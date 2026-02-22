@@ -250,6 +250,25 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
 }
 
 /**
+ * Mark a task as done directly (without a slot clear).
+ * Used when a task has no slot assignment but needs to be completed,
+ * e.g. from `ludics mag completed <proposal-name>`.
+ */
+export function taskCompleteDirectly(taskId: string): void {
+  const file = taskFilePath(taskId);
+  if (!existsSync(file)) {
+    console.error(`ludics: task file not found: ${taskId} (skipping task update)`);
+    return;
+  }
+  taskUpdateFrontmatter(taskId, "status", "done");
+  taskUpdateFrontmatter(taskId, "slot", "null");
+  const completed = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
+  taskUpdateFrontmatter(taskId, "completed", completed);
+  pruneBlockedBy(taskId);
+  stateCommit(`completed: ${taskId} (direct)`);
+}
+
+/**
  * When a task completes, remove it from other tasks' blocked_by lists
  * and move the reference to relates_to (preserving the relationship).
  */

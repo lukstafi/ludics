@@ -10,6 +10,8 @@ import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
 import { notifyOutgoing } from "./notify.ts";
+import { slotClear, taskCompleteDirectly } from "./slots/index.ts";
+import YAML from "yaml";
 import {
   tmuxAvailable,
   tmuxHasSession,
@@ -901,6 +903,66 @@ function magContext(): void {
   briefingPrecomputeContext();
 }
 
+function magCompleted(proposalName: string): void {
+  const harness = harnessDir();
+  const tasksPath = join(harness, "tasks");
+  if (!existsSync(tasksPath)) {
+    throw new Error("tasks directory not found");
+  }
+
+  const files = readdirSync(tasksPath).filter((f: string) => f.endsWith(".md"));
+
+  let matchedTaskId: string | null = null;
+  let matchedSlot: number | null = null;
+
+  for (const f of files) {
+    const content = readFileSync(join(tasksPath, f), "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) continue;
+
+    let data: Record<string, unknown>;
+    try {
+      data = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
+    } catch { continue; }
+
+    const status = String(data.status ?? "");
+    if (status !== "in-progress") continue;
+
+    const proposal = String(data.proposal ?? "").trim();
+    if (!proposal || proposal.toLowerCase() === "null") continue;
+
+    // Match proposal field: docs/<name>.md, <name>.md, or path ending in /<name>.md
+    const matches =
+      proposal === `docs/${proposalName}.md` ||
+      proposal === `${proposalName}.md` ||
+      proposal.endsWith(`/${proposalName}.md`);
+    if (!matches) continue;
+
+    matchedTaskId = String(data.id ?? "");
+    const slotVal = data.slot;
+    if (slotVal && String(slotVal) !== "null") {
+      const parsed = parseInt(String(slotVal), 10);
+      if (Number.isFinite(parsed)) matchedSlot = parsed;
+    }
+    break;
+  }
+
+  if (!matchedTaskId) {
+    console.error(`ludics: no in-progress task found matching proposal "${proposalName}"`);
+    process.exit(1);
+  }
+
+  if (matchedSlot !== null) {
+    slotClear(matchedSlot, "done");
+    console.log(`Completed task ${matchedTaskId} (slot ${matchedSlot} cleared)`);
+  } else {
+    taskCompleteDirectly(matchedTaskId);
+    console.log(`Completed task ${matchedTaskId} (no slot, direct update)`);
+  }
+
+  journalAppend("mag", `Completed task ${matchedTaskId} via proposal signal: ${proposalName}`);
+}
+
 export async function runMag(args: string[]): Promise<void> {
   const sub = args[0] ?? "";
 
@@ -1003,6 +1065,12 @@ export async function runMag(args: string[]): Promise<void> {
       console.log(`Queued feedback-digest request for ${repo}`);
       break;
     }
+    case "completed": {
+      const proposalName = args[1];
+      if (!proposalName) throw new Error("proposal name required (without .md extension)");
+      magCompleted(proposalName);
+      break;
+    }
     case "queue-pop": {
       // Called by the stop hook to check if there's a queued skill to run
       const cwd = args[1] ?? "";
@@ -1020,6 +1088,6 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     default:
-      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, health-check, message, inbox, queue, queue-pop, context, feedback-digest)`);
+      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, health-check, completed, message, inbox, queue, queue-pop, context, feedback-digest)`);
   }
 }

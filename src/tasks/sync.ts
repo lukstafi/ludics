@@ -558,8 +558,37 @@ export async function tasksUpdate(): Promise<void> {
     }
   }
 
+  // --- Reverse sync: close GitHub issues for locally completed tasks ---
+  let issuesClosed = 0;
+  for (const rec of githubRecords) {
+    if (rec.status !== "done" && rec.status !== "abandoned") continue;
+
+    const repo = inferRepoForTask(rec, reposBySlug);
+    const issueNumber = inferIssueNumber(rec);
+    if (!repo || !issueNumber) continue;
+
+    const issue = issuesByRepo.get(repo)?.get(issueNumber);
+    if (!issue) continue;
+
+    const ghState = normalizeState(issue.state);
+    if (ghState !== "open") continue; // already closed on GitHub
+
+    const ghArgs = ["gh", "issue", "close", "-R", repo, String(issueNumber)];
+    if (rec.status === "abandoned") {
+      ghArgs.push("--reason", "not planned");
+    }
+
+    const closeResult = Bun.spawnSync(ghArgs, { stdout: "pipe", stderr: "pipe" });
+    if (closeResult.exitCode === 0) {
+      issuesClosed++;
+      console.error(`ludics: closed ${repo}#${issueNumber} as ${rec.status}`);
+    } else {
+      console.error(`ludics: failed to close ${repo}#${issueNumber}: ${closeResult.stderr.toString().trim()}`);
+    }
+  }
+
   console.log(
-    `Updated ${touchedTasks.size} task(s): ${metadataUpdates} metadata field change(s), ${titleSynced} title sync(s), ${stateClosures} closed-state status change(s)`,
+    `Updated ${touchedTasks.size} task(s): ${metadataUpdates} metadata field change(s), ${titleSynced} title sync(s), ${stateClosures} closed-state status change(s), ${issuesClosed} GitHub issue(s) closed`,
   );
   console.log(
     `Preserved ${titlePreserved} local title override(s)`,
