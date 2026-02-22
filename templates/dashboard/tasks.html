@@ -79,6 +79,54 @@
             background-color: rgba(255, 255, 255, 0.02);
         }
 
+        .tree-node.task.done > summary,
+        .tree-node.task.done .task-link-row,
+        .tree-node.task.done .task-link-row a,
+        .tree-node.task.done .task-badge {
+            color: var(--text-secondary);
+        }
+
+        .tree-node.task.done .task-link-row a {
+            text-decoration-color: var(--text-secondary);
+        }
+
+        .tree-node.task.merged {
+            border-color: rgba(56, 140, 91, 0.45);
+        }
+
+        .tree-node.task.merged > summary,
+        .tree-node.task.merged .task-link-row,
+        .tree-node.task.merged .task-link-row a,
+        .tree-node.task.merged .task-badge {
+            color: #388c5b;
+        }
+
+        .tree-node.task.merged .task-badge {
+            border-color: rgba(56, 140, 91, 0.45);
+        }
+
+        .tree-node.task.abandoned {
+            border-style: dashed;
+            border-color: rgba(170, 170, 170, 0.45);
+        }
+
+        .tree-node.task.abandoned > summary,
+        .tree-node.task.abandoned .task-link-row,
+        .tree-node.task.abandoned .task-link-row a,
+        .tree-node.task.abandoned .task-badge {
+            color: var(--text-secondary);
+        }
+
+        .tree-node.task.abandoned > summary {
+            text-decoration: line-through;
+            text-decoration-thickness: 1px;
+            text-decoration-color: var(--text-secondary);
+        }
+
+        .tree-node.task.abandoned .task-badge {
+            border-color: rgba(170, 170, 170, 0.45);
+        }
+
         .tree-node.highlighted > summary {
             background-color: rgba(233, 69, 96, 0.08);
         }
@@ -221,6 +269,10 @@
             const nodeKey = `${parentKey}/${node.kind || 'task'}:${node.id || '(no-id)'}:${index}`;
             const details = document.createElement('details');
             details.className = `tree-node ${node.kind || 'task'}`;
+            const status = String(node.status || '').toLowerCase();
+            if (node.kind === 'task' && ['done', 'merged', 'abandoned'].includes(status)) {
+                details.classList.add(status);
+            }
             if (node.highlighted) details.classList.add('highlighted');
             if (node.hasProposal) details.classList.add('has-proposal');
             details.dataset.nodeKey = nodeKey;
