@@ -268,6 +268,20 @@ function queuePopSkill(): string | null {
     case "message": {
       const content = String(request.content ?? "");
       if (!content) return "/ludics-read-inbox"; // fallback for legacy queue entries
+
+      // Intercept button-tap launch messages from ntfy notifications
+      const launchMatch = content.match(/^Launch (agent-[\w-]+) for ([\w.-]+) in project .+$/);
+      if (launchMatch) {
+        const adapter = launchMatch[1]!;
+        const taskId = launchMatch[2]!;
+        return `/ludics-launch-session ${taskId} ${adapter}`;
+      }
+
+      // "I'll do it" button — just inform Mag, no action needed
+      if (content.match(/^User will handle [\w.-]+ manually$/)) {
+        return `The user chose to handle the task manually: ${content}`;
+      }
+
       return content; // send directly as user turn
     }
     case "feedback-digest": {
