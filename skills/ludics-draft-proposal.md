@@ -85,15 +85,15 @@ This skill is invoked when:
 8. **Update task frontmatter**: Set `proposal: docs/<feature>.md` in the task file.
    Use the `addFrontmatterField` pattern — add before closing `---`.
 
-9. **Send notification**:
+9. **Send notification with action buttons**:
    ```bash
-   ludics notify outgoing "Proposal ready for <task-id>: <title>"
+   ludics notify proposal "<task-id>" "<title>" "<one-line summary>" "<project-root>/docs/<feature>.md"
    ```
-   The `notifyProposal()` function (called internally) attaches the proposal file
-   and includes action buttons (agent-duo, pair-codex, pair-claude, I'll do it)
-   that POST to the incoming topic. The user taps a button on their phone,
-   the message arrives via the incoming subscriber as a direct queue injection,
-   and Mag interprets it as a user turn to execute the launch.
+   This sends the proposal file as an attachment and includes action buttons
+   (agent-duo, pair-claude, pair-codex) that POST to the incoming
+   topic. The user taps a button on their phone, the message arrives via the
+   incoming subscriber as a direct queue injection, and Mag interprets it as
+   a user turn to execute the launch.
 
 10. **Best-effort desktop**: Try `code <path>` to open the proposal in VS Code.
     Fail silently if unavailable.

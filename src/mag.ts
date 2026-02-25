@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess } from "./slots/markdown.ts";
 import { queueRequest, queuePop, queuePending, queueHasPendingFeedbackDigest } from "./queue.ts";
@@ -10,7 +10,7 @@ import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
 import { notifyOutgoing } from "./notify.ts";
-import { slotClear, taskCompleteDirectly } from "./slots/index.ts";
+import { slotAssign, slotClear, taskCompleteDirectly } from "./slots/index.ts";
 import YAML from "yaml";
 import {
   tmuxAvailable,
@@ -270,10 +270,13 @@ function queuePopSkill(): string | null {
       if (!content) return "/ludics-read-inbox"; // fallback for legacy queue entries
 
       // Intercept button-tap launch messages from ntfy notifications
-      const launchMatch = content.match(/^Launch (agent-[\w-]+) for ([\w.-]+) in project .+$/);
+      // Matches both "Launch agent-duo for ..." and "Launch agent-pair --claude for ..."
+      const launchMatch = content.match(/^Launch (agent-[\w-]+(?:\s+--[\w-]+)?) for ([\w.-]+) in project .+$/);
       if (launchMatch) {
-        const adapter = launchMatch[1]!;
+        const adapterRaw = launchMatch[1]!;
         const taskId = launchMatch[2]!;
+        // Normalize "agent-pair --claude" → "agent-pair-claude" for adapter registry
+        const adapter = adapterRaw.replace(/\s+--/, "-");
         return `/ludics-launch-session ${taskId} ${adapter}`;
       }
 
@@ -493,6 +496,117 @@ function maybeQueueProposals(): void {
   }
 }
 
+// --- Auto-fill empty slots ---
+
+function maybeFillEmptySlots(): void {
+  if (startSessionsAutonomy() === "manual") return;
+  if (proposalThrottled()) return;
+
+  // Check if draft-proposal is already in queue
+  const qFile = join(harnessDir(), "mag", "queue.jsonl");
+  if (existsSync(qFile)) {
+    const qContent = readFileSync(qFile, "utf-8");
+    if (qContent.includes('"draft-proposal"')) return;
+  }
+
+  // Find empty slots
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return;
+
+  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  const count = slotsCount();
+  const emptySlots: number[] = [];
+  const tasksInSlots = new Set<string>();
+
+  for (let i = 1; i <= count; i++) {
+    const block = blocks.get(i);
+    const process = block ? getProcess(block).trim() : "(empty)";
+    if (!process || process === "(empty)") {
+      emptySlots.push(i);
+    } else {
+      const taskId = block ? getTask(block).trim() : "";
+      if (taskId && taskId !== "null") tasksInSlots.add(taskId);
+    }
+  }
+
+  if (emptySlots.length === 0) return;
+
+  // Find ready, elaborated tasks not already in a slot
+  const tasksDir = join(harnessDir(), "tasks");
+  if (!existsSync(tasksDir)) return;
+
+  const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+
+  interface Candidate { id: string; priority: string; project: string; hasDeadline: boolean; deadline: string }
+  const candidates: Candidate[] = [];
+
+  for (const f of files) {
+    const content = readFileSync(join(tasksDir, f), "utf-8");
+    const idMatch = content.match(/^id:\s*(.+)$/m);
+    if (!idMatch) continue;
+    const id = idMatch[1]!.trim();
+
+    if (tasksInSlots.has(id)) continue;
+
+    const statusMatch = content.match(/^status:\s*(.+)$/m);
+    if (!statusMatch || statusMatch[1]!.trim() !== "ready") continue;
+
+    // Must be elaborated (has elaborated: field and no TBD placeholders)
+    if (!content.includes("\nelaborated:")) continue;
+    if (content.includes("- [ ] TBD\n")) continue;
+
+    // Must not have blocked_by dependencies
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (fmMatch) {
+      try {
+        const fm = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
+        const deps = fm.dependencies as Record<string, unknown> | undefined;
+        const blockedBy = deps?.blocked_by;
+        if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
+      } catch { /* skip parse errors */ }
+    }
+
+    const priorityMatch = content.match(/^priority:\s*(.+)$/m);
+    const priority = priorityMatch ? priorityMatch[1]!.trim() : "B";
+
+    const projectMatch = content.match(/^project:\s*(.+)$/m);
+    const project = projectMatch ? projectMatch[1]!.trim() : "";
+
+    const deadlineMatch = content.match(/^deadline:\s*(.+)$/m);
+    const deadline = deadlineMatch ? deadlineMatch[1]!.trim() : "";
+
+    candidates.push({ id, priority, project, hasDeadline: !!deadline && deadline !== "null", deadline });
+  }
+
+  if (candidates.length === 0) return;
+
+  // Sort by priority (A > B > C), then deadline presence, then deadline date
+  candidates.sort((a, b) => {
+    const pv = (p: string) => p === "A" ? 1 : p === "B" ? 2 : p === "C" ? 3 : 9;
+    const pd = pv(a.priority) - pv(b.priority);
+    if (pd !== 0) return pd;
+    if (a.hasDeadline !== b.hasDeadline) return a.hasDeadline ? -1 : 1;
+    return (a.deadline || "9999").localeCompare(b.deadline || "9999");
+  });
+
+  // Fill at most 1 empty slot per keepalive cycle (conservative)
+  const task = candidates[0]!;
+  const slot = emptySlots[0]!;
+
+  // Assign task to the empty slot with manual adapter (draft-proposal notification
+  // lets the user pick the actual adapter via action buttons)
+  slotAssign(slot, task.id, "manual");
+  console.error(`ludics: auto-assigned ${task.id} to empty slot ${slot}`);
+
+  // Write throttle timestamp (shared with maybeQueueProposals)
+  mkdirSync(magStateDir(), { recursive: true });
+  writeFileSync(proposalThrottleFile(), String(Math.floor(Date.now() / 1000)));
+
+  // Queue draft-proposal so Mag writes a proposal and notifies the user
+  queueRequest("draft-proposal", `"task":"${task.id}"`);
+  console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
+}
+
 // --- Mag CLI commands ---
 
 export function magStart(args: string[]): void {
@@ -522,8 +636,11 @@ export function magStart(args: string[]): void {
     // Publish terminal state to ntfy (dedup'd)
     publishTerminalState();
 
-    // Auto-queue proposals for elaborated leaf tasks
+    // Auto-queue proposals for elaborated leaf tasks already in slots
     maybeQueueProposals();
+
+    // Auto-fill empty slots with ready elaborated tasks
+    maybeFillEmptySlots();
 
     // Nudge if queue has items, but throttle to avoid spamming
     if (queuePending() && !nudgeThrottled()) {

@@ -101,35 +101,70 @@ export function notifyProposal(
   const token = getToken();
   const project = taskId.split("-").slice(0, -1).join("-") || "unknown";
 
-  // Build action buttons (ntfy Actions header)
-  const actions: string[] = [];
+  // Read file content for the message body (ntfy JSON API doesn't support file upload
+  // with actions, so we include a summary and attach via a follow-up if needed)
+  let fileContent = summary;
+  try {
+    const raw = readFileSync(filePath, "utf-8");
+    // Truncate to fit ntfy message limits (~4KB for the whole payload)
+    fileContent = raw.length > 2000 ? raw.slice(0, 2000) + "\n\n[truncated]" : raw;
+  } catch { /* use summary as fallback */ }
+
+  // Build JSON payload with action buttons (max 3 allowed by ntfy)
+  const payload: Record<string, unknown> = {
+    topic: outTopic,
+    title: `Proposal: ${title}`,
+    message: fileContent,
+    priority: 3,
+    tags: ["memo", taskId],
+  };
+
   if (inTopic) {
-    const authHeader = token ? `, headers.Authorization=Bearer ${token}` : "";
-    actions.push(
-      `http, agent-duo, https://ntfy.sh/${inTopic}, body=Launch agent-duo for ${taskId} in project ${project}, method=POST${authHeader}`,
-      `http, pair-codex, https://ntfy.sh/${inTopic}, body=Launch agent-pair-codex for ${taskId} in project ${project}, method=POST${authHeader}`,
-      `http, pair-claude, https://ntfy.sh/${inTopic}, body=Launch agent-pair-claude for ${taskId} in project ${project}, method=POST${authHeader}`,
-      `http, I'll do it, https://ntfy.sh/${inTopic}, body=User will handle ${taskId} manually, method=POST${authHeader}`,
-    );
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    // ntfy allows max 3 action buttons
+    payload.actions = [
+      {
+        action: "http",
+        label: "agent-duo",
+        url: `https://ntfy.sh/${inTopic}`,
+        method: "POST",
+        headers,
+        body: `Launch agent-duo for ${taskId} in project ${project}`,
+      },
+      {
+        action: "http",
+        label: "pair-claude",
+        url: `https://ntfy.sh/${inTopic}`,
+        method: "POST",
+        headers,
+        body: `Launch agent-pair --claude for ${taskId} in project ${project}`,
+      },
+      {
+        action: "http",
+        label: "pair-codex",
+        url: `https://ntfy.sh/${inTopic}`,
+        method: "POST",
+        headers,
+        body: `Launch agent-pair --codex for ${taskId} in project ${project}`,
+      },
+    ];
   }
 
-  // Build curl command with file attachment
   const curlArgs = [
     "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-    "-T", filePath,
-    "-H", `Title: Proposal: ${title}`,
-    "-H", `Priority: 3`,
-    "-H", `Tags: memo,${taskId}`,
-    "-H", `Filename: proposal.md`,
+    "-X", "POST",
+    "-H", "Content-Type: application/json",
   ];
   if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
-  if (actions.length > 0) curlArgs.push("-H", `Actions: ${actions.join("; ")}`);
-  curlArgs.push(`https://ntfy.sh/${outTopic}`);
+  curlArgs.push("-d", JSON.stringify(payload), "https://ntfy.sh/");
 
   const result = Bun.spawnSync(curlArgs, { stdout: "pipe", stderr: "pipe" });
   const httpCode = result.stdout.toString().trim();
   if (httpCode !== "200") {
-    console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${httpCode}), logged locally`);
+    const stderr = result.stderr.toString().trim();
+    console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${httpCode})${stderr ? `: ${stderr}` : ""}, logged locally`);
     // Fallback: send summary as plain text
     notifySend(outTopic, `Proposal for ${taskId}: ${summary}`, 3, `Proposal: ${title}`, "memo");
   }
@@ -285,6 +320,18 @@ export async function runNotify(args: string[]): Promise<void> {
       if (!args[1]) throw new Error("message required");
       notifyAgents(args.slice(1).join(" "));
       break;
+    case "proposal": {
+      // ludics notify proposal <task-id> <title> <summary> <file-path>
+      const taskId = args[1];
+      const title = args[2];
+      const summary = args[3];
+      const filePath = args[4];
+      if (!taskId || !title || !summary || !filePath) {
+        throw new Error("usage: ludics notify proposal <task-id> <title> <summary> <file-path>");
+      }
+      notifyProposal(taskId, title, summary, filePath);
+      break;
+    }
     case "subscribe":
       await subscribeIncoming();
       break;
@@ -292,6 +339,6 @@ export async function runNotify(args: string[]): Promise<void> {
       notifyRecent(args[1] ? parseInt(args[1], 10) : 10);
       break;
     default:
-      throw new Error(`unknown notify command: ${tier} (use: outgoing, agents, subscribe, recent)`);
+      throw new Error(`unknown notify command: ${tier} (use: outgoing, agents, proposal, subscribe, recent)`);
   }
 }

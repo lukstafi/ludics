@@ -102,12 +102,19 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - **suggest**: include ready-to-run commands in the briefing
    - **manual**: include observations only
 
-6. **Write result**:
+6. **Surface ambiguities**:
+   - Review the full briefing for information gaps that would change your next
+     autonomous actions (conflicting priorities, unclear task scope, suspiciously elaborated tasks,
+     dependency tangles, missing context from the user)
+   - Formulate 1-5 specific questions (see Questions Guidelines in the output format)
+   - If no genuine ambiguities exist, note "No blocking ambiguities."
+
+7. **Write result**:
    - Write briefing to `$LUDICS_STATE_PATH/briefing.md`
    - Read request ID: `REQ_ID=$(cat "$LUDICS_STATE_PATH/mag/current-request-id")`
    - Write result JSON to `$LUDICS_RESULTS_DIR/$REQ_ID.json`
 
-7. **Commit and push state**:
+8. **Commit and push state**:
    - Run `ludics sync` to commit and push to remote
 
 ## Output Format
@@ -143,7 +150,23 @@ Current context focus: [einsum/ocannl] - switching to [other] would incur contex
 
 ## Notes
 - [Any other strategic observations]
+
+## Questions
+1. [Question about a real ambiguity that blocks autonomous decision-making]
+2. [...]
 ```
+
+### Questions Guidelines
+
+End every briefing with 1-5 questions. Questions should surface information
+that you **cannot resolve yourself** by reading code, task files, or other
+available resources. If you can answer a question by researching, do the
+research instead of asking.
+
+**Avoid asking for confirmation to proceed.** Starting jobs that look like a good
+idea is the right default — worst case the user discards the results.
+
+When the answers arrive, update relevant files or perform relevant actions so the answers become discoverable.
 
 ### Result JSON
 
