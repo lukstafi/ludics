@@ -1,6 +1,6 @@
 # /ludics-launch-session - Launch Agent Session for Task
 
-Find the slot for a task (or an empty slot as fallback), assign the chosen adapter,
+Find the slot of or for a task (or an empty slot as fallback), assign the chosen adapter,
 and start the session. Triggered when the user taps an action button on a proposal
 notification.
 

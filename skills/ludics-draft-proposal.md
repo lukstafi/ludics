@@ -29,16 +29,26 @@ This skill is invoked when:
    Extract: title, project, dependencies, context, any linked GitHub issue.
 
 2. **Resolve project path**:
-   - Read project config to find the repository path
-   - If task has a project field, look up in `~/.config/ludics/config.yaml` projects list
-   - Determine the local checkout path (e.g., `~/repos/<project>`)
+   - The task's `project` field names a project from the `projects` list in the
+     ludics config (located at
+     `$LUDICS_STATE_PATH/config.yaml`). Each project entry has a `repo` field
+     (e.g., `lukstafi/ocannl`); the local checkout is typically `~/<repo-name>`.
+   - The `personal` project refers to the state repository itself.
 
 3. **Explore project codebase**:
    - Read relevant source files mentioned in the task elaboration
    - Understand existing patterns, architecture, related code
    - Check for existing docs, README, ARCHITECTURE files
 
-4. **Bail out if multi-concern**:
+4. **Surface task-statement ambiguities**:
+   - Cross-check the task description and elaboration against the codebase and other sources of user clarifications. Watch out for staleness, unjustified assumptions, missing context.
+   - If issues are found, note them prominently in the proposal's Motivation or
+     Current State section so the user sees them before launching an agent.
+   - If the task is clearly stale (the work is already done or the goal no longer
+     applies), skip the proposal. Write result JSON with `"status": "stale"` and
+     a short explanation, then stop.
+
+5. **Bail out if multi-concern**:
    - If the task covers multiple independent concerns (different modules, separable
      features, could be merged to main independently), do NOT write a proposal.
    - Instead, queue the split skill and stop:
@@ -49,11 +59,11 @@ This skill is invoked when:
    - The split skill will create subtasks, queue elaboration for each, and they
      will eventually get their own proposals when assigned to slots.
 
-5. **Determine docs directory**:
+6. **Determine docs directory**:
    - Check if `docs/`, `doc/`, or project root has existing documentation
    - Use `docs/` by default; create if needed
 
-6. **Write proposal** to `<project-root>/docs/<feature-name>.md`:
+7. **Write proposal** to `<project-root>/docs/<feature-name>.md`:
 
    ```markdown
    # <Title>
@@ -74,7 +84,7 @@ This skill is invoked when:
    **Key:** No implementation plan, no effort estimates, no micro-managed steps.
    The Why/What focus. Coding agents handle the How via their own plan/clarify phases.
 
-7. **Commit and push**:
+8. **Commit and push**:
    ```bash
    cd <project-root>
    git add docs/<feature>.md
@@ -82,10 +92,10 @@ This skill is invoked when:
    git push
    ```
 
-8. **Update task frontmatter**: Set `proposal: docs/<feature>.md` in the task file.
+9. **Update task frontmatter**: Set `proposal: docs/<feature>.md` in the task file.
    Use the `addFrontmatterField` pattern — add before closing `---`.
 
-9. **Send notification with action buttons**:
+10. **Send notification with action buttons**:
    ```bash
    ludics notify proposal "<task-id>" "<title>" "<one-line summary>" "<project-root>/docs/<feature>.md"
    ```
@@ -95,10 +105,10 @@ This skill is invoked when:
    incoming subscriber as a direct queue injection, and Mag interprets it as
    a user turn to execute the launch.
 
-10. **Best-effort desktop**: Try `code <path>` to open the proposal in VS Code.
+11. **Best-effort desktop**: Try `code <path>` to open the proposal in VS Code.
     Fail silently if unavailable.
 
-11. **Write result JSON**:
+12. **Write result JSON**:
     ```json
     {
       "id": "req-...",
@@ -112,7 +122,7 @@ This skill is invoked when:
 
 ## Output Format
 
-The proposal document follows the template in step 6. Keep it concise — typically 1-2 pages.
+The proposal document follows the template in step 7. Keep it concise — typically 1-2 pages.
 The goal is to give the user enough context to decide whether to launch an agent session,
 and which adapter to use.
 
