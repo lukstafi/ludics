@@ -270,19 +270,12 @@ function queuePopSkill(): string | null {
       if (!content) return "/ludics-read-inbox"; // fallback for legacy queue entries
 
       // Intercept button-tap launch messages from ntfy notifications
-      // Matches both "Launch agent-duo for ..." and "Launch agent-pair --claude for ..."
-      const launchMatch = content.match(/^Launch (agent-[\w-]+(?:\s+--[\w-]+)?) for ([\w.-]+) in project .+$/);
+      // e.g. "Launch agent-duo for task-042 in project ocannl"
+      const launchMatch = content.match(/^Launch (agent-[\w-]+) for ([\w.-]+) in project .+$/);
       if (launchMatch) {
-        const adapterRaw = launchMatch[1]!;
+        const adapter = launchMatch[1]!;
         const taskId = launchMatch[2]!;
-        // Normalize "agent-pair --claude" → "agent-pair-claude" for adapter registry
-        const adapter = adapterRaw.replace(/\s+--/, "-");
         return `/ludics-launch-session ${taskId} ${adapter}`;
-      }
-
-      // "I'll do it" button — just inform Mag, no action needed
-      if (content.match(/^User will handle [\w.-]+ manually$/)) {
-        return `The user chose to handle the task manually: ${content}`;
       }
 
       return content; // send directly as user turn

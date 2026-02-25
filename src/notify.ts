@@ -139,7 +139,7 @@ export function notifyProposal(
         url: `https://ntfy.sh/${inTopic}`,
         method: "POST",
         headers,
-        body: `Launch agent-pair --claude for ${taskId} in project ${project}`,
+        body: `Launch agent-pair-claude for ${taskId} in project ${project}`,
       },
       {
         action: "http",
@@ -147,7 +147,7 @@ export function notifyProposal(
         url: `https://ntfy.sh/${inTopic}`,
         method: "POST",
         headers,
-        body: `Launch agent-pair --codex for ${taskId} in project ${project}`,
+        body: `Launch agent-pair-codex for ${taskId} in project ${project}`,
       },
     ];
   }
