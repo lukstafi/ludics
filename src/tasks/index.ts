@@ -5,6 +5,7 @@ import { extname, join } from "path";
 import { harnessDir } from "../config.ts";
 import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField } from "./markdown.ts";
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
+import { emitEvent } from "../events.ts";
 
 function tasksDir(): string {
   return join(harnessDir(), "tasks");
@@ -124,6 +125,7 @@ Created manually via ludics.
 `;
 
   writeFileSync(file, content, { flag: "wx" });
+  emitEvent({ event_type: "task_created", source: "cli", scope: "task", task: id, message: title });
   console.log(`Created task: ${file}`);
   console.log(`ID: ${id}`);
 }
@@ -284,6 +286,7 @@ function tasksMerge(targetId: string, sourceIds: string[]): void {
     addFrontmatterField(targetFile, "merged_from", mergedList);
   }
 
+  emitEvent({ event_type: "task_merged", source: "cli", scope: "task", task: targetId, message: `merged ${sourceIds.join(", ")} into ${targetId}` });
   console.log(`\nMerged ${sourceIds.length} task(s) into ${targetId}`);
 }
 

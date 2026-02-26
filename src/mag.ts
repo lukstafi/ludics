@@ -9,6 +9,7 @@ import { queueRequest, queuePop, queuePending, queueHasPendingFeedbackDigest } f
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
+import { emitEvent } from "./events.ts";
 import { notifyOutgoing } from "./notify.ts";
 import { slotAssign, slotClear, taskCompleteDirectly } from "./slots/index.ts";
 import YAML from "yaml";
@@ -589,6 +590,7 @@ function maybeFillEmptySlots(): void {
   // Assign task to the empty slot with manual adapter (draft-proposal notification
   // lets the user pick the actual adapter via action buttons)
   slotAssign(slot, task.id, "manual");
+  emitEvent({ event_type: "slot_auto_fill", source: "keepalive", scope: "slot", slot, task: task.id, adapter: "manual", message: `auto-assigned ${task.id} to empty slot ${slot}` });
   console.error(`ludics: auto-assigned ${task.id} to empty slot ${slot}`);
 
   // Write throttle timestamp (shared with maybeQueueProposals)
@@ -597,6 +599,7 @@ function maybeFillEmptySlots(): void {
 
   // Queue draft-proposal so Mag writes a proposal and notifies the user
   queueRequest("draft-proposal", `"task":"${task.id}"`);
+  emitEvent({ event_type: "mag_auto_proposal", source: "keepalive", scope: "mag", task: task.id, message: `auto-queued draft-proposal for ${task.id}` });
   console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
 }
 
@@ -640,6 +643,7 @@ export function magStart(args: string[]): void {
       const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
       triggerSkill(MAG_SESSION_NAME, `Continue. (ludics automatic message, current time: ${now})`);
       writeNudgeTimestamp();
+      emitEvent({ event_type: "mag_nudge", source: "keepalive", scope: "mag", message: "nudged Mag with Continue" });
     }
     return;
   }
@@ -661,6 +665,7 @@ export function magStart(args: string[]): void {
   tmuxNewSession(MAG_SESSION_NAME, workingDir);
 
   magSignal("running", "session started");
+  emitEvent({ event_type: "mag_start", source: "cli", scope: "mag", message: `Mag session ${MAG_SESSION_NAME} started` });
 
   // Export environment variables for skills
   const statePath = harnessDir();
@@ -716,6 +721,7 @@ export function magStop(): void {
 
   console.error(`ludics: Stopping Mag tmux session '${MAG_SESSION_NAME}'...`);
   tmuxKillSession(MAG_SESSION_NAME);
+  emitEvent({ event_type: "mag_stop", source: "cli", scope: "mag", message: `Mag session ${MAG_SESSION_NAME} stopped` });
 
   // Append stopped timestamp
   const stateFile = magStateFile();
@@ -1085,6 +1091,7 @@ function magCompleted(proposalName: string): void {
   }
 
   journalAppend("mag", `Completed task ${matchedTaskId} via proposal signal: ${proposalName}`);
+  emitEvent({ event_type: "mag_completed", source: "mag", scope: "mag", task: matchedTaskId, slot: matchedSlot ?? undefined, message: `completed via proposal signal: ${proposalName}` });
 }
 
 export async function runMag(args: string[]): Promise<void> {

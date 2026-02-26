@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "fs";
 import { join, dirname } from "path";
 import { harnessDir } from "./config.ts";
+import { emitEvent } from "./events.ts";
 
 function queueFile(): string {
   return join(harnessDir(), "mag", "queue.jsonl");
@@ -27,6 +28,7 @@ export function queueRequest(action: string, extra?: string): string {
   }
 
   appendFileSync(file, request + "\n");
+  emitEvent({ event_type: "queue_request", source: "cli", scope: "queue", action, message: requestId });
   return requestId;
 }
 
@@ -40,6 +42,7 @@ export function queuePop(): string | null {
   const lines = content.split("\n");
   const first = lines[0]!;
   writeFileSync(file, lines.slice(1).join("\n") + (lines.length > 1 ? "\n" : ""));
+  emitEvent({ event_type: "queue_pop", source: "keepalive", scope: "queue", message: first.slice(0, 200) });
   return first;
 }
 
@@ -107,4 +110,5 @@ export function writeResult(requestId: string, status: string, outputFile?: stri
   } else {
     writeFileSync(resultFile, `{"id":"${requestId}","status":"${status}","timestamp":"${timestamp}"}\n`);
   }
+  emitEvent({ event_type: "queue_result", source: "mag", scope: "queue", status, message: requestId });
 }

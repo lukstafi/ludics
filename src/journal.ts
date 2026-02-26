@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import { harnessDir } from "./config.ts";
+import { emitEvent } from "./events.ts";
 
 function journalDir(): string {
   return join(harnessDir(), "journal");
@@ -28,6 +29,9 @@ export function journalAppend(category: string, message: string): void {
 
   const time = new Date().toTimeString().slice(0, 8);
   appendFileSync(file, `- **${time}** [${category}] ${message}\n`);
+
+  // Also emit structured event as generic fallback
+  emitEvent({ event_type: "journal", source: "cli", scope: category, message });
 }
 
 export function journalRecent(count: number = 20): void {

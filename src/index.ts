@@ -18,6 +18,7 @@ import { runInit } from "./init.ts";
 import { slotsList } from "./slots/index.ts";
 import { flowReady, flowCritical } from "./flow.ts";
 import { runQuote } from "./quote.ts";
+import { runEvents } from "./events.ts";
 
 const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   sessions: runSessions,
@@ -45,6 +46,7 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   },
   init: runInit,
   quote: async () => runQuote(),
+  events: async (args) => runEvents(args),
   sync: async () => stateFullSync(),
   state: async (args) => {
     const sub = args[0] ?? "";
@@ -154,6 +156,9 @@ Commands:
   journal                      Show today's journal entries
   journal recent [n]           Show last n journal entries
   journal list [days]          List journal files from last n days
+
+  events [--type X] [--task Y] [--scope S] [--source R] [--since T] [--limit N]
+                               Query structured event log
 
   network status               Show network configuration
   federation status            Show federation status (multi-machine Mag)

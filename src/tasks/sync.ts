@@ -6,6 +6,7 @@ import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCou
 import { slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getProcess, getTask } from "../slots/markdown.ts";
 import { writeTaskFile, updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter } from "./markdown.ts";
+import { emitEvent } from "../events.ts";
 
 function yamlEscape(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -146,7 +147,10 @@ export async function tasksConvert(): Promise<void> {
       currentUsesBrowser,
       currentRepo, currentUrl, currentLabels, today, currentPath || undefined,
     );
-    if (created) count++;
+    if (created) {
+      emitEvent({ event_type: "task_github_import", source: "sync", scope: "task", task: currentId, message: currentTitle });
+      count++;
+    }
   }
 
   for (const line of lines) {
@@ -547,6 +551,7 @@ export async function tasksUpdate(): Promise<void> {
       let changed = false;
       if (!["done", "abandoned"].includes(rec.status)) {
         if (setFrontmatterScalar(rec.filePath, "status", closureStatus)) {
+          emitEvent({ event_type: "task_status_change", source: "sync", scope: "task", task: taskId, status: closureStatus, message: `GitHub issue closed (${closureStatus})` });
           stateClosures++;
           changed = true;
         }
@@ -580,6 +585,7 @@ export async function tasksUpdate(): Promise<void> {
 
     const closeResult = Bun.spawnSync(ghArgs, { stdout: "pipe", stderr: "pipe" });
     if (closeResult.exitCode === 0) {
+      emitEvent({ event_type: "task_github_reverse_close", source: "sync", scope: "task", task: rec.id, status: rec.status, message: `closed ${repo}#${issueNumber} as ${rec.status}` });
       issuesClosed++;
       console.error(`ludics: closed ${repo}#${issueNumber} as ${rec.status}`);
     } else {
@@ -628,6 +634,7 @@ function tasksQueueElaborations(): void {
     const requestId = `req-${Math.floor(Date.now() / 1000)}-${process.pid}`;
     const request = `{"id":"${requestId}","action":"elaborate","timestamp":"${timestamp}","task":"${taskId}"}`;
     appendFileSync(queueFile, request + "\n");
+    emitEvent({ event_type: "task_elaborate_queued", source: "sync", scope: "task", task: taskId });
     count++;
   }
 
@@ -752,6 +759,7 @@ function tasksQueuePreemptions(): void {
     const autonomy = preemptAutonomy();
     const request = `{"id":"${requestId}","action":"preempt","timestamp":"${timestamp}","task":"${id}","autonomy":"${autonomy}"}`;
     appendFileSync(queueFile, request + "\n");
+    emitEvent({ event_type: "task_preempt_queued", source: "sync", scope: "task", task: id, message: `priority project: ${project}` });
     // Mark task immediately so subsequent syncs won't re-queue it
     // (closes the race window between queue-pop and actual slot assignment)
     updateFrontmatterField(join(tasksDir, f), "status", "preempt-queued");

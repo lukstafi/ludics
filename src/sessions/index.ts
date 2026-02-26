@@ -12,6 +12,7 @@ import { deduplicateAndMerge } from "./dedup.ts";
 import { classifySessions } from "./classify.ts";
 import { writeReport, printSummary, printDetailedSummary, printJson } from "./report.ts";
 import type { DiscoveredSession, DiscoveryResult, MergedSession } from "../types.ts";
+import { emitEvent } from "../events.ts";
 
 async function discoverAll(staleThreshold: number): Promise<DiscoveredSession[]> {
   // Run all scanners concurrently
@@ -51,6 +52,8 @@ async function runPipeline(): Promise<DiscoveryResult> {
   for (const s of raw) {
     sources[s.agentType] = (sources[s.agentType] ?? 0) + 1;
   }
+
+  emitEvent({ event_type: "session_discovery", source: "keepalive", scope: "session", message: `discovered ${raw.length} sessions, classified ${classified.length}, unclassified ${unclassified.length}` });
 
   return {
     generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),

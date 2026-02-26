@@ -5,6 +5,7 @@ import { join, dirname } from "path";
 import { harnessDir } from "./config.ts";
 import { networkNodes, networkCurrentNode } from "./network.ts";
 import { journalAppend } from "./journal.ts";
+import { emitEvent } from "./events.ts";
 import { stateCommit, statePull, statePush } from "./state.ts";
 
 const HEARTBEAT_TIMEOUT = parseInt(process.env.LUDICS_HEARTBEAT_TIMEOUT ?? "900", 10);
@@ -53,6 +54,7 @@ export function heartbeatPublish(): boolean {
   });
 
   writeFileSync(join(dir, `${nodeName}.json`), heartbeat + "\n");
+  emitEvent({ event_type: "federation_heartbeat", source: "federation", scope: "federation", message: nodeName });
   console.error(`ludics: federation: published heartbeat for ${nodeName}`);
   return true;
 }
@@ -140,6 +142,7 @@ function updateLeader(newLeader: string): boolean {
   } catch {
     // journal may not be available
   }
+  emitEvent({ event_type: "federation_leader_change", source: "federation", scope: "federation", message: `leader changed to ${newLeader} (term ${term})` });
 
   return true;
 }

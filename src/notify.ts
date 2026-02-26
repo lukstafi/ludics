@@ -4,6 +4,7 @@ import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync } fr
 import { join } from "path";
 import { loadConfigSync, harnessDir } from "./config.ts";
 import { queueRequest } from "./queue.ts";
+import { emitEvent } from "./events.ts";
 
 function notificationLogFile(): string {
   return join(harnessDir(), "journal", "notifications.jsonl");
@@ -286,6 +287,7 @@ export async function subscribeIncoming(): Promise<void> {
 
               // Log to journal
               notifyLog("incoming", data.message, 3, data.title || "ntfy incoming");
+              emitEvent({ event_type: "notify_incoming", source: "notify", scope: "notify", message: data.message.slice(0, 200) });
 
               // Persist state
               saveSubscriberState(data.id);
