@@ -1,11 +1,10 @@
 // Tasks CLI handlers
 
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, renameSync } from "fs";
+import { extname, join } from "path";
 import { harnessDir } from "../config.ts";
 import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField } from "./markdown.ts";
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
-import { stateCommit } from "../state.ts";
 
 function tasksDir(): string {
   return join(harnessDir(), "tasks");
@@ -77,11 +76,15 @@ function tasksCreate(
   const dir = tasksDir();
   mkdirSync(dir, { recursive: true });
 
-  const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-  const nextNum = files.length + 1;
   const today = new Date().toISOString().slice(0, 10);
-  const id = `task-${String(nextNum).padStart(3, "0")}`;
+  const id = `task-${contentFingerprint(title)}`;
   const file = join(dir, `${id}.md`);
+
+  if (existsSync(file)) {
+    console.log(`Task already exists: ${file}`);
+    console.log(`ID: ${id}`);
+    return;
+  }
 
   const content = `---
 id: ${id}
@@ -120,7 +123,7 @@ Created manually via ludics.
 
 `;
 
-  writeFileSync(file, content);
+  writeFileSync(file, content, { flag: "wx" });
   console.log(`Created task: ${file}`);
   console.log(`ID: ${id}`);
 }
@@ -326,6 +329,204 @@ function tasksDuplicates(): void {
   }
 }
 
+interface TaskIdMigrationPlan {
+  oldId: string;
+  newId: string;
+  oldFile: string;
+  newFile: string;
+  title: string;
+}
+
+function isLegacyManualTaskId(id: string): boolean {
+  return /^task-\d+$/.test(id);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function collectReferenceFiles(rootDir: string): string[] {
+  const out: string[] = [];
+  const allowedExt = new Set([".md", ".markdown", ".yaml", ".yml", ".json", ".jsonl", ".txt"]);
+
+  function walk(dir: string): void {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === ".git") continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(path);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (allowedExt.has(extname(entry.name).toLowerCase())) {
+        out.push(path);
+      }
+    }
+  }
+
+  walk(rootDir);
+  return out.sort();
+}
+
+function replaceTaskIds(content: string, mappings: Array<[string, string]>): { content: string; replacements: number } {
+  let updated = content;
+  let replacements = 0;
+
+  const sorted = mappings.slice().sort((a, b) => b[0].length - a[0].length);
+  for (const [oldId, newId] of sorted) {
+    const pattern = new RegExp(`(?<![A-Za-z0-9_-])${escapeRegExp(oldId)}(?![A-Za-z0-9_-])`, "g");
+    const hits = updated.match(pattern)?.length ?? 0;
+    if (hits === 0) continue;
+    replacements += hits;
+    updated = updated.replace(pattern, newId);
+  }
+
+  return { content: updated, replacements };
+}
+
+function tasksMigrateRefs(dryRun: boolean = false): void {
+  const harness = harnessDir();
+  const dir = tasksDir();
+  if (!existsSync(dir)) {
+    throw new Error(`tasks directory not found: ${dir} (run: ludics tasks sync)`);
+  }
+
+  const files = readdirSync(dir).filter((f) => f.endsWith(".md")).sort();
+  const candidates: TaskIdMigrationPlan[] = [];
+  const conflicts: string[] = [];
+
+  for (const f of files) {
+    const filePath = join(dir, f);
+    let content = "";
+    let fm;
+    try {
+      content = readFileSync(filePath, "utf-8");
+      fm = parseTaskFrontmatter(content);
+    } catch {
+      continue;
+    }
+
+    if (!isLegacyManualTaskId(fm.id)) continue;
+    const title = fm.title.trim();
+    if (!title) {
+      conflicts.push(`${fm.id}: missing title; cannot derive deterministic ID`);
+      continue;
+    }
+
+    const newId = `task-${contentFingerprint(title)}`;
+    candidates.push({
+      oldId: fm.id,
+      newId,
+      oldFile: filePath,
+      newFile: join(dir, `${newId}.md`),
+      title,
+    });
+  }
+
+  if (candidates.length === 0) {
+    console.log("No legacy task-<number> IDs found");
+    return;
+  }
+
+  const byNewId = new Map<string, TaskIdMigrationPlan[]>();
+  for (const c of candidates) {
+    const group = byNewId.get(c.newId) ?? [];
+    group.push(c);
+    byNewId.set(c.newId, group);
+  }
+
+  const duplicateTargets = new Set<string>();
+  for (const [newId, group] of byNewId.entries()) {
+    if (group.length < 2) continue;
+    duplicateTargets.add(newId);
+    const ids = group.map((g) => g.oldId).join(", ");
+    conflicts.push(`${newId}: multiple legacy tasks map to this ID (${ids})`);
+  }
+
+  const withoutDuplicateTargets = candidates.filter((c) => !duplicateTargets.has(c.newId));
+  const oldFiles = new Set(withoutDuplicateTargets.map((c) => c.oldFile));
+  const renames: TaskIdMigrationPlan[] = [];
+
+  for (const c of withoutDuplicateTargets) {
+    if (existsSync(c.newFile) && !oldFiles.has(c.newFile)) {
+      conflicts.push(`${c.oldId} -> ${c.newId}: target file already exists (${c.newFile})`);
+      continue;
+    }
+    renames.push(c);
+  }
+
+  console.log(
+    `Found ${candidates.length} legacy task(s): ${renames.length} migratable, ${conflicts.length} conflict(s)`,
+  );
+
+  if (conflicts.length > 0) {
+    console.log("");
+    console.log("Conflicts:");
+    for (const c of conflicts) {
+      console.log(`- ${c}`);
+    }
+  }
+
+  if (renames.length === 0) {
+    return;
+  }
+
+  console.log("");
+  console.log(dryRun ? "Planned migrations:" : "Applying migrations:");
+  for (const r of renames) {
+    console.log(`- ${r.oldId} -> ${r.newId}  "${r.title}"`);
+  }
+
+  if (dryRun) {
+    console.log("");
+    console.log("Dry run only; no files modified");
+    return;
+  }
+
+  const updatedContentByOldFile = new Map<string, string>();
+  for (const r of renames) {
+    const content = readFileSync(r.oldFile, "utf-8");
+    const updated = content.replace(/^id:\s*.+$/m, `id: ${r.newId}`);
+    updatedContentByOldFile.set(r.oldFile, updated);
+  }
+
+  const tempByOldFile = new Map<string, string>();
+  for (const r of renames) {
+    const tempFile = `${r.oldFile}.migrate-${process.pid}-${Math.random().toString(16).slice(2, 8)}`;
+    renameSync(r.oldFile, tempFile);
+    tempByOldFile.set(r.oldFile, tempFile);
+  }
+
+  for (const r of renames) {
+    const tempFile = tempByOldFile.get(r.oldFile);
+    if (!tempFile) continue;
+    const updated = updatedContentByOldFile.get(r.oldFile);
+    if (updated !== undefined) {
+      writeFileSync(tempFile, updated);
+    }
+    renameSync(tempFile, r.newFile);
+  }
+
+  const mappings: Array<[string, string]> = renames.map((r) => [r.oldId, r.newId]);
+  const refFiles = collectReferenceFiles(harness);
+  let changedFiles = 0;
+  let replacements = 0;
+
+  for (const file of refFiles) {
+    const content = readFileSync(file, "utf-8");
+    const result = replaceTaskIds(content, mappings);
+    if (result.replacements === 0) continue;
+    writeFileSync(file, result.content);
+    changedFiles++;
+    replacements += result.replacements;
+  }
+
+  console.log("");
+  console.log(`Migrated ${renames.length} task file(s)`);
+  console.log(`Updated ${changedFiles} file(s) with ${replacements} ID replacement(s)`);
+}
+
 export async function runTasks(args: string[]): Promise<void> {
   const sub = args[0] ?? "";
 
@@ -400,9 +601,21 @@ export async function runTasks(args: string[]): Promise<void> {
     case "duplicates":
       tasksDuplicates();
       break;
+    case "migrate-refs": {
+      let dryRun = false;
+      for (const arg of args.slice(1)) {
+        if (arg === "--dry-run") {
+          dryRun = true;
+          continue;
+        }
+        throw new Error(`unknown migrate-refs argument: ${arg} (use: --dry-run)`);
+      }
+      tasksMigrateRefs(dryRun);
+      break;
+    }
     default:
       throw new Error(
-        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, check, merge, duplicates)`,
+        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, check, merge, duplicates, migrate-refs)`,
       );
   }
 }

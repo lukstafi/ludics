@@ -25,9 +25,9 @@ This document tracks format changes and conversion steps during the TypeScript m
   now use TypeScript. Task file format (YAML frontmatter + Markdown) is unchanged.
 - State repo operations (`sync`, `state pull`, `state push`) now use `Bun.spawnSync` for git.
 - Journal operations (`journal`, `journal recent`, `journal list`) now use TypeScript.
-- `tasks migrate-refs` is removed (legacy one-time utility, per user directive).
-  It has been dropped from the help text. The original Bash implementation remains
-  in `lib/tasks.sh` for reference if ever needed again.
+- `tasks migrate-refs` was initially removed during migration as a one-time utility.
+  It has since been reintroduced in TypeScript to migrate legacy `task-<number>`
+  IDs to deterministic `task-<title-hash>` IDs and rewrite cross-references.
 - Adapter dispatch: `slot <n> start/stop` still invokes Bash adapter scripts via subprocess.
   The adapters themselves remain in Bash.
 

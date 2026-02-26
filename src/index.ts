@@ -105,6 +105,8 @@ Commands:
   tasks check <id>             Check if task needs elaboration
   tasks merge <target> <src..> Merge source task(s) into target
   tasks duplicates             Find potential duplicate tasks
+  tasks migrate-refs [--dry-run]
+                               Migrate legacy task-<number> IDs to deterministic IDs and rewrite references
 
   flow ready                   Priority-sorted ready tasks
   flow blocked                 What's blocked and why
