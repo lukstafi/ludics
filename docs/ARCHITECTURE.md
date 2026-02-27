@@ -141,6 +141,8 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 
 Skills are Markdown files with embedded instructions for Claude Code. They can specify delegation patterns (e.g., use Haiku subagent for extraction before Mag writes a task file).
 
+**Elaboration vs. Proposal timing**: Elaborations run as early as possible — immediately when tasks are created or during briefing — so that Mag has detailed specs for dependency analysis, slot assignment, and priority decisions. Proposals are deferred until a task is actually assigned to a slot, giving the proposal the freshest codebase state and cross-task context. Since proposals are the last step before a coding agent starts work, they benefit from a fresh Opus context window with maximum brain power for disambiguating scope, surfacing staleness, and deciding whether to split multi-concern tasks.
+
 **How automation invokes Mag:**
 
 Automation writes requests to a JSONL queue (`mag/queue.jsonl`). Mag's stop hook fires when Claude finishes a turn, reads the queue, and processes requests:
