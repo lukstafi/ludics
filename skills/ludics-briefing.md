@@ -55,7 +55,8 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
      - Run a lightweight slot reassignment (only newly-empty slots
        or newly-ready high-priority tasks)
      - Do not re-elaborate tasks or redo the full analysis
-     - Skip to step 6 (Write result)
+     - Still run step 6 (Nudge stalled slotted tasks)
+     - Then skip to step 8 (Write result)
    - If `Status: new`: proceed with the full process below
 
 3. **Elaborate unprocessed tasks**:
@@ -102,19 +103,34 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - **suggest**: include ready-to-run commands in the briefing
    - **manual**: include observations only
 
-6. **Surface ambiguities**:
+6. **Nudge stalled slotted tasks**:
+   - For each slot that has a task assigned with a proposal (`proposal:` field in
+     the task file) but no active session (no matching entry in the Sessions Report,
+     or Runtime section is empty):
+     - Re-read the task file to get title and proposal path
+     - Re-send the proposal notification:
+       ```bash
+       ludics notify proposal "<task-id>" "<title>" "<one-line summary>" "<proposal-path>"
+       ```
+     - Note the nudge in the briefing under Slot Assignments (e.g.,
+       "Slot 3: re-sent launch buttons for task-101 (no active session)")
+   - Skip tasks whose slot was just assigned in step 5 (fresh assignments will
+     get their own proposal via the normal draft-proposal flow)
+   - Skip if `start_sessions` autonomy is `manual`
+
+7. **Surface ambiguities**:
    - Review the full briefing for information gaps that would change your next
      autonomous actions (conflicting priorities, unclear task scope, suspiciously elaborated tasks,
      dependency tangles, missing context from the user)
    - Formulate 1-5 specific questions (see Questions Guidelines in the output format)
    - If no genuine ambiguities exist, note "No blocking ambiguities."
 
-7. **Write result**:
+8. **Write result**:
    - Write briefing to `$LUDICS_STATE_PATH/briefing.md`
    - Read request ID: `REQ_ID=$(cat "$LUDICS_STATE_PATH/mag/current-request-id")`
    - Write result JSON to `$LUDICS_RESULTS_DIR/$REQ_ID.json`
 
-8. **Commit and push state**:
+9. **Commit and push state**:
    - Run `ludics sync` to commit and push to remote
 
 ## Output Format
@@ -184,7 +200,7 @@ When the answers arrive, update relevant files or perform relevant actions so th
 - **Pre-computed data** in `briefing-context.md` (no CLI commands needed for data gathering)
 - **Git diff** (`tasks/`, `slots.md`, `sessions.md`, queue/notifications) for precise amend-mode change detection
 - **Task tool** to invoke `/ludics-elaborate` for unprocessed tasks (parallel)
-- **CLI tools** for slot operations (`ludics slot N assign`, `ludics slot N clear`)
+- **CLI tools** for slot operations (`ludics slot N assign`, `ludics slot N clear`) and nudge notifications (`ludics notify proposal`)
 - **Direct analysis** for strategic reasoning, slot assignment trade-offs, suggestions
 
 ## Error Handling
