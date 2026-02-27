@@ -124,7 +124,7 @@ export function notifyProposal(
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    // ntfy allows max 3 action buttons
+    // Keep all configured launch actions in payload; backend/client may cap rendered count.
     payload.actions = [
       {
         action: "http",
@@ -149,6 +149,22 @@ export function notifyProposal(
         method: "POST",
         headers,
         body: `Launch agent-pair-codex for ${taskId} in project ${project}`,
+      },
+      {
+        action: "http",
+        label: "codex",
+        url: `https://ntfy.sh/${inTopic}`,
+        method: "POST",
+        headers,
+        body: `Launch agent-codex for ${taskId} in project ${project}`,
+      },
+      {
+        action: "http",
+        label: "claude",
+        url: `https://ntfy.sh/${inTopic}`,
+        method: "POST",
+        headers,
+        body: `Launch agent-claude for ${taskId} in project ${project}`,
       },
     ];
   }
