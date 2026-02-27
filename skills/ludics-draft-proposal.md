@@ -105,10 +105,20 @@ This skill is invoked when:
    incoming subscriber as a direct queue injection, and Mag interprets it as
    a user turn to execute the launch.
 
-11. **Best-effort desktop**: Try `code <path>` to open the proposal in VS Code.
+11. **Send questions notification** (if ambiguities were found in step 4):
+    - If the proposal's Motivation or Current State sections note ambiguities,
+      extract them as concise numbered questions
+    - Send via:
+      ```bash
+      ludics notify outgoing "<questions text>"
+      ```
+      Use title: "Proposal questions — <task-id>: <title>"
+    - Skip if no ambiguities were found
+
+12. **Best-effort desktop**: Try `code <path>` to open the proposal in VS Code.
     Fail silently if unavailable.
 
-12. **Write result JSON**:
+13. **Write result JSON**:
     ```json
     {
       "id": "req-...",

@@ -130,8 +130,17 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - Read request ID: `REQ_ID=$(cat "$LUDICS_STATE_PATH/mag/current-request-id")`
    - Write result JSON to `$LUDICS_RESULTS_DIR/$REQ_ID.json`
 
-9. **Commit and push state**:
-   - Run `ludics sync` to commit and push to remote
+9. **Send questions notification**:
+   - Extract the `## Questions` section from the briefing you just wrote
+   - If there are questions (not just "No blocking ambiguities"), send them:
+     ```bash
+     ludics notify outgoing "<questions text>"
+     ```
+     Use the briefing date as the title, e.g., "Briefing questions — 2026-02-27"
+   - Keep the message concise: just the numbered questions, no preamble
+
+10. **Commit and push state**:
+    - Run `ludics sync` to commit and push to remote
 
 ## Output Format
 

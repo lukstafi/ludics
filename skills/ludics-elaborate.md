@@ -55,6 +55,17 @@ This skill is invoked:
 4. **Update task file**:
    Expand the task with detailed specification
 
+5. **Send questions notification** (if gaps or concerns were found):
+   - If elaboration identified missing context, unclear requirements, risky edge
+     cases, or other issues that need user input, formulate concise numbered
+     questions
+   - Send via:
+     ```bash
+     ludics notify outgoing "<questions text>"
+     ```
+     Use title: "Elaboration questions — <task-id>: <title>"
+   - Skip if elaboration completed without open questions
+
 ## Output Format
 
 ### Updated Task File
