@@ -122,27 +122,27 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 - Dependency graph: `tsort` for topological order
 - Priority filtering: `jq` for sorting and selection
 
-**Skills system** (`skills/` directory, 15 Markdown files):
+**Skills system** (`skills/` directory, 21 Markdown files — 15 skills + 6 workers):
 
-| Skill | Purpose |
-|-------|---------|
-| `/ludics-briefing` | Morning strategic briefing |
-| `/ludics-draft-proposal` | Write proposal document, send launch buttons |
-| `/ludics-elaborate` | Detailed spec for a task (early, for Mag context) |
-| `/ludics-feedback-digest` | Summarize user feedback |
-| `/ludics-health-check` | Detect approaching deadlines, queue completion checks |
-| `/ludics-launch-session` | Find slot and start agent session for a task |
-| `/ludics-learn` | Update institutional memory from corrections |
-| `/ludics-new-quote` | Generate motivational quote |
-| `/ludics-preempt` | Plan task preemption |
-| `/ludics-read-inbox` | Process incoming messages |
-| `/ludics-split-task` | Split multi-concern task into subtasks |
-| `/ludics-suggest` | Task suggestions based on flow state |
-| `/ludics-sync-learnings` | Consolidate learnings into structured memory |
-| `/ludics-techdebt` | Identify technical debt |
-| `/ludics-verify-completion` | Deep-inspect task completion, create follow-ups |
+| Skill | Purpose | Isolation |
+|-------|---------|-----------|
+| `/ludics-briefing` | Morning strategic briefing | Inline (needs strategic context) |
+| `/ludics-draft-proposal` | Write proposal document, send launch buttons | Orchestrator + worker |
+| `/ludics-elaborate` | Detailed spec for a task (early, for Mag context) | Orchestrator + worker |
+| `/ludics-feedback-digest` | Summarize user feedback | Orchestrator + worker |
+| `/ludics-health-check` | Detect approaching deadlines, queue completion checks | Inline |
+| `/ludics-launch-session` | Find slot and start agent session for a task | Inline |
+| `/ludics-learn` | Update institutional memory from corrections | Inline |
+| `/ludics-new-quote` | Generate motivational quote | Inline |
+| `/ludics-preempt` | Plan task preemption | Inline |
+| `/ludics-read-inbox` | Process incoming messages | Inline |
+| `/ludics-split-task` | Split multi-concern task into subtasks | Inline |
+| `/ludics-suggest` | Task suggestions based on flow state | Inline |
+| `/ludics-sync-learnings` | Consolidate learnings into structured memory | Orchestrator + worker |
+| `/ludics-techdebt` | Identify technical debt | Orchestrator + worker |
+| `/ludics-verify-completion` | Deep-inspect task completion, create follow-ups | Orchestrator + worker |
 
-Skills are Markdown files with embedded instructions for Claude Code. They can specify delegation patterns (e.g., use Haiku subagent for extraction before Mag writes a task file).
+Skills are Markdown files with embedded instructions for Claude Code. Heavy skills use an **orchestrator/worker pattern** for context isolation — see [Skill Context Isolation](#skill-context-isolation) below.
 
 **Elaboration vs. Proposal timing**: Elaborations run as early as possible — immediately when tasks are created or during briefing — so that Mag has detailed specs for dependency analysis, slot assignment, and priority decisions. Proposals are deferred until a task is actually assigned to a slot, giving the proposal the freshest codebase state and cross-task context. Since proposals are the last step before a coding agent starts work, they benefit from a fresh Opus context window with maximum brain power for disambiguating scope, surfacing staleness, and deciding whether to split multi-concern tasks.
 
@@ -178,6 +178,51 @@ The queue module (`src/queue.ts`) handles FIFO request/response:
 - `magDoctor()` — health check for Mag setup
 - Keepalive/nudge mechanism to keep Mag responsive
 - Terminal publishing: captures last 50 tmux lines, deduplicates via hash, publishes to ntfy.sh
+
+### Skill Context Isolation
+
+Mag is a persistent, long-running Claude Code session. Every skill invocation injects the full skill markdown plus all tool outputs into Mag's conversation context. Heavy skills that do deep codebase exploration (reading source files, git logs, grepping across projects) accumulate significant context that pushes out Mag's strategic memory: cross-task awareness, user preferences, prior decisions, and institutional knowledge.
+
+**Solution: Orchestrator/Worker pattern using `context: fork`**
+
+Six heavy skills are split into two files each:
+
+- **Orchestrator** (`ludics-<name>.md`) — runs inline in Mag's context. Reads the task file (small, gives Mag awareness), makes strategic decisions (proceed/bail/split), invokes the worker, interprets the result, handles notifications and result JSON.
+- **Worker** (`ludics-<name>-worker.md`) — runs in an isolated subagent via Claude Code's `context: fork` frontmatter. Does the heavy codebase exploration, writes artifacts to disk, returns a structured summary. Hidden from the user's `/` menu via `user-invocable: false`.
+
+```
+Mag's context:                    Isolated context:
+┌─────────────────────┐           ┌─────────────────────┐
+│  Orchestrator       │           │  Worker             │
+│  • Read task file   │──invoke──>│  • Explore codebase │
+│  • Decide proceed   │           │  • Read source files│
+│  • Parse result     │<─summary──│  • Write artifacts  │
+│  • Send notifs      │           │  • Git commit/push  │
+│  • Write result JSON│           └─────────────────────┘
+└─────────────────────┘
+```
+
+Worker frontmatter pattern:
+```yaml
+---
+name: ludics-<name>-worker
+description: <what the worker does>
+user-invocable: false
+context: fork
+agent: general-purpose
+allowed-tools: Read, Bash, Glob, Grep, Write
+---
+```
+
+**Workers can make state changes** (git commits, `ludics notify`, `ludics slot clear`, `gh issue create`) when the contract is clear — the orchestrator specifies what should happen and the worker follows through. This avoids unnecessary round-trips.
+
+**Classification:**
+
+| Category | Skills | Rationale |
+|----------|--------|-----------|
+| Heavy (orchestrator + worker) | draft-proposal, verify-completion, elaborate, techdebt, feedback-digest, sync-learnings | Deep codebase exploration; tool outputs would pollute Mag's context |
+| Light (inline) | launch-session, health-check, read-inbox, suggest, preempt, learn, split-task, new-quote | Mostly CLI commands with minimal reads |
+| Strategic (inline, special) | briefing | Needs Mag's cross-task context for slot assignment; sub-operations (elaboration) are themselves forked |
 
 ### The Slot Model: Forcing Function for Parallelization
 
@@ -557,22 +602,28 @@ ludics/
 │       ├── classify.ts               # Map sessions to slots
 │       ├── report.ts                 # Markdown/JSON report generation
 │       └── read-lines.ts             # Line reading utility
-├── skills/                           # Mag skills (15 Markdown files)
-│   ├── ludics-briefing.md
-│   ├── ludics-draft-proposal.md
-│   ├── ludics-elaborate.md
-│   ├── ludics-feedback-digest.md
-│   ├── ludics-health-check.md
-│   ├── ludics-launch-session.md
-│   ├── ludics-learn.md
-│   ├── ludics-new-quote.md
-│   ├── ludics-preempt.md
-│   ├── ludics-read-inbox.md
-│   ├── ludics-split-task.md
-│   ├── ludics-suggest.md
-│   ├── ludics-sync-learnings.md
-│   ├── ludics-techdebt.md
-│   └── ludics-verify-completion.md
+├── skills/                           # Mag skills (15 orchestrators + 6 workers)
+│   ├── ludics-briefing.md            # Inline (needs strategic context)
+│   ├── ludics-draft-proposal.md      # Orchestrator
+│   ├── ludics-draft-proposal-worker.md  # Worker (context: fork)
+│   ├── ludics-elaborate.md           # Orchestrator
+│   ├── ludics-elaborate-worker.md    # Worker (context: fork)
+│   ├── ludics-feedback-digest.md     # Orchestrator
+│   ├── ludics-feedback-digest-worker.md # Worker (context: fork)
+│   ├── ludics-health-check.md        # Inline
+│   ├── ludics-launch-session.md      # Inline
+│   ├── ludics-learn.md               # Inline
+│   ├── ludics-new-quote.md           # Inline
+│   ├── ludics-preempt.md             # Inline
+│   ├── ludics-read-inbox.md          # Inline
+│   ├── ludics-split-task.md          # Inline
+│   ├── ludics-suggest.md             # Inline
+│   ├── ludics-sync-learnings.md      # Orchestrator
+│   ├── ludics-sync-learnings-worker.md  # Worker (context: fork)
+│   ├── ludics-techdebt.md            # Orchestrator
+│   ├── ludics-techdebt-worker.md     # Worker (context: fork)
+│   ├── ludics-verify-completion.md   # Orchestrator
+│   └── ludics-verify-completion-worker.md # Worker (context: fork)
 ├── templates/
 │   ├── config.reference.yaml         # Example config
 │   ├── slots.example.md
