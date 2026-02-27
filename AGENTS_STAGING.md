@@ -33,3 +33,14 @@ Codex stores sessions in `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (date-or
 
 Adding an explicit `**Path:**` field to the slot block format makes slot-to-directory mapping first-class. This is cleaner than inferring paths from Git "Working directory:" lines or Session field guessing. Use with `slot assign --path /abs/path`.
 <!-- End entry -->
+
+<!-- Entry: skill-context-isolation-coder | 2026-02-27 -->
+### Claude Code skill frontmatter for context isolation
+
+Claude Code skills support `context: fork` to run as isolated subagents (since Claude Code 2.1). Combined with `user-invocable: false`, worker skills stay hidden from the user's `/` menu while remaining invocable by Claude. Key constraints:
+- Forked skills do NOT have access to the parent's conversation history — only `SKILL.md` content + `$ARGUMENTS` + `CLAUDE.md`
+- `$ARGUMENTS` is the full argument string; use `$ARGUMENTS[N]` or `$N` for positional access in the skill markdown content, but do NOT use `$0`/`$1` inside bash code blocks — those resolve to the shell script name in bash context
+- `allowed-tools` restricts what the forked subagent can use
+- Environment variables (like `$LUDICS_STATE_PATH`) propagate to forked subagents
+- The subagent's final text response is returned to the parent — keep it structured for parsing
+<!-- End entry -->
