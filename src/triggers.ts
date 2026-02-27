@@ -9,6 +9,7 @@ const KNOWN_LUDICS_TRIGGER_NAMES = [
   "sync",
   "morning",
   "health",
+  "sessions",
   "federation",
   "mag",
   "dashboard",
@@ -177,6 +178,24 @@ function triggersInstallMacos(): void {
     console.log(`Installed launchd trigger: health (every ${Math.floor(parseInt(interval) / 3600)}h)`);
   }
 
+  // Sessions adoption trigger
+  if (triggerGet("sessions", "enabled") === "true") {
+    const action = commandFromAction(triggerGet("sessions", "action"));
+    const interval = triggerGet("sessions", "interval") || "300";
+    const label = "com.ludics.sessions";
+    const content = [
+      PLIST_HEADER,
+      `  <key>Label</key>\n  <string>${label}</string>`,
+      `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
+      plistEnv(),
+      plistArgs(bin, ...action.split(" ")),
+      plistLogs("sessions"),
+      PLIST_FOOTER,
+    ].join("\n");
+    installPlist(label, content);
+    console.log(`Installed launchd trigger: sessions (every ${Math.floor(parseInt(interval) / 60)}m)`);
+  }
+
   // Watch triggers
   for (const rule of triggerGetWatchRules()) {
     const sanitized = sanitizeAction(rule.action);
@@ -334,6 +353,16 @@ function triggersInstallLinux(): void {
     writeSystemdUnit("ludics-health.timer", `[Unit]\nDescription=ludics health check timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-health.service\n\n[Install]\nWantedBy=timers.target\n`);
     enableSystemdUnit("ludics-health.timer");
     console.log(`Installed systemd trigger: health (every ${Math.floor(parseInt(interval) / 3600)}h)`);
+  }
+
+  // Sessions adoption
+  if (triggerGet("sessions", "enabled") === "true") {
+    const action = commandFromAction(triggerGet("sessions", "action"));
+    const interval = triggerGet("sessions", "interval") || "300";
+    writeSystemdUnit("ludics-sessions.service", `[Unit]\nDescription=ludics session adoption\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
+    writeSystemdUnit("ludics-sessions.timer", `[Unit]\nDescription=ludics session adoption timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-sessions.service\n\n[Install]\nWantedBy=timers.target\n`);
+    enableSystemdUnit("ludics-sessions.timer");
+    console.log(`Installed systemd trigger: sessions (every ${Math.floor(parseInt(interval) / 60)}m)`);
   }
 
   // Watch

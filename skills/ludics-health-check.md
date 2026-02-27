@@ -26,6 +26,20 @@ This skill is invoked when:
    - Identify slots that have been active > 24h without status update
    - Run `ludics sessions report` and check for orphaned/unclassified sessions
      (sessions with no slot match in `sessions.md`)
+   - For each unclassified session, check if its cwd path matches a configured
+     project (compare path components against project repo names from config:
+     `yq eval '.projects[].repo' "$LUDICS_STATE_PATH/config.yaml"`)
+   - If matched sessions exist with ready tasks and there are empty slots,
+     queue session adoption:
+     ```bash
+     ludics mag adopt-sessions
+     ```
+     Note in health report: "Queued session adoption for N orphaned sessions matching projects"
+     Add stable issue key: `session-orphaned:<cwd-basename>`
+   - If matched sessions exist but no empty slots:
+     flag as warning: "Active [agent] session on [project] has no slot (all slots occupied)"
+   - If unmatched sessions exist:
+     flag as info: "Unrecognized session at [cwd] — not matched to any configured project"
 
 3. **Check queue health**:
    - Read `mag/queue.jsonl`

@@ -32,6 +32,7 @@ The context file contains these sections:
 - **Recent Incoming**: Recent incoming notifications (from notifications.jsonl)
 - **Slots State**: Current slot assignments after adapter refresh
 - **Sessions Report**: All discovered agent sessions with classification
+- **Session-Project Matches**: Pre-computed matching of unclassified sessions to projects, with ready tasks per project and slot availability
 - **Flow: Ready Queue**: Priority-sorted ready tasks
 - **Flow: Critical Items**: Deadlines, high-priority ready
 - **Tasks Needing Elaboration**: Task IDs that lack elaboration
@@ -88,10 +89,14 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - Empty slots (candidates for filling)
    - Completed slots (candidates for clearing)
    - Cross-reference with ready queue and unclassified sessions
+   - Check `## Session-Project Matches` section for pre-computed session-to-project
+     matching with ready tasks per project
 
    **Build assignment plan:**
    - For empty slots: pick highest-priority ready task, prefer context affinity
    - If an unclassified session is running on a project path, reserve the slot
+     (use `**Recommended adapter:**` from the Session-Project Matches section —
+     it checks for `.peer-sync/` and `.agent-sessions/` to pick a safe adapter)
    - When all slots occupied: weigh eviction cost vs. new task priority
    - Commands:
      - Project reservation: `ludics slot N assign "<project> development" -a <adapter> -p <path>`

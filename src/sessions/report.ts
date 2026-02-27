@@ -96,10 +96,23 @@ function atomicWrite(path: string, content: string): void {
   renameSync(tmpPath, path);
 }
 
-/** Serialize DiscoveryResult to JSON, stripping the `sources` array from MergedSession to avoid circular/verbose output */
+/** Extract useful metadata from sources without the full verbose array */
+function extractMeta(sources: MergedSession["sources"]): Record<string, unknown> {
+  const meta: Record<string, unknown> = {};
+  for (const src of sources) {
+    if (src.meta.tmux_session && !meta.tmux_session) meta.tmux_session = src.meta.tmux_session;
+    if (src.meta.git_branch && !meta.git_branch) meta.git_branch = src.meta.git_branch;
+    if (src.meta.summary && !meta.summary) meta.summary = src.meta.summary;
+    if (src.meta.message_count && !meta.message_count) meta.message_count = src.meta.message_count;
+    if (src.meta.port && !meta.port) meta.port = src.meta.port;
+  }
+  return meta;
+}
+
+/** Serialize DiscoveryResult to JSON, replacing the `sources` array with extracted metadata */
 function toJsonOutput(result: DiscoveryResult): string {
   const strip = (sessions: MergedSession[]) =>
-    sessions.map(({ sources, ...rest }) => rest);
+    sessions.map(({ sources, ...rest }) => ({ ...rest, meta: extractMeta(sources) }));
   return JSON.stringify(
     {
       generatedAt: result.generatedAt,

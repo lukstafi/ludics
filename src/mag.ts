@@ -1,10 +1,10 @@
 // Mag session management — start/stop/status/attach/logs/doctor/briefing/queue
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync } from "fs";
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
-import { parseSlotBlocks, getTask, getProcess } from "./slots/markdown.ts";
+import { parseSlotBlocks, getTask, getProcess, getMode, getPath } from "./slots/markdown.ts";
 import { queueRequest, queuePop, queuePending, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
@@ -296,6 +296,9 @@ function queuePopSkill(): string | null {
       const task = String(request.task ?? "");
       return `/ludics-verify-completion ${task}`;
     }
+    case "adopt-sessions":
+      adoptSessionsPrecomputeContext();
+      return "/ludics-adopt-sessions";
     default:
       console.error(`ludics: mag queue-pop: unknown action: ${action}`);
       return null;
@@ -397,6 +400,8 @@ ${preemptedOutput}
 
 ${sessionsContent}
 
+${computeSessionProjectMatches()}
+
 ## Flow: Ready Queue
 
 ${flowReadyOutput}
@@ -417,6 +422,304 @@ ${journalOutput}
   writeFileSync(contextFile + ".tmp", contextContent);
   renameSync(contextFile + ".tmp", contextFile);
   console.error(`ludics: briefing context written to ${contextFile}`);
+}
+
+// --- Session-project matching for adopt-sessions ---
+
+interface ProjectMatch {
+  projectName: string;
+  repo: string;
+}
+
+function matchCwdToProject(
+  cwdNormalized: string,
+  repoTailMap: Map<string, ProjectMatch>,
+): ProjectMatch | null {
+  const components = cwdNormalized.split("/").filter(Boolean);
+
+  // Exact match: walk from rightmost component leftward
+  for (let i = components.length - 1; i >= 0; i--) {
+    const component = components[i]!;
+    if (repoTailMap.has(component)) {
+      return repoTailMap.get(component)!;
+    }
+  }
+
+  // Prefix match for worktree dirs (e.g., "ocannl-fix-xyz" matches "ocannl")
+  for (let i = components.length - 1; i >= 0; i--) {
+    const component = components[i]!;
+    for (const [tail, project] of repoTailMap) {
+      if (component.startsWith(tail + "-") || component.startsWith(tail + ".")) {
+        return project;
+      }
+    }
+  }
+
+  return null;
+}
+
+function computeSessionProjectMatches(): string {
+  const harness = harnessDir();
+  const sessionsFile = join(harness, "sessions.json");
+
+  if (!existsSync(sessionsFile)) return "(no sessions data — run `ludics sessions report` first)";
+
+  // Check freshness: skip if older than 15 minutes
+  try {
+    const mtime = statSync(sessionsFile).mtimeMs;
+    if (Date.now() - mtime > 900_000) return "(stale session data — sessions.json older than 15 minutes)";
+  } catch { return "(cannot read sessions.json)"; }
+
+  // Parse sessions.json
+  interface StrippedSession {
+    cwd: string;
+    cwdNormalized: string;
+    agents: string[];
+    ids: string[];
+    lastActivityEpoch: number;
+    lastActivity: string;
+    stale: boolean;
+    slot: number | null;
+    slotPath: string | null;
+    orchestration: { type: string; feature: string; phase: string; round: string } | null;
+    meta?: { tmux_session?: string; git_branch?: string; summary?: string; message_count?: number; port?: string };
+  }
+
+  let unclassified: StrippedSession[];
+  try {
+    const data = JSON.parse(readFileSync(sessionsFile, "utf-8")) as { unclassified?: StrippedSession[] };
+    unclassified = data.unclassified ?? [];
+  } catch { return "(invalid sessions.json)"; }
+
+  if (unclassified.length === 0) return "(no unclassified sessions)";
+
+  // Build repo-tail lookup from config
+  const config = loadConfigSync();
+  const projects = config.projects ?? [];
+  const repoTailMap = new Map<string, ProjectMatch>();
+  for (const p of projects) {
+    const tail = (p.repo ?? "").split("/").pop() ?? "";
+    if (!tail) continue;
+    if (repoTailMap.has(tail)) {
+      console.error(`ludics: adopt-sessions: duplicate repo tail "${tail}", keeping first`);
+      continue;
+    }
+    repoTailMap.set(tail, { projectName: p.name, repo: p.repo });
+  }
+
+  if (repoTailMap.size === 0) return "(no projects configured)";
+
+  // Read current slots: track which projects already have a slot and which slots are empty
+  const sFile = slotsFilePath();
+  const blocks = existsSync(sFile) ? parseSlotBlocks(readFileSync(sFile, "utf-8")) : new Map<number, string>();
+  const count = slotsCount();
+  const emptySlots: number[] = [];
+  const projectsInSlots = new Map<string, number>(); // project name → slot number
+
+  for (let i = 1; i <= count; i++) {
+    const block = blocks.get(i);
+    const process = block ? getProcess(block).trim() : "(empty)";
+    if (!process || process === "(empty)") {
+      emptySlots.push(i);
+    } else if (block) {
+      // Infer project from task or path
+      const taskId = getTask(block).trim();
+      if (taskId && taskId !== "null") {
+        const taskFile = join(harness, "tasks", `${taskId}.md`);
+        if (existsSync(taskFile)) {
+          const content = readFileSync(taskFile, "utf-8");
+          const pm = content.match(/^project:\s*(.+)$/m);
+          if (pm) projectsInSlots.set(pm[1]!.trim(), i);
+        }
+      }
+      // Also check path for project match
+      const slotPath = getPath(block).trim();
+      if (slotPath && slotPath !== "null") {
+        const pathMatch = matchCwdToProject(slotPath, repoTailMap);
+        if (pathMatch && !projectsInSlots.has(pathMatch.projectName)) {
+          projectsInSlots.set(pathMatch.projectName, i);
+        }
+      }
+    }
+  }
+
+  // Read ready tasks grouped by project
+  const tasksDir = join(harness, "tasks");
+  const tasksByProject = new Map<string, { id: string; title: string; priority: string; elaborated: boolean }[]>();
+
+  if (existsSync(tasksDir)) {
+    const taskFiles = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+    // Collect task IDs already in slots
+    const tasksInSlots = new Set<string>();
+    for (const [, block] of blocks) {
+      const tid = getTask(block).trim();
+      if (tid && tid !== "null") tasksInSlots.add(tid);
+    }
+
+    for (const f of taskFiles) {
+      const content = readFileSync(join(tasksDir, f), "utf-8");
+      const idMatch = content.match(/^id:\s*(.+)$/m);
+      if (!idMatch) continue;
+      const id = idMatch[1]!.trim();
+      if (tasksInSlots.has(id)) continue;
+
+      const statusMatch = content.match(/^status:\s*(.+)$/m);
+      if (!statusMatch || statusMatch[1]!.trim() !== "ready") continue;
+
+      // Check blocked_by
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        try {
+          const fm = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
+          const deps = fm.dependencies as Record<string, unknown> | undefined;
+          const blockedBy = deps?.blocked_by;
+          if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
+        } catch { /* skip parse errors */ }
+      }
+
+      const projectMatch = content.match(/^project:\s*(.+)$/m);
+      const project = projectMatch ? projectMatch[1]!.trim() : "";
+      if (!project) continue;
+
+      const titleMatch = content.match(/^title:\s*"?(.+?)"?\s*$/m);
+      const title = titleMatch ? titleMatch[1]! : id;
+
+      const priorityMatch = content.match(/^priority:\s*(.+)$/m);
+      const priority = priorityMatch ? priorityMatch[1]!.trim() : "B";
+
+      const isElaborated = content.includes("\nelaborated:") && !content.includes("- [ ] TBD\n");
+
+      const arr = tasksByProject.get(project) ?? [];
+      arr.push({ id, title, priority, elaborated: isElaborated });
+      tasksByProject.set(project, arr);
+    }
+  }
+
+  // Sort tasks within each project: elaborated first, then by priority
+  for (const [, tasks] of tasksByProject) {
+    tasks.sort((a, b) => {
+      if (a.elaborated !== b.elaborated) return a.elaborated ? -1 : 1;
+      const pv = (p: string) => p === "A" ? 1 : p === "B" ? 2 : p === "C" ? 3 : 9;
+      return pv(a.priority) - pv(b.priority);
+    });
+  }
+
+  // Match sessions to projects and format output
+  const lines: string[] = [];
+  const matchedSessions: string[] = [];
+  const unmatchedSessions: string[] = [];
+
+  for (const session of unclassified) {
+    const match = matchCwdToProject(session.cwdNormalized, repoTailMap);
+    if (match) {
+      const agents = session.agents.join(", ");
+      const staleTag = session.stale ? "yes" : "no";
+      const inSlot = projectsInSlots.has(match.projectName);
+
+      matchedSessions.push(`### ${session.agents[0] ?? "unknown"} — ${session.cwd}`);
+      matchedSessions.push(`- **Agents:** ${agents}`);
+      matchedSessions.push(`- **Session IDs:** ${session.ids.join(", ")}`);
+      matchedSessions.push(`- **Project:** ${match.projectName}`);
+      matchedSessions.push(`- **Stale:** ${staleTag}`);
+      if (inSlot) {
+        matchedSessions.push(`- **Project already in slot:** ${projectsInSlots.get(match.projectName)}`);
+      }
+      // Session metadata
+      const meta = session.meta;
+      if (meta) {
+        if (meta.tmux_session) matchedSessions.push(`- **tmux session:** ${meta.tmux_session}`);
+        if (meta.git_branch) matchedSessions.push(`- **Git branch:** ${meta.git_branch}`);
+        if (meta.summary) matchedSessions.push(`- **Summary:** ${meta.summary}`);
+      }
+      if (session.orchestration) {
+        const o = session.orchestration;
+        matchedSessions.push(`- **Orchestration:** ${o.type} (feature: ${o.feature || "?"}, phase: ${o.phase || "?"})`);
+      }
+      // Determine recommended adapter based on what infrastructure exists
+      const hasAgentSessions = existsSync(join(session.cwdNormalized, ".agent-sessions"));
+      if (session.orchestration) {
+        matchedSessions.push(`- **Recommended adapter:** ${session.orchestration.type} (orchestration detected)`);
+      } else if (hasAgentSessions) {
+        const primaryAgent = session.agents[0];
+        const adapterName = primaryAgent === "codex" ? "agent-codex"
+          : primaryAgent === "claude-code" ? "agent-claude" : "manual";
+        matchedSessions.push(`- **Recommended adapter:** ${adapterName} (.agent-sessions/ found)`);
+      } else {
+        matchedSessions.push(`- **Recommended adapter:** manual (no orchestration metadata)`);
+      }
+
+      const tasks = tasksByProject.get(match.projectName);
+      if (tasks && tasks.length > 0) {
+        matchedSessions.push(`- **Ready tasks for project:**`);
+        for (const t of tasks.slice(0, 5)) {
+          const elab = t.elaborated ? "elaborated" : "not elaborated";
+          matchedSessions.push(`  - ${t.id} (${t.priority}, ${elab}): ${t.title}`);
+        }
+        if (tasks.length > 5) matchedSessions.push(`  - ... and ${tasks.length - 5} more`);
+      } else {
+        matchedSessions.push(`- **Ready tasks for project:** (none)`);
+      }
+      matchedSessions.push("");
+    } else {
+      const unmatchedMeta: string[] = [];
+      if (session.meta?.tmux_session) unmatchedMeta.push(`tmux: ${session.meta.tmux_session}`);
+      if (session.meta?.git_branch) unmatchedMeta.push(`branch: ${session.meta.git_branch}`);
+      if (session.meta?.summary) unmatchedMeta.push(`summary: ${session.meta.summary}`);
+      const metaSuffix = unmatchedMeta.length > 0 ? ` [${unmatchedMeta.join(", ")}]` : "";
+      unmatchedSessions.push(`- ${session.agents[0] ?? "unknown"} — ${session.cwd} (no matching project)${metaSuffix}`);
+    }
+  }
+
+  lines.push("## Session-Project Matches");
+  lines.push("");
+
+  if (matchedSessions.length > 0) {
+    lines.push(...matchedSessions);
+  } else {
+    lines.push("(no sessions matched to projects)");
+    lines.push("");
+  }
+
+  if (unmatchedSessions.length > 0) {
+    lines.push("### Unmatched Sessions");
+    lines.push("");
+    lines.push(...unmatchedSessions);
+    lines.push("");
+  }
+
+  lines.push("## Slot Availability");
+  lines.push("");
+  if (emptySlots.length > 0) {
+    lines.push(`- **Empty slots:** ${emptySlots.join(", ")}`);
+  } else {
+    lines.push("- **Empty slots:** (none)");
+  }
+  if (projectsInSlots.size > 0) {
+    const entries = Array.from(projectsInSlots.entries()).map(([p, s]) => `${p} (slot ${s})`);
+    lines.push(`- **Projects already in slots:** ${entries.join(", ")}`);
+  }
+
+  return lines.join("\n");
+}
+
+function adoptSessionsPrecomputeContext(): void {
+  const harness = harnessDir();
+  const contextFile = join(harness, "mag", "adopt-sessions-context.md");
+  mkdirSync(join(harness, "mag"), { recursive: true });
+
+  const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const matches = computeSessionProjectMatches();
+
+  const content = `# Adopt Sessions Context
+
+Generated: ${timestamp}
+
+${matches}
+`;
+
+  writeFileSync(contextFile + ".tmp", content);
+  renameSync(contextFile + ".tmp", contextFile);
+  console.error(`ludics: adopt-sessions context written to ${contextFile}`);
 }
 
 // --- Auto-queue proposals ---
@@ -1194,6 +1497,13 @@ export async function runMag(args: string[]): Promise<void> {
       console.log(`Queued feedback-digest request for ${repo}`);
       break;
     }
+    case "adopt-sessions": {
+      // Refresh sessions, then queue skill for Mag
+      Bun.spawnSync([process.execPath, "sessions", "report"], { stdout: "pipe", stderr: "pipe" });
+      queueRequest("adopt-sessions");
+      console.log("Queued adopt-sessions request");
+      break;
+    }
     case "completed": {
       const proposalName = args[1];
       if (!proposalName) throw new Error("proposal name required (without .md extension)");
@@ -1217,6 +1527,6 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     default:
-      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, completed, message, inbox, queue, queue-pop, context, feedback-digest)`);
+      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, completed, message, inbox, queue, queue-pop, context, feedback-digest)`);
   }
 }
