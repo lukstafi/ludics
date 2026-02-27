@@ -1,12 +1,16 @@
 ---
 name: ludics-sync-learnings
-description: Consolidate learnings into structured memory files
+description: Consolidate corrections and journal learnings into structured memory
+context: fork
+agent: general-purpose
+allowed-tools: Read, Bash, Glob, Grep, Write, Edit
 ---
 
-# /ludics-sync-learnings - Knowledge Consolidation (Orchestrator)
+# /ludics-sync-learnings - Knowledge Consolidation
 
-Thin orchestrator that delegates knowledge consolidation to an isolated worker,
-then handles result reporting.
+Read scattered learnings from corrections.md and journal files, group by theme,
+update structured memory files, archive processed entries, and file GitHub issues
+for harness improvement patterns.
 
 ## Trigger
 
@@ -22,31 +26,101 @@ This skill is invoked when:
 
 ## Process
 
-### 1. Delegate to worker
+### 1. Read recent corrections
 
+```bash
+cat "$LUDICS_STATE_PATH/mag/memory/corrections.md"
 ```
-/ludics-sync-learnings-worker
+
+### 2. Read journal friction points
+
+```bash
+grep -l "friction\|mistake\|learned" "$LUDICS_STATE_PATH/journal/"*.md
 ```
 
-The worker runs in a forked context — its corrections reading, journal scanning,
-memory file updates, and GitHub issue operations do not enter Mag's conversation
-history. The worker handles all consolidation, archiving, issue filing, and
-CLAUDE.md staging autonomously.
+Read the matching files for relevant entries.
 
-### 2. Interpret worker result
+### 3. Group by theme
 
-Parse the worker's response for STATUS and counts.
+- Tool-related → `$LUDICS_STATE_PATH/mag/memory/tools.md`
+- Process-related → `$LUDICS_STATE_PATH/mag/memory/workflows.md`
+- Project-specific → `$LUDICS_STATE_PATH/mag/memory/projects/<project>.md`
 
-- **STATUS: completed** → write result JSON
-- **STATUS: error** → write result JSON with `"status": "error"`
+### 4. Update structured files
 
-### 3. Write result JSON
+- Merge similar learnings
+- Remove duplicates
+- Add cross-references
+
+### 5. Archive processed corrections
+
+- Move processed entries to `$LUDICS_STATE_PATH/mag/memory/corrections-archive.md`
+- Keep corrections.md for recent items only
+
+### 6. File GitHub issues for harness bugs/improvements
+
+When corrections reveal a pattern about the ludics harness itself:
+
+- Ensure the label exists:
+  ```bash
+  gh label create harness-improvement -R lukstafi/ludics --description "Improvement identified from operational learnings" --color "a2eeef" 2>/dev/null || true
+  ```
+- Deduplicate against existing open issues:
+  ```bash
+  gh issue list -R lukstafi/ludics --label harness-improvement --state open --json number,title,body --limit 100
+  ```
+- Create issues for new patterns:
+  ```bash
+  gh issue create -R lukstafi/ludics --title "<pattern summary>" --label harness-improvement --body "<body>"
+  ```
+  Issue body format:
+  ```markdown
+  ## Pattern
+  <what was observed across multiple corrections>
+
+  ## Evidence
+  - <correction 1 summary> (<date>)
+  - <correction 2 summary> (<date>)
+
+  ## Suggested Fix
+  <actionable suggestion>
+
+  ---
+  *Filed by ludics-sync-learnings from N corrections*
+  ```
+- Add comments to existing issues if new corrections add evidence
+
+### 7. Stage CLAUDE.md proposals (if broad patterns detected)
+
+- Append entries to `$LUDICS_STATE_PATH/AGENTS_STAGING.md`
+- Create the file if it doesn't exist:
+  ```markdown
+  # Agent Learnings (Staging)
+
+  This file collects agent-discovered learnings for later curation into CLAUDE.md.
+  ```
+- Each entry uses HTML comment markers:
+  ```markdown
+  <!-- Entry: sync-learnings | YYYY-MM-DD -->
+  ### <short title>
+
+  <what was learned and proposed CLAUDE.md change>
+
+  **Target**: <which project's CLAUDE.md this applies to>
+
+  <!-- End entry -->
+  ```
+
+### 8. Write result JSON
+
+Read the request ID from `$LUDICS_STATE_PATH/mag/current-request-id` and write
+result to `$LUDICS_RESULTS_DIR/$REQ_ID.json`:
 
 ```json
 {
-  "id": "req-...",
+  "id": "<request-id>",
   "status": "completed",
-  "timestamp": "...",
+  "timestamp": "<ISO-8601>",
   "processed": N,
   "updates": {
     "tools.md": N,
@@ -59,13 +133,15 @@ Parse the worker's response for STATUS and counts.
 }
 ```
 
-## Delegation Strategy
+## Memory File Structure
 
-- **Worker subagent** (`/ludics-sync-learnings-worker`): All corrections reading,
-  journal scanning, theme grouping, memory file updates, archiving, GitHub issue
-  filing, CLAUDE.md staging — runs in isolated context
-- **Orchestrator** (this skill): Result JSON — runs inline in Mag's context
+- **tools.md**: CLI tool knowledge organized by tool, with Usage and Gotchas subsections
+- **workflows.md**: Process patterns as numbered steps or checklists
+- **projects/[project].md**: Project-specific knowledge (build system, key modules, common issues)
 
 ## Error Handling
 
-- Worker returns error: Propagate to result JSON with `"status": "error"`
+- Corrections file missing or empty: Report `CORRECTIONS_PROCESSED: 0`, continue with journal
+- Journal directory missing: Report `JOURNAL_ENTRIES_PROCESSED: 0`, continue with corrections
+- `gh` not authenticated: Skip issue filing, note in response
+- On error: Write result JSON with `"status": "error"`

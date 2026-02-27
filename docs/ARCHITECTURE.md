@@ -138,8 +138,7 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 | `/ludics-read-inbox` | Process incoming messages | Inline |
 | `/ludics-split-task` | Split multi-concern task into subtasks | Inline |
 | `/ludics-suggest` | Task suggestions based on flow state | Inline |
-| `/ludics-sync-learnings` | Consolidate learnings into structured memory | Orchestrator + worker |
-| `/ludics-techdebt` | Identify technical debt | Orchestrator + worker |
+| `/ludics-sync-learnings` | Consolidate learnings into structured memory | Direct fork |
 | `/ludics-verify-completion` | Deep-inspect task completion, create follow-ups | Orchestrator + worker |
 
 Skills are Markdown files with embedded instructions for Claude Code. Heavy skills use an **orchestrator/worker pattern** for context isolation — see [Skill Context Isolation](#skill-context-isolation) below.
@@ -185,22 +184,27 @@ Mag is a persistent, long-running Claude Code session. Every skill invocation in
 
 **Solution: Orchestrator/Worker pattern using `context: fork`**
 
-Six heavy skills are split into two files each:
+Heavy skills are split into two files each:
 
-- **Orchestrator** (`ludics-<name>.md`) — runs inline in Mag's context. Reads the task file (small, gives Mag awareness), makes strategic decisions (proceed/bail/split), invokes the worker, interprets the result, handles notifications and result JSON.
-- **Worker** (`ludics-<name>-worker.md`) — runs in an isolated subagent via Claude Code's `context: fork` frontmatter. Does the heavy codebase exploration, writes artifacts to disk, returns a structured summary. Hidden from the user's `/` menu via `user-invocable: false`.
+- **Orchestrator** (`ludics-<name>.md`) — runs inline in Mag's context. Reads the task file (small, gives Mag awareness), composes a context brief, makes strategic decisions (proceed/bail/split), invokes the worker, interprets the result, handles notifications and result JSON.
+- **Worker** (`ludics-<name>-worker.md`) — runs in an isolated subagent via Claude Code's `context: fork` frontmatter. Does the heavy codebase exploration, writes artifacts to disk, returns a structured summary. Hidden from the user's `/` menu via `user-invocable: false`. All workers follow shared conventions in `skills/worker-conventions.md`.
+
+For simpler skills where the orchestrator adds no strategic value, a **direct fork** pattern is used instead: the skill has `context: fork` directly and handles everything (including result JSON) in the isolated context. `sync-learnings` uses this pattern.
 
 ```
 Mag's context:                    Isolated context:
 ┌─────────────────────┐           ┌─────────────────────┐
 │  Orchestrator       │           │  Worker             │
 │  • Read task file   │──invoke──>│  • Explore codebase │
-│  • Decide proceed   │           │  • Read source files│
-│  • Parse result     │<─summary──│  • Write artifacts  │
-│  • Send notifs      │           │  • Git commit/push  │
-│  • Write result JSON│           └─────────────────────┘
+│  • Compose brief    │  + brief  │  • Read source files│
+│  • Decide proceed   │           │  • Write artifacts  │
+│  • Parse result     │<─summary──│  • Git commit/push  │
+│  • Send notifs      │           └─────────────────────┘
+│  • Write result JSON│
 └─────────────────────┘
 ```
+
+**Context brief**: Judgment-heavy workers (draft-proposal, elaborate, verify-completion) receive a free-form context brief (3-10 lines) from the orchestrator, distilling relevant background from Mag's conversation history. This bridges the gap between context isolation and cross-task awareness.
 
 Worker frontmatter pattern:
 ```yaml
@@ -220,7 +224,8 @@ allowed-tools: Read, Bash, Glob, Grep, Write
 
 | Category | Skills | Rationale |
 |----------|--------|-----------|
-| Heavy (orchestrator + worker) | draft-proposal, verify-completion, elaborate, techdebt, feedback-digest, sync-learnings | Deep codebase exploration; tool outputs would pollute Mag's context |
+| Heavy (orchestrator + worker) | draft-proposal, verify-completion, elaborate, feedback-digest | Deep codebase exploration; tool outputs would pollute Mag's context |
+| Direct fork | sync-learnings | Forked for isolation but no orchestrator needed — mostly mechanical processing |
 | Light (inline) | launch-session, health-check, read-inbox, suggest, preempt, learn, split-task, new-quote | Mostly CLI commands with minimal reads |
 | Strategic (inline, special) | briefing | Needs Mag's cross-task context for slot assignment; sub-operations (elaboration) are themselves forked |
 
@@ -618,12 +623,10 @@ ludics/
 │   ├── ludics-read-inbox.md          # Inline
 │   ├── ludics-split-task.md          # Inline
 │   ├── ludics-suggest.md             # Inline
-│   ├── ludics-sync-learnings.md      # Orchestrator
-│   ├── ludics-sync-learnings-worker.md  # Worker (context: fork)
-│   ├── ludics-techdebt.md            # Orchestrator
-│   ├── ludics-techdebt-worker.md     # Worker (context: fork)
+│   ├── ludics-sync-learnings.md      # Direct fork (context: fork)
 │   ├── ludics-verify-completion.md   # Orchestrator
-│   └── ludics-verify-completion-worker.md # Worker (context: fork)
+│   ├── ludics-verify-completion-worker.md # Worker (context: fork)
+│   └── worker-conventions.md         # Shared worker conventions
 ├── templates/
 │   ├── config.reference.yaml         # Example config
 │   ├── slots.example.md

@@ -44,3 +44,12 @@ Claude Code skills support `context: fork` to run as isolated subagents (since C
 - Environment variables (like `$LUDICS_STATE_PATH`) propagate to forked subagents
 - The subagent's final text response is returned to the parent — keep it structured for parsing
 <!-- End entry -->
+<!-- Entry: skill-context-isolation-followup-coder | 2026-02-27T22:33:43+0100 -->
+### Skill file conventions: worker-conventions.md and context brief pattern
+
+- Worker skill files reference `skills/worker-conventions.md` for shared boilerplate (argument parsing, structured response format, error handling). When adding a new worker, follow this pattern rather than duplicating conventions inline.
+- Judgment-heavy orchestrators (draft-proposal, elaborate, verify-completion) pass a `<context_brief>` as a third positional argument to their workers. The brief is free-form text composed by the orchestrator from Mag's conversation history. Context-free workers (feedback-digest) do not receive a brief.
+- When a skill's orchestrator adds no strategic value (no proceed/bail/split decision, no notification routing), use `context: fork` directly on the skill instead of an orchestrator/worker split. sync-learnings is the current example of this "direct fork" pattern.
+- The `bun run typecheck` command requires bun type definitions installed; it may fail in fresh clones without `bun install` first.
+
+<!-- End entry -->

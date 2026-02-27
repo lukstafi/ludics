@@ -40,16 +40,27 @@ Extract: title, project, slot number. Gives Mag context about what's being verif
 Same logic as draft-proposal: look up the task's `project` field in
 `$LUDICS_STATE_PATH/config.yaml`, resolve to local checkout path.
 
-### 3. Delegate to worker
+### 3. Compose context brief
+
+Write a short free-form context brief (3-10 lines) distilling relevant
+background from Mag's conversation history. Include any of:
+- User comments about completion status (e.g., "finished core but skipped edge cases")
+- Known criteria changes since the task was started
+- Related completed or in-progress work that affects verification
+- Session observations relevant to the verdict
+
+If nothing relevant, pass an empty brief.
+
+### 4. Delegate to worker
 
 ```
-/ludics-verify-completion-worker <task_id> <project_path>
+/ludics-verify-completion-worker <task_id> <project_path> <context_brief>
 ```
 
 The worker runs in a forked context — its codebase reads, git log queries, and
 file inspections do not enter Mag's conversation history.
 
-### 4. Interpret worker result and act
+### 5. Interpret worker result and act
 
 Parse the worker's VERDICT and act accordingly:
 
@@ -88,7 +99,7 @@ Parse the worker's VERDICT and act accordingly:
 - Do NOT clear the slot
 - Note findings in result JSON but do not notify
 
-### 5. Write result JSON
+### 6. Write result JSON
 
 ```json
 {

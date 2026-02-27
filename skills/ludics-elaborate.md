@@ -40,16 +40,27 @@ being elaborated and whether it's already been done.
 Look up the task's `project` field in `$LUDICS_STATE_PATH/config.yaml`,
 resolve to local checkout path (typically `~/<repo-name>`).
 
-### 3. Delegate to worker
+### 3. Compose context brief
+
+Write a short free-form context brief (3-10 lines) distilling relevant
+background from Mag's conversation history. Include any of:
+- Related tasks that cover adjacent ground (overlap or dependency risks)
+- User preferences for scope, approach, or priorities
+- Recent decisions or discussions relevant to this task's domain
+- Cross-task awareness (what other slots are working on)
+
+If nothing relevant, pass an empty brief.
+
+### 4. Delegate to worker
 
 ```
-/ludics-elaborate-worker <task_id> <project_path>
+/ludics-elaborate-worker <task_id> <project_path> <context_brief>
 ```
 
 The worker runs in a forked context — its codebase reads, dependency analysis,
 and file writes do not enter Mag's conversation history.
 
-### 4. Interpret worker result
+### 5. Interpret worker result
 
 Parse the worker's response for STATUS, QUESTIONS, and SUMMARY.
 
@@ -58,7 +69,7 @@ Parse the worker's response for STATUS, QUESTIONS, and SUMMARY.
 - **STATUS: already-elaborated** → ask if re-elaboration is wanted, or skip
 - **STATUS: error** → write result JSON with `"status": "error"`, stop
 
-### 5. Send questions notification (if gaps found)
+### 6. Send questions notification (if gaps found)
 
 If the worker reported questions (not "none"):
 
@@ -70,7 +81,7 @@ Use title: "Elaboration questions — <task_id>: <title>"
 
 Skip if no questions.
 
-### 6. Write result JSON
+### 7. Write result JSON
 
 ```json
 {

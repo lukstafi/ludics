@@ -260,8 +260,6 @@ function queuePopSkill(): string | null {
       return "/ludics-learn";
     case "sync-learnings":
       return "/ludics-sync-learnings";
-    case "techdebt":
-      return "/ludics-techdebt";
     case "message": {
       const content = String(request.content ?? "");
       if (!content) return "/ludics-read-inbox"; // fallback for legacy queue entries

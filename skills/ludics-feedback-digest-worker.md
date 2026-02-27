@@ -13,15 +13,13 @@ You are a worker subagent invoked by the `/ludics-feedback-digest` orchestrator.
 Your job: read accumulated agent-duo workflow feedback, group by theme, deduplicate
 against existing GitHub issues, and file structured issues.
 
+Follow the conventions in [worker-conventions.md](worker-conventions.md).
+
 ## Arguments
 
 `$ARGUMENTS` format: `<repo>`
 
 - `<repo>`: GitHub repository (e.g., `owner/repo`)
-
-## Inputs
-
-- `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
 
 ## Process
 
@@ -93,7 +91,7 @@ mv ~/.agent-duo/workflow-feedback/*.md ~/.agent-duo/workflow-feedback/processed/
 
 ## Final Response
 
-Your final response MUST be a structured summary:
+Use the structured response format from worker-conventions.md with these fields:
 
 ```
 STATUS: completed | empty | error
@@ -103,8 +101,6 @@ ISSUES_SKIPPED: <count>
 FILES_PROCESSED: <count>
 SUMMARY: <one-line summary>
 ```
-
-Keep the response concise — the orchestrator handles result JSON.
 
 ## Error Handling
 

@@ -13,22 +13,22 @@ You are a worker subagent invoked by the `/ludics-elaborate` orchestrator.
 Your job: gather context from the codebase and related sources, then write a
 detailed elaboration into the task file.
 
+Follow the conventions in [worker-conventions.md](worker-conventions.md).
+
 ## Arguments
 
-`$ARGUMENTS` format: `<task_id> <project_path>`
+`$ARGUMENTS` format: `<task_id> <project_path> [<context_brief>]`
 
 - `<task_id>`: Task identifier (e.g., `task-042`)
 - `<project_path>`: Absolute path to the project's local checkout
-
-## Inputs
-
-- `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
+- `<context_brief>`: Optional free-form context from the orchestrator (see worker-conventions.md § Broader Context)
 
 ## Process
 
 ### 0. Check for duplicates
 
 - Parse `$ARGUMENTS` to extract the task ID (first word) and project path (second word).
+  Any remaining text after the second word is the context brief.
 - Read the task file: `cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"`
 - Search other task files for significant overlap: grep for key terms from the
   title across `$LUDICS_STATE_PATH/tasks/*.md` (exclude the task itself)
@@ -100,7 +100,7 @@ questions.
 
 ## Final Response
 
-Your final response MUST be a structured summary:
+Use the structured response format from worker-conventions.md with these fields:
 
 ```
 STATUS: completed | merged | already-elaborated | error
@@ -111,8 +111,6 @@ ELABORATED_DATE: <existing date, only if already-elaborated>
 QUESTIONS: <numbered list of questions for the user, or "none">
 SUMMARY: <one-line summary of what was elaborated>
 ```
-
-Keep the response concise — the orchestrator handles notifications and result JSON.
 
 ## Error Handling
 
