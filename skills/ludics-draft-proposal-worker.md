@@ -26,14 +26,15 @@ Your job: explore a project's codebase, assess the task, and write a proposal do
 ## Process
 
 1. **Read task file**:
+   Parse `$ARGUMENTS` to extract the task ID (first word) and project path (second word).
    ```bash
-   cat "$LUDICS_STATE_PATH/tasks/$0.md"
+   cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
    ```
    Extract: title, project, dependencies, context, any linked GitHub issue,
    acceptance criteria, elaboration content.
 
-2. **Resolve project path**: Use the `$1` argument. If the `personal` project,
-   use `$LUDICS_STATE_PATH/..` (the state repository root).
+2. **Resolve project path**: Use the project path from `$ARGUMENTS`. If the
+   `personal` project, use `$LUDICS_STATE_PATH/..` (the state repository root).
 
 3. **Explore project codebase**:
    - Read relevant source files mentioned in the task elaboration
@@ -94,9 +95,9 @@ Your final response MUST be a structured summary that the orchestrator can parse
 Include these fields clearly:
 
 ```
-STATUS: completed | stale | split-needed | error
+STATUS: completed | stale | split-needed | already-exists | error
 TASK_ID: <task-id>
-PROPOSAL_PATH: docs/<feature>.md (omit if stale/split-needed)
+PROPOSAL_PATH: <relative path, e.g. docs/<feature>.md> (omit if stale/split-needed/error)
 AMBIGUITIES: <numbered list of ambiguities, or "none">
 TITLE: <task title>
 SUMMARY: <one-line summary of what was proposed>

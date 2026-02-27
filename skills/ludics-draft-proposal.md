@@ -71,8 +71,10 @@ and SUMMARY fields.
 
 ### 5. Send notification with action buttons
 
+Use the worker's `PROPOSAL_PATH` as the source of truth for the proposal location:
+
 ```bash
-ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/docs/<feature>.md"
+ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<PROPOSAL_PATH>"
 ```
 
 ### 6. Send questions notification (if ambiguities found)
@@ -88,10 +90,12 @@ Use title: "Proposal questions — <task_id>: <title>"
 ### 7. Best-effort desktop
 
 ```bash
-code "<project_path>/docs/<feature>.md" 2>/dev/null || true
+code "<project_path>/<PROPOSAL_PATH>" 2>/dev/null || true
 ```
 
 ### 8. Write result JSON
+
+Use the worker's `PROPOSAL_PATH` in the result:
 
 ```json
 {
@@ -99,7 +103,7 @@ code "<project_path>/docs/<feature>.md" 2>/dev/null || true
   "status": "completed",
   "timestamp": "...",
   "task_id": "<task_id>",
-  "proposal_path": "docs/<feature>.md",
+  "proposal_path": "<PROPOSAL_PATH>",
   "output": "Proposal written for <task_id>: <title>"
 }
 ```

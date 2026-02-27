@@ -49,9 +49,11 @@ Each theme: short title + list of data points.
 
 ### 4. Fetch existing issues and ensure label
 
+Parse `$ARGUMENTS` to extract the repo (the entire argument string, e.g., `owner/repo`).
+
 ```bash
-gh label create workflow-feedback -R $0 --description "Auto-filed workflow feedback from agent sessions" --color "c5def5" 2>/dev/null || true
-gh issue list -R $0 --label workflow-feedback --state open --json number,title,body --limit 100
+gh label create workflow-feedback -R <repo> --description "Auto-filed workflow feedback from agent sessions" --color "c5def5" 2>/dev/null || true
+gh issue list -R <repo> --label workflow-feedback --state open --json number,title,body --limit 100
 ```
 
 ### 5. Deduplicate and file

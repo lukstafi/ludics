@@ -28,7 +28,8 @@ detailed elaboration into the task file.
 
 ### 0. Check for duplicates
 
-- Read the task file: `cat "$LUDICS_STATE_PATH/tasks/$0.md"`
+- Parse `$ARGUMENTS` to extract the task ID (first word) and project path (second word).
+- Read the task file: `cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"`
 - Search other task files for significant overlap: grep for key terms from the
   title across `$LUDICS_STATE_PATH/tasks/*.md` (exclude the task itself)
 - A task is a duplicate if another task covers the same work — look for:
@@ -42,7 +43,7 @@ detailed elaboration into the task file.
 ### 1. Read task file (if not already read)
 
 ```bash
-cat "$LUDICS_STATE_PATH/tasks/$0.md"
+cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
 ```
 
 ### 2. Gather context
@@ -102,10 +103,11 @@ questions.
 Your final response MUST be a structured summary:
 
 ```
-STATUS: completed | merged | error
+STATUS: completed | merged | already-elaborated | error
 TASK_ID: <task-id>
 TITLE: <task title>
 MERGE_TARGET: <target task id, only if merged>
+ELABORATED_DATE: <existing date, only if already-elaborated>
 QUESTIONS: <numbered list of questions for the user, or "none">
 SUMMARY: <one-line summary of what was elaborated>
 ```

@@ -27,8 +27,9 @@ criteria have been met.
 ## Process
 
 1. **Read task file**:
+   Parse `$ARGUMENTS` to extract the task ID (first word) and project path (second word).
    ```bash
-   cat "$LUDICS_STATE_PATH/tasks/$0.md"
+   cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
    ```
    Extract: title, project, acceptance criteria, proposal path, slot number.
 
