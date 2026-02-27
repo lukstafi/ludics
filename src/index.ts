@@ -129,6 +129,7 @@ Commands:
   mag elaborate <id>           Elaborate task into detailed spec
   mag draft-proposal <id>     Generate proposal document for task
   mag split-task <id>          Split multi-concern task into subtasks
+  mag verify-completion <id>   Deep-inspect task completion, create follow-ups
   mag health-check             Check for deadlines, issues
   mag message "text"           Send async message to Mag
   mag inbox                    Show and consume pending messages

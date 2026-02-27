@@ -298,6 +298,10 @@ function queuePopSkill(): string | null {
       const autonomy = String(request.autonomy ?? "suggest");
       return `/ludics-preempt ${task} ${autonomy}`;
     }
+    case "verify-completion": {
+      const task = String(request.task ?? "");
+      return `/ludics-verify-completion ${task}`;
+    }
     default:
       console.error(`ludics: mag queue-pop: unknown action: ${action}`);
       return null;
@@ -1174,6 +1178,13 @@ export async function runMag(args: string[]): Promise<void> {
       console.log(`Queued split-task request for ${taskId}`);
       break;
     }
+    case "verify-completion": {
+      const taskId = args[1];
+      if (!taskId) throw new Error("task id required");
+      queueRequest("verify-completion", `"task":"${taskId}"`);
+      console.log(`Queued verify-completion request for ${taskId}`);
+      break;
+    }
     case "feedback-digest": {
       const repo = args[1];
       if (!repo) throw new Error("repo required (e.g., owner/repo)");
@@ -1219,6 +1230,6 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     default:
-      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, health-check, completed, message, inbox, queue, queue-pop, context, feedback-digest)`);
+      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, completed, message, inbox, queue, queue-pop, context, feedback-digest)`);
   }
 }

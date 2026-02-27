@@ -43,33 +43,22 @@ This skill is invoked when:
    - Run `ludics tasks needs-elaboration` to count unprocessed tasks
    - Note: Elaboration queueing is handled automatically by `tasks_queue_elaborations()` in `tasks_sync()` -- no need to enqueue here
 
-6. **Check for semantically complete in-progress tasks**:
+6. **Queue completion verification for potentially done tasks**:
    - Read `slots.md` to find slots with active in-progress tasks
    - For each slotted in-progress task (where `completed` is null):
-     a. Read the task file from `$LUDICS_STATE_PATH/tasks/<task-id>.md`
-     b. Extract the `## Acceptance Criteria` section from the task body
-     c. If the task has a `proposal` field, resolve the project path from config
-        (same logic as `/ludics-draft-proposal` — look up the project in
-        `~/.config/ludics/config.yaml`, find the local checkout path) and read the
-        full proposal document from `<project-path>/<proposal-value>`
-     d. Examine the current project state for completion evidence:
-        - Check git log in the project directory for recent commits mentioning the
-          task ID or proposal name
-        - Check if acceptance criteria checkboxes are marked complete (`- [x]`)
-        - Look for test files, documentation, or other artifacts mentioned in
-          acceptance criteria
-        - Read relevant source files referenced in the proposal's "Proposed Change"
-          section to verify the described changes exist
-     e. Make a semantic judgment: do ALL acceptance criteria appear to be met?
-        - **Yes (high confidence)**: Run `ludics slot <N> clear done` and send a
-          notification:
-          ```bash
-          ludics notify outgoing "Auto-completed: <task-id> (<title>)" 3 "Health Check"
-          ```
-          Log the auto-completion in the health report.
-        - **Uncertain**: Flag as "possibly complete" in the report at warning level.
-          Do NOT auto-clear — leave for human review.
-     f. Build stable issue keys: `completion:<task-id>` for delta tracking
+     a. Quick-check for completion signals (lightweight, no deep codebase inspection):
+        - Has the adapter session ended (Runtime section empty, no matching session)?
+        - Are there recent commits mentioning the task ID?
+        - Has the task been in-progress for longer than its estimated effort?
+     b. If any completion signals are present, queue deep verification:
+        ```bash
+        ludics mag verify-completion <task-id>
+        ```
+        The `/ludics-verify-completion` skill will do the full semantic inspection,
+        clear the slot if done, create follow-up tasks for loose ends, and notify
+        the user for uncertain cases.
+     c. Note queued verifications in the health report
+     d. Build stable issue keys: `completion:<task-id>` for delta tracking
 
 7. **Generate report**:
    - Categorize issues by severity
@@ -110,9 +99,9 @@ This skill is invoked when:
 ## Elaboration Status
 - 2 tasks awaiting elaboration (queued automatically by mag keepalive)
 
-## Completion Detection
-- Slot 2 (task gh-ludics-42): All acceptance criteria appear met. Auto-cleared as done.
-- Slot 3 (task gh-myapp-15): 2/3 criteria met; "API documentation" criterion unclear. Flagged for review.
+## Completion Verification
+- Slot 2 (task gh-ludics-42): Session ended, recent commits found. Queued verify-completion.
+- Slot 3 (task gh-myapp-15): Active for 5 days (est. medium). Queued verify-completion.
 
 ## Recommendations
 1. Prioritize task-042 - deadline is imminent
@@ -139,7 +128,7 @@ This skill is invoked when:
 | Deadline <= 3 days | outgoing | 5 (critical) |
 | Deadline <= 7 days | outgoing | 4 (high) |
 | Queue stuck > 1h | agents | 4 (high) |
-| Task semantically complete (auto-cleared) | outgoing | 3 (default) |
+| Completion verification queued | (none — notification handled by verify-completion skill) | — |
 
 ## Delegation Strategy
 

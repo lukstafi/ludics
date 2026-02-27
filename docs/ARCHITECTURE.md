@@ -122,22 +122,26 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 - Dependency graph: `tsort` for topological order
 - Priority filtering: `jq` for sorting and selection
 
-**Skills system** (`skills/` directory, 12 Markdown files):
+**Skills system** (`skills/` directory, 16 Markdown files):
 
 | Skill | Purpose |
 |-------|---------|
-| `/ludics-briefing` | Morning strategic briefing |
-| `/ludics-suggest` | Task suggestions based on flow state |
-| `/ludics-elaborate` | Detailed spec for a task |
 | `/ludics-analyze-issue` | Parse GitHub issue → create task with dependencies |
-| `/ludics-health-check` | Detect approaching deadlines, issues |
-| `/ludics-learn` | Update institutional memory from corrections |
-| `/ludics-sync-learnings` | Consolidate learnings into structured memory |
+| `/ludics-briefing` | Morning strategic briefing |
+| `/ludics-draft-proposal` | Write proposal document, send launch buttons |
+| `/ludics-elaborate` | Detailed spec for a task (early, for Mag context) |
 | `/ludics-feedback-digest` | Summarize user feedback |
-| `/ludics-read-inbox` | Process incoming messages |
-| `/ludics-preempt` | Plan task preemption |
-| `/ludics-techdebt` | Identify technical debt |
+| `/ludics-health-check` | Detect approaching deadlines, queue completion checks |
+| `/ludics-launch-session` | Find slot and start agent session for a task |
+| `/ludics-learn` | Update institutional memory from corrections |
 | `/ludics-new-quote` | Generate motivational quote |
+| `/ludics-preempt` | Plan task preemption |
+| `/ludics-read-inbox` | Process incoming messages |
+| `/ludics-split-task` | Split multi-concern task into subtasks |
+| `/ludics-suggest` | Task suggestions based on flow state |
+| `/ludics-sync-learnings` | Consolidate learnings into structured memory |
+| `/ludics-techdebt` | Identify technical debt |
+| `/ludics-verify-completion` | Deep-inspect task completion, create follow-ups |
 
 Skills are Markdown files with embedded instructions for Claude Code. They can specify delegation patterns (e.g., use Haiku subagent for extraction before Mag writes a task file).
 
@@ -555,19 +559,23 @@ ludics/
 │       ├── classify.ts               # Map sessions to slots
 │       ├── report.ts                 # Markdown/JSON report generation
 │       └── read-lines.ts             # Line reading utility
-├── skills/                           # Mag skills (12 Markdown files)
-│   ├── ludics-briefing.md
-│   ├── ludics-suggest.md
-│   ├── ludics-elaborate.md
+├── skills/                           # Mag skills (16 Markdown files)
 │   ├── ludics-analyze-issue.md
-│   ├── ludics-health-check.md
-│   ├── ludics-learn.md
-│   ├── ludics-sync-learnings.md
+│   ├── ludics-briefing.md
+│   ├── ludics-draft-proposal.md
+│   ├── ludics-elaborate.md
 │   ├── ludics-feedback-digest.md
-│   ├── ludics-read-inbox.md
+│   ├── ludics-health-check.md
+│   ├── ludics-launch-session.md
+│   ├── ludics-learn.md
+│   ├── ludics-new-quote.md
 │   ├── ludics-preempt.md
+│   ├── ludics-read-inbox.md
+│   ├── ludics-split-task.md
+│   ├── ludics-suggest.md
+│   ├── ludics-sync-learnings.md
 │   ├── ludics-techdebt.md
-│   └── ludics-new-quote.md
+│   └── ludics-verify-completion.md
 ├── templates/
 │   ├── config.reference.yaml         # Example config
 │   ├── slots.example.md
