@@ -60,7 +60,6 @@ response is returned to Mag.
 - `/ludics-suggest` — reads flow state, suggests tasks
 - `/ludics-preempt` — slot stash/reassign
 - `/ludics-learn` — updates memory files (small, targeted)
-- `/ludics-analyze-issue` — GitHub issue parsing (moderate, borderline)
 - `/ludics-split-task` — reads task file, creates subtasks
 - `/ludics-new-quote` — trivial
 

@@ -250,10 +250,6 @@ function queuePopSkill(): string | null {
       return "/ludics-briefing";
     case "suggest":
       return "/ludics-suggest";
-    case "analyze-issue": {
-      const issue = String(request.issue ?? "");
-      return `/ludics-analyze-issue ${issue}`;
-    }
     case "elaborate": {
       const task = String(request.task ?? "");
       return `/ludics-elaborate ${task}`;
@@ -1129,13 +1125,6 @@ export async function runMag(args: string[]): Promise<void> {
       queueRequest("suggest");
       console.log("Queued suggest request");
       break;
-    case "analyze": {
-      const issue = args[1];
-      if (!issue) throw new Error("issue required (e.g., owner/repo#123)");
-      queueRequest("analyze-issue", `"issue":"${issue}"`);
-      console.log(`Queued analyze request for ${issue}`);
-      break;
-    }
     case "elaborate": {
       const taskId = args[1];
       if (!taskId) throw new Error("task id required");

@@ -39,7 +39,6 @@ mag:
   ttyd_port: 7679
 
   autonomy_level:
-    analyze_issues: auto
     elaborate_tasks: auto
     infer_dependencies: auto
     suggest_priorities: suggest

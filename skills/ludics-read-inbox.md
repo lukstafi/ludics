@@ -21,7 +21,7 @@ This skill is invoked when:
 
 2. **Act on messages**: For each message, determine the appropriate action:
    - **Information updates** (deadline changes, priority shifts): Update the relevant task files or context
-   - **Requests** (analyze issue, elaborate task): Queue the appropriate action or handle inline
+   - **Requests** (elaborate task): Queue the appropriate action or handle inline
    - **Context notes** (reminders, preferences): Note in `mag/context.md` if persistent
    - **Ambiguous messages**: Journal the message and note it for the next briefing
 

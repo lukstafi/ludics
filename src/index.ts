@@ -125,7 +125,6 @@ Commands:
   mag doctor                   Health check for Mag setup
   mag briefing                 Request morning briefing
   mag suggest                  Get task suggestions
-  mag analyze <issue>          Analyze GitHub issue
   mag elaborate <id>           Elaborate task into detailed spec
   mag draft-proposal <id>     Generate proposal document for task
   mag split-task <id>          Split multi-concern task into subtasks

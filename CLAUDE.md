@@ -41,7 +41,7 @@ ludics/
 │   ├── mag.ts              # Mag lifecycle & queue
 │   ├── federation.ts       # Multi-machine leader election
 │   └── ...
-├── skills/                 # Mag skills (16 Markdown files)
+├── skills/                 # Mag skills (15 Markdown files)
 ├── templates/              # Config templates, launchd/systemd, dashboard HTML
 └── tests/                  # Test suite
 ```

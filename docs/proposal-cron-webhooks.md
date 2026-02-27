@@ -39,7 +39,7 @@ The subscriber validates messages on the `events` topic against a strict pattern
 ```typescript
 // In subscribeIncoming(), when processing events topic:
 const EVENT_PATTERNS: RegExp[] = [
-  /^analyze-issue [\w-]+\/[\w.-]+#\d+: .{1,200}$/,
+  /^new-issue [\w-]+\/[\w.-]+#\d+: .{1,200}$/,
   /^pr-event [\w-]+\/[\w.-]+#\d+ (opened|closed|merged)$/,
   /^pr-comment [\w-]+\/[\w.-]+#\d+$/,
   /^priority-change [\w-]+\/[\w.-]+#\d+: [ABC]$/,
@@ -76,7 +76,7 @@ jobs:
           REPO="${{ github.repository }}"
           case "$EVENT" in
             issues)
-              MSG="analyze-issue ${REPO}#${{ github.event.issue.number }}: ${{ github.event.issue.title }}"
+              MSG="new-issue ${REPO}#${{ github.event.issue.number }}: ${{ github.event.issue.title }}"
               ;;
             pull_request)
               MSG="pr-event ${REPO}#${{ github.event.pull_request.number }} ${{ github.event.action }}"
@@ -112,7 +112,7 @@ whitelist validation ──► DROP if no pattern match
 queueRequest() with structured action
     │
     ▼
-Mag processes (e.g., /ludics-analyze-issue)
+Mag processes (e.g., tasks sync + /ludics-elaborate)
 ```
 
 **Result**: new issues reach Mag within one queue cycle (~60s), no secrets in CI, no prompt injection surface.
@@ -121,7 +121,7 @@ Mag processes (e.g., /ludics-analyze-issue)
 
 | GitHub event | ntfy message | Whitelist pattern | Mag action |
 |---|---|---|---|
-| Issue opened | `analyze-issue repo#N: title` | `^analyze-issue [\w-]+/[\w.-]+#\d+: .{1,200}$` | `/ludics-analyze-issue` |
+| Issue opened | `new-issue repo#N: title` | `^new-issue [\w-]+/[\w.-]+#\d+: .{1,200}$` | `tasks sync` + `/ludics-elaborate` |
 | Issue labeled | `priority-change repo#N: A` | `^priority-change [\w-]+/[\w.-]+#\d+: [ABC]$` | Update task file |
 | PR merged/closed | `pr-event repo#N merged` | `^pr-event [\w-]+/[\w.-]+#\d+ (opened\|closed\|merged)$` | Task completion check |
 | PR comment | `pr-comment repo#N` | `^pr-comment [\w-]+/[\w.-]+#\d+$` | Factor into health check |

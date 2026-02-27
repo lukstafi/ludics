@@ -122,11 +122,10 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 - Dependency graph: `tsort` for topological order
 - Priority filtering: `jq` for sorting and selection
 
-**Skills system** (`skills/` directory, 16 Markdown files):
+**Skills system** (`skills/` directory, 15 Markdown files):
 
 | Skill | Purpose |
 |-------|---------|
-| `/ludics-analyze-issue` | Parse GitHub issue → create task with dependencies |
 | `/ludics-briefing` | Morning strategic briefing |
 | `/ludics-draft-proposal` | Write proposal document, send launch buttons |
 | `/ludics-elaborate` | Detailed spec for a task (early, for Mag context) |
@@ -450,7 +449,6 @@ mag:
   enabled: true
   ttyd_port: 7679
   autonomy_level:
-    analyze_issues: auto
     elaborate_tasks: auto
     preempt_slots: auto
 
@@ -559,8 +557,7 @@ ludics/
 │       ├── classify.ts               # Map sessions to slots
 │       ├── report.ts                 # Markdown/JSON report generation
 │       └── read-lines.ts             # Line reading utility
-├── skills/                           # Mag skills (16 Markdown files)
-│   ├── ludics-analyze-issue.md
+├── skills/                           # Mag skills (15 Markdown files)
 │   ├── ludics-briefing.md
 │   ├── ludics-draft-proposal.md
 │   ├── ludics-elaborate.md

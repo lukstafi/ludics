@@ -63,7 +63,6 @@ mag:
 
   # Autonomy levels: auto | suggest | manual
   autonomy_level:
-    analyze_issues: auto        # Auto creates task files from issues
     elaborate_tasks: auto       # Auto writes detailed specs
     infer_dependencies: auto    # Auto adds blocks/blocked-by
     suggest_priorities: suggest # Suggests, doesn't set
