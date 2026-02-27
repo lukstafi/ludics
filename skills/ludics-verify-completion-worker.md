@@ -13,21 +13,21 @@ You are a worker subagent invoked by the `/ludics-verify-completion` orchestrato
 Your job: deep-inspect a project's codebase to determine whether a task's acceptance
 criteria have been met.
 
+Follow the conventions in [worker-conventions.md](worker-conventions.md).
+
 ## Arguments
 
-`$ARGUMENTS` format: `<task_id> <project_path>`
+`$ARGUMENTS` format: `<task_id> <project_path> [<context_brief>]`
 
 - `<task_id>`: Task identifier (e.g., `task-042`)
 - `<project_path>`: Absolute path to the project's local checkout
-
-## Inputs
-
-- `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
+- `<context_brief>`: Optional free-form context from the orchestrator (see worker-conventions.md § Broader Context)
 
 ## Process
 
 1. **Read task file**:
    Parse `$ARGUMENTS` to extract the task ID (first word) and project path (second word).
+   Any remaining text after the second word is the context brief.
    ```bash
    cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
    ```
@@ -67,7 +67,7 @@ criteria have been met.
 
 ## Final Response
 
-Your final response MUST be a structured summary:
+Use the structured response format from worker-conventions.md with these fields:
 
 ```
 STATUS: completed
@@ -79,9 +79,6 @@ FOLLOWUPS: <numbered list of follow-up task descriptions with priority, or "none
 QUESTIONS: <numbered questions for uncertain criteria, or "none">
 EVIDENCE: <brief summary of key evidence found>
 ```
-
-Keep the response concise — the orchestrator handles slot clearing, task creation,
-notifications, and result JSON.
 
 ## Error Handling
 

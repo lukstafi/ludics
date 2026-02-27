@@ -12,21 +12,21 @@ allowed-tools: Read, Bash, Glob, Grep, Write
 You are a worker subagent invoked by the `/ludics-draft-proposal` orchestrator.
 Your job: explore a project's codebase, assess the task, and write a proposal document.
 
+Follow the conventions in [worker-conventions.md](worker-conventions.md).
+
 ## Arguments
 
-`$ARGUMENTS` format: `<task_id> <project_path>`
+`$ARGUMENTS` format: `<task_id> <project_path> [<context_brief>]`
 
 - `<task_id>`: Task identifier (e.g., `task-042`)
 - `<project_path>`: Absolute path to the project's local checkout
-
-## Inputs
-
-- `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
+- `<context_brief>`: Optional free-form context from the orchestrator (see worker-conventions.md § Broader Context)
 
 ## Process
 
 1. **Read task file**:
    Parse `$ARGUMENTS` to extract the task ID (first word) and project path (second word).
+   Any remaining text after the second word is the context brief.
    ```bash
    cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
    ```
@@ -45,12 +45,12 @@ Your job: explore a project's codebase, assess the task, and write a proposal do
    - Cross-check the task description and elaboration against the codebase.
      Watch out for staleness, unjustified assumptions, missing context.
    - If the task is clearly stale (work already done or goal no longer applies),
-     report `"status": "stale"` in your final response and stop.
+     report `STATUS: stale` in your final response and stop.
 
 5. **Check for multi-concern**:
    - If the task covers multiple independent concerns (different modules,
      separable features, could be merged to main independently), report
-     `"status": "split-needed"` and stop. The orchestrator will queue the
+     `STATUS: split-needed` and stop. The orchestrator will queue the
      split skill.
 
 6. **Determine docs directory**:
@@ -91,8 +91,7 @@ Your job: explore a project's codebase, assess the task, and write a proposal do
 
 ## Final Response
 
-Your final response MUST be a structured summary that the orchestrator can parse.
-Include these fields clearly:
+Use the structured response format from worker-conventions.md with these fields:
 
 ```
 STATUS: completed | stale | split-needed | already-exists | error
@@ -102,8 +101,6 @@ AMBIGUITIES: <numbered list of ambiguities, or "none">
 TITLE: <task title>
 SUMMARY: <one-line summary of what was proposed>
 ```
-
-Keep the response concise — the orchestrator handles notifications and result JSON.
 
 ## Error Handling
 

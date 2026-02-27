@@ -42,19 +42,30 @@ Each project entry has a `repo` field (e.g., `lukstafi/ocannl`); the local
 checkout is typically `~/<repo-name>`. The `personal` project refers to the
 state repository itself.
 
-### 3. Delegate to worker
+### 3. Compose context brief
+
+Write a short free-form context brief (3-10 lines) distilling relevant
+background from Mag's conversation history. Include any of:
+- User preferences affecting scope or approach for this task
+- Related tasks in progress (what slots are doing, overlap risks)
+- Recent decisions or conversations relevant to this task
+- Known staleness signals or priority shifts
+
+If nothing relevant, pass an empty brief.
+
+### 4. Delegate to worker
 
 Invoke the isolated worker skill:
 
 ```
-/ludics-draft-proposal-worker <task_id> <project_path>
+/ludics-draft-proposal-worker <task_id> <project_path> <context_brief>
 ```
 
 The worker runs in a forked context — its codebase exploration, file reads,
 and git operations do not enter Mag's conversation history. Only the worker's
 final response returns here.
 
-### 4. Interpret worker result
+### 5. Interpret worker result
 
 Parse the worker's response for STATUS, PROPOSAL_PATH, AMBIGUITIES, TITLE,
 and SUMMARY fields.
@@ -69,7 +80,7 @@ and SUMMARY fields.
 - **STATUS: error** → write result JSON with `"status": "error"`, stop
 - **STATUS: already-exists** → check if re-generation is wanted, or skip
 
-### 5. Send notification with action buttons
+### 6. Send notification with action buttons
 
 Use the worker's `PROPOSAL_PATH` as the source of truth for the proposal location:
 
@@ -77,7 +88,7 @@ Use the worker's `PROPOSAL_PATH` as the source of truth for the proposal locatio
 ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<PROPOSAL_PATH>"
 ```
 
-### 6. Send questions notification (if ambiguities found)
+### 7. Send questions notification (if ambiguities found)
 
 If the worker reported ambiguities (not "none"), send them as numbered questions:
 
@@ -87,13 +98,13 @@ ludics notify outgoing "<questions text>"
 
 Use title: "Proposal questions — <task_id>: <title>"
 
-### 7. Best-effort desktop
+### 8. Best-effort desktop
 
 ```bash
 code "<project_path>/<PROPOSAL_PATH>" 2>/dev/null || true
 ```
 
-### 8. Write result JSON
+### 9. Write result JSON
 
 Use the worker's `PROPOSAL_PATH` in the result:
 
