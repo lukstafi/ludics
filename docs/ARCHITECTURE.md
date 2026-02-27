@@ -6,11 +6,6 @@
 
 ludics is a lightweight personal AI infrastructure — a harness for humans working with AI agents. It manages concurrent agent sessions (slots), orchestrates autonomous task analysis (Mag), and maintains flow-based task management.
 
-**Core philosophy: "Autonomous minds, deterministic rails"**
-- **Autonomous layer**: AI agents make strategic decisions (Mag, workers)
-- **Automation layer**: Deterministic code executes reliably (triggers, adapters, sync)
-- The autonomous layer supervises; the automation layer provides predictable, deterministic behavior.
-
 ## Technology Stack
 
 ludics is implemented in **100% TypeScript**, compiled to a standalone binary via Bun:
@@ -820,7 +815,7 @@ ludics quote                   # Print a random quote
 
 1. **Autonomous minds, deterministic rails** — AI makes decisions, deterministic code executes reliably
 2. **Flow-based, not time-based** — Throughput over latency, dependencies over deadlines
-3. **Thin coordination layer** — ludics coordinates, doesn't replace existing tools
+3. **Coordination layer** — ludics coordinates, doesn't replace existing tools
 4. **Adapter pattern** — Support any agent system via a common TypeScript interface
 5. **Git-backed persistence** — Everything version controlled, survives agent crashes
 6. **Hardcoded constraints as forcing functions** — Fixed slots create pressure to parallelize
