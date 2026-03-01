@@ -129,6 +129,20 @@ function taskSlotPath(taskId: string): string {
   return "";
 }
 
+function taskSlotNumber(taskId: string): number | null {
+  try {
+    const sFile = slotsFilePath();
+    if (!existsSync(sFile)) return null;
+    const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+    for (const [slotNum, block] of blocks) {
+      if (getTask(block).trim() === taskId) return slotNum;
+    }
+  } catch {
+    // ignore slot lookup failures
+  }
+  return null;
+}
+
 function proposalSearchRoots(taskId: string): string[] {
   const roots = new Set<string>();
   const slotPath = taskSlotPath(taskId);
@@ -287,7 +301,11 @@ export function notifyProposal(
 ): void {
   const outTopic = getTopic("outgoing");
   const inTopic = getTopic("incoming");
-  notifyLog("outgoing", `Proposal for ${taskId}: ${title}`, 3, "proposal");
+  const slotNum = taskSlotNumber(taskId);
+  const slotSuffix = slotNum !== null ? ` (slot ${slotNum})` : "";
+  const proposalTitle = slotNum !== null ? `Proposal [slot ${slotNum}]: ${title}` : `Proposal: ${title}`;
+  const optionsTitle = slotNum !== null ? `Proposal options [slot ${slotNum}]: ${title}` : `Proposal options: ${title}`;
+  notifyLog("outgoing", `Proposal for ${taskId}${slotSuffix}: ${title}`, 3, "proposal");
 
   if (!outTopic) {
     console.error("ludics: outgoing topic not configured, logging locally only");
@@ -373,7 +391,7 @@ export function notifyProposal(
       resolvedPath,
       attachmentName,
       token,
-      `Proposal: ${title}`,
+      proposalTitle,
       inlineHeaderMessage,
       3,
       tagsHeader,
@@ -384,7 +402,7 @@ export function notifyProposal(
       outTopic,
       inlineMessage,
       token,
-      `Proposal: ${title}`,
+      proposalTitle,
       3,
       tagsHeader,
       inTopic ? actions.slice(0, NTFY_MAX_ACTIONS) : [],
@@ -396,9 +414,9 @@ export function notifyProposal(
     console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${first.httpCode})${detail ? `: ${detail}` : ""}, retrying without attachment`);
     const fallback = notifyPublishMessage(
       outTopic,
-      `Proposal for ${taskId}\n\n${inlineMessage}`,
+      `Proposal for ${taskId}${slotSuffix}\n\n${inlineMessage}`,
       token,
-      `Proposal: ${title}`,
+      proposalTitle,
       3,
       tagsHeader,
       inTopic ? actions.slice(0, NTFY_MAX_ACTIONS) : [],
@@ -415,9 +433,9 @@ export function notifyProposal(
   for (let i = NTFY_MAX_ACTIONS; i < actions.length; i += NTFY_MAX_ACTIONS) {
     const followup = notifyPublishMessage(
       outTopic,
-      `More launch options for ${taskId}.`,
+      `More launch options for ${taskId}${slotSuffix}.`,
       token,
-      `Proposal options: ${title}`,
+      optionsTitle,
       3,
       tagsHeader,
       actions.slice(i, i + NTFY_MAX_ACTIONS),
