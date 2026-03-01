@@ -1,7 +1,7 @@
 // Notification system — ntfy.sh integration (outgoing + incoming + agents)
 
-import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync } from "fs";
+import { join, resolve } from "path";
 import { loadConfigSync, harnessDir } from "./config.ts";
 import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
@@ -59,6 +59,104 @@ function getTopic(tier: string): string {
   return topics[tier] ?? "";
 }
 
+function isRegularFile(path: string): boolean {
+  try {
+    return existsSync(path) && !statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function taskProject(taskId: string): string {
+  try {
+    const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+    if (!existsSync(taskFile)) return "";
+    const content = readFileSync(taskFile, "utf-8");
+    const match = content.match(/^project:\s*(.+)$/m);
+    return match ? match[1]!.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function candidateProjectDirs(project: string): string[] {
+  const dirs = new Set<string>();
+  const projectName = project.trim();
+  if (projectName) {
+    dirs.add(projectName);
+    dirs.add(projectName.toLowerCase());
+  }
+
+  try {
+    const config = loadConfigSync();
+    for (const p of (config.projects ?? [])) {
+      const name = String(p.name ?? "");
+      const repoTail = String(p.repo ?? "").split("/").pop() ?? "";
+      if (!repoTail) continue;
+      if (
+        projectName &&
+        projectName.toLowerCase() !== name.toLowerCase() &&
+        projectName.toLowerCase() !== repoTail.toLowerCase()
+      ) {
+        continue;
+      }
+      dirs.add(repoTail);
+    }
+  } catch {
+    // ignore config lookup failures; we still try direct fallbacks
+  }
+
+  return Array.from(dirs);
+}
+
+function resolveProposalFilePath(taskId: string, filePath: string): string | null {
+  const rawPath = filePath.trim();
+  if (!rawPath) return null;
+
+  const expanded = rawPath.startsWith("~/")
+    ? resolve(process.env.HOME ?? "~", rawPath.slice(2))
+    : rawPath;
+
+  const direct = resolve(expanded);
+  if (isRegularFile(direct)) return direct;
+
+  const home = process.env.HOME ?? "~";
+  const candidates: string[] = [];
+  for (const dir of candidateProjectDirs(taskProject(taskId))) {
+    candidates.push(resolve(home, dir, expanded));
+  }
+  candidates.push(resolve(home, expanded));
+
+  for (const candidate of candidates) {
+    if (isRegularFile(candidate)) return candidate;
+  }
+
+  return null;
+}
+
+function proposalMessageBody(taskId: string, summary: string, filePath: string): string {
+  let proposalText = "";
+  const resolvedPath = resolveProposalFilePath(taskId, filePath);
+
+  if (resolvedPath) {
+    try {
+      const raw = readFileSync(resolvedPath, "utf-8");
+      proposalText = raw.length > 2000 ? raw.slice(0, 2000) + "\n\n[truncated]" : raw;
+    } catch {
+      proposalText = "";
+    }
+  }
+
+  const trimmedSummary = summary.trim();
+  const trimmedProposal = proposalText.trim();
+
+  if (trimmedProposal && trimmedSummary && trimmedProposal !== trimmedSummary) {
+    return `Summary: ${trimmedSummary}\n\n${proposalText}`;
+  }
+  if (proposalText) return proposalText;
+  return summary;
+}
+
 export function notifyOutgoing(message: string, priority: number = 3, title: string = "ludics"): void {
   const topic = getTopic("outgoing");
   notifyLog("outgoing", message, priority, title);
@@ -101,21 +199,13 @@ export function notifyProposal(
 
   const token = getToken();
   const project = taskId.split("-").slice(0, -1).join("-") || "unknown";
+  const messageBody = proposalMessageBody(taskId, summary, filePath);
 
-  // Read file content for the message body (ntfy JSON API doesn't support file upload
-  // with actions, so we include a summary and attach via a follow-up if needed)
-  let fileContent = summary;
-  try {
-    const raw = readFileSync(filePath, "utf-8");
-    // Truncate to fit ntfy message limits (~4KB for the whole payload)
-    fileContent = raw.length > 2000 ? raw.slice(0, 2000) + "\n\n[truncated]" : raw;
-  } catch { /* use summary as fallback */ }
-
-  // Build JSON payload with action buttons (max 3 allowed by ntfy)
+  // Build JSON payload with action buttons. ntfy clients may cap rendered count.
   const payload: Record<string, unknown> = {
     topic: outTopic,
     title: `Proposal: ${title}`,
-    message: fileContent,
+    message: messageBody,
     priority: 3,
     tags: ["memo", taskId],
   };
@@ -133,6 +223,14 @@ export function notifyProposal(
         method: "POST",
         headers,
         body: `Launch agent-duo for ${taskId} in project ${project}`,
+      },
+      {
+        action: "http",
+        label: "abandon",
+        url: `https://ntfy.sh/${inTopic}`,
+        method: "POST",
+        headers,
+        body: `Abandon task ${taskId}`,
       },
       {
         action: "http",
@@ -182,8 +280,7 @@ export function notifyProposal(
   if (httpCode !== "200") {
     const stderr = result.stderr.toString().trim();
     console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${httpCode})${stderr ? `: ${stderr}` : ""}, logged locally`);
-    // Fallback: send summary as plain text
-    notifySend(outTopic, `Proposal for ${taskId}: ${summary}`, 3, `Proposal: ${title}`, "memo");
+    notifySend(outTopic, `Proposal for ${taskId}\n\n${messageBody}`, 3, `Proposal: ${title}`, "memo");
   }
 }
 
