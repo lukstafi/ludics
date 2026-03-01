@@ -130,7 +130,7 @@ Commands:
   mag split-task <id>          Split multi-concern task into subtasks
   mag verify-completion <id>   Deep-inspect task completion, create follow-ups
   mag health-check             Check for deadlines, issues
-  mag adopt-sessions           Discover sessions and queue adoption for Mag
+  mag adopt-sessions [--force] Discover sessions and queue adoption for Mag
   mag message "text"           Send async message to Mag
   mag inbox                    Show and consume pending messages
   mag queue                    Show pending queue requests

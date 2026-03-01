@@ -5,7 +5,7 @@ import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath } from "./slots/markdown.ts";
-import { queueRequest, queuePop, queuePending, queueHasPendingFeedbackDigest } from "./queue.ts";
+import { queueRequest, queuePop, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
@@ -116,6 +116,82 @@ function markFeedbackDigestQueued(repo: string): void {
 
 function lastCaptureHashFile(): string {
   return join(magStateDir(), "last-capture.hash");
+}
+
+function adoptSessionsFingerprintFile(): string {
+  return join(magStateDir(), "adopt-sessions-unclassified.hash");
+}
+
+interface AdoptFingerprintSession {
+  cwd: string;
+  cwdNormalized: string;
+  agents: string[];
+  ids: string[];
+  orchestration: { type: string; feature: string; phase: string; round: string } | null;
+  meta: {
+    tmux_session?: string;
+    git_branch?: string;
+    port?: string;
+  };
+}
+
+function adoptSessionsFingerprintData(
+  sessionsJsonPath: string,
+): { hash: string; unclassifiedCount: number } | null {
+  if (!existsSync(sessionsJsonPath)) return null;
+
+  try {
+    const data = JSON.parse(readFileSync(sessionsJsonPath, "utf-8")) as { unclassified?: Array<Record<string, unknown>> };
+    const raw = Array.isArray(data.unclassified) ? data.unclassified : [];
+    const normalized: AdoptFingerprintSession[] = raw.map((session) => {
+      const metaObj = session.meta && typeof session.meta === "object"
+        ? (session.meta as Record<string, unknown>)
+        : {};
+      const orchObj = session.orchestration && typeof session.orchestration === "object"
+        ? (session.orchestration as Record<string, unknown>)
+        : null;
+      const orchestration = orchObj
+        ? {
+          type: String(orchObj.type ?? ""),
+          feature: String(orchObj.feature ?? ""),
+          phase: String(orchObj.phase ?? ""),
+          round: String(orchObj.round ?? ""),
+        }
+        : null;
+
+      return {
+        cwd: String(session.cwd ?? "unknown"),
+        cwdNormalized: String(session.cwdNormalized ?? "unknown"),
+        agents: Array.isArray(session.agents) ? session.agents.map((v) => String(v)).sort() : [],
+        ids: Array.isArray(session.ids) ? session.ids.map((v) => String(v)).sort() : [],
+        orchestration,
+        meta: {
+          tmux_session: typeof metaObj.tmux_session === "string" ? metaObj.tmux_session : undefined,
+          git_branch: typeof metaObj.git_branch === "string" ? metaObj.git_branch : undefined,
+          port: typeof metaObj.port === "string" ? metaObj.port : undefined,
+        },
+      };
+    });
+
+    normalized.sort((a, b) => {
+      const pathCmp = a.cwdNormalized.localeCompare(b.cwdNormalized);
+      if (pathCmp !== 0) return pathCmp;
+      return a.ids.join(",").localeCompare(b.ids.join(","));
+    });
+
+    const payload = {
+      version: 1,
+      unclassified: normalized,
+    };
+    const hasher = new Bun.CryptoHasher("sha256");
+    hasher.update(JSON.stringify(payload));
+    return {
+      hash: hasher.digest("hex"),
+      unclassifiedCount: normalized.length,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function publishTerminalState(): void {
@@ -1498,10 +1574,42 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "adopt-sessions": {
-      // Refresh sessions, then queue skill for Mag
-      Bun.spawnSync([process.execPath, "sessions", "report"], { stdout: "pipe", stderr: "pipe" });
+      const force = args.includes("--force");
+      const refresh = Bun.spawnSync([process.execPath, "sessions", "report"], { stdout: "pipe", stderr: "pipe" });
+      if (refresh.exitCode !== 0) {
+        const stderr = refresh.stderr.toString().trim();
+        throw new Error(stderr ? `adopt-sessions: failed to refresh sessions: ${stderr}` : "adopt-sessions: failed to refresh sessions");
+      }
+
+      const sessionsFile = join(harnessDir(), "sessions.json");
+      const fingerprint = adoptSessionsFingerprintData(sessionsFile);
+      if (!fingerprint) {
+        throw new Error("adopt-sessions: failed to read sessions.json after refresh");
+      }
+
+      mkdirSync(magStateDir(), { recursive: true });
+      const fingerprintFile = adoptSessionsFingerprintFile();
+      const previous = existsSync(fingerprintFile) ? readFileSync(fingerprintFile, "utf-8").trim() : "";
+      const changed = previous !== fingerprint.hash;
+      writeFileSync(fingerprintFile, fingerprint.hash + "\n");
+
+      if (!force && !changed) {
+        console.log("Skipped adopt-sessions: no unclassified session changes");
+        break;
+      }
+
+      if (!force && fingerprint.unclassifiedCount === 0) {
+        console.log("Skipped adopt-sessions: no unclassified sessions");
+        break;
+      }
+
+      if (queueHasPendingAction("adopt-sessions")) {
+        console.log("Skipped adopt-sessions request: already pending in queue");
+        break;
+      }
+
       queueRequest("adopt-sessions");
-      console.log("Queued adopt-sessions request");
+      console.log(`Queued adopt-sessions request (${fingerprint.unclassifiedCount} unclassified session(s))`);
       break;
     }
     case "completed": {
