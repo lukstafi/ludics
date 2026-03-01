@@ -300,6 +300,58 @@ function ensureTtyd(): void {
 
 // --- Queue pop for skills ---
 
+function findSlotForTask(taskId: string): number | null {
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return null;
+
+  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  for (const [slotNum, block] of blocks) {
+    const currentTask = getTask(block).trim();
+    if (currentTask === taskId) return slotNum;
+  }
+  return null;
+}
+
+function abandonTaskFromNotification(taskId: string): void {
+  const slotNum = findSlotForTask(taskId);
+  if (slotNum === null) {
+    console.error(`ludics: abandon request ignored: task ${taskId} is not assigned to any slot`);
+    emitEvent({
+      event_type: "notify_abandon_ignored",
+      source: "notify",
+      scope: "mag",
+      task: taskId,
+      message: "task not assigned to any slot",
+    });
+    return;
+  }
+
+  try {
+    slotClear(slotNum, "abandoned");
+    emitEvent({
+      event_type: "notify_abandon",
+      source: "notify",
+      scope: "mag",
+      slot: slotNum,
+      task: taskId,
+      status: "abandoned",
+      message: "abandoned via notification button",
+    });
+    console.error(`ludics: abandoned ${taskId} from slot ${slotNum} via notification button`);
+  } catch (err) {
+    console.error(`ludics: failed to abandon ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
+    emitEvent({
+      event_type: "notify_abandon_error",
+      source: "notify",
+      scope: "mag",
+      slot: slotNum,
+      task: taskId,
+      status: "error",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 function queuePopSkill(): string | null {
   const queueFile = join(harnessDir(), "mag", "queue.jsonl");
   if (!existsSync(queueFile)) return null;
@@ -361,6 +413,12 @@ function queuePopSkill(): string | null {
         const adapter = launchMatch[1]!;
         const taskId = launchMatch[2]!;
         return `/ludics-launch-session ${taskId} ${adapter}`;
+      }
+
+      const abandonMatch = content.match(/^Abandon task ([\w.-]+)$/);
+      if (abandonMatch) {
+        abandonTaskFromNotification(abandonMatch[1]!);
+        return null;
       }
 
       return content; // send directly as user turn
