@@ -59,6 +59,8 @@ function getTopic(tier: string): string {
   return topics[tier] ?? "";
 }
 
+const NTFY_MAX_ACTIONS = 3;
+
 function isRegularFile(path: string): boolean {
   try {
     return existsSync(path) && !statSync(path).isDirectory();
@@ -141,7 +143,7 @@ function proposalMessageBody(taskId: string, summary: string, filePath: string):
   if (resolvedPath) {
     try {
       const raw = readFileSync(resolvedPath, "utf-8");
-      proposalText = raw.length > 2000 ? raw.slice(0, 2000) + "\n\n[truncated]" : raw;
+      proposalText = raw;
     } catch {
       proposalText = "";
     }
@@ -155,6 +157,22 @@ function proposalMessageBody(taskId: string, summary: string, filePath: string):
   }
   if (proposalText) return proposalText;
   return summary;
+}
+
+function notifyPublishJson(payload: Record<string, unknown>, token: string): { httpCode: string; stderr: string } {
+  const curlArgs = [
+    "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+    "-X", "POST",
+    "-H", "Content-Type: application/json",
+  ];
+  if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
+  curlArgs.push("-d", JSON.stringify(payload), "https://ntfy.sh/");
+
+  const result = Bun.spawnSync(curlArgs, { stdout: "pipe", stderr: "pipe" });
+  return {
+    httpCode: result.stdout.toString().trim(),
+    stderr: result.stderr.toString().trim(),
+  };
 }
 
 export function notifyOutgoing(message: string, priority: number = 3, title: string = "ludics"): void {
@@ -201,8 +219,7 @@ export function notifyProposal(
   const project = taskId.split("-").slice(0, -1).join("-") || "unknown";
   const messageBody = proposalMessageBody(taskId, summary, filePath);
 
-  // Build JSON payload with action buttons. ntfy clients may cap rendered count.
-  const payload: Record<string, unknown> = {
+  const basePayload: Record<string, unknown> = {
     topic: outTopic,
     title: `Proposal: ${title}`,
     message: messageBody,
@@ -210,77 +227,92 @@ export function notifyProposal(
     tags: ["memo", taskId],
   };
 
-  if (inTopic) {
-    const headers: Record<string, string> = {};
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    // Keep all configured launch actions in payload; backend/client may cap rendered count.
-    payload.actions = [
-      {
-        action: "http",
-        label: "agent-duo",
-        url: `https://ntfy.sh/${inTopic}`,
-        method: "POST",
-        headers,
-        body: `Launch agent-duo for ${taskId} in project ${project}`,
-      },
-      {
-        action: "http",
-        label: "abandon",
-        url: `https://ntfy.sh/${inTopic}`,
-        method: "POST",
-        headers,
-        body: `Abandon task ${taskId}`,
-      },
-      {
-        action: "http",
-        label: "pair-claude",
-        url: `https://ntfy.sh/${inTopic}`,
-        method: "POST",
-        headers,
-        body: `Launch agent-pair-claude for ${taskId} in project ${project}`,
-      },
-      {
-        action: "http",
-        label: "pair-codex",
-        url: `https://ntfy.sh/${inTopic}`,
-        method: "POST",
-        headers,
-        body: `Launch agent-pair-codex for ${taskId} in project ${project}`,
-      },
-      {
-        action: "http",
-        label: "codex",
-        url: `https://ntfy.sh/${inTopic}`,
-        method: "POST",
-        headers,
-        body: `Launch agent-codex for ${taskId} in project ${project}`,
-      },
-      {
-        action: "http",
-        label: "claude",
-        url: `https://ntfy.sh/${inTopic}`,
-        method: "POST",
-        headers,
-        body: `Launch agent-claude for ${taskId} in project ${project}`,
-      },
-    ];
+  if (!inTopic) {
+    const first = notifyPublishJson(basePayload, token);
+    if (first.httpCode !== "200") {
+      console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${first.httpCode})${first.stderr ? `: ${first.stderr}` : ""}, logged locally`);
+      notifySend(outTopic, `Proposal for ${taskId}\n\n${messageBody}`, 3, `Proposal: ${title}`, "memo");
+    }
+    return;
   }
 
-  const curlArgs = [
-    "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-    "-X", "POST",
-    "-H", "Content-Type: application/json",
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const actions: Array<Record<string, unknown>> = [
+    {
+      action: "http",
+      label: "agent-duo",
+      url: `https://ntfy.sh/${inTopic}`,
+      method: "POST",
+      headers,
+      body: `Launch agent-duo for ${taskId} in project ${project}`,
+    },
+    {
+      action: "http",
+      label: "abandon",
+      url: `https://ntfy.sh/${inTopic}`,
+      method: "POST",
+      headers,
+      body: `Abandon task ${taskId}`,
+    },
+    {
+      action: "http",
+      label: "pair-claude",
+      url: `https://ntfy.sh/${inTopic}`,
+      method: "POST",
+      headers,
+      body: `Launch agent-pair-claude for ${taskId} in project ${project}`,
+    },
+    {
+      action: "http",
+      label: "pair-codex",
+      url: `https://ntfy.sh/${inTopic}`,
+      method: "POST",
+      headers,
+      body: `Launch agent-pair-codex for ${taskId} in project ${project}`,
+    },
+    {
+      action: "http",
+      label: "codex",
+      url: `https://ntfy.sh/${inTopic}`,
+      method: "POST",
+      headers,
+      body: `Launch agent-codex for ${taskId} in project ${project}`,
+    },
+    {
+      action: "http",
+      label: "claude",
+      url: `https://ntfy.sh/${inTopic}`,
+      method: "POST",
+      headers,
+      body: `Launch agent-claude for ${taskId} in project ${project}`,
+    },
   ];
-  if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
-  curlArgs.push("-d", JSON.stringify(payload), "https://ntfy.sh/");
 
-  const result = Bun.spawnSync(curlArgs, { stdout: "pipe", stderr: "pipe" });
-  const httpCode = result.stdout.toString().trim();
-  if (httpCode !== "200") {
-    const stderr = result.stderr.toString().trim();
-    console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${httpCode})${stderr ? `: ${stderr}` : ""}, logged locally`);
+  const firstPayload: Record<string, unknown> = {
+    ...basePayload,
+    actions: actions.slice(0, NTFY_MAX_ACTIONS),
+  };
+  const first = notifyPublishJson(firstPayload, token);
+  if (first.httpCode !== "200") {
+    console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${first.httpCode})${first.stderr ? `: ${first.stderr}` : ""}, logged locally`);
     notifySend(outTopic, `Proposal for ${taskId}\n\n${messageBody}`, 3, `Proposal: ${title}`, "memo");
+    return;
+  }
+
+  for (let i = NTFY_MAX_ACTIONS; i < actions.length; i += NTFY_MAX_ACTIONS) {
+    const followupPayload: Record<string, unknown> = {
+      topic: outTopic,
+      title: `Proposal options: ${title}`,
+      message: `More launch options for ${taskId}.`,
+      priority: 3,
+      tags: ["memo", taskId],
+      actions: actions.slice(i, i + NTFY_MAX_ACTIONS),
+    };
+    const followup = notifyPublishJson(followupPayload, token);
+    if (followup.httpCode !== "200") {
+      console.error(`ludics: ntfy.sh proposal options notification failed (HTTP ${followup.httpCode})${followup.stderr ? `: ${followup.stderr}` : ""}, logged locally`);
+    }
   }
 }
 
