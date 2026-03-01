@@ -53,6 +53,25 @@ export function queuePending(): boolean {
   return content.length > 0;
 }
 
+export function queueHasPendingAction(action: string): boolean {
+  const file = queueFile();
+  if (!existsSync(file)) return false;
+
+  const content = readFileSync(file, "utf-8").trim();
+  if (!content) return false;
+
+  for (const line of content.split("\n")) {
+    try {
+      const request = JSON.parse(line) as Record<string, unknown>;
+      if (request.action === action) return true;
+    } catch {
+      continue;
+    }
+  }
+
+  return false;
+}
+
 export function queueHasPendingFeedbackDigest(repo: string): boolean {
   const file = queueFile();
   if (!existsSync(file)) return false;
