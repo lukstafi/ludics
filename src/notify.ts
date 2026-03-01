@@ -1,10 +1,11 @@
 // Notification system — ntfy.sh integration (outgoing + incoming + agents)
 
 import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync } from "fs";
-import { join, resolve } from "path";
-import { loadConfigSync, harnessDir } from "./config.ts";
+import { basename, join, resolve } from "path";
+import { loadConfigSync, harnessDir, slotsFilePath } from "./config.ts";
 import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
+import { parseSlotBlocks, getTask, getPath } from "./slots/markdown.ts";
 
 function notificationLogFile(): string {
   return join(harnessDir(), "journal", "notifications.jsonl");
@@ -60,6 +61,7 @@ function getTopic(tier: string): string {
 }
 
 const NTFY_MAX_ACTIONS = 3;
+const PROPOSAL_INLINE_CHAR_CUTOFF = 800;
 
 function isRegularFile(path: string): boolean {
   try {
@@ -111,23 +113,55 @@ function candidateProjectDirs(project: string): string[] {
   return Array.from(dirs);
 }
 
+function taskSlotPath(taskId: string): string {
+  try {
+    const sFile = slotsFilePath();
+    if (!existsSync(sFile)) return "";
+    const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+    for (const [, block] of blocks) {
+      if (getTask(block).trim() !== taskId) continue;
+      const path = getPath(block).trim();
+      if (path && path !== "null") return path;
+    }
+  } catch {
+    // ignore slot lookup failures
+  }
+  return "";
+}
+
+function proposalSearchRoots(taskId: string): string[] {
+  const roots = new Set<string>();
+  const slotPath = taskSlotPath(taskId);
+  if (slotPath) roots.add(slotPath);
+  roots.add(process.cwd());
+
+  const project = taskProject(taskId);
+  for (const dir of candidateProjectDirs(project)) {
+    roots.add(resolve(process.env.HOME ?? "~", dir));
+  }
+  roots.add(process.env.HOME ?? "~");
+
+  return Array.from(roots);
+}
+
 function resolveProposalFilePath(taskId: string, filePath: string): string | null {
   const rawPath = filePath.trim();
   if (!rawPath) return null;
 
-  const expanded = rawPath.startsWith("~/")
-    ? resolve(process.env.HOME ?? "~", rawPath.slice(2))
-    : rawPath;
+  const expanded = rawPath.startsWith("~/") ? resolve(process.env.HOME ?? "~", rawPath.slice(2)) : rawPath;
+  if (isRegularFile(expanded)) return expanded;
 
-  const direct = resolve(expanded);
-  if (isRegularFile(direct)) return direct;
-
-  const home = process.env.HOME ?? "~";
-  const candidates: string[] = [];
-  for (const dir of candidateProjectDirs(taskProject(taskId))) {
-    candidates.push(resolve(home, dir, expanded));
+  const candidates = new Set<string>();
+  if (rawPath.startsWith("~/")) {
+    candidates.add(resolve(process.env.HOME ?? "~", rawPath.slice(2)));
+  } else if (rawPath.startsWith("/")) {
+    candidates.add(resolve(rawPath));
+  } else {
+    for (const root of proposalSearchRoots(taskId)) {
+      candidates.add(resolve(root, rawPath));
+      candidates.add(resolve(root, expanded));
+    }
   }
-  candidates.push(resolve(home, expanded));
 
   for (const candidate of candidates) {
     if (isRegularFile(candidate)) return candidate;
@@ -136,42 +170,87 @@ function resolveProposalFilePath(taskId: string, filePath: string): string | nul
   return null;
 }
 
-function proposalMessageBody(taskId: string, summary: string, filePath: string): string {
-  let proposalText = "";
-  const resolvedPath = resolveProposalFilePath(taskId, filePath);
-
-  if (resolvedPath) {
-    try {
-      const raw = readFileSync(resolvedPath, "utf-8");
-      proposalText = raw;
-    } catch {
-      proposalText = "";
-    }
-  }
-
+function proposalInlineMessage(summary: string, proposalText: string, attachmentName: string): string {
   const trimmedSummary = summary.trim();
   const trimmedProposal = proposalText.trim();
 
-  if (trimmedProposal && trimmedSummary && trimmedProposal !== trimmedSummary) {
-    return `Summary: ${trimmedSummary}\n\n${proposalText}`;
+  if (trimmedProposal && trimmedProposal.length <= PROPOSAL_INLINE_CHAR_CUTOFF) {
+    if (trimmedSummary && trimmedProposal !== trimmedSummary) {
+      return `Summary: ${trimmedSummary}\n\n${trimmedProposal}`;
+    }
+    return trimmedProposal;
   }
-  if (proposalText) return proposalText;
-  return summary;
+  if (trimmedSummary) return `Summary: ${trimmedSummary}\n\nFull proposal attached as ${attachmentName}.`;
+  return `Full proposal attached as ${attachmentName}.`;
 }
 
-function notifyPublishJson(payload: Record<string, unknown>, token: string): { httpCode: string; stderr: string } {
+function notifyPublishMessage(
+  topic: string,
+  message: string,
+  token: string,
+  title: string,
+  priority: number,
+  tags: string,
+  actions: Array<Record<string, unknown>>,
+) : { httpCode: string; stderr: string; body: string } {
   const curlArgs = [
-    "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+    "curl", "-sS", "-w", "\n%{http_code}",
     "-X", "POST",
-    "-H", "Content-Type: application/json",
+    "-d", message,
   ];
+  if (title) curlArgs.push("-H", `Title: ${title}`);
+  curlArgs.push("-H", `Priority: ${priority}`);
+  if (tags) curlArgs.push("-H", `Tags: ${tags}`);
+  if (actions.length > 0) curlArgs.push("-H", `Actions: ${JSON.stringify(actions)}`);
   if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
-  curlArgs.push("-d", JSON.stringify(payload), "https://ntfy.sh/");
+  curlArgs.push(`https://ntfy.sh/${topic}`);
 
   const result = Bun.spawnSync(curlArgs, { stdout: "pipe", stderr: "pipe" });
+  const stdout = result.stdout.toString();
+  const splitAt = stdout.lastIndexOf("\n");
+  const body = splitAt >= 0 ? stdout.slice(0, splitAt).trim() : "";
+  const httpCode = splitAt >= 0 ? stdout.slice(splitAt + 1).trim() : stdout.trim();
   return {
-    httpCode: result.stdout.toString().trim(),
+    httpCode,
     stderr: result.stderr.toString().trim(),
+    body,
+  };
+}
+
+function notifyPublishFile(
+  topic: string,
+  filePath: string,
+  filename: string,
+  token: string,
+  title: string,
+  message: string,
+  priority: number,
+  tags: string,
+  actions: Array<Record<string, unknown>>,
+) : { httpCode: string; stderr: string; body: string } {
+  const curlArgs = [
+    "curl", "-sS", "-w", "\n%{http_code}",
+    "-X", "PUT",
+    "-T", filePath,
+  ];
+  if (title) curlArgs.push("-H", `Title: ${title}`);
+  if (message) curlArgs.push("-H", `Message: ${message}`);
+  curlArgs.push("-H", `Priority: ${priority}`);
+  if (tags) curlArgs.push("-H", `Tags: ${tags}`);
+  if (filename) curlArgs.push("-H", `Filename: ${filename}`);
+  if (actions.length > 0) curlArgs.push("-H", `Actions: ${JSON.stringify(actions)}`);
+  if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
+  curlArgs.push(`https://ntfy.sh/${topic}`);
+
+  const result = Bun.spawnSync(curlArgs, { stdout: "pipe", stderr: "pipe" });
+  const stdout = result.stdout.toString();
+  const splitAt = stdout.lastIndexOf("\n");
+  const body = splitAt >= 0 ? stdout.slice(0, splitAt).trim() : "";
+  const httpCode = splitAt >= 0 ? stdout.slice(splitAt + 1).trim() : stdout.trim();
+  return {
+    httpCode,
+    stderr: result.stderr.toString().trim(),
+    body,
   };
 }
 
@@ -217,24 +296,22 @@ export function notifyProposal(
 
   const token = getToken();
   const project = taskId.split("-").slice(0, -1).join("-") || "unknown";
-  const messageBody = proposalMessageBody(taskId, summary, filePath);
-
-  const basePayload: Record<string, unknown> = {
-    topic: outTopic,
-    title: `Proposal: ${title}`,
-    message: messageBody,
-    priority: 3,
-    tags: ["memo", taskId],
-  };
-
-  if (!inTopic) {
-    const first = notifyPublishJson(basePayload, token);
-    if (first.httpCode !== "200") {
-      console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${first.httpCode})${first.stderr ? `: ${first.stderr}` : ""}, logged locally`);
-      notifySend(outTopic, `Proposal for ${taskId}\n\n${messageBody}`, 3, `Proposal: ${title}`, "memo");
-    }
-    return;
+  const resolvedPath = resolveProposalFilePath(taskId, filePath);
+  if (!resolvedPath) {
+    console.error(`ludics: proposal file not found for attachment (${filePath}); sending notification without attachment`);
   }
+  const attachmentName = resolvedPath ? basename(resolvedPath) : `${taskId}-proposal.md`;
+  let proposalText = "";
+  if (resolvedPath) {
+    try {
+      proposalText = readFileSync(resolvedPath, "utf-8");
+    } catch {
+      proposalText = "";
+    }
+  }
+  const inlineMessage = proposalInlineMessage(summary, proposalText, attachmentName);
+  const inlineHeaderMessage = inlineMessage.replace(/\r?\n/g, " ").trim();
+  const tagsHeader = `memo,${taskId}`;
 
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -289,29 +366,65 @@ export function notifyProposal(
     },
   ];
 
-  const firstPayload: Record<string, unknown> = {
-    ...basePayload,
-    actions: actions.slice(0, NTFY_MAX_ACTIONS),
-  };
-  const first = notifyPublishJson(firstPayload, token);
+  let first: { httpCode: string; stderr: string; body: string };
+  if (resolvedPath) {
+    first = notifyPublishFile(
+      outTopic,
+      resolvedPath,
+      attachmentName,
+      token,
+      `Proposal: ${title}`,
+      inlineHeaderMessage,
+      3,
+      tagsHeader,
+      inTopic ? actions.slice(0, NTFY_MAX_ACTIONS) : [],
+    );
+  } else {
+    first = notifyPublishMessage(
+      outTopic,
+      inlineMessage,
+      token,
+      `Proposal: ${title}`,
+      3,
+      tagsHeader,
+      inTopic ? actions.slice(0, NTFY_MAX_ACTIONS) : [],
+    );
+  }
+
   if (first.httpCode !== "200") {
-    console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${first.httpCode})${first.stderr ? `: ${first.stderr}` : ""}, logged locally`);
-    notifySend(outTopic, `Proposal for ${taskId}\n\n${messageBody}`, 3, `Proposal: ${title}`, "memo");
+    const detail = first.body || first.stderr;
+    console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${first.httpCode})${detail ? `: ${detail}` : ""}, retrying without attachment`);
+    const fallback = notifyPublishMessage(
+      outTopic,
+      `Proposal for ${taskId}\n\n${inlineMessage}`,
+      token,
+      `Proposal: ${title}`,
+      3,
+      tagsHeader,
+      inTopic ? actions.slice(0, NTFY_MAX_ACTIONS) : [],
+    );
+    if (fallback.httpCode !== "200") {
+      const fallbackDetail = fallback.body || fallback.stderr;
+      console.error(`ludics: ntfy.sh proposal fallback failed (HTTP ${fallback.httpCode})${fallbackDetail ? `: ${fallbackDetail}` : ""}, logged locally`);
+    }
     return;
   }
 
+  if (!inTopic) return;
+
   for (let i = NTFY_MAX_ACTIONS; i < actions.length; i += NTFY_MAX_ACTIONS) {
-    const followupPayload: Record<string, unknown> = {
-      topic: outTopic,
-      title: `Proposal options: ${title}`,
-      message: `More launch options for ${taskId}.`,
-      priority: 3,
-      tags: ["memo", taskId],
-      actions: actions.slice(i, i + NTFY_MAX_ACTIONS),
-    };
-    const followup = notifyPublishJson(followupPayload, token);
+    const followup = notifyPublishMessage(
+      outTopic,
+      `More launch options for ${taskId}.`,
+      token,
+      `Proposal options: ${title}`,
+      3,
+      tagsHeader,
+      actions.slice(i, i + NTFY_MAX_ACTIONS),
+    );
     if (followup.httpCode !== "200") {
-      console.error(`ludics: ntfy.sh proposal options notification failed (HTTP ${followup.httpCode})${followup.stderr ? `: ${followup.stderr}` : ""}, logged locally`);
+      const detail = followup.body || followup.stderr;
+      console.error(`ludics: ntfy.sh proposal options notification failed (HTTP ${followup.httpCode})${detail ? `: ${detail}` : ""}, logged locally`);
     }
   }
 }
