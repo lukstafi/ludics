@@ -4,6 +4,7 @@ export interface AdapterContext {
   slot: number;
   mode: string;
   session: string;
+  path: string;
   taskId: string;
   adapterArgs: string;
   process: string;

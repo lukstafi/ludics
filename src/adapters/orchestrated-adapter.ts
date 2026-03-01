@@ -4,15 +4,22 @@
 // via OrchestratedConfig.
 
 import { existsSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import {
   listSessions,
-  sessionCount,
   readBasicState,
   readPorts,
   readWorktrees,
 } from "./peer-sync.ts";
-import { readStatusFile, formatAgentStatus, readSingleFile, resolveProjectDir, latestMtime } from "./base.ts";
+import {
+  readStatusFile,
+  formatAgentStatus,
+  readSingleFile,
+  resolveProjectDir,
+  latestMtime,
+  isGitWorktree,
+  getMainRepoFromWorktree,
+} from "./base.ts";
 import { getUrl } from "../network.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { AdapterContext, Adapter } from "./types.ts";
@@ -47,6 +54,39 @@ function matchesMode(peerSyncPath: string, modeFilter?: string): boolean {
   if (!modeFilter) return true;
   const mode = readSingleFile(join(peerSyncPath, "mode"));
   return mode === modeFilter;
+}
+
+function parseArgs(raw?: string): string[] {
+  if (!raw) return [];
+  return raw.split(/\s+/).filter(Boolean);
+}
+
+function normalizeProjectDirCandidate(raw: string): string {
+  const expanded = raw.startsWith("~/")
+    ? join(process.env.HOME ?? "~", raw.slice(2))
+    : raw;
+  const abs = resolve(expanded);
+  if (isGitWorktree(abs)) {
+    const mainRepo = getMainRepoFromWorktree(abs);
+    if (mainRepo) return mainRepo;
+  }
+  return abs;
+}
+
+function resolveAdapterProjectDir(ctx: AdapterContext): string {
+  const candidates: string[] = [];
+  if (ctx.path && ctx.path !== "null") candidates.push(ctx.path);
+  candidates.push(resolveProjectDir(ctx.session, true));
+
+  const normalized = Array.from(new Set(candidates.map(normalizeProjectDirCandidate)));
+
+  for (const dir of normalized) {
+    if (existsSync(join(dir, ".agent-sessions"))) return dir;
+  }
+  for (const dir of normalized) {
+    if (existsSync(dir)) return dir;
+  }
+  return normalized[0] ?? process.cwd();
 }
 
 function appendSessionState(
@@ -123,11 +163,11 @@ function appendSessionState(
 // ---------------------------------------------------------------------------
 
 export function createOrchestratedAdapter(cfg: OrchestratedConfig): Adapter {
-  const startArgs = cfg.cliStartArgs ? ` ${cfg.cliStartArgs}` : "";
-  const stopArgs = cfg.cliStopArgs ? ` ${cfg.cliStopArgs}` : "";
+  const startArgs = parseArgs(cfg.cliStartArgs);
+  const stopArgs = parseArgs(cfg.cliStopArgs);
 
   function readState(ctx: AdapterContext): string | null {
-    const projectDir = resolveProjectDir(ctx.session, true);
+    const projectDir = resolveAdapterProjectDir(ctx);
     const sessions = listSessions(projectDir);
     const filtered = sessions.filter((s) => matchesMode(s.peerSyncPath, cfg.modeFilter));
     const count = filtered.length;
@@ -151,49 +191,51 @@ export function createOrchestratedAdapter(cfg: OrchestratedConfig): Adapter {
   }
 
   function start(ctx: AdapterContext): string {
-    const projectDir = resolveProjectDir(ctx.session, true);
-    const count = sessionCount(projectDir, cfg.modeFilter);
-    const parts: string[] = [];
-    const adapterArgs = ctx.adapterArgs ? ` ${ctx.adapterArgs}` : "";
+    const projectDir = resolveAdapterProjectDir(ctx);
+    const feature = ctx.taskId || ctx.process || `slot-${ctx.slot}`;
+    const args = [cfg.cliCommand, "start", feature, ...startArgs, ...parseArgs(ctx.adapterArgs)];
 
-    parts.push(`${cfg.modeLabel} start: Use the ${cfg.cliCommand} CLI to launch sessions.`);
-    if (cfg.cliStartHint) parts.push(cfg.cliStartHint);
-    if (count > 0) parts.push(`Project has ${count}${cfg.modeFilter ? ` ${cfg.modeFilter}` : ""} sessions.`);
-
-    if (ctx.taskId) {
-      parts.push(`Suggested command:\n  cd ${projectDir} && ${cfg.cliCommand} start ${ctx.taskId}${startArgs}${adapterArgs}`);
-    } else {
-      parts.push(`Usage:\n  cd ${projectDir} && ${cfg.cliCommand} start <feature1> <feature2> ...${startArgs}${adapterArgs || " [adapter args]"} [--auto-run]`);
+    const result = Bun.spawnSync(args, {
+      cwd: projectDir,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env as Record<string, string>,
+    });
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr.toString().trim();
+      const stdout = result.stdout.toString().trim();
+      const detail = stderr || stdout || `exit ${result.exitCode}`;
+      throw new Error(`${cfg.cliCommand} start failed: ${detail}`);
     }
 
-    return parts.join("\n");
+    return result.stdout.toString().trim() || `${cfg.cliCommand} start ${feature} (cwd=${projectDir})`;
   }
 
   function stop(ctx: AdapterContext): string {
-    const projectDir = resolveProjectDir(ctx.session, true);
-    const sessions = listSessions(projectDir);
-    const filtered = sessions.filter((s) => matchesMode(s.peerSyncPath, cfg.modeFilter));
-    const count = filtered.length;
-    const parts: string[] = [];
-
-    parts.push(`${cfg.modeLabel} stop: Use the ${cfg.cliCommand} CLI to stop sessions.`);
-
-    if (count === 0) {
-      parts.push(`No active ${cfg.modeLabel} sessions detected in ${projectDir}`);
-      parts.push(`Usage:\n  cd ${projectDir} && ${cfg.cliCommand} stop${stopArgs} [--feature <name>]`);
-    } else {
-      parts.push(`Project has ${count}${cfg.modeFilter ? ` ${cfg.modeFilter}` : ""} sessions.`);
-      parts.push(`Active${cfg.modeFilter ? ` ${cfg.modeFilter}` : ""} sessions:`);
-      for (const s of filtered) parts.push(`  - ${s.feature}`);
-      parts.push(`To stop all:\n  cd ${projectDir} && ${cfg.cliCommand} stop${stopArgs}`);
-      parts.push(`To stop specific feature:\n  cd ${projectDir} && ${cfg.cliCommand} stop${stopArgs} --feature <feature-name>`);
+    const projectDir = resolveAdapterProjectDir(ctx);
+    const args = [cfg.cliCommand, "stop", ...stopArgs];
+    if (ctx.taskId) {
+      args.push("--feature", ctx.taskId);
     }
 
-    return parts.join("\n");
+    const result = Bun.spawnSync(args, {
+      cwd: projectDir,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env as Record<string, string>,
+    });
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr.toString().trim();
+      const stdout = result.stdout.toString().trim();
+      const detail = stderr || stdout || `exit ${result.exitCode}`;
+      throw new Error(`${cfg.cliCommand} stop failed: ${detail}`);
+    }
+
+    return result.stdout.toString().trim() || `${cfg.cliCommand} stop (cwd=${projectDir})`;
   }
 
   function lastActivity(ctx: AdapterContext): string | null {
-    const projectDir = resolveProjectDir(ctx.session, true);
+    const projectDir = resolveAdapterProjectDir(ctx);
     const sessions = listSessions(projectDir);
     const filtered = sessions.filter((s) => matchesMode(s.peerSyncPath, cfg.modeFilter));
     if (filtered.length === 0) return null;

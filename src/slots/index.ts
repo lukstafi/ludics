@@ -418,6 +418,7 @@ export function slotNote(slotNum: number, note: string): void {
 function makeAdapterContext(slotNum: number, block: string): AdapterContext {
   const mode = getMode(block).trim();
   const session = getSession(block).trim();
+  const path = getPath(block).trim();
   const taskIdRaw = getTask(block).trim();
   const adapterArgs = getAdapterArgs(block).trim();
   const process = getProcess(block).trim();
@@ -426,6 +427,7 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
     slot: slotNum,
     mode: mode === "null" ? "" : mode,
     session: session === "null" ? "" : session,
+    path: path === "null" ? "" : path,
     taskId: taskIdRaw === "null" ? "" : taskIdRaw,
     adapterArgs: adapterArgs === "null" ? "" : adapterArgs,
     process: process === "(empty)" ? "" : process,
