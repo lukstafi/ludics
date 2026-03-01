@@ -27,6 +27,20 @@ import {
 const MAG_SESSION_NAME = process.env.LUDICS_MAG_SESSION ?? "ludics-mag";
 const MAG_DEFAULT_PORT = process.env.LUDICS_MAG_PORT ?? "7679";
 const FEEDBACK_DIGEST_COOLDOWN_SECONDS = 120;
+const SCRIPT_EXT_RE = /\.(?:[cm]?[jt]sx?)$/i;
+
+function ludicsSelfCommand(args: string[]): string[] {
+  // Compiled binary: invoke directly via process.execPath.
+  // Script mode (bun/node): invoke the current entry script.
+  const entry = process.argv[1];
+  if (entry && SCRIPT_EXT_RE.test(entry) && existsSync(entry)) {
+    if (process.execPath.toLowerCase().endsWith("bun")) {
+      return [process.execPath, "run", entry, ...args];
+    }
+    return [process.execPath, entry, ...args];
+  }
+  return [process.execPath, ...args];
+}
 
 function magStateDir(): string {
   return join(harnessDir(), "mag");
@@ -393,7 +407,7 @@ function briefingPrecomputeContext(): void {
   // Capture slots
   let slotsOutput = "(unavailable)";
   try {
-    const r = Bun.spawnSync([process.execPath, "slots"], { stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(ludicsSelfCommand(["slots"]), { stdout: "pipe", stderr: "pipe" });
     if (r.exitCode === 0) slotsOutput = r.stdout.toString().trim();
   } catch { /* ignore */ }
 
@@ -407,28 +421,28 @@ function briefingPrecomputeContext(): void {
   // Flow ready
   let flowReadyOutput = "(unavailable)";
   try {
-    const r = Bun.spawnSync([process.execPath, "flow", "ready"], { stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(ludicsSelfCommand(["flow", "ready"]), { stdout: "pipe", stderr: "pipe" });
     if (r.exitCode === 0) flowReadyOutput = r.stdout.toString().trim();
   } catch { /* ignore */ }
 
   // Flow critical
   let flowCriticalOutput = "(unavailable)";
   try {
-    const r = Bun.spawnSync([process.execPath, "flow", "critical"], { stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(ludicsSelfCommand(["flow", "critical"]), { stdout: "pipe", stderr: "pipe" });
     if (r.exitCode === 0) flowCriticalOutput = r.stdout.toString().trim();
   } catch { /* ignore */ }
 
   // Tasks needing elaboration
   let needsElabOutput = "None";
   try {
-    const r = Bun.spawnSync([process.execPath, "tasks", "needs-elaboration"], { stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(ludicsSelfCommand(["tasks", "needs-elaboration"]), { stdout: "pipe", stderr: "pipe" });
     if (r.exitCode === 0 && r.stdout.toString().trim()) needsElabOutput = r.stdout.toString().trim();
   } catch { /* ignore */ }
 
   // Recent journal
   let journalOutput = "(no journal entries)";
   try {
-    const r = Bun.spawnSync([process.execPath, "journal", "recent", "20"], { stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(ludicsSelfCommand(["journal", "recent", "20"]), { stdout: "pipe", stderr: "pipe" });
     if (r.exitCode === 0) journalOutput = r.stdout.toString().trim();
   } catch { /* ignore */ }
 
@@ -1575,7 +1589,7 @@ export async function runMag(args: string[]): Promise<void> {
     }
     case "adopt-sessions": {
       const force = args.includes("--force");
-      const refresh = Bun.spawnSync([process.execPath, "sessions", "report"], { stdout: "pipe", stderr: "pipe" });
+      const refresh = Bun.spawnSync(ludicsSelfCommand(["sessions", "report"]), { stdout: "pipe", stderr: "pipe" });
       if (refresh.exitCode !== 0) {
         const stderr = refresh.stderr.toString().trim();
         throw new Error(stderr ? `adopt-sessions: failed to refresh sessions: ${stderr}` : "adopt-sessions: failed to refresh sessions");
