@@ -10,7 +10,7 @@ import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
-import { notifyOutgoing } from "./notify.ts";
+import { notifyOutgoing, expirePendingRevises } from "./notify.ts";
 import { slotAssign, slotClear, taskCompleteDirectly } from "./slots/index.ts";
 import YAML from "yaml";
 import {
@@ -430,6 +430,14 @@ function queuePopSkill(): string | null {
     case "draft-proposal": {
       const task = String(request.task ?? "");
       return `/ludics-draft-proposal ${task}`;
+    }
+    case "revise-proposal": {
+      const task = String(request.task ?? "");
+      const feedback = String(request.feedback ?? "");
+      if (feedback) {
+        return `/ludics-revise-proposal ${task} ${feedback}`;
+      }
+      return `/ludics-revise-proposal ${task}`;
     }
     case "split-task": {
       const task = String(request.task ?? "");
@@ -1081,6 +1089,9 @@ export function magStart(args: string[]): void {
     // Publish terminal state to ntfy (dedup'd)
     publishTerminalState();
 
+    // Expire pending-revise flags that timed out (15 min)
+    expirePendingRevises();
+
     // Auto-queue proposals for elaborated leaf tasks already in slots
     maybeQueueProposals();
 
@@ -1607,6 +1618,22 @@ export async function runMag(args: string[]): Promise<void> {
       if (!taskId) throw new Error("task id required");
       queueRequest("draft-proposal", `"task":"${taskId}"`);
       console.log(`Queued draft-proposal request for ${taskId}`);
+      break;
+    }
+    case "revise-proposal": {
+      const taskArg = args[1];
+      if (!taskArg) throw new Error("task id required (comma-separated for multiple)");
+      const taskIds = taskArg.split(",");
+      const feedback = args.slice(2).join(" ");
+      for (const taskId of taskIds) {
+        if (feedback) {
+          const escaped = JSON.stringify(feedback);
+          queueRequest("revise-proposal", `"task":"${taskId}","feedback":${escaped}`);
+        } else {
+          queueRequest("revise-proposal", `"task":"${taskId}"`);
+        }
+      }
+      console.log(`Queued revise-proposal request for ${taskIds.join(", ")}`);
       break;
     }
     case "split-task": {

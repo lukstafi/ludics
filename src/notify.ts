@@ -344,6 +344,14 @@ export function notifyProposal(
     },
     {
       action: "http",
+      label: "revise",
+      url: `https://ntfy.sh/${inTopic}`,
+      method: "POST",
+      headers,
+      body: `Revise proposal for ${taskId}`,
+    },
+    {
+      action: "http",
       label: "abandon",
       url: `https://ntfy.sh/${inTopic}`,
       method: "POST",
@@ -365,22 +373,6 @@ export function notifyProposal(
       method: "POST",
       headers,
       body: `Launch agent-pair-codex for ${taskId} in project ${project}`,
-    },
-    {
-      action: "http",
-      label: "codex",
-      url: `https://ntfy.sh/${inTopic}`,
-      method: "POST",
-      headers,
-      body: `Launch agent-codex for ${taskId} in project ${project}`,
-    },
-    {
-      action: "http",
-      label: "claude",
-      url: `https://ntfy.sh/${inTopic}`,
-      method: "POST",
-      headers,
-      body: `Launch agent-claude for ${taskId} in project ${project}`,
     },
   ];
 
@@ -501,6 +493,61 @@ function appendToInbox(message: string, title?: string): void {
   writeFileSync(inboxFile, existing + entry);
 }
 
+// --- Pending-revise mode ---
+// When user taps "revise" on a proposal notification, we write a flag file.
+// The next incoming message gets bundled as feedback for that revision.
+
+function pendingReviseFile(taskId: string): string {
+  return join(harnessDir(), "mag", `pending-revise-${taskId}`);
+}
+
+function setPendingRevise(taskId: string): void {
+  const file = pendingReviseFile(taskId);
+  mkdirSync(join(harnessDir(), "mag"), { recursive: true });
+  writeFileSync(file, String(Math.floor(Date.now() / 1000)));
+  console.log(`ludics: armed revise mode for ${taskId} — waiting for feedback message`);
+}
+
+/** Consume all pending-revise flags. Returns array of task IDs (may be empty). */
+function consumeAllPendingRevises(): string[] {
+  const magDir = join(harnessDir(), "mag");
+  if (!existsSync(magDir)) return [];
+  const { readdirSync, unlinkSync } = require("fs");
+  const taskIds: string[] = [];
+  const files: string[] = readdirSync(magDir);
+  for (const f of files) {
+    if (f.startsWith("pending-revise-")) {
+      const taskId = f.replace("pending-revise-", "");
+      unlinkSync(join(magDir, f));
+      taskIds.push(taskId);
+    }
+  }
+  return taskIds;
+}
+
+/** Expire pending-revise flags older than timeoutSec. Queue revision without feedback. */
+export function expirePendingRevises(timeoutSec: number = 900): void {
+  const magDir = join(harnessDir(), "mag");
+  if (!existsSync(magDir)) return;
+  const { readdirSync, unlinkSync } = require("fs");
+  const now = Math.floor(Date.now() / 1000);
+  const files: string[] = readdirSync(magDir);
+  for (const f of files) {
+    if (!f.startsWith("pending-revise-")) continue;
+    const taskId = f.replace("pending-revise-", "");
+    try {
+      const ts = parseInt(readFileSync(join(magDir, f), "utf-8").trim(), 10);
+      if (now - ts > timeoutSec) {
+        unlinkSync(join(magDir, f));
+        queueRequest("revise-proposal", `"task":"${taskId}"`);
+        console.log(`ludics: pending revise for ${taskId} timed out, queued without feedback`);
+      }
+    } catch {
+      unlinkSync(join(magDir, f));
+    }
+  }
+}
+
 export async function subscribeIncoming(): Promise<void> {
   const topic = getTopic("incoming");
   if (!topic) {
@@ -557,13 +604,32 @@ export async function subscribeIncoming(): Promise<void> {
             if (data.event === "message" && data.message) {
               console.log(`ludics: received message [${data.id}]: ${data.message.slice(0, 80)}`);
 
-              // Direct queue injection — message content goes into the queue entry
-              const escaped = JSON.stringify(data.message);
-              queueRequest("message", `"content":${escaped}`);
+              const msg: string = data.message;
+
+              // Check if this is a "revise" button tap — arm pending-revise mode
+              const reviseMatch = msg.match(/^Revise proposal for ([\w.-]+)$/);
+              if (reviseMatch) {
+                setPendingRevise(reviseMatch[1]!);
+              } else {
+                // Fallthrough: not a recognized button-tap pattern.
+                // Check if any pending-revise flags are armed — bundle this
+                // message as feedback for all of them.
+                const pendingTaskIds = consumeAllPendingRevises();
+                if (pendingTaskIds.length > 0) {
+                  const escaped = JSON.stringify(msg);
+                  for (const taskId of pendingTaskIds) {
+                    queueRequest("revise-proposal", `"task":"${taskId}","feedback":${escaped}`);
+                  }
+                } else {
+                  // Normal message — direct queue injection
+                  const escaped = JSON.stringify(msg);
+                  queueRequest("message", `"content":${escaped}`);
+                }
+              }
 
               // Log to journal
-              notifyLog("incoming", data.message, 3, data.title || "ntfy incoming");
-              emitEvent({ event_type: "notify_incoming", source: "notify", scope: "notify", message: data.message.slice(0, 200) });
+              notifyLog("incoming", msg, 3, data.title || "ntfy incoming");
+              emitEvent({ event_type: "notify_incoming", source: "notify", scope: "notify", message: msg.slice(0, 200) });
 
               // Persist state
               saveSubscriberState(data.id);
