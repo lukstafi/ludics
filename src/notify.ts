@@ -1,11 +1,14 @@
 // Notification system — ntfy.sh integration (outgoing + incoming + agents)
 
-import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync } from "fs";
+import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync, readdirSync, unlinkSync } from "fs";
 import { basename, join, resolve } from "path";
 import { loadConfigSync, harnessDir, slotsFilePath } from "./config.ts";
 import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
 import { parseSlotBlocks, getTask, getPath } from "./slots/markdown.ts";
+import { listSessions, type SessionInfo } from "./adapters/peer-sync.ts";
+import { readSingleFile, resolveProjectDir, isGitWorktree, getMainRepoFromWorktree } from "./adapters/base.ts";
+import type { AdapterContext } from "./adapters/types.ts";
 
 function notificationLogFile(): string {
   return join(harnessDir(), "journal", "notifications.jsonl");
@@ -62,6 +65,22 @@ function getTopic(tier: string): string {
 
 const NTFY_MAX_ACTIONS = 3;
 const PROPOSAL_INLINE_CHAR_CUTOFF = 800;
+const FOLLOWUP_SUMMARY_CHAR_CUTOFF = 300;
+const FOLLOWUP_PHASE = "suggest-refactor";
+
+interface FollowupNotificationInput {
+  taskId: string;
+  adapter: string;
+  slotNum: number | null;
+  phaseToken: string;
+  prLinks: string[];
+  refactorSummary?: string;
+}
+
+interface PendingFollowupRevise {
+  taskId: string;
+  adapter: string;
+}
 
 function isRegularFile(path: string): boolean {
   try {
@@ -266,6 +285,276 @@ function notifyPublishFile(
     stderr: result.stderr.toString().trim(),
     body,
   };
+}
+
+function truncateInline(text: string, maxChars: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= maxChars) return flat;
+  return `${flat.slice(0, Math.max(0, maxChars - 1)).trimEnd()}...`;
+}
+
+function extractRefactorSummary(markdownText: string): string {
+  const lines = markdownText.split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const numbered = line.match(/^\d+\.\s+(.+)$/);
+    if (numbered) return truncateInline(numbered[1]!, FOLLOWUP_SUMMARY_CHAR_CUTOFF);
+    const bullet = line.match(/^-\s+(.+)$/);
+    if (bullet) return truncateInline(bullet[1]!, FOLLOWUP_SUMMARY_CHAR_CUTOFF);
+  }
+  const firstText = lines.map((l) => l.trim()).find((l) => l && !l.startsWith("#")) ?? "";
+  return truncateInline(firstText, FOLLOWUP_SUMMARY_CHAR_CUTOFF);
+}
+
+function followupNotifyStateFile(): string {
+  return join(harnessDir(), "mag", "followup-notified.json");
+}
+
+function loadFollowupNotifyState(): Record<string, string> {
+  const file = followupNotifyStateFile();
+  if (!existsSync(file)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const obj = parsed as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveFollowupNotifyState(state: Record<string, string>): void {
+  const file = followupNotifyStateFile();
+  mkdirSync(join(harnessDir(), "mag"), { recursive: true });
+  writeFileSync(file, JSON.stringify(state, null, 2) + "\n");
+}
+
+function followupNotifyKey(input: FollowupNotificationInput): string {
+  return `${input.taskId}|${input.adapter}|${input.phaseToken}`;
+}
+
+function normalizeProjectDirCandidate(raw: string): string {
+  const expanded = raw.startsWith("~/")
+    ? join(process.env.HOME ?? "~", raw.slice(2))
+    : raw;
+  const abs = resolve(expanded);
+  if (isGitWorktree(abs)) {
+    const mainRepo = getMainRepoFromWorktree(abs);
+    if (mainRepo) return mainRepo;
+  }
+  return abs;
+}
+
+function resolveAdapterProjectDir(ctx: AdapterContext): string {
+  const candidates: string[] = [];
+  if (ctx.path && ctx.path !== "null") candidates.push(ctx.path);
+  candidates.push(resolveProjectDir(ctx.session, true));
+
+  const normalized = Array.from(new Set(candidates.map(normalizeProjectDirCandidate)));
+
+  for (const dir of normalized) {
+    if (existsSync(join(dir, ".agent-sessions"))) return dir;
+  }
+  for (const dir of normalized) {
+    if (existsSync(dir)) return dir;
+  }
+  return normalized[0] ?? process.cwd();
+}
+
+function orchestratedModeFilter(adapter: string): string | null {
+  switch (adapter) {
+    case "agent-duo":
+      return "duo";
+    case "agent-pair":
+    case "agent-pair-codex":
+    case "agent-pair-claude":
+      return "pair";
+    default:
+      return null;
+  }
+}
+
+function matchesOrchestratedMode(peerSyncPath: string, modeFilter: string | null): boolean {
+  if (!modeFilter) return false;
+  const mode = readSingleFile(join(peerSyncPath, "mode")) ?? "";
+  return mode === modeFilter;
+}
+
+function selectSessionForTask(
+  sessions: SessionInfo[],
+  taskId: string,
+): SessionInfo | null {
+  if (sessions.length === 0) return null;
+  if (taskId) {
+    const exact = sessions.find((s) => s.feature === taskId);
+    if (exact) return exact;
+
+    const contains = sessions.find((s) => s.feature.includes(taskId));
+    if (contains) return contains;
+  }
+  if (sessions.length === 1) return sessions[0]!;
+  return sessions[0]!;
+}
+
+function collectPrLinks(peerSyncPath: string): string[] {
+  const links = new Set<string>();
+  try {
+    const files = readdirSync(peerSyncPath).filter((f) => f.endsWith(".pr"));
+    for (const fileName of files) {
+      const content = readFileSync(join(peerSyncPath, fileName), "utf-8");
+      for (const line of content.split(/\r?\n/)) {
+        const url = line.trim();
+        if (/^https?:\/\/\S+$/i.test(url)) links.add(url);
+      }
+    }
+  } catch {
+    // ignore read failures
+  }
+  return Array.from(links);
+}
+
+function collectRefactorSummary(peerSyncPath: string): string {
+  const candidates = [
+    "suggest-refactor-combined.md",
+    "suggest-refactor-coder.md",
+  ];
+  for (const fileName of candidates) {
+    const fullPath = join(peerSyncPath, fileName);
+    if (!isRegularFile(fullPath)) continue;
+    try {
+      const text = readFileSync(fullPath, "utf-8");
+      const summary = extractRefactorSummary(text);
+      if (summary) return summary;
+    } catch {
+      // keep trying fallbacks
+    }
+  }
+  return "";
+}
+
+function readPhaseToken(peerSyncPath: string): string {
+  const token = readSingleFile(join(peerSyncPath, "phase-token")) ?? "";
+  if (token) return token;
+  const phase = readSingleFile(join(peerSyncPath, "phase")) ?? "";
+  const round = readSingleFile(join(peerSyncPath, "round")) ?? "";
+  return phase && round ? `${phase}|r${round}` : phase;
+}
+
+export function notifyPostMergeFollowup(input: FollowupNotificationInput): void {
+  const outTopic = getTopic("outgoing");
+  const inTopic = getTopic("incoming");
+  if (!outTopic) {
+    console.error("ludics: outgoing topic not configured, logging locally only");
+    return;
+  }
+  if (input.prLinks.length === 0) return;
+
+  const key = followupNotifyKey(input);
+  const state = loadFollowupNotifyState();
+  if (state[key]) return;
+
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const title = input.slotNum !== null
+    ? `Post-merge followup [slot ${input.slotNum}]: ${input.taskId}`
+    : `Post-merge followup: ${input.taskId}`;
+
+  const lines: string[] = [
+    `Post-merge followup is ready for ${input.taskId}.`,
+  ];
+  if (input.prLinks.length === 1) {
+    lines.push(`PR: ${input.prLinks[0]!}`);
+  } else {
+    lines.push("PRs:");
+    for (const link of input.prLinks) lines.push(`- ${link}`);
+  }
+  if (input.refactorSummary) {
+    lines.push("");
+    lines.push(`Refactor note: ${input.refactorSummary}`);
+  }
+  const message = lines.join("\n");
+
+  const actions: Array<Record<string, unknown>> = inTopic ? [
+    {
+      action: "http",
+      label: "followup",
+      url: `https://ntfy.sh/${inTopic}`,
+      method: "POST",
+      headers,
+      body: `Followup ${input.adapter} for ${input.taskId}`,
+    },
+    {
+      action: "http",
+      label: "revise",
+      url: `https://ntfy.sh/${inTopic}`,
+      method: "POST",
+      headers,
+      body: `Revise followup ${input.adapter} for ${input.taskId}`,
+    },
+    {
+      action: "http",
+      label: "done",
+      url: `https://ntfy.sh/${inTopic}`,
+      method: "POST",
+      headers,
+      body: `Done task ${input.taskId}`,
+    },
+  ] : [];
+
+  const result = notifyPublishMessage(
+    outTopic,
+    message,
+    token,
+    title,
+    3,
+    `memo,${input.taskId}`,
+    actions,
+  );
+
+  if (result.httpCode !== "200") {
+    const detail = result.body || result.stderr;
+    console.error(`ludics: ntfy.sh post-merge followup notification failed (HTTP ${result.httpCode})${detail ? `: ${detail}` : ""}, logged locally`);
+    return;
+  }
+
+  state[key] = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  saveFollowupNotifyState(state);
+  notifyLog("outgoing", message.replace(/\n/g, " "), 3, "post-merge followup");
+}
+
+export function maybeNotifyPostMergeFollowupForAdapter(ctx: AdapterContext): void {
+  if (!ctx.taskId) return;
+  const modeFilter = orchestratedModeFilter(ctx.mode);
+  if (!modeFilter) return;
+
+  const projectDir = resolveAdapterProjectDir(ctx);
+  const sessions = listSessions(projectDir).filter((s) => matchesOrchestratedMode(s.peerSyncPath, modeFilter));
+  if (sessions.length === 0) return;
+
+  const session = selectSessionForTask(sessions, ctx.taskId);
+  if (!session) return;
+  const phase = readSingleFile(join(session.peerSyncPath, "phase")) ?? "";
+  if (phase !== FOLLOWUP_PHASE) return;
+
+  const prLinks = collectPrLinks(session.peerSyncPath);
+  if (prLinks.length === 0) return;
+  const phaseToken = readPhaseToken(session.peerSyncPath) || FOLLOWUP_PHASE;
+  const refactorSummary = collectRefactorSummary(session.peerSyncPath);
+  notifyPostMergeFollowup({
+    taskId: ctx.taskId,
+    adapter: ctx.mode,
+    slotNum: ctx.slot,
+    phaseToken,
+    prLinks,
+    refactorSummary: refactorSummary || undefined,
+  });
 }
 
 export function notifyOutgoing(message: string, priority: number = 3, title: string = "ludics"): void {
@@ -501,6 +790,10 @@ function pendingReviseFile(taskId: string): string {
   return join(harnessDir(), "mag", `pending-revise-${taskId}`);
 }
 
+function pendingFollowupReviseFile(taskId: string, adapter: string): string {
+  return join(harnessDir(), "mag", `pending-followup-revise-${taskId}-${adapter}`);
+}
+
 function setPendingRevise(taskId: string): void {
   const file = pendingReviseFile(taskId);
   mkdirSync(join(harnessDir(), "mag"), { recursive: true });
@@ -508,13 +801,24 @@ function setPendingRevise(taskId: string): void {
   console.log(`ludics: armed revise mode for ${taskId} — waiting for feedback message`);
 }
 
+function setPendingFollowupRevise(taskId: string, adapter: string): void {
+  const file = pendingFollowupReviseFile(taskId, adapter);
+  mkdirSync(join(harnessDir(), "mag"), { recursive: true });
+  const payload = {
+    task: taskId,
+    adapter,
+    created: Math.floor(Date.now() / 1000),
+  };
+  writeFileSync(file, JSON.stringify(payload) + "\n");
+  console.log(`ludics: armed followup revise mode for ${taskId} (${adapter}) — waiting for feedback message`);
+}
+
 /** Consume all pending-revise flags. Returns array of task IDs (may be empty). */
 function consumeAllPendingRevises(): string[] {
   const magDir = join(harnessDir(), "mag");
   if (!existsSync(magDir)) return [];
-  const { readdirSync, unlinkSync } = require("fs");
   const taskIds: string[] = [];
-  const files: string[] = readdirSync(magDir);
+  const files = readdirSync(magDir);
   for (const f of files) {
     if (f.startsWith("pending-revise-")) {
       const taskId = f.replace("pending-revise-", "");
@@ -525,13 +829,34 @@ function consumeAllPendingRevises(): string[] {
   return taskIds;
 }
 
+/** Consume all pending followup-revise flags. */
+function consumeAllPendingFollowupRevises(): PendingFollowupRevise[] {
+  const magDir = join(harnessDir(), "mag");
+  if (!existsSync(magDir)) return [];
+  const pending: PendingFollowupRevise[] = [];
+  const files = readdirSync(magDir);
+  for (const f of files) {
+    if (!f.startsWith("pending-followup-revise-")) continue;
+    const filePath = join(magDir, f);
+    try {
+      const data = JSON.parse(readFileSync(filePath, "utf-8")) as Record<string, unknown>;
+      const taskId = String(data.task ?? "").trim();
+      const adapter = String(data.adapter ?? "").trim();
+      if (taskId && adapter) pending.push({ taskId, adapter });
+    } catch {
+      // Skip malformed payloads.
+    }
+    unlinkSync(filePath);
+  }
+  return pending;
+}
+
 /** Expire pending-revise flags older than timeoutSec. Queue revision without feedback. */
 export function expirePendingRevises(timeoutSec: number = 900): void {
   const magDir = join(harnessDir(), "mag");
   if (!existsSync(magDir)) return;
-  const { readdirSync, unlinkSync } = require("fs");
   const now = Math.floor(Date.now() / 1000);
-  const files: string[] = readdirSync(magDir);
+  const files = readdirSync(magDir);
   for (const f of files) {
     if (!f.startsWith("pending-revise-")) continue;
     const taskId = f.replace("pending-revise-", "");
@@ -544,6 +869,35 @@ export function expirePendingRevises(timeoutSec: number = 900): void {
       }
     } catch {
       unlinkSync(join(magDir, f));
+    }
+  }
+}
+
+/** Expire pending followup-revise flags older than timeoutSec. Queue followup without feedback. */
+export function expirePendingFollowupRevises(timeoutSec: number = 900): void {
+  const magDir = join(harnessDir(), "mag");
+  if (!existsSync(magDir)) return;
+  const now = Math.floor(Date.now() / 1000);
+  const files = readdirSync(magDir);
+  for (const f of files) {
+    if (!f.startsWith("pending-followup-revise-")) continue;
+    const filePath = join(magDir, f);
+    try {
+      const data = JSON.parse(readFileSync(filePath, "utf-8")) as Record<string, unknown>;
+      const taskId = String(data.task ?? "").trim();
+      const adapter = String(data.adapter ?? "").trim();
+      const created = Number(data.created ?? 0);
+      if (!taskId || !adapter || !Number.isFinite(created)) {
+        unlinkSync(filePath);
+        continue;
+      }
+      if (now - created > timeoutSec) {
+        unlinkSync(filePath);
+        queueRequest("adapter-followup", `"task":"${taskId}","adapter":"${adapter}"`);
+        console.log(`ludics: pending followup revise for ${taskId} (${adapter}) timed out, queued without feedback`);
+      }
+    } catch {
+      unlinkSync(filePath);
     }
   }
 }
@@ -606,19 +960,38 @@ export async function subscribeIncoming(): Promise<void> {
 
               const msg: string = data.message;
 
-              // Check if this is a "revise" button tap — arm pending-revise mode
-              const reviseMatch = msg.match(/^Revise proposal for ([\w.-]+)$/);
-              if (reviseMatch) {
-                setPendingRevise(reviseMatch[1]!);
+              // Button taps and pending feedback capture modes
+              const reviseProposalMatch = msg.match(/^Revise proposal for ([\w.-]+)$/);
+              const followupMatch = msg.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
+              const followupReviseMatch = msg.match(/^Revise followup ([\w-]+) for ([\w.-]+)$/);
+              const doneMatch = msg.match(/^Done task ([\w.-]+)$/);
+
+              if (reviseProposalMatch) {
+                setPendingRevise(reviseProposalMatch[1]!);
+              } else if (followupReviseMatch) {
+                const adapter = followupReviseMatch[1]!;
+                const taskId = followupReviseMatch[2]!;
+                setPendingFollowupRevise(taskId, adapter);
+              } else if (followupMatch) {
+                const adapter = followupMatch[1]!;
+                const taskId = followupMatch[2]!;
+                queueRequest("adapter-followup", `"task":"${taskId}","adapter":"${adapter}"`);
+              } else if (doneMatch) {
+                queueRequest("complete-task", `"task":"${doneMatch[1]!}"`);
               } else {
-                // Fallthrough: not a recognized button-tap pattern.
-                // Check if any pending-revise flags are armed — bundle this
-                // message as feedback for all of them.
                 const pendingTaskIds = consumeAllPendingRevises();
-                if (pendingTaskIds.length > 0) {
+                const pendingFollowups = consumeAllPendingFollowupRevises();
+
+                if (pendingTaskIds.length > 0 || pendingFollowups.length > 0) {
                   const escaped = JSON.stringify(msg);
                   for (const taskId of pendingTaskIds) {
                     queueRequest("revise-proposal", `"task":"${taskId}","feedback":${escaped}`);
+                  }
+                  for (const pending of pendingFollowups) {
+                    queueRequest(
+                      "adapter-followup",
+                      `"task":"${pending.taskId}","adapter":"${pending.adapter}","followup_smg":${escaped}`,
+                    );
                   }
                 } else {
                   // Normal message — direct queue injection
