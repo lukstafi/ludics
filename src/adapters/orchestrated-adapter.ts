@@ -3,10 +3,11 @@
 // Both adapters share ~80% structure. The differences are parameterized
 // via OrchestratedConfig.
 
-import { existsSync } from "fs";
+import { existsSync, readdirSync, readFileSync } from "fs";
 import { join, resolve } from "path";
 import {
   listSessions,
+  type SessionInfo,
   readBasicState,
   readPorts,
   readWorktrees,
@@ -59,6 +60,150 @@ function matchesMode(peerSyncPath: string, modeFilter?: string): boolean {
 function parseArgs(raw?: string): string[] {
   if (!raw) return [];
   return raw.split(/\s+/).filter(Boolean);
+}
+
+function selectSessionForTask(sessions: SessionInfo[], taskId: string): SessionInfo | null {
+  if (sessions.length === 0) return null;
+  if (!taskId) return sessions.length === 1 ? sessions[0]! : null;
+
+  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const boundaryPattern = new RegExp(`(^|[^A-Za-z0-9])${escapedTaskId}([^A-Za-z0-9]|$)`);
+
+  const exact = sessions.find((s) => s.feature === taskId);
+  if (exact) return exact;
+
+  const boundaryMatch = sessions.find((s) => boundaryPattern.test(s.feature));
+  if (boundaryMatch) return boundaryMatch;
+
+  return sessions.length === 1 ? sessions[0]! : null;
+}
+
+function collectPrLinks(peerSyncPath: string): string[] {
+  const links = new Set<string>();
+  try {
+    const files = readdirSync(peerSyncPath).filter((f) => f.endsWith(".pr"));
+    for (const fileName of files) {
+      const content = readFileSync(join(peerSyncPath, fileName), "utf-8");
+      for (const line of content.split(/\r?\n/)) {
+        const url = line.trim();
+        if (/^https?:\/\/\S+$/i.test(url)) links.add(url);
+      }
+    }
+  } catch {
+    // ignore read failures
+  }
+  return Array.from(links);
+}
+
+function parsePrNumberFromLink(link: string): string | null {
+  const match = link.match(/\/pull\/(\d+)(?:[/?#]|$)/i);
+  return match ? match[1]! : null;
+}
+
+interface GhPrState {
+  number: string;
+  mergedAt: string;
+}
+
+function readMergedPrViaGh(projectDir: string, prRef: string): GhPrState | null {
+  try {
+    const result = Bun.spawnSync(
+      ["gh", "pr", "view", prRef, "--json", "number,mergedAt"],
+      {
+        cwd: projectDir,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: process.env as Record<string, string>,
+      },
+    );
+    if (result.exitCode !== 0) return null;
+
+    const parsed = JSON.parse(result.stdout.toString().trim()) as {
+      number?: number | string;
+      mergedAt?: string | null;
+    };
+    if (!parsed.mergedAt || parsed.number === undefined || parsed.number === null) return null;
+    return {
+      number: String(parsed.number),
+      mergedAt: parsed.mergedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveFollowupPrNumber(
+  projectDir: string,
+  modeFilter: string | undefined,
+  taskId: string,
+): string | null {
+  const sessions = listSessions(projectDir).filter((s) => matchesMode(s.peerSyncPath, modeFilter));
+  const session = selectSessionForTask(sessions, taskId);
+  if (!session) return null;
+
+  const prLinks = collectPrLinks(session.peerSyncPath);
+  if (prLinks.length === 0) return null;
+
+  // agent-pair typically has one PR, so parse the single URL directly.
+  if (modeFilter === "pair") {
+    for (const link of prLinks) {
+      const number = parsePrNumberFromLink(link);
+      if (number) return number;
+    }
+    return null;
+  }
+
+  // agent-duo can have multiple PRs; prefer whichever GitHub reports as merged.
+  if (modeFilter === "duo") {
+    const merged: GhPrState[] = [];
+    for (const link of prLinks) {
+      const state = readMergedPrViaGh(projectDir, link);
+      if (state) merged.push(state);
+    }
+    if (merged.length > 0) {
+      merged.sort((a, b) => b.mergedAt.localeCompare(a.mergedAt));
+      return merged[0]!.number;
+    }
+  }
+
+  for (const link of prLinks) {
+    const number = parsePrNumberFromLink(link);
+    if (number) return number;
+  }
+  return null;
+}
+
+function injectFollowupPrNumber(
+  adapterArgs: string[],
+  prNumber: string | null,
+): string[] {
+  const output: string[] = [];
+
+  for (let i = 0; i < adapterArgs.length; i++) {
+    const arg = adapterArgs[i]!;
+    output.push(arg);
+    if (arg !== "--followup") continue;
+
+    const next = adapterArgs[i + 1];
+    if (next && !next.startsWith("-")) {
+      output.push(parsePrNumberFromLink(next) ?? next);
+      i++;
+      continue;
+    }
+    if (prNumber) output.push(prNumber);
+  }
+
+  return output;
+}
+
+function hasBareFollowupFlag(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== "--followup") continue;
+    const next = args[i + 1];
+    if (!next || next.startsWith("-")) return true;
+    i++;
+  }
+  return false;
 }
 
 function normalizeProjectDirCandidate(raw: string): string {
@@ -193,7 +338,18 @@ export function createOrchestratedAdapter(cfg: OrchestratedConfig): Adapter {
   function start(ctx: AdapterContext): string {
     const projectDir = resolveAdapterProjectDir(ctx);
     const feature = ctx.taskId || ctx.process || `slot-${ctx.slot}`;
-    const args = [cfg.cliCommand, "start", feature, ...startArgs, ...parseArgs(ctx.adapterArgs)];
+    const parsedAdapterArgs = parseArgs(ctx.adapterArgs);
+    const wantsFollowup = parsedAdapterArgs.includes("--followup");
+    const followupPr = wantsFollowup && ctx.taskId
+      ? resolveFollowupPrNumber(projectDir, cfg.modeFilter, ctx.taskId)
+      : null;
+    const adapterArgs = injectFollowupPrNumber(parsedAdapterArgs, followupPr);
+    if (wantsFollowup && hasBareFollowupFlag(adapterArgs)) {
+      throw new Error(`could not resolve merged PR number for ${cfg.modeLabel} followup (${ctx.taskId || feature})`);
+    }
+    const args = wantsFollowup
+      ? [cfg.cliCommand, "start", ...startArgs, ...adapterArgs]
+      : [cfg.cliCommand, "start", feature, ...startArgs, ...adapterArgs];
 
     const result = Bun.spawnSync(args, {
       cwd: projectDir,
