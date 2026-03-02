@@ -15,6 +15,7 @@ This skill is invoked when:
 
 - `$1` — Task ID (e.g., `task-042`, `gh-myrepo-42`)
 - `$2` — Adapter name (e.g., `agent-duo`, `agent-pair-codex`, `agent-pair-claude`)
+- `$3+` — Optional adapter start args (pass through to `slot assign -A`, e.g. `--followup --followup-smg ...`)
 
 ## Inputs
 
@@ -39,22 +40,25 @@ This skill is invoked when:
 3. **Decide action based on slot state**:
 
    ### Case A: Task is in slot N with the **same** adapter
-   The slot is already assigned correctly. Just start:
+   If adapter args were provided, re-assign with the same adapter to update args first.
+   Otherwise just start:
    ```bash
    ludics slot N start
    ```
 
    ### Case B: Task is in slot N with a **different** adapter
-   Re-assign with the user's chosen adapter, preserving the path:
+   Re-assign with the user's chosen adapter, preserving the path. If adapter args are
+   present, include `-A "<adapter_args>"`:
    ```bash
-   ludics slot N assign <task_id> -a <adapter> -p <existing-path>
+   ludics slot N assign <task_id> -a <adapter> -p <existing-path> [-A "<adapter_args>"]
    ludics slot N start
    ```
 
    ### Case C: Task not in any slot (fallback)
-   Find an empty slot — look for `**Process:** (empty)`:
+   Find an empty slot — look for `**Process:** (empty)`. If adapter args are present,
+   include `-A "<adapter_args>"`:
    ```bash
-   ludics slot N assign <task_id> -a <adapter>
+   ludics slot N assign <task_id> -a <adapter> [-A "<adapter_args>"]
    ludics slot N start
    ```
    If the task file has a `project` field, resolve the project path from

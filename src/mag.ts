@@ -2,16 +2,22 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
-import { parseSlotBlocks, getTask, getProcess, getMode, getPath } from "./slots/markdown.ts";
+import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs } from "./slots/markdown.ts";
 import { queueRequest, queuePop, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
-import { notifyOutgoing, expirePendingRevises } from "./notify.ts";
+import {
+  notifyOutgoing,
+  expirePendingRevises,
+  expirePendingFollowupRevises,
+  maybeNotifyPostMergeFollowupForAdapter,
+} from "./notify.ts";
 import { slotAssign, slotClear, taskCompleteDirectly } from "./slots/index.ts";
+import type { AdapterContext } from "./adapters/types.ts";
 import YAML from "yaml";
 import {
   tmuxAvailable,
@@ -352,6 +358,73 @@ function abandonTaskFromNotification(taskId: string): void {
   }
 }
 
+function completeTaskFromNotification(taskId: string): void {
+  const slotNum = findSlotForTask(taskId);
+  try {
+    if (slotNum !== null) {
+      slotClear(slotNum, "done");
+      emitEvent({
+        event_type: "notify_done",
+        source: "notify",
+        scope: "mag",
+        slot: slotNum,
+        task: taskId,
+        status: "done",
+        message: "completed via notification button",
+      });
+      console.error(`ludics: completed ${taskId} from slot ${slotNum} via notification button`);
+      return;
+    }
+
+    const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+    if (!existsSync(taskFile)) {
+      console.error(`ludics: done request ignored: task ${taskId} not found`);
+      emitEvent({
+        event_type: "notify_done_ignored",
+        source: "notify",
+        scope: "mag",
+        task: taskId,
+        message: "task not found",
+      });
+      return;
+    }
+
+    taskCompleteDirectly(taskId);
+    emitEvent({
+      event_type: "notify_done",
+      source: "notify",
+      scope: "mag",
+      task: taskId,
+      status: "done",
+      message: "completed via notification button (direct)",
+    });
+    console.error(`ludics: completed ${taskId} via notification button (direct)`);
+  } catch (err) {
+    console.error(`ludics: failed to complete ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
+    emitEvent({
+      event_type: "notify_done_error",
+      source: "notify",
+      scope: "mag",
+      slot: slotNum ?? undefined,
+      task: taskId,
+      status: "error",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function buildFollowupLaunchCommand(taskId: string, adapter: string, followupSmg: string): string {
+  const sanitizedSmg = followupSmg
+    .replace(/[\r\n]+/g, " ")
+    .trim();
+  if (sanitizedSmg) {
+    // Quote as a single shell-style token so multi-word feedback stays one argument.
+    const quotedSmg = `'${sanitizedSmg.replace(/'/g, `'\"'\"'`)}'`;
+    return `/ludics-launch-session ${taskId} ${adapter} --followup --followup-smg ${quotedSmg}`;
+  }
+  return `/ludics-launch-session ${taskId} ${adapter} --followup`;
+}
+
 function queuePopSkill(): string | null {
   const queueFile = join(harnessDir(), "mag", "queue.jsonl");
   if (!existsSync(queueFile)) return null;
@@ -421,7 +494,39 @@ function queuePopSkill(): string | null {
         return null;
       }
 
+      const followupMatch = content.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
+      if (followupMatch) {
+        const adapter = followupMatch[1]!;
+        const taskId = followupMatch[2]!;
+        return buildFollowupLaunchCommand(taskId, adapter, "");
+      }
+
+      const doneMatch = content.match(/^Done task ([\w.-]+)$/);
+      if (doneMatch) {
+        completeTaskFromNotification(doneMatch[1]!);
+        return null;
+      }
+
       return content; // send directly as user turn
+    }
+    case "adapter-followup": {
+      const task = String(request.task ?? "");
+      const adapter = String(request.adapter ?? "");
+      const followupSmg = String(request.followup_smg ?? "");
+      if (!task || !adapter) {
+        console.error("ludics: mag queue-pop: adapter-followup missing task/adapter");
+        return null;
+      }
+      return buildFollowupLaunchCommand(task, adapter, followupSmg);
+    }
+    case "complete-task": {
+      const task = String(request.task ?? "");
+      if (!task) {
+        console.error("ludics: mag queue-pop: complete-task missing task");
+        return null;
+      }
+      completeTaskFromNotification(task);
+      return null;
     }
     case "feedback-digest": {
       const repo = String(request.repo ?? "");
@@ -1060,6 +1165,34 @@ function maybeFillEmptySlots(): void {
   console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
 }
 
+function pollPostMergeFollowupNotifications(): void {
+  const slotsFile = slotsFilePath();
+  if (!existsSync(slotsFile)) return;
+
+  const blocks = parseSlotBlocks(readFileSync(slotsFile, "utf-8"));
+  for (const [slotNum, block] of blocks) {
+    const mode = getMode(block).trim();
+    if (!["agent-duo", "agent-pair", "agent-pair-codex", "agent-pair-claude"].includes(mode)) continue;
+
+    const taskId = getTask(block).trim();
+    if (!taskId || taskId === "null") continue;
+
+    const ctx: AdapterContext = {
+      slot: slotNum,
+      mode: mode === "null" ? "" : mode,
+      session: getSession(block).trim() === "null" ? "" : getSession(block).trim(),
+      path: getPath(block).trim() === "null" ? "" : getPath(block).trim(),
+      taskId,
+      adapterArgs: getAdapterArgs(block).trim() === "null" ? "" : getAdapterArgs(block).trim(),
+      process: getProcess(block).trim() === "(empty)" ? "" : getProcess(block).trim(),
+      harnessDir: harnessDir(),
+      stateRepoDir: stateRepoDir(),
+    };
+
+    maybeNotifyPostMergeFollowupForAdapter(ctx);
+  }
+}
+
 // --- Mag CLI commands ---
 
 export function magStart(args: string[]): void {
@@ -1091,12 +1224,16 @@ export function magStart(args: string[]): void {
 
     // Expire pending-revise flags that timed out (15 min)
     expirePendingRevises();
+    expirePendingFollowupRevises();
 
     // Auto-queue proposals for elaborated leaf tasks already in slots
     maybeQueueProposals();
 
     // Auto-fill empty slots with ready elaborated tasks
     maybeFillEmptySlots();
+
+    // Pull-based monitor for post-merge followup notifications (agent-duo/pair)
+    pollPostMergeFollowupNotifications();
 
     // Nudge if queue has items, but throttle to avoid spamming
     if (queuePending() && !nudgeThrottled()) {
