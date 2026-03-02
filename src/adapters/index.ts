@@ -19,13 +19,9 @@ const adapters: Record<string, Adapter> = {
   "agent-duo": agentDuo,
   "agent-pair-codex": agentPairCodex,
   "agent-pair-claude": agentPairClaude,
-  "agent-pair": agentPairCodex,
   "claude-ai": claudeAi,
   "chatgpt-com": chatgptCom,
   "manual": manual,
-  // Legacy aliases — existing slot files may still reference these modes
-  "claude-code": agentClaude,
-  "codex": agentCodex,
 };
 
 function getAdapter(mode: string): Adapter {

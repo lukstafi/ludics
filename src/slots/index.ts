@@ -171,13 +171,12 @@ export function slotAssign(
   // Session handling
   if (!session) {
     switch (adapter) {
-      case "claude-code":
-      case "codex":
+      case "agent-claude":
+      case "agent-codex":
       case "manual":
         session = String(slotNum);
         break;
       case "agent-duo":
-      case "agent-pair":
       case "agent-pair-codex":
       case "agent-pair-claude":
         session = "null";

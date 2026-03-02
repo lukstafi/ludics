@@ -16,7 +16,7 @@ export interface DiscoveredSession {
 }
 
 export interface Orchestration {
-  type: "agent-duo" | "agent-pair" | "agent-pair-codex" | "agent-pair-claude";
+  type: "agent-duo" | "agent-pair-codex" | "agent-pair-claude";
   mode: string;
   feature: string;
   phase: string;

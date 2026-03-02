@@ -101,8 +101,8 @@ When assigning a task to a slot:
 
 2. **Choose adapter**
    - Complex tasks: agent-duo (two agents)
-   - Medium tasks: claude-code (single agent)
-   - Simple tasks: manual or claude-code
+   - Medium tasks: agent-claude (single agent)
+   - Simple tasks: manual or agent-claude
 
 3. **Set up context**
    - Ensure working directory is correct

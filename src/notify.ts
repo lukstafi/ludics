@@ -370,7 +370,6 @@ function orchestratedModeFilter(adapter: string): string | null {
   switch (adapter) {
     case "agent-duo":
       return "duo";
-    case "agent-pair":
     case "agent-pair-codex":
     case "agent-pair-claude":
       return "pair";

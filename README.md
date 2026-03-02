@@ -184,7 +184,7 @@ mag:
 adapters:
   agent-duo:
     enabled: true
-  claude-code:
+  agent-claude:
     enabled: true
   manual:
     enabled: true
@@ -212,7 +212,7 @@ notifications:
 
 ### Adapter Args Layering
 
-For orchestrated adapters (`agent-duo`, `agent-pair-codex`, `agent-pair-claude`, `agent-pair`),
+For orchestrated adapters (`agent-duo`, `agent-pair-codex`, `agent-pair-claude`),
 ludics builds final CLI args from multiple sources in this order:
 
 1. `adapters.<adapter>.default_args`
@@ -235,7 +235,7 @@ adapters:
       - "5400"
 ```
 
-#### 2) Per-project profile for `agent-pair`
+#### 2) Per-project profile for `agent-pair-codex`
 
 ```yaml
 projects:
@@ -243,7 +243,7 @@ projects:
     repo: your-username/my-app
     issues: true
     adapter_profiles:
-      agent-pair:
+      agent-pair-codex:
         args:
           - --clarify
           - --pushback
@@ -369,10 +369,10 @@ Adapters are thin integrations that translate external state into slot format:
 |---------|-------------|
 | `agent-duo` | Reads `.peer-sync/` state from agent-duo sessions |
 | `agent-solo` | Single-agent mode for agent-duo |
-| `claude-code` | Inspects tmux sessions running Claude Code |
+| `agent-claude` | Inspects tmux sessions running Claude Code |
 | `claude-ai` | Treats bookmarked claude.ai URLs as sessions |
 | `chatgpt-com` | Tracks ChatGPT browser sessions |
-| `codex` | OpenAI Codex CLI integration |
+| `agent-codex` | OpenAI Codex CLI integration |
 | `manual` | Track human work without an agent |
 
 ## Triggers

@@ -1195,7 +1195,7 @@ function pollPostMergeFollowupNotifications(): void {
   const blocks = parseSlotBlocks(readFileSync(slotsFile, "utf-8"));
   for (const [slotNum, block] of blocks) {
     const mode = getMode(block).trim();
-    if (!["agent-duo", "agent-pair", "agent-pair-codex", "agent-pair-claude"].includes(mode)) continue;
+    if (!["agent-duo", "agent-pair-codex", "agent-pair-claude"].includes(mode)) continue;
 
     const taskId = getTask(block).trim();
     if (!taskId || taskId === "null") continue;

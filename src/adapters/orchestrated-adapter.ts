@@ -203,9 +203,7 @@ function parseTaskFrontmatter(content: string): Record<string, unknown> | null {
 }
 
 function adapterModeKeys(ctxMode: string, modeLabel: string): string[] {
-  const keys = [ctxMode, modeLabel].filter(Boolean);
-  if (keys.some((k) => k.startsWith("agent-pair"))) keys.push("agent-pair");
-  return Array.from(new Set(keys));
+  return Array.from(new Set([ctxMode, modeLabel].filter(Boolean)));
 }
 
 function projectMatchesName(project: ProjectConfig, taskProject: string): boolean {

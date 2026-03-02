@@ -26,7 +26,7 @@ projects:
 adapters:
   agent-duo:
     enabled: true
-  claude-code:
+  agent-claude:
     enabled: true
   claude-ai:
     enabled: true

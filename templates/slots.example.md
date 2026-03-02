@@ -48,7 +48,7 @@
 
 **Process:** ppx-minidebug 3.0 release
 **Task:** task-089
-**Mode:** claude-code
+**Mode:** agent-claude
 **Session:** minidebug
 **Path:** null
 **Started:** 2026-01-29T10:00Z

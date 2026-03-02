@@ -84,7 +84,7 @@ ludics is implemented in **100% TypeScript**, compiled to a standalone binary vi
 │                                                            │
 │  Slot 1: agent-duo on task-042 (coder + reviewer)          │
 │  Slot 2: empty                                             │
-│  Slot 3: claude-code on task-089                           │
+│  Slot 3: agent-claude on task-089                          │
 │  Slot 4-6: empty                                           │
 │                                                            │
 │  Workers implement tasks, not strategy                     │
@@ -234,7 +234,7 @@ ludics defaults to **6 slots** (configurable in config.yaml) based on cognitive 
 ├─────────────────────────────────────────────────────────────┤
 │  Process:     What's currently running (task/project)       │
 │  Task:        Task ID assigned to this slot                 │
-│  Mode:        How it's running (agent-duo, claude-code...)  │
+│  Mode:        How it's running (agent-duo, agent-claude...) │
 │  Session:     Named session identifier                      │
 │  Path:        Working directory path                        │
 │  Started:     Timestamp when assigned                       │
@@ -487,7 +487,7 @@ projects:
 adapters:
   agent-duo:
     enabled: true
-  claude-code:
+  agent-claude:
     enabled: true
 
 mag:
@@ -731,7 +731,7 @@ ludics provides a web dashboard for at-a-glance status monitoring (`src/dashboar
 │   Slot 1     │   Slot 2     │   Slot 3     │  Ready Queue   │
 │  ■ Active    │  □ Empty     │  ■ Active    │  1. task-101   │
 │  task-042    │              │  task-089    │  2. task-067   │
-│  agent-duo   │              │  claude-code │                │
+│  agent-duo   │              │  agent-claude │               │
 ├──────────────┼──────────────┼──────────────┤  Project Stats │
 │   Slot 4     │   Slot 5     │   Slot 6     │                │
 │  □ Empty     │  □ Empty     │  □ Empty     │  Notifications │
