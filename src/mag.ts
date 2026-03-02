@@ -71,7 +71,30 @@ function triggerSkill(session: string, cmd: string): void {
   tmuxSendKeys(session, "Enter");
 }
 
-const NUDGE_THROTTLE_SECONDS = 900; // 15 minutes between "Continue." nudges
+const DEFAULT_NUDGE_THROTTLE_SECONDS = 60;
+
+function nudgeThrottleSeconds(): number {
+  const envVal = process.env.LUDICS_NUDGE_THROTTLE_SECONDS;
+  if (envVal) {
+    const parsed = parseInt(envVal, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+
+  const configuredThrottle = Number(mag?.nudge_throttle_seconds);
+  if (Number.isFinite(configuredThrottle) && configuredThrottle > 0) {
+    return Math.floor(configuredThrottle);
+  }
+
+  const keepaliveInterval = Number(mag?.keepalive_interval ?? DEFAULT_NUDGE_THROTTLE_SECONDS);
+  if (Number.isFinite(keepaliveInterval) && keepaliveInterval > 0) {
+    return Math.floor(keepaliveInterval);
+  }
+
+  return DEFAULT_NUDGE_THROTTLE_SECONDS;
+}
 
 function nudgeTimestampFile(): string {
   return join(magStateDir(), "last-nudge.epoch");
@@ -82,7 +105,7 @@ function nudgeThrottled(): boolean {
   if (!existsSync(file)) return false;
   try {
     const lastEpoch = parseInt(readFileSync(file, "utf-8").trim(), 10);
-    return (Math.floor(Date.now() / 1000) - lastEpoch) < NUDGE_THROTTLE_SECONDS;
+    return (Math.floor(Date.now() / 1000) - lastEpoch) < nudgeThrottleSeconds();
   } catch {
     return false;
   }
