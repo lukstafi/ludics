@@ -26,6 +26,7 @@ Cadence release. Skill context isolation, post-merge followup workflow, session 
 - **GitHub metadata refresh** — `tasks update` refreshes GitHub-backed task metadata with 3-way title merge preserving local edits while keeping source snapshots current.
 - **Dashboard improvements** — Tasks pane with DAG tree view, styled task states, proposal highlighting, proposal detail improvements.
 - **Configurable Mag nudge throttle** — `mag.nudge_throttle_seconds` config key (or `LUDICS_NUDGE_THROTTLE_SECONDS` env var) replaces hardcoded 15-minute throttle.
+- **Cleanup detached sessions on 3rd sweep**, daily sweeps by default.
 
 ### Fixes
 
