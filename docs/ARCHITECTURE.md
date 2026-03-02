@@ -534,6 +534,48 @@ triggers:
       action: tasks sync
 ```
 
+### Adapter Args Layering (Orchestrated Adapters)
+
+For `agent-duo` / `agent-pair*` starts, ludics composes adapter args from:
+
+1. `adapters.<adapter>.default_args`
+2. `projects[].adapter_profiles.<adapter>`
+3. Slot `Adapter Args` field
+4. Task frontmatter `adapter_args` (highest precedence)
+
+Supported formats:
+
+- shell-style string: `--clarify --plan --work-timeout 5400`
+- argv list: `["--clarify", "--plan", "--work-timeout", "5400"]`
+- project/task mode map: `{ agent-duo: [...], default: "..." }`
+
+Example:
+
+```yaml
+adapters:
+  agent-duo:
+    enabled: true
+    default_args: ["--clarify", "--plan"]
+
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl
+    adapter_profiles:
+      agent-duo:
+        args: ["--work-timeout", "5400", "--review-timeout", "2700"]
+```
+
+Task override (`tasks/task-042.md`):
+
+```yaml
+---
+id: task-042
+project: ocannl
+proposal: docs/concat-einsum.md
+adapter_args: ["--work-timeout", "7200"]
+---
+```
+
 ## Directory Structure
 
 ### Public repo (`ludics`)

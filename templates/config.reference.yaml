@@ -17,6 +17,14 @@ projects:
     repo: your-username/my-project
     issues: true          # Include GitHub issues as tasks
     priority: false       # Priority project: preempt slots when tasks arrive
+    # Optional per-project adapter args profile.
+    # Later layers override earlier layers:
+    # adapter default args -> project profile -> slot Adapter Args -> task frontmatter adapter_args
+    # adapter_profiles:
+    #   agent-duo:
+    #     args: ["--work-timeout", "5400", "--review-timeout", "2700"]
+    #   agent-pair:
+    #     args: "--clarify --plan --pushback-timeout 900"
 
   - name: personal
     repo: your-username/private-repo
@@ -30,27 +38,38 @@ projects:
 adapters:
   agent-claude:
     enabled: true         # Claude Code CLI agent
+    default_args: []      # Optional default args (argv array or shell string)
   agent-codex:
     enabled: false        # Codex CLI agent
+    default_args: []      # Optional default args (argv array or shell string)
   agent-duo:
     enabled: true         # Dual agent system (Claude + Codex)
+    default_args: []      # Optional default args (argv array or shell string)
   agent-pair-codex:
     enabled: false        # Pair workflow (coder=Codex, reviewer=Claude)
+    default_args: []      # Optional default args (argv array or shell string)
   agent-pair-claude:
     enabled: false        # Pair workflow (coder=Claude, reviewer=Codex)
+    default_args: []      # Optional default args (argv array or shell string)
   agent-pair:
     enabled: false        # Alias for agent-pair-codex
+    default_args: []      # Optional default args (argv array or shell string)
   claude-ai:
     enabled: true         # Claude.ai web interface
+    default_args: []      # Optional default args (argv array or shell string)
   chatgpt-com:
     enabled: false        # ChatGPT.com web interface
+    default_args: []      # Optional default args (argv array or shell string)
   manual:
     enabled: false        # Manual human work tracking
+    default_args: []      # Optional default args (argv array or shell string)
   # Legacy aliases (still recognized for existing slot files)
   claude-code:
     enabled: false        # Legacy alias for agent-claude
+    default_args: []      # Optional default args (argv array or shell string)
   codex:
     enabled: false        # Legacy alias for agent-codex
+    default_args: []      # Optional default args (argv array or shell string)
 
 # Mag: Autonomous coordinator (Claude Opus in Claude Code)
 # Provides strategic thinking while automation handles reliable execution

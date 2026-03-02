@@ -5,6 +5,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join, resolve } from "path";
+import YAML from "yaml";
 import {
   listSessions,
   type SessionInfo,
@@ -22,6 +23,7 @@ import {
   getMainRepoFromWorktree,
 } from "./base.ts";
 import { getUrl } from "../network.ts";
+import { loadConfigSync, type LudicsFullConfig, type ProjectConfig } from "../config.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { AdapterContext, Adapter } from "./types.ts";
 
@@ -57,9 +59,226 @@ function matchesMode(peerSyncPath: string, modeFilter?: string): boolean {
   return mode === modeFilter;
 }
 
-function parseArgs(raw?: string): string[] {
+function parseArgs(raw?: string, sourceLabel: string = "arguments"): string[] {
   if (!raw) return [];
-  return raw.split(/\s+/).filter(Boolean);
+  const args: string[] = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escaping = false;
+
+  const pushCurrent = () => {
+    if (!current) return;
+    args.push(current);
+    current = "";
+  };
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+
+    if (escaping) {
+      current += ch;
+      escaping = false;
+      continue;
+    }
+
+    if (inSingle) {
+      if (ch === "'") inSingle = false;
+      else current += ch;
+      continue;
+    }
+
+    if (inDouble) {
+      if (ch === '"') {
+        inDouble = false;
+      } else if (ch === "\\") {
+        escaping = true;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      pushCurrent();
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+
+    if (ch === "\\") {
+      escaping = true;
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (escaping) current += "\\";
+  if (inSingle || inDouble) {
+    throw new Error(`unterminated quote in ${sourceLabel}`);
+  }
+  pushCurrent();
+
+  return args;
+}
+
+function parseArgSpec(value: unknown, sourceLabel: string): string[] | null {
+  if (value === undefined || value === null) return null;
+
+  if (typeof value === "string") {
+    return parseArgs(value, sourceLabel);
+  }
+
+  if (Array.isArray(value)) {
+    const out: string[] = [];
+    for (let i = 0; i < value.length; i++) {
+      const item = value[i];
+      if (typeof item !== "string") {
+        throw new Error(`${sourceLabel}[${i}] must be a string`);
+      }
+      if (item.length > 0) out.push(item);
+    }
+    return out;
+  }
+
+  if (typeof value === "object") {
+    const data = value as Record<string, unknown>;
+    if ("args" in data) {
+      return parseArgSpec(data.args, `${sourceLabel}.args`);
+    }
+  }
+
+  throw new Error(`${sourceLabel} must be a shell-style string or string array`);
+}
+
+function parseModeAwareArgSpec(
+  value: unknown,
+  modeKeys: string[],
+  sourceLabel: string,
+): string[] {
+  if (value === undefined || value === null) return [];
+
+  if (typeof value === "string" || Array.isArray(value)) {
+    return parseArgSpec(value, sourceLabel) ?? [];
+  }
+
+  if (typeof value !== "object") {
+    throw new Error(`${sourceLabel} has invalid type`);
+  }
+
+  const data = value as Record<string, unknown>;
+  for (const mode of modeKeys) {
+    if (!(mode in data)) continue;
+    return parseArgSpec(data[mode], `${sourceLabel}.${mode}`) ?? [];
+  }
+
+  const defaultArgs = parseArgSpec(data.default, `${sourceLabel}.default`);
+  if (defaultArgs !== null) return defaultArgs;
+
+  const directArgs = parseArgSpec(data.args, `${sourceLabel}.args`);
+  if (directArgs !== null) return directArgs;
+
+  return [];
+}
+
+function parseTaskFrontmatter(content: string): Record<string, unknown> | null {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return null;
+  try {
+    const parsed = YAML.parse(fmMatch[1]!);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function adapterModeKeys(ctxMode: string, modeLabel: string): string[] {
+  const keys = [ctxMode, modeLabel].filter(Boolean);
+  if (keys.some((k) => k.startsWith("agent-pair"))) keys.push("agent-pair");
+  return Array.from(new Set(keys));
+}
+
+function projectMatchesName(project: ProjectConfig, taskProject: string): boolean {
+  if (project.name === taskProject) return true;
+  const repoTail = project.repo.split("/").pop() ?? "";
+  return repoTail === taskProject;
+}
+
+function resolveAdapterDefaultArgs(config: LudicsFullConfig, modeKeys: string[]): string[] {
+  const adapters = config.adapters as Record<string, unknown> | undefined;
+  if (!adapters) return [];
+
+  for (const mode of modeKeys) {
+    const entry = adapters[mode];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const data = entry as Record<string, unknown>;
+    const parsed = parseArgSpec(data.default_args, `config adapters.${mode}.default_args`);
+    if (parsed !== null) return parsed;
+  }
+  return [];
+}
+
+function resolveProjectProfileArgs(
+  config: LudicsFullConfig,
+  taskProject: string,
+  modeKeys: string[],
+): string[] {
+  if (!taskProject) return [];
+  const project = (config.projects ?? []).find((p) => projectMatchesName(p, taskProject));
+  if (!project || !project.adapter_profiles) return [];
+
+  const profiles = project.adapter_profiles as Record<string, unknown>;
+  for (const mode of modeKeys) {
+    if (!(mode in profiles)) continue;
+    return parseModeAwareArgSpec(
+      profiles[mode],
+      modeKeys,
+      `project "${project.name}" adapter_profiles.${mode}`,
+    );
+  }
+
+  return parseModeAwareArgSpec(
+    profiles.default,
+    modeKeys,
+    `project "${project.name}" adapter_profiles.default`,
+  );
+}
+
+interface TaskRuntimeMetadata {
+  projectName: string;
+  taskArgs: string[];
+}
+
+function readTaskRuntimeMetadata(
+  ctx: AdapterContext,
+  modeKeys: string[],
+): TaskRuntimeMetadata {
+  if (!ctx.taskId) return { projectName: "", taskArgs: [] };
+
+  const taskFile = join(ctx.harnessDir, "tasks", `${ctx.taskId}.md`);
+  if (!existsSync(taskFile)) return { projectName: "", taskArgs: [] };
+
+  const content = readFileSync(taskFile, "utf-8");
+  const frontmatter = parseTaskFrontmatter(content);
+  if (!frontmatter) return { projectName: "", taskArgs: [] };
+
+  const projectName = typeof frontmatter.project === "string"
+    ? frontmatter.project.trim()
+    : "";
+  const rawTaskArgs = frontmatter.adapter_args ?? frontmatter.adapterArgs;
+  const taskArgs = parseModeAwareArgSpec(rawTaskArgs, modeKeys, `task ${ctx.taskId} adapter_args`);
+
+  return { projectName, taskArgs };
 }
 
 function normalizeYamlScalar(value: string): string {
@@ -428,7 +647,18 @@ export function createOrchestratedAdapter(cfg: OrchestratedConfig): Adapter {
 
   function start(ctx: AdapterContext): string {
     const projectDir = resolveAdapterProjectDir(ctx);
-    const parsedAdapterArgs = parseArgs(ctx.adapterArgs);
+    const modeKeys = adapterModeKeys(ctx.mode, cfg.modeLabel);
+    const config = loadConfigSync();
+    const taskRuntime = readTaskRuntimeMetadata(ctx, modeKeys);
+    const adapterDefaults = resolveAdapterDefaultArgs(config, modeKeys);
+    const projectProfileArgs = resolveProjectProfileArgs(config, taskRuntime.projectName, modeKeys);
+    const slotArgs = parseArgs(ctx.adapterArgs, `slot ${ctx.slot} Adapter Args`);
+    const parsedAdapterArgs = [
+      ...adapterDefaults,
+      ...projectProfileArgs,
+      ...slotArgs,
+      ...taskRuntime.taskArgs,
+    ];
     const wantsFollowup = parsedAdapterArgs.includes("--followup");
     const taskMeta = ctx.taskId
       ? (() => {

@@ -6,13 +6,34 @@ import YAML from "yaml";
 
 const DEFAULT_STALE_THRESHOLD = 86400; // 24 hours
 
+export interface AdapterConfigEntry {
+  enabled?: boolean;
+  /** Default argv tokens or shell-style arg string appended for this adapter. */
+  default_args?: string[] | string;
+}
+
+export interface ProjectConfig {
+  name: string;
+  repo: string;
+  issues?: boolean;
+  priority?: boolean;
+  /**
+   * Per-adapter args profile for tasks in this project.
+   * Entry value can be:
+   * - shell-style string
+   * - argv token array
+   * - object with { args: ... }
+   */
+  adapter_profiles?: Record<string, { args?: string[] | string } | string[] | string>;
+}
+
 export interface LudicsFullConfig {
   state_repo: string;
   state_path: string;
   staleThresholdSeconds: number;
   slots?: { count?: number };
-  projects?: Array<{ name: string; repo: string; issues?: boolean; priority?: boolean }>;
-  adapters?: Record<string, { enabled?: boolean }>;
+  projects?: ProjectConfig[];
+  adapters?: Record<string, AdapterConfigEntry>;
   mag?: Record<string, unknown>;
   triggers?: Record<string, unknown>;
   notifications?: {

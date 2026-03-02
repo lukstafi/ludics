@@ -210,6 +210,83 @@ notifications:
     agents: your-username-agents      # system → user (operational)
 ```
 
+### Adapter Args Layering
+
+For orchestrated adapters (`agent-duo`, `agent-pair-codex`, `agent-pair-claude`, `agent-pair`),
+ludics builds final CLI args from multiple sources in this order:
+
+1. `adapters.<adapter>.default_args`
+2. `projects[].adapter_profiles.<adapter>`
+3. Slot `Adapter Args` (`ludics slot <n> assign ... --adapter-args "..."`)
+4. Task frontmatter `adapter_args` (highest precedence)
+
+Later layers are appended last, so they override earlier options in typical CLI parsing.
+
+#### 1) Global defaults for `agent-duo`
+
+```yaml
+adapters:
+  agent-duo:
+    enabled: true
+    default_args:
+      - --clarify
+      - --plan
+      - --work-timeout
+      - "5400"
+```
+
+#### 2) Per-project profile for `agent-pair`
+
+```yaml
+projects:
+  - name: my-app
+    repo: your-username/my-app
+    issues: true
+    adapter_profiles:
+      agent-pair:
+        args:
+          - --clarify
+          - --pushback
+          - --work-timeout
+          - "4800"
+          - --review-timeout
+          - "2400"
+```
+
+#### 3) Per-task one-off override
+
+In `tasks/task-123.md` frontmatter:
+
+```yaml
+---
+id: task-123
+title: "Tune auth rollout"
+project: my-app
+proposal: docs/task-123.md
+adapter_args:
+  - --work-timeout
+  - "7200"
+  - --pushback-timeout
+  - "900"
+---
+```
+
+You can also use shell-style strings:
+
+```yaml
+adapter_args: --clarify --plan --work-timeout 7200
+```
+
+#### Quoting passthrough flags
+
+Arg parsing now supports shell-style quotes. This preserves values with spaces:
+
+```bash
+ludics slot 1 assign task-123 -a agent-duo --adapter-args '--claude-flags "--allowedTools Bash,Read" --codex-flags "--provider openai"'
+```
+
+Tip: for config and task files, prefer array form for maximum clarity and fewer quoting pitfalls.
+
 ## CLI Reference
 
 ### Task management
