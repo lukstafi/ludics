@@ -26,6 +26,7 @@ import { getUrl } from "../network.ts";
 import { loadConfigSync, type LudicsFullConfig, type ProjectConfig } from "../config.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { AdapterContext, Adapter } from "./types.ts";
+import { registerKnownSessions, type SweepMode } from "../sessions/sweep-state.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -47,6 +48,17 @@ export interface OrchestratedConfig {
   cliStartArgs?: string;                 // e.g. "--codex" for pair-codex
   cliStartHint?: string;                 // extra guidance for start command options
   cliStopArgs?: string;                  // optional extra args for stop commands
+}
+
+function asSweepMode(modeLabel: string): SweepMode | null {
+  if (
+    modeLabel === "agent-duo"
+    || modeLabel === "agent-pair-codex"
+    || modeLabel === "agent-pair-claude"
+  ) {
+    return modeLabel;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +638,17 @@ export function createOrchestratedAdapter(cfg: OrchestratedConfig): Adapter {
     const count = filtered.length;
     if (count === 0) return null;
 
+    const sweepMode = asSweepMode(cfg.modeLabel);
+    if (sweepMode) {
+      registerKnownSessions(
+        filtered.map((session) => ({
+          mode: sweepMode,
+          projectDir,
+          name: session.feature,
+        })),
+      );
+    }
+
     const md = new MarkdownBuilder();
     md.keyValue("Mode", `${cfg.modeLabel} (${count} sessions)`);
     md.separator();
@@ -696,6 +719,17 @@ export function createOrchestratedAdapter(cfg: OrchestratedConfig): Adapter {
       const stdout = result.stdout.toString().trim();
       const detail = stderr || stdout || `exit ${result.exitCode}`;
       throw new Error(`${cfg.cliCommand} start failed: ${detail}`);
+    }
+
+    const sweepMode = asSweepMode(cfg.modeLabel);
+    if (sweepMode) {
+      registerKnownSessions([
+        {
+          mode: sweepMode,
+          projectDir,
+          name: feature,
+        },
+      ]);
     }
 
     return result.stdout.toString().trim() || `${cfg.cliCommand} start ${feature} (cwd=${projectDir})`;

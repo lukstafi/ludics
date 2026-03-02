@@ -11,6 +11,7 @@ import { enrichWithPeerSync } from "./enrich.ts";
 import { deduplicateAndMerge } from "./dedup.ts";
 import { classifySessions } from "./classify.ts";
 import { writeReport, printSummary, printDetailedSummary, printJson } from "./report.ts";
+import { runSessionSweep } from "./sweep.ts";
 import type { DiscoveredSession, DiscoveryResult, MergedSession } from "../types.ts";
 import { emitEvent } from "../events.ts";
 
@@ -159,6 +160,12 @@ export async function runSessions(args: string[]): Promise<void> {
       break;
     }
 
+    case "sweep": {
+      const dryRun = hasFlag(args, "--dry-run");
+      runSessionSweep({ dryRun });
+      break;
+    }
+
     case "": {
       // Quick discovery and summary to stdout
       const result = await runPipeline();
@@ -179,7 +186,7 @@ export async function runSessions(args: string[]): Promise<void> {
 
     default:
       throw new Error(
-        `unknown sessions subcommand: ${sub} (use: report, refresh, show [filter], or omit for summary; add --json for JSON output)`,
+        `unknown sessions subcommand: ${sub} (use: report, refresh, show [filter], sweep [--dry-run], or omit for summary; add --json for JSON output)`,
       );
   }
 }

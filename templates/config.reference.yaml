@@ -154,6 +154,12 @@ triggers:
     interval: 300             # 5 minutes in seconds
     action: mag adopt-sessions
 
+  # Detached-session sweeper (cleanup known detached sessions)
+  sessions-sweep:
+    enabled: false
+    interval: 86400           # 24 hours in seconds
+    action: sessions sweep
+
   # Dashboard server (long-running, KeepAlive/Restart)
   dashboard:
     enabled: false

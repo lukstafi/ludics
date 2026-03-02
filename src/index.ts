@@ -149,6 +149,7 @@ Commands:
   sessions report [--json]     Generate sessions report for Mag (Markdown + JSON)
   sessions refresh [--json]    Re-run discovery and update report
   sessions show [filter]       Show detailed session info (optional cwd/id filter)
+  sessions sweep [--dry-run]   Cleanup detached known sessions after 3 sweeps
 
   sync                         Pull + push state repo (full sync)
   state pull                   Pull latest from state repo

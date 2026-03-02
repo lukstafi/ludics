@@ -99,6 +99,11 @@ triggers:
     interval: 14400
     action: mag health-check
 
+  sessions-sweep:
+    enabled: false
+    interval: 86400
+    action: sessions sweep
+
   watch:
     - paths:
         - ~/repos/ocannl/README.md

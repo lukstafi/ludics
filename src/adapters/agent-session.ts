@@ -11,6 +11,7 @@ import { readAgentSessionFile, findSessionByPrefixOrTask } from "./peer-sync.ts"
 import { getUrl } from "../network.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { AdapterContext, Adapter } from "./types.ts";
+import { registerKnownSessions, type SweepMode } from "../sessions/sweep-state.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -29,6 +30,8 @@ export interface AgentSessionConfig {
 // ---------------------------------------------------------------------------
 
 export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
+  const sweepMode = cfg.modeLabel as SweepMode;
+
   function readState(ctx: AdapterContext): string | null {
     if (!tmuxAvailable()) return null;
 
@@ -40,6 +43,21 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
       || (ctx.session && ctx.session !== "null" ? ctx.session : null);
     if (!tmuxName) return null;
     if (!tmuxHasSession(tmuxName)) return null;
+
+    const knownName = (
+      (ctx.taskId && ctx.taskId !== "null" ? ctx.taskId : "")
+      || sessionInfo?.task
+      || (ctx.session && ctx.session !== "null" && !/^\d+$/.test(ctx.session) ? ctx.session : "")
+    ).trim();
+    if (knownName) {
+      registerKnownSessions([
+        {
+          mode: sweepMode,
+          projectDir,
+          name: knownName,
+        },
+      ]);
+    }
 
     const md = new MarkdownBuilder();
     md.keyValue("Mode", cfg.modeLabel);
@@ -114,6 +132,17 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
     if (result.exitCode !== 0) {
       const stderr = result.stderr.toString().trim();
       throw new Error(`${cfg.command} start failed: ${stderr}`);
+    }
+
+    const knownName = task.trim();
+    if (knownName) {
+      registerKnownSessions([
+        {
+          mode: sweepMode,
+          projectDir,
+          name: knownName,
+        },
+      ]);
     }
 
     return result.stdout.toString().trim() || `${cfg.command} session started for ${task}`;

@@ -10,6 +10,7 @@ const KNOWN_LUDICS_TRIGGER_NAMES = [
   "morning",
   "health",
   "sessions",
+  "sessions-sweep",
   "federation",
   "mag",
   "dashboard",
@@ -196,6 +197,24 @@ function triggersInstallMacos(): void {
     console.log(`Installed launchd trigger: sessions (every ${Math.floor(parseInt(interval) / 60)}m)`);
   }
 
+  // Sessions cleanup sweeper trigger
+  if (triggerGet("sessions-sweep", "enabled") === "true") {
+    const action = commandFromAction(triggerGet("sessions-sweep", "action"));
+    const interval = triggerGet("sessions-sweep", "interval") || "86400";
+    const label = "com.ludics.sessions-sweep";
+    const content = [
+      PLIST_HEADER,
+      `  <key>Label</key>\n  <string>${label}</string>`,
+      `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
+      plistEnv(),
+      plistArgs(bin, ...action.split(" ")),
+      plistLogs("sessions-sweep"),
+      PLIST_FOOTER,
+    ].join("\n");
+    installPlist(label, content);
+    console.log(`Installed launchd trigger: sessions-sweep (every ${Math.floor(parseInt(interval) / 3600)}h)`);
+  }
+
   // Watch triggers
   for (const rule of triggerGetWatchRules()) {
     const sanitized = sanitizeAction(rule.action);
@@ -363,6 +382,16 @@ function triggersInstallLinux(): void {
     writeSystemdUnit("ludics-sessions.timer", `[Unit]\nDescription=ludics session adoption timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-sessions.service\n\n[Install]\nWantedBy=timers.target\n`);
     enableSystemdUnit("ludics-sessions.timer");
     console.log(`Installed systemd trigger: sessions (every ${Math.floor(parseInt(interval) / 60)}m)`);
+  }
+
+  // Sessions cleanup sweeper
+  if (triggerGet("sessions-sweep", "enabled") === "true") {
+    const action = commandFromAction(triggerGet("sessions-sweep", "action"));
+    const interval = triggerGet("sessions-sweep", "interval") || "86400";
+    writeSystemdUnit("ludics-sessions-sweep.service", `[Unit]\nDescription=ludics detached session sweeper\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
+    writeSystemdUnit("ludics-sessions-sweep.timer", `[Unit]\nDescription=ludics detached session sweeper timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-sessions-sweep.service\n\n[Install]\nWantedBy=timers.target\n`);
+    enableSystemdUnit("ludics-sessions-sweep.timer");
+    console.log(`Installed systemd trigger: sessions-sweep (every ${Math.floor(parseInt(interval) / 3600)}h)`);
   }
 
   // Watch
