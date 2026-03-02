@@ -15,7 +15,7 @@ This skill is invoked when:
 
 - `$1` — Task ID (e.g., `task-042`, `gh-myrepo-42`)
 - `$2` — Adapter name (e.g., `agent-duo`, `agent-pair-codex`, `agent-pair-claude`)
-- `$3+` — Optional adapter start args (pass through to `slot assign -A`, e.g. `--followup --followup-smg ...`)
+- `$3+` — Optional adapter start args (pass through to `slot assign -A`, e.g. `--followup --followup-msg ...`)
 
 ## Inputs
 

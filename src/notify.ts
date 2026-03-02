@@ -1028,7 +1028,7 @@ export async function subscribeIncoming(): Promise<void> {
                   for (const pending of pendingFollowups) {
                     queueRequest(
                       "adapter-followup",
-                      `"task":"${pending.taskId}","adapter":"${pending.adapter}","followup_smg":${escaped}`,
+                      `"task":"${pending.taskId}","adapter":"${pending.adapter}","followup_msg":${escaped}`,
                     );
                   }
                 } else {

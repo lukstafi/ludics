@@ -436,14 +436,14 @@ function completeTaskFromNotification(taskId: string): void {
   }
 }
 
-function buildFollowupLaunchCommand(taskId: string, adapter: string, followupSmg: string): string {
-  const sanitizedSmg = followupSmg
+function buildFollowupLaunchCommand(taskId: string, adapter: string, followupMsg: string): string {
+  const sanitizedMsg = followupMsg
     .replace(/[\r\n]+/g, " ")
     .trim();
-  if (sanitizedSmg) {
+  if (sanitizedMsg) {
     // Quote as a single shell-style token so multi-word feedback stays one argument.
-    const quotedSmg = `'${sanitizedSmg.replace(/'/g, `'\"'\"'`)}'`;
-    return `/ludics-launch-session ${taskId} ${adapter} --followup --followup-smg ${quotedSmg}`;
+    const quotedMsg = `'${sanitizedMsg.replace(/'/g, `'\"'\"'`)}'`;
+    return `/ludics-launch-session ${taskId} ${adapter} --followup --followup-msg ${quotedMsg}`;
   }
   return `/ludics-launch-session ${taskId} ${adapter} --followup`;
 }
@@ -535,12 +535,12 @@ function queuePopSkill(): string | null {
     case "adapter-followup": {
       const task = String(request.task ?? "");
       const adapter = String(request.adapter ?? "");
-      const followupSmg = String(request.followup_smg ?? "");
+      const followupMsg = String(request.followup_msg ?? "");
       if (!task || !adapter) {
         console.error("ludics: mag queue-pop: adapter-followup missing task/adapter");
         return null;
       }
-      return buildFollowupLaunchCommand(task, adapter, followupSmg);
+      return buildFollowupLaunchCommand(task, adapter, followupMsg);
     }
     case "complete-task": {
       const task = String(request.task ?? "");
