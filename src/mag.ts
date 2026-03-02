@@ -416,10 +416,11 @@ function completeTaskFromNotification(taskId: string): void {
 function buildFollowupLaunchCommand(taskId: string, adapter: string, followupSmg: string): string {
   const sanitizedSmg = followupSmg
     .replace(/[\r\n]+/g, " ")
-    .replace(/"/g, "'")
     .trim();
   if (sanitizedSmg) {
-    return `/ludics-launch-session ${taskId} ${adapter} --followup --followup-smg ${sanitizedSmg}`;
+    // Quote as a single shell-style token so multi-word feedback stays one argument.
+    const quotedSmg = `'${sanitizedSmg.replace(/'/g, `'\"'\"'`)}'`;
+    return `/ludics-launch-session ${taskId} ${adapter} --followup --followup-smg ${quotedSmg}`;
   }
   return `/ludics-launch-session ${taskId} ${adapter} --followup`;
 }

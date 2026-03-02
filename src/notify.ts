@@ -390,15 +390,20 @@ function selectSessionForTask(
   taskId: string,
 ): SessionInfo | null {
   if (sessions.length === 0) return null;
+  if (!taskId) return sessions.length === 1 ? sessions[0]! : null;
+
+  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const boundaryPattern = new RegExp(`(^|[^A-Za-z0-9])${escapedTaskId}([^A-Za-z0-9]|$)`);
+
   if (taskId) {
     const exact = sessions.find((s) => s.feature === taskId);
     if (exact) return exact;
 
-    const contains = sessions.find((s) => s.feature.includes(taskId));
-    if (contains) return contains;
+    const boundaryMatch = sessions.find((s) => boundaryPattern.test(s.feature));
+    if (boundaryMatch) return boundaryMatch;
   }
   if (sessions.length === 1) return sessions[0]!;
-  return sessions[0]!;
+  return null;
 }
 
 function collectPrLinks(peerSyncPath: string): string[] {
