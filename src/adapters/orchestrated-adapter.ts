@@ -62,18 +62,108 @@ function parseArgs(raw?: string): string[] {
   return raw.split(/\s+/).filter(Boolean);
 }
 
-function selectSessionForTask(sessions: SessionInfo[], taskId: string): SessionInfo | null {
+function normalizeYamlScalar(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function readFrontmatterField(content: string, field: string): string | null {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return null;
+
+  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = fmMatch[1]!.match(new RegExp(`^\\s*${escapedField}:\\s*(.+)$`, "m"));
+  if (!match) return null;
+
+  const value = normalizeYamlScalar(match[1]!);
+  if (!value || value.toLowerCase() === "null") return null;
+  return value;
+}
+
+function resolveTaskRelativePath(projectDir: string, rawPath: string): string {
+  if (rawPath.startsWith("~/")) {
+    return resolve(process.env.HOME ?? "~", rawPath.slice(2));
+  }
+  if (rawPath.startsWith("/")) return resolve(rawPath);
+  return resolve(projectDir, rawPath);
+}
+
+function proposalFeatureName(proposalPath: string): string {
+  const trimmed = proposalPath.trim();
+  const base = trimmed.split("/").pop() ?? "";
+  const name = base.replace(/\.md$/i, "").trim();
+  if (!name) throw new Error(`invalid proposal path "${proposalPath}"`);
+  return name;
+}
+
+interface TaskLaunchMetadata {
+  launchFeature: string;
+}
+
+function readTaskLaunchMetadata(
+  cfg: OrchestratedConfig,
+  ctx: AdapterContext,
+  projectDir: string,
+): TaskLaunchMetadata {
+  if (!ctx.taskId) {
+    throw new Error(`${cfg.cliCommand} start blocked: missing task id for orchestrated launch`);
+  }
+
+  const taskFile = join(ctx.harnessDir, "tasks", `${ctx.taskId}.md`);
+  if (!existsSync(taskFile)) {
+    throw new Error(
+      `${cfg.cliCommand} start blocked: missing task metadata file for ${ctx.taskId} (${taskFile})`,
+    );
+  }
+
+  const taskContent = readFileSync(taskFile, "utf-8");
+  const proposalValue = readFrontmatterField(taskContent, "proposal");
+  if (!proposalValue) {
+    throw new Error(
+      `${cfg.cliCommand} start blocked: task ${ctx.taskId} has no proposal metadata. Refusing ambiguous launch.`,
+    );
+  }
+
+  const proposalFile = resolveTaskRelativePath(projectDir, proposalValue);
+  if (!existsSync(proposalFile)) {
+    throw new Error(
+      `${cfg.cliCommand} start blocked: proposal for ${ctx.taskId} not found at ${proposalFile}`,
+    );
+  }
+
+  return {
+    launchFeature: proposalFeatureName(proposalValue),
+  };
+}
+
+function selectSessionForTask(
+  sessions: SessionInfo[],
+  taskId: string,
+  featureAliases: string[] = [],
+): SessionInfo | null {
   if (sessions.length === 0) return null;
-  if (!taskId) return sessions.length === 1 ? sessions[0]! : null;
+  if (!taskId && featureAliases.length === 0) return sessions.length === 1 ? sessions[0]! : null;
 
-  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const boundaryPattern = new RegExp(`(^|[^A-Za-z0-9])${escapedTaskId}([^A-Za-z0-9]|$)`);
+  const candidates = [taskId, ...featureAliases].filter(Boolean);
+  if (candidates.length === 0) return sessions.length === 1 ? sessions[0]! : null;
 
-  const exact = sessions.find((s) => s.feature === taskId);
-  if (exact) return exact;
+  for (const candidate of candidates) {
+    const exact = sessions.find((s) => s.feature === candidate);
+    if (exact) return exact;
+  }
 
-  const boundaryMatch = sessions.find((s) => boundaryPattern.test(s.feature));
-  if (boundaryMatch) return boundaryMatch;
+  for (const candidate of candidates) {
+    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const boundaryPattern = new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`);
+    const boundaryMatch = sessions.find((s) => boundaryPattern.test(s.feature));
+    if (boundaryMatch) return boundaryMatch;
+  }
 
   return sessions.length === 1 ? sessions[0]! : null;
 }
@@ -136,9 +226,10 @@ function resolveFollowupPrNumber(
   projectDir: string,
   modeFilter: string | undefined,
   taskId: string,
+  featureAliases: string[] = [],
 ): string | null {
   const sessions = listSessions(projectDir).filter((s) => matchesMode(s.peerSyncPath, modeFilter));
-  const session = selectSessionForTask(sessions, taskId);
+  const session = selectSessionForTask(sessions, taskId, featureAliases);
   if (!session) return null;
 
   const prLinks = collectPrLinks(session.peerSyncPath);
@@ -337,11 +428,26 @@ export function createOrchestratedAdapter(cfg: OrchestratedConfig): Adapter {
 
   function start(ctx: AdapterContext): string {
     const projectDir = resolveAdapterProjectDir(ctx);
-    const feature = ctx.taskId || ctx.process || `slot-${ctx.slot}`;
     const parsedAdapterArgs = parseArgs(ctx.adapterArgs);
     const wantsFollowup = parsedAdapterArgs.includes("--followup");
+    const taskMeta = ctx.taskId
+      ? (() => {
+        try {
+          return readTaskLaunchMetadata(cfg, ctx, projectDir);
+        } catch (err) {
+          if (!wantsFollowup) throw err;
+          return null;
+        }
+      })()
+      : null;
+    const feature = taskMeta?.launchFeature || ctx.taskId || ctx.process || `slot-${ctx.slot}`;
     const followupPr = wantsFollowup && ctx.taskId
-      ? resolveFollowupPrNumber(projectDir, cfg.modeFilter, ctx.taskId)
+      ? resolveFollowupPrNumber(
+        projectDir,
+        cfg.modeFilter,
+        ctx.taskId,
+        taskMeta ? [taskMeta.launchFeature] : [],
+      )
       : null;
     const adapterArgs = injectFollowupPrNumber(parsedAdapterArgs, followupPr);
     if (wantsFollowup && hasBareFollowupFlag(adapterArgs)) {
@@ -371,7 +477,15 @@ export function createOrchestratedAdapter(cfg: OrchestratedConfig): Adapter {
     const projectDir = resolveAdapterProjectDir(ctx);
     const args = [cfg.cliCommand, "stop", ...stopArgs];
     if (ctx.taskId) {
-      args.push("--feature", ctx.taskId);
+      const sessions = listSessions(projectDir).filter((s) => matchesMode(s.peerSyncPath, cfg.modeFilter));
+      let aliases: string[] = [];
+      try {
+        aliases = [readTaskLaunchMetadata(cfg, ctx, projectDir).launchFeature];
+      } catch {
+        aliases = [];
+      }
+      const selected = selectSessionForTask(sessions, ctx.taskId, aliases);
+      args.push("--feature", selected?.feature ?? aliases[0] ?? ctx.taskId);
     }
 
     const result = Bun.spawnSync(args, {

@@ -392,18 +392,52 @@ function selectSessionForTask(
   if (sessions.length === 0) return null;
   if (!taskId) return sessions.length === 1 ? sessions[0]! : null;
 
-  const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const boundaryPattern = new RegExp(`(^|[^A-Za-z0-9])${escapedTaskId}([^A-Za-z0-9]|$)`);
+  const aliases = taskFeatureAliases(taskId);
+  const candidates = [taskId, ...aliases];
 
-  if (taskId) {
-    const exact = sessions.find((s) => s.feature === taskId);
+  for (const candidate of candidates) {
+    const exact = sessions.find((s) => s.feature === candidate);
     if (exact) return exact;
+  }
 
+  for (const candidate of candidates) {
+    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const boundaryPattern = new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`);
     const boundaryMatch = sessions.find((s) => boundaryPattern.test(s.feature));
     if (boundaryMatch) return boundaryMatch;
   }
+
   if (sessions.length === 1) return sessions[0]!;
   return null;
+}
+
+function taskFeatureAliases(taskId: string): string[] {
+  const aliases = new Set<string>();
+  const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+  if (!existsSync(taskFile)) return [];
+
+  try {
+    const content = readFileSync(taskFile, "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return [];
+
+    const proposalMatch = fmMatch[1]!.match(/^\s*proposal:\s*(.+)$/m);
+    if (!proposalMatch) return [];
+
+    const raw = proposalMatch[1]!.trim();
+    if (!raw || raw.toLowerCase() === "null") return [];
+    const unquoted =
+      (raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))
+        ? raw.slice(1, -1).trim()
+        : raw;
+    const base = unquoted.split("/").pop() ?? "";
+    const feature = base.replace(/\.md$/i, "").trim();
+    if (feature) aliases.add(feature);
+  } catch {
+    return [];
+  }
+
+  return Array.from(aliases);
 }
 
 function collectPrLinks(peerSyncPath: string): string[] {

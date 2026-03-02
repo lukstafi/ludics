@@ -114,6 +114,9 @@ All slots occupied. Sent notification to user with preemption instructions.
 ## Error Handling
 
 - Task file not found: Write result with `"status": "error"`, notify user
+- Task metadata incomplete (`proposal:` missing/null or proposal file missing):
+  fail launch and notify user. Do **not** continue with fallback behavior,
+  because that can bind the session to the wrong spec.
 - `ludics slot N start` fails: Capture stderr, include in result, notify user
 - Adapter not recognized: Fall back to `agent-duo`, note in result
 - Task already has an active session (Runtime shows activity): Skip start, report as already running
