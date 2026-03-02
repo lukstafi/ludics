@@ -4,8 +4,13 @@
 
 Cadence release. Skill context isolation, post-merge followup workflow, session adoption, structured event log, and a wave of notification and dashboard improvements.
 
+### Breaking changes
+
+- **Adapter aliases removed** — Runtime aliases (`claude-code`, `codex`, `agent-solo`, etc.) are dropped from adapter dispatch and orchestration. Only canonical adapter names (`agent-pair-claude`, `agent-pair-codex`, etc.) are accepted. Config files, slot assignments, and task frontmatter must use the canonical names.
+
 ### New features
 
+- **Layered adapter args** — Adapter arguments now support four-level precedence: adapter defaults, project profiles, slot `Adapter Args`, and task frontmatter overrides. Shell-style quoted arg parsing replaces whitespace splitting to preserve passthrough flag values.
 - **Skill context isolation** — Heavy skills (draft-proposal, elaborate, verify-completion, briefing, health-check, revise-proposal, sync-learnings) are split into orchestrator + worker pairs using `context: fork`, so codebase-heavy operations run in disposable subagent contexts instead of polluting Mag's persistent session. Shared conventions extracted to `worker-conventions.md`.
 - **Post-merge followup notifications** — Pull-based followup detection for agent-duo/agent-pair sessions. Notifications offer followup/revise/done actions with pending feedback capture; Mag routes followup launches and task completion.
 - **Proactive session-to-slot adoption** — New `/ludics-adopt-sessions` skill matches discovered agent sessions to projects and assigns them to available slots. A dedicated trigger runs session discovery + queues the skill every 5 minutes. Change detection guard prevents duplicate queue entries.
@@ -32,6 +37,9 @@ Cadence release. Skill context isolation, post-merge followup workflow, session 
 - Fixed draft-proposal config path to reference `$LUDICS_STATE_PATH/config.yaml` instead of the pointer file.
 - Fixed feedback digest queue throttling.
 - Used canonical adapter names in button messages, removing regex normalization.
+- Hardened orchestrated launch metadata: derive feature names from proposal paths instead of task IDs, fail fast on missing metadata.
+- Fixed followup launch syntax for orchestrated adapters: resolve and inject PR numbers, prefer merged PR detection for agent-duo.
+- Fixed followup message flag/key naming (`--followup-msg`).
 
 ### Removals
 
