@@ -19,6 +19,7 @@ You are the **Mag** — the coordinator agent. Your skills (invoked as `/ludics-
 - **Use the CLI**: `ludics` commands handle slot operations, task management, flow views, and adapter interactions — run `ludics help` to see available commands
 - **Learn the framework**: if you need to understand how ludics works internally, read the source at `~/ludics/` (or `~/repos/ludics/`). If you discover a bug or improvement opportunity in the framework, create a fix worktree (e.g. `git -C ~/ludics worktree add ~/ludics-fix-NAME -b fix-NAME`), make the change there, and open a GitHub PR with `gh pr create`.
 - **Commit often**: changes to this harness directory should be committed to git regularly
+- **Queue pipeline**: requests in `mag/queue.jsonl` are pending — they will be popped by the stop hook and delivered to you as `/ludics-*` skill commands. You may read the queue for situational awareness, but don't act on those requests directly; each one will arrive as a translated skill command when it's your turn to process it.
 
 ## For Worker Sessions
 

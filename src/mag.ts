@@ -1261,7 +1261,7 @@ export function magStart(args: string[]): void {
     // Nudge if queue has items, but throttle to avoid spamming
     if (queuePending() && !nudgeThrottled()) {
       const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-      triggerSkill(MAG_SESSION_NAME, `Continue. (ludics automatic message, current time: ${now})`);
+      triggerSkill(MAG_SESSION_NAME, `Continue previous work if any. Queue requests arrive as skill commands on stop hook. (ludics, ${now})`);
       writeNudgeTimestamp();
       emitEvent({ event_type: "mag_nudge", source: "keepalive", scope: "mag", message: "nudged Mag with Continue" });
     }
