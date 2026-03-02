@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.4.0 — 2026-03-02
+
+Cadence release. Skill context isolation, post-merge followup workflow, session adoption, structured event log, and a wave of notification and dashboard improvements.
+
+### New features
+
+- **Skill context isolation** — Heavy skills (draft-proposal, elaborate, verify-completion, briefing, health-check, revise-proposal, sync-learnings) are split into orchestrator + worker pairs using `context: fork`, so codebase-heavy operations run in disposable subagent contexts instead of polluting Mag's persistent session. Shared conventions extracted to `worker-conventions.md`.
+- **Post-merge followup notifications** — Pull-based followup detection for agent-duo/agent-pair sessions. Notifications offer followup/revise/done actions with pending feedback capture; Mag routes followup launches and task completion.
+- **Proactive session-to-slot adoption** — New `/ludics-adopt-sessions` skill matches discovered agent sessions to projects and assigns them to available slots. A dedicated trigger runs session discovery + queues the skill every 5 minutes. Change detection guard prevents duplicate queue entries.
+- **Structured event log** — `emitEvent()` writes append-only JSONL across 37 emission points (slot lifecycle, task state changes, Mag decisions, queue ops, GitHub sync, session discovery, federation, notifications). New `ludics events` CLI command with filtering by type, task, scope, source, since, limit.
+- **Revise-proposal skill** — Orchestrator/worker pair for iterating on proposals via ntfy "revise" button or CLI. Pending-revise mode arms on tap; the next message becomes feedback. Timeout after 15 min queues revision without feedback.
+- **Verify-completion skill** — Extracted from health-check into a dedicated skill with its own fresh Opus context for deep semantic completion detection, follow-up task creation, and notifications for uncertain completions.
+- **Proactive slot filling** — Keepalive auto-assigns highest-priority ready elaborated tasks to empty slots and queues draft-proposal.
+- **Launch-session skill** — Intercepts ntfy button-tap "Launch agent-X for task-Y" messages and routes them to start sessions in existing or fallback slots.
+- **Automatic task completion detection** — Close GitHub issues when local tasks are done/abandoned (reverse sync in `tasks update`), `ludics mag completed <proposal-name>` for external completion signals, health-check semantic completion detection with auto-clear.
+- **Abandon notification button** — ntfy notifications include an "abandon" action that clears the slot with abandoned status.
+- **Questions in notifications** — Briefing, proposal, and elaboration skills send concise notifications when they surface ambiguities needing user input, enabling phone-based responses.
+- **Deterministic task ID migration** — `tasks migrate-ids` (with `--dry-run`) migrates legacy `task-N` files to title-hash IDs and rewrites cross-references.
+- **GitHub metadata refresh** — `tasks update` refreshes GitHub-backed task metadata with 3-way title merge preserving local edits while keeping source snapshots current.
+- **Dashboard improvements** — Tasks pane with DAG tree view, styled task states, proposal highlighting, proposal detail improvements.
+- **Configurable Mag nudge throttle** — `mag.nudge_throttle_seconds` config key (or `LUDICS_NUDGE_THROTTLE_SECONDS` env var) replaces hardcoded 15-minute throttle.
+
+### Fixes
+
+- Fixed orchestrated adapter launches: `start`/`stop` commands now run from adapter methods instead of returning suggestions; project cwd resolved from slot path/session with worktree-to-repo normalization.
+- Fixed ntfy proposal notification delivery: resolve relative proposal paths using slot repo roots, attach proposals with descriptive filenames, split actions across follow-up messages to respect ntfy action limits.
+- Fixed ntfy notification truncation for long messages.
+- Fixed PR review issues in followup routing: task-id boundary matching for peer-sync sessions, quoted followup-msg payload.
+- Fixed self-invocation for Mag subprocess commands in both bun/node script mode and compiled mode.
+- Fixed draft-proposal config path to reference `$LUDICS_STATE_PATH/config.yaml` instead of the pointer file.
+- Fixed feedback digest queue throttling.
+- Used canonical adapter names in button messages, removing regex normalization.
+
+### Removals
+
+- **`/ludics-analyze-issue` skill removed** — `tasks sync` + `/ludics-elaborate` already covers issue-to-task creation and enrichment.
+- **`/ludics-techdebt` skill removed** — Orchestrator, worker, and mag.ts references all cleaned up.
+- **"Core philosophy" slogan removed** from skills.
+
+---
+
 ## v0.3.0 — 2026-02-19
 
 Checkpoint release. Full rewrite from Bash to TypeScript, project rename, and a wave of Mag autonomy features. Not a stability milestone — a snapshot of fast-moving work.
