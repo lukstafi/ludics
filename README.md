@@ -118,7 +118,7 @@ This aggregates tasks from GitHub issues and README TODOs into `tasks.yaml`, aut
 
 ### Step 4: Verify triggers
 
-Triggers automate Mag startup and periodic task sync via launchd (macOS) or systemd (Linux). If Mag is enabled in your config, a keepalive trigger also starts Mag at login and checks every 15 minutes. Install them with:
+Triggers automate Mag startup and periodic task sync via launchd (macOS) or systemd (Linux). If Mag is enabled in your config, a keepalive trigger also starts Mag at login and checks on the `mag.keepalive_interval` cadence (default: 60 seconds). Install them with:
 
 Verify with:
 
@@ -382,7 +382,7 @@ Triggers automate periodic actions:
 - **macOS**: launchd agents for `startup`, `sync`, and Mag keepalive
 - **Linux (Ubuntu)**: systemd user units and timers
 
-If `mag.enabled` is `true` in your config, `triggers install` also creates a Mag keepalive service that starts Mag at login and checks every 15 minutes.
+If `mag.enabled` is `true` in your config, `triggers install` also creates a Mag keepalive service that starts Mag at login and checks on the `mag.keepalive_interval` cadence (default: 60 seconds).
 
 Configure in `config.yaml` under `triggers:` and `mag:`. Then run:
 

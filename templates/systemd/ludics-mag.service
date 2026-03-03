@@ -2,7 +2,7 @@
 #
 # Ensures Mag tmux session is running:
 # - Starts on login (default.target)
-# - Checks every 15 minutes via companion timer
+# - Checks every 60 seconds via companion timer
 # - Idempotent: exits early if already running
 #
 # Installation:

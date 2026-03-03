@@ -7,6 +7,7 @@ export interface AdapterContext {
   path: string;
   taskId: string;
   adapterArgs: string;
+  started?: string;
   process: string;
   harnessDir: string;
   stateRepoDir: string;

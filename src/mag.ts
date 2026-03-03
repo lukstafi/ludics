@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rename
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
-import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs } from "./slots/markdown.ts";
+import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getStarted, getAdapterArgs } from "./slots/markdown.ts";
 import { queueRequest, queuePop, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
@@ -1241,6 +1241,7 @@ function pollPostMergeFollowupNotifications(): void {
       mode: mode === "null" ? "" : mode,
       session: getSession(block).trim() === "null" ? "" : getSession(block).trim(),
       path: getPath(block).trim() === "null" ? "" : getPath(block).trim(),
+      started: getStarted(block).trim() === "null" ? "" : getStarted(block).trim(),
       taskId,
       adapterArgs: getAdapterArgs(block).trim() === "null" ? "" : getAdapterArgs(block).trim(),
       process: getProcess(block).trim() === "(empty)" ? "" : getProcess(block).trim(),
