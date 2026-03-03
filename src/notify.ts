@@ -414,6 +414,13 @@ function selectSessionForTask(
   return null;
 }
 
+function isFollowupSession(session: SessionInfo): boolean {
+  const rootName = basename(session.rootWorktree).toLowerCase();
+  if (rootName.endsWith("-followup")) return true;
+  const feature = session.feature.toLowerCase();
+  return /(^|[-_])followup($|[-_])/.test(feature);
+}
+
 function taskFeatureAliases(taskId: string): string[] {
   const aliases = new Set<string>();
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
@@ -636,13 +643,15 @@ export function maybeNotifyPostMergeFollowupForAdapter(ctx: AdapterContext): voi
   if (!modeFilter) return;
 
   const projectDir = resolveAdapterProjectDir(ctx);
+  const followupSlotRun = isFollowupSlotRun(ctx);
   const sessions = listSessions(projectDir).filter((s) => matchesOrchestratedMode(s.peerSyncPath, modeFilter));
   if (sessions.length === 0) return;
+  const candidateSessions = followupSlotRun ? sessions.filter(isFollowupSession) : sessions;
+  if (candidateSessions.length === 0) return;
 
-  const session = selectSessionForTask(sessions, ctx.taskId);
+  const session = selectSessionForTask(candidateSessions, ctx.taskId);
   if (!session) return;
   const phase = readSingleFile(join(session.peerSyncPath, "phase")) ?? "";
-  const followupSlotRun = isFollowupSlotRun(ctx);
   const followupStartedEpoch = parseIsoEpochSeconds(ctx.started);
   const completedFollowup = (
     isCompletedFollowupPhase(phase)
