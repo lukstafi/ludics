@@ -117,7 +117,7 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 - Dependency graph: `tsort` for topological order
 - Priority filtering: `jq` for sorting and selection
 
-**Skills system** (`skills/` directory, 21 Markdown files — 15 skills + 6 workers):
+**Skills system** (`skills/` directory, 20 Markdown files — 14 skills + 6 workers):
 
 | Skill | Purpose | Isolation |
 |-------|---------|-----------|
@@ -126,7 +126,6 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 | `/ludics-elaborate` | Detailed spec for a task (early, for Mag context) | Orchestrator + worker |
 | `/ludics-feedback-digest` | Summarize user feedback | Orchestrator + worker |
 | `/ludics-health-check` | Detect approaching deadlines, queue completion checks | Inline |
-| `/ludics-launch-session` | Find slot and start agent session for a task | Inline |
 | `/ludics-learn` | Update institutional memory from corrections | Inline |
 | `/ludics-new-quote` | Generate motivational quote | Inline |
 | `/ludics-preempt` | Plan task preemption | Inline |
@@ -221,7 +220,7 @@ allowed-tools: Read, Bash, Glob, Grep, Write
 |----------|--------|-----------|
 | Heavy (orchestrator + worker) | draft-proposal, verify-completion, elaborate, feedback-digest | Deep codebase exploration; tool outputs would pollute Mag's context |
 | Direct fork | sync-learnings | Forked for isolation but no orchestrator needed — mostly mechanical processing |
-| Light (inline) | launch-session, health-check, read-inbox, suggest, preempt, learn, split-task, new-quote | Mostly CLI commands with minimal reads |
+| Light (inline) | health-check, read-inbox, suggest, preempt, learn, split-task, new-quote | Mostly CLI commands with minimal reads |
 | Strategic (inline, special) | briefing | Needs Mag's cross-task context for slot assignment; sub-operations (elaboration) are themselves forked |
 
 ### The Slot Model: Forcing Function for Parallelization
@@ -653,7 +652,6 @@ ludics/
 │   ├── ludics-feedback-digest.md     # Orchestrator
 │   ├── ludics-feedback-digest-worker.md # Worker (context: fork)
 │   ├── ludics-health-check.md        # Inline
-│   ├── ludics-launch-session.md      # Inline
 │   ├── ludics-learn.md               # Inline
 │   ├── ludics-new-quote.md           # Inline
 │   ├── ludics-preempt.md             # Inline
