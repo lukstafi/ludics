@@ -33,6 +33,7 @@ The context file contains these sections:
 - **Slots State**: Current slot assignments after adapter refresh
 - **Sessions Report**: All discovered agent sessions with classification
 - **Session-Project Matches**: Pre-computed matching of unclassified sessions to projects, with ready tasks per project and slot availability
+- **Active Unconcluded Agent-Duo Slots**: Case-A slots precomputed from `sessions.json` + task completion state
 - **Flow: Ready Queue**: Priority-sorted ready tasks
 - **Flow: Critical Items**: Deadlines, high-priority ready
 - **Tasks Needing Elaboration**: Task IDs that lack elaboration
@@ -109,6 +110,9 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - **manual**: include observations only
 
 6. **Nudge stalled slotted tasks**:
+   - Read the `## Active Unconcluded Agent-Duo Slots` section first.
+     - Treat listed slots as **Case A** (active, unconcluded): do **not** re-send
+       launch buttons for those slots.
    - For each slot that has a task assigned with a proposal (`proposal:` field in
      the task file) but no active session (no matching entry in the Sessions Report,
      or Runtime section is empty):

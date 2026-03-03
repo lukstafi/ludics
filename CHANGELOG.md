@@ -1,5 +1,11 @@
 # Changelog
 
+## current
+
+### New features
+
+- **TypeScript launch routing** — Ntfy button-tap "Launch agent-X for task-Y" and followup actions are handled directly in `mag.ts` (slot select, assign, start), removing the dedicated launch skill.
+
 ## v0.4.0 — 2026-03-02
 
 Cadence release. Skill context isolation, post-merge followup workflow, session adoption, structured event log, and a wave of notification and dashboard improvements.
@@ -18,7 +24,6 @@ Cadence release. Skill context isolation, post-merge followup workflow, session 
 - **Revise-proposal skill** — Orchestrator/worker pair for iterating on proposals via ntfy "revise" button or CLI. Pending-revise mode arms on tap; the next message becomes feedback. Timeout after 15 min queues revision without feedback.
 - **Verify-completion skill** — Extracted from health-check into a dedicated skill with its own fresh Opus context for deep semantic completion detection, follow-up task creation, and notifications for uncertain completions.
 - **Proactive slot filling** — Keepalive auto-assigns highest-priority ready elaborated tasks to empty slots and queues draft-proposal.
-- **Launch-session skill** — Intercepts ntfy button-tap "Launch agent-X for task-Y" messages and routes them to start sessions in existing or fallback slots.
 - **Automatic task completion detection** — Close GitHub issues when local tasks are done/abandoned (reverse sync in `tasks update`), `ludics mag completed <proposal-name>` for external completion signals, health-check semantic completion detection with auto-clear.
 - **Abandon notification button** — ntfy notifications include an "abandon" action that clears the slot with abandoned status.
 - **Questions in notifications** — Briefing, proposal, and elaboration skills send concise notifications when they surface ambiguities needing user input, enabling phone-based responses.

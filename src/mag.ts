@@ -16,7 +16,7 @@ import {
   expirePendingFollowupRevises,
   maybeNotifySessionConclusionForAdapter,
 } from "./notify.ts";
-import { slotAssign, slotClear, taskCompleteDirectly } from "./slots/index.ts";
+import { slotAssign, slotClear, slotStart, taskCompleteDirectly } from "./slots/index.ts";
 import type { AdapterContext } from "./adapters/types.ts";
 import YAML from "yaml";
 import {
@@ -472,19 +472,186 @@ function completeTaskFromNotification(taskId: string): void {
   }
 }
 
-function buildFollowupLaunchCommand(taskId: string, adapter: string, followupMsg: string): string {
+const NOTIFICATION_LAUNCH_ADAPTERS = new Set([
+  "agent-duo",
+  "agent-pair-codex",
+  "agent-pair-claude",
+  "agent-codex",
+  "agent-claude",
+  "agent-session",
+]);
+
+function normalizeLaunchAdapter(rawAdapter: string): string {
+  const adapter = rawAdapter.trim();
+  if (NOTIFICATION_LAUNCH_ADAPTERS.has(adapter)) return adapter;
+  console.error(`ludics: unsupported launch adapter "${adapter}", falling back to agent-duo`);
+  return "agent-duo";
+}
+
+function quoteShellToken(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function buildFollowupAdapterArgs(followupMsg: string): string {
   const sanitizedMsg = followupMsg
     .replace(/[\r\n]+/g, " ")
     .trim();
   if (sanitizedMsg) {
-    // Quote as a single shell-style token so multi-word feedback stays one argument.
-    const quotedMsg = `'${sanitizedMsg.replace(/'/g, `'\"'\"'`)}'`;
-    return `/ludics-launch-session ${taskId} ${adapter} --followup --followup-msg ${quotedMsg}`;
+    return `--followup --followup-msg ${quoteShellToken(sanitizedMsg)}`;
   }
-  return `/ludics-launch-session ${taskId} ${adapter} --followup`;
+  return "--followup";
 }
 
-function queuePopSkill(): string | null {
+function normalizeYamlScalar(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function readTaskProject(taskId: string): string {
+  const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+  if (!existsSync(taskFile)) return "";
+  const content = readFileSync(taskFile, "utf-8");
+  const projectMatch = content.match(/^project:\s*(.+)$/m);
+  if (!projectMatch) return "";
+  return normalizeYamlScalar(projectMatch[1]!);
+}
+
+function resolveTaskProjectPath(taskId: string): string {
+  const project = readTaskProject(taskId);
+  if (!project) return "";
+
+  const home = process.env.HOME ?? "";
+  if (!home) return "";
+
+  const config = loadConfigSync();
+  const candidates: string[] = [];
+  const addProjectCandidates = (name: string): void => {
+    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    for (const candidate of [join(home, trimmed), join(home, "repos", trimmed)]) {
+      if (!candidates.includes(candidate)) candidates.push(candidate);
+    }
+  };
+
+  const configured = (config.projects ?? []).find((p) => {
+    const repoTail = p.repo.split("/").pop() ?? "";
+    return p.name === project || repoTail === project;
+  });
+
+  if (configured) {
+    const repoTail = configured.repo.split("/").pop() ?? "";
+    addProjectCandidates(repoTail);
+    addProjectCandidates(configured.name);
+  }
+
+  addProjectCandidates(project);
+
+  for (const path of candidates) {
+    if (existsSync(path)) return path;
+  }
+
+  return "";
+}
+
+interface SlotSelection {
+  taskSlot: number | null;
+  existingPath: string;
+  emptySlot: number | null;
+}
+
+function selectSlotForLaunch(taskId: string): SlotSelection {
+  const sFile = slotsFilePath();
+  const blocks = existsSync(sFile) ? parseSlotBlocks(readFileSync(sFile, "utf-8")) : new Map<number, string>();
+  const count = slotsCount();
+
+  let taskSlot: number | null = null;
+  let existingPath = "";
+  let emptySlot: number | null = null;
+
+  for (let i = 1; i <= count; i++) {
+    const block = blocks.get(i);
+    const process = block ? getProcess(block).trim() : "(empty)";
+
+    if ((!process || process === "(empty)") && emptySlot === null) {
+      emptySlot = i;
+    }
+
+    if (!block) continue;
+    if (getTask(block).trim() !== taskId) continue;
+
+    taskSlot = i;
+    const slotPath = getPath(block).trim();
+    if (slotPath && slotPath !== "null") existingPath = slotPath;
+  }
+
+  return { taskSlot, existingPath, emptySlot };
+}
+
+async function launchSessionFromNotification(taskId: string, rawAdapter: string, adapterArgs: string = ""): Promise<void> {
+  const adapter = normalizeLaunchAdapter(rawAdapter);
+  const launchArgs = adapterArgs.trim();
+  const selection = selectSlotForLaunch(taskId);
+
+  if (selection.taskSlot === null && selection.emptySlot === null) {
+    const msg = `Cannot launch ${taskId}: all slots occupied. Run: ludics slot N preempt ${taskId} -a ${adapter}`;
+    notifyOutgoing(msg, 3, "ludics");
+    emitEvent({
+      event_type: "notify_launch_no_slot",
+      source: "notify",
+      scope: "mag",
+      task: taskId,
+      adapter,
+      message: "all slots occupied",
+    });
+    console.error(`ludics: launch request for ${taskId} failed: no empty slots`);
+    return;
+  }
+
+  const slotNum = selection.taskSlot ?? selection.emptySlot!;
+  const path = selection.existingPath || resolveTaskProjectPath(taskId);
+
+  try {
+    // Notification button actions are always treated as fresh starts.
+    slotAssign(slotNum, taskId, adapter, "", path, launchArgs);
+    await slotStart(slotNum);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(`ludics: failed to launch ${adapter} for ${taskId} in slot ${slotNum}: ${detail}`);
+    notifyOutgoing(`Failed to launch ${adapter} for ${taskId} in slot ${slotNum}: ${detail}`, 3, "ludics");
+    emitEvent({
+      event_type: "notify_launch_error",
+      source: "notify",
+      scope: "mag",
+      slot: slotNum,
+      task: taskId,
+      adapter,
+      status: "error",
+      message: detail,
+    });
+    return;
+  }
+
+  const action = selection.taskSlot !== null ? "reassigned+started" : "assigned+started";
+  emitEvent({
+    event_type: "notify_launch",
+    source: "notify",
+    scope: "mag",
+    slot: slotNum,
+    task: taskId,
+    adapter,
+    message: action,
+  });
+  console.error(`ludics: launched ${adapter} for ${taskId} in slot ${slotNum} (${action})`);
+}
+
+async function queuePopSkill(): Promise<string | null> {
   const queueFile = join(harnessDir(), "mag", "queue.jsonl");
   if (!existsSync(queueFile)) return null;
 
@@ -544,7 +711,8 @@ function queuePopSkill(): string | null {
       if (launchMatch) {
         const adapter = launchMatch[1]!;
         const taskId = launchMatch[2]!;
-        return `/ludics-launch-session ${taskId} ${adapter}`;
+        await launchSessionFromNotification(taskId, adapter);
+        return null;
       }
 
       const abandonMatch = content.match(/^Abandon task ([\w.-]+)$/);
@@ -557,7 +725,8 @@ function queuePopSkill(): string | null {
       if (followupMatch) {
         const adapter = followupMatch[1]!;
         const taskId = followupMatch[2]!;
-        return buildFollowupLaunchCommand(taskId, adapter, "");
+        await launchSessionFromNotification(taskId, adapter, buildFollowupAdapterArgs(""));
+        return null;
       }
 
       const doneMatch = content.match(/^Done task ([\w.-]+)$/);
@@ -576,7 +745,8 @@ function queuePopSkill(): string | null {
         console.error("ludics: mag queue-pop: adapter-followup missing task/adapter");
         return null;
       }
-      return buildFollowupLaunchCommand(task, adapter, followupMsg);
+      await launchSessionFromNotification(task, adapter, buildFollowupAdapterArgs(followupMsg));
+      return null;
     }
     case "complete-task": {
       const task = String(request.task ?? "");
@@ -722,6 +892,8 @@ ${sessionsContent}
 
 ${computeSessionProjectMatches()}
 
+${computeActiveUnconcludedAgentDuoSlots()}
+
 ## Flow: Ready Queue
 
 ${flowReadyOutput}
@@ -776,6 +948,123 @@ function matchCwdToProject(
   }
 
   return null;
+}
+
+function taskIsConcluded(taskId: string, harness: string): boolean {
+  const taskFile = join(harness, "tasks", `${taskId}.md`);
+  if (!existsSync(taskFile)) return false;
+
+  try {
+    const content = readFileSync(taskFile, "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return false;
+
+    const data = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
+    const status = String(data.status ?? "").trim().toLowerCase();
+    if (status === "done" || status === "abandoned" || status === "completed") return true;
+
+    const completed = String(data.completed ?? "").trim().toLowerCase();
+    return !!completed && completed !== "null";
+  } catch {
+    return false;
+  }
+}
+
+interface BriefingClassifiedSession {
+  slot: number | null;
+  stale: boolean;
+  lastActivity: string;
+  orchestration: { type: string; phase: string; round: string } | null;
+}
+
+function readBriefingClassifiedSessions(sessionsFile: string): BriefingClassifiedSession[] | null {
+  if (!existsSync(sessionsFile)) return null;
+
+  // Keep behavior consistent with other pre-computations that require fresh session data.
+  try {
+    const mtime = statSync(sessionsFile).mtimeMs;
+    if (Date.now() - mtime > 900_000) return null;
+  } catch {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(sessionsFile, "utf-8")) as { classified?: Array<Record<string, unknown>> };
+    const raw = Array.isArray(parsed.classified) ? parsed.classified : [];
+
+    return raw.map((entry) => {
+      const slotValue = entry.slot;
+      const slot = typeof slotValue === "number"
+        ? slotValue
+        : (typeof slotValue === "string" && /^\d+$/.test(slotValue) ? parseInt(slotValue, 10) : null);
+      const orchestrationRaw = entry.orchestration;
+      const orchestration = orchestrationRaw && typeof orchestrationRaw === "object"
+        ? {
+          type: String((orchestrationRaw as Record<string, unknown>).type ?? ""),
+          phase: String((orchestrationRaw as Record<string, unknown>).phase ?? ""),
+          round: String((orchestrationRaw as Record<string, unknown>).round ?? ""),
+        }
+        : null;
+      return {
+        slot,
+        stale: Boolean(entry.stale),
+        lastActivity: String(entry.lastActivity ?? ""),
+        orchestration,
+      };
+    });
+  } catch {
+    return null;
+  }
+}
+
+function computeActiveUnconcludedAgentDuoSlots(): string {
+  const harness = harnessDir();
+  const sessionsFile = join(harness, "sessions.json");
+  const classified = readBriefingClassifiedSessions(sessionsFile);
+
+  const lines: string[] = [];
+  lines.push("## Active Unconcluded Agent-Duo Slots");
+  lines.push("");
+
+  if (!classified) {
+    lines.push("(no fresh sessions.json data — run `ludics sessions report` first)");
+    lines.push("");
+    return lines.join("\n");
+  }
+
+  const sFile = slotsFilePath();
+  const blocks = existsSync(sFile) ? parseSlotBlocks(readFileSync(sFile, "utf-8")) : new Map<number, string>();
+  const count = slotsCount();
+  let found = false;
+
+  for (let i = 1; i <= count; i++) {
+    const block = blocks.get(i);
+    if (!block) continue;
+    if (getMode(block).trim() !== "agent-duo") continue;
+
+    const taskId = getTask(block).trim();
+    if (!taskId || taskId === "null") continue;
+    if (taskIsConcluded(taskId, harness)) continue;
+
+    const sessionsForSlot = classified.filter((session) =>
+      session.slot === i
+      && session.orchestration !== null
+      && session.orchestration.type === "agent-duo"
+    );
+    if (sessionsForSlot.length === 0) continue;
+
+    const preferred = sessionsForSlot.find((session) => !session.stale) ?? sessionsForSlot[0]!;
+    const phase = preferred.orchestration?.phase || "unknown";
+    const round = preferred.orchestration?.round || "?";
+    const staleLabel = preferred.stale ? "yes" : "no";
+    const lastActivity = preferred.lastActivity || "unknown";
+    lines.push(`- Slot ${i}: ${taskId} (phase=${phase}, round=${round}, stale=${staleLabel}, last activity=${lastActivity})`);
+    found = true;
+  }
+
+  if (!found) lines.push("(none)");
+  lines.push("");
+  return lines.join("\n");
 }
 
 function computeSessionProjectMatches(): string {
@@ -1255,7 +1544,7 @@ function pollSessionConclusionNotifications(): void {
 
 // --- Mag CLI commands ---
 
-export function magStart(args: string[]): void {
+export async function magStart(args: string[]): Promise<void> {
   let useTtyd = true;
   let skipFederation = false;
 
@@ -1345,7 +1634,7 @@ export function magStart(args: string[]): void {
   if (useTtyd) ensureTtyd();
 
   // Drain queue
-  const skillCmd = queuePopSkill();
+  const skillCmd = await queuePopSkill();
   if (skillCmd) {
     Bun.spawnSync(["sleep", "5"], { stdout: "pipe", stderr: "pipe" });
     console.error(`ludics: Mag fresh start, sending queued request: ${skillCmd}`);
@@ -1756,7 +2045,7 @@ export async function runMag(args: string[]): Promise<void> {
 
   switch (sub) {
     case "start":
-      magStart(args.slice(1));
+      await magStart(args.slice(1));
       break;
     case "stop":
       magStop();
@@ -1930,7 +2219,7 @@ export async function runMag(args: string[]): Promise<void> {
         }
       }
       writeStopHookTimestamp();
-      const skillCommand = queuePopSkill();
+      const skillCommand = await queuePopSkill();
       if (skillCommand) {
         console.log(JSON.stringify({ decision: "block", reason: skillCommand }));
       }
