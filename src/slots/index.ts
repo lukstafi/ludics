@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { harnessDir, slotsFilePath, slotsCount, stateRepoDir, loadConfigSync } from "../config.ts";
-import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getAdapterArgs,
+import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
          emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
 import { stateCommit } from "../state.ts";
 import { journalAppend } from "../journal.ts";
@@ -419,6 +419,7 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
   const mode = getMode(block).trim();
   const session = getSession(block).trim();
   const path = getPath(block).trim();
+  const started = getStarted(block).trim();
   const taskIdRaw = getTask(block).trim();
   const adapterArgs = getAdapterArgs(block).trim();
   const process = getProcess(block).trim();
@@ -428,6 +429,7 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
     mode: mode === "null" ? "" : mode,
     session: session === "null" ? "" : session,
     path: path === "null" ? "" : path,
+    started: started === "null" ? "" : started,
     taskId: taskIdRaw === "null" ? "" : taskIdRaw,
     adapterArgs: adapterArgs === "null" ? "" : adapterArgs,
     process: process === "(empty)" ? "" : process,

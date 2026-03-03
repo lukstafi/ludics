@@ -491,6 +491,25 @@ function isCompletedFollowupPhase(phase: string): boolean {
   return FOLLOWUP_TERMINAL_PHASES.has(phase.toLowerCase());
 }
 
+function parseIsoEpochSeconds(value: string | undefined): number {
+  const raw = (value ?? "").trim();
+  if (!raw || raw.toLowerCase() === "null") return 0;
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return 0;
+  return Math.floor(ms / 1000);
+}
+
+function phaseFileUpdatedSince(peerSyncPath: string, minEpochSec: number): boolean {
+  if (minEpochSec <= 0) return true;
+  const phaseFile = join(peerSyncPath, "phase");
+  if (!existsSync(phaseFile)) return false;
+  try {
+    return statSync(phaseFile).mtimeMs >= minEpochSec * 1000;
+  } catch {
+    return false;
+  }
+}
+
 function followupStatusFiles(adapter: string): string[] {
   switch (adapter) {
     case "agent-duo":
@@ -503,14 +522,17 @@ function followupStatusFiles(adapter: string): string[] {
   }
 }
 
-function hasCompletedFollowupStatuses(peerSyncPath: string, adapter: string): boolean {
+function hasCompletedFollowupStatuses(peerSyncPath: string, adapter: string, minEpochSec: number): boolean {
   const files = followupStatusFiles(adapter);
   if (files.length === 0) return false;
   const statuses = files
     .map((fileName) => readStatusFile(join(peerSyncPath, fileName)))
     .filter((status): status is NonNullable<typeof status> => status !== null);
   if (statuses.length !== files.length) return false;
-  return statuses.every((status) => FOLLOWUP_TERMINAL_STATUSES.has(status.status.toLowerCase()));
+  return statuses.every((status) =>
+    FOLLOWUP_TERMINAL_STATUSES.has(status.status.toLowerCase())
+    && (minEpochSec <= 0 || status.epoch >= minEpochSec),
+  );
 }
 
 function readPhaseToken(peerSyncPath: string): string {
@@ -621,8 +643,11 @@ export function maybeNotifyPostMergeFollowupForAdapter(ctx: AdapterContext): voi
   if (!session) return;
   const phase = readSingleFile(join(session.peerSyncPath, "phase")) ?? "";
   const followupSlotRun = isFollowupSlotRun(ctx);
-  const completedFollowup = isCompletedFollowupPhase(phase)
-    || hasCompletedFollowupStatuses(session.peerSyncPath, ctx.mode);
+  const followupStartedEpoch = parseIsoEpochSeconds(ctx.started);
+  const completedFollowup = (
+    isCompletedFollowupPhase(phase)
+    && phaseFileUpdatedSince(session.peerSyncPath, followupStartedEpoch)
+  ) || hasCompletedFollowupStatuses(session.peerSyncPath, ctx.mode, followupStartedEpoch);
   if (followupSlotRun) {
     if (!completedFollowup) return;
   } else if (phase !== FOLLOWUP_PHASE) {
