@@ -563,6 +563,9 @@ function resolveTaskProjectPath(taskId: string): string {
 interface SlotSelection {
   taskSlot: number | null;
   existingPath: string;
+  previousMode: string;
+  previousSession: string;
+  previousAdapterArgs: string;
   emptySlot: number | null;
 }
 
@@ -573,6 +576,9 @@ function selectSlotForLaunch(taskId: string): SlotSelection {
 
   let taskSlot: number | null = null;
   let existingPath = "";
+  let previousMode = "";
+  let previousSession = "";
+  let previousAdapterArgs = "";
   let emptySlot: number | null = null;
 
   for (let i = 1; i <= count; i++) {
@@ -587,11 +593,17 @@ function selectSlotForLaunch(taskId: string): SlotSelection {
     if (getTask(block).trim() !== taskId) continue;
 
     taskSlot = i;
+    const slotMode = getMode(block).trim();
+    previousMode = slotMode && slotMode !== "null" ? slotMode : "";
+    const slotSession = getSession(block).trim();
+    previousSession = slotSession && slotSession !== "null" ? slotSession : "";
+    const slotAdapterArgs = getAdapterArgs(block).trim();
+    previousAdapterArgs = slotAdapterArgs && slotAdapterArgs !== "null" ? slotAdapterArgs : "";
     const slotPath = getPath(block).trim();
     if (slotPath && slotPath !== "null") existingPath = slotPath;
   }
 
-  return { taskSlot, existingPath, emptySlot };
+  return { taskSlot, existingPath, previousMode, previousSession, previousAdapterArgs, emptySlot };
 }
 
 async function launchSessionFromNotification(taskId: string, rawAdapter: string, adapterArgs: string = ""): Promise<void> {
@@ -623,8 +635,34 @@ async function launchSessionFromNotification(taskId: string, rawAdapter: string,
     await slotStart(slotNum);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
+    let rollbackStatus = "rollback skipped";
+    try {
+      if (selection.taskSlot === null) {
+        slotClear(slotNum, "ready");
+        rollbackStatus = "slot cleared back to ready";
+      } else {
+        slotAssign(
+          slotNum,
+          taskId,
+          selection.previousMode || "manual",
+          selection.previousSession,
+          selection.existingPath,
+          selection.previousAdapterArgs,
+        );
+        rollbackStatus = "restored prior slot assignment";
+      }
+    } catch (rollbackErr) {
+      const rollbackDetail = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+      rollbackStatus = `rollback failed: ${rollbackDetail}`;
+      console.error(`ludics: launch rollback failed for ${taskId} in slot ${slotNum}: ${rollbackDetail}`);
+    }
+
     console.error(`ludics: failed to launch ${adapter} for ${taskId} in slot ${slotNum}: ${detail}`);
-    notifyOutgoing(`Failed to launch ${adapter} for ${taskId} in slot ${slotNum}: ${detail}`, 3, "ludics");
+    notifyOutgoing(
+      `Failed to launch ${adapter} for ${taskId} in slot ${slotNum}: ${detail} (${rollbackStatus})`,
+      3,
+      "ludics",
+    );
     emitEvent({
       event_type: "notify_launch_error",
       source: "notify",
@@ -633,7 +671,7 @@ async function launchSessionFromNotification(taskId: string, rawAdapter: string,
       task: taskId,
       adapter,
       status: "error",
-      message: detail,
+      message: `${detail} (${rollbackStatus})`,
     });
     return;
   }
