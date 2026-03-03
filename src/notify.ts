@@ -414,8 +414,6 @@ interface SessionTaskMatch {
   session: SessionInfo;
   candidateIdx: number;
   followupDepth: number;
-  featureLength: number;
-  rootLength: number;
 }
 
 function compareSessionTaskMatch(
@@ -428,16 +426,6 @@ function compareSessionTaskMatch(
     return depthPreference === "deep"
       ? b.followupDepth - a.followupDepth
       : a.followupDepth - b.followupDepth;
-  }
-  if (a.featureLength !== b.featureLength) {
-    return depthPreference === "deep"
-      ? b.featureLength - a.featureLength
-      : a.featureLength - b.featureLength;
-  }
-  if (a.rootLength !== b.rootLength) {
-    return depthPreference === "deep"
-      ? b.rootLength - a.rootLength
-      : a.rootLength - b.rootLength;
   }
   return a.session.feature.localeCompare(b.session.feature);
 }
@@ -458,7 +446,6 @@ function selectSessionForTask(
   let best: SessionTaskMatch | null = null;
   for (const s of sessions) {
     const normalized = normalizeSessionFeatureForTaskMatch(s.feature);
-    const rootLength = basename(s.rootWorktree).length;
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i]!;
       let match: SessionTaskMatch | null = null;
@@ -467,8 +454,6 @@ function selectSessionForTask(
           session: s,
           candidateIdx: i,
           followupDepth: 0,
-          featureLength: normalized.length,
-          rootLength,
         };
       } else if (normalized.startsWith(candidate + "-")) {
         const suffix = normalized.slice(candidate.length + 1);
@@ -476,8 +461,6 @@ function selectSessionForTask(
           session: s,
           candidateIdx: i,
           followupDepth: countFollowupSuffixes(suffix),
-          featureLength: normalized.length,
-          rootLength,
         };
       }
       if (!match) continue;
@@ -502,9 +485,11 @@ function selectSessionForTask(
         bestBoundary = s;
         continue;
       }
-      const currentLen = basename(s.rootWorktree).length;
-      const bestLen = basename(bestBoundary.rootWorktree).length;
-      if (depthPreference === "deep" ? currentLen > bestLen : currentLen < bestLen) {
+      const currentDepth = countFollowupSuffixes(normalizeSessionFeatureForTaskMatch(s.feature));
+      const bestDepth = countFollowupSuffixes(normalizeSessionFeatureForTaskMatch(bestBoundary.feature));
+      if (depthPreference === "deep" ? currentDepth > bestDepth : currentDepth < bestDepth) {
+        bestBoundary = s;
+      } else if (currentDepth === bestDepth && s.feature.localeCompare(bestBoundary.feature) < 0) {
         bestBoundary = s;
       }
     }
