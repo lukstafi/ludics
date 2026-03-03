@@ -15,18 +15,24 @@ export PATH="/opt/homebrew/bin:$PATH"
 # Read Stop event input from stdin
 input=$(cat)
 
+# Ignore subagent stops; queue-pop should only run for top-level Stop events.
+hook_event_name=$(echo "$input" | jq -r '.hook_event_name // ""' 2>/dev/null)
+if [[ "$hook_event_name" == "SubagentStop" ]]; then
+  exit 0
+fi
+
 # Extract cwd so mag queue-pop can verify this is Mag session
 cwd=$(echo "$input" | jq -r '.cwd // ""' 2>/dev/null)
 
 # Find ludics binary and run queue-pop
 if command -v ludics >/dev/null 2>&1; then
-  exec ludics mag queue-pop "$cwd"
+  exec ludics mag queue-pop "$cwd" "$hook_event_name"
 fi
 
 # Fallback: check common install locations
 for bin in "$HOME/.local/bin/ludics" "$HOME/.local/ludics/bin/ludics"; do
   if [[ -x "$bin" ]]; then
-    exec "$bin" mag queue-pop "$cwd"
+    exec "$bin" mag queue-pop "$cwd" "$hook_event_name"
   fi
 done
 

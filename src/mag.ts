@@ -100,20 +100,41 @@ function nudgeTimestampFile(): string {
   return join(magStateDir(), "last-nudge.epoch");
 }
 
-function nudgeThrottled(): boolean {
-  const file = nudgeTimestampFile();
-  if (!existsSync(file)) return false;
+function stopHookTimestampFile(): string {
+  return join(magStateDir(), "last-stop-hook.epoch");
+}
+
+function readEpochFile(file: string): number | null {
+  if (!existsSync(file)) return null;
   try {
-    const lastEpoch = parseInt(readFileSync(file, "utf-8").trim(), 10);
-    return (Math.floor(Date.now() / 1000) - lastEpoch) < nudgeThrottleSeconds();
+    const epoch = parseInt(readFileSync(file, "utf-8").trim(), 10);
+    return Number.isFinite(epoch) && epoch > 0 ? epoch : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function nudgeThrottled(): boolean {
+  const lastNudgeEpoch = readEpochFile(nudgeTimestampFile());
+  if (lastNudgeEpoch === null) return false;
+
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const recentNudge = (nowEpoch - lastNudgeEpoch) < nudgeThrottleSeconds();
+  if (!recentNudge) return false;
+
+  // Back off repeated Continue nudges until a stop hook has fired after the last nudge.
+  const lastStopHookEpoch = readEpochFile(stopHookTimestampFile());
+  return lastStopHookEpoch === null || lastStopHookEpoch <= lastNudgeEpoch;
 }
 
 function writeNudgeTimestamp(): void {
   mkdirSync(magStateDir(), { recursive: true });
   writeFileSync(nudgeTimestampFile(), String(Math.floor(Date.now() / 1000)));
+}
+
+function writeStopHookTimestamp(): void {
+  mkdirSync(magStateDir(), { recursive: true });
+  writeFileSync(stopHookTimestampFile(), String(Math.floor(Date.now() / 1000)));
 }
 
 function feedbackDigestStateFile(): string {
@@ -1880,6 +1901,11 @@ export async function runMag(args: string[]): Promise<void> {
     case "queue-pop": {
       // Called by the stop hook to check if there's a queued skill to run
       const cwd = args[1] ?? "";
+      const hookEventName = args[2] ?? "";
+      if (hookEventName && hookEventName !== "Stop") {
+        // Defensive: ignore SubagentStop (and any non-Stop event) if passed by hook script.
+        break;
+      }
       if (cwd) {
         const harness = harnessDir();
         if (!cwd.startsWith(harness)) {
@@ -1887,6 +1913,7 @@ export async function runMag(args: string[]): Promise<void> {
           break;
         }
       }
+      writeStopHookTimestamp();
       const skillCommand = queuePopSkill();
       if (skillCommand) {
         console.log(JSON.stringify({ decision: "block", reason: skillCommand }));
