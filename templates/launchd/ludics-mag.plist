@@ -6,7 +6,7 @@
 
   Ensures Mag tmux session is running:
   - Starts on login (RunAtLoad)
-  - Checks every 15 minutes (StartInterval)
+  - Checks every 60 seconds (StartInterval)
   - Idempotent: exits early if already running
 
   Installation:
@@ -31,10 +31,10 @@
   <key>RunAtLoad</key>
   <true/>
 
-  <!-- Check every 15 minutes (900 seconds) -->
+  <!-- Check every 60 seconds -->
   <!-- Idempotent: ludics mag start exits early if session exists -->
   <key>StartInterval</key>
-  <integer>900</integer>
+  <integer>60</integer>
 
   <!-- Environment -->
   <key>EnvironmentVariables</key>

@@ -7,7 +7,7 @@ import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
 import { parseSlotBlocks, getTask, getPath } from "./slots/markdown.ts";
 import { listSessions, type SessionInfo } from "./adapters/peer-sync.ts";
-import { readSingleFile, resolveProjectDir, isGitWorktree, getMainRepoFromWorktree } from "./adapters/base.ts";
+import { readSingleFile, readStatusFile, resolveProjectDir, isGitWorktree, getMainRepoFromWorktree } from "./adapters/base.ts";
 import type { AdapterContext } from "./adapters/types.ts";
 
 function notificationLogFile(): string {
@@ -67,13 +67,17 @@ const NTFY_MAX_ACTIONS = 3;
 const PROPOSAL_INLINE_CHAR_CUTOFF = 800;
 const FOLLOWUP_SUMMARY_CHAR_CUTOFF = 300;
 const FOLLOWUP_PHASE = "suggest-refactor";
+const FOLLOWUP_TERMINAL_PHASES = new Set(["done", "completed", "complete", "finished", "stopped"]);
+const FOLLOWUP_TERMINAL_STATUSES = new Set(["done", "completed", "complete", "finished", "stopped", "error", "interrupted", "failed", "canceled", "cancelled"]);
 
 interface FollowupNotificationInput {
   taskId: string;
   adapter: string;
   slotNum: number | null;
+  sessionToken: string;
   phaseToken: string;
   prLinks: string[];
+  kind: "ready" | "completed";
   refactorSummary?: string;
 }
 
@@ -335,7 +339,7 @@ function saveFollowupNotifyState(state: Record<string, string>): void {
 }
 
 function followupNotifyKey(input: FollowupNotificationInput): string {
-  return `${input.taskId}|${input.adapter}|${input.phaseToken}`;
+  return `${input.taskId}|${input.adapter}|${input.kind}|${input.sessionToken}|${input.phaseToken}`;
 }
 
 function normalizeProjectDirCandidate(raw: string): string {
@@ -475,6 +479,40 @@ function collectRefactorSummary(peerSyncPath: string): string {
   return "";
 }
 
+function isFollowupSlotRun(ctx: AdapterContext): boolean {
+  return /(^|\s)--followup(?:\s|$)/.test(ctx.adapterArgs) || /(^|\s)--followup-msg(?:\s|$)/.test(ctx.adapterArgs);
+}
+
+function sessionToken(peerSyncPath: string, fallback: string): string {
+  return readSingleFile(join(peerSyncPath, "session")) ?? basename(peerSyncPath) ?? fallback;
+}
+
+function isCompletedFollowupPhase(phase: string): boolean {
+  return FOLLOWUP_TERMINAL_PHASES.has(phase.toLowerCase());
+}
+
+function followupStatusFiles(adapter: string): string[] {
+  switch (adapter) {
+    case "agent-duo":
+      return ["claude.status", "codex.status"];
+    case "agent-pair-codex":
+    case "agent-pair-claude":
+      return ["coder.status", "reviewer.status"];
+    default:
+      return [];
+  }
+}
+
+function hasCompletedFollowupStatuses(peerSyncPath: string, adapter: string): boolean {
+  const files = followupStatusFiles(adapter);
+  if (files.length === 0) return false;
+  const statuses = files
+    .map((fileName) => readStatusFile(join(peerSyncPath, fileName)))
+    .filter((status): status is NonNullable<typeof status> => status !== null);
+  if (statuses.length !== files.length) return false;
+  return statuses.every((status) => FOLLOWUP_TERMINAL_STATUSES.has(status.status.toLowerCase()));
+}
+
 function readPhaseToken(peerSyncPath: string): string {
   const token = readSingleFile(join(peerSyncPath, "phase-token")) ?? "";
   if (token) return token;
@@ -490,8 +528,6 @@ export function notifyPostMergeFollowup(input: FollowupNotificationInput): void 
     console.error("ludics: outgoing topic not configured, logging locally only");
     return;
   }
-  if (input.prLinks.length === 0) return;
-
   const key = followupNotifyKey(input);
   const state = loadFollowupNotifyState();
   if (state[key]) return;
@@ -500,16 +536,21 @@ export function notifyPostMergeFollowup(input: FollowupNotificationInput): void 
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
+  const titleBase = input.kind === "completed"
+    ? "Followup complete"
+    : "Post-merge followup";
   const title = input.slotNum !== null
-    ? `Post-merge followup [slot ${input.slotNum}]: ${input.taskId}`
-    : `Post-merge followup: ${input.taskId}`;
+    ? `${titleBase} [slot ${input.slotNum}]: ${input.taskId}`
+    : `${titleBase}: ${input.taskId}`;
 
   const lines: string[] = [
-    `Post-merge followup is ready for ${input.taskId}.`,
+    input.kind === "completed"
+      ? `Followup session completed for ${input.taskId}.`
+      : `Post-merge followup is ready for ${input.taskId}.`,
   ];
   if (input.prLinks.length === 1) {
     lines.push(`PR: ${input.prLinks[0]!}`);
-  } else {
+  } else if (input.prLinks.length > 1) {
     lines.push("PRs:");
     for (const link of input.prLinks) lines.push(`- ${link}`);
   }
@@ -579,17 +620,27 @@ export function maybeNotifyPostMergeFollowupForAdapter(ctx: AdapterContext): voi
   const session = selectSessionForTask(sessions, ctx.taskId);
   if (!session) return;
   const phase = readSingleFile(join(session.peerSyncPath, "phase")) ?? "";
-  if (phase !== FOLLOWUP_PHASE) return;
+  const followupSlotRun = isFollowupSlotRun(ctx);
+  const completedFollowup = isCompletedFollowupPhase(phase)
+    || hasCompletedFollowupStatuses(session.peerSyncPath, ctx.mode);
+  if (followupSlotRun) {
+    if (!completedFollowup) return;
+  } else if (phase !== FOLLOWUP_PHASE) {
+    return;
+  }
 
   const prLinks = collectPrLinks(session.peerSyncPath);
-  if (prLinks.length === 0) return;
   const phaseToken = readPhaseToken(session.peerSyncPath) || FOLLOWUP_PHASE;
   const refactorSummary = collectRefactorSummary(session.peerSyncPath);
+  if (!followupSlotRun && prLinks.length === 0) return;
+  if (followupSlotRun && prLinks.length === 0 && !refactorSummary) return;
   notifyPostMergeFollowup({
     taskId: ctx.taskId,
     adapter: ctx.mode,
     slotNum: ctx.slot,
+    sessionToken: sessionToken(session.peerSyncPath, ctx.taskId),
     phaseToken,
+    kind: followupSlotRun ? "completed" : "ready",
     prLinks,
     refactorSummary: refactorSummary || undefined,
   });
