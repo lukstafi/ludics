@@ -14,7 +14,7 @@ import {
   notifyOutgoing,
   expirePendingRevises,
   expirePendingFollowupRevises,
-  maybeNotifyPostMergeFollowupForAdapter,
+  maybeNotifySessionConclusionForAdapter,
 } from "./notify.ts";
 import { slotAssign, slotClear, taskCompleteDirectly } from "./slots/index.ts";
 import type { AdapterContext } from "./adapters/types.ts";
@@ -1224,7 +1224,7 @@ function maybeFillEmptySlots(): void {
   console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
 }
 
-function pollPostMergeFollowupNotifications(): void {
+function pollSessionConclusionNotifications(): void {
   const slotsFile = slotsFilePath();
   if (!existsSync(slotsFile)) return;
 
@@ -1249,7 +1249,7 @@ function pollPostMergeFollowupNotifications(): void {
       stateRepoDir: stateRepoDir(),
     };
 
-    maybeNotifyPostMergeFollowupForAdapter(ctx);
+    maybeNotifySessionConclusionForAdapter(ctx);
   }
 }
 
@@ -1292,8 +1292,8 @@ export function magStart(args: string[]): void {
     // Auto-fill empty slots with ready elaborated tasks
     maybeFillEmptySlots();
 
-    // Pull-based monitor for post-merge followup notifications (agent-duo/pair)
-    pollPostMergeFollowupNotifications();
+    // Pull-based monitor for session conclusion notifications (agent-duo/pair)
+    pollSessionConclusionNotifications();
 
     // Nudge if queue has items, but throttle to avoid spamming
     if (queuePending() && !nudgeThrottled()) {

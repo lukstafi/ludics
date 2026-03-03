@@ -65,19 +65,23 @@ function getTopic(tier: string): string {
 
 const NTFY_MAX_ACTIONS = 3;
 const PROPOSAL_INLINE_CHAR_CUTOFF = 800;
-const FOLLOWUP_SUMMARY_CHAR_CUTOFF = 300;
-const FOLLOWUP_PHASE = "suggest-refactor";
-const FOLLOWUP_TERMINAL_PHASES = new Set(["done", "completed", "complete", "finished", "stopped"]);
-const FOLLOWUP_TERMINAL_STATUSES = new Set(["done", "completed", "complete", "finished", "stopped", "error", "interrupted", "failed", "canceled", "cancelled"]);
+const CONCLUSION_SUMMARY_CHAR_CUTOFF = 300;
+// In agent-duo/agent-pair, suggest-refactor is the session-conclusion phase.
+const SESSION_CONCLUSION_PHASE = "suggest-refactor";
+// Keep these aligned with agent-duo/agent-pair phase and status vocab.
+const SESSION_CONCLUDED_PHASES = new Set([SESSION_CONCLUSION_PHASE]);
+const SESSION_CONCLUDED_STATUSES = new Set([
+  "suggest-refactor-done",
+]);
 
-interface FollowupNotificationInput {
+interface SessionConclusionNotificationInput {
   taskId: string;
   adapter: string;
   slotNum: number | null;
   sessionToken: string;
   phaseToken: string;
   prLinks: string[];
-  kind: "ready" | "completed";
+  kind: "in-progress" | "concluded";
   refactorSummary?: string;
 }
 
@@ -303,20 +307,21 @@ function extractRefactorSummary(markdownText: string): string {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
     const numbered = line.match(/^\d+\.\s+(.+)$/);
-    if (numbered) return truncateInline(numbered[1]!, FOLLOWUP_SUMMARY_CHAR_CUTOFF);
+    if (numbered) return truncateInline(numbered[1]!, CONCLUSION_SUMMARY_CHAR_CUTOFF);
     const bullet = line.match(/^-\s+(.+)$/);
-    if (bullet) return truncateInline(bullet[1]!, FOLLOWUP_SUMMARY_CHAR_CUTOFF);
+    if (bullet) return truncateInline(bullet[1]!, CONCLUSION_SUMMARY_CHAR_CUTOFF);
   }
   const firstText = lines.map((l) => l.trim()).find((l) => l && !l.startsWith("#")) ?? "";
-  return truncateInline(firstText, FOLLOWUP_SUMMARY_CHAR_CUTOFF);
+  return truncateInline(firstText, CONCLUSION_SUMMARY_CHAR_CUTOFF);
 }
 
-function followupNotifyStateFile(): string {
+function sessionConclusionStateFile(): string {
+  // Keep legacy file name for backward compatibility.
   return join(harnessDir(), "mag", "followup-notified.json");
 }
 
-function loadFollowupNotifyState(): Record<string, string> {
-  const file = followupNotifyStateFile();
+function loadSessionConclusionState(): Record<string, string> {
+  const file = sessionConclusionStateFile();
   if (!existsSync(file)) return {};
   try {
     const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown;
@@ -332,14 +337,18 @@ function loadFollowupNotifyState(): Record<string, string> {
   }
 }
 
-function saveFollowupNotifyState(state: Record<string, string>): void {
-  const file = followupNotifyStateFile();
+function saveSessionConclusionState(state: Record<string, string>): void {
+  const file = sessionConclusionStateFile();
   mkdirSync(join(harnessDir(), "mag"), { recursive: true });
   writeFileSync(file, JSON.stringify(state, null, 2) + "\n");
 }
 
-function followupNotifyKey(input: FollowupNotificationInput): string {
-  return `${input.taskId}|${input.adapter}|${input.kind}|${input.sessionToken}|${input.phaseToken}`;
+function sessionConclusionKey(input: SessionConclusionNotificationInput): string {
+  // Preserve old keys to avoid duplicate notifications after terminology renames.
+  const kindKey = input.kind === "in-progress"
+    ? "ready"
+    : "completed";
+  return `${input.taskId}|${input.adapter}|${kindKey}|${input.sessionToken}|${input.phaseToken}`;
 }
 
 function normalizeProjectDirCandidate(raw: string): string {
@@ -388,37 +397,122 @@ function matchesOrchestratedMode(peerSyncPath: string, modeFilter: string | null
   return mode === modeFilter;
 }
 
+type SessionSelectionDepth = "shallow" | "deep";
+
+function normalizeSessionFeatureForTaskMatch(feature: string): string {
+  if (feature.startsWith("pair-")) return feature.slice("pair-".length);
+  if (feature.startsWith("duo-")) return feature.slice("duo-".length);
+  return feature;
+}
+
+function countFollowupSuffixes(value: string): number {
+  const matches = value.match(/(^|-)followup(?=-|$)/g);
+  return matches ? matches.length : 0;
+}
+
+interface SessionTaskMatch {
+  session: SessionInfo;
+  candidateIdx: number;
+  followupDepth: number;
+  featureLength: number;
+  rootLength: number;
+}
+
+function compareSessionTaskMatch(
+  a: SessionTaskMatch,
+  b: SessionTaskMatch,
+  depthPreference: SessionSelectionDepth,
+): number {
+  if (a.candidateIdx !== b.candidateIdx) return a.candidateIdx - b.candidateIdx;
+  if (a.followupDepth !== b.followupDepth) {
+    return depthPreference === "deep"
+      ? b.followupDepth - a.followupDepth
+      : a.followupDepth - b.followupDepth;
+  }
+  if (a.featureLength !== b.featureLength) {
+    return depthPreference === "deep"
+      ? b.featureLength - a.featureLength
+      : a.featureLength - b.featureLength;
+  }
+  if (a.rootLength !== b.rootLength) {
+    return depthPreference === "deep"
+      ? b.rootLength - a.rootLength
+      : a.rootLength - b.rootLength;
+  }
+  return a.session.feature.localeCompare(b.session.feature);
+}
+
 function selectSessionForTask(
   sessions: SessionInfo[],
   taskId: string,
+  depthPreference: SessionSelectionDepth,
 ): SessionInfo | null {
   if (sessions.length === 0) return null;
   if (!taskId) return sessions.length === 1 ? sessions[0]! : null;
 
-  const aliases = taskFeatureAliases(taskId);
-  const candidates = [taskId, ...aliases];
+  // Prefer proposal-derived feature names; task ID is only a fallback.
+  const candidates = Array.from(
+    new Set([...taskFeatureAliases(taskId), taskId].map((v) => v.trim()).filter(Boolean)),
+  );
 
-  for (const candidate of candidates) {
-    const exact = sessions.find((s) => s.feature === candidate);
-    if (exact) return exact;
+  let best: SessionTaskMatch | null = null;
+  for (const s of sessions) {
+    const normalized = normalizeSessionFeatureForTaskMatch(s.feature);
+    const rootLength = basename(s.rootWorktree).length;
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i]!;
+      let match: SessionTaskMatch | null = null;
+      if (normalized === candidate) {
+        match = {
+          session: s,
+          candidateIdx: i,
+          followupDepth: 0,
+          featureLength: normalized.length,
+          rootLength,
+        };
+      } else if (normalized.startsWith(candidate + "-")) {
+        const suffix = normalized.slice(candidate.length + 1);
+        match = {
+          session: s,
+          candidateIdx: i,
+          followupDepth: countFollowupSuffixes(suffix),
+          featureLength: normalized.length,
+          rootLength,
+        };
+      }
+      if (!match) continue;
+      if (!best || compareSessionTaskMatch(match, best, depthPreference) < 0) {
+        best = match;
+      }
+    }
   }
 
+  if (best) {
+    return best.session;
+  }
+
+  // Backward-compatible fallback: boundary match when naming doesn't follow expected prefixes.
   for (const candidate of candidates) {
     const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const boundaryPattern = new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`);
-    const boundaryMatch = sessions.find((s) => boundaryPattern.test(s.feature));
-    if (boundaryMatch) return boundaryMatch;
+    let bestBoundary: SessionInfo | null = null;
+    for (const s of sessions) {
+      if (!boundaryPattern.test(s.feature)) continue;
+      if (!bestBoundary) {
+        bestBoundary = s;
+        continue;
+      }
+      const currentLen = basename(s.rootWorktree).length;
+      const bestLen = basename(bestBoundary.rootWorktree).length;
+      if (depthPreference === "deep" ? currentLen > bestLen : currentLen < bestLen) {
+        bestBoundary = s;
+      }
+    }
+    if (bestBoundary) return bestBoundary;
   }
 
   if (sessions.length === 1) return sessions[0]!;
   return null;
-}
-
-function isFollowupSession(session: SessionInfo): boolean {
-  const rootName = basename(session.rootWorktree).toLowerCase();
-  if (rootName.endsWith("-followup")) return true;
-  const feature = session.feature.toLowerCase();
-  return /(^|[-_])followup($|[-_])/.test(feature);
 }
 
 function taskFeatureAliases(taskId: string): string[] {
@@ -486,7 +580,7 @@ function collectRefactorSummary(peerSyncPath: string): string {
   return "";
 }
 
-function isFollowupSlotRun(ctx: AdapterContext): boolean {
+function preferDeepSessionSelection(ctx: AdapterContext): boolean {
   return /(^|\s)--followup(?:\s|$)/.test(ctx.adapterArgs) || /(^|\s)--followup-msg(?:\s|$)/.test(ctx.adapterArgs);
 }
 
@@ -494,8 +588,8 @@ function sessionToken(peerSyncPath: string, fallback: string): string {
   return readSingleFile(join(peerSyncPath, "session")) ?? basename(peerSyncPath) ?? fallback;
 }
 
-function isCompletedFollowupPhase(phase: string): boolean {
-  return FOLLOWUP_TERMINAL_PHASES.has(phase.toLowerCase());
+function isConcludedSessionPhase(phase: string): boolean {
+  return SESSION_CONCLUDED_PHASES.has(phase.toLowerCase());
 }
 
 function parseIsoEpochSeconds(value: string | undefined): number {
@@ -517,27 +611,28 @@ function phaseFileUpdatedSince(peerSyncPath: string, minEpochSec: number): boole
   }
 }
 
-function followupStatusFiles(adapter: string): string[] {
+function conclusionStatusFiles(adapter: string): string[] {
   switch (adapter) {
     case "agent-duo":
       return ["claude.status", "codex.status"];
     case "agent-pair-codex":
     case "agent-pair-claude":
-      return ["coder.status", "reviewer.status"];
+      // Pair session conclusion is signaled by coder only.
+      return ["coder.status"];
     default:
       return [];
   }
 }
 
-function hasCompletedFollowupStatuses(peerSyncPath: string, adapter: string, minEpochSec: number): boolean {
-  const files = followupStatusFiles(adapter);
+function hasConcludedSessionStatuses(peerSyncPath: string, adapter: string, minEpochSec: number): boolean {
+  const files = conclusionStatusFiles(adapter);
   if (files.length === 0) return false;
   const statuses = files
     .map((fileName) => readStatusFile(join(peerSyncPath, fileName)))
     .filter((status): status is NonNullable<typeof status> => status !== null);
   if (statuses.length !== files.length) return false;
   return statuses.every((status) =>
-    FOLLOWUP_TERMINAL_STATUSES.has(status.status.toLowerCase())
+    SESSION_CONCLUDED_STATUSES.has(status.status.toLowerCase())
     && (minEpochSec <= 0 || status.epoch >= minEpochSec),
   );
 }
@@ -550,32 +645,32 @@ function readPhaseToken(peerSyncPath: string): string {
   return phase && round ? `${phase}|r${round}` : phase;
 }
 
-export function notifyPostMergeFollowup(input: FollowupNotificationInput): void {
+export function notifySessionConclusion(input: SessionConclusionNotificationInput): void {
   const outTopic = getTopic("outgoing");
   const inTopic = getTopic("incoming");
   if (!outTopic) {
     console.error("ludics: outgoing topic not configured, logging locally only");
     return;
   }
-  const key = followupNotifyKey(input);
-  const state = loadFollowupNotifyState();
+  const key = sessionConclusionKey(input);
+  const state = loadSessionConclusionState();
   if (state[key]) return;
 
   const token = getToken();
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const titleBase = input.kind === "completed"
-    ? "Followup complete"
-    : "Post-merge followup";
+  const titleBase = input.kind === "concluded"
+    ? "Session concluded"
+    : "Session in progress";
   const title = input.slotNum !== null
     ? `${titleBase} [slot ${input.slotNum}]: ${input.taskId}`
     : `${titleBase}: ${input.taskId}`;
 
   const lines: string[] = [
-    input.kind === "completed"
-      ? `Followup session completed for ${input.taskId}.`
-      : `Post-merge followup is ready for ${input.taskId}.`,
+    input.kind === "concluded"
+      ? `Session concluded for ${input.taskId}.`
+      : `Session in progress for ${input.taskId}.`,
   ];
   if (input.prLinks.length === 1) {
     lines.push(`PR: ${input.prLinks[0]!}`);
@@ -628,53 +723,59 @@ export function notifyPostMergeFollowup(input: FollowupNotificationInput): void 
 
   if (result.httpCode !== "200") {
     const detail = result.body || result.stderr;
-    console.error(`ludics: ntfy.sh post-merge followup notification failed (HTTP ${result.httpCode})${detail ? `: ${detail}` : ""}, logged locally`);
+    console.error(`ludics: ntfy.sh session conclusion notification failed (HTTP ${result.httpCode})${detail ? `: ${detail}` : ""}, logged locally`);
     return;
   }
 
   state[key] = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  saveFollowupNotifyState(state);
-  notifyLog("outgoing", message.replace(/\n/g, " "), 3, "post-merge followup");
+  saveSessionConclusionState(state);
+  notifyLog("outgoing", message.replace(/\n/g, " "), 3, "session conclusion");
 }
 
-export function maybeNotifyPostMergeFollowupForAdapter(ctx: AdapterContext): void {
+export function maybeNotifySessionConclusionForAdapter(ctx: AdapterContext): void {
   if (!ctx.taskId) return;
   const modeFilter = orchestratedModeFilter(ctx.mode);
   if (!modeFilter) return;
 
   const projectDir = resolveAdapterProjectDir(ctx);
-  const followupSlotRun = isFollowupSlotRun(ctx);
+  const preferDeepSelection = preferDeepSessionSelection(ctx);
   const sessions = listSessions(projectDir).filter((s) => matchesOrchestratedMode(s.peerSyncPath, modeFilter));
   if (sessions.length === 0) return;
-  const candidateSessions = followupSlotRun ? sessions.filter(isFollowupSession) : sessions;
-  if (candidateSessions.length === 0) return;
-
-  const session = selectSessionForTask(candidateSessions, ctx.taskId);
+  // Slot intent influences depth preference only for session selection.
+  const session = selectSessionForTask(sessions, ctx.taskId, preferDeepSelection ? "deep" : "shallow");
   if (!session) return;
   const phase = readSingleFile(join(session.peerSyncPath, "phase")) ?? "";
-  const followupStartedEpoch = parseIsoEpochSeconds(ctx.started);
-  const completedFollowup = (
-    isCompletedFollowupPhase(phase)
-    && phaseFileUpdatedSince(session.peerSyncPath, followupStartedEpoch)
-  ) || hasCompletedFollowupStatuses(session.peerSyncPath, ctx.mode, followupStartedEpoch);
-  if (followupSlotRun) {
-    if (!completedFollowup) return;
-  } else if (phase !== FOLLOWUP_PHASE) {
+  const startedEpoch = parseIsoEpochSeconds(ctx.started);
+  const statusFiles = conclusionStatusFiles(ctx.mode);
+  const concluded = (
+    // For agent-duo/agent-pair, rely on status completion.
+    statusFiles.length > 0
+    && hasConcludedSessionStatuses(session.peerSyncPath, ctx.mode, startedEpoch)
+  ) || (
+    // Fallback for adapters without status files: terminal phase only.
+    statusFiles.length === 0
+    &&
+    isConcludedSessionPhase(phase)
+    && phaseFileUpdatedSince(session.peerSyncPath, startedEpoch)
+  );
+  if (preferDeepSelection) {
+    if (!concluded) return;
+  } else if (phase !== SESSION_CONCLUSION_PHASE) {
     return;
   }
 
   const prLinks = collectPrLinks(session.peerSyncPath);
-  const phaseToken = readPhaseToken(session.peerSyncPath) || FOLLOWUP_PHASE;
+  const phaseToken = readPhaseToken(session.peerSyncPath) || SESSION_CONCLUSION_PHASE;
   const refactorSummary = collectRefactorSummary(session.peerSyncPath);
-  if (!followupSlotRun && prLinks.length === 0) return;
-  if (followupSlotRun && prLinks.length === 0 && !refactorSummary) return;
-  notifyPostMergeFollowup({
+  if (!preferDeepSelection && prLinks.length === 0) return;
+  if (preferDeepSelection && prLinks.length === 0 && !refactorSummary) return;
+  notifySessionConclusion({
     taskId: ctx.taskId,
     adapter: ctx.mode,
     slotNum: ctx.slot,
     sessionToken: sessionToken(session.peerSyncPath, ctx.taskId),
     phaseToken,
-    kind: followupSlotRun ? "completed" : "ready",
+    kind: preferDeepSelection ? "concluded" : "in-progress",
     prLinks,
     refactorSummary: refactorSummary || undefined,
   });
