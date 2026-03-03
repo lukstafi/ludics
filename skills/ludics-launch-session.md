@@ -39,20 +39,25 @@ This skill is invoked when:
 
 3. **Decide action based on slot state**:
 
-   ### Case A: Task is in slot N with the **same** adapter
-   If adapter args were provided, re-assign with the same adapter to update args first.
-   Otherwise just start:
+   Intent split:
+   - **Continuation / restart**: no new run args (especially no `--followup` / `--followup-msg`)
+   - **Fresh run**: any followup args are present (or you explicitly need to switch adapter)
+   Adapter sameness is not the case boundary: a fresh run may use the same adapter or a different one.
+
+   ### Case A: Task is in slot N and intent is **continuation / restart**
+   Start the existing slot without re-assigning:
    ```bash
    ludics slot N start
    ```
 
-   ### Case B: Task is in slot N with a **different** adapter
-   Re-assign with the user's chosen adapter, preserving the path. If adapter args are
-   present, include `-A "<adapter_args>"`:
+   ### Case B: Task is in slot N and intent is **fresh run**
+   Re-assign before start to stamp a new slot assignment (`Started`) and adapter args.
+   Preserve `-p <existing-path>` whenever it is available (not `null`) so path does not get cleared.
    ```bash
    ludics slot N assign <task_id> -a <adapter> -p <existing-path> [-A "<adapter_args>"]
    ludics slot N start
    ```
+   If `existing-path` is `null`, omit `-p` and continue.
 
    ### Case C: Task not in any slot (fallback)
    Find an empty slot — look for `**Process:** (empty)`. If adapter args are present,
