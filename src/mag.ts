@@ -72,6 +72,7 @@ function triggerSkill(session: string, cmd: string): void {
 }
 
 const DEFAULT_NUDGE_THROTTLE_SECONDS = 60;
+const DEFAULT_NUDGE_BACKOFF_SECONDS = 600;
 
 function nudgeThrottleSeconds(): number {
   const envVal = process.env.LUDICS_NUDGE_THROTTLE_SECONDS;
@@ -88,12 +89,25 @@ function nudgeThrottleSeconds(): number {
     return Math.floor(configuredThrottle);
   }
 
-  const keepaliveInterval = Number(mag?.keepalive_interval ?? DEFAULT_NUDGE_THROTTLE_SECONDS);
-  if (Number.isFinite(keepaliveInterval) && keepaliveInterval > 0) {
-    return Math.floor(keepaliveInterval);
+  return DEFAULT_NUDGE_THROTTLE_SECONDS;
+}
+
+function nudgeBackoffSeconds(): number {
+  const envVal = process.env.LUDICS_NUDGE_BACKOFF_SECONDS;
+  if (envVal) {
+    const parsed = parseInt(envVal, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
 
-  return DEFAULT_NUDGE_THROTTLE_SECONDS;
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+
+  const configuredBackoff = Number(mag?.nudge_backoff_seconds);
+  if (Number.isFinite(configuredBackoff) && configuredBackoff > 0) {
+    return Math.floor(configuredBackoff);
+  }
+
+  return DEFAULT_NUDGE_BACKOFF_SECONDS;
 }
 
 function nudgeTimestampFile(): string {
@@ -119,10 +133,11 @@ function nudgeThrottled(): boolean {
   if (lastNudgeEpoch === null) return false;
 
   const nowEpoch = Math.floor(Date.now() / 1000);
-  const recentNudge = (nowEpoch - lastNudgeEpoch) < nudgeThrottleSeconds();
-  if (!recentNudge) return false;
+  const elapsed = nowEpoch - lastNudgeEpoch;
+  if (elapsed < nudgeThrottleSeconds()) return true;
 
   // Back off repeated Continue nudges until a stop hook has fired after the last nudge.
+  if (elapsed >= nudgeBackoffSeconds()) return false;
   const lastStopHookEpoch = readEpochFile(stopHookTimestampFile());
   return lastStopHookEpoch === null || lastStopHookEpoch <= lastNudgeEpoch;
 }
