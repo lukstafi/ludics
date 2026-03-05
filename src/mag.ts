@@ -953,28 +953,50 @@ async function launchSessionFromNotification(taskId: string, rawAdapter: string,
   console.error(`ludics: launched ${adapter} for ${taskId} in slot ${slotNum} (${action})`);
 }
 
-async function queuePopSkill(): Promise<string | null> {
-  const queueFile = join(harnessDir(), "mag", "queue.jsonl");
-  if (!existsSync(queueFile)) return null;
+type QueueDequeueResult =
+  | { status: "empty" }
+  | { status: "mismatch" }
+  | { status: "popped"; line: string; request: Record<string, unknown> | null };
+
+function queueFilePath(): string {
+  return join(harnessDir(), "mag", "queue.jsonl");
+}
+
+function dequeueQueueHead(expectedLine?: string): QueueDequeueResult {
+  const queueFile = queueFilePath();
+  if (!existsSync(queueFile)) return { status: "empty" };
 
   const content = readFileSync(queueFile, "utf-8").trim();
-  if (!content) return null;
+  if (!content) return { status: "empty" };
 
   const lines = content.split("\n");
   const first = lines[0]!;
 
-  let request: Record<string, unknown>;
-  try {
-    request = JSON.parse(first) as Record<string, unknown>;
-  } catch {
-    console.error("ludics: mag queue-pop: invalid request in queue");
-    // Drop malformed head entries so they don't wedge queue processing forever.
-    writeFileSync(queueFile, lines.slice(1).join("\n") + (lines.length > 1 ? "\n" : ""));
-    return null;
+  if (expectedLine !== undefined && first !== expectedLine) {
+    return { status: "mismatch" };
   }
 
-  // Remove from queue atomically
   writeFileSync(queueFile, lines.slice(1).join("\n") + (lines.length > 1 ? "\n" : ""));
+
+  try {
+    return { status: "popped", line: first, request: JSON.parse(first) as Record<string, unknown> };
+  } catch {
+    return { status: "popped", line: first, request: null };
+  }
+}
+
+async function queuePopSkill(): Promise<string | null> {
+  const queueFile = join(harnessDir(), "mag", "queue.jsonl");
+  if (!existsSync(queueFile)) return null;
+
+  const popped = dequeueQueueHead();
+  if (popped.status !== "popped") return null;
+
+  if (!popped.request) {
+    console.error("ludics: mag queue-pop: invalid request in queue");
+    return null;
+  }
+  const request = popped.request;
 
   // Write request ID to file so skills can read it (env vars can't be set mid-session)
   const requestId = String(request.id ?? "");
@@ -1119,7 +1141,7 @@ async function resolveQueueRequestCommand(request: Record<string, unknown>, exec
 }
 
 async function drainProgrammaticQueueHead(): Promise<boolean> {
-  const queueFile = join(harnessDir(), "mag", "queue.jsonl");
+  const queueFile = queueFilePath();
 
   while (true) {
     if (!existsSync(queueFile)) return false;
@@ -1132,15 +1154,21 @@ async function drainProgrammaticQueueHead(): Promise<boolean> {
     try {
       request = JSON.parse(first) as Record<string, unknown>;
     } catch {
-      // queuePopSkill() will drop malformed head entries.
-      await queuePopSkill();
+      const dropped = dequeueQueueHead(first);
+      if (dropped.status === "mismatch") continue;
+      if (dropped.status === "popped") {
+        console.error("ludics: mag queue-pop: invalid request in queue");
+      }
       continue;
     }
 
     const command = await resolveQueueRequestCommand(request, false);
     if (command) return true;
 
-    await queuePopSkill();
+    const popped = dequeueQueueHead(first);
+    if (popped.status === "mismatch") continue;
+    if (popped.status !== "popped" || !popped.request) continue;
+    await resolveQueueRequestCommand(popped.request, true);
   }
 }
 
