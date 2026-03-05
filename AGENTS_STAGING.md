@@ -63,3 +63,9 @@ For proposal-driven tasks, run a quick `rg` sweep before editing because proposa
 `bun run typecheck` depends on local `typescript` from `devDependencies`. If dependencies are not installed yet, the command fails with `Script not found "tsc"`; run `bun install` first in fresh worktrees.
 
 <!-- End entry -->
+<!-- Entry: gh-ludics-30-coder | 2026-03-05T18:48:08+0100 -->
+### Fresh Worktree Preflight: Install Bun Dependencies First
+
+In fresh worktrees, run bun install before bun run typecheck or bun run build. Without installed dependencies, typecheck can fail with Script not found "tsc", which can look like a config issue but is just missing local deps.
+
+<!-- End entry -->
