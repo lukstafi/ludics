@@ -628,10 +628,17 @@ function tasksQueueElaborations(): void {
     const statusMatch = content.match(/^status:\s*(.+)$/m);
     if (statusMatch && statusMatch[1]!.trim() !== "ready") continue;
 
-    // Auto-queue only first-time elaboration. Some older elaborations can retain
-    // placeholder body text (e.g. "- [ ] TBD"), which should not cause repeated
-    // elaborate requests once the frontmatter has an elaborated date.
-    if (content.match(/^elaborated:\s*(.+)$/m)) continue;
+    // Auto-queue only when elaboration is unset/incomplete.
+    // Treat absent, false, and null as "not elaborated"; any other non-empty
+    // value (e.g. true or a date) is considered already elaborated.
+    const elaboratedMatch = content.match(/^elaborated:\s*(.+)$/m);
+    if (elaboratedMatch) {
+      const normalized = elaboratedMatch[1]!
+        .trim()
+        .replace(/^['"]|['"]$/g, "")
+        .toLowerCase();
+      if (normalized && normalized !== "false" && normalized !== "null") continue;
+    }
 
     if (alreadyQueued.includes(`"task":"${taskId}"`)) continue;
 
