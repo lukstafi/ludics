@@ -40,6 +40,30 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
   - Run `ludics tasks merge <target> <this_task_id>` to merge
   - Report `STATUS: merged` and stop
 
+### 0b. Milestone-aware blocking (watch tasks)
+
+For tasks with `source: watch` (README-derived), determine which **milestone
+section** the source line belongs to. OCANNL milestones follow this order:
+
+  v0.7.0 → v0.7.1 → v0.8 → v0.9 → v1.0
+
+Steps:
+1. Read the project's README.md (or ROADMAP.md) and locate the source line
+   referenced in the task's Context section.
+2. Identify which milestone section that line falls under.
+3. Check the milestone dependency chains in Mag's memory
+   (`$LUDICS_STATE_PATH/mag/memory/MEMORY.md`, section "Milestone Dependency
+   Chains") for known gate tasks in prior milestones.
+4. Set `blocked_by` in the frontmatter to at least one representative gate
+   task from the immediately prior milestone. For example, a v0.8 task should
+   be blocked by a v0.7 gate task; a v1.0 task should be blocked by v0.9 work.
+5. If the prior milestone has no completed gate task, set `status: blocked`.
+6. If the task is a **meta-task** (umbrella for multiple sub-tasks, e.g.,
+   "resolve a few explore issues"), set `status: blocked` and note in the
+   elaboration that it depends on prior milestone completion.
+
+This prevents premature scheduling of tasks whose prerequisites aren't done.
+
 ### 1. Read task file (if not already read)
 
 ```bash
