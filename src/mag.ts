@@ -963,28 +963,31 @@ async function queuePopSkill(): Promise<string | null> {
   const lines = content.split("\n");
   const first = lines[0]!;
 
-  let action: string;
-  let requestId: string;
   let request: Record<string, unknown>;
   try {
     request = JSON.parse(first) as Record<string, unknown>;
-    action = String(request.action ?? "");
-    requestId = String(request.id ?? "");
   } catch {
     console.error("ludics: mag queue-pop: invalid request in queue");
+    // Drop malformed head entries so they don't wedge queue processing forever.
+    writeFileSync(queueFile, lines.slice(1).join("\n") + (lines.length > 1 ? "\n" : ""));
     return null;
   }
-
-  if (!action) return null;
 
   // Remove from queue atomically
   writeFileSync(queueFile, lines.slice(1).join("\n") + (lines.length > 1 ? "\n" : ""));
 
   // Write request ID to file so skills can read it (env vars can't be set mid-session)
+  const requestId = String(request.id ?? "");
   if (requestId) {
     const requestIdFile = join(harnessDir(), "mag", "current-request-id");
     writeFileSync(requestIdFile, requestId);
   }
+
+  return await resolveQueueRequestCommand(request, true);
+}
+
+async function resolveQueueRequestCommand(request: Record<string, unknown>, executeProgrammatic: boolean): Promise<string | null> {
+  const action = String(request.action ?? "");
 
   // Map action to skill command
   switch (action) {
@@ -1011,29 +1014,37 @@ async function queuePopSkill(): Promise<string | null> {
       // e.g. "Launch agent-duo for task-042 in project ocannl"
       const launchMatch = content.match(/^Launch (agent-[\w-]+) for ([\w.-]+) in project .+$/);
       if (launchMatch) {
-        const adapter = launchMatch[1]!;
-        const taskId = launchMatch[2]!;
-        await launchSessionFromNotification(taskId, adapter);
+        if (executeProgrammatic) {
+          const adapter = launchMatch[1]!;
+          const taskId = launchMatch[2]!;
+          await launchSessionFromNotification(taskId, adapter);
+        }
         return null;
       }
 
       const abandonMatch = content.match(/^Abandon task ([\w.-]+)$/);
       if (abandonMatch) {
-        abandonTaskFromNotification(abandonMatch[1]!);
+        if (executeProgrammatic) {
+          abandonTaskFromNotification(abandonMatch[1]!);
+        }
         return null;
       }
 
       const followupMatch = content.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
       if (followupMatch) {
-        const adapter = followupMatch[1]!;
-        const taskId = followupMatch[2]!;
-        await launchSessionFromNotification(taskId, adapter, buildFollowupAdapterArgs(""));
+        if (executeProgrammatic) {
+          const adapter = followupMatch[1]!;
+          const taskId = followupMatch[2]!;
+          await launchSessionFromNotification(taskId, adapter, buildFollowupAdapterArgs(""));
+        }
         return null;
       }
 
       const doneMatch = content.match(/^Done task ([\w.-]+)$/);
       if (doneMatch) {
-        completeTaskFromNotification(doneMatch[1]!);
+        if (executeProgrammatic) {
+          completeTaskFromNotification(doneMatch[1]!);
+        }
         return null;
       }
 
@@ -1044,19 +1055,27 @@ async function queuePopSkill(): Promise<string | null> {
       const adapter = String(request.adapter ?? "");
       const followupMsg = String(request.followup_msg ?? "");
       if (!task || !adapter) {
-        console.error("ludics: mag queue-pop: adapter-followup missing task/adapter");
+        if (executeProgrammatic) {
+          console.error("ludics: mag queue-pop: adapter-followup missing task/adapter");
+        }
         return null;
       }
-      await launchSessionFromNotification(task, adapter, buildFollowupAdapterArgs(followupMsg));
+      if (executeProgrammatic) {
+        await launchSessionFromNotification(task, adapter, buildFollowupAdapterArgs(followupMsg));
+      }
       return null;
     }
     case "complete-task": {
       const task = String(request.task ?? "");
       if (!task) {
-        console.error("ludics: mag queue-pop: complete-task missing task");
+        if (executeProgrammatic) {
+          console.error("ludics: mag queue-pop: complete-task missing task");
+        }
         return null;
       }
-      completeTaskFromNotification(task);
+      if (executeProgrammatic) {
+        completeTaskFromNotification(task);
+      }
       return null;
     }
     case "feedback-digest": {
@@ -1092,8 +1111,36 @@ async function queuePopSkill(): Promise<string | null> {
       adoptSessionsPrecomputeContext();
       return "/ludics-adopt-sessions";
     default:
-      console.error(`ludics: mag queue-pop: unknown action: ${action}`);
+      if (executeProgrammatic) {
+        console.error(`ludics: mag queue-pop: unknown action: ${action}`);
+      }
       return null;
+  }
+}
+
+async function drainProgrammaticQueueHead(): Promise<boolean> {
+  const queueFile = join(harnessDir(), "mag", "queue.jsonl");
+
+  while (true) {
+    if (!existsSync(queueFile)) return false;
+
+    const content = readFileSync(queueFile, "utf-8").trim();
+    if (!content) return false;
+
+    const first = content.split("\n")[0]!;
+    let request: Record<string, unknown>;
+    try {
+      request = JSON.parse(first) as Record<string, unknown>;
+    } catch {
+      // queuePopSkill() will drop malformed head entries.
+      await queuePopSkill();
+      continue;
+    }
+
+    const command = await resolveQueueRequestCommand(request, false);
+    if (command) return true;
+
+    await queuePopSkill();
   }
 }
 
@@ -1887,8 +1934,10 @@ export async function magStart(args: string[]): Promise<void> {
     // If startup got stuck (e.g. Claude helper hung), recover automatically.
     maybeRecoverStuckStartup();
 
-    // Nudge if queue has items, but throttle to avoid spamming
-    if (queuePending() && !nudgeThrottled()) {
+    // Execute programmatic head requests immediately; only nudge when the next
+    // queued request requires a Mag turn (skill/direct message).
+    const queueNeedsMagTurn = queuePending() ? await drainProgrammaticQueueHead() : false;
+    if (queueNeedsMagTurn && !nudgeThrottled()) {
       const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
       const nudged = triggerSkill(MAG_SESSION_NAME, `Continue previous work if any. Queue requests arrive as skill commands on stop hook. (ludics, ${now})`);
       if (nudged) {
@@ -1953,7 +2002,8 @@ export async function magStart(args: string[]): Promise<void> {
 
   if (useTtyd) ensureTtyd();
 
-  // Drain queue
+  // Drain programmatic requests first, then deliver one skill/direct request.
+  await drainProgrammaticQueueHead();
   const skillCmd = await queuePopSkill();
   if (skillCmd) {
     Bun.spawnSync(["sleep", "5"], { stdout: "pipe", stderr: "pipe" });
