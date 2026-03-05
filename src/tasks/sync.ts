@@ -1,12 +1,13 @@
 // Task aggregation — sync from GitHub issues and watch paths
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, appendFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
 import { join, dirname } from "path";
 import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCount } from "../config.ts";
 import { slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getProcess, getTask } from "../slots/markdown.ts";
 import { writeTaskFile, updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter } from "./markdown.ts";
 import { emitEvent } from "../events.ts";
+import { queueRequest } from "../queue.ts";
 
 function yamlEscape(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -634,11 +635,7 @@ function tasksQueueElaborations(): void {
 
     if (alreadyQueued.includes(`"task":"${taskId}"`)) continue;
 
-    mkdirSync(dirname(queueFile), { recursive: true });
-    const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    const requestId = `req-${Math.floor(Date.now() / 1000)}-${process.pid}`;
-    const request = `{"id":"${requestId}","action":"elaborate","timestamp":"${timestamp}","task":"${taskId}"}`;
-    appendFileSync(queueFile, request + "\n");
+    queueRequest("elaborate", `"task":"${taskId}"`);
     emitEvent({ event_type: "task_elaborate_queued", source: "sync", scope: "task", task: taskId });
     count++;
   }
@@ -758,12 +755,8 @@ function tasksQueuePreemptions(): void {
     );
     if (alreadyQueuedForTask) continue;
 
-    mkdirSync(dirname(queueFile), { recursive: true });
-    const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    const requestId = `req-${Math.floor(Date.now() / 1000)}-${process.pid}`;
     const autonomy = preemptAutonomy();
-    const request = `{"id":"${requestId}","action":"preempt","timestamp":"${timestamp}","task":"${id}","autonomy":"${autonomy}"}`;
-    appendFileSync(queueFile, request + "\n");
+    queueRequest("preempt", `"task":"${id}","autonomy":"${autonomy}"`);
     emitEvent({ event_type: "task_preempt_queued", source: "sync", scope: "task", task: id, message: `priority project: ${project}` });
     // Mark task immediately so subsequent syncs won't re-queue it
     // (closes the race window between queue-pop and actual slot assignment)

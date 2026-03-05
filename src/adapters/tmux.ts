@@ -52,16 +52,18 @@ export function tmuxKillSession(name: string): void {
  * Send keys to a tmux session.
  * When literal is true, uses -l to send keys literally (no special key lookup).
  */
-export function tmuxSendKeys(session: string, keys: string, literal: boolean = false): void {
+export function tmuxSendKeys(session: string, keys: string, literal: boolean = false): boolean {
   const args = ["send-keys", "-t", session];
   if (literal) args.push("-l");
   args.push(keys);
-  run(args);
+  const { exitCode } = run(args);
+  return exitCode === 0;
 }
 
 /** Send a command to a tmux session (literal text + Enter). */
-export function tmuxSendCommand(session: string, command: string): void {
-  run(["send-keys", "-t", session, command, "C-m"]);
+export function tmuxSendCommand(session: string, command: string): boolean {
+  const { exitCode } = run(["send-keys", "-t", session, command, "C-m"]);
+  return exitCode === 0;
 }
 
 /** Capture pane content from a tmux session. Returns null if capture fails. */
@@ -79,6 +81,37 @@ export function tmuxPaneCwd(session: string): string | null {
   if (exitCode !== 0) return null;
   const cwd = stdout.trim();
   return cwd || null;
+}
+
+/** Get the PID of the active pane process in a session. */
+export function tmuxPanePid(session: string): number | null {
+  const { exitCode, stdout } = run([
+    "display-message", "-t", session, "-p", "#{pane_pid}",
+  ]);
+  if (exitCode !== 0) return null;
+  const parsed = parseInt(stdout.trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** Check whether the active pane is currently in copy-mode. */
+export function tmuxPaneInMode(session: string): boolean {
+  const { exitCode, stdout } = run([
+    "display-message", "-t", session, "-p", "#{pane_in_mode}",
+  ]);
+  if (exitCode !== 0) return false;
+  return stdout.trim() === "1";
+}
+
+/** Cancel copy-mode in the active pane (best-effort). */
+export function tmuxCancelMode(session: string): boolean {
+  const { exitCode } = run(["send-keys", "-t", session, "-X", "cancel"]);
+  return exitCode === 0;
+}
+
+/** Switch the active tmux client to another session (when already inside tmux). */
+export function tmuxSwitchClient(session: string): boolean {
+  const { exitCode } = run(["switch-client", "-t", session]);
+  return exitCode === 0;
 }
 
 /**

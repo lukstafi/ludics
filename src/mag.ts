@@ -1,6 +1,6 @@
 // Mag session management — start/stop/status/attach/logs/doctor/briefing/queue
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
@@ -27,6 +27,10 @@ import {
   tmuxSendKeys,
   tmuxSendCommand,
   tmuxCapture,
+  tmuxPanePid,
+  tmuxPaneInMode,
+  tmuxCancelMode,
+  tmuxSwitchClient,
   tmuxRunShell,
 } from "./adapters/tmux.ts";
 
@@ -64,15 +68,32 @@ function magIsRunning(): boolean {
   return tmuxHasSession(MAG_SESSION_NAME);
 }
 
-function triggerSkill(session: string, cmd: string): void {
-  tmuxSendKeys(session, cmd, true);
+function claudeLaunchCommand(): string {
+  // Compact mode has been observed to wedge on startup helper subprocesses
+  // in some environments. Keep plain mode as the safe default.
+  const compactEnv = process.env.LUDICS_MAG_CLAUDE_COMPACT;
+  if (compactEnv === "1" || compactEnv === "true") {
+    return "claude -c --dangerously-skip-permissions || claude --dangerously-skip-permissions";
+  }
+  return "claude --dangerously-skip-permissions";
+}
+
+function triggerSkill(session: string, cmd: string): boolean {
+  if (tmuxPaneInMode(session)) {
+    tmuxCancelMode(session);
+  }
+  const sent = tmuxSendKeys(session, cmd, true);
+  if (!sent) return false;
   // Small delay before Enter
   Bun.spawnSync(["sleep", "0.5"], { stdout: "pipe", stderr: "pipe" });
-  tmuxSendKeys(session, "Enter");
+  return tmuxSendKeys(session, "Enter");
 }
 
 const DEFAULT_NUDGE_THROTTLE_SECONDS = 60;
 const DEFAULT_NUDGE_BACKOFF_SECONDS = 600;
+const DEFAULT_STARTUP_WATCHDOG_SECONDS = 60;
+const DEFAULT_STARTUP_HELPER_STUCK_SECONDS = 45;
+const STARTUP_ALERT_TITLE = "Mag alert";
 
 function nudgeThrottleSeconds(): number {
   const envVal = process.env.LUDICS_NUDGE_THROTTLE_SECONDS;
@@ -118,6 +139,10 @@ function stopHookTimestampFile(): string {
   return join(magStateDir(), "last-stop-hook.epoch");
 }
 
+function startupWatchdogEpochFile(): string {
+  return join(magStateDir(), "startup-watchdog.epoch");
+}
+
 function readEpochFile(file: string): number | null {
   if (!existsSync(file)) return null;
   try {
@@ -150,6 +175,242 @@ function writeNudgeTimestamp(): void {
 function writeStopHookTimestamp(): void {
   mkdirSync(magStateDir(), { recursive: true });
   writeFileSync(stopHookTimestampFile(), String(Math.floor(Date.now() / 1000)));
+}
+
+function startupWatchdogSeconds(): number {
+  const envVal = process.env.LUDICS_STARTUP_WATCHDOG_SECONDS;
+  if (envVal) {
+    const parsed = parseInt(envVal, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+  const configured = Number(mag?.startup_watchdog_seconds);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured);
+  }
+
+  return DEFAULT_STARTUP_WATCHDOG_SECONDS;
+}
+
+function startupHelperStuckSeconds(): number {
+  const envVal = process.env.LUDICS_STARTUP_HELPER_STUCK_SECONDS;
+  if (envVal) {
+    const parsed = parseInt(envVal, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+  const configured = Number(mag?.startup_helper_stuck_seconds);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured);
+  }
+
+  return DEFAULT_STARTUP_HELPER_STUCK_SECONDS;
+}
+
+function writeStartupWatchdogEpoch(): void {
+  mkdirSync(magStateDir(), { recursive: true });
+  writeFileSync(startupWatchdogEpochFile(), String(Math.floor(Date.now() / 1000)));
+}
+
+function clearStartupWatchdogEpoch(): void {
+  const file = startupWatchdogEpochFile();
+  if (!existsSync(file)) return;
+  try {
+    unlinkSync(file);
+  } catch {
+    // Best-effort
+  }
+}
+
+function startupAlertStateFile(): string {
+  return join(magStateDir(), "startup-alerts.json");
+}
+
+function loadStartupAlertState(): Record<string, number> {
+  const file = startupAlertStateFile();
+  if (!existsSync(file)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "number" && Number.isFinite(v) && v > 0) out[k] = Math.floor(v);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveStartupAlertState(state: Record<string, number>): void {
+  mkdirSync(magStateDir(), { recursive: true });
+  writeFileSync(startupAlertStateFile(), JSON.stringify(state, null, 2) + "\n");
+}
+
+function clearStartupAlertsForEpoch(startupEpoch: number): void {
+  const state = loadStartupAlertState();
+  let changed = false;
+  const suffix = `|${startupEpoch}`;
+  for (const key of Object.keys(state)) {
+    if (!key.endsWith(suffix)) continue;
+    delete state[key];
+    changed = true;
+  }
+  if (changed) saveStartupAlertState(state);
+}
+
+function notifyStartupAlertOnce(kind: string, startupEpoch: number, message: string): void {
+  const key = `${kind}|${startupEpoch}`;
+  const state = loadStartupAlertState();
+  if (state[key]) return;
+
+  state[key] = Math.floor(Date.now() / 1000);
+  saveStartupAlertState(state);
+
+  notifyOutgoing(message, 5, STARTUP_ALERT_TITLE);
+  emitEvent({
+    event_type: "mag_startup_alert",
+    source: "keepalive",
+    scope: "mag",
+    status: "warning",
+    message,
+  });
+}
+
+function latestResultEpoch(): number | null {
+  const dir = join(harnessDir(), "mag", "results");
+  if (!existsSync(dir)) return null;
+  let newest = 0;
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const mtime = Math.floor(statSync(join(dir, f)).mtimeMs / 1000);
+      if (mtime > newest) newest = mtime;
+    } catch {
+      continue;
+    }
+  }
+  return newest > 0 ? newest : null;
+}
+
+function readPsCommand(pid: number): string {
+  const out = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "pipe" });
+  if (out.exitCode !== 0) return "";
+  return out.stdout.toString().trim();
+}
+
+function readPsElapsedSeconds(pid: number): number | null {
+  const out = Bun.spawnSync(["ps", "-p", String(pid), "-o", "etimes="], { stdout: "pipe", stderr: "pipe" });
+  if (out.exitCode !== 0) return null;
+  const parsed = parseInt(out.stdout.toString().trim(), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function childPids(parentPid: number): number[] {
+  const out = Bun.spawnSync(["pgrep", "-P", String(parentPid)], { stdout: "pipe", stderr: "pipe" });
+  if (out.exitCode !== 0) return [];
+  return out.stdout
+    .toString()
+    .split("\n")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+function findClaudePidForPane(session: string): number | null {
+  const panePid = tmuxPanePid(session);
+  if (!panePid) return null;
+  const children = childPids(panePid);
+  for (const pid of children) {
+    const cmd = readPsCommand(pid);
+    if (!cmd) continue;
+    if (cmd.startsWith("claude ") || cmd.includes("/claude ")) return pid;
+  }
+  return null;
+}
+
+function claudeStartupHelperMaxAgeSeconds(claudePid: number): number {
+  let maxAge = 0;
+  for (const pid of childPids(claudePid)) {
+    const cmd = readPsCommand(pid);
+    if (!cmd.includes("--ripgrep --files --hidden")) continue;
+    const age = readPsElapsedSeconds(pid);
+    if (age !== null && age > maxAge) maxAge = age;
+  }
+  return maxAge;
+}
+
+function restartClaudeInMag(reason: string): boolean {
+  const claudePid = findClaudePidForPane(MAG_SESSION_NAME);
+  if (claudePid) {
+    const descendants = childPids(claudePid);
+    if (descendants.length > 0) {
+      Bun.spawnSync(["kill", "-9", ...descendants.map((pid) => String(pid))], { stdout: "pipe", stderr: "pipe" });
+    }
+    Bun.spawnSync(["kill", "-9", String(claudePid)], { stdout: "pipe", stderr: "pipe" });
+  }
+
+  const launched = tmuxSendCommand(MAG_SESSION_NAME, claudeLaunchCommand());
+  if (!launched) {
+    console.error(`ludics: startup watchdog: failed to relaunch Claude (${reason})`);
+    emitEvent({
+      event_type: "mag_startup_recover",
+      source: "keepalive",
+      scope: "mag",
+      status: "failed",
+      message: `failed relaunch (${reason})`,
+    });
+    return false;
+  }
+
+  writeStartupWatchdogEpoch();
+  emitEvent({
+    event_type: "mag_startup_recover",
+    source: "keepalive",
+    scope: "mag",
+    status: "ok",
+    message: `restarted Claude (${reason})`,
+  });
+  return true;
+}
+
+function maybeRecoverStuckStartup(): void {
+  const startupEpoch = readEpochFile(startupWatchdogEpochFile());
+  if (!startupEpoch) return;
+
+  const lastStopHook = readEpochFile(stopHookTimestampFile());
+  if (lastStopHook && lastStopHook >= startupEpoch) {
+    clearStartupAlertsForEpoch(startupEpoch);
+    clearStartupWatchdogEpoch();
+    return;
+  }
+
+  const lastResult = latestResultEpoch();
+  if (lastResult && lastResult >= startupEpoch) {
+    clearStartupAlertsForEpoch(startupEpoch);
+    clearStartupWatchdogEpoch();
+    return;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if ((now - startupEpoch) < startupWatchdogSeconds()) return;
+
+  const claudePid = findClaudePidForPane(MAG_SESSION_NAME);
+  if (!claudePid) {
+    console.error("ludics: startup watchdog: Claude process missing; attempting relaunch");
+    restartClaudeInMag("process missing");
+    return;
+  }
+
+  const helperAge = claudeStartupHelperMaxAgeSeconds(claudePid);
+  if (helperAge >= startupHelperStuckSeconds()) {
+    const message = `Mag startup degraded: Claude appears stuck in upstream helper (--ripgrep --files --hidden) for ${helperAge}s. Manual intervention likely required.`;
+    console.error(`ludics: ${message}`);
+    notifyStartupAlertOnce("claude-helper-stuck", startupEpoch, message);
+  }
 }
 
 function feedbackDigestStateFile(): string {
@@ -1622,12 +1883,20 @@ export async function magStart(args: string[]): Promise<void> {
     // Pull-based monitor for session conclusion notifications (agent-duo/pair)
     pollSessionConclusionNotifications();
 
+    // If startup got stuck (e.g. Claude helper hung), recover automatically.
+    maybeRecoverStuckStartup();
+
     // Nudge if queue has items, but throttle to avoid spamming
     if (queuePending() && !nudgeThrottled()) {
       const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-      triggerSkill(MAG_SESSION_NAME, `Continue previous work if any. Queue requests arrive as skill commands on stop hook. (ludics, ${now})`);
-      writeNudgeTimestamp();
-      emitEvent({ event_type: "mag_nudge", source: "keepalive", scope: "mag", message: "nudged Mag with Continue" });
+      const nudged = triggerSkill(MAG_SESSION_NAME, `Continue previous work if any. Queue requests arrive as skill commands on stop hook. (ludics, ${now})`);
+      if (nudged) {
+        writeNudgeTimestamp();
+        emitEvent({ event_type: "mag_nudge", source: "keepalive", scope: "mag", message: "nudged Mag with Continue" });
+      } else {
+        console.error("ludics: failed to nudge Mag via tmux send-keys");
+        emitEvent({ event_type: "mag_nudge_failed", source: "keepalive", scope: "mag", status: "failed", message: "tmux send-keys failed" });
+      }
     }
     return;
   }
@@ -1647,6 +1916,8 @@ export async function magStart(args: string[]): Promise<void> {
   // Create tmux session
   console.error(`ludics: Creating Mag tmux session '${MAG_SESSION_NAME}' in ${workingDir}`);
   tmuxNewSession(MAG_SESSION_NAME, workingDir);
+  // Prevent accidental wheel-scroll copy-mode lockups in web terminals.
+  Bun.spawnSync(["tmux", "set-option", "-t", MAG_SESSION_NAME, "mouse", "off"], { stdout: "pipe", stderr: "pipe" });
 
   magSignal("running", "session started");
   emitEvent({ event_type: "mag_start", source: "cli", scope: "mag", message: `Mag session ${MAG_SESSION_NAME} started` });
@@ -1655,16 +1926,26 @@ export async function magStart(args: string[]): Promise<void> {
   const statePath = harnessDir();
   const resultsPath = join(statePath, "mag", "results");
   mkdirSync(resultsPath, { recursive: true });
-  tmuxSendCommand(MAG_SESSION_NAME, `export LUDICS_STATE_PATH="${statePath}" LUDICS_RESULTS_DIR="${resultsPath}"`);
+  const envExported = tmuxSendCommand(MAG_SESSION_NAME, `export LUDICS_STATE_PATH="${statePath}" LUDICS_RESULTS_DIR="${resultsPath}"`);
+  if (!envExported) {
+    console.error("ludics: failed to export environment variables in Mag tmux session");
+  }
   Bun.spawnSync(["sleep", "0.5"], { stdout: "pipe", stderr: "pipe" });
 
   // Start Claude Code
   const hasClaude = Bun.spawnSync(["which", "claude"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
   if (hasClaude) {
-    tmuxSendCommand(MAG_SESSION_NAME, "claude -c --dangerously-skip-permissions || claude --dangerously-skip-permissions");
-    console.error("ludics: Started Claude Code in Mag session");
+    writeStartupWatchdogEpoch();
+    const claudeStarted = tmuxSendCommand(MAG_SESSION_NAME, claudeLaunchCommand());
+    if (claudeStarted) {
+      console.error("ludics: Started Claude Code in Mag session");
+    } else {
+      console.error("ludics: failed to send Claude start command to Mag tmux session");
+      emitEvent({ event_type: "mag_startup_recover", source: "cli", scope: "mag", status: "failed", message: "tmux send-command failed at startup" });
+    }
   } else {
     console.error("ludics: claude CLI not found; session started without Claude Code");
+    clearStartupWatchdogEpoch();
   }
 
   console.log(`Mag session started. Attach with: tmux attach -t ${MAG_SESSION_NAME}`);
@@ -1676,7 +1957,11 @@ export async function magStart(args: string[]): Promise<void> {
   if (skillCmd) {
     Bun.spawnSync(["sleep", "5"], { stdout: "pipe", stderr: "pipe" });
     console.error(`ludics: Mag fresh start, sending queued request: ${skillCmd}`);
-    triggerSkill(MAG_SESSION_NAME, skillCmd);
+    const sent = triggerSkill(MAG_SESSION_NAME, skillCmd);
+    if (!sent) {
+      console.error("ludics: failed to send queued request to Mag session");
+      emitEvent({ event_type: "mag_nudge_failed", source: "cli", scope: "mag", status: "failed", message: "failed sending startup queued request" });
+    }
   }
 }
 
@@ -1811,6 +2096,9 @@ export function magStatusCmd(): void {
 export function magAttach(): void {
   if (!magIsRunning()) {
     throw new Error(`Mag session '${MAG_SESSION_NAME}' is not running. Start with: ludics mag start`);
+  }
+  if (process.env.TMUX) {
+    if (tmuxSwitchClient(MAG_SESSION_NAME)) return;
   }
   // exec replaces the process — Bun.spawnSync with inherit so user gets the terminal
   Bun.spawnSync(["tmux", "attach", "-t", MAG_SESSION_NAME], { stdio: ["inherit", "inherit", "inherit"] });
@@ -2257,6 +2545,7 @@ export async function runMag(args: string[]): Promise<void> {
         }
       }
       writeStopHookTimestamp();
+      clearStartupWatchdogEpoch();
       const skillCommand = await queuePopSkill();
       if (skillCommand) {
         console.log(JSON.stringify({ decision: "block", reason: skillCommand }));

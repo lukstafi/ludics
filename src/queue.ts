@@ -13,12 +13,23 @@ function resultsDir(): string {
   return join(harnessDir(), "mag", "results");
 }
 
+let requestCounter = 0;
+
+function nextRequestId(): string {
+  // Keep the historical req-<epoch>-<number> shape while ensuring uniqueness
+  // within a process even when many requests are queued in the same second.
+  const epoch = Math.floor(Date.now() / 1000);
+  requestCounter = (requestCounter + 1) % 1_000_000;
+  const suffix = (process.pid * 1_000_000) + requestCounter;
+  return `req-${epoch}-${suffix}`;
+}
+
 export function queueRequest(action: string, extra?: string): string {
   const file = queueFile();
   mkdirSync(dirname(file), { recursive: true });
 
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  const requestId = `req-${Math.floor(Date.now() / 1000)}-${process.pid}`;
+  const requestId = nextRequestId();
 
   let request: string;
   if (extra) {

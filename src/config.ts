@@ -49,12 +49,20 @@ export interface LudicsFullConfig {
 }
 
 export function ludicsRoot(): string {
-  const execPath = process.execPath;
-  if (execPath.includes("/bin/")) {
-    return execPath.replace(/\/bin\/.*$/, "");
+  // Prefer the invoked entry script path in dev mode (`bun run src/index.ts`),
+  // where process.execPath points to the Bun executable in ~/.bun/bin.
+  const entry = process.argv[1] ?? "";
+  if (entry.includes("/src/")) {
+    return entry.replace(/\/src\/.*$/, "");
   }
-  if (execPath.includes("/src/")) {
-    return execPath.replace(/\/src\/.*$/, "");
+  if (entry.includes("/bin/")) {
+    return entry.replace(/\/bin\/.*$/, "");
+  }
+
+  const execPath = process.execPath;
+  // Compiled binary path in production mode.
+  if (execPath.includes("/bin/ludics")) {
+    return execPath.replace(/\/bin\/.*$/, "");
   }
   return process.cwd();
 }
