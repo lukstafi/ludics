@@ -1,7 +1,7 @@
 // Task frontmatter parsing and writing
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
+import { join } from "path";
 import YAML from "yaml";
 import type { TaskFrontmatter } from "./types.ts";
 
@@ -185,7 +185,6 @@ export function writeTaskFile(
   url: string,
   labels: string,
   today: string,
-  watchPath?: string,
 ): boolean {
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${id}.md`);

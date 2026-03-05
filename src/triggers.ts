@@ -1,6 +1,6 @@
 // Trigger installation — launchd (macOS) and systemd (Linux)
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from "fs";
+import { existsSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { loadConfigSync, ludicsRoot } from "./config.ts";
 

@@ -6,7 +6,6 @@ import { runSlots, runSlot } from "./slots/index.ts";
 import { runTasks } from "./tasks/index.ts";
 import { stateFullSync, statePull, statePush } from "./state.ts";
 import { journalRecent, journalList } from "./journal.ts";
-import { queueShow } from "./queue.ts";
 import { runFlow } from "./flow.ts";
 import { runNotify } from "./notify.ts";
 import { runMag } from "./mag.ts";
@@ -16,7 +15,7 @@ import { runFederation } from "./federation.ts";
 import { runTriggers, triggersPause, triggersUninstall } from "./triggers.ts";
 import { runInit } from "./init.ts";
 import { slotsList } from "./slots/index.ts";
-import { flowReady, flowCritical } from "./flow.ts";
+import { flowReady } from "./flow.ts";
 import { runQuote } from "./quote.ts";
 import { runEvents } from "./events.ts";
 

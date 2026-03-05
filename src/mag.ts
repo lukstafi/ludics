@@ -5,7 +5,7 @@ import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getStarted, getAdapterArgs } from "./slots/markdown.ts";
-import { queueRequest, queuePop, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
+import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
@@ -752,7 +752,7 @@ function normalizeLaunchAdapter(rawAdapter: string): string {
 }
 
 function quoteShellToken(value: string): string {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 function buildFollowupAdapterArgs(followupMsg: string): string {
@@ -2419,11 +2419,12 @@ export async function runMag(args: string[]): Promise<void> {
     case "inbox":
       magInbox(args.includes("--consume"));
       break;
-    case "queue":
+    case "queue": {
       // Reuse the existing queueShow
       const { queueShow } = await import("./queue.ts");
       queueShow();
       break;
+    }
     case "context":
       magContext();
       break;

@@ -1,6 +1,6 @@
 // Federation — seniority-based leader election for multi-machine Mag coordination
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { harnessDir } from "./config.ts";
 import { networkNodes, networkCurrentNode } from "./network.ts";
@@ -25,7 +25,7 @@ function leaderFile(): string {
 // --- Heartbeat functions ---
 
 export function heartbeatPublish(): boolean {
-  let nodeName = networkCurrentNode();
+  const nodeName = networkCurrentNode();
 
   if (!nodeName) {
     console.error("ludics: federation: cannot determine current node name");

@@ -39,6 +39,10 @@ export interface AgentSessionInfo {
   [key: string]: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 // ---------------------------------------------------------------------------
 // Session discovery via .agent-sessions/ registry
 // ---------------------------------------------------------------------------
@@ -155,12 +159,14 @@ export function readBasicState(syncDir: string): BasicState {
     const stateFile = join(syncDir, "state.json");
     if (existsSync(stateFile)) {
       try {
-        const data = JSON.parse(readFileSync(stateFile, "utf-8"));
-        state.phase = data.phase ?? "";
-        state.round = String(data.round ?? "");
-        state.session = data.session ?? "";
-        state.feature = data.feature ?? "";
-        state.mode = data.mode ?? "";
+        const parsed: unknown = JSON.parse(readFileSync(stateFile, "utf-8"));
+        if (isRecord(parsed)) {
+          state.phase = typeof parsed.phase === "string" ? parsed.phase : "";
+          state.round = String(parsed.round ?? "");
+          state.session = typeof parsed.session === "string" ? parsed.session : "";
+          state.feature = typeof parsed.feature === "string" ? parsed.feature : "";
+          state.mode = typeof parsed.mode === "string" ? parsed.mode : "";
+        }
       } catch {
         // Invalid JSON — leave defaults
       }
@@ -190,7 +196,13 @@ export function readWorktrees(syncDir: string): Record<string, string> {
   const worktreesFile = join(syncDir, "worktrees.json");
   if (!existsSync(worktreesFile)) return {};
   try {
-    return JSON.parse(readFileSync(worktreesFile, "utf-8"));
+    const parsed: unknown = JSON.parse(readFileSync(worktreesFile, "utf-8"));
+    if (!isRecord(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string") out[key] = value;
+    }
+    return out;
   } catch {
     return {};
   }

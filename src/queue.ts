@@ -15,6 +15,16 @@ function resultsDir(): string {
 
 let requestCounter = 0;
 
+function parseJsonRecord(text: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function nextRequestId(): string {
   // Keep the historical req-<epoch>-<number> shape while ensuring uniqueness
   // within a process even when many requests are queued in the same second.
@@ -118,10 +128,10 @@ export function queueShow(): void {
   const lines = content.split("\n");
   console.log(`${lines.length} pending request(s):`);
   for (const line of lines) {
-    try {
-      const req = JSON.parse(line);
-      console.log(`  ${req.id}: ${req.action} (${req.timestamp})`);
-    } catch {
+    const req = parseJsonRecord(line);
+    if (req) {
+      console.log(`  ${String(req.id ?? "")}: ${String(req.action ?? "")} (${String(req.timestamp ?? "")})`);
+    } else {
       console.log(`  (unparseable): ${line.slice(0, 80)}`);
     }
   }

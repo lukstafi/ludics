@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { harnessDir, slotsFilePath, slotsCount, stateRepoDir, loadConfigSync } from "../config.ts";
+import { harnessDir, slotsFilePath, slotsCount, stateRepoDir } from "../config.ts";
 import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
          emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
 import { stateCommit } from "../state.ts";

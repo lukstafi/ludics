@@ -1,7 +1,7 @@
 // Task aggregation — sync from GitHub issues and watch paths
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
-import { join, dirname } from "path";
+import { join } from "path";
 import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCount } from "../config.ts";
 import { slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getProcess, getTask } from "../slots/markdown.ts";
@@ -24,14 +24,6 @@ function contentFingerprint(text: string): string {
   const hasher = new Bun.CryptoHasher("md5");
   hasher.update(normalized);
   return hasher.digest("hex").slice(0, 8);
-}
-
-function sanitizePathForId(path: string): string {
-  const home = process.env.HOME ?? "";
-  let p = path;
-  if (p.startsWith(home + "/")) p = p.slice(home.length + 1);
-  if (p.startsWith("~/")) p = p.slice(2);
-  return p.replace(/[/. ]/g, "-").replace(/[^a-zA-Z0-9_-]/g, "");
 }
 
 interface GhIssue {
@@ -68,7 +60,6 @@ export async function tasksSync(): Promise<void> {
   const config = loadConfigSync();
   const harness = harnessDir();
   const yamlFile = join(harness, "tasks.yaml");
-  const tasksDir = join(harness, "tasks");
 
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const lines: string[] = [
@@ -139,14 +130,13 @@ export async function tasksConvert(): Promise<void> {
   let currentRepo = "";
   let currentUrl = "";
   let currentLabels = "";
-  let currentPath = "";
 
   function flushCurrent(): void {
     if (!currentId) return;
     const created = writeTaskFile(
       tasksDir, currentId, currentTitle, currentSource,
       currentUsesBrowser,
-      currentRepo, currentUrl, currentLabels, today, currentPath || undefined,
+      currentRepo, currentUrl, currentLabels, today,
     );
     if (created) {
       emitEvent({ event_type: "task_github_import", source: "sync", scope: "task", task: currentId, message: currentTitle });
@@ -167,7 +157,6 @@ export async function tasksConvert(): Promise<void> {
       currentRepo = "";
       currentUrl = "";
       currentLabels = "";
-      currentPath = "";
       continue;
     }
 
@@ -193,8 +182,6 @@ export async function tasksConvert(): Promise<void> {
     m = line.match(/^\s*labels:\s*"?(.*?)"?\s*$/);
     if (m) { currentLabels = m[1]!.replace(/"$/, ""); continue; }
 
-    m = line.match(/^\s*path:\s*"?(.+?)"?\s*$/);
-    if (m) { currentPath = m[1]!.replace(/"$/, ""); continue; }
   }
 
   flushCurrent();

@@ -13,6 +13,14 @@ function normalizeCwd(cwd: string): string {
   return cwd !== "/" ? cwd.replace(/\/+$/, "") : cwd;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
 interface SessionMeta {
   id?: string;
   cwd?: string;
@@ -23,14 +31,16 @@ interface SessionMeta {
 
 function parseSessionMeta(firstLine: string): SessionMeta | null {
   try {
-    const obj = JSON.parse(firstLine);
-    if (obj.type === "session_meta" && obj.payload) {
+    const parsed: unknown = JSON.parse(firstLine);
+    if (!isRecord(parsed)) return null;
+    if (parsed.type === "session_meta" && isRecord(parsed.payload)) {
+      const payload = parsed.payload;
       return {
-        id: obj.payload.id ?? undefined,
-        cwd: obj.payload.cwd ?? undefined,
-        source: obj.payload.source ?? "unknown",
-        cli_version: obj.payload.cli_version ?? undefined,
-        model_provider: obj.payload.model_provider ?? undefined,
+        id: getString(payload.id),
+        cwd: getString(payload.cwd),
+        source: getString(payload.source) ?? "unknown",
+        cli_version: getString(payload.cli_version),
+        model_provider: getString(payload.model_provider),
       };
     }
   } catch {
@@ -43,13 +53,18 @@ function parseFallback(lines: string[]): { id: string; cwd: string; source: stri
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
-      const obj = JSON.parse(line);
-      const cwd = obj.cwd ?? obj.payload?.cwd ?? obj.workdir ?? obj.workingDirectory;
+      const parsed: unknown = JSON.parse(line);
+      if (!isRecord(parsed)) continue;
+      const payload = isRecord(parsed.payload) ? parsed.payload : null;
+      const cwd = getString(parsed.cwd)
+        ?? (payload ? getString(payload.cwd) : undefined)
+        ?? getString(parsed.workdir)
+        ?? getString(parsed.workingDirectory);
       if (cwd) {
         return {
-          id: obj.id ?? obj.payload?.id ?? "",
+          id: getString(parsed.id) ?? (payload ? getString(payload.id) : undefined) ?? "",
           cwd,
-          source: obj.source ?? obj.payload?.source ?? "unknown",
+          source: getString(parsed.source) ?? (payload ? getString(payload.source) : undefined) ?? "unknown",
         };
       }
     } catch {

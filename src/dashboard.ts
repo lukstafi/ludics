@@ -53,7 +53,6 @@ function generateSlots(): SlotJson[] {
 
     // Parse terminals from block
     const terminals: Record<string, string> = {};
-    const termLines = block.match(/^- ([^:]+):\s*(.+)$/gm);
     let inTerminals = false;
     for (const line of block.split("\n")) {
       if (line === "**Terminals:**") { inTerminals = true; continue; }
