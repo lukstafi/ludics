@@ -573,7 +573,7 @@ export async function runSlot(args: string[]): Promise<void> {
 
     case "clear": {
       const finalStatus = args[2] ?? "ready";
-      const VALID_CLEAR_STATUSES = ["ready", "done", "abandoned"];
+      const VALID_CLEAR_STATUSES = ["ready", "in-progress", "done", "abandoned"];
       if (!VALID_CLEAR_STATUSES.includes(finalStatus)) {
         throw new Error(`invalid clear status: ${finalStatus} (use: ${VALID_CLEAR_STATUSES.join(", ")})`);
       }

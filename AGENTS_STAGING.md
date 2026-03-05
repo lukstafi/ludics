@@ -69,3 +69,10 @@ For proposal-driven tasks, run a quick `rg` sweep before editing because proposa
 In fresh worktrees, run bun install before bun run typecheck or bun run build. Without installed dependencies, typecheck can fail with Script not found "tsc", which can look like a config issue but is just missing local deps.
 
 <!-- End entry -->
+<!-- Entry: gh-ludics-30-followup-coder | 2026-03-05T19:36:15+0100 -->
+### Smoke Test Precondition and Pipefail Gotcha
+
+- `tests/test.sh` expects `bin/ludics` to exist; run `bun run build` before smoke tests in a fresh checkout.
+- The smoke checks using `echo "$output" | grep -q ...` can produce false negatives under `set -o pipefail`, because `grep -q` exits early and upstream `echo` can fail with SIGPIPE. If output appears contradictory, validate command and grep exit codes separately.
+
+<!-- End entry -->

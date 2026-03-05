@@ -83,8 +83,8 @@ Commands:
   slot <n>                     Show slot n
   slot <n> assign <task|desc> [-a adapter] [-s session] [-p path] [-A "adapter args"]
                                Assign a task to slot n
-  slot <n> clear [done|abandoned]
-                               Clear slot n (optionally mark task done/abandoned)
+  slot <n> clear [in-progress|done|abandoned]
+                               Clear slot n (optionally mark task in-progress/done/abandoned)
   slot <n> start               Start agent session (adapter)
   slot <n> stop                Stop agent session (adapter)
   slot <n> note "text"         Add runtime note to slot n

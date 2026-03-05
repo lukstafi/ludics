@@ -77,3 +77,13 @@ Codex can also answer questions or update the PR. Try commenting "@codex address
             
 </details>
 
+## Implementation Notes (Round 1)
+
+- Removed `completed` from keepalive status handling in `src/mag.ts`:
+  - `taskIsConcluded()` now treats only `done` / `abandoned` as concluded by status.
+  - `maybeQueueProposals()` no longer treats `completed` as a terminal status.
+  - `maybeClearDoneSlots()` now auto-clears only when status is `done`.
+- Added `in-progress` to `slot clear` valid statuses in `src/slots/index.ts`.
+- Updated CLI/docs usage text to match:
+  - `src/index.ts`
+  - `docs/ARCHITECTURE.md`

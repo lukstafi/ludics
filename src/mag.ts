@@ -1263,7 +1263,7 @@ function taskIsConcluded(taskId: string, harness: string): boolean {
 
     const data = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
     const status = String(data.status ?? "").trim().toLowerCase();
-    if (status === "done" || status === "abandoned" || status === "completed") return true;
+    if (status === "done" || status === "abandoned") return true;
 
     const completed = String(data.completed ?? "").trim().toLowerCase();
     return !!completed && completed !== "null";
@@ -1692,7 +1692,7 @@ function maybeQueueProposals(): void {
     const content = readFileSync(taskFile, "utf-8");
     const statusMatch = content.match(/^status:\s*(.+)$/m);
     const taskStatus = statusMatch ? statusMatch[1]!.trim() : "ready";
-    if (["abandoned", "done", "completed"].includes(taskStatus)) continue;
+    if (["abandoned", "done"].includes(taskStatus)) continue;
     if (content.includes("\nproposal:")) continue;
     if (autoProposalDebounced(taskId)) continue;
 
@@ -1815,7 +1815,7 @@ function maybeFillEmptySlots(): void {
   console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
 }
 
-// --- Auto-clear slots whose task reached done/completed status ---
+// --- Auto-clear slots whose task reached done status ---
 
 function maybeClearDoneSlots(): void {
   if (startSessionsAutonomy() === "manual") return;
@@ -1841,8 +1841,7 @@ function maybeClearDoneSlots(): void {
     const statusMatch = content.match(/^status:\s*(.+)$/m);
     const taskStatus = statusMatch ? statusMatch[1]!.trim() : "";
 
-    if (taskStatus === "done" || taskStatus === "completed") {
-      const clearStatus = "done";
+    if (taskStatus === "done") {
       console.error(`ludics: auto-clearing slot ${slotNum} (task ${taskId} is ${taskStatus})`);
       emitEvent({
         event_type: "slot_auto_clear",
@@ -1853,7 +1852,7 @@ function maybeClearDoneSlots(): void {
         status: taskStatus,
         message: `auto-cleared slot ${slotNum}: task ${taskId} reached status=${taskStatus}`,
       });
-      slotClear(slotNum, clearStatus);
+      slotClear(slotNum, taskStatus);
     }
   }
 }
@@ -1923,7 +1922,7 @@ export async function magStart(args: string[]): Promise<void> {
     // Auto-queue proposals for elaborated leaf tasks already in slots
     maybeQueueProposals();
 
-    // Auto-clear slots whose task reached done/completed status
+    // Auto-clear slots whose task reached done status
     maybeClearDoneSlots();
 
     // Auto-fill empty slots with ready elaborated tasks
