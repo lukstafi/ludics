@@ -1004,7 +1004,7 @@ async function queuePopSkill(): Promise<string | null> {
       return "/ludics-sync-learnings";
     case "message": {
       const content = String(request.content ?? "");
-      if (!content) return "/ludics-read-inbox"; // fallback for legacy queue entries
+      if (!content) return null;
 
       // Intercept button-tap launch messages from ntfy notifications
       // e.g. "Launch agent-duo for task-042 in project ocannl"
@@ -2283,26 +2283,6 @@ function magMessage(text: string): void {
   console.log("Message queued for Mag");
 }
 
-function magInbox(consume: boolean = false): void {
-  const inboxFile = join(harnessDir(), "mag", "inbox.md");
-  if (!existsSync(inboxFile)) {
-    console.log("No pending messages");
-    return;
-  }
-  const content = readFileSync(inboxFile, "utf-8");
-  console.log(content);
-
-  if (consume && content.trim()) {
-    // Append to past-messages.md
-    const pastFile = join(harnessDir(), "mag", "past-messages.md");
-    const existing = existsSync(pastFile) ? readFileSync(pastFile, "utf-8") : "# Past Messages\n";
-    writeFileSync(pastFile, existing + "\n" + content.replace(/^# Mag Inbox\n?/, ""));
-
-    // Clear inbox
-    writeFileSync(inboxFile, "# Mag Inbox\n");
-  }
-}
-
 function magContext(): void {
   briefingPrecomputeContext();
 }
@@ -2416,9 +2396,6 @@ export async function runMag(args: string[]): Promise<void> {
       magMessage(text);
       break;
     }
-    case "inbox":
-      magInbox(args.includes("--consume"));
-      break;
     case "queue": {
       // Reuse the existing queueShow
       const { queueShow } = await import("./queue.ts");
@@ -2556,6 +2533,6 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     default:
-      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, completed, message, inbox, queue, queue-pop, context, feedback-digest)`);
+      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, completed, message, queue, queue-pop, context, feedback-digest)`);
   }
 }

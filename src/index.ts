@@ -131,7 +131,6 @@ Commands:
   mag health-check             Check for deadlines, issues
   mag adopt-sessions [--force] Discover sessions and queue adoption for Mag
   mag message "text"           Send async message to Mag
-  mag inbox                    Show and consume pending messages
   mag queue                    Show pending queue requests
   mag context                  Pre-compute briefing context file
 

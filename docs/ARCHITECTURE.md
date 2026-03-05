@@ -129,7 +129,6 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 | `/ludics-learn` | Update institutional memory from corrections | Inline |
 | `/ludics-new-quote` | Generate motivational quote | Inline |
 | `/ludics-preempt` | Plan task preemption | Inline |
-| `/ludics-read-inbox` | Process incoming messages | Inline |
 | `/ludics-split-task` | Split multi-concern task into subtasks | Inline |
 | `/ludics-suggest` | Task suggestions based on flow state | Inline |
 | `/ludics-sync-learnings` | Consolidate learnings into structured memory | Direct fork |
@@ -220,7 +219,7 @@ allowed-tools: Read, Bash, Glob, Grep, Write
 |----------|--------|-----------|
 | Heavy (orchestrator + worker) | draft-proposal, verify-completion, elaborate, feedback-digest | Deep codebase exploration; tool outputs would pollute Mag's context |
 | Direct fork | sync-learnings | Forked for isolation but no orchestrator needed — mostly mechanical processing |
-| Light (inline) | health-check, read-inbox, suggest, preempt, learn, split-task, new-quote | Mostly CLI commands with minimal reads |
+| Light (inline) | health-check, suggest, preempt, learn, split-task, new-quote | Mostly CLI commands with minimal reads |
 | Strategic (inline, special) | briefing | Needs Mag's cross-task context for slot assignment; sub-operations (elaboration) are themselves forked |
 
 ### The Slot Model: Forcing Function for Parallelization
@@ -424,7 +423,7 @@ ludics uses **ntfy.sh** for bidirectional communication with three configurable 
 | `incoming` | user → Mag | Messages from phone (commands, replies, task input) |
 | `agents` | system → user | Operational agent updates |
 
-The `incoming` topic enables the user to converse with Mag from any device — respond to questions, approve elaborations, assign tasks, or send freeform instructions. Mag processes incoming messages via the `/ludics-read-inbox` skill.
+The `incoming` topic enables the user to converse with Mag from any device — respond to questions, approve elaborations, assign tasks, or send freeform instructions. Mag processes incoming messages by inserting message content directly as a user turn.
 
 Implementation (`src/notify.ts`): curl to `https://ntfy.sh/{topic}` with auth token. `ludics notify subscribe` long-polls the incoming topic. Notifications are logged to `journal/notifications.jsonl`.
 
@@ -655,7 +654,6 @@ ludics/
 │   ├── ludics-learn.md               # Inline
 │   ├── ludics-new-quote.md           # Inline
 │   ├── ludics-preempt.md             # Inline
-│   ├── ludics-read-inbox.md          # Inline
 │   ├── ludics-split-task.md          # Inline
 │   ├── ludics-suggest.md             # Inline
 │   ├── ludics-sync-learnings.md      # Direct fork (context: fork)
@@ -697,7 +695,6 @@ your-private-repo/
     │   ├── context.md             # Current understanding
     │   ├── queue.jsonl            # Request queue
     │   ├── results/               # Request result files
-    │   ├── inbox.md               # Async messages from humans
     │   ├── session.state          # Persistent Mag state
     │   ├── session.status         # Current status (ready|waiting|error)
     │   ├── briefing-context.md    # Pre-computed briefing context
@@ -798,7 +795,6 @@ ludics mag analyze <issue>     # Analyze GitHub issue
 ludics mag elaborate <id>      # Elaborate task into detailed spec
 ludics mag health-check        # Check for deadlines, issues
 ludics mag message "text"      # Send async message to Mag
-ludics mag inbox               # Show pending messages
 ludics mag queue               # Show pending queue requests
 ludics mag context             # Pre-compute briefing context file
 
