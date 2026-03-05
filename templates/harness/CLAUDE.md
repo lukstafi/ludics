@@ -21,12 +21,6 @@ You are the **Mag** — the coordinator agent. Your skills (invoked as `/ludics-
 - **Commit often**: changes to this harness directory should be committed to git regularly
 - **Queue pipeline**: requests in `mag/queue.jsonl` are pending — they will be popped by the stop hook and delivered to you as `/ludics-*` skill commands. You may read the queue for situational awareness, but don't act on those requests directly; each one will arrive as a translated skill command when it's your turn to process it.
 
-## Task Scheduling Rules
-
-- **Milestone ordering**: OCANNL tasks follow milestone gates (v0.7 → v0.8 → v0.9 → v1.0). Tasks from later milestones must have `blocked_by` set to a gate task from the prior milestone. Do not assign tasks to slots if their `blocked_by` dependencies are unresolved.
-- **Meta-tasks**: Umbrella tasks (e.g., "resolve a few explore issues") should have `status: blocked` until their prerequisite milestones are complete. Do not assign meta-tasks to slots or queue proposals for them.
-- **Watch task duplicates**: Many `watch-*` tasks duplicate `gh-*` issues. During elaboration, merge duplicates rather than elaborating both. Prefer the version with richer context.
-
 ## For Worker Sessions
 
 If you are an agent assigned to a slot working on a task:
