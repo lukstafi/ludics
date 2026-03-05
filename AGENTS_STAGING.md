@@ -53,3 +53,13 @@ Claude Code skills support `context: fork` to run as isolated subagents (since C
 - The `bun run typecheck` command requires bun type definitions installed; it may fail in fresh clones without `bun install` first.
 
 <!-- End entry -->
+<!-- Entry: gh-ludics-21-coder | 2026-03-05T16:40:59+0100 -->
+### Verify Proposal Against Current Code First
+
+For proposal-driven tasks, run a quick `rg` sweep before editing because proposals may reference code that is already removed on the working branch. In this task, a proposed `src/notify.ts` deletion target was already absent, so pre-checking avoided unnecessary churn.
+
+### Install Dependencies Before Typecheck
+
+`bun run typecheck` depends on local `typescript` from `devDependencies`. If dependencies are not installed yet, the command fails with `Script not found "tsc"`; run `bun install` first in fresh worktrees.
+
+<!-- End entry -->
