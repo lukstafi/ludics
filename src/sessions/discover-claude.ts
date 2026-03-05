@@ -14,14 +14,20 @@ function normalizeCwd(cwd: string): string {
   return cwd !== "/" ? cwd.replace(/\/+$/, "") : cwd;
 }
 
-interface IndexEntry {
-  sessionId: string;
-  fileMtime?: number;
-  projectPath?: string;
-  gitBranch?: string;
-  summary?: string;
-  messageCount?: number;
-  isSidechain?: boolean;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function getNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+function getBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 interface IndexMeta {
@@ -35,15 +41,17 @@ function buildMetaCache(indexFile: string): Map<string, IndexMeta> {
   const cache = new Map<string, IndexMeta>();
   try {
     const content = readFileSync(indexFile, "utf-8");
-    const data = JSON.parse(content);
-    const entries: IndexEntry[] = data.entries ?? [];
-    for (const entry of entries) {
-      if (!entry.sessionId) continue;
-      cache.set(entry.sessionId, {
-        git_branch: entry.gitBranch ?? null,
-        summary: entry.summary ?? null,
-        message_count: entry.messageCount ?? null,
-        is_sidechain: entry.isSidechain ?? false,
+    const parsed: unknown = JSON.parse(content);
+    if (!isRecord(parsed) || !Array.isArray(parsed.entries)) return cache;
+    for (const rawEntry of parsed.entries) {
+      if (!isRecord(rawEntry)) continue;
+      const sessionId = getString(rawEntry.sessionId);
+      if (!sessionId) continue;
+      cache.set(sessionId, {
+        git_branch: getString(rawEntry.gitBranch) ?? null,
+        summary: getString(rawEntry.summary) ?? null,
+        message_count: getNumber(rawEntry.messageCount) ?? null,
+        is_sidechain: getBoolean(rawEntry.isSidechain) ?? false,
       });
     }
   } catch {
@@ -115,10 +123,12 @@ export async function discoverClaudeCode(
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          const obj = JSON.parse(line);
-          if (obj.cwd) {
-            sessionId = obj.sessionId ?? "";
-            cwd = obj.cwd;
+          const parsed: unknown = JSON.parse(line);
+          if (!isRecord(parsed)) continue;
+          const parsedCwd = getString(parsed.cwd);
+          if (parsedCwd) {
+            sessionId = getString(parsed.sessionId) ?? "";
+            cwd = parsedCwd;
             break;
           }
         } catch {

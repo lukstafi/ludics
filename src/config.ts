@@ -80,7 +80,9 @@ export function pointerConfigPath(): string {
 
 function parseYamlFile(path: string): Record<string, unknown> {
   const text = readFileSync(path, "utf-8");
-  return YAML.parse(text) ?? {};
+  const parsed: unknown = YAML.parse(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  return parsed as Record<string, unknown>;
 }
 
 function resolveConfigPath(): string {

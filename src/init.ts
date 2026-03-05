@@ -12,6 +12,10 @@ state_repo: your-username/your-private-repo
 state_path: harness
 `;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 export async function runInit(args: string[]): Promise<void> {
   const noHooks = args.includes("--no-hooks");
   const noDashboard = args.includes("--no-dashboard");
@@ -151,7 +155,8 @@ function cloneStateRepo(): { repoDir: string | null; statePath: string } {
   }
 
   const content = readFileSync(configPath, "utf-8");
-  const data = YAML.parse(content) ?? {};
+  const parsed: unknown = YAML.parse(content);
+  const data = isRecord(parsed) ? parsed : {};
   const stateRepo = (data.state_repo as string) ?? "";
   const statePath = (data.state_path as string) || "harness";
 
@@ -283,7 +288,8 @@ function installStopHook(root: string): void {
 
   if (existsSync(settingsPath)) {
     try {
-      settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      settings = isRecord(parsed) ? parsed : {};
     } catch {
       console.warn("warning: could not parse ~/.claude/settings.json — skipping hook config");
       return;

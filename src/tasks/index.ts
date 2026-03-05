@@ -47,7 +47,7 @@ function tasksShow(taskId: string): void {
     const content = readFileSync(file, "utf-8");
     const lines = content.split("\n");
     let inBlock = false;
-    let output: string[] = [];
+    const output: string[] = [];
 
     for (const line of lines) {
       const idMatch = line.match(/^\s*-\s*id:\s*(.+)$/);
@@ -180,7 +180,7 @@ function tasksSamples(): void {
 
   for (const s of samples) {
     const file = join(dir, `${s.id}.md`);
-    let content = `---
+    const content = `---
 id: ${s.id}
 title: "${s.title}"
 project: ${s.project}

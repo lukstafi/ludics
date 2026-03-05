@@ -1,6 +1,6 @@
 // State repository git operations (git via Bun.$)
 
-import { harnessDir, stateRepoDir, loadConfigSync } from "./config.ts";
+import { stateRepoDir } from "./config.ts";
 
 function run(cmd: string[], cwd: string): { success: boolean; stdout: string } {
   const result = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe" });

@@ -2,7 +2,7 @@
 
 import { writeFileSync, mkdirSync, renameSync } from "fs";
 import { dirname } from "path";
-import type { MergedSession, DiscoveryResult, AgentType } from "../types.ts";
+import type { MergedSession, DiscoveryResult } from "../types.ts";
 
 function formatAge(epochSeconds: number): string {
   const now = Math.floor(Date.now() / 1000);

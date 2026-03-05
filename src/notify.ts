@@ -90,6 +90,33 @@ interface PendingFollowupRevise {
   adapter: string;
 }
 
+interface IncomingMessageEvent {
+  id: string;
+  message: string;
+  title?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function parseIncomingMessageEvent(raw: string): IncomingMessageEvent | null {
+  const parsed: unknown = JSON.parse(raw);
+  if (!isRecord(parsed)) return null;
+  const event = getString(parsed.event);
+  const message = getString(parsed.message);
+  if (event !== "message" || !message) return null;
+  return {
+    id: getString(parsed.id) ?? "",
+    message,
+    title: getString(parsed.title),
+  };
+}
+
 function isRegularFile(path: string): boolean {
   try {
     return existsSync(path) && !statSync(path).isDirectory();
@@ -948,8 +975,16 @@ export function notifyRecent(count: number = 10): void {
   const recent = lines.slice(-count);
   for (const line of recent) {
     try {
-      const obj = JSON.parse(line);
-      console.log(`${obj.timestamp} [${obj.tier}] ${obj.title}: ${obj.message}`);
+      const parsed: unknown = JSON.parse(line);
+      if (!isRecord(parsed)) {
+        console.log(line);
+        continue;
+      }
+      const timestamp = getString(parsed.timestamp) ?? "";
+      const tier = getString(parsed.tier) ?? "";
+      const title = getString(parsed.title) ?? "";
+      const message = getString(parsed.message) ?? "";
+      console.log(`${timestamp} [${tier}] ${title}: ${message}`);
     } catch {
       console.log(line);
     }
@@ -966,7 +1001,14 @@ function loadSubscriberState(): { last_id?: string; last_time?: string } {
   const file = subscriberStateFile();
   if (!existsSync(file)) return {};
   try {
-    return JSON.parse(readFileSync(file, "utf-8"));
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf-8"));
+    if (!isRecord(parsed)) return {};
+    const out: { last_id?: string; last_time?: string } = {};
+    const lastId = getString(parsed.last_id);
+    const lastTime = getString(parsed.last_time);
+    if (lastId) out.last_id = lastId;
+    if (lastTime) out.last_time = lastTime;
+    return out;
   } catch {
     return {};
   }
@@ -977,18 +1019,6 @@ function saveSubscriberState(lastId: string): void {
   mkdirSync(join(harnessDir(), "mag"), { recursive: true });
   const state = { last_id: lastId, last_time: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") };
   writeFileSync(file, JSON.stringify(state) + "\n");
-}
-
-function appendToInbox(message: string, title?: string): void {
-  const inboxFile = join(harnessDir(), "mag", "inbox.md");
-  mkdirSync(join(harnessDir(), "mag"), { recursive: true });
-
-  const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  const heading = title ? `## ntfy: ${title} - ${timestamp}` : `## ntfy Message - ${timestamp}`;
-  const entry = `\n${heading}\n\n${message}\n`;
-
-  const existing = existsSync(inboxFile) ? readFileSync(inboxFile, "utf-8") : "# Mag Inbox\n";
-  writeFileSync(inboxFile, existing + entry);
 }
 
 // --- Pending-revise mode ---
@@ -1163,11 +1193,11 @@ export async function subscribeIncoming(): Promise<void> {
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
           try {
-            const data = JSON.parse(line.slice(6));
-            if (data.event === "message" && data.message) {
-              console.log(`ludics: received message [${data.id}]: ${data.message.slice(0, 80)}`);
+            const incoming = parseIncomingMessageEvent(line.slice(6));
+            if (incoming) {
+              console.log(`ludics: received message [${incoming.id}]: ${incoming.message.slice(0, 80)}`);
 
-              const msg: string = data.message;
+              const msg = incoming.message;
 
               // Button taps and pending feedback capture modes
               const reviseProposalMatch = msg.match(/^Revise proposal for ([\w.-]+)$/);
@@ -1210,11 +1240,11 @@ export async function subscribeIncoming(): Promise<void> {
               }
 
               // Log to journal
-              notifyLog("incoming", msg, 3, data.title || "ntfy incoming");
+              notifyLog("incoming", msg, 3, incoming.title ?? "ntfy incoming");
               emitEvent({ event_type: "notify_incoming", source: "notify", scope: "notify", message: msg.slice(0, 200) });
 
               // Persist state
-              saveSubscriberState(data.id);
+              saveSubscriberState(incoming.id);
             }
           } catch {
             // Ignore unparseable data lines (e.g. open events)

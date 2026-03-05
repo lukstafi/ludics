@@ -7,8 +7,6 @@ import {
   adapterStateDir,
   readStateFile,
   writeStateFile,
-  updateStateKey,
-  readSingleFile,
   isoTimestamp,
   latestMtime,
 } from "./base.ts";

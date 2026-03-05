@@ -6,7 +6,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
-import { ensureAdapterStateDir, readStateFile, writeStateFile, isoTimestamp, latestMtime } from "./base.ts";
+import { readStateFile, writeStateFile, isoTimestamp, latestMtime } from "./base.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { AdapterContext } from "./types.ts";
 

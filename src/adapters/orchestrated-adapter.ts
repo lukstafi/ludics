@@ -151,9 +151,10 @@ function parseArgSpec(value: unknown, sourceLabel: string): string[] | null {
   }
 
   if (Array.isArray(value)) {
+    const items = value as unknown[];
     const out: string[] = [];
-    for (let i = 0; i < value.length; i++) {
-      const item = value[i];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
       if (typeof item !== "string") {
         throw new Error(`${sourceLabel}[${i}] must be a string`);
       }
@@ -206,7 +207,7 @@ function parseTaskFrontmatter(content: string): Record<string, unknown> | null {
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
   if (!fmMatch) return null;
   try {
-    const parsed = YAML.parse(fmMatch[1]!);
+    const parsed: unknown = YAML.parse(fmMatch[1]!);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     return parsed as Record<string, unknown>;
   } catch {

@@ -1,7 +1,6 @@
 // Slots Markdown parser — parse/write slots.md
 
-import { existsSync, readFileSync, writeFileSync } from "fs";
-import type { SlotBlock } from "./types.ts";
+import { writeFileSync } from "fs";
 
 export function emptyBlock(slot: number): string {
   return `## Slot ${slot}
