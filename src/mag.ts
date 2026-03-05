@@ -10,6 +10,7 @@ import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
+import { isElaborated } from "./tasks/elaboration.ts";
 import {
   notifyOutgoing,
   expirePendingRevises,
@@ -1497,10 +1498,10 @@ function computeSessionProjectMatches(): string {
       const priorityMatch = content.match(/^priority:\s*(.+)$/m);
       const priority = priorityMatch ? priorityMatch[1]!.trim() : "B";
 
-      const isElaborated = content.includes("\nelaborated:") && !content.includes("- [ ] TBD\n");
+      const elaborated = isElaborated(content);
 
       const arr = tasksByProject.get(project) ?? [];
-      arr.push({ id, title, priority, elaborated: isElaborated });
+      arr.push({ id, title, priority, elaborated });
       tasksByProject.set(project, arr);
     }
   }
@@ -1756,9 +1757,7 @@ function maybeFillEmptySlots(): void {
     const statusMatch = content.match(/^status:\s*(.+)$/m);
     if (!statusMatch || statusMatch[1]!.trim() !== "ready") continue;
 
-    // Must be elaborated (has elaborated: field and no TBD placeholders)
-    if (!content.includes("\nelaborated:")) continue;
-    if (content.includes("- [ ] TBD\n")) continue;
+    if (!isElaborated(content)) continue;
 
     // Must not have blocked_by dependencies
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);

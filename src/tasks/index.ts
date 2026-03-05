@@ -5,6 +5,7 @@ import { extname, join } from "path";
 import { harnessDir } from "../config.ts";
 import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField } from "./markdown.ts";
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
+import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
 
 function tasksDir(): string {
@@ -240,14 +241,11 @@ function tasksCheckElaboration(taskId: string): void {
   }
 
   const content = readFileSync(file, "utf-8");
-  if (!content.includes("\nelaborated:")) {
+  if (!isElaborated(content)) {
     console.log("needs-elaboration");
     return;
   }
-  if (content.includes("- [ ] TBD\n")) {
-    console.log("needs-elaboration");
-    return;
-  }
+
   console.log("elaborated");
 }
 

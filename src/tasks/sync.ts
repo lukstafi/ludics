@@ -6,6 +6,7 @@ import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCou
 import { slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getProcess, getTask } from "../slots/markdown.ts";
 import { writeTaskFile, updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter } from "./markdown.ts";
+import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
 import { queueRequest } from "../queue.ts";
 
@@ -615,17 +616,7 @@ function tasksQueueElaborations(): void {
     const statusMatch = content.match(/^status:\s*(.+)$/m);
     if (statusMatch && statusMatch[1]!.trim() !== "ready") continue;
 
-    // Auto-queue only when elaboration is unset/incomplete.
-    // Treat absent, false, and null as "not elaborated"; any other non-empty
-    // value (e.g. true or a date) is considered already elaborated.
-    const elaboratedMatch = content.match(/^elaborated:\s*(.+)$/m);
-    if (elaboratedMatch) {
-      const normalized = elaboratedMatch[1]!
-        .trim()
-        .replace(/^['"]|['"]$/g, "")
-        .toLowerCase();
-      if (normalized && normalized !== "false" && normalized !== "null") continue;
-    }
+    if (isElaborated(content)) continue;
 
     if (alreadyQueued.includes(`"task":"${taskId}"`)) continue;
 
@@ -653,11 +644,7 @@ function tasksNeedsElaborationList(tasksDir: string): string[] {
     const status = statusMatch ? statusMatch[1]!.trim() : "";
     if (["merged", "done", "abandoned"].includes(status)) continue;
 
-    let needsElab = false;
-    if (!content.includes("\nelaborated:")) needsElab = true;
-    if (content.includes("- [ ] TBD\n")) needsElab = true;
-
-    if (needsElab) result.push(id);
+    if (!isElaborated(content)) result.push(id);
   }
 
   return result;
