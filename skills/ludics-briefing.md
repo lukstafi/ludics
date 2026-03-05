@@ -16,7 +16,7 @@ This skill is invoked by the ludics automation when:
 
 ## Pre-computed Context
 
-All data gathering (slots refresh, session discovery, flow computations, inbox,
+All data gathering (slots refresh, session discovery, flow computations, recent incoming,
 journal, same-day check) has been done by bash before this skill runs.
 
 Read the context file:
@@ -69,7 +69,7 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
 4. **Analyze, merge, and split work**:
    - Identify high-priority ready tasks, approaching deadlines (7 days),
      slot utilization
-   - Factor in inbox messages as high-priority context
+   - Factor in recent incoming messages as high-priority context
    - Check for duplicate/overlapping tasks: merge any confirmed duplicates with `ludics tasks merge <target> <source...>`
      - `ludics tasks duplicates` can help but it only checks exact title match
    - Check whether tasks or projects should be split into finer-grained units:
