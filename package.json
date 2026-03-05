@@ -4,10 +4,10 @@
   "type": "module",
   "scripts": {
     "build": "bun build --compile src/index.ts --outfile bin/ludics",
-    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
+    "typecheck": "bun run --bun tsc --noEmit",
     "dev": "bun run src/index.ts",
-    "lint": "node node_modules/eslint/bin/eslint.js \"src/**/*.ts\" --max-warnings=0",
-    "lint:fix": "node node_modules/eslint/bin/eslint.js \"src/**/*.ts\" --fix"
+    "lint": "bun run --bun eslint \"src/**/*.ts\" --max-warnings=0",
+    "lint:fix": "bun run --bun eslint \"src/**/*.ts\" --fix"
   },
   "devDependencies": {
     "@types/bun": "latest",
