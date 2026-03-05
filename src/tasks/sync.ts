@@ -630,8 +630,8 @@ function tasksQueueElaborations(): void {
 
     // Auto-queue only first-time elaboration. Some older elaborations can retain
     // placeholder body text (e.g. "- [ ] TBD"), which should not cause repeated
-    // elaborate requests once the frontmatter has an elaborated date.
-    if (content.match(/^elaborated:\s*(.+)$/m)) continue;
+    // elaborate requests once frontmatter marks elaboration complete.
+    if (content.match(/^elaborated:\s*true\s*$/m)) continue;
 
     if (alreadyQueued.includes(`"task":"${taskId}"`)) continue;
 
