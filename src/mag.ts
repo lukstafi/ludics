@@ -1635,26 +1635,8 @@ ${matches}
 
 // --- Auto-queue proposals ---
 
-const PROPOSAL_THROTTLE_SECONDS = 1800; // 30 minutes between proposal queuing
-
-function proposalThrottleFile(): string {
-  return join(magStateDir(), "last-proposal-queue.epoch");
-}
-
-function proposalThrottled(): boolean {
-  const file = proposalThrottleFile();
-  if (!existsSync(file)) return false;
-  try {
-    const lastEpoch = parseInt(readFileSync(file, "utf-8").trim(), 10);
-    return (Math.floor(Date.now() / 1000) - lastEpoch) < PROPOSAL_THROTTLE_SECONDS;
-  } catch {
-    return false;
-  }
-}
-
 function maybeQueueProposals(): void {
   if (startSessionsAutonomy() === "manual") return;
-  if (proposalThrottled()) return;
 
   // Check if draft-proposal is already in queue
   const qFile = join(harnessDir(), "mag", "queue.jsonl");
@@ -1681,20 +1663,19 @@ function maybeQueueProposals(): void {
     const taskId = getTask(block).trim();
     if (!taskId || taskId === "null") continue;
 
-    // Read task file — queue draft if it has no proposal yet
+    // Read task file — skip terminal statuses, queue draft if no proposal yet
     const taskFile = join(tasksDir, `${taskId}.md`);
     if (!existsSync(taskFile)) continue;
     const content = readFileSync(taskFile, "utf-8");
+    const statusMatch = content.match(/^status:\s*(.+)$/m);
+    const taskStatus = statusMatch ? statusMatch[1]!.trim() : "ready";
+    if (["abandoned", "done", "completed"].includes(taskStatus)) continue;
     if (content.includes("\nproposal:")) continue;
 
     candidates.push(taskId);
   }
 
   if (candidates.length === 0) return;
-
-  // Write throttle timestamp
-  mkdirSync(magStateDir(), { recursive: true });
-  writeFileSync(proposalThrottleFile(), String(Math.floor(Date.now() / 1000)));
 
   for (const taskId of candidates) {
     queueRequest("draft-proposal", `"task":"${taskId}"`);
@@ -1706,7 +1687,6 @@ function maybeQueueProposals(): void {
 
 function maybeFillEmptySlots(): void {
   if (startSessionsAutonomy() === "manual") return;
-  if (proposalThrottled()) return;
 
   // Check if draft-proposal is already in queue
   const qFile = join(harnessDir(), "mag", "queue.jsonl");
@@ -1803,14 +1783,52 @@ function maybeFillEmptySlots(): void {
   emitEvent({ event_type: "slot_auto_fill", source: "keepalive", scope: "slot", slot, task: task.id, adapter: "manual", message: `auto-assigned ${task.id} to empty slot ${slot}` });
   console.error(`ludics: auto-assigned ${task.id} to empty slot ${slot}`);
 
-  // Write throttle timestamp (shared with maybeQueueProposals)
-  mkdirSync(magStateDir(), { recursive: true });
-  writeFileSync(proposalThrottleFile(), String(Math.floor(Date.now() / 1000)));
-
   // Queue draft-proposal so Mag writes a proposal and notifies the user
   queueRequest("draft-proposal", `"task":"${task.id}"`);
   emitEvent({ event_type: "mag_auto_proposal", source: "keepalive", scope: "mag", task: task.id, message: `auto-queued draft-proposal for ${task.id}` });
   console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
+}
+
+// --- Auto-clear slots whose task reached done/completed status ---
+
+function maybeClearDoneSlots(): void {
+  if (startSessionsAutonomy() === "manual") return;
+
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return;
+
+  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  const tasksDir = join(harnessDir(), "tasks");
+  if (!existsSync(tasksDir)) return;
+
+  for (const [slotNum, block] of blocks) {
+    const process = getProcess(block).trim();
+    if (!process || process === "(empty)") continue;
+
+    const taskId = getTask(block).trim();
+    if (!taskId || taskId === "null") continue;
+
+    const taskFile = join(tasksDir, `${taskId}.md`);
+    if (!existsSync(taskFile)) continue;
+
+    const content = readFileSync(taskFile, "utf-8");
+    const statusMatch = content.match(/^status:\s*(.+)$/m);
+    const taskStatus = statusMatch ? statusMatch[1]!.trim() : "";
+
+    if (taskStatus === "done" || taskStatus === "completed") {
+      console.error(`ludics: auto-clearing slot ${slotNum} (task ${taskId} is ${taskStatus})`);
+      emitEvent({
+        event_type: "slot_auto_clear",
+        source: "keepalive",
+        scope: "slot",
+        slot: slotNum,
+        task: taskId,
+        status: taskStatus,
+        message: `auto-cleared slot ${slotNum}: task ${taskId} reached status=${taskStatus}`,
+      });
+      slotClear(slotNum, taskStatus);
+    }
+  }
 }
 
 function pollSessionConclusionNotifications(): void {
@@ -1877,6 +1895,9 @@ export async function magStart(args: string[]): Promise<void> {
 
     // Auto-queue proposals for elaborated leaf tasks already in slots
     maybeQueueProposals();
+
+    // Auto-clear slots whose task reached done/completed status
+    maybeClearDoneSlots();
 
     // Auto-fill empty slots with ready elaborated tasks
     maybeFillEmptySlots();
