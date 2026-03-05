@@ -69,13 +69,15 @@ function magIsRunning(): boolean {
 }
 
 function claudeLaunchCommand(): string {
-  // Compact mode has been observed to wedge on startup helper subprocesses
-  // in some environments. Keep plain mode as the safe default.
-  const compactEnv = process.env.LUDICS_MAG_CLAUDE_COMPACT;
-  if (compactEnv === "1" || compactEnv === "true") {
-    return "claude -c --dangerously-skip-permissions || claude --dangerously-skip-permissions";
+  // Default to continue mode (-c) for persistent Mag sessions.
+  // Set LUDICS_MAG_CLAUDE_CONTINUE=0/false/no to force plain mode.
+  const continueEnv = (process.env.LUDICS_MAG_CLAUDE_CONTINUE ?? "")
+    .trim()
+    .toLowerCase();
+  if (continueEnv === "0" || continueEnv === "false" || continueEnv === "no") {
+    return "claude --dangerously-skip-permissions";
   }
-  return "claude --dangerously-skip-permissions";
+  return "claude -c --dangerously-skip-permissions || claude --dangerously-skip-permissions";
 }
 
 function triggerSkill(session: string, cmd: string): boolean {
