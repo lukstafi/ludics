@@ -753,7 +753,7 @@ ludics slots                   # Show all slots
 ludics slots refresh           # Refresh slot state from adapters
 ludics slot <n>                # Show slot n
 ludics slot <n> assign <task|desc> [-a adapter] [-s session] [-p path]
-ludics slot <n> clear [done|abandoned]
+ludics slot <n> clear [in-progress|done|abandoned]
 ludics slot <n> start          # Start agent session (adapter)
 ludics slot <n> stop           # Stop agent session
 ludics slot <n> note "text"    # Add runtime note
