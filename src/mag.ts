@@ -1635,6 +1635,29 @@ ${matches}
 
 // --- Auto-queue proposals ---
 
+const AUTO_PROPOSAL_DEBOUNCE_SECONDS = 1800;
+
+function autoProposalDebounceFile(taskId: string): string {
+  return join(magStateDir(), "auto-proposal-debounce", `${encodeURIComponent(taskId)}.epoch`);
+}
+
+function autoProposalDebounced(taskId: string): boolean {
+  const file = autoProposalDebounceFile(taskId);
+  if (!existsSync(file)) return false;
+  try {
+    const lastEpoch = parseInt(readFileSync(file, "utf-8").trim(), 10);
+    return (Math.floor(Date.now() / 1000) - lastEpoch) < AUTO_PROPOSAL_DEBOUNCE_SECONDS;
+  } catch {
+    return false;
+  }
+}
+
+function markAutoProposalQueued(taskId: string): void {
+  const file = autoProposalDebounceFile(taskId);
+  mkdirSync(join(magStateDir(), "auto-proposal-debounce"), { recursive: true });
+  writeFileSync(file, String(Math.floor(Date.now() / 1000)));
+}
+
 function maybeQueueProposals(): void {
   if (startSessionsAutonomy() === "manual") return;
 
@@ -1671,6 +1694,7 @@ function maybeQueueProposals(): void {
     const taskStatus = statusMatch ? statusMatch[1]!.trim() : "ready";
     if (["abandoned", "done", "completed"].includes(taskStatus)) continue;
     if (content.includes("\nproposal:")) continue;
+    if (autoProposalDebounced(taskId)) continue;
 
     candidates.push(taskId);
   }
@@ -1679,6 +1703,7 @@ function maybeQueueProposals(): void {
 
   for (const taskId of candidates) {
     queueRequest("draft-proposal", `"task":"${taskId}"`);
+    markAutoProposalQueued(taskId);
     console.error(`ludics: auto-queued draft-proposal for ${taskId}`);
   }
 }
@@ -1785,6 +1810,7 @@ function maybeFillEmptySlots(): void {
 
   // Queue draft-proposal so Mag writes a proposal and notifies the user
   queueRequest("draft-proposal", `"task":"${task.id}"`);
+  markAutoProposalQueued(task.id);
   emitEvent({ event_type: "mag_auto_proposal", source: "keepalive", scope: "mag", task: task.id, message: `auto-queued draft-proposal for ${task.id}` });
   console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
 }
@@ -1816,6 +1842,7 @@ function maybeClearDoneSlots(): void {
     const taskStatus = statusMatch ? statusMatch[1]!.trim() : "";
 
     if (taskStatus === "done" || taskStatus === "completed") {
+      const clearStatus = "done";
       console.error(`ludics: auto-clearing slot ${slotNum} (task ${taskId} is ${taskStatus})`);
       emitEvent({
         event_type: "slot_auto_clear",
@@ -1826,7 +1853,7 @@ function maybeClearDoneSlots(): void {
         status: taskStatus,
         message: `auto-cleared slot ${slotNum}: task ${taskId} reached status=${taskStatus}`,
       });
-      slotClear(slotNum, taskStatus);
+      slotClear(slotNum, clearStatus);
     }
   }
 }
