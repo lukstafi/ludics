@@ -1,6 +1,6 @@
 # Ludics
 
-A lightweight personal AI infrastructure — a harness for humans working with AI agents. Ludics manages a small number of concurrent "slots," aggregates tasks from GitHub and READMEs, allows merging of overlapping tasks, provides flow-based task views, and wires triggers for briefings and syncs.
+Autonomous task manager and personal AI infrastructure — a harness for humans working with AI agents. Ludics manages a small number of concurrent "slots," aggregates tasks from GitHub and READMEs, allows merging of overlapping tasks, provides flow-based task views, and wires triggers for briefings and syncs.
 
 Inspired by Daniel Miessler's Personal AI Infrastructure, by Steve Yegge's Gas Town, and Emacs' org-mode. Formerly `pai-lite`.
 
