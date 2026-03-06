@@ -25,6 +25,7 @@ import {
 import { getUrl } from "../network.ts";
 import { loadConfigSync, type LudicsFullConfig, type ProjectConfig } from "../config.ts";
 import { MarkdownBuilder } from "./markdown.ts";
+import { readFrontmatterField, readProposalLaunchMetadata } from "./task-launch.ts";
 import type { AdapterContext, Adapter } from "./types.ts";
 import { registerKnownSessions, type SweepMode } from "../sessions/sweep-state.ts";
 
@@ -292,46 +293,6 @@ function readTaskRuntimeMetadata(
   return { projectName, taskArgs };
 }
 
-function normalizeYamlScalar(value: string): string {
-  const trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1).trim();
-  }
-  return trimmed;
-}
-
-function readFrontmatterField(content: string, field: string): string | null {
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!fmMatch) return null;
-
-  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = fmMatch[1]!.match(new RegExp(`^\\s*${escapedField}:\\s*(.+)$`, "m"));
-  if (!match) return null;
-
-  const value = normalizeYamlScalar(match[1]!);
-  if (!value || value.toLowerCase() === "null") return null;
-  return value;
-}
-
-function resolveTaskRelativePath(projectDir: string, rawPath: string): string {
-  if (rawPath.startsWith("~/")) {
-    return resolve(process.env.HOME ?? "~", rawPath.slice(2));
-  }
-  if (rawPath.startsWith("/")) return resolve(rawPath);
-  return resolve(projectDir, rawPath);
-}
-
-function proposalFeatureName(proposalPath: string): string {
-  const trimmed = proposalPath.trim();
-  const base = trimmed.split("/").pop() ?? "";
-  const name = base.replace(/\.md$/i, "").trim();
-  if (!name) throw new Error(`invalid proposal path "${proposalPath}"`);
-  return name;
-}
-
 interface TaskLaunchMetadata {
   launchFeature: string;
 }
@@ -345,30 +306,20 @@ function readTaskLaunchMetadata(
     throw new Error(`${cfg.cliCommand} start blocked: missing task id for orchestrated launch`);
   }
 
-  const taskFile = join(ctx.harnessDir, "tasks", `${ctx.taskId}.md`);
-  if (!existsSync(taskFile)) {
-    throw new Error(
-      `${cfg.cliCommand} start blocked: missing task metadata file for ${ctx.taskId} (${taskFile})`,
-    );
-  }
-
-  const taskContent = readFileSync(taskFile, "utf-8");
-  const proposalValue = readFrontmatterField(taskContent, "proposal");
-  if (!proposalValue) {
+  const launchMetadata = readProposalLaunchMetadata(
+    cfg.cliCommand,
+    ctx.harnessDir,
+    ctx.taskId,
+    projectDir,
+  );
+  if (!launchMetadata) {
     throw new Error(
       `${cfg.cliCommand} start blocked: task ${ctx.taskId} has no proposal metadata. Refusing ambiguous launch.`,
     );
   }
 
-  const proposalFile = resolveTaskRelativePath(projectDir, proposalValue);
-  if (!existsSync(proposalFile)) {
-    throw new Error(
-      `${cfg.cliCommand} start blocked: proposal for ${ctx.taskId} not found at ${proposalFile}`,
-    );
-  }
-
   return {
-    launchFeature: proposalFeatureName(proposalValue),
+    launchFeature: launchMetadata.launchFeature,
   };
 }
 

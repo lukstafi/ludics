@@ -96,6 +96,42 @@ interface IncomingMessageEvent {
   title?: string;
 }
 
+type NtfyAction = Record<string, unknown>;
+
+export function chunkNotificationActions<T>(actions: T[], maxActions: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < actions.length; i += maxActions) {
+    chunks.push(actions.slice(i, i + maxActions));
+  }
+  return chunks;
+}
+
+export function buildProposalNotificationActions(
+  taskId: string,
+  project: string,
+  inTopic: string,
+  headers: Record<string, string>,
+): NtfyAction[] {
+  const action = (label: string, body: string): NtfyAction => ({
+    action: "http",
+    label,
+    url: `https://ntfy.sh/${inTopic}`,
+    method: "POST",
+    headers,
+    body,
+  });
+
+  return [
+    action("agent-duo", `Launch agent-duo for ${taskId} in project ${project}`),
+    action("pair-claude", `Launch agent-pair-claude for ${taskId} in project ${project}`),
+    action("pair-codex", `Launch agent-pair-codex for ${taskId} in project ${project}`),
+    action("agent-claude", `Launch agent-claude for ${taskId} in project ${project}`),
+    action("agent-codex", `Launch agent-codex for ${taskId} in project ${project}`),
+    action("revise", `Revise proposal for ${taskId}`),
+    action("abandon", `Abandon task ${taskId}`),
+  ];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -858,48 +894,11 @@ export function notifyProposal(
 
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const actions: Array<Record<string, unknown>> = [
-    {
-      action: "http",
-      label: "agent-duo",
-      url: `https://ntfy.sh/${inTopic}`,
-      method: "POST",
-      headers,
-      body: `Launch agent-duo for ${taskId} in project ${project}`,
-    },
-    {
-      action: "http",
-      label: "revise",
-      url: `https://ntfy.sh/${inTopic}`,
-      method: "POST",
-      headers,
-      body: `Revise proposal for ${taskId}`,
-    },
-    {
-      action: "http",
-      label: "abandon",
-      url: `https://ntfy.sh/${inTopic}`,
-      method: "POST",
-      headers,
-      body: `Abandon task ${taskId}`,
-    },
-    {
-      action: "http",
-      label: "pair-claude",
-      url: `https://ntfy.sh/${inTopic}`,
-      method: "POST",
-      headers,
-      body: `Launch agent-pair-claude for ${taskId} in project ${project}`,
-    },
-    {
-      action: "http",
-      label: "pair-codex",
-      url: `https://ntfy.sh/${inTopic}`,
-      method: "POST",
-      headers,
-      body: `Launch agent-pair-codex for ${taskId} in project ${project}`,
-    },
-  ];
+  const actions = inTopic
+    ? buildProposalNotificationActions(taskId, project, inTopic, headers)
+    : [];
+  const actionBatches = chunkNotificationActions(actions, NTFY_MAX_ACTIONS);
+  const firstActionBatch = actionBatches[0] ?? [];
 
   let first: { httpCode: string; stderr: string; body: string };
   if (resolvedPath) {
@@ -912,7 +911,7 @@ export function notifyProposal(
       inlineHeaderMessage,
       3,
       tagsHeader,
-      inTopic ? actions.slice(0, NTFY_MAX_ACTIONS) : [],
+      firstActionBatch,
     );
   } else {
     first = notifyPublishMessage(
@@ -922,7 +921,7 @@ export function notifyProposal(
       proposalTitle,
       3,
       tagsHeader,
-      inTopic ? actions.slice(0, NTFY_MAX_ACTIONS) : [],
+      firstActionBatch,
     );
   }
 
@@ -936,7 +935,7 @@ export function notifyProposal(
       proposalTitle,
       3,
       tagsHeader,
-      inTopic ? actions.slice(0, NTFY_MAX_ACTIONS) : [],
+      firstActionBatch,
     );
     if (fallback.httpCode !== "200") {
       const fallbackDetail = fallback.body || fallback.stderr;
@@ -947,7 +946,7 @@ export function notifyProposal(
 
   if (!inTopic) return;
 
-  for (let i = NTFY_MAX_ACTIONS; i < actions.length; i += NTFY_MAX_ACTIONS) {
+  for (const batch of actionBatches.slice(1)) {
     const followup = notifyPublishMessage(
       outTopic,
       `More launch options for ${taskId}${slotSuffix}.`,
@@ -955,7 +954,7 @@ export function notifyProposal(
       optionsTitle,
       3,
       tagsHeader,
-      actions.slice(i, i + NTFY_MAX_ACTIONS),
+      batch,
     );
     if (followup.httpCode !== "200") {
       const detail = followup.body || followup.stderr;

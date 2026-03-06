@@ -3,13 +3,14 @@
 // Both adapters are ~95% identical — parameterize the differences via
 // AgentSessionConfig and export factory functions.
 
-import { existsSync } from "fs";
-import { join } from "path";
+import { existsSync, readdirSync } from "fs";
+import { join, resolve } from "path";
 import { tmuxAvailable, tmuxHasSession, tmuxPaneCwd } from "./tmux.ts";
 import { readStatusFile, formatAgentStatus, timeAgo, isGitWorktree, getMainRepoFromWorktree, getGitBranch, readSingleFile, resolveProjectDir, latestMtime } from "./base.ts";
-import { readAgentSessionFile, findSessionByPrefixOrTask } from "./peer-sync.ts";
+import { readAgentSessionFile } from "./peer-sync.ts";
 import { getUrl } from "../network.ts";
 import { MarkdownBuilder } from "./markdown.ts";
+import { readProposalLaunchMetadata } from "./task-launch.ts";
 import type { AdapterContext, Adapter } from "./types.ts";
 import { registerKnownSessions, type SweepMode } from "../sessions/sweep-state.ts";
 
@@ -25,6 +26,98 @@ export interface AgentSessionConfig {
   sessionPrefixes: string[]; // ["claude-", "agent-claude-"] | ["codex-", "agent-codex-"]
 }
 
+export function resolveAgentSessionProjectDir(ctx: AdapterContext): string {
+  const candidates: string[] = [];
+  if (ctx.path && ctx.path !== "null") candidates.push(ctx.path);
+  candidates.push(resolveProjectDir(ctx.session));
+
+  const normalized = Array.from(new Set(candidates.map((raw) => {
+    const expanded = raw.startsWith("~/")
+      ? join(process.env.HOME ?? "~", raw.slice(2))
+      : raw;
+    const abs = resolve(expanded);
+    if (isGitWorktree(abs)) {
+      const mainRepo = getMainRepoFromWorktree(abs);
+      if (mainRepo) return mainRepo;
+    }
+    return abs;
+  })));
+
+  for (const dir of normalized) {
+    if (existsSync(join(dir, ".agent-sessions"))) return dir;
+  }
+  for (const dir of normalized) {
+    if (existsSync(dir)) return dir;
+  }
+  return normalized[0] ?? process.cwd();
+}
+
+function readLaunchFeature(
+  cfg: AgentSessionConfig,
+  ctx: AdapterContext,
+  projectDir: string,
+): string | null {
+  if (!ctx.taskId || ctx.taskId === "null") return null;
+  return readProposalLaunchMetadata(cfg.command, ctx.harnessDir, ctx.taskId, projectDir)?.launchFeature ?? null;
+}
+
+function tryReadLaunchFeature(
+  cfg: AgentSessionConfig,
+  ctx: AdapterContext,
+  projectDir: string,
+): string | null {
+  try {
+    return readLaunchFeature(cfg, ctx, projectDir);
+  } catch {
+    return null;
+  }
+}
+
+function sessionLookupCandidates(
+  ctx: AdapterContext,
+  launchFeature: string | null,
+): string[] {
+  const candidates = [
+    ctx.taskId,
+    launchFeature,
+    ctx.session && ctx.session !== "null" && !/^\d+$/.test(ctx.session) ? ctx.session : "",
+  ];
+  return Array.from(new Set(candidates.map((value) => value?.trim() ?? "").filter(Boolean)));
+}
+
+function findSessionFileForCandidates(
+  projectDir: string,
+  candidates: string[],
+  prefixes: string[],
+): string | null {
+  const sessionsDir = join(projectDir, ".agent-sessions");
+  if (!existsSync(sessionsDir)) return null;
+
+  let files: string[] = [];
+  try {
+    files = readdirSync(sessionsDir).filter((entry) => entry.endsWith(".session"));
+  } catch {
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    for (const prefix of prefixes) {
+      const fileName = `${prefix}${candidate}.session`;
+      if (files.includes(fileName)) return join(sessionsDir, fileName);
+    }
+    const legacyName = `${candidate}.session`;
+    if (files.includes(legacyName)) return join(sessionsDir, legacyName);
+  }
+
+  for (const prefix of prefixes) {
+    const prefixed = files.find((entry) => entry.startsWith(prefix));
+    if (prefixed) return join(sessionsDir, prefixed);
+  }
+
+  const fallback = files[0];
+  return fallback ? join(sessionsDir, fallback) : null;
+}
+
 // ---------------------------------------------------------------------------
 // Adapter factory
 // ---------------------------------------------------------------------------
@@ -35,8 +128,13 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
   function readState(ctx: AdapterContext): string | null {
     if (!tmuxAvailable()) return null;
 
-    const projectDir = resolveProjectDir(ctx.session);
-    const sessionFile = findSessionByPrefixOrTask(projectDir, ctx.taskId, cfg.sessionPrefixes);
+    const projectDir = resolveAgentSessionProjectDir(ctx);
+    const launchFeature = tryReadLaunchFeature(cfg, ctx, projectDir);
+    const sessionFile = findSessionFileForCandidates(
+      projectDir,
+      sessionLookupCandidates(ctx, launchFeature),
+      cfg.sessionPrefixes,
+    );
     const sessionInfo = sessionFile ? readAgentSessionFile(sessionFile) : null;
 
     const tmuxName = sessionInfo?.tmux
@@ -45,8 +143,9 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
     if (!tmuxHasSession(tmuxName)) return null;
 
     const knownName = (
-      (ctx.taskId && ctx.taskId !== "null" ? ctx.taskId : "")
-      || sessionInfo?.task
+      sessionInfo?.task
+      || launchFeature
+      || (ctx.taskId && ctx.taskId !== "null" ? ctx.taskId : "")
       || (ctx.session && ctx.session !== "null" && !/^\d+$/.test(ctx.session) ? ctx.session : "")
     ).trim();
     if (knownName) {
@@ -119,8 +218,11 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
   }
 
   function start(ctx: AdapterContext): string {
-    const projectDir = resolveProjectDir(ctx.session);
-    const task = ctx.taskId || ctx.session || `slot-${ctx.slot}`;
+    const projectDir = resolveAgentSessionProjectDir(ctx);
+    const task = readLaunchFeature(cfg, ctx, projectDir)
+      || ctx.taskId
+      || ctx.session
+      || `slot-${ctx.slot}`;
 
     const result = Bun.spawnSync([cfg.command, task, "--bare"], {
       cwd: projectDir,
@@ -149,8 +251,11 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
   }
 
   function stop(ctx: AdapterContext): string {
-    const projectDir = resolveProjectDir(ctx.session);
-    const task = ctx.taskId || ctx.session || `slot-${ctx.slot}`;
+    const projectDir = resolveAgentSessionProjectDir(ctx);
+    const task = tryReadLaunchFeature(cfg, ctx, projectDir)
+      || ctx.taskId
+      || ctx.session
+      || `slot-${ctx.slot}`;
 
     const result = Bun.spawnSync([cfg.command, "cleanup", task], {
       cwd: projectDir,
@@ -168,8 +273,13 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
   }
 
   function lastActivity(ctx: AdapterContext): string | null {
-    const projectDir = resolveProjectDir(ctx.session);
-    const sessionFile = findSessionByPrefixOrTask(projectDir, ctx.taskId, cfg.sessionPrefixes);
+    const projectDir = resolveAgentSessionProjectDir(ctx);
+    const launchFeature = tryReadLaunchFeature(cfg, ctx, projectDir);
+    const sessionFile = findSessionFileForCandidates(
+      projectDir,
+      sessionLookupCandidates(ctx, launchFeature),
+      cfg.sessionPrefixes,
+    );
     const sessionInfo = sessionFile ? readAgentSessionFile(sessionFile) : null;
 
     const paths: string[] = [];
