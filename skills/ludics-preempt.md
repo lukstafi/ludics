@@ -26,11 +26,15 @@ This skill is invoked when:
    ```
 
 3. **Check for existing preemptions**:
-   Look in `harness/mag/preempted/` for any existing stash files.
-   Never preempt a slot that already has a stash (no double preemption).
+   Look in `harness/mag/preempted/` for existing stash files.
+   Never preempt a slot that already has a stash (no double preemption for that slot).
+   Treat the effective cap as **one active preemption per project**, not one globally.
+   A priority task from project A must not block preempting a slot for project B.
 
 4. **Evaluate each slot** using these criteria:
-   - **Never preempt another priority project task** — check if the slot's current task belongs to a priority project
+   - **Never create a second active preemption for the same project** — if the incoming task's project already has a queued or stashed preemption, stop and reset the task to `ready`
+   - **Avoid preempting another priority task from the same project** — check whether the slot's current task belongs to the incoming task's project
+   - **A different priority project is not a global blocker** — if project A already has a preempted slot, project B may still preempt one of its own
    - **Prefer lower-priority tasks** — tasks with priority C over B over A
    - **Prefer tasks with less time invested** — recently started tasks are cheaper to pause
    - **Consider context** — prefer preempting tasks in unrelated contexts
@@ -53,7 +57,7 @@ This skill is invoked when:
    ```
 
    ### On failure / no suitable slot
-   If no slot can be preempted (e.g., all run priority project tasks), reset the task status so it can be reconsidered later. The task status was set to `preempt-queued` when the request was queued; update the task file's `status:` field back to `ready` if preemption doesn't happen.
+   If no slot can be preempted (e.g., every candidate would create a second preemption for the same project, or every slot already has a stash), reset the task status so it can be reconsidered later. The task status was set to `preempt-queued` when the request was queued; update the task file's `status:` field back to `ready` if preemption doesn't happen.
 
 ## Output Format
 

@@ -5,6 +5,7 @@ import { join } from "path";
 import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCount } from "../config.ts";
 import { slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getProcess, getTask } from "../slots/markdown.ts";
+import { listStashes } from "../slots/preempt.ts";
 import { writeTaskFile, updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
@@ -234,6 +235,54 @@ function normalizeState(value: string | null | undefined): string {
 
 function normalizeStateReason(value: string | null | undefined): string {
   return normalizeState(value).replace(/-/g, "_");
+}
+
+function readTaskProjectName(tasksDir: string, taskId: string): string {
+  if (!taskId) return "";
+  const taskFile = join(tasksDir, `${taskId}.md`);
+  if (!existsSync(taskFile)) return "";
+  const taskContent = readFileSync(taskFile, "utf-8");
+  const projectMatch = taskContent.match(/^project:\s*(.+)$/m);
+  return projectMatch ? projectMatch[1]!.trim() : "";
+}
+
+function collectProjectsWithQueuedPreemption(tasksDir: string, queueContent: string, priProjects: string[]): Set<string> {
+  const projects = new Set<string>();
+
+  for (const stash of listStashes()) {
+    const project = readTaskProjectName(tasksDir, stash.preemptingTask);
+    if (project && priProjects.includes(project)) {
+      projects.add(project);
+    }
+  }
+
+  for (const line of queueContent.split("\n")) {
+    if (!line.includes('"action":"preempt"')) continue;
+    try {
+      const req = JSON.parse(line) as Record<string, unknown>;
+      const qTask = String(req.task ?? "");
+      const project = readTaskProjectName(tasksDir, qTask);
+      if (project && priProjects.includes(project)) {
+        projects.add(project);
+      }
+    } catch {
+      // skip malformed queue lines
+    }
+  }
+
+  const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+  for (const file of files) {
+    const content = readFileSync(join(tasksDir, file), "utf-8");
+    const statusMatch = content.match(/^status:\s*(.+)$/m);
+    if (!statusMatch || statusMatch[1]!.trim() !== "preempt-queued") continue;
+    const projectMatch = content.match(/^project:\s*(.+)$/m);
+    const project = projectMatch ? projectMatch[1]!.trim() : "";
+    if (project && priProjects.includes(project)) {
+      projects.add(project);
+    }
+  }
+
+  return projects;
 }
 
 function closedStatusFromIssue(issue: GhIssueState): "done" | "abandoned" | null {
@@ -678,39 +727,10 @@ function tasksQueuePreemptions(): void {
     alreadyQueued = readFileSync(queueFile, "utf-8");
   }
 
-  // Collect projects that already have a task in-flight (in-progress or preempted in a slot)
-  // to avoid thrashing with multiple preemptions for the same project
-  const projectsInFlight = new Set<string>();
-  for (let i = 1; i <= count; i++) {
-    const block = blocks.get(i);
-    if (!block) continue;
-    const slotTaskId = getTask(block).trim();
-    if (!slotTaskId || slotTaskId === "null") continue;
-    const taskFile = join(tasksDir, `${slotTaskId}.md`);
-    if (!existsSync(taskFile)) continue;
-    const taskContent = readFileSync(taskFile, "utf-8");
-    const pm = taskContent.match(/^project:\s*(.+)$/m);
-    if (pm && priProjects.includes(pm[1]!.trim())) {
-      projectsInFlight.add(pm[1]!.trim());
-    }
-  }
-
-  // Also count projects already queued for preemption
-  const queuedLines = alreadyQueued.split("\n").filter((l) => l.includes('"action":"preempt"'));
-  for (const line of queuedLines) {
-    try {
-      const req = JSON.parse(line) as Record<string, unknown>;
-      const qTask = String(req.task ?? "");
-      if (!qTask) continue;
-      const taskFile = join(tasksDir, `${qTask}.md`);
-      if (!existsSync(taskFile)) continue;
-      const taskContent = readFileSync(taskFile, "utf-8");
-      const pm = taskContent.match(/^project:\s*(.+)$/m);
-      if (pm && priProjects.includes(pm[1]!.trim())) {
-        projectsInFlight.add(pm[1]!.trim());
-      }
-    } catch { /* skip */ }
-  }
+  // Limit active preemptions per project, not globally. A priority project already
+  // occupying a normal slot should not block another project from getting one
+  // preempted slot of its own.
+  const projectsInFlight = collectProjectsWithQueuedPreemption(tasksDir, alreadyQueued, priProjects);
 
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
   let queued = 0;
