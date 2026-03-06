@@ -4,7 +4,7 @@
 // AgentSessionConfig and export factory functions.
 
 import { existsSync, readdirSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { tmuxAvailable, tmuxHasSession, tmuxPaneCwd } from "./tmux.ts";
 import { readStatusFile, formatAgentStatus, timeAgo, isGitWorktree, getMainRepoFromWorktree, getGitBranch, readSingleFile, resolveProjectDir, latestMtime } from "./base.ts";
 import { readAgentSessionFile } from "./peer-sync.ts";
@@ -24,6 +24,32 @@ export interface AgentSessionConfig {
   terminalLabel: string;    // "Claude Code" | "Codex"
   statusFileName: string;   // "claude.status" | "codex.status"
   sessionPrefixes: string[]; // ["claude-", "agent-claude-"] | ["codex-", "agent-codex-"]
+}
+
+export function resolveAgentSessionProjectDir(ctx: AdapterContext): string {
+  const candidates: string[] = [];
+  if (ctx.path && ctx.path !== "null") candidates.push(ctx.path);
+  candidates.push(resolveProjectDir(ctx.session));
+
+  const normalized = Array.from(new Set(candidates.map((raw) => {
+    const expanded = raw.startsWith("~/")
+      ? join(process.env.HOME ?? "~", raw.slice(2))
+      : raw;
+    const abs = resolve(expanded);
+    if (isGitWorktree(abs)) {
+      const mainRepo = getMainRepoFromWorktree(abs);
+      if (mainRepo) return mainRepo;
+    }
+    return abs;
+  })));
+
+  for (const dir of normalized) {
+    if (existsSync(join(dir, ".agent-sessions"))) return dir;
+  }
+  for (const dir of normalized) {
+    if (existsSync(dir)) return dir;
+  }
+  return normalized[0] ?? process.cwd();
 }
 
 function readLaunchFeature(
@@ -102,7 +128,7 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
   function readState(ctx: AdapterContext): string | null {
     if (!tmuxAvailable()) return null;
 
-    const projectDir = resolveProjectDir(ctx.session);
+    const projectDir = resolveAgentSessionProjectDir(ctx);
     const launchFeature = tryReadLaunchFeature(cfg, ctx, projectDir);
     const sessionFile = findSessionFileForCandidates(
       projectDir,
@@ -192,7 +218,7 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
   }
 
   function start(ctx: AdapterContext): string {
-    const projectDir = resolveProjectDir(ctx.session);
+    const projectDir = resolveAgentSessionProjectDir(ctx);
     const task = readLaunchFeature(cfg, ctx, projectDir)
       || ctx.taskId
       || ctx.session
@@ -225,7 +251,7 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
   }
 
   function stop(ctx: AdapterContext): string {
-    const projectDir = resolveProjectDir(ctx.session);
+    const projectDir = resolveAgentSessionProjectDir(ctx);
     const task = tryReadLaunchFeature(cfg, ctx, projectDir)
       || ctx.taskId
       || ctx.session
@@ -247,7 +273,7 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
   }
 
   function lastActivity(ctx: AdapterContext): string | null {
-    const projectDir = resolveProjectDir(ctx.session);
+    const projectDir = resolveAgentSessionProjectDir(ctx);
     const launchFeature = tryReadLaunchFeature(cfg, ctx, projectDir);
     const sessionFile = findSessionFileForCandidates(
       projectDir,
