@@ -176,6 +176,7 @@ export function slotAssign(
       case "manual":
         session = String(slotNum);
         break;
+      case "t3code":
       case "agent-duo":
       case "agent-pair-codex":
       case "agent-pair-claude":

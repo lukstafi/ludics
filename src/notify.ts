@@ -125,6 +125,7 @@ export function buildProposalNotificationActions(
     action("agent-duo", `Launch agent-duo for ${taskId} in project ${project}`),
     action("pair-claude", `Launch agent-pair-claude for ${taskId} in project ${project}`),
     action("pair-codex", `Launch agent-pair-codex for ${taskId} in project ${project}`),
+    action("t3code", `Launch t3code for ${taskId} in project ${project}`),
     action("agent-claude", `Launch agent-claude for ${taskId} in project ${project}`),
     action("agent-codex", `Launch agent-codex for ${taskId} in project ${project}`),
     action("revise", `Revise proposal for ${taskId}`),

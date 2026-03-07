@@ -740,6 +740,7 @@ const NOTIFICATION_LAUNCH_ADAPTERS = new Set([
   "agent-duo",
   "agent-pair-codex",
   "agent-pair-claude",
+  "t3code",
   "agent-codex",
   "agent-claude",
   "agent-session",
@@ -1034,7 +1035,7 @@ async function resolveQueueRequestCommand(request: Record<string, unknown>, exec
 
       // Intercept button-tap launch messages from ntfy notifications
       // e.g. "Launch agent-duo for task-042 in project ocannl"
-      const launchMatch = content.match(/^Launch (agent-[\w-]+) for ([\w.-]+) in project .+$/);
+      const launchMatch = content.match(/^Launch ([\w-]+) for ([\w.-]+) in project .+$/);
       if (launchMatch) {
         if (executeProgrammatic) {
           const adapter = launchMatch[1]!;

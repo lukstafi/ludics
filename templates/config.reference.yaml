@@ -31,7 +31,7 @@ projects:
     issues: true          # Chores, reminders, etc.
 
 # Adapter settings
-# Available adapters: agent-claude, agent-codex, agent-duo,
+# Available adapters: agent-claude, agent-codex, t3code, agent-duo,
 #                     agent-pair-codex, agent-pair-claude,
 #                     claude-ai, chatgpt-com, manual
 adapters:
@@ -41,6 +41,9 @@ adapters:
   agent-codex:
     enabled: true         # Codex CLI agent
     default_args: []      # Optional default args (argv array or shell string)
+  t3code:
+    enabled: true         # Shared T3 Code server / thread-based Codex sessions
+    default_args: []      # Optional default args, e.g. ["--model", "gpt-5.4"]
   agent-duo:
     enabled: true         # Dual agent system (Claude + Codex)
     default_args: []      # Optional default args (argv array or shell string)

@@ -18,6 +18,7 @@ import { slotsList } from "./slots/index.ts";
 import { flowReady } from "./flow.ts";
 import { runQuote } from "./quote.ts";
 import { runEvents } from "./events.ts";
+import { runT3Code } from "./t3code/index.ts";
 
 const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   sessions: runSessions,
@@ -46,6 +47,7 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   init: runInit,
   quote: async () => runQuote(),
   events: async (args) => runEvents(args),
+  t3code: runT3Code,
   sync: async () => stateFullSync(),
   state: async (args) => {
     const sub = args[0] ?? "";
@@ -142,6 +144,10 @@ Commands:
   dashboard generate           Generate JSON data for dashboard
   dashboard serve [port]       Serve dashboard (default: 7678)
   dashboard install            Install dashboard to state repo
+
+  t3code [status]             Show shared t3code server status
+  t3code start                Start the shared t3code server
+  t3code stop                 Stop the shared t3code server
 
   sessions [--json]            Discover and classify all agent sessions
   sessions report [--json]     Generate sessions report for Mag (Markdown + JSON)

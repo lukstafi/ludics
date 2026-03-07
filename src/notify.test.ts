@@ -14,13 +14,15 @@ describe("buildProposalNotificationActions", () => {
       "agent-duo",
       "pair-claude",
       "pair-codex",
+      "t3code",
       "agent-claude",
       "agent-codex",
       "revise",
       "abandon",
     ]);
-    expect(String(actions[3]!.body)).toBe("Launch agent-claude for task-042 in project project-x");
-    expect(String(actions[4]!.body)).toBe("Launch agent-codex for task-042 in project project-x");
+    expect(String(actions[3]!.body)).toBe("Launch t3code for task-042 in project project-x");
+    expect(String(actions[4]!.body)).toBe("Launch agent-claude for task-042 in project project-x");
+    expect(String(actions[5]!.body)).toBe("Launch agent-codex for task-042 in project project-x");
   });
 });
 
@@ -29,7 +31,7 @@ describe("chunkNotificationActions", () => {
     const actions = buildProposalNotificationActions("task-042", "project-x", "incoming-topic", {});
     const chunks = chunkNotificationActions(actions, 3);
 
-    expect(chunks.map((chunk) => chunk.length)).toEqual([3, 3, 1]);
+    expect(chunks.map((chunk) => chunk.length)).toEqual([3, 3, 2]);
     expect(chunks.flat().map((action) => String(action.label))).toEqual(
       actions.map((action) => String(action.label)),
     );
