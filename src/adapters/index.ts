@@ -12,6 +12,7 @@ import * as agentPairClaude from "./agent-pair-claude.ts";
 import * as claudeAi from "./claude-ai.ts";
 import * as chatgptCom from "./chatgpt-com.ts";
 import * as manual from "./manual.ts";
+import * as t3code from "./t3code.ts";
 
 const adapters: Record<string, Adapter> = {
   "agent-claude": agentClaude,
@@ -22,6 +23,7 @@ const adapters: Record<string, Adapter> = {
   "claude-ai": claudeAi,
   "chatgpt-com": chatgptCom,
   "manual": manual,
+  "t3code": t3code,
 };
 
 function getAdapter(mode: string): Adapter {
