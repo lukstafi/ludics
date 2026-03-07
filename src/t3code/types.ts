@@ -7,7 +7,7 @@ export const ORCHESTRATION_WS_CHANNELS = {
   domainEvent: "orchestration.domainEvent",
 } as const;
 
-export type T3ProviderKind = "codex";
+export type T3ProviderKind = "codex" | "claude-code";
 export type T3RuntimeMode = "approval-required" | "full-access";
 export type T3InteractionMode = "default" | "plan";
 export type T3ApprovalPolicy = "untrusted" | "on-failure" | "on-request" | "never";

@@ -444,24 +444,27 @@ path is proven.
 
 ---
 
-## Open Questions
+## Design Decisions (Resolved)
 
-1. **t3code thread configuration:** Can we set the workspace path per thread (so each
-   agent thread points to its worktree)? Need to verify in t3code's `ProjectCreateCommand`
-   or thread configuration.
+1. **Thread-to-project mapping:** `T3ThreadCreateCommand` has a `worktreePath` field —
+   each thread can point to a different workspace directory. Mapping: one t3code project
+   per feature (the main repo), with multiple threads per project pointing to different
+   agent worktrees. `T3ProjectCreateCommand.workspaceRoot` is the main repo path.
 
-2. **Agent signaling:** How does an agent signal "phase done" through t3code? Options:
-   - Agent writes to `.peer-sync/<agent>.status` (current approach, Ludics polls)
-   - Agent sends a specific message that Ludics detects in t3code events
-   - t3code's `session/completed` event (turn-level, not phase-level)
-   - Likely: keep `.peer-sync/` status writes, Ludics polls both files and t3code events
+2. **Agent signaling:** Keep `.peer-sync/<agent>.status` file writes (current pattern).
+   Codex has shell access inside t3code, so skill templates instruct the agent to write
+   status files. t3code turn completion events serve as a secondary signal. See Phase 3
+   proposal for details.
 
-3. **Approval routing:** t3code has per-action approval workflows. Should Ludics
-   configure sandbox mode per phase? (e.g., stricter during review, looser during work)
+3. **Approval routing:** Start simple — `full-access` runtime mode for all phases.
+   Phase-specific sandbox modes (e.g., stricter during review) are a future optimization
+   once the basic orchestration loop is proven. The `runtimeMode` parameter is already
+   per-turn in `T3ThreadTurnStartCommand`, so tightening later is straightforward.
 
-4. **Headless mode:** For CI or SSH-only environments, can t3code run without a browser?
-   The server should work fine headless (just don't open browser), but need to confirm.
+4. **Headless mode:** t3code server is HTTP + WebSocket. Ludics only uses the WebSocket
+   API — no browser required. The web UI is optional; humans can open it for observation
+   but the orchestration engine never needs it. Confirmed working for CI/SSH environments.
 
-5. **Thread-to-project mapping:** t3code has a project concept. Does one project = one
-   worktree? Or can threads within a project point to different workspace paths?
-   This affects how duo mode maps to t3code's model.
+5. **Pair mode threads:** Two threads per slot, one per agent, even when backed by the
+   same model. Role switching (coder ↔ reviewer) is via different skill messages per
+   phase, not thread reuse. See Phase 3 proposal §3.3 for details.
