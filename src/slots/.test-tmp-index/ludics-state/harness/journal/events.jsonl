@@ -1,2 +1,0 @@
-{"ts":"2026-03-07T20:37:11Z","epoch":1772915831,"event_type":"journal","source":"cli","scope":"slot","message":"Slot 2 assigned: Investigate slot detection (task=null, adapter=manual)"}
-{"ts":"2026-03-07T20:37:11Z","epoch":1772915831,"event_type":"slot_assign","source":"cli","scope":"slot","slot":2,"adapter":"manual","message":"Investigate slot detection"}
