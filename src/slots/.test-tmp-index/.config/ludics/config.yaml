@@ -1,0 +1,4 @@
+state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2

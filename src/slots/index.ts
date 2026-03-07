@@ -152,17 +152,12 @@ export function slotAssign(
   // Determine task ID vs description
   let taskId: string;
   let processDesc: string;
-  if (/^task-\d+/.test(taskOrDesc) || /^gh-/.test(taskOrDesc) || /^readme-/.test(taskOrDesc)) {
+  const tf = taskFilePath(taskOrDesc);
+  if (existsSync(tf)) {
     taskId = taskOrDesc;
-    // Try to get title from task file
-    const tf = taskFilePath(taskId);
-    if (existsSync(tf)) {
-      const content = readFileSync(tf, "utf-8");
-      const titleMatch = content.match(/^title:\s*"?(.+?)"?\s*$/m);
-      processDesc = titleMatch ? titleMatch[1]! : taskId;
-    } else {
-      processDesc = taskId;
-    }
+    const content = readFileSync(tf, "utf-8");
+    const titleMatch = content.match(/^title:\s*"?(.+?)"?\s*$/m);
+    processDesc = titleMatch ? titleMatch[1]! : taskId;
   } else {
     taskId = "null";
     processDesc = taskOrDesc;
