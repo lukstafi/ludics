@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { slotAssign } from "./index.ts";
 
-const TMP = join(import.meta.dir, ".test-tmp-index");
-
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+let TMP = "";
 
 function writeConfig(homeDir: string): string {
   const configDir = join(homeDir, ".config", "ludics");
@@ -48,8 +48,7 @@ source: local
 }
 
 beforeEach(() => {
-  rmSync(TMP, { recursive: true, force: true });
-  mkdirSync(TMP, { recursive: true });
+  TMP = mkdtempSync(join(tmpdir(), "ludics-slots-index-"));
   process.env.HOME = TMP;
   process.env.LUDICS_CONFIG = writeConfig(TMP);
 });
