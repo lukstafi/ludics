@@ -11,6 +11,11 @@ Periodically review and consolidate valuable entries into `CLAUDE.md` or `AGENTS
 
 In bash, ${var:-{}} is ambiguous — when $var has a value containing braces, the expansion appends an extra }. Use [[ -n "$var" ]] || var="{}" instead.
 <!-- End entry -->
+<!-- Entry: proposal-slot-assign-task-id-detection-coder | 2026-03-07T21:41:20+0100 -->
+### Use OS temp dirs for test harnesses, not repo-local scratch paths
+
+When a Bun test needs a fake HOME or harness tree, allocate it with `mkdtempSync(join(tmpdir(), "..."))` instead of creating `.test-tmp-*` under `src/` or another tracked path. Repo-local scratch directories are easy to commit by accident and can also collide with tracked fixtures during cleanup.
+<!-- End entry -->
 
 <!-- Entry: pervasive_session_discovery-claude | 2026-02-10 -->
 ### Pipe-while subshell trap
