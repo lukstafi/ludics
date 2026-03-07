@@ -185,11 +185,19 @@ export interface T3CodeThreadRecord {
   model: string;
   runtimeMode: T3RuntimeMode;
   interactionMode: T3InteractionMode;
+  branch?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface T3CodeOrchestrationRef {
+  stateFile: string;
+  mode: "duo" | "pair";
+  pid?: number;
 }
 
 export interface T3CodeSlotState {
   slot: number;
   threads: T3CodeThreadRecord[];
+  orchestration?: T3CodeOrchestrationRef;
 }

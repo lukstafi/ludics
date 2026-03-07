@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canReuseSlotThread } from "./t3code.ts";
+import { canReuseSlotThread, parseT3CodeAdapterArgs } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 
 function makeThread(overrides: Partial<T3CodeThreadRecord> = {}): T3CodeThreadRecord {
@@ -64,5 +64,31 @@ describe("canReuseSlotThread", () => {
         interactionMode: "default",
       }),
     ).toBe(false);
+  });
+});
+
+describe("parseT3CodeAdapterArgs", () => {
+  test("parses classic single-thread options", () => {
+    const parsed = parseT3CodeAdapterArgs("--model gpt-5.5 --title test --runtime-mode full-access");
+    expect(parsed.model).toBe("gpt-5.5");
+    expect(parsed.title).toBe("test");
+    expect(parsed.orchestration).toBeNull();
+  });
+
+  test("parses duo orchestration defaults", () => {
+    const parsed = parseT3CodeAdapterArgs("--duo --clarify --plan");
+    expect(parsed.orchestration?.mode).toBe("duo");
+    expect(parsed.orchestration?.config.enableClarify).toBe(true);
+    expect(parsed.orchestration?.config.enablePlan).toBe(true);
+    expect(parsed.orchestration?.agents).toHaveLength(2);
+  });
+
+  test("parses pair role overrides", () => {
+    const parsed = parseT3CodeAdapterArgs("--pair --coder codex:gpt-5.6 --reviewer reviewer:claude-code:gpt-5.7");
+    expect(parsed.orchestration?.mode).toBe("pair");
+    expect(parsed.orchestration?.agents[0]?.role).toBe("coder");
+    expect(parsed.orchestration?.agents[0]?.provider).toBe("codex");
+    expect(parsed.orchestration?.agents[1]?.name).toBe("reviewer");
+    expect(parsed.orchestration?.agents[1]?.provider).toBe("claude-code");
   });
 });

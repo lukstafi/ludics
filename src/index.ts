@@ -19,6 +19,7 @@ import { flowReady } from "./flow.ts";
 import { runQuote } from "./quote.ts";
 import { runEvents } from "./events.ts";
 import { runT3Code } from "./t3code/index.ts";
+import { runOrchestrationCli } from "./orchestration/index.ts";
 
 const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   sessions: runSessions,
@@ -48,6 +49,8 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   quote: async () => runQuote(),
   events: async (args) => runEvents(args),
   t3code: runT3Code,
+  orch: runOrchestrationCli,
+  orchestration: runOrchestrationCli,
   sync: async () => stateFullSync(),
   state: async (args) => {
     const sub = args[0] ?? "";
@@ -148,6 +151,12 @@ Commands:
   t3code [status]             Show shared t3code server status
   t3code start                Start the shared t3code server
   t3code stop                 Stop the shared t3code server
+
+  orch status <slot>          Show orchestration state for a slot
+  orch confirm <slot>         Confirm the current orchestration phase
+  orch interrupt <slot>       Interrupt active agents in the current phase
+  orch skip <slot> <phase>    Force the orchestration to a different phase
+  orch log <slot>             Show phase transition log for the slot
 
   sessions [--json]            Discover and classify all agent sessions
   sessions report [--json]     Generate sessions report for Mag (Markdown + JSON)

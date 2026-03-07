@@ -41,15 +41,19 @@ function readFileIfExists(path: string): string | null {
 }
 
 function gitOutput(cwd: string, args: string[]): string | null {
-  const result = Bun.spawnSync(["git", ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "ignore",
-    env: process.env as Record<string, string>,
-  });
-  if (result.exitCode !== 0) return null;
-  const out = result.stdout.toString().trim();
-  return out || null;
+  try {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      stdout: "pipe",
+      stderr: "ignore",
+      env: process.env as Record<string, string>,
+    });
+    if (result.exitCode !== 0) return null;
+    const out = result.stdout.toString().trim();
+    return out || null;
+  } catch {
+    return null;
+  }
 }
 
 function doneStatusForPhase(phase: Phase): string {
