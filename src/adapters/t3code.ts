@@ -33,6 +33,14 @@ interface ParsedAdapterArgs {
   interactionMode: T3InteractionMode;
 }
 
+export interface DesiredThreadConfig {
+  workspaceRoot: string;
+  title: string;
+  model: string;
+  runtimeMode: T3RuntimeMode;
+  interactionMode: T3InteractionMode;
+}
+
 const DEFAULT_MODEL = "gpt-5.4";
 
 function isoNow(): string {
@@ -169,6 +177,18 @@ function findProject(snapshot: T3Snapshot, workspaceRoot: string): { id: string;
   return null;
 }
 
+export function canReuseSlotThread(
+  existing: T3CodeThreadRecord | null | undefined,
+  desired: DesiredThreadConfig,
+): boolean {
+  if (!existing) return false;
+  return existing.workspaceRoot === desired.workspaceRoot
+    && existing.title === desired.title
+    && existing.model === desired.model
+    && existing.runtimeMode === desired.runtimeMode
+    && existing.interactionMode === desired.interactionMode;
+}
+
 function threadUrl(record: T3CodeServerRecord, threadId: string): string {
   return `${record.webUrl}/${encodeURIComponent(threadId)}`;
 }
@@ -193,22 +213,52 @@ async function start(ctx: AdapterContext): Promise<string> {
   const workspaceRoot = normalizeWorkspacePath(ctx);
   const options = parseAdapterArgs(ctx.adapterArgs);
   const title = options.title ?? defaultTitle(ctx, workspaceRoot);
+  const desired: DesiredThreadConfig = {
+    workspaceRoot,
+    title,
+    model: options.model,
+    runtimeMode: options.runtimeMode,
+    interactionMode: options.interactionMode,
+  };
   const existingState = readSlotState(ctx.slot, ctx.harnessDir);
 
   return await withClient(record, async (client) => {
     const snapshot = await client.getSnapshot();
-
-    const existingThread = existingState?.threads[0]
-      ? findThread(snapshot, existingState.threads[0].threadId)
-      : null;
-    if (existingThread) {
-      return threadUrl(record, existingThread.id);
-    }
-
     const project = findProject(snapshot, workspaceRoot);
     const projectId = project?.id ?? makeId("project");
     const model = options.model || project?.defaultModel || DEFAULT_MODEL;
+    desired.model = model;
     const createdAt = isoNow();
+
+    const existingRecord = existingState?.threads[0] ?? null;
+    const existingThread = existingRecord
+      ? findThread(snapshot, existingRecord.threadId)
+      : null;
+    if (existingThread && canReuseSlotThread(existingRecord, desired)) {
+      return threadUrl(record, existingThread.id);
+    }
+
+    if (existingThread) {
+      try {
+        await client.dispatchCommand({
+          type: "thread.session.stop",
+          commandId: makeId("cmd"),
+          threadId: existingThread.id,
+          createdAt,
+        });
+      } catch {
+        // ignore cleanup failures and attempt a fresh thread below
+      }
+      try {
+        await client.dispatchCommand({
+          type: "thread.delete",
+          commandId: makeId("cmd"),
+          threadId: existingThread.id,
+        });
+      } catch {
+        // ignore cleanup failures and attempt a fresh thread below
+      }
+    }
 
     if (!project) {
       await client.dispatchCommand({
@@ -242,9 +292,9 @@ async function start(ctx: AdapterContext): Promise<string> {
       projectId,
       workspaceRoot,
       title,
-      model,
-      runtimeMode: options.runtimeMode,
-      interactionMode: options.interactionMode,
+      model: desired.model,
+      runtimeMode: desired.runtimeMode,
+      interactionMode: desired.interactionMode,
       createdAt,
       updatedAt: createdAt,
     };

@@ -22,6 +22,13 @@ const MAX_PORT_SCAN = 50;
 const START_TIMEOUT_MS = 15_000;
 const STOP_TIMEOUT_MS = 5_000;
 
+export interface T3CodeProcessInspection {
+  pid: number;
+  alive: boolean;
+  commandLine: string | null;
+  matchesRecord: boolean;
+}
+
 export function t3codeDir(harnessDir: string = defaultHarnessDir()): string {
   return join(harnessDir, "t3code");
 }
@@ -71,8 +78,12 @@ export async function serverStatus(
     return { running: false, record: null, snapshot: null, reason: "not started" };
   }
 
-  if (!processAlive(record.pid)) {
+  const inspection = inspectManagedServerProcess(record);
+  if (!inspection.alive) {
     return { running: false, record, snapshot: null, reason: "pid not running" };
+  }
+  if (!inspection.matchesRecord) {
+    return { running: false, record, snapshot: null, reason: "pid reused by another process" };
   }
 
   const client = new T3CodeClient({
@@ -106,7 +117,7 @@ export async function ensureServer(
   const existing = await serverStatus({ harnessDir });
   if (existing.running && existing.record) return existing.record;
 
-  if (existing.record && processAlive(existing.record.pid)) {
+  if (existing.record && inspectManagedServerProcess(existing.record).matchesRecord) {
     await terminateProcess(existing.record.pid);
   }
 
@@ -161,7 +172,10 @@ export async function stopServer(options: EnsureServerOptions = {}): Promise<boo
   const record = readServerRecord(harnessDir);
   if (!record) return false;
 
-  const stopped = await terminateProcess(record.pid);
+  const inspection = inspectManagedServerProcess(record);
+  const stopped = inspection.matchesRecord
+    ? await terminateProcess(record.pid)
+    : false;
   const path = t3codeServerPath(harnessDir);
   if (existsSync(path)) unlinkSync(path);
   return stopped;
@@ -191,6 +205,47 @@ function processAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function processCommandLine(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env as Record<string, string>,
+    });
+    if (result.exitCode !== 0) return null;
+    const output = result.stdout.toString().trim();
+    return output || null;
+  } catch {
+    return null;
+  }
+}
+
+export function commandLineMatchesServerRecord(
+  commandLine: string | null,
+  record: T3CodeServerRecord,
+): boolean {
+  if (!commandLine) return false;
+  if (!commandLine.includes(record.stateDir)) return false;
+  return commandLine.startsWith("t3 ")
+    || commandLine.includes("/t3 ")
+    || commandLine.startsWith("npx ")
+    || commandLine.includes(" npx ")
+    || commandLine.includes(" src/index.ts")
+    || commandLine.includes(" dist/index.mjs");
+}
+
+export function inspectManagedServerProcess(record: T3CodeServerRecord): T3CodeProcessInspection {
+  const alive = processAlive(record.pid);
+  const commandLine = alive ? processCommandLine(record.pid) : null;
+  return {
+    pid: record.pid,
+    alive,
+    commandLine,
+    matchesRecord: alive && commandLineMatchesServerRecord(commandLine, record),
+  };
 }
 
 async function terminateProcess(pid: number): Promise<boolean> {
