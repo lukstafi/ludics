@@ -4,3 +4,5 @@ bin/ludics
 bun.lock
 dist/
 *.tsbuildinfo
+.test-tmp-*
+src/**/.test-tmp-*
