@@ -49,13 +49,6 @@ Ludics (slot mgmt, flow, orchestration engine — purely algorithmic)
 - Git worktree management for agent isolation
 - Forced per-round commits (diffs via git, not explicit patches)
 
-### Temporary Regression
-
-t3code does not yet support Claude Code — only Codex. Until t3code ships Claude Code
-support, duo workflows will be Codex-only (or Codex + Codex with different models).
-Single-agent Claude Code workflows can continue using the existing `agent-claude` adapter
-with tmux until t3code catches up.
-
 ---
 
 ## Phase 0: Preparation (No Code Changes)
@@ -428,10 +421,13 @@ Phases 1 and 2 can be developed in parallel. Phase 3 is the bulk of the work.
 
 ## Risk Mitigation
 
-**t3code Claude Code support delay:**
-Keep the existing `agent-claude` adapter (tmux-based) as a fallback. Ludics can run
-mixed workflows: orchestration engine manages phases, but launches Claude via tmux
-instead of t3code until Claude Code support ships.
+**t3code Claude Code support:** ~~Previously a risk~~ — resolved. Our local t3code branch
+now supports Claude Code as a first-class provider (`"claudeCode"` on the wire, mapped
+from Ludics' `"claude-code"` in `src/t3code/types.ts`). Claude Code uses the
+`@anthropic-ai/claude-agent-sdk` in-process, while Codex runs as an external subprocess.
+Both emit canonical provider events through the same WebSocket API, so the orchestration
+engine treats them identically. Mixed duo workflows (e.g., Codex coder + Claude Code
+reviewer) are fully supported via `--coder codex --reviewer claude-code`.
 
 **t3code API instability:**
 Maintain our own minimal type definitions (`src/t3code/types.ts`). Don't import

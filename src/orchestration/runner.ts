@@ -3,6 +3,7 @@ import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { T3CodeClient } from "../t3code/client.ts";
 import { readServerRecord } from "../t3code/server.ts";
+import { toWireProvider } from "../t3code/types.ts";
 import type { T3CodeServerRecord, T3Snapshot } from "../t3code/types.ts";
 import { allAgentsDone, agentParticipatesInPhase, evaluateTransition, phaseTimeoutExpired } from "./phases.ts";
 import { clearInterrupt, readAgentStatus, readMarker, readPrUrl, writeInterrupt, writePeerSync } from "./peer-sync.ts";
@@ -105,7 +106,7 @@ async function sendTurnMessage(
         text: message,
         attachments: [],
       },
-      provider: agent.provider,
+      provider: toWireProvider(agent.provider),
       model: agent.model,
       runtimeMode: "full-access",
       interactionMode: "default",

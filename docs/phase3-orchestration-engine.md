@@ -620,7 +620,7 @@ Ported from agent-duo's worktree creation logic.
 ~/myproject-feat-codex/             (agent worktree, codex)
 ├── .peer-sync -> ../myproject-feat/.peer-sync  (symlink)
 │
-~/myproject-feat-claude/            (agent worktree, claude — when supported)
+~/myproject-feat-claude/            (agent worktree, claude)
 ├── .peer-sync -> ../myproject-feat/.peer-sync  (symlink)
 ```
 
