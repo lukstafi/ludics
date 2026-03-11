@@ -6,11 +6,13 @@
 
 ## Summary
 
-Replace the dashboard's Terminals tab (which embeds ttyd iframes in a 3x2 grid) with a nav-bar link that opens the t3code Web client in a new browser tab. The t3code server URL is resolved dynamically via a new `data/t3code.json` endpoint. Slot tiles on the main Dashboard page already link to per-thread t3code URLs through the existing `slot.terminals` mechanism — no change needed there.
+Replace the dashboard's Terminals tab (which embeds ttyd iframes in a 3x2 grid) with a nav-bar link that navigates to the t3code Web client in the same browser tab, replacing the dashboard view. The t3code server URL is resolved dynamically via a new `data/t3code.json` endpoint. Slot tiles on the main Dashboard page already link to per-thread t3code URLs through the existing `slot.terminals` mechanism — no change needed there.
+
+In planned followup work, the t3code fork will be modified to add links back to the dashboard, enabling bidirectional navigation between the dashboard and t3code.
 
 ## Motivation
 
-The Terminals tab was built for the agent-duo era (ttyd iframes). With the migration to t3code, terminals are accessed via the t3code Web client at `{webUrl}/{threadId}`. Embedding t3code in iframes is not practical — it is a full web app. A direct link is the correct UX. This also makes gh-ludics-23 Bug 3 (missing terminal sessions) moot.
+The Terminals tab was built for the agent-duo era (ttyd iframes). With the migration to t3code, terminals are accessed via the t3code Web client at `{webUrl}/{threadId}`. Embedding t3code in iframes is not practical — it is a full web app. A direct same-tab navigation link is the correct UX — clicking "t3code" replaces the dashboard view with the t3code Web client. Bidirectional navigation (t3code linking back to the dashboard) will be added in followup work on the t3code fork. This also makes gh-ludics-23 Bug 3 (missing terminal sessions) moot.
 
 ## Changes
 
@@ -41,7 +43,7 @@ writeFileSync(join(dataDir, "t3code.json"), JSON.stringify(generateT3code(), nul
 console.error("  t3code.json");
 ```
 
-### 2. Replace "Terminals" nav link with "t3code" external link
+### 2. Replace "Terminals" nav link with "t3code" same-tab link
 
 **Files to modify (nav bar appears in all four):**
 
@@ -58,8 +60,10 @@ In each surviving file, replace:
 ```
 with:
 ```html
-<a href="#" id="t3code-link" target="_blank">t3code</a>
+<a href="#" id="t3code-link">t3code</a>
 ```
+
+Note: No `target="_blank"` — clicking the link navigates away from the dashboard in the same tab. In followup work, the t3code fork will be modified to include a link back to the dashboard for bidirectional navigation.
 
 Add a shared JS snippet at the end of each page's `<script>` block (or in `dashboard.js` for `index.html`):
 
@@ -180,7 +184,7 @@ The server serves static files. The new `data/t3code.json` will be served automa
 4. **Manual: `ludics dashboard serve`** -- open dashboard:
    - Verify "t3code" link appears in nav bar on all three pages (index, tasks, briefing).
    - Verify "Terminals" link is gone from nav bar.
-   - When t3code server is running: link opens t3code Web client in new tab.
+   - When t3code server is running: link navigates to t3code Web client in the same tab.
    - When t3code server is not running: link is grayed out / non-clickable.
 5. **Manual: slot tiles** -- verify slot terminal links (Web) still work and point to `{webUrl}/{threadId}`.
 6. **Manual: `ludics dashboard install`** -- verify `terminals.html` is not copied to the dashboard directory.
@@ -192,3 +196,4 @@ The server serves static files. The new `data/t3code.json` will be served automa
 - **Stale `terminals.html` in existing installs.** Users who installed before this change will have a leftover `terminals.html`. It will still be accessible by direct URL but no page links to it. Acceptable — `ludics dashboard install` will not copy it on next reinstall.
 - **t3code server not running.** The link gracefully degrades (grayed out, non-clickable). No errors thrown.
 - **Tailnet hostname resolution.** Uses the existing `networkHostname()` infrastructure which already handles localhost/tailscale modes. No new hostname logic needed.
+- **No return navigation (yet).** Clicking the t3code link navigates away from the dashboard with no built-in way to return except the browser back button. Followup work on the t3code fork will add dashboard links to address this. This is acceptable for the initial implementation.
