@@ -6,7 +6,7 @@
 
 ## Summary
 
-Replace the dashboard's Terminals tab (which embeds ttyd iframes in a 3x2 grid) with a nav-bar link that navigates to the t3code Web client in the same browser tab. The t3code server URL is resolved dynamically via a new `data/t3code.json` endpoint, using the shared `networkHostname()` from `src/network.ts` so that both the dashboard and t3code use the same network address. The default network mode is migrated from `localhost` to `tailscale`, making Tailnet the default access method. All stale terminal-related code (terminals.html, ttyd references in dashboard.ts, mag-terminal element in index.html) is cleaned up.
+Replace the dashboard's Terminals tab (which embeds ttyd iframes in a 3x2 grid) with a nav-bar link that navigates to the t3code Web client in the same browser tab. The t3code server URL is resolved dynamically via a new `data/t3code.json` endpoint, using the shared `networkHostname()` from `src/network.ts` so that both the dashboard and t3code use the same network address. The default network mode is migrated from `localhost` to `tailscale`, making Tailnet the default access method. Stale worker-terminal code (terminals.html, worker ttyd references) is cleaned up. The **mag-terminal** element on the main dashboard page is preserved — Mag has a distinctive coordinator role and keeps its own terminal UI.
 
 In planned followup work, the t3code fork will be modified to add links back to the dashboard, enabling bidirectional navigation.
 
@@ -130,45 +130,9 @@ Delete the file. The `dashboardInstall()` function uses `copyDir()` to copy all 
 
 ### 5. Stale code cleanup
 
-The following terminal-related dead code should be removed when the Terminals tab is deleted:
+The following worker-terminal-related dead code should be removed when the Terminals tab is deleted. **Note:** The mag-terminal element on the main dashboard page (`index.html`) and its handler in `dashboard.js` are **not stale** — Mag has a distinctive coordinator/manager role and keeps its own terminal UI separate from the t3code worker sessions. The `generateMag()` function in `dashboard.ts` continues to produce the `terminal` field in `mag.json` for the mag-terminal link.
 
-#### 5a. Remove ttyd/mag-terminal references from `src/dashboard.ts`
-
-In `generateMag()` (lines 413-415, 441), remove the ttyd terminal URL generation:
-
-```typescript
-// REMOVE these lines from generateMag():
-const magPort = String((config.mag as Record<string, unknown> | undefined)?.ttyd_port ?? "7679");
-const terminal = getUrl(magPort);
-
-// And remove from the return object:
-terminal: terminal || null,
-```
-
-The `mag.terminal` field was used to link to the ttyd terminal for the Mag session. With t3code replacing ttyd, this is dead code. The Mag session is now accessed via the t3code Web client like any other thread.
-
-#### 5b. Remove `mag-terminal` link from `templates/dashboard/index.html`
-
-Line 117 in `index.html`:
-```html
-<!-- REMOVE this line: -->
-<a href="#" id="mag-terminal">Open terminal</a>
-```
-
-#### 5c. Remove `mag-terminal` handling from `templates/dashboard/dashboard.js`
-
-Lines 219, 236-238 in `dashboard.js`:
-```javascript
-// REMOVE these lines from renderMagStatus():
-const terminalLink = document.getElementById('mag-terminal');
-
-if (terminalLink && mag.terminal) {
-    terminalLink.href = mag.terminal;
-    terminalLink.style.display = 'inline';
-}
-```
-
-#### 5d. Rename terminal links in slot tiles (optional, not stale)
+#### 5a. Rename terminal links in slot tiles (optional, not stale)
 
 The slot-level `terminals` field in `renderSlots()` (dashboard.js lines 117-124) is **not stale** — it renders per-slot t3code Web URLs written by the t3code adapter. These links remain useful and should be kept. However, the comment `// Build terminal links` could be updated to `// Build session links` to reflect the t3code era.
 
@@ -238,9 +202,9 @@ The t3code adapter already writes `Web: {webUrl}/{threadId}` entries to the Term
 | File | Action |
 |------|--------|
 | `src/network.ts` | Change default mode from `"localhost"` to `"tailscale"` |
-| `src/dashboard.ts` | Add `generateT3code()`, remove ttyd `terminal` from `generateMag()` |
-| `templates/dashboard/index.html` | Replace Terminals nav link with t3code, remove `mag-terminal` link |
-| `templates/dashboard/dashboard.js` | Add `fetchT3codeLink()`, remove `mag-terminal` handling |
+| `src/dashboard.ts` | Add `generateT3code()` (keep `generateMag()` terminal field intact) |
+| `templates/dashboard/index.html` | Replace Terminals nav link with t3code (keep `mag-terminal` element) |
+| `templates/dashboard/dashboard.js` | Add `fetchT3codeLink()` (keep `mag-terminal` handling) |
 | `templates/dashboard/tasks.html` | Replace Terminals nav link, add t3code link JS |
 | `templates/dashboard/briefing.html` | Replace Terminals nav link, add t3code link JS |
 | `templates/dashboard/terminals.html` | **Delete** |
@@ -251,11 +215,11 @@ The t3code adapter already writes `Web: {webUrl}/{threadId}` entries to the Term
 2. **Unit: `generateT3code()` with server record** -- returns correct `webUrl` using `networkHostname()`.
 3. **Unit: `networkMode()` default** -- returns `"tailscale"` when no config is set.
 4. **Unit: `networkHostname()` fallback** -- returns `"localhost"` when Tailscale is not available and no config hostname is set.
-5. **Manual: `ludics dashboard generate`** -- verify `data/t3code.json` is created; verify `data/mag.json` no longer contains `terminal` field.
+5. **Manual: `ludics dashboard generate`** -- verify `data/t3code.json` is created; verify `data/mag.json` still contains the `terminal` field for mag-terminal.
 6. **Manual: `ludics dashboard serve`** -- open dashboard:
    - Verify "t3code" link appears in nav bar on all three pages (index, tasks, briefing).
    - Verify "Terminals" link is gone from nav bar.
-   - Verify "Open terminal" link is gone from Mag status section.
+   - Verify "Open terminal" link still works in Mag status section (mag-terminal preserved).
    - When t3code server is running: link navigates to t3code Web client in the same tab.
    - When t3code server is not running: link is grayed out / non-clickable.
 7. **Manual: Tailnet access** -- access dashboard from a different machine on the Tailnet; verify t3code link uses the Tailnet hostname.
