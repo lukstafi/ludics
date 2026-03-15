@@ -1,7 +1,9 @@
+import { randomBytes } from "crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "path";
 import { harnessDir as defaultHarnessDir } from "../config.ts";
+import { networkHostname } from "../network.ts";
 import { T3CodeClient } from "./client.ts";
 import type { T3CodeServerRecord, T3CodeSlotState, T3Snapshot } from "./types.ts";
 
@@ -16,11 +18,20 @@ interface EnsureServerOptions {
   harnessDir?: string;
 }
 
-const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 3773;
 const MAX_PORT_SCAN = 50;
 const START_TIMEOUT_MS = 15_000;
 const STOP_TIMEOUT_MS = 5_000;
+
+/**
+ * Resolve the host to bind / advertise.
+ * In tailscale mode this returns the Tailnet hostname; otherwise "127.0.0.1".
+ */
+export function resolveHost(): string {
+  const nh = networkHostname();
+  // networkHostname() returns "localhost" when mode is localhost — map to IPv4 literal
+  return nh === "localhost" ? "127.0.0.1" : nh;
+}
 
 export interface T3CodeProcessInspection {
   pid: number;
@@ -121,13 +132,16 @@ export async function ensureServer(
     await terminateProcess(existing.record.pid);
   }
 
-  const port = await findAvailablePort(DEFAULT_PORT);
-  const host = DEFAULT_HOST;
+  const host = resolveHost();
+  const port = await findAvailablePort(DEFAULT_PORT, host);
   const webUrl = `http://${host}:${port}`;
   const wsUrl = `ws://${host}:${port}`;
-  const authToken = (process.env.LUDICS_T3CODE_AUTH_TOKEN ?? "").trim() || undefined;
+  // Auto-generate an auth token when binding to a non-localhost address
+  const envToken = (process.env.LUDICS_T3CODE_AUTH_TOKEN ?? "").trim() || undefined;
+  const authToken = envToken ?? (host !== "127.0.0.1" ? randomBytes(24).toString("hex") : undefined);
   const command = buildLaunchCommand({
     port,
+    host,
     stateDir: t3codeServerStateDir(harnessDir),
     authToken,
   });
@@ -234,7 +248,9 @@ export function commandLineMatchesServerRecord(
     || commandLine.startsWith("npx ")
     || commandLine.includes(" npx ")
     || commandLine.includes(" src/index.ts")
-    || commandLine.includes(" dist/index.mjs");
+    || commandLine.includes(" dist/index.mjs")
+    || commandLine.includes("bun run ")
+    || commandLine.includes("bun --cwd ");
 }
 
 export function inspectManagedServerProcess(record: T3CodeServerRecord): T3CodeProcessInspection {
@@ -302,19 +318,19 @@ async function waitForReady(record: T3CodeServerRecord, timeoutMs: number): Prom
   throw new Error(`t3code server did not become ready: ${lastError}`);
 }
 
-async function findAvailablePort(start: number): Promise<number> {
+async function findAvailablePort(start: number, host: string = "127.0.0.1"): Promise<number> {
   for (let port = start; port < start + MAX_PORT_SCAN; port++) {
-    if (await portAvailable(port)) return port;
+    if (await portAvailable(port, host)) return port;
   }
   throw new Error(`no free port found in range ${start}-${start + MAX_PORT_SCAN - 1}`);
 }
 
-async function portAvailable(port: number): Promise<boolean> {
+async function portAvailable(port: number, host: string = "127.0.0.1"): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
     const server = createServer();
     server.unref();
     server.once("error", () => resolve(false));
-    server.listen(port, DEFAULT_HOST, () => {
+    server.listen(port, host, () => {
       server.close(() => resolve(true));
     });
   });
@@ -322,27 +338,31 @@ async function portAvailable(port: number): Promise<boolean> {
 
 function buildLaunchCommand(input: {
   port: number;
+  host?: string;
   stateDir: string;
   authToken?: string;
 }): string[] {
   const preferred = (process.env.LUDICS_T3CODE_BIN ?? "").trim();
   const repoOverride = (process.env.LUDICS_T3CODE_REPO ?? "").trim();
-  const homeRepo = join(process.env.HOME ?? "~", "t3code");
-  const sourceRepo = resolve(repoOverride || homeRepo);
+  const home = process.env.HOME ?? "~";
+  // Prefer t3code-ludics (the local fork with ludics integrations)
+  const ludicsRepo = join(home, "t3code-ludics");
+  const plainRepo = join(home, "t3code");
+  const sourceRepo = resolve(repoOverride || (existsSync(ludicsRepo) ? ludicsRepo : plainRepo));
   const sourceServerDir = join(sourceRepo, "apps", "server");
   const command = preferred
     ? [preferred]
-    : Bun.which("t3")
-      ? ["t3"]
-      : existsSync(join(sourceServerDir, "src", "index.ts"))
-        ? ["bun", "--cwd", sourceServerDir, "src/index.ts"]
+    : existsSync(join(sourceServerDir, "src", "index.ts"))
+      ? ["bun", "run", "--cwd", sourceServerDir, "start"]
+      : Bun.which("t3")
+        ? ["t3"]
         : Bun.which("npx")
           ? ["npx", "-y", "t3"]
           : null;
 
   if (!command) {
     throw new Error(
-      "t3code launcher not found; install `t3`, keep the source repo at ~/t3code, or set LUDICS_T3CODE_BIN/LUDICS_T3CODE_REPO",
+      "t3code launcher not found; keep the source repo at ~/t3code-ludics (or ~/t3code), install `t3`, or set LUDICS_T3CODE_BIN/LUDICS_T3CODE_REPO",
     );
   }
 
@@ -356,6 +376,9 @@ function buildLaunchCommand(input: {
     input.stateDir,
     "--no-browser",
   ];
+  if (input.host) {
+    args.push("--host", input.host);
+  }
   if (input.authToken) {
     args.push("--auth-token", input.authToken);
   }

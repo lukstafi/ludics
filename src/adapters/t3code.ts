@@ -698,6 +698,7 @@ async function readState(ctx: AdapterContext): Promise<string | null> {
     ? readOrchestrationState(ctx.slot, ctx.harnessDir)
     : null;
   md.keyValue("Mode", orchestration ? `t3code ${orchestration.mode}` : "t3code");
+  md.keyValue("Session", slotState.threads[0]!.threadId);
 
   if (!status.record) {
     md.section("Runtime");

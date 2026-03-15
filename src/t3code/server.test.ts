@@ -37,6 +37,40 @@ describe("commandLineMatchesServerRecord", () => {
     ).toBe(true);
   });
 
+  test("matches bun run --cwd launches that include the recorded state dir", () => {
+    const record = makeRecord();
+    expect(
+      commandLineMatchesServerRecord(
+        "bun run --cwd /Users/lukstafi/t3code-ludics/apps/server start --mode desktop --state-dir /tmp/ludics/harness/t3code/state",
+        record,
+      ),
+    ).toBe(true);
+  });
+
+  test("matches bun --cwd (without run) launches that include the recorded state dir", () => {
+    const record = makeRecord();
+    expect(
+      commandLineMatchesServerRecord(
+        "bun --cwd /Users/lukstafi/t3code-ludics/apps/server src/index.ts --state-dir /tmp/ludics/harness/t3code/state",
+        record,
+      ),
+    ).toBe(true);
+  });
+
+  test("matches when host is a Tailscale hostname", () => {
+    const record = makeRecord({
+      host: "macbook.tail12345.ts.net",
+      webUrl: "http://macbook.tail12345.ts.net:3773",
+      wsUrl: "ws://macbook.tail12345.ts.net:3773",
+    });
+    expect(
+      commandLineMatchesServerRecord(
+        "bun run --cwd /Users/lukstafi/t3code-ludics/apps/server start --state-dir /tmp/ludics/harness/t3code/state --host macbook.tail12345.ts.net",
+        record,
+      ),
+    ).toBe(true);
+  });
+
   test("rejects unrelated processes even when the pid is alive", () => {
     const record = makeRecord();
     expect(

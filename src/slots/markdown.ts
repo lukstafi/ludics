@@ -120,6 +120,7 @@ export function mergeAdapterState(block: string, adapterOutput: string): string 
   let hasRuntime = false;
   let hasGit = false;
   let currentSection = "";
+  let adapterSession: string | null = null;
 
   for (const line of adapterOutput.split("\n")) {
     if (line.startsWith("**Terminals:") || line.startsWith("**Terminals**")) {
@@ -137,7 +138,16 @@ export function mergeAdapterState(block: string, adapterOutput: string): string 
       hasGit = true;
       continue;
     }
-    if (line.startsWith("**Mode:") || line.startsWith("**Session:") || line.startsWith("**Feature:")) {
+    if (line.startsWith("**Mode:") || line.startsWith("**Feature:")) {
+      currentSection = "";
+      continue;
+    }
+    if (line.startsWith("**Session:**")) {
+      // Extract session value from adapter output to update the slot block
+      const sessionValue = line.slice("**Session:**".length).trim();
+      if (sessionValue) {
+        adapterSession = sessionValue;
+      }
       currentSection = "";
       continue;
     }
@@ -196,7 +206,12 @@ export function mergeAdapterState(block: string, adapterOutput: string): string 
     }
 
     if (!skipUntilNext) {
-      output.push(line);
+      // Update Session field if adapter provided one
+      if (adapterSession && line.startsWith("**Session:**")) {
+        output.push(`**Session:** ${adapterSession}`);
+      } else {
+        output.push(line);
+      }
     }
   }
 
