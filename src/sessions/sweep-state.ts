@@ -7,7 +7,7 @@ import { join, resolve } from "path";
 import { harnessDir } from "../config.ts";
 import { isGitWorktree, getMainRepoFromWorktree } from "../adapters/base.ts";
 
-export type SweepMode = "agent-duo" | "agent-pair-codex" | "agent-pair-claude" | "agent-claude" | "agent-codex";
+export type SweepMode = "agent-duo" | "agent-pair-codex" | "agent-pair-claude" | "agent-claude" | "agent-codex" | "t3code";
 
 export const SWEEP_TARGET_MODES = new Set<SweepMode>([
   "agent-duo",
@@ -15,6 +15,7 @@ export const SWEEP_TARGET_MODES = new Set<SweepMode>([
   "agent-pair-claude",
   "agent-claude",
   "agent-codex",
+  "t3code",
 ]);
 
 export interface KnownSessionRecord {
@@ -72,6 +73,10 @@ export function defaultCleanupCommand(mode: SweepMode, name: string): string[] {
   if (mode === "agent-duo") return ["agent-duo", "cleanup", "--feature", name, "--full"];
   if (mode === "agent-pair-codex" || mode === "agent-pair-claude") {
     return ["agent-pair", "cleanup", "--feature", name, "--full"];
+  }
+  if (mode === "t3code") {
+    // t3code thread cleanup is handled by the server lifecycle, not per-session sweep
+    return [];
   }
   return [mode, "cleanup", name];
 }

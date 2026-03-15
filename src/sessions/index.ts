@@ -3,11 +3,12 @@
 import { join } from "path";
 import { loadConfig, harnessDir, slotsFilePath } from "../config.ts";
 import { extractSlotPaths } from "../slots/paths.ts";
+import { discoverT3code } from "./discover-t3code.ts";
 import { discoverCodex } from "./discover-codex.ts";
 import { discoverClaudeCode } from "./discover-claude.ts";
 import { discoverTmux } from "./discover-tmux.ts";
 import { discoverTtyd } from "./discover-ttyd.ts";
-import { enrichWithPeerSync } from "./enrich.ts";
+import { enrichSessions } from "./enrich.ts";
 import { deduplicateAndMerge } from "./dedup.ts";
 import { classifySessions } from "./classify.ts";
 import { writeReport, printSummary, printDetailedSummary, printJson } from "./report.ts";
@@ -16,15 +17,16 @@ import type { DiscoveredSession, DiscoveryResult, MergedSession } from "../types
 import { emitEvent } from "../events.ts";
 
 async function discoverAll(staleThreshold: number): Promise<DiscoveredSession[]> {
-  // Run all scanners concurrently
-  const [codex, claude, tmux, ttyd] = await Promise.all([
+  // Run all scanners concurrently — t3code, legacy codex/claude, tmux, and ttyd.
+  const [t3code, codex, claude, tmux, ttyd] = await Promise.all([
+    discoverT3code(),
     discoverCodex(staleThreshold),
     discoverClaudeCode(staleThreshold),
     discoverTmux(),
     discoverTtyd(),
   ]);
 
-  return [...codex, ...claude, ...tmux, ...ttyd];
+  return [...t3code, ...codex, ...claude, ...tmux, ...ttyd];
 }
 
 async function runPipeline(): Promise<DiscoveryResult> {
@@ -35,8 +37,8 @@ async function runPipeline(): Promise<DiscoveryResult> {
   // Step 1: Discover from all sources
   const raw = await discoverAll(config.staleThresholdSeconds);
 
-  // Step 2: Enrich with .peer-sync orchestration data
-  const orchestrations = await enrichWithPeerSync(raw);
+  // Step 2: Enrich with orchestration data (t3code slot state or .peer-sync fallback)
+  const orchestrations = await enrichSessions(raw);
 
   // Step 3: Deduplicate and merge
   const merged = deduplicateAndMerge(raw, orchestrations, config.staleThresholdSeconds);
@@ -162,7 +164,7 @@ export async function runSessions(args: string[]): Promise<void> {
 
     case "sweep": {
       const dryRun = hasFlag(args, "--dry-run");
-      runSessionSweep({ dryRun });
+      await runSessionSweep({ dryRun });
       break;
     }
 
