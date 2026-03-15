@@ -122,9 +122,6 @@ export function buildProposalNotificationActions(
   });
 
   return [
-    action("agent-duo", `Launch agent-duo for ${taskId} in project ${project}`),
-    action("pair-claude", `Launch agent-pair-claude for ${taskId} in project ${project}`),
-    action("pair-codex", `Launch agent-pair-codex for ${taskId} in project ${project}`),
     action("t3code", `Launch t3code for ${taskId} in project ${project}`),
     action("agent-claude", `Launch agent-claude for ${taskId} in project ${project}`),
     action("agent-codex", `Launch agent-codex for ${taskId} in project ${project}`),
@@ -1204,6 +1201,8 @@ export async function subscribeIncoming(): Promise<void> {
               const followupMatch = msg.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
               const followupReviseMatch = msg.match(/^Revise followup ([\w-]+) for ([\w.-]+)$/);
               const doneMatch = msg.match(/^Done task ([\w.-]+)$/);
+              const launchMatch = msg.match(/^Launch ([\w-]+) for ([\w.-]+) in project (.+)$/);
+              const abandonMatch = msg.match(/^Abandon task ([\w.-]+)$/);
 
               if (reviseProposalMatch) {
                 setPendingRevise(reviseProposalMatch[1]!);
@@ -1217,6 +1216,14 @@ export async function subscribeIncoming(): Promise<void> {
                 queueRequest("adapter-followup", `"task":"${taskId}","adapter":"${adapter}"`);
               } else if (doneMatch) {
                 queueRequest("complete-task", `"task":"${doneMatch[1]!}"`);
+              } else if (launchMatch) {
+                // Route Launch messages directly — bypass pending-revise consumption
+                const escaped = JSON.stringify(msg);
+                queueRequest("message", `"content":${escaped}`);
+              } else if (abandonMatch) {
+                // Route Abandon messages directly — bypass pending-revise consumption
+                const escaped = JSON.stringify(msg);
+                queueRequest("message", `"content":${escaped}`);
               } else {
                 const pendingTaskIds = consumeAllPendingRevises();
                 const pendingFollowups = consumeAllPendingFollowupRevises();
