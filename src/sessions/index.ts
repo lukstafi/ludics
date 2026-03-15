@@ -17,25 +17,16 @@ import type { DiscoveredSession, DiscoveryResult, MergedSession } from "../types
 import { emitEvent } from "../events.ts";
 
 async function discoverAll(staleThreshold: number): Promise<DiscoveredSession[]> {
-  // Run t3code discovery (primary) and tmux/ttyd (for Mag session) concurrently.
-  // Legacy codex/claude scanners are used as fallback only when t3code returns nothing.
-  const [t3code, tmux, ttyd] = await Promise.all([
+  // Run all scanners concurrently — t3code, legacy codex/claude, tmux, and ttyd.
+  const [t3code, codex, claude, tmux, ttyd] = await Promise.all([
     discoverT3code(),
+    discoverCodex(staleThreshold),
+    discoverClaudeCode(staleThreshold),
     discoverTmux(),
     discoverTtyd(),
   ]);
 
-  if (t3code.length > 0) {
-    return [...t3code, ...tmux, ...ttyd];
-  }
-
-  // Fallback: t3code server not running — use legacy scanners
-  console.error("ludics: t3code returned no sessions, falling back to legacy scanners");
-  const [codex, claude] = await Promise.all([
-    discoverCodex(staleThreshold),
-    discoverClaudeCode(staleThreshold),
-  ]);
-  return [...codex, ...claude, ...tmux, ...ttyd];
+  return [...t3code, ...codex, ...claude, ...tmux, ...ttyd];
 }
 
 async function runPipeline(): Promise<DiscoveryResult> {

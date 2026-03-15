@@ -75,8 +75,8 @@ export function defaultCleanupCommand(mode: SweepMode, name: string): string[] {
     return ["agent-pair", "cleanup", "--feature", name, "--full"];
   }
   if (mode === "t3code") {
-    // name is the threadId for t3code sessions
-    return ["ludics", "t3code", "stop-thread", name];
+    // t3code thread cleanup is handled by the server lifecycle, not per-session sweep
+    return [];
   }
   return [mode, "cleanup", name];
 }
