@@ -94,7 +94,12 @@ export async function serverStatus(
     return { running: false, record, snapshot: null, reason: "pid not running" };
   }
   if (!inspection.matchesRecord) {
-    return { running: false, record, snapshot: null, reason: "pid reused by another process" };
+    // HTTP fallback: the PID may be a wrapper process whose command line
+    // doesn't match our patterns, but the server is actually running.
+    const httpAlive = await httpHealthCheck(record);
+    if (!httpAlive) {
+      return { running: false, record, snapshot: null, reason: "pid reused by another process" };
+    }
   }
 
   const client = new T3CodeClient({
@@ -247,6 +252,9 @@ export function commandLineMatchesServerRecord(
     || commandLine.includes("/t3 ")
     || commandLine.startsWith("npx ")
     || commandLine.includes(" npx ")
+    || commandLine.startsWith("npm ")
+    || commandLine.includes(" npm ")
+    || commandLine.includes("/npm ")
     || commandLine.includes(" src/index.ts")
     || commandLine.includes(" dist/index.mjs")
     || commandLine.includes("bun run ")
@@ -262,6 +270,17 @@ export function inspectManagedServerProcess(record: T3CodeServerRecord): T3CodeP
     commandLine,
     matchesRecord: alive && commandLineMatchesServerRecord(commandLine, record),
   };
+}
+
+async function httpHealthCheck(record: T3CodeServerRecord): Promise<boolean> {
+  try {
+    const response = await fetch(record.webUrl, {
+      signal: AbortSignal.timeout(2_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function terminateProcess(pid: number): Promise<boolean> {

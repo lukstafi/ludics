@@ -71,6 +71,26 @@ describe("commandLineMatchesServerRecord", () => {
     ).toBe(true);
   });
 
+  test("matches npm exec wrapper that includes the recorded state dir", () => {
+    const record = makeRecord();
+    expect(
+      commandLineMatchesServerRecord(
+        "npm exec t3 -- --mode desktop --port 3773 --state-dir /tmp/ludics/harness/t3code/state --no-browser",
+        record,
+      ),
+    ).toBe(true);
+  });
+
+  test("matches npm run wrapper that includes the recorded state dir", () => {
+    const record = makeRecord();
+    expect(
+      commandLineMatchesServerRecord(
+        "/usr/local/bin/npm run t3 -- --mode desktop --port 3773 --state-dir /tmp/ludics/harness/t3code/state --no-browser",
+        record,
+      ),
+    ).toBe(true);
+  });
+
   test("rejects unrelated processes even when the pid is alive", () => {
     const record = makeRecord();
     expect(
