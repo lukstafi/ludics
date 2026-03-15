@@ -1884,11 +1884,15 @@ function maybeFillEmptySlots(): void {
   emitEvent({ event_type: "slot_auto_fill", source: "keepalive", scope: "slot", slot, task: task.id, adapter: "manual", message: `auto-assigned ${task.id} to empty slot ${slot}` });
   console.error(`ludics: auto-assigned ${task.id} to empty slot ${slot}`);
 
-  // Queue draft-proposal so Mag writes a proposal and notifies the user
-  queueRequest("draft-proposal", `"task":"${task.id}"`);
-  markAutoProposalQueued(task.id);
-  emitEvent({ event_type: "mag_auto_proposal", source: "keepalive", scope: "mag", task: task.id, message: `auto-queued draft-proposal for ${task.id}` });
-  console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
+  // Queue draft-proposal only if the task doesn't already have a proposal
+  const taskFile = join(tasksDir, `${task.id}.md`);
+  const taskContent = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
+  if (!taskContent.includes("\nproposal:")) {
+    queueRequest("draft-proposal", `"task":"${task.id}"`);
+    markAutoProposalQueued(task.id);
+    emitEvent({ event_type: "mag_auto_proposal", source: "keepalive", scope: "mag", task: task.id, message: `auto-queued draft-proposal for ${task.id}` });
+    console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
+  }
 }
 
 // --- Auto-clear slots whose task reached done status ---
