@@ -30,9 +30,6 @@ function formatSessionMarkdown(session: MergedSession, classification: "classifi
   // Extract useful fields from primary source meta
   for (const src of session.sources) {
     const meta = src.meta;
-    if (meta.tmux_session) {
-      lines.push(`- **tmux session:** ${meta.tmux_session}`);
-    }
     if (meta.git_branch) {
       lines.push(`- **Git branch:** ${meta.git_branch}`);
     }
@@ -118,11 +115,9 @@ function atomicWrite(path: string, content: string): void {
 function extractMeta(sources: MergedSession["sources"]): Record<string, unknown> {
   const meta: Record<string, unknown> = {};
   for (const src of sources) {
-    if (src.meta.tmux_session && !meta.tmux_session) meta.tmux_session = src.meta.tmux_session;
     if (src.meta.git_branch && !meta.git_branch) meta.git_branch = src.meta.git_branch;
     if (src.meta.summary && !meta.summary) meta.summary = src.meta.summary;
     if (src.meta.message_count && !meta.message_count) meta.message_count = src.meta.message_count;
-    if (src.meta.port && !meta.port) meta.port = src.meta.port;
     // t3code fields
     if (src.meta.threadId && !meta.threadId) meta.threadId = src.meta.threadId;
     if (src.meta.projectId && !meta.projectId) meta.projectId = src.meta.projectId;

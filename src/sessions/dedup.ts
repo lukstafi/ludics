@@ -1,6 +1,6 @@
 // Deduplication by normalized cwd
 // When multiple sources report the same directory,
-// agent stores (codex, claude-code) rank higher than terminal sources (tmux, ttyd)
+// t3code ranks highest, then agent stores (codex, claude-code)
 
 import type { AgentType, DiscoveredSession, MergedSession, Orchestration } from "../types.ts";
 import { findOrchestrationForCwd } from "./enrich.ts";
@@ -12,9 +12,6 @@ function sourcePriority(agentType: AgentType): number {
     case "codex":
     case "claude-code":
       return 2;
-    case "tmux":
-    case "ttyd":
-      return 1;
     default:
       return 0;
   }

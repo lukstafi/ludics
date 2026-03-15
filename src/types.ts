@@ -2,7 +2,7 @@
 
 // --- Session Discovery ---
 
-export type AgentType = "t3code" | "codex" | "claude-code" | "tmux" | "ttyd";
+export type AgentType = "t3code" | "codex" | "claude-code";
 export type SourceKind = "cli" | "vscode" | "exec" | "appServer" | "app" | "web" | "unknown";
 
 export interface DiscoveredSession {
