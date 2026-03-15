@@ -184,7 +184,8 @@
         <div class="nav-links">
             <h1>ludics</h1>
             <a href="index.html">Dashboard</a>
-            <a href="terminals.html">Terminals</a>
+            <a href="terminal.html">Mag</a>
+            <a href="#" id="t3code-link">t3code</a>
             <a href="tasks.html" class="active">Tasks</a>
             <a href="briefing.html">Briefing</a>
         </div>
@@ -371,6 +372,23 @@
                 return isoString;
             }
         }
+        // Resolve t3code link
+        (async function() {
+            try {
+                const resp = await fetch('data/t3code.json');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const link = document.getElementById('t3code-link');
+                if (link && data.available && data.webUrl) {
+                    link.href = data.webUrl;
+                    link.title = 't3code Web client';
+                } else if (link) {
+                    link.style.opacity = '0.4';
+                    link.style.pointerEvents = 'none';
+                    link.title = 't3code server not running';
+                }
+            } catch { /* ignore */ }
+        })();
     </script>
 </body>
 </html>

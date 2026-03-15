@@ -36,8 +36,26 @@ function formatSessionMarkdown(session: MergedSession, classification: "classifi
     if (meta.git_branch) {
       lines.push(`- **Git branch:** ${meta.git_branch}`);
     }
+    if (meta.branch) {
+      lines.push(`- **Branch:** ${meta.branch}`);
+    }
     if (meta.summary) {
       lines.push(`- **Summary:** ${meta.summary}`);
+    }
+    if (meta.threadId) {
+      lines.push(`- **Thread:** ${meta.threadId}`);
+    }
+    if (meta.model) {
+      lines.push(`- **Model:** ${meta.model}`);
+    }
+    if (meta.sessionStatus) {
+      lines.push(`- **Session status:** ${meta.sessionStatus}`);
+    }
+    if (meta.turnState) {
+      lines.push(`- **Turn state:** ${meta.turnState}`);
+    }
+    if (meta.title) {
+      lines.push(`- **Title:** ${meta.title}`);
     }
   }
 
@@ -105,6 +123,16 @@ function extractMeta(sources: MergedSession["sources"]): Record<string, unknown>
     if (src.meta.summary && !meta.summary) meta.summary = src.meta.summary;
     if (src.meta.message_count && !meta.message_count) meta.message_count = src.meta.message_count;
     if (src.meta.port && !meta.port) meta.port = src.meta.port;
+    // t3code fields
+    if (src.meta.threadId && !meta.threadId) meta.threadId = src.meta.threadId;
+    if (src.meta.projectId && !meta.projectId) meta.projectId = src.meta.projectId;
+    if (src.meta.model && !meta.model) meta.model = src.meta.model;
+    if (src.meta.sessionStatus && !meta.sessionStatus) meta.sessionStatus = src.meta.sessionStatus;
+    if (src.meta.turnState && !meta.turnState) meta.turnState = src.meta.turnState;
+    if (src.meta.branch && !meta.branch) meta.branch = src.meta.branch;
+    if (src.meta.worktreePath && !meta.worktreePath) meta.worktreePath = src.meta.worktreePath;
+    if (src.meta.title && !meta.title) meta.title = src.meta.title;
+    if (src.meta.providerName && !meta.providerName) meta.providerName = src.meta.providerName;
   }
   return meta;
 }

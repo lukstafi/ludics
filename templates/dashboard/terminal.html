@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ludics Mag</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .terminal-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 0;
+            min-height: 0;
+        }
+
+        .terminal-iframe {
+            flex: 1;
+            width: 100%;
+            border: none;
+            min-height: 0;
+        }
+
+        .terminal-placeholder {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+            font-size: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="nav-links">
+            <h1>ludics</h1>
+            <a href="index.html">Dashboard</a>
+            <a href="terminal.html" class="active">Mag</a>
+            <a href="#" id="t3code-link">t3code</a>
+            <a href="tasks.html">Tasks</a>
+            <a href="briefing.html">Briefing</a>
+        </div>
+        <div class="status-bar">
+            <span id="last-update">Last update: --</span>
+            <span id="connection-status" class="connected">Connected</span>
+        </div>
+    </header>
+
+    <main class="terminal-container" id="terminal-container">
+        <div class="terminal-placeholder" id="terminal-placeholder">
+            Loading terminal...
+        </div>
+    </main>
+
+    <script>
+        const CONFIG = {
+            dataPath: 'data/'
+        };
+
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchTerminalUrl();
+        });
+
+        async function fetchTerminalUrl() {
+            try {
+                const response = await fetch(CONFIG.dataPath + 'mag.json');
+                if (!response.ok) throw new Error('Failed to fetch mag data');
+                const mag = await response.json();
+
+                const container = document.getElementById('terminal-container');
+                const placeholder = document.getElementById('terminal-placeholder');
+
+                if (mag.terminal) {
+                    placeholder.remove();
+                    const iframe = document.createElement('iframe');
+                    iframe.className = 'terminal-iframe';
+                    iframe.src = mag.terminal;
+                    iframe.allow = 'clipboard-read; clipboard-write';
+                    container.appendChild(iframe);
+
+                    const el = document.getElementById('last-update');
+                    if (el) {
+                        el.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+                    }
+                    setConnectionStatus(true);
+                } else {
+                    placeholder.textContent = 'Mag terminal not available';
+                    setConnectionStatus(true);
+                }
+            } catch (error) {
+                console.warn('Failed to fetch terminal URL:', error);
+                const placeholder = document.getElementById('terminal-placeholder');
+                if (placeholder) {
+                    placeholder.textContent = 'Mag terminal not available';
+                }
+                setConnectionStatus(false);
+            }
+        }
+
+        function setConnectionStatus(connected) {
+            const el = document.getElementById('connection-status');
+            if (!el) return;
+            el.className = connected ? 'connected' : 'disconnected';
+            el.textContent = connected ? 'Connected' : 'Disconnected';
+        }
+
+        // Resolve t3code link
+        (async function() {
+            try {
+                const resp = await fetch('data/t3code.json');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const link = document.getElementById('t3code-link');
+                if (link && data.available && data.webUrl) {
+                    link.href = data.webUrl;
+                    link.title = 't3code Web client';
+                } else if (link) {
+                    link.style.opacity = '0.4';
+                    link.style.pointerEvents = 'none';
+                    link.title = 't3code server not running';
+                }
+            } catch { /* ignore */ }
+        })();
+    </script>
+</body>
+</html>

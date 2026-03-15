@@ -7,6 +7,8 @@ import { findOrchestrationForCwd } from "./enrich.ts";
 
 function sourcePriority(agentType: AgentType): number {
   switch (agentType) {
+    case "t3code":
+      return 3;
     case "codex":
     case "claude-code":
       return 2;

@@ -7,6 +7,7 @@ import { harnessDir, loadConfigSync, slotsFilePath } from "./config.ts";
 import { parseSlotBlocks, getField, getProcess, getTask, getMode } from "./slots/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl } from "./network.ts";
+import { readServerRecord } from "./t3code/server.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
 
 function dashboardDataDir(): string {
@@ -410,7 +411,7 @@ function generateMag(): Record<string, unknown> {
   const tmuxResult = Bun.spawnSync(["tmux", "has-session", "-t", magSession], { stdout: "pipe", stderr: "pipe" });
   if (tmuxResult.exitCode === 0) status = "running";
 
-  // Get ttyd port
+  // Get ttyd port for mag terminal
   const magPort = String((config.mag as Record<string, unknown> | undefined)?.ttyd_port ?? "7679");
   const terminal = getUrl(magPort);
 
@@ -440,6 +441,16 @@ function generateMag(): Record<string, unknown> {
     pendingRequests: pending,
     terminal: terminal || null,
   };
+}
+
+// --- Generate t3code.json ---
+
+function generateT3code(): Record<string, unknown> {
+  const record = readServerRecord();
+  if (!record) {
+    return { available: false, webUrl: null };
+  }
+  return { available: true, webUrl: getUrl(record.port) };
 }
 
 // --- Generate briefing.json ---
@@ -484,6 +495,9 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "briefing.json"), JSON.stringify(generateBriefing(), null, 2));
   console.error("  briefing.json");
+
+  writeFileSync(join(dataDir, "t3code.json"), JSON.stringify(generateT3code(), null, 2));
+  console.error("  t3code.json");
 
   console.error(`ludics: dashboard data generated in ${dataDir}`);
 }

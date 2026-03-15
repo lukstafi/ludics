@@ -11,6 +11,8 @@ import { slotsCount, slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getMode, getTask, getPath, getSession } from "../slots/markdown.ts";
 import { readSingleFile, resolveProjectDir } from "../adapters/base.ts";
 import { listSessions, type SessionInfo, findSessionByPrefixOrTask } from "../adapters/peer-sync.ts";
+import { readSlotState, serverStatus } from "../t3code/server.ts";
+import type { T3Snapshot } from "../t3code/types.ts";
 import {
   type KnownSessionRecord,
   type SweepMode,
@@ -92,6 +94,19 @@ function collectAttachedKeys(): Set<string> {
     const taskId = getTask(block).trim();
     const slotSession = getSession(block).trim();
     const slotPath = getPath(block).trim();
+
+    // t3code mode: use slot state files for thread tracking
+    if (mode === "t3code") {
+      const slotState = readSlotState(slot);
+      if (slotState) {
+        for (const thread of slotState.threads) {
+          const projectDir = normalizeProjectDirForSweep(thread.workspaceRoot ?? slotPath);
+          attached.add(buildKnownSessionKey(mode, projectDir, thread.threadId));
+        }
+      }
+      continue;
+    }
+
     const projectDir = resolveProjectDirForSlot(mode, slotPath, slotSession);
 
     if (mode === "agent-duo" || mode.startsWith("agent-pair")) {
@@ -117,7 +132,26 @@ function agentPrefixes(mode: SweepMode): string[] {
   return [];
 }
 
-function knownSessionStillPresent(record: KnownSessionRecord): boolean {
+// Lazily cached t3code snapshot for sweep presence checks
+let cachedT3codeSnapshot: T3Snapshot | null | undefined;
+async function getT3codeSnapshotForSweep(): Promise<T3Snapshot | null> {
+  if (cachedT3codeSnapshot !== undefined) return cachedT3codeSnapshot;
+  try {
+    const status = await serverStatus();
+    cachedT3codeSnapshot = status.running ? (status.snapshot ?? null) : null;
+  } catch {
+    cachedT3codeSnapshot = null;
+  }
+  return cachedT3codeSnapshot;
+}
+
+function knownSessionStillPresent(record: KnownSessionRecord, t3codeSnapshot: T3Snapshot | null): boolean {
+  // t3code mode: check if the thread still exists in the snapshot
+  if (record.mode === "t3code") {
+    if (!t3codeSnapshot) return false;
+    return t3codeSnapshot.threads.some((t) => t.id === record.name && !t.deletedAt);
+  }
+
   if (!existsSync(record.projectDir)) return false;
 
   if (record.mode === "agent-duo" || record.mode.startsWith("agent-pair")) {
@@ -152,10 +186,16 @@ function runCleanup(record: KnownSessionRecord): { ok: boolean; detail: string }
   return { ok: false, detail: stderr || stdout || `exit ${result.exitCode}` };
 }
 
-export function runSessionSweep(options: SweepOptions): void {
+export async function runSessionSweep(options: SweepOptions): Promise<void> {
+  // Reset cached snapshot for each sweep run
+  cachedT3codeSnapshot = undefined;
+
   const now = isoNow();
   const state = loadSessionSweepState();
   const attachedKeys = collectAttachedKeys();
+
+  // Pre-fetch t3code snapshot for presence checks
+  const t3codeSnapshot = await getT3codeSnapshotForSweep();
 
   let reattachedResets = 0;
   let detachedUpdated = 0;
@@ -173,7 +213,7 @@ export function runSessionSweep(options: SweepOptions): void {
       continue;
     }
 
-    if (!knownSessionStillPresent(record)) {
+    if (!knownSessionStillPresent(record, t3codeSnapshot)) {
       delete state.sessions[key];
       retiredMissing++;
       continue;

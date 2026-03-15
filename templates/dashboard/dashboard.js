@@ -42,7 +42,8 @@ async function fetchAllData() {
             fetchSlots(),
             fetchReadyQueue(),
             fetchNotifications(),
-            fetchMagStatus()
+            fetchMagStatus(),
+            fetchT3codeLink()
         ]);
         updateTimestamp();
         setConnectionStatus(true);
@@ -387,6 +388,27 @@ function inlineFormat(text) {
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
     return s;
+}
+
+// Fetch t3code link
+async function fetchT3codeLink() {
+    try {
+        const response = await fetch(CONFIG.dataPath + 't3code.json');
+        if (!response.ok) return;
+        const data = await response.json();
+        const link = document.getElementById('t3code-link');
+        if (!link) return;
+        if (data.available && data.webUrl) {
+            link.href = data.webUrl;
+            link.title = 't3code Web client';
+            link.style.opacity = '';
+            link.style.pointerEvents = '';
+        } else {
+            link.style.opacity = '0.4';
+            link.style.pointerEvents = 'none';
+            link.title = 't3code server not running';
+        }
+    } catch { /* ignore */ }
 }
 
 // Placeholder data for development/demo
