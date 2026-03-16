@@ -443,6 +443,10 @@ function orchestratedModeFilter(_adapter: string): string | null {
   return null;
 }
 
+function matchesOrchestratedMode(_peerSyncPath: string, _modeFilter: string): boolean {
+  return true;
+}
+
 type SessionSelectionDepth = "shallow" | "deep";
 
 function normalizeSessionFeatureForTaskMatch(feature: string): string {

@@ -206,16 +206,11 @@ function markActiveAgents(state: OrchestrationState): void {
 | gh-agent-duo-40 | Gemini CLI provider | Provider expansion, orthogonal to orchestration |
 | gh-agent-duo-48 | Cursor CLI provider | Provider expansion, orthogonal to orchestration |
 
-### 4. Legacy adapter removal confirmation
+### 4. Legacy adapter removal confirmation — DONE
 
-After reviewing all the orchestration code:
+Both `src/adapters/orchestrated-adapter.ts` and `src/adapters/agent-duo.ts` were removed in commit `1317e03`. No agent-duo entries remain in the adapter registry or `normalizeLaunchAdapter()`.
 
-- `src/adapters/orchestrated-adapter.ts` — if this file still exists, it is safe to remove. The t3code adapter fully replaces it with `startOrchestratedThreads()`.
-- `src/adapters/agent-duo.ts` — if this file still exists, it is safe to remove. No references remain in `src/adapters/index.ts` after PR #49.
-- `normalizeLaunchAdapter()` in `src/mag.ts` already correctly maps unknown adapters to `t3code`. The allowed set is `{"t3code", "agent-codex", "agent-claude", "agent-session"}` — no agent-duo entries remain.
-- The comment in `src/events.ts` line 2 referencing "agent-duo's append_event pattern" is harmless historical context; no code change needed.
-
-This confirms gh-ludics-41 can proceed cleanly.
+**Regression fixed**: The removal deleted `matchesOrchestratedMode()` but left a call site in `src/notify.ts:762`, breaking the build. A stub returning `true` was added (per gh-ludics-41 proposal guidance). The caller is currently unreachable (`orchestratedModeFilter` returns `null`), but the session conclusion code in `notify.ts` (functions using `peerSyncPath`: `collectPrLinks`, `collectRefactorSummary`, `hasConcludedSessionStatuses`, `readPhaseToken`, etc.) will need adaptation as part of the t3code port — these still assume agent-duo's `.peer-sync/` filesystem layout for reading session state.
 
 ### 5. End-to-end verification
 
