@@ -47,6 +47,8 @@ mag:
 # Three-tier notification system
 notifications:
   provider: ntfy
+  # ntfy web app URL for dashboard iframe (default: https://ntfy.sh/app)
+  # app_url: https://ntfy.sh/app
 
   topics:
     pai: lukstafi-pai

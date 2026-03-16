@@ -453,6 +453,15 @@ function generateT3code(): Record<string, unknown> {
   return { available: true, webUrl: getUrl(record.port) };
 }
 
+// --- Generate ntfy.json ---
+
+function generateNtfy(): Record<string, unknown> {
+  const config = loadConfigSync();
+  const ntfyConfig = config.notifications as Record<string, unknown> | undefined;
+  const appUrl = String(ntfyConfig?.app_url ?? "https://ntfy.sh/app");
+  return { appUrl };
+}
+
 // --- Generate briefing.json ---
 
 function generateBriefing(): Record<string, unknown> {
@@ -498,6 +507,9 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "t3code.json"), JSON.stringify(generateT3code(), null, 2));
   console.error("  t3code.json");
+
+  writeFileSync(join(dataDir, "ntfy.json"), JSON.stringify(generateNtfy(), null, 2));
+  console.error("  ntfy.json");
 
   console.error(`ludics: dashboard data generated in ${dataDir}`);
 }

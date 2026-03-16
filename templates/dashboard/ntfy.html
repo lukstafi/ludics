@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ludics Mag</title>
+    <title>ludics Notifications</title>
     <link rel="stylesheet" href="style.css">
     <style>
-        .terminal-container {
+        .ntfy-container {
             flex: 1;
             display: flex;
             flex-direction: column;
@@ -14,14 +14,14 @@
             min-height: 0;
         }
 
-        .terminal-iframe {
+        .ntfy-iframe {
             flex: 1;
             width: 100%;
             border: none;
             min-height: 0;
         }
 
-        .terminal-placeholder {
+        .ntfy-placeholder {
             flex: 1;
             display: flex;
             align-items: center;
@@ -36,9 +36,9 @@
         <div class="nav-links">
             <h1>ludics</h1>
             <a href="index.html">Dashboard</a>
-            <a href="terminal.html" class="active">Mag</a>
+            <a href="terminal.html">Mag</a>
             <a href="#" id="t3code-link">t3code</a>
-            <a href="ntfy.html">ntfy</a>
+            <a href="ntfy.html" class="active">ntfy</a>
             <a href="tasks.html">Tasks</a>
             <a href="briefing.html">Briefing</a>
         </div>
@@ -48,9 +48,9 @@
         </div>
     </header>
 
-    <main class="terminal-container" id="terminal-container">
-        <div class="terminal-placeholder" id="terminal-placeholder">
-            Loading terminal...
+    <main class="ntfy-container" id="ntfy-container">
+        <div class="ntfy-placeholder" id="ntfy-placeholder">
+            Loading ntfy...
         </div>
     </main>
 
@@ -60,24 +60,24 @@
         };
 
         document.addEventListener('DOMContentLoaded', () => {
-            fetchTerminalUrl();
+            fetchNtfyUrl();
         });
 
-        async function fetchTerminalUrl() {
+        async function fetchNtfyUrl() {
             try {
-                const response = await fetch(CONFIG.dataPath + 'mag.json');
-                if (!response.ok) throw new Error('Failed to fetch mag data');
-                const mag = await response.json();
+                const response = await fetch(CONFIG.dataPath + 'ntfy.json');
+                if (!response.ok) throw new Error('Failed to fetch ntfy data');
+                const ntfy = await response.json();
 
-                const container = document.getElementById('terminal-container');
-                const placeholder = document.getElementById('terminal-placeholder');
+                const container = document.getElementById('ntfy-container');
+                const placeholder = document.getElementById('ntfy-placeholder');
 
-                if (mag.terminal) {
+                if (ntfy.appUrl) {
                     placeholder.remove();
                     const iframe = document.createElement('iframe');
-                    iframe.className = 'terminal-iframe';
-                    iframe.src = mag.terminal;
-                    iframe.allow = 'clipboard-read; clipboard-write';
+                    iframe.className = 'ntfy-iframe';
+                    iframe.src = ntfy.appUrl;
+                    iframe.allow = 'clipboard-read; clipboard-write; notifications';
                     container.appendChild(iframe);
 
                     const el = document.getElementById('last-update');
@@ -86,14 +86,14 @@
                     }
                     setConnectionStatus(true);
                 } else {
-                    placeholder.textContent = 'Mag terminal not available';
+                    placeholder.textContent = 'ntfy app not configured';
                     setConnectionStatus(true);
                 }
             } catch (error) {
-                console.warn('Failed to fetch terminal URL:', error);
-                const placeholder = document.getElementById('terminal-placeholder');
+                console.warn('Failed to fetch ntfy URL:', error);
+                const placeholder = document.getElementById('ntfy-placeholder');
                 if (placeholder) {
-                    placeholder.textContent = 'Mag terminal not available';
+                    placeholder.textContent = 'ntfy app not available';
                 }
                 setConnectionStatus(false);
             }
