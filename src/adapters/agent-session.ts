@@ -6,7 +6,7 @@
 import { existsSync, readdirSync } from "fs";
 import { join, resolve } from "path";
 import { tmuxAvailable, tmuxHasSession, tmuxPaneCwd } from "./tmux.ts";
-import { readStatusFile, formatAgentStatus, timeAgo, isGitWorktree, getMainRepoFromWorktree, getGitBranch, readSingleFile, resolveProjectDir, latestMtime } from "./base.ts";
+import { readStatusFile, formatAgentStatus, timeAgo, isGitWorktree, getMainRepoFromWorktree, getGitBranch, resolveProjectDir, latestMtime } from "./base.ts";
 import { readAgentSessionFile } from "./peer-sync.ts";
 import { getUrl } from "../network.ts";
 import { MarkdownBuilder } from "./markdown.ts";
@@ -198,19 +198,6 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
       if (status && status.status) {
         md.bullet(`Status: ${formatAgentStatus(status)}`);
         if (status.epoch) md.detail(`Updated: ${timeAgo(status.epoch)}`);
-      }
-    }
-
-    // Integration with peer-sync
-    const peerSyncDir = cwd ? join(cwd, ".peer-sync") : null;
-    if (peerSyncDir && existsSync(peerSyncDir)) {
-      const feature = readSingleFile(join(peerSyncDir, "feature"));
-      const mode = readSingleFile(join(peerSyncDir, "mode"));
-      if (feature || mode) {
-        md.section("Integration");
-        md.bullet("Part of agent-duo session");
-        if (feature) md.bullet(`Feature: ${feature}`);
-        if (mode) md.bullet(`Mode: ${mode}`);
       }
     }
 

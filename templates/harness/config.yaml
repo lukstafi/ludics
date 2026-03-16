@@ -15,17 +15,11 @@ projects:
     repo: lukstafi/ppx_minidebug
     issues: true
 
-  - name: agent-duo
-    repo: lukstafi/agent-duo
-    issues: true
-
   - name: personal
     repo: lukstafi/self-improve
     issues: true
 
 adapters:
-  agent-duo:
-    enabled: true
   agent-claude:
     enabled: true
   claude-ai:

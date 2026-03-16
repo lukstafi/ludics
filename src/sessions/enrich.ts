@@ -19,10 +19,8 @@ function enrichFromT3codeSlots(): Map<string, Orchestration> {
     if (!slotState?.orchestration) continue;
 
     const orch = slotState.orchestration;
-    // Map t3code orchestration modes to existing Orchestration type
-    const type: Orchestration["type"] = orch.mode === "pair"
-      ? "agent-pair-codex"  // default; exact agent assignment not tracked here
-      : "agent-duo";
+    // Map t3code orchestration modes to Orchestration type
+    const type = orch.mode === "pair" ? "t3code-pair" : "t3code-duo";
 
     for (const thread of slotState.threads) {
       const cwd = (thread.workspaceRoot ?? "").replace(/\/+$/, "");

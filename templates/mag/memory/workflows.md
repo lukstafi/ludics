@@ -100,7 +100,7 @@ When assigning a task to a slot:
    - Task must have clear acceptance criteria
 
 2. **Choose adapter**
-   - Complex tasks: agent-duo (two agents)
+   - Complex tasks: t3code (thread-based sessions)
    - Medium tasks: agent-claude (single agent)
    - Simple tasks: manual or agent-claude
 

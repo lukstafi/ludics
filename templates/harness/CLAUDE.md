@@ -23,7 +23,7 @@ You are the **Mag** — the coordinator agent. Your skills (invoked as `/ludics-
 
 ## Filing Issues from Obstacles
 
-When you encounter workflow friction, automation bugs, or recurring manual workarounds during a session, file a GitHub issue to the appropriate repo (e.g., `lukstafi/ludics` for harness/Mag issues, `lukstafi/agent-duo` for adapter issues). Don't accumulate — file promptly while context is fresh.
+When you encounter workflow friction, automation bugs, or recurring manual workarounds during a session, file a GitHub issue to the appropriate repo (e.g., `lukstafi/ludics` for harness/Mag issues). Don't accumulate — file promptly while context is fresh.
 
 ## For Worker Sessions
 

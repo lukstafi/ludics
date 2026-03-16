@@ -172,9 +172,6 @@ export function slotAssign(
         session = String(slotNum);
         break;
       case "t3code":
-      case "agent-duo":
-      case "agent-pair-codex":
-      case "agent-pair-claude":
         session = "null";
         break;
       default:

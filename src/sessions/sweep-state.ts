@@ -7,12 +7,9 @@ import { join, resolve } from "path";
 import { harnessDir } from "../config.ts";
 import { isGitWorktree, getMainRepoFromWorktree } from "../adapters/base.ts";
 
-export type SweepMode = "agent-duo" | "agent-pair-codex" | "agent-pair-claude" | "agent-claude" | "agent-codex" | "t3code";
+export type SweepMode = "agent-claude" | "agent-codex" | "t3code";
 
 export const SWEEP_TARGET_MODES = new Set<SweepMode>([
-  "agent-duo",
-  "agent-pair-codex",
-  "agent-pair-claude",
   "agent-claude",
   "agent-codex",
   "t3code",
@@ -70,10 +67,6 @@ export function buildKnownSessionKey(mode: SweepMode, projectDir: string, name: 
 }
 
 export function defaultCleanupCommand(mode: SweepMode, name: string): string[] {
-  if (mode === "agent-duo") return ["agent-duo", "cleanup", "--feature", name, "--full"];
-  if (mode === "agent-pair-codex" || mode === "agent-pair-claude") {
-    return ["agent-pair", "cleanup", "--feature", name, "--full"];
-  }
   if (mode === "t3code") {
     // name is the threadId for t3code sessions
     return ["ludics", "t3code", "stop-thread", name];

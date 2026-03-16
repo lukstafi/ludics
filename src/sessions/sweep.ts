@@ -9,8 +9,8 @@ import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { slotsCount, slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getMode, getTask, getPath, getSession } from "../slots/markdown.ts";
-import { readSingleFile, resolveProjectDir } from "../adapters/base.ts";
-import { listSessions, type SessionInfo, findSessionByPrefixOrTask } from "../adapters/peer-sync.ts";
+import { resolveProjectDir } from "../adapters/base.ts";
+import { findSessionByPrefixOrTask } from "../adapters/peer-sync.ts";
 import { readSlotState, serverStatus } from "../t3code/server.ts";
 import type { T3Snapshot } from "../t3code/types.ts";
 import {
@@ -35,8 +35,7 @@ function resolveProjectDirForSlot(mode: SweepMode, slotPath: string, slotSession
   const candidates: string[] = [];
   if (slotPath && slotPath !== "null") candidates.push(normalizeProjectDirForSweep(slotPath));
 
-  const preferPeerSync = mode === "agent-duo" || mode.startsWith("agent-pair");
-  const resolved = resolveProjectDir(slotSession, preferPeerSync);
+  const resolved = resolveProjectDir(slotSession, false);
   if (resolved) candidates.push(normalizeProjectDirForSweep(resolved));
 
   const unique = Array.from(new Set(candidates.filter(Boolean)));
@@ -47,27 +46,6 @@ function resolveProjectDirForSlot(mode: SweepMode, slotPath: string, slotSession
     if (existsSync(candidate)) return candidate;
   }
   return unique[0] ?? process.cwd();
-}
-
-function matchesOrchestratedMode(peerSyncPath: string, mode: SweepMode): boolean {
-  const expected = mode === "agent-duo" ? "duo" : mode.startsWith("agent-pair") ? "pair" : "";
-  if (!expected) return true;
-  return (readSingleFile(join(peerSyncPath, "mode")) ?? "") === expected;
-}
-
-function selectSessionForTask(sessions: SessionInfo[], taskId: string): SessionInfo | null {
-  if (sessions.length === 0) return null;
-  if (!taskId) return sessions.length === 1 ? sessions[0]! : null;
-
-  const exact = sessions.find((s) => s.feature === taskId);
-  if (exact) return exact;
-
-  const escaped = taskId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const boundaryPattern = new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`);
-  const boundaryMatch = sessions.find((s) => boundaryPattern.test(s.feature));
-  if (boundaryMatch) return boundaryMatch;
-
-  return sessions.length === 1 ? sessions[0]! : null;
 }
 
 function providerCleanupName(taskId: string, session: string): string | null {
@@ -109,15 +87,6 @@ function collectAttachedKeys(): Set<string> {
 
     const projectDir = resolveProjectDirForSlot(mode, slotPath, slotSession);
 
-    if (mode === "agent-duo" || mode.startsWith("agent-pair")) {
-      const sessions = listSessions(projectDir).filter((s) => matchesOrchestratedMode(s.peerSyncPath, mode));
-      const selected = selectSessionForTask(sessions, taskId && taskId !== "null" ? taskId : "");
-      const feature = selected?.feature ?? (taskId && taskId !== "null" ? taskId : "");
-      if (!feature) continue;
-      attached.add(buildKnownSessionKey(mode, projectDir, feature));
-      continue;
-    }
-
     const name = providerCleanupName(taskId, slotSession);
     if (!name) continue;
     attached.add(buildKnownSessionKey(mode, projectDir, name));
@@ -153,11 +122,6 @@ function knownSessionStillPresent(record: KnownSessionRecord, t3codeSnapshot: T3
   }
 
   if (!existsSync(record.projectDir)) return false;
-
-  if (record.mode === "agent-duo" || record.mode.startsWith("agent-pair")) {
-    const sessions = listSessions(record.projectDir).filter((s) => matchesOrchestratedMode(s.peerSyncPath, record.mode));
-    return sessions.some((s) => s.feature === record.name);
-  }
 
   const prefixes = agentPrefixes(record.mode);
   if (prefixes.length === 0) return false;

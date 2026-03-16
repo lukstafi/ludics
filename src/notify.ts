@@ -66,9 +66,8 @@ function getTopic(tier: string): string {
 const NTFY_MAX_ACTIONS = 3;
 const PROPOSAL_INLINE_CHAR_CUTOFF = 800;
 const CONCLUSION_SUMMARY_CHAR_CUTOFF = 300;
-// In agent-duo/agent-pair, suggest-refactor is the session-conclusion phase.
+// Session conclusion phase detection (used by t3code and agent-claude/codex adapters).
 const SESSION_CONCLUSION_PHASE = "suggest-refactor";
-// Keep these aligned with agent-duo/agent-pair phase and status vocab.
 const SESSION_CONCLUDED_PHASES = new Set([SESSION_CONCLUSION_PHASE]);
 const SESSION_CONCLUDED_STATUSES = new Set([
   "suggest-refactor-done",
@@ -440,29 +439,13 @@ function resolveAdapterProjectDir(ctx: AdapterContext): string {
   return normalized[0] ?? process.cwd();
 }
 
-function orchestratedModeFilter(adapter: string): string | null {
-  switch (adapter) {
-    case "agent-duo":
-      return "duo";
-    case "agent-pair-codex":
-    case "agent-pair-claude":
-      return "pair";
-    default:
-      return null;
-  }
-}
-
-function matchesOrchestratedMode(peerSyncPath: string, modeFilter: string | null): boolean {
-  if (!modeFilter) return false;
-  const mode = readSingleFile(join(peerSyncPath, "mode")) ?? "";
-  return mode === modeFilter;
+function orchestratedModeFilter(_adapter: string): string | null {
+  return null;
 }
 
 type SessionSelectionDepth = "shallow" | "deep";
 
 function normalizeSessionFeatureForTaskMatch(feature: string): string {
-  if (feature.startsWith("pair-")) return feature.slice("pair-".length);
-  if (feature.startsWith("duo-")) return feature.slice("duo-".length);
   return feature;
 }
 
@@ -657,17 +640,8 @@ function phaseFileUpdatedSince(peerSyncPath: string, minEpochSec: number): boole
   }
 }
 
-function conclusionStatusFiles(adapter: string): string[] {
-  switch (adapter) {
-    case "agent-duo":
-      return ["claude.status", "codex.status"];
-    case "agent-pair-codex":
-    case "agent-pair-claude":
-      // Pair session conclusion is signaled by coder only.
-      return ["coder.status"];
-    default:
-      return [];
-  }
+function conclusionStatusFiles(_adapter: string): string[] {
+  return [];
 }
 
 function hasConcludedSessionStatuses(peerSyncPath: string, adapter: string, minEpochSec: number): boolean {
@@ -794,7 +768,7 @@ export function maybeNotifySessionConclusionForAdapter(ctx: AdapterContext): voi
   const startedEpoch = parseIsoEpochSeconds(ctx.started);
   const statusFiles = conclusionStatusFiles(ctx.mode);
   const concluded = (
-    // For agent-duo/agent-pair, rely on status completion.
+    // Rely on status file completion if available.
     statusFiles.length > 0
     && hasConcludedSessionStatuses(session.peerSyncPath, ctx.mode, startedEpoch)
   ) || (

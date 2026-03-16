@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rename
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
-import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getStarted, getAdapterArgs } from "./slots/markdown.ts";
+import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
@@ -15,10 +15,8 @@ import {
   notifyOutgoing,
   expirePendingRevises,
   expirePendingFollowupRevises,
-  maybeNotifySessionConclusionForAdapter,
 } from "./notify.ts";
 import { slotAssign, slotClear, slotStart, taskCompleteDirectly } from "./slots/index.ts";
-import type { AdapterContext } from "./adapters/types.ts";
 import YAML from "yaml";
 import {
   tmuxAvailable,
@@ -737,9 +735,6 @@ function completeTaskFromNotification(taskId: string): void {
 }
 
 const NOTIFICATION_LAUNCH_ADAPTERS = new Set([
-  "agent-duo",
-  "agent-pair-codex",
-  "agent-pair-claude",
   "t3code",
   "agent-codex",
   "agent-claude",
@@ -749,8 +744,8 @@ const NOTIFICATION_LAUNCH_ADAPTERS = new Set([
 function normalizeLaunchAdapter(rawAdapter: string): string {
   const adapter = rawAdapter.trim();
   if (NOTIFICATION_LAUNCH_ADAPTERS.has(adapter)) return adapter;
-  console.error(`ludics: unsupported launch adapter "${adapter}", falling back to agent-duo`);
-  return "agent-duo";
+  console.error(`ludics: unsupported launch adapter "${adapter}", falling back to t3code`);
+  return "t3code";
 }
 
 function quoteShellToken(value: string): string {
@@ -1034,7 +1029,7 @@ async function resolveQueueRequestCommand(request: Record<string, unknown>, exec
       if (!content) return null;
 
       // Intercept button-tap launch messages from ntfy notifications
-      // e.g. "Launch agent-duo for task-042 in project ocannl"
+      // e.g. "Launch t3code for task-042 in project ocannl"
       const launchMatch = content.match(/^Launch ([\w-]+) for ([\w.-]+) in project .+$/);
       if (launchMatch) {
         if (executeProgrammatic) {
@@ -1270,8 +1265,6 @@ ${sessionsContent}
 
 ${computeSessionProjectMatches()}
 
-${computeActiveUnconcludedAgentDuoSlots()}
-
 ## Flow: Ready Queue
 
 ${flowReadyOutput}
@@ -1393,56 +1386,6 @@ function readBriefingClassifiedSessions(sessionsFile: string): BriefingClassifie
   } catch {
     return null;
   }
-}
-
-function computeActiveUnconcludedAgentDuoSlots(): string {
-  const harness = harnessDir();
-  const sessionsFile = join(harness, "sessions.json");
-  const classified = readBriefingClassifiedSessions(sessionsFile);
-
-  const lines: string[] = [];
-  lines.push("## Active Unconcluded Agent-Duo Slots");
-  lines.push("");
-
-  if (!classified) {
-    lines.push("(no fresh sessions.json data — run `ludics sessions report` first)");
-    lines.push("");
-    return lines.join("\n");
-  }
-
-  const sFile = slotsFilePath();
-  const blocks = existsSync(sFile) ? parseSlotBlocks(readFileSync(sFile, "utf-8")) : new Map<number, string>();
-  const count = slotsCount();
-  let found = false;
-
-  for (let i = 1; i <= count; i++) {
-    const block = blocks.get(i);
-    if (!block) continue;
-    if (getMode(block).trim() !== "agent-duo") continue;
-
-    const taskId = getTask(block).trim();
-    if (!taskId || taskId === "null") continue;
-    if (taskIsConcluded(taskId, harness)) continue;
-
-    const sessionsForSlot = classified.filter((session) =>
-      session.slot === i
-      && session.orchestration !== null
-      && session.orchestration.type === "agent-duo"
-    );
-    if (sessionsForSlot.length === 0) continue;
-
-    const preferred = sessionsForSlot.find((session) => !session.stale) ?? sessionsForSlot[0]!;
-    const phase = preferred.orchestration?.phase || "unknown";
-    const round = preferred.orchestration?.round || "?";
-    const staleLabel = preferred.stale ? "yes" : "no";
-    const lastActivity = preferred.lastActivity || "unknown";
-    lines.push(`- Slot ${i}: ${taskId} (phase=${phase}, round=${round}, stale=${staleLabel}, last activity=${lastActivity})`);
-    found = true;
-  }
-
-  if (!found) lines.push("(none)");
-  lines.push("");
-  return lines.join("\n");
 }
 
 function computeSessionProjectMatches(): string {
@@ -1937,35 +1880,6 @@ function maybeClearDoneSlots(): void {
   }
 }
 
-function pollSessionConclusionNotifications(): void {
-  const slotsFile = slotsFilePath();
-  if (!existsSync(slotsFile)) return;
-
-  const blocks = parseSlotBlocks(readFileSync(slotsFile, "utf-8"));
-  for (const [slotNum, block] of blocks) {
-    const mode = getMode(block).trim();
-    if (!["agent-duo", "agent-pair-codex", "agent-pair-claude"].includes(mode)) continue;
-
-    const taskId = getTask(block).trim();
-    if (!taskId || taskId === "null") continue;
-
-    const ctx: AdapterContext = {
-      slot: slotNum,
-      mode: mode === "null" ? "" : mode,
-      session: getSession(block).trim() === "null" ? "" : getSession(block).trim(),
-      path: getPath(block).trim() === "null" ? "" : getPath(block).trim(),
-      started: getStarted(block).trim() === "null" ? "" : getStarted(block).trim(),
-      taskId,
-      adapterArgs: getAdapterArgs(block).trim() === "null" ? "" : getAdapterArgs(block).trim(),
-      process: getProcess(block).trim() === "(empty)" ? "" : getProcess(block).trim(),
-      harnessDir: harnessDir(),
-      stateRepoDir: stateRepoDir(),
-    };
-
-    maybeNotifySessionConclusionForAdapter(ctx);
-  }
-}
-
 // --- Mag CLI commands ---
 
 export async function magStart(args: string[]): Promise<void> {
@@ -2007,9 +1921,6 @@ export async function magStart(args: string[]): Promise<void> {
 
     // Auto-fill empty slots with ready elaborated tasks
     maybeFillEmptySlots();
-
-    // Pull-based monitor for session conclusion notifications (agent-duo/pair)
-    pollSessionConclusionNotifications();
 
     // If startup got stuck (e.g. Claude helper hung), recover automatically.
     maybeRecoverStuckStartup();

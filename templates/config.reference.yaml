@@ -21,18 +21,15 @@ projects:
     # Later layers override earlier layers:
     # adapter default args -> project profile -> slot Adapter Args -> task frontmatter adapter_args
     # adapter_profiles:
-    #   agent-duo:
-    #     args: ["--work-timeout", "5400", "--review-timeout", "2700"]
-    #   agent-pair-codex:
-    #     args: "--clarify --plan --pushback-timeout 900"
+    #   agent-claude:
+    #     args: ["--timeout", "5400"]
 
   - name: personal
     repo: your-username/private-repo
     issues: true          # Chores, reminders, etc.
 
 # Adapter settings
-# Available adapters: agent-claude, agent-codex, t3code, agent-duo,
-#                     agent-pair-codex, agent-pair-claude,
+# Available adapters: agent-claude, agent-codex, t3code,
 #                     claude-ai, chatgpt-com, manual
 adapters:
   agent-claude:
@@ -44,15 +41,6 @@ adapters:
   t3code:
     enabled: true         # Shared T3 Code server / thread-based Codex sessions
     default_args: []      # Optional default args, e.g. ["--model", "gpt-5.4"]
-  agent-duo:
-    enabled: true         # Dual agent system (Claude + Codex)
-    default_args: []      # Optional default args (argv array or shell string)
-  agent-pair-codex:
-    enabled: true         # Pair workflow (coder=Codex, reviewer=Claude)
-    default_args: []      # Optional default args (argv array or shell string)
-  agent-pair-claude:
-    enabled: true         # Pair workflow (coder=Claude, reviewer=Codex)
-    default_args: []      # Optional default args (argv array or shell string)
   claude-ai:
     enabled: true         # Claude.ai web interface
     default_args: []      # Optional default args (argv array or shell string)

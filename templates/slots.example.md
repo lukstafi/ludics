@@ -4,7 +4,7 @@
 
 **Process:** OCANNL tensor concatenation
 **Task:** task-042
-**Mode:** agent-duo
+**Mode:** t3code
 **Session:** concat-einsum
 **Path:** /Users/lukstafi/repos/ocannl
 **Started:** 2026-01-29T14:00Z
