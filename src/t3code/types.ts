@@ -10,16 +10,16 @@ export const ORCHESTRATION_WS_CHANNELS = {
 export type T3ProviderKind = "codex" | "claude-code";
 
 /** Provider kind as used on the t3code WebSocket wire protocol. */
-export type T3WireProviderKind = "codex" | "claudeCode";
+export type T3WireProviderKind = "codex" | "claudeAgent";
 
 /** Convert Ludics provider name to t3code wire format. */
 export function toWireProvider(provider: T3ProviderKind): T3WireProviderKind {
-  return provider === "claude-code" ? "claudeCode" : provider;
+  return provider === "claude-code" ? "claudeAgent" : provider;
 }
 
 /** Convert t3code wire format to Ludics provider name. */
 export function fromWireProvider(wire: T3WireProviderKind): T3ProviderKind {
-  return wire === "claudeCode" ? "claude-code" : wire;
+  return wire === "claudeAgent" ? "claude-code" : wire;
 }
 export type T3RuntimeMode = "approval-required" | "full-access";
 export type T3InteractionMode = "default" | "plan";

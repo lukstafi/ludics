@@ -151,11 +151,12 @@ export async function ensureServer(
   });
 
   let proc: Bun.Subprocess;
+  const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
   try {
     proc = Bun.spawn(command, {
       stdin: "ignore",
       stdout: "ignore",
-      stderr: "ignore",
+      stderr: Bun.file(stderrPath),
       env: process.env as Record<string, string>,
     });
   } catch (error) {
