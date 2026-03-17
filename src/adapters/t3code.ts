@@ -17,14 +17,15 @@ import {
   serverStatus,
   writeSlotState,
 } from "../t3code/server.ts";
-import type {
-  T3CodeServerRecord,
-  T3CodeThreadRecord,
-  T3InteractionMode,
-  T3ProviderKind,
-  T3RuntimeMode,
-  T3Snapshot,
-  T3Thread,
+import {
+  toWireProvider,
+  type T3CodeServerRecord,
+  type T3CodeThreadRecord,
+  type T3InteractionMode,
+  type T3ProviderKind,
+  type T3RuntimeMode,
+  type T3Snapshot,
+  type T3Thread,
 } from "../t3code/types.ts";
 import { runOrchestrationForSlot } from "../orchestration/runner.ts";
 import {
@@ -66,12 +67,14 @@ export interface DesiredThreadConfig {
   workspaceRoot: string;
   title: string;
   model: string;
+  provider?: T3ProviderKind;
   runtimeMode: T3RuntimeMode;
   interactionMode: T3InteractionMode;
   branch?: string | null;
 }
 
 const DEFAULT_MODEL = "gpt-5.4";
+const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6";
 
 function normalizeWorkspacePath(ctx: AdapterContext): string {
   const raw = ctx.path && ctx.path !== "null"
@@ -160,7 +163,8 @@ function parseProviderToken(raw: string, defaultName: string, defaultModel: stri
     if (provider !== "codex" && provider !== "claude-code") {
       throw new Error(`t3code adapter args: unsupported provider ${provider}`);
     }
-    return { name: defaultName, provider, model: defaultModel };
+    const model = provider === "claude-code" ? DEFAULT_CLAUDE_MODEL : defaultModel;
+    return { name: defaultName, provider, model };
   }
 
   if (parts.length === 2) {
@@ -422,6 +426,7 @@ async function ensureThread(
   }
 
   const threadId = makeId(`thread-slot-${slot}`);
+  const provider = desired.provider ? toWireProvider(desired.provider) : undefined;
   await client.dispatchCommand({
     type: "thread.create",
     commandId: makeId("cmd"),
@@ -429,6 +434,7 @@ async function ensureThread(
     projectId,
     title: desired.title,
     model,
+    ...(provider ? { provider } : {}),
     runtimeMode: desired.runtimeMode,
     interactionMode: desired.interactionMode,
     branch: desired.branch ?? null,
@@ -611,6 +617,7 @@ async function startOrchestratedThreads(
         workspaceRoot: agent.worktreePath,
         title: `${title}:${agent.name}`,
         model: agent.model,
+        provider: agent.provider,
         runtimeMode: options.runtimeMode,
         interactionMode: options.interactionMode,
         branch: agent.branch,
