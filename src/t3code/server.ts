@@ -1,4 +1,3 @@
-import { randomBytes } from "crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "path";
@@ -141,9 +140,9 @@ export async function ensureServer(
   const port = await findAvailablePort(DEFAULT_PORT, host);
   const webUrl = `http://${host}:${port}`;
   const wsUrl = `ws://${host}:${port}`;
-  // Auto-generate an auth token when binding to a non-localhost address
-  const envToken = (process.env.LUDICS_T3CODE_AUTH_TOKEN ?? "").trim() || undefined;
-  const authToken = envToken ?? (host !== "127.0.0.1" ? randomBytes(24).toString("hex") : undefined);
+  // Auth token: only use when explicitly provided via env var.
+  // Tailnet-only setups don't need auth; auth doesn't work upstream.
+  const authToken = (process.env.LUDICS_T3CODE_AUTH_TOKEN ?? "").trim() || undefined;
   const command = buildLaunchCommand({
     port,
     host,
