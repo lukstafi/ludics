@@ -116,8 +116,10 @@ async function sendTurnMessage(
 }
 
 async function enterPhase(state: OrchestrationState): Promise<void> {
+  if (state.phaseDispatched) return;
   writePeerSync(state);
   markActiveAgents(state);
+  state.phaseDispatched = true;
   if (state.phase === "setup") return;
 
   for (const agent of state.agents) {
@@ -262,10 +264,6 @@ export async function runOrchestration(
     const next = maybeOverrideTransition(state, evaluated);
 
     if (!next) {
-      if (phaseTimeoutExpired(state)) {
-        state.phaseStartedAt = nowEpoch();
-        persistState(state);
-      }
       await sleep(state.config.pollInterval * 1000);
       continue;
     }
@@ -286,6 +284,7 @@ export async function runOrchestration(
     state.phase = next;
     state.phaseStartedAt = nowEpoch();
     state.confirmedPhase = null;
+    state.phaseDispatched = false;
     persistState(state);
   }
 }

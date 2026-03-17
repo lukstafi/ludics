@@ -66,6 +66,7 @@ export interface OrchestrationState {
   lastLearningAt?: number;
   lastLearningRound?: number;
   confirmedPhase?: Phase | null;
+  phaseDispatched?: boolean;
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {
