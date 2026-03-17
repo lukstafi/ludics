@@ -78,6 +78,7 @@
                     iframe.className = 'terminal-iframe';
                     iframe.src = mag.terminal;
                     iframe.allow = 'clipboard-read; clipboard-write';
+                    iframe.sandbox = 'allow-scripts allow-same-origin allow-popups allow-forms';
                     container.appendChild(iframe);
 
                     const el = document.getElementById('last-update');
