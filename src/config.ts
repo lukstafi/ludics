@@ -200,6 +200,8 @@ export async function loadConfig(): Promise<LudicsFullConfig> {
 }
 
 export function harnessDir(): string {
+  if (process.env.LUDICS_HARNESS_DIR) return process.env.LUDICS_HARNESS_DIR;
+
   const configPath = resolveConfigPath();
   if (!existsSync(configPath)) {
     throw new Error(`config not found: ${configPath}`);

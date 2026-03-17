@@ -1,4 +1,4 @@
-import { existsSync } from "fs";
+import { existsSync, openSync, readFileSync } from "fs";
 import { basename, join, resolve } from "path";
 import {
   getGitBranch,
@@ -493,11 +493,13 @@ function orchestrationProjectDir(workspaceRoot: string): string {
   return getMainRepoFromWorktree(workspaceRoot) ?? workspaceRoot;
 }
 
-function startOrchestrationProcess(slot: number, harnessDir: string): number {
+async function startOrchestrationProcess(slot: number, harnessDir: string, feature: string): Promise<number> {
+  const logPath = join(harnessDir, "orchestration", `slot-${slot}-${feature}.log`);
+  const logFd = openSync(logPath, "a");
   const proc = Bun.spawn(ludicsSelfCommand(["orch", "run-internal", String(slot)]), {
     stdin: "ignore",
     stdout: "ignore",
-    stderr: "ignore",
+    stderr: logFd,
     env: {
       ...(process.env as Record<string, string>),
       LUDICS_HARNESS_DIR: harnessDir,
@@ -506,6 +508,13 @@ function startOrchestrationProcess(slot: number, harnessDir: string): number {
   if (typeof (proc as { unref?: () => void }).unref === "function") {
     (proc as { unref: () => void }).unref();
   }
+
+  await Bun.sleep(500);
+  if (proc.exitCode !== null) {
+    const log = readFileSync(logPath, "utf-8").slice(-2000);
+    throw new Error(`Orchestration runner exited immediately (code ${proc.exitCode}):\n${log}`);
+  }
+
   return proc.pid;
 }
 
@@ -646,7 +655,7 @@ async function startOrchestratedThreads(
   };
   persistState(state, ctx.harnessDir);
 
-  const pid = startOrchestrationProcess(ctx.slot, ctx.harnessDir);
+  const pid = await startOrchestrationProcess(ctx.slot, ctx.harnessDir, feature);
   writeSlotState({
     slot: ctx.slot,
     threads: slotThreads,
@@ -719,7 +728,16 @@ async function readState(ctx: AdapterContext): Promise<string | null> {
     md.bullet(`Phase: ${orchestration.phase}`);
     md.bullet(`Round: ${orchestration.round}`);
     md.bullet(`Peer sync: ${orchestration.peerSyncDir}`);
-    if (slotState.orchestration?.pid) md.detail(`Runner pid: ${slotState.orchestration.pid}`);
+    if (slotState.orchestration?.pid) {
+      let alive = false;
+      try {
+        process.kill(slotState.orchestration.pid, 0);
+        alive = true;
+      } catch {
+        // process not found
+      }
+      md.detail(`Runner pid: ${slotState.orchestration.pid} (${alive ? "running" : "crashed"})`);
+    }
     for (const agent of orchestration.agents) {
       const runtime = orchestration.agentStates[agent.name];
       md.bullet(`${agent.name}: ${runtime?.status ?? "unknown"}`);
