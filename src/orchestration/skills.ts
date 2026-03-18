@@ -62,13 +62,38 @@ function doneStatusForPhase(phase: Phase): string {
   return `${phase}-done`;
 }
 
+function ghIssueBody(repo: string, issue: string): string | null {
+  try {
+    const result = Bun.spawnSync(
+      ["gh", "issue", "view", issue, "--repo", repo, "--json", "body", "-q", ".body"],
+      { stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string> },
+    );
+    if (result.exitCode !== 0) return null;
+    const body = result.stdout.toString().trim();
+    return body || null;
+  } catch {
+    return null;
+  }
+}
+
 function taskSpecText(state: OrchestrationState): string {
   const taskId = state.taskId?.trim();
   if (!taskId) {
     return state.slotTitle?.trim() || state.feature;
   }
   const path = join(harnessDir(), "tasks", `${taskId}.md`);
-  return readFileIfExists(path) ?? taskId;
+  const content = readFileIfExists(path);
+  if (!content) return taskId;
+
+  // Try to extract and append GitHub issue body
+  const urlMatch = content.match(/^url:\s*"?https:\/\/github\.com\/([^/\s"]+\/[^/\s"]+)\/issues\/(\d+)"?/m);
+  if (urlMatch) {
+    const issueBody = ghIssueBody(urlMatch[1]!, urlMatch[2]!);
+    if (issueBody) {
+      return `${content}\n\n---\n## GitHub Issue Body\n\n${issueBody}`;
+    }
+  }
+  return content;
 }
 
 function templateRoot(): string {
