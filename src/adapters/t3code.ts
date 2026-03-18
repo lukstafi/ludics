@@ -584,7 +584,7 @@ async function startOrchestratedThreads(
 
   if (existing?.orchestration?.pid) killPid(existing.orchestration.pid);
 
-  const setup = createWorktrees(projectDir, feature, orchestration.agents, undefined, ctx.slot);
+  const setup = createWorktrees(projectDir, feature, orchestration.agents, undefined, ctx.slot, orchestration.mode);
   symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);
 
   const agents: AgentConfig[] = orchestration.agents.map((agent) => ({
@@ -818,7 +818,7 @@ async function stop(ctx: AdapterContext): Promise<string> {
 
   if (orchestrationState) {
     removePeerSyncSession(orchestrationState.projectDir, orchestrationState.feature);
-    cleanupWorktrees(orchestrationState.projectDir, orchestrationState.feature, orchestrationState.agents, ctx.slot);
+    cleanupWorktrees(orchestrationState.projectDir, orchestrationState.feature, orchestrationState.agents, ctx.slot, orchestrationState.mode);
     removeOrchestrationState(ctx.slot, ctx.harnessDir);
   }
 

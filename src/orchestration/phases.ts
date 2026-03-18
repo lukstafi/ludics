@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { nowEpoch } from "./util.ts";
 
@@ -85,18 +87,28 @@ export function agentParticipatesInPhase(
 ): boolean {
   if (state.phase === "setup" || state.phase === "done") return false;
   if (state.mode === "duo") return true;
+  // Pair mode: strict role separation
   switch (state.phase) {
     case "gather":
     case "review":
     case "plan-review":
+    case "pushback":
       return agent.role === "reviewer";
     case "work":
-    case "merge-execute":
-    case "merge-amend":
+    case "pr-create":
     case "final-merge":
       return agent.role === "coder";
+    case "update-docs":
+    case "pr-comments":
+    case "suggest-refactor":
+      return agent.role === "coder";
+    // Merge phases are duo-only; should never be reached in pair mode
+    case "merge-vote":
+    case "merge-debate":
+    case "merge-execute":
+    case "merge-amend":
     case "merge-review":
-      return agent.name === state.mergeWinner;
+      return false;
     default:
       return true;
   }
@@ -127,6 +139,18 @@ function hasTwoPrs(state: OrchestrationState): boolean {
 
 function isMerged(state: OrchestrationState): boolean {
   return state.agents.some((agent) => state.agentStates[agent.name]?.status === "merged");
+}
+
+/** Read the latest reviewer verdict (APPROVE or REQUEST_CHANGES) from the review file. */
+function pairReviewVerdict(state: OrchestrationState): "approve" | "request_changes" | null {
+  const reviewer = state.agents.find((a) => a.role === "reviewer");
+  if (!reviewer) return null;
+  const reviewFile = join(state.peerSyncDir, "reviews", `round-${state.round}-${reviewer.name}.md`);
+  if (!existsSync(reviewFile)) return null;
+  const content = readFileSync(reviewFile, "utf-8").toUpperCase();
+  if (/\bAPPROVE\b/.test(content) && !/\bREQUEST_CHANGES\b/.test(content)) return "approve";
+  if (/\bREQUEST_CHANGES\b/.test(content)) return "request_changes";
+  return null;
 }
 
 function nextAfterPrework(state: OrchestrationState): Phase {
@@ -189,12 +213,18 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
       return null;
 
     case "review":
-      if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "update-docs";
-      return null;
+      if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      if (state.mode === "pair") {
+        const verdict = pairReviewVerdict(state);
+        if (verdict === "request_changes") return "work";
+        // APPROVE or timeout: proceed to update-docs
+      }
+      return "update-docs";
 
     case "update-docs":
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
       if (hasAnyPr(state)) return "pr-comments";
+      if (state.mode === "pair") return "pr-create";
       return "work";
 
     case "pr-create":
@@ -204,6 +234,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
     case "pr-comments":
       if (isMerged(state)) return "suggest-refactor";
       if (state.mode === "duo" && hasTwoPrs(state)) return "merge-vote";
+      // Pair mode: stay in pr-comments until merged externally
       return null;
 
     case "merge-vote":

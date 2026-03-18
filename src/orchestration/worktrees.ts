@@ -78,6 +78,7 @@ export function createWorktrees(
   agents: Array<{ name: string }>,
   mainBranch: string = defaultMainBranch(projectDir),
   slot?: number,
+  mode: "duo" | "pair" = "duo",
 ): WorktreeSetup {
   const featureSlug = slugify(feature);
   const slotSuffix = slot ? `-s${slot}` : "";
@@ -92,12 +93,21 @@ export function createWorktrees(
   addWorktree(projectDir, rootWorktree, branches.root, mainBranch);
 
   const agentWorktrees: Record<string, string> = {};
-  for (const agent of agents) {
-    const path = join(parentDir, `${stem}-${slugify(agent.name)}`);
-    const branch = `ludics/${featureSlug}${slotSuffix}/${slugify(agent.name)}`;
-    branches[agent.name] = branch;
-    addWorktree(projectDir, path, branch, mainBranch);
-    agentWorktrees[agent.name] = path;
+  if (mode === "pair") {
+    // Pair mode: both agents share the root worktree and branch
+    for (const agent of agents) {
+      branches[agent.name] = branches.root;
+      agentWorktrees[agent.name] = rootWorktree;
+    }
+  } else {
+    // Duo mode: each agent gets its own worktree and branch
+    for (const agent of agents) {
+      const path = join(parentDir, `${stem}-${slugify(agent.name)}`);
+      const branch = `ludics/${featureSlug}${slotSuffix}/${slugify(agent.name)}`;
+      branches[agent.name] = branch;
+      addWorktree(projectDir, path, branch, mainBranch);
+      agentWorktrees[agent.name] = path;
+    }
   }
 
   return { rootWorktree, peerSyncDir, agentWorktrees, branches };
@@ -107,9 +117,13 @@ export function symlinkPeerSync(
   peerSyncDir: string,
   agentWorktrees: Record<string, string>,
 ): void {
-  for (const worktreePath of Object.values(agentWorktrees)) {
+  // Deduplicate: in pair mode all agents share the root worktree
+  const uniquePaths = new Set(Object.values(agentWorktrees));
+  for (const worktreePath of uniquePaths) {
     mkdirSync(worktreePath, { recursive: true });
     const linkPath = join(worktreePath, ".peer-sync");
+    // If peerSyncDir is already inside this worktree, skip symlinking
+    if (resolve(peerSyncDir).startsWith(resolve(worktreePath))) continue;
     try {
       if (existsSync(linkPath)) {
         const stat = lstatSync(linkPath);
@@ -128,6 +142,7 @@ export function cleanupWorktrees(
   feature: string,
   agents: Array<{ name: string }>,
   slot?: number,
+  mode: "duo" | "pair" = "duo",
 ): void {
   const featureSlug = slugify(feature);
   const slotSuffix = slot ? `-s${slot}` : "";
@@ -136,7 +151,9 @@ export function cleanupWorktrees(
   const stem = `${repoName}-${featureSlug}${slotSuffix}`;
   const rootWorktree = join(parentDir, stem);
   removeIfRegistered(projectDir, rootWorktree);
-  for (const agent of agents) {
-    removeIfRegistered(projectDir, join(parentDir, `${stem}-${slugify(agent.name)}`));
+  if (mode === "duo") {
+    for (const agent of agents) {
+      removeIfRegistered(projectDir, join(parentDir, `${stem}-${slugify(agent.name)}`));
+    }
   }
 }

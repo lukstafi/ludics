@@ -198,7 +198,7 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   if (state.phase === "review" && next === "update-docs" && !shouldRunUpdateDocs(state)) {
     state.lastLearningAt = state.lastLearningAt ?? 0;
   }
-  if (state.phase === "update-docs" && next === "work") {
+  if ((state.phase === "update-docs" || state.phase === "review") && next === "work") {
     state.round += 1;
   }
   if (state.phase === "merge-vote") {
