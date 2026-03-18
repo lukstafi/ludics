@@ -4,7 +4,7 @@
 
 ## Overview
 
-ludics is a lightweight personal AI infrastructure — a harness for humans working with AI agents. It manages concurrent agent sessions (slots), orchestrates autonomous task analysis (Mag), and maintains flow-based task management.
+ludics is a lightweight personal AI infrastructure — a harness for humans working with AI agents. It manages concurrent agent sessions (slots), orchestrates autonomous task analysis (Mag), runs multi-agent coding workflows via t3code, and maintains flow-based task management.
 
 ## Technology Stack
 
@@ -20,7 +20,7 @@ ludics is implemented in **100% TypeScript**, compiled to a standalone binary vi
 - Fast startup (Bun's compiled binary is instant)
 - Native async/await for shell process orchestration
 - Single binary deployment (no runtime dependency for users)
-- Module system for clean separation of concerns (~22 modules, ~9K lines)
+- Module system for clean separation of concerns (~35 modules, ~26K lines)
 
 ## Architectural Layers
 
@@ -52,6 +52,18 @@ ludics is implemented in **100% TypeScript**, compiled to a standalone binary vi
 │    • Computes ready queue (priority + deadline sorting)    │
 │    • Detects deadline violations                           │
 │                                                            │
+│  Orchestration Engine (TypeScript):                        │
+│    • 23-phase state machine for multi-agent workflows      │
+│    • Phase transitions, timeouts, skill dispatch           │
+│    • Git worktree management per slot/agent                │
+│    • Peer-sync coordination channel                        │
+│    • Merge voting and consensus                            │
+│                                                            │
+│  t3code Integration (WebSocket):                           │
+│    • Server lifecycle management                           │
+│    • Thread creation and command dispatch                  │
+│    • Agent session spawning (Claude Code, Codex)           │
+│                                                            │
 │  Trigger System (launchd / systemd):                       │
 │    • 08:00 → invoke Mag for briefing                       │
 │    • Periodic → sync, health check                         │
@@ -65,6 +77,11 @@ ludics is implemented in **100% TypeScript**, compiled to a standalone binary vi
 │    • Pull from repos → aggregate issues                    │
 │    • Commit Mag's changes                                  │
 │    • Push to private repo                                  │
+│                                                            │
+│  Events (JSONL):                                           │
+│    • Append-only structured event log                      │
+│    • Phase transitions, slot changes, task events          │
+│    • Queryable via CLI with filters                        │
 │                                                            │
 │  Notifications (ntfy.sh):                                  │
 │    • <user>-from-Mag: outgoing strategic updates (→ phone) │
@@ -82,13 +99,14 @@ ludics is implemented in **100% TypeScript**, compiled to a standalone binary vi
 │              WORKER SLOTS (Ephemeral AI)                   │
 │                     6 slots (default)                      │
 │                                                            │
-│  Slot 1: agent-duo on task-042 (coder + reviewer)          │
+│  Slot 1: t3code --duo on task-042 (coder + reviewer)       │
 │  Slot 2: empty                                             │
-│  Slot 3: agent-claude on task-089                          │
+│  Slot 3: t3code --agent on task-089                         │
 │  Slot 4-6: empty                                           │
 │                                                            │
 │  Workers implement tasks, not strategy                     │
 │  Preemption: stash current work for priority tasks         │
+│  Orchestration: phase-driven workflows with peer review    │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -121,6 +139,7 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 
 | Skill | Purpose | Isolation |
 |-------|---------|-----------|
+| `/ludics-adopt-sessions` | Adopt discovered sessions into slots | Inline |
 | `/ludics-briefing` | Morning strategic briefing | Inline (needs strategic context) |
 | `/ludics-draft-proposal` | Write proposal document, send launch buttons | Orchestrator + worker |
 | `/ludics-elaborate` | Detailed spec for a task (early, for Mag context) | Orchestrator + worker |
@@ -129,6 +148,7 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 | `/ludics-learn` | Update institutional memory from corrections | Inline |
 | `/ludics-new-quote` | Generate motivational quote | Inline |
 | `/ludics-preempt` | Plan task preemption | Inline |
+| `/ludics-revise-proposal` | Revise existing proposal based on feedback | Orchestrator + worker |
 | `/ludics-split-task` | Split multi-concern task into subtasks | Inline |
 | `/ludics-suggest` | Task suggestions based on flow state | Inline |
 | `/ludics-sync-learnings` | Consolidate learnings into structured memory | Direct fork |
@@ -217,10 +237,158 @@ allowed-tools: Read, Bash, Glob, Grep, Write
 
 | Category | Skills | Rationale |
 |----------|--------|-----------|
-| Heavy (orchestrator + worker) | draft-proposal, verify-completion, elaborate, feedback-digest | Deep codebase exploration; tool outputs would pollute Mag's context |
+| Heavy (orchestrator + worker) | draft-proposal, revise-proposal, verify-completion, elaborate, feedback-digest | Deep codebase exploration; tool outputs would pollute Mag's context |
 | Direct fork | sync-learnings | Forked for isolation but no orchestrator needed — mostly mechanical processing |
-| Light (inline) | health-check, suggest, preempt, learn, split-task, new-quote | Mostly CLI commands with minimal reads |
+| Light (inline) | health-check, suggest, preempt, learn, split-task, new-quote, adopt-sessions | Mostly CLI commands with minimal reads |
 | Strategic (inline, special) | briefing | Needs Mag's cross-task context for slot assignment; sub-operations (elaboration) are themselves forked |
+
+### Orchestration Engine
+
+The orchestration engine (`src/orchestration/`, ~1.5K lines) runs multi-agent coding workflows within slots. It implements the phase state machine, skill dispatch, peer coordination, and merge logic that were previously handled by agent-duo's Bash scripts.
+
+**Phases** (23 total, defined in `src/orchestration/phases.ts`):
+
+```
+setup → [gather] → [clarify] → [pushback] → [plan] → [plan-review]
+      → work → review → [update-docs]
+      → [pr-create] → [pr-comments]
+      → [merge-vote] → [merge-debate] → [merge-execute] → [merge-review] → [merge-amend]
+      → [suggest-refactor] → [final-merge]
+      → done
+```
+
+Phases in brackets are optional, gated by configuration flags (`enableClarify`, `enablePushback`, `enablePlan`, `enableGather`, `autoFinish`) and runtime conditions (PR existence, merge consensus).
+
+**Orchestration state** (`src/orchestration/state.ts`):
+
+```typescript
+interface OrchestrationState {
+  slot: number;
+  feature: string;
+  mode: "duo" | "pair";           // duo = same roles, pair = coder + reviewer
+  phase: PhaseId;
+  round: number;
+  agents: AgentConfig[];          // name, provider, role, model, branch, worktreePath
+  agentStates: Record<string, AgentRuntimeState>;  // status, PR URL, interrupted, turn state
+  config: OrchestrationConfig;    // timeouts, poll intervals, feature flags
+  phaseDispatched: boolean;       // prevents infinite re-entry
+  rootWorktree?: string;
+  peerSyncDir?: string;
+}
+```
+
+**Runner** (`src/orchestration/runner.ts`, ~330 lines):
+
+The runner is spawned as a background subprocess (`ludics orch run-internal <slot>`) by the t3code adapter. It:
+
+1. Loads orchestration state from `orchestration/slot-{n}.json`
+2. Enters the current phase — marks agents active, dispatches skill messages to t3code threads
+3. Polls until all agents complete their turn or the phase times out
+4. Evaluates the transition to determine the next phase
+5. Emits `phase_transition` events to the event log
+6. Repeats until reaching a terminal phase (`done`)
+
+**Skill dispatch** (`src/orchestration/skills.ts`):
+
+Each phase has a corresponding skill template in `skills/orchestration/`. The runner:
+1. Resolves the template path based on phase, mode, and agent role
+2. Builds a skill context (task spec, peer status, git diff, merge votes, file paths)
+3. Substitutes `{{PLACEHOLDER}}` variables in the template
+4. Sends the composed message to the agent's t3code thread
+
+**Peer-sync** (`src/orchestration/peer-sync.ts`):
+
+The `.peer-sync/` directory in the root worktree serves as the coordination channel — ludics writes, agents read:
+
+```
+.peer-sync/
+├── feature           # Feature/task name
+├── mode              # duo or pair
+├── phase             # Current phase ID
+├── phase-token       # Unique token per phase entry
+├── round             # Current round number
+├── {agent}-status    # Agent status files
+├── plans/            # Agent-submitted plans
+├── reviews/          # Agent-submitted reviews
+├── merge-votes/      # Merge vote files
+└── worktrees.json    # Worktree paths for all agents
+```
+
+**Worktrees** (`src/orchestration/worktrees.ts`):
+
+Each orchestrated slot creates git worktrees:
+- Root worktree: `{repo}-{feature}-s{slot}` on branch `ludics/{feature}/root`
+- Per-agent worktrees: `{repo}-{feature}-s{slot}-{agent}` on branch `ludics/{feature}/{agent}`
+
+Worktrees are cleaned up when the orchestration stops.
+
+**Merge logic** (`src/orchestration/merge.ts`):
+
+Multi-agent merge uses a voting protocol:
+- Each agent writes a merge vote (accept/reject with rationale)
+- Consensus check determines if merge can proceed
+- Debate phase if agents disagree
+- Execute → review → amend cycle for the actual merge
+
+**Pair mode**:
+
+In `pair` mode, agents have distinct roles:
+- **Coder**: clarify → plan → work (writes code)
+- **Reviewer**: gather → pushback → plan-review → review (provides feedback)
+
+Phase-specific templates exist for each role (`pair-coder-*.md`, `pair-reviewer-*.md`).
+
+### t3code Integration
+
+t3code is a Web GUI for AI coding agents (Node.js + React + Electron, Effect-TS, event-sourced with SQLite, WebSocket JSON-RPC). ludics integrates with t3code as the runtime layer for spawning and managing AI agent sessions, replacing the previous tmux-based agent-duo approach.
+
+**Architecture** (`src/t3code/`, ~1K lines):
+
+```
+ludics ──WebSocket──> t3code server ──spawns──> AI agents (Claude Code, Codex)
+                           │
+                      SQLite + React UI
+```
+
+**Client** (`src/t3code/client.ts`):
+- `T3CodeClient`: WebSocket client with JSON-RPC protocol
+- Methods: `getSnapshot()`, `dispatchCommand()`, `close()`
+- Commands: project/thread creation, turn dispatch, snapshot retrieval
+
+**Server management** (`src/t3code/server.ts`):
+- `ensureServer()` — starts t3code server if not running, returns connection record
+- `serverStatus()` — checks running status and gets snapshot
+- `stopServer()` — graceful shutdown
+- Port scanning (3773+) for available ports
+- Health check via HTTP and process inspection
+- Per-slot state: `{harnessDir}/t3code/slot-{n}.json` (thread IDs, orchestration metadata)
+
+**Provider mapping**:
+- `codex` → `codex` (wire format)
+- `claude-code` → `claudeAgent` (wire format)
+- Conversion via `toWireProvider()` / `fromWireProvider()`
+
+**t3code adapter** (`src/adapters/t3code.ts`, ~860 lines):
+
+The t3code adapter supports two modes:
+
+1. **Single-thread mode** (`slot start -a t3code`): Creates one t3code thread for manual coding
+2. **Orchestrated mode** (`slot start -a t3code --duo/--pair`): Creates multiple threads + spawns orchestration subprocess
+
+Orchestrated mode argument parsing:
+```
+--duo                     # Two agents, same roles
+--pair                    # Coder + reviewer roles
+--coder <provider>        # e.g., claude-code, codex
+--reviewer <provider>
+--feature <name>          # Feature branch name
+--enable-clarify          # Enable clarify phase
+--enable-plan             # Enable plan phase
+--enable-gather           # Enable gather phase
+--auto-finish             # Auto-finish after review
+```
+
+Thread reuse: checks if existing threads can be reused based on workspace/title/model/runtime/interaction mode.
 
 ### The Slot Model: Forcing Function for Parallelization
 
@@ -232,7 +400,7 @@ ludics defaults to **6 slots** (configurable in config.yaml) based on cognitive 
 ├─────────────────────────────────────────────────────────────┤
 │  Process:     What's currently running (task/project)       │
 │  Task:        Task ID assigned to this slot                 │
-│  Mode:        How it's running (agent-duo, agent-claude...) │
+│  Mode:        How it's running (t3code, agent-claude...)    │
 │  Session:     Named session identifier                      │
 │  Path:        Working directory path                        │
 │  Started:     Timestamp when assigned                       │
@@ -316,7 +484,7 @@ dependencies:
 effort: large
 context: einsum
 slot: 1
-adapter: agent-duo
+adapter: t3code
 created: 2026-01-29
 started: 2026-01-29
 completed: null
@@ -346,6 +514,30 @@ Roadmap item: Support `^` operator for tensor concatenation...
 - `tasks duplicates` — fingerprint titles to find potential duplicates
 
 **Source of truth**: Individual `.md` task files in `tasks/` are the authoritative source. `tasks.yaml` is an auto-generated import manifest from `tasks sync`; processes (adapters, Mag, slots) read and update the `.md` files directly. All CLI commands (`list`, `show`, `files`, `flow`) read from `.md` files; `tasks.yaml` is only a fallback for tasks not yet converted.
+
+### Events
+
+ludics maintains a structured, append-only event log (`src/events.ts`, ~130 lines) for observability:
+
+```typescript
+interface LudicsEvent {
+  ts: string;           // ISO timestamp
+  epoch: number;        // Unix epoch
+  event_type: string;   // e.g., "phase_transition", "slot_change"
+  source: string;       // e.g., "orchestration", "slots"
+  scope?: string;       // e.g., "slot-1"
+  slot?: number;
+  task?: string;
+  adapter?: string;
+  action?: string;
+  status?: string;
+  message?: string;
+}
+```
+
+- `emitEvent()` — best-effort append to `journal/events.jsonl` (never fails caller)
+- Events are emitted by the orchestration runner (phase transitions), adapters, and slot operations
+- Queryable via CLI with filters: `--type`, `--task`, `--scope`, `--source`, `--since`, `--limit`
 
 ### Session Discovery
 
@@ -378,6 +570,7 @@ interface Adapter {
   readState(ctx: AdapterContext): MaybePromise<string | null>;
   start(ctx: AdapterContext): MaybePromise<string>;
   stop(ctx: AdapterContext): MaybePromise<string>;
+  lastActivity(ctx: AdapterContext): MaybePromise<string | null>;
 }
 
 interface AdapterContext {
@@ -395,21 +588,21 @@ interface AdapterContext {
 
 | Adapter | What it manages | State source |
 |---------|-----------------|--------------|
-| `agent-duo` | Two agents + orchestrator | `.peer-sync/` |
-| `agent-solo` | Single agent orchestration | `.peer-sync/` |
+| `t3code` | Multi-agent orchestration or single-thread coding via t3code | t3code WebSocket + orchestration state |
 | `agent-claude` | Claude Code (SSH-based, tmux) | `.peer-sync/` + tmux |
 | `agent-codex` | Codex (SSH-based, tmux) | `.peer-sync/` + tmux |
 | `claude-ai` | Browser Claude conversation | URL bookmark |
 | `chatgpt-com` | Browser ChatGPT conversation | URL bookmark |
 | `manual` | Human, no agent | Status file + notes |
-| `tmux` | Standalone tmux session | tmux |
-| `bookmark` | Web bookmark collector | — |
 
 **Shared utilities** (`src/adapters/base.ts`):
 - State file I/O (key=value format, atomic writes)
 - Status file format (pipe-delimited: `status|epoch|message`)
 - Git worktree detection and branch reading
 - MarkdownBuilder utility for structured state reports
+
+**Task-launch utility** (`src/adapters/task-launch.ts`):
+- Shared logic for launching tasks in adapters
 
 **Registry pattern** (`src/adapters/index.ts`): Central dispatch maps adapter names to implementations.
 
@@ -483,7 +676,7 @@ projects:
     issues: true
 
 adapters:
-  agent-duo:
+  t3code:
     enabled: true
   agent-claude:
     enabled: true
@@ -532,47 +725,20 @@ triggers:
       action: tasks sync
 ```
 
-### Adapter Args Layering (Orchestrated Adapters)
+### Adapter Args Layering (t3code Orchestrated Adapters)
 
-For `agent-duo` / `agent-pair*` starts, ludics composes adapter args from:
+For t3code orchestrated starts, ludics composes adapter args from:
 
-1. `adapters.<adapter>.default_args`
-2. `projects[].adapter_profiles.<adapter>`
+1. `adapters.t3code.default_args`
+2. `projects[].adapter_profiles.t3code`
 3. Slot `Adapter Args` field
 4. Task frontmatter `adapter_args` (highest precedence)
 
 Supported formats:
 
-- shell-style string: `--clarify --plan --work-timeout 5400`
-- argv list: `["--clarify", "--plan", "--work-timeout", "5400"]`
-- project/task mode map: `{ agent-duo: [...], default: "..." }`
-
-Example:
-
-```yaml
-adapters:
-  agent-duo:
-    enabled: true
-    default_args: ["--clarify", "--plan"]
-
-projects:
-  - name: ocannl
-    repo: lukstafi/ocannl
-    adapter_profiles:
-      agent-duo:
-        args: ["--work-timeout", "5400", "--review-timeout", "2700"]
-```
-
-Task override (`tasks/task-042.md`):
-
-```yaml
----
-id: task-042
-project: ocannl
-proposal: docs/concat-einsum.md
-adapter_args: ["--work-timeout", "7200"]
----
-```
+- shell-style string: `--duo --enable-clarify --enable-plan`
+- argv list: `["--duo", "--enable-clarify", "--feature", "my-feature"]`
+- project/task mode map: `{ t3code: [...], default: "..." }`
 
 ## Directory Structure
 
@@ -586,12 +752,13 @@ ludics/
 ├── tsconfig.json                     # TypeScript config
 ├── bin/
 │   └── ludics                        # Compiled standalone binary (~60MB)
-├── src/                              # TypeScript source (~22 modules, ~9K lines)
+├── src/                              # TypeScript source (~35 modules, ~26K lines)
 │   ├── index.ts                      # CLI entry point & command dispatcher
 │   ├── config.ts                     # Two-tier config loading (YAML)
 │   ├── types.ts                      # Shared type definitions
 │   ├── state.ts                      # Git-backed state (commit/pull/push)
 │   ├── flow.ts                       # Flow engine (ready/blocked/critical/impact)
+│   ├── events.ts                     # Structured event log (JSONL)
 │   ├── mag.ts                        # Mag lifecycle & queue management
 │   ├── notify.ts                     # ntfy.sh integration
 │   ├── journal.ts                    # JSONL activity log
@@ -603,6 +770,22 @@ ludics/
 │   ├── federation.ts                 # Multi-machine leader election
 │   ├── init.ts                       # Setup pipeline
 │   ├── quote.ts                      # Random quotes
+│   ├── orchestration/                # Multi-agent workflow engine (~1.5K lines)
+│   │   ├── index.ts                  # Orchestration CLI (status, confirm, interrupt, skip, log)
+│   │   ├── state.ts                  # OrchestrationState, AgentConfig, AgentRuntimeState
+│   │   ├── phases.ts                 # 23-phase state machine, transition rules
+│   │   ├── runner.ts                 # Main orchestration loop (~330 lines)
+│   │   ├── skills.ts                 # Template resolution, context building, substitution
+│   │   ├── peer-sync.ts             # .peer-sync/ directory management
+│   │   ├── worktrees.ts             # Git worktree creation and cleanup
+│   │   ├── merge.ts                 # Merge voting and consensus
+│   │   ├── learning.ts              # Update-docs phase gating
+│   │   └── util.ts                  # Shared orchestration utilities
+│   ├── t3code/                       # t3code server integration (~1K lines)
+│   │   ├── index.ts                  # t3code CLI (start, stop, status)
+│   │   ├── types.ts                  # T3 types, provider mapping, WebSocket commands
+│   │   ├── client.ts                 # WebSocket JSON-RPC client
+│   │   └── server.ts                 # Server lifecycle, port scanning, health check
 │   ├── slots/
 │   │   ├── index.ts                  # Slot CLI + lifecycle (~515 lines)
 │   │   ├── markdown.ts               # Parse/write slots.md
@@ -618,13 +801,12 @@ ludics/
 │   │   ├── index.ts                  # Adapter registry (dispatch by name)
 │   │   ├── types.ts                  # Adapter interface
 │   │   ├── base.ts                   # Shared utilities (state I/O, git)
-│   │   ├── agent-duo.ts              # agent-duo orchestration
-│   │   ├── agent-solo.ts             # Single agent orchestration
+│   │   ├── t3code.ts                 # t3code adapter (~860 lines) — orchestrated + single-thread
 │   │   ├── agent-claude.ts           # Claude Code (SSH, tmux)
 │   │   ├── agent-codex.ts            # Codex (SSH, tmux)
 │   │   ├── agent-session.ts          # Shared agent session logic
-│   │   ├── orchestrated-adapter.ts   # Base for orchestrated adapters
 │   │   ├── peer-sync.ts              # .peer-sync/ file reading
+│   │   ├── task-launch.ts            # Shared task-launch logic
 │   │   ├── claude-ai.ts              # Browser Claude
 │   │   ├── chatgpt-com.ts            # Browser ChatGPT
 │   │   ├── manual.ts                 # Human work tracking
@@ -642,7 +824,8 @@ ludics/
 │       ├── classify.ts               # Map sessions to slots
 │       ├── report.ts                 # Markdown/JSON report generation
 │       └── read-lines.ts             # Line reading utility
-├── skills/                           # Mag skills (15 orchestrators + 6 workers)
+├── skills/                           # Mag skills (20 files: 14 skills + 6 workers)
+│   ├── ludics-adopt-sessions.md      # Inline
 │   ├── ludics-briefing.md            # Inline (needs strategic context)
 │   ├── ludics-draft-proposal.md      # Orchestrator
 │   ├── ludics-draft-proposal-worker.md  # Worker (context: fork)
@@ -654,12 +837,40 @@ ludics/
 │   ├── ludics-learn.md               # Inline
 │   ├── ludics-new-quote.md           # Inline
 │   ├── ludics-preempt.md             # Inline
+│   ├── ludics-revise-proposal.md     # Orchestrator
+│   ├── ludics-revise-proposal-worker.md # Worker (context: fork)
 │   ├── ludics-split-task.md          # Inline
 │   ├── ludics-suggest.md             # Inline
 │   ├── ludics-sync-learnings.md      # Direct fork (context: fork)
 │   ├── ludics-verify-completion.md   # Orchestrator
 │   ├── ludics-verify-completion-worker.md # Worker (context: fork)
 │   └── worker-conventions.md         # Shared worker conventions
+├── skills/orchestration/             # Orchestration phase templates (25 files)
+│   ├── clarify.md                    # Clarify phase instructions
+│   ├── gather.md                     # Gather context phase
+│   ├── pushback.md                   # Reviewer pushback phase
+│   ├── plan.md                       # Plan phase
+│   ├── plan-review.md                # Plan review phase
+│   ├── work.md                       # Main work phase
+│   ├── review.md                     # Review phase
+│   ├── update-docs.md                # Learning/docs phase
+│   ├── pr-create.md                  # PR creation phase
+│   ├── pr-comments.md                # PR comments phase
+│   ├── merge-vote.md                 # Merge voting
+│   ├── merge-debate.md               # Merge debate
+│   ├── merge-execute.md              # Merge execution
+│   ├── merge-review.md               # Post-merge review
+│   ├── merge-amend.md                # Merge amendments
+│   ├── suggest-refactor.md           # Post-merge refactoring suggestions
+│   ├── final-merge.md                # Final merge
+│   ├── pair-coder-clarify.md         # Pair mode: coder clarify
+│   ├── pair-coder-plan.md            # Pair mode: coder plan
+│   ├── pair-coder-work.md            # Pair mode: coder work
+│   ├── pair-reviewer-clarify.md      # Pair mode: reviewer clarify
+│   ├── pair-reviewer-gather.md       # Pair mode: reviewer gather
+│   ├── pair-reviewer-plan-review.md  # Pair mode: reviewer plan review
+│   ├── pair-reviewer-pushback.md     # Pair mode: reviewer pushback
+│   └── pair-reviewer-review.md       # Pair mode: reviewer review
 ├── templates/
 │   ├── config.reference.yaml         # Example config
 │   ├── slots.example.md
@@ -673,7 +884,8 @@ ludics/
 ├── tests/                            # Test suite
 └── docs/
     ├── ARCHITECTURE.md               # This file
-    └── ...
+    ├── implemented/                   # Proposals/plans that have been implemented
+    └── proposals/                     # Active proposals for future work
 ```
 
 ### Private repo (user's choice, e.g., `self-improve`)
@@ -688,8 +900,14 @@ your-private-repo/
     │   ├── task-001.md
     │   ├── task-002.md
     │   └── ...
+    ├── orchestration/             # Orchestration state per slot
+    │   └── slot-{n}.json         # OrchestrationState for active orchestrations
+    ├── t3code/                    # t3code integration state
+    │   ├── server.json           # Server connection record (pid, urls, auth)
+    │   └── slot-{n}.json        # Per-slot thread/metadata
     ├── journal/                   # Daily logs
     │   ├── 2026-01-31.md
+    │   ├── events.jsonl          # Structured event log
     │   └── notifications.jsonl    # Notification history
     ├── mag/                       # Mag's persistent state
     │   ├── context.md             # Current understanding
@@ -726,7 +944,7 @@ ludics provides a web dashboard for at-a-glance status monitoring (`src/dashboar
 │   Slot 1     │   Slot 2     │   Slot 3     │  Ready Queue   │
 │  ■ Active    │  □ Empty     │  ■ Active    │  1. task-101   │
 │  task-042    │              │  task-089    │  2. task-067   │
-│  agent-duo   │              │  agent-claude │               │
+│  t3code      │              │  agent-claude│                │
 ├──────────────┼──────────────┼──────────────┤  Project Stats │
 │   Slot 4     │   Slot 5     │   Slot 6     │                │
 │  □ Empty     │  □ Empty     │  □ Empty     │  Notifications │
@@ -781,6 +999,22 @@ ludics flow critical           # Deadlines + high-priority
 ludics flow impact <id>        # What this task unblocks
 ludics flow context            # Context distribution across slots
 ludics flow check-cycle        # Check for dependency cycles
+
+# Orchestration control
+ludics orch status <slot>      # Show orchestration state for slot
+ludics orch confirm <slot>     # Confirm current phase
+ludics orch interrupt <slot>   # Interrupt active agents
+ludics orch skip <slot> <phase> # Force to specific phase
+ludics orch log <slot>         # Show phase transition log
+ludics orch run-internal <slot> # Internal: run orchestration loop (spawned as subprocess)
+
+# t3code server management
+ludics t3code [status]         # Show t3code server status
+ludics t3code start            # Start t3code server
+ludics t3code stop             # Stop t3code server
+
+# Events
+ludics events [--type X] [--task Y] [--scope S] [--source R] [--since T] [--limit N]
 
 # Mag interaction
 ludics mag start [--no-ttyd]   # Start Mag tmux session
@@ -859,6 +1093,7 @@ ludics quote                   # Print a random quote
 8. **TypeScript + Bun** — Type-safe, fast startup, single binary, shell commands where needed
 9. **Federation for scale** — Seniority-based leader election for multi-machine Mag coordination
 10. **Bidirectional messaging via ntfy** — outgoing alerts push to user's phone; incoming topic lets user converse with Mag from any device
+11. **t3code as runtime layer** — Web GUI for AI agents replaces tmux-based orchestration; ludics manages lifecycle and phases, t3code handles agent sessions
 
 ## Failure Modes and Recovery
 
@@ -871,12 +1106,17 @@ ludics quote                   # Print a random quote
 | Claude API down | Task tool fails | Mag retries or skips, logs warning |
 | Task file corrupted | YAML parse fails | Skip file; notify user |
 | Federation: leader down | Heartbeat timeout (900s) | Next node by seniority becomes leader |
+| t3code server crashes | Health check, PID inspection | `ludics t3code start` restarts; orchestration state persists |
+| Orchestration runner crashes | PID check in readState | Restart via `slot start`; state persists in `orchestration/slot-{n}.json` |
+| Phase timeout | Runner polling detects expiry | Automatic transition to next phase |
 
 **Design for recovery:**
 - All state changes go through git → crash-safe, auditable
+- Orchestration state persists to JSON files → recoverable after runner restart
 - Adapters are stateless readers (can restart anytime)
 - Triggers are idempotent (safe to re-run)
 - Preemption uses stash files (recoverable if process crashes)
+- t3code threads persist in SQLite → survive server restarts
 
 **What requires manual intervention:**
 - Git merge conflicts (by design — human resolves semantic conflicts)
