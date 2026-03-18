@@ -323,6 +323,7 @@ export function skipToPhase(
   if (!state) throw new Error(`orchestration state not found for slot ${slot}`);
   state.phase = phase;
   state.phaseStartedAt = nowEpoch();
+  state.phaseDispatched = false;
   persistState(state, harnessDir);
   return state;
 }
