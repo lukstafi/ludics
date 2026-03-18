@@ -78,6 +78,10 @@ function markActiveAgents(state: OrchestrationState): void {
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
     const runtime = state.agentStates[agent.name]!;
+    // Don't overwrite if agent already has a meaningful status for this phase
+    if (runtime.status.endsWith("-done") || runtime.status === "done" || runtime.status === "merged") {
+      continue;
+    }
     runtime.status = phaseActiveStatus(state.phase);
     runtime.statusEpoch = nowEpoch();
     runtime.statusMessage = `entered ${state.phase}`;
