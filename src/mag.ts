@@ -1906,6 +1906,19 @@ export async function magStart(args: string[]): Promise<void> {
   if (magIsRunning()) {
     if (useTtyd) ensureTtyd();
 
+    // Ensure t3code server is running (idempotent)
+    {
+      const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
+      if (magConfig?.ensure_t3code !== false) {
+        try {
+          const { ensureServer } = await import("./t3code/server.ts");
+          await ensureServer({ harnessDir: harnessDir() });
+        } catch {
+          // t3code may not be installed — silently skip
+        }
+      }
+    }
+
     // Publish terminal state to ntfy (dedup'd)
     publishTerminalState();
 
@@ -1992,6 +2005,19 @@ export async function magStart(args: string[]): Promise<void> {
   console.log(`Mag session started. Attach with: tmux attach -t ${MAG_SESSION_NAME}`);
 
   if (useTtyd) ensureTtyd();
+
+  // Ensure t3code server on fresh start
+  {
+    const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
+    if (magConfig?.ensure_t3code !== false) {
+      try {
+        const { ensureServer } = await import("./t3code/server.ts");
+        await ensureServer({ harnessDir: harnessDir() });
+      } catch {
+        // t3code may not be installed — silently skip
+      }
+    }
+  }
 
   // Drain programmatic requests first, then deliver one skill/direct request.
   await drainProgrammaticQueueHead();

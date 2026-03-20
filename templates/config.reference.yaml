@@ -59,6 +59,7 @@ mag:
   session: ludics-mag         # tmux session name
   ttyd_port: 7679            # Web terminal port (tmux-ttyd backend only)
   keepalive_interval: 60      # Keepalive trigger interval in seconds (default: 60)
+  ensure_t3code: true         # Auto-start shared t3code server on keepalive (default: true)
   nudge_throttle_seconds: 60  # Minimum seconds between automatic "Continue." nudges (default: 60)
   nudge_backoff_seconds: 600  # If no stop hook fired since last nudge, suppress repeat nudges for this long (default: 600)
 
