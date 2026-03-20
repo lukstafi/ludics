@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, renameSync } from "fs";
 import { extname, join } from "path";
 import { harnessDir } from "../config.ts";
-import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField } from "./markdown.ts";
+import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField } from "./markdown.ts";
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
@@ -286,6 +286,53 @@ function tasksMerge(targetId: string, sourceIds: string[]): void {
 
   emitEvent({ event_type: "task_merged", source: "cli", scope: "task", task: targetId, message: `merged ${sourceIds.join(", ")} into ${targetId}` });
   console.log(`\nMerged ${sourceIds.length} task(s) into ${targetId}`);
+}
+
+function tasksUnmerge(sourceId: string): void {
+  const dir = tasksDir();
+  const srcFile = join(dir, `${sourceId}.md`);
+  if (!existsSync(srcFile)) {
+    throw new Error(`task not found: ${sourceId}`);
+  }
+
+  const srcContent = readFileSync(srcFile, "utf-8");
+  const srcFm = parseTaskFrontmatter(srcContent);
+
+  if (!srcFm.merged_into) {
+    throw new Error(`task ${sourceId} is not merged (no merged_into field)`);
+  }
+
+  const targetId = srcFm.merged_into;
+  const targetFile = join(dir, `${targetId}.md`);
+
+  // Restore source task
+  updateFrontmatterField(srcFile, "status", "ready");
+  removeFrontmatterField(srcFile, "merged_into");
+
+  // Remove source from target's merged_from list
+  if (existsSync(targetFile)) {
+    const targetContent = readFileSync(targetFile, "utf-8");
+    const targetFm = parseTaskFrontmatter(targetContent);
+    if (targetFm.merged_from) {
+      const updated = targetFm.merged_from.filter((id) => id !== sourceId);
+      if (updated.length > 0) {
+        updateFrontmatterField(targetFile, "merged_from", `[${updated.join(", ")}]`);
+      } else {
+        removeFrontmatterField(targetFile, "merged_from");
+      }
+    }
+  } else {
+    console.warn(`Warning: target task ${targetId} not found; source restored anyway`);
+  }
+
+  emitEvent({
+    event_type: "task_unmerged",
+    source: "cli",
+    scope: "task",
+    task: sourceId,
+    message: `unmerged ${sourceId} from ${targetId}`,
+  });
+  console.log(`Unmerged: ${sourceId} (was merged into ${targetId})`);
 }
 
 function tasksDuplicates(): void {
@@ -599,6 +646,12 @@ export async function runTasks(args: string[]): Promise<void> {
       tasksMerge(target, sources);
       break;
     }
+    case "unmerge": {
+      const id = args[1];
+      if (!id) throw new Error("source task ID required (the task to unmerge)");
+      tasksUnmerge(id);
+      break;
+    }
     case "duplicates":
       tasksDuplicates();
       break;
@@ -616,7 +669,7 @@ export async function runTasks(args: string[]): Promise<void> {
     }
     default:
       throw new Error(
-        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, check, merge, duplicates, migrate-refs)`,
+        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, check, merge, unmerge, duplicates, migrate-refs)`,
       );
   }
 }

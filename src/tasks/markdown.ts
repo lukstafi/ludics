@@ -120,6 +120,33 @@ export function addFrontmatterField(filePath: string, field: string, value: stri
   writeFileSync(filePath, output.join("\n"));
 }
 
+export function removeFrontmatterField(filePath: string, field: string): void {
+  if (!existsSync(filePath)) return;
+  const content = readFileSync(filePath, "utf-8");
+  const lines = content.split("\n");
+  let inFrontmatter = false;
+  const output: string[] = [];
+
+  for (const line of lines) {
+    if (line === "---" && !inFrontmatter) {
+      inFrontmatter = true;
+      output.push(line);
+      continue;
+    }
+    if (line === "---" && inFrontmatter) {
+      inFrontmatter = false;
+      output.push(line);
+      continue;
+    }
+    if (inFrontmatter && line.startsWith(`${field}:`)) {
+      continue; // skip this line
+    }
+    output.push(line);
+  }
+
+  writeFileSync(filePath, output.join("\n"));
+}
+
 /**
  * Update an array subfield within the dependencies block of a task file.
  * Handles both existing and missing subfields (inserts after last dependency line).
