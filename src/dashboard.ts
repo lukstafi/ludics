@@ -28,6 +28,8 @@ interface SlotJson {
   terminals: Record<string, string> | null;
   preempted: boolean;
   preemptedTask: string | null;
+  hasProposal: boolean;
+  proposalLink: string | null;
 }
 
 function lookupTaskContent(taskId: string): string | null {
@@ -67,6 +69,21 @@ function discoverTtydUrls(): Map<string, string> {
     // ignore — pgrep may not be available or ttyd may not be running
   }
   return result;
+}
+
+function lookupTaskHasProposal(taskId: string): boolean {
+  const tasksDir = join(harnessDir(), "tasks");
+  const taskFile = join(tasksDir, taskId + ".md");
+  if (!existsSync(taskFile)) return false;
+  try {
+    const content = readFileSync(taskFile, "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return false;
+    const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
+    return hasNonNullProposal(data.proposal);
+  } catch {
+    return false;
+  }
 }
 
 function generateSlots(): SlotJson[] {
@@ -117,6 +134,8 @@ function generateSlots(): SlotJson[] {
 
     const taskId = empty ? null : getTask(block).trim() || null;
     const taskContent = taskId && taskId !== "null" ? lookupTaskContent(taskId) : null;
+    const slotHasProposal = taskId && taskId !== "null" ? lookupTaskHasProposal(taskId) : false;
+    const slotProposalLink = slotHasProposal && taskId ? `/proposal.html?task=${encodeURIComponent(taskId)}` : null;
 
     // Check for preemption stash
     const stash = readStash(num);
@@ -133,6 +152,8 @@ function generateSlots(): SlotJson[] {
       terminals: empty ? null : Object.keys(terminals).length > 0 ? terminals : null,
       preempted: stash !== null,
       preemptedTask: stash?.previousTask ?? null,
+      hasProposal: slotHasProposal,
+      proposalLink: slotProposalLink,
     });
   }
 
@@ -358,7 +379,7 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
     const subtreeHasActiveProposal = hasActiveProposal || descendantHasActiveProposal;
     const highlighted = !task.isCompleted && subtreeHasActiveProposal;
     const taskFileLink = `/task-files/${encodeURIComponent(task.id)}.md`;
-    const proposalLink = task.proposalPath ? `/proposal-files/${encodeURIComponent(task.id)}.md` : null;
+    const proposalLink = task.proposalPath ? `/proposal.html?task=${encodeURIComponent(task.id)}` : null;
 
     return {
       node: {

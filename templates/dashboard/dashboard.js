@@ -127,6 +127,9 @@ function renderSlots(slots) {
                     }
                 }
             }
+            if (slot.proposalLink) {
+                links += `<a href="${slot.proposalLink}">proposal</a>`;
+            }
             setHtmlPreserveScroll(linksDiv, links);
         }
     }
