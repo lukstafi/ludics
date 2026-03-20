@@ -811,4 +811,4 @@ function tasksQueuePreemptions(): void {
   }
 }
 
-export { tasksNeedsElaborationList, tasksQueueElaborations, tasksQueuePreemptions, contentFingerprint };
+export { tasksNeedsElaborationList, tasksQueueElaborations, tasksQueuePreemptions, tasksReconcileBlockedStatus, contentFingerprint };

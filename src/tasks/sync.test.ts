@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { tasksQueuePreemptions } from "./sync.ts";
+import { tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
 import { emptyBlock, writeSlotFile } from "../slots/markdown.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-sync");
@@ -42,6 +42,24 @@ elaborated: true
 dependencies:
   blocks: []
   blocked_by: []
+  relates_to: []
+  subtask_of: null
+---
+`);
+}
+
+function writeTaskWithBlockedBy(tasksDir: string, id: string, status: string, blockedBy: string[]): void {
+  const blockedByYaml = blockedBy.map((b) => `    - ${b}`).join("\n");
+  const blockedBySection = blockedBy.length > 0 ? `\n${blockedByYaml}` : " []";
+  writeFileSync(join(tasksDir, `${id}.md`), `---
+id: ${id}
+title: "${id}"
+project: test-project
+status: ${status}
+priority: B
+dependencies:
+  blocks: []
+  blocked_by:${blockedBySection}
   relates_to: []
   subtask_of: null
 ---
@@ -140,5 +158,64 @@ describe("tasksQueuePreemptions", () => {
     expect(queuedTasks).toEqual(["task-beta-next"]);
     expect(readFileSync(join(tasksDir, "task-alpha-next.md"), "utf-8")).toContain("status: ready");
     expect(readFileSync(join(tasksDir, "task-beta-next.md"), "utf-8")).toContain("status: preempt-queued");
+  });
+});
+
+describe("tasksReconcileBlockedStatus", () => {
+  test("sets status to blocked when blocked_by is non-empty and status is ready", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    writeTaskWithBlockedBy(tasksDir, "task-needs-blocking", "ready", ["task-dep-1", "task-dep-2"]);
+
+    tasksReconcileBlockedStatus(tasksDir);
+
+    expect(readFileSync(join(tasksDir, "task-needs-blocking.md"), "utf-8")).toContain('status: "blocked"');
+  });
+
+  test("resets status to ready when blocked_by is empty and status is blocked", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    writeTaskWithBlockedBy(tasksDir, "task-should-unblock", "blocked", []);
+
+    tasksReconcileBlockedStatus(tasksDir);
+
+    expect(readFileSync(join(tasksDir, "task-should-unblock.md"), "utf-8")).toContain('status: "ready"');
+  });
+
+  test("skips terminal statuses (done, abandoned, merged, in-progress, preempt-queued, preempted)", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    const terminalStatuses = ["done", "abandoned", "merged", "in-progress", "preempt-queued", "preempted"];
+    for (const s of terminalStatuses) {
+      writeTaskWithBlockedBy(tasksDir, `task-${s}`, s, ["task-dep"]);
+    }
+
+    tasksReconcileBlockedStatus(tasksDir);
+
+    for (const s of terminalStatuses) {
+      expect(readFileSync(join(tasksDir, `task-${s}.md`), "utf-8")).toContain(`status: ${s}`);
+    }
+  });
+
+  test("does not change already-consistent statuses", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    // ready with no blockers — should stay ready
+    writeTaskWithBlockedBy(tasksDir, "task-already-ready", "ready", []);
+    // blocked with blockers — should stay blocked
+    writeTaskWithBlockedBy(tasksDir, "task-already-blocked", "blocked", ["task-dep"]);
+
+    tasksReconcileBlockedStatus(tasksDir);
+
+    expect(readFileSync(join(tasksDir, "task-already-ready.md"), "utf-8")).toContain("status: ready");
+    expect(readFileSync(join(tasksDir, "task-already-blocked.md"), "utf-8")).toContain("status: blocked");
   });
 });
