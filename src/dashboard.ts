@@ -40,12 +40,42 @@ function lookupTaskContent(taskId: string): string | null {
   return body || null;
 }
 
+// Discover running ttyd processes and map tmux session names to their URLs
+function discoverTtydUrls(): Map<string, string> {
+  const result = new Map<string, string>();
+  try {
+    const proc = Bun.spawnSync(["pgrep", "-fa", "ttyd"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (proc.exitCode !== 0) return result;
+    const lines = proc.stdout.toString().trim().split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      // Match port: -p PORT or --port PORT or --port=PORT
+      const portMatch = line.match(/(?:-p\s+|--port[= ])(\d+)/);
+      // Match tmux session: tmux ... -t SESSION (covers attach, new-session, etc.)
+      const sessionMatch = line.match(/tmux\s+\S.*?-t\s+(\S+)/);
+      if (portMatch && sessionMatch) {
+        const port = portMatch[1]!;
+        const session = sessionMatch[1]!.replace(/^['"]|['"]$/g, "");
+        const url = getUrl(port);
+        if (url) result.set(session, url);
+      }
+    }
+  } catch {
+    // ignore — pgrep may not be available or ttyd may not be running
+  }
+  return result;
+}
+
 function generateSlots(): SlotJson[] {
   const slotsFile = slotsFilePath();
   if (!existsSync(slotsFile)) return [];
 
   const content = readFileSync(slotsFile, "utf-8");
   const blocks = parseSlotBlocks(content);
+  const ttydBySession = discoverTtydUrls();
   const result: SlotJson[] = [];
 
   for (const [num, block] of blocks) {
@@ -62,6 +92,20 @@ function generateSlots(): SlotJson[] {
         const m = line.match(/^- ([^:]+):\s*(.+)$/);
         if (m) {
           terminals[m[1]!.toLowerCase().replace(/ /g, "_")] = m[2]!;
+        }
+      }
+    }
+
+    // Enrich terminals: cross-reference tmux session references with discovered ttyd processes
+    for (const key of Object.keys(terminals)) {
+      const value = terminals[key]!;
+      if (!value.startsWith("http://") && !value.startsWith("https://")) {
+        // Non-URL entry — extract tmux session name and look up a ttyd URL
+        const tmuxMatch = value.match(/tmux\s+session\s+'?([^']+)'?/i)
+          || value.match(/^([^\s]+)$/); // bare session name
+        const sessionName = tmuxMatch?.[1]?.trim();
+        if (sessionName && ttydBySession.has(sessionName)) {
+          terminals[key] = ttydBySession.get(sessionName)!;
         }
       }
     }

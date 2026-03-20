@@ -360,6 +360,13 @@ main {
     text-decoration: underline;
 }
 
+.slot-links .terminal-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-right: 0.75rem;
+    font-style: italic;
+}
+
 /* Sidebar */
 .sidebar {
     display: flex;
