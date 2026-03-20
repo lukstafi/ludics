@@ -85,8 +85,8 @@ function renderSlots(slots) {
         if (slot.empty || !slot.process) {
             statusDiv.className = 'slot-status empty';
             statusText.textContent = 'Empty';
-            detailsDiv.innerHTML = '';
-            linksDiv.innerHTML = '';
+            setHtmlPreserveScroll(detailsDiv, '');
+            setHtmlPreserveScroll(linksDiv, '');
         } else {
             if (slot.preempted) {
                 statusDiv.className = 'slot-status preempted';
@@ -113,16 +113,21 @@ function renderSlots(slots) {
                 html += `<div class="task-content">${markdownToHtml(slot.taskContent)}</div>`;
             }
 
-            detailsDiv.innerHTML = html;
+            setHtmlPreserveScroll(detailsDiv, html, '.task-content');
 
-            // Build terminal links
+            // Build terminal links — only render valid HTTP/HTTPS URLs as clickable links
             let links = '';
             if (slot.terminals) {
                 for (const [name, url] of Object.entries(slot.terminals)) {
-                    links += `<a href="${url}" target="_blank">${name}</a>`;
+                    const label = escapeHtml(name.replace(/_/g, ' '));
+                    if (url.startsWith('http://') || url.startsWith('https://')) {
+                        links += `<a href="${escapeHtml(url)}" target="_blank">${label}</a>`;
+                    } else {
+                        links += `<span class="terminal-label">${label}</span>`;
+                    }
                 }
             }
-            linksDiv.innerHTML = links;
+            setHtmlPreserveScroll(linksDiv, links);
         }
     }
 }
@@ -145,23 +150,28 @@ function renderReadyQueue(tasks) {
     const list = document.getElementById('ready-list');
     if (!list) return;
 
+    let newHtml;
     if (tasks.length === 0) {
-        list.innerHTML = '<li class="empty">No ready tasks</li>';
-        return;
-    }
-
-    const items = tasks.slice(0, CONFIG.maxReadyTasks).map(task => {
-        const priority = task.priority || '-';
-        const priorityClass = `priority-${priority}`;
-        return `
+        newHtml = '<li class="empty">No ready tasks</li>';
+    } else {
+        const items = tasks.slice(0, CONFIG.maxReadyTasks).map(task => {
+            const priority = task.priority || '-';
+            const priorityClass = `priority-${priority}`;
+            return `
             <li>
                 <span class="priority ${priorityClass}">${priority}</span>
                 <span class="task-title">${escapeHtml(task.title || task.id)}</span>
             </li>
         `;
-    });
+        });
+        newHtml = items.join('');
+    }
 
-    list.innerHTML = items.join('');
+    if (list.innerHTML !== newHtml) {
+        const scrollTop = list.scrollTop;
+        list.innerHTML = newHtml;
+        list.scrollTop = scrollTop;
+    }
 }
 
 // Fetch notifications
@@ -182,22 +192,27 @@ function renderNotifications(notifications) {
     const list = document.getElementById('notifications-list');
     if (!list) return;
 
+    let newHtml;
     if (notifications.length === 0) {
-        list.innerHTML = '<li class="empty">No recent notifications</li>';
-        return;
-    }
-
-    const items = notifications.slice(0, CONFIG.maxNotifications).map(notif => {
-        const time = formatTime(notif.timestamp);
-        return `
+        newHtml = '<li class="empty">No recent notifications</li>';
+    } else {
+        const items = notifications.slice(0, CONFIG.maxNotifications).map(notif => {
+            const time = formatTime(notif.timestamp);
+            return `
             <li>
                 <span class="notif-time">${time}</span>
                 <span class="notif-msg">${escapeHtml(notif.message)}</span>
             </li>
         `;
-    });
+        });
+        newHtml = items.join('');
+    }
 
-    list.innerHTML = items.join('');
+    if (list.innerHTML !== newHtml) {
+        const scrollTop = list.scrollTop;
+        list.innerHTML = newHtml;
+        list.scrollTop = scrollTop;
+    }
 }
 
 // Fetch Mag status
@@ -258,9 +273,28 @@ function setConnectionStatus(connected) {
     }
 }
 
-// Run CLI command (opens in new tab with instructions)
-function runCommand(cmd) {
-    alert(`Run in terminal:\n\nludics ${cmd}`);
+// Scroll to the ready queue panel (used by quick links)
+function scrollToReadyQueue(event) {
+    event.preventDefault();
+    const el = document.querySelector('.ready-queue');
+    if (el) el.scrollIntoView({ behavior: 'smooth' });
+}
+
+// Helper: set innerHTML only if changed, preserving scroll of scrollable descendants
+function setHtmlPreserveScroll(element, newHtml, ...scrollableSelectors) {
+    if (element.innerHTML === newHtml) return;
+    const saved = [];
+    for (const sel of scrollableSelectors) {
+        const el = element.querySelector(sel);
+        if (el) saved.push({ sel, scrollTop: el.scrollTop });
+    }
+    const ownScrollTop = element.scrollTop;
+    element.innerHTML = newHtml;
+    element.scrollTop = ownScrollTop;
+    for (const { sel, scrollTop } of saved) {
+        const el = element.querySelector(sel);
+        if (el) el.scrollTop = scrollTop;
+    }
 }
 
 // Utility: Format timestamp
