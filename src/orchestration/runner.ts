@@ -63,9 +63,19 @@ function refreshAgentStatuses(state: OrchestrationState, snapshot: T3Snapshot | 
     runtime.latestTurnState = thread?.latestTurn?.state ?? "missing";
     runtime.latestTurnCompletedAt = thread?.latestTurn?.completedAt ?? null;
 
+    // Only treat the turn as a fresh completion if its completedAt is at or
+    // after the timestamp when this phase's turns were dispatched.  This
+    // prevents a stale "completed" state from the previous phase from
+    // triggering a premature phase transition.
+    const dispatchedAt = state.phaseDispatchedAt ?? null;
+    const completedAt = runtime.latestTurnCompletedAt ?? null;
+    const isFreshCompletion =
+      !dispatchedAt || (completedAt !== null && completedAt >= dispatchedAt);
+
     if (
       (runtime.status === "unknown" || runtime.status === "idle")
       && runtime.latestTurnState === "completed"
+      && isFreshCompletion
     ) {
       runtime.status = "turn-complete";
       runtime.statusEpoch = nowEpoch();
@@ -126,6 +136,10 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
   markActiveAgents(state);
   state.phaseDispatched = true;
   if (state.phase === "setup") return;
+
+  // Record the dispatch timestamp before sending turns so that any stale
+  // completedAt from a prior phase is recognized as such during polling.
+  state.phaseDispatchedAt = isoNow();
 
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
@@ -290,6 +304,7 @@ export async function runOrchestration(
     state.phaseStartedAt = nowEpoch();
     state.confirmedPhase = null;
     state.phaseDispatched = false;
+    state.phaseDispatchedAt = null;
     persistState(state);
   }
 }
@@ -329,6 +344,7 @@ export function skipToPhase(
   state.phase = phase;
   state.phaseStartedAt = nowEpoch();
   state.phaseDispatched = false;
+  state.phaseDispatchedAt = null;
   persistState(state, harnessDir);
   return state;
 }

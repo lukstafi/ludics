@@ -119,7 +119,17 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
   if (!runtime) return false;
   if (runtime.interrupted) return true;
   if (DONE_STATUSES.has(runtime.status)) return true;
-  if (runtime.latestTurnState === "completed") return true;
+  // Only treat a "completed" turn state as done when it is fresh — i.e. its
+  // completedAt timestamp is at or after the moment this phase dispatched its
+  // turns.  A "completed" state left over from the *previous* phase must not
+  // trigger a premature transition before the new turn has even started.
+  if (runtime.latestTurnState === "completed") {
+    const dispatchedAt = state.phaseDispatchedAt ?? null;
+    const completedAt = runtime.latestTurnCompletedAt ?? null;
+    if (!dispatchedAt || (completedAt !== null && completedAt >= dispatchedAt)) {
+      return true;
+    }
+  }
   return false;
 }
 
