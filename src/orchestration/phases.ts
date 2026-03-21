@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
-import { nowEpoch } from "./util.ts";
+import { isTurnFresh, nowEpoch } from "./util.ts";
 
 export type Phase =
   | "setup"
@@ -124,9 +124,7 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
   // turns.  A "completed" state left over from the *previous* phase must not
   // trigger a premature transition before the new turn has even started.
   if (runtime.latestTurnState === "completed") {
-    const dispatchedAt = state.phaseDispatchedAt ?? null;
-    const completedAt = runtime.latestTurnCompletedAt ?? null;
-    if (!dispatchedAt || (completedAt !== null && completedAt >= dispatchedAt)) {
+    if (isTurnFresh(state.phaseDispatchedAt, runtime.latestTurnCompletedAt)) {
       return true;
     }
   }

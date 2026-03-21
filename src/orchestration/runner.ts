@@ -11,7 +11,7 @@ import { determineWinner, hasConsensus, readMergeVotes } from "./merge.ts";
 import { shouldRunUpdateDocs } from "./learning.ts";
 import { composeSkillMessage } from "./skills.ts";
 import { persistState, readOrchestrationState, type AgentConfig, type OrchestrationState } from "./state.ts";
-import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
+import { isoNow, isTurnFresh, makeId, nowEpoch, sleep } from "./util.ts";
 
 async function withClient<T>(
   record: T3CodeServerRecord,
@@ -67,10 +67,7 @@ function refreshAgentStatuses(state: OrchestrationState, snapshot: T3Snapshot | 
     // after the timestamp when this phase's turns were dispatched.  This
     // prevents a stale "completed" state from the previous phase from
     // triggering a premature phase transition.
-    const dispatchedAt = state.phaseDispatchedAt ?? null;
-    const completedAt = runtime.latestTurnCompletedAt ?? null;
-    const isFreshCompletion =
-      !dispatchedAt || (completedAt !== null && completedAt >= dispatchedAt);
+    const isFreshCompletion = isTurnFresh(state.phaseDispatchedAt, runtime.latestTurnCompletedAt);
 
     if (
       (runtime.status === "unknown" || runtime.status === "idle")
