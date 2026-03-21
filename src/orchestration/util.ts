@@ -54,3 +54,24 @@ export function ludicsSelfCommand(args: string[]): string[] {
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * Returns true when `completedAt` represents a point in time that is at or
+ * after `dispatchedAt`, comparing the two ISO 8601 strings as Date values.
+ *
+ * String comparison is intentionally avoided: ISO variants with milliseconds
+ * (e.g. "2026-03-21T17:22:43.500Z") sort *before* the same second without
+ * milliseconds ("2026-03-21T17:22:43Z") lexicographically, which would
+ * incorrectly classify a freshly-completed turn as stale.
+ *
+ * Returns true when `dispatchedAt` is null/undefined (no constraint) and
+ * false when `completedAt` is null/undefined (no completion recorded yet).
+ */
+export function isTurnFresh(
+  dispatchedAt: string | null | undefined,
+  completedAt: string | null | undefined,
+): boolean {
+  if (!dispatchedAt) return true;
+  if (!completedAt) return false;
+  return Date.parse(completedAt) >= Date.parse(dispatchedAt);
+}
