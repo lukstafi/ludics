@@ -184,12 +184,12 @@ async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<
   }
 
   // Only re-dispatch once all participating agents have finished their current turn.
+  // Do NOT advance prCommentsLastCheckAt here — we have not polled GitHub yet, so
+  // advancing the checkpoint would cause comments that arrive while agents are active
+  // to fall outside the next poll's "since" window and be silently skipped.
   const participants = state.agents.filter((a) => agentParticipatesInPhase(state, a));
   const allDone = participants.every((a) => isAgentDone(state, a));
-  if (!allDone) {
-    state.prCommentsLastCheckAt = now;
-    return;
-  }
+  if (!allDone) return;
 
   // Count new comments since the last check.
   let totalNewComments = 0;
@@ -283,16 +283,18 @@ async function pollUntilDone(state: OrchestrationState): Promise<void> {
       validateAgentPrFiles(state);
     }
 
-    persistState(state);
-
-    if (allAgentsDone(state)) return;
-
+    // For pr-comments: poll GitHub and re-dispatch before the allAgentsDone short-circuit,
+    // so the quiet-period tracking and re-dispatch logic run on the tick when agents finish.
     if (state.phase === "pr-comments") {
       await checkAndRedispatchPrComments(state);
       persistState(state);
       // Return to the main loop so evaluateTransition can check quiet-period expiry.
       if (evaluateTransition(state) !== null) return;
     }
+
+    persistState(state);
+
+    if (allAgentsDone(state)) return;
 
     if (nowEpoch() >= deadline) {
       await handleTimeout(state);
