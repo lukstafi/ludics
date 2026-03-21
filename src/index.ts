@@ -110,6 +110,7 @@ Commands:
   tasks queue-elaborations     Queue elaboration for unprocessed ready tasks
   tasks check <id>             Check if task needs elaboration
   tasks merge <target> <src..> Merge source task(s) into target
+  tasks unmerge <source>       Unmerge a previously merged task
   tasks duplicates             Find potential duplicate tasks
   tasks migrate-refs [--dry-run]
                                Migrate legacy task-<number> IDs to deterministic IDs and rewrite references
