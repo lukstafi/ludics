@@ -391,7 +391,7 @@ function buildLaunchCommand(input: {
     "desktop",
     "--port",
     String(input.port),
-    "--state-dir",
+    "--home-dir",
     input.stateDir,
     "--no-browser",
   ];

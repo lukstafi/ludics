@@ -11,7 +11,7 @@ function makeRecord(overrides: Partial<T3CodeServerRecord> = {}): T3CodeServerRe
     wsUrl: "ws://127.0.0.1:3773",
     stateDir: "/tmp/ludics/harness/t3code/state",
     startedAt: "2026-03-07T00:00:00Z",
-    command: ["t3", "--state-dir", "/tmp/ludics/harness/t3code/state"],
+    command: ["t3", "--home-dir", "/tmp/ludics/harness/t3code/state"],
     ...overrides,
   };
 }
@@ -21,7 +21,7 @@ describe("commandLineMatchesServerRecord", () => {
     const record = makeRecord();
     expect(
       commandLineMatchesServerRecord(
-        "t3 --mode desktop --port 3773 --state-dir /tmp/ludics/harness/t3code/state --no-browser",
+        "t3 --mode desktop --port 3773 --home-dir /tmp/ludics/harness/t3code/state --no-browser",
         record,
       ),
     ).toBe(true);
@@ -31,7 +31,7 @@ describe("commandLineMatchesServerRecord", () => {
     const record = makeRecord();
     expect(
       commandLineMatchesServerRecord(
-        "bun --cwd /Users/lukstafi/t3code/apps/server src/index.ts --mode desktop --state-dir /tmp/ludics/harness/t3code/state",
+        "bun --cwd /Users/lukstafi/t3code/apps/server src/index.ts --mode desktop --home-dir /tmp/ludics/harness/t3code/state",
         record,
       ),
     ).toBe(true);
@@ -41,7 +41,7 @@ describe("commandLineMatchesServerRecord", () => {
     const record = makeRecord();
     expect(
       commandLineMatchesServerRecord(
-        "bun run --cwd /Users/lukstafi/t3code-ludics/apps/server start --mode desktop --state-dir /tmp/ludics/harness/t3code/state",
+        "bun run --cwd /Users/lukstafi/t3code-ludics/apps/server start --mode desktop --home-dir /tmp/ludics/harness/t3code/state",
         record,
       ),
     ).toBe(true);
@@ -51,7 +51,7 @@ describe("commandLineMatchesServerRecord", () => {
     const record = makeRecord();
     expect(
       commandLineMatchesServerRecord(
-        "bun --cwd /Users/lukstafi/t3code-ludics/apps/server src/index.ts --state-dir /tmp/ludics/harness/t3code/state",
+        "bun --cwd /Users/lukstafi/t3code-ludics/apps/server src/index.ts --home-dir /tmp/ludics/harness/t3code/state",
         record,
       ),
     ).toBe(true);
@@ -65,7 +65,7 @@ describe("commandLineMatchesServerRecord", () => {
     });
     expect(
       commandLineMatchesServerRecord(
-        "bun run --cwd /Users/lukstafi/t3code-ludics/apps/server start --state-dir /tmp/ludics/harness/t3code/state --host macbook.tail12345.ts.net",
+        "bun run --cwd /Users/lukstafi/t3code-ludics/apps/server start --home-dir /tmp/ludics/harness/t3code/state --host macbook.tail12345.ts.net",
         record,
       ),
     ).toBe(true);
@@ -75,7 +75,7 @@ describe("commandLineMatchesServerRecord", () => {
     const record = makeRecord();
     expect(
       commandLineMatchesServerRecord(
-        "npm exec t3 -- --mode desktop --port 3773 --state-dir /tmp/ludics/harness/t3code/state --no-browser",
+        "npm exec t3 -- --mode desktop --port 3773 --home-dir /tmp/ludics/harness/t3code/state --no-browser",
         record,
       ),
     ).toBe(true);
@@ -85,7 +85,7 @@ describe("commandLineMatchesServerRecord", () => {
     const record = makeRecord();
     expect(
       commandLineMatchesServerRecord(
-        "/usr/local/bin/npm run t3 -- --mode desktop --port 3773 --state-dir /tmp/ludics/harness/t3code/state --no-browser",
+        "/usr/local/bin/npm run t3 -- --mode desktop --port 3773 --home-dir /tmp/ludics/harness/t3code/state --no-browser",
         record,
       ),
     ).toBe(true);
@@ -95,7 +95,7 @@ describe("commandLineMatchesServerRecord", () => {
     const record = makeRecord();
     expect(
       commandLineMatchesServerRecord(
-        "node /Users/lukstafi/project/server.js --state-dir /tmp/other-state",
+        "node /Users/lukstafi/project/server.js --home-dir /tmp/other-state",
         record,
       ),
     ).toBe(false);
