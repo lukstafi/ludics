@@ -117,12 +117,12 @@ function renderSlots(slots) {
 
             // Build contextual links section
             let links = '';
-            // GitHub issue link
-            if (slot.githubUrl) {
+            // GitHub issue link — only render valid HTTP/HTTPS URLs
+            if (slot.githubUrl && (slot.githubUrl.startsWith('http://') || slot.githubUrl.startsWith('https://'))) {
                 links += `<a href="${escapeHtml(slot.githubUrl)}" target="_blank" class="link-issue">issue</a>`;
             }
-            // PR link
-            if (slot.prUrl) {
+            // PR link — only render valid HTTP/HTTPS URLs
+            if (slot.prUrl && (slot.prUrl.startsWith('http://') || slot.prUrl.startsWith('https://'))) {
                 links += `<a href="${escapeHtml(slot.prUrl)}" target="_blank" class="link-pr">PR</a>`;
             }
             // Proposal link
