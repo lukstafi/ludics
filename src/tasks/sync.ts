@@ -202,6 +202,8 @@ function formatYamlScalar(value: string | number | boolean | null): string {
   if (value === null) return "null";
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") return String(value);
+  // Only quote strings that contain special YAML characters or could be misinterpreted
+  if (/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(value)) return value;
   return `"${yamlEscape(value)}"`;
 }
 

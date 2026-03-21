@@ -171,7 +171,7 @@ describe("tasksReconcileBlockedStatus", () => {
 
     tasksReconcileBlockedStatus(tasksDir);
 
-    expect(readFileSync(join(tasksDir, "task-needs-blocking.md"), "utf-8")).toContain('status: "blocked"');
+    expect(readFileSync(join(tasksDir, "task-needs-blocking.md"), "utf-8")).toContain("status: blocked");
   });
 
   test("resets status to ready when blocked_by is empty and status is blocked", () => {
@@ -183,7 +183,7 @@ describe("tasksReconcileBlockedStatus", () => {
 
     tasksReconcileBlockedStatus(tasksDir);
 
-    expect(readFileSync(join(tasksDir, "task-should-unblock.md"), "utf-8")).toContain('status: "ready"');
+    expect(readFileSync(join(tasksDir, "task-should-unblock.md"), "utf-8")).toContain("status: ready");
   });
 
   test("skips terminal statuses (done, abandoned, merged, in-progress, preempt-queued, preempted)", () => {
