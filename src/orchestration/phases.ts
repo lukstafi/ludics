@@ -239,11 +239,22 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
       if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "pr-comments";
       return null;
 
-    case "pr-comments":
+    case "pr-comments": {
       if (isMerged(state)) return "suggest-refactor";
       if (state.mode === "duo" && hasTwoPrs(state)) return "merge-vote";
-      // Pair mode: stay in pr-comments until merged externally
+      // Transition to final-merge after the quiet period (no new comments for prCommentsTimeout).
+      const quietPeriod = state.config.prCommentsTimeout;
+      if (
+        hasAnyPr(state)
+        && state.prCommentsQuietSince
+        && nowEpoch() - state.prCommentsQuietSince >= quietPeriod
+      ) {
+        return "final-merge";
+      }
+      // Also transition on hard phase timeout (failsafe).
+      if (phaseTimeoutExpired(state) && hasAnyPr(state)) return "final-merge";
       return null;
+    }
 
     case "merge-vote":
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
@@ -267,10 +278,11 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "suggest-refactor":
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
-      return state.config.autoFinish ? "final-merge" : "done";
+      // final-merge now precedes suggest-refactor in the automated path; always finish here.
+      return "done";
 
     case "final-merge":
-      if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "done";
+      if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "suggest-refactor";
       return null;
 
     case "done":
