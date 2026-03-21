@@ -131,6 +131,12 @@ export interface T3ThreadTurnStartCommand {
   assistantDeliveryMode?: T3AssistantDeliveryMode;
   runtimeMode: T3RuntimeMode;
   interactionMode: T3InteractionMode;
+  /**
+   * Token budget for extended thinking (Anthropic) or reasoning effort (OpenAI).
+   * For Anthropic: number of tokens (e.g. 1024, 8192, 32768).
+   * Provider-agnostic budget; the t3code server maps it to the correct provider parameter.
+   */
+  thinkingBudget?: number | null;
   createdAt: string;
 }
 

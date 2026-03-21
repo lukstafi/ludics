@@ -17,6 +17,7 @@ import {
   serverStatus,
   writeSlotState,
 } from "../t3code/server.ts";
+import { loadConfigSync } from "../config.ts";
 import {
   toWireProvider,
   type T3CodeServerRecord,
@@ -43,16 +44,28 @@ import { initPeerSync, removePeerSyncSession } from "../orchestration/peer-sync.
 import { createWorktrees, cleanupWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
 import { isoNow, ludicsSelfCommand, makeId, nowEpoch, slugify } from "../orchestration/util.ts";
 
+interface ParsedAgentToken {
+  name: string;
+  provider: T3ProviderKind;
+  model: string;
+  /** True when the model was explicitly set in the token (not just a provider default). */
+  modelExplicit: boolean;
+  role?: "coder" | "reviewer";
+}
+
 interface ParsedOrchestrationArgs {
   mode: "duo" | "pair";
   feature?: string;
   config: Partial<OrchestrationConfig>;
-  agents: Array<{
-    name: string;
-    provider: T3ProviderKind;
-    model: string;
-    role?: "coder" | "reviewer";
-  }>;
+  agents: ParsedAgentToken[];
+  /** Explicit coder model override from --coder-model flag. */
+  coderModelOverride?: string;
+  /** Explicit reviewer model override from --reviewer-model flag. */
+  reviewerModelOverride?: string;
+  /** Thinking effort for the coder agent (pair) or first duo agent. */
+  coderThinkingEffort?: string;
+  /** Thinking effort for the reviewer agent (pair) or second duo agent. */
+  reviewerThinkingEffort?: string;
 }
 
 interface ParsedAdapterArgs {
@@ -152,6 +165,7 @@ function parseProviderToken(raw: string, defaultName: string, defaultModel: stri
   name: string;
   provider: T3ProviderKind;
   model: string;
+  modelExplicit: boolean;
 } {
   const parts = raw.split(":").map((part) => part.trim()).filter(Boolean);
   if (parts.length === 0) {
@@ -164,7 +178,7 @@ function parseProviderToken(raw: string, defaultName: string, defaultModel: stri
       throw new Error(`t3code adapter args: unsupported provider ${provider}`);
     }
     const model = provider === "claude-code" ? DEFAULT_CLAUDE_MODEL : defaultModel;
-    return { name: defaultName, provider, model };
+    return { name: defaultName, provider, model, modelExplicit: false };
   }
 
   if (parts.length === 2) {
@@ -172,14 +186,14 @@ function parseProviderToken(raw: string, defaultName: string, defaultModel: stri
     if (provider !== "codex" && provider !== "claude-code") {
       throw new Error(`t3code adapter args: unsupported provider ${provider}`);
     }
-    return { name: defaultName, provider, model };
+    return { name: defaultName, provider, model, modelExplicit: true };
   }
 
   const [name, provider, model] = parts;
   if (provider !== "codex" && provider !== "claude-code") {
     throw new Error(`t3code adapter args: unsupported provider ${provider}`);
   }
-  return { name, provider, model: model ?? defaultModel };
+  return { name, provider, model: model ?? defaultModel, modelExplicit: !!model };
 }
 
 export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
@@ -197,6 +211,10 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   let coderToken: string | null = null;
   let reviewerToken: string | null = null;
   let feature: string | undefined;
+  let coderModelOverride: string | undefined;
+  let reviewerModelOverride: string | undefined;
+  let coderThinkingEffort: string | undefined;
+  let reviewerThinkingEffort: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -247,6 +265,32 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         reviewerToken = next;
         i++;
         break;
+      case "--coder-model":
+        if (!next) throw new Error("t3code adapter args: --coder-model requires a model ID");
+        coderModelOverride = next;
+        i++;
+        break;
+      case "--reviewer-model":
+        if (!next) throw new Error("t3code adapter args: --reviewer-model requires a model ID");
+        reviewerModelOverride = next;
+        i++;
+        break;
+      case "--coder-thinking-effort":
+        if (!next) throw new Error("t3code adapter args: --coder-thinking-effort requires low|medium|high|<tokens>");
+        coderThinkingEffort = next;
+        i++;
+        break;
+      case "--reviewer-thinking-effort":
+        if (!next) throw new Error("t3code adapter args: --reviewer-thinking-effort requires low|medium|high|<tokens>");
+        reviewerThinkingEffort = next;
+        i++;
+        break;
+      case "--thinking-effort":
+        if (!next) throw new Error("t3code adapter args: --thinking-effort requires low|medium|high|<tokens>");
+        coderThinkingEffort = next;
+        reviewerThinkingEffort = next;
+        i++;
+        break;
       case "--feature":
         if (!next) throw new Error("t3code adapter args: --feature requires a value");
         feature = next;
@@ -285,6 +329,33 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         orchestrationConfig.learningProductiveRoundsGap = parseInt(next, 10);
         i++;
         break;
+      case "--work-timeout": {
+        if (!next) throw new Error("t3code adapter args: --work-timeout requires seconds");
+        const workSecs = parseInt(next, 10);
+        if (isNaN(workSecs)) throw new Error(`t3code adapter args: --work-timeout requires a valid number, got "${next}"`);
+        orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, work: workSecs };
+        i++;
+        break;
+      }
+      case "--review-timeout": {
+        if (!next) throw new Error("t3code adapter args: --review-timeout requires seconds");
+        const reviewSecs = parseInt(next, 10);
+        if (isNaN(reviewSecs)) throw new Error(`t3code adapter args: --review-timeout requires a valid number, got "${next}"`);
+        orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, review: reviewSecs };
+        i++;
+        break;
+      }
+      case "--phase-timeout": {
+        if (!next) throw new Error("t3code adapter args: --phase-timeout requires phase:seconds");
+        const sep = next.indexOf(":");
+        if (sep < 1) throw new Error("t3code adapter args: --phase-timeout format is phase:seconds");
+        const phase = next.slice(0, sep);
+        const secs = parseInt(next.slice(sep + 1), 10);
+        if (isNaN(secs)) throw new Error(`t3code adapter args: --phase-timeout invalid seconds in "${next}"`);
+        orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, [phase]: secs };
+        i++;
+        break;
+      }
       default:
         throw new Error(`t3code adapter args: unsupported flag ${arg}`);
     }
@@ -293,31 +364,42 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   if (!mode) return parsed;
 
   if (mode === "duo") {
+    // Default fallback agents must have modelExplicit=false so config.yaml defaults apply.
     const agents = duoAgents.length > 0
       ? duoAgents
       : [
-        parseProviderToken("agent1:codex:gpt-5.4", "agent1", parsed.model),
-        parseProviderToken("agent2:codex:gpt-5.4", "agent2", parsed.model),
+        { ...parseProviderToken("agent1:codex:gpt-5.4", "agent1", parsed.model), modelExplicit: false },
+        { ...parseProviderToken("agent2:codex:gpt-5.4", "agent2", parsed.model), modelExplicit: false },
       ];
     parsed.orchestration = {
       mode,
       feature,
       config: orchestrationConfig,
       agents,
+      coderModelOverride,
+      reviewerModelOverride,
+      coderThinkingEffort,
+      reviewerThinkingEffort,
     };
     return parsed;
   }
 
-  const coder = parseProviderToken(coderToken ?? "coder:codex:gpt-5.4", "coder", parsed.model);
-  const reviewer = parseProviderToken(reviewerToken ?? "reviewer:codex:gpt-5.4", "reviewer", parsed.model);
+  // For pair mode: modelExplicit is only true when the user explicitly provided the token
+  // (i.e. --coder/--reviewer flag was given) AND that token included an explicit model.
+  const coderParsed = parseProviderToken(coderToken ?? "coder:codex:gpt-5.4", "coder", parsed.model);
+  const reviewerParsed = parseProviderToken(reviewerToken ?? "reviewer:codex:gpt-5.4", "reviewer", parsed.model);
   parsed.orchestration = {
     mode,
     feature,
     config: orchestrationConfig,
     agents: [
-      { ...coder, role: "coder" },
-      { ...reviewer, role: "reviewer" },
+      { ...coderParsed, role: "coder", modelExplicit: coderToken !== null && coderParsed.modelExplicit },
+      { ...reviewerParsed, role: "reviewer", modelExplicit: reviewerToken !== null && reviewerParsed.modelExplicit },
     ],
+    coderModelOverride,
+    reviewerModelOverride,
+    coderThinkingEffort,
+    reviewerThinkingEffort,
   };
   return parsed;
 }
@@ -582,6 +664,77 @@ async function startSingleThread(
   });
 }
 
+/** Load orchestration-specific settings from config.yaml's mag.orchestration section. */
+function loadConfigOrchestration(): Record<string, unknown> | undefined {
+  try {
+    const config = loadConfigSync();
+    const mag = config.mag as Record<string, unknown> | undefined;
+    return mag?.orchestration as Record<string, unknown> | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Resolve the final model for an agent, applying config and adapter arg overrides. */
+function resolveAgentModel(
+  agent: ParsedAgentToken,
+  index: number,
+  orchCfg: Record<string, unknown> | undefined,
+  coderOverride: string | undefined,
+  reviewerOverride: string | undefined,
+): string {
+  const isCoderSlot = agent.role === "coder" || (!agent.role && index === 0);
+  const isReviewerSlot = agent.role === "reviewer" || (!agent.role && index === 1);
+
+  // Highest priority: explicit --coder-model / --reviewer-model flag
+  if (isCoderSlot && coderOverride) return coderOverride;
+  if (isReviewerSlot && reviewerOverride) return reviewerOverride;
+
+  // Next: explicit model in --coder provider:model token
+  if (agent.modelExplicit) return agent.model;
+
+  // Next: config.yaml mag.orchestration defaults
+  if (isCoderSlot) {
+    const cfgModel = orchCfg?.coder_model as string | undefined;
+    if (cfgModel?.trim()) return cfgModel.trim();
+  }
+  if (isReviewerSlot) {
+    const cfgModel = orchCfg?.reviewer_model as string | undefined;
+    if (cfgModel?.trim()) return cfgModel.trim();
+  }
+
+  // Fallback: provider default from --coder / --reviewer token
+  return agent.model;
+}
+
+/** Resolve thinking effort for an agent, applying config and adapter arg overrides. */
+function resolveAgentThinkingEffort(
+  agent: ParsedAgentToken,
+  index: number,
+  orchCfg: Record<string, unknown> | undefined,
+  coderEffort: string | undefined,
+  reviewerEffort: string | undefined,
+): string | undefined {
+  const isCoderSlot = agent.role === "coder" || (!agent.role && index === 0);
+  const isReviewerSlot = agent.role === "reviewer" || (!agent.role && index === 1);
+
+  // Highest priority: adapter arg flags
+  if (isCoderSlot && coderEffort) return coderEffort;
+  if (isReviewerSlot && reviewerEffort) return reviewerEffort;
+
+  // Fallback: config.yaml defaults
+  if (isCoderSlot) {
+    const cfgEffort = orchCfg?.coder_thinking_effort as string | undefined;
+    if (cfgEffort?.trim()) return cfgEffort.trim();
+  }
+  if (isReviewerSlot) {
+    const cfgEffort = orchCfg?.reviewer_thinking_effort as string | undefined;
+    if (cfgEffort?.trim()) return cfgEffort.trim();
+  }
+
+  return undefined;
+}
+
 async function startOrchestratedThreads(
   ctx: AdapterContext,
   record: T3CodeServerRecord,
@@ -596,14 +749,36 @@ async function startOrchestratedThreads(
 
   if (existing?.orchestration?.pid) killPid(existing.orchestration.pid);
 
+  // Load config.yaml orchestration defaults and merge with adapter arg overrides.
+  const orchCfg = loadConfigOrchestration();
+
+  // Merge phase_timeouts from config.yaml into orchestration config (adapter args have higher priority).
+  const configPhaseTimeouts = orchCfg?.phase_timeouts as Record<string, number> | undefined;
+  if (configPhaseTimeouts && typeof configPhaseTimeouts === "object") {
+    orchestration.config.timeouts = { ...configPhaseTimeouts, ...(orchestration.config.timeouts ?? {}) };
+  }
+
   const setup = createWorktrees(projectDir, feature, orchestration.agents, undefined, ctx.slot, orchestration.mode);
   symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);
 
-  const agents: AgentConfig[] = orchestration.agents.map((agent) => ({
+  const agents: AgentConfig[] = orchestration.agents.map((agent, index) => ({
     name: agent.name,
     provider: agent.provider,
     role: agent.role,
-    model: agent.model,
+    model: resolveAgentModel(
+      agent,
+      index,
+      orchCfg,
+      orchestration.coderModelOverride,
+      orchestration.reviewerModelOverride,
+    ),
+    thinkingEffort: resolveAgentThinkingEffort(
+      agent,
+      index,
+      orchCfg,
+      orchestration.coderThinkingEffort,
+      orchestration.reviewerThinkingEffort,
+    ),
     branch: setup.branches[agent.name]!,
     worktreePath: setup.agentWorktrees[agent.name]!,
   }));

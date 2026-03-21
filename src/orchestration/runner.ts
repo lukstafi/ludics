@@ -99,6 +99,20 @@ function markActiveAgents(state: OrchestrationState): void {
   }
 }
 
+/** Convert a thinking effort string to a token budget number for the wire protocol. */
+function thinkingEffortToBudget(effort: string | undefined): number | null {
+  if (!effort) return null;
+  switch (effort.toLowerCase()) {
+    case "low": return 1024;
+    case "medium": return 8192;
+    case "high": return 32768;
+    default: {
+      const n = parseInt(effort, 10);
+      return isNaN(n) ? null : n;
+    }
+  }
+}
+
 async function sendTurnMessage(
   state: OrchestrationState,
   agent: AgentConfig,
@@ -107,6 +121,8 @@ async function sendTurnMessage(
   const threadId = state.threadIds[agent.name];
   const record = readServerRecord();
   if (!record || !threadId) throw new Error(`no t3code thread for agent ${agent.name}`);
+
+  const thinkingBudget = thinkingEffortToBudget(agent.thinkingEffort);
 
   await withClient(record, async (client) => {
     await client.dispatchCommand({
@@ -121,6 +137,7 @@ async function sendTurnMessage(
       },
       provider: toWireProvider(agent.provider),
       model: agent.model,
+      ...(thinkingBudget !== null ? { thinkingBudget } : {}),
       runtimeMode: "full-access",
       interactionMode: "default",
       createdAt: isoNow(),

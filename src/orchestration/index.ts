@@ -21,9 +21,14 @@ function orchStatus(slot: number): void {
   console.log(`mergeRound: ${state.mergeRound}`);
   for (const agent of state.agents) {
     const runtime = state.agentStates[agent.name];
+    const effort = agent.thinkingEffort ? ` thinking=${agent.thinkingEffort}` : "";
     console.log(
-      `${agent.name}: status=${runtime?.status ?? "unknown"} provider=${agent.provider} pr=${runtime?.prUrl ?? "-"}`,
+      `${agent.name}: status=${runtime?.status ?? "unknown"} provider=${agent.provider} model=${agent.model}${effort} pr=${runtime?.prUrl ?? "-"}`,
     );
+  }
+  console.log("timeouts:");
+  for (const [phase, secs] of Object.entries(state.config.timeouts)) {
+    console.log(`  ${phase}: ${secs}s`);
   }
 }
 
