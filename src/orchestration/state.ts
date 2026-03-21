@@ -18,6 +18,8 @@ export interface AgentConfig {
   model: string;
   branch: string;
   worktreePath: string;
+  /** Thinking effort level: "low" | "medium" | "high" or a token budget number as string. */
+  thinkingEffort?: string;
 }
 
 export interface AgentRuntimeState {

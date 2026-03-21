@@ -63,6 +63,31 @@ mag:
   nudge_throttle_seconds: 60  # Minimum seconds between automatic "Continue." nudges (default: 60)
   nudge_backoff_seconds: 600  # If no stop hook fired since last nudge, suppress repeat nudges for this long (default: 600)
 
+  # Duo/pair orchestration settings (overridable per-task via adapter -A args)
+  orchestration:
+    coder_model: ""              # Model ID for the coder agent (e.g. claude-opus-4-6); empty = provider default
+    reviewer_model: ""           # Model ID for the reviewer agent; empty = provider default
+    coder_thinking_effort: ""    # Thinking effort for the coder: low | medium | high | <token-count>; empty = disabled
+    reviewer_thinking_effort: "" # Thinking effort for the reviewer: low | medium | high | <token-count>; empty = disabled
+    phase_timeouts:              # Per-phase timeout overrides in seconds (unset phases use built-in defaults)
+      work: 3600
+      review: 1800
+      gather: 600
+      clarify: 600
+      pushback: 600
+      plan: 600
+      plan-review: 600
+      update-docs: 600
+      pr-create: 600
+      pr-comments: 86400
+      merge-vote: 600
+      merge-debate: 600
+      merge-execute: 1800
+      merge-review: 600
+      merge-amend: 600
+      suggest-refactor: 600
+      final-merge: 1800
+
   # Autonomy levels: auto | suggest | manual
   autonomy_level:
     elaborate_tasks: auto       # Auto writes detailed specs
