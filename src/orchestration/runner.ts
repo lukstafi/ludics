@@ -1,17 +1,18 @@
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { T3CodeClient } from "../t3code/client.ts";
 import { readServerRecord } from "../t3code/server.ts";
 import { toWireProvider } from "../t3code/types.ts";
 import type { T3CodeServerRecord, T3Snapshot } from "../t3code/types.ts";
-import { allAgentsDone, agentParticipatesInPhase, evaluateTransition, phaseTimeoutExpired } from "./phases.ts";
+import { allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone } from "./phases.ts";
 import { clearInterrupt, readAgentStatus, readMarker, readPrUrl, writeInterrupt, writePeerSync } from "./peer-sync.ts";
 import { determineWinner, hasConsensus, readMergeVotes } from "./merge.ts";
 import { shouldRunUpdateDocs } from "./learning.ts";
 import { composeSkillMessage } from "./skills.ts";
 import { persistState, readOrchestrationState, type AgentConfig, type OrchestrationState } from "./state.ts";
 import { isoNow, isTurnFresh, makeId, nowEpoch, sleep } from "./util.ts";
+import { fetchNewPrCommentCount, validateAndFixPrFile } from "./github.ts";
 
 async function withClient<T>(
   record: T3CodeServerRecord,
@@ -132,6 +133,11 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
   writePeerSync(state);
   markActiveAgents(state);
   state.phaseDispatched = true;
+  // Reset pr-comments tracking state on phase entry.
+  if (state.phase === "pr-comments") {
+    state.prCommentsLastCheckAt = undefined;
+    state.prCommentsQuietSince = undefined;
+  }
   if (state.phase === "setup") return;
 
   // Record the dispatch timestamp before sending turns so that any stale
@@ -142,6 +148,78 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
     if (!agentParticipatesInPhase(state, agent)) continue;
     const skillMessage = await composeSkillMessage(state, agent);
     await sendTurnMessage(state, agent, skillMessage);
+  }
+}
+
+/** Send a fresh turn message to each participating agent without changing phaseDispatched. */
+async function redispatchForPrComments(state: OrchestrationState): Promise<void> {
+  for (const agent of state.agents) {
+    if (!agentParticipatesInPhase(state, agent)) continue;
+    const runtime = state.agentStates[agent.name]!;
+    runtime.status = "pr-comments-active";
+    runtime.statusEpoch = nowEpoch();
+    runtime.statusMessage = "re-dispatched for new PR comments";
+    const skillMessage = await composeSkillMessage(state, agent);
+    await sendTurnMessage(state, agent, skillMessage);
+  }
+}
+
+/**
+ * Poll GitHub for new PR comments during the pr-comments phase.
+ * Re-dispatches agents when new comments are found; updates prCommentsQuietSince otherwise.
+ */
+async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<void> {
+  const now = nowEpoch();
+  const checkInterval = state.config.prCommentsCheckInterval;
+  const lastCheck = state.prCommentsLastCheckAt ?? state.phaseStartedAt;
+
+  if (now - lastCheck < checkInterval) return;
+
+  const agentsWithPr = state.agents.filter((a) => !!state.agentStates[a.name]?.prUrl);
+
+  if (agentsWithPr.length === 0) {
+    state.prCommentsLastCheckAt = now;
+    if (!state.prCommentsQuietSince) state.prCommentsQuietSince = now;
+    return;
+  }
+
+  // Only re-dispatch once all participating agents have finished their current turn.
+  const participants = state.agents.filter((a) => agentParticipatesInPhase(state, a));
+  const allDone = participants.every((a) => isAgentDone(state, a));
+  if (!allDone) {
+    state.prCommentsLastCheckAt = now;
+    return;
+  }
+
+  // Count new comments since the last check.
+  let totalNewComments = 0;
+  for (const agent of agentsWithPr) {
+    totalNewComments += fetchNewPrCommentCount(state.agentStates[agent.name]!.prUrl!, lastCheck);
+  }
+
+  state.prCommentsLastCheckAt = now;
+
+  if (totalNewComments > 0) {
+    state.prCommentsQuietSince = 0; // Reset quiet period.
+    await redispatchForPrComments(state);
+  } else if (!state.prCommentsQuietSince) {
+    state.prCommentsQuietSince = now;
+  }
+}
+
+/**
+ * After agents complete a phase that creates PRs, validate the pr files.
+ * If a file contains markdown text instead of a URL, auto-create the PR and rewrite the file.
+ */
+function validateAgentPrFiles(state: OrchestrationState): void {
+  for (const agent of state.agents) {
+    if (!agentParticipatesInPhase(state, agent)) continue;
+    if (!isAgentDone(state, agent)) continue;
+    const prFile = join(state.peerSyncDir, `${agent.name}.pr`);
+    const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch);
+    if (fixedUrl && !state.agentStates[agent.name]!.prUrl) {
+      state.agentStates[agent.name]!.prUrl = fixedUrl;
+    }
   }
 }
 
@@ -175,7 +253,12 @@ async function handleTimeout(state: OrchestrationState): Promise<void> {
   if (state.phase === "clarify" || state.phase === "pushback" || state.phase === "plan") {
     return;
   }
-  if (state.phase === "work" || state.phase === "review") {
+  if (
+    state.phase === "work"
+    || state.phase === "review"
+    || state.phase === "pr-comments"
+    || state.phase === "final-merge"
+  ) {
     for (const agent of state.agents) {
       if (!agentParticipatesInPhase(state, agent)) continue;
       const runtime = state.agentStates[agent.name]!;
@@ -194,20 +277,29 @@ async function pollUntilDone(state: OrchestrationState): Promise<void> {
   while (true) {
     const snapshot = await fetchSnapshot(record);
     refreshAgentStatuses(state, snapshot);
+
+    // Validate pr files when coder finishes pr-create (auto-create PR from markdown if needed).
+    if (state.phase === "pr-create") {
+      validateAgentPrFiles(state);
+    }
+
     persistState(state);
 
     if (allAgentsDone(state)) return;
-    if (state.phase === "pr-comments") return;
+
+    if (state.phase === "pr-comments") {
+      await checkAndRedispatchPrComments(state);
+      persistState(state);
+      // Return to the main loop so evaluateTransition can check quiet-period expiry.
+      if (evaluateTransition(state) !== null) return;
+    }
+
     if (nowEpoch() >= deadline) {
       await handleTimeout(state);
       return;
     }
     await sleep(interval);
   }
-}
-
-function mergedViaMarker(state: OrchestrationState): boolean {
-  return state.agents.some((agent) => readMarker(state.peerSyncDir, `${agent.name}.merged`) !== null);
 }
 
 function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationState["phase"]): void {
@@ -245,9 +337,6 @@ function maybeOverrideTransition(state: OrchestrationState, next: OrchestrationS
     return state.agents.some((agent) => !!state.agentStates[agent.name]?.prUrl)
       ? "pr-comments"
       : "work";
-  }
-  if (state.phase === "pr-comments" && mergedViaMarker(state)) {
-    return "suggest-refactor";
   }
   if (state.phase === "merge-vote" && next === "merge-execute") {
     const votes = readMergeVotes(state.peerSyncDir, state.mergeRound);

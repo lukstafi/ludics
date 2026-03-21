@@ -42,6 +42,10 @@ export interface OrchestrationConfig {
   learningInterval: number;
   learningProductiveRoundsGap: number;
   useMagTailoring: boolean;
+  /** Seconds of no new PR comments/reviews before auto-transitioning to final-merge. */
+  prCommentsTimeout: number;
+  /** How often (seconds) to poll GitHub for new PR comments during pr-comments phase. */
+  prCommentsCheckInterval: number;
 }
 
 export interface OrchestrationState {
@@ -68,6 +72,13 @@ export interface OrchestrationState {
   confirmedPhase?: Phase | null;
   phaseDispatched?: boolean;
   phaseDispatchedAt?: string | null;
+  /** Epoch of the last GitHub comment poll during pr-comments phase. */
+  prCommentsLastCheckAt?: number;
+  /**
+   * Epoch since which no new PR comments have been observed (quiet period start).
+   * Set to 0 to indicate quiet period was reset due to new comments.
+   */
+  prCommentsQuietSince?: number;
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {
@@ -80,6 +91,7 @@ export const DEFAULT_TIMEOUTS: Record<string, number> = {
   "plan-review": 600,
   "update-docs": 600,
   "pr-create": 600,
+  "pr-comments": 86400, // hard cap; quiet-period timeout governs normal exit
   "merge-vote": 600,
   "merge-debate": 600,
   "merge-execute": 1800,
@@ -88,6 +100,9 @@ export const DEFAULT_TIMEOUTS: Record<string, number> = {
   "suggest-refactor": 600,
   "final-merge": 1800,
 };
+
+export const DEFAULT_PR_COMMENTS_TIMEOUT = 1800; // 30 min quiet before auto-merging
+export const DEFAULT_PR_COMMENTS_CHECK_INTERVAL = 60; // poll GitHub every 60 s
 
 export const DEFAULT_POLL_INTERVAL = 10;
 export const DEFAULT_LEARNING_INTERVAL = 3600;
@@ -110,6 +125,9 @@ export function defaultOrchestrationConfig(
     learningProductiveRoundsGap:
       overrides.learningProductiveRoundsGap ?? DEFAULT_LEARNING_PRODUCTIVE_ROUNDS_GAP,
     useMagTailoring: overrides.useMagTailoring ?? false,
+    prCommentsTimeout: overrides.prCommentsTimeout ?? DEFAULT_PR_COMMENTS_TIMEOUT,
+    prCommentsCheckInterval:
+      overrides.prCommentsCheckInterval ?? DEFAULT_PR_COMMENTS_CHECK_INTERVAL,
   };
 }
 

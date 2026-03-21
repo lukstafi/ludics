@@ -59,4 +59,52 @@ describe("evaluateTransition", () => {
     state.agentStates.agent1.prUrl = "https://example.com/pr/1";
     expect(evaluateTransition(state)).toBe("pr-comments");
   });
+
+  test("pr-comments stays null when no PR and quiet period not set", () => {
+    const state = makeState({ phase: "pr-comments" });
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
+  test("pr-comments transitions to final-merge after quiet period expires", () => {
+    const quietStart = Math.floor(Date.now() / 1000) - 2000; // 2000s ago
+    const state = makeState({
+      phase: "pr-comments",
+      prCommentsQuietSince: quietStart,
+    });
+    state.agentStates.agent1.prUrl = "https://github.com/owner/repo/pull/1";
+    expect(evaluateTransition(state)).toBe("final-merge");
+  });
+
+  test("pr-comments stays null when quiet period has not yet elapsed", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const quietStart = now - 60; // only 60s ago
+    const state = makeState({
+      phase: "pr-comments",
+      phaseStartedAt: now - 90, // phase started 90s ago (well within 86400s hard cap)
+      prCommentsQuietSince: quietStart,
+      config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
+    });
+    state.agentStates.agent1.prUrl = "https://github.com/owner/repo/pull/1";
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
+  test("pr-comments transitions to suggest-refactor when merged marker present", () => {
+    const state = makeState({ phase: "pr-comments" });
+    state.agentStates.agent1.status = "merged";
+    expect(evaluateTransition(state)).toBe("suggest-refactor");
+  });
+
+  test("final-merge transitions to suggest-refactor when done", () => {
+    const state = makeState({ phase: "final-merge" });
+    state.agentStates.agent1.status = "final-merge-done";
+    state.agentStates.agent2.status = "final-merge-done";
+    expect(evaluateTransition(state)).toBe("suggest-refactor");
+  });
+
+  test("suggest-refactor always transitions to done", () => {
+    const state = makeState({ phase: "suggest-refactor" });
+    state.agentStates.agent1.status = "suggest-refactor-done";
+    state.agentStates.agent2.status = "suggest-refactor-done";
+    expect(evaluateTransition(state)).toBe("done");
+  });
 });
