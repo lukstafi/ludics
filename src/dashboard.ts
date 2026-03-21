@@ -8,6 +8,7 @@ import { parseSlotBlocks, getField, getProcess, getTask, getMode } from "./slots
 import { readStash } from "./slots/preempt.ts";
 import { getUrl } from "./network.ts";
 import { readServerRecord } from "./t3code/server.ts";
+import { readOrchestrationState } from "./orchestration/state.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
 
 function dashboardDataDir(): string {
@@ -30,6 +31,9 @@ interface SlotJson {
   preemptedTask: string | null;
   hasProposal: boolean;
   proposalLink: string | null;
+  prUrl: string | null;
+  githubUrl: string | null;
+  t3codeThreadLinks: Record<string, string> | null;
 }
 
 function lookupTaskContent(taskId: string): string | null {
@@ -71,6 +75,52 @@ function discoverTtydUrls(): Map<string, string> {
   return result;
 }
 
+function lookupTaskGithubUrl(taskId: string): string | null {
+  const tasksDir = join(harnessDir(), "tasks");
+  const taskFile = join(tasksDir, taskId + ".md");
+  if (!existsSync(taskFile)) return null;
+  try {
+    const content = readFileSync(taskFile, "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return null;
+    const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
+    const url = data.url;
+    if (!url || typeof url !== "string" || url.trim() === "" || url.trim().toLowerCase() === "null") return null;
+    return url.trim();
+  } catch {
+    return null;
+  }
+}
+
+function lookupSlotOrchestrationLinks(
+  slotNum: number,
+  t3codeWebUrl: string | null,
+): { prUrl: string | null; t3codeThreadLinks: Record<string, string> | null } {
+  const orchState = readOrchestrationState(slotNum);
+  if (!orchState) return { prUrl: null, t3codeThreadLinks: null };
+
+  // Extract first non-null PR URL from agent states
+  let prUrl: string | null = null;
+  for (const agentState of Object.values(orchState.agentStates)) {
+    if (agentState.prUrl) {
+      prUrl = agentState.prUrl;
+      break;
+    }
+  }
+
+  // Build t3code thread links from threadIds + server webUrl
+  let t3codeThreadLinks: Record<string, string> | null = null;
+  if (t3codeWebUrl && orchState.threadIds && Object.keys(orchState.threadIds).length > 0) {
+    t3codeThreadLinks = {};
+    for (const [agentName, threadId] of Object.entries(orchState.threadIds)) {
+      t3codeThreadLinks[agentName] = `${t3codeWebUrl}/${encodeURIComponent(threadId)}`;
+    }
+    if (Object.keys(t3codeThreadLinks).length === 0) t3codeThreadLinks = null;
+  }
+
+  return { prUrl, t3codeThreadLinks };
+}
+
 function lookupTaskHasProposal(taskId: string): boolean {
   const tasksDir = join(harnessDir(), "tasks");
   const taskFile = join(tasksDir, taskId + ".md");
@@ -94,6 +144,10 @@ function generateSlots(): SlotJson[] {
   const blocks = parseSlotBlocks(content);
   const ttydBySession = discoverTtydUrls();
   const result: SlotJson[] = [];
+
+  // Resolve t3code web URL once for all slots
+  const t3codeRecord = readServerRecord();
+  const t3codeWebUrl = t3codeRecord ? t3codeRecord.webUrl : null;
 
   for (const [num, block] of blocks) {
     const process = getProcess(block).trim();
@@ -136,6 +190,12 @@ function generateSlots(): SlotJson[] {
     const taskContent = taskId && taskId !== "null" ? lookupTaskContent(taskId) : null;
     const slotHasProposal = taskId && taskId !== "null" ? lookupTaskHasProposal(taskId) : false;
     const slotProposalLink = slotHasProposal && taskId ? `/proposal.html?task=${encodeURIComponent(taskId)}` : null;
+    const githubUrl = taskId && taskId !== "null" ? lookupTaskGithubUrl(taskId) : null;
+
+    // Read orchestration state for PR URL and t3code thread links
+    const { prUrl, t3codeThreadLinks } = empty
+      ? { prUrl: null, t3codeThreadLinks: null }
+      : lookupSlotOrchestrationLinks(num, t3codeWebUrl);
 
     // Check for preemption stash
     const stash = readStash(num);
@@ -154,6 +214,9 @@ function generateSlots(): SlotJson[] {
       preemptedTask: stash?.previousTask ?? null,
       hasProposal: slotHasProposal,
       proposalLink: slotProposalLink,
+      prUrl: empty ? null : prUrl,
+      githubUrl: empty ? null : githubUrl,
+      t3codeThreadLinks: empty ? null : t3codeThreadLinks,
     });
   }
 

@@ -115,8 +115,29 @@ function renderSlots(slots) {
 
             setHtmlPreserveScroll(detailsDiv, html, '.task-content');
 
-            // Build terminal links — only render valid HTTP/HTTPS URLs as clickable links
+            // Build contextual links section
             let links = '';
+            // GitHub issue link — only render valid HTTP/HTTPS URLs
+            if (slot.githubUrl && (slot.githubUrl.startsWith('http://') || slot.githubUrl.startsWith('https://'))) {
+                links += `<a href="${escapeHtml(slot.githubUrl)}" target="_blank" class="link-issue">issue</a>`;
+            }
+            // PR link — only render valid HTTP/HTTPS URLs
+            if (slot.prUrl && (slot.prUrl.startsWith('http://') || slot.prUrl.startsWith('https://'))) {
+                links += `<a href="${escapeHtml(slot.prUrl)}" target="_blank" class="link-pr">PR</a>`;
+            }
+            // Proposal link
+            if (slot.proposalLink) {
+                links += `<a href="${slot.proposalLink}" class="link-proposal">proposal</a>`;
+            }
+            // t3code thread links — only render valid HTTP/HTTPS URLs
+            if (slot.t3codeThreadLinks) {
+                for (const [name, url] of Object.entries(slot.t3codeThreadLinks)) {
+                    if (url.startsWith('http://') || url.startsWith('https://')) {
+                        links += `<a href="${escapeHtml(url)}" target="_blank" class="link-t3code">${escapeHtml(name)}</a>`;
+                    }
+                }
+            }
+            // Terminal links — only render valid HTTP/HTTPS URLs as clickable links
             if (slot.terminals) {
                 for (const [name, url] of Object.entries(slot.terminals)) {
                     const label = escapeHtml(name.replace(/_/g, ' '));
@@ -126,9 +147,6 @@ function renderSlots(slots) {
                         links += `<span class="terminal-label">${label}</span>`;
                     }
                 }
-            }
-            if (slot.proposalLink) {
-                links += `<a href="${slot.proposalLink}">proposal</a>`;
             }
             setHtmlPreserveScroll(linksDiv, links);
         }

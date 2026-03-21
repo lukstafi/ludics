@@ -367,6 +367,11 @@ main {
     font-style: italic;
 }
 
+.slot-links .link-issue::before { content: '⊙ '; }
+.slot-links .link-pr::before { content: '⤴ '; }
+.slot-links .link-proposal::before { content: '📋 '; }
+.slot-links .link-t3code::before { content: '⚡ '; }
+
 /* Sidebar */
 .sidebar {
     display: flex;
