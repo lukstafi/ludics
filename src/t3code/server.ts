@@ -1,6 +1,21 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "path";
+
+/**
+ * Migrate legacy `<t3codeDir>/state/` → `<t3codeDir>/userdata/`.
+ *
+ * t3code upstream renamed `--state-dir` to `--home-dir` and now appends
+ * `/userdata/` internally.  Our old layout put the SQLite DB directly
+ * under `state/`; the new layout expects it under `userdata/`.
+ */
+function migrateStateDirIfNeeded(t3Dir: string): void {
+  const oldDir = join(t3Dir, "state");
+  const newDir = join(t3Dir, "userdata");
+  if (existsSync(join(oldDir, "state.sqlite")) && !existsSync(newDir)) {
+    renameSync(oldDir, newDir);
+  }
+}
 import { harnessDir as defaultHarnessDir } from "../config.ts";
 import { networkHostname } from "../network.ts";
 import { T3CodeClient } from "./client.ts";
@@ -127,7 +142,6 @@ export async function ensureServer(
 ): Promise<T3CodeServerRecord> {
   const harnessDir = options.harnessDir ?? defaultHarnessDir();
   mkdirSync(t3codeDir(harnessDir), { recursive: true });
-  mkdirSync(t3codeServerStateDir(harnessDir), { recursive: true });
 
   const existing = await serverStatus({ harnessDir });
   if (existing.running && existing.record) return existing.record;
@@ -143,10 +157,12 @@ export async function ensureServer(
   // Auth token: only use when explicitly provided via env var.
   // Tailnet-only setups don't need auth; auth doesn't work upstream.
   const authToken = (process.env.LUDICS_T3CODE_AUTH_TOKEN ?? "").trim() || undefined;
+  const t3Home = t3codeDir(harnessDir);
+  migrateStateDirIfNeeded(t3Home);
   const command = buildLaunchCommand({
     port,
     host,
-    stateDir: t3codeServerStateDir(harnessDir),
+    homeDir: t3Home,
     authToken,
   });
 
@@ -176,7 +192,7 @@ export async function ensureServer(
     webUrl,
     wsUrl,
     authToken,
-    stateDir: t3codeServerStateDir(harnessDir),
+    stateDir: t3Home,
     startedAt: isoNow(),
     command,
   };
@@ -358,7 +374,7 @@ async function portAvailable(port: number, host: string = "127.0.0.1"): Promise<
 function buildLaunchCommand(input: {
   port: number;
   host?: string;
-  stateDir: string;
+  homeDir: string;
   authToken?: string;
 }): string[] {
   const preferred = (process.env.LUDICS_T3CODE_BIN ?? "").trim();
@@ -392,7 +408,7 @@ function buildLaunchCommand(input: {
     "--port",
     String(input.port),
     "--home-dir",
-    input.stateDir,
+    input.homeDir,
     "--no-browser",
   ];
   if (input.host) {
