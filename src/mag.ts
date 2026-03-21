@@ -1010,7 +1010,10 @@ async function resolveQueueRequestCommand(request: Record<string, unknown>, exec
   // Map action to skill command
   switch (action) {
     case "briefing":
-      await briefingPrecomputeContext();
+      // Only precompute (and clean up threads) when actually dispatching, not during peek.
+      if (executeProgrammatic) {
+        await briefingPrecomputeContext();
+      }
       return "/ludics-briefing";
     case "suggest":
       return "/ludics-suggest";
