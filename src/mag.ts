@@ -1010,7 +1010,7 @@ async function resolveQueueRequestCommand(request: Record<string, unknown>, exec
   // Map action to skill command
   switch (action) {
     case "briefing":
-      briefingPrecomputeContext();
+      await briefingPrecomputeContext();
       return "/ludics-briefing";
     case "suggest":
       return "/ludics-suggest";
@@ -1170,7 +1170,83 @@ async function drainProgrammaticQueueHead(): Promise<boolean> {
 
 // --- Briefing context pre-computation ---
 
-function briefingPrecomputeContext(): void {
+/**
+ * Delete t3code threads for tasks marked as done/abandoned that have stored
+ * thread IDs in their `t3code_threads` frontmatter field.
+ * This is idempotent: threads already absent from the server are skipped.
+ */
+async function cleanupDoneTaskThreads(): Promise<void> {
+  const harness = harnessDir();
+  const tasksDir = join(harness, "tasks");
+  if (!existsSync(tasksDir)) return;
+
+  // Collect thread IDs from completed tasks
+  const threadIdsToDelete: string[] = [];
+  try {
+    const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+    for (const f of files) {
+      const content = readFileSync(join(tasksDir, f), "utf-8");
+      const statusMatch = content.match(/^status:\s*(.+)$/m);
+      const status = statusMatch ? statusMatch[1]!.trim() : "";
+      if (status !== "done" && status !== "abandoned") continue;
+      const threadsMatch = content.match(/^t3code_threads:\s*\[(.+)\]$/m);
+      if (!threadsMatch) continue;
+      const ids = threadsMatch[1]!.split(",").map((s) => s.trim()).filter(Boolean);
+      threadIdsToDelete.push(...ids);
+    }
+  } catch {
+    return;
+  }
+
+  if (threadIdsToDelete.length === 0) return;
+
+  // Delete threads from t3code server (idempotent — skip if not on server)
+  try {
+    const { serverStatus } = await import("./t3code/server.ts");
+    const { T3CodeClient } = await import("./t3code/client.ts");
+    const { makeId, isoNow } = await import("./orchestration/util.ts");
+    const status = await serverStatus({ harnessDir: harness });
+    if (!status.running || !status.record || !status.snapshot) return;
+
+    const snapshot = status.snapshot;
+    const record = status.record;
+    const client = new T3CodeClient({ url: record.wsUrl, token: record.authToken });
+    try {
+      for (const threadId of threadIdsToDelete) {
+        if (!snapshot.threads.find((t) => t.id === threadId)) continue; // already gone
+        try {
+          await client.dispatchCommand({
+            type: "thread.session.stop",
+            commandId: makeId("cmd"),
+            threadId,
+            createdAt: isoNow(),
+          });
+        } catch {
+          // ignore
+        }
+        try {
+          await client.dispatchCommand({
+            type: "thread.delete",
+            commandId: makeId("cmd"),
+            threadId,
+          });
+        } catch {
+          // ignore
+        }
+        console.error(`ludics: briefing cleanup: deleted t3code thread ${threadId}`);
+      }
+    } finally {
+      client.close();
+    }
+  } catch {
+    // t3code not available or other error — skip silently
+  }
+}
+
+async function briefingPrecomputeContext(): Promise<void> {
+  // Clean up t3code threads for completed tasks before building the context
+  await cleanupDoneTaskThreads();
+
   const harness = harnessDir();
   const contextFile = join(harness, "mag", "briefing-context.md");
   mkdirSync(join(harness, "mag"), { recursive: true });
@@ -2349,8 +2425,8 @@ function magMessage(text: string): void {
   console.log("Message queued for Mag");
 }
 
-function magContext(): void {
-  briefingPrecomputeContext();
+async function magContext(): Promise<void> {
+  await briefingPrecomputeContext();
 }
 
 function magCompleted(proposalName: string): void {
@@ -2469,7 +2545,7 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "context":
-      magContext();
+      await magContext();
       break;
     case "draft-proposal": {
       const taskId = args[1];
