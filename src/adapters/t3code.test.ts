@@ -7,7 +7,7 @@ function makeThread(overrides: Partial<T3CodeThreadRecord> = {}): T3CodeThreadRe
   return {
     threadId: "thread-1",
     projectId: "project-1",
-    workspaceRoot: "/tmp/repo-a",
+    worktreePath: "/tmp/repo-a",
     title: "task-1",
     model: "gpt-5.4",
     runtimeMode: "full-access",
@@ -23,7 +23,7 @@ describe("canReuseSlotThread", () => {
     const existing = makeThread();
     expect(
       canReuseSlotThread(existing, {
-        workspaceRoot: "/tmp/repo-a",
+        worktreePath: "/tmp/repo-a",
         title: "task-1",
         model: "gpt-5.4",
         runtimeMode: "full-access",
@@ -36,7 +36,7 @@ describe("canReuseSlotThread", () => {
     const existing = makeThread();
     expect(
       canReuseSlotThread(existing, {
-        workspaceRoot: "/tmp/repo-b",
+        worktreePath: "/tmp/repo-b",
         title: "task-1",
         model: "gpt-5.4",
         runtimeMode: "full-access",
@@ -49,7 +49,7 @@ describe("canReuseSlotThread", () => {
     const existing = makeThread();
     expect(
       canReuseSlotThread(existing, {
-        workspaceRoot: "/tmp/repo-a",
+        worktreePath: "/tmp/repo-a",
         title: "task-1",
         model: "gpt-5.3-codex",
         runtimeMode: "full-access",
@@ -58,7 +58,7 @@ describe("canReuseSlotThread", () => {
     ).toBe(false);
     expect(
       canReuseSlotThread(existing, {
-        workspaceRoot: "/tmp/repo-a",
+        worktreePath: "/tmp/repo-a",
         title: "task-1",
         model: "gpt-5.4",
         runtimeMode: "approval-required",

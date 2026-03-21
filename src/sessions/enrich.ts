@@ -23,7 +23,7 @@ function enrichFromT3codeSlots(): Map<string, Orchestration> {
     const type = orch.mode === "pair" ? "t3code-pair" : "t3code-duo";
 
     for (const thread of slotState.threads) {
-      const cwd = (thread.workspaceRoot ?? "").replace(/\/+$/, "");
+      const cwd = (thread.worktreePath ?? "").replace(/\/+$/, "");
       if (!cwd) continue;
 
       orchestrations.set(cwd, {

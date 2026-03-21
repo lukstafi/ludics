@@ -78,7 +78,7 @@ function collectAttachedKeys(): Set<string> {
       const slotState = readSlotState(slot);
       if (slotState) {
         for (const thread of slotState.threads) {
-          const projectDir = normalizeProjectDirForSweep(thread.workspaceRoot ?? slotPath);
+          const projectDir = normalizeProjectDirForSweep(thread.worktreePath ?? slotPath);
           attached.add(buildKnownSessionKey(mode, projectDir, thread.threadId));
         }
       }

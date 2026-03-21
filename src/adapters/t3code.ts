@@ -64,7 +64,7 @@ interface ParsedAdapterArgs {
 }
 
 export interface DesiredThreadConfig {
-  workspaceRoot: string;
+  worktreePath: string;
   title: string;
   model: string;
   provider?: T3ProviderKind;
@@ -335,7 +335,7 @@ export function canReuseSlotThread(
   desired: DesiredThreadConfig,
 ): boolean {
   if (!existing) return false;
-  return existing.workspaceRoot === desired.workspaceRoot
+  return existing.worktreePath === desired.worktreePath
     && existing.title === desired.title
     && existing.model === desired.model
     && existing.runtimeMode === desired.runtimeMode
@@ -362,16 +362,38 @@ async function withClient<T>(
   }
 }
 
+/** Find or create a t3code project for the given workspace root. Returns the projectId. */
+async function ensureProject(
+  client: T3CodeClient,
+  snapshot: T3Snapshot,
+  workspaceRoot: string,
+  defaultModel: string,
+): Promise<string> {
+  const project = findProject(snapshot, workspaceRoot);
+  if (project) return project.id;
+
+  const projectId = makeId("project");
+  await client.dispatchCommand({
+    type: "project.create",
+    commandId: makeId("cmd"),
+    projectId,
+    title: basename(workspaceRoot) || "project",
+    workspaceRoot,
+    defaultModel,
+    createdAt: isoNow(),
+  });
+  return projectId;
+}
+
 async function ensureThread(
   client: T3CodeClient,
   snapshot: T3Snapshot,
   slot: number,
+  projectId: string,
   desired: DesiredThreadConfig,
   existingRecord: T3CodeThreadRecord | null | undefined,
 ): Promise<T3CodeThreadRecord> {
-  const project = findProject(snapshot, desired.workspaceRoot);
-  const projectId = project?.id ?? makeId("project");
-  const model = desired.model || project?.defaultModel || DEFAULT_MODEL;
+  const model = desired.model || DEFAULT_MODEL;
   const createdAt = isoNow();
 
   const existingThread = existingRecord ? findThread(snapshot, existingRecord.threadId) : null;
@@ -380,7 +402,7 @@ async function ensureThread(
     return {
       threadId: reusedRecord.threadId,
       projectId: reusedRecord.projectId,
-      workspaceRoot: reusedRecord.workspaceRoot,
+      worktreePath: reusedRecord.worktreePath,
       title: reusedRecord.title,
       model,
       runtimeMode: reusedRecord.runtimeMode,
@@ -413,18 +435,6 @@ async function ensureThread(
     }
   }
 
-  if (!project) {
-    await client.dispatchCommand({
-      type: "project.create",
-      commandId: makeId("cmd"),
-      projectId,
-      title: basename(desired.workspaceRoot) || desired.title,
-      workspaceRoot: desired.workspaceRoot,
-      defaultModel: model,
-      createdAt,
-    });
-  }
-
   const threadId = makeId(`thread-slot-${slot}`);
   const provider = desired.provider ? toWireProvider(desired.provider) : undefined;
   await client.dispatchCommand({
@@ -438,14 +448,14 @@ async function ensureThread(
     runtimeMode: desired.runtimeMode,
     interactionMode: desired.interactionMode,
     branch: desired.branch ?? null,
-    worktreePath: desired.workspaceRoot,
+    worktreePath: desired.worktreePath,
     createdAt,
   });
 
   return {
     threadId,
     projectId,
-    workspaceRoot: desired.workspaceRoot,
+    worktreePath: desired.worktreePath,
     title: desired.title,
     model,
     runtimeMode: desired.runtimeMode,
@@ -541,7 +551,7 @@ async function startSingleThread(
 ): Promise<string> {
   const title = options.title ?? defaultTitle(ctx, workspaceRoot);
   const desired: DesiredThreadConfig = {
-    workspaceRoot,
+    worktreePath: workspaceRoot,
     title,
     model: options.model,
     runtimeMode: options.runtimeMode,
@@ -552,10 +562,12 @@ async function startSingleThread(
 
   return await withClient(record, async (client) => {
     const snapshot = await client.getSnapshot();
+    const projectId = await ensureProject(client, snapshot, workspaceRoot, options.model);
     const threadRecord = await ensureThread(
       client,
       snapshot,
       ctx.slot,
+      projectId,
       desired,
       existingState?.threads[0] ?? null,
     );
@@ -606,15 +618,16 @@ async function startOrchestratedThreads(
   );
 
   const existingThreadMap = new Map(
-    (existing?.threads ?? []).map((thread) => [thread.workspaceRoot, thread]),
+    (existing?.threads ?? []).map((thread) => [thread.worktreePath, thread]),
   );
 
   const slotThreads = await withClient(record, async (client) => {
     const snapshot = await client.getSnapshot();
+    const projectId = await ensureProject(client, snapshot, projectDir, orchestration.agents[0]?.model ?? options.model);
     const created: T3CodeThreadRecord[] = [];
     for (const agent of agents) {
       const desired: DesiredThreadConfig = {
-        workspaceRoot: agent.worktreePath,
+        worktreePath: agent.worktreePath,
         title: `${title}:${agent.name}`,
         model: agent.model,
         provider: agent.provider,
@@ -627,6 +640,7 @@ async function startOrchestratedThreads(
           client,
           snapshot,
           ctx.slot,
+          projectId,
           desired,
           existingThreadMap.get(agent.worktreePath),
         ),
@@ -695,7 +709,7 @@ function addThreadDetails(
 ): void {
   const thread = snapshot ? findThread(snapshot, threadRecord.threadId) : null;
   md.bullet(`Thread: ${threadRecord.title} (${threadRecord.threadId})`);
-  md.detail(`Workspace: ${threadRecord.workspaceRoot}`);
+  md.detail(`Workspace: ${threadRecord.worktreePath}`);
   if (threadRecord.branch) md.detail(`Branch: ${threadRecord.branch}`);
   md.detail(`Model: ${threadRecord.model}`);
   if (thread) {
@@ -755,7 +769,7 @@ async function readState(ctx: AdapterContext): Promise<string | null> {
   }
 
   md.section("Git");
-  const primaryWorkspace = slotState.threads[0]!.workspaceRoot;
+  const primaryWorkspace = slotState.threads[0]!.worktreePath;
   if (isGitWorktree(primaryWorkspace)) {
     md.bullet(`Working directory: ${primaryWorkspace} (worktree)`);
     const mainRepo = getMainRepoFromWorktree(primaryWorkspace);

@@ -193,7 +193,7 @@ export interface T3CodeServerRecord {
 export interface T3CodeThreadRecord {
   threadId: string;
   projectId: string;
-  workspaceRoot: string;
+  worktreePath: string;
   title: string;
   model: string;
   runtimeMode: T3RuntimeMode;
