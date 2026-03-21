@@ -62,6 +62,7 @@ export function parseTaskFrontmatter(content: string): Partial<TaskFrontmatter> 
     elaborated: data.elaborated ? String(data.elaborated) : undefined,
     merged_into: data.merged_into ? String(data.merged_into) : undefined,
     merged_from: Array.isArray(data.merged_from) ? (data.merged_from as string[]) : undefined,
+    t3code_threads: Array.isArray(data.t3code_threads) ? (data.t3code_threads as string[]) : undefined,
   };
 }
 

@@ -35,6 +35,7 @@ export interface TaskFrontmatter {
   elaborated?: string;
   merged_into?: string;
   merged_from?: string[];
+  t3code_threads?: string[];
 }
 
 export interface TaskYamlEntry {

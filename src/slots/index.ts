@@ -14,6 +14,7 @@ import { maybeNotifySessionConclusionForAdapter } from "../notify.ts";
 import { addFrontmatterField, updateDependencyArray, parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import type { PreemptStash } from "./preempt.ts";
+import { readSlotState } from "../t3code/server.ts";
 
 function ensureSlotsFile(): string {
   const file = slotsFilePath();
@@ -219,6 +220,20 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
 
   const block = blocks.get(slotNum) ?? "";
   const taskId = block ? getTask(block) : "null";
+
+  // Save t3code thread IDs to task file frontmatter before clearing the slot state
+  const mode = block ? getMode(block).trim() : "";
+  if (mode === "t3code" && taskId && taskId !== "null") {
+    try {
+      const slotState = readSlotState(slotNum, harnessDir());
+      if (slotState && slotState.threads.length > 0) {
+        const threadIds = slotState.threads.map((t) => t.threadId);
+        addFrontmatterField(taskFilePath(taskId), "t3code_threads", `[${threadIds.join(", ")}]`);
+      }
+    } catch {
+      // non-critical: continue even if thread ID saving fails
+    }
+  }
 
   blocks.set(slotNum, emptyBlock(slotNum));
   writeSlotFile(file, blocks, count);
