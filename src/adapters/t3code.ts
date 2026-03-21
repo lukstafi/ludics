@@ -329,16 +329,22 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         orchestrationConfig.learningProductiveRoundsGap = parseInt(next, 10);
         i++;
         break;
-      case "--work-timeout":
+      case "--work-timeout": {
         if (!next) throw new Error("t3code adapter args: --work-timeout requires seconds");
-        orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, work: parseInt(next, 10) };
+        const workSecs = parseInt(next, 10);
+        if (isNaN(workSecs)) throw new Error(`t3code adapter args: --work-timeout requires a valid number, got "${next}"`);
+        orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, work: workSecs };
         i++;
         break;
-      case "--review-timeout":
+      }
+      case "--review-timeout": {
         if (!next) throw new Error("t3code adapter args: --review-timeout requires seconds");
-        orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, review: parseInt(next, 10) };
+        const reviewSecs = parseInt(next, 10);
+        if (isNaN(reviewSecs)) throw new Error(`t3code adapter args: --review-timeout requires a valid number, got "${next}"`);
+        orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, review: reviewSecs };
         i++;
         break;
+      }
       case "--phase-timeout": {
         if (!next) throw new Error("t3code adapter args: --phase-timeout requires phase:seconds");
         const sep = next.indexOf(":");
@@ -358,11 +364,12 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   if (!mode) return parsed;
 
   if (mode === "duo") {
+    // Default fallback agents must have modelExplicit=false so config.yaml defaults apply.
     const agents = duoAgents.length > 0
       ? duoAgents
       : [
-        parseProviderToken("agent1:codex:gpt-5.4", "agent1", parsed.model),
-        parseProviderToken("agent2:codex:gpt-5.4", "agent2", parsed.model),
+        { ...parseProviderToken("agent1:codex:gpt-5.4", "agent1", parsed.model), modelExplicit: false },
+        { ...parseProviderToken("agent2:codex:gpt-5.4", "agent2", parsed.model), modelExplicit: false },
       ];
     parsed.orchestration = {
       mode,
@@ -377,15 +384,17 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
     return parsed;
   }
 
-  const coder = parseProviderToken(coderToken ?? "coder:codex:gpt-5.4", "coder", parsed.model);
-  const reviewer = parseProviderToken(reviewerToken ?? "reviewer:codex:gpt-5.4", "reviewer", parsed.model);
+  // For pair mode: modelExplicit is only true when the user explicitly provided the token
+  // (i.e. --coder/--reviewer flag was given) AND that token included an explicit model.
+  const coderParsed = parseProviderToken(coderToken ?? "coder:codex:gpt-5.4", "coder", parsed.model);
+  const reviewerParsed = parseProviderToken(reviewerToken ?? "reviewer:codex:gpt-5.4", "reviewer", parsed.model);
   parsed.orchestration = {
     mode,
     feature,
     config: orchestrationConfig,
     agents: [
-      { ...coder, role: "coder" },
-      { ...reviewer, role: "reviewer" },
+      { ...coderParsed, role: "coder", modelExplicit: coderToken !== null && coderParsed.modelExplicit },
+      { ...reviewerParsed, role: "reviewer", modelExplicit: reviewerToken !== null && reviewerParsed.modelExplicit },
     ],
     coderModelOverride,
     reviewerModelOverride,
