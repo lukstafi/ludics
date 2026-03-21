@@ -102,6 +102,10 @@ export async function tasksSync(): Promise<void> {
   // Refresh metadata and closed/open state for existing GitHub-backed task files
   await tasksUpdate();
 
+  // Reconcile blocked/ready status based on dependencies
+  const tasksDir = join(harness, "tasks");
+  tasksReconcileBlockedStatus(tasksDir);
+
   // Queue elaboration for new ready tasks
   tasksQueueElaborations();
 
@@ -198,6 +202,8 @@ function formatYamlScalar(value: string | number | boolean | null): string {
   if (value === null) return "null";
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") return String(value);
+  // Only quote strings that contain special YAML characters or could be misinterpreted
+  if (/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(value)) return value;
   return `"${yamlEscape(value)}"`;
 }
 
@@ -642,6 +648,42 @@ export async function tasksUpdate(): Promise<void> {
   );
 }
 
+function tasksReconcileBlockedStatus(tasksDir: string): void {
+  const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+  let reconciled = 0;
+
+  for (const f of files) {
+    const filePath = join(tasksDir, f);
+    const content = readFileSync(filePath, "utf-8");
+    let fm;
+    try {
+      fm = parseTaskFrontmatter(content);
+    } catch { continue; }
+
+    const status = fm.status ?? "ready";
+    const blockedBy = fm.dependencies?.blocked_by ?? [];
+
+    // Skip terminal and active statuses
+    if (["done", "abandoned", "merged", "in-progress", "preempt-queued", "preempted"].includes(status)) continue;
+
+    if (blockedBy.length > 0 && status === "ready") {
+      if (setFrontmatterScalar(filePath, "status", "blocked")) {
+        emitEvent({ event_type: "task_status_change", source: "sync", scope: "task", task: fm.id, status: "blocked", message: `blocked by: ${blockedBy.join(", ")}` });
+        reconciled++;
+      }
+    } else if (blockedBy.length === 0 && status === "blocked") {
+      if (setFrontmatterScalar(filePath, "status", "ready")) {
+        emitEvent({ event_type: "task_status_change", source: "sync", scope: "task", task: fm.id, status: "ready", message: "all blockers resolved" });
+        reconciled++;
+      }
+    }
+  }
+
+  if (reconciled > 0) {
+    console.error(`ludics: reconciled status for ${reconciled} task(s)`);
+  }
+}
+
 function tasksQueueElaborations(): void {
   const harness = harnessDir();
   const tasksDir = join(harness, "tasks");
@@ -771,4 +813,4 @@ function tasksQueuePreemptions(): void {
   }
 }
 
-export { tasksNeedsElaborationList, tasksQueueElaborations, tasksQueuePreemptions, contentFingerprint };
+export { tasksNeedsElaborationList, tasksQueueElaborations, tasksQueuePreemptions, tasksReconcileBlockedStatus, contentFingerprint };
