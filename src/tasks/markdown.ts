@@ -127,7 +127,8 @@ export function removeFrontmatterField(filePath: string, field: string): void {
   let inFrontmatter = false;
   const output: string[] = [];
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
     if (line === "---" && !inFrontmatter) {
       inFrontmatter = true;
       output.push(line);
@@ -139,7 +140,11 @@ export function removeFrontmatterField(filePath: string, field: string): void {
       continue;
     }
     if (inFrontmatter && line.startsWith(`${field}:`)) {
-      continue; // skip this line
+      // Skip this line and any indented continuation lines (block YAML values)
+      while (i + 1 < lines.length && lines[i + 1] !== "---" && /^\s+/.test(lines[i + 1]!)) {
+        i++;
+      }
+      continue;
     }
     output.push(line);
   }
