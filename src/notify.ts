@@ -9,6 +9,7 @@ import { parseSlotBlocks, getTask, getPath } from "./slots/markdown.ts";
 import { listSessions, type SessionInfo } from "./adapters/peer-sync.ts";
 import { readSingleFile, readStatusFile, resolveProjectDir, isGitWorktree, getMainRepoFromWorktree } from "./adapters/base.ts";
 import type { AdapterContext } from "./adapters/types.ts";
+import { getUrl } from "./network.ts";
 
 function notificationLogFile(): string {
   return join(harnessDir(), "journal", "notifications.jsonl");
@@ -851,6 +852,13 @@ export function notifyProposal(
 
   const token = getToken();
   const project = taskId.split("-").slice(0, -1).join("-") || "unknown";
+
+  // Compute dashboard view URL for the proposal
+  const config = loadConfigSync();
+  const dashboardPort = config.dashboard?.port ?? 7678;
+  const dashboardBaseUrl = getUrl(dashboardPort);
+  const proposalViewUrl = `${dashboardBaseUrl}/proposal.html?task=${encodeURIComponent(taskId)}`;
+
   const resolvedPath = resolveProposalFilePath(taskId, filePath);
   if (!resolvedPath) {
     console.error(`ludics: proposal file not found for attachment (${filePath}); sending notification without attachment`);
@@ -864,37 +872,54 @@ export function notifyProposal(
       proposalText = "";
     }
   }
-  const inlineMessage = proposalInlineMessage(summary, proposalText, attachmentName);
-  const inlineHeaderMessage = inlineMessage.replace(/\r?\n/g, " ").trim();
   const tagsHeader = `memo,${taskId}`;
 
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const actions = inTopic
+
+  // Build "view" action as first action (opens proposal in browser)
+  const viewAction: NtfyAction = {
+    action: "view",
+    label: "view",
+    url: proposalViewUrl,
+  };
+
+  const launchActions = inTopic
     ? buildProposalNotificationActions(taskId, project, inTopic, headers)
     : [];
-  const actionBatches = chunkNotificationActions(actions, NTFY_MAX_ACTIONS);
+  const allActions = [viewAction, ...launchActions];
+  const actionBatches = chunkNotificationActions(allActions, NTFY_MAX_ACTIONS);
   const firstActionBatch = actionBatches[0] ?? [];
 
+  // When we have a dashboard view URL, use a simpler message body
+  const simpleMessage = summary.trim()
+    ? `Proposal for ${taskId}${slotSuffix}: ${summary.trim()}`
+    : `Proposal for ${taskId}${slotSuffix}`;
+
+  // Use dashboard view URL message when available; file attachment is a fallback
   let first: { httpCode: string; stderr: string; body: string };
-  if (resolvedPath) {
+  first = notifyPublishMessage(
+    outTopic,
+    simpleMessage,
+    token,
+    proposalTitle,
+    3,
+    tagsHeader,
+    firstActionBatch,
+  );
+
+  if (first.httpCode !== "200" && resolvedPath) {
+    // Fallback: attach the file
+    const detail = first.body || first.stderr;
+    console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${first.httpCode})${detail ? `: ${detail}` : ""}, retrying with file attachment`);
+    const fallbackMessage = proposalInlineMessage(summary, proposalText, attachmentName).replace(/\r?\n/g, " ").trim();
     first = notifyPublishFile(
       outTopic,
       resolvedPath,
       attachmentName,
       token,
       proposalTitle,
-      inlineHeaderMessage,
-      3,
-      tagsHeader,
-      firstActionBatch,
-    );
-  } else {
-    first = notifyPublishMessage(
-      outTopic,
-      inlineMessage,
-      token,
-      proposalTitle,
+      fallbackMessage,
       3,
       tagsHeader,
       firstActionBatch,
@@ -903,20 +928,7 @@ export function notifyProposal(
 
   if (first.httpCode !== "200") {
     const detail = first.body || first.stderr;
-    console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${first.httpCode})${detail ? `: ${detail}` : ""}, retrying without attachment`);
-    const fallback = notifyPublishMessage(
-      outTopic,
-      `Proposal for ${taskId}${slotSuffix}\n\n${inlineMessage}`,
-      token,
-      proposalTitle,
-      3,
-      tagsHeader,
-      firstActionBatch,
-    );
-    if (fallback.httpCode !== "200") {
-      const fallbackDetail = fallback.body || fallback.stderr;
-      console.error(`ludics: ntfy.sh proposal fallback failed (HTTP ${fallback.httpCode})${fallbackDetail ? `: ${fallbackDetail}` : ""}, logged locally`);
-    }
+    console.error(`ludics: ntfy.sh proposal notification failed (HTTP ${first.httpCode})${detail ? `: ${detail}` : ""}, logged locally`);
     return;
   }
 
