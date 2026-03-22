@@ -103,7 +103,7 @@ export const DEFAULT_TIMEOUTS: Record<string, number> = {
   "final-merge": 1800,
 };
 
-export const DEFAULT_PR_COMMENTS_TIMEOUT = 1800; // 30 min quiet before auto-merging
+export const DEFAULT_PR_COMMENTS_TIMEOUT = 600; // 10 min quiet before auto-merging (matches agent-duo)
 export const DEFAULT_PR_COMMENTS_CHECK_INTERVAL = 60; // poll GitHub every 60 s
 
 export const DEFAULT_POLL_INTERVAL = 10;
