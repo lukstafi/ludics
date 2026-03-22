@@ -680,13 +680,18 @@ const CLAUDE_OPUS_MODEL = "claude-opus-4-6";
 /**
  * Auto-select orchestration flags for the t3code adapter based on task effort.
  *
- * Effort-based selection:
+ * Effort-based selection (when coder is claude-code):
  * - small:  pair mode, no pre-work phases, Claude coder model = Sonnet
  * - medium: pair mode, enable plan phase, Claude coder model = Opus
  * - large:  pair mode, enable plan + gather phases, Claude coder model = Opus
  *
+ * For non-Claude coder providers (e.g. codex), no model suffix is emitted so the
+ * provider's own default applies (and coder_model config fallback remains active).
+ *
  * Config keys (mag.orchestration): default_mode, default_coder, default_reviewer
  * These can be overridden by explicit -A adapter args at assign time.
+ *
+ * Duo mode uses --agent tokens (name:provider[:model]); pair mode uses --coder/--reviewer.
  *
  * @returns An object with the recommended adapter name ("t3code") and args string.
  */
@@ -696,31 +701,45 @@ export function selectOrchestrationFlags(effort: string): { adapter: string; arg
   const coder = (orchCfg?.default_coder as string | undefined)?.trim() || "claude-code";
   const reviewer = (orchCfg?.default_reviewer as string | undefined)?.trim() || "codex";
 
-  const modeFlag = mode === "duo" ? "--duo" : "--pair";
-
   const norm = (effort ?? "").toLowerCase().trim();
-  let coderModel: string;
   const phaseFlags: string[] = [];
 
-  if (norm === "large") {
-    coderModel = CLAUDE_OPUS_MODEL;
-    phaseFlags.push("--plan", "--gather");
-  } else if (norm === "medium") {
-    coderModel = CLAUDE_OPUS_MODEL;
-    phaseFlags.push("--plan");
-  } else {
-    // small or unknown: no pre-work phases, Sonnet model
-    coderModel = DEFAULT_CLAUDE_MODEL;
+  // Only apply effort-based model selection for Claude providers; other providers
+  // use their own defaults (Codex picks gpt-5.4, etc.).
+  let coderModelSuffix = "";
+  if (coder === "claude-code") {
+    if (norm === "large" || norm === "medium") {
+      coderModelSuffix = `:${CLAUDE_OPUS_MODEL}`;
+    } else {
+      coderModelSuffix = `:${DEFAULT_CLAUDE_MODEL}`;
+    }
   }
 
-  const parts = [
-    modeFlag,
-    `--coder ${coder}:${coderModel}`,
-    `--reviewer ${reviewer}`,
-    ...phaseFlags,
-  ];
-  const args = parts.join(" ");
+  if (norm === "large") {
+    phaseFlags.push("--plan", "--gather");
+  } else if (norm === "medium") {
+    phaseFlags.push("--plan");
+  }
+  // small / unknown: no pre-work phases
 
+  let modeArgs: string[];
+  if (mode === "duo") {
+    // Duo mode: --agent name:provider[:model] (parsed as name:provider:model by parseProviderToken)
+    modeArgs = [
+      "--duo",
+      `--agent coder:${coder}${coderModelSuffix}`,
+      `--agent reviewer:${reviewer}`,
+    ];
+  } else {
+    // Pair mode: --coder provider[:model] --reviewer provider
+    modeArgs = [
+      "--pair",
+      `--coder ${coder}${coderModelSuffix}`,
+      `--reviewer ${reviewer}`,
+    ];
+  }
+
+  const args = [...modeArgs, ...phaseFlags].join(" ");
   return { adapter: "t3code", args };
 }
 
