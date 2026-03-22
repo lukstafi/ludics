@@ -119,22 +119,37 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
   if (!runtime) return false;
   if (runtime.interrupted) return true;
 
-  // For both peer-sync status ("done", "review-done", etc.) and t3code turn
-  // completion, verify the signal is fresh — i.e. written/completed after the
-  // current phase dispatched its turns.  A stale "done" left in the peer-sync
-  // file from a previous phase/run must not trigger a premature transition.
+  // The t3code turn state is the authoritative signal for whether the agent
+  // has finished its current work.  The peer-sync status file ("done",
+  // "review-done", etc.) is a secondary signal — it can be stale from a
+  // previous phase because the agent writes it seconds before the phase
+  // transitions, making its epoch appear "fresh" relative to the next
+  // phase's dispatch timestamp.
+  //
+  // Strategy: require the t3code turn to be freshly completed before
+  // trusting any done signal.  If we can't verify turn freshness (e.g.
+  // snapshot unavailable), fall back to the peer-sync status but only if
+  // the turn state is also "completed" (not "running" or "missing").
   const dispatchedAt = state.phaseDispatchedAt;
   const turnIsFresh = isTurnFresh(dispatchedAt, runtime.latestTurnCompletedAt);
-  const statusIsFresh = dispatchedAt
-    ? runtime.statusEpoch >= Math.floor(new Date(dispatchedAt).getTime() / 1000)
-    : true; // no dispatch timestamp means we can't verify — trust the status
 
-  if (DONE_STATUSES.has(runtime.status) && (statusIsFresh || turnIsFresh)) {
+  // Turn is freshly completed — trust either turn state or peer-sync status.
+  if (turnIsFresh) {
+    if (runtime.latestTurnState === "completed") return true;
+    if (DONE_STATUSES.has(runtime.status)) return true;
+  }
+
+  // Turn state unknown/missing but peer-sync says done AND turn is not running
+  // (handles case where t3code snapshot is unavailable).
+  if (
+    DONE_STATUSES.has(runtime.status)
+    && runtime.latestTurnState !== "running"
+    && runtime.latestTurnState !== "missing"
+    && !dispatchedAt  // no dispatch timestamp means pre-existing state, trust it
+  ) {
     return true;
   }
-  if (runtime.latestTurnState === "completed" && turnIsFresh) {
-    return true;
-  }
+
   return false;
 }
 
