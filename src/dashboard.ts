@@ -707,6 +707,36 @@ export function dashboardInstall(): void {
 
 // --- CLI dispatch ---
 
+export function dashboardStop(): void {
+  try {
+    const result = Bun.spawnSync(["pgrep", "-f", "ludics dashboard serve"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (result.exitCode !== 0) {
+      console.error("ludics: no dashboard server running");
+      return;
+    }
+    const pids = result.stdout.toString().trim().split("\n").filter(Boolean);
+    const myPid = String(process.pid);
+    let killed = 0;
+    for (const pid of pids) {
+      if (pid.trim() === myPid) continue;
+      try {
+        process.kill(parseInt(pid.trim(), 10), "SIGTERM");
+        killed++;
+      } catch { /* already dead */ }
+    }
+    if (killed > 0) {
+      console.error(`ludics: stopped dashboard server (${killed} process${killed > 1 ? "es" : ""})`);
+    } else {
+      console.error("ludics: no dashboard server running");
+    }
+  } catch {
+    console.error("ludics: failed to find dashboard server process");
+  }
+}
+
 export async function runDashboard(args: string[]): Promise<void> {
   const sub = args[0] ?? "";
 
@@ -728,7 +758,22 @@ export async function runDashboard(args: string[]): Promise<void> {
     case "install":
       dashboardInstall();
       break;
+    case "stop":
+      dashboardStop();
+      break;
+    case "restart": {
+      dashboardStop();
+      let port: number;
+      if (args[1]) {
+        port = parseInt(args[1], 10);
+      } else {
+        const config = loadConfigSync();
+        port = config.dashboard?.port ?? 7678;
+      }
+      dashboardServe(port);
+      break;
+    }
     default:
-      throw new Error(`unknown dashboard command: ${sub} (use: generate, serve, install)`);
+      throw new Error(`unknown dashboard command: ${sub} (use: generate, serve, stop, restart, install)`);
   }
 }

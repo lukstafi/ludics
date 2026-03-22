@@ -147,6 +147,8 @@ Commands:
 
   dashboard generate           Generate JSON data for dashboard
   dashboard serve [port]       Serve dashboard (default: 7678)
+  dashboard stop               Stop the dashboard server
+  dashboard restart [port]     Restart the dashboard server
   dashboard install            Install dashboard to state repo
 
   t3code [status]             Show shared t3code server status
