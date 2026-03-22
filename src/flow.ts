@@ -135,7 +135,8 @@ export function flowReady(): void {
         (!t.dependencies.blocked_by || t.dependencies.blocked_by.length === 0),
     )
     .sort((a, b) => {
-      const pDiff = effectivePriorityValue(a.priority, a.project) - effectivePriorityValue(b.priority, b.project);
+      // Pass pre-computed fp to avoid O(n log n) config reads during sorting
+      const pDiff = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
       if (pDiff !== 0) return pDiff;
       const aHas = a.deadline ? 1 : 2;
       const bHas = b.deadline ? 1 : 2;
@@ -148,7 +149,7 @@ export function flowReady(): void {
   } else {
     for (const t of ready) {
       // Show virtual priority when a focus project is configured (for transparency)
-      const displayPri = fp ? effectivePriority(t.priority, t.project) : (t.priority || "-");
+      const displayPri = fp ? effectivePriority(t.priority, t.project, fp) : (t.priority || "-");
       console.log(`${t.id} (${displayPri}) ${t.title}`);
     }
   }

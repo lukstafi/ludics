@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, effectivePriorityValue } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, focusProject, effectivePriorityValue } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
@@ -1906,8 +1906,10 @@ function maybeFillEmptySlots(): void {
 
   // Sort by effective (virtual) priority (S > A > B > C), then deadline presence, then deadline date.
   // Focus-project tasks receive a one-level virtual boost via effectivePriorityValue().
+  // Pre-compute fp once to avoid repeated config reads inside the sort comparator.
+  const fp = focusProject();
   candidates.sort((a, b) => {
-    const pd = effectivePriorityValue(a.priority, a.project) - effectivePriorityValue(b.priority, b.project);
+    const pd = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
     if (pd !== 0) return pd;
     if (a.hasDeadline !== b.hasDeadline) return a.hasDeadline ? -1 : 1;
     return (a.deadline || "9999").localeCompare(b.deadline || "9999");

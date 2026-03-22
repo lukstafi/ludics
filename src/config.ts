@@ -267,10 +267,13 @@ export function focusProject(): string | null {
  * boost when the task's project matches the configured focus project:
  *   A → S, B → A, C → B (non-focus tasks keep their actual priority).
  * When no focus project is configured, returns the original priority unchanged.
+ *
+ * Pass the pre-computed `fp` value (from `focusProject()`) to avoid repeated
+ * config reads inside sort comparators. When omitted, reads config once.
  */
-export function effectivePriority(priority: string, project: string): string {
-  const fp = focusProject();
-  if (!fp || project !== fp) return priority;
+export function effectivePriority(priority: string, project: string, fp?: string | null): string {
+  const focusPrj = fp !== undefined ? fp : focusProject();
+  if (!focusPrj || project !== focusPrj) return priority;
   switch (priority) {
     case "A": return "S";
     case "B": return "A";
@@ -282,9 +285,12 @@ export function effectivePriority(priority: string, project: string): string {
 /**
  * Numeric sort key for virtual priority: S=0, A=1, B=2, C=3, other=9.
  * Applies focus-project boost automatically.
+ *
+ * Pass the pre-computed `fp` value (from `focusProject()`) to avoid repeated
+ * config reads inside sort comparators. When omitted, reads config once.
  */
-export function effectivePriorityValue(priority: string, project: string): number {
-  const ep = effectivePriority(priority, project);
+export function effectivePriorityValue(priority: string, project: string, fp?: string | null): number {
+  const ep = effectivePriority(priority, project, fp);
   switch (ep) {
     case "S": return 0;
     case "A": return 1;
