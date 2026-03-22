@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { T3CodeClient } from "../t3code/client.ts";
@@ -12,7 +12,7 @@ import { shouldRunUpdateDocs } from "./learning.ts";
 import { composeSkillMessage } from "./skills.ts";
 import { persistState, readOrchestrationState, type AgentConfig, type OrchestrationState } from "./state.ts";
 import { isoNow, isTurnFresh, makeId, nowEpoch, sleep } from "./util.ts";
-import { fetchNewPrCommentCount, validateAndFixPrFile } from "./github.ts";
+import { fetchNewPrCommentCount, isPrMerged, validateAndFixPrFile } from "./github.ts";
 
 async function withClient<T>(
   record: T3CodeServerRecord,
@@ -198,6 +198,26 @@ async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<
     state.prCommentsLastCheckAt = now;
     if (!state.prCommentsQuietSince) state.prCommentsQuietSince = now;
     return;
+  }
+
+  // Check if any PR has been merged externally — create the merged marker so
+  // evaluateTransition can advance past pr-comments.
+  for (const agent of agentsWithPr) {
+    const prUrl = state.agentStates[agent.name]!.prUrl!;
+    const markerFile = join(state.peerSyncDir, `${agent.name}.merged`);
+    if (!existsSync(markerFile) && isPrMerged(prUrl)) {
+      writeFileSync(markerFile, "merged\n");
+      state.agentStates[agent.name]!.status = "merged";
+      state.agentStates[agent.name]!.statusMessage = "PR merged externally";
+      emitEvent({
+        event_type: "pr_merged",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.feature,
+        message: `PR merged: ${prUrl}`,
+      });
+    }
   }
 
   // Only re-dispatch once all participating agents have finished their current turn.

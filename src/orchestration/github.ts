@@ -45,6 +45,23 @@ export function fetchNewPrCommentCount(prUrl: string, sinceEpoch: number): numbe
   return reviewComments + issueComments + reviews;
 }
 
+/** Check if a GitHub PR has been merged. */
+export function isPrMerged(prUrl: string): boolean {
+  const match = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+  if (!match) return false;
+  const [, repo, prNumber] = match;
+  try {
+    const result = Bun.spawnSync(
+      ["gh", "api", `repos/${repo}/pulls/${prNumber}`, "--jq", ".merged"],
+      { stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string> },
+    );
+    if (result.exitCode !== 0) return false;
+    return result.stdout.toString().trim() === "true";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * If the pr file contains markdown/text rather than a GitHub PR URL, use the content as the
  * PR body to auto-create a PR via `gh pr create`, then rewrite the file with just the URL.
