@@ -97,6 +97,9 @@ function renderSlots(slots) {
             } else if (isProjectReserved) {
                 statusDiv.className = 'slot-status reserved';
                 statusText.textContent = 'Project';
+            } else if (hasTask && !slot.phase) {
+                statusDiv.className = 'slot-status assigned';
+                statusText.innerHTML = 'Assigned <button class="start-slot-btn" onclick="startSlot(' + i + ')" title="Start session">start</button>';
             } else {
                 statusDiv.className = 'slot-status active';
                 statusText.innerHTML = 'Active <button class="mark-done-btn" onclick="markSlotDone(' + i + ')" title="Mark slot as done">done</button>';
@@ -486,6 +489,28 @@ async function markSlotDone(slotNum) {
     } catch {
         btn.textContent = 'error';
         setTimeout(() => { btn.textContent = 'done'; btn.disabled = false; }, 2000);
+    }
+}
+
+// Start a slot session via CLI command
+async function startSlot(slotNum) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+        const response = await fetch(`/api/slot-start?slot=${slotNum}`);
+        if (response.ok) {
+            btn.textContent = 'started';
+            fetchAllData(); // refresh
+        } else {
+            const msg = await response.text();
+            btn.textContent = 'error';
+            console.error('slot start failed:', msg);
+            setTimeout(() => { btn.textContent = 'start'; btn.disabled = false; }, 3000);
+        }
+    } catch {
+        btn.textContent = 'error';
+        setTimeout(() => { btn.textContent = 'start'; btn.disabled = false; }, 3000);
     }
 }
 

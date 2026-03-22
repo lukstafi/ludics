@@ -159,6 +159,27 @@ export function startDashboardServer(
         }
       }
 
+      // API: start a slot session
+      if (pathname === "/api/slot-start") {
+        const slotParam = url.searchParams.get("slot");
+        if (!slotParam || !/^[1-6]$/.test(slotParam)) {
+          return new Response("Bad Request: slot must be 1-6", { status: 400 });
+        }
+        try {
+          const proc = Bun.spawnSync(
+            [process.execPath, "slot", slotParam, "start"],
+            { stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
+          );
+          if (proc.exitCode !== 0) {
+            return new Response(proc.stderr.toString() || "slot start failed", { status: 500 });
+          }
+          lastGenerated = 0;
+          return new Response("OK", { status: 200 });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
       if (pathname.startsWith("/task-files/")) {
         const taskPath = pathname.slice("/task-files/".length);
         const taskMatch = taskPath.match(/^([A-Za-z0-9._-]+)\.md$/);
