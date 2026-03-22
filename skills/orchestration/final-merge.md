@@ -20,9 +20,8 @@ Steps:
 4. Run the project build and relevant tests to confirm the branch is green.
 5. Merge the PR:
    ```sh
-   gh pr merge --squash --delete-branch
+   gh pr merge --merge --delete-branch
    ```
-   Use `--squash` for a clean history; fall back to `--merge` if squash is not permitted.
 6. After a successful merge, create the merged marker:
    ```sh
    touch "{{MERGED_MARKER_FILE}}"
