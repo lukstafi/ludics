@@ -110,6 +110,19 @@ export function createWorktrees(
     }
   }
 
+  // Symlink node_modules from the project dir into worktrees so that
+  // typecheck, tests, and tooling work without a separate install.
+  const projectNodeModules = join(resolve(projectDir), "node_modules");
+  if (existsSync(projectNodeModules)) {
+    const uniquePaths = new Set([rootWorktree, ...Object.values(agentWorktrees)]);
+    for (const wt of uniquePaths) {
+      const target = join(wt, "node_modules");
+      if (!existsSync(target)) {
+        try { symlinkSync(projectNodeModules, target); } catch { /* ignore */ }
+      }
+    }
+  }
+
   return { rootWorktree, peerSyncDir, agentWorktrees, branches };
 }
 
