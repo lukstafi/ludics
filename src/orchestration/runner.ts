@@ -100,16 +100,37 @@ function markActiveAgents(state: OrchestrationState): void {
 }
 
 /**
+ * Normalise a raw effort value to a named level string.
+ * Legacy numeric token-budget values (e.g. 32768 from old coder_thinking_effort configs)
+ * are mapped to the closest named level so they remain valid on the wire.
+ */
+function normaliseEffortLevel(raw: string): string {
+  const lower = raw.toLowerCase().trim();
+  // Already a named level — return as-is.
+  if (lower === "low" || lower === "medium" || lower === "high" || lower === "max") return lower;
+  // Legacy numeric token budget — map to the closest named level.
+  const n = parseInt(raw, 10);
+  if (!isNaN(n)) {
+    if (n <= 1024) return "low";
+    if (n <= 8192) return "medium";
+    return "high";
+  }
+  // Unrecognised value — fall back to high.
+  return "high";
+}
+
+/**
  * Translate a provider-agnostic effort level to the correct wire protocol fields.
  * - For claudeAgent: sends `effort` field (supports low/medium/high/max)
  * - For codex: sends `reasoningEffort` field (supports low/medium/high; max → high)
+ * - Legacy numeric values (e.g. 32768) are mapped to named levels before dispatch.
  */
 function effortFields(
   effort: string | undefined,
   wireProvider: ReturnType<typeof toWireProvider>,
 ): { effort?: string } | { reasoningEffort?: string } | Record<string, never> {
   if (!effort) return {};
-  const level = effort.toLowerCase();
+  const level = normaliseEffortLevel(effort);
   if (wireProvider === "claudeAgent") {
     return { effort: level };
   }
