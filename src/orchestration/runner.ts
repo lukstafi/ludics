@@ -99,18 +99,44 @@ function markActiveAgents(state: OrchestrationState): void {
   }
 }
 
-/** Convert a thinking effort string to a token budget number for the wire protocol. */
-function thinkingEffortToBudget(effort: string | undefined): number | null {
-  if (!effort) return null;
-  switch (effort.toLowerCase()) {
-    case "low": return 1024;
-    case "medium": return 8192;
-    case "high": return 32768;
-    default: {
-      const n = parseInt(effort, 10);
-      return isNaN(n) ? null : n;
-    }
+/**
+ * Normalise a raw effort value to a named level string.
+ * Legacy numeric token-budget values (e.g. 32768 from old coder_thinking_effort configs)
+ * are mapped to the closest named level so they remain valid on the wire.
+ */
+function normaliseEffortLevel(raw: string): string {
+  const lower = raw.toLowerCase().trim();
+  // Already a named level — return as-is.
+  if (lower === "low" || lower === "medium" || lower === "high" || lower === "max") return lower;
+  // Legacy numeric token budget — map to the closest named level.
+  const n = parseInt(raw, 10);
+  if (!isNaN(n)) {
+    if (n <= 1024) return "low";
+    if (n <= 8192) return "medium";
+    return "high";
   }
+  // Unrecognised value — fall back to high.
+  return "high";
+}
+
+/**
+ * Translate a provider-agnostic effort level to the correct wire protocol fields.
+ * - For claudeAgent: sends `effort` field (supports low/medium/high/max)
+ * - For codex: sends `reasoningEffort` field (supports low/medium/high; max → high)
+ * - Legacy numeric values (e.g. 32768) are mapped to named levels before dispatch.
+ */
+function effortFields(
+  effort: string | undefined,
+  wireProvider: ReturnType<typeof toWireProvider>,
+): { effort?: string } | { reasoningEffort?: string } | Record<string, never> {
+  if (!effort) return {};
+  const level = normaliseEffortLevel(effort);
+  if (wireProvider === "claudeAgent") {
+    return { effort: level };
+  }
+  // Codex: max is not supported, map to high
+  const codexLevel = level === "max" ? "high" : level;
+  return { reasoningEffort: codexLevel };
 }
 
 async function sendTurnMessage(
@@ -122,7 +148,8 @@ async function sendTurnMessage(
   const record = readServerRecord();
   if (!record || !threadId) throw new Error(`no t3code thread for agent ${agent.name}`);
 
-  const thinkingBudget = thinkingEffortToBudget(agent.thinkingEffort);
+  const wireProvider = toWireProvider(agent.provider);
+  const providerEffort = effortFields(agent.thinkingEffort, wireProvider);
 
   await withClient(record, async (client) => {
     await client.dispatchCommand({
@@ -135,9 +162,9 @@ async function sendTurnMessage(
         text: message,
         attachments: [],
       },
-      provider: toWireProvider(agent.provider),
+      provider: wireProvider,
       model: agent.model,
-      ...(thinkingBudget !== null ? { thinkingBudget } : {}),
+      ...providerEffort,
       runtimeMode: "full-access",
       interactionMode: "default",
       createdAt: isoNow(),

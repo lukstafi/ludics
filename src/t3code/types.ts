@@ -132,11 +132,15 @@ export interface T3ThreadTurnStartCommand {
   runtimeMode: T3RuntimeMode;
   interactionMode: T3InteractionMode;
   /**
-   * Token budget for extended thinking (Anthropic) or reasoning effort (OpenAI).
-   * For Anthropic: number of tokens (e.g. 1024, 8192, 32768).
-   * Provider-agnostic budget; the t3code server maps it to the correct provider parameter.
+   * Effort level for Claude (claudeAgent) provider.
+   * Values: "low" | "medium" | "high" | "max"
    */
-  thinkingBudget?: number | null;
+  effort?: string | null;
+  /**
+   * Reasoning effort for Codex provider.
+   * Values: "low" | "medium" | "high" (Codex does not support "max")
+   */
+  reasoningEffort?: string | null;
   createdAt: string;
 }
 
