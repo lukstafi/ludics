@@ -1247,6 +1247,19 @@ async function cleanupDoneTaskThreads(): Promise<void> {
 }
 
 async function briefingPrecomputeContext(): Promise<void> {
+  // Ensure t3code server is running before briefing (it dies on overnight shutdown)
+  {
+    const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
+    if (magConfig?.ensure_t3code !== false) {
+      try {
+        const { ensureServer } = await import("./t3code/server.ts");
+        await ensureServer({ harnessDir: harnessDir() });
+      } catch {
+        // t3code may not be installed — silently skip
+      }
+    }
+  }
+
   // Clean up t3code threads for completed tasks before building the context
   await cleanupDoneTaskThreads();
 
