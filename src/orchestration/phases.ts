@@ -118,15 +118,22 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
   const runtime = state.agentStates[agent.name];
   if (!runtime) return false;
   if (runtime.interrupted) return true;
-  if (DONE_STATUSES.has(runtime.status)) return true;
-  // Only treat a "completed" turn state as done when it is fresh — i.e. its
-  // completedAt timestamp is at or after the moment this phase dispatched its
-  // turns.  A "completed" state left over from the *previous* phase must not
-  // trigger a premature transition before the new turn has even started.
-  if (runtime.latestTurnState === "completed") {
-    if (isTurnFresh(state.phaseDispatchedAt, runtime.latestTurnCompletedAt)) {
-      return true;
-    }
+
+  // For both peer-sync status ("done", "review-done", etc.) and t3code turn
+  // completion, verify the signal is fresh — i.e. written/completed after the
+  // current phase dispatched its turns.  A stale "done" left in the peer-sync
+  // file from a previous phase/run must not trigger a premature transition.
+  const dispatchedAt = state.phaseDispatchedAt;
+  const turnIsFresh = isTurnFresh(dispatchedAt, runtime.latestTurnCompletedAt);
+  const statusIsFresh = dispatchedAt
+    ? runtime.statusEpoch >= Math.floor(new Date(dispatchedAt).getTime() / 1000)
+    : true; // no dispatch timestamp means we can't verify — trust the status
+
+  if (DONE_STATUSES.has(runtime.status) && (statusIsFresh || turnIsFresh)) {
+    return true;
+  }
+  if (runtime.latestTurnState === "completed" && turnIsFresh) {
+    return true;
   }
   return false;
 }
