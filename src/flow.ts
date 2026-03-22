@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import YAML from "yaml";
-import { harnessDir, slotsFilePath } from "./config.ts";
+import { harnessDir, slotsFilePath, focusProject, effectivePriority, effectivePriorityValue } from "./config.ts";
 
 interface TaskData {
   id: string;
@@ -126,6 +126,8 @@ export function flowReady(): void {
     console.error("ludics: dependency cycle detected in tasks");
   }
 
+  const fp = focusProject();
+
   const ready = tasks
     .filter(
       (t) =>
@@ -133,7 +135,8 @@ export function flowReady(): void {
         (!t.dependencies.blocked_by || t.dependencies.blocked_by.length === 0),
     )
     .sort((a, b) => {
-      const pDiff = priorityValue(a.priority) - priorityValue(b.priority);
+      // Pass pre-computed fp to avoid O(n log n) config reads during sorting
+      const pDiff = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
       if (pDiff !== 0) return pDiff;
       const aHas = a.deadline ? 1 : 2;
       const bHas = b.deadline ? 1 : 2;
@@ -145,7 +148,9 @@ export function flowReady(): void {
     console.log("No ready tasks");
   } else {
     for (const t of ready) {
-      console.log(`${t.id} (${t.priority || "-"}) ${t.title}`);
+      // Show virtual priority when a focus project is configured (for transparency)
+      const displayPri = fp ? effectivePriority(t.priority, t.project, fp) : (t.priority || "-");
+      console.log(`${t.id} (${displayPri}) ${t.title}`);
     }
   }
 }

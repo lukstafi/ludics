@@ -92,6 +92,11 @@ mag:
       suggest-refactor: 600
       final-merge: 1800
 
+  # Focus project: tasks from this project receive a virtual one-level priority boost
+  # during auto-fill and flow ready sorting (A→S, B→A, C→B relative to other projects).
+  # Set to null or omit to disable the boost (backward compatible).
+  focus_project: null   # e.g. "ludics"
+
   # Autonomy levels: auto | suggest | manual
   autonomy_level:
     elaborate_tasks: auto       # Auto writes detailed specs

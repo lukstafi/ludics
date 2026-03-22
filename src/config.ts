@@ -253,3 +253,49 @@ export function startSessionsAutonomy(): "auto" | "suggest" | "manual" {
   if (val === "suggest") return "suggest";
   return "manual";
 }
+
+/** Returns the focus project name from mag.focus_project, or null if unset. */
+export function focusProject(): string | null {
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+  const fp = mag?.focus_project;
+  return typeof fp === "string" && fp ? fp : null;
+}
+
+/**
+ * Returns the effective (virtual) priority for a task, applying a one-level
+ * boost when the task's project matches the configured focus project:
+ *   A → S, B → A, C → B (non-focus tasks keep their actual priority).
+ * When no focus project is configured, returns the original priority unchanged.
+ *
+ * Pass the pre-computed `fp` value (from `focusProject()`) to avoid repeated
+ * config reads inside sort comparators. When omitted, reads config once.
+ */
+export function effectivePriority(priority: string, project: string, fp?: string | null): string {
+  const focusPrj = fp !== undefined ? fp : focusProject();
+  if (!focusPrj || project !== focusPrj) return priority;
+  switch (priority) {
+    case "A": return "S";
+    case "B": return "A";
+    case "C": return "B";
+    default: return priority;
+  }
+}
+
+/**
+ * Numeric sort key for virtual priority: S=0, A=1, B=2, C=3, other=9.
+ * Applies focus-project boost automatically.
+ *
+ * Pass the pre-computed `fp` value (from `focusProject()`) to avoid repeated
+ * config reads inside sort comparators. When omitted, reads config once.
+ */
+export function effectivePriorityValue(priority: string, project: string, fp?: string | null): number {
+  const ep = effectivePriority(priority, project, fp);
+  switch (ep) {
+    case "S": return 0;
+    case "A": return 1;
+    case "B": return 2;
+    case "C": return 3;
+    default: return 9;
+  }
+}
