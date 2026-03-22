@@ -219,7 +219,7 @@ main {
     gap: 0.5rem;
 }
 
-.clear-done-btn {
+.mark-done-btn {
     font-size: 0.7rem;
     padding: 0.1rem 0.4rem;
     border: 1px solid var(--accent);
@@ -230,7 +230,7 @@ main {
     font-family: inherit;
 }
 
-.clear-done-btn:hover {
+.mark-done-btn:hover {
     background: var(--accent);
     color: var(--bg-primary);
 }

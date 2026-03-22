@@ -90,7 +90,7 @@ function renderSlots(slots) {
         } else {
             if (slot.phase === 'done') {
                 statusDiv.className = 'slot-status done';
-                statusText.innerHTML = '<span class="done-label">Done</span> <button class="clear-done-btn" onclick="clearSlotDone(' + i + ')" title="Clear slot as done">clear</button>';
+                statusText.innerHTML = 'Done';
             } else if (slot.preempted) {
                 statusDiv.className = 'slot-status preempted';
                 statusText.textContent = 'Preempted';
@@ -99,7 +99,7 @@ function renderSlots(slots) {
                 statusText.textContent = 'Project';
             } else {
                 statusDiv.className = 'slot-status active';
-                statusText.textContent = 'Active';
+                statusText.innerHTML = 'Active <button class="mark-done-btn" onclick="markSlotDone(' + i + ')" title="Mark slot as done">done</button>';
             }
 
             let html = `<p class="process" title="${escapeHtml(slot.process)}">${escapeHtml(slot.process)}</p>`;
@@ -469,23 +469,23 @@ async function fetchT3codeLink() {
     } catch { /* ignore */ }
 }
 
-// Clear a done slot via CLI command
-async function clearSlotDone(slotNum) {
+// Mark a slot as done via CLI command (auto-clear happens on next keepalive)
+async function markSlotDone(slotNum) {
     const btn = event.target;
     btn.disabled = true;
     btn.textContent = '...';
     try {
         const response = await fetch(`/api/slot-clear?slot=${slotNum}&status=done`);
         if (response.ok) {
-            btn.textContent = 'cleared';
+            btn.textContent = 'done';
             fetchAllData(); // refresh
         } else {
             btn.textContent = 'error';
-            setTimeout(() => { btn.textContent = 'clear'; btn.disabled = false; }, 2000);
+            setTimeout(() => { btn.textContent = 'done'; btn.disabled = false; }, 2000);
         }
     } catch {
         btn.textContent = 'error';
-        setTimeout(() => { btn.textContent = 'clear'; btn.disabled = false; }, 2000);
+        setTimeout(() => { btn.textContent = 'done'; btn.disabled = false; }, 2000);
     }
 }
 
