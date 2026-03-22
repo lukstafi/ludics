@@ -208,6 +208,33 @@ main {
     color: var(--empty);
 }
 
+.slot-status.done .status-indicator {
+    background-color: var(--accent);
+}
+
+.slot-status.done .status-text {
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.clear-done-btn {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--accent);
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.clear-done-btn:hover {
+    background: var(--accent);
+    color: var(--bg-primary);
+}
+
 .slot-details {
     font-size: 0.875rem;
     color: var(--text-secondary);

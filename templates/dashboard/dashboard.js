@@ -88,7 +88,10 @@ function renderSlots(slots) {
             setHtmlPreserveScroll(detailsDiv, '');
             setHtmlPreserveScroll(linksDiv, '');
         } else {
-            if (slot.preempted) {
+            if (slot.phase === 'done') {
+                statusDiv.className = 'slot-status done';
+                statusText.innerHTML = '<span class="done-label">Done</span> <button class="clear-done-btn" onclick="clearSlotDone(' + i + ')" title="Clear slot as done">clear</button>';
+            } else if (slot.preempted) {
                 statusDiv.className = 'slot-status preempted';
                 statusText.textContent = 'Preempted';
             } else if (isProjectReserved) {
@@ -464,6 +467,26 @@ async function fetchT3codeLink() {
             link.title = 't3code server not running';
         }
     } catch { /* ignore */ }
+}
+
+// Clear a done slot via CLI command
+async function clearSlotDone(slotNum) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+        const response = await fetch(`/api/slot-clear?slot=${slotNum}&status=done`);
+        if (response.ok) {
+            btn.textContent = 'cleared';
+            fetchAllData(); // refresh
+        } else {
+            btn.textContent = 'error';
+            setTimeout(() => { btn.textContent = 'clear'; btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = 'error';
+        setTimeout(() => { btn.textContent = 'clear'; btn.disabled = false; }, 2000);
+    }
 }
 
 // Placeholder data for development/demo

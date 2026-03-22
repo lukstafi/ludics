@@ -137,6 +137,28 @@ export function startDashboardServer(
         maybeRegenerate();
       }
 
+      // API: clear a slot as done
+      if (pathname === "/api/slot-clear") {
+        const slotParam = url.searchParams.get("slot");
+        const status = url.searchParams.get("status") ?? "done";
+        if (!slotParam || !/^[1-6]$/.test(slotParam)) {
+          return new Response("Bad Request: slot must be 1-6", { status: 400 });
+        }
+        try {
+          const proc = Bun.spawnSync(
+            [process.execPath, "slot", slotParam, "clear", status],
+            { stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
+          );
+          if (proc.exitCode !== 0) {
+            return new Response(proc.stderr.toString() || "slot clear failed", { status: 500 });
+          }
+          lastGenerated = 0; // force regeneration on next data request
+          return new Response("OK", { status: 200 });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
       if (pathname.startsWith("/task-files/")) {
         const taskPath = pathname.slice("/task-files/".length);
         const taskMatch = taskPath.match(/^([A-Za-z0-9._-]+)\.md$/);
