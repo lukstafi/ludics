@@ -13,6 +13,8 @@ import { composeSkillMessage } from "./skills.ts";
 import { persistState, readOrchestrationState, type AgentConfig, type OrchestrationState } from "./state.ts";
 import { isoNow, isTurnFresh, makeId, nowEpoch, sleep } from "./util.ts";
 import { fetchNewPrCommentCount, isPrMerged, validateAndFixPrFile } from "./github.ts";
+import { updateFrontmatterField } from "../tasks/markdown.ts";
+import { harnessDir } from "../config.ts";
 
 async function withClient<T>(
   record: T3CodeServerRecord,
@@ -458,6 +460,25 @@ export async function runOrchestration(
     state.phaseDispatched = false;
     state.phaseDispatchedAt = null;
     persistState(state);
+  }
+
+  // Orchestration complete — mark the task as done so maybeClearDoneSlots()
+  // auto-clears the slot on the next keepalive tick.
+  if (state.taskId) {
+    const taskFile = join(harnessDir(), "tasks", `${state.taskId}.md`);
+    if (existsSync(taskFile)) {
+      updateFrontmatterField(taskFile, "status", "done");
+      updateFrontmatterField(taskFile, "completed", isoNow());
+      emitEvent({
+        event_type: "task_completed",
+        source: "orchestration",
+        scope: "task",
+        slot: state.slot,
+        task: state.taskId,
+        status: "done",
+        message: `orchestration completed for ${state.taskId}`,
+      });
+    }
   }
 }
 
