@@ -4,11 +4,15 @@ Monitor the GitHub PR linked in `{{PR_FILE}}` and address any reviewer feedback 
 
 Steps:
 1. Read the PR URL from `{{PR_FILE}}`.
-2. Fetch all open review comments and review requests:
+2. Fetch all review feedback — both top-level reviews AND inline file comments:
    ```sh
+   # Top-level reviews and PR comments
    gh pr view --json reviews,comments --jq '.reviews,.comments'
+   # Inline file-level review comments (these are on a separate API endpoint)
+   gh api repos/{owner}/{repo}/pulls/{number}/comments --jq '.[] | {path, line, body}'
    ```
-3. For each actionable comment, make the requested change, commit, and push.
+   Extract the owner/repo/number from the PR URL.
+3. For each actionable comment (top-level or inline), make the requested change, commit, and push.
 4. If no PR URL exists in `{{PR_FILE}}` yet (file missing or blank), create the PR first:
    ```sh
    gh pr create --title "<title>" --body "<description>"
