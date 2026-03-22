@@ -99,18 +99,23 @@ function markActiveAgents(state: OrchestrationState): void {
   }
 }
 
-/** Convert a thinking effort string to a token budget number for the wire protocol. */
-function thinkingEffortToBudget(effort: string | undefined): number | null {
-  if (!effort) return null;
-  switch (effort.toLowerCase()) {
-    case "low": return 1024;
-    case "medium": return 8192;
-    case "high": return 32768;
-    default: {
-      const n = parseInt(effort, 10);
-      return isNaN(n) ? null : n;
-    }
+/**
+ * Translate a provider-agnostic effort level to the correct wire protocol fields.
+ * - For claudeAgent: sends `effort` field (supports low/medium/high/max)
+ * - For codex: sends `reasoningEffort` field (supports low/medium/high; max → high)
+ */
+function effortFields(
+  effort: string | undefined,
+  wireProvider: ReturnType<typeof toWireProvider>,
+): { effort?: string } | { reasoningEffort?: string } | Record<string, never> {
+  if (!effort) return {};
+  const level = effort.toLowerCase();
+  if (wireProvider === "claudeAgent") {
+    return { effort: level };
   }
+  // Codex: max is not supported, map to high
+  const codexLevel = level === "max" ? "high" : level;
+  return { reasoningEffort: codexLevel };
 }
 
 async function sendTurnMessage(
@@ -122,7 +127,8 @@ async function sendTurnMessage(
   const record = readServerRecord();
   if (!record || !threadId) throw new Error(`no t3code thread for agent ${agent.name}`);
 
-  const thinkingBudget = thinkingEffortToBudget(agent.thinkingEffort);
+  const wireProvider = toWireProvider(agent.provider);
+  const providerEffort = effortFields(agent.thinkingEffort, wireProvider);
 
   await withClient(record, async (client) => {
     await client.dispatchCommand({
@@ -135,9 +141,9 @@ async function sendTurnMessage(
         text: message,
         attachments: [],
       },
-      provider: toWireProvider(agent.provider),
+      provider: wireProvider,
       model: agent.model,
-      ...(thinkingBudget !== null ? { thinkingBudget } : {}),
+      ...providerEffort,
       runtimeMode: "full-access",
       interactionMode: "default",
       createdAt: isoNow(),

@@ -18,7 +18,12 @@ export interface AgentConfig {
   model: string;
   branch: string;
   worktreePath: string;
-  /** Thinking effort level: "low" | "medium" | "high" or a token budget number as string. */
+  /**
+   * Provider-agnostic effort level: "low" | "medium" | "high" | "max".
+   * Defaults to "high" when not explicitly configured.
+   * Translated to provider-specific wire fields: `effort` for claudeAgent, `reasoningEffort` for codex.
+   * Codex does not support "max"; it is mapped to "high" at dispatch time.
+   */
   thinkingEffort?: string;
 }
 

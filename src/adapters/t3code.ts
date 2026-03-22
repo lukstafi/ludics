@@ -275,18 +275,21 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         reviewerModelOverride = next;
         i++;
         break;
+      case "--coder-effort":
       case "--coder-thinking-effort":
-        if (!next) throw new Error("t3code adapter args: --coder-thinking-effort requires low|medium|high|<tokens>");
+        if (!next) throw new Error(`t3code adapter args: ${arg} requires low|medium|high|max`);
         coderThinkingEffort = next;
         i++;
         break;
+      case "--reviewer-effort":
       case "--reviewer-thinking-effort":
-        if (!next) throw new Error("t3code adapter args: --reviewer-thinking-effort requires low|medium|high|<tokens>");
+        if (!next) throw new Error(`t3code adapter args: ${arg} requires low|medium|high|max`);
         reviewerThinkingEffort = next;
         i++;
         break;
+      case "--effort":
       case "--thinking-effort":
-        if (!next) throw new Error("t3code adapter args: --thinking-effort requires low|medium|high|<tokens>");
+        if (!next) throw new Error(`t3code adapter args: ${arg} requires low|medium|high|max`);
         coderThinkingEffort = next;
         reviewerThinkingEffort = next;
         i++;
@@ -775,14 +778,14 @@ function resolveAgentModel(
   return agent.model;
 }
 
-/** Resolve thinking effort for an agent, applying config and adapter arg overrides. */
+/** Resolve effort level for an agent, applying config and adapter arg overrides. Defaults to "high". */
 function resolveAgentThinkingEffort(
   agent: ParsedAgentToken,
   index: number,
   orchCfg: Record<string, unknown> | undefined,
   coderEffort: string | undefined,
   reviewerEffort: string | undefined,
-): string | undefined {
+): string {
   const isCoderSlot = agent.role === "coder" || (!agent.role && index === 0);
   const isReviewerSlot = agent.role === "reviewer" || (!agent.role && index === 1);
 
@@ -790,17 +793,18 @@ function resolveAgentThinkingEffort(
   if (isCoderSlot && coderEffort) return coderEffort;
   if (isReviewerSlot && reviewerEffort) return reviewerEffort;
 
-  // Fallback: config.yaml defaults
+  // Fallback: config.yaml defaults (support both coder_effort and legacy coder_thinking_effort)
   if (isCoderSlot) {
-    const cfgEffort = orchCfg?.coder_thinking_effort as string | undefined;
+    const cfgEffort = (orchCfg?.coder_effort ?? orchCfg?.coder_thinking_effort) as string | undefined;
     if (cfgEffort?.trim()) return cfgEffort.trim();
   }
   if (isReviewerSlot) {
-    const cfgEffort = orchCfg?.reviewer_thinking_effort as string | undefined;
+    const cfgEffort = (orchCfg?.reviewer_effort ?? orchCfg?.reviewer_thinking_effort) as string | undefined;
     if (cfgEffort?.trim()) return cfgEffort.trim();
   }
 
-  return undefined;
+  // Default: high effort for both coder and reviewer
+  return "high";
 }
 
 async function startOrchestratedThreads(
