@@ -65,6 +65,9 @@ mag:
 
   # Duo/pair orchestration settings (overridable per-task via adapter -A args)
   orchestration:
+    default_mode: pair           # Default orchestration mode for auto-selected sessions: pair | duo
+    default_coder: claude-code   # Default coder provider for auto-selected sessions: claude-code | codex
+    default_reviewer: codex      # Default reviewer provider for auto-selected sessions: codex | claude-code
     coder_model: ""              # Model ID for the coder agent (e.g. claude-opus-4-6); empty = provider default
     reviewer_model: ""           # Model ID for the reviewer agent; empty = provider default
     coder_thinking_effort: ""    # Thinking effort for the coder: low | medium | high | <token-count>; empty = disabled

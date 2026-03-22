@@ -17,6 +17,7 @@ import {
   expirePendingFollowupRevises,
 } from "./notify.ts";
 import { slotAssign, slotClear, slotStart, taskCompleteDirectly } from "./slots/index.ts";
+import { selectOrchestrationFlags } from "./adapters/t3code.ts";
 import YAML from "yaml";
 import {
   tmuxAvailable,
@@ -1859,7 +1860,7 @@ function maybeFillEmptySlots(): void {
 
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
 
-  interface Candidate { id: string; priority: string; project: string; hasDeadline: boolean; deadline: string }
+  interface Candidate { id: string; priority: string; project: string; hasDeadline: boolean; deadline: string; effort: string }
   const candidates: Candidate[] = [];
 
   for (const f of files) {
@@ -1895,7 +1896,10 @@ function maybeFillEmptySlots(): void {
     const deadlineMatch = content.match(/^deadline:\s*(.+)$/m);
     const deadline = deadlineMatch ? deadlineMatch[1]!.trim() : "";
 
-    candidates.push({ id, priority, project, hasDeadline: !!deadline && deadline !== "null", deadline });
+    const effortMatch = content.match(/^effort:\s*(.+)$/m);
+    const effort = effortMatch ? effortMatch[1]!.trim() : "small";
+
+    candidates.push({ id, priority, project, hasDeadline: !!deadline && deadline !== "null", deadline, effort });
   }
 
   if (candidates.length === 0) return;
@@ -1913,11 +1917,23 @@ function maybeFillEmptySlots(): void {
   const task = candidates[0]!;
   const slot = emptySlots[0]!;
 
-  // Assign task to the empty slot with manual adapter (draft-proposal notification
-  // lets the user pick the actual adapter via action buttons)
-  slotAssign(slot, task.id, "manual");
-  emitEvent({ event_type: "slot_auto_fill", source: "keepalive", scope: "slot", slot, task: task.id, adapter: "manual", message: `auto-assigned ${task.id} to empty slot ${slot}` });
-  console.error(`ludics: auto-assigned ${task.id} to empty slot ${slot}`);
+  // Auto-select orchestration flags based on task effort
+  const { adapter: autoAdapter, args: autoArgs } = selectOrchestrationFlags(task.effort);
+
+  // Assign task to the empty slot using the auto-selected adapter and flags
+  slotAssign(slot, task.id, autoAdapter, "", "", autoArgs);
+  emitEvent({
+    event_type: "slot_auto_fill",
+    source: "keepalive",
+    scope: "slot",
+    slot,
+    task: task.id,
+    adapter: autoAdapter,
+    effort: task.effort,
+    flags: autoArgs,
+    message: `auto-assigned ${task.id} to slot ${slot} with effort=${task.effort}: ${autoArgs}`,
+  });
+  console.error(`ludics: auto-assigned ${task.id} to slot ${slot} with effort=${task.effort} (${autoAdapter} ${autoArgs})`);
 
   // Queue draft-proposal only if the task doesn't already have a proposal
   const taskFile = join(tasksDir, `${task.id}.md`);

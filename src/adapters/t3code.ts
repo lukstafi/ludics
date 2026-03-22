@@ -675,6 +675,55 @@ function loadConfigOrchestration(): Record<string, unknown> | undefined {
   }
 }
 
+const CLAUDE_OPUS_MODEL = "claude-opus-4-6";
+
+/**
+ * Auto-select orchestration flags for the t3code adapter based on task effort.
+ *
+ * Effort-based selection:
+ * - small:  pair mode, no pre-work phases, Claude coder model = Sonnet
+ * - medium: pair mode, enable plan phase, Claude coder model = Opus
+ * - large:  pair mode, enable plan + gather phases, Claude coder model = Opus
+ *
+ * Config keys (mag.orchestration): default_mode, default_coder, default_reviewer
+ * These can be overridden by explicit -A adapter args at assign time.
+ *
+ * @returns An object with the recommended adapter name ("t3code") and args string.
+ */
+export function selectOrchestrationFlags(effort: string): { adapter: string; args: string } {
+  const orchCfg = loadConfigOrchestration();
+  const mode = (orchCfg?.default_mode as string | undefined)?.trim() || "pair";
+  const coder = (orchCfg?.default_coder as string | undefined)?.trim() || "claude-code";
+  const reviewer = (orchCfg?.default_reviewer as string | undefined)?.trim() || "codex";
+
+  const modeFlag = mode === "duo" ? "--duo" : "--pair";
+
+  const norm = (effort ?? "").toLowerCase().trim();
+  let coderModel: string;
+  const phaseFlags: string[] = [];
+
+  if (norm === "large") {
+    coderModel = CLAUDE_OPUS_MODEL;
+    phaseFlags.push("--plan", "--gather");
+  } else if (norm === "medium") {
+    coderModel = CLAUDE_OPUS_MODEL;
+    phaseFlags.push("--plan");
+  } else {
+    // small or unknown: no pre-work phases, Sonnet model
+    coderModel = DEFAULT_CLAUDE_MODEL;
+  }
+
+  const parts = [
+    modeFlag,
+    `--coder ${coder}:${coderModel}`,
+    `--reviewer ${reviewer}`,
+    ...phaseFlags,
+  ];
+  const args = parts.join(" ");
+
+  return { adapter: "t3code", args };
+}
+
 /** Resolve the final model for an agent, applying config and adapter arg overrides. */
 function resolveAgentModel(
   agent: ParsedAgentToken,
