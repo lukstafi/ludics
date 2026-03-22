@@ -95,9 +95,14 @@ function lookupTaskGithubUrl(taskId: string): string | null {
 function lookupSlotOrchestrationLinks(
   slotNum: number,
   t3codeWebUrl: string | null,
+  currentTaskId: string | null,
 ): { prUrl: string | null; t3codeThreadLinks: Record<string, string> | null } {
   const orchState = readOrchestrationState(slotNum);
   if (!orchState) return { prUrl: null, t3codeThreadLinks: null };
+  // Skip stale orchestration state from a previous task
+  if (currentTaskId && orchState.taskId && orchState.taskId !== currentTaskId && orchState.feature !== currentTaskId) {
+    return { prUrl: null, t3codeThreadLinks: null };
+  }
 
   // Extract first non-null PR URL from agent states
   let prUrl: string | null = null;
@@ -192,10 +197,11 @@ function generateSlots(): SlotJson[] {
     const slotProposalLink = slotHasProposal && taskId ? `/proposal.html?task=${encodeURIComponent(taskId)}` : null;
     const githubUrl = taskId && taskId !== "null" ? lookupTaskGithubUrl(taskId) : null;
 
-    // Read orchestration state for PR URL and t3code thread links
-    const { prUrl, t3codeThreadLinks } = empty
-      ? { prUrl: null, t3codeThreadLinks: null }
-      : lookupSlotOrchestrationLinks(num, t3codeWebUrl);
+    // Read orchestration state for PR URL and t3code thread links.
+    // Only use the state if its feature matches the slot's current task
+    // to avoid showing stale links from a previous task.
+    const orchLinks = empty ? { prUrl: null, t3codeThreadLinks: null }
+      : lookupSlotOrchestrationLinks(num, t3codeWebUrl, taskId);
 
     // Check for preemption stash
     const stash = readStash(num);
@@ -214,9 +220,9 @@ function generateSlots(): SlotJson[] {
       preemptedTask: stash?.previousTask ?? null,
       hasProposal: slotHasProposal,
       proposalLink: slotProposalLink,
-      prUrl: empty ? null : prUrl,
+      prUrl: empty ? null : orchLinks.prUrl,
       githubUrl: empty ? null : githubUrl,
-      t3codeThreadLinks: empty ? null : t3codeThreadLinks,
+      t3codeThreadLinks: empty ? null : orchLinks.t3codeThreadLinks,
     });
   }
 
