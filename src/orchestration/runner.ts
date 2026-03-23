@@ -195,6 +195,25 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
     const skillMessage = await composeSkillMessage(state, agent);
     await sendTurnMessage(state, agent, skillMessage);
   }
+
+  // Wait for dispatched turns to register as "running" in the t3code snapshot
+  // before entering the poll loop.  Without this, the snapshot still shows the
+  // previous turn's "completed" state and pollUntilDone treats it as a fresh
+  // completion, causing premature phase transitions.
+  const record = readServerRecord();
+  const maxWait = 30_000; // 30 seconds max
+  const pollMs = 2_000;
+  const started = Date.now();
+  while (Date.now() - started < maxWait) {
+    const snap = await fetchSnapshot(record);
+    const participants = state.agents.filter((a) => agentParticipatesInPhase(state, a));
+    const allRunning = participants.every((agent) => {
+      const thread = snap?.threads.find((t) => t.id === state.threadIds[agent.name]);
+      return thread?.latestTurn?.state === "running";
+    });
+    if (allRunning) break;
+    await sleep(pollMs);
+  }
 }
 
 /** Send a fresh turn message to each participating agent without changing phaseDispatched. */
