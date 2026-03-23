@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { harnessDir, slotsFilePath, slotsCount, stateRepoDir } from "../config.ts";
+import { harnessDir, slotsFilePath, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
 import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
          emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
 import { stateCommit } from "../state.ts";
@@ -432,11 +432,25 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
   const adapterArgs = getAdapterArgs(block).trim();
   const process = getProcess(block).trim();
 
+  let resolvedPath = path === "null" ? "" : path;
+
+  // If path is empty, try to resolve from the task's project config
+  if (!resolvedPath && taskIdRaw && taskIdRaw !== "null") {
+    const taskFile = join(harnessDir(), "tasks", `${taskIdRaw}.md`);
+    if (existsSync(taskFile)) {
+      const content = readFileSync(taskFile, "utf-8");
+      const projectMatch = content.match(/^project:\s*(.+)$/m);
+      if (projectMatch) {
+        resolvedPath = resolveProjectPath(projectMatch[1]!.trim());
+      }
+    }
+  }
+
   return {
     slot: slotNum,
     mode: mode === "null" ? "" : mode,
     session: session === "null" ? "" : session,
-    path: path === "null" ? "" : path,
+    path: resolvedPath,
     started: started === "null" ? "" : started,
     taskId: taskIdRaw === "null" ? "" : taskIdRaw,
     adapterArgs: adapterArgs === "null" ? "" : adapterArgs,
