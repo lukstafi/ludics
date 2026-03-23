@@ -63,19 +63,28 @@ function refreshAgentStatuses(state: OrchestrationState, snapshot: T3Snapshot | 
     }
 
     const thread = threadSnapshot(snapshot, state.threadIds[agent.name]);
-    runtime.latestTurnState = thread?.latestTurn?.state ?? "missing";
     runtime.latestTurnCompletedAt = thread?.latestTurn?.completedAt ?? null;
 
-    // Only treat the turn as a fresh completion if its completedAt is at or
-    // after the timestamp when this phase's turns were dispatched.  This
-    // prevents a stale "completed" state from the previous phase from
-    // triggering a premature phase transition.
+    // Use session status as the authoritative turn-running signal.
+    // session.status "running" with an activeTurnId means the agent is
+    // actively working — latestTurn shows the PREVIOUS completed turn.
+    const sessionStatus = thread?.session?.status;
+    const hasActiveTurn = !!thread?.session?.activeTurnId;
+
+    if (sessionStatus === "running" && hasActiveTurn) {
+      // Agent is actively working — override latestTurnState to "running"
+      runtime.latestTurnState = "running";
+    } else {
+      runtime.latestTurnState = thread?.latestTurn?.state ?? "missing";
+    }
+
     const isFreshCompletion = isTurnFresh(state.phaseDispatchedAt, runtime.latestTurnCompletedAt);
 
     if (
       (runtime.status === "unknown" || runtime.status === "idle")
       && runtime.latestTurnState === "completed"
       && isFreshCompletion
+      && !hasActiveTurn
     ) {
       runtime.status = "turn-complete";
       runtime.statusEpoch = nowEpoch();
@@ -209,7 +218,9 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
     const participants = state.agents.filter((a) => agentParticipatesInPhase(state, a));
     const allRunning = participants.every((agent) => {
       const thread = snap?.threads.find((t) => t.id === state.threadIds[agent.name]);
-      return thread?.latestTurn?.state === "running";
+      // Check session status (authoritative) — "running" with activeTurnId means the agent started
+      return (thread?.session?.status === "running" && !!thread?.session?.activeTurnId)
+        || thread?.latestTurn?.state === "running";
     });
     if (allRunning) break;
     await sleep(pollMs);
