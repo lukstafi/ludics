@@ -18,6 +18,13 @@ export interface ProjectConfig {
   issues?: boolean;
   priority?: boolean;
   /**
+   * When true, task sorting uses milestone as the primary key (lexicographic),
+   * with virtual priority as the tiebreaker within the same milestone.
+   * Tasks without a milestone sort after all milestoned tasks.
+   * Default: false.
+   */
+  milestones?: boolean;
+  /**
    * Per-adapter args profile for tasks in this project.
    * Entry value can be:
    * - shell-style string
@@ -298,4 +305,34 @@ export function effectivePriorityValue(priority: string, project: string, fp?: s
     case "C": return 3;
     default: return 9;
   }
+}
+
+/**
+ * Returns the set of project names that have milestones enabled in config.
+ */
+export function milestonesEnabledProjects(): Set<string> {
+  const config = loadConfigSync();
+  const result = new Set<string>();
+  for (const project of (config.projects ?? [])) {
+    if (project.milestones) result.add(project.name);
+  }
+  return result;
+}
+
+/**
+ * Returns the milestone sort key for a task.
+ * If the task's project has milestones enabled and the task has a milestone,
+ * returns the milestone string (sorts alphabetically/lexicographically).
+ * Otherwise returns "\uFFFF" so the task sorts after all milestoned tasks.
+ *
+ * Pass the pre-computed `enabledProjects` set to avoid repeated config reads
+ * inside sort comparators.
+ */
+export function milestoneKey(
+  milestone: string | undefined | null,
+  project: string,
+  enabledProjects: Set<string>,
+): string {
+  if (enabledProjects.has(project) && milestone) return milestone;
+  return "\uFFFF";
 }
