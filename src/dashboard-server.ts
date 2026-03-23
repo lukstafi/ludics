@@ -147,7 +147,7 @@ export function startDashboardServer(
         try {
           const proc = Bun.spawnSync(
             [process.execPath, "slot", slotParam, "clear", status],
-            { stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
+            { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
           );
           if (proc.exitCode !== 0) {
             return new Response(proc.stderr.toString() || "slot clear failed", { status: 500 });
@@ -168,7 +168,7 @@ export function startDashboardServer(
         try {
           const proc = Bun.spawnSync(
             [process.execPath, "slot", slotParam, "start"],
-            { stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
+            { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
           );
           if (proc.exitCode !== 0) {
             return new Response(proc.stderr.toString() || "slot start failed", { status: 500 });
