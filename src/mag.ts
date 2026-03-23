@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, focusProject, effectivePriorityValue } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, focusProject, effectivePriorityValue, milestonesEnabledProjects, milestoneKey } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
@@ -1860,7 +1860,7 @@ function maybeFillEmptySlots(): void {
 
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
 
-  interface Candidate { id: string; priority: string; project: string; hasDeadline: boolean; deadline: string; effort: string }
+  interface Candidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string }
   const candidates: Candidate[] = [];
 
   for (const f of files) {
@@ -1893,22 +1893,33 @@ function maybeFillEmptySlots(): void {
     const projectMatch = content.match(/^project:\s*(.+)$/m);
     const project = projectMatch ? projectMatch[1]!.trim() : "";
 
+    const milestoneMatch = content.match(/^milestone:\s*(.+)$/m);
+    const milestone = milestoneMatch ? milestoneMatch[1]!.trim() : undefined;
+
     const deadlineMatch = content.match(/^deadline:\s*(.+)$/m);
     const deadline = deadlineMatch ? deadlineMatch[1]!.trim() : "";
 
     const effortMatch = content.match(/^effort:\s*(.+)$/m);
     const effort = effortMatch ? effortMatch[1]!.trim() : "small";
 
-    candidates.push({ id, priority, project, hasDeadline: !!deadline && deadline !== "null", deadline, effort });
+    candidates.push({ id, priority, project, milestone, hasDeadline: !!deadline && deadline !== "null", deadline, effort });
   }
 
   if (candidates.length === 0) return;
 
-  // Sort by effective (virtual) priority (S > A > B > C), then deadline presence, then deadline date.
+  // Sort by: milestone (when enabled) > effective (virtual) priority > deadline presence > deadline date.
   // Focus-project tasks receive a one-level virtual boost via effectivePriorityValue().
-  // Pre-compute fp once to avoid repeated config reads inside the sort comparator.
+  // Pre-compute fp and milestonesProjects once to avoid repeated config reads inside the sort comparator.
   const fp = focusProject();
+  const milestonesProjects = milestonesEnabledProjects();
+  const anyMilestones = milestonesProjects.size > 0;
   candidates.sort((a, b) => {
+    if (anyMilestones) {
+      const aMKey = milestoneKey(a.milestone, a.project, milestonesProjects);
+      const bMKey = milestoneKey(b.milestone, b.project, milestonesProjects);
+      const mDiff = aMKey.localeCompare(bMKey);
+      if (mDiff !== 0) return mDiff;
+    }
     const pd = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
     if (pd !== 0) return pd;
     if (a.hasDeadline !== b.hasDeadline) return a.hasDeadline ? -1 : 1;
