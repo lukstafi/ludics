@@ -6,7 +6,7 @@ import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCou
 import { slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getProcess, getTask } from "../slots/markdown.ts";
 import { listStashes } from "../slots/preempt.ts";
-import { writeTaskFile, updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter } from "./markdown.ts";
+import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
 import { queueRequest } from "../queue.ts";
@@ -558,6 +558,21 @@ export async function tasksUpdate(): Promise<void> {
     }
 
     const milestoneTitle = issue.milestone?.title ?? null;
+
+    // Handle milestone sync: set when GitHub has one, remove when GitHub cleared it.
+    // Only remove if the field currently exists in the file (avoid adding null lines).
+    let milestoneChanged = false;
+    if (milestoneTitle !== null) {
+      milestoneChanged = setFrontmatterScalar(rec.filePath, "milestone", milestoneTitle);
+    } else {
+      // GitHub has no milestone — remove stale local field if present
+      const fileContent = readFileSync(rec.filePath, "utf-8");
+      if (/^milestone:/m.test(fileContent)) {
+        removeFrontmatterField(rec.filePath, "milestone");
+        milestoneChanged = true;
+      }
+    }
+
     const updates = [
       setFrontmatterScalar(rec.filePath, "github_title", remoteTitle),
       setFrontmatterScalar(rec.filePath, "url", issue.url),
@@ -568,8 +583,7 @@ export async function tasksUpdate(): Promise<void> {
       setFrontmatterScalar(rec.filePath, "github_state_reason", stateReason || null),
       setFrontmatterScalar(rec.filePath, "github_updated_at", issue.updatedAt ?? null),
       setFrontmatterScalar(rec.filePath, "github_closed_at", issue.closedAt ?? null),
-      // Sync milestone from GitHub when the issue has one
-      ...(milestoneTitle !== null ? [setFrontmatterScalar(rec.filePath, "milestone", milestoneTitle)] : []),
+      milestoneChanged,
     ];
 
     const metadataChanged = updates.filter(Boolean).length;
