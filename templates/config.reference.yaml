@@ -15,6 +15,7 @@ slots:
 projects:
   - name: my-project
     repo: your-username/my-project
+    path: ~/my-project    # Local checkout path (used for slot start, worktree creation)
     issues: true          # Include GitHub issues as tasks
     priority: false       # Priority project: preempt slots when tasks arrive
     milestones: false     # When true, task sorting uses milestone as primary key (lexicographic).

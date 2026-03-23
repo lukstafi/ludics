@@ -15,6 +15,7 @@ export interface AdapterConfigEntry {
 export interface ProjectConfig {
   name: string;
   repo: string;
+  path?: string;
   issues?: boolean;
   priority?: boolean;
   /**
@@ -262,6 +263,50 @@ export function startSessionsAutonomy(): "auto" | "suggest" | "manual" {
 }
 
 /** Returns the focus project name from mag.focus_project, or null if unset. */
+/**
+ * Resolve the local checkout path for a project by name.
+ * Checks the `path` field in config, then falls back to ~/name and ~/repos/name.
+ */
+export function resolveProjectPath(projectName: string): string {
+  const config = loadConfigSync();
+  const projects = config.projects ?? [];
+  for (const p of projects) {
+    const name = String(p.name ?? "").toLowerCase();
+    const repo = String(p.repo ?? "");
+    const repoTail = repo.split("/").pop() ?? "";
+    if (
+      name === projectName.toLowerCase()
+      || repoTail.toLowerCase() === projectName.toLowerCase()
+    ) {
+      if (p.path) {
+        const resolved = String(p.path).startsWith("~/")
+          ? join(process.env.HOME ?? "~", String(p.path).slice(2))
+          : String(p.path);
+        if (existsSync(resolved)) return resolved;
+      }
+      // Fallback: try ~/repoTail and ~/repos/repoTail
+      const home = process.env.HOME ?? "~";
+      for (const candidate of [
+        join(home, repoTail),
+        join(home, "repos", repoTail),
+        join(home, repoTail.toLowerCase()),
+      ]) {
+        if (existsSync(candidate)) return candidate;
+      }
+    }
+  }
+  // Last resort: try ~/projectName
+  const home = process.env.HOME ?? "~";
+  for (const candidate of [
+    join(home, projectName),
+    join(home, projectName.toLowerCase()),
+    join(home, "repos", projectName.toLowerCase()),
+  ]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return "";
+}
+
 export function focusProject(): string | null {
   const config = loadConfigSync();
   const mag = config.mag as Record<string, unknown> | undefined;

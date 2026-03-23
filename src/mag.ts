@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, focusProject, effectivePriorityValue, milestonesEnabledProjects, milestoneKey } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, focusProject, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
@@ -1933,8 +1933,11 @@ function maybeFillEmptySlots(): void {
   // Auto-select orchestration flags based on task effort
   const { adapter: autoAdapter, args: autoArgs } = selectOrchestrationFlags(task.effort);
 
-  // Assign task to the empty slot using the auto-selected adapter and flags
-  slotAssign(slot, task.id, autoAdapter, "", "", autoArgs);
+  // Resolve project path from config
+  const projectPath = resolveProjectPath(task.project);
+
+  // Assign task to the empty slot using the auto-selected adapter, path, and flags
+  slotAssign(slot, task.id, autoAdapter, "", projectPath, autoArgs);
   emitEvent({
     event_type: "slot_auto_fill",
     source: "keepalive",
