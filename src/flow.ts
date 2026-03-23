@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import YAML from "yaml";
-import { harnessDir, slotsFilePath, focusProject, effectivePriority, effectivePriorityValue } from "./config.ts";
+import { harnessDir, slotsFilePath, focusProject, effectivePriority, effectivePriorityValue, milestonesEnabledProjects, milestoneKey } from "./config.ts";
 
 interface TaskData {
   id: string;
@@ -15,6 +15,7 @@ interface TaskData {
   modified: string | null;
   project: string;
   context: string;
+  milestone?: string;
   dependencies: { blocks?: string[]; blocked_by?: string[]; relates_to?: string[]; subtask_of?: string | null };
   _file: string;
 }
@@ -49,6 +50,7 @@ function collectTasks(): TaskData[] {
         modified: data.modified ? String(data.modified) : null,
         project: String(data.project ?? ""),
         context: String(data.context ?? ""),
+        milestone: data.milestone ? String(data.milestone) : undefined,
         dependencies: {
           blocks: Array.isArray(deps.blocks) ? (deps.blocks as string[]) : [],
           blocked_by: Array.isArray(deps.blocked_by) ? (deps.blocked_by as string[]) : [],
@@ -127,6 +129,9 @@ export function flowReady(): void {
   }
 
   const fp = focusProject();
+  // Pre-compute milestones-enabled project set to avoid repeated config reads
+  const milestonesProjects = milestonesEnabledProjects();
+  const anyMilestones = milestonesProjects.size > 0;
 
   const ready = tasks
     .filter(
@@ -135,6 +140,13 @@ export function flowReady(): void {
         (!t.dependencies.blocked_by || t.dependencies.blocked_by.length === 0),
     )
     .sort((a, b) => {
+      // Milestone sort (when any project has milestones enabled): earlier milestones first
+      if (anyMilestones) {
+        const aMKey = milestoneKey(a.milestone, a.project, milestonesProjects);
+        const bMKey = milestoneKey(b.milestone, b.project, milestonesProjects);
+        const mDiff = aMKey.localeCompare(bMKey);
+        if (mDiff !== 0) return mDiff;
+      }
       // Pass pre-computed fp to avoid O(n log n) config reads during sorting
       const pDiff = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
       if (pDiff !== 0) return pDiff;
@@ -150,7 +162,11 @@ export function flowReady(): void {
     for (const t of ready) {
       // Show virtual priority when a focus project is configured (for transparency)
       const displayPri = fp ? effectivePriority(t.priority, t.project, fp) : (t.priority || "-");
-      console.log(`${t.id} (${displayPri}) ${t.title}`);
+      // Show milestone alongside priority when milestones are enabled for this task's project
+      const milestoneDisplay = anyMilestones && milestonesProjects.has(t.project)
+        ? ` [${t.milestone ?? "no milestone"}]`
+        : "";
+      console.log(`${t.id} (${displayPri})${milestoneDisplay} ${t.title}`);
     }
   }
 }
