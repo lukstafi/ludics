@@ -17,6 +17,9 @@ projects:
     repo: your-username/my-project
     issues: true          # Include GitHub issues as tasks
     priority: false       # Priority project: preempt slots when tasks arrive
+    milestones: false     # When true, task sorting uses milestone as primary key (lexicographic).
+                          # For GitHub-backed tasks, milestone syncs from GitHub's milestone field.
+                          # Tasks missing milestone field emit a warning during tasks sync.
     # Optional per-project adapter args profile.
     # Later layers override earlier layers:
     # adapter default args -> project profile -> slot Adapter Args -> task frontmatter adapter_args

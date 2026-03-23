@@ -32,6 +32,7 @@ export interface TaskFrontmatter {
   github_state_reason?: string | null;
   github_updated_at?: string | null;
   github_closed_at?: string | null;
+  milestone?: string;
   elaborated?: string;
   merged_into?: string;
   merged_from?: string[];

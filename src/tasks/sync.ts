@@ -2,11 +2,11 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
-import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCount } from "../config.ts";
+import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCount, milestonesEnabledProjects } from "../config.ts";
 import { slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getProcess, getTask } from "../slots/markdown.ts";
 import { listStashes } from "../slots/preempt.ts";
-import { writeTaskFile, updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter } from "./markdown.ts";
+import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
 import { queueRequest } from "../queue.ts";
@@ -40,6 +40,7 @@ interface GhIssueState extends GhIssue {
   stateReason?: string | null;
   closedAt?: string | null;
   updatedAt?: string | null;
+  milestone?: { title: string } | null;
 }
 
 async function fetchGitHubIssues(repo: string): Promise<GhIssue[]> {
@@ -104,6 +105,9 @@ export async function tasksSync(): Promise<void> {
 
   // Reconcile blocked/ready status based on dependencies
   const tasksDir = join(harness, "tasks");
+
+  // Warn about tasks missing milestone field when milestones are enabled for their project
+  tasksMilestoneWarnings(tasksDir);
   tasksReconcileBlockedStatus(tasksDir);
 
   // Queue elaboration for new ready tasks
@@ -313,7 +317,7 @@ function fetchGitHubIssuesAll(repo: string): Map<number, GhIssueState> {
       "-R", repo,
       "--state", "all",
       "--limit", "1000",
-      "--json", "number,title,url,labels,state,stateReason,closedAt,updatedAt",
+      "--json", "number,title,url,labels,state,stateReason,closedAt,updatedAt,milestone",
     ],
     { stdout: "pipe", stderr: "pipe" },
   );
@@ -553,6 +557,22 @@ export async function tasksUpdate(): Promise<void> {
       titlePreserved++;
     }
 
+    const milestoneTitle = issue.milestone?.title ?? null;
+
+    // Handle milestone sync: set when GitHub has one, remove when GitHub cleared it.
+    // Only remove if the field currently exists in the file (avoid adding null lines).
+    let milestoneChanged = false;
+    if (milestoneTitle !== null) {
+      milestoneChanged = setFrontmatterScalar(rec.filePath, "milestone", milestoneTitle);
+    } else {
+      // GitHub has no milestone — remove stale local field if present
+      const fileContent = readFileSync(rec.filePath, "utf-8");
+      if (/^milestone:/m.test(fileContent)) {
+        removeFrontmatterField(rec.filePath, "milestone");
+        milestoneChanged = true;
+      }
+    }
+
     const updates = [
       setFrontmatterScalar(rec.filePath, "github_title", remoteTitle),
       setFrontmatterScalar(rec.filePath, "url", issue.url),
@@ -563,6 +583,7 @@ export async function tasksUpdate(): Promise<void> {
       setFrontmatterScalar(rec.filePath, "github_state_reason", stateReason || null),
       setFrontmatterScalar(rec.filePath, "github_updated_at", issue.updatedAt ?? null),
       setFrontmatterScalar(rec.filePath, "github_closed_at", issue.closedAt ?? null),
+      milestoneChanged,
     ];
 
     const metadataChanged = updates.filter(Boolean).length;
@@ -681,6 +702,37 @@ function tasksReconcileBlockedStatus(tasksDir: string): void {
 
   if (reconciled > 0) {
     console.error(`ludics: reconciled status for ${reconciled} task(s)`);
+  }
+}
+
+function tasksMilestoneWarnings(tasksDir: string): void {
+  const milestonesProjects = milestonesEnabledProjects();
+  if (milestonesProjects.size === 0) return;
+  if (!existsSync(tasksDir)) return;
+
+  const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+  const missing: string[] = [];
+
+  for (const f of files) {
+    const content = readFileSync(join(tasksDir, f), "utf-8");
+    let fm;
+    try {
+      fm = parseTaskFrontmatter(content);
+    } catch { continue; }
+
+    // Only warn for active (non-terminal) tasks
+    const status = fm.status ?? "ready";
+    if (["done", "abandoned", "merged"].includes(status)) continue;
+
+    if (!milestonesProjects.has(fm.project ?? "")) continue;
+
+    if (!fm.milestone) {
+      missing.push(fm.id);
+    }
+  }
+
+  if (missing.length > 0) {
+    console.warn(`ludics: warning: ${missing.length} task(s) missing milestone field (milestones enabled): ${missing.join(", ")}`);
   }
 }
 

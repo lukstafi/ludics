@@ -59,6 +59,7 @@ export function parseTaskFrontmatter(content: string): Partial<TaskFrontmatter> 
     github_closed_at: data.github_closed_at !== undefined && data.github_closed_at === null
       ? null
       : (data.github_closed_at ? String(data.github_closed_at) : undefined),
+    milestone: data.milestone ? String(data.milestone) : undefined,
     elaborated: data.elaborated ? String(data.elaborated) : undefined,
     merged_into: data.merged_into ? String(data.merged_into) : undefined,
     merged_from: Array.isArray(data.merged_from) ? (data.merged_from as string[]) : undefined,
