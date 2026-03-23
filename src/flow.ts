@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import YAML from "yaml";
 import { harnessDir, slotsFilePath, focusProject, effectivePriority, effectivePriorityValue, milestonesEnabledProjects, milestoneKey } from "./config.ts";
+import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
 
 interface TaskData {
   id: string;
@@ -12,6 +13,7 @@ interface TaskData {
   priority: string;
   deadline: string | null;
   started: string | null;
+  completed: string | null;
   modified: string | null;
   project: string;
   context: string;
@@ -47,6 +49,7 @@ function collectTasks(): TaskData[] {
         priority: String(data.priority ?? "B"),
         deadline: data.deadline ? String(data.deadline) : null,
         started: data.started ? String(data.started) : null,
+        completed: data.completed ? String(data.completed) : null,
         modified: data.modified ? String(data.modified) : null,
         project: String(data.project ?? ""),
         context: String(data.context ?? ""),
@@ -121,6 +124,20 @@ function checkCycle(tasks: TaskData[]): boolean {
   return visited < allNodes.size; // cycle exists if not all visited
 }
 
+function readSlottedTaskIds(): Set<string> {
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return new Set();
+  const content = readFileSync(sFile, "utf-8");
+  const ids = new Set<string>();
+  const re = /^\*\*Task:\*\*\s*(.+)$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const id = m[1]!.trim();
+    if (id && id !== "(empty)" && id !== "null") ids.add(id);
+  }
+  return ids;
+}
+
 export function flowReady(): void {
   const tasks = collectTasks();
 
@@ -132,6 +149,20 @@ export function flowReady(): void {
   // Pre-compute milestones-enabled project set to avoid repeated config reads
   const milestonesProjects = milestonesEnabledProjects();
   const anyMilestones = milestonesProjects.size > 0;
+
+  // Build affinity lookup once for tie-breaking
+  const slottedIds = readSlottedTaskIds();
+  const affinityInputs: AffinityInput[] = tasks.map((t) => ({
+    id: t.id,
+    status: t.status,
+    completed: t.completed,
+    dependencies: {
+      blocks: t.dependencies.blocks ?? [],
+      blocked_by: t.dependencies.blocked_by ?? [],
+      relates_to: t.dependencies.relates_to ?? [],
+    },
+  }));
+  const affinity = buildAffinityLookup(affinityInputs, slottedIds);
 
   const ready = tasks
     .filter(
@@ -150,6 +181,8 @@ export function flowReady(): void {
       // Pass pre-computed fp to avoid O(n log n) config reads during sorting
       const pDiff = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
       if (pDiff !== 0) return pDiff;
+      const tDiff = affinity.getTier(a.id) - affinity.getTier(b.id);
+      if (tDiff !== 0) return tDiff;
       const aHas = a.deadline ? 1 : 2;
       const bHas = b.deadline ? 1 : 2;
       if (aHas !== bHas) return aHas - bHas;

@@ -11,6 +11,7 @@ import { federationShouldRunMag } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
 import { isElaborated } from "./tasks/elaboration.ts";
+import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
 import {
   notifyOutgoing,
   expirePendingRevises,
@@ -1862,57 +1863,61 @@ function maybeFillEmptySlots(): void {
 
   interface Candidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string }
   const candidates: Candidate[] = [];
+  const allTasksForAffinity: AffinityInput[] = [];
 
   for (const f of files) {
     const content = readFileSync(join(tasksDir, f), "utf-8");
-    const idMatch = content.match(/^id:\s*(.+)$/m);
-    if (!idMatch) continue;
-    const id = idMatch[1]!.trim();
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) continue;
 
+    let fm: Record<string, unknown>;
+    try { fm = YAML.parse(fmMatch[1]!) as Record<string, unknown>; } catch { continue; }
+
+    const id = String(fm.id ?? "").trim();
+    if (!id) continue;
+
+    const status = String(fm.status ?? "ready").trim();
+    const deps = (fm.dependencies as Record<string, unknown>) ?? {};
+
+    // Collect affinity data for ALL tasks (needed for graph construction)
+    allTasksForAffinity.push({
+      id,
+      status,
+      completed: fm.completed ? String(fm.completed) : null,
+      dependencies: {
+        blocks: Array.isArray(deps.blocks) ? deps.blocks as string[] : [],
+        blocked_by: Array.isArray(deps.blocked_by) ? deps.blocked_by as string[] : [],
+        relates_to: Array.isArray(deps.relates_to) ? deps.relates_to as string[] : [],
+      },
+    });
+
+    // Filter for candidates: ready, elaborated, unblocked, not already slotted
     if (tasksInSlots.has(id)) continue;
-
-    const statusMatch = content.match(/^status:\s*(.+)$/m);
-    if (!statusMatch || statusMatch[1]!.trim() !== "ready") continue;
-
+    if (status !== "ready") continue;
     if (!isElaborated(content)) continue;
 
-    // Must not have blocked_by dependencies
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (fmMatch) {
-      try {
-        const fm = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
-        const deps = fm.dependencies as Record<string, unknown> | undefined;
-        const blockedBy = deps?.blocked_by;
-        if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
-      } catch { /* skip parse errors */ }
-    }
+    const blockedBy = deps.blocked_by;
+    if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
 
-    const priorityMatch = content.match(/^priority:\s*(.+)$/m);
-    const priority = priorityMatch ? priorityMatch[1]!.trim() : "B";
+    const priority = String(fm.priority ?? "B").trim();
+    const project = String(fm.project ?? "").trim();
+    const milestone = fm.milestone ? String(fm.milestone).trim() : undefined;
+    const deadlineRaw = fm.deadline ? String(fm.deadline).trim() : "";
+    const deadline = deadlineRaw && deadlineRaw !== "null" ? deadlineRaw : "";
+    const effort = String(fm.effort ?? "small").trim();
 
-    const projectMatch = content.match(/^project:\s*(.+)$/m);
-    const project = projectMatch ? projectMatch[1]!.trim() : "";
-
-    const milestoneMatch = content.match(/^milestone:\s*(.+)$/m);
-    const milestone = milestoneMatch ? milestoneMatch[1]!.trim() : undefined;
-
-    const deadlineMatch = content.match(/^deadline:\s*(.+)$/m);
-    const deadline = deadlineMatch ? deadlineMatch[1]!.trim() : "";
-
-    const effortMatch = content.match(/^effort:\s*(.+)$/m);
-    const effort = effortMatch ? effortMatch[1]!.trim() : "small";
-
-    candidates.push({ id, priority, project, milestone, hasDeadline: !!deadline && deadline !== "null", deadline, effort });
+    candidates.push({ id, priority, project, milestone, hasDeadline: !!deadline, deadline, effort });
   }
 
   if (candidates.length === 0) return;
 
-  // Sort by: milestone (when enabled) > effective (virtual) priority > deadline presence > deadline date.
-  // Focus-project tasks receive a one-level virtual boost via effectivePriorityValue().
+  // Sort by: milestone (when enabled) > effective (virtual) priority > affinity tier > deadline.
   // Pre-compute fp and milestonesProjects once to avoid repeated config reads inside the sort comparator.
   const fp = focusProject();
   const milestonesProjects = milestonesEnabledProjects();
   const anyMilestones = milestonesProjects.size > 0;
+  // Build affinity lookup once for tie-breaking
+  const affinity = buildAffinityLookup(allTasksForAffinity, tasksInSlots);
   candidates.sort((a, b) => {
     if (anyMilestones) {
       const aMKey = milestoneKey(a.milestone, a.project, milestonesProjects);
@@ -1922,6 +1927,8 @@ function maybeFillEmptySlots(): void {
     }
     const pd = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
     if (pd !== 0) return pd;
+    const td = affinity.getTier(a.id) - affinity.getTier(b.id);
+    if (td !== 0) return td;
     if (a.hasDeadline !== b.hasDeadline) return a.hasDeadline ? -1 : 1;
     return (a.deadline || "9999").localeCompare(b.deadline || "9999");
   });
