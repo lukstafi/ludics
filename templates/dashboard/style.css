@@ -302,6 +302,16 @@ main {
     font-family: monospace;
 }
 
+.slot-details .effort {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    background-color: var(--bg-secondary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    text-transform: lowercase;
+}
+
 .slot-details .task-content {
     background-color: var(--bg-secondary);
     border: 1px solid var(--border);
@@ -559,20 +569,6 @@ main {
 
 .mag-links a:hover {
     text-decoration: underline;
-}
-
-/* Quick Links */
-.quick-links li {
-    padding: 0.375rem 0;
-}
-
-.quick-links a {
-    color: var(--text-primary);
-    text-decoration: none;
-}
-
-.quick-links a:hover {
-    color: var(--accent);
 }
 
 /* Footer */

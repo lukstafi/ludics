@@ -108,6 +108,7 @@ function renderSlots(slots) {
             let html = `<p class="process" title="${escapeHtml(slot.process)}">${escapeHtml(slot.process)}</p>`;
             const meta = [];
             if (hasTask) meta.push(`<span class="task-id">${escapeHtml(slot.task)}</span>`);
+            if (slot.effort) meta.push(`<span class="effort">${escapeHtml(slot.effort)}</span>`);
             if (slot.mode) meta.push(escapeHtml(slot.mode));
             if (slot.started) meta.push(formatTime(slot.started));
             if (meta.length > 0) html += `<p class="slot-meta">${meta.join(' · ')}</p>`;
@@ -298,13 +299,6 @@ function setConnectionStatus(connected) {
         el.className = connected ? 'connected' : 'disconnected';
         el.textContent = connected ? 'Connected' : 'Disconnected';
     }
-}
-
-// Scroll to the ready queue panel (used by quick links)
-function scrollToReadyQueue(event) {
-    event.preventDefault();
-    const el = document.querySelector('.ready-queue');
-    if (el) el.scrollIntoView({ behavior: 'smooth' });
 }
 
 // Helper: set innerHTML only if changed, preserving scroll of scrollable descendants

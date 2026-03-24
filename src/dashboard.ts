@@ -34,6 +34,7 @@ interface SlotJson {
   prUrl: string | null;
   githubUrl: string | null;
   t3codeThreadLinks: Record<string, string> | null;
+  effort: string | null;
 }
 
 function lookupTaskContent(taskId: string): string | null {
@@ -87,6 +88,23 @@ function lookupTaskGithubUrl(taskId: string): string | null {
     const url = data.url;
     if (!url || typeof url !== "string" || url.trim() === "" || url.trim().toLowerCase() === "null") return null;
     return url.trim();
+  } catch {
+    return null;
+  }
+}
+
+function lookupTaskEffort(taskId: string): string | null {
+  const tasksDir = join(harnessDir(), "tasks");
+  const taskFile = join(tasksDir, taskId + ".md");
+  if (!existsSync(taskFile)) return null;
+  try {
+    const content = readFileSync(taskFile, "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return null;
+    const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
+    const effort = data.effort;
+    if (!effort || typeof effort !== "string" || effort.trim() === "" || effort.trim().toLowerCase() === "null") return null;
+    return effort.trim();
   } catch {
     return null;
   }
@@ -193,6 +211,7 @@ function generateSlots(): SlotJson[] {
 
     const taskId = empty ? null : getTask(block).trim() || null;
     const taskContent = taskId && taskId !== "null" ? lookupTaskContent(taskId) : null;
+    const taskEffort = taskId && taskId !== "null" ? lookupTaskEffort(taskId) : null;
     const slotHasProposal = taskId && taskId !== "null" ? lookupTaskHasProposal(taskId) : false;
     const slotProposalLink = slotHasProposal && taskId ? `/proposal.html?task=${encodeURIComponent(taskId)}` : null;
     const githubUrl = taskId && taskId !== "null" ? lookupTaskGithubUrl(taskId) : null;
@@ -223,6 +242,7 @@ function generateSlots(): SlotJson[] {
       prUrl: empty ? null : orchLinks.prUrl,
       githubUrl: empty ? null : githubUrl,
       t3codeThreadLinks: empty ? null : orchLinks.t3codeThreadLinks,
+      effort: taskEffort,
     });
   }
 
