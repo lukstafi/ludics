@@ -177,6 +177,74 @@ export function readStopHookRecord(peerSyncDir: string, agent: string): StopHook
   }
 }
 
+/**
+ * Write a `.ludics-orchestration.json` marker file at each agent's worktree,
+ * plus a project-level `.claude/settings.local.json` with a SessionStart hook
+ * that injects `LUDICS_PEER_SYNC_DIR` and `LUDICS_AGENT_NAME` into the agent
+ * session's environment via `$CLAUDE_ENV_FILE`.
+ *
+ * This satisfies the acceptance criterion of passing the peer-sync path via
+ * env var at session startup — Claude Code's SessionStart hook fires when the
+ * agent session initialises and the exported variables are available to all
+ * subsequent hooks (including Stop).
+ */
+export function writeAgentMarkerFiles(
+  peerSyncDir: string,
+  agentWorktrees: Record<string, string>,
+): void {
+  for (const [name, worktreePath] of Object.entries(agentWorktrees)) {
+    mkdirSync(worktreePath, { recursive: true });
+
+    // 1. Marker file (read by the stop hook as a secondary fallback).
+    const markerPath = join(worktreePath, ".ludics-orchestration.json");
+    const marker = { agentName: name, peerSyncDir };
+    writeFileSync(markerPath, JSON.stringify(marker, null, 2) + "\n");
+
+    // 2. Project-level Claude Code settings with SessionStart hook.
+    //    This injects env vars into $CLAUDE_ENV_FILE at session start so they
+    //    are available to the Stop hook without any marker-file discovery.
+    const claudeDir = join(worktreePath, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    const settingsPath = join(claudeDir, "settings.local.json");
+    const escapedPeerSync = peerSyncDir.replace(/'/g, "'\\''");
+    const escapedName = name.replace(/'/g, "'\\''");
+    const envCommand =
+      `echo 'export LUDICS_PEER_SYNC_DIR='"'"'${escapedPeerSync}'"'"'' >> "$CLAUDE_ENV_FILE" && ` +
+      `echo 'export LUDICS_AGENT_NAME='"'"'${escapedName}'"'"'' >> "$CLAUDE_ENV_FILE"`;
+    const settings = {
+      hooks: {
+        SessionStart: [
+          {
+            matcher: "",
+            hooks: [
+              {
+                type: "command" as const,
+                command: envCommand,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  }
+}
+
+/**
+ * Read the agent marker file from a worktree path, if it exists.
+ */
+export function readAgentMarkerFile(
+  worktreePath: string,
+): { agentName: string; peerSyncDir: string } | null {
+  const markerPath = join(worktreePath, ".ludics-orchestration.json");
+  if (!existsSync(markerPath)) return null;
+  try {
+    return JSON.parse(readFileSync(markerPath, "utf-8")) as { agentName: string; peerSyncDir: string };
+  } catch {
+    return null;
+  }
+}
+
 export function cleanupPeerSyncDir(dir: string): void {
   if (!existsSync(dir)) return;
   rmSync(dir, { recursive: true, force: true });

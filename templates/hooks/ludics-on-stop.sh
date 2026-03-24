@@ -7,6 +7,14 @@
 #   1. Orchestration agents: writes a stop-hook record to .peer-sync for the runner
 #   2. Mag sessions: pops the next queued request and outputs a JSON decision
 #
+# Peer-sync routing (priority order):
+#   1. Env vars LUDICS_PEER_SYNC_DIR / LUDICS_AGENT_NAME — set at session
+#      startup via a project-level SessionStart hook in .claude/settings.local.json
+#      (written by orchestration setup).  This is the primary path.
+#   2. Marker file .ludics-orchestration.json at the worktree root — fallback
+#      for Codex sessions or environments without Claude Code hook support.
+#   3. Directory walk up from cwd to find .peer-sync/phase — legacy fallback.
+#
 # Loop prevention (Mag): when the queue is empty, mag_queue_pop outputs nothing
 # (exit 0), so Claude stops naturally.
 
@@ -42,17 +50,48 @@ if [[ -z "$ludics_bin" ]]; then
   exit 0
 fi
 
-# Check if this cwd belongs to an orchestration worktree (has .peer-sync/phase).
-# Walk up from cwd to find .peer-sync — agents may be in subdirectories.
-check_dir="$cwd"
+# Determine peer-sync directory and agent name.
+# Priority: env var > marker file > directory walk.
 peer_sync_dir=""
-while [[ -n "$check_dir" && "$check_dir" != "/" ]]; do
-  if [[ -f "$check_dir/.peer-sync/phase" ]]; then
-    peer_sync_dir="$check_dir/.peer-sync"
-    break
-  fi
-  check_dir=$(dirname "$check_dir")
-done
+
+# 1. Env var set externally (e.g. by a wrapper or test harness).
+if [[ -n "${LUDICS_PEER_SYNC_DIR:-}" && -f "${LUDICS_PEER_SYNC_DIR}/phase" ]]; then
+  peer_sync_dir="$LUDICS_PEER_SYNC_DIR"
+fi
+
+# 2. Marker file written by orchestration setup at each worktree root.
+#    Also exports LUDICS_PEER_SYNC_DIR and LUDICS_AGENT_NAME so the
+#    ludics process invoked below receives them.
+if [[ -z "$peer_sync_dir" ]]; then
+  check_dir="$cwd"
+  while [[ -n "$check_dir" && "$check_dir" != "/" ]]; do
+    if [[ -f "$check_dir/.ludics-orchestration.json" ]]; then
+      marker_peer_sync=$(jq -r '.peerSyncDir // ""' "$check_dir/.ludics-orchestration.json" 2>/dev/null)
+      marker_agent_name=$(jq -r '.agentName // ""' "$check_dir/.ludics-orchestration.json" 2>/dev/null)
+      if [[ -n "$marker_peer_sync" && -f "$marker_peer_sync/phase" ]]; then
+        peer_sync_dir="$marker_peer_sync"
+        export LUDICS_PEER_SYNC_DIR="$marker_peer_sync"
+        if [[ -n "$marker_agent_name" ]]; then
+          export LUDICS_AGENT_NAME="$marker_agent_name"
+        fi
+        break
+      fi
+    fi
+    check_dir=$(dirname "$check_dir")
+  done
+fi
+
+# 3. Fallback: walk up from cwd to find .peer-sync/phase.
+if [[ -z "$peer_sync_dir" ]]; then
+  check_dir="$cwd"
+  while [[ -n "$check_dir" && "$check_dir" != "/" ]]; do
+    if [[ -f "$check_dir/.peer-sync/phase" ]]; then
+      peer_sync_dir="$check_dir/.peer-sync"
+      break
+    fi
+    check_dir=$(dirname "$check_dir")
+  done
+fi
 
 if [[ -n "$peer_sync_dir" ]]; then
   # Orchestration agent stop — notify the runner

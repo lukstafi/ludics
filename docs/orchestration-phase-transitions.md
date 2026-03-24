@@ -220,3 +220,44 @@ Error branch:  running → error (session.status=error)
 This model eliminates timestamp-based freshness checks entirely.  The identity
 of the tracked turn (via `observedTurnId`) provides unambiguous lifecycle
 boundaries.
+
+### Fast-complete handling
+
+When an agent turn completes before the runner observes `activeTurnId` in the
+snapshot, the lifecycle stays in `dispatched` — there is no snapshot-only
+fast-complete path because the snapshot cannot prove the completed turn belongs
+to *this* dispatch (no `turnId` is returned from `dispatchCommand`).
+
+Fast completion is detected via the **stop-hook path**: when a stop hook fires
+with a matching `phaseToken`, the runner transitions directly from `dispatched`
+to `settled` with `completionSource: "stop-hook"`.
+
+### Phase-specific artifact validation
+
+Before treating an agent as done, `isAgentDone()` checks that required
+phase artifacts exist:
+
+| Phase | Required artifact |
+|-------|------------------|
+| `plan` | `plans/round-{N}-{agent}.md` |
+| `plan-review`, `review` | `reviews/round-{N}-{agent}.md` |
+| `pr-create` | `{agent}.pr` (must contain a valid GitHub PR URL) |
+| Other phases | No artifact required |
+
+If the artifact is missing or invalid, the agent is **not** treated as done
+even if its status file says done or the grace period has elapsed.  This
+prevents premature phase transitions when an agent reports completion but fails
+to write output.
+
+### Stop-hook environment propagation
+
+Orchestration setup writes a project-level `.claude/settings.local.json` at
+each agent's worktree with a `SessionStart` hook that injects
+`LUDICS_PEER_SYNC_DIR` and `LUDICS_AGENT_NAME` into `$CLAUDE_ENV_FILE`.  This
+ensures the env vars are available when the `Stop` hook fires, replacing the
+old directory-walk heuristic with env-based routing.
+
+Fallback chain (for Codex or non-Claude environments):
+1. Env vars from `$CLAUDE_ENV_FILE` (set by `SessionStart` hook)
+2. `.ludics-orchestration.json` marker file at the worktree root
+3. Directory walk up from cwd to find `.peer-sync/phase` (legacy)

@@ -61,10 +61,6 @@ export interface AgentRuntimeState {
   statusMessage: string;
   prUrl: string | null;
   interrupted: boolean;
-  /** @deprecated Use turnLifecycle.state instead. Kept for backward compat during migration. */
-  latestTurnState?: "running" | "interrupted" | "completed" | "error" | "missing";
-  /** @deprecated Use turnLifecycle.turnCompletedAt instead. */
-  latestTurnCompletedAt?: string | null;
   /** Current phase's turn lifecycle tracking.  Null for phases that don't dispatch turns (e.g. setup). */
   turnLifecycle?: AgentTurnLifecycle | null;
 }
@@ -110,7 +106,6 @@ export interface OrchestrationState {
   lastLearningRound?: number;
   confirmedPhase?: Phase | null;
   phaseDispatched?: boolean;
-  phaseDispatchedAt?: string | null;
   /** Epoch of the last GitHub comment poll during pr-comments phase. */
   prCommentsLastCheckAt?: number;
   /**
@@ -210,8 +205,6 @@ export function initAgentRuntimeState(names: string[]): Record<string, AgentRunt
       statusMessage: "",
       prUrl: null,
       interrupted: false,
-      latestTurnState: "missing",
-      latestTurnCompletedAt: null,
       turnLifecycle: null,
     };
   }

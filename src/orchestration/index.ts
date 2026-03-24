@@ -2,7 +2,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { harnessDir } from "../config.ts";
 import type { Phase } from "./phases.ts";
-import { readAgentStatus, readPhaseToken, writeStopHookRecord } from "./peer-sync.ts";
+import { readAgentMarkerFile, readAgentStatus, readPhaseToken, writeStopHookRecord } from "./peer-sync.ts";
 import { confirmPhase, interruptCurrentPhase, runOrchestrationForSlot, skipToPhase } from "./runner.ts";
 import { readOrchestrationState } from "./state.ts";
 import { isoNow } from "./util.ts";
@@ -96,7 +96,7 @@ export async function runOrchestrationCli(args: string[]): Promise<void> {
  * Writes a stop-hook record to .peer-sync/<agent>.stop.json so the runner
  * can detect turn completion via push rather than waiting for the next poll.
  */
-function orchOnStop(args: string[]): void {
+export function orchOnStop(args: string[]): void {
   const [cwd, peerSyncDir, hookEventName] = args;
   if (!cwd || !peerSyncDir) {
     console.error("usage: ludics orch on-stop <cwd> <peer-sync-dir> [hook-event-name]");
@@ -114,8 +114,10 @@ function orchOnStop(args: string[]): void {
   // and would incorrectly match every cwd, producing a "root.stop.json"
   // that the runner never reads.
   let agentName: string | null = null;
+  let worktreeAgentNames: string[] = [];
   try {
-    const worktrees = JSON.parse(readFileSync(join(peerSyncDir, "worktrees.json"), "utf-8"));
+    const worktrees = JSON.parse(readFileSync(join(peerSyncDir, "worktrees.json"), "utf-8")) as Record<string, unknown>;
+    worktreeAgentNames = Object.keys(worktrees).filter((n) => n !== "root");
     for (const [name, path] of Object.entries(worktrees)) {
       if (name === "root") continue;
       if (typeof path === "string" && cwd.startsWith(path)) {
@@ -124,21 +126,43 @@ function orchOnStop(args: string[]): void {
       }
     }
   } catch {
-    // Can't read worktrees — try to identify by status files.
+    // Can't read worktrees — fall through to env-var check.
   }
 
-  // Fallback: check coder.status and reviewer.status, pick whichever is active.
+  // Marker-file attribution: .ludics-orchestration.json written by orchestration setup.
   if (!agentName) {
-    for (const candidate of ["coder", "reviewer"]) {
-      const status = readAgentStatus(peerSyncDir, candidate);
-      if (status.status !== "unknown" && status.status !== "idle") {
-        agentName = candidate;
-        break;
-      }
+    const marker = readAgentMarkerFile(cwd);
+    if (marker && worktreeAgentNames.includes(marker.agentName)) {
+      agentName = marker.agentName;
     }
   }
 
-  if (!agentName) return; // Unable to identify agent.
+  // Env-var attribution: the agent name set externally (e.g. testing).
+  if (!agentName) {
+    const envAgent = process.env.LUDICS_AGENT_NAME;
+    if (envAgent && worktreeAgentNames.includes(envAgent)) {
+      agentName = envAgent;
+    }
+  }
+
+  // Last resort: check status files, but ONLY accept if exactly one agent is
+  // non-idle.  When multiple agents are active, attribution is ambiguous and
+  // we refuse to write — the runner will detect completion via snapshot polling.
+  if (!agentName && worktreeAgentNames.length > 0) {
+    const activeAgents: string[] = [];
+    for (const candidate of worktreeAgentNames) {
+      const status = readAgentStatus(peerSyncDir, candidate);
+      if (status.status !== "unknown" && status.status !== "idle") {
+        activeAgents.push(candidate);
+      }
+    }
+    if (activeAgents.length === 1) {
+      agentName = activeAgents[0]!;
+    }
+    // If 0 or 2+ agents are active, attribution is ambiguous — refuse.
+  }
+
+  if (!agentName) return; // Unable to unambiguously identify agent.
 
   writeStopHookRecord(peerSyncDir, {
     agent: agentName,

@@ -55,21 +55,3 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Returns true when `completedAt` represents a point in time that is at or
- * after `dispatchedAt`, comparing the two ISO 8601 strings as Date values.
- *
- * @deprecated Replaced by the AgentTurnLifecycle identity-based tracking model.
- * The lifecycle tracks the dispatched turn by ID rather than comparing timestamps,
- * which eliminates the Race Window 1 (dispatch-to-start gap) vulnerability.
- * See docs/orchestration-phase-transitions.md for the full design.
- * Kept for backward compatibility during migration; will be removed in a future release.
- */
-export function isTurnFresh(
-  dispatchedAt: string | null | undefined,
-  completedAt: string | null | undefined,
-): boolean {
-  if (!dispatchedAt) return true;
-  if (!completedAt) return false;
-  return Date.parse(completedAt) >= Date.parse(dispatchedAt);
-}
