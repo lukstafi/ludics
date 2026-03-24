@@ -113,6 +113,11 @@ export interface OrchestrationState {
    * Set to 0 to indicate quiet period was reset due to new comments.
    */
   prCommentsQuietSince?: number;
+  /**
+   * Set to true when a `+1` reaction from `chatgpt-codex-connector[bot]` is detected on
+   * any agent's PR during the pr-comments phase.  Triggers immediate transition to final-merge.
+   */
+  prCodexApproved?: boolean;
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {
@@ -135,7 +140,7 @@ export const DEFAULT_TIMEOUTS: Record<string, number> = {
   "final-merge": 1800,
 };
 
-export const DEFAULT_PR_COMMENTS_TIMEOUT = 600; // 10 min quiet before auto-merging (matches agent-duo)
+export const DEFAULT_PR_COMMENTS_TIMEOUT = 1200; // 20 min quiet before auto-merging
 export const DEFAULT_PR_COMMENTS_CHECK_INTERVAL = 60; // poll GitHub every 60 s
 
 export const DEFAULT_POLL_INTERVAL = 10;

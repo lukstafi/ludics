@@ -373,6 +373,8 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
     case "pr-comments": {
       if (isMerged(state)) return "suggest-refactor";
       if (state.mode === "duo" && hasTwoPrs(state)) return "merge-vote";
+      // Immediate transition when Codex bot has left a +1 approval reaction.
+      if (state.prCodexApproved && hasAnyPr(state)) return "final-merge";
       // Transition to final-merge after the quiet period (no new comments for prCommentsTimeout).
       const quietPeriod = state.config.prCommentsTimeout;
       if (
