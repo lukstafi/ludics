@@ -155,6 +155,17 @@ Commands:
   t3code start                Start the shared t3code server
   t3code stop                 Stop the shared t3code server
   t3code doctor               Verify t3code binary, process, HTTP reachability, and WebSocket
+  t3code thread <id> log [--last N]
+                              Show message history for a thread
+  t3code thread <id> send [--wait] "<msg>"
+                              Send a user message to a thread (--wait for response)
+  t3code thread <id> response Show last assistant response for a thread
+  t3code slot <N> log [--agent coder|reviewer] [--last N]
+                              Show message history for a slot's agent thread
+  t3code slot <N> send [--agent coder|reviewer] [--wait] "<msg>"
+                              Send a user message to a slot's agent thread
+  t3code slot <N> response [--agent coder|reviewer]
+                              Show last assistant response for a slot's agent
 
   orch status <slot>          Show orchestration state for a slot
   orch confirm <slot>         Confirm the current orchestration phase
