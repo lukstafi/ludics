@@ -2,8 +2,8 @@ import { harnessDir } from "../config.ts";
 import { readOrchestrationState } from "../orchestration/state.ts";
 import type { AgentConfig } from "../orchestration/state.ts";
 import { T3CodeClient } from "./client.ts";
-import { doctorServer, ensureServer, readServerRecord, readSlotState, serverStatus, stopServer, t3codeServerPath } from "./server.ts";
-import type { T3ThreadMessage } from "./types.ts";
+import { doctorServer, ensureServer, readServerRecord, serverStatus, stopServer, t3codeServerPath } from "./server.ts";
+import type { T3Snapshot, T3ThreadMessage } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -117,6 +117,48 @@ async function threadLog(
   formatMessages(messages);
 }
 
+/**
+ * Poll `getSnapshot` until a turn with a different ID than `preDispatchTurnId`
+ * reaches a terminal state ("completed", "error", or "interrupted").
+ *
+ * Returns the terminal result, or null on timeout.
+ * Exported for testing.
+ */
+export async function waitForNewTurn(
+  getSnapshot: () => Promise<T3Snapshot | null>,
+  threadId: string,
+  preDispatchTurnId: string | null,
+  options: { pollIntervalMs: number; maxWaitMs: number },
+): Promise<{ state: "completed" | "error" | "interrupted"; turnId: string } | null> {
+  const deadline = Date.now() + options.maxWaitMs;
+
+  while (Date.now() < deadline) {
+    await sleep(options.pollIntervalMs);
+    try {
+      const snap = await getSnapshot();
+      if (!snap) continue;
+
+      const t = snap.threads.find((x) => x.id === threadId);
+      if (!t) return null; // thread gone
+
+      const lt = t.latestTurn;
+      if (!lt) continue;
+
+      // Skip the pre-dispatch turn — it was already there before we sent.
+      if (lt.turnId === preDispatchTurnId) continue;
+
+      if (lt.state === "completed" || lt.state === "error" || lt.state === "interrupted") {
+        return { state: lt.state, turnId: lt.turnId };
+      }
+      // else "running" or "starting" — keep polling
+    } catch {
+      // transient error — keep polling
+    }
+  }
+
+  return null; // timed out
+}
+
 async function threadSend(
   threadId: string,
   message: string,
@@ -133,6 +175,9 @@ async function threadSend(
     const thread = snapshot.threads.find((t) => t.id === threadId);
     const runtimeMode = thread?.runtimeMode ?? "full-access";
     const interactionMode = thread?.interactionMode ?? "default";
+
+    // Capture the pre-dispatch turn ID so the polling loop can skip stale turns.
+    const preDispatchTurnId = thread?.latestTurn?.turnId ?? null;
 
     await client.dispatchCommand({
       type: "thread.turn.start",
@@ -154,59 +199,42 @@ async function threadSend(
       return;
     }
 
-    // Poll snapshot until the turn completes
     console.log("waiting for agent response...");
-    const POLL_INTERVAL_MS = 1_500;
-    const MAX_WAIT_MS = 30 * 60 * 1_000; // 30 minutes
-    const deadline = Date.now() + MAX_WAIT_MS;
-    let lastTurnId: string | null = null;
+    const result = await waitForNewTurn(
+      () => client.getSnapshot(),
+      threadId,
+      preDispatchTurnId,
+      { pollIntervalMs: 1_500, maxWaitMs: 30 * 60 * 1_000 },
+    );
 
-    while (Date.now() < deadline) {
-      await sleep(POLL_INTERVAL_MS);
-      try {
-        const snap = await client.getSnapshot();
-        const t = snap.threads.find((x) => x.id === threadId);
-        if (!t) break;
-
-        const lt = t.latestTurn;
-        if (!lt) continue;
-
-        if (lastTurnId === null && (lt.state === "running" || lt.state === "completed")) {
-          lastTurnId = lt.turnId;
-        }
-
-        if (lastTurnId && lt.turnId === lastTurnId && lt.state === "completed") {
-          // Turn finished — fetch and show the last assistant message
-          try {
-            const msgs = await client.getThreadMessages(threadId, 1);
-            const last = msgs.at(-1);
-            if (last?.role === "assistant") {
-              console.log();
-              formatMessages(msgs);
-            } else {
-              console.log(`turn ${lastTurnId} completed`);
-            }
-          } catch {
-            console.log(`turn ${lastTurnId} completed`);
-          }
-          return;
-        }
-
-        if (lastTurnId && lt.turnId === lastTurnId && lt.state === "error") {
-          console.error(`turn ${lastTurnId} ended with error`);
-          return;
-        }
-
-        if (lastTurnId && lt.turnId === lastTurnId && lt.state === "interrupted") {
-          console.log(`turn ${lastTurnId} was interrupted`);
-          return;
-        }
-      } catch {
-        // transient error — keep polling
-      }
+    if (!result) {
+      console.log("timed out waiting for agent response (turn may still be running)");
+      return;
     }
 
-    console.log("timed out waiting for agent response (turn may still be running)");
+    if (result.state === "error") {
+      console.error(`turn ${result.turnId} ended with error`);
+      return;
+    }
+
+    if (result.state === "interrupted") {
+      console.log(`turn ${result.turnId} was interrupted`);
+      return;
+    }
+
+    // state === "completed" — fetch and show the last assistant message
+    try {
+      const msgs = await client.getThreadMessages(threadId, 1);
+      const last = msgs.at(-1);
+      if (last?.role === "assistant") {
+        console.log();
+        formatMessages(msgs);
+      } else {
+        console.log(`turn ${result.turnId} completed`);
+      }
+    } catch {
+      console.log(`turn ${result.turnId} completed`);
+    }
   } finally {
     client.close();
   }
@@ -375,12 +403,6 @@ export async function runT3Code(args: string[]): Promise<void> {
 
       const subcmd = args[2];
       const rest = args.slice(3);
-
-      // Validate slot has state
-      const slotState = readSlotState(slot, harness);
-      if (!slotState && subcmd !== "log" && subcmd !== "send" && subcmd !== "response") {
-        throw new Error(`no t3code slot state found for slot ${slot}`);
-      }
 
       switch (subcmd) {
         case "log": {
