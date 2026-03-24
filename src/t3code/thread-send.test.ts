@@ -29,16 +29,13 @@ function makeSnapshot(threadId: string, latestTurn: T3LatestTurn | null): T3Snap
 function makeTurn(
   turnId: string,
   state: T3LatestTurn["state"],
+  requestedAt = "2026-03-24T10:00:00Z",
 ): T3LatestTurn {
-  return {
-    turnId,
-    state,
-    requestedAt: "2026-01-01T00:00:00Z",
-  };
+  return { turnId, state, requestedAt };
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// waitForNewTurn — turn-ID correlation tests
 // ---------------------------------------------------------------------------
 
 describe("waitForNewTurn", () => {
@@ -107,10 +104,9 @@ describe("waitForNewTurn", () => {
 
   test("returns error state when turn ends with error", async () => {
     const threadId = "thread-err";
-    const fresh = "turn-err";
 
     const getSnapshot = async (): Promise<T3Snapshot> =>
-      makeSnapshot(threadId, makeTurn(fresh, "error"));
+      makeSnapshot(threadId, makeTurn("turn-err", "error"));
 
     const result = await waitForNewTurn(getSnapshot, threadId, null, {
       pollIntervalMs: 10,
@@ -122,10 +118,9 @@ describe("waitForNewTurn", () => {
 
   test("returns interrupted state when turn is interrupted", async () => {
     const threadId = "thread-int";
-    const fresh = "turn-int";
 
     const getSnapshot = async (): Promise<T3Snapshot> =>
-      makeSnapshot(threadId, makeTurn(fresh, "interrupted"));
+      makeSnapshot(threadId, makeTurn("turn-int", "interrupted"));
 
     const result = await waitForNewTurn(getSnapshot, threadId, null, {
       pollIntervalMs: 10,
@@ -161,9 +156,60 @@ describe("waitForNewTurn", () => {
 
     const result = await waitForNewTurn(getSnapshot, threadId, stale, {
       pollIntervalMs: 10,
-      maxWaitMs: 80, // very short timeout
+      maxWaitMs: 80,
     });
 
     expect(result).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // minRequestedAt filter (concurrent-actor guard)
+  // ---------------------------------------------------------------------------
+
+  test("ignores a concurrent turn requested before minRequestedAt", async () => {
+    const threadId = "thread-concurrent";
+    const concurrent = "turn-concurrent";
+    const ours = "turn-ours";
+
+    // concurrent turn was created before our dispatch timestamp
+    const minRequestedAt = "2026-03-24T12:00:00Z";
+    const beforeDispatch = "2026-03-24T11:59:00Z";
+    const afterDispatch = "2026-03-24T12:01:00Z";
+
+    let calls = 0;
+    const getSnapshot = async (): Promise<T3Snapshot> => {
+      calls += 1;
+      if (calls === 1) {
+        // First poll: concurrent actor's completed turn (before our dispatch time)
+        return makeSnapshot(threadId, makeTurn(concurrent, "completed", beforeDispatch));
+      }
+      // Second poll: our turn completes
+      return makeSnapshot(threadId, makeTurn(ours, "completed", afterDispatch));
+    };
+
+    const result = await waitForNewTurn(getSnapshot, threadId, null, {
+      pollIntervalMs: 10,
+      maxWaitMs: 5_000,
+      minRequestedAt,
+    });
+
+    expect(result?.turnId).toBe(ours);
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  test("accepts a turn with requestedAt exactly at minRequestedAt", async () => {
+    const threadId = "thread-exact";
+    const ts = "2026-03-24T12:00:00Z";
+
+    const getSnapshot = async (): Promise<T3Snapshot> =>
+      makeSnapshot(threadId, makeTurn("turn-exact", "completed", ts));
+
+    const result = await waitForNewTurn(getSnapshot, threadId, null, {
+      pollIntervalMs: 10,
+      maxWaitMs: 5_000,
+      minRequestedAt: ts,
+    });
+
+    expect(result?.turnId).toBe("turn-exact");
   });
 });

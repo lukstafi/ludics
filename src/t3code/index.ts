@@ -119,7 +119,11 @@ async function threadLog(
 
 /**
  * Poll `getSnapshot` until a turn with a different ID than `preDispatchTurnId`
- * reaches a terminal state ("completed", "error", or "interrupted").
+ * AND a `requestedAt` timestamp not earlier than `minRequestedAt` reaches a
+ * terminal state ("completed", "error", or "interrupted").
+ *
+ * The two filters together guard against stale pre-existing turns AND unrelated
+ * concurrent turns dispatched by other actors before our command was processed.
  *
  * Returns the terminal result, or null on timeout.
  * Exported for testing.
@@ -128,7 +132,17 @@ export async function waitForNewTurn(
   getSnapshot: () => Promise<T3Snapshot | null>,
   threadId: string,
   preDispatchTurnId: string | null,
-  options: { pollIntervalMs: number; maxWaitMs: number },
+  options: {
+    pollIntervalMs: number;
+    maxWaitMs: number;
+    /**
+     * ISO timestamp captured just before the dispatch command was sent.
+     * Turns whose `requestedAt` is strictly before this value are ignored,
+     * filtering out concurrent turns created by other actors before our command
+     * reached the server.
+     */
+    minRequestedAt?: string;
+  },
 ): Promise<{ state: "completed" | "error" | "interrupted"; turnId: string } | null> {
   const deadline = Date.now() + options.maxWaitMs;
 
@@ -146,6 +160,9 @@ export async function waitForNewTurn(
 
       // Skip the pre-dispatch turn — it was already there before we sent.
       if (lt.turnId === preDispatchTurnId) continue;
+
+      // Skip turns requested before our dispatch — they belong to concurrent actors.
+      if (options.minRequestedAt && lt.requestedAt < options.minRequestedAt) continue;
 
       if (lt.state === "completed" || lt.state === "error" || lt.state === "interrupted") {
         return { state: lt.state, turnId: lt.turnId };
@@ -178,6 +195,8 @@ async function threadSend(
 
     // Capture the pre-dispatch turn ID so the polling loop can skip stale turns.
     const preDispatchTurnId = thread?.latestTurn?.turnId ?? null;
+    // Capture the pre-dispatch timestamp to filter out concurrent turns from other actors.
+    const minRequestedAt = isoNow();
 
     await client.dispatchCommand({
       type: "thread.turn.start",
@@ -204,7 +223,7 @@ async function threadSend(
       () => client.getSnapshot(),
       threadId,
       preDispatchTurnId,
-      { pollIntervalMs: 1_500, maxWaitMs: 30 * 60 * 1_000 },
+      { pollIntervalMs: 1_500, maxWaitMs: 30 * 60 * 1_000, minRequestedAt },
     );
 
     if (!result) {
@@ -263,14 +282,19 @@ async function threadResponse(threadId: string, harness: string): Promise<void> 
 function parseFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
   if (idx === -1) return undefined;
-  return args[idx + 1];
+  const val = args[idx + 1];
+  if (val === undefined || val.startsWith("--")) {
+    throw new Error(`flag ${flag} requires a value`);
+  }
+  return val;
 }
 
 function parseIntFlag(args: string[], flag: string): number | undefined {
-  const val = parseFlag(args, flag);
+  const val = parseFlag(args, flag); // throws if flag present without value
   if (val === undefined) return undefined;
   const n = parseInt(val, 10);
-  return isNaN(n) ? undefined : n;
+  if (isNaN(n)) throw new Error(`flag ${flag} requires an integer value, got: ${val}`);
+  return n;
 }
 
 function hasFlag(args: string[], flag: string): boolean {
