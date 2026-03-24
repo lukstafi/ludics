@@ -12,7 +12,7 @@ import { emitEvent } from "../events.ts";
 import { runAdapterAction, readAdapterState, readAdapterLastActivity } from "../adapters/index.ts";
 import type { AdapterContext } from "../adapters/index.ts";
 import { maybeNotifySessionConclusionForAdapter } from "../notify.ts";
-import { addFrontmatterField, updateDependencyArray, parseTaskFrontmatter } from "../tasks/markdown.ts";
+import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import type { PreemptStash } from "./preempt.ts";
 import { readSlotState } from "../t3code/server.ts";
@@ -200,6 +200,23 @@ export function slotAssign(
 
 **Git:**
 `;
+
+  // Clear metadata on the previous task (if any) being replaced in this slot
+  const oldBlock = blocks.get(slotNum);
+  if (oldBlock) {
+    const oldTaskId = getTask(oldBlock).trim();
+    if (oldTaskId && oldTaskId !== "null" && oldTaskId !== taskId) {
+      const oldTaskFile = taskFilePath(oldTaskId);
+      if (existsSync(oldTaskFile)) {
+        updateFrontmatterField(oldTaskFile, "slot", "null");
+        const oldContent = readFileSync(oldTaskFile, "utf-8");
+        const oldStatus = oldContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+        if (oldStatus === "in-progress") {
+          updateFrontmatterField(oldTaskFile, "status", "ready");
+        }
+      }
+    }
+  }
 
   blocks.set(slotNum, block);
   writeSlotFile(file, blocks, count);
