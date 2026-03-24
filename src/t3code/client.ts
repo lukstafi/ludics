@@ -5,6 +5,7 @@ import {
   type T3CommandResult,
   type T3DomainEvent,
   type T3Snapshot,
+  type T3ThreadMessage,
   type T3WsPush,
   type T3WsResponse,
 } from "./types.ts";
@@ -170,6 +171,15 @@ export class T3CodeClient {
     return await this.request<T3CommandResult | undefined>(
       ORCHESTRATION_WS_METHODS.dispatchCommand,
       { command },
+    );
+  }
+
+  async getThreadMessages(threadId: string, limit?: number): Promise<T3ThreadMessage[]> {
+    const params: Record<string, unknown> = { threadId };
+    if (limit !== undefined) params.limit = limit;
+    return await this.request<T3ThreadMessage[]>(
+      ORCHESTRATION_WS_METHODS.getThreadMessages,
+      params,
     );
   }
 

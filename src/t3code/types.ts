@@ -1,6 +1,7 @@
 export const ORCHESTRATION_WS_METHODS = {
   getSnapshot: "orchestration.getSnapshot",
   dispatchCommand: "orchestration.dispatchCommand",
+  getThreadMessages: "thread.messages.list",
 } as const;
 
 export const ORCHESTRATION_WS_CHANNELS = {
@@ -83,6 +84,18 @@ export interface T3Snapshot {
 export interface T3CommandResult {
   sequence?: number;
   eventId?: string;
+}
+
+export type T3MessageRole = "user" | "assistant" | "system" | "tool";
+
+export interface T3ThreadMessage {
+  messageId: string;
+  role: T3MessageRole;
+  /** Plain text content of the message. */
+  text: string;
+  createdAt: string;
+  /** Turn ID this message belongs to, if applicable. */
+  turnId?: string | null;
 }
 
 export interface T3ProjectCreateCommand {
