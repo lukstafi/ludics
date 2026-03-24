@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFi
 import { join, dirname } from "path";
 import YAML from "yaml";
 import { harnessDir, loadConfigSync, slotsFilePath } from "./config.ts";
-import { parseSlotBlocks, getField, getProcess, getTask, getMode } from "./slots/markdown.ts";
+import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted } from "./slots/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl } from "./network.ts";
 import { inspectManagedServerProcess, readServerRecord, t3codeStartingPath } from "./t3code/server.ts";
@@ -25,6 +25,8 @@ interface SlotJson {
   taskContent: string | null;
   mode: string | null;
   started: string | null;
+  /** ISO timestamp written by slotStart(); null if no session is running. */
+  sessionStarted: string | null;
   phase: string | null;
   terminals: Record<string, string> | null;
   preempted: boolean;
@@ -225,6 +227,9 @@ function generateSlots(): SlotJson[] {
     // Check for preemption stash
     const stash = readStash(num);
 
+    const rawSessionStarted = getSessionStarted(block).trim();
+    const sessionStarted = (rawSessionStarted && rawSessionStarted !== "null") ? rawSessionStarted : null;
+
     result.push({
       number: num,
       empty,
@@ -233,6 +238,7 @@ function generateSlots(): SlotJson[] {
       taskContent,
       mode: empty ? null : getMode(block).trim() || null,
       started: empty ? null : getField(block, "Started").trim() || null,
+      sessionStarted: empty ? null : sessionStarted,
       phase: empty ? null : phase,
       terminals: empty ? null : Object.keys(terminals).length > 0 ? terminals : null,
       preempted: stash !== null,

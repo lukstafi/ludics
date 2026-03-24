@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { harnessDir, slotsFilePath, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
 import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
+         getSessionStarted, setField,
          emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
 import { stateCommit } from "../state.ts";
 import { journalAppend } from "../journal.ts";
@@ -190,6 +191,7 @@ export function slotAssign(
 **Path:** ${path || "null"}
 **Started:** ${started}
 **Adapter Args:** ${adapterArgs || "null"}
+**Session Started:** null
 
 **Terminals:**
 
@@ -438,10 +440,19 @@ export function slotSetMode(slotNum: number, mode: string): void {
   // The Mode field doubles as the live adapter identity once a session has started;
   // changing it mid-session would cause slotClear(), slotsRefresh(), and slotStop()
   // to target the wrong adapter and lose t3code thread persistence.
-  const phaseMatch = block.match(/^- Phase:\s*(.+)$/m);
-  if (phaseMatch) {
+  //
+  // Check the structured "Session Started" field first (written by slotStart() for
+  // all adapters). Fall back to the phase marker for t3code blocks that pre-date
+  // the Session Started field or where slotStart() was not used.
+  const sessionStarted = getSessionStarted(block).trim();
+  const hasActiveSession = (sessionStarted && sessionStarted !== "null")
+    || /^- Phase:\s*.+$/m.test(block);
+  if (hasActiveSession) {
+    const detail = (sessionStarted && sessionStarted !== "null")
+      ? `session started at ${sessionStarted}`
+      : `phase active`;
     throw new Error(
-      `slot ${slotNum} has an active session (phase: ${phaseMatch[1]!.trim()}); stop or clear the slot before changing mode`,
+      `slot ${slotNum} has an active session (${detail}); stop or clear the slot before changing mode`,
     );
   }
 
@@ -517,6 +528,16 @@ export async function slotStart(slotNum: number): Promise<void> {
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
   await runAdapterAction("start", ctx);
+
+  // Stamp the block so the mode-toggle guard can detect an active session
+  // regardless of which adapter is in use (manual has no phase marker).
+  const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
+  const updated = setField(block, "Session Started", sessionStartedAt);
+  if (updated !== block) {
+    blocks.set(slotNum, updated);
+    writeSlotFile(file, blocks, count);
+  }
+
   journalAppend("slot", `Slot ${slotNum} started (adapter=${ctx.mode})`);
   emitEvent({ event_type: "slot_start", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
 }
@@ -534,6 +555,14 @@ export async function slotStop(slotNum: number): Promise<void> {
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
   await runAdapterAction("stop", ctx);
+
+  // Clear the session-active marker so the mode toggle becomes available again
+  const updated = setField(block, "Session Started", "null");
+  if (updated !== block) {
+    blocks.set(slotNum, updated);
+    writeSlotFile(file, blocks, count);
+  }
+
   journalAppend("slot", `Slot ${slotNum} stopped (adapter=${ctx.mode})`);
   emitEvent({ event_type: "slot_stop", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
 }

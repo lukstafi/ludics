@@ -12,6 +12,7 @@ export function emptyBlock(slot: number): string {
 **Path:** null
 **Started:** null
 **Adapter Args:** null
+**Session Started:** null
 
 **Terminals:**
 
@@ -65,6 +66,24 @@ export function getSession(block: string): string { return getField(block, "Sess
 export function getPath(block: string): string { return getField(block, "Path"); }
 export function getStarted(block: string): string { return getField(block, "Started"); }
 export function getAdapterArgs(block: string): string { return getField(block, "Adapter Args"); }
+export function getSessionStarted(block: string): string { return getField(block, "Session Started"); }
+
+/**
+ * Update (or insert) a structured `**Field:** value` header line in a slot block.
+ * If the field is already present it is replaced; if not found the block is
+ * returned unchanged (backward-compat with old-format blocks).
+ */
+export function setField(block: string, field: string, value: string): string {
+  const marker = `**${field}:**`;
+  const lines = block.split("\n");
+  const idx = lines.findIndex(l => l.startsWith(marker));
+  if (idx >= 0) {
+    lines[idx] = `${marker} ${value}`;
+    return lines.join("\n");
+  }
+  // Field absent in old-format block — leave unchanged for safety
+  return block;
+}
 
 export function writeSlotFile(filePath: string, blocks: Map<number, string>, count: number): void {
   const parts: string[] = ["# Slots\n\n"];
