@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { harnessDir, slotsFilePath, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
 import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
+         getSessionStarted, setField,
          emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
 import { stateCommit } from "../state.ts";
 import { journalAppend } from "../journal.ts";
@@ -190,6 +191,7 @@ export function slotAssign(
 **Path:** ${path || "null"}
 **Started:** ${started}
 **Adapter Args:** ${adapterArgs || "null"}
+**Session Started:** null
 
 **Terminals:**
 
@@ -423,6 +425,56 @@ export function slotNote(slotNum: number, note: string): void {
   writeSlotFile(file, blocks, count);
 }
 
+export function slotSetMode(slotNum: number, mode: string): void {
+  const file = ensureSlotsFile();
+  const blocks = loadBlocks(file);
+  const count = slotsCount();
+  validateRange(slotNum, count);
+
+  const block = blocks.get(slotNum);
+  if (!block) {
+    throw new Error(`slot ${slotNum} not found`);
+  }
+
+  // Refuse to toggle mode while a session is actively running.
+  // The Mode field doubles as the live adapter identity once a session has started;
+  // changing it mid-session would cause slotClear(), slotsRefresh(), and slotStop()
+  // to target the wrong adapter and lose t3code thread persistence.
+  //
+  // Use only the structured "Session Started" field (written by slotStart() for
+  // every adapter, cleared by slotStop()). The old phase-marker fallback was
+  // removed because slotStop() does not clear phase text written by slotsRefresh(),
+  // which would permanently block mode toggling after a session ends.
+  const sessionStarted = getSessionStarted(block).trim();
+  const hasActiveSession = sessionStarted && sessionStarted !== "null";
+  if (hasActiveSession) {
+    throw new Error(
+      `slot ${slotNum} has an active session (started at ${sessionStarted}); stop or clear the slot before changing mode`,
+    );
+  }
+
+  // Update the Mode field in-place
+  const updated = block.split("\n").map(line => {
+    if (line.startsWith("**Mode:**")) {
+      return `**Mode:** ${mode}`;
+    }
+    return line;
+  }).join("\n");
+
+  blocks.set(slotNum, updated);
+  writeSlotFile(file, blocks, count);
+
+  // Keep task file adapter: field in sync
+  const taskId = getTask(updated).trim();
+  if (taskId && taskId !== "null") {
+    taskUpdateFrontmatter(taskId, "adapter", mode);
+  }
+
+  journalAppend("slot", `Slot ${slotNum} mode set to ${mode}`);
+  emitEvent({ event_type: "slot_mode", source: "cli", scope: "slot", slot: slotNum, message: `mode=${mode}` });
+  stateCommit(`slot ${slotNum}: mode=${mode}`);
+}
+
 function makeAdapterContext(slotNum: number, block: string): AdapterContext {
   const mode = getMode(block).trim();
   const session = getSession(block).trim();
@@ -473,6 +525,16 @@ export async function slotStart(slotNum: number): Promise<void> {
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
   await runAdapterAction("start", ctx);
+
+  // Stamp the block so the mode-toggle guard can detect an active session
+  // regardless of which adapter is in use (manual has no phase marker).
+  const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
+  const updated = setField(block, "Session Started", sessionStartedAt);
+  if (updated !== block) {
+    blocks.set(slotNum, updated);
+    writeSlotFile(file, blocks, count);
+  }
+
   journalAppend("slot", `Slot ${slotNum} started (adapter=${ctx.mode})`);
   emitEvent({ event_type: "slot_start", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
 }
@@ -490,6 +552,14 @@ export async function slotStop(slotNum: number): Promise<void> {
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
   await runAdapterAction("stop", ctx);
+
+  // Clear the session-active marker so the mode toggle becomes available again
+  const updated = setField(block, "Session Started", "null");
+  if (updated !== block) {
+    blocks.set(slotNum, updated);
+    writeSlotFile(file, blocks, count);
+  }
+
   journalAppend("slot", `Slot ${slotNum} stopped (adapter=${ctx.mode})`);
   emitEvent({ event_type: "slot_stop", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
 }
@@ -615,6 +685,13 @@ export async function runSlot(args: string[]): Promise<void> {
       const noteText = args[2];
       if (!noteText) throw new Error("note text required");
       slotNote(slotNum, noteText);
+      break;
+    }
+
+    case "mode": {
+      const modeVal = args[2];
+      if (!modeVal) throw new Error("mode value required (e.g., manual, t3code)");
+      slotSetMode(slotNum, modeVal);
       break;
     }
 

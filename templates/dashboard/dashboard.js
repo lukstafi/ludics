@@ -109,7 +109,21 @@ function renderSlots(slots) {
             const meta = [];
             if (hasTask) meta.push(`<span class="task-id">${escapeHtml(slot.task)}</span>`);
             if (slot.effort) meta.push(`<span class="effort">${escapeHtml(slot.effort)}</span>`);
-            if (slot.mode) meta.push(escapeHtml(slot.mode));
+            if (slot.mode) {
+                // Only allow toggling when no session is actively running.
+                // slotStart() stamps slot.sessionStarted for all adapters (manual included),
+                // and slotStop() clears it. The phase fallback was removed because phase
+                // text written by slotsRefresh() is never cleared by slotStop(), which
+                // would permanently block the toggle after a session ends.
+                const isToggleable = (slot.mode === 'manual' || slot.mode === 't3code')
+                    && !slot.sessionStarted;
+                if (isToggleable) {
+                    const otherMode = slot.mode === 'manual' ? 't3code' : 'manual';
+                    meta.push(`<button class="mode-toggle-btn mode-${escapeHtml(slot.mode)}" onclick="toggleSlotMode(${i}, '${otherMode}')" title="Mode: ${escapeHtml(slot.mode)} — click to switch to ${otherMode}">${escapeHtml(slot.mode)}</button>`);
+                } else {
+                    meta.push(escapeHtml(slot.mode));
+                }
+            }
             if (slot.started) meta.push(formatTime(slot.started));
             if (meta.length > 0) html += `<p class="slot-meta">${meta.join(' · ')}</p>`;
             if (slot.phase) html += `<p class="phase"><span class="label">Phase:</span> ${escapeHtml(slot.phase)}</p>`;
@@ -515,6 +529,28 @@ async function startSlot(slotNum) {
     } catch {
         btn.textContent = 'error';
         setTimeout(() => { btn.textContent = 'start'; btn.disabled = false; }, 3000);
+    }
+}
+
+// Toggle slot mode between manual and t3code
+async function toggleSlotMode(slotNum, mode) {
+    const btn = event.target;
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = '...';
+    try {
+        const response = await fetch(`/api/slot-mode?slot=${slotNum}&mode=${encodeURIComponent(mode)}`);
+        if (response.ok) {
+            fetchAllData(); // refresh
+        } else {
+            const msg = await response.text();
+            btn.textContent = 'error';
+            console.error('slot mode toggle failed:', msg);
+            setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = 'error';
+        setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
     }
 }
 
