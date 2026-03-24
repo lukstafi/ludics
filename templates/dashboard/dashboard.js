@@ -458,10 +458,20 @@ async function fetchT3codeLink() {
             link.title = 't3code Web client';
             link.style.opacity = '';
             link.style.pointerEvents = '';
+            link.textContent = link.textContent.replace(' (starting…)', '');
+        } else if (data.starting && data.webUrl) {
+            link.href = data.webUrl;
+            link.title = 't3code server is starting up…';
+            link.style.opacity = '0.6';
+            link.style.pointerEvents = 'none';
+            if (!link.textContent.includes('(starting…)')) {
+                link.textContent = link.textContent + ' (starting…)';
+            }
         } else {
             link.style.opacity = '0.4';
             link.style.pointerEvents = 'none';
             link.title = 't3code server not running';
+            link.textContent = link.textContent.replace(' (starting…)', '');
         }
     } catch { /* ignore */ }
 }

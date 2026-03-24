@@ -1,5 +1,5 @@
 import { harnessDir } from "../config.ts";
-import { ensureServer, serverStatus, stopServer, t3codeServerPath } from "./server.ts";
+import { doctorServer, ensureServer, serverStatus, stopServer, t3codeServerPath } from "./server.ts";
 
 export async function runT3Code(args: string[]): Promise<void> {
   const sub = args[0] ?? "status";
@@ -40,7 +40,18 @@ export async function runT3Code(args: string[]): Promise<void> {
       return;
     }
 
+    case "doctor": {
+      const result = await doctorServer({ harnessDir: harness });
+      console.log(result.ok ? "t3code: healthy" : "t3code: unhealthy");
+      for (const check of result.checks) {
+        const icon = check.passed ? "✓" : "✗";
+        console.log(`  ${icon} ${check.name}: ${check.detail}`);
+      }
+      if (!result.ok) process.exit(1);
+      return;
+    }
+
     default:
-      throw new Error(`unknown t3code subcommand: ${sub} (use: status, start, stop)`);
+      throw new Error(`unknown t3code subcommand: ${sub} (use: status, start, stop, doctor)`);
   }
 }

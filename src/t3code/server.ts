@@ -62,6 +62,18 @@ export function t3codeServerPath(harnessDir: string = defaultHarnessDir()): stri
   return join(t3codeDir(harnessDir), "server.json");
 }
 
+/**
+ * Path to the "server is starting" marker file.
+ * Written just before Bun.spawn() and cleared on successful startup.
+ * Used by the dashboard to show "starting…" while keepalive is reviving the server.
+ */
+export function t3codeStartingPath(harnessDir: string = defaultHarnessDir()): string {
+  return join(t3codeDir(harnessDir), "starting.json");
+}
+
+/** How long (ms) a starting.json marker is considered fresh. */
+const STARTING_MARKER_TTL_MS = 120_000;
+
 export function t3codeServerStateDir(harnessDir: string = defaultHarnessDir()): string {
   return join(t3codeDir(harnessDir), "state");
 }
@@ -166,6 +178,10 @@ export async function ensureServer(
     authToken,
   });
 
+  // Write a "starting" marker before spawning so the dashboard can show
+  // "starting…" while the server is coming up.  Cleared on successful start.
+  writeJsonFile(t3codeStartingPath(harnessDir), { since: isoNow() });
+
   let proc: Bun.Subprocess;
   const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
   try {
@@ -176,6 +192,8 @@ export async function ensureServer(
       env: process.env as Record<string, string>,
     });
   } catch (error) {
+    // Remove marker so the dashboard doesn't show "starting…" indefinitely
+    try { unlinkSync(t3codeStartingPath(harnessDir)); } catch { /* ignore */ }
     throw new Error(
       `unable to start t3code server: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -197,7 +215,12 @@ export async function ensureServer(
     command,
   };
 
-  await waitForReady(record, START_TIMEOUT_MS);
+  try {
+    await waitForReady(record, START_TIMEOUT_MS);
+  } finally {
+    // Always clear the starting marker once we know the outcome
+    try { unlinkSync(t3codeStartingPath(harnessDir)); } catch { /* ignore */ }
+  }
   writeJsonFile(t3codeServerPath(harnessDir), record);
   return record;
 }
@@ -371,12 +394,18 @@ async function portAvailable(port: number, host: string = "127.0.0.1"): Promise<
   });
 }
 
-function buildLaunchCommand(input: {
-  port: number;
-  host?: string;
-  homeDir: string;
-  authToken?: string;
-}): string[] {
+interface LauncherCandidate {
+  /** The base command tokens (e.g. ["bun","run","--cwd",…] or ["t3"]). Null when none found. */
+  command: string[] | null;
+  /** Human-readable description for diagnostics. */
+  detail: string;
+}
+
+/**
+ * Resolve the best available t3code launcher.
+ * Single source of truth used by both buildLaunchCommand() and doctorServer().
+ */
+function resolveLauncherCandidate(): LauncherCandidate {
   const preferred = (process.env.LUDICS_T3CODE_BIN ?? "").trim();
   const repoOverride = (process.env.LUDICS_T3CODE_REPO ?? "").trim();
   const home = process.env.HOME ?? "~";
@@ -385,15 +414,47 @@ function buildLaunchCommand(input: {
   const plainRepo = join(home, "t3code");
   const sourceRepo = resolve(repoOverride || (existsSync(ludicsRepo) ? ludicsRepo : plainRepo));
   const sourceServerDir = join(sourceRepo, "apps", "server");
-  const command = preferred
-    ? [preferred]
-    : existsSync(join(sourceServerDir, "src", "index.ts"))
-      ? ["bun", "run", "--cwd", sourceServerDir, "start"]
-      : Bun.which("t3")
-        ? ["t3"]
-        : Bun.which("npx")
-          ? ["npx", "-y", "t3"]
-          : null;
+
+  if (preferred) {
+    // Accept absolute paths (existsSync) OR bare command names resolvable via PATH (Bun.which).
+    // This handles e.g. LUDICS_T3CODE_BIN=t3 where `t3` is on PATH but not a filesystem path.
+    const foundOnDisk = existsSync(preferred);
+    const foundInPath = !foundOnDisk ? Bun.which(preferred) : null;
+    const found = foundOnDisk || foundInPath !== null;
+    const resolvedPath = foundOnDisk ? preferred : (foundInPath ?? preferred);
+    return {
+      command: found ? [preferred] : null,
+      detail: found
+        ? `LUDICS_T3CODE_BIN=${preferred} (resolved: ${resolvedPath})`
+        : `LUDICS_T3CODE_BIN=${preferred} (not found on disk or in PATH)`,
+    };
+  }
+  if (existsSync(join(sourceServerDir, "src", "index.ts"))) {
+    return {
+      command: ["bun", "run", "--cwd", sourceServerDir, "start"],
+      detail: `source repo at ${sourceRepo}`,
+    };
+  }
+  const t3bin = Bun.which("t3");
+  if (t3bin) {
+    return { command: ["t3"], detail: `t3 binary at ${t3bin}` };
+  }
+  if (Bun.which("npx")) {
+    return { command: ["npx", "-y", "t3"], detail: "will use npx -y t3 (slow first run)" };
+  }
+  return {
+    command: null,
+    detail: "no launcher found; install t3 or keep source at ~/t3code-ludics",
+  };
+}
+
+function buildLaunchCommand(input: {
+  port: number;
+  host?: string;
+  homeDir: string;
+  authToken?: string;
+}): string[] {
+  const { command } = resolveLauncherCandidate();
 
   if (!command) {
     throw new Error(
@@ -418,6 +479,120 @@ function buildLaunchCommand(input: {
     args.push("--auth-token", input.authToken);
   }
   return args;
+}
+
+export interface T3CodeDoctorResult {
+  ok: boolean;
+  checks: Array<{ name: string; passed: boolean; detail: string }>;
+}
+
+/**
+ * Health check for the t3code server setup.
+ * Verifies binary availability, server record, process state, and HTTP reachability.
+ * Returns a structured result suitable for CLI output.
+ */
+export async function doctorServer(
+  options: EnsureServerOptions = {},
+): Promise<T3CodeDoctorResult> {
+  const harnessDir = options.harnessDir ?? defaultHarnessDir();
+  const checks: Array<{ name: string; passed: boolean; detail: string }> = [];
+
+  // 1. Binary / launcher availability
+  {
+    const launcher = resolveLauncherCandidate();
+    checks.push({ name: "launcher", passed: launcher.command !== null, detail: launcher.detail });
+  }
+
+  // 2. server.json record exists
+  const record = readServerRecord(harnessDir);
+  {
+    const passed = record !== null;
+    checks.push({
+      name: "server.json",
+      passed,
+      detail: passed ? t3codeServerPath(harnessDir) : "no record — server has never been started",
+    });
+  }
+
+  if (record) {
+    // 3. Process alive
+    const inspection = inspectManagedServerProcess(record);
+    checks.push({
+      name: "process alive",
+      passed: inspection.alive,
+      detail: inspection.alive
+        ? `pid ${record.pid} is running`
+        : `pid ${record.pid} is dead (stale record)`,
+    });
+
+    // 4. Command line matches record (detects PID reuse)
+    if (inspection.alive) {
+      checks.push({
+        name: "process identity",
+        passed: inspection.matchesRecord,
+        detail: inspection.matchesRecord
+          ? `command line matches t3code record`
+          : `command line mismatch — pid may be reused: ${inspection.commandLine ?? "(unreadable)"}`,
+      });
+    }
+
+    // 5. HTTP health check
+    const httpOk = await httpHealthCheck(record);
+    checks.push({
+      name: "HTTP reachable",
+      passed: httpOk,
+      detail: httpOk ? record.webUrl : `${record.webUrl} did not respond (server down or starting)`,
+    });
+
+    // 6. WebSocket / snapshot
+    if (httpOk) {
+      const client = new T3CodeClient({
+        url: record.wsUrl,
+        token: record.authToken,
+        requestTimeoutMs: 3_000,
+      });
+      try {
+        const snapshot = await client.getSnapshot();
+        checks.push({
+          name: "WebSocket snapshot",
+          passed: true,
+          detail: `${snapshot.projects.length} project(s), ${snapshot.threads.length} thread(s)`,
+        });
+      } catch (err) {
+        checks.push({
+          name: "WebSocket snapshot",
+          passed: false,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        client.close();
+      }
+    }
+
+    // 7. stderr log hints (last few lines if file exists)
+    const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
+    if (existsSync(stderrPath)) {
+      try {
+        const content = Bun.spawnSync(["tail", "-n", "5", stderrPath], {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: process.env as Record<string, string>,
+        }).stdout.toString().trim();
+        if (content) {
+          checks.push({
+            name: "server-stderr.log (last 5 lines)",
+            passed: true,
+            detail: content,
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const ok = checks.filter((c) => c.name !== "server-stderr.log (last 5 lines)").every((c) => c.passed);
+  return { ok, checks };
 }
 
 function sleep(ms: number): Promise<void> {

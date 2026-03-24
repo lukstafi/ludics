@@ -154,6 +154,7 @@ Commands:
   t3code [status]             Show shared t3code server status
   t3code start                Start the shared t3code server
   t3code stop                 Stop the shared t3code server
+  t3code doctor               Verify t3code binary, process, HTTP reachability, and WebSocket
 
   orch status <slot>          Show orchestration state for a slot
   orch confirm <slot>         Confirm the current orchestration phase

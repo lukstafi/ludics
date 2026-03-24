@@ -1253,11 +1253,13 @@ async function briefingPrecomputeContext(): Promise<void> {
   {
     const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
     if (magConfig?.ensure_t3code !== false) {
+      console.error("ludics: ensureServer (briefing): ensuring t3code server...");
       try {
         const { ensureServer } = await import("./t3code/server.ts");
         await ensureServer({ harnessDir: harnessDir() });
-      } catch {
-        // t3code may not be installed — silently skip
+        console.error("ludics: ensureServer (briefing): t3code server ready");
+      } catch (err) {
+        console.error(`ludics: ensureServer (briefing): failed — ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -2044,8 +2046,8 @@ export async function magStart(args: string[]): Promise<void> {
         try {
           const { ensureServer } = await import("./t3code/server.ts");
           await ensureServer({ harnessDir: harnessDir() });
-        } catch {
-          // t3code may not be installed — silently skip
+        } catch (err) {
+          console.error(`ludics: ensureServer (keepalive): failed — ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }
@@ -2141,11 +2143,13 @@ export async function magStart(args: string[]): Promise<void> {
   {
     const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
     if (magConfig?.ensure_t3code !== false) {
+      console.error("ludics: ensureServer (fresh start): ensuring t3code server...");
       try {
         const { ensureServer } = await import("./t3code/server.ts");
         await ensureServer({ harnessDir: harnessDir() });
-      } catch {
-        // t3code may not be installed — silently skip
+        console.error("ludics: ensureServer (fresh start): t3code server ready");
+      } catch (err) {
+        console.error(`ludics: ensureServer (fresh start): failed — ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
