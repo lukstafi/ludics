@@ -211,19 +211,41 @@ export function writeAgentMarkerFiles(
     const envCommand =
       `echo 'export LUDICS_PEER_SYNC_DIR='"'"'${escapedPeerSync}'"'"'' >> "$CLAUDE_ENV_FILE" && ` +
       `echo 'export LUDICS_AGENT_NAME='"'"'${escapedName}'"'"'' >> "$CLAUDE_ENV_FILE"`;
+    // Merge with existing settings to avoid clobbering project-level config.
+    let existing: Record<string, unknown> = {};
+    if (existsSync(settingsPath)) {
+      try {
+        existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+      } catch {
+        // Corrupted file — overwrite.
+      }
+    }
+    const existingHooks = (existing.hooks ?? {}) as Record<string, unknown[]>;
+    const sessionStartHook = {
+      matcher: "",
+      hooks: [
+        {
+          type: "command" as const,
+          command: envCommand,
+        },
+      ],
+    };
+    // Prepend our hook, preserving any existing SessionStart hooks.
+    const existingSessionStart = Array.isArray(existingHooks.SessionStart)
+      ? existingHooks.SessionStart
+      : [];
+    // Remove any previous ludics env hook (idempotent re-runs).
+    const filtered = existingSessionStart.filter(
+      (h: unknown) => {
+        const hook = h as { hooks?: Array<{ command?: string }> };
+        return !hook.hooks?.some((hh) => hh.command?.includes("LUDICS_PEER_SYNC_DIR"));
+      },
+    );
     const settings = {
+      ...existing,
       hooks: {
-        SessionStart: [
-          {
-            matcher: "",
-            hooks: [
-              {
-                type: "command" as const,
-                command: envCommand,
-              },
-            ],
-          },
-        ],
+        ...existingHooks,
+        SessionStart: [sessionStartHook, ...filtered],
       },
     };
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");

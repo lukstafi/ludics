@@ -400,15 +400,27 @@ async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<
 /**
  * After agents complete a phase that creates PRs, validate the pr files.
  * If a file contains markdown text instead of a URL, auto-create the PR and rewrite the file.
+ *
+ * NOTE: We gate on the turn lifecycle being settled (or a done status present)
+ * rather than isAgentDone(), because isAgentDone() itself requires a valid PR URL
+ * artifact — creating a deadlock when the agent writes markdown that
+ * validateAndFixPrFile() is designed to repair.
  */
 function validateAgentPrFiles(state: OrchestrationState): void {
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
-    if (!isAgentDone(state, agent)) continue;
+    const runtime = state.agentStates[agent.name];
+    if (!runtime) continue;
+    // Allow fix to run once the turn has settled or agent reported done,
+    // even if artifact validation hasn't passed yet.
+    const lc = runtime.turnLifecycle;
+    const turnSettled = lc && (lc.state === "settled" || lc.state === "error");
+    const statusDone = DONE_STATUSES.has(runtime.status);
+    if (!turnSettled && !statusDone && !runtime.interrupted) continue;
     const prFile = join(state.peerSyncDir, `${agent.name}.pr`);
     const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch);
-    if (fixedUrl && !state.agentStates[agent.name]!.prUrl) {
-      state.agentStates[agent.name]!.prUrl = fixedUrl;
+    if (fixedUrl && !runtime.prUrl) {
+      runtime.prUrl = fixedUrl;
     }
   }
 }

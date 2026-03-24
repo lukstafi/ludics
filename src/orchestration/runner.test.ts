@@ -660,6 +660,48 @@ describe("agent marker files", () => {
     expect(hookCommand).toContain("CLAUDE_ENV_FILE");
   });
 
+  test("writeAgentMarkerFiles merges with existing settings.local.json", () => {
+    const peerSyncDir = join(tmpDir, ".peer-sync");
+    mkdirSync(peerSyncDir, { recursive: true });
+
+    // Pre-populate settings with an existing Stop hook.
+    const claudeDir = join(tmpDir, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    const settingsPath = join(claudeDir, "settings.local.json");
+    const existing = {
+      permissions: { allow: ["bash"] },
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: "echo bye" }] }],
+      },
+    };
+    writeFileSync(settingsPath, JSON.stringify(existing, null, 2));
+
+    writeAgentMarkerFiles(peerSyncDir, { coder: tmpDir });
+
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    // Existing permissions preserved.
+    expect(settings.permissions).toEqual({ allow: ["bash"] });
+    // Existing Stop hook preserved.
+    expect(settings.hooks.Stop).toHaveLength(1);
+    expect(settings.hooks.Stop[0].hooks[0].command).toBe("echo bye");
+    // SessionStart hook added.
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("LUDICS_PEER_SYNC_DIR");
+  });
+
+  test("writeAgentMarkerFiles is idempotent — deduplicates ludics SessionStart hooks", () => {
+    const peerSyncDir = join(tmpDir, ".peer-sync");
+    mkdirSync(peerSyncDir, { recursive: true });
+
+    writeAgentMarkerFiles(peerSyncDir, { coder: tmpDir });
+    writeAgentMarkerFiles(peerSyncDir, { coder: tmpDir });
+
+    const settingsPath = join(tmpDir, ".claude", "settings.local.json");
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    // Should only have one SessionStart hook, not two.
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+  });
+
   test("readAgentMarkerFile returns null when no marker file", () => {
     expect(readAgentMarkerFile(tmpDir)).toBeNull();
   });
