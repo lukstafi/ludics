@@ -416,10 +416,17 @@ function resolveLauncherCandidate(): LauncherCandidate {
   const sourceServerDir = join(sourceRepo, "apps", "server");
 
   if (preferred) {
-    const found = existsSync(preferred);
+    // Accept absolute paths (existsSync) OR bare command names resolvable via PATH (Bun.which).
+    // This handles e.g. LUDICS_T3CODE_BIN=t3 where `t3` is on PATH but not a filesystem path.
+    const foundOnDisk = existsSync(preferred);
+    const foundInPath = !foundOnDisk ? Bun.which(preferred) : null;
+    const found = foundOnDisk || foundInPath !== null;
+    const resolvedPath = foundOnDisk ? preferred : (foundInPath ?? preferred);
     return {
       command: found ? [preferred] : null,
-      detail: found ? `LUDICS_T3CODE_BIN=${preferred}` : `LUDICS_T3CODE_BIN=${preferred} (file not found)`,
+      detail: found
+        ? `LUDICS_T3CODE_BIN=${preferred} (resolved: ${resolvedPath})`
+        : `LUDICS_T3CODE_BIN=${preferred} (not found on disk or in PATH)`,
     };
   }
   if (existsSync(join(sourceServerDir, "src", "index.ts"))) {
