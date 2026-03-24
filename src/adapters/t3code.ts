@@ -876,7 +876,7 @@ async function startOrchestratedThreads(
     for (const agent of agents) {
       const desired: DesiredThreadConfig = {
         worktreePath: agent.worktreePath,
-        title: `${title}:${agent.name}`,
+        title: `s${ctx.slot}.${agent.role ?? agent.name}.${ctx.taskId ?? feature}`,
         model: agent.model,
         provider: agent.provider,
         runtimeMode: options.runtimeMode,
