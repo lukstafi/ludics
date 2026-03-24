@@ -70,8 +70,10 @@ export function getSessionStarted(block: string): string { return getField(block
 
 /**
  * Update (or insert) a structured `**Field:** value` header line in a slot block.
- * If the field is already present it is replaced; if not found the block is
- * returned unchanged (backward-compat with old-format blocks).
+ * If the field is present it is replaced in-place.
+ * If absent (old-format block), it is inserted after the last header field line
+ * so that slotStart() can always stamp an active-session marker regardless of
+ * when the block was created.
  */
 export function setField(block: string, field: string, value: string): string {
   const marker = `**${field}:**`;
@@ -81,8 +83,23 @@ export function setField(block: string, field: string, value: string): string {
     lines[idx] = `${marker} ${value}`;
     return lines.join("\n");
   }
-  // Field absent in old-format block — leave unchanged for safety
-  return block;
+  // Field absent — insert after the last header field line.
+  // Header fields have the pattern "**Key:** value" (space after the colon-star).
+  // Section headers like "**Terminals:**" have nothing after the colon-star and
+  // are excluded by the trailing-space requirement.
+  const lastHeaderIdx = lines.reduce(
+    (best, l, i) => (/^\*\*[^*]+:\*\*\s/.test(l) ? i : best),
+    -1,
+  );
+  if (lastHeaderIdx >= 0) {
+    lines.splice(lastHeaderIdx + 1, 0, `${marker} ${value}`);
+    return lines.join("\n");
+  }
+  // No header fields found at all (degenerate block) — append before first blank line
+  const firstBlankIdx = lines.findIndex(l => l.trim() === "");
+  const insertAt = firstBlankIdx >= 0 ? firstBlankIdx : lines.length;
+  lines.splice(insertAt, 0, `${marker} ${value}`);
+  return lines.join("\n");
 }
 
 export function writeSlotFile(filePath: string, blocks: Map<number, string>, count: number): void {

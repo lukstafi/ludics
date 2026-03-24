@@ -441,18 +441,15 @@ export function slotSetMode(slotNum: number, mode: string): void {
   // changing it mid-session would cause slotClear(), slotsRefresh(), and slotStop()
   // to target the wrong adapter and lose t3code thread persistence.
   //
-  // Check the structured "Session Started" field first (written by slotStart() for
-  // all adapters). Fall back to the phase marker for t3code blocks that pre-date
-  // the Session Started field or where slotStart() was not used.
+  // Use only the structured "Session Started" field (written by slotStart() for
+  // every adapter, cleared by slotStop()). The old phase-marker fallback was
+  // removed because slotStop() does not clear phase text written by slotsRefresh(),
+  // which would permanently block mode toggling after a session ends.
   const sessionStarted = getSessionStarted(block).trim();
-  const hasActiveSession = (sessionStarted && sessionStarted !== "null")
-    || /^- Phase:\s*.+$/m.test(block);
+  const hasActiveSession = sessionStarted && sessionStarted !== "null";
   if (hasActiveSession) {
-    const detail = (sessionStarted && sessionStarted !== "null")
-      ? `session started at ${sessionStarted}`
-      : `phase active`;
     throw new Error(
-      `slot ${slotNum} has an active session (${detail}); stop or clear the slot before changing mode`,
+      `slot ${slotNum} has an active session (started at ${sessionStarted}); stop or clear the slot before changing mode`,
     );
   }
 
