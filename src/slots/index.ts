@@ -434,6 +434,17 @@ export function slotSetMode(slotNum: number, mode: string): void {
     throw new Error(`slot ${slotNum} not found`);
   }
 
+  // Refuse to toggle mode while a session is actively running.
+  // The Mode field doubles as the live adapter identity once a session has started;
+  // changing it mid-session would cause slotClear(), slotsRefresh(), and slotStop()
+  // to target the wrong adapter and lose t3code thread persistence.
+  const phaseMatch = block.match(/^- Phase:\s*(.+)$/m);
+  if (phaseMatch) {
+    throw new Error(
+      `slot ${slotNum} has an active session (phase: ${phaseMatch[1]!.trim()}); stop or clear the slot before changing mode`,
+    );
+  }
+
   // Update the Mode field in-place
   const updated = block.split("\n").map(line => {
     if (line.startsWith("**Mode:**")) {
@@ -444,6 +455,12 @@ export function slotSetMode(slotNum: number, mode: string): void {
 
   blocks.set(slotNum, updated);
   writeSlotFile(file, blocks, count);
+
+  // Keep task file adapter: field in sync
+  const taskId = getTask(updated).trim();
+  if (taskId && taskId !== "null") {
+    taskUpdateFrontmatter(taskId, "adapter", mode);
+  }
 
   journalAppend("slot", `Slot ${slotNum} mode set to ${mode}`);
   emitEvent({ event_type: "slot_mode", source: "cli", scope: "slot", slot: slotNum, message: `mode=${mode}` });

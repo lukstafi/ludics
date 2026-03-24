@@ -110,7 +110,10 @@ function renderSlots(slots) {
             if (hasTask) meta.push(`<span class="task-id">${escapeHtml(slot.task)}</span>`);
             if (slot.effort) meta.push(`<span class="effort">${escapeHtml(slot.effort)}</span>`);
             if (slot.mode) {
-                const isToggleable = slot.mode === 'manual' || slot.mode === 't3code';
+                // Only allow toggling when no session is actively running (phase is null).
+                // Once a session has started (phase is set), the Mode field is the live adapter
+                // identity — changing it would corrupt slotClear() and other operations.
+                const isToggleable = (slot.mode === 'manual' || slot.mode === 't3code') && !slot.phase;
                 if (isToggleable) {
                     const otherMode = slot.mode === 'manual' ? 't3code' : 'manual';
                     meta.push(`<button class="mode-toggle-btn mode-${escapeHtml(slot.mode)}" onclick="toggleSlotMode(${i}, '${otherMode}')" title="Mode: ${escapeHtml(slot.mode)} — click to switch to ${otherMode}">${escapeHtml(slot.mode)}</button>`);
