@@ -5,7 +5,7 @@ import { T3CodeClient } from "../t3code/client.ts";
 import { readServerRecord } from "../t3code/server.ts";
 import { toWireProvider } from "../t3code/types.ts";
 import type { T3CodeServerRecord, T3Snapshot } from "../t3code/types.ts";
-import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone } from "./phases.ts";
+import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone, pairReviewVerdict } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
   readStopHookRecord, statusFileFingerprint, writeInterrupt, writePeerSync,
@@ -644,10 +644,14 @@ export async function runOrchestration(
       const taskLabel = state.taskId ?? state.feature;
       const slotLabel = `Slot ${state.slot} [${taskLabel}]`;
       if (state.phase === "review" && state.mode === "pair") {
-        // Include review verdict in the notification message
-        const verdict = next === "work" ? "REQUEST_CHANGES" : "APPROVE";
+        // Use the parsed verdict from the review file. Falls back to "timeout" when
+        // no verdict file exists (review phase expired without an explicit verdict).
+        const parsed = pairReviewVerdict(state);
+        const verdictLabel = parsed === "approve" ? "APPROVE"
+          : parsed === "request_changes" ? "REQUEST_CHANGES"
+          : "timeout";
         notifyAgents(
-          `${slotLabel}: review verdict: ${verdict} → ${next} (round ${state.round})`,
+          `${slotLabel}: review verdict: ${verdictLabel} → ${next} (round ${state.round})`,
           3,
           `${slotLabel}: review verdict`,
         );
