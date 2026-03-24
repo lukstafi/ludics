@@ -423,6 +423,33 @@ export function slotNote(slotNum: number, note: string): void {
   writeSlotFile(file, blocks, count);
 }
 
+export function slotSetMode(slotNum: number, mode: string): void {
+  const file = ensureSlotsFile();
+  const blocks = loadBlocks(file);
+  const count = slotsCount();
+  validateRange(slotNum, count);
+
+  const block = blocks.get(slotNum);
+  if (!block) {
+    throw new Error(`slot ${slotNum} not found`);
+  }
+
+  // Update the Mode field in-place
+  const updated = block.split("\n").map(line => {
+    if (line.startsWith("**Mode:**")) {
+      return `**Mode:** ${mode}`;
+    }
+    return line;
+  }).join("\n");
+
+  blocks.set(slotNum, updated);
+  writeSlotFile(file, blocks, count);
+
+  journalAppend("slot", `Slot ${slotNum} mode set to ${mode}`);
+  emitEvent({ event_type: "slot_mode", source: "cli", scope: "slot", slot: slotNum, message: `mode=${mode}` });
+  stateCommit(`slot ${slotNum}: mode=${mode}`);
+}
+
 function makeAdapterContext(slotNum: number, block: string): AdapterContext {
   const mode = getMode(block).trim();
   const session = getSession(block).trim();
@@ -615,6 +642,13 @@ export async function runSlot(args: string[]): Promise<void> {
       const noteText = args[2];
       if (!noteText) throw new Error("note text required");
       slotNote(slotNum, noteText);
+      break;
+    }
+
+    case "mode": {
+      const modeVal = args[2];
+      if (!modeVal) throw new Error("mode value required (e.g., manual, t3code)");
+      slotSetMode(slotNum, modeVal);
       break;
     }
 

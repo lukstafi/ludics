@@ -262,6 +262,36 @@ main {
     color: var(--bg-primary);
 }
 
+.mode-toggle-btn {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    background: transparent;
+    cursor: pointer;
+    font-family: inherit;
+    border: 1px solid var(--text-secondary);
+    color: var(--text-secondary);
+}
+
+.mode-toggle-btn.mode-t3code {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.mode-toggle-btn.mode-manual {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.mode-toggle-btn:hover {
+    opacity: 0.8;
+}
+
+.mode-toggle-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .slot-details {
     font-size: 0.875rem;
     color: var(--text-secondary);

@@ -159,6 +159,31 @@ export function startDashboardServer(
         }
       }
 
+      // API: set slot mode (manual or t3code)
+      if (pathname === "/api/slot-mode") {
+        const slotParam = url.searchParams.get("slot");
+        const mode = url.searchParams.get("mode");
+        if (!slotParam || !/^[1-6]$/.test(slotParam)) {
+          return new Response("Bad Request: slot must be 1-6", { status: 400 });
+        }
+        if (!mode || !["manual", "t3code"].includes(mode)) {
+          return new Response("Bad Request: mode must be manual or t3code", { status: 400 });
+        }
+        try {
+          const proc = Bun.spawnSync(
+            [process.execPath, "slot", slotParam, "mode", mode],
+            { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
+          );
+          if (proc.exitCode !== 0) {
+            return new Response(proc.stderr.toString() || "slot mode failed", { status: 500 });
+          }
+          lastGenerated = 0;
+          return new Response("OK", { status: 200 });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
       // API: start a slot session
       if (pathname === "/api/slot-start") {
         const slotParam = url.searchParams.get("slot");
