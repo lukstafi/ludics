@@ -1253,7 +1253,7 @@ async function briefingPrecomputeContext(): Promise<void> {
   {
     const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
     if (magConfig?.ensure_t3code !== false) {
-      console.error("ludics: ensureServer (briefing): starting t3code server...");
+      console.error("ludics: ensureServer (briefing): ensuring t3code server...");
       try {
         const { ensureServer } = await import("./t3code/server.ts");
         await ensureServer({ harnessDir: harnessDir() });
@@ -2143,7 +2143,7 @@ export async function magStart(args: string[]): Promise<void> {
   {
     const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
     if (magConfig?.ensure_t3code !== false) {
-      console.error("ludics: ensureServer (fresh start): starting t3code server...");
+      console.error("ludics: ensureServer (fresh start): ensuring t3code server...");
       try {
         const { ensureServer } = await import("./t3code/server.ts");
         await ensureServer({ harnessDir: harnessDir() });

@@ -7,7 +7,7 @@ import { harnessDir, loadConfigSync, slotsFilePath } from "./config.ts";
 import { parseSlotBlocks, getField, getProcess, getTask, getMode } from "./slots/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl } from "./network.ts";
-import { inspectManagedServerProcess, readServerRecord } from "./t3code/server.ts";
+import { inspectManagedServerProcess, readServerRecord, t3codeStartingPath } from "./t3code/server.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
 
@@ -601,16 +601,36 @@ function generateMag(): Record<string, unknown> {
 
 function generateT3code(): Record<string, unknown> {
   const record = readServerRecord();
-  if (!record) {
-    return { available: false, starting: false, webUrl: null };
+  const webUrl = record ? getUrl(record.port) : null;
+
+  // Check process state if we have a record
+  if (record) {
+    const inspection = inspectManagedServerProcess(record);
+    if (inspection.alive && inspection.matchesRecord) {
+      return { available: true, starting: false, webUrl };
+    }
+    if (inspection.alive && !inspection.matchesRecord) {
+      // HTTP fallback would be needed for full accuracy, but this is synchronous
+      // context — treat a mismatched PID as unavailable
+    }
   }
-  const webUrl = getUrl(record.port);
-  const inspection = inspectManagedServerProcess(record);
-  if (!inspection.alive) {
-    // Record exists but process is gone — server is being restarted (keepalive will revive it)
-    return { available: false, starting: true, webUrl };
+
+  // Not running — check if ensureServer() has recently written a starting marker.
+  // Only show "starting…" when there's actual evidence that a restart is in flight.
+  const startingPath = t3codeStartingPath();
+  if (existsSync(startingPath)) {
+    try {
+      const marker = JSON.parse(readFileSync(startingPath, "utf-8")) as { since?: string };
+      if (marker.since) {
+        const age = Date.now() - new Date(marker.since).getTime();
+        if (age < 120_000) {
+          return { available: false, starting: true, webUrl };
+        }
+      }
+    } catch { /* malformed marker — ignore */ }
   }
-  return { available: true, starting: false, webUrl };
+
+  return { available: false, starting: false, webUrl };
 }
 
 // --- Generate ntfy.json ---

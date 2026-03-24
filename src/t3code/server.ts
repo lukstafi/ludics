@@ -62,6 +62,18 @@ export function t3codeServerPath(harnessDir: string = defaultHarnessDir()): stri
   return join(t3codeDir(harnessDir), "server.json");
 }
 
+/**
+ * Path to the "server is starting" marker file.
+ * Written just before Bun.spawn() and cleared on successful startup.
+ * Used by the dashboard to show "starting…" while keepalive is reviving the server.
+ */
+export function t3codeStartingPath(harnessDir: string = defaultHarnessDir()): string {
+  return join(t3codeDir(harnessDir), "starting.json");
+}
+
+/** How long (ms) a starting.json marker is considered fresh. */
+const STARTING_MARKER_TTL_MS = 120_000;
+
 export function t3codeServerStateDir(harnessDir: string = defaultHarnessDir()): string {
   return join(t3codeDir(harnessDir), "state");
 }
@@ -166,6 +178,10 @@ export async function ensureServer(
     authToken,
   });
 
+  // Write a "starting" marker before spawning so the dashboard can show
+  // "starting…" while the server is coming up.  Cleared on successful start.
+  writeJsonFile(t3codeStartingPath(harnessDir), { since: isoNow() });
+
   let proc: Bun.Subprocess;
   const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
   try {
@@ -176,6 +192,8 @@ export async function ensureServer(
       env: process.env as Record<string, string>,
     });
   } catch (error) {
+    // Remove marker so the dashboard doesn't show "starting…" indefinitely
+    try { unlinkSync(t3codeStartingPath(harnessDir)); } catch { /* ignore */ }
     throw new Error(
       `unable to start t3code server: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -197,7 +215,12 @@ export async function ensureServer(
     command,
   };
 
-  await waitForReady(record, START_TIMEOUT_MS);
+  try {
+    await waitForReady(record, START_TIMEOUT_MS);
+  } finally {
+    // Always clear the starting marker once we know the outcome
+    try { unlinkSync(t3codeStartingPath(harnessDir)); } catch { /* ignore */ }
+  }
   writeJsonFile(t3codeServerPath(harnessDir), record);
   return record;
 }
@@ -371,12 +394,18 @@ async function portAvailable(port: number, host: string = "127.0.0.1"): Promise<
   });
 }
 
-function buildLaunchCommand(input: {
-  port: number;
-  host?: string;
-  homeDir: string;
-  authToken?: string;
-}): string[] {
+interface LauncherCandidate {
+  /** The base command tokens (e.g. ["bun","run","--cwd",…] or ["t3"]). Null when none found. */
+  command: string[] | null;
+  /** Human-readable description for diagnostics. */
+  detail: string;
+}
+
+/**
+ * Resolve the best available t3code launcher.
+ * Single source of truth used by both buildLaunchCommand() and doctorServer().
+ */
+function resolveLauncherCandidate(): LauncherCandidate {
   const preferred = (process.env.LUDICS_T3CODE_BIN ?? "").trim();
   const repoOverride = (process.env.LUDICS_T3CODE_REPO ?? "").trim();
   const home = process.env.HOME ?? "~";
@@ -385,15 +414,40 @@ function buildLaunchCommand(input: {
   const plainRepo = join(home, "t3code");
   const sourceRepo = resolve(repoOverride || (existsSync(ludicsRepo) ? ludicsRepo : plainRepo));
   const sourceServerDir = join(sourceRepo, "apps", "server");
-  const command = preferred
-    ? [preferred]
-    : existsSync(join(sourceServerDir, "src", "index.ts"))
-      ? ["bun", "run", "--cwd", sourceServerDir, "start"]
-      : Bun.which("t3")
-        ? ["t3"]
-        : Bun.which("npx")
-          ? ["npx", "-y", "t3"]
-          : null;
+
+  if (preferred) {
+    const found = existsSync(preferred);
+    return {
+      command: found ? [preferred] : null,
+      detail: found ? `LUDICS_T3CODE_BIN=${preferred}` : `LUDICS_T3CODE_BIN=${preferred} (file not found)`,
+    };
+  }
+  if (existsSync(join(sourceServerDir, "src", "index.ts"))) {
+    return {
+      command: ["bun", "run", "--cwd", sourceServerDir, "start"],
+      detail: `source repo at ${sourceRepo}`,
+    };
+  }
+  const t3bin = Bun.which("t3");
+  if (t3bin) {
+    return { command: ["t3"], detail: `t3 binary at ${t3bin}` };
+  }
+  if (Bun.which("npx")) {
+    return { command: ["npx", "-y", "t3"], detail: "will use npx -y t3 (slow first run)" };
+  }
+  return {
+    command: null,
+    detail: "no launcher found; install t3 or keep source at ~/t3code-ludics",
+  };
+}
+
+function buildLaunchCommand(input: {
+  port: number;
+  host?: string;
+  homeDir: string;
+  authToken?: string;
+}): string[] {
+  const { command } = resolveLauncherCandidate();
 
   if (!command) {
     throw new Error(
@@ -438,33 +492,8 @@ export async function doctorServer(
 
   // 1. Binary / launcher availability
   {
-    const preferred = (process.env.LUDICS_T3CODE_BIN ?? "").trim();
-    const repoOverride = (process.env.LUDICS_T3CODE_REPO ?? "").trim();
-    const home = process.env.HOME ?? "~";
-    const ludicsRepo = join(home, "t3code-ludics");
-    const plainRepo = join(home, "t3code");
-    const sourceRepo = resolve(repoOverride || (existsSync(ludicsRepo) ? ludicsRepo : plainRepo));
-    const sourceServerDir = join(sourceRepo, "apps", "server");
-
-    let detail: string;
-    let passed: boolean;
-    if (preferred) {
-      passed = existsSync(preferred);
-      detail = passed ? `LUDICS_T3CODE_BIN=${preferred}` : `LUDICS_T3CODE_BIN=${preferred} (file not found)`;
-    } else if (existsSync(join(sourceServerDir, "src", "index.ts"))) {
-      passed = true;
-      detail = `source repo at ${sourceRepo}`;
-    } else if (Bun.which("t3")) {
-      passed = true;
-      detail = `t3 binary at ${Bun.which("t3")}`;
-    } else if (Bun.which("npx")) {
-      passed = true;
-      detail = `will use npx -y t3 (slow first run)`;
-    } else {
-      passed = false;
-      detail = "no launcher found; install t3 or keep source at ~/t3code-ludics";
-    }
-    checks.push({ name: "launcher", passed, detail });
+    const launcher = resolveLauncherCandidate();
+    checks.push({ name: "launcher", passed: launcher.command !== null, detail: launcher.detail });
   }
 
   // 2. server.json record exists
