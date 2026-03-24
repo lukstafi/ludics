@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { emitEvent } from "../events.ts";
+import { statusFileFingerprint } from "./peer-sync.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
-import { isTurnFresh, nowEpoch } from "./util.ts";
+import { nowEpoch } from "./util.ts";
 
 export type Phase =
   | "setup"
@@ -54,7 +56,10 @@ export const PHASE_CATEGORIES: Record<Phase, PhaseCategory> = {
   done: "terminal",
 };
 
-const DONE_STATUSES = new Set([
+/** Grace period (seconds) after a turn settles before treating as done without status update. */
+const SETTLED_GRACE_PERIOD_S = 30;
+
+export const DONE_STATUSES = new Set([
   "done",
   "review-done",
   "plan-done",
@@ -114,43 +119,71 @@ export function agentParticipatesInPhase(
   }
 }
 
+/**
+ * Determine if an agent has finished its work for the current phase.
+ *
+ * Uses the dispatch-scoped AgentTurnLifecycle for identity-based tracking
+ * instead of timestamp freshness heuristics.  See
+ * docs/orchestration-phase-transitions.md §5–6 for the full rationale.
+ *
+ * Signal precedence:
+ *  1. If lifecycle says "running" or "dispatched" → NOT done (turn in progress).
+ *  2. If lifecycle says "settled" + peer-sync done status → done.
+ *  3. If lifecycle says "settled" + no status update + grace period elapsed → done (with warning).
+ *  4. If lifecycle says "error" → done (error is terminal).
+ *  5. No lifecycle (setup phase or legacy state) → trust peer-sync.
+ */
 export function isAgentDone(state: OrchestrationState, agent: AgentConfig): boolean {
   const runtime = state.agentStates[agent.name];
   if (!runtime) return false;
   if (runtime.interrupted) return true;
+  if (runtime.status === "merged") return true;
 
-  // The t3code turn state is the authoritative signal for whether the agent
-  // has finished its current work.  The peer-sync status file ("done",
-  // "review-done", etc.) is a secondary signal — it can be stale from a
-  // previous phase because the agent writes it seconds before the phase
-  // transitions, making its epoch appear "fresh" relative to the next
-  // phase's dispatch timestamp.
-  //
-  // Strategy: require the t3code turn to be freshly completed before
-  // trusting any done signal.  If we can't verify turn freshness (e.g.
-  // snapshot unavailable), fall back to the peer-sync status but only if
-  // the turn state is also "completed" (not "running" or "missing").
-  const dispatchedAt = state.phaseDispatchedAt;
-  const turnIsFresh = isTurnFresh(dispatchedAt, runtime.latestTurnCompletedAt);
+  const lc = runtime.turnLifecycle;
 
-  // Turn is freshly completed — trust either turn state or peer-sync status.
-  if (turnIsFresh) {
-    if (runtime.latestTurnState === "completed") return true;
-    if (DONE_STATUSES.has(runtime.status)) return true;
+  // No lifecycle → pre-existing / setup state. Trust peer-sync alone.
+  if (!lc) return DONE_STATUSES.has(runtime.status);
+
+  switch (lc.state) {
+    case "dispatched":
+    case "starting":
+    case "running":
+      // Turn not yet settled — never done regardless of peer-sync.
+      return false;
+
+    case "settled": {
+      // Turn settled — check for a done status from peer-sync.
+      if (DONE_STATUSES.has(runtime.status)) return true;
+
+      // Status file may not have been updated yet. Check fingerprint.
+      const currentFp = statusFileFingerprint(state.peerSyncDir, agent.name);
+      if (currentFp !== lc.statusFileFingerprint) {
+        // Status file changed since dispatch but isn't a done status — keep waiting.
+        return false;
+      }
+
+      // Status file unchanged since dispatch — apply grace period.
+      const settledAgeS = lc.turnCompletedAt
+        ? (Date.now() - Date.parse(lc.turnCompletedAt)) / 1000
+        : 0;
+      if (settledAgeS > SETTLED_GRACE_PERIOD_S) {
+        emitEvent({
+          event_type: "orchestration_warning",
+          source: "orchestration",
+          scope: "slot",
+          slot: state.slot,
+          task: state.feature,
+          message: `${agent.name}: turn settled ${Math.round(settledAgeS)}s ago but status file unchanged — treating as done`,
+        });
+        return true;
+      }
+      return false;
+    }
+
+    case "error":
+      // Error is a terminal state — treat as done.
+      return true;
   }
-
-  // Turn state unknown/missing but peer-sync says done AND turn is not running
-  // (handles case where t3code snapshot is unavailable).
-  if (
-    DONE_STATUSES.has(runtime.status)
-    && runtime.latestTurnState !== "running"
-    && runtime.latestTurnState !== "missing"
-    && !dispatchedAt  // no dispatch timestamp means pre-existing state, trust it
-  ) {
-    return true;
-  }
-
-  return false;
 }
 
 export function allAgentsDone(state: OrchestrationState): boolean {

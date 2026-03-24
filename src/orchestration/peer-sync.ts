@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import type { OrchestrationState } from "./state.ts";
 import { makeId } from "./util.ts";
@@ -124,6 +124,57 @@ export function readMarker(dir: string, name: string): string | null {
   if (!existsSync(path)) return null;
   const value = readFileSync(path, "utf-8").trim();
   return value || null;
+}
+
+/**
+ * Return a fingerprint of the agent's .status file for stale-detection.
+ * Combines file content with mtime so that identical content written at a new
+ * time still counts as a change.
+ */
+export function statusFileFingerprint(dir: string, agent: string): string | null {
+  const path = join(dir, `${agent}.status`);
+  if (!existsSync(path)) return null;
+  try {
+    const content = readFileSync(path, "utf-8").trim();
+    const mtime = statSync(path).mtimeMs;
+    return `${content}|${mtime}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Read the phase token currently written in .peer-sync. */
+export function readPhaseToken(dir: string): string | null {
+  const path = join(dir, "phase-token");
+  if (!existsSync(path)) return null;
+  return readFileSync(path, "utf-8").trim() || null;
+}
+
+/** Stop-hook record written by `ludics orch on-stop`. */
+export interface StopHookRecord {
+  agent: string;
+  provider: string;
+  phase: string;
+  phaseToken: string;
+  observedAt: string;
+  cwd: string;
+  hookEventName: string;
+}
+
+/** Write a stop-hook record for an agent. */
+export function writeStopHookRecord(peerSyncDir: string, record: StopHookRecord): void {
+  writeFile(join(peerSyncDir, `${record.agent}.stop.json`), JSON.stringify(record, null, 2));
+}
+
+/** Read the most recent stop-hook record for an agent, or null. */
+export function readStopHookRecord(peerSyncDir: string, agent: string): StopHookRecord | null {
+  const path = join(peerSyncDir, `${agent}.stop.json`);
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as StopHookRecord;
+  } catch {
+    return null;
+  }
 }
 
 export function cleanupPeerSyncDir(dir: string): void {

@@ -27,14 +27,46 @@ export interface AgentConfig {
   thinkingEffort?: string;
 }
 
+/**
+ * Per-agent turn lifecycle tracking for the current phase.
+ * Replaces timestamp-based freshness heuristics with identity-based tracking.
+ * See docs/orchestration-phase-transitions.md for the full design.
+ */
+export interface AgentTurnLifecycle {
+  /** Command ID from the dispatch (for correlation). */
+  dispatchCommandId: string;
+  /** ISO timestamp when the turn was dispatched by the runner. */
+  dispatchedAt: string;
+  /** Phase token at dispatch time — used to reject stale stop hooks. */
+  phaseToken: string;
+  /** Turn ID observed from snapshot after dispatch (null until first observation). */
+  observedTurnId: string | null;
+  /** Lifecycle state derived from snapshot. */
+  state: "dispatched" | "starting" | "running" | "settled" | "error";
+  /** ISO timestamp when turn was first observed running. */
+  turnStartedAt: string | null;
+  /** ISO timestamp when turn was observed settled. */
+  turnCompletedAt: string | null;
+  /** Source that first reported completion. */
+  completionSource: "snapshot" | "stop-hook" | "timeout" | null;
+  /** Fingerprint of the agent's .status file content at dispatch time (stale detection). */
+  statusFileFingerprint: string | null;
+  /** ISO timestamp of the most recent stop hook for this agent. */
+  lastStopHookAt: string | null;
+}
+
 export interface AgentRuntimeState {
   status: string;
   statusEpoch: number;
   statusMessage: string;
   prUrl: string | null;
   interrupted: boolean;
+  /** @deprecated Use turnLifecycle.state instead. Kept for backward compat during migration. */
   latestTurnState?: "running" | "interrupted" | "completed" | "error" | "missing";
+  /** @deprecated Use turnLifecycle.turnCompletedAt instead. */
   latestTurnCompletedAt?: string | null;
+  /** Current phase's turn lifecycle tracking.  Null for phases that don't dispatch turns (e.g. setup). */
+  turnLifecycle?: AgentTurnLifecycle | null;
 }
 
 export interface OrchestrationConfig {
@@ -180,6 +212,7 @@ export function initAgentRuntimeState(names: string[]): Record<string, AgentRunt
       interrupted: false,
       latestTurnState: "missing",
       latestTurnCompletedAt: null,
+      turnLifecycle: null,
     };
   }
   return out;
