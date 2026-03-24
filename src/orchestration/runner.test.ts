@@ -1,0 +1,708 @@
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import { isAgentDone } from "./phases.ts";
+import { updateTurnLifecycle } from "./runner.ts";
+import { orchOnStop } from "./index.ts";
+import { readStopHookRecord, writeAgentMarkerFiles, readAgentMarkerFile } from "./peer-sync.ts";
+import { defaultOrchestrationConfig, initAgentRuntimeState, type AgentTurnLifecycle, type OrchestrationState } from "./state.ts";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function makeTmpDir(): string {
+  return mkdtempSync(join(tmpdir(), "ludics-runner-test-"));
+}
+
+function makeLifecycle(overrides: Partial<AgentTurnLifecycle> = {}): AgentTurnLifecycle {
+  return {
+    dispatchCommandId: "cmd-test",
+    dispatchedAt: new Date(Date.now() - 60_000).toISOString(),
+    phaseToken: "phase-test",
+    observedTurnId: null,
+    state: "dispatched",
+    turnStartedAt: null,
+    turnCompletedAt: null,
+    completionSource: null,
+    statusFileFingerprint: null,
+    lastStopHookAt: null,
+    ...overrides,
+  };
+}
+
+function makeState(
+  overrides: Partial<OrchestrationState> = {},
+  peerSyncDir?: string,
+): OrchestrationState {
+  const dir = peerSyncDir ?? makeTmpDir();
+  mkdirSync(join(dir, "plans"), { recursive: true });
+  mkdirSync(join(dir, "reviews"), { recursive: true });
+  return {
+    slot: 1,
+    feature: "feat",
+    mode: "pair",
+    phase: "work",
+    round: 1,
+    mergeRound: 0,
+    agents: [
+      { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+      { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+    ],
+    agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+    config: defaultOrchestrationConfig(),
+    phaseStartedAt: Math.floor(Date.now() / 1000),
+    startedAt: new Date().toISOString(),
+    projectDir: "/tmp/project",
+    rootWorktree: "/tmp/project-feat",
+    peerSyncDir: dir,
+    threadIds: { coder: "t1", reviewer: "t2" },
+    ...overrides,
+  };
+}
+
+/** Create a fully-initialized peer-sync dir for orchOnStop tests. */
+function makePeerSyncDir(
+  worktrees: Record<string, string>,
+  agentStatuses?: Record<string, string>,
+): string {
+  const dir = makeTmpDir();
+  writeFileSync(join(dir, "phase"), "work");
+  writeFileSync(join(dir, "phase-token"), "phase-test-token");
+  writeFileSync(join(dir, "worktrees.json"), JSON.stringify(worktrees, null, 2));
+  if (agentStatuses) {
+    for (const [name, status] of Object.entries(agentStatuses)) {
+      writeFileSync(join(dir, `${name}.status`), `${status}\n`);
+    }
+  }
+  return dir;
+}
+
+// ===========================================================================
+// updateTurnLifecycle — direct tests of the state machine
+// ===========================================================================
+
+describe("updateTurnLifecycle", () => {
+  test("dispatched → running when activeTurnId appears", () => {
+    const lc = makeLifecycle({ state: "dispatched" });
+    updateTurnLifecycle(lc, "running", "turn-abc", null);
+    expect(lc.state).toBe("running");
+    expect(lc.observedTurnId).toBe("turn-abc");
+    expect(lc.turnStartedAt).not.toBeNull();
+  });
+
+  test("dispatched stays dispatched when no activeTurnId", () => {
+    const lc = makeLifecycle({ state: "dispatched" });
+    updateTurnLifecycle(lc, "idle", null, null);
+    expect(lc.state).toBe("dispatched");
+  });
+
+  test("dispatched stays dispatched with completed latestTurn (no snapshot fast-complete)", () => {
+    const lc = makeLifecycle({ state: "dispatched" });
+    // A completed turn in the snapshot should NOT settle the lifecycle from dispatched.
+    updateTurnLifecycle(lc, "idle", null, {
+      turnId: "turn-completed",
+      state: "completed",
+      completedAt: new Date().toISOString(),
+    });
+    expect(lc.state).toBe("dispatched");
+    expect(lc.observedTurnId).toBeNull();
+  });
+
+  test("running → settled when activeTurnId clears", () => {
+    const lc = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-abc",
+      turnStartedAt: new Date().toISOString(),
+    });
+    const completedAt = new Date().toISOString();
+    updateTurnLifecycle(lc, "idle", null, {
+      turnId: "turn-abc",
+      state: "completed",
+      completedAt,
+    });
+    expect(lc.state).toBe("settled");
+    expect(lc.turnCompletedAt).toBe(completedAt);
+    expect(lc.completionSource).toBe("snapshot");
+  });
+
+  test("running → error when session status is error", () => {
+    const lc = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-abc",
+    });
+    updateTurnLifecycle(lc, "error", null, null);
+    expect(lc.state).toBe("error");
+    expect(lc.completionSource).toBe("snapshot");
+  });
+
+  test("running does NOT transition on null sessionStatus (snapshot fetch failure)", () => {
+    const lc = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-abc",
+    });
+    updateTurnLifecycle(lc, null, null, null);
+    expect(lc.state).toBe("running");
+  });
+
+  test("settled is a terminal state — no further transitions", () => {
+    const lc = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-abc",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    updateTurnLifecycle(lc, "running", "turn-new", null);
+    expect(lc.state).toBe("settled");
+  });
+
+  test("error is a terminal state — no further transitions", () => {
+    const lc = makeLifecycle({
+      state: "error",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    updateTurnLifecycle(lc, "running", "turn-new", null);
+    expect(lc.state).toBe("error");
+  });
+});
+
+// ===========================================================================
+// Stop-hook fast-complete path (refreshAgentStatuses logic)
+// ===========================================================================
+
+describe("stop-hook fast-complete path", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    mkdirSync(join(tmpDir, "plans"), { recursive: true });
+    mkdirSync(join(tmpDir, "reviews"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("stop-hook with matching phaseToken settles a dispatched lifecycle", () => {
+    // Simulate the stop-hook settlement path from refreshAgentStatuses.
+    // This is the code from runner.ts lines 83-103.
+    const lc = makeLifecycle({
+      state: "dispatched",
+      phaseToken: "phase-match",
+    });
+    const latestTurn = {
+      turnId: "turn-fast",
+      state: "completed" as const,
+      completedAt: new Date().toISOString(),
+    };
+    const activeTurnId: string | null = null;
+
+    // First, updateTurnLifecycle won't settle it (no snapshot fast-complete).
+    updateTurnLifecycle(lc, "idle", activeTurnId, latestTurn);
+    expect(lc.state).toBe("dispatched");
+
+    // Now simulate the stop-hook record check.
+    const stopRecord = {
+      agent: "coder",
+      provider: "unknown",
+      phase: "work",
+      phaseToken: "phase-match",
+      observedAt: new Date().toISOString(),
+      cwd: "/tmp/a",
+      hookEventName: "Stop",
+    };
+
+    // This mirrors the logic in refreshAgentStatuses:
+    if (stopRecord.phaseToken === lc.phaseToken) {
+      lc.lastStopHookAt = stopRecord.observedAt;
+      if (lc.state === "dispatched" && latestTurn.state === "completed" && !activeTurnId) {
+        lc.observedTurnId = latestTurn.turnId;
+        lc.state = "settled";
+        lc.turnCompletedAt = latestTurn.completedAt;
+        lc.completionSource = "stop-hook";
+      }
+    }
+
+    expect(lc.state).toBe("settled");
+    expect(lc.observedTurnId).toBe("turn-fast");
+    expect(lc.completionSource).toBe("stop-hook");
+  });
+
+  test("stop-hook with wrong phaseToken does NOT settle lifecycle", () => {
+    const lc = makeLifecycle({
+      state: "dispatched",
+      phaseToken: "phase-current",
+    });
+
+    const stopRecord = {
+      phaseToken: "phase-stale",
+      observedAt: new Date().toISOString(),
+    };
+
+    // Stale stop hook should not trigger settlement.
+    if (stopRecord.phaseToken === lc.phaseToken) {
+      lc.state = "settled"; // This should NOT execute.
+    }
+
+    expect(lc.state).toBe("dispatched");
+  });
+});
+
+// ===========================================================================
+// orchOnStop — real handler tests
+// ===========================================================================
+
+describe("orchOnStop handler", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    // Clean up env vars.
+    delete process.env.LUDICS_AGENT_NAME;
+  });
+
+  test("worktree path matching writes stop record for correct agent", () => {
+    const agentWorktree = join(tmpDir, "worktree-alpha");
+    mkdirSync(agentWorktree, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir({
+      root: tmpDir,
+      "agent-alpha": agentWorktree,
+      "agent-beta": join(tmpDir, "worktree-beta"),
+    });
+
+    orchOnStop([agentWorktree, peerSyncDir, "Stop"]);
+
+    const record = readStopHookRecord(peerSyncDir, "agent-alpha");
+    expect(record).not.toBeNull();
+    expect(record!.agent).toBe("agent-alpha");
+    expect(record!.phaseToken).toBe("phase-test-token");
+    expect(record!.cwd).toBe(agentWorktree);
+  });
+
+  test("nested cwd under worktree resolves to correct agent", () => {
+    const agentWorktree = join(tmpDir, "worktree-beta");
+    const nestedCwd = join(agentWorktree, "src", "components");
+    mkdirSync(nestedCwd, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir({
+      root: tmpDir,
+      "agent-alpha": join(tmpDir, "worktree-alpha"),
+      "agent-beta": agentWorktree,
+    });
+
+    orchOnStop([nestedCwd, peerSyncDir, "Stop"]);
+
+    const record = readStopHookRecord(peerSyncDir, "agent-beta");
+    expect(record).not.toBeNull();
+    expect(record!.agent).toBe("agent-beta");
+  });
+
+  test("marker-file attribution resolves agent name", () => {
+    const agentWorktree = join(tmpDir, "shared-worktree");
+    mkdirSync(agentWorktree, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir({
+      root: agentWorktree,
+      coder: agentWorktree,
+      reviewer: agentWorktree,
+    }, {
+      coder: "work-active|1|coding",
+      reviewer: "idle|0|awaiting",
+    });
+
+    // Both agents share the same worktree (pair mode).
+    // Write a marker file to disambiguate.
+    writeAgentMarkerFiles(peerSyncDir, { coder: agentWorktree });
+
+    orchOnStop([agentWorktree, peerSyncDir, "Stop"]);
+
+    // In pair mode with shared worktree, path matching matches both.
+    // The first match wins (coder comes before reviewer alphabetically
+    // in Object.entries). But marker file provides the coder name too.
+    const coderRecord = readStopHookRecord(peerSyncDir, "coder");
+    expect(coderRecord).not.toBeNull();
+    expect(coderRecord!.agent).toBe("coder");
+  });
+
+  test("env var LUDICS_AGENT_NAME resolves when path matching fails", () => {
+    const unknownCwd = join(tmpDir, "unknown-dir");
+    mkdirSync(unknownCwd, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir({
+      root: join(tmpDir, "root"),
+      "agent-x": join(tmpDir, "worktree-x"),
+    });
+
+    // Set env var for attribution.
+    process.env.LUDICS_AGENT_NAME = "agent-x";
+
+    orchOnStop([unknownCwd, peerSyncDir, "Stop"]);
+
+    const record = readStopHookRecord(peerSyncDir, "agent-x");
+    expect(record).not.toBeNull();
+    expect(record!.agent).toBe("agent-x");
+  });
+
+  test("ambiguous multi-agent: no stop record when both active and path unmatched", () => {
+    const unknownCwd = join(tmpDir, "unknown-dir");
+    mkdirSync(unknownCwd, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir(
+      {
+        root: join(tmpDir, "root"),
+        "agent-a": join(tmpDir, "worktree-a"),
+        "agent-b": join(tmpDir, "worktree-b"),
+      },
+      {
+        "agent-a": "work-active|1|working",
+        "agent-b": "work-active|1|working",
+      },
+    );
+
+    orchOnStop([unknownCwd, peerSyncDir, "Stop"]);
+
+    // With two active agents and no path match, no stop record should be written.
+    expect(readStopHookRecord(peerSyncDir, "agent-a")).toBeNull();
+    expect(readStopHookRecord(peerSyncDir, "agent-b")).toBeNull();
+  });
+
+  test("single active agent fallback writes stop record when path unmatched", () => {
+    const unknownCwd = join(tmpDir, "unknown-dir");
+    mkdirSync(unknownCwd, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir(
+      {
+        root: join(tmpDir, "root"),
+        "agent-a": join(tmpDir, "worktree-a"),
+        "agent-b": join(tmpDir, "worktree-b"),
+      },
+      {
+        "agent-a": "work-active|1|working",
+        "agent-b": "idle|0|awaiting",
+      },
+    );
+
+    orchOnStop([unknownCwd, peerSyncDir, "Stop"]);
+
+    const record = readStopHookRecord(peerSyncDir, "agent-a");
+    expect(record).not.toBeNull();
+    expect(record!.agent).toBe("agent-a");
+  });
+
+  test("no phase file → no stop record", () => {
+    const cwd = join(tmpDir, "cwd");
+    mkdirSync(cwd, { recursive: true });
+    const peerSyncDir = makeTmpDir();
+    // No phase file written.
+    writeFileSync(join(peerSyncDir, "phase-token"), "token");
+
+    orchOnStop([cwd, peerSyncDir, "Stop"]);
+
+    // No stop record should be written when there's no active phase.
+    expect(existsSync(join(peerSyncDir, "coder.stop.json"))).toBe(false);
+  });
+});
+
+// ===========================================================================
+// AgentTurnLifecycle state transitions (via isAgentDone)
+// ===========================================================================
+
+describe("AgentTurnLifecycle state machine via isAgentDone", () => {
+  test("dispatched state → not done regardless of peer-sync status", () => {
+    const state = makeState({ phase: "work" });
+    state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched" });
+    state.agentStates.coder.status = "done";
+    expect(isAgentDone(state, state.agents[0]!)).toBe(false);
+  });
+
+  test("running state → not done regardless of peer-sync status", () => {
+    const state = makeState({ phase: "work" });
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-123",
+    });
+    state.agentStates.coder.status = "done";
+    expect(isAgentDone(state, state.agents[0]!)).toBe(false);
+  });
+
+  test("settled + done status → done (no artifact for work phase)", () => {
+    const state = makeState({ phase: "work" });
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-123",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.coder.status = "done";
+    expect(isAgentDone(state, state.agents[0]!)).toBe(true);
+  });
+
+  test("error state → done (terminal)", () => {
+    const state = makeState({ phase: "work" });
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "error",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    expect(isAgentDone(state, state.agents[0]!)).toBe(true);
+  });
+
+  test("interrupted → done regardless of lifecycle", () => {
+    const state = makeState({ phase: "work" });
+    state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "running" });
+    state.agentStates.coder.interrupted = true;
+    expect(isAgentDone(state, state.agents[0]!)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Phase-specific artifact validation (blocking)
+// ===========================================================================
+
+describe("phase-specific artifact validation", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    mkdirSync(join(tmpDir, "plans"), { recursive: true });
+    mkdirSync(join(tmpDir, "reviews"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("plan phase: missing plan file → not done", () => {
+    const state = makeState({ phase: "plan" }, tmpDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-plan",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.coder.status = "plan-done";
+    expect(isAgentDone(state, state.agents[0]!)).toBe(false);
+  });
+
+  test("plan phase: plan file exists → done", () => {
+    const state = makeState({ phase: "plan" }, tmpDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-plan",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.coder.status = "plan-done";
+    writeFileSync(join(tmpDir, "plans", "round-1-coder.md"), "# Plan\n");
+    expect(isAgentDone(state, state.agents[0]!)).toBe(true);
+  });
+
+  test("plan-review phase: requires review file (not plan file)", () => {
+    const state = makeState({ phase: "plan-review" }, tmpDir);
+    const reviewer = state.agents[1]!;
+    state.agentStates.reviewer.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-plan-review",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.reviewer.status = "plan-review-done";
+
+    // Plan file exists but review file doesn't — should NOT be done.
+    writeFileSync(join(tmpDir, "plans", "round-1-reviewer.md"), "# Plan\n");
+    expect(isAgentDone(state, reviewer)).toBe(false);
+
+    // Now create the review file — should be done.
+    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "APPROVE\n");
+    expect(isAgentDone(state, reviewer)).toBe(true);
+  });
+
+  test("review phase: missing review file → not done", () => {
+    const state = makeState({ phase: "review" }, tmpDir);
+    const reviewer = state.agents[1]!;
+    state.agentStates.reviewer.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-review",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.reviewer.status = "review-done";
+    expect(isAgentDone(state, reviewer)).toBe(false);
+  });
+
+  test("review phase: review file exists → done", () => {
+    const state = makeState({ phase: "review" }, tmpDir);
+    const reviewer = state.agents[1]!;
+    state.agentStates.reviewer.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-review",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.reviewer.status = "review-done";
+    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "# Review\nAPPROVE\n");
+    expect(isAgentDone(state, reviewer)).toBe(true);
+  });
+
+  test("pr-create phase: missing .pr file → not done", () => {
+    const state = makeState({ phase: "pr-create" }, tmpDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-pr",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.coder.status = "pr-create-done";
+    expect(isAgentDone(state, state.agents[0]!)).toBe(false);
+  });
+
+  test("pr-create phase: .pr file with valid URL → done", () => {
+    const state = makeState({ phase: "pr-create" }, tmpDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-pr",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.coder.status = "pr-create-done";
+    writeFileSync(join(tmpDir, "coder.pr"), "https://github.com/org/repo/pull/1\n");
+    expect(isAgentDone(state, state.agents[0]!)).toBe(true);
+  });
+
+  test("pr-create phase: .pr file with malformed body (not a URL) → not done", () => {
+    const state = makeState({ phase: "pr-create" }, tmpDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-pr",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.coder.status = "pr-create-done";
+    writeFileSync(join(tmpDir, "coder.pr"), "# My PR\n\nThis is a PR body, not a URL.\n");
+    expect(isAgentDone(state, state.agents[0]!)).toBe(false);
+  });
+
+  test("work phase: no artifact required → done with just done status", () => {
+    const state = makeState({ phase: "work" }, tmpDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-work",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.coder.status = "done";
+    expect(isAgentDone(state, state.agents[0]!)).toBe(true);
+  });
+
+  test("grace-period done with missing artifact → not done", () => {
+    const state = makeState({ phase: "plan" }, tmpDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-plan",
+      turnCompletedAt: new Date(Date.now() - 120_000).toISOString(),
+      completionSource: "snapshot",
+      statusFileFingerprint: "same",
+    });
+    writeFileSync(join(tmpDir, "coder.status"), "plan-active|0|working\n");
+    state.agentStates.coder.status = "plan-active";
+    expect(isAgentDone(state, state.agents[0]!)).toBe(false);
+  });
+});
+
+// ===========================================================================
+// Agent marker file read/write
+// ===========================================================================
+
+describe("agent marker files", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("writeAgentMarkerFiles creates marker and readAgentMarkerFile reads it", () => {
+    const peerSyncDir = join(tmpDir, ".peer-sync");
+    mkdirSync(peerSyncDir, { recursive: true });
+    writeAgentMarkerFiles(peerSyncDir, { coder: tmpDir });
+    const marker = readAgentMarkerFile(tmpDir);
+    expect(marker).toEqual({ agentName: "coder", peerSyncDir });
+  });
+
+  test("writeAgentMarkerFiles creates .claude/settings.local.json with SessionStart hook", () => {
+    const peerSyncDir = join(tmpDir, ".peer-sync");
+    mkdirSync(peerSyncDir, { recursive: true });
+    writeAgentMarkerFiles(peerSyncDir, { coder: tmpDir });
+
+    const settingsPath = join(tmpDir, ".claude", "settings.local.json");
+    expect(existsSync(settingsPath)).toBe(true);
+
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    expect(settings.hooks).toBeDefined();
+    expect(settings.hooks.SessionStart).toBeDefined();
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+
+    const hookCommand = settings.hooks.SessionStart[0].hooks[0].command;
+    expect(hookCommand).toContain("LUDICS_PEER_SYNC_DIR");
+    expect(hookCommand).toContain("LUDICS_AGENT_NAME");
+    expect(hookCommand).toContain(peerSyncDir);
+    expect(hookCommand).toContain("coder");
+    expect(hookCommand).toContain("CLAUDE_ENV_FILE");
+  });
+
+  test("writeAgentMarkerFiles merges with existing settings.local.json", () => {
+    const peerSyncDir = join(tmpDir, ".peer-sync");
+    mkdirSync(peerSyncDir, { recursive: true });
+
+    // Pre-populate settings with an existing Stop hook.
+    const claudeDir = join(tmpDir, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    const settingsPath = join(claudeDir, "settings.local.json");
+    const existing = {
+      permissions: { allow: ["bash"] },
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: "echo bye" }] }],
+      },
+    };
+    writeFileSync(settingsPath, JSON.stringify(existing, null, 2));
+
+    writeAgentMarkerFiles(peerSyncDir, { coder: tmpDir });
+
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    // Existing permissions preserved.
+    expect(settings.permissions).toEqual({ allow: ["bash"] });
+    // Existing Stop hook preserved.
+    expect(settings.hooks.Stop).toHaveLength(1);
+    expect(settings.hooks.Stop[0].hooks[0].command).toBe("echo bye");
+    // SessionStart hook added.
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("LUDICS_PEER_SYNC_DIR");
+  });
+
+  test("writeAgentMarkerFiles is idempotent — deduplicates ludics SessionStart hooks", () => {
+    const peerSyncDir = join(tmpDir, ".peer-sync");
+    mkdirSync(peerSyncDir, { recursive: true });
+
+    writeAgentMarkerFiles(peerSyncDir, { coder: tmpDir });
+    writeAgentMarkerFiles(peerSyncDir, { coder: tmpDir });
+
+    const settingsPath = join(tmpDir, ".claude", "settings.local.json");
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    // Should only have one SessionStart hook, not two.
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+  });
+
+  test("readAgentMarkerFile returns null when no marker file", () => {
+    expect(readAgentMarkerFile(tmpDir)).toBeNull();
+  });
+});

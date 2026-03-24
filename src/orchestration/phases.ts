@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
+import { isPrUrl } from "./github.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { nowEpoch } from "./util.ts";
@@ -58,6 +59,55 @@ export const PHASE_CATEGORIES: Record<Phase, PhaseCategory> = {
 
 /** Grace period (seconds) after a turn settles before treating as done without status update. */
 const SETTLED_GRACE_PERIOD_S = 30;
+
+/**
+ * Return the path of the required artifact for this phase/agent, or null if
+ * the phase has no required file artifact.  When a non-null path is returned,
+ * `isAgentDone()` will NOT treat the agent as done until the file exists.
+ */
+function requiredArtifactPath(state: OrchestrationState, agent: AgentConfig): string | null {
+  const dir = state.peerSyncDir;
+  switch (state.phase) {
+    case "plan":
+      return join(dir, "plans", `round-${state.round}-${agent.name}.md`);
+    case "plan-review":
+    case "review":
+      // plan-review writes its verdict to the review file (see pair-reviewer-plan-review.md),
+      // not the plan file.  Same path shape as review phase.
+      return join(dir, "reviews", `round-${state.round}-${agent.name}.md`);
+    case "pr-create":
+      return join(dir, `${agent.name}.pr`);
+    default:
+      return null;
+  }
+}
+
+/**
+ * Check whether the required phase artifact exists and is valid for the agent.
+ * Returns true when no artifact is required or when the artifact is present and valid.
+ *
+ * For `pr-create`, mere file existence is insufficient — the file must contain
+ * a valid GitHub PR URL.  A malformed PR body that `validateAndFixPrFile()`
+ * has not yet converted keeps the agent not-done so the runner has a chance to
+ * auto-fix it on the next poll cycle.
+ */
+function hasRequiredArtifact(state: OrchestrationState, agent: AgentConfig): boolean {
+  const path = requiredArtifactPath(state, agent);
+  if (!path) return true;
+  if (!existsSync(path)) return false;
+
+  // For pr-create, validate that the file contains a valid PR URL.
+  if (state.phase === "pr-create") {
+    try {
+      const content = readFileSync(path, "utf-8").trim();
+      return !!content && isPrUrl(content);
+    } catch {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 export const DONE_STATUSES = new Set([
   "done",
@@ -153,7 +203,21 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
 
     case "settled": {
       // Turn settled — check for a done status from peer-sync.
-      if (DONE_STATUSES.has(runtime.status)) return true;
+      if (DONE_STATUSES.has(runtime.status)) {
+        // Validate required phase artifact before treating as done.
+        if (!hasRequiredArtifact(state, agent)) {
+          emitEvent({
+            event_type: "orchestration_warning",
+            source: "orchestration",
+            scope: "slot",
+            slot: state.slot,
+            task: state.feature,
+            message: `${agent.name}: status is "${runtime.status}" but required artifact missing: ${requiredArtifactPath(state, agent)}`,
+          });
+          return false;
+        }
+        return true;
+      }
 
       // Status file may not have been updated yet. Check fingerprint.
       const currentFp = statusFileFingerprint(state.peerSyncDir, agent.name);
@@ -167,6 +231,18 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
         ? (Date.now() - Date.parse(lc.turnCompletedAt)) / 1000
         : 0;
       if (settledAgeS > SETTLED_GRACE_PERIOD_S) {
+        // Even after grace period, require artifacts for phases that need them.
+        if (!hasRequiredArtifact(state, agent)) {
+          emitEvent({
+            event_type: "orchestration_warning",
+            source: "orchestration",
+            scope: "slot",
+            slot: state.slot,
+            task: state.feature,
+            message: `${agent.name}: turn settled ${Math.round(settledAgeS)}s ago, status unchanged, required artifact still missing — not done`,
+          });
+          return false;
+        }
         emitEvent({
           event_type: "orchestration_warning",
           source: "orchestration",

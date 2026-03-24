@@ -75,14 +75,6 @@ function refreshAgentStatuses(state: OrchestrationState, snapshot: T3Snapshot | 
     const activeTurnId = thread?.session?.activeTurnId ?? null;
     const latestTurn = thread?.latestTurn ?? null;
 
-    // Keep deprecated fields populated for any code that still reads them.
-    runtime.latestTurnCompletedAt = latestTurn?.completedAt ?? null;
-    if (sessionStatus === "running" && activeTurnId) {
-      runtime.latestTurnState = "running";
-    } else {
-      runtime.latestTurnState = latestTurn?.state ?? "missing";
-    }
-
     // --- 3. Update turn lifecycle (identity-based tracking) ---
     const lc = runtime.turnLifecycle;
     if (lc) {
@@ -112,7 +104,7 @@ function refreshAgentStatuses(state: OrchestrationState, snapshot: T3Snapshot | 
  * Advance the per-agent turn lifecycle state machine based on snapshot data.
  * See docs/orchestration-phase-transitions.md §6 for the state diagram.
  */
-function updateTurnLifecycle(
+export function updateTurnLifecycle(
   lc: AgentTurnLifecycle,
   sessionStatus: string | null,
   activeTurnId: string | null,
@@ -126,22 +118,13 @@ function updateTurnLifecycle(
         lc.observedTurnId = activeTurnId;
         lc.state = "running";
         lc.turnStartedAt = isoNow();
-      } else if (
-        // Agent completed so fast we missed the running state entirely:
-        // latestTurn shows a NEW completed turn (different from any we saw before dispatch).
-        latestTurn
-        && latestTurn.state === "completed"
-        && latestTurn.completedAt
-        && !activeTurnId
-        && lc.observedTurnId === null
-        // Heuristic: the completed turn must be newer than our dispatch.
-        && Date.parse(latestTurn.completedAt) >= Date.parse(lc.dispatchedAt)
-      ) {
-        lc.observedTurnId = latestTurn.turnId;
-        lc.state = "settled";
-        lc.turnCompletedAt = latestTurn.completedAt;
-        lc.completionSource = "snapshot";
       }
+      // NOTE: No snapshot-only fast-complete path. Without a turnId returned
+      // from dispatch, we cannot prove a completed turn in the snapshot belongs
+      // to *this* dispatch rather than a prior turn.  Fast completion is handled
+      // by the stop-hook path (which provides phaseToken proof) in
+      // refreshAgentStatuses().  If no stop-hook arrives and activeTurnId is
+      // never observed, the lifecycle stays "dispatched" until timeout.
       break;
     }
     case "running": {
@@ -295,9 +278,6 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
   }
   if (state.phase === "setup") return;
 
-  // Record dispatch timestamp (kept for backward compat; lifecycle is authoritative).
-  state.phaseDispatchedAt = isoNow();
-
   // Read the phase token written by writePeerSync above — used to scope stop hooks.
   const phaseToken = readPhaseToken(state.peerSyncDir) ?? makeId("phase");
 
@@ -420,15 +400,27 @@ async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<
 /**
  * After agents complete a phase that creates PRs, validate the pr files.
  * If a file contains markdown text instead of a URL, auto-create the PR and rewrite the file.
+ *
+ * NOTE: We gate on the turn lifecycle being settled (or a done status present)
+ * rather than isAgentDone(), because isAgentDone() itself requires a valid PR URL
+ * artifact — creating a deadlock when the agent writes markdown that
+ * validateAndFixPrFile() is designed to repair.
  */
 function validateAgentPrFiles(state: OrchestrationState): void {
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
-    if (!isAgentDone(state, agent)) continue;
+    const runtime = state.agentStates[agent.name];
+    if (!runtime) continue;
+    // Allow fix to run once the turn has settled or agent reported done,
+    // even if artifact validation hasn't passed yet.
+    const lc = runtime.turnLifecycle;
+    const turnSettled = lc && (lc.state === "settled" || lc.state === "error");
+    const statusDone = DONE_STATUSES.has(runtime.status);
+    if (!turnSettled && !statusDone && !runtime.interrupted) continue;
     const prFile = join(state.peerSyncDir, `${agent.name}.pr`);
     const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch);
-    if (fixedUrl && !state.agentStates[agent.name]!.prUrl) {
-      state.agentStates[agent.name]!.prUrl = fixedUrl;
+    if (fixedUrl && !runtime.prUrl) {
+      runtime.prUrl = fixedUrl;
     }
   }
 }
@@ -493,8 +485,11 @@ async function pollUntilDone(state: OrchestrationState): Promise<void> {
     try {
       eventClient = new T3CodeClient({ url: record.wsUrl, token: record.authToken });
       await eventClient.connect();
-      unsubscribe = eventClient.onDomainEvent(() => {
-        // Any domain event (turn started/completed, session set) wakes the poll loop.
+      unsubscribe = eventClient.onDomainEvent((event) => {
+        // Only wake for turn/session lifecycle events — ignore unrelated domain events
+        // (e.g. message-sent, activity) to reduce unnecessary poll cycles.
+        // See docs/orchestration-phase-transitions.md §4 for the documented event model.
+        if (event.type !== "thread.session.set" && event.type !== "thread.turn-diff-completed") return;
         if (wakeResolve) {
           wakeResolve();
           wakeResolve = null;
@@ -636,7 +631,6 @@ export async function runOrchestration(
     state.phaseStartedAt = nowEpoch();
     state.confirmedPhase = null;
     state.phaseDispatched = false;
-    state.phaseDispatchedAt = null;
     persistState(state);
   }
 
@@ -695,7 +689,6 @@ export function skipToPhase(
   state.phase = phase;
   state.phaseStartedAt = nowEpoch();
   state.phaseDispatched = false;
-  state.phaseDispatchedAt = null;
   persistState(state, harnessDir);
   return state;
 }

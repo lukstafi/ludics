@@ -40,7 +40,7 @@ import {
   type OrchestrationConfig,
   type OrchestrationState,
 } from "../orchestration/state.ts";
-import { initPeerSync, removePeerSyncSession } from "../orchestration/peer-sync.ts";
+import { initPeerSync, removePeerSyncSession, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
 import { createWorktrees, cleanupWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
 import { isoNow, ludicsSelfCommand, makeId, nowEpoch, slugify } from "../orchestration/util.ts";
 
@@ -863,6 +863,7 @@ async function startOrchestratedThreads(
     agents,
     { root: setup.rootWorktree, ...setup.agentWorktrees },
   );
+  writeAgentMarkerFiles(setup.peerSyncDir, setup.agentWorktrees);
 
   const existingThreadMap = new Map(
     (existing?.threads ?? []).map((thread) => [thread.worktreePath, thread]),
