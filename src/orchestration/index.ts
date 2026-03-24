@@ -110,10 +110,14 @@ function orchOnStop(args: string[]): void {
   if (!phase || !phaseToken) return; // Not an active orchestration session.
 
   // Try to identify the agent: read worktrees.json and match cwd.
+  // Skip the "root" entry — it's typically a prefix of all worktree paths
+  // and would incorrectly match every cwd, producing a "root.stop.json"
+  // that the runner never reads.
   let agentName: string | null = null;
   try {
     const worktrees = JSON.parse(readFileSync(join(peerSyncDir, "worktrees.json"), "utf-8"));
     for (const [name, path] of Object.entries(worktrees)) {
+      if (name === "root") continue;
       if (typeof path === "string" && cwd.startsWith(path)) {
         agentName = name;
         break;

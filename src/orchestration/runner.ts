@@ -146,6 +146,9 @@ function updateTurnLifecycle(
     }
     case "running": {
       // Turn is active — check if it settled.
+      // Guard: if sessionStatus is null (snapshot fetch failed), do NOT transition.
+      // A transient RPC failure must not permanently misclassify an active turn as settled.
+      if (sessionStatus === null) break;
       if (!activeTurnId || sessionStatus !== "running") {
         if (sessionStatus === "error") {
           lc.state = "error";
