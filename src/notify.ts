@@ -37,6 +37,7 @@ function notifySend(topic: string, message: string, priority: number, title: str
 
   const curlArgs = [
     "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+    "--max-time", "5",
     "-d", message,
   ];
   if (title) curlArgs.push("-H", `Title: ${title}`);
