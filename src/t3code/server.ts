@@ -420,6 +420,145 @@ function buildLaunchCommand(input: {
   return args;
 }
 
+export interface T3CodeDoctorResult {
+  ok: boolean;
+  checks: Array<{ name: string; passed: boolean; detail: string }>;
+}
+
+/**
+ * Health check for the t3code server setup.
+ * Verifies binary availability, server record, process state, and HTTP reachability.
+ * Returns a structured result suitable for CLI output.
+ */
+export async function doctorServer(
+  options: EnsureServerOptions = {},
+): Promise<T3CodeDoctorResult> {
+  const harnessDir = options.harnessDir ?? defaultHarnessDir();
+  const checks: Array<{ name: string; passed: boolean; detail: string }> = [];
+
+  // 1. Binary / launcher availability
+  {
+    const preferred = (process.env.LUDICS_T3CODE_BIN ?? "").trim();
+    const repoOverride = (process.env.LUDICS_T3CODE_REPO ?? "").trim();
+    const home = process.env.HOME ?? "~";
+    const ludicsRepo = join(home, "t3code-ludics");
+    const plainRepo = join(home, "t3code");
+    const sourceRepo = resolve(repoOverride || (existsSync(ludicsRepo) ? ludicsRepo : plainRepo));
+    const sourceServerDir = join(sourceRepo, "apps", "server");
+
+    let detail: string;
+    let passed: boolean;
+    if (preferred) {
+      passed = existsSync(preferred);
+      detail = passed ? `LUDICS_T3CODE_BIN=${preferred}` : `LUDICS_T3CODE_BIN=${preferred} (file not found)`;
+    } else if (existsSync(join(sourceServerDir, "src", "index.ts"))) {
+      passed = true;
+      detail = `source repo at ${sourceRepo}`;
+    } else if (Bun.which("t3")) {
+      passed = true;
+      detail = `t3 binary at ${Bun.which("t3")}`;
+    } else if (Bun.which("npx")) {
+      passed = true;
+      detail = `will use npx -y t3 (slow first run)`;
+    } else {
+      passed = false;
+      detail = "no launcher found; install t3 or keep source at ~/t3code-ludics";
+    }
+    checks.push({ name: "launcher", passed, detail });
+  }
+
+  // 2. server.json record exists
+  const record = readServerRecord(harnessDir);
+  {
+    const passed = record !== null;
+    checks.push({
+      name: "server.json",
+      passed,
+      detail: passed ? t3codeServerPath(harnessDir) : "no record — server has never been started",
+    });
+  }
+
+  if (record) {
+    // 3. Process alive
+    const inspection = inspectManagedServerProcess(record);
+    checks.push({
+      name: "process alive",
+      passed: inspection.alive,
+      detail: inspection.alive
+        ? `pid ${record.pid} is running`
+        : `pid ${record.pid} is dead (stale record)`,
+    });
+
+    // 4. Command line matches record (detects PID reuse)
+    if (inspection.alive) {
+      checks.push({
+        name: "process identity",
+        passed: inspection.matchesRecord,
+        detail: inspection.matchesRecord
+          ? `command line matches t3code record`
+          : `command line mismatch — pid may be reused: ${inspection.commandLine ?? "(unreadable)"}`,
+      });
+    }
+
+    // 5. HTTP health check
+    const httpOk = await httpHealthCheck(record);
+    checks.push({
+      name: "HTTP reachable",
+      passed: httpOk,
+      detail: httpOk ? record.webUrl : `${record.webUrl} did not respond (server down or starting)`,
+    });
+
+    // 6. WebSocket / snapshot
+    if (httpOk) {
+      const client = new T3CodeClient({
+        url: record.wsUrl,
+        token: record.authToken,
+        requestTimeoutMs: 3_000,
+      });
+      try {
+        const snapshot = await client.getSnapshot();
+        checks.push({
+          name: "WebSocket snapshot",
+          passed: true,
+          detail: `${snapshot.projects.length} project(s), ${snapshot.threads.length} thread(s)`,
+        });
+      } catch (err) {
+        checks.push({
+          name: "WebSocket snapshot",
+          passed: false,
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        client.close();
+      }
+    }
+
+    // 7. stderr log hints (last few lines if file exists)
+    const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
+    if (existsSync(stderrPath)) {
+      try {
+        const content = Bun.spawnSync(["tail", "-n", "5", stderrPath], {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: process.env as Record<string, string>,
+        }).stdout.toString().trim();
+        if (content) {
+          checks.push({
+            name: "server-stderr.log (last 5 lines)",
+            passed: true,
+            detail: content,
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const ok = checks.filter((c) => c.name !== "server-stderr.log (last 5 lines)").every((c) => c.passed);
+  return { ok, checks };
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

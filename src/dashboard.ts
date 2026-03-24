@@ -7,7 +7,7 @@ import { harnessDir, loadConfigSync, slotsFilePath } from "./config.ts";
 import { parseSlotBlocks, getField, getProcess, getTask, getMode } from "./slots/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl } from "./network.ts";
-import { readServerRecord } from "./t3code/server.ts";
+import { inspectManagedServerProcess, readServerRecord } from "./t3code/server.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
 
@@ -602,9 +602,15 @@ function generateMag(): Record<string, unknown> {
 function generateT3code(): Record<string, unknown> {
   const record = readServerRecord();
   if (!record) {
-    return { available: false, webUrl: null };
+    return { available: false, starting: false, webUrl: null };
   }
-  return { available: true, webUrl: getUrl(record.port) };
+  const webUrl = getUrl(record.port);
+  const inspection = inspectManagedServerProcess(record);
+  if (!inspection.alive) {
+    // Record exists but process is gone — server is being restarted (keepalive will revive it)
+    return { available: false, starting: true, webUrl };
+  }
+  return { available: true, starting: false, webUrl };
 }
 
 // --- Generate ntfy.json ---
