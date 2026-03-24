@@ -100,6 +100,8 @@ export interface OrchestrationState {
   peerSyncDir: string;
   threadIds: Record<string, string>;
   mergeWinner?: string;
+  /** Tracks how many plan-merge → plan-review iterations have completed (pair mode only). */
+  planMergeRound?: number;
   taskId?: string;
   slotTitle?: string;
   lastLearningAt?: number;
@@ -127,6 +129,7 @@ export const DEFAULT_TIMEOUTS: Record<string, number> = {
   clarify: 600,
   pushback: 600,
   plan: 600,
+  "plan-merge": 600,
   "plan-review": 600,
   "update-docs": 600,
   "pr-create": 600,

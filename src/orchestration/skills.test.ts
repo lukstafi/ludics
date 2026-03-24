@@ -60,6 +60,8 @@ describe("skills", () => {
         workflowFeedbackFile: "/tmp/feedback",
         mergeReviewDecisionFile: "/tmp/merge-decision",
         mergedMarkerFile: "/tmp/merged",
+        mergedPlanFile: "/tmp/merged-plan",
+        planMergeRound: 0,
         peerSyncDir: "/tmp/peer-sync",
         doneStatus: "review-done",
       },

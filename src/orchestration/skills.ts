@@ -31,6 +31,8 @@ export interface SkillContext {
   workflowFeedbackFile: string;
   mergeReviewDecisionFile: string;
   mergedMarkerFile: string;
+  mergedPlanFile: string;
+  planMergeRound: number;
   peerSyncDir: string;
   doneStatus: string;
 }
@@ -139,21 +141,40 @@ export function buildSkillContext(
 ): SkillContext {
   const peer = state.agents.find((candidate) => candidate.name !== agent.name) ?? null;
   const planFile = join(state.peerSyncDir, "plans", `round-${state.round}-${agent.name}.md`);
-  const reviewFile = join(state.peerSyncDir, "reviews", `round-${state.round}-${agent.name}.md`);
-  const peerPlan = peer
-    ? readFileIfExists(join(state.peerSyncDir, "plans", `round-${state.round}-${peer.name}.md`))
-    : null;
-  // The review that informs the current work phase was written during the
-  // previous round's review phase.  Try round-1 first, then current round,
-  // then scan for the highest-numbered review file (handles crash restarts
-  // where the round counter was reset but old review files persist).
-  const peerReview = peer
-    ? (state.round > 1
+  const planMergeRound = state.planMergeRound ?? 0;
+  // Key the merged plan file by planMergeRound so each retry iteration writes a fresh file,
+  // preventing a stale merged plan from satisfying the artifact gate in later iterations.
+  const mergedPlanFile = join(state.peerSyncDir, "plans", `round-${state.round}-merged-${planMergeRound}.md`);
+
+  // plan-review uses per-iteration review files to avoid stale verdicts from a prior loop.
+  const reviewFile = state.phase === "plan-review"
+    ? join(state.peerSyncDir, "reviews", `plan-merge-${planMergeRound}-${agent.name}.md`)
+    : join(state.peerSyncDir, "reviews", `round-${state.round}-${agent.name}.md`);
+
+  // In pair plan-review the reviewer reads the merged plan produced by the coder in plan-merge.
+  // In duo plan-review (no plan-merge phase) each agent reviews the other's independent plan.
+  const peerPlan = state.phase === "plan-review" && state.mode === "pair"
+    ? readFileIfExists(mergedPlanFile)
+    : peer
+      ? readFileIfExists(join(state.peerSyncDir, "plans", `round-${state.round}-${peer.name}.md`))
+      : null;
+
+  // In plan-merge (iteration > 0) the coder reads the reviewer's feedback from the previous round.
+  // For other phases, use the previous round's review with findLatestReview fallback for crash restarts.
+  const peerReview = (() => {
+    if (!peer) return null;
+    if (state.phase === "plan-merge") {
+      if (planMergeRound === 0) return null; // first iteration: no prior review
+      return readFileIfExists(
+        join(state.peerSyncDir, "reviews", `plan-merge-${planMergeRound - 1}-${peer.name}.md`),
+      );
+    }
+    return (state.round > 1
         ? readFileIfExists(join(state.peerSyncDir, "reviews", `round-${state.round - 1}-${peer.name}.md`))
         : null)
       ?? readFileIfExists(join(state.peerSyncDir, "reviews", `round-${state.round}-${peer.name}.md`))
-      ?? findLatestReview(state.peerSyncDir, peer.name)
-    : null;
+      ?? findLatestReview(state.peerSyncDir, peer.name);
+  })();
   const mergeVotes = Object.entries(readMergeVotes(state.peerSyncDir, state.mergeRound))
     .map(([name, vote]) => `${name}: ${vote}`)
     .join("\n");
@@ -177,6 +198,8 @@ export function buildSkillContext(
     peerWorktreePath: peer?.worktreePath ?? null,
     statusFile: join(state.peerSyncDir, `${agent.name}.status`),
     planFile,
+    mergedPlanFile,
+    planMergeRound,
     reviewFile,
     prFile: join(state.peerSyncDir, `${agent.name}.pr`),
     interruptFile: join(state.peerSyncDir, `${agent.name}.interrupt`),
@@ -212,6 +235,8 @@ export function substituteTemplate(template: string, ctx: SkillContext): string 
     PEER_WORKTREE_PATH: ctx.peerWorktreePath ?? "(no peer worktree)",
     STATUS_FILE: ctx.statusFile,
     PLAN_FILE: ctx.planFile,
+    MERGED_PLAN_FILE: ctx.mergedPlanFile,
+    PLAN_MERGE_ROUND: String(ctx.planMergeRound),
     REVIEW_FILE: ctx.reviewFile,
     PR_FILE: ctx.prFile,
     INTERRUPT_FILE: ctx.interruptFile,
