@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { isAgentDone } from "./phases.ts";
+import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle } from "./runner.ts";
 import { orchOnStop } from "./index.ts";
 import { readStopHookRecord, writeAgentMarkerFiles, readAgentMarkerFile } from "./peer-sync.ts";
@@ -704,5 +704,67 @@ describe("agent marker files", () => {
 
   test("readAgentMarkerFile returns null when no marker file", () => {
     expect(readAgentMarkerFile(tmpDir)).toBeNull();
+  });
+});
+
+// ===========================================================================
+// pairReviewVerdict — verdict file parsing and timeout handling
+// ===========================================================================
+
+describe("pairReviewVerdict", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("returns null when no review file exists (review timeout path)", () => {
+    // No review file written — simulates a timed-out review phase.
+    const state = makeState({ phase: "review", round: 1 }, tmpDir);
+    expect(pairReviewVerdict(state)).toBeNull();
+  });
+
+  test("returns 'approve' when review file contains APPROVE", () => {
+    const state = makeState({ phase: "review", round: 1 }, tmpDir);
+    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "**Verdict**: APPROVE\n\nLooks good!\n");
+    expect(pairReviewVerdict(state)).toBe("approve");
+  });
+
+  test("returns 'request_changes' when review file contains REQUEST_CHANGES", () => {
+    const state = makeState({ phase: "review", round: 1 }, tmpDir);
+    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "**Verdict**: REQUEST_CHANGES\n\nFix X.\n");
+    expect(pairReviewVerdict(state)).toBe("request_changes");
+  });
+
+  test("returns 'request_changes' when file contains both APPROVE and REQUEST_CHANGES", () => {
+    const state = makeState({ phase: "review", round: 1 }, tmpDir);
+    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "do NOT APPROVE — REQUEST_CHANGES instead\n");
+    expect(pairReviewVerdict(state)).toBe("request_changes");
+  });
+
+  test("uses correct round number for the review file lookup", () => {
+    const state = makeState({ phase: "review", round: 3 }, tmpDir);
+    // Write verdict for round 3 only — rounds 1 and 2 have no files.
+    writeFileSync(join(tmpDir, "reviews", "round-3-reviewer.md"), "**Verdict**: APPROVE\n");
+    expect(pairReviewVerdict(state)).toBe("approve");
+  });
+
+  test("timed-out review produces null verdict (regression: was falsely APPROVE)", () => {
+    // This is the regression case: review phase timed out → evaluateTransition returns
+    // "update-docs" (same as APPROVE), but no review file was written. The notification
+    // logic must NOT label this transition as "APPROVE".
+    const state = makeState({ phase: "review", round: 2 }, tmpDir);
+    // No review file for round 2 — timeout scenario.
+    const verdict = pairReviewVerdict(state);
+    expect(verdict).toBeNull();
+    // Verify the label that would be used in the notification is "timeout", not "APPROVE".
+    const verdictLabel = verdict === "approve" ? "APPROVE"
+      : verdict === "request_changes" ? "REQUEST_CHANGES"
+      : "timeout";
+    expect(verdictLabel).toBe("timeout");
   });
 });

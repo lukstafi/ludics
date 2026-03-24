@@ -5,7 +5,7 @@ import { T3CodeClient } from "../t3code/client.ts";
 import { readServerRecord } from "../t3code/server.ts";
 import { toWireProvider } from "../t3code/types.ts";
 import type { T3CodeServerRecord, T3Snapshot } from "../t3code/types.ts";
-import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone } from "./phases.ts";
+import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone, pairReviewVerdict } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
   readStopHookRecord, statusFileFingerprint, writeInterrupt, writePeerSync,
@@ -21,6 +21,7 @@ import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
 import { fetchNewPrCommentCount, isPrMerged, validateAndFixPrFile } from "./github.ts";
 import { updateFrontmatterField } from "../tasks/markdown.ts";
 import { harnessDir } from "../config.ts";
+import { notifyAgents } from "../notify.ts";
 
 async function withClient<T>(
   record: T3CodeServerRecord,
@@ -370,6 +371,12 @@ async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<
         task: state.feature,
         message: `PR merged: ${prUrl}`,
       });
+      const mergedTaskLabel = state.taskId ?? state.feature;
+      notifyAgents(
+        `Slot ${state.slot} [${mergedTaskLabel}]: PR merged: ${prUrl}`,
+        3,
+        `Slot ${state.slot}: PR merged`,
+      );
     }
   }
 
@@ -421,6 +428,12 @@ function validateAgentPrFiles(state: OrchestrationState): void {
     const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch);
     if (fixedUrl && !runtime.prUrl) {
       runtime.prUrl = fixedUrl;
+      const prTaskLabel = state.taskId ?? state.feature;
+      notifyAgents(
+        `Slot ${state.slot} [${prTaskLabel}]: PR created by ${agent.name}: ${fixedUrl}`,
+        3,
+        `Slot ${state.slot}: PR created`,
+      );
     }
   }
 }
@@ -627,6 +640,30 @@ export async function runOrchestration(
       message: `round ${state.round}`,
     });
 
+    {
+      const taskLabel = state.taskId ?? state.feature;
+      const slotLabel = `Slot ${state.slot} [${taskLabel}]`;
+      if (state.phase === "review" && state.mode === "pair") {
+        // Use the parsed verdict from the review file. Falls back to "timeout" when
+        // no verdict file exists (review phase expired without an explicit verdict).
+        const parsed = pairReviewVerdict(state);
+        const verdictLabel = parsed === "approve" ? "APPROVE"
+          : parsed === "request_changes" ? "REQUEST_CHANGES"
+          : "timeout";
+        notifyAgents(
+          `${slotLabel}: review verdict: ${verdictLabel} → ${next} (round ${state.round})`,
+          3,
+          `${slotLabel}: review verdict`,
+        );
+      } else {
+        notifyAgents(
+          `${slotLabel}: ${state.phase} → ${next} (round ${state.round})`,
+          1,
+          `${slotLabel}: phase`,
+        );
+      }
+    }
+
     state.phase = next;
     state.phaseStartedAt = nowEpoch();
     state.confirmedPhase = null;
@@ -650,6 +687,11 @@ export async function runOrchestration(
         status: "done",
         message: `orchestration completed for ${state.taskId}`,
       });
+      notifyAgents(
+        `Slot ${state.slot} [${state.taskId}]: orchestration complete`,
+        3,
+        `Slot ${state.slot}: task done`,
+      );
     }
   }
 }

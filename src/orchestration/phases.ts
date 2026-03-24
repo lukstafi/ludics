@@ -281,7 +281,7 @@ function isMerged(state: OrchestrationState): boolean {
 }
 
 /** Read the latest reviewer verdict (APPROVE or REQUEST_CHANGES) from the review file. */
-function pairReviewVerdict(state: OrchestrationState): "approve" | "request_changes" | null {
+export function pairReviewVerdict(state: OrchestrationState): "approve" | "request_changes" | null {
   const reviewer = state.agents.find((a) => a.role === "reviewer");
   if (!reviewer) return null;
   const reviewFile = join(state.peerSyncDir, "reviews", `round-${state.round}-${reviewer.name}.md`);
