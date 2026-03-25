@@ -484,7 +484,13 @@ export async function interruptAgent(
 }
 
 async function handleTimeout(state: OrchestrationState): Promise<void> {
-  if (state.phase === "clarify" || state.phase === "pushback" || state.phase === "plan") {
+  if (
+    state.phase === "clarify"
+    || state.phase === "pushback"
+    || state.phase === "plan"
+    || state.phase === "plan-merge"
+    || state.phase === "plan-review"
+  ) {
     return;
   }
   if (
@@ -582,6 +588,10 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   if ((state.phase === "update-docs" || state.phase === "review") && next === "work") {
     state.round += 1;
   }
+  // Track plan-merge iterations: increment planMergeRound each time we loop back.
+  if (state.phase === "plan-review" && next === "plan-merge") {
+    state.planMergeRound = (state.planMergeRound ?? 0) + 1;
+  }
   if (state.phase === "merge-vote") {
     const votes = readMergeVotes(state.peerSyncDir, state.mergeRound);
     if (hasConsensus(votes)) {
@@ -673,6 +683,16 @@ export async function runOrchestration(
           `${slotLabel}: review verdict: ${verdictLabel} → ${next} (round ${state.round})`,
           3,
           `${slotLabel}: review verdict`,
+        );
+      } else if (state.phase === "plan-review" && state.mode === "pair") {
+        const parsed = pairReviewVerdict(state);
+        const verdictLabel = parsed === "approve" ? "APPROVE"
+          : parsed === "request_changes" ? "REQUEST_CHANGES"
+          : "timeout";
+        notifyAgents(
+          `${slotLabel}: plan-review verdict: ${verdictLabel} → ${next} (plan-merge round ${state.planMergeRound ?? 0})`,
+          3,
+          `${slotLabel}: plan-review verdict`,
         );
       } else {
         notifyAgents(

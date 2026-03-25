@@ -12,6 +12,7 @@ export type Phase =
   | "clarify"
   | "pushback"
   | "plan"
+  | "plan-merge"
   | "plan-review"
   | "work"
   | "review"
@@ -41,6 +42,7 @@ export const PHASE_CATEGORIES: Record<Phase, PhaseCategory> = {
   clarify: "pre-work",
   pushback: "pre-work",
   plan: "pre-work",
+  "plan-merge": "pre-work",
   "plan-review": "pre-work",
   work: "main-loop",
   review: "main-loop",
@@ -70,10 +72,15 @@ function requiredArtifactPath(state: OrchestrationState, agent: AgentConfig): st
   switch (state.phase) {
     case "plan":
       return join(dir, "plans", `round-${state.round}-${agent.name}.md`);
+    case "plan-merge":
+      // Only coder participates; writes a merged plan file keyed by planMergeRound so that
+      // each retry iteration requires a fresh file and can't be satisfied by a stale one.
+      return join(dir, "plans", `round-${state.round}-merged-${state.planMergeRound ?? 0}.md`);
     case "plan-review":
+      // Uses planMergeRound to give each iteration its own review file so the
+      // artifact gate isn't bypassed by a stale file from a previous iteration.
+      return join(dir, "reviews", `plan-merge-${state.planMergeRound ?? 0}-${agent.name}.md`);
     case "review":
-      // plan-review writes its verdict to the review file (see pair-reviewer-plan-review.md),
-      // not the plan file.  Same path shape as review phase.
       return join(dir, "reviews", `round-${state.round}-${agent.name}.md`);
     case "pr-create":
       return join(dir, `${agent.name}.pr`);
@@ -113,6 +120,7 @@ export const DONE_STATUSES = new Set([
   "done",
   "review-done",
   "plan-done",
+  "plan-merge-done",
   "plan-review-done",
   "clarify-done",
   "pushback-done",
@@ -149,6 +157,9 @@ export function agentParticipatesInPhase(
     case "plan-review":
     case "pushback":
       return agent.role === "reviewer";
+    case "plan-merge":
+      // Coder reads both independent plans and produces the merged plan.
+      return agent.role === "coder";
     case "work":
     case "pr-create":
     case "final-merge":
@@ -284,7 +295,10 @@ function isMerged(state: OrchestrationState): boolean {
 export function pairReviewVerdict(state: OrchestrationState): "approve" | "request_changes" | null {
   const reviewer = state.agents.find((a) => a.role === "reviewer");
   if (!reviewer) return null;
-  const reviewFile = join(state.peerSyncDir, "reviews", `round-${state.round}-${reviewer.name}.md`);
+  // plan-review uses per-iteration files keyed by planMergeRound to avoid stale verdicts.
+  const reviewFile = state.phase === "plan-review"
+    ? join(state.peerSyncDir, "reviews", `plan-merge-${state.planMergeRound ?? 0}-${reviewer.name}.md`)
+    : join(state.peerSyncDir, "reviews", `round-${state.round}-${reviewer.name}.md`);
   if (!existsSync(reviewFile)) return null;
   const content = readFileSync(reviewFile, "utf-8").toUpperCase();
   if (/\bAPPROVE\b/.test(content) && !/\bREQUEST_CHANGES\b/.test(content)) return "approve";
@@ -340,12 +354,30 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
       return null;
 
     case "plan":
+      if (allAgentsDone(state) || phaseTimeoutExpired(state)) {
+        // Pair mode: both agents wrote independent plans — move to plan-merge so the
+        // coder can combine them before the reviewer does a formal review.
+        // Duo mode: go straight to plan-review (original behaviour).
+        return state.mode === "pair" ? "plan-merge" : "plan-review";
+      }
+      return null;
+
+    case "plan-merge":
       if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "plan-review";
       return null;
 
-    case "plan-review":
-      if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "work";
-      return null;
+    case "plan-review": {
+      if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      // In pair mode, honour the reviewer's verdict and loop back to plan-merge on
+      // REQUEST_CHANGES (up to 3 iterations total before forcing forward to work).
+      if (state.mode === "pair") {
+        const verdict = pairReviewVerdict(state);
+        if (verdict === "request_changes" && (state.planMergeRound ?? 0) < 3) {
+          return "plan-merge";
+        }
+      }
+      return "work";
+    }
 
     case "work":
       if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "review";

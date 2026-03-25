@@ -505,7 +505,8 @@ describe("phase-specific artifact validation", () => {
   });
 
   test("plan-review phase: requires review file (not plan file)", () => {
-    const state = makeState({ phase: "plan-review" }, tmpDir);
+    // planMergeRound defaults to 0, so the required file is plan-merge-0-reviewer.md
+    const state = makeState({ phase: "plan-review", planMergeRound: 0 }, tmpDir);
     const reviewer = state.agents[1]!;
     state.agentStates.reviewer.turnLifecycle = makeLifecycle({
       state: "settled",
@@ -519,8 +520,8 @@ describe("phase-specific artifact validation", () => {
     writeFileSync(join(tmpDir, "plans", "round-1-reviewer.md"), "# Plan\n");
     expect(isAgentDone(state, reviewer)).toBe(false);
 
-    // Now create the review file — should be done.
-    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "APPROVE\n");
+    // Now create the per-iteration review file — should be done.
+    writeFileSync(join(tmpDir, "reviews", "plan-merge-0-reviewer.md"), "APPROVE\n");
     expect(isAgentDone(state, reviewer)).toBe(true);
   });
 
