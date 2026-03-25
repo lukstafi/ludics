@@ -123,9 +123,7 @@ export function buildProposalNotificationActions(
   });
 
   return [
-    action("t3code", `Launch t3code for ${taskId} in project ${project}`),
-    action("agent-claude", `Launch agent-claude for ${taskId} in project ${project}`),
-    action("agent-codex", `Launch agent-codex for ${taskId} in project ${project}`),
+    action("launch", `Launch task ${taskId}`),
     action("revise", `Revise proposal for ${taskId}`),
     action("abandon", `Abandon task ${taskId}`),
   ];
@@ -717,15 +715,7 @@ export function notifySessionConclusion(input: SessionConclusionNotificationInpu
       url: `https://ntfy.sh/${inTopic}`,
       method: "POST",
       headers,
-      body: `Followup ${input.adapter} for ${input.taskId}`,
-    },
-    {
-      action: "http",
-      label: "revise",
-      url: `https://ntfy.sh/${inTopic}`,
-      method: "POST",
-      headers,
-      body: `Revise followup ${input.adapter} for ${input.taskId}`,
+      body: `Followup task ${input.taskId}`,
     },
     {
       action: "http",
@@ -1188,27 +1178,36 @@ export async function subscribeIncoming(): Promise<void> {
               const msg = incoming.message;
 
               // Button taps and pending feedback capture modes
+              // New simplified formats (match first)
+              const launchNewMatch = msg.match(/^Launch task ([\w.-]+)$/);
+              const followupNewMatch = msg.match(/^Followup task ([\w.-]+)$/);
+              // Legacy formats (backward compat for in-flight notifications)
               const reviseProposalMatch = msg.match(/^Revise proposal for ([\w.-]+)$/);
-              const followupMatch = msg.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
+              const followupLegacyMatch = msg.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
               const followupReviseMatch = msg.match(/^Revise followup ([\w-]+) for ([\w.-]+)$/);
               const doneMatch = msg.match(/^Done task ([\w.-]+)$/);
-              const launchMatch = msg.match(/^Launch ([\w-]+) for ([\w.-]+) in project (.+)$/);
+              const launchLegacyMatch = msg.match(/^Launch ([\w-]+) for ([\w.-]+) in project (.+)$/);
               const abandonMatch = msg.match(/^Abandon task ([\w.-]+)$/);
 
               if (reviseProposalMatch) {
                 setPendingRevise(reviseProposalMatch[1]!);
               } else if (followupReviseMatch) {
+                // Legacy followup-revise — kept for backward compat
                 const adapter = followupReviseMatch[1]!;
                 const taskId = followupReviseMatch[2]!;
                 setPendingFollowupRevise(taskId, adapter);
-              } else if (followupMatch) {
-                const adapter = followupMatch[1]!;
-                const taskId = followupMatch[2]!;
-                queueRequest("adapter-followup", `"task":"${taskId}","adapter":"${adapter}"`);
+              } else if (followupNewMatch) {
+                // New format — route as t3code followup
+                queueRequest("adapter-followup", `"task":"${followupNewMatch[1]!}","adapter":"t3code","followup_msg":""`);
+              } else if (followupLegacyMatch) {
+                // Legacy format
+                const adapter = followupLegacyMatch[1]!;
+                const taskId = followupLegacyMatch[2]!;
+                queueRequest("adapter-followup", `"task":"${taskId}","adapter":"${adapter}","followup_msg":""`);
               } else if (doneMatch) {
                 queueRequest("complete-task", `"task":"${doneMatch[1]!}"`);
-              } else if (launchMatch) {
-                // Route Launch messages directly — bypass pending-revise consumption
+              } else if (launchNewMatch || launchLegacyMatch) {
+                // Both new and legacy launch — route to mag queue as message
                 const escaped = JSON.stringify(msg);
                 queueRequest("message", `"content":${escaped}`);
               } else if (abandonMatch) {

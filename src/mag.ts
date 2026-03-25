@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rename
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, focusProject, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
-import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs } from "./slots/markdown.ts";
+import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
@@ -868,10 +868,52 @@ function selectSlotForLaunch(taskId: string): SlotSelection {
   return { taskSlot, existingPath, previousMode, previousSession, previousAdapterArgs, emptySlot };
 }
 
+// --- Auto-start decision support ---
+
+interface AutoStartDecision {
+  decision: "auto-start" | "defer-to-user";
+  reason: string;
+}
+
+function evaluateAutoStartDecision(
+  taskId: string,
+  workerConfidence: "high" | "low" | undefined,
+): AutoStartDecision {
+  const autonomy = startSessionsAutonomy();
+  if (autonomy === "manual") return { decision: "defer-to-user", reason: "autonomy=manual" };
+  if (autonomy === "suggest") return { decision: "defer-to-user", reason: "autonomy=suggest" };
+  // autonomy === "auto"
+  if (workerConfidence === "low" || !workerConfidence) {
+    return { decision: "defer-to-user", reason: `worker confidence: ${workerConfidence ?? "missing"}` };
+  }
+  // Verify slot is assigned
+  const slot = findSlotForTask(taskId);
+  if (slot === null) return { decision: "defer-to-user", reason: "no slot assigned" };
+  return { decision: "auto-start", reason: "high confidence, slot ready" };
+}
+
 async function launchSessionFromNotification(taskId: string, rawAdapter: string, adapterArgs: string = ""): Promise<void> {
   const adapter = normalizeLaunchAdapter(rawAdapter);
   const launchArgs = adapterArgs.trim();
   const selection = selectSlotForLaunch(taskId);
+
+  // Guard: if the task's slot already has an active session, skip re-start
+  if (selection.taskSlot !== null) {
+    const sFile = slotsFilePath();
+    if (existsSync(sFile)) {
+      const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+      const block = blocks.get(selection.taskSlot);
+      if (block) {
+        const sessionStarted = getSessionStarted(block).trim();
+        if (sessionStarted && sessionStarted !== "null") {
+          const msg = `Session already active for ${taskId} in slot ${selection.taskSlot} — ignoring duplicate launch`;
+          console.error(`ludics: ${msg}`);
+          notifyOutgoing(msg, 2, "ludics");
+          return;
+        }
+      }
+    }
+  }
 
   if (selection.taskSlot === null && selection.emptySlot === null) {
     const msg = `Cannot launch ${taskId}: all slots occupied. Run: ludics slot N preempt ${taskId} -a ${adapter}`;
@@ -1034,13 +1076,20 @@ async function resolveQueueRequestCommand(request: Record<string, unknown>, exec
       if (!content) return null;
 
       // Intercept button-tap launch messages from ntfy notifications
-      // e.g. "Launch t3code for task-042 in project ocannl"
-      const launchMatch = content.match(/^Launch ([\w-]+) for ([\w.-]+) in project .+$/);
-      if (launchMatch) {
+      // New format: "Launch task <id>"
+      const launchNewMatch = content.match(/^Launch task ([\w.-]+)$/);
+      if (launchNewMatch) {
         if (executeProgrammatic) {
-          const adapter = launchMatch[1]!;
-          const taskId = launchMatch[2]!;
-          await launchSessionFromNotification(taskId, adapter);
+          await launchSessionFromNotification(launchNewMatch[1]!, "t3code");
+        }
+        return null;
+      }
+
+      // Legacy format: "Launch <adapter> for <id> in project ..."
+      const launchLegacyMatch = content.match(/^Launch ([\w-]+) for ([\w.-]+) in project .+$/);
+      if (launchLegacyMatch) {
+        if (executeProgrammatic) {
+          await launchSessionFromNotification(launchLegacyMatch[2]!, launchLegacyMatch[1]!);
         }
         return null;
       }
@@ -1053,12 +1102,20 @@ async function resolveQueueRequestCommand(request: Record<string, unknown>, exec
         return null;
       }
 
-      const followupMatch = content.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
-      if (followupMatch) {
+      // New format: "Followup task <id>"
+      const followupNewMatch = content.match(/^Followup task ([\w.-]+)$/);
+      if (followupNewMatch) {
         if (executeProgrammatic) {
-          const adapter = followupMatch[1]!;
-          const taskId = followupMatch[2]!;
-          await launchSessionFromNotification(taskId, adapter, buildFollowupAdapterArgs(""));
+          await launchSessionFromNotification(followupNewMatch[1]!, "t3code", buildFollowupAdapterArgs(""));
+        }
+        return null;
+      }
+
+      // Legacy format: "Followup <adapter> for <id>"
+      const followupLegacyMatch = content.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
+      if (followupLegacyMatch) {
+        if (executeProgrammatic) {
+          await launchSessionFromNotification(followupLegacyMatch[2]!, followupLegacyMatch[1]!, buildFollowupAdapterArgs(""));
         }
         return null;
       }
@@ -2606,6 +2663,17 @@ export async function runMag(args: string[]): Promise<void> {
     case "context":
       await magContext();
       break;
+    case "auto-start-evaluate": {
+      const taskId = args[1];
+      const confidence = args[2];
+      if (!taskId) throw new Error("task id required");
+      const result = evaluateAutoStartDecision(
+        taskId,
+        confidence === "high" || confidence === "low" ? confidence : undefined,
+      );
+      console.log(JSON.stringify(result));
+      break;
+    }
     case "draft-proposal": {
       const taskId = args[1];
       if (!taskId) throw new Error("task id required");
