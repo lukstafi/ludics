@@ -89,6 +89,9 @@ export function startDashboardServer(
     const parsed = parseTaskFrontmatter(taskFilePath);
     if (!parsed || !parsed.proposal) return null;
 
+    // "inline" means the proposal is written directly in the task file
+    if (parsed.proposal === "inline") return taskFilePath;
+
     const normalizedProposal = parsed.proposal.startsWith("~/")
       ? resolve(process.env.HOME ?? "~", parsed.proposal.slice(2))
       : parsed.proposal;
