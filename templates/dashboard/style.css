@@ -731,3 +731,60 @@ footer a {
         text-align: center;
     }
 }
+
+/* Recently Completed tile */
+.recently-completed ul {
+    list-style: none;
+    padding: 0;
+}
+
+.recently-completed li {
+    margin-bottom: 0.25rem;
+}
+
+.recently-completed li a {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.375rem 0.5rem;
+    border-radius: 4px;
+    color: var(--text-primary);
+    text-decoration: none;
+    font-size: 0.875rem;
+    transition: background-color 0.15s;
+}
+
+.recently-completed li a:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.completed-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.1rem 0.375rem;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.badge-merged {
+    background-color: rgba(46, 160, 67, 0.15);
+    color: #3fb950;
+    border: 1px solid rgba(46, 160, 67, 0.3);
+}
+
+.badge-pr {
+    background-color: rgba(31, 111, 235, 0.15);
+    color: #58a6ff;
+    border: 1px solid rgba(31, 111, 235, 0.3);
+}

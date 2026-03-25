@@ -43,7 +43,8 @@ async function fetchAllData() {
             fetchReadyQueue(),
             fetchNotifications(),
             fetchMagStatus(),
-            fetchT3codeLink()
+            fetchT3codeLink(),
+            fetchRecentlyCompleted()
         ]);
         updateTimestamp();
         setConnectionStatus(true);
@@ -632,6 +633,51 @@ async function toggleSlotMode(slotNum, mode) {
     } catch {
         btn.textContent = 'error';
         setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+    }
+}
+
+// Fetch recently completed tasks
+async function fetchRecentlyCompleted() {
+    try {
+        const response = await fetch(CONFIG.dataPath + 'recently-completed.json');
+        if (!response.ok) throw new Error('Failed to fetch recently completed');
+        const tasks = await response.json();
+        renderRecentlyCompleted(tasks);
+    } catch (error) {
+        console.warn('Using placeholder completed data');
+        renderRecentlyCompleted([]);
+    }
+}
+
+// Render recently completed tasks
+function renderRecentlyCompleted(tasks) {
+    const list = document.getElementById('completed-list');
+    if (!list) return;
+
+    let newHtml;
+    if (tasks.length === 0) {
+        newHtml = '<li class="empty">No recently completed tasks</li>';
+    } else {
+        const items = tasks.map(task => {
+            const time = formatTime(task.completedAt);
+            let badges = '';
+            if (task.prStatus === 'merged') badges += '<span class="badge badge-merged">merged</span>';
+            else if (task.prStatus === 'open') badges += '<span class="badge badge-pr">PR</span>';
+            return `
+            <li class="completed-task-item">
+                <a href="${escapeHtml(task.retrospectiveLink)}">
+                    <span class="task-title">${escapeHtml(task.title || task.id)}</span>
+                    <span class="completed-meta">${time} ${badges}</span>
+                </a>
+            </li>`;
+        });
+        newHtml = items.join('');
+    }
+
+    if (list.innerHTML !== newHtml) {
+        const scrollTop = list.scrollTop;
+        list.innerHTML = newHtml;
+        list.scrollTop = scrollTop;
     }
 }
 
