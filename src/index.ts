@@ -90,8 +90,9 @@ Commands:
                                Assign a task to slot n
   slot <n> clear [in-progress|done|abandoned]
                                Clear slot n (optionally mark task in-progress/done/abandoned)
-  slot <n> start               Start agent session (adapter)
+  slot <n> start               Start fresh agent session (fails if recoverable state exists for same task)
   slot <n> stop                Stop agent session (adapter)
+  slot <n> resume              Resume orchestrated t3code session from persisted state (crash recovery)
   slot <n> note "text"         Add runtime note to slot n
   slot <n> preempt <task-id> [-a adapter] [-s session] [-p path] [-A "adapter args"]
                                Preempt slot for priority task (stashes current work)

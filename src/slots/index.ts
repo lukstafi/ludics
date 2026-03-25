@@ -15,7 +15,9 @@ import { maybeNotifySessionConclusionForAdapter } from "../notify.ts";
 import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import type { PreemptStash } from "./preempt.ts";
-import { readSlotState } from "../t3code/server.ts";
+import { readSlotState, writeSlotState } from "../t3code/server.ts";
+import { readOrchestrationState } from "../orchestration/state.ts";
+import { startOrchestrationProcess } from "../adapters/t3code.ts";
 
 function ensureSlotsFile(): string {
   const file = slotsFilePath();
@@ -541,6 +543,17 @@ export async function slotStart(slotNum: number): Promise<void> {
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
+  // Guard: check for recoverable orchestration state matching current task
+  if (ctx.taskId) {
+    const orchState = readOrchestrationState(slotNum);
+    if (orchState && orchState.phase !== "done" && orchState.taskId === ctx.taskId) {
+      throw new Error(
+        `slot ${slotNum} has recoverable orchestration state for ${ctx.taskId} (phase: ${orchState.phase}). ` +
+        `Use 'ludics slot ${slotNum} resume' to continue, or 'ludics slot ${slotNum} clear' first to discard.`
+      );
+    }
+  }
+
   await runAdapterAction("start", ctx);
 
   // Stamp the block so the mode-toggle guard can detect an active session
@@ -579,6 +592,108 @@ export async function slotStop(slotNum: number): Promise<void> {
 
   journalAppend("slot", `Slot ${slotNum} stopped (adapter=${ctx.mode})`);
   emitEvent({ event_type: "slot_stop", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
+}
+
+/** Resume a crashed orchestrated t3code session from persisted state.
+ *  Unlike slotStart(), does not reinitialize threads/worktrees/orchestration.
+ *  Only supports orchestrated t3code sessions — single-thread sessions have no state to resume. */
+export async function slotResume(slotNum: number): Promise<void> {
+  const file = ensureSlotsFile();
+  const blocks = loadBlocks(file);
+  const count = slotsCount();
+  validateRange(slotNum, count);
+
+  const block = blocks.get(slotNum);
+  if (!block) throw new Error(`slot ${slotNum} not found`);
+
+  const ctx = makeAdapterContext(slotNum, block);
+  if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode — nothing to resume`);
+  if (ctx.mode !== "t3code") {
+    throw new Error(`slot ${slotNum} has Mode=${ctx.mode} — resume only supports t3code`);
+  }
+  if (!ctx.taskId) throw new Error(`slot ${slotNum} has no Task — nothing to resume`);
+
+  // Require persisted t3code slot state
+  const slotState = readSlotState(slotNum, ctx.harnessDir);
+  if (!slotState || slotState.threads.length === 0) {
+    throw new Error(
+      `slot ${slotNum} has no persisted t3code state (t3code/slot-${slotNum}.json) — use 'slot start' for fresh start`
+    );
+  }
+
+  // Require persisted orchestration state (orchestrated sessions only)
+  const orchState = readOrchestrationState(slotNum);
+  if (!orchState) {
+    throw new Error(
+      `slot ${slotNum} has no persisted orchestration state — ` +
+      `resume only supports orchestrated sessions. Use 'slot start' for fresh start`
+    );
+  }
+
+  if (orchState.phase === "done") {
+    console.log(`Orchestration already completed for slot ${slotNum} (task ${ctx.taskId}).`);
+    return;
+  }
+
+  // Ensure t3code server is running
+  const { ensureServer } = await import("../t3code/server.ts");
+  const record = await ensureServer({ harnessDir: ctx.harnessDir });
+
+  // Validate stored thread IDs still exist on the server
+  const { T3CodeClient } = await import("../t3code/client.ts");
+  const client = new T3CodeClient({ url: record.wsUrl, token: record.authToken });
+  try {
+    const snapshot = await client.getSnapshot();
+    const existingThreadIds = new Set(snapshot.threads.map((t: { id: string }) => t.id));
+    const storedThreadIds = slotState.threads.map((t) => t.threadId);
+    const missingThreads = storedThreadIds.filter((id) => !existingThreadIds.has(id));
+    if (missingThreads.length > 0) {
+      throw new Error(
+        `slot ${slotNum}: persisted thread(s) ${missingThreads.join(", ")} no longer exist on t3code server — ` +
+        `use 'ludics slot ${slotNum} clear' then 'ludics slot ${slotNum} start' for a fresh start`
+      );
+    }
+  } finally {
+    client.close();
+  }
+
+  // Kill stale orchestration PID if recorded
+  if (slotState.orchestration?.pid) {
+    try { process.kill(slotState.orchestration.pid, 0); } catch {
+      // PID already dead — expected for crash recovery
+    }
+  }
+
+  // Restart orchestration runner (reuses existing state)
+  const newPid = await startOrchestrationProcess(slotNum, ctx.harnessDir, orchState.feature);
+
+  // Update PID in slot state (only after successful spawn)
+  writeSlotState({
+    ...slotState,
+    orchestration: {
+      ...slotState.orchestration!,
+      pid: newPid,
+    },
+  }, ctx.harnessDir);
+
+  // Stamp session-active marker
+  const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
+  const updated = setField(block, "Session Started", sessionStartedAt);
+  if (updated !== block) {
+    blocks.set(slotNum, updated);
+    writeSlotFile(file, blocks, count);
+  }
+
+  journalAppend("slot", `Slot ${slotNum} resumed (adapter=${ctx.mode}, phase=${orchState.phase}, task=${ctx.taskId})`);
+  emitEvent({
+    event_type: "slot_resume",
+    source: "cli",
+    scope: "slot",
+    slot: slotNum,
+    adapter: ctx.mode,
+    task: ctx.taskId,
+  });
+  console.log(`Slot ${slotNum} resumed: orchestration continuing from phase "${orchState.phase}"`);
 }
 
 export async function slotsRefresh(): Promise<void> {
@@ -696,6 +811,10 @@ export async function runSlot(args: string[]): Promise<void> {
 
     case "stop":
       await slotStop(slotNum);
+      break;
+
+    case "resume":
+      await slotResume(slotNum);
       break;
 
     case "note": {

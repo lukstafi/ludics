@@ -268,21 +268,43 @@ async function sendTurnMessage(
 
 async function enterPhase(state: OrchestrationState): Promise<void> {
   if (state.phaseDispatched) return;
-  writePeerSync(state);
+
+  // Generate or reuse the phase token for this phase.
+  // On fresh entry: generate new token, persist it, write peer-sync.
+  // On crash re-entry: reuse the persisted token so already-dispatched agents are deduped.
+  let phaseToken: string;
+  if (state.currentPhaseToken) {
+    // Re-entry after crash — reuse the token already persisted
+    phaseToken = state.currentPhaseToken;
+  } else {
+    // Fresh entry — generate and persist immediately
+    phaseToken = makeId("phase");
+    state.currentPhaseToken = phaseToken;
+  }
+
+  writePeerSync(state, phaseToken);
   markActiveAgents(state);
-  state.phaseDispatched = true;
+
   // Reset pr-comments tracking state on phase entry.
   if (state.phase === "pr-comments") {
     state.prCommentsLastCheckAt = undefined;
     state.prCommentsQuietSince = undefined;
   }
-  if (state.phase === "setup") return;
-
-  // Read the phase token written by writePeerSync above — used to scope stop hooks.
-  const phaseToken = readPhaseToken(state.peerSyncDir) ?? makeId("phase");
+  if (state.phase === "setup") {
+    state.phaseDispatched = true;
+    state.currentPhaseToken = undefined;
+    return;
+  }
 
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
+
+    // Skip agents already dispatched for this phase token (crash recovery dedup)
+    const existing = state.agentStates[agent.name]?.turnLifecycle;
+    if (existing && existing.state === "dispatched" && existing.phaseToken === phaseToken) {
+      continue;
+    }
+
     const skillMessage = await composeSkillMessage(state, agent);
     const commandId = await sendTurnMessage(state, agent, skillMessage);
 
@@ -300,8 +322,13 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
       statusFileFingerprint: statusFileFingerprint(state.peerSyncDir, agent.name),
       lastStopHookAt: null,
     };
+
+    // Persist after each agent dispatch — crash recovery will have lifecycle data
+    persistState(state);
   }
 
+  state.phaseDispatched = true;
+  state.currentPhaseToken = undefined;
   // No wait-for-running loop needed.  The lifecycle model tracks "dispatched"
   // as a distinct state — pollUntilDone won't consider the agent done until the
   // lifecycle advances to "settled" or "error".
@@ -706,6 +733,7 @@ export async function runOrchestration(
     state.phaseStartedAt = nowEpoch();
     state.confirmedPhase = null;
     state.phaseDispatched = false;
+    state.currentPhaseToken = undefined;
     persistState(state);
   }
 

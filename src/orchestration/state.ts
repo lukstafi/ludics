@@ -120,6 +120,8 @@ export interface OrchestrationState {
    * any agent's PR during the pr-comments phase.  Triggers immediate transition to final-merge.
    */
   prCodexApproved?: boolean;
+  /** Phase token for the current phase — persisted for crash-recovery dedup. */
+  currentPhaseToken?: string;
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {
