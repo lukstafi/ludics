@@ -4,7 +4,7 @@
 
 import type { DiscoveredSession } from "../types.ts";
 import { serverStatus } from "../t3code/server.ts";
-import type { T3Project, T3Snapshot, T3Thread } from "../t3code/types.ts";
+import { threadModel, type T3Project, type T3Snapshot, type T3Thread } from "../t3code/types.ts";
 
 function normalizeCwd(cwd: string): string {
   return cwd !== "/" ? cwd.replace(/\/+$/, "") : cwd;
@@ -50,7 +50,7 @@ function mapThreadToSession(
       projectId: thread.projectId,
       worktreePath: thread.worktreePath ?? null,
       branch: thread.branch ?? null,
-      model: thread.model,
+      model: threadModel(thread),
       sessionStatus: thread.session?.status ?? null,
       turnState: thread.latestTurn?.state ?? null,
       providerName: thread.session?.providerName ?? null,

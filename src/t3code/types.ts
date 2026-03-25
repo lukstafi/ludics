@@ -1,7 +1,6 @@
 export const ORCHESTRATION_WS_METHODS = {
   getSnapshot: "orchestration.getSnapshot",
   dispatchCommand: "orchestration.dispatchCommand",
-  getThreadMessages: "thread.messages.list",
 } as const;
 
 export const ORCHESTRATION_WS_CHANNELS = {
@@ -22,6 +21,7 @@ export function toWireProvider(provider: T3ProviderKind): T3WireProviderKind {
 export function fromWireProvider(wire: T3WireProviderKind): T3ProviderKind {
   return wire === "claudeAgent" ? "claude-code" : wire;
 }
+
 export type T3RuntimeMode = "approval-required" | "full-access";
 export type T3InteractionMode = "default" | "plan";
 export type T3ApprovalPolicy = "untrusted" | "on-failure" | "on-request" | "never";
@@ -29,11 +29,18 @@ export type T3SandboxMode = "read-only" | "workspace-write" | "danger-full-acces
 export type T3ServiceTier = "fast" | "flex";
 export type T3AssistantDeliveryMode = "buffered" | "streaming";
 
+/** Model selection as used on the t3code wire protocol. */
+export interface T3ModelSelection {
+  provider: T3WireProviderKind;
+  model: string;
+  options?: Record<string, unknown>;
+}
+
 export interface T3Project {
   id: string;
   title: string;
   workspaceRoot: string;
-  defaultModel?: string | null;
+  defaultModelSelection?: T3ModelSelection | null;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;
@@ -62,7 +69,7 @@ export interface T3Thread {
   id: string;
   projectId: string;
   title: string;
-  model: string;
+  modelSelection: T3ModelSelection;
   runtimeMode: T3RuntimeMode;
   interactionMode?: T3InteractionMode;
   branch?: string | null;
@@ -72,6 +79,17 @@ export interface T3Thread {
   updatedAt: string;
   deletedAt?: string | null;
   session?: T3ThreadSession | null;
+  messages?: T3ThreadMessage[];
+}
+
+/** Helper to extract a flat model string from a thread. */
+export function threadModel(thread: T3Thread): string {
+  return thread.modelSelection.model;
+}
+
+/** Helper to extract a flat model string from a project. */
+export function projectModel(project: T3Project): string | null {
+  return project.defaultModelSelection?.model ?? null;
 }
 
 export interface T3Snapshot {
@@ -86,16 +104,19 @@ export interface T3CommandResult {
   eventId?: string;
 }
 
-export type T3MessageRole = "user" | "assistant" | "system" | "tool";
+export type T3MessageRole = "user" | "assistant" | "system";
 
 export interface T3ThreadMessage {
-  messageId: string;
+  id: string;
   role: T3MessageRole;
   /** Plain text content of the message. */
   text: string;
   createdAt: string;
+  updatedAt: string;
   /** Turn ID this message belongs to, if applicable. */
   turnId?: string | null;
+  /** Whether the message is still being streamed. */
+  streaming?: boolean;
 }
 
 export interface T3ProjectCreateCommand {
@@ -104,7 +125,7 @@ export interface T3ProjectCreateCommand {
   projectId: string;
   title: string;
   workspaceRoot: string;
-  defaultModel?: string;
+  defaultModelSelection?: T3ModelSelection | null;
   createdAt: string;
 }
 
@@ -114,7 +135,7 @@ export interface T3ThreadCreateCommand {
   threadId: string;
   projectId: string;
   title: string;
-  model: string;
+  modelSelection: T3ModelSelection;
   runtimeMode: T3RuntimeMode;
   interactionMode: T3InteractionMode;
   branch: string | null;
@@ -138,22 +159,11 @@ export interface T3ThreadTurnStartCommand {
     text: string;
     attachments: unknown[];
   };
-  provider?: T3WireProviderKind;
-  model?: string;
-  serviceTier?: T3ServiceTier | null;
+  modelSelection?: T3ModelSelection;
+  providerOptions?: Record<string, unknown>;
   assistantDeliveryMode?: T3AssistantDeliveryMode;
   runtimeMode: T3RuntimeMode;
   interactionMode: T3InteractionMode;
-  /**
-   * Effort level for Claude (claudeAgent) provider.
-   * Values: "low" | "medium" | "high" | "max"
-   */
-  effort?: string | null;
-  /**
-   * Reasoning effort for Codex provider.
-   * Values: "low" | "medium" | "high" (Codex does not support "max")
-   */
-  reasoningEffort?: string | null;
   createdAt: string;
 }
 

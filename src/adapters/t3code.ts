@@ -20,9 +20,11 @@ import {
 import { loadConfigSync } from "../config.ts";
 import {
   toWireProvider,
+  threadModel,
   type T3CodeServerRecord,
   type T3CodeThreadRecord,
   type T3InteractionMode,
+  type T3ModelSelection,
   type T3ProviderKind,
   type T3RuntimeMode,
   type T3Snapshot,
@@ -417,7 +419,7 @@ function findThread(snapshot: T3Snapshot, threadId: string): T3Thread | null {
   return snapshot.threads.find((thread) => thread.id === threadId) ?? null;
 }
 
-function findProject(snapshot: T3Snapshot, workspaceRoot: string): { id: string; defaultModel?: string | null } | null {
+function findProject(snapshot: T3Snapshot, workspaceRoot: string): { id: string; defaultModelSelection?: T3ModelSelection | null } | null {
   return snapshot.projects.find((project) => project.workspaceRoot === workspaceRoot) ?? null;
 }
 
@@ -458,7 +460,7 @@ async function ensureProject(
   client: T3CodeClient,
   snapshot: T3Snapshot,
   workspaceRoot: string,
-  defaultModel: string,
+  defaultModelSelection: T3ModelSelection,
 ): Promise<string> {
   const project = findProject(snapshot, workspaceRoot);
   if (project) return project.id;
@@ -470,7 +472,7 @@ async function ensureProject(
     projectId,
     title: basename(workspaceRoot) || "project",
     workspaceRoot,
-    defaultModel,
+    defaultModelSelection,
     createdAt: isoNow(),
   });
   return projectId;
@@ -527,15 +529,15 @@ async function ensureThread(
   }
 
   const threadId = makeId(`thread-slot-${slot}`);
-  const provider = desired.provider ? toWireProvider(desired.provider) : undefined;
+  const wireProvider = desired.provider ? toWireProvider(desired.provider) : "codex";
+  const modelSelection: T3ModelSelection = { provider: wireProvider, model };
   await client.dispatchCommand({
     type: "thread.create",
     commandId: makeId("cmd"),
     threadId,
     projectId,
     title: desired.title,
-    model,
-    ...(provider ? { provider } : {}),
+    modelSelection,
     runtimeMode: desired.runtimeMode,
     interactionMode: desired.interactionMode,
     branch: desired.branch ?? null,
@@ -653,7 +655,8 @@ async function startSingleThread(
 
   return await withClient(record, async (client) => {
     const snapshot = await client.getSnapshot();
-    const projectId = await ensureProject(client, snapshot, workspaceRoot, options.model);
+    const defaultModelSelection: T3ModelSelection = { provider: "codex", model: options.model || DEFAULT_MODEL };
+    const projectId = await ensureProject(client, snapshot, workspaceRoot, defaultModelSelection);
     const threadRecord = await ensureThread(
       client,
       snapshot,
@@ -877,7 +880,12 @@ async function startOrchestratedThreads(
 
   const slotThreads = await withClient(record, async (client) => {
     const snapshot = await client.getSnapshot();
-    const projectId = await ensureProject(client, snapshot, projectDir, orchestration.agents[0]?.model ?? options.model);
+    const firstAgent = orchestration.agents[0];
+    const defaultModelSelection: T3ModelSelection = {
+      provider: firstAgent?.provider ? toWireProvider(firstAgent.provider) : "codex",
+      model: firstAgent?.model ?? options.model ?? DEFAULT_MODEL,
+    };
+    const projectId = await ensureProject(client, snapshot, projectDir, defaultModelSelection);
     const created: T3CodeThreadRecord[] = [];
     for (const agent of agents) {
       const desired: DesiredThreadConfig = {

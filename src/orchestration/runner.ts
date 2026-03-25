@@ -211,23 +211,25 @@ function normaliseEffortLevel(raw: string): string {
 }
 
 /**
- * Translate a provider-agnostic effort level to the correct wire protocol fields.
- * - For claudeAgent: sends `effort` field (supports low/medium/high/max)
- * - For codex: sends `reasoningEffort` field (supports low/medium/high; max → high)
+ * Build modelSelection options with effort/reasoning settings.
+ * - For claudeAgent: sets `options.effort` (supports low/medium/high/max)
+ * - For codex: sets `options.reasoningEffort` (supports low/medium/high; max -> high)
  * - Legacy numeric values (e.g. 32768) are mapped to named levels before dispatch.
  */
-function effortFields(
-  effort: string | undefined,
-  wireProvider: ReturnType<typeof toWireProvider>,
-): { effort?: string } | { reasoningEffort?: string } | Record<string, never> {
-  if (!effort) return {};
+function buildModelSelection(
+  agent: AgentConfig,
+): { provider: "codex" | "claudeAgent"; model: string; options?: Record<string, unknown> } {
+  const wireProvider = toWireProvider(agent.provider);
+  const effort = agent.thinkingEffort;
+  if (!effort) return { provider: wireProvider, model: agent.model };
+
   const level = normaliseEffortLevel(effort);
   if (wireProvider === "claudeAgent") {
-    return { effort: level };
+    return { provider: wireProvider, model: agent.model, options: { effort: level } };
   }
   // Codex: max is not supported, map to high
   const codexLevel = level === "max" ? "high" : level;
-  return { reasoningEffort: codexLevel };
+  return { provider: wireProvider, model: agent.model, options: { reasoningEffort: codexLevel } };
 }
 
 /** Dispatch a turn message and return the commandId used for correlation. */
@@ -240,8 +242,7 @@ async function sendTurnMessage(
   const record = readServerRecord();
   if (!record || !threadId) throw new Error(`no t3code thread for agent ${agent.name}`);
 
-  const wireProvider = toWireProvider(agent.provider);
-  const providerEffort = effortFields(agent.thinkingEffort, wireProvider);
+  const modelSelection = buildModelSelection(agent);
   const commandId = makeId("cmd");
 
   await withClient(record, async (client) => {
@@ -255,9 +256,7 @@ async function sendTurnMessage(
         text: message,
         attachments: [],
       },
-      provider: wireProvider,
-      model: agent.model,
-      ...providerEffort,
+      modelSelection,
       runtimeMode: "full-access",
       interactionMode: "default",
       createdAt: isoNow(),

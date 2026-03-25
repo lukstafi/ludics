@@ -15,7 +15,7 @@ function makeSnapshot(threadId: string, latestTurn: T3LatestTurn | null): T3Snap
         id: threadId,
         projectId: "proj-1",
         title: "Test Thread",
-        model: "claude-opus-4",
+        modelSelection: { provider: "claudeAgent", model: "claude-opus-4" },
         runtimeMode: "full-access",
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",

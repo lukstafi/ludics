@@ -10,6 +10,8 @@ import {
   type T3WsResponse,
 } from "./types.ts";
 
+export { threadModel, projectModel } from "./types.ts";
+
 type PushListener = (data: unknown) => void;
 
 interface PendingRequest {
@@ -174,13 +176,20 @@ export class T3CodeClient {
     );
   }
 
+  /**
+   * Get thread messages by extracting them from the snapshot.
+   * The server no longer has a separate getThreadMessages RPC;
+   * messages are embedded in the snapshot's thread objects.
+   */
   async getThreadMessages(threadId: string, limit?: number): Promise<T3ThreadMessage[]> {
-    const params: Record<string, unknown> = { threadId };
-    if (limit !== undefined) params.limit = limit;
-    return await this.request<T3ThreadMessage[]>(
-      ORCHESTRATION_WS_METHODS.getThreadMessages,
-      params,
-    );
+    const snapshot = await this.getSnapshot();
+    const thread = snapshot.threads.find((t) => t.id === threadId);
+    if (!thread) return [];
+    const messages = thread.messages ?? [];
+    if (limit !== undefined && limit > 0) {
+      return messages.slice(-limit);
+    }
+    return messages;
   }
 
   private websocketUrl(): string {
