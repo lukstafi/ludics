@@ -736,17 +736,15 @@ function completeTaskFromNotification(taskId: string): void {
   }
 }
 
-const NOTIFICATION_LAUNCH_ADAPTERS = new Set([
-  "t3code",
-  "agent-codex",
-  "agent-claude",
-  "agent-session",
-]);
-
-function normalizeLaunchAdapter(rawAdapter: string): string {
+/** Map any adapter name from notification bodies to t3code.
+ *  Legacy notifications may carry "agent-claude", "agent-codex", etc.
+ *  With the t3code-only workflow, all launches use t3code. */
+export function normalizeLaunchAdapter(rawAdapter: string): string {
   const adapter = rawAdapter.trim();
-  if (NOTIFICATION_LAUNCH_ADAPTERS.has(adapter)) return adapter;
-  console.error(`ludics: unsupported launch adapter "${adapter}", falling back to t3code`);
+  if (adapter === "t3code") return adapter;
+  if (adapter) {
+    console.error(`ludics: legacy launch adapter "${adapter}" → t3code`);
+  }
   return "t3code";
 }
 
