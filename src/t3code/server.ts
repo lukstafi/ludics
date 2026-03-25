@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "path";
 
@@ -184,6 +184,16 @@ export async function ensureServer(
 
   let proc: Bun.Subprocess;
   const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
+  // Preserve previous crash log for upstream reporting
+  if (existsSync(stderrPath)) {
+    const crashLog = join(t3codeDir(harnessDir), "server-crashes.log");
+    try {
+      const prev = readFileSync(stderrPath, "utf-8").trim();
+      if (prev) {
+        appendFileSync(crashLog, `\n--- crash at ${isoNow()} ---\n${prev}\n`);
+      }
+    } catch { /* ignore */ }
+  }
   try {
     proc = Bun.spawn(command, {
       stdin: "ignore",
