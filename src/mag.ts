@@ -868,26 +868,44 @@ function selectSlotForLaunch(taskId: string): SlotSelection {
 
 // --- Auto-start decision support ---
 
-interface AutoStartDecision {
+export interface AutoStartDecision {
   decision: "auto-start" | "defer-to-user";
   reason: string;
 }
 
-function evaluateAutoStartDecision(
-  taskId: string,
+/** Pure decision function — no filesystem or config side effects.
+ *  Exported for testing; the private wrapper below reads config/slots and delegates here. */
+export function evaluateAutoStartDecisionPure(
   workerConfidence: "high" | "low" | undefined,
+  rationale: string,
+  autonomy: "auto" | "suggest" | "manual",
+  slotAssigned: boolean,
 ): AutoStartDecision {
-  const autonomy = startSessionsAutonomy();
   if (autonomy === "manual") return { decision: "defer-to-user", reason: "autonomy=manual" };
   if (autonomy === "suggest") return { decision: "defer-to-user", reason: "autonomy=suggest" };
   // autonomy === "auto"
   if (workerConfidence === "low" || !workerConfidence) {
     return { decision: "defer-to-user", reason: `worker confidence: ${workerConfidence ?? "missing"}` };
   }
-  // Verify slot is assigned
-  const slot = findSlotForTask(taskId);
-  if (slot === null) return { decision: "defer-to-user", reason: "no slot assigned" };
+  // Safety net: scan rationale for ambiguity signals contradicting "high"
+  const AMBIGUITY_SIGNALS = ["ambiguous", "unclear", "open question", "speculative", "uncertain scope"];
+  const lowerRationale = rationale.toLowerCase();
+  const ambiguityHit = AMBIGUITY_SIGNALS.find((s) => lowerRationale.includes(s));
+  if (ambiguityHit) {
+    return { decision: "defer-to-user", reason: `rationale contains "${ambiguityHit}" despite high confidence` };
+  }
+  if (!slotAssigned) return { decision: "defer-to-user", reason: "no slot assigned" };
   return { decision: "auto-start", reason: "high confidence, slot ready" };
+}
+
+function evaluateAutoStartDecision(
+  taskId: string,
+  workerConfidence: "high" | "low" | undefined,
+  rationale: string = "",
+): AutoStartDecision {
+  const autonomy = startSessionsAutonomy();
+  const slot = findSlotForTask(taskId);
+  return evaluateAutoStartDecisionPure(workerConfidence, rationale, autonomy, slot !== null);
 }
 
 async function launchSessionFromNotification(taskId: string, rawAdapter: string, adapterArgs: string = ""): Promise<void> {
@@ -914,14 +932,14 @@ async function launchSessionFromNotification(taskId: string, rawAdapter: string,
   }
 
   if (selection.taskSlot === null && selection.emptySlot === null) {
-    const msg = `Cannot launch ${taskId}: all slots occupied. Run: ludics slot N preempt ${taskId} -a ${adapter}`;
+    const msg = `Cannot launch ${taskId}: all slots occupied. Run: ludics slot N preempt ${taskId} -a t3code`;
     notifyOutgoing(msg, 3, "ludics");
     emitEvent({
       event_type: "notify_launch_no_slot",
       source: "notify",
       scope: "mag",
       task: taskId,
-      adapter,
+      adapter: "t3code",
       message: "all slots occupied",
     });
     console.error(`ludics: launch request for ${taskId} failed: no empty slots`);
@@ -959,9 +977,9 @@ async function launchSessionFromNotification(taskId: string, rawAdapter: string,
       console.error(`ludics: launch rollback failed for ${taskId} in slot ${slotNum}: ${rollbackDetail}`);
     }
 
-    console.error(`ludics: failed to launch ${adapter} for ${taskId} in slot ${slotNum}: ${detail}`);
+    console.error(`ludics: failed to launch t3code for ${taskId} in slot ${slotNum}: ${detail}`);
     notifyOutgoing(
-      `Failed to launch ${adapter} for ${taskId} in slot ${slotNum}: ${detail} (${rollbackStatus})`,
+      `Failed to launch t3code for ${taskId} in slot ${slotNum}: ${detail} (${rollbackStatus})`,
       3,
       "ludics",
     );
@@ -971,24 +989,24 @@ async function launchSessionFromNotification(taskId: string, rawAdapter: string,
       scope: "mag",
       slot: slotNum,
       task: taskId,
-      adapter,
+      adapter: "t3code",
       status: "error",
       message: `${detail} (${rollbackStatus})`,
     });
     return;
   }
 
-  const action = selection.taskSlot !== null ? "reassigned+started" : "assigned+started";
+  const actionLabel = selection.taskSlot !== null ? "reassigned+started" : "assigned+started";
   emitEvent({
     event_type: "notify_launch",
     source: "notify",
     scope: "mag",
     slot: slotNum,
     task: taskId,
-    adapter,
-    message: action,
+    adapter: "t3code",
+    message: actionLabel,
   });
-  console.error(`ludics: launched ${adapter} for ${taskId} in slot ${slotNum} (${action})`);
+  console.error(`ludics: launched t3code for ${taskId} in slot ${slotNum} (${actionLabel})`);
 }
 
 type QueueDequeueResult =
@@ -1046,7 +1064,9 @@ async function queuePopSkill(): Promise<string | null> {
   return await resolveQueueRequestCommand(request, true);
 }
 
-async function resolveQueueRequestCommand(request: Record<string, unknown>, executeProgrammatic: boolean): Promise<string | null> {
+/** Resolve a queue request to a skill command or execute it programmatically.
+ *  Exported for testing — call with `executeProgrammatic: false` for pure parsing. */
+export async function resolveQueueRequestCommand(request: Record<string, unknown>, executeProgrammatic: boolean): Promise<string | null> {
   const action = String(request.action ?? "");
 
   // Map action to skill command
@@ -1083,7 +1103,8 @@ async function resolveQueueRequestCommand(request: Record<string, unknown>, exec
         return null;
       }
 
-      // Legacy format: "Launch <adapter> for <id> in project ..."
+      // Backward compat: old ntfy buttons may still carry this format.
+      // New notifications emit "Launch task <id>" only.
       const launchLegacyMatch = content.match(/^Launch ([\w-]+) for ([\w.-]+) in project .+$/);
       if (launchLegacyMatch) {
         if (executeProgrammatic) {
@@ -1109,7 +1130,8 @@ async function resolveQueueRequestCommand(request: Record<string, unknown>, exec
         return null;
       }
 
-      // Legacy format: "Followup <adapter> for <id>"
+      // Backward compat: old ntfy buttons may still carry this format.
+      // New notifications emit "Followup task <id>" only.
       const followupLegacyMatch = content.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
       if (followupLegacyMatch) {
         if (executeProgrammatic) {
@@ -2664,10 +2686,12 @@ export async function runMag(args: string[]): Promise<void> {
     case "auto-start-evaluate": {
       const taskId = args[1];
       const confidence = args[2];
+      const rationale = args[3] ?? "";
       if (!taskId) throw new Error("task id required");
       const result = evaluateAutoStartDecision(
         taskId,
         confidence === "high" || confidence === "low" ? confidence : undefined,
+        rationale,
       );
       console.log(JSON.stringify(result));
       break;

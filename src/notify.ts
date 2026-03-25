@@ -6,8 +6,8 @@ import { loadConfigSync, harnessDir, slotsFilePath } from "./config.ts";
 import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
 import { parseSlotBlocks, getTask, getPath } from "./slots/markdown.ts";
-import { listSessions, type SessionInfo } from "./adapters/peer-sync.ts";
-import { readSingleFile, readStatusFile, resolveProjectDir, isGitWorktree, getMainRepoFromWorktree } from "./adapters/base.ts";
+import { type SessionInfo } from "./adapters/peer-sync.ts";
+import { readSingleFile, resolveProjectDir, isGitWorktree, getMainRepoFromWorktree } from "./adapters/base.ts";
 import type { AdapterContext } from "./adapters/types.ts";
 import { getUrl } from "./network.ts";
 
@@ -68,12 +68,6 @@ function getTopic(tier: string): string {
 const NTFY_MAX_ACTIONS = 3;
 const PROPOSAL_INLINE_CHAR_CUTOFF = 800;
 const CONCLUSION_SUMMARY_CHAR_CUTOFF = 300;
-// Session conclusion phase detection (used by t3code and agent-claude/codex adapters).
-const SESSION_CONCLUSION_PHASE = "suggest-refactor";
-const SESSION_CONCLUDED_PHASES = new Set([SESSION_CONCLUSION_PHASE]);
-const SESSION_CONCLUDED_STATUSES = new Set([
-  "suggest-refactor-done",
-]);
 
 interface SessionConclusionNotificationInput {
   taskId: string;
@@ -439,14 +433,6 @@ function resolveAdapterProjectDir(ctx: AdapterContext): string {
   return normalized[0] ?? process.cwd();
 }
 
-function orchestratedModeFilter(_adapter: string): string | null {
-  return null;
-}
-
-function matchesOrchestratedMode(_peerSyncPath: string, _modeFilter: string): boolean {
-  return true;
-}
-
 type SessionSelectionDepth = "shallow" | "deep";
 
 function normalizeSessionFeatureForTaskMatch(feature: string): string {
@@ -621,10 +607,6 @@ function sessionToken(peerSyncPath: string, fallback: string): string {
   return readSingleFile(join(peerSyncPath, "session")) ?? basename(peerSyncPath) ?? fallback;
 }
 
-function isConcludedSessionPhase(phase: string): boolean {
-  return SESSION_CONCLUDED_PHASES.has(phase.toLowerCase());
-}
-
 function parseIsoEpochSeconds(value: string | undefined): number {
   const raw = (value ?? "").trim();
   if (!raw || raw.toLowerCase() === "null") return 0;
@@ -644,22 +626,6 @@ function phaseFileUpdatedSince(peerSyncPath: string, minEpochSec: number): boole
   }
 }
 
-function conclusionStatusFiles(_adapter: string): string[] {
-  return [];
-}
-
-function hasConcludedSessionStatuses(peerSyncPath: string, adapter: string, minEpochSec: number): boolean {
-  const files = conclusionStatusFiles(adapter);
-  if (files.length === 0) return false;
-  const statuses = files
-    .map((fileName) => readStatusFile(join(peerSyncPath, fileName)))
-    .filter((status): status is NonNullable<typeof status> => status !== null);
-  if (statuses.length !== files.length) return false;
-  return statuses.every((status) =>
-    SESSION_CONCLUDED_STATUSES.has(status.status.toLowerCase())
-    && (minEpochSec <= 0 || status.epoch >= minEpochSec),
-  );
-}
 
 function readPhaseToken(peerSyncPath: string): string {
   const token = readSingleFile(join(peerSyncPath, "phase-token")) ?? "";
@@ -748,55 +714,6 @@ export function notifySessionConclusion(input: SessionConclusionNotificationInpu
   notifyLog("outgoing", message.replace(/\n/g, " "), 3, "session conclusion");
 }
 
-export function maybeNotifySessionConclusionForAdapter(ctx: AdapterContext): void {
-  if (!ctx.taskId) return;
-  const modeFilter = orchestratedModeFilter(ctx.mode);
-  if (!modeFilter) return;
-
-  const projectDir = resolveAdapterProjectDir(ctx);
-  const preferDeepSelection = preferDeepSessionSelection(ctx);
-  const sessions = listSessions(projectDir).filter((s) => matchesOrchestratedMode(s.peerSyncPath, modeFilter));
-  if (sessions.length === 0) return;
-  // Slot intent influences depth preference only for session selection.
-  const session = selectSessionForTask(sessions, ctx.taskId, preferDeepSelection ? "deep" : "shallow");
-  if (!session) return;
-  const phase = readSingleFile(join(session.peerSyncPath, "phase")) ?? "";
-  const startedEpoch = parseIsoEpochSeconds(ctx.started);
-  const statusFiles = conclusionStatusFiles(ctx.mode);
-  const concluded = (
-    // Rely on status file completion if available.
-    statusFiles.length > 0
-    && hasConcludedSessionStatuses(session.peerSyncPath, ctx.mode, startedEpoch)
-  ) || (
-    // Fallback for adapters without status files: terminal phase only.
-    statusFiles.length === 0
-    &&
-    isConcludedSessionPhase(phase)
-    && phaseFileUpdatedSince(session.peerSyncPath, startedEpoch)
-  );
-  if (preferDeepSelection) {
-    if (!concluded) return;
-  } else if (phase !== SESSION_CONCLUSION_PHASE) {
-    return;
-  }
-
-  const prLinks = collectPrLinks(session.peerSyncPath);
-  const phaseToken = readPhaseToken(session.peerSyncPath) || SESSION_CONCLUSION_PHASE;
-  const refactorSummary = collectRefactorSummary(session.peerSyncPath);
-  if (!preferDeepSelection && prLinks.length === 0) return;
-  if (preferDeepSelection && prLinks.length === 0 && !refactorSummary) return;
-  notifySessionConclusion({
-    taskId: ctx.taskId,
-    adapter: ctx.mode,
-    slotNum: ctx.slot,
-    sessionToken: sessionToken(session.peerSyncPath, ctx.taskId),
-    phaseToken,
-    kind: preferDeepSelection ? "concluded" : "in-progress",
-    prLinks,
-    refactorSummary: refactorSummary || undefined,
-  });
-}
-
 export function notifyOutgoing(message: string, priority: number = 3, title: string = "ludics"): void {
   const topic = getTopic("outgoing");
   notifyLog("outgoing", message, priority, title);
@@ -807,9 +724,6 @@ export function notifyOutgoing(message: string, priority: number = 3, title: str
   }
   notifySend(topic, message, priority, title, "robot_face");
 }
-
-/** @deprecated Use notifyOutgoing instead */
-export const notifyPai = notifyOutgoing;
 
 export function notifyAgents(message: string, priority: number = 3, title: string = "agent update"): void {
   const topic = getTopic("agents");
@@ -1181,7 +1095,8 @@ export async function subscribeIncoming(): Promise<void> {
               // New simplified formats (match first)
               const launchNewMatch = msg.match(/^Launch task ([\w.-]+)$/);
               const followupNewMatch = msg.match(/^Followup task ([\w.-]+)$/);
-              // Legacy formats (backward compat for in-flight notifications)
+              // Backward compat: old ntfy buttons may still post these formats.
+              // New notifications emit simplified "Launch task <id>" / "Followup task <id>" only.
               const reviseProposalMatch = msg.match(/^Revise proposal for ([\w.-]+)$/);
               const followupLegacyMatch = msg.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
               const followupReviseMatch = msg.match(/^Revise followup ([\w-]+) for ([\w.-]+)$/);

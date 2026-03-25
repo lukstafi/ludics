@@ -11,7 +11,6 @@ import { journalAppend } from "../journal.ts";
 import { emitEvent } from "../events.ts";
 import { runAdapterAction, readAdapterState, readAdapterLastActivity } from "../adapters/index.ts";
 import type { AdapterContext } from "../adapters/index.ts";
-import { maybeNotifySessionConclusionForAdapter } from "../notify.ts";
 import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import type { PreemptStash } from "./preempt.ts";
@@ -743,12 +742,6 @@ export async function slotsRefresh(): Promise<void> {
       blocks.set(i, mergeAdapterState(block, output));
       anyUpdated = true;
       console.error(`ludics: refreshed slot ${i} (${mode})`);
-    }
-
-    try {
-      maybeNotifySessionConclusionForAdapter(ctx);
-    } catch (err) {
-      console.error(`ludics: session conclusion notify scan failed for slot ${i}: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Update task modified timestamp from adapter activity

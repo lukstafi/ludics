@@ -319,15 +319,16 @@ ludics slots                   # Show all slots
 ludics slot <n>                # Show slot n details
 ludics slot <n> assign <task>  # Assign a task to slot n
 ludics slot <n> clear          # Clear slot n
-ludics slot <n> start          # Start agent session (adapter)
-ludics slot <n> stop           # Stop agent session (adapter)
+ludics slot <n> start          # Start fresh agent session (use 'resume' for crash recovery)
+ludics slot <n> stop           # Stop agent session
+ludics slot <n> resume         # Resume crashed orchestrated session from persisted state
 ludics slot <n> note "text"    # Add runtime note to slot n
 ```
 
 ### Notifications
 
 ```bash
-ludics notify outgoing <msg>   # Send strategic notification (alias: pai)
+ludics notify outgoing <msg>   # Send notification to user
 ludics notify agents <msg>     # Send operational notification
 ludics notify subscribe        # Subscribe to incoming messages (long-running)
 ludics notify recent [n]       # Show recent notifications

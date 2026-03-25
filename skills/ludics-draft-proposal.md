@@ -86,7 +86,7 @@ After STATUS: completed, evaluate whether to auto-start the slot or defer
 to the user:
 
 ```bash
-ludics mag auto-start-evaluate <task_id> <START_CONFIDENCE>
+ludics mag auto-start-evaluate <task_id> <START_CONFIDENCE> "<START_RATIONALE>"
 ```
 
 Parse the JSON output for the `decision` field:
@@ -97,6 +97,16 @@ The decision respects the `start_sessions` autonomy level:
 - `manual` or `suggest` → always defers to the user
 - `auto` → auto-starts when worker reports `high` confidence and a slot is assigned;
   defers otherwise
+
+**Decision criteria details:**
+- **Confidence is the primary signal** — the worker's `START_CONFIDENCE` drives the
+  decision. The worker has full codebase context and is the authority on scope clarity.
+- **Rationale is a safety net** — the rationale text is scanned for ambiguity keywords
+  ("ambiguous", "unclear", "speculative", "open question", "uncertain scope") that
+  contradict a `high` confidence signal. If found, the decision overrides to `defer-to-user`.
+- **Vague acceptance criteria do NOT block auto-start** — improvements can be refined
+  in follow-up work.
+- Tasks with no assigned slot always defer to the user.
 
 ### 6a. Auto-start slot (if decision = "auto-start")
 

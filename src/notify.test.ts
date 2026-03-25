@@ -33,3 +33,25 @@ describe("chunkNotificationActions", () => {
     );
   });
 });
+
+describe("buildProposalNotificationActions — t3code-only format", () => {
+  test("action bodies contain no adapter or project references", () => {
+    const actions = buildProposalNotificationActions(
+      "task-042",
+      "some-project",
+      "incoming-topic",
+      { Authorization: "Bearer token" },
+    );
+
+    for (const action of actions) {
+      const body = String(action.body);
+      // Must not contain adapter-specific launch patterns
+      expect(body).not.toMatch(/Launch \w+ for/);
+      // Must not contain "in project" suffix
+      expect(body).not.toContain("in project");
+    }
+
+    // Verify exact modern format
+    expect(String(actions[0]!.body)).toBe("Launch task task-042");
+  });
+});
