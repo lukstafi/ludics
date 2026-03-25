@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { slotAssign } from "./index.ts";
+import { slotAssign, slotResume, slotStart } from "./index.ts";
+import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "../orchestration/state.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -99,5 +100,80 @@ describe("slotAssign", () => {
     expect(slots).toContain("## Slot 2");
     expect(slots).toContain("**Process:** Investigate slot detection");
     expect(slots).toContain("**Task:** null");
+  });
+});
+
+describe("slotResume guards", () => {
+  test("rejects non-t3code mode slots", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-resume-1", "Resume test");
+    slotAssign(1, "task-resume-1", "manual");
+
+    await expect(slotResume(1)).rejects.toThrow("resume only supports t3code");
+  });
+
+  test("rejects slots with no persisted t3code state", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-resume-2", "Resume test 2");
+    slotAssign(1, "task-resume-2", "t3code");
+
+    await expect(slotResume(1)).rejects.toThrow("slot start");
+  });
+
+  test("rejects slots with no persisted orchestration state", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-resume-3", "Resume test 3");
+    slotAssign(1, "task-resume-3", "t3code");
+
+    // Write t3code slot state but no orchestration state
+    const t3codeDir = join(harness, "t3code");
+    mkdirSync(t3codeDir, { recursive: true });
+    writeFileSync(join(t3codeDir, "slot-1.json"), JSON.stringify({
+      slot: 1,
+      threads: [{ threadId: "t-1", projectId: "p-1", worktreePath: "/tmp/x", title: "test", model: "gpt-5.4", runtimeMode: "full-access", interactionMode: "default", createdAt: "2026-03-25", updatedAt: "2026-03-25" }],
+    }));
+
+    await expect(slotResume(1)).rejects.toThrow("orchestrated sessions");
+  });
+});
+
+describe("slotStart guard", () => {
+  test("refuses when recoverable orchestration state exists for same task", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-guard-1", "Guard test");
+    slotAssign(1, "task-guard-1", "t3code");
+
+    // Write orchestration state for the same task (not done)
+    const orchDir = join(harness, "orchestration");
+    mkdirSync(orchDir, { recursive: true });
+    const orchState: OrchestrationState = {
+      slot: 1,
+      feature: "task-guard-1",
+      mode: "pair",
+      phase: "work",
+      round: 1,
+      mergeRound: 0,
+      agents: [],
+      agentStates: {},
+      config: defaultOrchestrationConfig(),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/project",
+      rootWorktree: "/tmp/root",
+      peerSyncDir: "/tmp/peersync",
+      threadIds: {},
+      taskId: "task-guard-1",
+    };
+    persistState(orchState, harness);
+
+    await expect(slotStart(1)).rejects.toThrow("resume");
   });
 });

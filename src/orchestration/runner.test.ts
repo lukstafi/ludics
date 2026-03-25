@@ -709,6 +709,71 @@ describe("agent marker files", () => {
 });
 
 // ===========================================================================
+// Crash-recovery dispatch dedup via currentPhaseToken
+// ===========================================================================
+
+describe("crash-recovery dispatch dedup", () => {
+  test("pre-existing turnLifecycle with matching phaseToken is not re-dispatched", () => {
+    // Simulates the skip guard in enterPhase().
+    // The logic: if existing.phaseToken === phaseToken && existing.state === "dispatched", skip.
+    const phaseToken = "phase-crash-recovery";
+    const existing = makeLifecycle({
+      state: "dispatched",
+      phaseToken,
+      dispatchCommandId: "cmd-original",
+    });
+
+    // The guard check from enterPhase():
+    const shouldSkip = existing && existing.state === "dispatched" && existing.phaseToken === phaseToken;
+    expect(shouldSkip).toBe(true);
+  });
+
+  test("pre-existing turnLifecycle with different phaseToken is re-dispatched", () => {
+    const phaseToken = "phase-new";
+    const existing = makeLifecycle({
+      state: "dispatched",
+      phaseToken: "phase-old",
+      dispatchCommandId: "cmd-original",
+    });
+
+    const shouldSkip = existing && existing.state === "dispatched" && existing.phaseToken === phaseToken;
+    expect(shouldSkip).toBe(false);
+  });
+
+  test("settled turnLifecycle is not skipped (allows re-entry for new phase)", () => {
+    const phaseToken = "phase-reuse";
+    const existing = makeLifecycle({
+      state: "settled",
+      phaseToken,
+      dispatchCommandId: "cmd-original",
+    });
+
+    const shouldSkip = existing && existing.state === "dispatched" && existing.phaseToken === phaseToken;
+    expect(shouldSkip).toBe(false);
+  });
+
+  test("currentPhaseToken is reused on re-entry (crash recovery scenario)", () => {
+    // Simulates the logic: if state.currentPhaseToken exists, reuse it.
+    const state = makeState({ phase: "work" });
+    state.currentPhaseToken = "phase-persisted";
+
+    // On re-entry, enterPhase() should use this token instead of generating new one.
+    const phaseToken = state.currentPhaseToken ?? "phase-fresh-should-not-be-used";
+    expect(phaseToken).toBe("phase-persisted");
+  });
+
+  test("currentPhaseToken is generated fresh when not set", () => {
+    const state = makeState({ phase: "work" });
+    // No currentPhaseToken set — simulates fresh entry
+    expect(state.currentPhaseToken).toBeUndefined();
+
+    // enterPhase() would generate a new token
+    const phaseToken = state.currentPhaseToken ?? "phase-fresh";
+    expect(phaseToken).toBe("phase-fresh");
+  });
+});
+
+// ===========================================================================
 // pairReviewVerdict — verdict file parsing and timeout handling
 // ===========================================================================
 

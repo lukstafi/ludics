@@ -108,7 +108,11 @@ mag:
     suggest_priorities: suggest # Suggests, doesn't set
     preempt_slots: suggest      # Preempt a slot for priority project tasks
     assign_to_slots: manual     # Requires approval
-    start_sessions: manual      # Requires approval
+    # start_sessions: Controls whether Mag auto-starts sessions after proposal completion.
+    #   manual  — defers to user with proposal notification + launch buttons (default)
+    #   suggest — defers to user with proposal notification + launch buttons
+    #   auto    — auto-starts high-confidence proposals; defers low-confidence to user with launch buttons
+    start_sessions: manual
 
   # Schedule for automated invocations
   schedule:

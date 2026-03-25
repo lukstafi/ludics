@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canReuseSlotThread, orchestratedThreadTitle, parseT3CodeAdapterArgs } from "./t3code.ts";
+import { canReuseSlotThread, orchestratedThreadTitle, parseT3CodeAdapterArgs, startOrchestrationProcess } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 import { mergeAdapterState } from "../slots/markdown.ts";
 
@@ -123,6 +123,12 @@ describe("orchestratedThreadTitle", () => {
     expect(orchestratedThreadTitle(4, "agent-b", "task-abc", "feat")).toBe(
       "s4.agent-b.task-abc",
     );
+  });
+});
+
+describe("startOrchestrationProcess export", () => {
+  test("is exported as a function", () => {
+    expect(typeof startOrchestrationProcess).toBe("function");
   });
 });
 
