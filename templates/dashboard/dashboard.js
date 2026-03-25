@@ -102,7 +102,12 @@ function renderSlots(slots) {
                 statusText.textContent = 'Project';
             } else if (hasTask && !slot.phase) {
                 statusDiv.className = 'slot-status assigned';
-                statusText.innerHTML = 'Assigned <button class="start-slot-btn" onclick="startSlot(' + i + ')" title="Start session">start</button>';
+                statusText.innerHTML = 'Assigned <button class="start-slot-btn" onclick="startSlot(' + i + ')" title="Start session">start</button>'
+                    + ' <span class="slot-action-btns">'
+                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done">✓</button>'
+                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon">✕</button>'
+                    + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)">↓</button>'
+                    + '</span>';
             } else {
                 statusDiv.className = 'slot-status active';
                 statusText.innerHTML = 'Active <span class="slot-action-btns">'
