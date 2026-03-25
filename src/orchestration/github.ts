@@ -63,6 +63,31 @@ export function isPrMerged(prUrl: string): boolean {
 }
 
 /**
+ * Returns true if the PR has a `+1` (thumbs-up) reaction from the Codex connector bot
+ * (`chatgpt-codex-connector[bot]`), indicating automated approval.
+ */
+export function hasPrApprovalReaction(prUrl: string): boolean {
+  const match = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+  if (!match) return false;
+  const [, repo, prNumber] = match;
+  try {
+    const result = Bun.spawnSync(
+      [
+        "gh", "api",
+        `repos/${repo}/issues/${prNumber}/reactions`,
+        "--jq",
+        '[.[] | select(.content == "+1" and (.user.login | test("codex")))] | length',
+      ],
+      { stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string> },
+    );
+    if (result.exitCode !== 0) return false;
+    return parseInt(result.stdout.toString().trim(), 10) > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * If the pr file contains markdown/text rather than a GitHub PR URL, use the content as the
  * PR body to auto-create a PR via `gh pr create`, then rewrite the file with just the URL.
  * Returns the final PR URL (unchanged if already a URL), or null on failure.

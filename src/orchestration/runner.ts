@@ -18,7 +18,7 @@ import {
   type AgentConfig, type AgentTurnLifecycle, type OrchestrationState,
 } from "./state.ts";
 import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
-import { fetchNewPrCommentCount, isPrMerged, validateAndFixPrFile } from "./github.ts";
+import { fetchNewPrCommentCount, hasPrApprovalReaction, isPrMerged, validateAndFixPrFile } from "./github.ts";
 import { updateFrontmatterField } from "../tasks/markdown.ts";
 import { harnessDir } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
@@ -387,6 +387,25 @@ async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<
   const participants = state.agents.filter((a) => agentParticipatesInPhase(state, a));
   const allDone = participants.every((a) => isAgentDone(state, a));
   if (!allDone) return;
+
+  // Check for Codex thumbs-up approval reaction — triggers immediate transition to final-merge.
+  if (!state.prCodexApproved) {
+    for (const agent of agentsWithPr) {
+      const prUrl = state.agentStates[agent.name]!.prUrl!;
+      if (hasPrApprovalReaction(prUrl)) {
+        state.prCodexApproved = true;
+        emitEvent({
+          event_type: "pr_codex_approved",
+          source: "orchestration",
+          scope: "slot",
+          slot: state.slot,
+          task: state.feature,
+          message: `Codex +1 approval reaction detected on PR: ${prUrl} — bypassing quiet period`,
+        });
+        break;
+      }
+    }
+  }
 
   // Count new comments since the last check.
   let totalNewComments = 0;

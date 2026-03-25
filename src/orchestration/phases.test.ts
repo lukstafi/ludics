@@ -88,6 +88,17 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBeNull();
   });
 
+  test("pr-comments transitions to final-merge immediately when Codex +1 approval detected", () => {
+    const state = makeState({ phase: "pr-comments", prCodexApproved: true });
+    state.agentStates.agent1.prUrl = "https://github.com/owner/repo/pull/1";
+    expect(evaluateTransition(state)).toBe("final-merge");
+  });
+
+  test("pr-comments stays null when Codex approved but no PR present", () => {
+    const state = makeState({ phase: "pr-comments", prCodexApproved: true });
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
   test("pr-comments transitions to suggest-refactor when merged marker present", () => {
     const state = makeState({ phase: "pr-comments" });
     state.agentStates.agent1.status = "merged";
