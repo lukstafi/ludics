@@ -202,6 +202,9 @@ main {
 
 .slot-status.active .status-text {
     color: var(--success);
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
 }
 
 .slot-status.empty .status-text {
@@ -246,20 +249,61 @@ main {
     gap: 0.5rem;
 }
 
-.mark-done-btn {
-    font-size: 0.7rem;
-    padding: 0.1rem 0.4rem;
-    border: 1px solid var(--accent);
-    border-radius: 3px;
-    background: transparent;
-    color: var(--accent);
-    cursor: pointer;
-    font-family: inherit;
+.slot-action-btns {
+    display: inline-flex;
+    gap: 0.2rem;
+    align-items: center;
 }
 
-.mark-done-btn:hover {
+.slot-action-btn {
+    font-size: 0.8rem;
+    width: 1.35rem;
+    height: 1.35rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    background: transparent;
+    cursor: pointer;
+    font-family: inherit;
+    line-height: 1;
+    padding: 0;
+    transition: background-color 0.15s, color 0.15s;
+}
+
+.slot-done-btn {
+    border: 1px solid var(--success);
+    color: var(--success);
+}
+
+.slot-done-btn:hover {
+    background: var(--success);
+    color: var(--bg-primary);
+}
+
+.slot-abandon-btn {
+    border: 1px solid var(--accent);
+    color: var(--accent);
+}
+
+.slot-abandon-btn:hover {
     background: var(--accent);
     color: var(--bg-primary);
+}
+
+.slot-postpone-btn {
+    border: 1px solid var(--text-secondary);
+    color: var(--text-secondary);
+}
+
+.slot-postpone-btn:hover {
+    background: var(--text-secondary);
+    color: var(--bg-primary);
+}
+
+.slot-action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 .mode-toggle-btn {
@@ -563,6 +607,34 @@ main {
 .priority-C {
     background-color: var(--empty);
     color: white;
+}
+
+.priority-S {
+    background-color: #a855f7;
+    color: white;
+}
+
+/* Ready queue clickable items */
+.ready-task-item {
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background-color 0.15s;
+    margin: 0 -0.25rem;
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
+}
+
+.ready-task-item:hover {
+    background-color: var(--bg-secondary);
+}
+
+.ready-task-item.promoted {
+    background-color: rgba(74, 222, 128, 0.15);
+    transition: background-color 0.1s;
+}
+
+.ready-task-item.promote-error {
+    background-color: rgba(233, 69, 96, 0.15);
 }
 
 /* Notifications */

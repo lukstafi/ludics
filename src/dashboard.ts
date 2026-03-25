@@ -300,6 +300,7 @@ interface TasksTreeNode {
 }
 
 function priorityValue(priority: string): number {
+  if (priority === "S") return 0;
   if (priority === "A") return 1;
   if (priority === "B") return 2;
   if (priority === "C") return 3;

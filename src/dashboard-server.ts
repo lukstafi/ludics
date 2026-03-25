@@ -3,11 +3,11 @@
 // Serves static files from the dashboard directory and lazily regenerates
 // data/*.json files when they become stale (TTL-based).
 
-import { existsSync, readFileSync, statSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, statSync } from "fs";
 import { resolve, extname } from "path";
 import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
-import { loadConfigSync } from "./config.ts";
+import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -203,6 +203,130 @@ export function startDashboardServer(
           }
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: postpone a slot (decrease task priority one level + clear as ready)
+      if (pathname === "/api/slot-postpone") {
+        const slotParam = url.searchParams.get("slot");
+        if (!slotParam || !/^[1-6]$/.test(slotParam)) {
+          return new Response("Bad Request: slot must be 1-6", { status: 400 });
+        }
+        try {
+          const slotNum = parseInt(slotParam, 10);
+
+          // Resolve task ID and new priority *before* clearing, but do NOT write yet.
+          // Only write priority after the clear succeeds (atomicity).
+          let pendingPriorityWrite: (() => void) | null = null;
+          const slotsFile = slotsFilePath();
+          if (existsSync(slotsFile)) {
+            const slotsContent = readFileSync(slotsFile, "utf-8");
+            const slotSection = slotsContent.match(
+              new RegExp(`## Slot ${slotNum}\\n([\\s\\S]*?)(?=## Slot |$)`),
+            );
+            const taskIdMatch = slotSection?.[1]?.match(/\*\*Task:\*\*\s*(.+)/);
+            const taskId = taskIdMatch ? taskIdMatch[1]!.trim() : null;
+            if (taskId && taskId !== "null") {
+              const hDir = harnessDir();
+              const taskFile = resolve(hDir, "tasks", `${taskId}.md`);
+              const safeTasksRoot = resolve(hDir, "tasks") + "/";
+              if (taskFile.startsWith(safeTasksRoot) && existsSync(taskFile) && !statSync(taskFile).isDirectory()) {
+                const PRIORITY_DECREASE: Record<string, string> = { S: "A", A: "B", B: "C" };
+                const content = readFileSync(taskFile, "utf-8");
+                const priorityMatch = content.match(/^priority:\s*(.+)$/m);
+                const currentPriority = priorityMatch ? priorityMatch[1]!.trim() : "B";
+                const newPriority = PRIORITY_DECREASE[currentPriority] ?? currentPriority;
+                if (newPriority !== currentPriority) {
+                  const lines = content.split("\n");
+                  let inFrontmatter = false;
+                  let done = false;
+                  const output: string[] = [];
+                  for (const line of lines) {
+                    if (line === "---" && !inFrontmatter) { inFrontmatter = true; output.push(line); continue; }
+                    if (line === "---" && inFrontmatter) { inFrontmatter = false; output.push(line); continue; }
+                    if (inFrontmatter && !done && line.startsWith("priority:")) {
+                      output.push(`priority: ${newPriority}`);
+                      done = true;
+                      continue;
+                    }
+                    output.push(line);
+                  }
+                  // Capture the write as a closure; execute only after clear succeeds.
+                  pendingPriorityWrite = () => writeFileSync(taskFile, output.join("\n"));
+                }
+              }
+            }
+          }
+
+          // Clear the slot first; only update priority if this succeeds.
+          const proc = Bun.spawnSync(
+            [process.execPath, "slot", slotParam, "clear", "ready"],
+            { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
+          );
+          if (proc.exitCode !== 0) {
+            return new Response(proc.stderr.toString() || "slot clear failed", { status: 500 });
+          }
+
+          // Clear succeeded — now safely write the demoted priority.
+          pendingPriorityWrite?.();
+
+          lastGenerated = 0;
+          return new Response("OK", { status: 200 });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: promote task priority one level (C→B→A→S)
+      if (pathname === "/api/task-promote") {
+        const taskParam = url.searchParams.get("task");
+        if (!taskParam || !/^[A-Za-z0-9._-]+$/.test(taskParam)) {
+          return new Response("Bad Request: invalid task id", { status: 400 });
+        }
+        try {
+          const hDir = harnessDir();
+          const taskFile = resolve(hDir, "tasks", `${taskParam}.md`);
+          const safeTasksRoot = resolve(hDir, "tasks") + "/";
+          if (!taskFile.startsWith(safeTasksRoot)) {
+            return new Response("Forbidden", { status: 403 });
+          }
+          if (!existsSync(taskFile) || statSync(taskFile).isDirectory()) {
+            return new Response("Not Found", { status: 404 });
+          }
+          const PRIORITY_INCREASE: Record<string, string> = { C: "B", B: "A", A: "S" };
+          const content = readFileSync(taskFile, "utf-8");
+          const priorityMatch = content.match(/^priority:\s*(.+)$/m);
+          const currentPriority = priorityMatch ? priorityMatch[1]!.trim() : "B";
+          const newPriority = PRIORITY_INCREASE[currentPriority] ?? currentPriority;
+          if (newPriority !== currentPriority) {
+            const lines = content.split("\n");
+            let inFrontmatter = false;
+            let done = false;
+            const output: string[] = [];
+            for (const line of lines) {
+              if (line === "---" && !inFrontmatter) { inFrontmatter = true; output.push(line); continue; }
+              if (line === "---" && inFrontmatter) {
+                // Closing fence: if priority key was absent, insert it before closing.
+                if (!done) { output.push(`priority: ${newPriority}`); done = true; }
+                inFrontmatter = false;
+                output.push(line);
+                continue;
+              }
+              if (inFrontmatter && !done && line.startsWith("priority:")) {
+                output.push(`priority: ${newPriority}`);
+                done = true;
+                continue;
+              }
+              output.push(line);
+            }
+            writeFileSync(taskFile, output.join("\n"));
+          }
+          lastGenerated = 0;
+          return new Response(JSON.stringify({ priority: newPriority }), {
+            headers: { "Content-Type": "application/json" },
+          });
         } catch (e) {
           return new Response(String(e), { status: 500 });
         }

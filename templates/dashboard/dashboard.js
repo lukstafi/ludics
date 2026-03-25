@@ -90,7 +90,10 @@ function renderSlots(slots) {
         } else {
             if (slot.phase === 'done') {
                 statusDiv.className = 'slot-status done';
-                statusText.innerHTML = 'Done';
+                statusText.innerHTML = 'Done <span class="slot-action-btns">'
+                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done">✓</button>'
+                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon">✕</button>'
+                    + '</span>';
             } else if (slot.preempted) {
                 statusDiv.className = 'slot-status preempted';
                 statusText.textContent = 'Preempted';
@@ -102,7 +105,11 @@ function renderSlots(slots) {
                 statusText.innerHTML = 'Assigned <button class="start-slot-btn" onclick="startSlot(' + i + ')" title="Start session">start</button>';
             } else {
                 statusDiv.className = 'slot-status active';
-                statusText.innerHTML = 'Active <button class="mark-done-btn" onclick="markSlotDone(' + i + ')" title="Mark slot as done">done</button>';
+                statusText.innerHTML = 'Active <span class="slot-action-btns">'
+                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done">✓</button>'
+                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon">✕</button>'
+                    + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)">↓</button>'
+                    + '</span>';
             }
 
             let html = `<p class="process" title="${escapeHtml(slot.process)}">${escapeHtml(slot.process)}</p>`;
@@ -200,8 +207,8 @@ function renderReadyQueue(tasks) {
             const priority = task.priority || '-';
             const priorityClass = `priority-${priority}`;
             return `
-            <li>
-                <span class="priority ${priorityClass}">${priority}</span>
+            <li class="ready-task-item" onclick="promoteTask('${escapeHtml(task.id)}')" title="Click to promote priority">
+                <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>
                 <span class="task-title">${escapeHtml(task.title || task.id)}</span>
             </li>
         `;
@@ -490,23 +497,92 @@ async function fetchT3codeLink() {
     } catch { /* ignore */ }
 }
 
-// Mark a slot as done via CLI command (auto-clear happens on next keepalive)
-async function markSlotDone(slotNum) {
+// Slot action: mark done (✓)
+async function slotActionDone(slotNum) {
     const btn = event.target;
     btn.disabled = true;
-    btn.textContent = '...';
+    btn.textContent = '…';
     try {
         const response = await fetch(`/api/slot-clear?slot=${slotNum}&status=done`);
         if (response.ok) {
-            btn.textContent = 'done';
-            fetchAllData(); // refresh
+            fetchAllData();
         } else {
-            btn.textContent = 'error';
-            setTimeout(() => { btn.textContent = 'done'; btn.disabled = false; }, 2000);
+            btn.textContent = '✓';
+            setTimeout(() => { btn.disabled = false; }, 2000);
         }
     } catch {
-        btn.textContent = 'error';
-        setTimeout(() => { btn.textContent = 'done'; btn.disabled = false; }, 2000);
+        btn.textContent = '✓';
+        setTimeout(() => { btn.disabled = false; }, 2000);
+    }
+}
+
+// Slot action: abandon (✕)
+async function slotActionAbandon(slotNum) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+        const response = await fetch(`/api/slot-clear?slot=${slotNum}&status=abandoned`);
+        if (response.ok) {
+            fetchAllData();
+        } else {
+            btn.textContent = '✕';
+            setTimeout(() => { btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = '✕';
+        setTimeout(() => { btn.disabled = false; }, 2000);
+    }
+}
+
+// Slot action: postpone (↓) — decrease task priority + clear slot as ready
+async function slotActionPostpone(slotNum) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+        const response = await fetch(`/api/slot-postpone?slot=${slotNum}`);
+        if (response.ok) {
+            fetchAllData();
+        } else {
+            btn.textContent = '↓';
+            setTimeout(() => { btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = '↓';
+        setTimeout(() => { btn.disabled = false; }, 2000);
+    }
+}
+
+// Promote a ready queue task's priority one level (C→B→A→S)
+async function promoteTask(taskId) {
+    const li = event.currentTarget;
+    if (li.classList.contains('promoting')) return;
+    li.classList.add('promoting');
+    try {
+        const response = await fetch(`/api/task-promote?task=${encodeURIComponent(taskId)}`);
+        if (response.ok) {
+            const data = await response.json();
+            // Update priority badge immediately
+            const prioritySpan = li.querySelector('.priority');
+            if (prioritySpan && data.priority) {
+                prioritySpan.textContent = data.priority;
+                prioritySpan.className = `priority priority-${data.priority}`;
+            }
+            li.classList.add('promoted');
+            setTimeout(() => {
+                li.classList.remove('promoted');
+                fetchAllData();
+            }, 800);
+        } else {
+            li.classList.add('promote-error');
+            setTimeout(() => li.classList.remove('promote-error'), 1500);
+        }
+    } catch {
+        li.classList.add('promote-error');
+        setTimeout(() => li.classList.remove('promote-error'), 1500);
+    } finally {
+        setTimeout(() => li.classList.remove('promoting'), 300);
     }
 }
 
