@@ -206,12 +206,20 @@ function generateSlots(): SlotJson[] {
       }
     }
 
-    // Parse phase from Runtime section
-    let phase: string | null = null;
-    const phaseMatch = block.match(/^- Phase:\s*(.+)$/m);
-    if (phaseMatch) phase = phaseMatch[1]!.trim();
-
     const taskId = empty ? null : getTask(block).trim() || null;
+
+    // Parse phase: prefer orchestration state JSON (authoritative), fall back to Runtime section in slots.md
+    let phase: string | null = null;
+    if (!empty) {
+      const orchState = readOrchestrationState(num);
+      if (orchState && (!taskId || orchState.taskId === taskId || orchState.feature === taskId)) {
+        phase = orchState.phase ?? null;
+      }
+    }
+    if (!phase) {
+      const phaseMatch = block.match(/^- Phase:\s*(.+)$/m);
+      if (phaseMatch) phase = phaseMatch[1]!.trim();
+    }
     const taskContent = taskId && taskId !== "null" ? lookupTaskContent(taskId) : null;
     const taskEffort = taskId && taskId !== "null" ? lookupTaskEffort(taskId) : null;
     const slotHasProposal = taskId && taskId !== "null" ? lookupTaskHasProposal(taskId) : false;
