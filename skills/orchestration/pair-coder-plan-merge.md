@@ -1,23 +1,18 @@
 # Pair Plan Merge (Coder)
 
-Both you and the reviewer have written independent plans for `{{FEATURE}}`. Your task is to produce a single merged plan that takes the best ideas from each.
+Merge the two independent plans for `{{FEATURE}}` into one at `{{MERGED_PLAN_FILE}}`.
 
-**Your plan** is at `{{PLAN_FILE}}` — read it now.
+**Your plan**: `{{PLAN_FILE}}`
 
-**Reviewer's independent plan**:
+**Reviewer's plan**:
 
 {{PEER_PLAN}}
 
-**Reviewer's feedback on the previous merged plan** (if any — "(no review yet)" means this is the first merge iteration):
+**Reviewer's feedback on previous merge** (if any):
 
 {{PEER_REVIEW}}
 
-Read the two plans and any reviewer feedback above, then write a merged plan to `{{MERGED_PLAN_FILE}}`. The merged plan should:
-- Select the strongest approach from each plan, resolving any conflicts
-- Incorporate reviewer feedback if this is a revision
-- Remain concrete: list files to modify, describe each change, and include validation steps
-
-Then write:
+Pick the strongest approach from each, incorporate feedback, stay concrete.
 
 ```sh
 printf '%s|%s|merged plan written\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"

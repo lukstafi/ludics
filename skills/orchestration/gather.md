@@ -1,16 +1,10 @@
 # Gather
 
-You are `{{AGENT_NAME}}` in phase `{{PHASE}}` for feature `{{FEATURE}}`.
-Worktree: `{{WORKTREE_PATH}}`
-
-Task context:
+You are `{{AGENT_NAME}}` in phase `{{PHASE}}` for `{{FEATURE}}` at `{{WORKTREE_PATH}}`.
 
 {{TASK_SPEC}}
 
-Collect missing codebase context, constraints, and risks. Focus on what the implementation phase needs next.
-
-Write a short note to `{{PLAN_FILE}}`.
-When finished, update `{{STATUS_FILE}}` with:
+Collect codebase context, constraints, and risks needed for implementation. Write findings to `{{PLAN_FILE}}`.
 
 ```sh
 printf '%s|%s|context gathered\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
