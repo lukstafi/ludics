@@ -728,7 +728,8 @@ function generateRecentlyCompleted(tasks: DashboardTask[]): RecentlyCompletedTas
   }
 
   return capped.map((t) => {
-    const prUrl = prUrls.get(t.id) ?? (t.url ?? null);
+    // Only use the retrospective's prUrl — t.url is the GitHub issue URL, not a PR
+    const prUrl = prUrls.get(t.id) ?? null;
     let prStatus: "merged" | "open" | "none" = "none";
     if (mergedTasks.has(t.id)) {
       prStatus = "merged";

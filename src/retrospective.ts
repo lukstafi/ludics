@@ -77,7 +77,7 @@ interface PhaseEntry {
   since: number; // epoch seconds
 }
 
-function buildPhaseTimeline(taskId: string, slot: number | null): {
+function buildPhaseTimeline(taskId: string, slot: number | null, feature?: string): {
   phases: string[];
   timeline: PhaseEntry[];
 } {
@@ -95,13 +95,20 @@ function buildPhaseTimeline(taskId: string, slot: number | null): {
   const lines = content.split("\n");
   const entries: PhaseEntry[] = [];
 
-  // First pass: try matching by taskId
+  // Phase-transition events use `task: state.feature` (not state.taskId) and store
+  // the destination phase in `event.status` (e.g. "review").  `event.action` is a
+  // human-readable label like "work → review" and must not be used as the phase value.
+  // Match by taskId or feature (they may differ).
+  const matchIds = new Set<string>([taskId]);
+  if (feature && feature !== taskId) matchIds.add(feature);
+
   for (const line of lines) {
     try {
       const event = JSON.parse(line) as Record<string, unknown>;
       if (event.event_type !== "phase_transition") continue;
-      if (event.task === taskId) {
-        const phase = String(event.action ?? event.phase ?? "");
+      const eventTask = String(event.task ?? "");
+      if (eventTask && matchIds.has(eventTask)) {
+        const phase = String(event.status ?? "");
         const epoch = Number(event.epoch ?? 0);
         if (phase && epoch) entries.push({ phase, since: epoch });
       }
@@ -110,14 +117,14 @@ function buildPhaseTimeline(taskId: string, slot: number | null): {
     }
   }
 
-  // Fallback: if no task-matched events, try slot-based matching
+  // Fallback: if no task/feature-matched events, try slot-based matching
   if (entries.length === 0 && slot !== null) {
     for (const line of lines) {
       try {
         const event = JSON.parse(line) as Record<string, unknown>;
         if (event.event_type !== "phase_transition") continue;
-        if (event.slot === slot && !event.task) {
-          const phase = String(event.action ?? event.phase ?? "");
+        if (event.slot === slot) {
+          const phase = String(event.status ?? "");
           const epoch = Number(event.epoch ?? 0);
           if (phase && epoch) entries.push({ phase, since: epoch });
         }
@@ -386,7 +393,7 @@ export async function collectAndWriteRetrospective(state: OrchestrationState): P
   }
 
   // Build phase timeline
-  const { phases, timeline } = buildPhaseTimeline(taskId, state.slot);
+  const { phases, timeline } = buildPhaseTimeline(taskId, state.slot, state.feature);
 
   // Get t3code snapshot
   const allThreads: RetrospectiveThread[] = [];
