@@ -216,10 +216,13 @@ export function startDashboardServer(
         }
         try {
           const slotNum = parseInt(slotParam, 10);
+
+          // Resolve task ID and new priority *before* clearing, but do NOT write yet.
+          // Only write priority after the clear succeeds (atomicity).
+          let pendingPriorityWrite: (() => void) | null = null;
           const slotsFile = slotsFilePath();
           if (existsSync(slotsFile)) {
             const slotsContent = readFileSync(slotsFile, "utf-8");
-            // Find task ID for this slot in the slots markdown
             const slotSection = slotsContent.match(
               new RegExp(`## Slot ${slotNum}\\n([\\s\\S]*?)(?=## Slot |$)`),
             );
@@ -250,11 +253,14 @@ export function startDashboardServer(
                     }
                     output.push(line);
                   }
-                  writeFileSync(taskFile, output.join("\n"));
+                  // Capture the write as a closure; execute only after clear succeeds.
+                  pendingPriorityWrite = () => writeFileSync(taskFile, output.join("\n"));
                 }
               }
             }
           }
+
+          // Clear the slot first; only update priority if this succeeds.
           const proc = Bun.spawnSync(
             [process.execPath, "slot", slotParam, "clear", "ready"],
             { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
@@ -262,6 +268,10 @@ export function startDashboardServer(
           if (proc.exitCode !== 0) {
             return new Response(proc.stderr.toString() || "slot clear failed", { status: 500 });
           }
+
+          // Clear succeeded — now safely write the demoted priority.
+          pendingPriorityWrite?.();
+
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
         } catch (e) {
