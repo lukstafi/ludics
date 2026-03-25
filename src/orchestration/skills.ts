@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { harnessDir, ludicsRoot } from "../config.ts";
 import type { Phase } from "./phases.ts";
@@ -38,6 +38,24 @@ export interface SkillContext {
 function readFileIfExists(path: string): string | null {
   if (!existsSync(path)) return null;
   return readFileSync(path, "utf-8").trim() || null;
+}
+
+/** Scan reviews/ for the highest-numbered review file from a given peer.
+ *  Handles crash restarts where the round counter was reset but old files persist. */
+function findLatestReview(peerSyncDir: string, peerName: string): string | null {
+  const reviewsDir = join(peerSyncDir, "reviews");
+  if (!existsSync(reviewsDir)) return null;
+  const pattern = new RegExp(`^round-(\\d+)-${peerName}\\.md$`);
+  let maxRound = -1;
+  let maxFile: string | null = null;
+  for (const entry of readdirSync(reviewsDir)) {
+    const m = entry.match(pattern);
+    if (m) {
+      const n = parseInt(m[1]!, 10);
+      if (n > maxRound) { maxRound = n; maxFile = join(reviewsDir, entry); }
+    }
+  }
+  return maxFile ? readFileIfExists(maxFile) : null;
 }
 
 function gitOutput(cwd: string, args: string[]): string | null {
@@ -125,8 +143,16 @@ export function buildSkillContext(
   const peerPlan = peer
     ? readFileIfExists(join(state.peerSyncDir, "plans", `round-${state.round}-${peer.name}.md`))
     : null;
+  // The review that informs the current work phase was written during the
+  // previous round's review phase.  Try round-1 first, then current round,
+  // then scan for the highest-numbered review file (handles crash restarts
+  // where the round counter was reset but old review files persist).
   const peerReview = peer
-    ? readFileIfExists(join(state.peerSyncDir, "reviews", `round-${state.round}-${peer.name}.md`))
+    ? (state.round > 1
+        ? readFileIfExists(join(state.peerSyncDir, "reviews", `round-${state.round - 1}-${peer.name}.md`))
+        : null)
+      ?? readFileIfExists(join(state.peerSyncDir, "reviews", `round-${state.round}-${peer.name}.md`))
+      ?? findLatestReview(state.peerSyncDir, peer.name)
     : null;
   const mergeVotes = Object.entries(readMergeVotes(state.peerSyncDir, state.mergeRound))
     .map(([name, vote]) => `${name}: ${vote}`)
