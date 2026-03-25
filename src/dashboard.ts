@@ -657,6 +657,97 @@ function generateNtfy(): Record<string, unknown> {
   return { appUrl };
 }
 
+// --- Generate recently-completed.json ---
+
+interface RecentlyCompletedTask {
+  id: string;
+  title: string;
+  completedAt: string;
+  prUrl: string | null;
+  prStatus: "merged" | "open" | "none";
+  retrospectiveLink: string;
+  proposalLink: string | null;
+}
+
+function generateRecentlyCompleted(tasks: DashboardTask[]): RecentlyCompletedTask[] {
+  const harness = harnessDir();
+  const retroDir = join(harness, "retrospectives");
+
+  // Filter to completed tasks with retrospective files
+  const completed = tasks.filter((t) => {
+    if (!t.isCompleted || !t.completed) return false;
+    return existsSync(join(retroDir, `${t.id}.json`));
+  });
+
+  // Sort by completion date descending, then id as tiebreaker
+  completed.sort((a, b) => {
+    const dateA = new Date(a.completed!).getTime();
+    const dateB = new Date(b.completed!).getTime();
+    if (dateB !== dateA) return dateB - dateA;
+    return a.id.localeCompare(b.id);
+  });
+
+  // Filter to last 7 days, cap at 10
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const recent = completed.filter((t) => {
+    const ts = new Date(t.completed!).getTime();
+    return ts >= sevenDaysAgo;
+  });
+  // If fewer than 10 within 7 days, still cap at 10
+  const capped = recent.length >= 10 ? recent.slice(0, 10) : recent;
+
+  // Derive PR status from events log
+  const mergedTasks = new Set<string>();
+  const eventsFile = join(harness, "journal", "events.jsonl");
+  if (existsSync(eventsFile)) {
+    try {
+      const content = readFileSync(eventsFile, "utf-8").trim();
+      if (content) {
+        for (const line of content.split("\n")) {
+          try {
+            const event = JSON.parse(line) as Record<string, unknown>;
+            if (event.event_type === "pr_merged" && event.task) {
+              mergedTasks.add(String(event.task));
+            }
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  // Also try to read PR URL from retrospective JSON
+  const prUrls = new Map<string, string>();
+  for (const t of capped) {
+    const retroFile = join(retroDir, `${t.id}.json`);
+    try {
+      const data = JSON.parse(readFileSync(retroFile, "utf-8")) as Record<string, unknown>;
+      if (data.prUrl && typeof data.prUrl === "string") {
+        prUrls.set(t.id, data.prUrl);
+      }
+    } catch { /* skip */ }
+  }
+
+  return capped.map((t) => {
+    const prUrl = prUrls.get(t.id) ?? (t.url ?? null);
+    let prStatus: "merged" | "open" | "none" = "none";
+    if (mergedTasks.has(t.id)) {
+      prStatus = "merged";
+    } else if (prUrl) {
+      prStatus = "open";
+    }
+
+    return {
+      id: t.id,
+      title: t.title,
+      completedAt: t.completed!,
+      prUrl,
+      prStatus,
+      retrospectiveLink: `/retrospective.html?task=${encodeURIComponent(t.id)}`,
+      proposalLink: t.hasProposal ? `/proposal.html?task=${encodeURIComponent(t.id)}` : null,
+    };
+  });
+}
+
 // --- Generate briefing.json ---
 
 function generateBriefing(): Record<string, unknown> {
@@ -705,6 +796,9 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "ntfy.json"), JSON.stringify(generateNtfy(), null, 2));
   console.error("  ntfy.json");
+
+  writeFileSync(join(dataDir, "recently-completed.json"), JSON.stringify(generateRecentlyCompleted(tasks), null, 2));
+  console.error("  recently-completed.json");
 
   console.error(`ludics: dashboard data generated in ${dataDir}`);
 }

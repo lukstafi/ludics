@@ -758,6 +758,14 @@ export async function runOrchestration(
         3,
         `Slot ${state.slot}: task done`,
       );
+
+      // Collect retrospective data before threads are cleaned up
+      try {
+        const { collectAndWriteRetrospective } = await import("../retrospective.ts");
+        await collectAndWriteRetrospective(state);
+      } catch (err) {
+        console.error(`ludics: retrospective collection failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 }

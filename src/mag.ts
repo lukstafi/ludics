@@ -1280,6 +1280,29 @@ async function cleanupDoneTaskThreads(): Promise<void> {
     return;
   }
 
+  // Fallback: collect retrospective for done tasks that don't have one yet
+  {
+    const retroDir = join(harness, "retrospectives");
+    try {
+      const taskFiles = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+      for (const f of taskFiles) {
+        const content = readFileSync(join(tasksDir, f), "utf-8");
+        const statusMatch = content.match(/^status:\s*(.+)$/m);
+        const taskStatus = statusMatch ? statusMatch[1]!.trim() : "";
+        if (taskStatus !== "done" && taskStatus !== "abandoned") continue;
+
+        const taskId = f.replace(/\.md$/, "");
+        const retroFile = join(retroDir, `${taskId}.json`);
+        if (!existsSync(retroFile)) {
+          try {
+            const { collectRetrospectiveFallback } = await import("./retrospective.ts");
+            await collectRetrospectiveFallback(taskId);
+          } catch { /* best effort — ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
   if (threadIdsToDelete.length === 0) return;
 
   // Delete threads from t3code server (idempotent — skip if not on server)

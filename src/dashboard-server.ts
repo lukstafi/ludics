@@ -4,7 +4,7 @@
 // data/*.json files when they become stale (TTL-based).
 
 import { existsSync, readFileSync, writeFileSync, statSync } from "fs";
-import { resolve, extname } from "path";
+import { resolve, extname, join } from "path";
 import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
@@ -369,6 +369,26 @@ export function startDashboardServer(
         const ext = extname(proposalFilePath);
         return new Response(body, {
           headers: { "Content-Type": MIME_TYPES[ext] ?? MIME_TYPES[".md"]! },
+        });
+      }
+
+      if (pathname.startsWith("/retrospective-files/")) {
+        const retroPath = pathname.slice("/retrospective-files/".length);
+        const retroMatch = retroPath.match(/^([A-Za-z0-9._-]+)\.json$/);
+        if (!retroMatch) {
+          return new Response("Bad Request", { status: 400 });
+        }
+        const retroRoot = resolve(join(harnessDir(), "retrospectives"));
+        const retroFilePath = resolve(retroRoot, retroMatch[1]! + ".json");
+        if (!retroFilePath.startsWith(retroRoot)) {
+          return new Response("Forbidden", { status: 403 });
+        }
+        if (!existsSync(retroFilePath) || statSync(retroFilePath).isDirectory()) {
+          return new Response("Not Found", { status: 404 });
+        }
+        const retroBody = readFileSync(retroFilePath);
+        return new Response(retroBody, {
+          headers: { "Content-Type": "application/json" },
         });
       }
 
