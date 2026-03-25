@@ -282,7 +282,7 @@ export function startDashboardServer(
       // API: promote task priority one level (C→B→A→S)
       if (pathname === "/api/task-promote") {
         const taskParam = url.searchParams.get("task");
-        if (!taskParam || !/^[A-Za-z0-9_-]+$/.test(taskParam)) {
+        if (!taskParam || !/^[A-Za-z0-9._-]+$/.test(taskParam)) {
           return new Response("Bad Request: invalid task id", { status: 400 });
         }
         try {
@@ -307,7 +307,13 @@ export function startDashboardServer(
             const output: string[] = [];
             for (const line of lines) {
               if (line === "---" && !inFrontmatter) { inFrontmatter = true; output.push(line); continue; }
-              if (line === "---" && inFrontmatter) { inFrontmatter = false; output.push(line); continue; }
+              if (line === "---" && inFrontmatter) {
+                // Closing fence: if priority key was absent, insert it before closing.
+                if (!done) { output.push(`priority: ${newPriority}`); done = true; }
+                inFrontmatter = false;
+                output.push(line);
+                continue;
+              }
               if (inFrontmatter && !done && line.startsWith("priority:")) {
                 output.push(`priority: ${newPriority}`);
                 done = true;
