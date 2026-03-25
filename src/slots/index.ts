@@ -630,6 +630,14 @@ export async function slotResume(slotNum: number): Promise<void> {
     );
   }
 
+  // Guard: orchestration state must match the slot's current task
+  if (orchState.taskId && orchState.taskId !== ctx.taskId) {
+    throw new Error(
+      `slot ${slotNum}: persisted orchestration is for task "${orchState.taskId}" but slot is assigned to "${ctx.taskId}" — ` +
+      `use 'ludics slot ${slotNum} clear' then 'ludics slot ${slotNum} start' for a fresh start`
+    );
+  }
+
   if (orchState.phase === "done") {
     console.log(`Orchestration already completed for slot ${slotNum} (task ${ctx.taskId}).`);
     return;
@@ -657,10 +665,27 @@ export async function slotResume(slotNum: number): Promise<void> {
     client.close();
   }
 
-  // Kill stale orchestration PID if recorded
+  // Terminate stale orchestration runner if still alive
   if (slotState.orchestration?.pid) {
-    try { process.kill(slotState.orchestration.pid, 0); } catch {
+    const pid = slotState.orchestration.pid;
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch {
       // PID already dead — expected for crash recovery
+    }
+    if (alive) {
+      console.error(`ludics: terminating stale orchestration runner (pid ${pid}) before resume`);
+      try { process.kill(pid, "SIGTERM"); } catch {
+        // ignore if kill fails
+      }
+      // Brief wait for graceful shutdown
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Force kill if still alive
+      try {
+        process.kill(pid, 0); // check if still alive
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already dead — good
+      }
     }
   }
 
