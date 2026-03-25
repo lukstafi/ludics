@@ -1,5 +1,5 @@
 // Structured event log — append-only JSONL for observability
-// Inspired by agent-duo's append_event pattern, adapted for TypeScript/Bun.
+// Structured event log for the ludics harness.
 
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "fs";
 import { join } from "path";

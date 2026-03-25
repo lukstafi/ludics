@@ -98,9 +98,22 @@ STATUS: completed | stale | split-needed | already-exists | error
 TASK_ID: <task-id>
 PROPOSAL_PATH: <relative path, e.g. docs/<feature>.md> (omit if stale/split-needed/error)
 AMBIGUITIES: <numbered list of ambiguities, or "none">
+START_CONFIDENCE: high | low
+START_RATIONALE: <one sentence explaining confidence level>
 TITLE: <task title>
 SUMMARY: <one-line summary of what was proposed>
 ```
+
+**START_CONFIDENCE guidance:**
+- `high`: task is a clear, bounded improvement with specific scope — derived from
+  a concrete user request, a well-defined GitHub issue, or a clearly actionable
+  elaboration
+- `low`: task is exploratory/speculative ("consider", "study", "look into"), has
+  unresolved ambiguities that affect scope, or the elaboration is suspiciously
+  overconfident for a vague task statement
+- Vague acceptance criteria alone do NOT warrant `low` — improvements can be
+  refined in follow-up work
+- This is advisory only; the orchestrator makes the final decision
 
 ## Error Handling
 

@@ -90,8 +90,9 @@ Commands:
                                Assign a task to slot n
   slot <n> clear [in-progress|done|abandoned]
                                Clear slot n (optionally mark task in-progress/done/abandoned)
-  slot <n> start               Start agent session (adapter)
-  slot <n> stop                Stop agent session (adapter)
+  slot <n> start               Start fresh agent session (use 'resume' for crash recovery)
+  slot <n> stop                Stop agent session
+  slot <n> resume              Resume orchestrated t3code session from persisted state (crash recovery)
   slot <n> note "text"         Add runtime note to slot n
   slot <n> preempt <task-id> [-a adapter] [-s session] [-p path] [-A "adapter args"]
                                Preempt slot for priority task (stashes current work)
@@ -140,7 +141,7 @@ Commands:
   mag queue                    Show pending queue requests
   mag context                  Pre-compute briefing context file
 
-  notify outgoing <msg>        Send strategic notification (alias: pai)
+  notify outgoing <msg>        Send notification to user
   notify agents <msg>          Send operational notification
   notify subscribe             Subscribe to incoming messages (long-running)
   notify recent [n]            Show recent notifications

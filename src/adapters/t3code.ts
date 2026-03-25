@@ -602,7 +602,7 @@ function orchestrationProjectDir(workspaceRoot: string): string {
   return getMainRepoFromWorktree(workspaceRoot) ?? workspaceRoot;
 }
 
-async function startOrchestrationProcess(slot: number, harnessDir: string, feature: string): Promise<number> {
+export async function startOrchestrationProcess(slot: number, harnessDir: string, feature: string): Promise<number> {
   const logPath = join(harnessDir, "orchestration", `slot-${slot}-${feature}.log`);
   const logFd = openSync(logPath, "a");
   const proc = Bun.spawn(ludicsSelfCommand(["orch", "run-internal", String(slot)]), {

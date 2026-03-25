@@ -67,10 +67,10 @@ final response returns here.
 
 ### 5. Interpret worker result
 
-Parse the worker's response for STATUS, PROPOSAL_PATH, AMBIGUITIES, TITLE,
-and SUMMARY fields.
+Parse the worker's response for STATUS, PROPOSAL_PATH, AMBIGUITIES,
+START_CONFIDENCE, START_RATIONALE, TITLE, and SUMMARY fields.
 
-- **STATUS: completed** → proceed to notifications
+- **STATUS: completed** → proceed to auto-start evaluation (Step 5.5)
 - **STATUS: stale** → write result JSON with `"status": "stale"`, stop
 - **STATUS: split-needed** → queue the split skill and stop:
   ```bash
@@ -80,7 +80,52 @@ and SUMMARY fields.
 - **STATUS: error** → write result JSON with `"status": "error"`, stop
 - **STATUS: already-exists** → check if re-generation is wanted, or skip
 
-### 6. Send notification with action buttons
+### 5.5. Evaluate auto-start decision
+
+After STATUS: completed, evaluate whether to auto-start the slot or defer
+to the user:
+
+```bash
+ludics mag auto-start-evaluate <task_id> <START_CONFIDENCE> "<START_RATIONALE>"
+```
+
+Parse the JSON output for the `decision` field:
+- `"auto-start"` → proceed to Step 6a (auto-start)
+- `"defer-to-user"` → proceed to Step 6b (notification with launch buttons)
+
+The decision respects the `start_sessions` autonomy level:
+- `manual` or `suggest` → always defers to the user
+- `auto` → auto-starts when worker reports `high` confidence and a slot is assigned;
+  defers otherwise
+
+**Decision criteria details:**
+- **Confidence is the primary signal** — the worker's `START_CONFIDENCE` drives the
+  decision. The worker has full codebase context and is the authority on scope clarity.
+- **Rationale is a safety net** — the rationale text is scanned for ambiguity keywords
+  ("ambiguous", "unclear", "speculative", "open question", "uncertain scope") that
+  contradict a `high` confidence signal. If found, the decision overrides to `defer-to-user`.
+- **Vague acceptance criteria do NOT block auto-start** — improvements can be refined
+  in follow-up work.
+- Tasks with no assigned slot always defer to the user.
+
+### 6a. Auto-start slot (if decision = "auto-start")
+
+Start the assigned slot directly:
+
+```bash
+ludics slot <N> start
+```
+
+Send a lighter notification (priority 2):
+
+```bash
+ludics notify outgoing "Started slot <N> for <task_id>: <title>"
+```
+
+Skip the launch-button notification — proceed to Step 7 (questions) and
+Step 9 (result JSON).
+
+### 6b. Send notification with action buttons (if decision = "defer-to-user")
 
 Use the worker's `PROPOSAL_PATH` as the source of truth for the proposal location:
 

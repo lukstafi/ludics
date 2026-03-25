@@ -141,7 +141,7 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 |-------|---------|-----------|
 | `/ludics-adopt-sessions` | Adopt discovered sessions into slots | Inline |
 | `/ludics-briefing` | Morning strategic briefing | Inline (needs strategic context) |
-| `/ludics-draft-proposal` | Write proposal document, send launch buttons | Orchestrator + worker |
+| `/ludics-draft-proposal` | Write proposal document, evaluate auto-start vs launch buttons | Orchestrator + worker |
 | `/ludics-elaborate` | Detailed spec for a task (early, for Mag context) | Orchestrator + worker |
 | `/ludics-feedback-digest` | Summarize user feedback | Orchestrator + worker |
 | `/ludics-health-check` | Detect approaching deadlines, queue completion checks | Inline |
@@ -433,7 +433,8 @@ Slots support preemption for priority tasks:
 **Slot operations** (implemented in `src/slots/index.ts`, ~515 lines):
 - `slotAssign()` — assign task/description to slot (sets adapter, session, started time)
 - `slotClear()` — clear slot, optionally mark task done/abandoned
-- `slotStart()` / `slotStop()` — invoke adapter lifecycle
+- `slotStart()` / `slotStop()` — invoke adapter lifecycle (start guards against recoverable orchestration state for same task)
+- `slotResume()` — crash recovery for orchestrated t3code sessions: validates persisted threads still exist on server, spawns new orchestration runner from saved state (distinct from `slotStart()` which creates fresh sessions)
 - `slotsRefresh()` — poll adapters for state updates
 - Slot changes automatically sync task file frontmatter (status, slot, adapter, started, completed)
 
@@ -972,8 +973,9 @@ ludics slots refresh           # Refresh slot state from adapters
 ludics slot <n>                # Show slot n
 ludics slot <n> assign <task|desc> [-a adapter] [-s session] [-p path]
 ludics slot <n> clear [in-progress|done|abandoned]
-ludics slot <n> start          # Start agent session (adapter)
+ludics slot <n> start          # Start fresh agent session (fails if recoverable state for same task)
 ludics slot <n> stop           # Stop agent session
+ludics slot <n> resume         # Resume orchestrated t3code session (crash recovery)
 ludics slot <n> note "text"    # Add runtime note
 ludics slot <n> preempt <task-id> [-a adapter] [-s session] [-p path]
 ludics slot <n> restore        # Restore previously preempted work
@@ -1107,7 +1109,7 @@ ludics quote                   # Print a random quote
 | Task file corrupted | YAML parse fails | Skip file; notify user |
 | Federation: leader down | Heartbeat timeout (900s) | Next node by seniority becomes leader |
 | t3code server crashes | Health check, PID inspection | `ludics t3code start` restarts; orchestration state persists |
-| Orchestration runner crashes | PID check in readState | Restart via `slot start`; state persists in `orchestration/slot-{n}.json` |
+| Orchestration runner crashes | PID check in readState | Restart via `slot resume`; state persists in `orchestration/slot-{n}.json`; phase token dedup prevents duplicate agent dispatches |
 | Phase timeout | Runner polling detects expiry | Automatic transition to next phase |
 
 **Design for recovery:**

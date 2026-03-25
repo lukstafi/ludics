@@ -70,11 +70,11 @@ export function removePeerSyncSession(projectDir: string, feature: string): void
   }
 }
 
-export function writePeerSync(state: OrchestrationState): void {
+export function writePeerSync(state: OrchestrationState, phaseToken?: string): void {
   const dir = state.peerSyncDir;
   mkdirSync(dir, { recursive: true });
   writeFile(join(dir, "phase"), state.phase);
-  writeFile(join(dir, "phase-token"), makeId("phase"));
+  writeFile(join(dir, "phase-token"), phaseToken ?? makeId("phase"));
   writeFile(join(dir, "round"), String(state.round));
   writeFile(join(dir, "feature"), state.feature);
   writeFile(join(dir, "mode"), state.mode);
