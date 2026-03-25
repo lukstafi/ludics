@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canReuseSlotThread, parseT3CodeAdapterArgs } from "./t3code.ts";
+import { canReuseSlotThread, orchestratedThreadTitle, parseT3CodeAdapterArgs } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 import { mergeAdapterState } from "../slots/markdown.ts";
 
@@ -91,6 +91,38 @@ describe("parseT3CodeAdapterArgs", () => {
     expect(parsed.orchestration?.agents[0]?.provider).toBe("codex");
     expect(parsed.orchestration?.agents[1]?.name).toBe("reviewer");
     expect(parsed.orchestration?.agents[1]?.provider).toBe("claude-code");
+  });
+});
+
+describe("orchestratedThreadTitle", () => {
+  test("produces s<slot>.<role>.<taskId> when taskId is present", () => {
+    expect(orchestratedThreadTitle(2, "coder", "task-0df412c1", "my-feature")).toBe(
+      "s2.coder.task-0df412c1",
+    );
+  });
+
+  test("falls back to feature when taskId is empty string", () => {
+    expect(orchestratedThreadTitle(3, "reviewer", "", "gh-ludics-68")).toBe(
+      "s3.reviewer.gh-ludics-68",
+    );
+  });
+
+  test("falls back to feature when taskId is undefined", () => {
+    expect(orchestratedThreadTitle(5, "agent-a", undefined, "my-feature")).toBe(
+      "s5.agent-a.my-feature",
+    );
+  });
+
+  test("falls back to feature when taskId is 'null' string", () => {
+    expect(orchestratedThreadTitle(1, "coder", "null", "fallback-feat")).toBe(
+      "s1.coder.fallback-feat",
+    );
+  });
+
+  test("uses agent name as role in duo mode", () => {
+    expect(orchestratedThreadTitle(4, "agent-b", "task-abc", "feat")).toBe(
+      "s4.agent-b.task-abc",
+    );
   });
 });
 

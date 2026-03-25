@@ -99,6 +99,12 @@ function normalizeWorkspacePath(ctx: AdapterContext): string {
   return resolve(raw);
 }
 
+/** Build orchestrated thread title: s<slot>.<role>.<taskId-or-feature> */
+export function orchestratedThreadTitle(slot: number, role: string, taskId: string | undefined, feature: string): string {
+  const suffix = taskId && taskId !== "null" ? taskId : feature;
+  return `s${slot}.${role}.${suffix}`;
+}
+
 function defaultTitle(ctx: AdapterContext, workspacePath: string): string {
   if (ctx.taskId && ctx.taskId !== "null") return ctx.taskId;
   if (ctx.process && ctx.process !== "(empty)") return ctx.process;
@@ -876,7 +882,7 @@ async function startOrchestratedThreads(
     for (const agent of agents) {
       const desired: DesiredThreadConfig = {
         worktreePath: agent.worktreePath,
-        title: `${title}:${agent.name}`,
+        title: orchestratedThreadTitle(ctx.slot, agent.role ?? agent.name, ctx.taskId, feature),
         model: agent.model,
         provider: agent.provider,
         runtimeMode: options.runtimeMode,
