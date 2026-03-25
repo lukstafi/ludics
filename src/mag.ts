@@ -1280,6 +1280,29 @@ async function cleanupDoneTaskThreads(): Promise<void> {
     return;
   }
 
+  // Fallback: collect retrospective for done tasks that don't have one yet
+  {
+    const retroDir = join(harness, "retrospectives");
+    try {
+      const taskFiles = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+      for (const f of taskFiles) {
+        const content = readFileSync(join(tasksDir, f), "utf-8");
+        const statusMatch = content.match(/^status:\s*(.+)$/m);
+        const taskStatus = statusMatch ? statusMatch[1]!.trim() : "";
+        if (taskStatus !== "done" && taskStatus !== "abandoned") continue;
+
+        const taskId = f.replace(/\.md$/, "");
+        const retroFile = join(retroDir, `${taskId}.json`);
+        if (!existsSync(retroFile)) {
+          try {
+            const { collectRetrospectiveFallback } = await import("./retrospective.ts");
+            await collectRetrospectiveFallback(taskId);
+          } catch { /* best effort — ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
   if (threadIdsToDelete.length === 0) return;
 
   // Delete threads from t3code server (idempotent — skip if not on server)
@@ -1990,20 +2013,48 @@ function maybeFillEmptySlots(): void {
 
   if (candidates.length === 0) return;
 
-  // Sort by: milestone (when enabled) > effective (virtual) priority > affinity tier > deadline.
-  // Pre-compute fp and milestonesProjects once to avoid repeated config reads inside the sort comparator.
+  // Sort by: relative milestone position > effective priority > affinity tier > deadline.
+  //
+  // Relative milestone position: for each milestone-enabled project, sort its
+  // milestones lexicographically and assign positions 0, 1, 2, ... starting from
+  // the earliest milestone that has open (candidate) tasks.  Projects without
+  // milestones get position 0 (single implicit milestone).  This makes milestone
+  // ordering globally consistent and transitive across projects.
   const fp = focusProject();
   const milestonesProjects = milestonesEnabledProjects();
-  const anyMilestones = milestonesProjects.size > 0;
   // Build affinity lookup once for tie-breaking
   const affinity = buildAffinityLookup(allTasksForAffinity, tasksInSlots);
-  candidates.sort((a, b) => {
-    if (anyMilestones) {
-      const aMKey = milestoneKey(a.milestone, a.project, milestonesProjects);
-      const bMKey = milestoneKey(b.milestone, b.project, milestonesProjects);
-      const mDiff = aMKey.localeCompare(bMKey);
-      if (mDiff !== 0) return mDiff;
+
+  // Compute relative milestone positions per project
+  const milestonePosition = new Map<string, number>(); // key: "project\0milestone" → position
+  if (milestonesProjects.size > 0) {
+    // Collect distinct milestones per project from candidates
+    const projectMilestones = new Map<string, Set<string>>();
+    for (const c of candidates) {
+      if (!milestonesProjects.has(c.project) || !c.milestone) continue;
+      let ms = projectMilestones.get(c.project);
+      if (!ms) { ms = new Set(); projectMilestones.set(c.project, ms); }
+      ms.add(c.milestone);
     }
+    // Sort milestones lexicographically and assign positions
+    for (const [project, ms] of projectMilestones) {
+      const sorted = [...ms].sort();
+      for (let i = 0; i < sorted.length; i++) {
+        milestonePosition.set(`${project}\0${sorted[i]}`, i);
+      }
+    }
+  }
+
+  function relMilestonePos(c: Candidate): number {
+    if (!c.milestone || !milestonesProjects.has(c.project)) return 0;
+    return milestonePosition.get(`${c.project}\0${c.milestone}`) ?? 0;
+  }
+
+  candidates.sort((a, b) => {
+    // Relative milestone position (globally comparable, 0 = earliest/no milestone)
+    const mp = relMilestonePos(a) - relMilestonePos(b);
+    if (mp !== 0) return mp;
+    // Effective priority (with focus project boost)
     const pd = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
     if (pd !== 0) return pd;
     const td = affinity.getTier(a.id) - affinity.getTier(b.id);
