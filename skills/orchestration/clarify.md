@@ -2,15 +2,11 @@
 
 You are `{{AGENT_NAME}}` (`{{AGENT_PROVIDER}}`) in `{{WORKTREE_PATH}}`.
 
-Task spec:
-
 {{TASK_SPEC}}
 
 Peer status: `{{PEER_STATUS}}`
 
-Identify ambiguities, hidden assumptions, and the best implementation direction. If a question is blocking, state it explicitly in `{{PLAN_FILE}}`.
-
-When finished:
+Identify ambiguities, hidden assumptions, and the best implementation direction. Write blocking questions to `{{PLAN_FILE}}`.
 
 ```sh
 printf '%s|%s|clarified approach\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
