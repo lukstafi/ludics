@@ -169,16 +169,36 @@ export function flowReady(): void {
       (t) =>
         t.status === "ready" &&
         (!t.dependencies.blocked_by || t.dependencies.blocked_by.length === 0),
-    )
-    .sort((a, b) => {
-      // Milestone sort (when any project has milestones enabled): earlier milestones first
-      if (anyMilestones) {
-        const aMKey = milestoneKey(a.milestone, a.project, milestonesProjects);
-        const bMKey = milestoneKey(b.milestone, b.project, milestonesProjects);
-        const mDiff = aMKey.localeCompare(bMKey);
-        if (mDiff !== 0) return mDiff;
+    );
+
+  // Compute relative milestone positions per project (same logic as maybeFillEmptySlots)
+  const milestonePosition = new Map<string, number>();
+  if (anyMilestones) {
+    const projectMilestones = new Map<string, Set<string>>();
+    for (const c of ready) {
+      if (!milestonesProjects.has(c.project) || !c.milestone) continue;
+      let ms = projectMilestones.get(c.project);
+      if (!ms) { ms = new Set(); projectMilestones.set(c.project, ms); }
+      ms.add(c.milestone);
+    }
+    for (const [project, ms] of projectMilestones) {
+      const sorted = [...ms].sort();
+      for (let i = 0; i < sorted.length; i++) {
+        milestonePosition.set(`${project}\0${sorted[i]}`, i);
       }
-      // Pass pre-computed fp to avoid O(n log n) config reads during sorting
+    }
+  }
+
+  function relMilestonePos(t: { milestone?: string; project: string }): number {
+    if (!t.milestone || !milestonesProjects.has(t.project)) return 0;
+    return milestonePosition.get(`${t.project}\0${t.milestone}`) ?? 0;
+  }
+
+  ready.sort((a, b) => {
+      // Relative milestone position (globally comparable, 0 = earliest/no milestone)
+      const mp = relMilestonePos(a) - relMilestonePos(b);
+      if (mp !== 0) return mp;
+      // Effective priority (with focus project boost)
       const pDiff = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
       if (pDiff !== 0) return pDiff;
       const tDiff = affinity.getTier(a.id) - affinity.getTier(b.id);

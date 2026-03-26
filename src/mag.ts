@@ -10,6 +10,7 @@ import { getUrl } from "./network.ts";
 import { federationShouldRunMag } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
+import { readOrchestrationState } from "./orchestration/state.ts";
 import { isElaborated } from "./tasks/elaboration.ts";
 import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
 import {
@@ -1893,13 +1894,19 @@ function maybeQueueProposals(): void {
 
   const candidates: string[] = [];
 
-  for (const [, block] of blocks) {
+  for (const [slotNum, block] of blocks) {
     if (candidates.length >= 2) break;
     const process = getProcess(block).trim();
     if (!process || process === "(empty)") continue;
 
     const taskId = getTask(block).trim();
     if (!taskId || taskId === "null") continue;
+
+    // Skip if the slot has an active orchestration session (agents are already working)
+    const orchState = readOrchestrationState(slotNum);
+    if (orchState && orchState.phase !== "setup") continue;
+    const sessionStarted = getSessionStarted(block).trim();
+    if (sessionStarted && sessionStarted !== "null") continue;
 
     // Read task file — skip terminal statuses, queue draft if no proposal yet
     const taskFile = join(tasksDir, `${taskId}.md`);
