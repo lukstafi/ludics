@@ -4,7 +4,7 @@ Push and create a PR from `{{WORKTREE_PATH}}`. Write **only the bare PR URL** to
 
 ```sh
 git push -u origin HEAD
-gh pr create --title "<concise title>" --body "<description>"
+gh pr create --title "<concise title>" --body "<description>" | tee "{{PR_FILE}}"
 ```
 
 ```sh
