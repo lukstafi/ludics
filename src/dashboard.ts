@@ -907,19 +907,32 @@ export function dashboardStop(): void {
     }
     const pids = result.stdout.toString().trim().split("\n").filter(Boolean);
     const myPid = String(process.pid);
-    let killed = 0;
+    const targetPids: number[] = [];
     for (const pid of pids) {
       if (pid.trim() === myPid) continue;
+      const n = parseInt(pid.trim(), 10);
       try {
-        process.kill(parseInt(pid.trim(), 10), "SIGTERM");
-        killed++;
+        process.kill(n, "SIGTERM");
+        targetPids.push(n);
       } catch { /* already dead */ }
     }
-    if (killed > 0) {
-      console.error(`ludics: stopped dashboard server (${killed} process${killed > 1 ? "es" : ""})`);
-    } else {
+    if (targetPids.length === 0) {
       console.error("ludics: no dashboard server running");
+      return;
     }
+    // Wait for processes to die, escalate to SIGKILL
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const alive = targetPids.filter((p) => { try { process.kill(p, 0); return true; } catch { return false; } });
+      if (alive.length === 0) break;
+      Bun.sleepSync(100);
+    }
+    for (const p of targetPids) {
+      try { process.kill(p, "SIGKILL"); } catch { /* already dead */ }
+    }
+    // Wait for port to free
+    Bun.sleepSync(500);
+    console.error(`ludics: stopped dashboard server (${targetPids.length} process${targetPids.length > 1 ? "es" : ""})`);
   } catch {
     console.error("ludics: failed to find dashboard server process");
   }
