@@ -182,11 +182,11 @@ export function buildSkillContext(
     .join("\n");
   const _cfg = loadConfigSync();
   const _projectEntry = (_cfg.projects ?? []).find((p) => {
-    // 1. Explicit path: expand ~/ and compare directly — no existsSync, handles non-existent checkouts
+    // 1. Explicit path: expand ~/ and normalize trailing slash, compare directly — no existsSync
     if (p.path) {
-      const expanded = String(p.path).startsWith("~/")
+      const expanded = (String(p.path).startsWith("~/")
         ? join(process.env.HOME ?? "~", String(p.path).slice(2))
-        : String(p.path);
+        : String(p.path)).replace(/\/+$/, "");
       if (state.projectDir === expanded || state.projectDir.startsWith(expanded + "/")) return true;
     }
     // 2. Fallback: match basename(projectDir) against project name or repo tail (case-insensitive)
