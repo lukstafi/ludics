@@ -108,9 +108,10 @@ export function orchestratedThreadTitle(slot: number, role: string, taskId: stri
 }
 
 function defaultTitle(ctx: AdapterContext, workspacePath: string): string {
-  if (ctx.taskId && ctx.taskId !== "null") return ctx.taskId;
-  if (ctx.process && ctx.process !== "(empty)") return ctx.process;
-  return basename(workspacePath) || `slot-${ctx.slot}`;
+  const prefix = `s${ctx.slot}.`;
+  if (ctx.taskId && ctx.taskId !== "null") return `${prefix}${ctx.taskId}`;
+  if (ctx.process && ctx.process !== "(empty)") return `${prefix}${ctx.process}`;
+  return `${prefix}${basename(workspacePath) || "thread"}`;
 }
 
 function parseArgs(raw: string): string[] {
