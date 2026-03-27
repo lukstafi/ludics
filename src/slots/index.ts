@@ -676,7 +676,7 @@ export async function slotResume(slotNum: number): Promise<void> {
         const placeholders = storedThreadIds.map(() => "?").join(",");
         const result = db.run(
           `UPDATE projection_threads SET deleted_at = NULL WHERE thread_id IN (${placeholders}) AND deleted_at IS NOT NULL`,
-          ...storedThreadIds,
+          storedThreadIds,
         );
         if (result.changes > 0) {
           console.error(`ludics: undeleted ${result.changes} soft-deleted thread(s) for resume`);
