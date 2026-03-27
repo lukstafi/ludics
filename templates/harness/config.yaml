@@ -8,7 +8,8 @@ slots:
 
 projects:
   - name: ocannl
-    repo: lukstafi/ocannl
+    repo: ahrefs/ocannl               # upstream — used for issue syncing (tasks sync)
+    staging_repo: lukstafi/ocannl-staging  # staging fork — where PRs are created
     issues: true
 
   - name: ppx-minidebug

@@ -1,5 +1,5 @@
 # Create PR (Coder)
-
+{{STAGING_REPO_NOTE}}
 Push and create a PR from `{{WORKTREE_PATH}}`. Write **only the bare PR URL** to `{{PR_FILE}}`.
 
 ```sh
