@@ -135,7 +135,7 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 - Dependency graph: `tsort` for topological order
 - Priority filtering: `jq` for sorting and selection
 
-**Skills system** (`skills/` directory, 20 Markdown files — 14 skills + 6 workers):
+**Skills system** (`skills/` directory, 20 Markdown files — 13 skills + 6 workers + shared conventions):
 
 | Skill | Purpose | Isolation |
 |-------|---------|-----------|
@@ -157,6 +157,18 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 Skills are Markdown files with embedded instructions for Claude Code. Heavy skills use an **orchestrator/worker pattern** for context isolation — see [Skill Context Isolation](#skill-context-isolation) below.
 
 **Elaboration vs. Proposal timing**: Elaborations run as early as possible — immediately when tasks are created or during briefing — so that Mag has detailed specs for dependency analysis, slot assignment, and priority decisions. Proposals are deferred until a task is actually assigned to a slot, giving the proposal the freshest codebase state and cross-task context. Since proposals are the last step before a coding agent starts work, they benefit from a fresh Opus context window with maximum brain power for disambiguating scope, surfacing staleness, and deciding whether to split multi-concern tasks.
+
+**Auto-start decision** (`evaluateAutoStartDecisionPure` in `src/mag.ts`):
+
+When a proposal is ready, ludics evaluates whether to automatically launch a coding session or defer to the user:
+
+1. If `autonomy` config is `manual` or `suggest` → defer to user
+2. If worker confidence is not `high` → defer
+3. **Safety net**: scan rationale for ambiguity signals (`"ambiguous"`, `"unclear"`, `"open question"`, `"speculative"`, `"uncertain scope"`) → defer despite "high" confidence
+4. If no slot available → defer
+5. Otherwise → auto-start
+
+Exposed via `ludics auto-start-evaluate <taskId> [high|low] [rationale...]`.
 
 **How automation invokes Mag:**
 
@@ -246,10 +258,10 @@ allowed-tools: Read, Bash, Glob, Grep, Write
 
 The orchestration engine (`src/orchestration/`, ~1.5K lines) runs multi-agent coding workflows within slots. It implements the phase state machine, skill dispatch, peer coordination, and merge logic that were previously handled by agent-duo's Bash scripts.
 
-**Phases** (23 total, defined in `src/orchestration/phases.ts`):
+**Phases** (20 total, defined in `src/orchestration/phases.ts`):
 
 ```
-setup → [gather] → [clarify] → [pushback] → [plan] → [plan-review]
+setup → [gather] → [clarify] → [pushback] → [plan] → [plan-merge] → [plan-review]
       → work → review → [update-docs]
       → [pr-create] → [pr-comments]
       → [merge-vote] → [merge-debate] → [merge-execute] → [merge-review] → [merge-amend]
@@ -330,11 +342,21 @@ Multi-agent merge uses a voting protocol:
 - Debate phase if agents disagree
 - Execute → review → amend cycle for the actual merge
 
-**Pair mode**:
+**Pair mode — collaborative planning workflow**:
 
-In `pair` mode, agents have distinct roles:
-- **Coder**: clarify → plan → work (writes code)
-- **Reviewer**: gather → pushback → plan-review → review (provides feedback)
+In `pair` mode, agents have distinct roles with a structured planning collaboration:
+- **Coder**: clarify → plan → plan-merge → work → pr-create (writes code)
+- **Reviewer**: gather → pushback → plan → plan-review → review (provides feedback)
+
+The planning phases implement an iterative merge-and-review cycle:
+
+1. **Plan** — both agents write independent plans in parallel (`round-N-{agent}.md`)
+2. **Plan-merge** (coder only) — coder reads both plans and produces a merged plan (`round-N-merged-{planMergeRound}.md`), integrating the strongest approaches from each
+3. **Plan-review** (reviewer only) — reviewer votes `APPROVE` or `REQUEST_CHANGES` (`plan-merge-{planMergeRound}-{agent}.md`)
+4. If `REQUEST_CHANGES` and `planMergeRound < 3`: loop back to plan-merge with reviewer feedback
+5. If `planMergeRound >= 3` or `APPROVE`: proceed to work phase
+
+This cycle ensures both agents contribute to the plan while keeping the coder as the single integrator, avoiding merge conflicts in the plan itself.
 
 Phase-specific templates exist for each role (`pair-coder-*.md`, `pair-reviewer-*.md`).
 
@@ -362,6 +384,10 @@ ludics ──WebSocket──> t3code server ──spawns──> AI agents (Claud
 - Port scanning (3773+) for available ports
 - Health check via HTTP and process inspection
 - Per-slot state: `{harnessDir}/t3code/slot-{n}.json` (thread IDs, orchestration metadata)
+
+**Concurrency safety** (prevents race conditions when multiple callers invoke `ensureServer()` simultaneously):
+- **File-based lock** (`server.lock`) — atomic `wx` create; dead-process stealing via PID check; 20s timeout before forced acquisition
+- **Startup grace period** (15s) — if an existing server process was started recently, poll for readiness instead of killing it; prevents crash loops where concurrent callers SIGTERM each other's startups
 
 **Provider mapping**:
 - `codex` → `codex` (wire format)
@@ -539,6 +565,22 @@ interface LudicsEvent {
 - `emitEvent()` — best-effort append to `journal/events.jsonl` (never fails caller)
 - Events are emitted by the orchestration runner (phase transitions), adapters, and slot operations
 - Queryable via CLI with filters: `--type`, `--task`, `--scope`, `--source`, `--since`, `--limit`
+
+### Retrospectives
+
+When a task completes, ludics collects a retrospective (`src/retrospective.ts`, ~555 lines) — a structured record of the entire orchestration lifecycle for post-hoc analysis.
+
+**Data collected:**
+- **Phase timeline** — ordered phases traversed, reconstructed from `journal/events.jsonl` phase_transition events
+- **Verdicts** — `APPROVE` / `REQUEST_CHANGES` / `timeout` per review and plan-review round, parsed from artifact files (`round-N-{agent}.md`, `plan-merge-M-{agent}.md`)
+- **Thread transcripts** — last assistant message from each turn in each t3code thread, annotated with phase-at-timestamp
+- **Metadata** — task ID, agents, mode, rounds, PR URL, proposal path, suggest-refactor and workflow-feedback summaries
+
+**Collection paths:**
+- **Primary** (`collectAndWriteRetrospective`) — called by the orchestration runner when entering `done` phase, with full `OrchestrationState` available
+- **Fallback** (`collectRetrospectiveFallback`) — called by Mag's keepalive before thread cleanup, using only task frontmatter (for orphaned/manually-completed tasks)
+
+**Output:** JSON files in `retrospectives/` directory, viewable via the dashboard's retrospective page (`templates/dashboard/retrospective.html`). The dashboard shows phase badges, verdict history, per-agent thread cards, and a chronological turn log.
 
 ### Session Discovery
 
@@ -767,6 +809,7 @@ ludics/
 │   ├── triggers.ts                   # launchd/systemd trigger generation
 │   ├── dashboard.ts                  # Dashboard data generation
 │   ├── dashboard-server.ts           # HTTP server for dashboard
+│   ├── retrospective.ts              # Retrospective collection at task completion (~555 lines)
 │   ├── network.ts                    # Hostname/URL helpers (Tailscale)
 │   ├── federation.ts                 # Multi-machine leader election
 │   ├── init.ts                       # Setup pipeline
@@ -774,7 +817,7 @@ ludics/
 │   ├── orchestration/                # Multi-agent workflow engine (~1.5K lines)
 │   │   ├── index.ts                  # Orchestration CLI (status, confirm, interrupt, skip, log)
 │   │   ├── state.ts                  # OrchestrationState, AgentConfig, AgentRuntimeState
-│   │   ├── phases.ts                 # 23-phase state machine, transition rules
+│   │   ├── phases.ts                 # 20-phase state machine, transition rules
 │   │   ├── runner.ts                 # Main orchestration loop (~330 lines)
 │   │   ├── skills.ts                 # Template resolution, context building, substitution
 │   │   ├── peer-sync.ts             # .peer-sync/ directory management
@@ -846,7 +889,7 @@ ludics/
 │   ├── ludics-verify-completion.md   # Orchestrator
 │   ├── ludics-verify-completion-worker.md # Worker (context: fork)
 │   └── worker-conventions.md         # Shared worker conventions
-├── skills/orchestration/             # Orchestration phase templates (25 files)
+├── skills/orchestration/             # Orchestration phase templates (29 files)
 │   ├── clarify.md                    # Clarify phase instructions
 │   ├── gather.md                     # Gather context phase
 │   ├── pushback.md                   # Reviewer pushback phase
@@ -866,10 +909,14 @@ ludics/
 │   ├── final-merge.md                # Final merge
 │   ├── pair-coder-clarify.md         # Pair mode: coder clarify
 │   ├── pair-coder-plan.md            # Pair mode: coder plan
+│   ├── pair-coder-plan-merge.md      # Pair mode: coder merges independent plans
+│   ├── pair-coder-pr-create.md       # Pair mode: coder PR creation
+│   ├── pair-coder-update-docs.md     # Pair mode: coder update docs
 │   ├── pair-coder-work.md            # Pair mode: coder work
 │   ├── pair-reviewer-clarify.md      # Pair mode: reviewer clarify
 │   ├── pair-reviewer-gather.md       # Pair mode: reviewer gather
-│   ├── pair-reviewer-plan-review.md  # Pair mode: reviewer plan review
+│   ├── pair-reviewer-plan.md         # Pair mode: reviewer independent plan
+│   ├── pair-reviewer-plan-review.md  # Pair mode: reviewer votes on merged plan
 │   ├── pair-reviewer-pushback.md     # Pair mode: reviewer pushback
 │   └── pair-reviewer-review.md       # Pair mode: reviewer review
 ├── templates/
@@ -905,6 +952,7 @@ your-private-repo/
     │   └── slot-{n}.json         # OrchestrationState for active orchestrations
     ├── t3code/                    # t3code integration state
     │   ├── server.json           # Server connection record (pid, urls, auth)
+    │   ├── server.lock           # Startup lock (prevents concurrent ensureServer races)
     │   └── slot-{n}.json        # Per-slot thread/metadata
     ├── journal/                   # Daily logs
     │   ├── 2026-01-31.md
@@ -919,6 +967,8 @@ your-private-repo/
     │   ├── briefing-context.md    # Pre-computed briefing context
     │   └── memory/                # Long-term patterns
     │       └── user-preferences.md
+    ├── retrospectives/            # Post-completion retrospective data
+    │   └── {taskId}.json         # Per-task retrospective JSON
     ├── federation/                # Multi-machine coordination
     │   ├── leader.json            # Current leader
     │   └── heartbeats/            # Per-node heartbeat files
@@ -935,6 +985,7 @@ ludics provides a web dashboard for at-a-glance status monitoring (`src/dashboar
 - `generateSlots()` → JSON with slot status, task content (Markdown), preemption info
 - `generateReady()` → ready tasks sorted by priority/deadline
 - `generateProjects()` → project statistics
+- `generateRecentlyCompleted()` → recently completed tasks with retrospective links
 
 **Serving:** Node.js-compatible HTTP server on configurable port (default 7678).
 
@@ -954,8 +1005,10 @@ ludics provides a web dashboard for at-a-glance status monitoring (`src/dashboar
 
 **Features:**
 - Slot tiles with task Markdown content, scrollable details
+- Recently-completed tasks tile with links to retrospective viewer
 - Project status indicators (priority projects highlighted)
 - Dynamic details panel on tile click
+- Retrospective viewer page (`retrospective.html`) — phase timeline, verdict history, chronological turn log
 - Responsive layout filling the viewport
 - Read-only — all control via CLI
 
@@ -1033,6 +1086,7 @@ ludics mag health-check        # Check for deadlines, issues
 ludics mag message "text"      # Send async message to Mag
 ludics mag queue               # Show pending queue requests
 ludics mag context             # Pre-compute briefing context file
+ludics auto-start-evaluate <id> [confidence] [rationale...]  # Evaluate auto-start decision
 
 # Session discovery
 ludics sessions [--json]       # Discover and classify all agent sessions
@@ -1109,6 +1163,7 @@ ludics quote                   # Print a random quote
 | Task file corrupted | YAML parse fails | Skip file; notify user |
 | Federation: leader down | Heartbeat timeout (900s) | Next node by seniority becomes leader |
 | t3code server crashes | Health check, PID inspection | `ludics t3code start` restarts; orchestration state persists |
+| t3code concurrent startup | File lock + grace period | `server.lock` serializes callers; 15s grace prevents SIGTERM of starting processes |
 | Orchestration runner crashes | PID check in readState | Restart via `slot resume`; state persists in `orchestration/slot-{n}.json`; phase token dedup prevents duplicate agent dispatches |
 | Phase timeout | Runner polling detects expiry | Automatic transition to next phase |
 
