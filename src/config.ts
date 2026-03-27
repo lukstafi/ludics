@@ -311,7 +311,7 @@ export function focusProject(): string | null {
   const config = loadConfigSync();
   const mag = config.mag as Record<string, unknown> | undefined;
   const fp = mag?.focus_project;
-  return typeof fp === "string" && fp ? fp : null;
+  return typeof fp === "string" && fp ? fp.toLowerCase() : null;
 }
 
 /**
