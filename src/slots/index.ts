@@ -548,6 +548,15 @@ export async function slotStart(slotNum: number): Promise<void> {
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
+  if (ctx.mode === "t3code" && !ctx.adapterArgs.trim()) {
+    throw new Error(
+      `slot ${slotNum}: t3code adapter requires orchestration flags.\n` +
+      `  Reassign with one of:\n` +
+      `    ludics slot ${slotNum} assign <task> -a t3code --pair --coder <provider> --reviewer <provider>\n` +
+      `    ludics slot ${slotNum} assign <task> -a t3code -A "<flags>"`
+    );
+  }
+
   // Guard: check for recoverable orchestration state matching current task
   if (ctx.taskId) {
     const orchState = readOrchestrationState(slotNum);
@@ -827,18 +836,72 @@ export async function runSlot(args: string[]): Promise<void> {
       let adapter = "manual";
       let session = "";
       let path = "";
-      let adapterArgs = "";
+      const adapterArgFragments: string[] = [];
+      let hasDirectOrchFlags = false;    // true only if a direct shorthand flag was used (not -A)
+      let firstDirectOrchFlagIdx = -1;   // fragment index of the first direct --coder/--reviewer/--plan
       for (let i = 3; i < args.length; i++) {
         switch (args[i]) {
           case "-a": adapter = args[++i] ?? "manual"; break;
           case "-s": session = args[++i] ?? ""; break;
           case "-p": path = args[++i] ?? ""; break;
           case "-A":
-          case "--adapter-args":
-            adapterArgs = args[++i] ?? "";
+          case "--adapter-args": {
+            const raw = args[++i];
+            if (raw === undefined) throw new Error("--adapter-args requires a value");
+            adapterArgFragments.push(raw);   // raw payload — does NOT set hasDirectOrchFlags
+            break;
+          }
+          case "--pair":
+            hasDirectOrchFlags = true;
+            // --pair itself is the mode flag; no need to record it as an auto-prepend target
+            adapterArgFragments.push("--pair");
+            break;
+          case "--coder": {
+            const val = args[++i];
+            if (!val || val.startsWith("-")) throw new Error("--coder requires a provider value (got a flag instead)");
+            hasDirectOrchFlags = true;
+            if (firstDirectOrchFlagIdx === -1) firstDirectOrchFlagIdx = adapterArgFragments.length;
+            adapterArgFragments.push(`--coder ${val}`);
+            break;
+          }
+          case "--reviewer": {
+            const val = args[++i];
+            if (!val || val.startsWith("-")) throw new Error("--reviewer requires a provider value (got a flag instead)");
+            hasDirectOrchFlags = true;
+            if (firstDirectOrchFlagIdx === -1) firstDirectOrchFlagIdx = adapterArgFragments.length;
+            adapterArgFragments.push(`--reviewer ${val}`);
+            break;
+          }
+          case "--plan":
+            hasDirectOrchFlags = true;
+            if (firstDirectOrchFlagIdx === -1) firstDirectOrchFlagIdx = adapterArgFragments.length;
+            adapterArgFragments.push("--plan");
             break;
         }
       }
+
+      // Guard: shorthand orchestration flags require the t3code adapter.
+      // Raw -A/--adapter-args payloads are not subject to this check.
+      if (hasDirectOrchFlags && adapter !== "t3code") {
+        throw new Error(
+          `--pair/--coder/--reviewer/--plan flags require adapter "t3code" (got "${adapter}")`
+        );
+      }
+
+      // Auto-prepend --pair when any direct orchestration shorthand is present without an
+      // explicit mode flag. Splice at the position of the first such shorthand to preserve
+      // fragment ordering (raw -A fragments that precede it are left undisturbed).
+      // Also scan raw -A fragments for an existing mode word (--pair or --duo) so we don't
+      // clobber an intentional duo-mode config passed via --adapter-args.
+      const hasModeDirectFlag = adapterArgFragments.includes("--pair");
+      const hasModeInRawFragments = adapterArgFragments.some(
+        f => /(?:^|\s)--(?:pair|duo)(?:\s|$)/.test(f)
+      );
+      if (hasDirectOrchFlags && !hasModeDirectFlag && !hasModeInRawFragments && firstDirectOrchFlagIdx !== -1) {
+        adapterArgFragments.splice(firstDirectOrchFlagIdx, 0, "--pair");
+      }
+
+      const adapterArgs = adapterArgFragments.join(" ");
       slotAssign(slotNum, taskOrDesc, adapter, session, path, adapterArgs);
       break;
     }
