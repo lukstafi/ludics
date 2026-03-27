@@ -1,6 +1,6 @@
 // Slot operations — list, show, assign, clear, note, start, stop, refresh
 
-import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { harnessDir, slotsFilePath, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
 import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
@@ -257,6 +257,12 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
 
   blocks.set(slotNum, emptyBlock(slotNum));
   writeSlotFile(file, blocks, count);
+
+  // Remove task-specific orchestration state
+  const orchFile = join(harnessDir(), "orchestration", `slot-${slotNum}.json`);
+  if (existsSync(orchFile)) {
+    try { unlinkSync(orchFile); } catch { /* ignore */ }
+  }
 
   if (taskId && taskId !== "null") {
     taskUpdateForSlotClear(taskId, finalStatus);
