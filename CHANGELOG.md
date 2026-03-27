@@ -1,10 +1,55 @@
 # Changelog
 
-## current
+## v0.5.0 — 2026-03-27
+
+Major release. Full migration to t3code as the agent runtime, multi-agent orchestration engine with collaborative pair-mode planning, retrospective collection, dashboard action buttons, crash recovery, and milestone-aware scheduling.
+
+### Breaking changes
+
+- **Legacy adapters removed** — `agent-duo`, `agent-pair-claude`, `agent-pair-codex` adapters are removed; all orchestrated workflows now run through the `t3code` adapter. Legacy adapter names in config and task frontmatter are auto-mapped to `t3code` via `normalizeLaunchAdapter()`.
+- **Session discovery replaced** — Legacy tmux/ttyd-based session discovery is replaced with t3code snapshot queries.
 
 ### New features
 
+- **t3code orchestration engine** — Full phase-driven multi-agent workflow engine (`src/orchestration/`) with 20 phases, artifact validation, dispatch-scoped turn lifecycle tracking, and identity-based phase transitions. Supports duo (same roles) and pair (coder + reviewer) modes with per-role skill templates.
+- **Collaborative pair-mode planning** — Independent plans from both agents are merged by the coder in a `plan-merge` phase, then reviewed by the reviewer in `plan-review`. Up to 3 iterations of merge→review before forcing forward to work.
+- **Retrospective collection** — Structured post-task records capturing phase timeline, review verdicts, agent thread transcripts (with phase annotations), and artifact summaries. Primary collection at orchestration completion; fallback collection from task frontmatter for orphaned tasks. Viewable via dashboard retrospective page.
+- **Auto-start decision logic** — Pure function evaluating whether to auto-launch a coding session based on autonomy config, worker confidence, rationale ambiguity signals, and slot availability. CLI: `ludics auto-start-evaluate`.
+- **Crash recovery** — `ludics slot <n> resume` recovers crashed t3code orchestrated sessions by validating persisted thread/orchestration state, killing stale runner PIDs, and spawning a new runner from saved state. Phase-token deduplication prevents duplicate agent dispatches.
+- **Hold/resume queue toggle** — Dashboard button to suppress automatic slot assignment and proposal generation. Controlled by `mag/queue-hold` sentinel file.
+- **Slot mode toggle** — `ludics slot <n> mode <mode>` switches a slot's adapter (e.g., manual ↔ t3code) with active-session guards and task frontmatter sync.
+- **Effort-based orchestration flags** — `selectOrchestrationFlags(effort)` auto-selects pair/duo mode, planning phases, and model based on task effort (small → Sonnet coder, no pre-work; medium → Opus coder, plan; large → Opus coder, plan + gather).
+- **Milestone-aware scheduling** — Tasks can have a `milestone` field synced from GitHub. Flow sorting and auto-fill respect relative milestone positions within each project. Dashboard displays milestones.
+- **Automated PR workflow** — PR comment polling loop with quiet-period transitions, Codex `+1` reaction triggers immediate final-merge, rebase-and-merge strategy, PR file validation gates.
+- **Dashboard action buttons** — Slot tiles have done/abandon/postpone buttons for active slots, start button for assigned-but-idle slots, click-to-promote in ready queue, mode toggle button, and contextual links to t3code/proposals/PRs.
+- **Dashboard pages** — Proposal viewer, retrospective viewer, recently-completed tasks tile, briefing page, notifications iframe (ntfy.sh embedded).
+- **Tasks unmerge** — `ludics tasks unmerge <source>` reverses a previous task merge, restoring source frontmatter and cleaning up cross-references.
+- **t3code thread interaction** — `ludics t3code read`, `ludics t3code send` for reading agent responses and sending messages to t3code threads.
+- **Workflow progress notifications** — Phase transitions, review verdicts, and PR events emit ntfy notifications with 5s curl timeout to prevent blocking.
 - **TypeScript launch routing** — Ntfy button-tap "Launch agent-X for task-Y" and followup actions are handled directly in `mag.ts` (slot select, assign, start), removing the dedicated launch skill.
+- **Configurable orchestration defaults** — `adapters.t3code.default_mode`, `default_coder`, `default_reviewer` in config; per-task `adapter_args` override.
+- **Relation-affinity tie-breaking** — Task sorting prefers tasks related to currently active slot work.
+- **Focus project boost** — Virtual priority boost for the configured focus project in auto-fill and flow ready.
+
+### Fixes
+
+- **t3code server race condition** — File-based lock (`server.lock`) + 15s startup grace period prevent concurrent `ensureServer()` callers from SIGTERM-ing each other's startups.
+- **Dashboard restart** — Waits for old server to die before starting new one.
+- **Orchestration state cleanup** — Orchestration state JSON is deleted on slot clear.
+- **Stale runner on resume** — Kills stale orchestration runner PID before spawning new one; validates task matches orchestration state.
+- **Phase transition hardening** — Identity-based lifecycle tracking, artifact validation gates, env propagation to subprocesses.
+- **Turn freshness** — `Date.parse()` for comparison, dispatch-scoped turn lifecycle replaces timestamp-freshness heuristics, `session.status + activeTurnId` as authoritative signal.
+- **PR-create deadlock** — Fixed deadlock in PR creation phase; preserve existing Claude settings on merge.
+- **Milestone field sync** — Clears local milestone when GitHub issue milestone is removed.
+- **Case-insensitive project matching** — `focusProject()` normalized to lowercase.
+- **Worktree symlinks** — `node_modules` symlinked into worktrees for typecheck/test support.
+- **Various orchestration fixes** — Null-snapshot guard, root-worktree stop-hook resolution, empty taskId handling, review verdict notification using parsed verdict, stale PR/t3code link display, legacy effort value normalization.
+
+### Removals
+
+- **Agent-duo/pair adapters** — Removed in favor of t3code adapter.
+- **Legacy session discovery** — tmux/ttyd discovery modules removed.
+- **Dead notification code** — Unused notification helpers cleaned up.
 
 ## v0.4.0 — 2026-03-02
 
