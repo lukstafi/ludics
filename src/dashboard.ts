@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync, statSync } from "fs";
 import { join, dirname } from "path";
 import YAML from "yaml";
-import { harnessDir, loadConfigSync, slotsFilePath } from "./config.ts";
+import { harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, focusProject, milestonesEnabledProjects } from "./config.ts";
 import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted } from "./slots/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl } from "./network.ts";
@@ -282,6 +282,7 @@ interface DashboardTask {
   priority: string;
   context: string;
   deadline: string | null;
+  milestone: string | null;
   completed: string | null;
   isCompleted: boolean;
   url: string | null;
@@ -358,6 +359,7 @@ function readDashboardTasks(): DashboardTask[] {
         project: String(data.project ?? ""),
         context: String(data.context ?? ""),
         deadline: data.deadline ? String(data.deadline) : null,
+        milestone: isNonNullValue(data.milestone) ? String(data.milestone).trim() : null,
         completed: isNonNullValue(data.completed) ? String(data.completed) : null,
         isCompleted: isNonNullValue(data.completed),
         url: data.url ? String(data.url) : null,
@@ -387,10 +389,40 @@ function generateReady(tasks: DashboardTask[]): ReadyTask[] {
       project: task.project,
       context: task.context,
       deadline: task.deadline,
+      milestone: task.milestone,
     }));
 
+  // Sort using the same logic as flow.ts: milestone position → priority → deadline
+  const fp = focusProject();
+  const milestonesProjects = milestonesEnabledProjects();
+  const anyMilestones = milestonesProjects.size > 0;
+
+  const milestonePosition = new Map<string, number>();
+  if (anyMilestones) {
+    const projectMilestones = new Map<string, Set<string>>();
+    for (const t of tasks) {
+      if (t.status !== "ready") continue;
+      if (!milestonesProjects.has(t.project) || !t.milestone) continue;
+      let ms = projectMilestones.get(t.project);
+      if (!ms) { ms = new Set(); projectMilestones.set(t.project, ms); }
+      ms.add(t.milestone);
+    }
+    for (const [project, ms] of projectMilestones) {
+      const sorted = [...ms].sort();
+      for (let i = 0; i < sorted.length; i++) {
+        milestonePosition.set(`${project}\0${sorted[i]}`, i);
+      }
+    }
+  }
+  function relMilestonePos(t: { milestone?: string; project: string }): number {
+    if (!t.milestone || !milestonesProjects.has(t.project)) return 0;
+    return milestonePosition.get(`${t.project}\0${t.milestone}`) ?? 0;
+  }
+
   ready.sort((a, b) => {
-    const pd = priorityValue(a.priority) - priorityValue(b.priority);
+    const mp = relMilestonePos(a) - relMilestonePos(b);
+    if (mp !== 0) return mp;
+    const pd = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
     if (pd !== 0) return pd;
     return (a.deadline ?? "9999-99-99").localeCompare(b.deadline ?? "9999-99-99");
   });

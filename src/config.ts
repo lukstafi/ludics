@@ -359,7 +359,7 @@ export function milestonesEnabledProjects(): Set<string> {
   const config = loadConfigSync();
   const result = new Set<string>();
   for (const project of (config.projects ?? [])) {
-    if (project.milestones) result.add(project.name);
+    if (project.milestones) result.add(project.name.toLowerCase());
   }
   return result;
 }

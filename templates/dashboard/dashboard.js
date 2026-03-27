@@ -15,7 +15,7 @@ const CONFIG = {
     refreshInterval: 10000, // 10 seconds
     dataPath: 'data/',
     maxNotifications: 10,
-    maxReadyTasks: 5
+    maxReadyTasks: 12
 };
 
 // State
