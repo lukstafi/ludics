@@ -15,7 +15,7 @@ import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, par
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState } from "../t3code/server.ts";
-import { readOrchestrationState } from "../orchestration/state.ts";
+import { readOrchestrationState, persistState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../adapters/t3code.ts";
 
 function ensureSlotsFile(): string {
@@ -723,6 +723,15 @@ export async function slotResume(slotNum: number): Promise<void> {
       }
     }
   }
+
+  // Reset turnLifecycle for all agents — stale lifecycle data from before the crash
+  // would block phase transitions (isAgentDone returns false for state "running"/"dispatched").
+  // With lifecycle null, the orchestrator trusts peer-sync status files as ground truth.
+  for (const agentName of Object.keys(orchState.agentStates)) {
+    orchState.agentStates[agentName]!.turnLifecycle = null;
+  }
+  orchState.phaseDispatched = false;
+  persistState(orchState, ctx.harnessDir);
 
   // Restart orchestration runner (reuses existing state)
   const newPid = await startOrchestrationProcess(slotNum, ctx.harnessDir, orchState.feature);
