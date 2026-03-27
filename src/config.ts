@@ -15,6 +15,8 @@ export interface AdapterConfigEntry {
 export interface ProjectConfig {
   name: string;
   repo: string;
+  /** Optional staging fork used for PR creation. `repo` remains the upstream for issue syncing. */
+  staging_repo?: string;
   path?: string;
   issues?: boolean;
   priority?: boolean;

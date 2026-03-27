@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
-import { join } from "path";
-import { harnessDir, ludicsRoot } from "../config.ts";
+import { join, basename } from "path";
+import { harnessDir, ludicsRoot, loadConfigSync } from "../config.ts";
 import type { Phase } from "./phases.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { readMergeVotes } from "./merge.ts";
@@ -35,6 +35,8 @@ export interface SkillContext {
   planMergeRound: number;
   peerSyncDir: string;
   doneStatus: string;
+  /** Staging fork for PR creation, or null when not configured. */
+  stagingRepo: string | null;
 }
 
 function readFileIfExists(path: string): string | null {
@@ -178,6 +180,22 @@ export function buildSkillContext(
   const mergeVotes = Object.entries(readMergeVotes(state.peerSyncDir, state.mergeRound))
     .map(([name, vote]) => `${name}: ${vote}`)
     .join("\n");
+  const _cfg = loadConfigSync();
+  const _projectEntry = (_cfg.projects ?? []).find((p) => {
+    // 1. Explicit path: expand ~/ and normalize trailing slash, compare directly — no existsSync
+    if (p.path) {
+      const expanded = (String(p.path).startsWith("~/")
+        ? join(process.env.HOME ?? "~", String(p.path).slice(2))
+        : String(p.path)).replace(/\/+$/, "");
+      if (state.projectDir === expanded || state.projectDir.startsWith(expanded + "/")) return true;
+    }
+    // 2. Fallback: match basename(projectDir) against project name or repo tail (case-insensitive)
+    const dir = basename(state.projectDir).toLowerCase();
+    const repoTail = String(p.repo ?? "").split("/").pop()?.toLowerCase() ?? "";
+    return dir === String(p.name ?? "").toLowerCase() || dir === repoTail;
+  });
+  const stagingRepo = _projectEntry?.staging_repo ?? null;
+
   return {
     phase: state.phase,
     round: state.round,
@@ -210,6 +228,7 @@ export function buildSkillContext(
     mergedMarkerFile: join(state.peerSyncDir, `${agent.name}.merged`),
     peerSyncDir: state.peerSyncDir,
     doneStatus: doneStatusForPhase(state.phase),
+    stagingRepo,
   };
 }
 
@@ -247,6 +266,10 @@ export function substituteTemplate(template: string, ctx: SkillContext): string 
     MERGED_MARKER_FILE: ctx.mergedMarkerFile,
     PEER_SYNC_DIR: ctx.peerSyncDir,
     DONE_STATUS: ctx.doneStatus,
+    STAGING_REPO: ctx.stagingRepo ?? "",
+    STAGING_REPO_NOTE: ctx.stagingRepo
+      ? `\n> **Staging fork**: This project uses a staging fork (\`${ctx.stagingRepo}\`). Create the PR against the staging fork, not the upstream repo.\n`
+      : "",
   };
   return template.replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, key: string) => values[key] ?? "");
 }
