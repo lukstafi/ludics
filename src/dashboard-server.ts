@@ -3,7 +3,7 @@
 // Serves static files from the dashboard directory and lazily regenerates
 // data/*.json files when they become stale (TTL-based).
 
-import { existsSync, readFileSync, writeFileSync, statSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, statSync } from "fs";
 import { resolve, extname, join } from "path";
 import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
@@ -327,6 +327,35 @@ export function startDashboardServer(
           return new Response(JSON.stringify({ priority: newPriority }), {
             headers: { "Content-Type": "application/json" },
           });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: get queue hold state
+      if (pathname === "/api/queue-hold-state") {
+        const holdFile = join(harnessDir(), "mag", "queue-hold");
+        return new Response(JSON.stringify({ held: existsSync(holdFile) }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      // API: set queue hold state (state=true → hold, state=false → resume)
+      if (pathname === "/api/queue-hold") {
+        const stateParam = url.searchParams.get("state");
+        if (stateParam !== "true" && stateParam !== "false") {
+          return new Response("Bad Request: state must be true or false", { status: 400 });
+        }
+        try {
+          const holdFile = join(harnessDir(), "mag", "queue-hold");
+          if (stateParam === "true") {
+            mkdirSync(join(harnessDir(), "mag"), { recursive: true });
+            writeFileSync(holdFile, "");
+          } else {
+            if (existsSync(holdFile)) unlinkSync(holdFile);
+          }
+          lastGenerated = 0;
+          return new Response("OK", { status: 200 });
         } catch (e) {
           return new Response(String(e), { status: 500 });
         }

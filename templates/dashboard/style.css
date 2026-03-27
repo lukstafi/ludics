@@ -576,6 +576,62 @@ main {
     text-decoration: underline;
 }
 
+/* Ready Queue — hold toggle */
+.ready-queue-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: nowrap;
+}
+
+.queue-held-badge {
+    display: none;
+    background-color: var(--warning);
+    color: black;
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+.queue-held-badge.visible {
+    display: inline-block;
+}
+
+.queue-hold-btn {
+    margin-left: auto;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 3px;
+    cursor: pointer;
+    border: 1px solid var(--text-secondary);
+    background: transparent;
+    color: var(--text-secondary);
+    text-transform: none;
+    letter-spacing: 0;
+    white-space: nowrap;
+    transition: border-color 0.15s, color 0.15s;
+}
+
+.queue-hold-btn:hover {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.queue-hold-btn.held {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.queue-hold-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
 /* Ready Queue */
 .ready-queue li {
     display: flex;

@@ -1930,10 +1930,23 @@ function maybeQueueProposals(): void {
   }
 }
 
+// --- Queue hold state ---
+
+/** Returns the path to the queue-hold sentinel file. */
+function queueHoldFilePath(): string {
+  return join(harnessDir(), "mag", "queue-hold");
+}
+
+/** Returns true when the queue is held (auto-assignment suppressed). */
+function isQueueHeld(): boolean {
+  return existsSync(queueHoldFilePath());
+}
+
 // --- Auto-fill empty slots ---
 
 function maybeFillEmptySlots(): void {
   if (startSessionsAutonomy() === "manual") return;
+  if (isQueueHeld()) return; // hold suppresses auto-assignment
 
   // Check if draft-proposal is already in queue
   const qFile = join(harnessDir(), "mag", "queue.jsonl");

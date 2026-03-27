@@ -20,6 +20,7 @@ const CONFIG = {
 
 // State
 let lastUpdate = null;
+let queueHeld = false;
 
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', () => {
@@ -41,6 +42,7 @@ async function fetchAllData() {
         await Promise.all([
             fetchSlots(),
             fetchReadyQueue(),
+            fetchQueueHoldState(),
             fetchNotifications(),
             fetchMagStatus(),
             fetchT3codeLink(),
@@ -633,6 +635,62 @@ async function toggleSlotMode(slotNum, mode) {
     } catch {
         btn.textContent = 'error';
         setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
+    }
+}
+
+// Fetch queue hold state and update UI
+async function fetchQueueHoldState() {
+    try {
+        const response = await fetch('/api/queue-hold-state');
+        if (!response.ok) return;
+        const data = await response.json();
+        queueHeld = data.held;
+        updateQueueHoldUI();
+    } catch { /* ignore */ }
+}
+
+// Update hold button and badge to reflect current queueHeld state
+function updateQueueHoldUI() {
+    const btn = document.getElementById('queue-hold-btn');
+    const badge = document.getElementById('queue-held-badge');
+    if (btn) {
+        btn.textContent = queueHeld ? 'Resume' : 'Hold';
+        if (queueHeld) {
+            btn.classList.add('held');
+        } else {
+            btn.classList.remove('held');
+        }
+    }
+    if (badge) {
+        if (queueHeld) {
+            badge.classList.add('visible');
+        } else {
+            badge.classList.remove('visible');
+        }
+    }
+}
+
+// Toggle the queue hold state via API
+async function toggleQueueHold() {
+    const btn = document.getElementById('queue-hold-btn');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '...';
+    }
+    const newState = !queueHeld;
+    try {
+        const response = await fetch(`/api/queue-hold?state=${newState}`);
+        if (response.ok) {
+            queueHeld = newState;
+            updateQueueHoldUI();
+        } else {
+            // restore button text on failure
+            if (btn) btn.textContent = queueHeld ? 'Resume' : 'Hold';
+        }
+    } catch {
+        if (btn) btn.textContent = queueHeld ? 'Resume' : 'Hold';
+    } finally {
+        if (btn) btn.disabled = false;
     }
 }
 
