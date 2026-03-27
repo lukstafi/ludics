@@ -286,9 +286,14 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
   markActiveAgents(state);
 
   // Reset pr-comments tracking state on phase entry.
+  // Don't dispatch agents yet — wait for actual comments/reviews to arrive.
+  // checkAndRedispatchPrComments will handle the first dispatch when needed.
   if (state.phase === "pr-comments") {
     state.prCommentsLastCheckAt = undefined;
     state.prCommentsQuietSince = undefined;
+    state.phaseDispatched = true;
+    state.currentPhaseToken = undefined;
+    return;
   }
   if (state.phase === "setup") {
     state.phaseDispatched = true;
