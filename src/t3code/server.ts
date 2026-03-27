@@ -36,6 +36,10 @@ const DEFAULT_PORT = 3773;
 const MAX_PORT_SCAN = 50;
 const START_TIMEOUT_MS = 15_000;
 const STOP_TIMEOUT_MS = 5_000;
+/** How long after startedAt we consider a server "too young to kill". */
+const STARTUP_GRACE_MS = 15_000;
+/** How long to wait for another process holding the lock to finish starting. */
+const LOCK_WAIT_MS = 20_000;
 
 /**
  * Resolve the host to bind / advertise.
@@ -149,90 +153,196 @@ export async function serverStatus(
   }
 }
 
+// ---------------------------------------------------------------------------
+// File-based lock to prevent concurrent ensureServer() callers from racing.
+// ---------------------------------------------------------------------------
+
+function lockPath(harnessDir: string): string {
+  return join(t3codeDir(harnessDir), "server.lock");
+}
+
+interface LockContent {
+  pid: number;
+  acquiredAt: string;
+}
+
+function tryAcquireLock(harnessDir: string): boolean {
+  const lp = lockPath(harnessDir);
+  const content: LockContent = { pid: process.pid, acquiredAt: isoNow() };
+  try {
+    // wx = exclusive create — fails if file already exists
+    writeFileSync(lp, JSON.stringify(content) + "\n", { flag: "wx" });
+    return true;
+  } catch {
+    // Lock file exists — check if holder is still alive
+    try {
+      const existing = JSON.parse(readFileSync(lp, "utf-8")) as LockContent;
+      if (existing.pid !== process.pid && processAlive(existing.pid)) {
+        return false; // held by a live process
+      }
+      // Holder is dead — steal the lock
+      writeFileSync(lp, JSON.stringify(content) + "\n");
+      return true;
+    } catch {
+      // Corrupt lock file — steal it
+      writeFileSync(lp, JSON.stringify(content) + "\n");
+      return true;
+    }
+  }
+}
+
+function releaseLock(harnessDir: string): void {
+  try { unlinkSync(lockPath(harnessDir)); } catch { /* ignore */ }
+}
+
+/**
+ * Check whether the recorded server was started recently enough that we should
+ * not kill it — it may still be initialising.
+ */
+function withinStartupGrace(record: T3CodeServerRecord): boolean {
+  if (!record.startedAt) return false;
+  const started = new Date(record.startedAt).getTime();
+  return Date.now() - started < STARTUP_GRACE_MS;
+}
+
 export async function ensureServer(
   options: EnsureServerOptions = {},
 ): Promise<T3CodeServerRecord> {
   const harnessDir = options.harnessDir ?? defaultHarnessDir();
   mkdirSync(t3codeDir(harnessDir), { recursive: true });
 
+  // Fast path: server already running — no lock needed.
   const existing = await serverStatus({ harnessDir });
   if (existing.running && existing.record) return existing.record;
 
-  if (existing.record && inspectManagedServerProcess(existing.record).matchesRecord) {
-    await terminateProcess(existing.record.pid);
-  }
-
-  const host = resolveHost();
-  const port = await findAvailablePort(DEFAULT_PORT, host);
-  const webUrl = `http://${host}:${port}`;
-  const wsUrl = `ws://${host}:${port}`;
-  // Auth token: only use when explicitly provided via env var.
-  // Tailnet-only setups don't need auth; auth doesn't work upstream.
-  const authToken = (process.env.LUDICS_T3CODE_AUTH_TOKEN ?? "").trim() || undefined;
-  const t3Home = t3codeDir(harnessDir);
-  migrateStateDirIfNeeded(t3Home);
-  const command = buildLaunchCommand({
-    port,
-    host,
-    homeDir: t3Home,
-    authToken,
-  });
-
-  // Write a "starting" marker before spawning so the dashboard can show
-  // "starting…" while the server is coming up.  Cleared on successful start.
-  writeJsonFile(t3codeStartingPath(harnessDir), { since: isoNow() });
-
-  let proc: Bun.Subprocess;
-  const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
-  // Preserve previous crash log for upstream reporting
-  if (existsSync(stderrPath)) {
-    const crashLog = join(t3codeDir(harnessDir), "server-crashes.log");
-    try {
-      const prev = readFileSync(stderrPath, "utf-8").trim();
-      if (prev) {
-        appendFileSync(crashLog, `\n--- crash at ${isoNow()} ---\n${prev}\n`);
+  // ---- Acquire lock ----
+  const lockDeadline = Date.now() + LOCK_WAIT_MS;
+  while (!tryAcquireLock(harnessDir)) {
+    // Another process is starting the server — wait for it.
+    if (Date.now() >= lockDeadline) {
+      // Timed out waiting; steal the lock so we don't deadlock.
+      releaseLock(harnessDir);
+      if (!tryAcquireLock(harnessDir)) {
+        throw new Error("unable to acquire t3code server lock after timeout");
       }
-    } catch { /* ignore */ }
+      break;
+    }
+    await sleep(1_000);
+    // Re-check: the other process may have finished starting.
+    const recheck = await serverStatus({ harnessDir });
+    if (recheck.running && recheck.record) {
+      return recheck.record;
+    }
   }
+
   try {
-    proc = Bun.spawn(command, {
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: Bun.file(stderrPath),
-      env: process.env as Record<string, string>,
+    // Re-check status after acquiring lock — the previous holder may have
+    // successfully started the server.
+    const afterLock = await serverStatus({ harnessDir });
+    if (afterLock.running && afterLock.record) return afterLock.record;
+
+    // Only kill the old process if it is NOT within the startup grace period.
+    if (afterLock.record) {
+      if (withinStartupGrace(afterLock.record)) {
+        // Server was started very recently — give it more time instead of
+        // killing it.  Wait up to the remaining grace period.
+        const started = new Date(afterLock.record.startedAt!).getTime();
+        const remainingGrace = STARTUP_GRACE_MS - (Date.now() - started);
+        if (remainingGrace > 0) {
+          const graceDeadline = Date.now() + remainingGrace;
+          while (Date.now() < graceDeadline) {
+            await sleep(1_000);
+            const graceCheck = await serverStatus({ harnessDir });
+            if (graceCheck.running && graceCheck.record) return graceCheck.record;
+          }
+        }
+        // If still not running after grace, fall through and restart.
+      }
+      if (inspectManagedServerProcess(afterLock.record).matchesRecord) {
+        await terminateProcess(afterLock.record.pid);
+      }
+    }
+
+    const host = resolveHost();
+    const port = await findAvailablePort(DEFAULT_PORT, host);
+    const webUrl = `http://${host}:${port}`;
+    const wsUrl = `ws://${host}:${port}`;
+    // Auth token: only use when explicitly provided via env var.
+    // Tailnet-only setups don't need auth; auth doesn't work upstream.
+    const authToken = (process.env.LUDICS_T3CODE_AUTH_TOKEN ?? "").trim() || undefined;
+    const t3Home = t3codeDir(harnessDir);
+    migrateStateDirIfNeeded(t3Home);
+    const command = buildLaunchCommand({
+      port,
+      host,
+      homeDir: t3Home,
+      authToken,
     });
-  } catch (error) {
-    // Remove marker so the dashboard doesn't show "starting…" indefinitely
-    try { unlinkSync(t3codeStartingPath(harnessDir)); } catch { /* ignore */ }
-    throw new Error(
-      `unable to start t3code server: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
 
-  if (typeof (proc as { unref?: () => void }).unref === "function") {
-    (proc as { unref: () => void }).unref();
-  }
+    // Write a "starting" marker before spawning so the dashboard can show
+    // "starting…" while the server is coming up.  Cleared on successful start.
+    writeJsonFile(t3codeStartingPath(harnessDir), { since: isoNow() });
 
-  const record: T3CodeServerRecord = {
-    pid: proc.pid,
-    port,
-    host,
-    webUrl,
-    wsUrl,
-    authToken,
-    stateDir: t3Home,
-    startedAt: isoNow(),
-    command,
-  };
+    let proc: Bun.Subprocess;
+    const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
+    // Preserve previous crash log for upstream reporting
+    if (existsSync(stderrPath)) {
+      const crashLog = join(t3codeDir(harnessDir), "server-crashes.log");
+      try {
+        const prev = readFileSync(stderrPath, "utf-8").trim();
+        if (prev) {
+          appendFileSync(crashLog, `\n--- crash at ${isoNow()} ---\n${prev}\n`);
+        }
+      } catch { /* ignore */ }
+    }
+    try {
+      proc = Bun.spawn(command, {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: Bun.file(stderrPath),
+        env: process.env as Record<string, string>,
+      });
+    } catch (error) {
+      // Remove marker so the dashboard doesn't show "starting…" indefinitely
+      try { unlinkSync(t3codeStartingPath(harnessDir)); } catch { /* ignore */ }
+      throw new Error(
+        `unable to start t3code server: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
-  try {
-    await waitForReady(record, START_TIMEOUT_MS);
+    if (typeof (proc as { unref?: () => void }).unref === "function") {
+      (proc as { unref: () => void }).unref();
+    }
+
+    const record: T3CodeServerRecord = {
+      pid: proc.pid,
+      port,
+      host,
+      webUrl,
+      wsUrl,
+      authToken,
+      stateDir: t3Home,
+      startedAt: isoNow(),
+      command,
+    };
+
+    // Write the record immediately so concurrent callers can see
+    // startedAt and respect the grace period.
+    writeJsonFile(t3codeServerPath(harnessDir), record);
+
+    try {
+      await waitForReady(record, START_TIMEOUT_MS);
+    } finally {
+      // Always clear the starting marker once we know the outcome
+      try { unlinkSync(t3codeStartingPath(harnessDir)); } catch { /* ignore */ }
+    }
+    // Re-write with confirmed-good record (same content, but ensures
+    // atomic write after successful startup).
+    writeJsonFile(t3codeServerPath(harnessDir), record);
+    return record;
   } finally {
-    // Always clear the starting marker once we know the outcome
-    try { unlinkSync(t3codeStartingPath(harnessDir)); } catch { /* ignore */ }
+    releaseLock(harnessDir);
   }
-  writeJsonFile(t3codeServerPath(harnessDir), record);
-  return record;
 }
 
 export async function stopServer(options: EnsureServerOptions = {}): Promise<boolean> {
