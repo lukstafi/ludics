@@ -858,7 +858,7 @@ export async function runSlot(args: string[]): Promise<void> {
             break;
           case "--coder": {
             const val = args[++i];
-            if (!val) throw new Error("--coder requires a provider value");
+            if (!val || val.startsWith("-")) throw new Error("--coder requires a provider value (got a flag instead)");
             hasDirectOrchFlags = true;
             if (firstDirectOrchFlagIdx === -1) firstDirectOrchFlagIdx = adapterArgFragments.length;
             adapterArgFragments.push(`--coder ${val}`);
@@ -866,7 +866,7 @@ export async function runSlot(args: string[]): Promise<void> {
           }
           case "--reviewer": {
             const val = args[++i];
-            if (!val) throw new Error("--reviewer requires a provider value");
+            if (!val || val.startsWith("-")) throw new Error("--reviewer requires a provider value (got a flag instead)");
             hasDirectOrchFlags = true;
             if (firstDirectOrchFlagIdx === -1) firstDirectOrchFlagIdx = adapterArgFragments.length;
             adapterArgFragments.push(`--reviewer ${val}`);
@@ -891,8 +891,13 @@ export async function runSlot(args: string[]): Promise<void> {
       // Auto-prepend --pair when any direct orchestration shorthand is present without an
       // explicit mode flag. Splice at the position of the first such shorthand to preserve
       // fragment ordering (raw -A fragments that precede it are left undisturbed).
-      const hasPairFragment = adapterArgFragments.includes("--pair");
-      if (hasDirectOrchFlags && !hasPairFragment && firstDirectOrchFlagIdx !== -1) {
+      // Also scan raw -A fragments for an existing mode word (--pair or --duo) so we don't
+      // clobber an intentional duo-mode config passed via --adapter-args.
+      const hasModeDirectFlag = adapterArgFragments.includes("--pair");
+      const hasModeInRawFragments = adapterArgFragments.some(
+        f => /(?:^|\s)--(?:pair|duo)(?:\s|$)/.test(f)
+      );
+      if (hasDirectOrchFlags && !hasModeDirectFlag && !hasModeInRawFragments && firstDirectOrchFlagIdx !== -1) {
         adapterArgFragments.splice(firstDirectOrchFlagIdx, 0, "--pair");
       }
 

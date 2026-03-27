@@ -262,6 +262,33 @@ describe("slot assign — direct orchestration flags", () => {
     await expect(runSlot(["1", "assign", "My task", "-a", "manual", "-A", "--pair --coder foo"])).resolves.toBeUndefined();
     expect(readAdapterArgs()).toBe("--pair --coder foo");
   });
+
+  test("does not inject --pair when -A already contains a mode flag (--duo)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--duo --agent coder:claude-code", "--plan"]);
+    // --plan is a direct shorthand, but --duo already set a mode in the raw fragment
+    expect(readAdapterArgs()).toBe("--duo --agent coder:claude-code --plan");
+  });
+
+  test("does not inject --pair when -A already contains --pair", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--pair --coder existing", "--plan"]);
+    expect(readAdapterArgs()).toBe("--pair --coder existing --plan");
+  });
+
+  test("errors when --coder value looks like a flag", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    await expect(runSlot(["1", "assign", "My task", "-a", "t3code", "--coder", "--reviewer"])).rejects.toThrow("got a flag instead");
+  });
+
+  test("errors when --reviewer value looks like a flag", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    await expect(runSlot(["1", "assign", "My task", "-a", "t3code", "--reviewer", "--plan"])).rejects.toThrow("got a flag instead");
+  });
 });
 
 describe("slotStart — t3code empty-args guard", () => {
