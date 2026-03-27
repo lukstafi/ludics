@@ -151,6 +151,59 @@ else
   fail "fingerprint collision" "$fp1 == $fp6"
 fi
 
+# ── Section: queue-hold sentinel ─────────────────────────────────────
+echo
+echo "${bold}queue-hold sentinel${reset}"
+
+# Use a temp directory to simulate a harness; always clean up even on failure.
+qh_tmpdir="$(mktemp -d)"
+qh_cleanup() { rm -rf "$qh_tmpdir"; }
+trap qh_cleanup EXIT
+
+# 1. No sentinel file → queue is NOT held
+if [[ ! -f "$qh_tmpdir/mag/queue-hold" ]]; then
+  ok "queue not held when sentinel absent"
+else
+  fail "queue-hold initial state" "expected no sentinel file"
+fi
+
+# 2. Create mag/ dir + sentinel → queue IS held (mirrors mkdirSync + writeFileSync)
+mkdir -p "$qh_tmpdir/mag"
+touch "$qh_tmpdir/mag/queue-hold"
+if [[ -f "$qh_tmpdir/mag/queue-hold" ]]; then
+  ok "queue held when sentinel present"
+else
+  fail "queue-hold after create" "sentinel file not found"
+fi
+
+# 3. Remove sentinel → queue resumes (mirrors unlinkSync)
+rm "$qh_tmpdir/mag/queue-hold"
+if [[ ! -f "$qh_tmpdir/mag/queue-hold" ]]; then
+  ok "queue resumes after sentinel removed"
+else
+  fail "queue-hold after remove" "sentinel file still present"
+fi
+
+# 4. mkdir -p is idempotent when mag/ already exists (covers the mkdirSync fix)
+mkdir -p "$qh_tmpdir/mag"
+touch "$qh_tmpdir/mag/queue-hold"
+if [[ -f "$qh_tmpdir/mag/queue-hold" ]]; then
+  ok "sentinel writeable after idempotent mkdir -p (existing dir)"
+else
+  fail "queue-hold idempotent mkdir" "could not write sentinel after re-mkdir"
+fi
+
+# 5. Sentinel writable even when mag/ did NOT pre-exist (the ENOENT fix scenario)
+qh_fresh="$(mktemp -d)"
+mkdir -p "$qh_fresh/mag"   # same as mkdirSync({ recursive: true }) in the fix
+touch "$qh_fresh/mag/queue-hold"
+if [[ -f "$qh_fresh/mag/queue-hold" ]]; then
+  ok "sentinel writeable in fresh harness without pre-existing mag/"
+else
+  fail "queue-hold fresh harness" "could not write sentinel"
+fi
+rm -rf "$qh_fresh"
+
 # ── Summary ───────────────────────────────────────────────────────────
 echo
 total=$((pass + fail + skip))

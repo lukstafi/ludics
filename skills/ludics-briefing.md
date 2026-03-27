@@ -86,6 +86,13 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    Slot states: **Empty** (available), **Project-reserved** (path+mode, no task),
    **Task-assigned** (active work).
 
+   **Check queue hold state first:**
+   - Run: `test -f "$LUDICS_STATE_PATH/mag/queue-hold" && echo held || echo running`
+   - If **held**: skip auto-assignment of empty slots (respect user's hold). You may
+     still clear completed/abandoned slots and note the hold in the briefing.
+     Include: "Queue held — auto-assignment suppressed. Use `ludics slot N assign …` to assign manually."
+   - If **running**: proceed with normal slot assignment below.
+
    **Identify opportunities:**
    - Empty slots (candidates for filling)
    - Completed slots (candidates for clearing)

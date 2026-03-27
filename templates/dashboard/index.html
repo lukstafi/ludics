@@ -92,7 +92,11 @@
             <aside class="sidebar">
                 <!-- Ready Queue -->
                 <section class="ready-queue panel">
-                    <h2>Ready Queue</h2>
+                    <h2 class="ready-queue-header">
+                        Ready Queue
+                        <span class="queue-held-badge" id="queue-held-badge">Queue held</span>
+                        <button class="queue-hold-btn" id="queue-hold-btn" onclick="toggleQueueHold()" title="Hold auto-assignment from queue">Hold</button>
+                    </h2>
                     <ul id="ready-list">
                         <li class="loading">Loading...</li>
                     </ul>
