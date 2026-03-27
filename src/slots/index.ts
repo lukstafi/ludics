@@ -656,9 +656,30 @@ export async function slotResume(slotNum: number): Promise<void> {
   const { T3CodeClient } = await import("../t3code/client.ts");
   const client = new T3CodeClient({ url: record.wsUrl, token: record.authToken });
   try {
+    // Undelete any soft-deleted threads we need (t3code auto-cleans old project
+    // threads when new ones are created, but resume reuses the old thread IDs)
+    const storedThreadIds = slotState.threads.map((t) => t.threadId);
+    try {
+      const dbPath = join(ctx.harnessDir, "t3code", "userdata", "state.sqlite");
+      if (existsSync(dbPath)) {
+        const { Database } = await import("bun:sqlite");
+        const db = new Database(dbPath);
+        const placeholders = storedThreadIds.map(() => "?").join(",");
+        const result = db.run(
+          `UPDATE projection_threads SET deleted_at = NULL WHERE thread_id IN (${placeholders}) AND deleted_at IS NOT NULL`,
+          ...storedThreadIds,
+        );
+        if (result.changes > 0) {
+          console.error(`ludics: undeleted ${result.changes} soft-deleted thread(s) for resume`);
+        }
+        db.close();
+      }
+    } catch {
+      // Non-critical — continue with resume, threads might still work
+    }
+
     const snapshot = await client.getSnapshot();
     const existingThreadIds = new Set(snapshot.threads.map((t: { id: string }) => t.id));
-    const storedThreadIds = slotState.threads.map((t) => t.threadId);
     const missingThreads = storedThreadIds.filter((id) => !existingThreadIds.has(id));
     if (missingThreads.length > 0) {
       throw new Error(
