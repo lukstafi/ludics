@@ -86,6 +86,24 @@ function extractProposalSummary(proposalFile: string): string | null {
   return para ? para.replace(/\n/g, " ").slice(0, 300) : null;
 }
 
+function taskSpecBriefText(state: OrchestrationState): string {
+  const taskId = state.taskId?.trim();
+  if (!taskId) return state.slotTitle?.trim() || state.feature;
+  const title = state.slotTitle?.trim() || state.feature;
+  const path = join(harnessDir(), "tasks", `${taskId}.md`);
+  const content = readFileIfExists(path);
+  const proposalMatch = content?.match(/^proposal:\s*(.+)$/m);
+  const proposalValue = proposalMatch?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "";
+  const proposalRef =
+    proposalValue && proposalValue !== "inline" && proposalValue.toLowerCase() !== "null"
+      ? proposalValue
+      : "";
+  const proposalLine = proposalRef
+    ? `\nProposal file: \`${proposalRef}\` (already read in round 1)`
+    : "";
+  return `**Task** ${taskId}: ${title}${proposalLine}\n(Full task spec was provided in round 1 — refer to earlier context.)`;
+}
+
 function taskSpecText(state: OrchestrationState): string {
   const taskId = state.taskId?.trim();
   if (!taskId) {
@@ -232,7 +250,8 @@ export function buildSkillContext(
     AGENT_ROLE: agent.role ?? "agent",
     PEER_NAME: peer?.name ?? "none",
     PEER_PROVIDER: peer?.provider ?? "none",
-    TASK_SPEC: taskSpecText(state),
+    TASK_SPEC: state.round <= 1 ? taskSpecText(state) : taskSpecBriefText(state),
+    TASK_SPEC_BRIEF: taskSpecBriefText(state),
     PROPOSAL_PATH: proposalPath,
     PEER_REVIEW: peerReview ?? "(no review yet)",
     PEER_STATUS: peer ? (state.agentStates[peer.name]?.status ?? "unknown") : "unknown",
