@@ -104,6 +104,14 @@ export function validateAndFixPrFile(
   if (isPrUrl(content)) return content;
 
   // Content looks like a PR description — try to create the PR automatically.
+  // First ensure the branch is pushed (coder may have committed but not pushed).
+  try {
+    Bun.spawnSync(
+      ["git", "push", "-u", "origin", branch],
+      { cwd: worktreePath, stdout: "ignore", stderr: "ignore", env: process.env as Record<string, string> },
+    );
+  } catch { /* best-effort — gh pr create will fail if push fails */ }
+
   const titleMatch = content.match(/^#\s+(.+)$/m);
   const title = titleMatch ? titleMatch[1]!.trim() : `feat: ${branch}`;
 
