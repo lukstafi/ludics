@@ -177,6 +177,35 @@
             font-size: 0.9rem;
             padding: 0.5rem;
         }
+
+        .filter-bar {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            margin-bottom: 0.75rem;
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+        }
+
+        .filter-btn {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+
+        .filter-btn.active {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+
+        .filter-btn:hover {
+            border-color: var(--accent);
+        }
     </style>
 </head>
 <body>
@@ -199,6 +228,13 @@
     <main class="tasks-container">
         <section class="tasks-panel">
             <h2>Tasks</h2>
+            <div class="filter-bar">
+                <span>Filter:</span>
+                <button class="filter-btn active" data-filter="all">All</button>
+                <button class="filter-btn" data-filter="30d">Last 30 days</button>
+                <button class="filter-btn" data-filter="7d">Last 7 days</button>
+                <button class="filter-btn" data-filter="24h">Last 24 hours</button>
+            </div>
             <div id="tasks-forest" class="tasks-forest">
                 <p class="tasks-placeholder">Loading task tree...</p>
             </div>
@@ -216,8 +252,30 @@
         };
         let openNodeKeys = new Set();
         let hasRendered = false;
+        let currentFilter = (() => { try { return localStorage.getItem('tasks-filter') || 'all'; } catch { return 'all'; } })();
+        let cachedForest = null;
+
+        function saveFilter(value) {
+            try { localStorage.setItem('tasks-filter', value); } catch { /* storage unavailable */ }
+        }
 
         document.addEventListener('DOMContentLoaded', () => {
+            // Initialize filter buttons
+            document.querySelectorAll('.filter-btn').forEach((btn) => {
+                if (btn.dataset.filter === currentFilter) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+                btn.addEventListener('click', () => {
+                    currentFilter = btn.dataset.filter;
+                    saveFilter(currentFilter);
+                    document.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    if (cachedForest) renderTasksTree(cachedForest);
+                });
+            });
+
             fetchTasksTree();
             setInterval(fetchTasksTree, CONFIG.refreshInterval);
         });
@@ -233,6 +291,7 @@
                 const response = await fetch(CONFIG.dataPath + 'tasks-tree.json');
                 if (!response.ok) throw new Error('Failed to fetch task tree');
                 const tree = await response.json();
+                cachedForest = tree;
                 renderTasksTree(tree);
                 updateTimestamp();
                 setConnectionStatus(true);
@@ -240,6 +299,31 @@
                 console.warn('Failed to fetch task tree:', error);
                 setConnectionStatus(false);
             }
+        }
+
+        function filterCutoff() {
+            if (currentFilter === '30d') return Date.now() - 30 * 86400000;
+            if (currentFilter === '7d') return Date.now() - 7 * 86400000;
+            if (currentFilter === '24h') return Date.now() - 86400000;
+            return null;
+        }
+
+        function filterTree(nodes, cutoff) {
+            if (!cutoff) return nodes;
+            return nodes.map((node) => {
+                if (node.kind === 'project') {
+                    const filteredChildren = filterTree(node.children || [], cutoff);
+                    if (filteredChildren.length === 0) return null;
+                    return Object.assign({}, node, { children: filteredChildren });
+                }
+                // task node: include if mtime >= cutoff or any descendant passes
+                const filteredChildren = filterTree(node.children || [], cutoff);
+                const selfPasses = node.mtime && new Date(node.mtime).getTime() >= cutoff;
+                if (selfPasses || filteredChildren.length > 0) {
+                    return Object.assign({}, node, { children: filteredChildren });
+                }
+                return null;
+            }).filter(Boolean);
         }
 
         function renderTasksTree(forest) {
@@ -260,9 +344,17 @@
                 return;
             }
 
+            const cutoff = filterCutoff();
+            const filtered = filterTree(forest, cutoff);
+
+            if (filtered.length === 0) {
+                container.innerHTML = '<p class="tasks-placeholder">No tasks match the current filter</p>';
+                return;
+            }
+
             container.innerHTML = '';
-            for (let i = 0; i < forest.length; i++) {
-                container.appendChild(renderNode(forest[i], 0, 'root', i));
+            for (let i = 0; i < filtered.length; i++) {
+                container.appendChild(renderNode(filtered[i], 0, 'root', i));
             }
             hasRendered = true;
         }
@@ -305,6 +397,15 @@
                     proposalLink.target = '_blank';
                     proposalLink.rel = 'noopener noreferrer';
                     row.appendChild(proposalLink);
+                }
+
+                if (node.retroLink) {
+                    const retroLink = document.createElement('a');
+                    retroLink.textContent = 'retrospective';
+                    retroLink.href = node.retroLink;
+                    retroLink.target = '_blank';
+                    retroLink.rel = 'noopener noreferrer';
+                    row.appendChild(retroLink);
                 }
 
                 if (node.priority) {
