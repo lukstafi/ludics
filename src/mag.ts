@@ -1953,7 +1953,7 @@ function maybeFillEmptySlots(): void {
 
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
 
-  interface Candidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string }
+  interface Candidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string; elaborated: boolean }
   const candidates: Candidate[] = [];
   const allTasksForAffinity: AffinityInput[] = [];
 
@@ -1983,10 +1983,9 @@ function maybeFillEmptySlots(): void {
       },
     });
 
-    // Filter for candidates: ready, elaborated, unblocked, not already slotted
+    // Filter for candidates: ready, unblocked, not already slotted
     if (tasksInSlots.has(id)) continue;
     if (status !== "ready") continue;
-    if (!isElaborated(content)) continue;
 
     const blockedBy = deps.blocked_by;
     if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
@@ -1997,8 +1996,9 @@ function maybeFillEmptySlots(): void {
     const deadlineRaw = fm.deadline ? String(fm.deadline).trim() : "";
     const deadline = deadlineRaw && deadlineRaw !== "null" ? deadlineRaw : "";
     const effort = String(fm.effort ?? "small").trim();
+    const elaborated = isElaborated(content);
 
-    candidates.push({ id, priority, project, milestone, hasDeadline: !!deadline, deadline, effort });
+    candidates.push({ id, priority, project, milestone, hasDeadline: !!deadline, deadline, effort, elaborated });
   }
 
   if (candidates.length === 0) return;
@@ -2053,6 +2053,21 @@ function maybeFillEmptySlots(): void {
   });
 
   // Fill at most 1 empty slot per keepalive cycle (conservative)
+  // If the top candidate isn't elaborated, queue elaboration instead of assigning
+  const topCandidate = candidates[0]!;
+  if (!topCandidate.elaborated) {
+    if (!autoProposalDebounced(topCandidate.id)) {
+      queueRequest("elaborate", `"task":"${topCandidate.id}"`);
+      markAutoProposalQueued(topCandidate.id); // reuse debounce to avoid re-queuing
+      emitEvent({ event_type: "task_elaborate_queued", source: "keepalive", scope: "task", task: topCandidate.id, message: `top candidate needs elaboration` });
+      console.error(`ludics: top candidate ${topCandidate.id} needs elaboration — queued`);
+    }
+    // Skip to the first elaborated candidate for slot assignment
+    const elaboratedIdx = candidates.findIndex((c) => c.elaborated);
+    if (elaboratedIdx < 0) return; // no elaborated candidates at all
+    candidates.splice(0, elaboratedIdx); // remove unelabroated ones from front
+  }
+
   const task = candidates[0]!;
   const slot = emptySlots[0]!;
 
