@@ -376,7 +376,8 @@ main {
     font-family: monospace;
 }
 
-.slot-details .effort {
+.slot-details .effort,
+.ready-queue .effort {
     font-size: 0.7rem;
     padding: 0.1rem 0.35rem;
     border-radius: 3px;
@@ -384,6 +385,28 @@ main {
     color: var(--text-secondary);
     border: 1px solid var(--border);
     text-transform: lowercase;
+    flex-shrink: 0;
+}
+
+.slot-details .effort[data-effort="small"],
+.ready-queue .effort[data-effort="small"] {
+    background-color: rgba(74, 222, 128, 0.12);
+    color: #4ade80;
+    border-color: rgba(74, 222, 128, 0.4);
+}
+
+.slot-details .effort[data-effort="medium"],
+.ready-queue .effort[data-effort="medium"] {
+    background-color: rgba(251, 191, 36, 0.12);
+    color: #fbbf24;
+    border-color: rgba(251, 191, 36, 0.4);
+}
+
+.slot-details .effort[data-effort="large"],
+.ready-queue .effort[data-effort="large"] {
+    background-color: rgba(233, 69, 96, 0.12);
+    color: #e94560;
+    border-color: rgba(233, 69, 96, 0.4);
 }
 
 .slot-details .task-content {
