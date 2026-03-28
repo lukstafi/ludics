@@ -135,7 +135,11 @@ function taskSpecText(state: OrchestrationState): string {
     const proposalValue = proposalMatch[1]!.trim().replace(/^["']|["']$/g, "");
     if (proposalValue && proposalValue !== "inline" && proposalValue.toLowerCase() !== "null") {
       const proposalFile = resolveProposalAbsPath(state.projectDir, proposalValue);
-      const summary = extractProposalSummary(proposalFile);
+      // Only read proposal file contents if it is inside the project tree, to avoid
+      // exposing arbitrary local file content through the Proposal summary line.
+      const projectRoot = state.projectDir.endsWith("/") ? state.projectDir : `${state.projectDir}/`;
+      const isInProjectTree = proposalFile.startsWith(projectRoot);
+      const summary = isInProjectTree ? extractProposalSummary(proposalFile) : null;
       const summaryLine = summary ? `Proposal summary: ${summary}\n` : "";
       const contentWithPointer =
         `${content}\n\n---\n${summaryLine}Read the full proposal at \`${proposalValue}\` in the project repo.\n`;
