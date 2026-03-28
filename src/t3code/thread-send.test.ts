@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { waitForNewTurn } from "./index.ts";
+import { waitForNewTurn } from "./client.ts";
 import type { T3LatestTurn, T3Snapshot } from "./types.ts";
 
 // ---------------------------------------------------------------------------
