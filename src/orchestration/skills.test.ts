@@ -161,6 +161,65 @@ describe("skills", () => {
     expect(renderedNull).not.toContain("staging fork");
   });
 
+  test("taskSpecText: file-based proposal appends pointer and summary, not inline body", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-skills-proposal-test-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      mkdir2(j(projectDir, "docs", "proposals"), { recursive: true });
+      write2(j(harnessTasks, "task-p1.md"), [
+        "---", "id: task-p1", "proposal: docs/proposals/my-feature.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      write2(j(projectDir, "docs", "proposals", "my-feature.md"), [
+        "# My Feature", "", "## Motivation", "",
+        "This is the motivation paragraph.", "",
+        "## Proposed Change", "", "Change details here.",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-p1", projectDir };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx.taskSpec).toContain("docs/proposals/my-feature.md");
+      expect(ctx.taskSpec).toContain("Read the full proposal");
+      expect(ctx.taskSpec).toContain("motivation paragraph");     // summary extracted
+      expect(ctx.taskSpec).not.toContain("Change details here."); // proposal body not inlined
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("taskSpecText: proposal: inline returns full task content unchanged", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-skills-inline-test-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-p2.md"), [
+        "---", "id: task-p2", "proposal: inline", "---",
+        "", "## Motivation", "", "Big inline proposal here.",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-p2", projectDir: j(tmpDir, "project") };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx.taskSpec).toContain("Big inline proposal here.");
+      expect(ctx.taskSpec).not.toContain("Read the full proposal");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test("buildSkillContext: discovers staging_repo via configured path", async () => {
     const tmpCfg = "/tmp/ludics-skills-staging-test.yaml";
     writeFileSync(tmpCfg, [

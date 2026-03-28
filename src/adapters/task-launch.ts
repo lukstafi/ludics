@@ -61,6 +61,9 @@ export function readProposalLaunchMetadata(
   const proposalValue = readFrontmatterField(taskContent, "proposal");
   if (!proposalValue) return null;
 
+  // Legacy inline proposals have no associated file; treat as no file-based proposal.
+  if (proposalValue === "inline") return null;
+
   const proposalFile = resolveTaskRelativePath(projectDir, proposalValue);
   if (!existsSync(proposalFile)) {
     throw new Error(

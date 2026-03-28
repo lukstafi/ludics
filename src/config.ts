@@ -27,6 +27,10 @@ export interface ProjectConfig {
    * Default: false.
    */
   milestones?: boolean;
+  /** Directory for proposal documents, relative to project repo root.
+   *  If unset, the draft-proposal orchestrator auto-detects from docs/, doc/, .docs/;
+   *  falls back to docs/proposals/. */
+  proposals_path?: string;
   /**
    * Per-adapter args profile for tasks in this project.
    * Entry value can be:

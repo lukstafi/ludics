@@ -75,4 +75,32 @@ describe("readProposalLaunchMetadata", () => {
       `agent-codex start blocked: proposal for task-103 not found at ${join(projectDir, "docs", "missing-proposal.md")}`,
     );
   });
+
+  test("returns null for proposal: inline (legacy mode, no file required)", () => {
+    const harnessDir = join(TMP, "harness");
+    const projectDir = join(TMP, "project");
+    mkdirSync(join(harnessDir, "tasks"), { recursive: true });
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(harnessDir, "tasks", "task-104.md"),
+      ["---", "id: task-104", "proposal: inline", "---", "", "Inline proposal body."].join("\n"),
+    );
+    // Must NOT throw; must return null so caller derives feature from task title.
+    expect(readProposalLaunchMetadata("agent-claude", harnessDir, "task-104", projectDir)).toBeNull();
+  });
+
+  test("resolves proposal under docs/proposals/ path", () => {
+    const harnessDir = join(TMP, "harness");
+    const projectDir = join(TMP, "project");
+    mkdirSync(join(harnessDir, "tasks"), { recursive: true });
+    mkdirSync(join(projectDir, "docs", "proposals"), { recursive: true });
+    writeFileSync(
+      join(harnessDir, "tasks", "task-105.md"),
+      ["---", "id: task-105", "proposal: docs/proposals/add-filter.md", "---", ""].join("\n"),
+    );
+    writeFileSync(join(projectDir, "docs", "proposals", "add-filter.md"), "# Proposal\n");
+    const meta = readProposalLaunchMetadata("agent-claude", harnessDir, "task-105", projectDir);
+    expect(meta?.launchFeature).toBe("add-filter");
+    expect(meta?.proposalFile).toBe(join(projectDir, "docs", "proposals", "add-filter.md"));
+  });
 });
