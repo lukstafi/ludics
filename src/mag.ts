@@ -879,7 +879,7 @@ export interface AutoStartDecision {
 }
 
 /** Pure decision function — no filesystem or config side effects.
- *  Exported for testing; the private wrapper below reads config/slots and delegates here. */
+ *  Callers must supply autonomy and slotAssigned explicitly (read from config/slots). */
 export function evaluateAutoStartDecisionPure(
   workerConfidence: "high" | "low" | undefined,
   rationale: string,
@@ -1767,7 +1767,7 @@ function computeSessionProjectMatches(): string {
       // Determine recommended adapter based on what infrastructure exists
       const hasAgentSessions = existsSync(join(session.cwdNormalized, ".agent-sessions"));
       if (session.orchestration) {
-        matchedSessions.push(`- **Recommended adapter:** ${session.orchestration.type} (orchestration detected)`);
+        matchedSessions.push(`- **Recommended adapter:** t3code (orchestration detected: ${session.orchestration.type})`);
       } else if (hasAgentSessions) {
         matchedSessions.push(`- **Recommended adapter:** t3code (.agent-sessions/ found)`);
       } else {
