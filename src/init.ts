@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readlinkSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, lstatSync, symlinkSync, unlinkSync, chmodSync } from "fs";
 import { join, dirname } from "path";
 import YAML from "yaml";
-import { ludicsRoot, pointerConfigPath } from "./config.ts";
+import { ludicsRoot, pointerConfigPath, harnessDir } from "./config.ts";
 import { dashboardInstall, dashboardStop, dashboardServe } from "./dashboard.ts";
 import { triggersInstall } from "./triggers.ts";
 
@@ -63,7 +63,7 @@ export async function runInit(args: string[]): Promise<void> {
       if (pids.length > 0) {
         console.log("  restarting dashboard server...");
         dashboardStop();
-        const config = YAML.parse(readFileSync(join(repoDir, "config.yaml"), "utf-8")) as Record<string, unknown>;
+        const config = YAML.parse(readFileSync(join(harnessDir(), "config.yaml"), "utf-8")) as Record<string, unknown>;
         const port = (config.dashboard as Record<string, unknown> | undefined)?.port as number ?? 7678;
         dashboardServe(port);
       }
