@@ -92,15 +92,18 @@ mv "$LUDICS_STATE_PATH/feedback/"*.md "$LUDICS_STATE_PATH/feedback/processed/"
 
 ## Final Response
 
-Use the structured response format from worker-conventions.md with these fields:
+Use the structured response format from worker-conventions.md. Emit a fenced JSON block
+as the last code block in your response:
 
-```
-STATUS: completed | empty | error
-ISSUES_CREATED: <count>
-ISSUES_UPDATED: <count>
-ISSUES_SKIPPED: <count>
-FILES_PROCESSED: <count>
-SUMMARY: <one-line summary>
+```json
+{
+  "status": "completed | empty | error",
+  "issues_created": <count>,
+  "issues_updated": <count>,
+  "issues_skipped": <count>,
+  "files_processed": <count>,
+  "summary": "<one-line summary>"
+}
 ```
 
 ## Error Handling

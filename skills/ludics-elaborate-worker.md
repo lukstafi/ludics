@@ -124,17 +124,23 @@ questions.
 
 ## Final Response
 
-Use the structured response format from worker-conventions.md with these fields:
+Use the structured response format from worker-conventions.md. Emit a fenced JSON block
+as the last code block in your response:
 
+```json
+{
+  "status": "completed | merged | already-elaborated | error",
+  "task_id": "<task-id>",
+  "title": "<task title>",
+  "merge_target": "<target task id — include only if status is merged>",
+  "elaborated_date": "<existing date — include only if status is already-elaborated>",
+  "questions": ["<question 1>", "<question 2>"],
+  "summary": "<one-line summary of what was elaborated>"
+}
 ```
-STATUS: completed | merged | already-elaborated | error
-TASK_ID: <task-id>
-TITLE: <task title>
-MERGE_TARGET: <target task id, only if merged>
-ELABORATED_DATE: <existing date, only if already-elaborated>
-QUESTIONS: <numbered list of questions for the user, or "none">
-SUMMARY: <one-line summary of what was elaborated>
-```
+
+Omit `merge_target` and `elaborated_date` when not applicable. Use `"none"` for
+`questions` when there are no questions.
 
 ## Error Handling
 

@@ -39,7 +39,19 @@ Worker: `/ludics-verify-completion-worker <task_id> <project_path> <context_brie
 
 ## Skill-Specific: VERDICT Routing
 
-Parse the worker's VERDICT and act accordingly:
+Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
+Parse the JSON for `status`, `verdict`, `followups`, `questions`, `slot`, `title`, and `evidence`.
+
+If no JSON block is found, fall back to line-based parsing: look for `STATUS: <value>`,
+`VERDICT: <value>`, `FOLLOWUPS: <value>`, `QUESTIONS: <value>`, `SLOT: <value>`, `TITLE: <value>`,
+and `EVIDENCE: <value>` lines. On the legacy path: treat `QUESTIONS:` content as a
+pre-formatted string (send as-is in the uncertain branch); treat each numbered item in
+`FOLLOWUPS:` as `{"title": "<item text>", "priority": "B"}`.
+
+**Check `status` first:**
+- **status: error** — write result JSON with `"status": "error"`, stop
+
+Then act on `verdict`:
 
 ### VERDICT: complete
 - Clear the slot:
@@ -56,21 +68,26 @@ Parse the worker's VERDICT and act accordingly:
   ```bash
   ludics slot <N> clear done
   ```
-- Create follow-up tasks for each item in FOLLOWUPS:
+- For each object in the `followups` array, extract its `title` and `priority` fields
+  and create a follow-up task:
   ```bash
-  ludics tasks create "<follow-up title>" <project> <priority>
+  ludics tasks create "<followup.title>" <project> <followup.priority>
   ```
+  If `followups` is `"none"` or an empty array, skip this step.
 - Send notification listing what was completed and follow-ups created:
   ```bash
-  ludics notify outgoing "<summary>" 3 "Task Complete + Follow-ups"
+  ludics notify outgoing "Completed <task_id>: <title> — created <N> follow-up task(s)" 3 "Task Complete + Follow-ups"
   ```
 
 ### VERDICT: uncertain
 - Do NOT clear the slot
-- Send notification with the QUESTIONS from the worker:
+- Send notification with questions. Format depends on the source:
+  - JSON array: format each element as a numbered list before sending
+  - Legacy pre-formatted string (fallback path): send as-is
   ```bash
-  ludics notify outgoing "<questions>" 3 "Completion check — <task_id>"
+  ludics notify outgoing "<formatted questions or generic uncertainty message>" 3 "Completion check — <task_id>"
   ```
+  If `questions` is `"none"` or empty, send a generic uncertainty message.
 
 ### VERDICT: incomplete
 - Do NOT clear the slot

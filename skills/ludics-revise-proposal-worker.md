@@ -154,20 +154,25 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
 ## Final Response
 
-Use the structured response format from worker-conventions.md with these fields:
+Use the structured response format from worker-conventions.md. Emit a fenced JSON block
+as the last code block in your response:
 
-```
-STATUS: revised | no-changes | error
-TASK_ID: <task-id>
-PROPOSAL_PATH: <relative path, e.g. docs/<feature>.md> (omit for inline mode, no-changes, or error)
-PROPOSAL_MODE: file | inline  (always include when STATUS: revised)
-CHANGES_SUMMARY: <2-3 sentence summary of what was changed and why>
-TITLE: <task title>
-SUMMARY: <one-line summary for the notification>
+```json
+{
+  "status": "revised | no-changes | error",
+  "task_id": "<task-id>",
+  "proposal_path": "<relative path, e.g. docs/feature.md>",
+  "proposal_mode": "file | inline",
+  "changes_summary": "<2-3 sentence summary of what was changed and why>",
+  "title": "<task title>",
+  "summary": "<one-line summary for the notification>"
+}
 ```
 
-For **inline mode**: omit `PROPOSAL_PATH` entirely and set `PROPOSAL_MODE: inline`.
-For **file-based mode**: include `PROPOSAL_PATH` as the project-relative path and set `PROPOSAL_MODE: file`.
+For **inline mode**: omit `proposal_path` entirely and set `"proposal_mode": "inline"`.
+For **file-based mode**: include `proposal_path` as the project-relative path and set
+`"proposal_mode": "file"`.
+`proposal_mode` is required when `status` is `"revised"`.
 
 ## Error Handling
 

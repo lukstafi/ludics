@@ -70,18 +70,25 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
 ## Final Response
 
-Use the structured response format from worker-conventions.md with these fields:
+Use the structured response format from worker-conventions.md. Emit a fenced JSON block
+as the last code block in your response:
 
+```json
+{
+  "status": "completed",
+  "task_id": "<task-id>",
+  "title": "<task title>",
+  "slot": <slot number>,
+  "verdict": "complete | complete-with-followups | uncertain | incomplete",
+  "followups": [{"title": "<follow-up title>", "priority": "A|B|C"}],
+  "questions": ["<question 1>", "<question 2>"],
+  "evidence": "<brief summary of key evidence found>"
+}
 ```
-STATUS: completed
-TASK_ID: <task-id>
-TITLE: <task title>
-SLOT: <slot number>
-VERDICT: complete | complete-with-followups | uncertain | incomplete
-FOLLOWUPS: <numbered list of follow-up task descriptions with priority, or "none">
-QUESTIONS: <numbered questions for uncertain criteria, or "none">
-EVIDENCE: <brief summary of key evidence found>
-```
+
+Note: `status` is always `"completed"` for this worker in non-error cases. The
+orchestrator checks `status` first to handle errors, then uses `verdict` for
+success-path routing. Use `"none"` for `followups` and `questions` when they are empty.
 
 ## Error Handling
 

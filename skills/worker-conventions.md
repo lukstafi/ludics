@@ -27,19 +27,25 @@ Mag's conversation history. When present:
 
 ## Structured Response Format
 
-Your final response MUST use this key-value format so the orchestrator can parse it:
+Your final response MUST include a fenced JSON block (` ```json ``` `) as the **last
+code block** in your response. All structured fields go inside this JSON object.
 
-```
-STATUS: <status_value>
-FIELD_NAME: <value>
+```json
+{
+  "status": "<status_value>",
+  "field_name": "<value>"
+}
 ```
 
 Rules:
-- **STATUS** is always the first field and is required
-- Common status values: `completed`, `error`, `stale`, `split-needed`,
-  `already-exists`, `merged`, `already-elaborated`, `empty`
-- Each field is on its own line: `FIELD_NAME: value`
-- Multi-item values use comma-separated format or numbered lists
+- **`status`** is always required and is the primary routing field
+- Common status values: `"completed"`, `"error"`, `"stale"`, `"split-needed"`,
+  `"already-exists"`, `"merged"`, `"already-elaborated"`, `"empty"`
+- Field names use **snake_case**
+- Multi-value fields use JSON arrays (e.g., `"questions": ["q1", "q2"]`);
+  use the string `"none"` when the list is empty
+- Free-form explanation text may precede the JSON block — the JSON block is
+  always the last fenced code block in your response
 - Keep the response concise — the orchestrator handles notifications,
   result JSON, and downstream actions
 
@@ -47,8 +53,10 @@ Rules:
 
 Follow these conventions for all error conditions:
 
-- **Missing input** (task not found, path not found): Report `STATUS: error`
-  with a clear explanation in SUMMARY
+- **Missing input** (task not found, path not found): Set `"status": "error"`.
+  Include the explanation in the worker's primary narrative field (`summary`,
+  `evidence`, etc.); if none applies, add an `"error"` string field to the
+  JSON response.
 - **Partial failure** (some operations succeed, others fail): Continue with
   what works, report partial results in the structured response
 - **External service failure** (`gh` not authenticated, git push fails):
