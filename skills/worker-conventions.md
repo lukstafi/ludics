@@ -53,8 +53,10 @@ Rules:
 
 Follow these conventions for all error conditions:
 
-- **Missing input** (task not found, path not found): Report `STATUS: error`
-  with a clear explanation in SUMMARY
+- **Missing input** (task not found, path not found): Set `"status": "error"`.
+  Include the explanation in the worker's primary narrative field (`summary`,
+  `evidence`, etc.); if none applies, add an `"error"` string field to the
+  JSON response.
 - **Partial failure** (some operations succeed, others fail): Continue with
   what works, report partial results in the structured response
 - **External service failure** (`gh` not authenticated, git push fails):
