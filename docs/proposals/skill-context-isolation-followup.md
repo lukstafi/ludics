@@ -12,7 +12,7 @@ It is not triggered by any automation currently, and it would be polluting too m
 
 ## Combine the ludics-sync-learnings and ludics-sync-learnings-worker back into a single skill
 
-This orchestrator essentially just invokes the worker and writes result JSON — it doesn't read a task file or make strategic decisions. For these, Approach A from docs/implemented/skill-context-isolation.md (direct `context: fork` on the skill itself) might have been more appropriate than Approach B. The orchestrator/worker split adds value for `draft-proposal` (proceed/bail/split decision), `verify-completion` (slot clearing, follow-up creation), and `elaborate` (notification routing), but for techdebt and sync-learnings the orchestrator is ceremony without substance. Worth revisiting if the pattern feels heavy.
+This orchestrator essentially just invokes the worker and writes result JSON — it doesn't read a task file or make strategic decisions. For these, Approach A from docs/proposals/skill-context-isolation.md (direct `context: fork` on the skill itself) might have been more appropriate than Approach B. The orchestrator/worker split adds value for `draft-proposal` (proceed/bail/split decision), `verify-completion` (slot clearing, follow-up creation), and `elaborate` (notification routing), but for techdebt and sync-learnings the orchestrator is ceremony without substance. Worth revisiting if the pattern feels heavy.
 
 ## Implement follow-up: passing broader context from Mag to workers
 

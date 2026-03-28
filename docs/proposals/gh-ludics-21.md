@@ -11,7 +11,7 @@
 
 The `mag/inbox.md` file and `/ludics-read-inbox` skill predate the ntfy.sh queue-based messaging
 channel. With the "lightweight incoming" proposal implemented
-(`docs/implemented/proposal-lightweight-incoming.md`), incoming ntfy messages are written directly
+(`docs/proposals/proposal-lightweight-incoming.md`), incoming ntfy messages are written directly
 to the queue with content via `queueRequest("message", '"content":...')`, and `queuePopSkill()`
 returns the message content as a direct user turn. The `/ludics-read-inbox` fallback path in
 `queuePopSkill()`, the `appendToInbox()` function in `notify.ts`, and the `magInbox()` function in
@@ -237,10 +237,10 @@ ludics mag inbox               # Show pending messages
 
 The following files contain `inbox` or `read-inbox` references but do **not** require changes:
 
-- `docs/implemented/proposal-lightweight-incoming.md` — historical design doc describing the
+- `docs/proposals/proposal-lightweight-incoming.md` — historical design doc describing the
   transition; leave as-is (implemented/ directory is an archive)
-- `docs/implemented/skill-context-isolation.md` — historical doc; leave as-is
-- `docs/implemented/TypeScript_migration/` — historical migration notes; leave as-is
+- `docs/proposals/skill-context-isolation.md` — historical doc; leave as-is
+- `docs/proposals/TypeScript_migration/` — historical migration notes; leave as-is
 - `docs/proposal-memory-compaction.md` — references `past-messages.md` as a compaction target;
   after deletion of the file, this reference becomes moot but the proposal doc itself is
   low-priority to update
