@@ -5,40 +5,6 @@ import type { Phase } from "./phases.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { readMergeVotes } from "./merge.ts";
 
-export interface SkillContext {
-  phase: Phase;
-  round: number;
-  mode: "duo" | "pair";
-  feature: string;
-  agent: AgentConfig;
-  peer: AgentConfig | null;
-  taskSpec: string;
-  peerReview: string | null;
-  peerStatus: string | null;
-  peerPlan: string | null;
-  gitDiffStat: string | null;
-  previousRoundSummary: string | null;
-  mergeVotes: string | null;
-  worktreePath: string;
-  peerWorktreePath: string | null;
-  statusFile: string;
-  planFile: string;
-  reviewFile: string;
-  prFile: string;
-  interruptFile: string;
-  mergeVoteFile: string;
-  suggestRefactorFile: string;
-  workflowFeedbackFile: string;
-  mergeReviewDecisionFile: string;
-  mergedMarkerFile: string;
-  mergedPlanFile: string;
-  planMergeRound: number;
-  peerSyncDir: string;
-  doneStatus: string;
-  /** Staging fork for PR creation, or null when not configured. */
-  stagingRepo: string | null;
-}
-
 function readFileIfExists(path: string): string | null {
   if (!existsSync(path)) return null;
   return readFileSync(path, "utf-8").trim() || null;
@@ -192,7 +158,7 @@ export function resolveTemplatePath(
 export function buildSkillContext(
   state: OrchestrationState,
   agent: AgentConfig,
-): SkillContext {
+): Record<string, string> {
   const peer = state.agents.find((candidate) => candidate.name !== agent.name) ?? null;
   const planFile = join(state.peerSyncDir, "plans", `round-${state.round}-${agent.name}.md`);
   const planMergeRound = state.planMergeRound ?? 0;
@@ -248,82 +214,71 @@ export function buildSkillContext(
   });
   const stagingRepo = _projectEntry?.staging_repo ?? null;
 
-  return {
-    phase: state.phase,
-    round: state.round,
-    mode: state.mode,
-    feature: state.feature,
-    agent,
-    peer,
-    taskSpec: taskSpecText(state),
-    peerReview,
-    peerStatus: peer ? state.agentStates[peer.name]?.status ?? null : null,
-    peerPlan,
-    gitDiffStat: gitOutput(agent.worktreePath, ["diff", "--stat"]),
-    previousRoundSummary: state.round > 1 && peer
+  const result: Record<string, string> = {
+    PHASE: state.phase,
+    ROUND: String(state.round),
+    MODE: state.mode,
+    FEATURE: state.feature,
+    AGENT_NAME: agent.name,
+    AGENT_PROVIDER: agent.provider,
+    AGENT_ROLE: agent.role ?? "agent",
+    PEER_NAME: peer?.name ?? "none",
+    PEER_PROVIDER: peer?.provider ?? "none",
+    TASK_SPEC: taskSpecText(state),
+    PEER_REVIEW: peerReview ?? "(no review yet)",
+    PEER_STATUS: peer ? (state.agentStates[peer.name]?.status ?? "unknown") : "unknown",
+    PEER_PLAN: peerPlan ?? "(no plan yet)",
+    GIT_DIFF_STAT: gitOutput(agent.worktreePath, ["diff", "--stat"]) ?? "(no changes yet)",
+    PREVIOUS_ROUND_SUMMARY: (state.round > 1 && peer
       ? readFileIfExists(join(state.peerSyncDir, "reviews", `round-${state.round - 1}-${peer.name}.md`))
-      : null,
-    mergeVotes: mergeVotes || null,
-    worktreePath: agent.worktreePath,
-    peerWorktreePath: peer?.worktreePath ?? null,
-    statusFile: join(state.peerSyncDir, `${agent.name}.status`),
-    planFile,
-    mergedPlanFile,
-    planMergeRound,
-    reviewFile,
-    prFile: join(state.peerSyncDir, `${agent.name}.pr`),
-    interruptFile: join(state.peerSyncDir, `${agent.name}.interrupt`),
-    mergeVoteFile: join(state.peerSyncDir, "merge-votes", `round-${state.mergeRound}-${agent.name}.txt`),
-    suggestRefactorFile: join(state.peerSyncDir, `suggest-refactor-${agent.name}.md`),
-    workflowFeedbackFile: join(state.peerSyncDir, `workflow-feedback-${agent.name}.md`),
-    mergeReviewDecisionFile: join(state.peerSyncDir, "merge-review-approval.txt"),
-    mergedMarkerFile: join(state.peerSyncDir, `${agent.name}.merged`),
-    peerSyncDir: state.peerSyncDir,
-    doneStatus: doneStatusForPhase(state.phase),
-    stagingRepo,
-  };
-}
-
-export function substituteTemplate(template: string, ctx: SkillContext): string {
-  const values: Record<string, string> = {
-    PHASE: ctx.phase,
-    ROUND: String(ctx.round),
-    MODE: ctx.mode,
-    FEATURE: ctx.feature,
-    AGENT_NAME: ctx.agent.name,
-    AGENT_PROVIDER: ctx.agent.provider,
-    AGENT_ROLE: ctx.agent.role ?? "agent",
-    PEER_NAME: ctx.peer?.name ?? "none",
-    PEER_PROVIDER: ctx.peer?.provider ?? "none",
-    TASK_SPEC: ctx.taskSpec,
-    PEER_REVIEW: ctx.peerReview ?? "(no review yet)",
-    PEER_STATUS: ctx.peerStatus ?? "unknown",
-    PEER_PLAN: ctx.peerPlan ?? "(no plan yet)",
-    GIT_DIFF_STAT: ctx.gitDiffStat ?? "(no changes yet)",
-    PREVIOUS_ROUND_SUMMARY: ctx.previousRoundSummary ?? "(no previous round summary)",
-    MERGE_VOTES: ctx.mergeVotes ?? "(no merge votes yet)",
-    WORKTREE_PATH: ctx.worktreePath,
-    PEER_WORKTREE_PATH: ctx.peerWorktreePath ?? "(no peer worktree)",
-    STATUS_FILE: ctx.statusFile,
-    PLAN_FILE: ctx.planFile,
-    MERGED_PLAN_FILE: ctx.mergedPlanFile,
-    PLAN_MERGE_ROUND: String(ctx.planMergeRound),
-    REVIEW_FILE: ctx.reviewFile,
-    PR_FILE: ctx.prFile,
-    INTERRUPT_FILE: ctx.interruptFile,
-    MERGE_VOTE_FILE: ctx.mergeVoteFile,
-    SUGGEST_REFACTOR_FILE: ctx.suggestRefactorFile,
-    WORKFLOW_FEEDBACK_FILE: ctx.workflowFeedbackFile,
-    MERGE_REVIEW_DECISION_FILE: ctx.mergeReviewDecisionFile,
-    MERGED_MARKER_FILE: ctx.mergedMarkerFile,
-    PEER_SYNC_DIR: ctx.peerSyncDir,
-    DONE_STATUS: ctx.doneStatus,
-    STAGING_REPO: ctx.stagingRepo ?? "",
-    STAGING_REPO_NOTE: ctx.stagingRepo
-      ? `\n> **Staging fork**: This project uses a staging fork (\`${ctx.stagingRepo}\`). Create the PR against the staging fork, not the upstream repo.\n`
+      : null) ?? "(no previous round summary)",
+    MERGE_VOTES: mergeVotes || "(no merge votes yet)",
+    WORKTREE_PATH: agent.worktreePath,
+    PEER_WORKTREE_PATH: peer?.worktreePath ?? "(no peer worktree)",
+    STATUS_FILE: join(state.peerSyncDir, `${agent.name}.status`),
+    PLAN_FILE: planFile,
+    MERGED_PLAN_FILE: mergedPlanFile,
+    PLAN_MERGE_ROUND: String(planMergeRound),
+    REVIEW_FILE: reviewFile,
+    PR_FILE: join(state.peerSyncDir, `${agent.name}.pr`),
+    INTERRUPT_FILE: join(state.peerSyncDir, `${agent.name}.interrupt`),
+    MERGE_VOTE_FILE: join(
+      state.peerSyncDir, "merge-votes", `round-${state.mergeRound}-${agent.name}.txt`,
+    ),
+    SUGGEST_REFACTOR_FILE: join(state.peerSyncDir, `suggest-refactor-${agent.name}.md`),
+    WORKFLOW_FEEDBACK_FILE: join(state.peerSyncDir, `workflow-feedback-${agent.name}.md`),
+    MERGE_REVIEW_DECISION_FILE: join(state.peerSyncDir, "merge-review-approval.txt"),
+    MERGED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.merged`),
+    PEER_SYNC_DIR: state.peerSyncDir,
+    DONE_STATUS: doneStatusForPhase(state.phase),
+    STAGING_REPO: stagingRepo ?? "",
+    STAGING_REPO_NOTE: stagingRepo
+      ? `\n> **Staging fork**: This project uses a staging fork (\`${stagingRepo}\`). Create the PR against the staging fork, not the upstream repo.\n`
       : "",
   };
-  return template.replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, key: string) => values[key] ?? "");
+
+  // Auto-inject project config string fields as PROJECT_<FIELD> variables.
+  // Non-string fields (booleans, objects) are skipped to avoid "[object Object]" in templates.
+  if (_projectEntry) {
+    for (const [key, val] of Object.entries(_projectEntry)) {
+      if (typeof val === "string" && val) {
+        result[`PROJECT_${key.toUpperCase()}`] = val;
+      }
+    }
+  }
+
+  return result;
+}
+
+export function substituteTemplate(template: string, values: Record<string, string>): string {
+  return template.replace(/\{\{([A-Z0-9_]+)\}\}/g, (match, key: string) => {
+    if (!(key in values)) {
+      if (process.env.LUDICS_DEV || process.env.DEBUG) {
+        console.error(`ludics: template warning: unknown variable {{${key}}}`);
+      }
+    }
+    return values[key] ?? "";
+  });
 }
 
 async function magTailorSkill(message: string): Promise<string> {
