@@ -124,7 +124,7 @@ function renderSlots(slots) {
             let html = `<p class="process" title="${escapeHtml(slot.process)}">${escapeHtml(slot.process)}</p>`;
             const meta = [];
             if (hasTask) meta.push(`<span class="task-id">${escapeHtml(slot.task)}</span>`);
-            if (slot.effort) meta.push(`<span class="effort">${escapeHtml(slot.effort)}</span>`);
+            if (slot.effort) meta.push(`<span class="effort" data-effort="${escapeHtml(slot.effort)}">${escapeHtml(slot.effort)}</span>`);
             if (slot.mode) {
                 // Only allow toggling when no session is actively running.
                 // slotStart() stamps slot.sessionStarted for all adapters (manual included),
@@ -215,10 +215,14 @@ function renderReadyQueue(tasks) {
         const items = tasks.slice(0, CONFIG.maxReadyTasks).map(task => {
             const priority = task.priority || '-';
             const priorityClass = `priority-${priority}`;
+            const effortBadge = task.effort
+                ? `<span class="effort" data-effort="${escapeHtml(task.effort)}">${escapeHtml(task.effort)}</span>`
+                : '';
             return `
             <li class="ready-task-item" onclick="promoteTask('${escapeHtml(task.id)}')" title="Click to promote priority">
                 <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>
                 <span class="task-title">${escapeHtml(task.title || task.id)}</span>
+                ${effortBadge}
             </li>
         `;
         });

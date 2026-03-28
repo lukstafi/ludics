@@ -39,14 +39,46 @@ interface SlotJson {
   effort: string | null;
 }
 
-function lookupTaskContent(taskId: string): string | null {
+interface TaskMetadata {
+  content: string | null;
+  githubUrl: string | null;
+  effort: string | null;
+  hasProposal: boolean;
+}
+
+function lookupTaskMetadata(taskId: string): TaskMetadata {
   const tasksDir = join(harnessDir(), "tasks");
   const taskFile = join(tasksDir, taskId + ".md");
-  if (!existsSync(taskFile)) return null;
-  const content = readFileSync(taskFile, "utf-8");
-  // Strip YAML frontmatter, return the markdown body
-  const body = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
-  return body || null;
+  if (!existsSync(taskFile)) return { content: null, githubUrl: null, effort: null, hasProposal: false };
+  let raw: string;
+  try {
+    raw = readFileSync(taskFile, "utf-8");
+  } catch {
+    return { content: null, githubUrl: null, effort: null, hasProposal: false };
+  }
+  // Body extraction never depends on YAML — do it before the YAML try/catch so
+  // a malformed frontmatter block cannot lose the task body (regression guard).
+  const body = raw.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+  const content = body || null;
+  try {
+    const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return { content, githubUrl: null, effort: null, hasProposal: false };
+    const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
+    const urlVal = data.url;
+    const githubUrl =
+      urlVal && typeof urlVal === "string" && urlVal.trim() !== "" && urlVal.trim().toLowerCase() !== "null"
+        ? urlVal.trim()
+        : null;
+    const effortVal = data.effort;
+    const effort =
+      effortVal && typeof effortVal === "string" && effortVal.trim() !== "" && effortVal.trim().toLowerCase() !== "null"
+        ? effortVal.trim()
+        : null;
+    return { content, githubUrl, effort, hasProposal: hasNonNullProposal(data.proposal) };
+  } catch {
+    // YAML parse failed — return body but null out frontmatter-derived fields
+    return { content, githubUrl: null, effort: null, hasProposal: false };
+  }
 }
 
 // Discover running ttyd processes and map tmux session names to their URLs
@@ -76,40 +108,6 @@ function discoverTtydUrls(): Map<string, string> {
     // ignore — pgrep may not be available or ttyd may not be running
   }
   return result;
-}
-
-function lookupTaskGithubUrl(taskId: string): string | null {
-  const tasksDir = join(harnessDir(), "tasks");
-  const taskFile = join(tasksDir, taskId + ".md");
-  if (!existsSync(taskFile)) return null;
-  try {
-    const content = readFileSync(taskFile, "utf-8");
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fmMatch) return null;
-    const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
-    const url = data.url;
-    if (!url || typeof url !== "string" || url.trim() === "" || url.trim().toLowerCase() === "null") return null;
-    return url.trim();
-  } catch {
-    return null;
-  }
-}
-
-function lookupTaskEffort(taskId: string): string | null {
-  const tasksDir = join(harnessDir(), "tasks");
-  const taskFile = join(tasksDir, taskId + ".md");
-  if (!existsSync(taskFile)) return null;
-  try {
-    const content = readFileSync(taskFile, "utf-8");
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fmMatch) return null;
-    const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
-    const effort = data.effort;
-    if (!effort || typeof effort !== "string" || effort.trim() === "" || effort.trim().toLowerCase() === "null") return null;
-    return effort.trim();
-  } catch {
-    return null;
-  }
 }
 
 function lookupSlotOrchestrationLinks(
@@ -144,21 +142,6 @@ function lookupSlotOrchestrationLinks(
   }
 
   return { prUrl, t3codeThreadLinks };
-}
-
-function lookupTaskHasProposal(taskId: string): boolean {
-  const tasksDir = join(harnessDir(), "tasks");
-  const taskFile = join(tasksDir, taskId + ".md");
-  if (!existsSync(taskFile)) return false;
-  try {
-    const content = readFileSync(taskFile, "utf-8");
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fmMatch) return false;
-    const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
-    return hasNonNullProposal(data.proposal);
-  } catch {
-    return false;
-  }
 }
 
 function generateSlots(): SlotJson[] {
@@ -220,11 +203,14 @@ function generateSlots(): SlotJson[] {
       const phaseMatch = block.match(/^- Phase:\s*(.+)$/m);
       if (phaseMatch) phase = phaseMatch[1]!.trim();
     }
-    const taskContent = taskId && taskId !== "null" ? lookupTaskContent(taskId) : null;
-    const taskEffort = taskId && taskId !== "null" ? lookupTaskEffort(taskId) : null;
-    const slotHasProposal = taskId && taskId !== "null" ? lookupTaskHasProposal(taskId) : false;
+    const taskMeta = taskId && taskId !== "null"
+      ? lookupTaskMetadata(taskId)
+      : { content: null, githubUrl: null, effort: null, hasProposal: false };
+    const taskContent = taskMeta.content;
+    const taskEffort = taskMeta.effort;
+    const slotHasProposal = taskMeta.hasProposal;
     const slotProposalLink = slotHasProposal && taskId ? `/proposal.html?task=${encodeURIComponent(taskId)}` : null;
-    const githubUrl = taskId && taskId !== "null" ? lookupTaskGithubUrl(taskId) : null;
+    const githubUrl = taskMeta.githubUrl;
 
     // Read orchestration state for PR URL and t3code thread links.
     // Only use the state if its feature matches the slot's current task
@@ -272,6 +258,7 @@ interface ReadyTask {
   project: string;
   context: string;
   deadline: string | null;
+  effort: string | null;
 }
 
 interface DashboardTask {
@@ -282,6 +269,7 @@ interface DashboardTask {
   priority: string;
   context: string;
   deadline: string | null;
+  effort: string | null;
   milestone: string | null;
   created: string | null;
   completed: string | null;
@@ -370,6 +358,7 @@ function readDashboardTasks(): DashboardTask[] {
         project: String(data.project ?? ""),
         context: String(data.context ?? ""),
         deadline: data.deadline ? String(data.deadline) : null,
+        effort: isNonNullValue(data.effort) ? String(data.effort).trim() : null,
         milestone: isNonNullValue(data.milestone) ? String(data.milestone).trim() : null,
         created: isNonNullValue(data.created) ? String(data.created) : null,
         completed: isNonNullValue(data.completed) ? String(data.completed) : null,
@@ -402,6 +391,7 @@ function generateReady(tasks: DashboardTask[]): ReadyTask[] {
       project: task.project,
       context: task.context,
       deadline: task.deadline,
+      effort: task.effort,
       milestone: task.milestone,
     }));
 
