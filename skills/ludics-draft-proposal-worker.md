@@ -96,18 +96,24 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
 ## Final Response
 
-Use the structured response format from worker-conventions.md with these fields:
+Use the structured response format from worker-conventions.md. Emit a fenced JSON block
+as the last code block in your response:
 
+```json
+{
+  "status": "completed | stale | split-needed | already-exists | error",
+  "task_id": "<task-id>",
+  "proposal_path": "<relative path, e.g. docs/proposals/feature.md>",
+  "ambiguities": ["<ambiguity 1>", "<ambiguity 2>"],
+  "start_confidence": "high | low",
+  "start_rationale": "<one sentence explaining confidence level>",
+  "title": "<task title>",
+  "summary": "<one-line summary of what was proposed>"
+}
 ```
-STATUS: completed | stale | split-needed | already-exists | error
-TASK_ID: <task-id>
-PROPOSAL_PATH: <relative path, e.g. <proposals_path_relative>/<feature>.md> (omit if stale/split-needed/error)
-AMBIGUITIES: <numbered list of ambiguities, or "none">
-START_CONFIDENCE: high | low
-START_RATIONALE: <one sentence explaining confidence level>
-TITLE: <task title>
-SUMMARY: <one-line summary of what was proposed>
-```
+
+Omit `proposal_path` if status is `"stale"`, `"split-needed"`, or `"error"`. Use
+`"none"` for `ambiguities` when there are none.
 
 **START_CONFIDENCE guidance:**
 - `high`: task is a clear, bounded improvement with specific scope — derived from
