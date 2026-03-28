@@ -288,8 +288,10 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
   // Reset pr-comments tracking state on phase entry.
   // Don't dispatch agents yet — wait for actual comments/reviews to arrive.
   // checkAndRedispatchPrComments will handle the first dispatch when needed.
+  // Look back 10 minutes to catch comments posted during preceding phases
+  // (e.g., Codex review posted during update-docs or pr-create).
   if (state.phase === "pr-comments") {
-    state.prCommentsLastCheckAt = undefined;
+    state.prCommentsLastCheckAt = state.phaseStartedAt - 600;
     state.prCommentsQuietSince = undefined;
     state.phaseDispatched = true;
     state.currentPhaseToken = undefined;
