@@ -1,6 +1,9 @@
 ---
 name: ludics-process-suggestions
 description: Process retrospective suggestions into needs-confirmation tasks
+queue-action: process-suggestions
+queue-args: [task]
+queue-required-args: [task]
 ---
 
 # /ludics-process-suggestions - Process Retrospective Suggestions

@@ -1,3 +1,9 @@
+---
+name: ludics-suggest
+description: Provide intelligent task suggestions
+queue-action: suggest
+---
+
 # /ludics-suggest - Task Suggestions
 
 Provide intelligent task suggestions based on current flow state.

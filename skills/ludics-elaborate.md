@@ -1,6 +1,8 @@
 ---
 name: ludics-elaborate
 description: Elaborate a task into a detailed specification
+queue-action: elaborate
+queue-args: [task]
 ---
 
 # /ludics-elaborate - Task Elaboration (Orchestrator)

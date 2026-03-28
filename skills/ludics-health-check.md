@@ -1,3 +1,9 @@
+---
+name: ludics-health-check
+description: Detect approaching deadlines and flag issues requiring attention
+queue-action: health-check
+---
+
 # /ludics-health-check - System Health Check
 
 Detect approaching deadlines, check for semantically complete tasks, and flag
