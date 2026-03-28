@@ -1,6 +1,7 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "path";
+import { Database } from "bun:sqlite";
 
 /**
  * Migrate legacy `<t3codeDir>/state/` → `<t3codeDir>/userdata/`.
@@ -272,6 +273,17 @@ export async function ensureServer(
     const authToken = (process.env.LUDICS_T3CODE_AUTH_TOKEN ?? "").trim() || undefined;
     const t3Home = t3codeDir(harnessDir);
     migrateStateDirIfNeeded(t3Home);
+
+    // DB resilience before each server start.
+    // Order matters: integrity-check (and auto-recover) FIRST, then backup.
+    // This ensures .bak is always a copy of a known-good (or just-recovered)
+    // database — not a copy of a corrupt one.
+    const dbPath = join(t3Home, "userdata", "state.sqlite");
+    const dbHealthy = checkAndRecoverDb(dbPath);
+    if (dbHealthy) {
+      backupDb(dbPath);
+    }
+
     const command = buildLaunchCommand({
       port,
       host,
@@ -349,6 +361,14 @@ export async function stopServer(options: EnsureServerOptions = {}): Promise<boo
   const harnessDir = options.harnessDir ?? defaultHarnessDir();
   const record = readServerRecord(harnessDir);
   if (!record) return false;
+
+  // Checkpoint the WAL before killing the process — this is the single most
+  // impactful change for preventing corruption on unclean shutdown.  The
+  // checkpoint runs while the t3code process is still alive (holding its own
+  // connection); SQLite supports multiple concurrent readers so opening a
+  // second connection here is safe.  Errors are non-fatal.
+  const dbPath = join(record.stateDir, "userdata", "state.sqlite");
+  checkpointWal(dbPath);
 
   const inspection = inspectManagedServerProcess(record);
   const stopped = inspection.matchesRecord
@@ -713,6 +733,199 @@ export async function doctorServer(
 
   const ok = checks.filter((c) => c.name !== "server-stderr.log (last 5 lines)").every((c) => c.passed);
   return { ok, checks };
+}
+
+// ---------------------------------------------------------------------------
+// SQLite crash-resilience helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Checkpoint the WAL file before a clean stop.
+ * Uses TRUNCATE mode to flush all WAL frames to the main DB file and reset the
+ * WAL to zero length.  Falls back to PASSIVE (which doesn't need an exclusive
+ * lock) when the t3code process still holds a write lock.  Errors are non-fatal
+ * — the stop must always proceed regardless.
+ */
+function checkpointWal(dbPath: string): void {
+  if (!existsSync(dbPath)) return;
+  try {
+    const db = new Database(dbPath, { readonly: false });
+    try {
+      db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {
+      // TRUNCATE needs exclusive lock; fall back to passive
+      try {
+        db.run("PRAGMA wal_checkpoint(PASSIVE)");
+      } catch { /* ignore */ }
+    }
+    db.close();
+  } catch (err) {
+    console.error(`t3code: WAL checkpoint failed: ${err}`);
+  }
+}
+
+/**
+ * Copy state.sqlite (+ WAL/SHM side-files if present) to .bak before each
+ * server start, rotating the previous .bak to .bak.1 (keeping last 2 copies).
+ *
+ * Only called when the DB has already been verified as healthy, so .bak is
+ * always a copy of a known-good database.
+ */
+function backupDb(dbPath: string): void {
+  if (!existsSync(dbPath)) return;
+  const bak = dbPath + ".bak";
+  const bak1 = dbPath + ".bak.1";
+  // Rotate: drop old .bak.1 (and its side-files), then move .bak → .bak.1.
+  // Side-files must be rotated alongside their main DB file so that .bak.1
+  // remains self-consistent if it is ever used for a restore.
+  for (const suffix of ["", "-wal", "-shm"]) {
+    if (existsSync(bak1 + suffix)) {
+      try { unlinkSync(bak1 + suffix); } catch { /* ignore */ }
+    }
+  }
+  if (existsSync(bak)) {
+    try { renameSync(bak, bak1); } catch { /* ignore */ }
+  }
+  for (const suffix of ["-wal", "-shm"]) {
+    if (existsSync(bak + suffix)) {
+      try { renameSync(bak + suffix, bak1 + suffix); } catch { /* ignore */ }
+    }
+  }
+  // Copy current DB and any WAL/SHM side-files to .bak
+  try {
+    copyFileSync(dbPath, bak);
+    for (const ext of ["-wal", "-shm"]) {
+      if (existsSync(dbPath + ext)) {
+        try { copyFileSync(dbPath + ext, bak + ext); } catch { /* ignore */ }
+      }
+    }
+  } catch (err) {
+    console.error(`t3code: DB backup failed: ${err}`);
+  }
+}
+
+/**
+ * Run `PRAGMA integrity_check` on state.sqlite.  If it fails, attempt
+ * automatic recovery via `sqlite3 .recover` (pipe into a fresh DB), verify the
+ * result, then swap it in.  If `.recover` also fails, fall back to the most
+ * recent `.bak` file.  Returns true if the DB is (or was recovered to) a usable
+ * state; false if nothing worked (caller proceeds at its own risk).
+ */
+function checkAndRecoverDb(dbPath: string): boolean {
+  if (!existsSync(dbPath)) return true; // fresh start — nothing to check
+
+  // ---- Integrity check ----
+  let integrityOk = false;
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const result = db.query("PRAGMA integrity_check").get() as { integrity_check: string } | null;
+      integrityOk = result?.integrity_check === "ok";
+      if (!integrityOk) {
+        console.error(
+          `t3code: integrity check failed: ${result?.integrity_check ?? "(no result)"}`,
+        );
+      }
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    console.error(`t3code: integrity check error: ${err}`);
+    integrityOk = false;
+  }
+
+  if (integrityOk) return true;
+
+  // ---- Attempt recovery via sqlite3 .recover ----
+  console.error("t3code: attempting automatic recovery...");
+  const recoveredPath = dbPath + ".recovered";
+  if (existsSync(recoveredPath)) {
+    try { unlinkSync(recoveredPath); } catch { /* ignore */ }
+  }
+
+  const recoverResult = Bun.spawnSync(
+    [
+      "bash",
+      "-c",
+      `sqlite3 ${JSON.stringify(dbPath)} ".recover" | sqlite3 ${JSON.stringify(recoveredPath)}`,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+
+  if (recoverResult.exitCode === 0 && existsSync(recoveredPath)) {
+    // Verify the recovered DB before committing to it
+    let recoveredOk = false;
+    try {
+      const db2 = new Database(recoveredPath, { readonly: true });
+      try {
+        const r = db2.query("PRAGMA integrity_check").get() as {
+          integrity_check: string;
+        } | null;
+        recoveredOk = r?.integrity_check === "ok";
+      } finally {
+        db2.close();
+      }
+    } catch { /* fall through to backup restore */ }
+
+    if (recoveredOk) {
+      // Swap: rename corrupt DB aside, place recovered DB at canonical path
+      renameSync(dbPath, dbPath + ".corrupt");
+      renameSync(recoveredPath, dbPath);
+      // Remove orphaned WAL/SHM files left over from the old (now corrupt) DB
+      for (const ext of ["-wal", "-shm"]) {
+        if (existsSync(dbPath + ext)) {
+          try { unlinkSync(dbPath + ext); } catch { /* ignore */ }
+        }
+      }
+      console.error("t3code: recovery succeeded — swapped to recovered DB");
+      return true;
+    }
+  }
+
+  // ---- .recover failed — try restoring from backup ----
+  // Try .bak first, then .bak.1. Verify each backup's integrity before
+  // committing to it — either could be corrupt if a previous start failed.
+  console.error("t3code: .recover failed, trying backup restore...");
+  for (const bakPath of [dbPath + ".bak", dbPath + ".bak.1"]) {
+    if (!existsSync(bakPath)) continue;
+    let bakOk = false;
+    try {
+      const dbBak = new Database(bakPath, { readonly: true });
+      try {
+        const r = dbBak.query("PRAGMA integrity_check").get() as {
+          integrity_check: string;
+        } | null;
+        bakOk = r?.integrity_check === "ok";
+      } finally {
+        dbBak.close();
+      }
+    } catch { /* try next candidate */ }
+
+    if (!bakOk) {
+      console.error(`t3code: backup ${bakPath} failed integrity check, skipping...`);
+      continue;
+    }
+
+    try {
+      renameSync(dbPath, dbPath + ".corrupt");
+      copyFileSync(bakPath, dbPath);
+      // Restore WAL/SHM from backup if present; otherwise remove stale ones
+      for (const ext of ["-wal", "-shm"]) {
+        if (existsSync(bakPath + ext)) {
+          try { copyFileSync(bakPath + ext, dbPath + ext); } catch { /* ignore */ }
+        } else if (existsSync(dbPath + ext)) {
+          try { unlinkSync(dbPath + ext); } catch { /* ignore */ }
+        }
+      }
+      console.error(`t3code: restored from ${bakPath}`);
+      return true;
+    } catch (err) {
+      console.error(`t3code: restore from ${bakPath} failed: ${err}`);
+    }
+  }
+
+  console.error("t3code: no usable backup — starting with corrupt DB (may fail)");
+  return false;
 }
 
 function sleep(ms: number): Promise<void> {
