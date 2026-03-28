@@ -252,8 +252,12 @@
         };
         let openNodeKeys = new Set();
         let hasRendered = false;
-        let currentFilter = localStorage.getItem('tasks-filter') || 'all';
+        let currentFilter = (() => { try { return localStorage.getItem('tasks-filter') || 'all'; } catch { return 'all'; } })();
         let cachedForest = null;
+
+        function saveFilter(value) {
+            try { localStorage.setItem('tasks-filter', value); } catch { /* storage unavailable */ }
+        }
 
         document.addEventListener('DOMContentLoaded', () => {
             // Initialize filter buttons
@@ -265,7 +269,7 @@
                 }
                 btn.addEventListener('click', () => {
                     currentFilter = btn.dataset.filter;
-                    localStorage.setItem('tasks-filter', currentFilter);
+                    saveFilter(currentFilter);
                     document.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('active'));
                     btn.classList.add('active');
                     if (cachedForest) renderTasksTree(cachedForest);
