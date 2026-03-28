@@ -6,6 +6,7 @@ import { basename, join } from "path";
 import YAML from "yaml";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
+import { queueRequest } from "./queue.ts";
 import type { OrchestrationState } from "./orchestration/state.ts";
 import type { T3Thread, T3ThreadMessage } from "./t3code/types.ts";
 import { threadModel } from "./t3code/types.ts";
@@ -416,6 +417,15 @@ function writeRetrospective(data: RetrospectiveData): void {
     slot: data.slot ?? undefined,
     message: `retrospective written for ${data.taskId} (${data.turns.length} turns, ${data.threads.length} threads)`,
   });
+
+  // Auto-queue suggestion processing if retrospective contains suggestions
+  if (data.suggestRefactorSummary || Object.keys(data.workflowFeedback).length > 0) {
+    try {
+      queueRequest("process-suggestions", `"task":"${data.taskId}"`);
+    } catch {
+      // Non-critical: don't fail retrospective write if queue append fails
+    }
+  }
 }
 
 // --- Primary collector ---

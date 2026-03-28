@@ -159,4 +159,20 @@ describe("resolveQueueRequestCommand — backward compat parsing", () => {
     );
     expect(result).toBe("/ludics-draft-proposal task-042");
   });
+
+  test("process-suggestions action routes to skill command", async () => {
+    const result = await resolveQueueRequestCommand(
+      { action: "process-suggestions", task: "task-042" },
+      false,
+    );
+    expect(result).toBe("/ludics-process-suggestions task-042");
+  });
+
+  test("process-suggestions without task returns null", async () => {
+    const result = await resolveQueueRequestCommand(
+      { action: "process-suggestions" },
+      false,
+    );
+    expect(result).toBeNull();
+  });
 });

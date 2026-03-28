@@ -57,8 +57,8 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
      - Run a lightweight slot reassignment (only newly-empty slots
        or newly-ready high-priority tasks)
      - Do not re-elaborate tasks or redo the full analysis
-     - Still run step 6 (Nudge stalled slotted tasks)
-     - Then skip to step 8 (Write result)
+     - Still run step 7 (Nudge stalled slotted tasks)
+     - Then skip to step 9 (Write result)
    - If `Status: new`: proceed with the full process below
 
 3. **Elaborate unprocessed tasks**:
@@ -66,7 +66,12 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - For tasks that appear in the ready queue or are high-priority:
      - Use the Task tool to invoke `/ludics-elaborate <task-id>` (parallel)
 
-4. **Analyze, merge, and split work**:
+4. **Scan for needs-confirmation tasks**:
+   - Check task files for `status: needs-confirmation`
+   - For each, note the task ID, title, priority, and `relates_to` source task
+   - These will be included in a dedicated "Needs Confirmation" section
+
+5. **Analyze, merge, and split work**:
    - Identify high-priority ready tasks, approaching deadlines (7 days),
      slot utilization
    - Factor in recent incoming messages as high-priority context
@@ -81,7 +86,7 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
      - Sub-tasks: `ludics tasks create "<title>" <project> <priority>` or
        `/ludics-elaborate <task-id>` to break into children
 
-5. **(Re)Assign slots**:
+6. **(Re)Assign slots**:
 
    Slot states: **Empty** (available), **Project-reserved** (path+mode, no task),
    **Task-assigned** (active work).
@@ -116,7 +121,7 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - **suggest**: include ready-to-run commands in the briefing
    - **manual**: include observations only
 
-6. **Nudge stalled slotted tasks**:
+7. **Nudge stalled slotted tasks**:
    - Read the `## Active Unconcluded Agent-Duo Slots` section first.
      - Treat listed slots as **Case A** (active, unconcluded): do **not** re-send
        launch buttons for those slots.
@@ -130,23 +135,23 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
        ```
      - Note the nudge in the briefing under Slot Assignments (e.g.,
        "Slot 3: re-sent launch buttons for task-101 (no active session)")
-   - Skip tasks whose slot was just assigned in step 5 (fresh assignments will
+   - Skip tasks whose slot was just assigned in step 6 (fresh assignments will
      get their own proposal via the normal draft-proposal flow)
    - Skip if `start_sessions` autonomy is `manual`
 
-7. **Surface ambiguities**:
+8. **Surface ambiguities**:
    - Review the full briefing for information gaps that would change your next
      autonomous actions (conflicting priorities, unclear task scope, suspiciously elaborated tasks,
      dependency tangles, missing context from the user)
    - Formulate 1-5 specific questions (see Questions Guidelines in the output format)
    - If no genuine ambiguities exist, note "No blocking ambiguities."
 
-8. **Write result**:
+9. **Write result**:
    - Write briefing to `$LUDICS_STATE_PATH/briefing.md`
    - Read request ID: `REQ_ID=$(cat "$LUDICS_STATE_PATH/mag/current-request-id")`
    - Write result JSON to `$LUDICS_RESULTS_DIR/$REQ_ID.json`
 
-9. **Send questions notification**:
+10. **Send questions notification**:
    - Extract the `## Questions` section from the briefing you just wrote
    - If there are questions (not just "No blocking ambiguities"), send them:
      ```bash
@@ -155,7 +160,7 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
      Use the briefing date as the title, e.g., "Briefing questions — 2026-02-27"
    - Keep the message concise: just the numbered questions, no preamble
 
-10. **Commit and push state**:
+11. **Commit and push state**:
     - Run `ludics sync` to commit and push to remote
 
 ## Output Format
@@ -181,6 +186,14 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
 1. **task-101** (A): [title] - [reason this is high priority]
 2. **task-067** (A): [title]
 3. **task-128** (B): [title]
+
+## Needs Confirmation
+- **task-abc123** (C): "Refactor tensor allocation path" -- from task-xyz789 retrospective
+- **task-def456** (C): "Add missing edge-case tests for parser" -- from task-xyz789 retrospective
+
+_(Confirm or dismiss these in the dashboard)_
+
+[Omit this section if no needs-confirmation tasks exist]
 
 ## Urgent Attention
 - **Deadline**: task-042 due in 3 days (POPL submission)

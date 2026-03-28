@@ -42,6 +42,7 @@ async function fetchAllData() {
         await Promise.all([
             fetchSlots(),
             fetchReadyQueue(),
+            fetchNeedsConfirmation(),
             fetchQueueHoldState(),
             fetchNotifications(),
             fetchMagStatus(),
@@ -485,6 +486,88 @@ async function promoteTask(taskId) {
         setTimeout(() => li.classList.remove('promote-error'), 1500);
     } finally {
         setTimeout(() => li.classList.remove('promoting'), 300);
+    }
+}
+
+// Fetch needs-confirmation tasks
+async function fetchNeedsConfirmation() {
+    try {
+        const response = await fetch(CONFIG.dataPath + 'needs-confirmation.json');
+        if (!response.ok) throw new Error('Failed to fetch needs-confirmation');
+        const tasks = await response.json();
+        renderNeedsConfirmation(tasks);
+    } catch (error) {
+        console.warn('Using placeholder needs-confirmation');
+        renderNeedsConfirmation([]);
+    }
+}
+
+// Render needs-confirmation tasks
+function renderNeedsConfirmation(tasks) {
+    const list = document.getElementById('needs-confirmation-list');
+    if (!list) return;
+
+    let newHtml;
+    if (tasks.length === 0) {
+        newHtml = '<li class="empty">No tasks need confirmation</li>';
+    } else {
+        const items = tasks.map(task => {
+            const priority = task.priority || '-';
+            const priorityClass = `priority-${priority}`;
+            const source = task.relatesTo?.length ? ` (from ${escapeHtml(task.relatesTo[0])})` : '';
+            return `
+            <li class="needs-confirm-item">
+                <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>
+                <span class="task-title">${escapeHtml(task.title || task.id)}${source}</span>
+                <span class="confirm-actions">
+                    <button class="confirm-btn" onclick="confirmTask('${escapeHtml(task.id)}')" title="Confirm: move to ready">&#x2713;</button>
+                    <button class="dismiss-btn" onclick="dismissTask('${escapeHtml(task.id)}')" title="Dismiss: abandon">&#x2715;</button>
+                </span>
+            </li>`;
+        });
+        newHtml = items.join('');
+    }
+
+    if (list.innerHTML !== newHtml) {
+        list.innerHTML = newHtml;
+    }
+}
+
+// Confirm a needs-confirmation task (move to ready)
+async function confirmTask(taskId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '\u2026';
+    try {
+        const response = await fetch(`/api/task-confirm?task=${encodeURIComponent(taskId)}`);
+        if (response.ok) {
+            fetchAllData();
+        } else {
+            btn.textContent = '\u2713';
+            setTimeout(() => { btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = '\u2713';
+        setTimeout(() => { btn.disabled = false; }, 2000);
+    }
+}
+
+// Dismiss a needs-confirmation task (move to abandoned)
+async function dismissTask(taskId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '\u2026';
+    try {
+        const response = await fetch(`/api/task-dismiss?task=${encodeURIComponent(taskId)}`);
+        if (response.ok) {
+            fetchAllData();
+        } else {
+            btn.textContent = '\u2715';
+            setTimeout(() => { btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = '\u2715';
+        setTimeout(() => { btn.disabled = false; }, 2000);
     }
 }
 
