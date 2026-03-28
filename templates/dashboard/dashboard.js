@@ -522,7 +522,7 @@ function renderNeedsConfirmation(tasks) {
             return `
             <li class="needs-confirm-item">
                 <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>
-                <span class="task-title">${escapeHtml(task.title || task.id)}${source}</span>
+                <a class="task-title" href="tasks/${escapeHtml(task.id)}.md" target="_blank">${escapeHtml(task.title || task.id)}</a>${source}
                 <span class="confirm-actions">
                     <button class="confirm-btn" onclick="confirmTask('${escapeHtml(task.id)}')" title="Confirm: move to ready">&#x2713;</button>
                     <button class="dismiss-btn" onclick="dismissTask('${escapeHtml(task.id)}')" title="Dismiss: abandon">&#x2715;</button>
