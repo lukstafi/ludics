@@ -142,7 +142,11 @@ function renderSlots(slots) {
             }
             if (slot.started) meta.push(formatTime(slot.started));
             if (meta.length > 0) html += `<p class="slot-meta">${meta.join(' · ')}</p>`;
-            if (slot.phase) html += `<p class="phase"><span class="label">Phase:</span> ${escapeHtml(slot.phase)}</p>`;
+            if (slot.phase) {
+                let phaseText = escapeHtml(slot.phase);
+                if (slot.round != null && slot.round > 0) phaseText += ` (round ${slot.round})`;
+                html += `<p class="phase"><span class="label">Phase:</span> ${phaseText}</p>`;
+            }
             if (slot.preempted && slot.preemptedTask) {
                 html += `<p class="preempted-notice">Stashed: <span class="task-id">${escapeHtml(slot.preemptedTask)}</span></p>`;
             }
