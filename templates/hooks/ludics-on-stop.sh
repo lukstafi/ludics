@@ -82,19 +82,27 @@ if [[ -z "$peer_sync_dir" ]]; then
 fi
 
 # 3. Fallback: walk up from cwd to find .peer-sync/phase.
+#    DEPRECATED: This heuristic is fragile (may match wrong .peer-sync in nested
+#    worktrees) and will be removed in a future release. Ensure LUDICS_PEER_SYNC_DIR
+#    is set (via SessionStart hook) or .ludics-orchestration.json markers are present.
 if [[ -z "$peer_sync_dir" ]]; then
   check_dir="$cwd"
   while [[ -n "$check_dir" && "$check_dir" != "/" ]]; do
     if [[ -f "$check_dir/.peer-sync/phase" ]]; then
       peer_sync_dir="$check_dir/.peer-sync"
+      echo "[ludics] WARNING: stop hook resolved peer-sync via directory walk (deprecated). Set LUDICS_PEER_SYNC_DIR env var instead." >&2
       break
     fi
     check_dir=$(dirname "$check_dir")
   done
 fi
 
+# Orchestration stop-hook routing.  Only exec into orch on-stop when the shell
+# successfully resolved a peer-sync dir (via env var, marker file, or dir walk).
+# If peer_sync_dir is empty, fall through to mag queue-pop — do NOT check the
+# raw LUDICS_PEER_SYNC_DIR env var here, because it may be stale (no phase file),
+# and exec-ing would prevent the Mag fallback from running.
 if [[ -n "$peer_sync_dir" ]]; then
-  # Orchestration agent stop — notify the runner
   exec "$ludics_bin" orch on-stop "$cwd" "$peer_sync_dir" "$hook_event_name"
 fi
 

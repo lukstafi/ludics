@@ -55,7 +55,7 @@ async function fetchSnapshot(record: T3CodeServerRecord | null): Promise<T3Snaps
   }
 }
 
-function refreshAgentStatuses(state: OrchestrationState, snapshot: T3Snapshot | null): void {
+export function refreshAgentStatuses(state: OrchestrationState, snapshot: T3Snapshot | null): void {
   for (const agent of state.agents) {
     // --- 1. Read peer-sync status ---
     const peerStatus = readAgentStatus(state.peerSyncDir, agent.name);

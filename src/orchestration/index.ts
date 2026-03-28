@@ -91,17 +91,31 @@ export async function runOrchestrationCli(args: string[]): Promise<void> {
 
 /**
  * Handle a stop-hook invocation from an orchestration agent.
- * Usage: ludics orch on-stop <cwd> <peer-sync-dir> <hook-event-name>
+ * Usage: ludics orch on-stop <cwd> [peer-sync-dir] [hook-event-name]
  *
  * Writes a stop-hook record to .peer-sync/<agent>.stop.json so the runner
  * can detect turn completion via push rather than waiting for the next poll.
+ *
+ * Peer-sync directory resolution: CLI arg (if valid) > LUDICS_PEER_SYNC_DIR
+ * env var > give up.  The shell hook passes an empty-string placeholder for
+ * the CLI arg when it couldn't resolve the dir, so the env var kicks in.
  */
 export function orchOnStop(args: string[]): void {
-  const [cwd, peerSyncDir, hookEventName] = args;
-  if (!cwd || !peerSyncDir) {
-    console.error("usage: ludics orch on-stop <cwd> <peer-sync-dir> [hook-event-name]");
+  const [cwd, cliPeerSyncDir, hookEventName] = args;
+  if (!cwd) {
+    console.error("usage: ludics orch on-stop <cwd> [peer-sync-dir] [hook-event-name]");
     process.exit(1);
   }
+
+  // Resolve peerSyncDir: CLI arg (if valid) > env var > give up.
+  let peerSyncDir = cliPeerSyncDir || undefined;
+  if (!peerSyncDir || !readFileIfExists(join(peerSyncDir, "phase"))) {
+    const envDir = process.env.LUDICS_PEER_SYNC_DIR;
+    if (envDir && readFileIfExists(join(envDir, "phase"))) {
+      peerSyncDir = envDir;
+    }
+  }
+  if (!peerSyncDir) return; // No active orchestration found.
 
   // Determine which agent this stop belongs to by checking which agent's
   // worktree matches the cwd.
