@@ -274,10 +274,15 @@ export async function ensureServer(
     const t3Home = t3codeDir(harnessDir);
     migrateStateDirIfNeeded(t3Home);
 
-    // DB resilience: backup then integrity-check before each server start.
+    // DB resilience before each server start.
+    // Order matters: integrity-check (and auto-recover) FIRST, then backup.
+    // This ensures .bak is always a copy of a known-good (or just-recovered)
+    // database — not a copy of a corrupt one.
     const dbPath = join(t3Home, "userdata", "state.sqlite");
-    backupDb(dbPath);
-    checkAndRecoverDb(dbPath);
+    const dbHealthy = checkAndRecoverDb(dbPath);
+    if (dbHealthy) {
+      backupDb(dbPath);
+    }
 
     const command = buildLaunchCommand({
       port,
@@ -762,17 +767,29 @@ function checkpointWal(dbPath: string): void {
 /**
  * Copy state.sqlite (+ WAL/SHM side-files if present) to .bak before each
  * server start, rotating the previous .bak to .bak.1 (keeping last 2 copies).
+ *
+ * Only called when the DB has already been verified as healthy, so .bak is
+ * always a copy of a known-good database.
  */
 function backupDb(dbPath: string): void {
   if (!existsSync(dbPath)) return;
   const bak = dbPath + ".bak";
   const bak1 = dbPath + ".bak.1";
-  // Rotate: .bak → .bak.1 (drop old .bak.1 to keep at most 2 backups)
-  if (existsSync(bak1)) {
-    try { unlinkSync(bak1); } catch { /* ignore */ }
+  // Rotate: drop old .bak.1 (and its side-files), then move .bak → .bak.1.
+  // Side-files must be rotated alongside their main DB file so that .bak.1
+  // remains self-consistent if it is ever used for a restore.
+  for (const suffix of ["", "-wal", "-shm"]) {
+    if (existsSync(bak1 + suffix)) {
+      try { unlinkSync(bak1 + suffix); } catch { /* ignore */ }
+    }
   }
   if (existsSync(bak)) {
     try { renameSync(bak, bak1); } catch { /* ignore */ }
+  }
+  for (const suffix of ["-wal", "-shm"]) {
+    if (existsSync(bak + suffix)) {
+      try { renameSync(bak + suffix, bak1 + suffix); } catch { /* ignore */ }
+    }
   }
   // Copy current DB and any WAL/SHM side-files to .bak
   try {
@@ -865,10 +882,30 @@ function checkAndRecoverDb(dbPath: string): boolean {
     }
   }
 
-  // ---- .recover failed — try restoring from latest backup ----
+  // ---- .recover failed — try restoring from backup ----
+  // Try .bak first, then .bak.1. Verify each backup's integrity before
+  // committing to it — either could be corrupt if a previous start failed.
   console.error("t3code: .recover failed, trying backup restore...");
-  const bakPath = dbPath + ".bak";
-  if (existsSync(bakPath)) {
+  for (const bakPath of [dbPath + ".bak", dbPath + ".bak.1"]) {
+    if (!existsSync(bakPath)) continue;
+    let bakOk = false;
+    try {
+      const dbBak = new Database(bakPath, { readonly: true });
+      try {
+        const r = dbBak.query("PRAGMA integrity_check").get() as {
+          integrity_check: string;
+        } | null;
+        bakOk = r?.integrity_check === "ok";
+      } finally {
+        dbBak.close();
+      }
+    } catch { /* try next candidate */ }
+
+    if (!bakOk) {
+      console.error(`t3code: backup ${bakPath} failed integrity check, skipping...`);
+      continue;
+    }
+
     try {
       renameSync(dbPath, dbPath + ".corrupt");
       copyFileSync(bakPath, dbPath);
@@ -880,10 +917,10 @@ function checkAndRecoverDb(dbPath: string): boolean {
           try { unlinkSync(dbPath + ext); } catch { /* ignore */ }
         }
       }
-      console.error("t3code: restored from backup");
+      console.error(`t3code: restored from ${bakPath}`);
       return true;
     } catch (err) {
-      console.error(`t3code: backup restore failed: ${err}`);
+      console.error(`t3code: restore from ${bakPath} failed: ${err}`);
     }
   }
 
