@@ -19,6 +19,7 @@ import {
   expirePendingFollowupRevises,
 } from "./notify.ts";
 import { slotAssign, slotClear, slotStart, taskCompleteDirectly } from "./slots/index.ts";
+import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
 import { selectOrchestrationFlags } from "./adapters/t3code.ts";
 import YAML from "yaml";
 import {
@@ -1061,30 +1062,35 @@ async function queuePopSkill(): Promise<string | null> {
 }
 
 /** Resolve a queue request to a skill command or execute it programmatically.
- *  Exported for testing — call with `executeProgrammatic: false` for pure parsing. */
+ *  Exported for testing — call with `executeProgrammatic: false` for pure parsing.
+ *
+ *  Three-tier dispatch:
+ *  1. Pre-hooks for briefing/adopt-sessions (imperative side-effects before skill command).
+ *  2. Auto-discovered skill commands read from skills/*.md frontmatter via the registry.
+ *  3. Programmatic-only actions (message, adapter-followup, complete-task) that never
+ *     return a slash command, handled by the reduced switch below.
+ */
 export async function resolveQueueRequestCommand(request: Record<string, unknown>, executeProgrammatic: boolean): Promise<string | null> {
   const action = String(request.action ?? "");
 
-  // Map action to skill command
-  switch (action) {
-    case "briefing":
-      // Only precompute (and clean up threads) when actually dispatching, not during peek.
-      if (executeProgrammatic) {
-        await briefingPrecomputeContext();
-      }
-      return "/ludics-briefing";
-    case "suggest":
-      return "/ludics-suggest";
-    case "elaborate": {
-      const task = String(request.task ?? "");
-      return `/ludics-elaborate ${task}`;
+  // Tier 1: Pre-hooks for skill actions that require context pre-computation.
+  // Only precompute when actually dispatching, not during a peek.
+  if (executeProgrammatic) {
+    if (action === "briefing") {
+      await briefingPrecomputeContext();
+    } else if (action === "adopt-sessions") {
+      adoptSessionsPrecomputeContext();
     }
-    case "health-check":
-      return "/ludics-health-check";
-    case "learn":
-      return "/ludics-learn";
-    case "sync-learnings":
-      return "/ludics-sync-learnings";
+  }
+
+  // Tier 2: Auto-discovered skill commands from skills/*.md frontmatter.
+  const skillCommand = resolveSkillCommand(action, request);
+  if (skillCommand !== null) {
+    return skillCommand;
+  }
+
+  // Tier 3: Programmatic-only actions that never yield a skill command.
+  switch (action) {
     case "message": {
       const content = String(request.content ?? "");
       if (!content) return null;
@@ -1176,45 +1182,10 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       }
       return null;
     }
-    case "feedback-digest": {
-      const repo = String(request.repo ?? "");
-      return `/ludics-feedback-digest ${repo}`;
-    }
-    case "draft-proposal": {
-      const task = String(request.task ?? "");
-      return `/ludics-draft-proposal ${task}`;
-    }
-    case "revise-proposal": {
-      const task = String(request.task ?? "");
-      const feedback = String(request.feedback ?? "");
-      if (feedback) {
-        return `/ludics-revise-proposal ${task} ${feedback}`;
-      }
-      return `/ludics-revise-proposal ${task}`;
-    }
-    case "split-task": {
-      const task = String(request.task ?? "");
-      return `/ludics-split-task ${task}`;
-    }
-    case "preempt": {
-      const task = String(request.task ?? "");
-      const autonomy = String(request.autonomy ?? "suggest");
-      return `/ludics-preempt ${task} ${autonomy}`;
-    }
-    case "verify-completion": {
-      const task = String(request.task ?? "");
-      return `/ludics-verify-completion ${task}`;
-    }
-    case "adopt-sessions":
-      adoptSessionsPrecomputeContext();
-      return "/ludics-adopt-sessions";
-    case "process-suggestions": {
-      const task = String(request.task ?? "");
-      if (!task) return null;
-      return `/ludics-process-suggestions ${task}`;
-    }
     default:
-      if (executeProgrammatic) {
+      // Log only for truly unknown actions; registered skills that returned null
+      // (e.g. missing a required arg) are not unknown.
+      if (executeProgrammatic && !hasRegisteredAction(action)) {
         console.error(`ludics: mag queue-pop: unknown action: ${action}`);
       }
       return null;
