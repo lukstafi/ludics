@@ -347,6 +347,10 @@ async function redispatchForPrComments(state: OrchestrationState): Promise<void>
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
     const runtime = state.agentStates[agent.name]!;
+    // Clear any latched interrupt state from a previous timeout so the new turn
+    // isn't immediately treated as done by isAgentDone().
+    runtime.interrupted = false;
+    clearInterrupt(state.peerSyncDir, agent.name);
     runtime.status = "pr-comments-active";
     runtime.statusEpoch = nowEpoch();
     runtime.statusMessage = "re-dispatched for new PR comments";
@@ -419,8 +423,21 @@ async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<
             `Slot ${state.slot}: upstream PR merged`,
           );
         }
+      } else if (isStaging && !forwarded) {
+        // Staging PR merged before forwarding — do NOT write .merged marker.
+        // Writing .merged would cause isMerged() → suggest-refactor, skipping the
+        // entire staging→upstream forwarding flow. The workflow should still proceed
+        // to forward-pr to create the upstream PR. Emit a warning.
+        emitEvent({
+          event_type: "orchestration_warning",
+          source: "orchestration",
+          scope: "slot",
+          slot: state.slot,
+          task: state.feature,
+          message: `Staging PR merged before forwarding: ${prUrl} — will still forward to upstream`,
+        });
       } else {
-        // Non-staging or pre-forwarding: existing behavior
+        // Non-staging: existing behavior
         writeFileSync(markerFile, "merged\n");
         state.agentStates[agent.name]!.status = "merged";
         state.agentStates[agent.name]!.statusMessage = "PR merged externally";
@@ -556,17 +573,11 @@ async function handleTimeout(state: OrchestrationState): Promise<void> {
     return;
   }
 
-  // In the forwarded upstream-monitoring branch of pr-comments, no agents are
-  // dispatched (enterPhase returns early for pr-comments). Interrupting them
-  // would latch interrupted=true with no phase transition to clear it, since
-  // evaluateTransition only transitions on the upstream-merged marker, not timeout.
-  // Skip interrupts entirely — the runner just keeps polling GitHub for merge status.
-  if (state.phase === "pr-comments" && state.stagingRepo && state.mode === "pair") {
-    const forwarded = state.agents.some((a) =>
-      existsSync(join(state.peerSyncDir, `${a.name}.forwarded`))
-    );
-    if (forwarded) return;
-  }
+  // Note: for forwarded pr-comments (upstream monitoring), timeout interrupts are NOT
+  // suppressed. If redispatchForPrComments dispatched a turn that hangs, it should be
+  // interrupted normally. The interrupted state is cleared by redispatchForPrComments
+  // when new comments trigger a fresh dispatch, preventing the latch from blocking
+  // subsequent turns.
 
   if (
     state.phase === "work"
