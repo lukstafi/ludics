@@ -18,9 +18,9 @@ import {
   type AgentConfig, type AgentTurnLifecycle, type OrchestrationState,
 } from "./state.ts";
 import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
-import { fetchNewPrCommentCount, hasPrApprovalReaction, isPrMerged, validateAndFixPrFile } from "./github.ts";
+import { fetchNewPrCommentCount, hasPrApprovalReaction, isPrMerged, postCodexReviewComment, validateAndFixPrFile } from "./github.ts";
 import { updateFrontmatterField } from "../tasks/markdown.ts";
-import { harnessDir } from "../config.ts";
+import { findProjectConfig, harnessDir } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
 
 async function withClient<T>(
@@ -645,6 +645,44 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   if (state.phase === "update-docs" && next === "pr-comments") {
     state.lastLearningAt = nowEpoch();
     state.lastLearningRound = state.round;
+  }
+  maybePostCodexReviewRequests(state, state.phase, next);
+}
+
+/**
+ * Post @codex review on each unique PR when first entering pr-comments
+ * after PR creation.  Only fires on the initial pr-comments entry paths
+ * (pr-create, update-docs, review), NOT on merge-loop re-entries
+ * (merge-review -> pr-comments).
+ */
+export function maybePostCodexReviewRequests(
+  state: OrchestrationState,
+  from: OrchestrationState["phase"],
+  next: OrchestrationState["phase"],
+): void {
+  // Only on initial entry to pr-comments (not merge-loop re-entries).
+  const initialPrCommentsPaths: OrchestrationState["phase"][] = ["pr-create", "update-docs", "review"];
+  if (next !== "pr-comments" || !initialPrCommentsPaths.includes(from)) return;
+
+  // Only when the reviewer agent is Codex — matches the acceptance criterion
+  // "when reviewer is Codex".  Avoids noise in non-Codex setups and in setups
+  // where only the coder is Codex.
+  const hasCodexReviewer = state.agents.some(
+    (a) => a.role === "reviewer" && a.provider === "codex",
+  );
+  if (!hasCodexReviewer) return;
+
+  const projectEntry = findProjectConfig(state.projectDir);
+  const customPrompt = projectEntry?.codex_review_prompt ?? undefined;
+
+  // De-duplicate PR URLs (pair mode: both agents may point to same PR after merge).
+  const seen = new Set<string>();
+  for (const agent of state.agents) {
+    const prUrl = state.agentStates[agent.name]?.prUrl;
+    if (prUrl && !seen.has(prUrl)) {
+      seen.add(prUrl);
+      postCodexReviewComment(prUrl, customPrompt);
+    }
   }
 }
 

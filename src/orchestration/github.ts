@@ -134,3 +134,31 @@ export function validateAndFixPrFile(
     return null;
   }
 }
+
+/** Default focus prompt for the @codex review PR comment. */
+export const DEFAULT_CODEX_REVIEW_PROMPT =
+  "Focus on bugs, correctness issues, and edge cases. Do not check adherence to a spec or plan.";
+
+/**
+ * Post `@codex review` as a PR comment to trigger the GitHub-native Codex
+ * review integration.  Returns true on success, false on failure.
+ * Best-effort: failures do not abort orchestration.
+ */
+export function postCodexReviewComment(
+  prUrl: string,
+  prompt?: string,
+): boolean {
+  const trimmed = prompt?.trim();
+  const body = trimmed
+    ? `@codex review ${trimmed}`
+    : `@codex review ${DEFAULT_CODEX_REVIEW_PROMPT}`;
+  try {
+    const result = Bun.spawnSync(
+      ["gh", "pr", "comment", prUrl, "--body", body],
+      { stdout: "ignore", stderr: "ignore", env: process.env as Record<string, string> },
+    );
+    return result.exitCode === 0;
+  } catch {
+    return false;
+  }
+}
