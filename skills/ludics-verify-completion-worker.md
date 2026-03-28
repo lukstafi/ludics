@@ -86,8 +86,9 @@ as the last code block in your response:
 }
 ```
 
-Note: `status` is always `"completed"` for this worker — routing uses `verdict` instead.
-Use `"none"` for `followups` and `questions` when they are empty.
+Note: `status` is always `"completed"` for this worker in non-error cases. The
+orchestrator checks `status` first to handle errors, then uses `verdict` for
+success-path routing. Use `"none"` for `followups` and `questions` when they are empty.
 
 ## Error Handling
 
