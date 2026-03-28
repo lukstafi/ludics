@@ -7,7 +7,8 @@
     "typecheck": "bun run --bun tsc --noEmit",
     "dev": "bun run src/index.ts",
     "lint": "bun run --bun eslint \"src/**/*.ts\" --max-warnings=0",
-    "lint:fix": "bun run --bun eslint \"src/**/*.ts\" --fix"
+    "lint:fix": "bun run --bun eslint \"src/**/*.ts\" --fix",
+    "lint:cli-readme": "bun run scripts/lint-cli-readme.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

@@ -85,6 +85,24 @@ describe("evaluateAutoStartDecisionPure", () => {
     expect(result.decision).toBe("defer-to-user");
     expect(result.reason).toContain("manual");
   });
+
+  test("auto + high + 'uncertain scope' in rationale → defer-to-user", () => {
+    const result = evaluateAutoStartDecisionPure("high", "the task has uncertain scope", "auto", true);
+    expect(result.decision).toBe("defer-to-user");
+    expect(result.reason).toContain("uncertain scope");
+  });
+
+  test("suggest + high + no slot → still defers (slot state irrelevant for non-auto)", () => {
+    const result = evaluateAutoStartDecisionPure("high", "", "suggest", false);
+    expect(result.decision).toBe("defer-to-user");
+    expect(result.reason).toContain("suggest");
+  });
+
+  test("manual + high + no slot → still defers (slot state irrelevant for non-auto)", () => {
+    const result = evaluateAutoStartDecisionPure("high", "", "manual", false);
+    expect(result.decision).toBe("defer-to-user");
+    expect(result.reason).toContain("manual");
+  });
 });
 
 describe("resolveQueueRequestCommand — backward compat parsing", () => {
