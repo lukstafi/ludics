@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync, statSync } from "fs";
 import { join, dirname } from "path";
 import YAML from "yaml";
-import { harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, focusProject, milestonesEnabledProjects } from "./config.ts";
+import { harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
 import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted } from "./slots/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl } from "./network.ts";
@@ -393,7 +393,6 @@ function generateReady(tasks: DashboardTask[]): ReadyTask[] {
     }));
 
   // Sort using the same logic as flow.ts: milestone position → priority → deadline
-  const fp = focusProject();
   const milestonesProjects = milestonesEnabledProjects();
   const anyMilestones = milestonesProjects.size > 0;
 
@@ -422,7 +421,7 @@ function generateReady(tasks: DashboardTask[]): ReadyTask[] {
   ready.sort((a, b) => {
     const mp = relMilestonePos(a) - relMilestonePos(b);
     if (mp !== 0) return mp;
-    const pd = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
+    const pd = effectivePriorityValue(a.priority, a.project) - effectivePriorityValue(b.priority, b.project);
     if (pd !== 0) return pd;
     return (a.deadline ?? "9999-99-99").localeCompare(b.deadline ?? "9999-99-99");
   });

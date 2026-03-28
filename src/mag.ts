@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, focusProject, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
@@ -2040,7 +2040,6 @@ function maybeFillEmptySlots(): void {
   // the earliest milestone that has open (candidate) tasks.  Projects without
   // milestones get position 0 (single implicit milestone).  This makes milestone
   // ordering globally consistent and transitive across projects.
-  const fp = focusProject();
   const milestonesProjects = milestonesEnabledProjects();
   // Build affinity lookup once for tie-breaking
   const affinity = buildAffinityLookup(allTasksForAffinity, tasksInSlots);
@@ -2074,8 +2073,8 @@ function maybeFillEmptySlots(): void {
     // Relative milestone position (globally comparable, 0 = earliest/no milestone)
     const mp = relMilestonePos(a) - relMilestonePos(b);
     if (mp !== 0) return mp;
-    // Effective priority (with focus project boost)
-    const pd = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
+    // Effective priority (with priority project boost)
+    const pd = effectivePriorityValue(a.priority, a.project) - effectivePriorityValue(b.priority, b.project);
     if (pd !== 0) return pd;
     const td = affinity.getTier(a.id) - affinity.getTier(b.id);
     if (td !== 0) return td;

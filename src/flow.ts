@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import YAML from "yaml";
-import { harnessDir, slotsFilePath, focusProject, effectivePriority, effectivePriorityValue, milestonesEnabledProjects, milestoneKey } from "./config.ts";
+import { harnessDir, slotsFilePath, effectivePriority, effectivePriorityValue, milestonesEnabledProjects, milestoneKey } from "./config.ts";
 import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
 
 interface TaskData {
@@ -145,7 +145,6 @@ export function flowReady(): void {
     console.error("ludics: dependency cycle detected in tasks");
   }
 
-  const fp = focusProject();
   // Pre-compute milestones-enabled project set to avoid repeated config reads
   const milestonesProjects = milestonesEnabledProjects();
   const anyMilestones = milestonesProjects.size > 0;
@@ -199,7 +198,7 @@ export function flowReady(): void {
       const mp = relMilestonePos(a) - relMilestonePos(b);
       if (mp !== 0) return mp;
       // Effective priority (with focus project boost)
-      const pDiff = effectivePriorityValue(a.priority, a.project, fp) - effectivePriorityValue(b.priority, b.project, fp);
+      const pDiff = effectivePriorityValue(a.priority, a.project) - effectivePriorityValue(b.priority, b.project);
       if (pDiff !== 0) return pDiff;
       const tDiff = affinity.getTier(a.id) - affinity.getTier(b.id);
       if (tDiff !== 0) return tDiff;
@@ -214,7 +213,7 @@ export function flowReady(): void {
   } else {
     for (const t of ready) {
       // Show virtual priority when a focus project is configured (for transparency)
-      const displayPri = fp ? effectivePriority(t.priority, t.project, fp) : (t.priority || "-");
+      const displayPri = effectivePriority(t.priority, t.project);
       // Show milestone alongside priority when milestones are enabled for this task's project
       const milestoneDisplay = anyMilestones && milestonesProjects.has(t.project)
         ? ` [${t.milestone ?? "no milestone"}]`

@@ -268,7 +268,6 @@ export function startSessionsAutonomy(): "auto" | "suggest" | "manual" {
   return "manual";
 }
 
-/** Returns the focus project name from mag.focus_project, or null if unset. */
 /**
  * Resolve the local checkout path for a project by name.
  * Checks the `path` field in config, then falls back to ~/name and ~/repos/name.
@@ -313,14 +312,7 @@ export function resolveProjectPath(projectName: string): string {
   return "";
 }
 
-export function focusProject(): string | null {
-  const config = loadConfigSync();
-  const mag = config.mag as Record<string, unknown> | undefined;
-  const fp = mag?.focus_project;
-  return typeof fp === "string" && fp ? fp.toLowerCase() : null;
-}
-
-/** Set of projects with `priority: true` in config, cached per call site. */
+/** Set of projects with `priority: true` in config, cached per process. */
 let _priorityProjectsCache: Set<string> | null = null;
 function priorityProjectSet(): Set<string> {
   if (!_priorityProjectsCache) {
@@ -331,15 +323,11 @@ function priorityProjectSet(): Set<string> {
 
 /**
  * Returns the effective (virtual) priority for a task, applying a one-level
- * boost when the task's project is a priority project (`priority: true` in
- * config) or matches the configured focus project:
+ * boost when the task's project has `priority: true` in config:
  *   A → S, B → A, C → B (non-priority tasks keep their actual priority).
  */
-export function effectivePriority(priority: string, project: string, fp?: string | null): string {
-  const proj = project.toLowerCase();
-  const focusPrj = fp !== undefined ? fp : focusProject();
-  const boosted = (focusPrj && proj === focusPrj) || priorityProjectSet().has(proj);
-  if (!boosted) return priority;
+export function effectivePriority(priority: string, project: string): string {
+  if (!priorityProjectSet().has(project.toLowerCase())) return priority;
   switch (priority) {
     case "A": return "S";
     case "B": return "A";
@@ -352,8 +340,8 @@ export function effectivePriority(priority: string, project: string, fp?: string
  * Numeric sort key for virtual priority: S=0, A=1, B=2, C=3, other=9.
  * Applies priority-project boost automatically.
  */
-export function effectivePriorityValue(priority: string, project: string, fp?: string | null): number {
-  const ep = effectivePriority(priority, project, fp);
+export function effectivePriorityValue(priority: string, project: string): number {
+  const ep = effectivePriority(priority, project);
   switch (ep) {
     case "S": return 0;
     case "A": return 1;
