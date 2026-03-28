@@ -56,6 +56,11 @@ Parse the worker's response for STATUS and counts.
 
 Output format: `"Created N issues, updated N, skipped N (N files processed)"`
 
+## Error Handling
+
+Per [orchestrator-conventions.md](orchestrator-conventions.md) Section F, plus:
+- Repo not specified: Write result with `"status": "error"`, stop
+
 ## Delegation Strategy
 
 - **Worker** (`/ludics-feedback-digest-worker`): All feedback reading, theme
