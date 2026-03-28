@@ -53,26 +53,33 @@ Worker: `/ludics-draft-proposal-worker <task_id> <project_path> <proposals_path>
 
 ## Skill-Specific: Status Routing
 
-Parse the worker's response for STATUS, PROPOSAL_PATH, AMBIGUITIES,
-START_CONFIDENCE, START_RATIONALE, TITLE, and SUMMARY fields.
+Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
+Parse the JSON for `status`, `proposal_path`, `ambiguities`, `start_confidence`,
+`start_rationale`, `title`, and `summary`.
 
-- **STATUS: completed** — proceed to auto-start evaluation (next section)
-- **STATUS: stale** — write result JSON with `"status": "stale"`, stop
-- **STATUS: split-needed** — queue the split skill and stop:
+If no JSON block is found, fall back to line-based parsing: look for `STATUS: <value>`,
+`PROPOSAL_PATH: <value>`, `AMBIGUITIES: <value>`, `START_CONFIDENCE: <value>`,
+`START_RATIONALE: <value>`, `TITLE: <value>`, and `SUMMARY: <value>` lines. On the
+legacy path, treat `AMBIGUITIES:` content as a pre-formatted string and send as-is
+in the questions notification step.
+
+- **status: completed** — proceed to auto-start evaluation (next section)
+- **status: stale** — write result JSON with `"status": "stale"`, stop
+- **status: split-needed** — queue the split skill and stop:
   ```bash
   ludics mag split-task <task_id>
   ```
   Write result JSON with `"status": "split-needed"`, stop.
-- **STATUS: error** — write result JSON with `"status": "error"`, stop
-- **STATUS: already-exists** — check if re-generation is wanted, or skip
+- **status: error** — write result JSON with `"status": "error"`, stop
+- **status: already-exists** — check if re-generation is wanted, or skip
 
 ## Skill-Specific: Auto-start Evaluation
 
-After STATUS: completed, evaluate whether to auto-start the slot or defer
+After status: `"completed"`, evaluate whether to auto-start the slot or defer
 to the user:
 
 ```bash
-ludics mag auto-start-evaluate <task_id> <START_CONFIDENCE> "<START_RATIONALE>"
+ludics mag auto-start-evaluate <task_id> <start_confidence> "<start_rationale>"
 ```
 
 Parse the JSON output for the `decision` field:
@@ -85,7 +92,7 @@ The decision respects the `start_sessions` autonomy level:
   defers otherwise
 
 **Decision criteria details:**
-- **Confidence is the primary signal** — the worker's `START_CONFIDENCE` drives the
+- **Confidence is the primary signal** — the worker's `start_confidence` drives the
   decision. The worker has full codebase context and is the authority on scope clarity.
 - **Rationale is a safety net** — the rationale text is scanned for ambiguity keywords
   ("ambiguous", "unclear", "speculative", "open question", "uncertain scope") that
@@ -112,27 +119,31 @@ Skip the launch-button notification — proceed to questions and result JSON.
 
 ## Skill-Specific: Proposal Notification (defer-to-user)
 
-If decision = "defer-to-user", use the worker's `PROPOSAL_PATH` as the source
+If decision = "defer-to-user", use the worker's `proposal_path` as the source
 of truth for the proposal location:
 
 ```bash
-ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<PROPOSAL_PATH>"
+ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<proposal_path>"
 ```
 
 ## Skill-Specific: Questions Notification
 
-If the worker reported ambiguities (not "none"), send them as numbered questions:
+If `ambiguities` is not `"none"` and is non-empty, send as notification text:
+- JSON array path: format each element as a numbered list
+- Legacy pre-formatted string (fallback path): send as-is
 
 ```bash
-ludics notify outgoing "<questions text>"
+ludics notify outgoing "<formatted ambiguities>"
 ```
 
 Use title: "Proposal questions — <task_id>: <title>"
 
+Skip if `ambiguities` is `"none"` or an empty array/string.
+
 ## Skill-Specific: Best-effort Desktop
 
 ```bash
-code "<project_path>/<PROPOSAL_PATH>" 2>/dev/null || true
+code "<project_path>/<proposal_path>" 2>/dev/null || true
 ```
 
 ## Skill-Specific Result Fields
@@ -140,7 +151,7 @@ code "<project_path>/<PROPOSAL_PATH>" 2>/dev/null || true
 ```json
 {
   "task_id": "<task_id>",
-  "proposal_path": "<PROPOSAL_PATH>"
+  "proposal_path": "<proposal_path>"
 }
 ```
 

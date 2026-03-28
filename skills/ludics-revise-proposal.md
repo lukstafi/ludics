@@ -49,25 +49,31 @@ Worker: `/ludics-revise-proposal-worker <task_id> <project_path> <context_brief>
 
 ## Skill-Specific: Status Routing
 
-Parse the worker's response for STATUS, PROPOSAL_PATH, PROPOSAL_MODE,
-CHANGES_SUMMARY, TITLE, and SUMMARY fields.
+Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
+Parse the JSON for `status`, `proposal_path`, `proposal_mode`, `changes_summary`,
+`title`, and `summary`.
 
-- **STATUS: revised** — proceed to re-notification
-- **STATUS: no-changes** — write result JSON with `"status": "no-changes"`, stop
-- **STATUS: error** — write result JSON with `"status": "error"`, stop
+If no JSON block is found, fall back to line-based parsing: look for `STATUS: <value>`,
+`PROPOSAL_PATH: <value>`, `PROPOSAL_MODE: <value>`, `CHANGES_SUMMARY: <value>`,
+`TITLE: <value>`, and `SUMMARY: <value>` lines.
 
-Note `PROPOSAL_MODE` for the steps below:
-- `PROPOSAL_MODE: file` — worker revised a separate proposal file; `PROPOSAL_PATH` is present.
-- `PROPOSAL_MODE: inline` — worker revised the task body in-place; `PROPOSAL_PATH` is absent.
+- **status: revised** — proceed to re-notification
+- **status: no-changes** — write result JSON with `"status": "no-changes"`, stop
+- **status: error** — write result JSON with `"status": "error"`, stop
+
+Note `proposal_mode` for the steps below:
+- `"proposal_mode": "file"` — worker revised a separate proposal file; `proposal_path` is present.
+- `"proposal_mode": "inline"` — worker revised the task body in-place; `proposal_path` is absent.
 
 ## Skill-Specific: Re-send Proposal Notification
 
-**File-based mode** (`PROPOSAL_MODE: file`):
+**File-based mode** (`proposal_mode: "file"`):
 ```bash
-ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<PROPOSAL_PATH>"
+ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<proposal_path>"
 ```
 
-**Inline mode** (`PROPOSAL_MODE: inline`):
+**Inline mode** (`proposal_mode: "inline"`): the proposal content lives in the task file itself.
+Use the task file as the attachment:
 ```bash
 ludics notify proposal "<task_id>" "<title>" "<summary>" "$LUDICS_STATE_PATH/tasks/<task_id>.md"
 ```
@@ -79,7 +85,7 @@ iteration loop.
 
 **File-based mode**:
 ```bash
-code "<project_path>/<PROPOSAL_PATH>" 2>/dev/null || true
+code "<project_path>/<proposal_path>" 2>/dev/null || true
 ```
 
 **Inline mode**:
@@ -93,7 +99,7 @@ code "$LUDICS_STATE_PATH/tasks/<task_id>.md" 2>/dev/null || true
 ```json
 {
   "task_id": "<task_id>",
-  "proposal_path": "<PROPOSAL_PATH>",
+  "proposal_path": "<proposal_path>",
   "proposal_mode": "file",
   "changes_summary": "<what changed>"
 }
