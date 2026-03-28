@@ -115,8 +115,12 @@ export function addFrontmatterField(filePath: string, field: string, value: stri
   if (!existsSync(filePath)) return;
   const content = readFileSync(filePath, "utf-8");
 
-  // If field already exists, update instead
-  if (content.includes(`\n${field}:`)) {
+  // Scope the existence check to the frontmatter block only.
+  // A matching line in the markdown body must not be mistaken for a frontmatter field —
+  // that would cause updateFrontmatterField (which is frontmatter-scoped) to silently no-op.
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  const fmContent = fmMatch ? fmMatch[1]! : "";
+  if (fmContent.split("\n").some((line) => line.startsWith(`${field}:`))) {
     updateFrontmatterField(filePath, field, value);
     return;
   }
