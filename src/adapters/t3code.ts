@@ -936,6 +936,21 @@ async function startOrchestratedThreads(
     threadIds: Object.fromEntries(slotThreads.map((thread, index) => [agents[index]!.name, thread.threadId])),
     taskId: ctx.taskId || undefined,
     slotTitle: title,
+    stagingRepo: (() => {
+      const cfg = loadConfigSync();
+      const proj = cfg.projects?.find((p) => {
+        if (p.path) {
+          const expanded = (String(p.path).startsWith("~/")
+            ? join(process.env.HOME ?? "~", String(p.path).slice(2))
+            : String(p.path)).replace(/\/+$/, "");
+          if (projectDir === expanded || projectDir.startsWith(expanded + "/")) return true;
+        }
+        const dir = basename(projectDir).toLowerCase();
+        const repoTail = String(p.repo ?? "").split("/").pop()?.toLowerCase() ?? "";
+        return dir === String(p.name ?? "").toLowerCase() || dir === repoTail;
+      });
+      return proj?.staging_repo || undefined;
+    })(),
   };
   persistState(state, ctx.harnessDir);
 

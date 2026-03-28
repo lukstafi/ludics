@@ -65,12 +65,32 @@ function baseCtx(): Record<string, string> {
     DONE_STATUS: "review-done",
     STAGING_REPO: "",
     STAGING_REPO_NOTE: "",
+    STAGING_PR_FILE: "/tmp/staging-pr",
+    UPSTREAM_MERGED_MARKER_FILE: "/tmp/upstream-merged",
+    FORWARDED_MARKER_FILE: "/tmp/forwarded",
   };
 }
 
 describe("skills", () => {
   test("selects pair reviewer override templates when available", () => {
     const path = resolveTemplatePath("review", "pair", "reviewer");
+    expect(path.endsWith("pair-reviewer-review.md")).toBe(true);
+  });
+
+  test("resolveTemplatePath: staging flag selects staging-final-merge.md", () => {
+    const path = resolveTemplatePath("final-merge", "pair", "coder", true);
+    expect(path.endsWith("staging-final-merge.md")).toBe(true);
+  });
+
+  test("resolveTemplatePath: non-staging uses plain final-merge.md", () => {
+    const path = resolveTemplatePath("final-merge", "pair", "coder", false);
+    expect(path.endsWith("final-merge.md")).toBe(true);
+    expect(path).not.toContain("staging-");
+  });
+
+  test("resolveTemplatePath: staging flag without staging template falls through to generic", () => {
+    // review has no staging variant — should fall through to pair-reviewer-review.md
+    const path = resolveTemplatePath("review", "pair", "reviewer", true);
     expect(path.endsWith("pair-reviewer-review.md")).toBe(true);
   });
 
@@ -168,6 +188,63 @@ describe("skills", () => {
     // Note must be absent when STAGING_REPO is empty
     const renderedNull = substituteTemplate(template, baseCtx());
     expect(renderedNull).not.toContain("staging fork");
+  });
+
+  test("staging-final-merge template does NOT contain gh pr merge (non-staging merge command)", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/staging-final-merge.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, baseCtx());
+    expect(rendered).not.toContain("gh pr merge");
+    expect(rendered).toContain("staging cleanup");
+  });
+
+  test("non-staging final-merge template does NOT contain staging cleanup", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/final-merge.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, baseCtx());
+    expect(rendered).toContain("gh pr merge");
+    expect(rendered).not.toContain("staging cleanup");
+    expect(rendered).not.toContain("STAGING_PR_FILE");
+  });
+
+  test("buildSkillContext: duo mode suppresses STAGING_REPO even when config has staging_repo", async () => {
+    const tmpCfg = "/tmp/ludics-skills-duo-staging-test.yaml";
+    writeFileSync(tmpCfg, [
+      "state_repo: test/testrepo",
+      "state_path: harness",
+      "projects:",
+      "  - name: my-proj",
+      "    repo: upstream/my-proj",
+      "    staging_repo: owner/my-proj-staging",
+      "    path: /tmp/my-proj-checkout",
+    ].join("\n"));
+    const origConfig = process.env.LUDICS_CONFIG;
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_CONFIG = tmpCfg;
+    process.env.LUDICS_HARNESS_DIR = "/tmp/ludics-test-harness";
+    try {
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = {
+        ...makeState(),
+        mode: "duo" as const,
+        projectDir: "/tmp/my-proj-checkout",
+        agents: [
+          { name: "agent1", provider: "codex" as const, model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a" },
+          { name: "agent2", provider: "codex" as const, model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b" },
+        ],
+        agentStates: initAgentRuntimeState(["agent1", "agent2"]),
+      };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      // Duo mode must suppress staging variables
+      expect(ctx["STAGING_REPO"]).toBe("");
+      expect(ctx["STAGING_REPO_NOTE"]).toBe("");
+    } finally {
+      if (origConfig !== undefined) process.env.LUDICS_CONFIG = origConfig;
+      else delete process.env.LUDICS_CONFIG;
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      try { unlinkSync(tmpCfg); } catch {}
+    }
   });
 
   test("substituteTemplate: warns in dev mode for unknown placeholders", () => {
@@ -420,5 +497,16 @@ describe("skills", () => {
       else delete process.env.LUDICS_HARNESS_DIR;
       try { unlinkSync(tmpCfg); } catch {}
     }
+  });
+
+  test("buildSkillContext: exposes staging sidecar file variables", async () => {
+    const { buildSkillContext } = await import("./skills.ts");
+    const state = makeState();
+    const coder = state.agents.find((a) => a.role === "coder")!;
+    const ctx = buildSkillContext(state, coder);
+    expect(ctx["STAGING_PR_FILE"]).toContain(".peer-sync");
+    expect(ctx["STAGING_PR_FILE"]).toContain("staging-pr");
+    expect(ctx["UPSTREAM_MERGED_MARKER_FILE"]).toContain("upstream-merged");
+    expect(ctx["FORWARDED_MARKER_FILE"]).toContain("forwarded");
   });
 });
