@@ -29,6 +29,7 @@ interface SlotJson {
   /** ISO timestamp written by slotStart(); null if no session is running. */
   sessionStarted: string | null;
   phase: string | null;
+  round: number | null;
   terminals: Record<string, string> | null;
   preempted: boolean;
   preemptedTask: string | null;
@@ -194,10 +195,12 @@ function generateSlots(): SlotJson[] {
 
     // Parse phase: prefer orchestration state JSON (authoritative), fall back to Runtime section in slots.md
     let phase: string | null = null;
+    let round: number | null = null;
     if (!empty) {
       const orchState = readOrchestrationState(num);
       if (orchState && (!taskId || orchState.taskId === taskId || orchState.feature === taskId)) {
         phase = orchState.phase ?? null;
+        round = orchState.round ?? null;
       }
     }
     if (!phase) {
@@ -235,6 +238,7 @@ function generateSlots(): SlotJson[] {
       started: empty ? null : getField(block, "Started").trim() || null,
       sessionStarted: empty ? null : sessionStarted,
       phase: empty ? null : phase,
+      round: empty ? null : round,
       terminals: empty ? null : Object.keys(terminals).length > 0 ? terminals : null,
       preempted: stash !== null,
       preemptedTask: stash?.previousTask ?? null,
