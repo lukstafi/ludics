@@ -214,6 +214,14 @@ export function buildSkillContext(
   });
   const stagingRepo = _projectEntry?.staging_repo ?? null;
 
+  // Extract proposal path from task frontmatter for templates that need just a reference
+  const _taskPath = state.taskId ? join(harnessDir(), "tasks", `${state.taskId}.md`) : null;
+  const _taskContent = _taskPath ? readFileIfExists(_taskPath) : null;
+  const _proposalMatch = _taskContent?.match(/^proposal:\s*(.+)$/m);
+  const _proposalPath = _proposalMatch?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "";
+  const proposalPath = _proposalPath && _proposalPath !== "inline" && _proposalPath.toLowerCase() !== "null"
+    ? _proposalPath : "";
+
   const result: Record<string, string> = {
     PHASE: state.phase,
     ROUND: String(state.round),
@@ -225,6 +233,7 @@ export function buildSkillContext(
     PEER_NAME: peer?.name ?? "none",
     PEER_PROVIDER: peer?.provider ?? "none",
     TASK_SPEC: taskSpecText(state),
+    PROPOSAL_PATH: proposalPath,
     PEER_REVIEW: peerReview ?? "(no review yet)",
     PEER_STATUS: peer ? (state.agentStates[peer.name]?.status ?? "unknown") : "unknown",
     PEER_PLAN: peerPlan ?? "(no plan yet)",
