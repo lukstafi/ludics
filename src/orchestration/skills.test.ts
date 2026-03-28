@@ -28,38 +28,42 @@ function makeState(): OrchestrationState {
   };
 }
 
-function baseCtx() {
+function baseCtx(): Record<string, string> {
   return {
-    phase: "review" as const,
-    round: 1,
-    mode: "duo" as const,
-    feature: "feat",
-    agent: { name: "agent1", provider: "codex" as const, model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a" },
-    peer: null,
-    taskSpec: "spec",
-    peerReview: null,
-    peerStatus: null,
-    peerPlan: null,
-    gitDiffStat: null,
-    previousRoundSummary: null,
-    mergeVotes: null,
-    worktreePath: "/tmp/a",
-    peerWorktreePath: null,
-    statusFile: "/tmp/status",
-    planFile: "/tmp/plan",
-    reviewFile: "/tmp/review",
-    prFile: "/tmp/pr",
-    interruptFile: "/tmp/interrupt",
-    mergeVoteFile: "/tmp/vote",
-    suggestRefactorFile: "/tmp/suggest",
-    workflowFeedbackFile: "/tmp/feedback",
-    mergeReviewDecisionFile: "/tmp/merge-decision",
-    mergedMarkerFile: "/tmp/merged",
-    mergedPlanFile: "/tmp/merged-plan",
-    planMergeRound: 0,
-    peerSyncDir: "/tmp/peer-sync",
-    doneStatus: "review-done",
-    stagingRepo: null,
+    PHASE: "review",
+    ROUND: "1",
+    MODE: "duo",
+    FEATURE: "feat",
+    AGENT_NAME: "agent1",
+    AGENT_PROVIDER: "codex",
+    AGENT_ROLE: "agent",
+    PEER_NAME: "none",
+    PEER_PROVIDER: "none",
+    TASK_SPEC: "spec",
+    PEER_REVIEW: "(no review yet)",
+    PEER_STATUS: "unknown",
+    PEER_PLAN: "(no plan yet)",
+    GIT_DIFF_STAT: "(no changes yet)",
+    PREVIOUS_ROUND_SUMMARY: "(no previous round summary)",
+    MERGE_VOTES: "(no merge votes yet)",
+    WORKTREE_PATH: "/tmp/a",
+    PEER_WORKTREE_PATH: "(no peer worktree)",
+    STATUS_FILE: "/tmp/status",
+    PLAN_FILE: "/tmp/plan",
+    REVIEW_FILE: "/tmp/review",
+    PR_FILE: "/tmp/pr",
+    INTERRUPT_FILE: "/tmp/interrupt",
+    MERGE_VOTE_FILE: "/tmp/vote",
+    SUGGEST_REFACTOR_FILE: "/tmp/suggest",
+    WORKFLOW_FEEDBACK_FILE: "/tmp/feedback",
+    MERGE_REVIEW_DECISION_FILE: "/tmp/merge-decision",
+    MERGED_MARKER_FILE: "/tmp/merged",
+    MERGED_PLAN_FILE: "/tmp/merged-plan",
+    PLAN_MERGE_ROUND: "0",
+    PEER_SYNC_DIR: "/tmp/peer-sync",
+    DONE_STATUS: "review-done",
+    STAGING_REPO: "",
+    STAGING_REPO_NOTE: "",
   };
 }
 
@@ -92,12 +96,12 @@ describe("skills", () => {
     const reviewer = state.agents.find((a) => a.role === "reviewer")!;
     const ctx = buildSkillContext(state, reviewer);
     // mergedPlanFile must be keyed by both round and planMergeRound
-    expect(ctx.mergedPlanFile).toContain("round-2-merged-1.md");
+    expect(ctx["MERGED_PLAN_FILE"]).toContain("round-2-merged-1.md");
     // peerPlan is null because the merged plan file doesn't exist on disk (non-issue in test)
     // but the path used should be the merged plan, not the peer's plan
     // We verify via PEER_PLAN substitution: it will be "(no plan yet)" since the file is absent,
     // but mergedPlanFile is correctly set.
-    expect(ctx.mergedPlanFile).not.toContain(`round-2-${reviewer.name}.md`);
+    expect(ctx["MERGED_PLAN_FILE"]).not.toContain(`round-2-${reviewer.name}.md`);
   });
 
   test("buildSkillContext: duo plan-review peerPlan reads peer's plan (not merged)", async () => {
@@ -116,11 +120,11 @@ describe("skills", () => {
     // peerPlan must NOT reference the merged plan file (which doesn't exist in duo mode).
     // The mergedPlanFile path is still computed but peerPlan should point at agent2's plan.
     // Since agent2's plan file doesn't exist either, peerPlan is null — but mergedPlanFile must not be used.
-    expect(ctx.mergedPlanFile).toContain("merged");
+    expect(ctx["MERGED_PLAN_FILE"]).toContain("merged");
     // Verify peerPlan would use the peer plan path, not merged: since we can't easily mock readFileIfExists,
     // we confirm that mergedPlanFile is keyed by planMergeRound (not agent name) as a proxy.
-    expect(ctx.mergedPlanFile).not.toContain("agent1");
-    expect(ctx.mergedPlanFile).not.toContain("agent2");
+    expect(ctx["MERGED_PLAN_FILE"]).not.toContain("agent1");
+    expect(ctx["MERGED_PLAN_FILE"]).not.toContain("agent2");
   });
 
   test("buildSkillContext: plan-merge mergedPlanFile is keyed by planMergeRound", async () => {
@@ -130,35 +134,75 @@ describe("skills", () => {
     state.planMergeRound = 2;
     const coder = state.agents.find((a) => a.role === "coder")!;
     const ctx = buildSkillContext(state, coder);
-    expect(ctx.mergedPlanFile).toContain("round-2-merged-2.md");
+    expect(ctx["MERGED_PLAN_FILE"]).toContain("round-2-merged-2.md");
   });
 
-  test("substituteTemplate: STAGING_REPO and STAGING_REPO_NOTE are empty when stagingRepo is null", () => {
-    const text = substituteTemplate("{{STAGING_REPO}}|{{STAGING_REPO_NOTE}}", {
-      ...baseCtx(),
-      stagingRepo: null,
-    });
+  test("substituteTemplate: STAGING_REPO and STAGING_REPO_NOTE are empty when not set", () => {
+    const text = substituteTemplate("{{STAGING_REPO}}|{{STAGING_REPO_NOTE}}", baseCtx());
     expect(text).toBe("|");
   });
 
-  test("substituteTemplate: STAGING_REPO and STAGING_REPO_NOTE render when stagingRepo is set", () => {
+  test("substituteTemplate: STAGING_REPO and STAGING_REPO_NOTE render when set", () => {
+    const stagingFork = "owner/staging-fork";
     const text = substituteTemplate("{{STAGING_REPO}}|{{STAGING_REPO_NOTE}}", {
       ...baseCtx(),
-      stagingRepo: "owner/staging-fork",
+      STAGING_REPO: stagingFork,
+      STAGING_REPO_NOTE: `\n> **Staging fork**: This project uses a staging fork (\`${stagingFork}\`). Create the PR against the staging fork, not the upstream repo.\n`,
     });
     expect(text).toContain("owner/staging-fork");
     expect(text).toContain("staging fork");
   });
 
-  test("pr-create template renders staging note when stagingRepo is set", () => {
+  test("pr-create template renders staging note when STAGING_REPO is set", () => {
     const templatePath = join(import.meta.dir, "../../skills/orchestration/pr-create.md");
     const template = readFileSync(templatePath, "utf-8");
-    const rendered = substituteTemplate(template, { ...baseCtx(), stagingRepo: "owner/staging-fork" });
+    const stagingFork = "owner/staging-fork";
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      STAGING_REPO: stagingFork,
+      STAGING_REPO_NOTE: `\n> **Staging fork**: This project uses a staging fork (\`${stagingFork}\`). Create the PR against the staging fork, not the upstream repo.\n`,
+    });
     expect(rendered).toContain("owner/staging-fork");
     expect(rendered).toContain("staging fork");
-    // Note must be absent when stagingRepo is null
-    const renderedNull = substituteTemplate(template, { ...baseCtx(), stagingRepo: null });
+    // Note must be absent when STAGING_REPO is empty
+    const renderedNull = substituteTemplate(template, baseCtx());
     expect(renderedNull).not.toContain("staging fork");
+  });
+
+  test("substituteTemplate: warns in dev mode for unknown placeholders", () => {
+    const origDev = process.env.LUDICS_DEV;
+    process.env.LUDICS_DEV = "1";
+    const warnings: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => warnings.push(String(args[0]));
+    try {
+      const text = substituteTemplate("hello {{TYPO_VAR}} world", baseCtx());
+      expect(text).toBe("hello  world");
+      expect(warnings.some((w) => w.includes("TYPO_VAR"))).toBe(true);
+    } finally {
+      console.error = origError;
+      if (origDev !== undefined) process.env.LUDICS_DEV = origDev;
+      else delete process.env.LUDICS_DEV;
+    }
+  });
+
+  test("substituteTemplate: no warning in non-dev mode for unknown placeholders", () => {
+    const origDev = process.env.LUDICS_DEV;
+    const origDebug = process.env.DEBUG;
+    delete process.env.LUDICS_DEV;
+    delete process.env.DEBUG;
+    const warnings: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => warnings.push(String(args[0]));
+    try {
+      const text = substituteTemplate("hello {{TYPO_VAR}} world", baseCtx());
+      expect(text).toBe("hello  world");
+      expect(warnings.length).toBe(0);
+    } finally {
+      console.error = origError;
+      if (origDev !== undefined) process.env.LUDICS_DEV = origDev;
+      if (origDebug !== undefined) process.env.DEBUG = origDebug;
+    }
   });
 
   test("taskSpecText: file-based proposal appends pointer and summary, not inline body", async () => {
@@ -184,10 +228,10 @@ describe("skills", () => {
       const { buildSkillContext } = await import("./skills.ts");
       const state = { ...makeState(), taskId: "task-p1", projectDir };
       const ctx = buildSkillContext(state, state.agents[0]!);
-      expect(ctx.taskSpec).toContain("docs/proposals/my-feature.md");
-      expect(ctx.taskSpec).toContain("Read the full proposal");
-      expect(ctx.taskSpec).toContain("motivation paragraph");     // summary extracted
-      expect(ctx.taskSpec).not.toContain("Change details here."); // proposal body not inlined
+      expect(ctx["TASK_SPEC"]).toContain("docs/proposals/my-feature.md");
+      expect(ctx["TASK_SPEC"]).toContain("Read the full proposal");
+      expect(ctx["TASK_SPEC"]).toContain("motivation paragraph");     // summary extracted
+      expect(ctx["TASK_SPEC"]).not.toContain("Change details here."); // proposal body not inlined
     } finally {
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
@@ -211,8 +255,8 @@ describe("skills", () => {
       const { buildSkillContext } = await import("./skills.ts");
       const state = { ...makeState(), taskId: "task-p2", projectDir: j(tmpDir, "project") };
       const ctx = buildSkillContext(state, state.agents[0]!);
-      expect(ctx.taskSpec).toContain("Big inline proposal here.");
-      expect(ctx.taskSpec).not.toContain("Read the full proposal");
+      expect(ctx["TASK_SPEC"]).toContain("Big inline proposal here.");
+      expect(ctx["TASK_SPEC"]).not.toContain("Read the full proposal");
     } finally {
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
@@ -240,7 +284,43 @@ describe("skills", () => {
       const state = { ...makeState(), projectDir: "/tmp/my-proj-checkout" };
       const coder = state.agents.find((a) => a.role === "coder")!;
       const ctx = buildSkillContext(state, coder);
-      expect(ctx.stagingRepo).toBe("owner/my-proj-staging");
+      expect(ctx["STAGING_REPO"]).toBe("owner/my-proj-staging");
+    } finally {
+      if (origConfig !== undefined) process.env.LUDICS_CONFIG = origConfig;
+      else delete process.env.LUDICS_CONFIG;
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      try { unlinkSync(tmpCfg); } catch {}
+    }
+  });
+
+  test("buildSkillContext: auto-injects project config string fields as PROJECT_<FIELD>", async () => {
+    const tmpCfg = "/tmp/ludics-skills-project-inject-test.yaml";
+    writeFileSync(tmpCfg, [
+      "state_repo: test/testrepo",
+      "state_path: harness",
+      "projects:",
+      "  - name: my-proj",
+      "    repo: upstream/my-proj",
+      "    staging_repo: owner/my-proj-staging",
+      "    path: /tmp/my-proj-checkout",
+      "    proposals_path: docs/proposals",
+    ].join("\n"));
+    const origConfig = process.env.LUDICS_CONFIG;
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_CONFIG = tmpCfg;
+    process.env.LUDICS_HARNESS_DIR = "/tmp/ludics-test-harness";
+    try {
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), projectDir: "/tmp/my-proj-checkout" };
+      const coder = state.agents.find((a) => a.role === "coder")!;
+      const ctx = buildSkillContext(state, coder);
+      expect(ctx["PROJECT_NAME"]).toBe("my-proj");
+      expect(ctx["PROJECT_REPO"]).toBe("upstream/my-proj");
+      expect(ctx["PROJECT_STAGING_REPO"]).toBe("owner/my-proj-staging");
+      expect(ctx["PROJECT_PROPOSALS_PATH"]).toBe("docs/proposals");
+      // Non-string fields should NOT be injected (e.g., boolean issues)
+      expect(ctx["PROJECT_ISSUES"]).toBeUndefined();
     } finally {
       if (origConfig !== undefined) process.env.LUDICS_CONFIG = origConfig;
       else delete process.env.LUDICS_CONFIG;
