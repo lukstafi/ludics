@@ -1322,21 +1322,29 @@ async function cleanupDoneTaskThreads(): Promise<void> {
   }
 }
 
+/**
+ * Ensure the t3code server is running if `mag.ensure_t3code` is not false.
+ * Encapsulates config check, dynamic import, try/catch, and logging so that
+ * the three call-sites (keepalive, fresh start, briefing) share a single
+ * implementation.  Pass a short `context` string (e.g. "keepalive") that
+ * appears in log messages to aid debugging.
+ */
+async function ensureT3codeIfEnabled(context: string): Promise<void> {
+  const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
+  if (magConfig?.ensure_t3code === false) return;
+  console.error(`ludics: ensureServer (${context}): ensuring t3code server...`);
+  try {
+    const { ensureServer } = await import("./t3code/server.ts");
+    await ensureServer({ harnessDir: harnessDir() });
+    console.error(`ludics: ensureServer (${context}): t3code server ready`);
+  } catch (err) {
+    console.error(`ludics: ensureServer (${context}): failed — ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function briefingPrecomputeContext(): Promise<void> {
   // Ensure t3code server is running before briefing (it dies on overnight shutdown)
-  {
-    const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
-    if (magConfig?.ensure_t3code !== false) {
-      console.error("ludics: ensureServer (briefing): ensuring t3code server...");
-      try {
-        const { ensureServer } = await import("./t3code/server.ts");
-        await ensureServer({ harnessDir: harnessDir() });
-        console.error("ludics: ensureServer (briefing): t3code server ready");
-      } catch (err) {
-        console.error(`ludics: ensureServer (briefing): failed — ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  }
+  await ensureT3codeIfEnabled("briefing");
 
   // Clean up t3code threads for completed tasks before building the context
   await cleanupDoneTaskThreads();
@@ -2184,17 +2192,7 @@ export async function magStart(args: string[]): Promise<void> {
     if (useTtyd) ensureTtyd();
 
     // Ensure t3code server is running (idempotent)
-    {
-      const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
-      if (magConfig?.ensure_t3code !== false) {
-        try {
-          const { ensureServer } = await import("./t3code/server.ts");
-          await ensureServer({ harnessDir: harnessDir() });
-        } catch (err) {
-          console.error(`ludics: ensureServer (keepalive): failed — ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
+    await ensureT3codeIfEnabled("keepalive");
 
     // Publish terminal state to ntfy (dedup'd)
     publishTerminalState();
@@ -2284,19 +2282,7 @@ export async function magStart(args: string[]): Promise<void> {
   if (useTtyd) ensureTtyd();
 
   // Ensure t3code server on fresh start
-  {
-    const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
-    if (magConfig?.ensure_t3code !== false) {
-      console.error("ludics: ensureServer (fresh start): ensuring t3code server...");
-      try {
-        const { ensureServer } = await import("./t3code/server.ts");
-        await ensureServer({ harnessDir: harnessDir() });
-        console.error("ludics: ensureServer (fresh start): t3code server ready");
-      } catch (err) {
-        console.error(`ludics: ensureServer (fresh start): failed — ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  }
+  await ensureT3codeIfEnabled("fresh start");
 
   // Drain programmatic requests first, then deliver one skill/direct request.
   await drainProgrammaticQueueHead();
