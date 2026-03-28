@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join, basename } from "path";
-import { harnessDir, ludicsRoot, loadConfigSync } from "../config.ts";
+import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
 import type { Phase } from "./phases.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { readMergeVotes } from "./merge.ts";
@@ -216,20 +216,7 @@ export function buildSkillContext(
   const mergeVotes = Object.entries(readMergeVotes(state.peerSyncDir, state.mergeRound))
     .map(([name, vote]) => `${name}: ${vote}`)
     .join("\n");
-  const _cfg = loadConfigSync();
-  const _projectEntry = (_cfg.projects ?? []).find((p) => {
-    // 1. Explicit path: expand ~/ and normalize trailing slash, compare directly — no existsSync
-    if (p.path) {
-      const expanded = (String(p.path).startsWith("~/")
-        ? join(process.env.HOME ?? "~", String(p.path).slice(2))
-        : String(p.path)).replace(/\/+$/, "");
-      if (state.projectDir === expanded || state.projectDir.startsWith(expanded + "/")) return true;
-    }
-    // 2. Fallback: match basename(projectDir) against project name or repo tail (case-insensitive)
-    const dir = basename(state.projectDir).toLowerCase();
-    const repoTail = String(p.repo ?? "").split("/").pop()?.toLowerCase() ?? "";
-    return dir === String(p.name ?? "").toLowerCase() || dir === repoTail;
-  });
+  const _projectEntry = findProjectConfig(state.projectDir);
   const stagingRepo = _projectEntry?.staging_repo ?? null;
 
   // Extract proposal path from task frontmatter for templates that need just a reference

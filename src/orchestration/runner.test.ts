@@ -1,9 +1,10 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
-import { updateTurnLifecycle, refreshAgentStatuses } from "./runner.ts";
+import { updateTurnLifecycle, refreshAgentStatuses, maybePostCodexReviewRequests } from "./runner.ts";
+import * as github from "./github.ts";
 import { orchOnStop } from "./index.ts";
 import { readStopHookRecord, writeStopHookRecord, writeAgentMarkerFiles, readAgentMarkerFile } from "./peer-sync.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type AgentTurnLifecycle, type OrchestrationState } from "./state.ts";
@@ -1276,5 +1277,154 @@ describe("pairReviewVerdict", () => {
       : verdict === "request_changes" ? "REQUEST_CHANGES"
       : "timeout";
     expect(verdictLabel).toBe("timeout");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// maybePostCodexReviewRequests — @codex review comment decision logic
+// ---------------------------------------------------------------------------
+
+describe("maybePostCodexReviewRequests", () => {
+  let postSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    postSpy = spyOn(github, "postCodexReviewComment").mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    postSpy.mockRestore();
+  });
+
+  function makeCodexState(
+    overrides: Partial<OrchestrationState> = {},
+  ): OrchestrationState {
+    const state = makeState({
+      phase: "pr-create",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+        { name: "reviewer", provider: "codex", role: "reviewer", model: "o3-pro", branch: "b", worktreePath: "/tmp/b" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-create-done", statusEpoch: 0, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
+        },
+        reviewer: {
+          status: "idle", statusEpoch: 0, statusMessage: "",
+          prUrl: null, interrupted: false,
+        },
+      },
+      ...overrides,
+    });
+    return state;
+  }
+
+  test("posts on pr-create -> pr-comments with codex reviewer", () => {
+    const state = makeCodexState({ phase: "pr-create" });
+    maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(postSpy.mock.calls[0]![0]).toBe("https://github.com/test/repo/pull/42");
+  });
+
+  test("posts on update-docs -> pr-comments with codex reviewer", () => {
+    const state = makeCodexState({ phase: "update-docs" });
+    maybePostCodexReviewRequests(state, "update-docs", "pr-comments");
+    expect(postSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("posts on review -> pr-comments with codex reviewer", () => {
+    const state = makeCodexState({ phase: "review" });
+    maybePostCodexReviewRequests(state, "review", "pr-comments");
+    expect(postSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("does NOT post on merge-review -> pr-comments", () => {
+    const state = makeCodexState({ phase: "merge-review" });
+    maybePostCodexReviewRequests(state, "merge-review", "pr-comments");
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("does NOT post when reviewer provider is claude-code", () => {
+    const state = makeCodexState({
+      phase: "pr-create",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    });
+    maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("does NOT post when coder is codex but reviewer is claude-code", () => {
+    const state = makeCodexState({
+      phase: "pr-create",
+      agents: [
+        { name: "coder", provider: "codex", role: "coder", model: "o3-pro", branch: "a", worktreePath: "/tmp/a" },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    });
+    maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("does NOT post when next phase is not pr-comments", () => {
+    const state = makeCodexState({ phase: "pr-create" });
+    maybePostCodexReviewRequests(state, "pr-create", "work");
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("de-duplicates identical PR URLs", () => {
+    const state = makeCodexState({
+      phase: "pr-create",
+      agentStates: {
+        coder: {
+          status: "pr-create-done", statusEpoch: 0, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
+        },
+        reviewer: {
+          status: "pr-create-done", statusEpoch: 0, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
+        },
+      },
+    });
+    maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
+    expect(postSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("posts once per distinct PR URL", () => {
+    const state = makeCodexState({
+      phase: "pr-create",
+      agentStates: {
+        coder: {
+          status: "pr-create-done", statusEpoch: 0, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
+        },
+        reviewer: {
+          status: "pr-create-done", statusEpoch: 0, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/43", interrupted: false,
+        },
+      },
+    });
+    maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
+    expect(postSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test("skips agents without a prUrl", () => {
+    const state = makeCodexState({
+      phase: "pr-create",
+      agentStates: {
+        coder: {
+          status: "pr-create-done", statusEpoch: 0, statusMessage: "",
+          prUrl: null, interrupted: false,
+        },
+        reviewer: {
+          status: "idle", statusEpoch: 0, statusMessage: "",
+          prUrl: null, interrupted: false,
+        },
+      },
+    });
+    maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
+    expect(postSpy).not.toHaveBeenCalled();
   });
 });

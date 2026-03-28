@@ -24,6 +24,8 @@ projects:
                           # Tasks missing milestone field emit a warning during tasks sync.
     proposals_path: ""    # Optional: proposal doc dir relative to project root.
                           # Auto-detected from docs/, doc/, .docs/ if unset; defaults to docs/proposals/
+    codex_review_prompt: ""   # Optional: custom focus for GitHub-native @codex review comments.
+                              # Default: "Focus on bugs, correctness issues, and edge cases."
     # Optional per-project adapter args profile.
     # Later layers override earlier layers:
     # adapter default args -> project profile -> slot Adapter Args -> task frontmatter adapter_args

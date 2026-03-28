@@ -1,7 +1,7 @@
 // Config reading for ludics (Phase 2: native YAML parsing)
 
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 import YAML from "yaml";
 
 const DEFAULT_STALE_THRESHOLD = 86400; // 24 hours
@@ -39,6 +39,8 @@ export interface ProjectConfig {
    * - object with { args: ... }
    */
   adapter_profiles?: Record<string, { args?: string[] | string } | string[] | string>;
+  /** Custom prompt for the @codex review PR comment. Overrides the default review focus. */
+  codex_review_prompt?: string;
 }
 
 export interface LudicsFullConfig {
@@ -211,6 +213,29 @@ export function loadConfigSync(): LudicsFullConfig {
 // Async wrapper for backward compatibility with Phase 1 callers
 export async function loadConfig(): Promise<LudicsFullConfig> {
   return loadConfigSync();
+}
+
+/**
+ * Find the ProjectConfig entry matching a given project directory.
+ * Match semantics: explicit `path` match (with ~/… expansion and worktree prefix),
+ * then fallback to basename match against project name or repo tail.
+ */
+export function findProjectConfig(
+  projectDir: string,
+  config?: LudicsFullConfig,
+): ProjectConfig | null {
+  const cfg = config ?? loadConfigSync();
+  return (cfg.projects ?? []).find((p) => {
+    if (p.path) {
+      const expanded = (String(p.path).startsWith("~/")
+        ? join(process.env.HOME ?? "~", String(p.path).slice(2))
+        : String(p.path)).replace(/\/+$/, "");
+      if (projectDir === expanded || projectDir.startsWith(expanded + "/")) return true;
+    }
+    const dir = basename(projectDir).toLowerCase();
+    const repoTail = String(p.repo ?? "").split("/").pop()?.toLowerCase() ?? "";
+    return dir === String(p.name ?? "").toLowerCase() || dir === repoTail;
+  }) ?? null;
 }
 
 export function harnessDir(): string {
