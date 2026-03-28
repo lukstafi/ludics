@@ -1,6 +1,6 @@
 node_modules/
 ludics-ts
-bin/ludics
+bin/
 bun.lock
 dist/
 *.tsbuildinfo
