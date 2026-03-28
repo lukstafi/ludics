@@ -24,51 +24,45 @@ This skill is invoked when:
 - `$LUDICS_RESULTS_DIR`: Directory for result JSON (environment variable)
 - **Request ID**: Read from file `$LUDICS_STATE_PATH/mag/current-request-id`
 
-## Process
+## Common Steps
 
-### 1. Delegate to worker
+Follow [orchestrator-conventions.md](orchestrator-conventions.md):
+- **D** (Worker Delegation): invoke worker in forked context
+- **E** (Result JSON): write result with request ID
+- **F** (Error Handling): standard error patterns
 
-```
-/ludics-feedback-digest-worker <repo>
-```
+Sections A, B, C do not apply — this skill takes `<repo>`, not `<task_id>`.
 
-The worker runs in a forked context — its feedback file reads, theme clustering,
-and GitHub issue operations do not enter Mag's conversation history. The worker
-handles reading, clustering, deduplication, issue filing, and file cleanup
-autonomously.
+Worker: `/ludics-feedback-digest-worker <repo>`
 
-### 2. Interpret worker result
+## Skill-Specific: Status Routing
 
 Parse the worker's response for STATUS and counts.
 
-- **STATUS: completed** → write result JSON
-- **STATUS: empty** → write result JSON indicating nothing to process
-- **STATUS: error** → write result JSON with `"status": "error"`
+- **STATUS: completed** — write result JSON
+- **STATUS: empty** — write result JSON indicating nothing to process
+- **STATUS: error** — write result JSON with `"status": "error"`
 
-### 3. Write result JSON
-
-Read request ID and write to `$LUDICS_RESULTS_DIR/$REQ_ID.json`:
+## Skill-Specific Result Fields
 
 ```json
 {
-  "id": "<request-id>",
-  "status": "completed",
-  "timestamp": "<ISO-8601>",
-  "issues_created": N,
-  "issues_updated": N,
-  "issues_skipped": N,
-  "files_processed": N,
-  "output": "Created N issues, updated N, skipped N (N files processed)"
+  "issues_created": 0,
+  "issues_updated": 0,
+  "issues_skipped": 0,
+  "files_processed": 0
 }
 ```
 
-## Delegation Strategy
-
-- **Worker subagent** (`/ludics-feedback-digest-worker`): All feedback reading,
-  theme extraction, issue dedup/filing, file cleanup — runs in isolated context
-- **Orchestrator** (this skill): Result JSON — runs inline in Mag's context
+Output format: `"Created N issues, updated N, skipped N (N files processed)"`
 
 ## Error Handling
 
-- Worker returns error: Propagate to result JSON with `"status": "error"`
-- Repo not specified: Write result with status "error"
+Per [orchestrator-conventions.md](orchestrator-conventions.md) Section F, plus:
+- Repo not specified: Write result with `"status": "error"`, stop
+
+## Delegation Strategy
+
+- **Worker** (`/ludics-feedback-digest-worker`): All feedback reading, theme
+  extraction, issue dedup/filing, file cleanup — runs in isolated context
+- **Orchestrator** (this skill): Result JSON — runs inline in Mag's context

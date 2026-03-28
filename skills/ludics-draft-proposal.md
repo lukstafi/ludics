@@ -24,75 +24,49 @@ This skill is invoked when:
 - `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
 - **Request ID**: Read from file `$LUDICS_STATE_PATH/mag/current-request-id`
 
-## Process
+## Common Steps
 
-### 1. Read task file (for Mag's awareness)
+Follow [orchestrator-conventions.md](orchestrator-conventions.md):
+- **A** (Task Resolution): read task file, extract title/project/slot
+- **B** (Project Path): resolve project checkout path from config.
+  **Additionally**: resolve the proposals path (see below).
+- **C** (Context Brief): compose 3-10 line brief from conversation history
+- **D** (Worker Delegation): invoke worker in forked context
+- **E** (Result JSON): write result with request ID
+- **F** (Error Handling): standard error patterns
 
-```bash
-cat "$LUDICS_STATE_PATH/tasks/$ARGUMENTS.md"
-```
+### Proposals Path Resolution (extends Section B)
 
-Extract: title, project, slot number. This gives Mag context about the task
-being proposed without doing deep codebase exploration.
-
-### 2. Resolve project path and proposals path
-
-Look up the task's `project` field in `$LUDICS_STATE_PATH/config.yaml`.
-Each project entry has a `repo` field (e.g., `lukstafi/ocannl`); the local
-checkout is typically `~/<repo-name>`. The `personal` project refers to the
-state repository itself.
-
-After resolving the project path, check the project's `proposals_path` field in the same
-config entry. Then compute the absolute proposals directory:
+After resolving the project path, check the project's `proposals_path` field
+in the same config entry. Then compute the absolute proposals directory:
 
 - If `proposals_path` is set: `<project_path>/<proposals_path>`
 - Otherwise probe in order:
-  1. `<project_path>/docs/` exists → use `<project_path>/docs/proposals/`
-  2. `<project_path>/doc/` exists → use `<project_path>/doc/proposals/`
-  3. `<project_path>/.docs/` exists → use `<project_path>/.docs/proposals/`
+  1. `<project_path>/docs/` exists -> use `<project_path>/docs/proposals/`
+  2. `<project_path>/doc/` exists -> use `<project_path>/doc/proposals/`
+  3. `<project_path>/.docs/` exists -> use `<project_path>/.docs/proposals/`
   4. Fallback: `<project_path>/docs/proposals/`
 
 The worker will create the directory; this step only resolves the path.
 
-### 3. Compose context brief
+Worker: `/ludics-draft-proposal-worker <task_id> <project_path> <proposals_path> <context_brief>`
 
-Write a short free-form context brief (3-10 lines) distilling relevant
-background from Mag's conversation history. Include any of:
-- User preferences affecting scope or approach for this task
-- Related tasks in progress (what slots are doing, overlap risks)
-- Recent decisions or conversations relevant to this task
-- Known staleness signals or priority shifts
-
-If nothing relevant, pass an empty brief.
-
-### 4. Delegate to worker
-
-Invoke the isolated worker skill:
-
-```
-/ludics-draft-proposal-worker <task_id> <project_path> <proposals_path> <context_brief>
-```
-
-The worker runs in a forked context — its codebase exploration, file reads,
-and git operations do not enter Mag's conversation history. Only the worker's
-final response returns here.
-
-### 5. Interpret worker result
+## Skill-Specific: Status Routing
 
 Parse the worker's response for STATUS, PROPOSAL_PATH, AMBIGUITIES,
 START_CONFIDENCE, START_RATIONALE, TITLE, and SUMMARY fields.
 
-- **STATUS: completed** → proceed to auto-start evaluation (Step 5.5)
-- **STATUS: stale** → write result JSON with `"status": "stale"`, stop
-- **STATUS: split-needed** → queue the split skill and stop:
+- **STATUS: completed** — proceed to auto-start evaluation (next section)
+- **STATUS: stale** — write result JSON with `"status": "stale"`, stop
+- **STATUS: split-needed** — queue the split skill and stop:
   ```bash
   ludics mag split-task <task_id>
   ```
   Write result JSON with `"status": "split-needed"`, stop.
-- **STATUS: error** → write result JSON with `"status": "error"`, stop
-- **STATUS: already-exists** → check if re-generation is wanted, or skip
+- **STATUS: error** — write result JSON with `"status": "error"`, stop
+- **STATUS: already-exists** — check if re-generation is wanted, or skip
 
-### 5.5. Evaluate auto-start decision
+## Skill-Specific: Auto-start Evaluation
 
 After STATUS: completed, evaluate whether to auto-start the slot or defer
 to the user:
@@ -102,12 +76,12 @@ ludics mag auto-start-evaluate <task_id> <START_CONFIDENCE> "<START_RATIONALE>"
 ```
 
 Parse the JSON output for the `decision` field:
-- `"auto-start"` → proceed to Step 6a (auto-start)
-- `"defer-to-user"` → proceed to Step 6b (notification with launch buttons)
+- `"auto-start"` — proceed to auto-start (next section)
+- `"defer-to-user"` — proceed to notification with launch buttons
 
 The decision respects the `start_sessions` autonomy level:
-- `manual` or `suggest` → always defers to the user
-- `auto` → auto-starts when worker reports `high` confidence and a slot is assigned;
+- `manual` or `suggest` — always defers to the user
+- `auto` — auto-starts when worker reports `high` confidence and a slot is assigned;
   defers otherwise
 
 **Decision criteria details:**
@@ -120,9 +94,9 @@ The decision respects the `start_sessions` autonomy level:
   in follow-up work.
 - Tasks with no assigned slot always defer to the user.
 
-### 6a. Auto-start slot (if decision = "auto-start")
+## Skill-Specific: Auto-start Slot
 
-Start the assigned slot directly:
+If decision = "auto-start", start the assigned slot directly:
 
 ```bash
 ludics slot <N> start
@@ -134,18 +108,18 @@ Send a lighter notification (priority 2):
 ludics notify outgoing "Started slot <N> for <task_id>: <title>"
 ```
 
-Skip the launch-button notification — proceed to Step 7 (questions) and
-Step 9 (result JSON).
+Skip the launch-button notification — proceed to questions and result JSON.
 
-### 6b. Send notification with action buttons (if decision = "defer-to-user")
+## Skill-Specific: Proposal Notification (defer-to-user)
 
-Use the worker's `PROPOSAL_PATH` as the source of truth for the proposal location:
+If decision = "defer-to-user", use the worker's `PROPOSAL_PATH` as the source
+of truth for the proposal location:
 
 ```bash
 ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<PROPOSAL_PATH>"
 ```
 
-### 7. Send questions notification (if ambiguities found)
+## Skill-Specific: Questions Notification
 
 If the worker reported ambiguities (not "none"), send them as numbered questions:
 
@@ -155,36 +129,26 @@ ludics notify outgoing "<questions text>"
 
 Use title: "Proposal questions — <task_id>: <title>"
 
-### 8. Best-effort desktop
+## Skill-Specific: Best-effort Desktop
 
 ```bash
 code "<project_path>/<PROPOSAL_PATH>" 2>/dev/null || true
 ```
 
-### 9. Write result JSON
-
-Use the worker's `PROPOSAL_PATH` in the result:
+## Skill-Specific Result Fields
 
 ```json
 {
-  "id": "req-...",
-  "status": "completed",
-  "timestamp": "...",
   "task_id": "<task_id>",
-  "proposal_path": "<PROPOSAL_PATH>",
-  "output": "Proposal written for <task_id>: <title>"
+  "proposal_path": "<PROPOSAL_PATH>"
 }
 ```
 
+Output format: `"Proposal written for <task_id>: <title>"`
+
 ## Delegation Strategy
 
-- **Worker subagent** (`/ludics-draft-proposal-worker`): All codebase exploration,
+- **Worker** (`/ludics-draft-proposal-worker`): All codebase exploration,
   proposal writing, git commit+push, task frontmatter update — runs in isolated context
 - **Orchestrator** (this skill): Task file read, decision routing, notifications,
   result JSON — runs inline in Mag's context
-
-## Error Handling
-
-- Task not found: Write result with status "error"
-- Worker returns error: Propagate to result JSON
-- Notification fails: Log warning, continue
