@@ -283,6 +283,7 @@ interface DashboardTask {
   context: string;
   deadline: string | null;
   milestone: string | null;
+  created: string | null;
   completed: string | null;
   isCompleted: boolean;
   url: string | null;
@@ -291,8 +292,18 @@ interface DashboardTask {
   dependencies: {
     blocks: string[];
     blocked_by: string[];
+    relates_to: string[];
     subtask_of: string | null;
   };
+}
+
+interface NeedsConfirmationTask {
+  id: string;
+  title: string;
+  project: string;
+  priority: string;
+  created: string | null;
+  relatesTo: string[];
 }
 
 interface TasksTreeNode {
@@ -360,6 +371,7 @@ function readDashboardTasks(): DashboardTask[] {
         context: String(data.context ?? ""),
         deadline: data.deadline ? String(data.deadline) : null,
         milestone: isNonNullValue(data.milestone) ? String(data.milestone).trim() : null,
+        created: isNonNullValue(data.created) ? String(data.created) : null,
         completed: isNonNullValue(data.completed) ? String(data.completed) : null,
         isCompleted: isNonNullValue(data.completed),
         url: data.url ? String(data.url) : null,
@@ -368,6 +380,7 @@ function readDashboardTasks(): DashboardTask[] {
         dependencies: {
           blocks: Array.isArray(deps.blocks) ? (deps.blocks as string[]) : [],
           blocked_by: Array.isArray(deps.blocked_by) ? (deps.blocked_by as string[]) : [],
+          relates_to: Array.isArray(deps.relates_to) ? (deps.relates_to as string[]) : [],
           subtask_of: deps.subtask_of ? String(deps.subtask_of) : null,
         },
       });
@@ -427,6 +440,19 @@ function generateReady(tasks: DashboardTask[]): ReadyTask[] {
   });
 
   return ready;
+}
+
+function generateNeedsConfirmation(tasks: DashboardTask[]): NeedsConfirmationTask[] {
+  return tasks
+    .filter((task) => task.status === "needs-confirmation")
+    .map((task) => ({
+      id: task.id,
+      title: task.title,
+      project: task.project,
+      priority: task.priority,
+      created: task.created,
+      relatesTo: task.dependencies.relates_to,
+    }));
 }
 
 function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
@@ -810,6 +836,9 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "ready.json"), JSON.stringify(generateReady(tasks), null, 2));
   console.error("  ready.json");
+
+  writeFileSync(join(dataDir, "needs-confirmation.json"), JSON.stringify(generateNeedsConfirmation(tasks), null, 2));
+  console.error("  needs-confirmation.json");
 
   writeFileSync(join(dataDir, "tasks-tree.json"), JSON.stringify(generateTasksTree(tasks), null, 2));
   console.error("  tasks-tree.json");

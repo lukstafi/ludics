@@ -693,6 +693,42 @@ main {
     background-color: rgba(233, 69, 96, 0.15);
 }
 
+/* Needs Confirmation */
+.needs-confirm-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    padding: 0.3em 0.5em;
+    cursor: default;
+}
+
+.confirm-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 0.25em;
+}
+
+.confirm-btn, .dismiss-btn {
+    border: 1px solid;
+    border-radius: 4px;
+    padding: 0.15em 0.4em;
+    cursor: pointer;
+    font-size: 0.85em;
+    background: transparent;
+}
+
+.confirm-btn {
+    border-color: #4a9;
+    color: #4a9;
+}
+.confirm-btn:hover { background: #4a9; color: #fff; }
+
+.dismiss-btn {
+    border-color: #c55;
+    color: #c55;
+}
+.dismiss-btn:hover { background: #c55; color: #fff; }
+
 /* Notifications */
 .notifications li {
     display: flex;

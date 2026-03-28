@@ -8,6 +8,7 @@ import { resolve, extname, join } from "path";
 import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
+import { updateFrontmatterField } from "./tasks/markdown.ts";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -325,6 +326,74 @@ export function startDashboardServer(
           }
           lastGenerated = 0;
           return new Response(JSON.stringify({ priority: newPriority }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: confirm a needs-confirmation task (set status to ready)
+      if (pathname === "/api/task-confirm") {
+        const taskParam = url.searchParams.get("task");
+        if (!taskParam || !/^[A-Za-z0-9._-]+$/.test(taskParam)) {
+          return new Response("Bad Request: invalid task id", { status: 400 });
+        }
+        try {
+          const hDir = harnessDir();
+          const taskFile = resolve(hDir, "tasks", `${taskParam}.md`);
+          const safeTasksRoot = resolve(hDir, "tasks") + "/";
+          if (!taskFile.startsWith(safeTasksRoot)) {
+            return new Response("Forbidden", { status: 403 });
+          }
+          if (!existsSync(taskFile) || statSync(taskFile).isDirectory()) {
+            return new Response("Not Found", { status: 404 });
+          }
+          const content = readFileSync(taskFile, "utf-8");
+          const statusMatch = content.match(/^status:\s*(.+)$/m);
+          const currentStatus = statusMatch ? statusMatch[1]!.trim() : "";
+          if (currentStatus !== "needs-confirmation") {
+            return new Response(JSON.stringify({ error: "task is not needs-confirmation" }), {
+              status: 409, headers: { "Content-Type": "application/json" },
+            });
+          }
+          updateFrontmatterField(taskFile, "status", "ready");
+          lastGenerated = 0;
+          return new Response(JSON.stringify({ status: "ready" }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: dismiss a needs-confirmation task (set status to abandoned)
+      if (pathname === "/api/task-dismiss") {
+        const taskParam = url.searchParams.get("task");
+        if (!taskParam || !/^[A-Za-z0-9._-]+$/.test(taskParam)) {
+          return new Response("Bad Request: invalid task id", { status: 400 });
+        }
+        try {
+          const hDir = harnessDir();
+          const taskFile = resolve(hDir, "tasks", `${taskParam}.md`);
+          const safeTasksRoot = resolve(hDir, "tasks") + "/";
+          if (!taskFile.startsWith(safeTasksRoot)) {
+            return new Response("Forbidden", { status: 403 });
+          }
+          if (!existsSync(taskFile) || statSync(taskFile).isDirectory()) {
+            return new Response("Not Found", { status: 404 });
+          }
+          const content = readFileSync(taskFile, "utf-8");
+          const statusMatch = content.match(/^status:\s*(.+)$/m);
+          const currentStatus = statusMatch ? statusMatch[1]!.trim() : "";
+          if (currentStatus !== "needs-confirmation") {
+            return new Response(JSON.stringify({ error: "task is not needs-confirmation" }), {
+              status: 409, headers: { "Content-Type": "application/json" },
+            });
+          }
+          updateFrontmatterField(taskFile, "status", "abandoned");
+          lastGenerated = 0;
+          return new Response(JSON.stringify({ status: "abandoned" }), {
             headers: { "Content-Type": "application/json" },
           });
         } catch (e) {

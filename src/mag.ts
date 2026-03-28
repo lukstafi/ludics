@@ -1211,6 +1211,11 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
     case "adopt-sessions":
       adoptSessionsPrecomputeContext();
       return "/ludics-adopt-sessions";
+    case "process-suggestions": {
+      const task = String(request.task ?? "");
+      if (!task) return null;
+      return `/ludics-process-suggestions ${task}`;
+    }
     default:
       if (executeProgrammatic) {
         console.error(`ludics: mag queue-pop: unknown action: ${action}`);
@@ -2864,6 +2869,13 @@ export async function runMag(args: string[]): Promise<void> {
       console.log(`Queued adopt-sessions request (${fingerprint.unclassifiedCount} unclassified session(s))`);
       break;
     }
+    case "process-suggestions": {
+      const taskId = args[1];
+      if (!taskId) throw new Error("task id required");
+      queueRequest("process-suggestions", `"task":"${taskId}"`);
+      console.log(`Queued process-suggestions request for ${taskId}`);
+      break;
+    }
     case "completed": {
       const proposalName = args[1];
       if (!proposalName) throw new Error("proposal name required (without .md extension)");
@@ -2894,6 +2906,6 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     default:
-      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, completed, message, queue, queue-pop, context, feedback-digest)`);
+      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, process-suggestions, completed, message, queue, queue-pop, context, feedback-digest)`);
   }
 }

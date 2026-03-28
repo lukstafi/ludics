@@ -137,6 +137,7 @@ Commands:
   mag verify-completion <id>   Deep-inspect task completion, create follow-ups
   mag health-check             Check for deadlines, issues
   mag adopt-sessions [--force] Discover sessions and queue adoption for Mag
+  mag process-suggestions <id> Queue suggestion processing for completed task
   mag message "text"           Send async message to Mag
   mag queue                    Show pending queue requests
   mag context                  Pre-compute briefing context file
