@@ -1,6 +1,8 @@
 ---
 name: ludics-draft-proposal
 description: Write proposal document, send launch buttons
+queue-action: draft-proposal
+queue-args: [task]
 ---
 
 # /ludics-draft-proposal - Draft Proposal & Notify (Orchestrator)

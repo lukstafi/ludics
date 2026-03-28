@@ -1,3 +1,10 @@
+---
+name: ludics-split-task
+description: Split a multi-concern task into independent subtasks
+queue-action: split-task
+queue-args: [task]
+---
+
 # /ludics-split-task - Split Multi-Concern Task
 
 Split a task that covers multiple independent concerns into subtasks.

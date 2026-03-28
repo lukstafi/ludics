@@ -1,6 +1,8 @@
 ---
 name: ludics-verify-completion
 description: Verify task completion, clear slot, create follow-ups
+queue-action: verify-completion
+queue-args: [task]
 ---
 
 # /ludics-verify-completion - Verify Task Completion (Orchestrator)

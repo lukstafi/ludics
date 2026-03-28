@@ -4,6 +4,7 @@ description: Consolidate corrections and journal learnings into structured memor
 context: fork
 agent: general-purpose
 allowed-tools: Read, Bash, Glob, Grep, Write, Edit
+queue-action: sync-learnings
 ---
 
 # /ludics-sync-learnings - Knowledge Consolidation

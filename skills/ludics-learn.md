@@ -1,3 +1,9 @@
+---
+name: ludics-learn
+description: Update Mag memory from user corrections and feedback
+queue-action: learn
+---
+
 # /ludics-learn - Institutional Learning
 
 Update Mag's memory from user corrections and feedback.

@@ -1,3 +1,9 @@
+---
+name: ludics-briefing
+description: Generate a comprehensive strategic briefing
+queue-action: briefing
+---
+
 # /ludics-briefing - Strategic Morning Briefing
 
 Generate a comprehensive strategic briefing for the user.

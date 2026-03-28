@@ -1,6 +1,8 @@
 ---
 name: ludics-feedback-digest
 description: Summarize workflow feedback, file GitHub issues
+queue-action: feedback-digest
+queue-args: [repo]
 ---
 
 # /ludics-feedback-digest - Workflow Feedback Digest (Orchestrator)

@@ -1,3 +1,12 @@
+---
+name: ludics-preempt
+description: Decide which slot to preempt for a priority project task
+queue-action: preempt
+queue-args: [task, autonomy]
+queue-args-defaults:
+  autonomy: suggest
+---
+
 # /ludics-preempt - Priority Project Preemption
 
 Decide which slot to preempt for a priority project task.

@@ -1,6 +1,8 @@
 ---
 name: ludics-revise-proposal
 description: Revise existing proposal based on feedback, re-send notification
+queue-action: revise-proposal
+queue-args: [task, feedback]
 ---
 
 # /ludics-revise-proposal - Revise Proposal & Re-notify (Orchestrator)

@@ -1,3 +1,9 @@
+---
+name: ludics-adopt-sessions
+description: Match discovered agent sessions to projects and assign to available slots
+queue-action: adopt-sessions
+---
+
 # /ludics-adopt-sessions - Adopt Unclassified Sessions
 
 Match discovered agent sessions to projects and assign them to available slots.
