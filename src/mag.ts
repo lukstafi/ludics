@@ -739,7 +739,11 @@ function completeTaskFromNotification(taskId: string): void {
 
 /** Map any adapter name from notification bodies to t3code.
  *  Legacy notifications may carry "agent-claude", "agent-codex", etc.
- *  With the t3code-only workflow, all launches use t3code. */
+ *  With the t3code-only workflow, all launches use t3code.
+ *
+ *  @deprecated Internal callers no longer pass rawAdapter to launchSessionFromNotification.
+ *  This function is kept for backward-compat with legacy notification regex matchers
+ *  until those notification formats are fully retired. */
 export function normalizeLaunchAdapter(rawAdapter: string): string {
   const adapter = rawAdapter.trim();
   if (adapter === "t3code") return adapter;
@@ -899,18 +903,9 @@ export function evaluateAutoStartDecisionPure(
   return { decision: "auto-start", reason: "high confidence, slot ready" };
 }
 
-function evaluateAutoStartDecision(
-  taskId: string,
-  workerConfidence: "high" | "low" | undefined,
-  rationale: string = "",
-): AutoStartDecision {
-  const autonomy = startSessionsAutonomy();
-  const slot = findSlotForTask(taskId);
-  return evaluateAutoStartDecisionPure(workerConfidence, rationale, autonomy, slot !== null);
-}
 
-async function launchSessionFromNotification(taskId: string, rawAdapter: string, adapterArgs: string = ""): Promise<void> {
-  const adapter = normalizeLaunchAdapter(rawAdapter);
+async function launchSessionFromNotification(taskId: string, adapterArgs: string = ""): Promise<void> {
+  const adapter = "t3code";
   const launchArgs = adapterArgs.trim();
   const selection = selectSlotForLaunch(taskId);
 
@@ -1099,17 +1094,18 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       const launchNewMatch = content.match(/^Launch task ([\w.-]+)$/);
       if (launchNewMatch) {
         if (executeProgrammatic) {
-          await launchSessionFromNotification(launchNewMatch[1]!, "t3code");
+          await launchSessionFromNotification(launchNewMatch[1]!);
         }
         return null;
       }
 
       // Backward compat: old ntfy buttons may still carry this format.
       // New notifications emit "Launch task <id>" only.
+      // The captured adapter group is intentionally ignored — all launches use t3code.
       const launchLegacyMatch = content.match(/^Launch ([\w-]+) for ([\w.-]+) in project .+$/);
       if (launchLegacyMatch) {
         if (executeProgrammatic) {
-          await launchSessionFromNotification(launchLegacyMatch[2]!, launchLegacyMatch[1]!);
+          await launchSessionFromNotification(launchLegacyMatch[2]!);
         }
         return null;
       }
@@ -1126,17 +1122,18 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       const followupNewMatch = content.match(/^Followup task ([\w.-]+)$/);
       if (followupNewMatch) {
         if (executeProgrammatic) {
-          await launchSessionFromNotification(followupNewMatch[1]!, "t3code", buildFollowupAdapterArgs(""));
+          await launchSessionFromNotification(followupNewMatch[1]!, buildFollowupAdapterArgs(""));
         }
         return null;
       }
 
       // Backward compat: old ntfy buttons may still carry this format.
       // New notifications emit "Followup task <id>" only.
+      // The captured adapter group is intentionally ignored — all launches use t3code.
       const followupLegacyMatch = content.match(/^Followup ([\w-]+) for ([\w.-]+)$/);
       if (followupLegacyMatch) {
         if (executeProgrammatic) {
-          await launchSessionFromNotification(followupLegacyMatch[2]!, followupLegacyMatch[1]!, buildFollowupAdapterArgs(""));
+          await launchSessionFromNotification(followupLegacyMatch[2]!, buildFollowupAdapterArgs(""));
         }
         return null;
       }
@@ -1153,16 +1150,16 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
     }
     case "adapter-followup": {
       const task = String(request.task ?? "");
-      const adapter = String(request.adapter ?? "");
+      // `adapter` field is accepted for backward compat but ignored — all launches use t3code.
       const followupMsg = String(request.followup_msg ?? "");
-      if (!task || !adapter) {
+      if (!task) {
         if (executeProgrammatic) {
-          console.error("ludics: mag queue-pop: adapter-followup missing task/adapter");
+          console.error("ludics: mag queue-pop: adapter-followup missing task");
         }
         return null;
       }
       if (executeProgrammatic) {
-        await launchSessionFromNotification(task, adapter, buildFollowupAdapterArgs(followupMsg));
+        await launchSessionFromNotification(task, buildFollowupAdapterArgs(followupMsg));
       }
       return null;
     }
@@ -1772,10 +1769,7 @@ function computeSessionProjectMatches(): string {
       if (session.orchestration) {
         matchedSessions.push(`- **Recommended adapter:** ${session.orchestration.type} (orchestration detected)`);
       } else if (hasAgentSessions) {
-        const primaryAgent = session.agents[0];
-        const adapterName = primaryAgent === "codex" ? "agent-codex"
-          : primaryAgent === "claude-code" ? "agent-claude" : "manual";
-        matchedSessions.push(`- **Recommended adapter:** ${adapterName} (.agent-sessions/ found)`);
+        matchedSessions.push(`- **Recommended adapter:** t3code (.agent-sessions/ found)`);
       } else {
         matchedSessions.push(`- **Recommended adapter:** manual (no orchestration metadata)`);
       }
@@ -2763,10 +2757,11 @@ export async function runMag(args: string[]): Promise<void> {
       const confidence = args[2];
       const rationale = args[3] ?? "";
       if (!taskId) throw new Error("task id required");
-      const result = evaluateAutoStartDecision(
-        taskId,
+      const result = evaluateAutoStartDecisionPure(
         confidence === "high" || confidence === "low" ? confidence : undefined,
         rationale,
+        startSessionsAutonomy(),
+        findSlotForTask(taskId) !== null,
       );
       console.log(JSON.stringify(result));
       break;
