@@ -3,10 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
-import { updateTurnLifecycle } from "./runner.ts";
+import { updateTurnLifecycle, refreshAgentStatuses } from "./runner.ts";
 import { orchOnStop } from "./index.ts";
-import { readStopHookRecord, writeAgentMarkerFiles, readAgentMarkerFile } from "./peer-sync.ts";
+import { readStopHookRecord, writeStopHookRecord, writeAgentMarkerFiles, readAgentMarkerFile } from "./peer-sync.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type AgentTurnLifecycle, type OrchestrationState } from "./state.ts";
+import type { T3Snapshot, T3ThreadSession, T3LatestTurn } from "../t3code/types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -77,6 +78,44 @@ function makePeerSyncDir(
     }
   }
   return dir;
+}
+
+/** Build a minimal T3Snapshot with the given threads. */
+function makeSnapshot(
+  threads: Array<{
+    id: string;
+    session?: Partial<T3ThreadSession>;
+    latestTurn?: Partial<T3LatestTurn> | null;
+  }>,
+): T3Snapshot {
+  const now = new Date().toISOString();
+  return {
+    snapshotSequence: 1,
+    projects: [],
+    threads: threads.map((t) => ({
+      id: t.id,
+      projectId: "p1",
+      title: "test",
+      modelSelection: { provider: "claudeAgent" as const, model: "opus-4" },
+      runtimeMode: "full-access" as const,
+      createdAt: now,
+      updatedAt: now,
+      session: t.session ? {
+        threadId: t.id,
+        status: "idle" as const,
+        runtimeMode: "full-access" as const,
+        updatedAt: now,
+        ...t.session,
+      } satisfies T3ThreadSession : null,
+      latestTurn: t.latestTurn === undefined ? null : t.latestTurn ? {
+        turnId: "turn-default",
+        state: "completed" as const,
+        requestedAt: now,
+        ...t.latestTurn,
+      } satisfies T3LatestTurn : null,
+    })),
+    updatedAt: now,
+  };
 }
 
 // ===========================================================================
@@ -165,6 +204,58 @@ describe("updateTurnLifecycle", () => {
     });
     updateTurnLifecycle(lc, "running", "turn-new", null);
     expect(lc.state).toBe("error");
+  });
+
+  // --- Edge cases (task-41f81ece) ---
+
+  test("dispatched stays dispatched with sessionStatus 'starting'", () => {
+    const lc = makeLifecycle({ state: "dispatched" });
+    updateTurnLifecycle(lc, "starting", null, null);
+    expect(lc.state).toBe("dispatched");
+  });
+
+  test("dispatched stays dispatched with sessionStatus 'error' (never reached running)", () => {
+    const lc = makeLifecycle({ state: "dispatched" });
+    updateTurnLifecycle(lc, "error", null, null);
+    expect(lc.state).toBe("dispatched");
+    // The dispatched case only transitions on sessionStatus === "running" && activeTurnId.
+    expect(lc.observedTurnId).toBeNull();
+  });
+
+  test("running → settled when sessionStatus is not 'running' despite activeTurnId present", () => {
+    const lc = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-x",
+      turnStartedAt: new Date().toISOString(),
+    });
+    // sessionStatus "ready" !== "running" triggers the guard even though activeTurnId is present.
+    updateTurnLifecycle(lc, "ready", "turn-x", null);
+    expect(lc.state).toBe("settled");
+    expect(lc.completionSource).toBe("snapshot");
+  });
+
+  test("running → settled uses isoNow() when latestTurn is null", () => {
+    const lc = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-y",
+      turnStartedAt: new Date().toISOString(),
+    });
+    updateTurnLifecycle(lc, "idle", null, null);
+    expect(lc.state).toBe("settled");
+    expect(lc.turnCompletedAt).not.toBeNull();
+    // Should be a valid ISO timestamp.
+    expect(new Date(lc.turnCompletedAt!).getTime()).not.toBeNaN();
+    expect(lc.completionSource).toBe("snapshot");
+  });
+
+  test("running stays running when activeTurnId present AND sessionStatus 'running'", () => {
+    const lc = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-abc",
+      turnStartedAt: new Date().toISOString(),
+    });
+    updateTurnLifecycle(lc, "running", "turn-abc", null);
+    expect(lc.state).toBe("running");
   });
 });
 
@@ -407,6 +498,359 @@ describe("orchOnStop handler", () => {
 
     // No stop record should be written when there's no active phase.
     expect(existsSync(join(peerSyncDir, "coder.stop.json"))).toBe(false);
+  });
+});
+
+// ===========================================================================
+// refreshAgentStatuses — integration tests (task-41f81ece)
+// ===========================================================================
+
+describe("refreshAgentStatuses", () => {
+  let tmpDir: string;
+  let origHarnessDir: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    origHarnessDir = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = join(tmpDir, "harness");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    if (origHarnessDir !== undefined) process.env.LUDICS_HARNESS_DIR = origHarnessDir;
+    else delete process.env.LUDICS_HARNESS_DIR;
+  });
+
+  test("null snapshot does not crash or transition dispatched lifecycle", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched" });
+
+    refreshAgentStatuses(state, null);
+
+    expect(state.agentStates.coder.turnLifecycle!.state).toBe("dispatched");
+  });
+
+  test("null snapshot does not downgrade running lifecycle", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date().toISOString(),
+    });
+
+    refreshAgentStatuses(state, null);
+
+    // Null sessionStatus triggers the null guard — lifecycle stays running.
+    expect(state.agentStates.coder.turnLifecycle!.state).toBe("running");
+  });
+
+  test("snapshot with running session transitions dispatched → running", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched" });
+
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "running", activeTurnId: "turn-1" },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.state).toBe("running");
+    expect(lc.observedTurnId).toBe("turn-1");
+  });
+
+  test("snapshot with settled session transitions running → settled", () => {
+    const completedAt = new Date().toISOString();
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date().toISOString(),
+    });
+
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "ready", activeTurnId: null },
+      latestTurn: { turnId: "turn-1", state: "completed", completedAt },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.state).toBe("settled");
+    expect(lc.completionSource).toBe("snapshot");
+    expect(lc.turnCompletedAt).toBe(completedAt);
+  });
+
+  test("stop-hook record with matching phaseToken settles dispatched lifecycle", () => {
+    const completedAt = new Date().toISOString();
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    const phaseToken = "phase-test";
+    state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched", phaseToken });
+
+    // Write stop-hook record with matching phaseToken.
+    writeStopHookRecord(peerSyncDir, {
+      agent: "coder",
+      provider: "unknown",
+      phase: "work",
+      phaseToken,
+      observedAt: new Date().toISOString(),
+      cwd: tmpDir,
+      hookEventName: "Stop",
+    });
+
+    // Snapshot shows completed turn with no active turn.
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "ready", activeTurnId: null },
+      latestTurn: { turnId: "turn-fast", state: "completed", completedAt },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.state).toBe("settled");
+    expect(lc.completionSource).toBe("stop-hook");
+    expect(lc.observedTurnId).toBe("turn-fast");
+  });
+
+  test("stop-hook record with wrong phaseToken is ignored", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "dispatched",
+      phaseToken: "phase-current",
+    });
+
+    // Write stop-hook record with WRONG phaseToken.
+    writeStopHookRecord(peerSyncDir, {
+      agent: "coder",
+      provider: "unknown",
+      phase: "work",
+      phaseToken: "phase-stale",
+      observedAt: new Date().toISOString(),
+      cwd: tmpDir,
+      hookEventName: "Stop",
+    });
+
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "ready", activeTurnId: null },
+      latestTurn: { turnId: "turn-x", state: "completed", completedAt: new Date().toISOString() },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    // Stale phaseToken — lifecycle stays dispatched.
+    expect(state.agentStates.coder.turnLifecycle!.state).toBe("dispatched");
+  });
+
+  test("fast-complete with latestTurn.completedAt null uses isoNow() fallback", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    const phaseToken = "phase-test";
+    state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched", phaseToken });
+
+    writeStopHookRecord(peerSyncDir, {
+      agent: "coder",
+      provider: "unknown",
+      phase: "work",
+      phaseToken,
+      observedAt: new Date().toISOString(),
+      cwd: tmpDir,
+      hookEventName: "Stop",
+    });
+
+    // latestTurn has completedAt: null.
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "ready", activeTurnId: null },
+      latestTurn: { turnId: "turn-fast", state: "completed", completedAt: null },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.state).toBe("settled");
+    expect(lc.turnCompletedAt).not.toBeNull();
+    // Should be a valid ISO timestamp (from isoNow() fallback).
+    expect(new Date(lc.turnCompletedAt!).getTime()).not.toBeNaN();
+  });
+
+  test("merge marker overrides agent status to 'merged'", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "done|1|done" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+
+    // Write merge marker.
+    writeFileSync(join(peerSyncDir, "coder.merged"), "1");
+
+    refreshAgentStatuses(state, null);
+
+    expect(state.agentStates.coder.status).toBe("merged");
+  });
+
+  test("terminal lifecycle states remain terminal after refresh", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-old",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+
+    // Snapshot shows a new running session — should NOT revert settled state.
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "running", activeTurnId: "turn-new" },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    expect(state.agentStates.coder.turnLifecycle!.state).toBe("settled");
+  });
+
+  test("inconsistency: peer-sync done + lifecycle dispatched emits warning", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "done|1|done" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched" });
+
+    refreshAgentStatuses(state, null);
+
+    // Read the events journal to verify a warning was emitted.
+    const eventsPath = join(tmpDir, "harness", "journal", "events.jsonl");
+    expect(existsSync(eventsPath)).toBe(true);
+    const events = readFileSync(eventsPath, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    const warning = events.find((e: { event_type?: string }) => e.event_type === "orchestration_warning");
+    expect(warning).toBeDefined();
+    expect(warning.message).toContain('peer-sync says "done"');
+    expect(warning.message).toContain('"dispatched"');
+  });
+});
+
+// ===========================================================================
+// orchOnStop env-var fallback tests (task-41f81ece)
+// ===========================================================================
+
+describe("orchOnStop env-var fallback", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env.LUDICS_AGENT_NAME;
+    delete process.env.LUDICS_PEER_SYNC_DIR;
+  });
+
+  test("LUDICS_PEER_SYNC_DIR env var used when CLI peerSyncDir is empty string", () => {
+    const agentWorktree = join(tmpDir, "worktree-alpha");
+    mkdirSync(agentWorktree, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir({
+      root: tmpDir,
+      "agent-alpha": agentWorktree,
+    });
+
+    process.env.LUDICS_PEER_SYNC_DIR = peerSyncDir;
+
+    // Pass empty string for peerSyncDir — should fall back to env var.
+    orchOnStop([agentWorktree, "", "Stop"]);
+
+    const record = readStopHookRecord(peerSyncDir, "agent-alpha");
+    expect(record).not.toBeNull();
+    expect(record!.agent).toBe("agent-alpha");
+    expect(record!.phaseToken).toBe("phase-test-token");
+  });
+
+  test("LUDICS_PEER_SYNC_DIR env var used when CLI peerSyncDir has no phase file", () => {
+    const agentWorktree = join(tmpDir, "worktree-beta");
+    mkdirSync(agentWorktree, { recursive: true });
+
+    const stalePeerSync = makeTmpDir();
+    // No phase file in stalePeerSync — it's stale.
+    writeFileSync(join(stalePeerSync, "phase-token"), "stale-token");
+
+    const validPeerSync = makePeerSyncDir({
+      root: tmpDir,
+      "agent-beta": agentWorktree,
+    });
+
+    process.env.LUDICS_PEER_SYNC_DIR = validPeerSync;
+
+    orchOnStop([agentWorktree, stalePeerSync, "Stop"]);
+
+    const record = readStopHookRecord(validPeerSync, "agent-beta");
+    expect(record).not.toBeNull();
+    expect(record!.agent).toBe("agent-beta");
+  });
+
+  test("CLI peerSyncDir takes precedence over env var", () => {
+    const agentWorktree = join(tmpDir, "worktree-gamma");
+    mkdirSync(agentWorktree, { recursive: true });
+
+    const cliPeerSync = makePeerSyncDir({
+      root: tmpDir,
+      "agent-gamma": agentWorktree,
+    });
+
+    const envPeerSync = makePeerSyncDir({
+      root: tmpDir,
+      "agent-gamma": agentWorktree,
+    });
+    // Give the env peer-sync a different phase token.
+    writeFileSync(join(envPeerSync, "phase-token"), "env-token");
+
+    process.env.LUDICS_PEER_SYNC_DIR = envPeerSync;
+
+    orchOnStop([agentWorktree, cliPeerSync, "Stop"]);
+
+    // Should use CLI arg's peer-sync dir (with "phase-test-token").
+    const record = readStopHookRecord(cliPeerSync, "agent-gamma");
+    expect(record).not.toBeNull();
+    expect(record!.phaseToken).toBe("phase-test-token");
+
+    // Should NOT have written to env peer-sync dir.
+    expect(readStopHookRecord(envPeerSync, "agent-gamma")).toBeNull();
+  });
+
+  test("invalid env var falls back to CLI arg", () => {
+    const agentWorktree = join(tmpDir, "worktree-delta");
+    mkdirSync(agentWorktree, { recursive: true });
+
+    const cliPeerSync = makePeerSyncDir({
+      root: tmpDir,
+      "agent-delta": agentWorktree,
+    });
+
+    // Env var points to nonexistent dir.
+    process.env.LUDICS_PEER_SYNC_DIR = "/tmp/nonexistent-ludics-test-dir";
+
+    orchOnStop([agentWorktree, cliPeerSync, "Stop"]);
+
+    const record = readStopHookRecord(cliPeerSync, "agent-delta");
+    expect(record).not.toBeNull();
+    expect(record!.agent).toBe("agent-delta");
+  });
+
+  test("neither env var nor CLI arg valid → no stop record", () => {
+    const cwd = join(tmpDir, "cwd");
+    mkdirSync(cwd, { recursive: true });
+
+    process.env.LUDICS_PEER_SYNC_DIR = "/tmp/nonexistent-ludics-test-dir";
+
+    orchOnStop([cwd, "", "Stop"]);
+
+    // No stop record should be created anywhere.
+    expect(existsSync(join(tmpDir, "coder.stop.json"))).toBe(false);
   });
 });
 

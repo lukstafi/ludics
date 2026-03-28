@@ -111,9 +111,11 @@ After `thread.turn.start` is dispatched but before the provider starts:
 - `session.activeTurnId` is still `null`
 - `latestTurn` still shows the previous turn (possibly with `state: "completed"`)
 
-**Why this causes premature transitions**: The old `isTurnFresh()` compares
-`latestTurn.completedAt >= phaseDispatchedAt`.  If the previous turn completed
-very recently (same second as dispatch), the stale completion appears "fresh."
+**Why this caused premature transitions (old design)**: The previous
+`isTurnFresh()` heuristic compared `latestTurn.completedAt >= phaseDispatchedAt`.
+If the previous turn completed very recently (same second as dispatch), the stale
+completion appeared "fresh."  This was replaced by identity-based turn tracking
+in PR #69.
 
 **Solution**: Track the dispatched turn by binding to the first
 `session.activeTurnId` observed after dispatch.  Never trust `latestTurn` alone.
