@@ -98,6 +98,28 @@ function ghIssueBody(repo: string, issue: string): string | null {
   }
 }
 
+/** Resolve a proposal frontmatter value to an absolute filesystem path.
+ *  Handles ~/..., absolute paths, and project-relative paths. */
+function resolveProposalAbsPath(projectDir: string, rawPath: string): string {
+  if (rawPath.startsWith("~/")) {
+    return join(process.env.HOME ?? "~", rawPath.slice(2));
+  }
+  if (rawPath.startsWith("/")) return rawPath;
+  return join(projectDir, rawPath);
+}
+
+/** Extract the first paragraph under ## Motivation from a proposal file.
+ *  Falls back to the first non-empty non-heading paragraph in the file.
+ *  Returns null if the file can't be read or yields no usable text. */
+function extractProposalSummary(proposalFile: string): string | null {
+  const text = readFileIfExists(proposalFile);
+  if (!text) return null;
+  const motivIdx = text.search(/^## Motivation/m);
+  const src = motivIdx >= 0 ? text.slice(motivIdx + "## Motivation".length) : text;
+  const para = src.split(/\n\n+/).map((p) => p.trim()).find((p) => p && !p.startsWith("#"));
+  return para ? para.replace(/\n/g, " ").slice(0, 300) : null;
+}
+
 function taskSpecText(state: OrchestrationState): string {
   const taskId = state.taskId?.trim();
   if (!taskId) {
@@ -107,8 +129,34 @@ function taskSpecText(state: OrchestrationState): string {
   const content = readFileIfExists(path);
   if (!content) return taskId;
 
-  // Try to extract and append GitHub issue body
-  const urlMatch = content.match(/^url:\s*"?https:\/\/github\.com\/([^/\s"]+\/[^/\s"]+)\/issues\/(\d+)"?/m);
+  // When proposal is a file path, append a pointer + summary rather than inlining content.
+  const proposalMatch = content.match(/^proposal:\s*(.+)$/m);
+  if (proposalMatch) {
+    const proposalValue = proposalMatch[1]!.trim().replace(/^["']|["']$/g, "");
+    if (proposalValue && proposalValue !== "inline" && proposalValue.toLowerCase() !== "null") {
+      const proposalFile = resolveProposalAbsPath(state.projectDir, proposalValue);
+      const summary = extractProposalSummary(proposalFile);
+      const summaryLine = summary ? `Proposal summary: ${summary}\n` : "";
+      const contentWithPointer =
+        `${content}\n\n---\n${summaryLine}Read the full proposal at \`${proposalValue}\` in the project repo.\n`;
+
+      const urlMatch = contentWithPointer.match(
+        /^url:\s*"?https:\/\/github\.com\/([^/\s"]+\/[^/\s"]+)\/issues\/(\d+)"?/m,
+      );
+      if (urlMatch) {
+        const issueBody = ghIssueBody(urlMatch[1]!, urlMatch[2]!);
+        if (issueBody) {
+          return `${contentWithPointer}\n\n---\n## GitHub Issue Body\n\n${issueBody}`;
+        }
+      }
+      return contentWithPointer;
+    }
+  }
+
+  // Legacy (proposal: inline) or no proposal: return full content as-is.
+  const urlMatch = content.match(
+    /^url:\s*"?https:\/\/github\.com\/([^/\s"]+\/[^/\s"]+)\/issues\/(\d+)"?/m,
+  );
   if (urlMatch) {
     const issueBody = ghIssueBody(urlMatch[1]!, urlMatch[2]!);
     if (issueBody) {
