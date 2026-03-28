@@ -277,6 +277,8 @@ interface DashboardTask {
   url: string | null;
   hasProposal: boolean;
   proposalPath: string | null;
+  mtime: string | null;
+  hasRetrospective: boolean;
   dependencies: {
     blocks: string[];
     blocked_by: string[];
@@ -300,10 +302,12 @@ interface TasksTreeNode {
   title: string;
   link: string | null;
   proposalLink: string | null;
+  retroLink: string | null;
   priority: string | null;
   status: string | null;
   hasProposal: boolean;
   highlighted: boolean;
+  mtime: string | null;
   children: TasksTreeNode[];
 }
 
@@ -340,8 +344,10 @@ function readDashboardTasks(): DashboardTask[] {
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
   const tasks: DashboardTask[] = [];
 
+  const retroDir = join(harnessDir(), "retrospectives");
   for (const f of files) {
-    const content = readFileSync(join(tasksDir, f), "utf-8");
+    const filePath = join(tasksDir, f);
+    const content = readFileSync(filePath, "utf-8");
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     if (!fmMatch) continue;
 
@@ -350,6 +356,9 @@ function readDashboardTasks(): DashboardTask[] {
       const deps = (data.dependencies as Record<string, unknown>) ?? {};
       const id = String(data.id ?? "");
       if (!id) continue;
+      const fileMtime = statSync(filePath).mtime.toISOString();
+      const isCompleted = isNonNullValue(data.completed);
+      const hasRetrospective = isCompleted && existsSync(join(retroDir, `${id}.json`));
       tasks.push({
         id,
         title: String(data.title ?? ""),
@@ -362,10 +371,12 @@ function readDashboardTasks(): DashboardTask[] {
         milestone: isNonNullValue(data.milestone) ? String(data.milestone).trim() : null,
         created: isNonNullValue(data.created) ? String(data.created) : null,
         completed: isNonNullValue(data.completed) ? String(data.completed) : null,
-        isCompleted: isNonNullValue(data.completed),
+        isCompleted,
         url: data.url ? String(data.url) : null,
         hasProposal: hasNonNullProposal(data.proposal),
         proposalPath: isNonNullValue(data.proposal) ? String(data.proposal).trim() : null,
+        mtime: fileMtime,
+        hasRetrospective,
         dependencies: {
           blocks: Array.isArray(deps.blocks) ? (deps.blocks as string[]) : [],
           blocked_by: Array.isArray(deps.blocked_by) ? (deps.blocked_by as string[]) : [],
@@ -503,10 +514,12 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
         title: id,
         link: null,
         proposalLink: null,
+        retroLink: null,
         priority: null,
         status: null,
         hasProposal: false,
         highlighted: false,
+        mtime: null,
         children: [],
       };
     }
@@ -531,6 +544,7 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
     const highlighted = !task.isCompleted && subtreeHasActiveProposal;
     const taskFileLink = `/task-files/${encodeURIComponent(task.id)}.md`;
     const proposalLink = task.proposalPath ? `/proposal.html?task=${encodeURIComponent(task.id)}` : null;
+    const retroLink = task.hasRetrospective ? `retrospective.html?task=${encodeURIComponent(task.id)}` : null;
 
     return {
       node: {
@@ -539,10 +553,12 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
         title: task.title || task.id,
         link: taskFileLink,
         proposalLink,
+        retroLink,
         priority: task.priority,
         status: task.status,
         hasProposal: hasActiveProposal,
         highlighted,
+        mtime: task.mtime,
         children,
       },
       subtreeHasActiveProposal,
@@ -577,10 +593,12 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
       title: project,
       link: null,
       proposalLink: null,
+      retroLink: null,
       priority: null,
       status: null,
       hasProposal: false,
       highlighted: childResults.some((child) => child.subtreeHasActiveProposal),
+      mtime: null,
       children: childResults.map((child) => child.node),
     };
     forest.push(projectNode);
