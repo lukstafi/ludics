@@ -73,8 +73,12 @@ Read the request ID and write the result file:
 
 - Task not found: result with `"status": "error"`, descriptive output
 - Worker returns `STATUS: error`: propagate to result JSON
+- **State-mutation failure** (slot clear/start, task creation): report the
+  failure in result JSON — do NOT continue as if successful. State mutations
+  that fail can desync Mag from actual repo/slot state.
 - Notification fails: log warning, continue (do not fail the skill)
-- External tool failure (gh, git push): log, continue with remaining work
+- Best-effort tool failure (editor open, `gh` for non-critical ops): log,
+  continue with remaining work
 
 ## Environment
 

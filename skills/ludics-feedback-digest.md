@@ -47,10 +47,10 @@ Parse the worker's response for STATUS and counts.
 
 ```json
 {
-  "issues_created": "N",
-  "issues_updated": "N",
-  "issues_skipped": "N",
-  "files_processed": "N"
+  "issues_created": 0,
+  "issues_updated": 0,
+  "issues_skipped": 0,
+  "files_processed": 0
 }
 ```
 
