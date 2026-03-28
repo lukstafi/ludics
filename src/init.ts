@@ -63,9 +63,13 @@ export async function runInit(args: string[]): Promise<void> {
       if (pids.length > 0) {
         console.log("  restarting dashboard server...");
         dashboardStop();
-        const config = YAML.parse(readFileSync(join(harnessDir(), "config.yaml"), "utf-8")) as Record<string, unknown>;
-        const port = (config.dashboard as Record<string, unknown> | undefined)?.port as number ?? 7678;
-        dashboardServe(port);
+        // Spawn as detached background process — dashboardServe() blocks
+        const proc = Bun.spawn(["ludics", "dashboard", "serve"], {
+          stdout: "ignore",
+          stderr: "ignore",
+          stdin: "ignore",
+        });
+        proc.unref();
       }
     } catch (err) {
       console.warn(`warning: dashboard install failed: ${err instanceof Error ? err.message : String(err)}`);
