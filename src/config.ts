@@ -320,18 +320,26 @@ export function focusProject(): string | null {
   return typeof fp === "string" && fp ? fp.toLowerCase() : null;
 }
 
+/** Set of projects with `priority: true` in config, cached per call site. */
+let _priorityProjectsCache: Set<string> | null = null;
+function priorityProjectSet(): Set<string> {
+  if (!_priorityProjectsCache) {
+    _priorityProjectsCache = new Set(priorityProjects().map((p) => p.toLowerCase()));
+  }
+  return _priorityProjectsCache;
+}
+
 /**
  * Returns the effective (virtual) priority for a task, applying a one-level
- * boost when the task's project matches the configured focus project:
- *   A → S, B → A, C → B (non-focus tasks keep their actual priority).
- * When no focus project is configured, returns the original priority unchanged.
- *
- * Pass the pre-computed `fp` value (from `focusProject()`) to avoid repeated
- * config reads inside sort comparators. When omitted, reads config once.
+ * boost when the task's project is a priority project (`priority: true` in
+ * config) or matches the configured focus project:
+ *   A → S, B → A, C → B (non-priority tasks keep their actual priority).
  */
 export function effectivePriority(priority: string, project: string, fp?: string | null): string {
+  const proj = project.toLowerCase();
   const focusPrj = fp !== undefined ? fp : focusProject();
-  if (!focusPrj || project !== focusPrj) return priority;
+  const boosted = (focusPrj && proj === focusPrj) || priorityProjectSet().has(proj);
+  if (!boosted) return priority;
   switch (priority) {
     case "A": return "S";
     case "B": return "A";
@@ -342,10 +350,7 @@ export function effectivePriority(priority: string, project: string, fp?: string
 
 /**
  * Numeric sort key for virtual priority: S=0, A=1, B=2, C=3, other=9.
- * Applies focus-project boost automatically.
- *
- * Pass the pre-computed `fp` value (from `focusProject()`) to avoid repeated
- * config reads inside sort comparators. When omitted, reads config once.
+ * Applies priority-project boost automatically.
  */
 export function effectivePriorityValue(priority: string, project: string, fp?: string | null): number {
   const ep = effectivePriority(priority, project, fp);
