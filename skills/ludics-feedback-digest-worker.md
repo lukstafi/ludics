@@ -10,8 +10,8 @@ allowed-tools: Read, Bash, Glob, Grep
 # Feedback Digest Worker — Theme Clustering & Issue Filing
 
 You are a worker subagent invoked by the `/ludics-feedback-digest` orchestrator.
-Your job: read accumulated agent-duo workflow feedback, group by theme, deduplicate
-against existing GitHub issues, and file structured issues.
+Your job: read accumulated workflow feedback from completed tasks, group by theme,
+deduplicate against existing GitHub issues, and file structured issues.
 
 Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
@@ -25,8 +25,9 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
 ### 1. Read feedback files
 
-Read all `.md` files from `~/.agent-duo/workflow-feedback/` (skip the `processed/`
-subdirectory). If no files exist, report `STATUS: empty` and stop.
+Read all `.md` files from `$LUDICS_STATE_PATH/feedback/` (skip the `processed/`
+subdirectory). Files are named `<task-id>--workflow-feedback-<agent>.md`.
+If no files exist, report `STATUS: empty` and stop.
 
 ### 2. Extract individual data points
 
@@ -85,8 +86,8 @@ For each theme:
 ### 6. Move processed files
 
 ```bash
-mkdir -p ~/.agent-duo/workflow-feedback/processed/
-mv ~/.agent-duo/workflow-feedback/*.md ~/.agent-duo/workflow-feedback/processed/
+mkdir -p "$LUDICS_STATE_PATH/feedback/processed/"
+mv "$LUDICS_STATE_PATH/feedback/"*.md "$LUDICS_STATE_PATH/feedback/processed/"
 ```
 
 ## Final Response

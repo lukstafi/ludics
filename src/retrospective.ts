@@ -1,8 +1,8 @@
 // Retrospective collection — extract last assistant message per turn from t3code
 // threads at task completion, write to retrospectives/<task-id>.json.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
+import { basename, join } from "path";
 import YAML from "yaml";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
@@ -66,6 +66,8 @@ export interface RetrospectiveData {
   turns: RetrospectiveTurn[];
   missingThreads: MissingThread[];
   suggestRefactorSummary: string | null;
+  workflowFeedback: Record<string, string>;
+  /** @deprecated Use workflowFeedback instead */
   workflowFeedbackSummary: string | null;
   collectedAt: string;
 }
@@ -307,10 +309,49 @@ function extractArtifactSummary(peerSyncDir: string, pattern: RegExp): string | 
     // Pick the most recent (last alphabetically)
     files.sort();
     const content = readFileSync(join(peerSyncDir, files[files.length - 1]!), "utf-8");
-    return content.slice(0, 500) || null;
+    return content || null;
   } catch {
     return null;
   }
+}
+
+/** Read all workflow feedback files from peerSyncDir, keyed by agent name. */
+function extractAllWorkflowFeedback(peerSyncDir: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!existsSync(peerSyncDir)) return result;
+
+  try {
+    const files = readdirSync(peerSyncDir).filter((f: string) => /^workflow-feedback.*\.md$/.test(f));
+    for (const f of files) {
+      const content = readFileSync(join(peerSyncDir, f), "utf-8");
+      if (content) {
+        // Extract agent name: workflow-feedback-coder.md → coder
+        const match = f.match(/^workflow-feedback-(.+)\.md$/);
+        const key = match?.[1] ?? f;
+        result[key] = content;
+      }
+    }
+  } catch { /* ignore */ }
+  return result;
+}
+
+/** Copy workflow feedback files to harness/feedback/ for the digest pipeline. */
+function persistWorkflowFeedback(peerSyncDir: string, taskId: string): void {
+  if (!existsSync(peerSyncDir)) return;
+
+  try {
+    const files = readdirSync(peerSyncDir).filter((f: string) => /^workflow-feedback.*\.md$/.test(f));
+    if (files.length === 0) return;
+
+    const feedbackDir = join(harnessDir(), "feedback");
+    mkdirSync(feedbackDir, { recursive: true });
+
+    for (const f of files) {
+      // Name: <taskId>--<original-filename> to avoid collisions
+      const destName = `${taskId}--${f}`;
+      copyFileSync(join(peerSyncDir, f), join(feedbackDir, destName));
+    }
+  } catch { /* non-critical */ }
 }
 
 // --- Task frontmatter reading ---
@@ -440,7 +481,10 @@ export async function collectAndWriteRetrospective(state: OrchestrationState): P
 
   // Extract artifact summaries
   const suggestRefactorSummary = extractArtifactSummary(state.peerSyncDir, /^suggest-refactor.*\.md$/);
-  const workflowFeedbackSummary = extractArtifactSummary(state.peerSyncDir, /^workflow-feedback.*\.md$/);
+  const workflowFeedback = extractAllWorkflowFeedback(state.peerSyncDir);
+
+  // Copy feedback files to harness/feedback/ for the digest pipeline
+  persistWorkflowFeedback(state.peerSyncDir, taskId);
 
   const now = new Date();
   const data: RetrospectiveData = {
@@ -464,7 +508,8 @@ export async function collectAndWriteRetrospective(state: OrchestrationState): P
     turns: allTurns,
     missingThreads: allMissing,
     suggestRefactorSummary,
-    workflowFeedbackSummary,
+    workflowFeedback,
+    workflowFeedbackSummary: Object.values(workflowFeedback)[0] ?? null,
     collectedAt: now.toISOString().replace(/\.\d{3}Z$/, "Z"),
   };
 
@@ -546,6 +591,7 @@ export async function collectRetrospectiveFallback(taskId: string): Promise<void
     turns: allTurns,
     missingThreads: allMissing,
     suggestRefactorSummary: null,
+    workflowFeedback: {},
     workflowFeedbackSummary: null,
     collectedAt: now.toISOString().replace(/\.\d{3}Z$/, "Z"),
   };
