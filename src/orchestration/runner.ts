@@ -392,24 +392,53 @@ async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<
   for (const agent of agentsWithPr) {
     const prUrl = state.agentStates[agent.name]!.prUrl!;
     const markerFile = join(state.peerSyncDir, `${agent.name}.merged`);
+
     if (!existsSync(markerFile) && isPrMerged(prUrl)) {
-      writeFileSync(markerFile, "merged\n");
-      state.agentStates[agent.name]!.status = "merged";
-      state.agentStates[agent.name]!.statusMessage = "PR merged externally";
-      emitEvent({
-        event_type: "pr_merged",
-        source: "orchestration",
-        scope: "slot",
-        slot: state.slot,
-        task: state.feature,
-        message: `PR merged: ${prUrl}`,
-      });
-      const mergedTaskLabel = state.taskId ?? state.feature;
-      notifyAgents(
-        `Slot ${state.slot} [${mergedTaskLabel}]: PR merged: ${prUrl}`,
-        3,
-        `Slot ${state.slot}: PR merged`,
+      const isStaging = !!state.stagingRepo && state.mode === "pair";
+      const forwarded = state.agents.some((a) =>
+        existsSync(join(state.peerSyncDir, `${a.name}.forwarded`))
       );
+
+      if (isStaging && forwarded) {
+        // Upstream PR merged — write upstream-merged marker (NOT .merged)
+        const upstreamMarkerFile = join(state.peerSyncDir, `${agent.name}.upstream-merged`);
+        if (!existsSync(upstreamMarkerFile)) {
+          writeFileSync(upstreamMarkerFile, "upstream-merged\n");
+          emitEvent({
+            event_type: "upstream_pr_merged",
+            source: "orchestration",
+            scope: "slot",
+            slot: state.slot,
+            task: state.feature,
+            message: `Upstream PR merged: ${prUrl}`,
+          });
+          const mergedTaskLabel = state.taskId ?? state.feature;
+          notifyAgents(
+            `Slot ${state.slot} [${mergedTaskLabel}]: upstream PR merged: ${prUrl}`,
+            3,
+            `Slot ${state.slot}: upstream PR merged`,
+          );
+        }
+      } else {
+        // Non-staging or pre-forwarding: existing behavior
+        writeFileSync(markerFile, "merged\n");
+        state.agentStates[agent.name]!.status = "merged";
+        state.agentStates[agent.name]!.statusMessage = "PR merged externally";
+        emitEvent({
+          event_type: "pr_merged",
+          source: "orchestration",
+          scope: "slot",
+          slot: state.slot,
+          task: state.feature,
+          message: `PR merged: ${prUrl}`,
+        });
+        const mergedTaskLabel = state.taskId ?? state.feature;
+        notifyAgents(
+          `Slot ${state.slot} [${mergedTaskLabel}]: PR merged: ${prUrl}`,
+          3,
+          `Slot ${state.slot}: PR merged`,
+        );
+      }
     }
   }
 
@@ -526,11 +555,25 @@ async function handleTimeout(state: OrchestrationState): Promise<void> {
   ) {
     return;
   }
+
+  // In the forwarded upstream-monitoring branch of pr-comments, no agents are
+  // dispatched (enterPhase returns early for pr-comments). Interrupting them
+  // would latch interrupted=true with no phase transition to clear it, since
+  // evaluateTransition only transitions on the upstream-merged marker, not timeout.
+  // Skip interrupts entirely — the runner just keeps polling GitHub for merge status.
+  if (state.phase === "pr-comments" && state.stagingRepo && state.mode === "pair") {
+    const forwarded = state.agents.some((a) =>
+      existsSync(join(state.peerSyncDir, `${a.name}.forwarded`))
+    );
+    if (forwarded) return;
+  }
+
   if (
     state.phase === "work"
     || state.phase === "review"
     || state.phase === "pr-comments"
     || state.phase === "final-merge"
+    || state.phase === "forward-pr"
   ) {
     for (const agent of state.agents) {
       if (!agentParticipatesInPhase(state, agent)) continue;
@@ -641,6 +684,11 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   }
   if (state.phase === "merge-review" && next === "merge-amend") {
     state.mergeRound += 1;
+  }
+  // Reset pr-comments approval state when re-entering after forward-pr,
+  // so Codex +1 from the staging PR doesn't auto-transition the upstream monitoring.
+  if (state.phase === "forward-pr" && next === "pr-comments") {
+    state.prCodexApproved = false;
   }
   if (state.phase === "update-docs" && next === "pr-comments") {
     state.lastLearningAt = nowEpoch();

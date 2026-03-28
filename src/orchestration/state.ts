@@ -104,6 +104,8 @@ export interface OrchestrationState {
   planMergeRound?: number;
   taskId?: string;
   slotTitle?: string;
+  /** Staging fork repo slug (e.g. "lukstafi/ocannl-staging"). Set from project config at init. */
+  stagingRepo?: string;
   lastLearningAt?: number;
   lastLearningRound?: number;
   confirmedPhase?: Phase | null;
@@ -142,6 +144,7 @@ export const DEFAULT_TIMEOUTS: Record<string, number> = {
   "merge-review": 600,
   "merge-amend": 600,
   "suggest-refactor": 600,
+  "forward-pr": 1800,
   "final-merge": 1800,
 };
 

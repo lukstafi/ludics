@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
-import { join, basename } from "path";
+import { join } from "path";
 import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
 import type { Phase } from "./phases.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
@@ -162,8 +162,19 @@ export function resolveTemplatePath(
   phase: Phase,
   mode: "duo" | "pair",
   role?: "coder" | "reviewer",
+  staging?: boolean,
 ): string {
   const root = templateRoot();
+  // Staging-aware resolution: check staging-specific templates first when staging is active.
+  // Priority: pair-<role>-staging-<phase>.md > staging-<phase>.md > pair-<role>-<phase>.md > <phase>.md
+  if (staging) {
+    if (mode === "pair" && role) {
+      const stagingRolePath = join(root, `pair-${role}-staging-${phase}.md`);
+      if (existsSync(stagingRolePath)) return stagingRolePath;
+    }
+    const stagingPath = join(root, `staging-${phase}.md`);
+    if (existsSync(stagingPath)) return stagingPath;
+  }
   if (mode === "pair" && role) {
     const rolePath = join(root, `pair-${role}-${phase}.md`);
     if (existsSync(rolePath)) return rolePath;
@@ -217,7 +228,12 @@ export function buildSkillContext(
     .map(([name, vote]) => `${name}: ${vote}`)
     .join("\n");
   const _projectEntry = findProjectConfig(state.projectDir);
-  const stagingRepo = _projectEntry?.staging_repo ?? null;
+  // Staging is pair-mode only. In duo mode, staging_repo is ignored because the
+  // two-agent winner-selection flow doesn't compose with staging→upstream forwarding.
+  // Suppressing the variables here prevents pr-create and other prompts from
+  // instructing the agent to target the staging fork when the state machine won't
+  // perform the staging forwarding flow.
+  const stagingRepo = state.mode === "pair" ? (_projectEntry?.staging_repo ?? null) : null;
 
   // Extract proposal path from task frontmatter for templates that need just a reference
   const _taskPath = state.taskId ? join(harnessDir(), "tasks", `${state.taskId}.md`) : null;
@@ -264,6 +280,9 @@ export function buildSkillContext(
     WORKFLOW_FEEDBACK_FILE: join(state.peerSyncDir, `workflow-feedback-${agent.name}.md`),
     MERGE_REVIEW_DECISION_FILE: join(state.peerSyncDir, "merge-review-approval.txt"),
     MERGED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.merged`),
+    STAGING_PR_FILE: join(state.peerSyncDir, `${agent.name}.staging-pr`),
+    UPSTREAM_MERGED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.upstream-merged`),
+    FORWARDED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.forwarded`),
     PEER_SYNC_DIR: state.peerSyncDir,
     DONE_STATUS: doneStatusForPhase(state.phase),
     STAGING_REPO: stagingRepo ?? "",
@@ -305,7 +324,8 @@ export async function composeSkillMessage(
   agent: AgentConfig,
 ): Promise<string> {
   const context = buildSkillContext(state, agent);
-  const templatePath = resolveTemplatePath(state.phase, state.mode, agent.role);
+  const isStaging = !!state.stagingRepo && state.mode === "pair";
+  const templatePath = resolveTemplatePath(state.phase, state.mode, agent.role, isStaging);
   const template = readFileSync(templatePath, "utf-8");
   let message = substituteTemplate(template, context);
   if (state.config.useMagTailoring) {

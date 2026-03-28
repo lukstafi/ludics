@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "path";
 import { evaluateTransition } from "./phases.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "./state.ts";
 
@@ -211,5 +212,134 @@ describe("evaluateTransition", () => {
     state.phaseStartedAt = 0; // timeout
     // Even if verdict were REQUEST_CHANGES, planMergeRound >= 3 forces forward to work.
     expect(evaluateTransition(state)).toBe("work");
+  });
+
+  // --- Staging-aware transitions ---
+
+  test("pr-comments with staging + no forwarding transitions to forward-pr on Codex approval", () => {
+    const state = makeState({
+      mode: "pair",
+      phase: "pr-comments",
+      prCodexApproved: true,
+      stagingRepo: "owner/staging-fork",
+      agents: [
+        { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
+        { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      threadIds: { coder: "t1", reviewer: "t2" },
+    });
+    state.agentStates.coder.prUrl = "https://github.com/owner/staging-fork/pull/1";
+    expect(evaluateTransition(state)).toBe("forward-pr");
+  });
+
+  test("pr-comments with staging + no forwarding transitions to forward-pr on quiet period", () => {
+    const quietStart = Math.floor(Date.now() / 1000) - 2000;
+    const state = makeState({
+      mode: "pair",
+      phase: "pr-comments",
+      prCommentsQuietSince: quietStart,
+      stagingRepo: "owner/staging-fork",
+      agents: [
+        { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
+        { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      threadIds: { coder: "t1", reviewer: "t2" },
+    });
+    state.agentStates.coder.prUrl = "https://github.com/owner/staging-fork/pull/1";
+    expect(evaluateTransition(state)).toBe("forward-pr");
+  });
+
+  test("pr-comments without staging still transitions to final-merge on quiet period", () => {
+    const quietStart = Math.floor(Date.now() / 1000) - 2000;
+    const state = makeState({
+      phase: "pr-comments",
+      prCommentsQuietSince: quietStart,
+    });
+    state.agentStates.agent1.prUrl = "https://github.com/owner/repo/pull/1";
+    expect(evaluateTransition(state)).toBe("final-merge");
+  });
+
+  test("duo mode with staging_repo ignores staging and transitions to final-merge", () => {
+    const quietStart = Math.floor(Date.now() / 1000) - 2000;
+    const state = makeState({
+      mode: "duo",
+      phase: "pr-comments",
+      prCommentsQuietSince: quietStart,
+      stagingRepo: "owner/staging-fork",
+    });
+    state.agentStates.agent1.prUrl = "https://github.com/owner/staging-fork/pull/1";
+    // Duo mode ignores stagingRepo → non-staging path → final-merge
+    expect(evaluateTransition(state)).toBe("final-merge");
+  });
+
+  test("forward-pr transitions to pr-comments when done", () => {
+    const state = makeState({
+      phase: "forward-pr",
+      mode: "pair",
+      agents: [
+        { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
+        { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      threadIds: { coder: "t1", reviewer: "t2" },
+    });
+    state.agentStates.coder.status = "forward-pr-done";
+    expect(evaluateTransition(state)).toBe("pr-comments");
+  });
+
+  test("pr-comments with staging + forwarded + upstream-merged transitions to final-merge", () => {
+    const { mkdtempSync, writeFileSync: write } = require("fs");
+    const { rmSync } = require("fs");
+    const tmpDir = mkdtempSync("/tmp/ludics-phases-staging-test-");
+    try {
+      write(join(tmpDir, "coder.forwarded"), "");
+      write(join(tmpDir, "coder.upstream-merged"), "upstream-merged\n");
+      const state = makeState({
+        mode: "pair",
+        phase: "pr-comments",
+        stagingRepo: "owner/staging-fork",
+        peerSyncDir: tmpDir,
+        agents: [
+          { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
+          { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
+        ],
+        agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+        threadIds: { coder: "t1", reviewer: "t2" },
+      });
+      state.agentStates.coder.prUrl = "https://github.com/upstream/repo/pull/5";
+      expect(evaluateTransition(state)).toBe("final-merge");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("pr-comments with staging + forwarded but no upstream-merged stays null (no timeout escape)", () => {
+    const { mkdtempSync, writeFileSync: write } = require("fs");
+    const { rmSync } = require("fs");
+    const tmpDir = mkdtempSync("/tmp/ludics-phases-staging-wait-test-");
+    try {
+      write(join(tmpDir, "coder.forwarded"), "");
+      const state = makeState({
+        mode: "pair",
+        phase: "pr-comments",
+        stagingRepo: "owner/staging-fork",
+        peerSyncDir: tmpDir,
+        phaseStartedAt: 0, // phase timeout long expired
+        prCommentsQuietSince: 1, // quiet period long expired
+        agents: [
+          { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
+          { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
+        ],
+        agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+        threadIds: { coder: "t1", reviewer: "t2" },
+      });
+      state.agentStates.coder.prUrl = "https://github.com/upstream/repo/pull/5";
+      // Even with expired timeouts: forwarded branch only transitions on upstream-merged marker
+      expect(evaluateTransition(state)).toBeNull();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
