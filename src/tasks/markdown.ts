@@ -5,6 +5,20 @@ import { join } from "path";
 import YAML from "yaml";
 import type { TaskFrontmatter } from "./types.ts";
 
+/** Regex for valid task IDs — used across all task-related endpoints. */
+export const TASK_ID_RE = /^[A-Za-z0-9._-]+$/;
+
+/** Numeric sort key for priority levels. S < A < B < C < anything else. */
+export function priorityValue(p: string): number {
+  switch (p) {
+    case "S": return 0;
+    case "A": return 1;
+    case "B": return 2;
+    case "C": return 3;
+    default: return 9;
+  }
+}
+
 function asBoolean(value: unknown): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {

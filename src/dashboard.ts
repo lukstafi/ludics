@@ -5,6 +5,7 @@ import { join, dirname } from "path";
 import YAML from "yaml";
 import { harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
 import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted } from "./slots/markdown.ts";
+import { priorityValue } from "./tasks/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl } from "./network.ts";
 import { inspectManagedServerProcess, readServerRecord, t3codeStartingPath } from "./t3code/server.ts";
@@ -309,14 +310,6 @@ interface TasksTreeNode {
   highlighted: boolean;
   mtime: string | null;
   children: TasksTreeNode[];
-}
-
-function priorityValue(priority: string): number {
-  if (priority === "S") return 0;
-  if (priority === "A") return 1;
-  if (priority === "B") return 2;
-  if (priority === "C") return 3;
-  return 9;
 }
 
 function hasNonNullProposal(value: unknown): boolean {

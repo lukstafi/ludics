@@ -70,15 +70,6 @@ function collectTasks(): TaskData[] {
   return tasks;
 }
 
-function priorityValue(p: string): number {
-  switch (p) {
-    case "A": return 1;
-    case "B": return 2;
-    case "C": return 3;
-    default: return 9;
-  }
-}
-
 function checkCycle(tasks: TaskData[]): boolean {
   // Build adjacency list: for each "X blocked_by Y" we have edge Y -> X
   const edges: [string, string][] = [];
