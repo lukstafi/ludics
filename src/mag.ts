@@ -1885,7 +1885,19 @@ function maybeQueueProposals(): void {
     const statusMatch = content.match(/^status:\s*(.+)$/m);
     const taskStatus = statusMatch ? statusMatch[1]!.trim() : "ready";
     if (["abandoned", "done"].includes(taskStatus)) continue;
-    if (content.includes("\nproposal:")) continue;
+
+    // Task has a proposal but no session — auto-start the slot directly
+    if (content.includes("\nproposal:")) {
+      try {
+        slotStart(slotNum);
+        emitEvent({ event_type: "slot_auto_start", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)` });
+        console.error(`ludics: auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)`);
+      } catch (err) {
+        console.error(`ludics: failed to auto-start slot ${slotNum}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      continue;
+    }
+
     if (autoProposalDebounced(taskId)) continue;
 
     candidates.push(taskId);
