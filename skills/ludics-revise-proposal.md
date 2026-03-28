@@ -38,6 +38,8 @@ cat "$LUDICS_STATE_PATH/tasks/$ARGUMENTS.md"
 Extract: title, project, slot number, proposal path. Verify that a `proposal:`
 field exists — if the task has no proposal yet, write a result JSON with
 `"status": "error"` and message "no proposal to revise", then stop.
+`proposal: inline` is a valid legacy value and proceeds normally; the worker treats the task
+body as the proposal source and revises it in-place.
 
 ### 2. Resolve project path
 
@@ -71,32 +73,47 @@ and git operations do not enter Mag's conversation history.
 
 ### 5. Interpret worker result
 
-Parse the worker's response for STATUS, PROPOSAL_PATH, CHANGES_SUMMARY,
+Parse the worker's response for STATUS, PROPOSAL_PATH, PROPOSAL_MODE, CHANGES_SUMMARY,
 TITLE, and SUMMARY fields.
 
 - **STATUS: revised** → proceed to re-notification
 - **STATUS: no-changes** → write result JSON with `"status": "no-changes"`, stop
 - **STATUS: error** → write result JSON with `"status": "error"`, stop
 
+Note `PROPOSAL_MODE` for the steps below:
+- `PROPOSAL_MODE: file` — worker revised a separate proposal file; `PROPOSAL_PATH` is present.
+- `PROPOSAL_MODE: inline` — worker revised the task body in-place; `PROPOSAL_PATH` is absent.
+
 ### 6. Re-send proposal notification
 
-Use the same notification pathway as initial proposals:
-
+**File-based mode** (`PROPOSAL_MODE: file`):
 ```bash
 ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<PROPOSAL_PATH>"
 ```
 
-This re-sends the proposal with launch/revise/abandon buttons, completing
-the iteration loop.
+**Inline mode** (`PROPOSAL_MODE: inline`): the proposal content lives in the task file itself.
+Use the task file as the attachment:
+```bash
+ludics notify proposal "<task_id>" "<title>" "<summary>" "$LUDICS_STATE_PATH/tasks/<task_id>.md"
+```
+
+This re-sends the proposal with launch/revise/abandon buttons, completing the iteration loop.
 
 ### 7. Best-effort desktop
 
+**File-based mode**:
 ```bash
 code "<project_path>/<PROPOSAL_PATH>" 2>/dev/null || true
 ```
 
+**Inline mode**:
+```bash
+code "$LUDICS_STATE_PATH/tasks/<task_id>.md" 2>/dev/null || true
+```
+
 ### 8. Write result JSON
 
+**File-based mode**:
 ```json
 {
   "id": "req-...",
@@ -104,6 +121,21 @@ code "<project_path>/<PROPOSAL_PATH>" 2>/dev/null || true
   "timestamp": "...",
   "task_id": "<task_id>",
   "proposal_path": "<PROPOSAL_PATH>",
+  "proposal_mode": "file",
+  "changes_summary": "<what changed>",
+  "output": "Revised proposal for <task_id>: <title>"
+}
+```
+
+**Inline mode**:
+```json
+{
+  "id": "req-...",
+  "status": "revised",
+  "timestamp": "...",
+  "task_id": "<task_id>",
+  "proposal_path": null,
+  "proposal_mode": "inline",
   "changes_summary": "<what changed>",
   "output": "Revised proposal for <task_id>: <title>"
 }

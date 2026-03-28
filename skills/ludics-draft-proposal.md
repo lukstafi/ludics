@@ -35,12 +35,24 @@ cat "$LUDICS_STATE_PATH/tasks/$ARGUMENTS.md"
 Extract: title, project, slot number. This gives Mag context about the task
 being proposed without doing deep codebase exploration.
 
-### 2. Resolve project path
+### 2. Resolve project path and proposals path
 
 Look up the task's `project` field in `$LUDICS_STATE_PATH/config.yaml`.
 Each project entry has a `repo` field (e.g., `lukstafi/ocannl`); the local
 checkout is typically `~/<repo-name>`. The `personal` project refers to the
 state repository itself.
+
+After resolving the project path, check the project's `proposals_path` field in the same
+config entry. Then compute the absolute proposals directory:
+
+- If `proposals_path` is set: `<project_path>/<proposals_path>`
+- Otherwise probe in order:
+  1. `<project_path>/docs/` exists → use `<project_path>/docs/proposals/`
+  2. `<project_path>/doc/` exists → use `<project_path>/doc/proposals/`
+  3. `<project_path>/.docs/` exists → use `<project_path>/.docs/proposals/`
+  4. Fallback: `<project_path>/docs/proposals/`
+
+The worker will create the directory; this step only resolves the path.
 
 ### 3. Compose context brief
 
@@ -58,7 +70,7 @@ If nothing relevant, pass an empty brief.
 Invoke the isolated worker skill:
 
 ```
-/ludics-draft-proposal-worker <task_id> <project_path> <context_brief>
+/ludics-draft-proposal-worker <task_id> <project_path> <proposals_path> <context_brief>
 ```
 
 The worker runs in a forked context — its codebase exploration, file reads,

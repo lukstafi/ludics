@@ -35,10 +35,44 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    Extract: title, project, proposal path, dependencies, acceptance criteria,
    elaboration content, any existing notes.
 
-2. **Read existing proposal**:
-   Read the proposal file at `<project_path>/<proposal_path>` (from the task's
-   `proposal:` frontmatter field). Understand the current approach, scope, and
-   structure.
+2. **Detect proposal mode and read existing proposal**:
+
+   Check the `proposal:` frontmatter value extracted in step 1.
+
+   **File-based mode** (`proposal:` is any value other than `inline`):
+
+   a. Resolve to absolute path:
+      ```bash
+      case "<proposal_path>" in
+        ~/*)  proposal_abs="$HOME/${<proposal_path>#~/}" ;;
+        /*)   proposal_abs="<proposal_path>" ;;
+        *)    proposal_abs="<project_path>/<proposal_path>" ;;
+      esac
+      ```
+
+   b. Verify the file is inside the project tree (can be committed):
+      ```bash
+      proposal_rel=$(python3 -c \
+        "import os; r=os.path.relpath('$proposal_abs','<project_path>'); print(r)")
+      ```
+      If `$proposal_rel` starts with `..` or equals `..`, the proposal lives outside the
+      project repo and cannot be committed. Report `STATUS: error` with this message and stop:
+      ```
+      Proposal file is outside the project tree (<proposal_abs>). Cannot revise and commit
+      safely. Move the proposal to <project_path>/<proposals_path>/<feature>.md and update
+      the task frontmatter, then re-run revise-proposal.
+      ```
+      Do not make any edits before this check.
+
+   c. Read the proposal file at `$proposal_abs`. Understand its current approach, scope,
+      and structure.
+
+   **Inline mode** (`proposal: inline`):
+
+   The proposal content is the task file body (everything after the closing `---` of the
+   frontmatter). The task file is both the metadata record and the proposal document.
+   Use the task body as the proposal source. Skip the out-of-tree check — there is no
+   separate file.
 
 3. **Explore relevant codebase**:
    - Re-read source files referenced in the proposal
@@ -46,9 +80,10 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    - Look for new context that affects the approach
    - Focus exploration on areas where the proposal may be wrong or outdated
 
-4. **Edit task file (additive)**:
-   Add or correct content in the task file. This is the persistent record, so
-   treat it carefully:
+4. **Edit task file**:
+
+   **File-based mode**: apply additive edits as described — add Notes section, correct
+   factual errors, update acceptance criteria. Preserve all existing structure:
    - **Add** a `## Notes` section (or append to existing one) with observations
      discovered during revision — things the coding agent should know
    - **Correct** factual errors (wrong file paths, outdated API references,
@@ -58,8 +93,16 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
      that are correct
    - **Don't remove** content unless it's demonstrably wrong
 
-5. **Edit proposal file (destructive)**:
-   The proposal is a working document. Revise it aggressively:
+   **Inline mode**: skip step 4. All task file editing — both proposal revision and
+   notes/criteria updates — is handled in a single combined pass in step 5 to avoid
+   conflicting with the destructive rewrite of the same file.
+
+5. **Edit proposal content**:
+
+   **File-based mode**: revise the proposal file at `$proposal_abs` destructively —
+   rewrite the approach if off-track, cut premature details, shorten over-specified
+   sections, tighten scope. Maintain the Motivation / Current State / Proposed Change /
+   Scope structure:
    - **Rewrite** the approach if it's off-track or based on incorrect assumptions
    - **Cut** premature implementation details — sections that micro-manage the
      "how" rather than specifying the "what" and "why"
@@ -71,18 +114,36 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    - **Maintain** the same section structure (Motivation, Current State,
      Proposed Change, Scope) unless a section is genuinely empty
 
+   **Inline mode**: perform a single combined edit of the task file. In one pass:
+   - Revise the proposal sections (Motivation, Current State, Proposed Change, Scope)
+     destructively — the same rules as file-based revision apply here.
+   - Make any notes or acceptance-criteria corrections that would normally go in step 4.
+   - Preserve the frontmatter block unchanged.
+   There is no additive-only constraint here; step 4 is skipped in this mode.
+
 6. **Commit and push**:
+
+   **File-based mode**:
    ```bash
    cd <project_path>
-   git add docs/<proposal-file>.md
+   git add "$proposal_rel"          # repo-relative path computed in step 2
    git commit -m "proposal: revise <title>"
    git push
    ```
-   Also commit the task file changes:
+   Then commit any task file changes (notes, criteria) written in step 4:
    ```bash
    cd "$LUDICS_STATE_PATH"
    git add tasks/<task_id>.md
    git commit -m "task: add notes for <task_id>"
+   git push
+   ```
+
+   **Inline mode**: the proposal was revised in-place in the task file; commit only the
+   task file:
+   ```bash
+   cd "$LUDICS_STATE_PATH"
+   git add tasks/<task_id>.md
+   git commit -m "task: revise inline proposal for <task_id>"
    git push
    ```
 
@@ -98,11 +159,15 @@ Use the structured response format from worker-conventions.md with these fields:
 ```
 STATUS: revised | no-changes | error
 TASK_ID: <task-id>
-PROPOSAL_PATH: <relative path, e.g. docs/<feature>.md> (omit if no-changes/error)
+PROPOSAL_PATH: <relative path, e.g. docs/<feature>.md> (omit for inline mode, no-changes, or error)
+PROPOSAL_MODE: file | inline  (always include when STATUS: revised)
 CHANGES_SUMMARY: <2-3 sentence summary of what was changed and why>
 TITLE: <task title>
 SUMMARY: <one-line summary for the notification>
 ```
+
+For **inline mode**: omit `PROPOSAL_PATH` entirely and set `PROPOSAL_MODE: inline`.
+For **file-based mode**: include `PROPOSAL_PATH` as the project-relative path and set `PROPOSAL_MODE: file`.
 
 ## Error Handling
 

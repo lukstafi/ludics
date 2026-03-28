@@ -16,17 +16,18 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
 ## Arguments
 
-`$ARGUMENTS` format: `<task_id> <project_path> [<context_brief>]`
+`$ARGUMENTS` format: `<task_id> <project_path> <proposals_path> [<context_brief>]`
 
 - `<task_id>`: Task identifier (e.g., `task-042`)
 - `<project_path>`: Absolute path to the project's local checkout
+- `<proposals_path>`: Absolute path to the proposals directory (pre-resolved by orchestrator)
 - `<context_brief>`: Optional free-form context from the orchestrator (see worker-conventions.md § Broader Context)
 
 ## Process
 
 1. **Read task file**:
-   Parse `$ARGUMENTS` to extract the task ID (first word) and project path (second word).
-   Any remaining text after the second word is the context brief.
+   Parse `$ARGUMENTS` to extract the task ID (first word), project path (second word), and
+   proposals path (third word). Any remaining text after the third word is the context brief.
    ```bash
    cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
    ```
@@ -53,11 +54,13 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
      `STATUS: split-needed` and stop. The orchestrator will queue the
      split skill.
 
-6. **Determine docs directory**:
-   - Check if `docs/`, `doc/`, or project root has existing documentation
-   - Use `docs/` by default; create if needed
+6. **Use provided proposals path**:
+   Create the directory if it doesn't exist:
+   ```bash
+   mkdir -p "<proposals_path>"
+   ```
 
-7. **Write proposal** to `<project_path>/docs/<feature-name>.md`:
+7. **Write proposal** to `<proposals_path>/<feature-name>.md`:
 
    ```markdown
    # <Title>
@@ -79,14 +82,16 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    Why/What focus. Coding agents handle the How via their own plan/clarify phases.
 
 8. **Commit and push**:
+   Strip the `<project_path>/` prefix from `<proposals_path>` to get the repo-relative path:
    ```bash
    cd <project_path>
-   git add docs/<feature>.md
+   git add <proposals_path_relative>/<feature>.md
    git commit -m "proposal: <title>"
    git push
    ```
 
-9. **Update task frontmatter**: Set `proposal: docs/<feature>.md` in the task file.
+9. **Update task frontmatter**: Set `proposal: <proposals_path_relative>/<feature-name>.md`
+   (e.g., `proposal: docs/proposals/add-filter.md`) in the task file.
    Add the field before the closing `---` in the YAML frontmatter.
 
 ## Final Response
@@ -96,7 +101,7 @@ Use the structured response format from worker-conventions.md with these fields:
 ```
 STATUS: completed | stale | split-needed | already-exists | error
 TASK_ID: <task-id>
-PROPOSAL_PATH: <relative path, e.g. docs/<feature>.md> (omit if stale/split-needed/error)
+PROPOSAL_PATH: <relative path, e.g. <proposals_path_relative>/<feature>.md> (omit if stale/split-needed/error)
 AMBIGUITIES: <numbered list of ambiguities, or "none">
 START_CONFIDENCE: high | low
 START_RATIONALE: <one sentence explaining confidence level>

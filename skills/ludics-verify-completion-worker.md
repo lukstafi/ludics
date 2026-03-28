@@ -34,8 +34,11 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    Extract: title, project, acceptance criteria, proposal path, slot number.
 
 2. **Read proposal** (if available):
-   - If the task has a `proposal:` field, read the full proposal document from
-     `<project_path>/<proposal_value>`
+   - If `proposal:` points to a file (not `inline`), resolve the path:
+     - `~/...` → expand `$HOME/...`; `/...` → use as-is; otherwise join to `<project_path>`.
+     Read from the resolved absolute path.
+   - If `proposal: inline`, re-use the task file content already read in step 1 as the
+     proposal source — the proposal body is embedded in the task file.
    - Extract the Proposed Change and Scope sections for verification targets
 
 3. **Inspect codebase for completion evidence**:
