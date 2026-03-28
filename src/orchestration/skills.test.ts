@@ -40,6 +40,7 @@ function baseCtx(): Record<string, string> {
     PEER_NAME: "none",
     PEER_PROVIDER: "none",
     TASK_SPEC: "spec",
+    TASK_SPEC_BRIEF: "brief",
     PEER_REVIEW: "(no review yet)",
     PEER_STATUS: "unknown",
     PEER_PLAN: "(no plan yet)",
@@ -226,7 +227,7 @@ describe("skills", () => {
       ].join("\n"));
       process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
       const { buildSkillContext } = await import("./skills.ts");
-      const state = { ...makeState(), taskId: "task-p1", projectDir };
+      const state = { ...makeState(), taskId: "task-p1", projectDir, round: 1 };
       const ctx = buildSkillContext(state, state.agents[0]!);
       expect(ctx["TASK_SPEC"]).toContain("docs/proposals/my-feature.md");
       expect(ctx["TASK_SPEC"]).toContain("Read the full proposal");
@@ -253,7 +254,7 @@ describe("skills", () => {
       ].join("\n"));
       process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
       const { buildSkillContext } = await import("./skills.ts");
-      const state = { ...makeState(), taskId: "task-p2", projectDir: j(tmpDir, "project") };
+      const state = { ...makeState(), taskId: "task-p2", projectDir: j(tmpDir, "project"), round: 1 };
       const ctx = buildSkillContext(state, state.agents[0]!);
       expect(ctx["TASK_SPEC"]).toContain("Big inline proposal here.");
       expect(ctx["TASK_SPEC"]).not.toContain("Read the full proposal");
@@ -262,6 +263,97 @@ describe("skills", () => {
       else delete process.env.LUDICS_HARNESS_DIR;
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  test("TASK_SPEC round-conditional: round 2+ returns brief form with task ID and title", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-skills-brief-test-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      mkdir2(j(projectDir, "docs", "proposals"), { recursive: true });
+      write2(j(harnessTasks, "task-r2.md"), [
+        "---", "id: task-r2", "title: Round Two Task", "proposal: docs/proposals/round2.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      write2(j(projectDir, "docs", "proposals", "round2.md"), [
+        "# Round 2 Proposal", "", "## Motivation", "",
+        "This is the motivation paragraph.", "",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+
+      // Round 1: full spec
+      const stateR1 = { ...makeState(), taskId: "task-r2", projectDir, round: 1, slotTitle: "Round Two Task" };
+      const ctxR1 = buildSkillContext(stateR1, stateR1.agents[0]!);
+      expect(ctxR1["TASK_SPEC"]).toContain("Acceptance Criteria"); // full task content
+      expect(ctxR1["TASK_SPEC"]).toContain("Read the full proposal");
+
+      // Round 2: brief form
+      const stateR2 = { ...makeState(), taskId: "task-r2", projectDir, round: 2, slotTitle: "Round Two Task" };
+      const ctxR2 = buildSkillContext(stateR2, stateR2.agents[0]!);
+      expect(ctxR2["TASK_SPEC"]).toContain("task-r2");
+      expect(ctxR2["TASK_SPEC"]).toContain("Round Two Task");
+      expect(ctxR2["TASK_SPEC"]).toContain("docs/proposals/round2.md");
+      expect(ctxR2["TASK_SPEC"]).toContain("round 1");
+      expect(ctxR2["TASK_SPEC"]).not.toContain("Acceptance Criteria"); // full body not included
+
+      // Round 3: still brief
+      const stateR3 = { ...makeState(), taskId: "task-r2", projectDir, round: 3, slotTitle: "Round Two Task" };
+      const ctxR3 = buildSkillContext(stateR3, stateR3.agents[0]!);
+      expect(ctxR3["TASK_SPEC"]).not.toContain("Acceptance Criteria");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("TASK_SPEC_BRIEF always returns brief form regardless of round", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-skills-brief2-test-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      mkdir2(j(projectDir, "docs", "proposals"), { recursive: true });
+      write2(j(harnessTasks, "task-brief.md"), [
+        "---", "id: task-brief", "title: Brief Test", "proposal: docs/proposals/brief.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+
+      // Round 1: TASK_SPEC_BRIEF is still brief
+      const stateR1 = { ...makeState(), taskId: "task-brief", projectDir, round: 1, slotTitle: "Brief Test" };
+      const ctxR1 = buildSkillContext(stateR1, stateR1.agents[0]!);
+      expect(ctxR1["TASK_SPEC_BRIEF"]).toContain("task-brief");
+      expect(ctxR1["TASK_SPEC_BRIEF"]).toContain("Brief Test");
+      expect(ctxR1["TASK_SPEC_BRIEF"]).not.toContain("Acceptance Criteria");
+
+      // Round 2: TASK_SPEC_BRIEF is still brief
+      const stateR2 = { ...makeState(), taskId: "task-brief", projectDir, round: 2, slotTitle: "Brief Test" };
+      const ctxR2 = buildSkillContext(stateR2, stateR2.agents[0]!);
+      expect(ctxR2["TASK_SPEC_BRIEF"]).toContain("task-brief");
+      expect(ctxR2["TASK_SPEC_BRIEF"]).not.toContain("Acceptance Criteria");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("TASK_SPEC round-conditional: no taskId uses slotTitle on round 2+", async () => {
+    const { buildSkillContext } = await import("./skills.ts");
+    const state = { ...makeState(), taskId: undefined, slotTitle: "My Feature Title", round: 2 };
+    const ctx = buildSkillContext(state, state.agents[0]!);
+    expect(ctx["TASK_SPEC"]).toBe("My Feature Title");
+    expect(ctx["TASK_SPEC_BRIEF"]).toBe("My Feature Title");
   });
 
   test("buildSkillContext: discovers staging_repo via configured path", async () => {
