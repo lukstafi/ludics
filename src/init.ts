@@ -4,7 +4,7 @@ import { existsSync, readFileSync, readlinkSync, writeFileSync, mkdirSync, copyF
 import { join, dirname } from "path";
 import YAML from "yaml";
 import { ludicsRoot, pointerConfigPath } from "./config.ts";
-import { dashboardInstall } from "./dashboard.ts";
+import { dashboardInstall, dashboardStop, dashboardServe } from "./dashboard.ts";
 import { triggersInstall } from "./triggers.ts";
 
 const POINTER_CONFIG_TEMPLATE = `# ludics pointer config — edit state_repo, then run: ludics init
@@ -57,6 +57,16 @@ export async function runInit(args: string[]): Promise<void> {
     console.log("\n--- Dashboard ---");
     try {
       dashboardInstall();
+      // Restart the dashboard server if it was running (picks up new binary)
+      const pgrep = Bun.spawnSync(["pgrep", "-f", "ludics dashboard serve"], { stdout: "pipe", stderr: "pipe" });
+      const pids = pgrep.exitCode === 0 ? pgrep.stdout.toString().trim().split("\n").filter((p) => p.trim() !== String(process.pid)) : [];
+      if (pids.length > 0) {
+        console.log("  restarting dashboard server...");
+        dashboardStop();
+        const config = YAML.parse(readFileSync(join(repoDir, "config.yaml"), "utf-8")) as Record<string, unknown>;
+        const port = (config.dashboard as Record<string, unknown> | undefined)?.port as number ?? 7678;
+        dashboardServe(port);
+      }
     } catch (err) {
       console.warn(`warning: dashboard install failed: ${err instanceof Error ? err.message : String(err)}`);
     }
