@@ -25,46 +25,23 @@ This skill is invoked when:
 - `$LUDICS_RESULTS_DIR`: Directory for writing result JSON (environment variable)
 - **Request ID**: Read from file `$LUDICS_STATE_PATH/mag/current-request-id`
 
-## Process
+## Common Steps
 
-### 1. Read task file (for Mag's awareness)
+Follow [orchestrator-conventions.md](orchestrator-conventions.md):
+- **A** (Task Resolution): read task file, extract title/project/slot
+- **B** (Project Path): resolve project checkout path from config
+- **C** (Context Brief): compose 3-10 line brief from conversation history
+- **D** (Worker Delegation): invoke worker in forked context
+- **E** (Result JSON): write result with request ID
+- **F** (Error Handling): standard error patterns
 
-```bash
-cat "$LUDICS_STATE_PATH/tasks/$ARGUMENTS.md"
-```
+Worker: `/ludics-verify-completion-worker <task_id> <project_path> <context_brief>`
 
-Extract: title, project, slot number. Gives Mag context about what's being verified.
-
-### 2. Resolve project path
-
-Same logic as draft-proposal: look up the task's `project` field in
-`$LUDICS_STATE_PATH/config.yaml`, resolve to local checkout path.
-
-### 3. Compose context brief
-
-Write a short free-form context brief (3-10 lines) distilling relevant
-background from Mag's conversation history. Include any of:
-- User comments about completion status (e.g., "finished core but skipped edge cases")
-- Known criteria changes since the task was started
-- Related completed or in-progress work that affects verification
-- Session observations relevant to the verdict
-
-If nothing relevant, pass an empty brief.
-
-### 4. Delegate to worker
-
-```
-/ludics-verify-completion-worker <task_id> <project_path> <context_brief>
-```
-
-The worker runs in a forked context — its codebase reads, git log queries, and
-file inspections do not enter Mag's conversation history.
-
-### 5. Interpret worker result and act
+## Skill-Specific: VERDICT Routing
 
 Parse the worker's VERDICT and act accordingly:
 
-#### VERDICT: complete
+### VERDICT: complete
 - Clear the slot:
   ```bash
   ludics slot <N> clear done
@@ -74,7 +51,7 @@ Parse the worker's VERDICT and act accordingly:
   ludics notify outgoing "Completed: <task_id> (<title>)" 3 "Task Complete"
   ```
 
-#### VERDICT: complete-with-followups
+### VERDICT: complete-with-followups
 - Clear the slot:
   ```bash
   ludics slot <N> clear done
@@ -88,40 +65,35 @@ Parse the worker's VERDICT and act accordingly:
   ludics notify outgoing "<summary>" 3 "Task Complete + Follow-ups"
   ```
 
-#### VERDICT: uncertain
+### VERDICT: uncertain
 - Do NOT clear the slot
 - Send notification with the QUESTIONS from the worker:
   ```bash
   ludics notify outgoing "<questions>" 3 "Completion check — <task_id>"
   ```
 
-#### VERDICT: incomplete
+### VERDICT: incomplete
 - Do NOT clear the slot
 - Note findings in result JSON but do not notify
 
-### 6. Write result JSON
+## Skill-Specific Result Fields
 
 ```json
 {
-  "id": "req-...",
-  "status": "completed",
-  "timestamp": "...",
   "task_id": "<task_id>",
   "verdict": "<verdict>",
-  "followup_tasks": ["task-NNN", "..."],
-  "output": "Verified <task_id>: <verdict summary>"
+  "followup_tasks": ["task-NNN", "..."]
 }
 ```
 
 ## Delegation Strategy
 
-- **Worker subagent** (`/ludics-verify-completion-worker`): All codebase inspection,
+- **Worker** (`/ludics-verify-completion-worker`): All codebase inspection,
   git log analysis, acceptance criteria checking — runs in isolated context
 - **Orchestrator** (this skill): Task file read, verdict routing, slot clearing,
   follow-up task creation, notifications, result JSON — runs inline in Mag's context
 
 ## Error Handling
 
-- Task not found: Write result with `"status": "error"`
+Per [orchestrator-conventions.md](orchestrator-conventions.md) Section F, plus:
 - Task not in any slot: Write result with `"verdict": "not-slotted"`, skip slot operations
-- Worker returns error: Propagate to result JSON

@@ -24,52 +24,28 @@ This skill is invoked:
 - `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
 - **Request ID**: Read from file `$LUDICS_STATE_PATH/mag/current-request-id`
 
-## Process
+## Common Steps
 
-### 1. Read task file (for Mag's awareness)
+Follow [orchestrator-conventions.md](orchestrator-conventions.md):
+- **A** (Task Resolution): read task file, extract title/project/slot
+- **B** (Project Path): resolve project checkout path from config
+- **C** (Context Brief): compose 3-10 line brief from conversation history
+- **D** (Worker Delegation): invoke worker in forked context
+- **E** (Result JSON): write result with request ID
+- **F** (Error Handling): standard error patterns
 
-```bash
-cat "$LUDICS_STATE_PATH/tasks/$ARGUMENTS.md"
-```
+Worker: `/ludics-elaborate-worker <task_id> <project_path> <context_brief>`
 
-Extract: title, project, elaboration status. Gives Mag context about what's
-being elaborated and whether it's already been done.
-
-### 2. Resolve project path
-
-Look up the task's `project` field in `$LUDICS_STATE_PATH/config.yaml`,
-resolve to local checkout path (typically `~/<repo-name>`).
-
-### 3. Compose context brief
-
-Write a short free-form context brief (3-10 lines) distilling relevant
-background from Mag's conversation history. Include any of:
-- Related tasks that cover adjacent ground (overlap or dependency risks)
-- User preferences for scope, approach, or priorities
-- Recent decisions or discussions relevant to this task's domain
-- Cross-task awareness (what other slots are working on)
-
-If nothing relevant, pass an empty brief.
-
-### 4. Delegate to worker
-
-```
-/ludics-elaborate-worker <task_id> <project_path> <context_brief>
-```
-
-The worker runs in a forked context — its codebase reads, dependency analysis,
-and file writes do not enter Mag's conversation history.
-
-### 5. Interpret worker result
+## Skill-Specific: Status Routing
 
 Parse the worker's response for STATUS, QUESTIONS, and SUMMARY.
 
-- **STATUS: completed** → proceed to notifications
-- **STATUS: merged** → write result JSON noting the merge, stop
-- **STATUS: already-elaborated** → ask if re-elaboration is wanted, or skip
-- **STATUS: error** → write result JSON with `"status": "error"`, stop
+- **STATUS: completed** — proceed to notifications
+- **STATUS: merged** — write result JSON noting the merge, stop
+- **STATUS: already-elaborated** — ask if re-elaboration is wanted, or skip
+- **STATUS: error** — write result JSON with `"status": "error"`, stop
 
-### 6. Send questions notification (if gaps found)
+## Skill-Specific: Questions Notification
 
 If the worker reported questions (not "none"):
 
@@ -81,28 +57,17 @@ Use title: "Elaboration questions — <task_id>: <title>"
 
 Skip if no questions.
 
-### 7. Write result JSON
+## Skill-Specific Result Fields
 
 ```json
 {
-  "id": "req-...",
-  "status": "completed",
-  "timestamp": "...",
-  "output": "Elaborated <task_id> with implementation plan",
   "task_id": "<task_id>"
 }
 ```
 
 ## Delegation Strategy
 
-- **Worker subagent** (`/ludics-elaborate-worker`): Duplicate checking, context
-  gathering, codebase exploration, spec writing, task file update — runs in
-  isolated context
+- **Worker** (`/ludics-elaborate-worker`): Duplicate checking, context gathering,
+  codebase exploration, spec writing, task file update — runs in isolated context
 - **Orchestrator** (this skill): Task file read, decision routing, notifications,
   result JSON — runs inline in Mag's context
-
-## Error Handling
-
-- Task not found: Write result with status "error"
-- Worker returns error: Propagate to result JSON
-- Already elaborated: Ask if re-elaboration is wanted
