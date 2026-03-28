@@ -168,6 +168,7 @@
         <p>ludics v0.1 | <a href="https://github.com/lukstafi/ludics">GitHub</a></p>
     </footer>
 
+    <script src="markdown.js"></script>
     <script>
         const params = new URLSearchParams(window.location.search);
         const taskId = params.get('task') || '';
@@ -347,68 +348,6 @@
                 const days = Math.floor(hours / 24);
                 return `${days}d ago`;
             } catch { return iso; }
-        }
-
-        // Markdown to HTML (copied from proposal.html)
-        function markdownToHtml(md) {
-            if (!md) return '';
-            const lines = md.split('\n');
-            let html = '';
-            let inList = null;
-            let inPre = false;
-            let preContent = '';
-
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (line.startsWith('```')) {
-                    if (inPre) {
-                        html += '<pre><code>' + escapeHtml(preContent.trimEnd()) + '</code></pre>\n';
-                        preContent = '';
-                        inPre = false;
-                    } else {
-                        if (inList) { html += `</${inList}>\n`; inList = null; }
-                        inPre = true;
-                    }
-                    continue;
-                }
-                if (inPre) { preContent += line + '\n'; continue; }
-                if (inList && !line.match(/^(\s*[-*]|\s*\d+\.)\s/)) { html += `</${inList}>\n`; inList = null; }
-                if (line.startsWith('### ')) { html += '<h3>' + inlineFormat(line.slice(4)) + '</h3>\n'; continue; }
-                if (line.startsWith('## ')) { html += '<h2>' + inlineFormat(line.slice(3)) + '</h2>\n'; continue; }
-                if (line.startsWith('# ')) { html += '<h1>' + inlineFormat(line.slice(2)) + '</h1>\n'; continue; }
-                if (line.match(/^---+$/)) { html += '<hr>\n'; continue; }
-                if (line.match(/^\s*[-*]\s/)) {
-                    if (inList !== 'ul') { if (inList) html += `</${inList}>\n`; html += '<ul>\n'; inList = 'ul'; }
-                    html += '<li>' + inlineFormat(line.replace(/^\s*[-*]\s/, '')) + '</li>\n';
-                    continue;
-                }
-                if (line.match(/^\s*\d+\.\s/)) {
-                    if (inList !== 'ol') { if (inList) html += `</${inList}>\n`; html += '<ol>\n'; inList = 'ol'; }
-                    html += '<li>' + inlineFormat(line.replace(/^\s*\d+\.\s/, '')) + '</li>\n';
-                    continue;
-                }
-                if (line.trim() === '') continue;
-                html += '<p>' + inlineFormat(line) + '</p>\n';
-            }
-            if (inList) html += `</${inList}>\n`;
-            if (inPre) html += '<pre><code>' + escapeHtml(preContent.trimEnd()) + '</code></pre>\n';
-            return html;
-        }
-
-        function inlineFormat(text) {
-            let s = escapeHtml(text);
-            s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-            s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-            s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-            s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-            return s;
-        }
-
-        function escapeHtml(str) {
-            if (!str) return '';
-            const div = document.createElement('div');
-            div.textContent = str;
-            return div.innerHTML;
         }
 
         function updateTimestamp() {
