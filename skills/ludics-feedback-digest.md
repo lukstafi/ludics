@@ -37,11 +37,17 @@ Worker: `/ludics-feedback-digest-worker <repo>`
 
 ## Skill-Specific: Status Routing
 
-Parse the worker's response for STATUS and counts.
+Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
+Parse the JSON for `status`, `issues_created`, `issues_updated`, `issues_skipped`,
+`files_processed`, and `summary`.
 
-- **STATUS: completed** — write result JSON
-- **STATUS: empty** — write result JSON indicating nothing to process
-- **STATUS: error** — write result JSON with `"status": "error"`
+If no JSON block is found, fall back to line-based parsing: look for `STATUS: <value>`,
+`ISSUES_CREATED: <value>`, `ISSUES_UPDATED: <value>`, `ISSUES_SKIPPED: <value>`,
+`FILES_PROCESSED: <value>`, and `SUMMARY: <value>` lines.
+
+- **status: completed** — write result JSON
+- **status: empty** — write result JSON indicating nothing to process
+- **status: error** — write result JSON with `"status": "error"`
 
 ## Skill-Specific Result Fields
 

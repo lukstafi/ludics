@@ -38,24 +38,31 @@ Worker: `/ludics-elaborate-worker <task_id> <project_path> <context_brief>`
 
 ## Skill-Specific: Status Routing
 
-Parse the worker's response for STATUS, QUESTIONS, and SUMMARY.
+Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
+Parse the JSON for `status`, `questions`, and `summary`.
 
-- **STATUS: completed** — proceed to notifications
-- **STATUS: merged** — write result JSON noting the merge, stop
-- **STATUS: already-elaborated** — ask if re-elaboration is wanted, or skip
-- **STATUS: error** — write result JSON with `"status": "error"`, stop
+If no JSON block is found, fall back to line-based parsing: look for `STATUS: <value>`,
+`QUESTIONS: <value>`, and `SUMMARY: <value>` lines. On the legacy path, treat `QUESTIONS:`
+content as a pre-formatted string and send as-is in the questions notification step.
+
+- **status: completed** — proceed to notifications
+- **status: merged** — write result JSON noting the merge, stop
+- **status: already-elaborated** — ask if re-elaboration is wanted, or skip
+- **status: error** — write result JSON with `"status": "error"`, stop
 
 ## Skill-Specific: Questions Notification
 
-If the worker reported questions (not "none"):
+If `questions` is not `"none"` and is non-empty, send as notification text:
+- JSON array path: format each element as a numbered list (e.g., `1. <q1>\n2. <q2>`)
+- Legacy pre-formatted string (fallback path): send as-is
 
 ```bash
-ludics notify outgoing "<questions text>"
+ludics notify outgoing "<formatted questions>"
 ```
 
 Use title: "Elaboration questions — <task_id>: <title>"
 
-Skip if no questions.
+Skip if `questions` is `"none"` or an empty array/string.
 
 ## Skill-Specific Result Fields
 
