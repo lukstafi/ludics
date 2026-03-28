@@ -12,6 +12,14 @@ import {
 
 export { threadModel, projectModel } from "./types.ts";
 
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 type PushListener = (data: unknown) => void;
 
 interface PendingRequest {
@@ -259,6 +267,68 @@ export class T3CodeClient {
 
     pending.resolve(parsed.result);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Polling utilities
+// ---------------------------------------------------------------------------
+
+/**
+ * Poll `getSnapshot` until a turn with a different ID than `preDispatchTurnId`
+ * AND a `requestedAt` timestamp not earlier than `minRequestedAt` reaches a
+ * terminal state ("completed", "error", or "interrupted").
+ *
+ * The two filters together guard against stale pre-existing turns AND unrelated
+ * concurrent turns dispatched by other actors before our command was processed.
+ *
+ * Returns the terminal result, or null on timeout.
+ */
+export async function waitForNewTurn(
+  getSnapshot: () => Promise<T3Snapshot | null>,
+  threadId: string,
+  preDispatchTurnId: string | null,
+  options: {
+    pollIntervalMs: number;
+    maxWaitMs: number;
+    /**
+     * ISO timestamp captured just before the dispatch command was sent.
+     * Turns whose `requestedAt` is strictly before this value are ignored,
+     * filtering out concurrent turns created by other actors before our command
+     * reached the server.
+     */
+    minRequestedAt?: string;
+  },
+): Promise<{ state: "completed" | "error" | "interrupted"; turnId: string } | null> {
+  const deadline = Date.now() + options.maxWaitMs;
+
+  while (Date.now() < deadline) {
+    await sleep(options.pollIntervalMs);
+    try {
+      const snap = await getSnapshot();
+      if (!snap) continue;
+
+      const t = snap.threads.find((x) => x.id === threadId);
+      if (!t) return null; // thread gone
+
+      const lt = t.latestTurn;
+      if (!lt) continue;
+
+      // Skip the pre-dispatch turn — it was already there before we sent.
+      if (lt.turnId === preDispatchTurnId) continue;
+
+      // Skip turns requested before our dispatch — they belong to concurrent actors.
+      if (options.minRequestedAt && lt.requestedAt < options.minRequestedAt) continue;
+
+      if (lt.state === "completed" || lt.state === "error" || lt.state === "interrupted") {
+        return { state: lt.state, turnId: lt.turnId };
+      }
+      // else "running" or "starting" — keep polling
+    } catch {
+      // transient error — keep polling
+    }
+  }
+
+  return null; // timed out
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
