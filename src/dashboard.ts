@@ -49,15 +49,20 @@ interface TaskMetadata {
 function lookupTaskMetadata(taskId: string): TaskMetadata {
   const tasksDir = join(harnessDir(), "tasks");
   const taskFile = join(tasksDir, taskId + ".md");
-  const empty: TaskMetadata = { content: null, githubUrl: null, effort: null, hasProposal: false };
-  if (!existsSync(taskFile)) return empty;
+  if (!existsSync(taskFile)) return { content: null, githubUrl: null, effort: null, hasProposal: false };
+  let raw: string;
   try {
-    const raw = readFileSync(taskFile, "utf-8");
-    // Strip YAML frontmatter to get body
-    const body = raw.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
-    const content = body || null;
+    raw = readFileSync(taskFile, "utf-8");
+  } catch {
+    return { content: null, githubUrl: null, effort: null, hasProposal: false };
+  }
+  // Body extraction never depends on YAML — do it before the YAML try/catch so
+  // a malformed frontmatter block cannot lose the task body (regression guard).
+  const body = raw.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+  const content = body || null;
+  try {
     const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
-    if (!fmMatch) return { ...empty, content };
+    if (!fmMatch) return { content, githubUrl: null, effort: null, hasProposal: false };
     const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
     const urlVal = data.url;
     const githubUrl =
@@ -71,7 +76,8 @@ function lookupTaskMetadata(taskId: string): TaskMetadata {
         : null;
     return { content, githubUrl, effort, hasProposal: hasNonNullProposal(data.proposal) };
   } catch {
-    return empty;
+    // YAML parse failed — return body but null out frontmatter-derived fields
+    return { content, githubUrl: null, effort: null, hasProposal: false };
   }
 }
 
