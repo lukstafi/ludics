@@ -6,6 +6,7 @@ import YAML from "yaml";
 import { ludicsRoot, pointerConfigPath, harnessDir } from "./config.ts";
 import { dashboardInstall, dashboardStop, dashboardServe } from "./dashboard.ts";
 import { triggersInstall } from "./triggers.ts";
+import { stopServer, ensureServer } from "./t3code/server.ts";
 
 const POINTER_CONFIG_TEMPLATE = `# ludics pointer config — edit state_repo, then run: ludics init
 state_repo: your-username/your-private-repo
@@ -20,6 +21,7 @@ export async function runInit(args: string[]): Promise<void> {
   const noHooks = args.includes("--no-hooks");
   const noDashboard = args.includes("--no-dashboard");
   const noTriggers = args.includes("--no-triggers");
+  const restartT3code = args.includes("--restart-t3code");
 
   const root = ludicsRoot();
 
@@ -74,6 +76,22 @@ export async function runInit(args: string[]): Promise<void> {
     } catch (err) {
       console.warn(`warning: dashboard install failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  // 8b. t3code restart (opt-in)
+  if (restartT3code && repoDir) {
+    const resolvedHarnessDir = join(repoDir, statePath);
+    console.log("\n--- t3code server restart ---");
+    try {
+      const stopped = await stopServer({ harnessDir: resolvedHarnessDir });
+      console.log(stopped ? "  stopped existing server" : "  no running server found");
+      const record = await ensureServer({ harnessDir: resolvedHarnessDir });
+      console.log(`  started t3code server on ${record.webUrl} (pid ${record.pid})`);
+    } catch (err) {
+      console.warn(`warning: t3code restart failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } else if (restartT3code && !repoDir) {
+    console.warn("warning: --restart-t3code skipped — state repo not configured");
   }
 
   // 9. Triggers
