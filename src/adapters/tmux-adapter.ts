@@ -99,6 +99,17 @@ function ttydPort(slot: number, role: "coder" | "reviewer"): number {
   return PORT_BASE + (slot - 1) * 2 + roleIndex;
 }
 
+/**
+ * Derive the port-assignment role for an agent.
+ * Uses the explicit role if set, otherwise falls back to index-based assignment
+ * (even index → coder, odd → reviewer) so duo-mode agents with arbitrary names
+ * get distinct ports instead of all colliding on "reviewer".
+ */
+function agentPortRole(agent: { role?: string; name: string }, index: number): "coder" | "reviewer" {
+  if (agent.role === "coder" || agent.role === "reviewer") return agent.role;
+  return index % 2 === 0 ? "coder" : "reviewer";
+}
+
 // ---------------------------------------------------------------------------
 // Workspace & feature helpers (shared with t3code adapter)
 // ---------------------------------------------------------------------------
@@ -391,9 +402,10 @@ async function start(ctx: AdapterContext): Promise<string> {
   // --- tmux-specific setup: create windows + ttyd + boot agent CLIs ---
   ensureTmuxSession();
   const ttydPids: Record<string, number> = {};
-  for (const agent of agents) {
+  for (let i = 0; i < agents.length; i++) {
+    const agent = agents[i]!;
     createTmuxWindow(ctx.slot, agent.name, agent.worktreePath);
-    const role = (agent.role ?? (agent.name === "coder" ? "coder" : "reviewer")) as "coder" | "reviewer";
+    const role = agentPortRole(agent, i);
     ttydPids[agent.name] = startTtyd(ctx.slot, agent.name, role);
     // Boot persistent interactive agent CLI in the pane
     bootAgentCli(ctx.slot, agent, setup.peerSyncDir, "setup");
@@ -505,10 +517,10 @@ async function readState(ctx: AdapterContext): Promise<string | null> {
     }
 
     md.section("Agents");
-    for (const agent of orchState.agents) {
-      const role = agent.role ?? agent.name;
-      const agentRole = (role === "coder" || role === "reviewer") ? role : "coder";
-      const port = ttydPort(ctx.slot, agentRole as "coder" | "reviewer");
+    for (let i = 0; i < orchState.agents.length; i++) {
+      const agent = orchState.agents[i]!;
+      const role = agentPortRole(agent, i);
+      const port = ttydPort(ctx.slot, role);
       const alive = isAgentAlive(ctx.slot, agent.name);
       md.bullet(`${agent.name} (${agent.provider}:${agent.model})`);
       md.detail(`Status: ${alive ? "running" : "idle"}`);

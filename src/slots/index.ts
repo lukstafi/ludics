@@ -742,10 +742,16 @@ export async function slotResume(slotNum: number): Promise<void> {
 
     // Recreate missing tmux windows, ttyd, and agent CLIs for each agent
     const newTtydPids: Record<string, number> = { ...(tmuxState?.ttydPids ?? {}) };
-    for (const agent of orchState.agents) {
+    for (let i = 0; i < orchState.agents.length; i++) {
+      const agent = orchState.agents[i];
       const windowName = `slot-${slotNum}-${agent.name}`;
       const target = `ludics:${windowName}`;
-      const role = (agent.role ?? (agent.name === "coder" ? "coder" : "reviewer")) as "coder" | "reviewer";
+      // Derive port role: use explicit role if set, otherwise index-based
+      // (even index → coder, odd → reviewer) to avoid port collisions in duo mode.
+      const role: "coder" | "reviewer" =
+        agent.role === "coder" || agent.role === "reviewer"
+          ? agent.role
+          : i % 2 === 0 ? "coder" : "reviewer";
       const portBase = 7681;
       const port = portBase + (slotNum - 1) * 2 + (role === "reviewer" ? 1 : 0);
 
