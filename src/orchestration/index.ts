@@ -1,6 +1,6 @@
 import { readFileSync } from "fs";
 import { join } from "path";
-import { harnessDir } from "../config.ts";
+import { globalAdapter, harnessDir } from "../config.ts";
 import type { Phase } from "./phases.ts";
 import { readAgentMarkerFile, readAgentStatus, readPhaseToken, writeStopHookRecord } from "./peer-sync.ts";
 import { confirmPhase, interruptCurrentPhase, runOrchestrationForSlot, skipToPhase } from "./runner.ts";
@@ -190,6 +190,31 @@ export function orchOnStop(args: string[]): void {
     cwd,
     hookEventName: hookEventName ?? "",
   });
+
+  // Auto-commit agent changes at end of turn (tmux mode default, opt-in for t3code).
+  // In tmux mode agents don't manage their own commits, so we commit for them.
+  try {
+    const adapter = globalAdapter();
+    if (adapter === "tmux") {
+      autoCommitOnStop(cwd, agentName, phase);
+    }
+  } catch {
+    // Non-critical: don't break the stop hook if auto-commit fails
+  }
+}
+
+/**
+ * Auto-commit all changes in the agent's worktree at end of turn.
+ * Ported from agent-duo's `lib_commit_round()` pattern.
+ */
+function autoCommitOnStop(cwd: string, agent: string, phase: string): void {
+  const status = Bun.spawnSync(["git", "status", "--porcelain"], { cwd, stdout: "pipe", stderr: "pipe" });
+  const output = status.stdout.toString().trim();
+  if (!output) return; // nothing to commit
+
+  Bun.spawnSync(["git", "add", "-A"], { cwd, stdout: "pipe", stderr: "pipe" });
+  const msg = `ludics: auto-commit after ${phase} (${agent})`;
+  Bun.spawnSync(["git", "commit", "-m", msg, "--no-verify"], { cwd, stdout: "pipe", stderr: "pipe" });
 }
 
 function readFileIfExists(path: string): string | null {

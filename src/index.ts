@@ -20,6 +20,7 @@ import { runQuote } from "./quote.ts";
 import { runEvents } from "./events.ts";
 import { runT3Code } from "./t3code/index.ts";
 import { runOrchestrationCli } from "./orchestration/index.ts";
+import { globalAdapter } from "./config.ts";
 
 const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   sessions: runSessions,
@@ -48,7 +49,22 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   init: runInit,
   quote: async () => runQuote(),
   events: async (args) => runEvents(args),
-  t3code: runT3Code,
+  t3code: async (args) => {
+    if (globalAdapter() === "tmux") {
+      console.error("ludics is configured for tmux mode — t3code commands are not available.");
+      console.error("  Use 'ludics tmux status' to check tmux backend state.");
+      process.exit(1);
+    }
+    await runT3Code(args);
+  },
+  tmux: async (args) => {
+    if (globalAdapter() !== "tmux") {
+      console.error("ludics is configured for t3code mode — tmux commands are not available.");
+      console.error("  Set 'adapter: tmux' in config.yaml to enable tmux mode.");
+      process.exit(1);
+    }
+    await runTmuxCli(args);
+  },
   orch: runOrchestrationCli,
   orchestration: runOrchestrationCli,
   sync: async () => stateFullSync(),
@@ -92,7 +108,7 @@ Commands:
                                Clear slot n (optionally mark task in-progress/done/abandoned)
   slot <n> start               Start fresh agent session (use 'resume' for crash recovery)
   slot <n> stop                Stop agent session
-  slot <n> resume              Resume orchestrated t3code session from persisted state (crash recovery)
+  slot <n> resume              Resume orchestrated session from persisted state (crash recovery)
   slot <n> note "text"         Add runtime note to slot n
   slot <n> preempt <task-id> [-a adapter] [-s session] [-p path] [-A "adapter args"]
                                Preempt slot for priority task (stashes current work)
@@ -169,6 +185,11 @@ Commands:
   t3code slot <N> response [--agent coder|reviewer]
                               Show last assistant response for a slot's agent
 
+  tmux status                 Show tmux session state, windows, and ttyd processes
+  tmux list-panes             Show all panes with process state
+  tmux attach <slot> [agent]  Attach to a slot's agent tmux window
+  tmux capture <slot> [agent] Capture pane content for debugging
+
   orch status <slot>          Show orchestration state for a slot
   orch confirm <slot>         Confirm the current orchestration phase
   orch interrupt <slot>       Interrupt active agents in the current phase
@@ -212,6 +233,92 @@ Commands:
   doctor                       Check system health and dependencies
 
   help                         Show this message`;
+
+async function runTmuxCli(args: string[]): Promise<void> {
+  const sub = args[0] ?? "status";
+
+  if (sub === "status") {
+    const { tmuxHasSession, tmuxCapture } = await import("./adapters/tmux.ts");
+    const hasSession = tmuxHasSession("ludics");
+    console.log(`tmux session 'ludics': ${hasSession ? "active" : "not found"}`);
+    if (hasSession) {
+      // List windows
+      const result = Bun.spawnSync(
+        ["tmux", "list-windows", "-t", "ludics", "-F", "#{window_index}: #{window_name} (#{pane_current_command})"],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      if (result.exitCode === 0) {
+        console.log("\nWindows:");
+        for (const line of result.stdout.toString().trim().split("\n")) {
+          if (line.trim()) console.log(`  ${line}`);
+        }
+      }
+    }
+    // Show ttyd processes
+    const ttyd = Bun.spawnSync(["pgrep", "-fa", "ttyd"], { stdout: "pipe", stderr: "pipe" });
+    if (ttyd.exitCode === 0) {
+      console.log("\nttyd processes:");
+      for (const line of ttyd.stdout.toString().trim().split("\n")) {
+        if (line.trim()) console.log(`  ${line}`);
+      }
+    } else {
+      console.log("\nNo ttyd processes running.");
+    }
+    return;
+  }
+
+  if (sub === "list-panes") {
+    const result = Bun.spawnSync(
+      ["tmux", "list-panes", "-s", "-t", "ludics", "-F",
+       "#{window_name}: pid=#{pane_pid} cmd=#{pane_current_command} active=#{pane_active}"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    if (result.exitCode !== 0) {
+      console.error("tmux session 'ludics' not found or no panes.");
+      return;
+    }
+    for (const line of result.stdout.toString().trim().split("\n")) {
+      if (line.trim()) console.log(line);
+    }
+    return;
+  }
+
+  if (sub === "attach") {
+    const slot = parseInt(args[1] ?? "", 10);
+    if (!slot || slot < 1 || slot > 6) {
+      console.error("usage: ludics tmux attach <slot> [agent]");
+      process.exit(1);
+    }
+    const agent = args[2] ?? "coder";
+    const target = `ludics:slot-${slot}-${agent}`;
+    console.log(`Attaching to ${target}...`);
+    const proc = Bun.spawn(["tmux", "attach", "-t", target], {
+      stdin: "inherit", stdout: "inherit", stderr: "inherit",
+    });
+    await proc.exited;
+    return;
+  }
+
+  if (sub === "capture") {
+    const slot = parseInt(args[1] ?? "", 10);
+    if (!slot || slot < 1 || slot > 6) {
+      console.error("usage: ludics tmux capture <slot> [agent]");
+      process.exit(1);
+    }
+    const agent = args[2] ?? "coder";
+    const target = `ludics:slot-${slot}-${agent}`;
+    const { tmuxCapture } = await import("./adapters/tmux.ts");
+    const content = tmuxCapture(target, 200);
+    if (content === null) {
+      console.error(`Could not capture pane content from ${target}`);
+      process.exit(1);
+    }
+    console.log(content);
+    return;
+  }
+
+  throw new Error(`unknown tmux subcommand: ${sub} (use: status, list-panes, attach, capture)`);
+}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
