@@ -689,7 +689,10 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
     state.round += 1;
   }
   // Track plan-merge iterations: increment planMergeRound each time we loop back.
-  if (state.phase === "plan-review" && next === "plan-merge") {
+  // Only increment if the plan-review phase actually dispatched and ran (phaseDispatched is true).
+  // On resume, a stale plan-review → plan-merge transition can fire without the phase
+  // having run, which would desync planMergeRound from the artifact filenames.
+  if (state.phase === "plan-review" && next === "plan-merge" && state.phaseDispatched) {
     state.planMergeRound = (state.planMergeRound ?? 0) + 1;
   }
   if (state.phase === "merge-vote") {
