@@ -603,37 +603,9 @@ function orchestrationProjectDir(workspaceRoot: string): string {
   return getMainRepoFromWorktree(workspaceRoot) ?? workspaceRoot;
 }
 
-export async function startOrchestrationProcess(slot: number, harnessDir: string, feature: string): Promise<number> {
-  const logPath = join(harnessDir, "orchestration", `slot-${slot}-${feature}.log`);
-  const logFd = openSync(logPath, "a");
-  // Wrap in setsid to isolate the orchestrator in its own process group.
-  // Prevents SIGINT from parent terminals from killing the orchestrator.
-  const orchCommand = ludicsSelfCommand(["orch", "run-internal", String(slot)]);
-  const setsidBin = Bun.which("setsid");
-  const wrappedCommand = setsidBin
-    ? [setsidBin, ...orchCommand]
-    : ["perl", "-e", `use POSIX qw(setsid); setsid(); exec @ARGV`, "--", ...orchCommand];
-  const proc = Bun.spawn(wrappedCommand, {
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: logFd,
-    env: {
-      ...(process.env as Record<string, string>),
-      LUDICS_HARNESS_DIR: harnessDir,
-    },
-  });
-  if (typeof (proc as { unref?: () => void }).unref === "function") {
-    (proc as { unref: () => void }).unref();
-  }
-
-  await Bun.sleep(500);
-  if (proc.exitCode !== null) {
-    const log = readFileSync(logPath, "utf-8").slice(-2000);
-    throw new Error(`Orchestration runner exited immediately (code ${proc.exitCode}):\n${log}`);
-  }
-
-  return proc.pid;
-}
+// Import from shared module; re-export for backward compat
+import { startOrchestrationProcess } from "../orchestration/process.ts";
+export { startOrchestrationProcess };
 
 function killPid(pid?: number): void {
   if (!pid || pid <= 0) return;

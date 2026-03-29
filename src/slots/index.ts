@@ -16,7 +16,7 @@ import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState } from "../t3code/server.ts";
 import { readOrchestrationState, persistState } from "../orchestration/state.ts";
-import { startOrchestrationProcess } from "../adapters/t3code.ts";
+import { startOrchestrationProcess } from "../orchestration/process.ts";
 
 function ensureSlotsFile(): string {
   const file = slotsFilePath();

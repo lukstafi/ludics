@@ -10,6 +10,7 @@ import * as claudeAi from "./claude-ai.ts";
 import * as chatgptCom from "./chatgpt-com.ts";
 import * as manual from "./manual.ts";
 import * as t3code from "./t3code.ts";
+import * as tmuxAdapter from "./tmux-adapter.ts";
 
 const adapters: Record<string, Adapter> = {
   "agent-claude": agentClaude,
@@ -18,6 +19,7 @@ const adapters: Record<string, Adapter> = {
   "chatgpt-com": chatgptCom,
   "manual": manual,
   "t3code": t3code,
+  "tmux": tmuxAdapter,
 };
 
 function getAdapter(mode: string): Adapter {
