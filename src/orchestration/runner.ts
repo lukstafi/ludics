@@ -622,7 +622,7 @@ async function pollUntilDone(state: OrchestrationState): Promise<void> {
   if (record) {
     try {
       eventClient = new T3CodeClient({ url: record.wsUrl, token: record.authToken });
-      await eventClient.connect();
+      await eventClient.connectWithRetry();
       unsubscribe = eventClient.onDomainEvent((event) => {
         // Only wake for turn/session lifecycle events — ignore unrelated domain events
         // (e.g. message-sent, activity) to reduce unnecessary poll cycles.

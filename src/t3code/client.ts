@@ -60,6 +60,24 @@ export class T3CodeClient {
     this.reconnectDelaysMs = options.reconnectDelaysMs ?? DEFAULT_RECONNECT_DELAYS_MS;
   }
 
+  /**
+   * Connect with retries.  The initial connection attempt can fail when
+   * t3code is restarting (e.g., after a crash).  Retries use the same
+   * delays as post-connection reconnect.
+   */
+  async connectWithRetry(maxAttempts: number = 5): Promise<void> {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        await this.connect();
+        return;
+      } catch (err) {
+        if (this.disposed || attempt >= maxAttempts - 1) throw err;
+        const delay = this.reconnectDelaysMs[Math.min(attempt, this.reconnectDelaysMs.length - 1)];
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+
   async connect(): Promise<void> {
     if (this.disposed) throw new Error("t3code client is closed");
     if (this.ws?.readyState === WebSocket.OPEN) return;
@@ -147,7 +165,7 @@ export class T3CodeClient {
   }
 
   async request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    await this.connect();
+    await this.connectWithRetry();
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       throw new Error("t3code connection is not open");
