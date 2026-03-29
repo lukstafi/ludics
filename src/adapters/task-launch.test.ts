@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { readProposalLaunchMetadata } from "./task-launch.ts";
+import { assertRepoRelativeProposalPath, readProposalLaunchMetadata } from "./task-launch.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-task-launch");
 
@@ -89,6 +89,22 @@ describe("readProposalLaunchMetadata", () => {
     expect(readProposalLaunchMetadata("agent-claude", harnessDir, "task-104", projectDir)).toBeNull();
   });
 
+  test("throws when proposal path is absolute", () => {
+    const harnessDir = join(TMP, "harness");
+    const projectDir = join(TMP, "project");
+    mkdirSync(join(harnessDir, "tasks"), { recursive: true });
+    mkdirSync(projectDir, { recursive: true });
+
+    writeFileSync(
+      join(harnessDir, "tasks", "task-abs.md"),
+      ["---", "id: task-abs", "proposal: /tmp/evil.md", "---", ""].join("\n"),
+    );
+
+    expect(() => readProposalLaunchMetadata("agent-claude", harnessDir, "task-abs", projectDir)).toThrow(
+      "proposal path must be repo-relative, got absolute",
+    );
+  });
+
   test("resolves proposal under docs/proposals/ path", () => {
     const harnessDir = join(TMP, "harness");
     const projectDir = join(TMP, "project");
@@ -102,5 +118,45 @@ describe("readProposalLaunchMetadata", () => {
     const meta = readProposalLaunchMetadata("agent-claude", harnessDir, "task-105", projectDir);
     expect(meta?.launchFeature).toBe("add-filter");
     expect(meta?.proposalFile).toBe(join(projectDir, "docs", "proposals", "add-filter.md"));
+  });
+});
+
+describe("assertRepoRelativeProposalPath", () => {
+  test("accepts repo-relative path", () => {
+    expect(() => assertRepoRelativeProposalPath("docs/proposals/foo.md")).not.toThrow();
+  });
+
+  test("accepts nested relative path that stays in-tree", () => {
+    expect(() => assertRepoRelativeProposalPath("docs/../docs/proposals/foo.md")).not.toThrow();
+  });
+
+  test("rejects absolute path", () => {
+    expect(() => assertRepoRelativeProposalPath("/tmp/evil.md")).toThrow(
+      "proposal path must be repo-relative, got absolute",
+    );
+  });
+
+  test("rejects home-relative path", () => {
+    expect(() => assertRepoRelativeProposalPath("~/docs/foo.md")).toThrow(
+      "proposal path must be repo-relative, got home-relative",
+    );
+  });
+
+  test("rejects parent traversal", () => {
+    expect(() => assertRepoRelativeProposalPath("../../etc/passwd")).toThrow(
+      "proposal path escapes project tree",
+    );
+  });
+
+  test("rejects single dotdot", () => {
+    expect(() => assertRepoRelativeProposalPath("../foo.md")).toThrow(
+      "proposal path escapes project tree",
+    );
+  });
+
+  test("rejects traversal that normalizes out of tree", () => {
+    expect(() => assertRepoRelativeProposalPath("docs/../../foo.md")).toThrow(
+      "proposal path escapes project tree",
+    );
   });
 });

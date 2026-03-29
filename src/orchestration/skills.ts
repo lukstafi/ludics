@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
+import { assertRepoRelativeProposalPath } from "../adapters/task-launch.ts";
 import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
 import type { Phase } from "./phases.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
@@ -65,8 +66,9 @@ function ghIssueBody(repo: string, issue: string): string | null {
 }
 
 /** Resolve a proposal frontmatter value to an absolute filesystem path.
- *  Handles ~/..., absolute paths, and project-relative paths. */
+ *  Requires repo-relative input; throws on absolute/home-relative/traversal paths. */
 function resolveProposalAbsPath(projectDir: string, rawPath: string): string {
+  assertRepoRelativeProposalPath(rawPath);
   if (rawPath.startsWith("~/")) {
     return join(process.env.HOME ?? "~", rawPath.slice(2));
   }

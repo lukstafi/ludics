@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "fs";
-import { join, resolve } from "path";
+import { join, normalize, resolve } from "path";
 
 function normalizeYamlScalar(value: string): string {
   const trimmed = value.trim();
@@ -23,6 +23,18 @@ export function readFrontmatterField(content: string, field: string): string | n
   const value = normalizeYamlScalar(match[1]!);
   if (!value || value.toLowerCase() === "null") return null;
   return value;
+}
+
+/** Throws if `rawPath` is not repo-relative (absolute, home-relative, or escapes tree). */
+export function assertRepoRelativeProposalPath(rawPath: string): void {
+  const trimmed = rawPath.trim();
+  if (trimmed.startsWith("/"))
+    throw new Error(`proposal path must be repo-relative, got absolute: "${rawPath}"`);
+  if (trimmed.startsWith("~/"))
+    throw new Error(`proposal path must be repo-relative, got home-relative: "${rawPath}"`);
+  const normalized = normalize(trimmed);
+  if (normalized.startsWith("../") || normalized === "..")
+    throw new Error(`proposal path escapes project tree: "${rawPath}"`);
 }
 
 export function resolveTaskRelativePath(projectDir: string, rawPath: string): string {
@@ -64,6 +76,7 @@ export function readProposalLaunchMetadata(
   // Legacy inline proposals have no associated file; treat as no file-based proposal.
   if (proposalValue === "inline") return null;
 
+  assertRepoRelativeProposalPath(proposalValue);
   const proposalFile = resolveTaskRelativePath(projectDir, proposalValue);
   if (!existsSync(proposalFile)) {
     throw new Error(
