@@ -91,7 +91,7 @@ export async function discoverT3code(): Promise<DiscoveredSession[]> {
     return snapshotToSessions(status.snapshot);
   } catch (error) {
     console.error(
-      `ludics: t3code discovery failed: ${error instanceof Error ? error.message : String(error)}`,
+      `ludics: t3code discovery failed: ${error instanceof Error ? error.message : String(error)} (run \`ludics t3code doctor\` for diagnostics)`,
     );
     return [];
   }

@@ -283,7 +283,10 @@ export async function runT3Code(args: string[]): Promise<void> {
       console.log(`ws: ${status.record.wsUrl}`);
       console.log(`state: ${status.record.stateDir}`);
       console.log(`record: ${t3codeServerPath(harness)}`);
-      if (status.reason) console.log(`reason: ${status.reason}`);
+      if (status.reason) {
+        console.log(`reason: ${status.reason}`);
+        if (!status.running) console.log(`hint: run \`ludics t3code doctor\` for diagnostics`);
+      }
       if (status.snapshot) {
         console.log(`projects: ${status.snapshot.projects.length}`);
         console.log(`threads: ${status.snapshot.threads.length}`);

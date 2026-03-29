@@ -318,7 +318,7 @@ export async function ensureServer(
       // Remove marker so the dashboard doesn't show "starting…" indefinitely
       try { unlinkSync(t3codeStartingPath(harnessDir)); } catch { /* ignore */ }
       throw new Error(
-        `unable to start t3code server: ${error instanceof Error ? error.message : String(error)}`,
+        `unable to start t3code server: ${error instanceof Error ? error.message : String(error)}\n  hint: run \`ludics t3code doctor\` for diagnostics`,
       );
     }
 
@@ -513,7 +513,7 @@ async function waitForReady(record: T3CodeServerRecord, timeoutMs: number): Prom
     }
   }
 
-  throw new Error(`t3code server did not become ready: ${lastError}`);
+  throw new Error(`t3code server did not become ready: ${lastError}\n  hint: run \`ludics t3code doctor\` for diagnostics`);
 }
 
 async function findAvailablePort(start: number, host: string = "127.0.0.1"): Promise<number> {
@@ -709,7 +709,49 @@ export async function doctorServer(
       }
     }
 
-    // 7. stderr log hints (last few lines if file exists)
+    // 7. SDK version freshness (installed vs bundled)
+    {
+      const launcher = resolveLauncherCandidate();
+      const repoDir = launcher.detail.match(/source repo at (.+)/)?.[1];
+      if (repoDir) {
+        const installedPkgPath = join(repoDir, "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json");
+        const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
+        let installedVersion: string | null = null;
+        let bundledVersion: string | null = null;
+        try {
+          installedVersion = JSON.parse(readFileSync(installedPkgPath, "utf-8")).version;
+        } catch { /* not installed */ }
+        // Extract version from stderr log (sdk path includes version)
+        if (existsSync(stderrPath)) {
+          try {
+            const stderr = readFileSync(stderrPath, "utf-8");
+            const match = stderr.match(/claude-agent-sdk@([0-9.]+)/);
+            if (match) bundledVersion = match[1];
+          } catch { /* ignore */ }
+        }
+        if (installedVersion && bundledVersion && installedVersion !== bundledVersion) {
+          checks.push({
+            name: "SDK version freshness",
+            passed: false,
+            detail: `installed=${installedVersion} but bundled=${bundledVersion} — run: cd ${repoDir} && npx turbo run build --force`,
+          });
+        } else if (installedVersion && bundledVersion) {
+          checks.push({
+            name: "SDK version freshness",
+            passed: true,
+            detail: `claude-agent-sdk@${installedVersion} (installed = bundled)`,
+          });
+        } else if (installedVersion) {
+          checks.push({
+            name: "SDK version freshness",
+            passed: true,
+            detail: `claude-agent-sdk@${installedVersion} installed (bundled version not detectable from logs)`,
+          });
+        }
+      }
+    }
+
+    // 8. stderr log hints (last few lines if file exists)
     const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
     if (existsSync(stderrPath)) {
       try {
