@@ -1,28 +1,25 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
-import { T3CodeClient } from "../t3code/client.ts";
-import { readServerRecord } from "../t3code/server.ts";
-import { toWireProvider } from "../t3code/types.ts";
-import type { T3CodeServerRecord, T3Snapshot } from "../t3code/types.ts";
 import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone, pairReviewVerdict } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
-  readStopHookRecord, statusFileFingerprint, writeInterrupt, writePeerSync,
+  statusFileFingerprint, writeInterrupt, writePeerSync,
 } from "./peer-sync.ts";
 import { determineWinner, hasConsensus, readMergeVotes } from "./merge.ts";
 import { shouldRunUpdateDocs } from "./learning.ts";
 import { composeSkillMessage } from "./skills.ts";
 import {
   persistState, readOrchestrationState,
-  type AgentConfig, type AgentTurnLifecycle, type OrchestrationState,
+  type AgentConfig, type OrchestrationState,
 } from "./state.ts";
 import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
 import { fetchNewPrCommentCount, hasPrApprovalReaction, isPrMerged, postCodexReviewComment, validateAndFixPrFile } from "./github.ts";
 import { updateFrontmatterField } from "../tasks/markdown.ts";
-import { findProjectConfig, harnessDir } from "../config.ts";
+import { findProjectConfig, globalAdapter, harnessDir } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
 import { autoCommitWorktree, pushBranch } from "./worktrees.ts";
+import type { OrchestrationTransport } from "./transport.ts";
 
 // --- Stall detection constants ---
 /** Seconds after turnStartedAt before a running-but-done-status agent is stalled. */
@@ -34,41 +31,18 @@ const NUDGE_COOLDOWN_S = 120;
 /** Force-settle via interruptAgent() after this many failed nudges. */
 const MAX_NUDGE_ATTEMPTS = 2;
 
-async function withClient<T>(
-  record: T3CodeServerRecord,
-  fn: (client: T3CodeClient) => Promise<T>,
-): Promise<T> {
-  const client = new T3CodeClient({
-    url: record.wsUrl,
-    token: record.authToken,
-  });
-  try {
-    return await fn(client);
-  } finally {
-    client.close();
-  }
-}
-
 function phaseActiveStatus(phase: OrchestrationState["phase"]): string {
   return `${phase}-active`;
 }
 
-function threadSnapshot(snapshot: T3Snapshot | null, threadId: string) {
-  return snapshot?.threads.find((thread) => thread.id === threadId) ?? null;
-}
-
-async function fetchSnapshot(record: T3CodeServerRecord | null): Promise<T3Snapshot | null> {
-  if (!record) return null;
-  try {
-    return await withClient(record, (client) => client.getSnapshot());
-  } catch {
-    return null;
-  }
-}
-
-export function refreshAgentStatuses(state: OrchestrationState, snapshot: T3Snapshot | null): void {
+/**
+ * Refresh agent statuses from peer-sync (shared) and transport-specific backend.
+ * The transport's refreshAgentTransportState() handles turn lifecycle updates
+ * from the backend (t3code snapshot, tmux process state, etc.).
+ */
+export async function refreshAgentStatuses(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
+  // --- 1. Read peer-sync status (shared across all transports) ---
   for (const agent of state.agents) {
-    // --- 1. Read peer-sync status ---
     const peerStatus = readAgentStatus(state.peerSyncDir, agent.name);
     const runtime = state.agentStates[agent.name]!;
     runtime.status = peerStatus.status;
@@ -80,145 +54,14 @@ export function refreshAgentStatuses(state: OrchestrationState, snapshot: T3Snap
       runtime.status = "merged";
       runtime.statusMessage = "merged";
     }
-
-    // --- 2. Read snapshot thread state ---
-    const thread = threadSnapshot(snapshot, state.threadIds[agent.name]);
-    const sessionStatus = thread?.session?.status;
-    const activeTurnId = thread?.session?.activeTurnId ?? null;
-    const latestTurn = thread?.latestTurn ?? null;
-
-    // --- 3. Update turn lifecycle (identity-based tracking) ---
-    const lc = runtime.turnLifecycle;
-    if (lc) {
-      updateTurnLifecycle(lc, sessionStatus ?? null, activeTurnId, latestTurn);
-
-      // --- 3b. Check stop-hook records ---
-      const stopRecord = readStopHookRecord(state.peerSyncDir, agent.name);
-      if (stopRecord && stopRecord.phaseToken === lc.phaseToken) {
-        lc.lastStopHookAt = stopRecord.observedAt;
-        // Stop hook arrived for this phase — if lifecycle still shows dispatched
-        // and snapshot doesn't yet show running, the turn likely completed very fast.
-        if (lc.state === "dispatched" && latestTurn?.state === "completed" && !activeTurnId) {
-          lc.observedTurnId = latestTurn.turnId;
-          lc.state = "settled";
-          lc.turnCompletedAt = latestTurn.completedAt ?? isoNow();
-          lc.completionSource = "stop-hook";
-        }
-      }
-    }
-
-    // --- 3c. Snapshot reconciliation for stuck dispatched lifecycles ---
-    // If lifecycle is still "dispatched", no stop-hook arrived, but the snapshot
-    // shows a terminal latestTurn that was requested AFTER our dispatch, settle
-    // the lifecycle. This handles the case where t3code processed the turn but
-    // the orchestrator never observed it running (e.g. very fast completion,
-    // snapshot polling gap).
-    if (lc && lc.state === "dispatched" && !activeTurnId && latestTurn
-        && (latestTurn.state === "completed" || latestTurn.state === "error")
-        && sessionStatus !== null && sessionStatus !== undefined) {
-      const turnRequested = latestTurn.requestedAt
-        ? new Date(latestTurn.requestedAt).getTime()
-        : 0;
-      const dispatched = new Date(lc.dispatchedAt).getTime();
-      if (turnRequested >= dispatched) {
-        lc.observedTurnId = latestTurn.turnId;
-        lc.state = latestTurn.state === "error" ? "error" : "settled";
-        lc.turnCompletedAt = latestTurn.completedAt ?? isoNow();
-        lc.completionSource = "snapshot";
-        emitEvent({
-          event_type: "orchestration_snapshot_reconcile",
-          source: "orchestration",
-          scope: "slot",
-          slot: state.slot,
-          task: state.feature,
-          agent: agent.name,
-          message: `${agent.name}: reconciled stuck dispatched lifecycle via snapshot (latestTurn.requestedAt >= dispatchedAt)`,
-        });
-      }
-    }
-
-    // --- 4. Detect inconsistencies ---
-    detectAgentInconsistencies(state, agent, runtime);
-
-    // --- 5. Post-nudge outcome classification ---
-    if (lc && (lc.stallDetectedAt ?? null) !== null && lc.state === "settled") {
-      const nudgeAttempts = lc.nudgeAttempts ?? 0;
-      if (nudgeAttempts > 0) {
-        // Deterministic classification via assistantMessageId comparison.
-        const currentAMId = thread?.latestTurn?.assistantMessageId ?? null;
-        const preAMId = lc.preNudgeAssistantMessageId ?? null;
-        // If the assistantMessageId changed (or appeared), agent responded to nudge.
-        // If unchanged (or both null), session was dead / settled without response.
-        const agentResponded = currentAMId !== null && currentAMId !== preAMId;
-        const eventType = agentResponded
-          ? "orchestration_nudge_settled_alive"
-          : "orchestration_nudge_settled_dead";
-        emitEvent({
-          event_type: eventType,
-          source: "orchestration",
-          scope: "slot",
-          slot: state.slot,
-          task: state.feature,
-          agent: agent.name,
-          nudgeAttempts,
-          message: `${agent.name}: stall resolved (${agentResponded ? "alive" : "dead"}) after ${nudgeAttempts} nudge(s)`,
-        });
-      }
-      // Clear stall bookkeeping
-      lc.stallDetectedAt = null;
-      lc.nudgeAttempts = 0;
-      lc.lastNudgeAt = null;
-      lc.preNudgeAssistantMessageId = null;
-    }
   }
-}
 
-/**
- * Advance the per-agent turn lifecycle state machine based on snapshot data.
- * See docs/orchestration-phase-transitions.md §6 for the state diagram.
- */
-export function updateTurnLifecycle(
-  lc: AgentTurnLifecycle,
-  sessionStatus: string | null,
-  activeTurnId: string | null,
-  latestTurn: { turnId: string; state: string; completedAt?: string | null; startedAt?: string | null } | null,
-): void {
-  switch (lc.state) {
-    case "dispatched": {
-      // Waiting for the provider to start the turn.
-      if (sessionStatus === "running" && activeTurnId) {
-        // Turn started — bind to the observed turn ID.
-        lc.observedTurnId = activeTurnId;
-        lc.state = "running";
-        lc.turnStartedAt = isoNow();
-      }
-      // NOTE: No snapshot-only fast-complete path. Without a turnId returned
-      // from dispatch, we cannot prove a completed turn in the snapshot belongs
-      // to *this* dispatch rather than a prior turn.  Fast completion is handled
-      // by the stop-hook path (which provides phaseToken proof) in
-      // refreshAgentStatuses().  If no stop-hook arrives and activeTurnId is
-      // never observed, the lifecycle stays "dispatched" until timeout.
-      break;
-    }
-    case "running": {
-      // Turn is active — check if it settled.
-      // Guard: if sessionStatus is null (snapshot fetch failed), do NOT transition.
-      // A transient RPC failure must not permanently misclassify an active turn as settled.
-      if (sessionStatus === null) break;
-      if (!activeTurnId || sessionStatus !== "running") {
-        if (sessionStatus === "error") {
-          lc.state = "error";
-          lc.turnCompletedAt = latestTurn?.completedAt ?? isoNow();
-          lc.completionSource = "snapshot";
-        } else {
-          lc.state = "settled";
-          lc.turnCompletedAt = latestTurn?.completedAt ?? isoNow();
-          lc.completionSource = "snapshot";
-        }
-      }
-      break;
-    }
-    // settled and error are terminal states for the lifecycle — no further transitions.
+  // --- 2. Transport-specific state refresh (turn lifecycle, process state) ---
+  await transport.refreshAgentTransportState(state);
+
+  // --- 3. Detect inconsistencies ---
+  for (const agent of state.agents) {
+    detectAgentInconsistencies(state, agent, state.agentStates[agent.name]!);
   }
 }
 
@@ -257,7 +100,7 @@ function detectAgentInconsistencies(
  */
 export async function detectAndNudgeStalls(
   state: OrchestrationState,
-  snapshot: T3Snapshot | null,
+  transport: OrchestrationTransport,
 ): Promise<void> {
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
@@ -320,7 +163,7 @@ export async function detectAndNudgeStalls(
         attempts,
         message: `${agent.name}: force-settling after ${attempts} nudge attempts`,
       });
-      await interruptAgent(state, agent);
+      await interruptAgent(state, agent, transport);
       continue;
     }
 
@@ -330,32 +173,14 @@ export async function detectAndNudgeStalls(
       : 0;
     if (now - lastNudge < NUDGE_COOLDOWN_S) continue;
 
-    // --- Pre-nudge snapshot guard (avoid nudging a naturally settling turn) ---
-    const thread = snapshot
-      ? threadSnapshot(snapshot, state.threadIds[agent.name])
-      : null;
-    if (snapshot && thread) {
-      const activeTurnId = thread.session?.activeTurnId ?? null;
-      const sessionStatus = thread.session?.status;
-      if (sessionStatus !== "running" || !activeTurnId) {
-        // Turn appears settled in latest snapshot — let the next
-        // refreshAgentStatuses() advance the lifecycle naturally.
-        continue;
-      }
-    }
-
-    // --- Capture pre-nudge assistant message ID for outcome classification ---
-    const preNudgeAMId = thread?.latestTurn?.assistantMessageId ?? null;
-
     // --- Send phase-aware nudge ---
     try {
       const nudgeMessage = stallType === "dispatch"
         ? `Your session appears stuck. Please respond to confirm you are working on the ${state.phase} phase.`
         : `Your work for the ${state.phase} phase is complete. Stop and wait for further instructions.`;
-      await sendTurnMessage(state, agent, nudgeMessage);
+      await transport.sendTurn(state, agent, nudgeMessage);
       lc.nudgeAttempts = attempts + 1;
       lc.lastNudgeAt = isoNow();
-      lc.preNudgeAssistantMessageId = preNudgeAMId;
       emitEvent({
         event_type: "orchestration_nudge_sent",
         source: "orchestration",
@@ -402,83 +227,7 @@ function markActiveAgents(state: OrchestrationState): void {
   }
 }
 
-/**
- * Normalise a raw effort value to a named level string.
- * Legacy numeric token-budget values (e.g. 32768 from old coder_thinking_effort configs)
- * are mapped to the closest named level so they remain valid on the wire.
- */
-function normaliseEffortLevel(raw: string): string {
-  const lower = raw.toLowerCase().trim();
-  // Already a named level — return as-is.
-  if (lower === "low" || lower === "medium" || lower === "high" || lower === "max") return lower;
-  // Legacy numeric token budget — map to the closest named level.
-  const n = parseInt(raw, 10);
-  if (!isNaN(n)) {
-    if (n <= 1024) return "low";
-    if (n <= 8192) return "medium";
-    return "high";
-  }
-  // Unrecognised value — fall back to high.
-  return "high";
-}
-
-/**
- * Build modelSelection options with effort/reasoning settings.
- * - For claudeAgent: sets `options.effort` (supports low/medium/high/max)
- * - For codex: sets `options.reasoningEffort` (supports low/medium/high; max -> high)
- * - Legacy numeric values (e.g. 32768) are mapped to named levels before dispatch.
- */
-function buildModelSelection(
-  agent: AgentConfig,
-): { provider: "codex" | "claudeAgent"; model: string; options?: Record<string, unknown> } {
-  const wireProvider = toWireProvider(agent.provider);
-  const effort = agent.thinkingEffort;
-  if (!effort) return { provider: wireProvider, model: agent.model };
-
-  const level = normaliseEffortLevel(effort);
-  if (wireProvider === "claudeAgent") {
-    return { provider: wireProvider, model: agent.model, options: { effort: level } };
-  }
-  // Codex: max is not supported, map to high
-  const codexLevel = level === "max" ? "high" : level;
-  return { provider: wireProvider, model: agent.model, options: { reasoningEffort: codexLevel } };
-}
-
-/** Dispatch a turn message and return the commandId used for correlation. */
-async function sendTurnMessage(
-  state: OrchestrationState,
-  agent: AgentConfig,
-  message: string,
-): Promise<string> {
-  const threadId = state.threadIds[agent.name];
-  const record = readServerRecord();
-  if (!record || !threadId) throw new Error(`no t3code thread for agent ${agent.name}`);
-
-  const modelSelection = buildModelSelection(agent);
-  const commandId = makeId("cmd");
-
-  await withClient(record, async (client) => {
-    await client.dispatchCommand({
-      type: "thread.turn.start",
-      commandId,
-      threadId,
-      message: {
-        messageId: makeId("msg"),
-        role: "user",
-        text: message,
-        attachments: [],
-      },
-      modelSelection,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      createdAt: isoNow(),
-    });
-  });
-
-  return commandId;
-}
-
-async function enterPhase(state: OrchestrationState): Promise<void> {
+async function enterPhase(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
   if (state.phaseDispatched) return;
 
   // Generate or reuse the phase token for this phase.
@@ -537,7 +286,7 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
     }
 
     const skillMessage = await composeSkillMessage(state, agent);
-    const commandId = await sendTurnMessage(state, agent, skillMessage);
+    const commandId = await transport.sendTurn(state, agent, skillMessage);
 
     // Initialize per-agent turn lifecycle for this phase.
     const runtime = state.agentStates[agent.name]!;
@@ -570,7 +319,7 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
 }
 
 /** Send a fresh turn message to each participating agent without changing phaseDispatched. */
-async function redispatchForPrComments(state: OrchestrationState): Promise<void> {
+async function redispatchForPrComments(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
   const phaseToken = readPhaseToken(state.peerSyncDir) ?? makeId("phase");
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
@@ -583,7 +332,7 @@ async function redispatchForPrComments(state: OrchestrationState): Promise<void>
     runtime.statusEpoch = nowEpoch();
     runtime.statusMessage = "re-dispatched for new PR comments";
     const skillMessage = await composeSkillMessage(state, agent);
-    const commandId = await sendTurnMessage(state, agent, skillMessage);
+    const commandId = await transport.sendTurn(state, agent, skillMessage);
     // Reset lifecycle for the re-dispatched turn.
     runtime.turnLifecycle = {
       dispatchCommandId: commandId,
@@ -608,7 +357,7 @@ async function redispatchForPrComments(state: OrchestrationState): Promise<void>
  * Poll GitHub for new PR comments during the pr-comments phase.
  * Re-dispatches agents when new comments are found; updates prCommentsQuietSince otherwise.
  */
-async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<void> {
+async function checkAndRedispatchPrComments(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
   const now = nowEpoch();
   const checkInterval = state.config.prCommentsCheckInterval;
   const lastCheck = state.prCommentsLastCheckAt ?? state.phaseStartedAt;
@@ -728,7 +477,7 @@ async function checkAndRedispatchPrComments(state: OrchestrationState): Promise<
 
   if (totalNewComments > 0) {
     state.prCommentsQuietSince = 0; // Reset quiet period.
-    await redispatchForPrComments(state);
+    await redispatchForPrComments(state, transport);
   } else if (!state.prCommentsQuietSince) {
     state.prCommentsQuietSince = now;
   }
@@ -771,30 +520,16 @@ function validateAgentPrFiles(state: OrchestrationState): void {
 export async function interruptAgent(
   state: OrchestrationState,
   agent: AgentConfig,
+  transport: OrchestrationTransport,
 ): Promise<void> {
   writeInterrupt(state.peerSyncDir, agent.name);
-  const threadId = state.threadIds[agent.name];
-  const record = readServerRecord();
-  if (record && threadId) {
-    await withClient(record, async (client) => {
-      try {
-        await client.dispatchCommand({
-          type: "thread.turn.interrupt",
-          commandId: makeId("cmd"),
-          threadId,
-          createdAt: isoNow(),
-        });
-      } catch {
-        // ignore
-      }
-    });
-  }
+  await transport.interruptAgent(state, agent);
   state.agentStates[agent.name]!.interrupted = true;
   state.agentStates[agent.name]!.status = "interrupted";
   state.agentStates[agent.name]!.statusEpoch = nowEpoch();
 }
 
-async function handleTimeout(state: OrchestrationState): Promise<void> {
+async function handleTimeout(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
   if (
     state.phase === "clarify"
     || state.phase === "pushback"
@@ -822,7 +557,7 @@ async function handleTimeout(state: OrchestrationState): Promise<void> {
       if (!agentParticipatesInPhase(state, agent)) continue;
       const runtime = state.agentStates[agent.name]!;
       if (runtime.interrupted || runtime.status === "done" || runtime.status === "review-done") continue;
-      await interruptAgent(state, agent);
+      await interruptAgent(state, agent, transport);
     }
   }
 }
@@ -916,26 +651,18 @@ export function autoCommitAllAgents(
   }
 }
 
-async function pollUntilDone(state: OrchestrationState): Promise<void> {
+async function pollUntilDone(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
   const timeout = state.config.timeouts[state.phase] ?? 600;
   const deadline = state.phaseStartedAt + timeout;
   const interval = state.config.pollInterval * 1000;
-  const record = readServerRecord();
 
-  // Subscribe to domain events for early wakeup (falls back to pure polling).
+  // Subscribe to transport events for early wakeup (optional; falls back to pure polling).
   let wakeResolve: (() => void) | null = null;
-  let eventClient: T3CodeClient | null = null;
   let unsubscribe: (() => void) | null = null;
 
-  if (record) {
+  if (transport.subscribeEvents) {
     try {
-      eventClient = new T3CodeClient({ url: record.wsUrl, token: record.authToken });
-      await eventClient.connectWithRetry();
-      unsubscribe = eventClient.onDomainEvent((event) => {
-        // Only wake for turn/session lifecycle events — ignore unrelated domain events
-        // (e.g. message-sent, activity) to reduce unnecessary poll cycles.
-        // See docs/orchestration-phase-transitions.md §4 for the documented event model.
-        if (event.type !== "thread.session.set" && event.type !== "thread.turn-diff-completed") return;
+      unsubscribe = await transport.subscribeEvents(() => {
         if (wakeResolve) {
           wakeResolve();
           wakeResolve = null;
@@ -943,18 +670,15 @@ async function pollUntilDone(state: OrchestrationState): Promise<void> {
       });
     } catch {
       // Event subscription failed — pure polling fallback.
-      eventClient?.close();
-      eventClient = null;
     }
   }
 
   try {
     while (true) {
-      const snapshot = await fetchSnapshot(record);
-      refreshAgentStatuses(state, snapshot);
+      await refreshAgentStatuses(state, transport);
 
       // Detect stalled agents and send nudges / force-settle.
-      await detectAndNudgeStalls(state, snapshot);
+      await detectAndNudgeStalls(state, transport);
 
       // Validate pr files when coder finishes pr-create (auto-create PR from markdown if needed).
       if (state.phase === "pr-create") {
@@ -964,7 +688,7 @@ async function pollUntilDone(state: OrchestrationState): Promise<void> {
       // For pr-comments: poll GitHub and re-dispatch before the allAgentsDone short-circuit,
       // so the quiet-period tracking and re-dispatch logic run on the tick when agents finish.
       if (state.phase === "pr-comments") {
-        await checkAndRedispatchPrComments(state);
+        await checkAndRedispatchPrComments(state, transport);
         persistState(state);
         // Return to the main loop so evaluateTransition can check quiet-period expiry.
         if (evaluateTransition(state) !== null) return;
@@ -975,11 +699,11 @@ async function pollUntilDone(state: OrchestrationState): Promise<void> {
       if (allAgentsDone(state)) return;
 
       if (nowEpoch() >= deadline) {
-        await handleTimeout(state);
+        await handleTimeout(state, transport);
         return;
       }
 
-      // Sleep with early wakeup from domain events.
+      // Sleep with early wakeup from transport events.
       await Promise.race([
         sleep(interval),
         new Promise<void>((resolve) => { wakeResolve = resolve; }),
@@ -988,7 +712,6 @@ async function pollUntilDone(state: OrchestrationState): Promise<void> {
     }
   } finally {
     unsubscribe?.();
-    eventClient?.close();
   }
 }
 
@@ -1097,14 +820,18 @@ function readFileIfExists(path: string): string | null {
 
 export async function runOrchestration(
   state: OrchestrationState,
+  transport?: OrchestrationTransport,
 ): Promise<void> {
+  if (!transport) {
+    transport = await createTransport();
+  }
   persistState(state);
 
   while (state.phase !== "done") {
-    await enterPhase(state);
+    await enterPhase(state, transport);
     persistState(state);
 
-    await pollUntilDone(state);
+    await pollUntilDone(state, transport);
 
     // Auto-commit any uncommitted work after agents finish their turn.
     // Push=false here; push happens before PR-related phases below.
@@ -1218,10 +945,22 @@ export async function runOrchestration(
   }
 }
 
+/** Create the appropriate transport based on the global adapter config. */
+async function createTransport(): Promise<OrchestrationTransport> {
+  const adapter = globalAdapter();
+  if (adapter === "tmux") {
+    const { TmuxTransport } = await import("./transport-tmux.ts");
+    return new TmuxTransport();
+  }
+  const { T3CodeTransport } = await import("./transport-t3code.ts");
+  return new T3CodeTransport();
+}
+
 export async function runOrchestrationForSlot(slot: number, harnessDir?: string): Promise<void> {
   const state = readOrchestrationState(slot, harnessDir);
   if (!state) throw new Error(`orchestration state not found for slot ${slot}`);
-  await runOrchestration(state);
+  const transport = await createTransport();
+  await runOrchestration(state, transport);
 }
 
 export function confirmPhase(slot: number, harnessDir?: string): OrchestrationState {
@@ -1235,9 +974,10 @@ export function confirmPhase(slot: number, harnessDir?: string): OrchestrationSt
 export async function interruptCurrentPhase(slot: number, harnessDir?: string): Promise<OrchestrationState> {
   const state = readOrchestrationState(slot, harnessDir);
   if (!state) throw new Error(`orchestration state not found for slot ${slot}`);
+  const transport = await createTransport();
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
-    await interruptAgent(state, agent);
+    await interruptAgent(state, agent, transport);
   }
   persistState(state, harnessDir);
   return state;

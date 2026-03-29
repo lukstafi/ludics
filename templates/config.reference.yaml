@@ -3,6 +3,11 @@
 # or cherry-pick only the settings you want to override (unset keys use
 # the defaults shown here).
 
+# Global orchestration backend: "t3code" or "tmux" (default: t3code)
+# t3code: WebSocket-based agent management via Claude Agent SDK
+# tmux: terminal multiplexer + ttyd web terminals — agents run as CLI processes
+adapter: t3code
+
 # Where to store state (your private repo)
 state_repo: your-username/your-private-repo
 state_path: harness                   # Subdirectory within the state repo

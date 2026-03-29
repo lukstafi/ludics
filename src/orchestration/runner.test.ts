@@ -3,14 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
-import { updateTurnLifecycle, refreshAgentStatuses, maybePostCodexReviewRequests, autoCommitAgent, autoCommitAllAgents, detectAndNudgeStalls, interruptAgent } from "./runner.ts";
+import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, autoCommitAgent, autoCommitAllAgents, detectAndNudgeStalls, interruptAgent } from "./runner.ts";
 import * as events from "../events.ts";
-import * as t3codeServer from "../t3code/server.ts";
 import * as github from "./github.ts";
 import { orchOnStop } from "./index.ts";
 import { readStopHookRecord, writeStopHookRecord, writeAgentMarkerFiles, readAgentMarkerFile } from "./peer-sync.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type AgentTurnLifecycle, type OrchestrationState } from "./state.ts";
 import type { T3Snapshot, T3ThreadSession, T3LatestTurn } from "../t3code/types.ts";
+import type { OrchestrationTransport } from "./transport.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,6 +123,49 @@ function makeSnapshot(
       } satisfies T3LatestTurn : null,
     })),
     updatedAt: now,
+  };
+}
+
+/**
+ * Create a mock OrchestrationTransport that wraps a T3Snapshot for testing.
+ * The refreshAgentTransportState method replicates the T3CodeTransport behavior
+ * using the provided snapshot data.
+ */
+function makeMockTransport(snapshot: T3Snapshot | null): OrchestrationTransport {
+  return {
+    async sendTurn() { return "cmd-mock"; },
+    async refreshAgentTransportState(state: OrchestrationState) {
+      // Replicate T3CodeTransport.refreshAgentTransportState using the snapshot
+      const { agentParticipatesInPhase } = await import("./phases.ts");
+      const { readStopHookRecord } = await import("./peer-sync.ts");
+
+      for (const agent of state.agents) {
+        if (!agentParticipatesInPhase(state, agent)) continue;
+
+        const thread = snapshot?.threads.find((t) => t.id === state.threadIds[agent.name]) ?? null;
+        const sessionStatus = thread?.session?.status ?? null;
+        const activeTurnId = thread?.session?.activeTurnId ?? null;
+        const latestTurn = thread?.latestTurn ?? null;
+
+        const runtime = state.agentStates[agent.name]!;
+        const lc = runtime.turnLifecycle;
+        if (lc) {
+          updateTurnLifecycle(lc, sessionStatus, activeTurnId, latestTurn);
+
+          const stopRecord = readStopHookRecord(state.peerSyncDir, agent.name);
+          if (stopRecord && stopRecord.phaseToken === lc.phaseToken) {
+            lc.lastStopHookAt = stopRecord.observedAt;
+            if (lc.state === "dispatched" && latestTurn?.state === "completed" && !activeTurnId) {
+              lc.observedTurnId = latestTurn.turnId;
+              lc.state = "settled";
+              lc.turnCompletedAt = latestTurn.completedAt ?? new Date().toISOString();
+              lc.completionSource = "stop-hook";
+            }
+          }
+        }
+      }
+    },
+    async interruptAgent() {},
   };
 }
 
@@ -528,17 +572,17 @@ describe("refreshAgentStatuses", () => {
     else delete process.env.LUDICS_HARNESS_DIR;
   });
 
-  test("null snapshot does not crash or transition dispatched lifecycle", () => {
+  test("null snapshot does not crash or transition dispatched lifecycle", async () => {
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
     const state = makeState({ phase: "work" }, peerSyncDir);
     state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched" });
 
-    refreshAgentStatuses(state, null);
+    await refreshAgentStatuses(state, makeMockTransport(null));
 
     expect(state.agentStates.coder.turnLifecycle!.state).toBe("dispatched");
   });
 
-  test("null snapshot does not downgrade running lifecycle", () => {
+  test("null snapshot does not downgrade running lifecycle", async () => {
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
     const state = makeState({ phase: "work" }, peerSyncDir);
     state.agentStates.coder.turnLifecycle = makeLifecycle({
@@ -547,13 +591,13 @@ describe("refreshAgentStatuses", () => {
       turnStartedAt: new Date().toISOString(),
     });
 
-    refreshAgentStatuses(state, null);
+    await refreshAgentStatuses(state, makeMockTransport(null));
 
     // Null sessionStatus triggers the null guard — lifecycle stays running.
     expect(state.agentStates.coder.turnLifecycle!.state).toBe("running");
   });
 
-  test("snapshot with running session transitions dispatched → running", () => {
+  test("snapshot with running session transitions dispatched → running", async () => {
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
     const state = makeState({ phase: "work" }, peerSyncDir);
     state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched" });
@@ -563,14 +607,14 @@ describe("refreshAgentStatuses", () => {
       session: { status: "running", activeTurnId: "turn-1" },
     }]);
 
-    refreshAgentStatuses(state, snapshot);
+    await refreshAgentStatuses(state, makeMockTransport(snapshot));
 
     const lc = state.agentStates.coder.turnLifecycle!;
     expect(lc.state).toBe("running");
     expect(lc.observedTurnId).toBe("turn-1");
   });
 
-  test("snapshot with settled session transitions running → settled", () => {
+  test("snapshot with settled session transitions running → settled", async () => {
     const completedAt = new Date().toISOString();
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
     const state = makeState({ phase: "work" }, peerSyncDir);
@@ -586,7 +630,7 @@ describe("refreshAgentStatuses", () => {
       latestTurn: { turnId: "turn-1", state: "completed", completedAt },
     }]);
 
-    refreshAgentStatuses(state, snapshot);
+    await refreshAgentStatuses(state, makeMockTransport(snapshot));
 
     const lc = state.agentStates.coder.turnLifecycle!;
     expect(lc.state).toBe("settled");
@@ -594,7 +638,7 @@ describe("refreshAgentStatuses", () => {
     expect(lc.turnCompletedAt).toBe(completedAt);
   });
 
-  test("stop-hook record with matching phaseToken settles dispatched lifecycle", () => {
+  test("stop-hook record with matching phaseToken settles dispatched lifecycle", async () => {
     const completedAt = new Date().toISOString();
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
     const state = makeState({ phase: "work" }, peerSyncDir);
@@ -619,7 +663,7 @@ describe("refreshAgentStatuses", () => {
       latestTurn: { turnId: "turn-fast", state: "completed", completedAt },
     }]);
 
-    refreshAgentStatuses(state, snapshot);
+    await refreshAgentStatuses(state, makeMockTransport(snapshot));
 
     const lc = state.agentStates.coder.turnLifecycle!;
     expect(lc.state).toBe("settled");
@@ -627,7 +671,7 @@ describe("refreshAgentStatuses", () => {
     expect(lc.observedTurnId).toBe("turn-fast");
   });
 
-  test("stop-hook record with wrong phaseToken is ignored", () => {
+  test("stop-hook record with wrong phaseToken is ignored", async () => {
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
     const state = makeState({ phase: "work" }, peerSyncDir);
     state.agentStates.coder.turnLifecycle = makeLifecycle({
@@ -660,13 +704,13 @@ describe("refreshAgentStatuses", () => {
       },
     }]);
 
-    refreshAgentStatuses(state, snapshot);
+    await refreshAgentStatuses(state, makeMockTransport(snapshot));
 
     // Stale phaseToken AND stale requestedAt — lifecycle stays dispatched.
     expect(state.agentStates.coder.turnLifecycle!.state).toBe("dispatched");
   });
 
-  test("fast-complete with latestTurn.completedAt null uses isoNow() fallback", () => {
+  test("fast-complete with latestTurn.completedAt null uses isoNow() fallback", async () => {
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
     const state = makeState({ phase: "work" }, peerSyncDir);
     const phaseToken = "phase-test";
@@ -689,7 +733,7 @@ describe("refreshAgentStatuses", () => {
       latestTurn: { turnId: "turn-fast", state: "completed", completedAt: null },
     }]);
 
-    refreshAgentStatuses(state, snapshot);
+    await refreshAgentStatuses(state, makeMockTransport(snapshot));
 
     const lc = state.agentStates.coder.turnLifecycle!;
     expect(lc.state).toBe("settled");
@@ -698,19 +742,19 @@ describe("refreshAgentStatuses", () => {
     expect(new Date(lc.turnCompletedAt!).getTime()).not.toBeNaN();
   });
 
-  test("merge marker overrides agent status to 'merged'", () => {
+  test("merge marker overrides agent status to 'merged'", async () => {
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "done|1|done" });
     const state = makeState({ phase: "work" }, peerSyncDir);
 
     // Write merge marker.
     writeFileSync(join(peerSyncDir, "coder.merged"), "1");
 
-    refreshAgentStatuses(state, null);
+    await refreshAgentStatuses(state, makeMockTransport(null));
 
     expect(state.agentStates.coder.status).toBe("merged");
   });
 
-  test("terminal lifecycle states remain terminal after refresh", () => {
+  test("terminal lifecycle states remain terminal after refresh", async () => {
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
     const state = makeState({ phase: "work" }, peerSyncDir);
     state.agentStates.coder.turnLifecycle = makeLifecycle({
@@ -726,17 +770,17 @@ describe("refreshAgentStatuses", () => {
       session: { status: "running", activeTurnId: "turn-new" },
     }]);
 
-    refreshAgentStatuses(state, snapshot);
+    await refreshAgentStatuses(state, makeMockTransport(snapshot));
 
     expect(state.agentStates.coder.turnLifecycle!.state).toBe("settled");
   });
 
-  test("inconsistency: peer-sync done + lifecycle dispatched emits warning", () => {
+  test("inconsistency: peer-sync done + lifecycle dispatched emits warning", async () => {
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "done|1|done" });
     const state = makeState({ phase: "work" }, peerSyncDir);
     state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched" });
 
-    refreshAgentStatuses(state, null);
+    await refreshAgentStatuses(state, makeMockTransport(null));
 
     // Read the events journal to verify a warning was emitted.
     const eventsPath = join(tmpDir, "harness", "journal", "events.jsonl");
