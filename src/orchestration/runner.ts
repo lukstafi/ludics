@@ -180,8 +180,9 @@ function markActiveAgents(state: OrchestrationState): void {
     // Always clear stale interrupt state on phase entry, even for terminal statuses
     runtime.interrupted = false;
     clearInterrupt(state.peerSyncDir, agent.name);
-    // Don't overwrite if agent already has a meaningful status for this phase
-    if (runtime.status.endsWith("-done") || runtime.status === "done" || runtime.status === "merged") {
+    // Don't overwrite if agent already has a meaningful status for THIS phase
+    const currentPhaseDone = `${state.phase}-done`;
+    if (runtime.status === currentPhaseDone || runtime.status === "done" || runtime.status === "merged") {
       continue;
     }
     runtime.status = phaseActiveStatus(state.phase);
@@ -312,10 +313,16 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
       continue;
     }
 
-    // Skip agents whose peer-sync status already shows done for this phase
-    // (resume after crash — agent finished but orchestrator didn't see it)
-    if (DONE_STATUSES.has(state.agentStates[agent.name]!.status)) {
-      continue;
+    // Skip agents whose peer-sync status already shows done for THIS phase
+    // (resume after crash — agent finished but orchestrator didn't see it).
+    // Only match the current phase's done status — a leftover "pr-comments-done"
+    // must not prevent dispatch in "final-merge".
+    {
+      const agentStatus = state.agentStates[agent.name]!.status;
+      const currentPhaseDone = `${state.phase}-done`;
+      if (agentStatus === currentPhaseDone || agentStatus === "done" || agentStatus === "merged") {
+        continue;
+      }
     }
 
     const skillMessage = await composeSkillMessage(state, agent);
