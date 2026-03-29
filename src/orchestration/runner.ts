@@ -947,11 +947,18 @@ export async function runOrchestration(
 
 /**
  * Create the appropriate transport for a persisted orchestration state.
- * Uses the backend field from state (single source of truth) with globalAdapter() as fallback
- * for states created before the backend field existed.
+ * Uses the backend field from state (single source of truth).  For legacy
+ * states created before the backend field existed, infer the backend from
+ * state data: populated threadIds indicate t3code; otherwise fall back to
+ * the current globalAdapter() setting.
  */
 async function createTransport(state: OrchestrationState): Promise<OrchestrationTransport> {
-  const backend = state.backend ?? globalAdapter();
+  let backend = state.backend;
+  if (!backend) {
+    // Legacy state: t3code states have non-empty threadIds; tmux does not.
+    const hasThreadIds = Object.values(state.threadIds ?? {}).some(v => !!v);
+    backend = hasThreadIds ? "t3code" : globalAdapter();
+  }
   if (backend === "tmux") {
     const { TmuxTransport } = await import("./transport-tmux.ts");
     return new TmuxTransport();

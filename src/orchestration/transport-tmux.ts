@@ -99,24 +99,21 @@ export class TmuxTransport implements OrchestrationTransport {
     const promptFile = `/tmp/ludics-prompt-${state.slot}-${agent.name}-${Date.now()}.txt`;
     writeFileSync(promptFile, message);
 
-    if (agent.provider === "claude-code") {
-      // Claude Code interactive: pipe the prompt file content
-      // Use Escape first to clear any partial input, then send the prompt
-      tmuxSendKeys(target, "Escape");
-      await Bun.sleep(50);
-      // Send the prompt content: read from file and type it in
-      const sendCmd = `cat ${promptFile}`;
-      tmuxSendKeys(target, `$(${sendCmd})`, true);
-      await Bun.sleep(50);
-      tmuxSendKeys(target, "Enter");
-    } else {
-      // Codex interactive: same approach
-      tmuxSendKeys(target, "Escape");
-      await Bun.sleep(50);
-      tmuxSendKeys(target, `$(cat ${promptFile})`, true);
-      await Bun.sleep(50);
-      tmuxSendKeys(target, "Enter");
-    }
+    // Inject prompt via tmux paste-buffer so the full text reaches the
+    // interactive CLI.  tmuxSendKeys with -l would send the literal string
+    // "$(cat ...)" instead of the file contents, and without -l special
+    // characters can be misinterpreted.  load-buffer + paste-buffer avoids
+    // both problems.
+    tmuxSendKeys(target, "Escape");
+    await Bun.sleep(50);
+    Bun.spawnSync(["tmux", "load-buffer", promptFile], {
+      stdout: "pipe", stderr: "pipe",
+    });
+    Bun.spawnSync(["tmux", "paste-buffer", "-t", target], {
+      stdout: "pipe", stderr: "pipe",
+    });
+    await Bun.sleep(50);
+    tmuxSendKeys(target, "Enter");
 
     return commandId;
   }
