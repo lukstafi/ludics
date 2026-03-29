@@ -308,7 +308,14 @@ export async function ensureServer(
       } catch { /* ignore */ }
     }
     try {
-      proc = Bun.spawn(command, {
+      // Wrap in setsid to isolate the server in its own process group.
+      // This prevents SIGINT from parent terminals or sibling processes
+      // (e.g., ludics CLI invocations) from killing the server.
+      const setsidBin = Bun.which("setsid");
+      const wrappedCommand = setsidBin
+        ? [setsidBin, ...command]  // Linux: setsid binary available
+        : ["perl", "-e", `use POSIX qw(setsid); setsid(); exec @ARGV`, "--", ...command]; // macOS: use perl
+      proc = Bun.spawn(wrappedCommand, {
         stdin: "ignore",
         stdout: "ignore",
         stderr: Bun.file(stderrPath),

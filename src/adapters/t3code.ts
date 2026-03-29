@@ -606,7 +606,14 @@ function orchestrationProjectDir(workspaceRoot: string): string {
 export async function startOrchestrationProcess(slot: number, harnessDir: string, feature: string): Promise<number> {
   const logPath = join(harnessDir, "orchestration", `slot-${slot}-${feature}.log`);
   const logFd = openSync(logPath, "a");
-  const proc = Bun.spawn(ludicsSelfCommand(["orch", "run-internal", String(slot)]), {
+  // Wrap in setsid to isolate the orchestrator in its own process group.
+  // Prevents SIGINT from parent terminals from killing the orchestrator.
+  const orchCommand = ludicsSelfCommand(["orch", "run-internal", String(slot)]);
+  const setsidBin = Bun.which("setsid");
+  const wrappedCommand = setsidBin
+    ? [setsidBin, ...orchCommand]
+    : ["perl", "-e", `use POSIX qw(setsid); setsid(); exec @ARGV`, "--", ...orchCommand];
+  const proc = Bun.spawn(wrappedCommand, {
     stdin: "ignore",
     stdout: "ignore",
     stderr: logFd,
