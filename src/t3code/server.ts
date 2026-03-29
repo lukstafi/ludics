@@ -749,7 +749,7 @@ export async function doctorServer(
 function checkpointWal(dbPath: string): void {
   if (!existsSync(dbPath)) return;
   try {
-    const db = new Database(dbPath, { readonly: false });
+    const db = new Database(dbPath, { readwrite: true });
     try {
       db.run("PRAGMA wal_checkpoint(TRUNCATE)");
     } catch {
