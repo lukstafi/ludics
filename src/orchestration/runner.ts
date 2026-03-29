@@ -312,6 +312,12 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
       continue;
     }
 
+    // Skip agents whose peer-sync status already shows done for this phase
+    // (resume after crash — agent finished but orchestrator didn't see it)
+    if (DONE_STATUSES.has(state.agentStates[agent.name]!.status)) {
+      continue;
+    }
+
     const skillMessage = await composeSkillMessage(state, agent);
     const commandId = await sendTurnMessage(state, agent, skillMessage);
 
