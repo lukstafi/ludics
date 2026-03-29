@@ -709,43 +709,50 @@ export async function doctorServer(
       }
     }
 
-    // 7. SDK version freshness (installed vs bundled)
+    // 7. SDK version freshness (installed vs resolved by bun)
     {
       const launcher = resolveLauncherCandidate();
       const repoDir = launcher.detail.match(/source repo at (.+)/)?.[1];
       if (repoDir) {
-        const installedPkgPath = join(repoDir, "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json");
-        const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
+        const bunCacheDir = join(repoDir, "node_modules", ".bun");
         let installedVersion: string | null = null;
-        let bundledVersion: string | null = null;
-        try {
-          installedVersion = JSON.parse(readFileSync(installedPkgPath, "utf-8")).version;
-        } catch { /* not installed */ }
-        // Extract version from stderr log (sdk path includes version)
-        if (existsSync(stderrPath)) {
+        let latestCached: string | null = null;
+        // Find all cached SDK versions and pick the highest
+        if (existsSync(bunCacheDir)) {
           try {
-            const stderr = readFileSync(stderrPath, "utf-8");
-            const match = stderr.match(/claude-agent-sdk@([0-9.]+)/);
-            if (match) bundledVersion = match[1];
+            const { readdirSync } = require("fs");
+            const entries: string[] = readdirSync(bunCacheDir);
+            const sdkVersions = entries
+              .map((e: string) => e.match(/^@anthropic-ai\+claude-agent-sdk@([0-9.]+)/)?.[1])
+              .filter((v): v is string => v != null)
+              .sort();
+            if (sdkVersions.length > 0) latestCached = sdkVersions[sdkVersions.length - 1];
           } catch { /* ignore */ }
         }
-        if (installedVersion && bundledVersion && installedVersion !== bundledVersion) {
+        // Check the canonical node_modules path
+        const installedPkgPath = join(repoDir, "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json");
+        try {
+          installedVersion = JSON.parse(readFileSync(installedPkgPath, "utf-8")).version;
+        } catch { /* may be hoisted into .bun only */ }
+        const effectiveVersion = installedVersion ?? latestCached;
+        // Compare against npm registry latest
+        const npmLatest = (() => { try {
+          const result = Bun.spawnSync(["npm", "view", "@anthropic-ai/claude-agent-sdk", "version"], {
+            stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string>,
+          });
+          return result.stdout.toString().trim() || null;
+        } catch { return null; } })();
+        if (effectiveVersion && npmLatest && effectiveVersion !== npmLatest) {
           checks.push({
             name: "SDK version freshness",
-            passed: false,
-            detail: `installed=${installedVersion} but bundled=${bundledVersion} — run: cd ${repoDir} && npx turbo run build --force`,
+            passed: true, // warning, not failure — may be intentional
+            detail: `claude-agent-sdk@${effectiveVersion} (latest: ${npmLatest}) — run \`bun update @anthropic-ai/claude-agent-sdk\` to update`,
           });
-        } else if (installedVersion && bundledVersion) {
+        } else if (effectiveVersion) {
           checks.push({
             name: "SDK version freshness",
             passed: true,
-            detail: `claude-agent-sdk@${installedVersion} (installed = bundled)`,
-          });
-        } else if (installedVersion) {
-          checks.push({
-            name: "SDK version freshness",
-            passed: true,
-            detail: `claude-agent-sdk@${installedVersion} installed (bundled version not detectable from logs)`,
+            detail: `claude-agent-sdk@${effectiveVersion}${npmLatest ? " (latest)" : ""}`,
           });
         }
       }
