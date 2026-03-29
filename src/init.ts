@@ -85,6 +85,8 @@ export async function runInit(args: string[]): Promise<void> {
     try {
       const stopped = await stopServer({ harnessDir: resolvedHarnessDir });
       console.log(stopped ? "  stopped existing server" : "  no running server found");
+      // Wait for file locks to be released after server shutdown
+      if (stopped) await new Promise((r) => setTimeout(r, 1500));
       const record = await ensureServer({ harnessDir: resolvedHarnessDir });
       console.log(`  started t3code server on ${record.webUrl} (pid ${record.pid})`);
     } catch (err) {

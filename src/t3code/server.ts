@@ -870,24 +870,32 @@ function backupDb(dbPath: string): void {
 function checkAndRecoverDb(dbPath: string): boolean {
   if (!existsSync(dbPath)) return true; // fresh start — nothing to check
 
-  // ---- Integrity check ----
+  // ---- Integrity check (with retry for transient file lock issues after server stop) ----
   let integrityOk = false;
-  try {
-    const db = new Database(dbPath, { readonly: true });
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const result = db.query("PRAGMA integrity_check").get() as { integrity_check: string } | null;
-      integrityOk = result?.integrity_check === "ok";
-      if (!integrityOk) {
-        console.error(
-          `t3code: integrity check failed: ${result?.integrity_check ?? "(no result)"}`,
-        );
+      const db = new Database(dbPath, { readonly: true });
+      try {
+        const result = db.query("PRAGMA integrity_check").get() as { integrity_check: string } | null;
+        integrityOk = result?.integrity_check === "ok";
+        if (!integrityOk) {
+          console.error(
+            `t3code: integrity check failed: ${result?.integrity_check ?? "(no result)"}`,
+          );
+        }
+      } finally {
+        db.close();
       }
-    } finally {
-      db.close();
+      break; // success — no retry needed
+    } catch (err) {
+      if (attempt < 2) {
+        // Transient file lock — wait and retry
+        Bun.sleepSync(500);
+        continue;
+      }
+      console.error(`t3code: integrity check error: ${err}`);
+      integrityOk = false;
     }
-  } catch (err) {
-    console.error(`t3code: integrity check error: ${err}`);
-    integrityOk = false;
   }
 
   if (integrityOk) return true;
