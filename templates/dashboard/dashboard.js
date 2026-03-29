@@ -377,9 +377,26 @@ function formatTime(isoString) {
     }
 }
 
-// Fetch t3code link
+// Fetch t3code / adapter link
 async function fetchT3codeLink() {
     try {
+        // Check adapter.json first — authoritative for tmux mode
+        const adapterResp = await fetch(CONFIG.dataPath + 'adapter.json');
+        if (adapterResp.ok) {
+            const adapterData = await adapterResp.json();
+            const link = document.getElementById('t3code-link');
+            if (!link) return;
+            if (adapterData.adapter === 'tmux') {
+                link.textContent = 'Terminals';
+                link.href = 'terminals.html';
+                link.title = 'Agent terminals (tmux+ttyd)';
+                link.style.opacity = '';
+                link.style.pointerEvents = '';
+                return;
+            }
+        }
+
+        // Fallback: original t3code link logic
         const response = await fetch(CONFIG.dataPath + 't3code.json');
         if (!response.ok) return;
         const data = await response.json();
