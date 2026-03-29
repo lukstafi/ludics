@@ -823,7 +823,7 @@ export async function runOrchestration(
   transport?: OrchestrationTransport,
 ): Promise<void> {
   if (!transport) {
-    transport = await createTransport();
+    transport = await createTransport(state);
   }
   persistState(state);
 
@@ -945,10 +945,14 @@ export async function runOrchestration(
   }
 }
 
-/** Create the appropriate transport based on the global adapter config. */
-async function createTransport(): Promise<OrchestrationTransport> {
-  const adapter = globalAdapter();
-  if (adapter === "tmux") {
+/**
+ * Create the appropriate transport for a persisted orchestration state.
+ * Uses the backend field from state (single source of truth) with globalAdapter() as fallback
+ * for states created before the backend field existed.
+ */
+async function createTransport(state: OrchestrationState): Promise<OrchestrationTransport> {
+  const backend = state.backend ?? globalAdapter();
+  if (backend === "tmux") {
     const { TmuxTransport } = await import("./transport-tmux.ts");
     return new TmuxTransport();
   }
@@ -959,7 +963,7 @@ async function createTransport(): Promise<OrchestrationTransport> {
 export async function runOrchestrationForSlot(slot: number, harnessDir?: string): Promise<void> {
   const state = readOrchestrationState(slot, harnessDir);
   if (!state) throw new Error(`orchestration state not found for slot ${slot}`);
-  const transport = await createTransport();
+  const transport = await createTransport(state);
   await runOrchestration(state, transport);
 }
 
@@ -974,7 +978,7 @@ export function confirmPhase(slot: number, harnessDir?: string): OrchestrationSt
 export async function interruptCurrentPhase(slot: number, harnessDir?: string): Promise<OrchestrationState> {
   const state = readOrchestrationState(slot, harnessDir);
   if (!state) throw new Error(`orchestration state not found for slot ${slot}`);
-  const transport = await createTransport();
+  const transport = await createTransport(state);
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
     await interruptAgent(state, agent, transport);

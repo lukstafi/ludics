@@ -914,6 +914,7 @@ async function startOrchestratedThreads(
     rootWorktree: setup.rootWorktree,
     peerSyncDir: setup.peerSyncDir,
     threadIds: Object.fromEntries(slotThreads.map((thread, index) => [agents[index]!.name, thread.threadId])),
+    backend: "t3code",
     taskId: ctx.taskId || undefined,
     slotTitle: title,
     stagingRepo: (() => {

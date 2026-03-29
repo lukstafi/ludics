@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
-import { harnessDir, slotsFilePath, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
+import { globalAdapter, harnessDir, slotsFilePath, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
 import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
          getSessionStarted, setField,
          emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
@@ -964,12 +964,26 @@ export async function runSlot(args: string[]): Promise<void> {
         }
       }
 
-      // Guard: shorthand orchestration flags require the t3code adapter.
+      // Guard: shorthand orchestration flags require an orchestrated adapter.
       // Raw -A/--adapter-args payloads are not subject to this check.
       if (hasDirectOrchFlags && adapter !== "t3code" && adapter !== "tmux") {
         throw new Error(
           `--pair/--coder/--reviewer/--plan flags require adapter "t3code" or "tmux" (got "${adapter}")`
         );
+      }
+
+      // Guard: orchestrated adapter must match globalAdapter() to prevent split-brain.
+      // The runner selects its transport from the persisted backend field, which is set
+      // from the adapter used at slot creation. A mismatch would start a t3code adapter
+      // session but spawn a runner that then uses TmuxTransport (or vice versa).
+      if (hasDirectOrchFlags || adapterArgFragments.some(f => /--(?:pair|duo)/.test(f))) {
+        const expected = globalAdapter();
+        if ((adapter === "t3code" || adapter === "tmux") && adapter !== expected) {
+          throw new Error(
+            `slot ${slotNum}: adapter "${adapter}" does not match global config adapter "${expected}".\n` +
+            `  Either change config.yaml to 'adapter: ${adapter}' or use '-a ${expected}'.`
+          );
+        }
       }
 
       // Auto-prepend --pair when any direct orchestration shorthand is present without an

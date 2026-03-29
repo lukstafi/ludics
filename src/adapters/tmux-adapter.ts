@@ -375,6 +375,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     rootWorktree: setup.rootWorktree,
     peerSyncDir: setup.peerSyncDir,
     threadIds: {}, // tmux mode doesn't use t3code threads
+    backend: "tmux",
     taskId: ctx.taskId || undefined,
     slotTitle: options.title ?? `s${ctx.slot}.${ctx.taskId || feature}`,
     stagingRepo: (() => {
