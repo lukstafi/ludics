@@ -202,7 +202,7 @@ Commands:
 
   status                       Overview of slots + tasks
   briefing                     Morning briefing
-  init [--no-hooks] [--no-dashboard] [--no-triggers]
+  init [--no-hooks] [--no-dashboard] [--no-triggers] [--restart-t3code]
                                Initialize config, harness, hooks, dashboard, and triggers
   stop [pause|uninstall]       Stop scheduled activity (default: pause)
   triggers install             Install launchd/systemd triggers
