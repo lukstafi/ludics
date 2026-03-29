@@ -87,11 +87,14 @@ export async function runInit(args: string[]): Promise<void> {
       console.log("  tmux: available");
       const hasTtyd = Bun.spawnSync(["which", "ttyd"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
       if (!hasTtyd) {
-        console.warn("  ttyd: NOT available — install from https://github.com/nicely/ttyd");
-        console.warn("  (dashboard terminals will not work until ttyd is installed)");
-      } else {
-        console.log("  ttyd: available");
+        throw new Error(
+          "adapter: tmux requires ttyd to be installed.\n" +
+          "  Install from https://github.com/nicely/ttyd\n" +
+          "  macOS: brew install ttyd\n" +
+          "  Linux: see https://github.com/nicely/ttyd#installation"
+        );
       }
+      console.log("  ttyd: available");
       // Pre-create the ludics tmux session if not already running
       const { tmuxHasSession, tmuxNewSession } = await import("./adapters/tmux.ts");
       if (!tmuxHasSession("ludics")) {

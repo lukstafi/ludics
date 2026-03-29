@@ -12,6 +12,7 @@ import {
   tmuxNewSession,
   tmuxPanePid,
   tmuxKillSession,
+  tmuxSendCommand,
   tmuxCapture,
 } from "./tmux.ts";
 import {
@@ -267,6 +268,44 @@ function killTmuxWindowsForSlot(slot: number, agentNames: string[]): void {
 }
 
 // ---------------------------------------------------------------------------
+// Boot persistent agent CLI in a tmux pane
+// ---------------------------------------------------------------------------
+
+/**
+ * Start a persistent interactive agent CLI in the pane.
+ * The CLI stays alive between turns; the transport injects prompts into it.
+ */
+function bootAgentCli(
+  slot: number,
+  agent: { name: string; provider: string },
+  peerSyncDir: string,
+  phaseToken: string,
+): void {
+  const target = tmuxTarget(slot, agent.name);
+
+  // Export environment variables needed by stop hooks
+  const envCmd = [
+    `export LUDICS_SLOT=${slot}`,
+    `LUDICS_AGENT=${agent.name}`,
+    `LUDICS_PEER_SYNC_DIR="${peerSyncDir}"`,
+    `LUDICS_PHASE_TOKEN="${phaseToken}"`,
+  ].join(" ");
+  tmuxSendCommand(target, envCmd);
+
+  // Determine CLI command based on provider
+  let cliCmd: string;
+  if (agent.provider === "claude-code") {
+    cliCmd = "claude --dangerously-skip-permissions";
+  } else {
+    // codex — interactive full-auto mode
+    cliCmd = "codex --full-auto";
+  }
+
+  // Boot the CLI (runs persistently in the pane)
+  tmuxSendCommand(target, cliCmd);
+}
+
+// ---------------------------------------------------------------------------
 // isAgentAlive — check if an agent CLI process is running in the tmux pane
 // ---------------------------------------------------------------------------
 
@@ -349,13 +388,15 @@ async function start(ctx: AdapterContext): Promise<string> {
   );
   writeAgentMarkerFiles(setup.peerSyncDir, setup.agentWorktrees);
 
-  // --- tmux-specific setup: create windows + ttyd ---
+  // --- tmux-specific setup: create windows + ttyd + boot agent CLIs ---
   ensureTmuxSession();
   const ttydPids: Record<string, number> = {};
   for (const agent of agents) {
     createTmuxWindow(ctx.slot, agent.name, agent.worktreePath);
     const role = (agent.role ?? (agent.name === "coder" ? "coder" : "reviewer")) as "coder" | "reviewer";
     ttydPids[agent.name] = startTtyd(ctx.slot, agent.name, role);
+    // Boot persistent interactive agent CLI in the pane
+    bootAgentCli(ctx.slot, agent, setup.peerSyncDir, "setup");
   }
 
   // --- Build orchestration state (no t3code threadIds) ---

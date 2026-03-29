@@ -73,35 +73,50 @@ export class TmuxTransport implements OrchestrationTransport {
     const target = tmuxTarget(state.slot, agent.name);
     const commandId = makeId("cmd");
 
-    // Write prompt to temp file to avoid shell escaping issues
+    // Update environment variables for the current phase token (stop hook needs it)
+    const envUpdateCmd = `export LUDICS_PHASE_TOKEN="${state.currentPhaseToken ?? ""}"`;
+    tmuxSendCommand(target, envUpdateCmd);
+    await Bun.sleep(100);
+
+    // Check if the agent CLI is already running in the pane (persistent session).
+    // If not, reboot it — this handles crash recovery and first-turn-after-resume.
+    const alive = isAgentCliAlive(state.slot, agent.name);
+    if (!alive) {
+      // Agent CLI not running — boot a fresh persistent session
+      let cliCmd: string;
+      if (agent.provider === "claude-code") {
+        cliCmd = "claude --dangerously-skip-permissions";
+      } else {
+        cliCmd = "codex --full-auto";
+      }
+      tmuxSendCommand(target, cliCmd);
+      // Wait for the CLI to boot and show its prompt
+      await Bun.sleep(3000);
+    }
+
+    // Inject prompt into the live interactive agent CLI session.
+    // Write to temp file to avoid shell escaping / tmux send-keys length limits.
     const promptFile = `/tmp/ludics-prompt-${state.slot}-${agent.name}-${Date.now()}.txt`;
     writeFileSync(promptFile, message);
 
-    // Export environment variables for stop hook
-    const envCmd = [
-      `export LUDICS_SLOT=${state.slot}`,
-      `LUDICS_AGENT=${agent.name}`,
-      `LUDICS_PEER_SYNC_DIR="${state.peerSyncDir}"`,
-      `LUDICS_PHASE_TOKEN="${state.currentPhaseToken ?? ""}"`,
-    ].join(" ");
-    tmuxSendCommand(target, envCmd);
-
-    // Small delay to ensure env vars are set before running the command
-    await Bun.sleep(100);
-
-    // Determine CLI command based on provider
-    let cliCmd: string;
     if (agent.provider === "claude-code") {
-      cliCmd = `claude --dangerously-skip-permissions -p "$(cat ${promptFile})"`;
+      // Claude Code interactive: pipe the prompt file content
+      // Use Escape first to clear any partial input, then send the prompt
+      tmuxSendKeys(target, "Escape");
+      await Bun.sleep(50);
+      // Send the prompt content: read from file and type it in
+      const sendCmd = `cat ${promptFile}`;
+      tmuxSendKeys(target, `$(${sendCmd})`, true);
+      await Bun.sleep(50);
+      tmuxSendKeys(target, "Enter");
     } else {
-      // codex
-      cliCmd = `codex --full-auto -q "$(cat ${promptFile})"`;
+      // Codex interactive: same approach
+      tmuxSendKeys(target, "Escape");
+      await Bun.sleep(50);
+      tmuxSendKeys(target, `$(cat ${promptFile})`, true);
+      await Bun.sleep(50);
+      tmuxSendKeys(target, "Enter");
     }
-
-    // Send command: text then C-m separately (agent-duo pattern)
-    tmuxSendKeys(target, cliCmd, true);
-    await Bun.sleep(50);
-    tmuxSendKeys(target, "C-m");
 
     return commandId;
   }
