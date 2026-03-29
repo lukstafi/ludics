@@ -264,6 +264,12 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
     try { unlinkSync(orchFile); } catch { /* ignore */ }
   }
 
+  // Remove tmux slot state if present
+  const tmuxSlotFile = join(harnessDir(), "orchestration", `tmux-slot-${slotNum}.json`);
+  if (existsSync(tmuxSlotFile)) {
+    try { unlinkSync(tmuxSlotFile); } catch { /* ignore */ }
+  }
+
   if (taskId && taskId !== "null") {
     taskUpdateForSlotClear(taskId, finalStatus);
     journalAppend("slot", `Slot ${slotNum} cleared: task=${taskId} status=${finalStatus}`);
@@ -548,12 +554,12 @@ export async function slotStart(slotNum: number): Promise<void> {
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
-  if (ctx.mode === "t3code" && !ctx.adapterArgs.trim()) {
+  if ((ctx.mode === "t3code" || ctx.mode === "tmux") && !ctx.adapterArgs.trim()) {
     throw new Error(
-      `slot ${slotNum}: t3code adapter requires orchestration flags.\n` +
+      `slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags.\n` +
       `  Reassign with one of:\n` +
-      `    ludics slot ${slotNum} assign <task> -a t3code --pair --coder <provider> --reviewer <provider>\n` +
-      `    ludics slot ${slotNum} assign <task> -a t3code -A "<flags>"`
+      `    ludics slot ${slotNum} assign <task> -a ${ctx.mode} --pair --coder <provider> --reviewer <provider>\n` +
+      `    ludics slot ${slotNum} assign <task> -a ${ctx.mode} -A "<flags>"`
     );
   }
 
@@ -622,17 +628,19 @@ export async function slotResume(slotNum: number): Promise<void> {
 
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode — nothing to resume`);
-  if (ctx.mode !== "t3code") {
-    throw new Error(`slot ${slotNum} has Mode=${ctx.mode} — resume only supports t3code`);
+  if (ctx.mode !== "t3code" && ctx.mode !== "tmux") {
+    throw new Error(`slot ${slotNum} has Mode=${ctx.mode} — resume only supports t3code and tmux`);
   }
   if (!ctx.taskId) throw new Error(`slot ${slotNum} has no Task — nothing to resume`);
 
-  // Require persisted t3code slot state
-  const slotState = readSlotState(slotNum, ctx.harnessDir);
-  if (!slotState || slotState.threads.length === 0) {
-    throw new Error(
-      `slot ${slotNum} has no persisted t3code state (t3code/slot-${slotNum}.json) — use 'slot start' for fresh start`
-    );
+  // --- t3code-specific: Require persisted slot state ---
+  if (ctx.mode === "t3code") {
+    const slotState = readSlotState(slotNum, ctx.harnessDir);
+    if (!slotState || slotState.threads.length === 0) {
+      throw new Error(
+        `slot ${slotNum} has no persisted t3code state (t3code/slot-${slotNum}.json) — use 'slot start' for fresh start`
+      );
+    }
   }
 
   // Require persisted orchestration state (orchestrated sessions only)
@@ -657,69 +665,121 @@ export async function slotResume(slotNum: number): Promise<void> {
     return;
   }
 
-  // Ensure t3code server is running
-  const { ensureServer } = await import("../t3code/server.ts");
-  const record = await ensureServer({ harnessDir: ctx.harnessDir });
+  // --- t3code-specific: validate server and threads ---
+  if (ctx.mode === "t3code") {
+    const slotState = readSlotState(slotNum, ctx.harnessDir)!;
+    // Ensure t3code server is running
+    const { ensureServer } = await import("../t3code/server.ts");
+    const record = await ensureServer({ harnessDir: ctx.harnessDir });
 
-  // Validate stored thread IDs still exist on the server
-  const { T3CodeClient } = await import("../t3code/client.ts");
-  const client = new T3CodeClient({ url: record.wsUrl, token: record.authToken });
-  try {
-    // Undelete any soft-deleted threads we need (t3code auto-cleans old project
-    // threads when new ones are created, but resume reuses the old thread IDs)
-    const storedThreadIds = slotState.threads.map((t) => t.threadId);
+    // Validate stored thread IDs still exist on the server
+    const { T3CodeClient } = await import("../t3code/client.ts");
+    const client = new T3CodeClient({ url: record.wsUrl, token: record.authToken });
     try {
-      const dbPath = join(ctx.harnessDir, "t3code", "userdata", "state.sqlite");
-      if (existsSync(dbPath)) {
-        const { Database } = await import("bun:sqlite");
-        const db = new Database(dbPath);
-        const placeholders = storedThreadIds.map(() => "?").join(",");
-        const result = db.run(
-          `UPDATE projection_threads SET deleted_at = NULL WHERE thread_id IN (${placeholders}) AND deleted_at IS NOT NULL`,
-          storedThreadIds,
-        );
-        if (result.changes > 0) {
-          console.error(`ludics: undeleted ${result.changes} soft-deleted thread(s) for resume`);
+      // Undelete any soft-deleted threads we need (t3code auto-cleans old project
+      // threads when new ones are created, but resume reuses the old thread IDs)
+      const storedThreadIds = slotState.threads.map((t) => t.threadId);
+      try {
+        const dbPath = join(ctx.harnessDir, "t3code", "userdata", "state.sqlite");
+        if (existsSync(dbPath)) {
+          const { Database } = await import("bun:sqlite");
+          const db = new Database(dbPath);
+          const placeholders = storedThreadIds.map(() => "?").join(",");
+          const result = db.run(
+            `UPDATE projection_threads SET deleted_at = NULL WHERE thread_id IN (${placeholders}) AND deleted_at IS NOT NULL`,
+            storedThreadIds,
+          );
+          if (result.changes > 0) {
+            console.error(`ludics: undeleted ${result.changes} soft-deleted thread(s) for resume`);
+          }
+          db.close();
         }
-        db.close();
+      } catch {
+        // Non-critical — continue with resume, threads might still work
       }
-    } catch {
-      // Non-critical — continue with resume, threads might still work
-    }
 
-    const snapshot = await client.getSnapshot();
-    const existingThreadIds = new Set(snapshot.threads.map((t: { id: string }) => t.id));
-    const missingThreads = storedThreadIds.filter((id) => !existingThreadIds.has(id));
-    if (missingThreads.length > 0) {
-      throw new Error(
-        `slot ${slotNum}: persisted thread(s) ${missingThreads.join(", ")} no longer exist on t3code server — ` +
-        `use 'ludics slot ${slotNum} clear' then 'ludics slot ${slotNum} start' for a fresh start`
-      );
+      const snapshot = await client.getSnapshot();
+      const existingThreadIds = new Set(snapshot.threads.map((t: { id: string }) => t.id));
+      const missingThreads = storedThreadIds.filter((id) => !existingThreadIds.has(id));
+      if (missingThreads.length > 0) {
+        throw new Error(
+          `slot ${slotNum}: persisted thread(s) ${missingThreads.join(", ")} no longer exist on t3code server — ` +
+          `use 'ludics slot ${slotNum} clear' then 'ludics slot ${slotNum} start' for a fresh start`
+        );
+      }
+    } finally {
+      client.close();
     }
-  } finally {
-    client.close();
   }
 
-  // Terminate stale orchestration runner if still alive
-  if (slotState.orchestration?.pid) {
-    const pid = slotState.orchestration.pid;
-    let alive = false;
-    try { process.kill(pid, 0); alive = true; } catch {
-      // PID already dead — expected for crash recovery
+  // --- tmux-specific: verify tmux session, re-create ttyd if needed ---
+  if (ctx.mode === "tmux") {
+    const { tmuxHasSession } = await import("../adapters/tmux.ts");
+    const { readTmuxSlotState } = await import("../adapters/tmux-adapter.ts");
+    const tmuxState = readTmuxSlotState(slotNum, ctx.harnessDir);
+
+    if (!tmuxHasSession("ludics")) {
+      const { tmuxNewSession } = await import("../adapters/tmux.ts");
+      tmuxNewSession("ludics");
+      console.error("ludics: re-created tmux session 'ludics' for resume");
     }
-    if (alive) {
-      console.error(`ludics: terminating stale orchestration runner (pid ${pid}) before resume`);
-      try { process.kill(pid, "SIGTERM"); } catch {
-        // ignore if kill fails
+
+    // Re-create ttyd instances for agents if needed
+    for (const agent of orchState.agents) {
+      const role = (agent.role ?? (agent.name === "coder" ? "coder" : "reviewer")) as "coder" | "reviewer";
+      const portBase = 7681;
+      const port = portBase + (slotNum - 1) * 2 + (role === "reviewer" ? 1 : 0);
+      const portInUse = Bun.spawnSync(["lsof", "-i", `:${port}`], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+      if (!portInUse) {
+        const target = `ludics:slot-${slotNum}-${agent.name}`;
+        const proc = Bun.spawn(
+          ["ttyd", "--writable", "--port", String(port), "tmux", "attach", "-t", target],
+          { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+        );
+        if (typeof (proc as { unref?: () => void }).unref === "function") {
+          (proc as { unref: () => void }).unref();
+        }
+        console.error(`ludics: re-started ttyd on port ${port} for ${agent.name}`);
       }
-      // Brief wait for graceful shutdown
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      // Force kill if still alive
-      try {
-        process.kill(pid, 0); // check if still alive
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // already dead — good
+    }
+
+    // Kill stale orchestration runner from tmux state
+    if (tmuxState?.orchestration?.pid) {
+      const pid = tmuxState.orchestration.pid;
+      let alive = false;
+      try { process.kill(pid, 0); alive = true; } catch { /* dead */ }
+      if (alive) {
+        console.error(`ludics: terminating stale orchestration runner (pid ${pid}) before resume`);
+        try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); } catch { /* dead */ }
+      }
+    }
+  }
+
+  // --- t3code-specific: terminate stale runner from t3code slot state ---
+  if (ctx.mode === "t3code") {
+    const slotState = readSlotState(slotNum, ctx.harnessDir)!;
+    if (slotState.orchestration?.pid) {
+      const pid = slotState.orchestration.pid;
+      let alive = false;
+      try { process.kill(pid, 0); alive = true; } catch {
+        // PID already dead — expected for crash recovery
+      }
+      if (alive) {
+        console.error(`ludics: terminating stale orchestration runner (pid ${pid}) before resume`);
+        try { process.kill(pid, "SIGTERM"); } catch {
+          // ignore if kill fails
+        }
+        // Brief wait for graceful shutdown
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        // Force kill if still alive
+        try {
+          process.kill(pid, 0); // check if still alive
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // already dead — good
+        }
       }
     }
   }
@@ -737,16 +797,31 @@ export async function slotResume(slotNum: number): Promise<void> {
   const newPid = await startOrchestrationProcess(slotNum, ctx.harnessDir, orchState.feature);
 
   // Update PID in slot state (only after successful spawn)
-  if (!slotState.orchestration) {
-    throw new Error(`slot ${slotNum}: persisted t3code state has no orchestration record — use 'slot start' for fresh start`);
+  if (ctx.mode === "t3code") {
+    const slotState = readSlotState(slotNum, ctx.harnessDir)!;
+    if (!slotState.orchestration) {
+      throw new Error(`slot ${slotNum}: persisted t3code state has no orchestration record — use 'slot start' for fresh start`);
+    }
+    writeSlotState({
+      ...slotState,
+      orchestration: {
+        ...slotState.orchestration,
+        pid: newPid,
+      },
+    }, ctx.harnessDir);
+  } else if (ctx.mode === "tmux") {
+    const { readTmuxSlotState, writeTmuxSlotState } = await import("../adapters/tmux-adapter.ts");
+    const tmuxState = readTmuxSlotState(slotNum, ctx.harnessDir);
+    if (tmuxState) {
+      writeTmuxSlotState({
+        ...tmuxState,
+        orchestration: {
+          ...tmuxState.orchestration!,
+          pid: newPid,
+        },
+      }, ctx.harnessDir);
+    }
   }
-  writeSlotState({
-    ...slotState,
-    orchestration: {
-      ...slotState.orchestration,
-      pid: newPid,
-    },
-  }, ctx.harnessDir);
 
   // Stamp session-active marker
   const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
@@ -891,9 +966,9 @@ export async function runSlot(args: string[]): Promise<void> {
 
       // Guard: shorthand orchestration flags require the t3code adapter.
       // Raw -A/--adapter-args payloads are not subject to this check.
-      if (hasDirectOrchFlags && adapter !== "t3code") {
+      if (hasDirectOrchFlags && adapter !== "t3code" && adapter !== "tmux") {
         throw new Error(
-          `--pair/--coder/--reviewer/--plan flags require adapter "t3code" (got "${adapter}")`
+          `--pair/--coder/--reviewer/--plan flags require adapter "t3code" or "tmux" (got "${adapter}")`
         );
       }
 

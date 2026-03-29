@@ -17,7 +17,7 @@ import {
   serverStatus,
   writeSlotState,
 } from "../t3code/server.ts";
-import { loadConfigSync } from "../config.ts";
+import { globalAdapter, loadConfigSync } from "../config.ts";
 import {
   toWireProvider,
   threadModel,
@@ -732,7 +732,8 @@ export function selectOrchestrationFlags(effort: string): { adapter: string; arg
   }
 
   const args = [...modeArgs, ...phaseFlags].join(" ");
-  return { adapter: "t3code", args };
+  // Use the global adapter setting so orchestration flags work with either backend
+  return { adapter: globalAdapter(), args };
 }
 
 /** Resolve the final model for an agent, applying config and adapter arg overrides. */
