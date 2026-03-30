@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ludics Terminals</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .terminal-grid {
+            display: flex; flex-direction: column;
+            gap: 4px; padding: 8px;
+        }
+        .terminal-pair {
+            display: flex; gap: 4px;
+            min-height: 50vh; flex-shrink: 0;
+        }
+        .terminal-cell {
+            flex: 1; display: flex; flex-direction: column;
+            border: 1px solid #333; border-radius: 4px; overflow: hidden;
+        }
+        .terminal-label {
+            background: #1a1a2e; color: #8be9fd;
+            padding: 4px 8px; font-size: 12px; font-family: monospace;
+        }
+        .terminal-frame {
+            flex: 1; border: none; width: 100%; min-height: 45vh;
+            background: #0d1117;
+        }
+        .terminal-cell.inactive .terminal-label { opacity: 0.4; }
+        .terminal-cell.inactive .terminal-frame { display: none; }
+        .terminal-cell.inactive::after {
+            content: 'No session'; display: flex; align-items: center;
+            justify-content: center; flex: 1; color: #555; font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="nav-links">
+            <h1>ludics</h1>
+            <a href="index.html">Dashboard</a>
+            <a href="terminal.html">Mag</a>
+            <a href="terminals.html" class="active">Terminals</a>
+            <a href="ntfy.html">ntfy</a>
+            <a href="tasks.html">Tasks</a>
+            <a href="briefing.html">Briefing</a>
+        </div>
+        <div class="status-bar">
+            <span id="last-update">Last update: --</span>
+            <span id="connection-status" class="connected">Connected</span>
+        </div>
+    </header>
+    <div class="terminal-grid">
+        <!-- Populated by JS from data/terminals.json -->
+    </div>
+    <script src="adapter-link.js"></script>
+    <script>
+        async function loadTerminals() {
+            try {
+                const resp = await fetch('data/terminals.json');
+                if (!resp.ok) return renderFallback();
+                const data = await resp.json();
+                renderTerminals(data.terminals || [], data.activeSlots || []);
+                document.getElementById('last-update').textContent =
+                    'Last update: ' + new Date().toLocaleTimeString();
+            } catch { renderFallback(); }
+        }
+        function renderTerminals(terminals, activeSlots) {
+            const grid = document.querySelector('.terminal-grid');
+            grid.innerHTML = '';
+            for (let slot = 1; slot <= 6; slot++) {
+                const pair = document.createElement('div');
+                pair.className = 'terminal-pair';
+                const slotActive = activeSlots.includes(slot);
+                for (const role of ['coder', 'reviewer']) {
+                    const cell = document.createElement('div');
+                    const entry = terminals.find(
+                        t => t.slot === slot && t.role === role
+                    );
+                    const port = entry?.port ?? (7681 + (slot-1)*2 + (role === 'reviewer' ? 1 : 0));
+                    const host = entry?.host ?? window.location.hostname;
+                    const active = slotActive && entry?.active !== false;
+                    cell.className = 'terminal-cell' + (active ? '' : ' inactive');
+                    cell.innerHTML = active
+                        ? `<div class="terminal-label">Slot ${slot} ${role} (:${port})</div>
+                           <iframe class="terminal-frame" src="http://${host}:${port}" loading="lazy"></iframe>`
+                        : `<div class="terminal-label">Slot ${slot} ${role} (:${port})</div>`;
+                    pair.appendChild(cell);
+                }
+                grid.appendChild(pair);
+            }
+        }
+        function renderFallback() { renderTerminals([], []); }
+        loadTerminals();
+        setInterval(loadTerminals, 30000);
+    </script>
+</body>
+</html>

@@ -3,11 +3,11 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync, statSync } from "fs";
 import { join, dirname } from "path";
 import YAML from "yaml";
-import { harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
+import { globalAdapter, harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
 import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted } from "./slots/markdown.ts";
 import { priorityValue } from "./tasks/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
-import { getUrl } from "./network.ts";
+import { getUrl, networkHostname } from "./network.ts";
 import { inspectManagedServerProcess, readServerRecord, t3codeStartingPath } from "./t3code/server.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
@@ -710,6 +710,52 @@ function generateT3code(): Record<string, unknown> {
   return { available: false, starting: false, webUrl };
 }
 
+// --- Generate adapter.json ---
+
+function generateAdapter(): Record<string, unknown> {
+  const adapter = globalAdapter();
+  if (adapter === "tmux") {
+    return { adapter: "tmux", t3codeAvailable: false, t3codeWebUrl: null };
+  }
+  // t3code mode — check server availability
+  const record = readServerRecord();
+  const webUrl = record ? getUrl(record.port) : null;
+  let t3codeAvailable = false;
+  if (record) {
+    const inspection = inspectManagedServerProcess(record);
+    t3codeAvailable = inspection.alive && inspection.matchesRecord;
+  }
+  return { adapter: "t3code", t3codeAvailable, t3codeWebUrl: webUrl };
+}
+
+// --- Generate terminals.json ---
+
+function generateTerminals(): Record<string, unknown> {
+  const host = networkHostname();
+  const slotsFile = slotsFilePath();
+  const activeSlots: number[] = [];
+
+  if (existsSync(slotsFile)) {
+    const blocks = parseSlotBlocks(readFileSync(slotsFile, "utf-8"));
+    for (const [num, block] of blocks) {
+      const mode = getMode(block).trim();
+      if (mode === "tmux") activeSlots.push(num);
+    }
+  }
+
+  const terminals: { slot: number; role: string; port: number; host: string; active: boolean }[] = [];
+  for (let slot = 1; slot <= 6; slot++) {
+    const slotActive = activeSlots.includes(slot);
+    for (const role of ["coder", "reviewer"]) {
+      const roleIndex = role === "reviewer" ? 1 : 0;
+      const port = 7681 + (slot - 1) * 2 + roleIndex;
+      terminals.push({ slot, role, port, host, active: slotActive });
+    }
+  }
+
+  return { terminals, activeSlots };
+}
+
 // --- Generate ntfy.json ---
 
 function generateNtfy(): Record<string, unknown> {
@@ -859,6 +905,12 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "t3code.json"), JSON.stringify(generateT3code(), null, 2));
   console.error("  t3code.json");
+
+  writeFileSync(join(dataDir, "adapter.json"), JSON.stringify(generateAdapter(), null, 2));
+  console.error("  adapter.json");
+
+  writeFileSync(join(dataDir, "terminals.json"), JSON.stringify(generateTerminals(), null, 2));
+  console.error("  terminals.json");
 
   writeFileSync(join(dataDir, "ntfy.json"), JSON.stringify(generateNtfy(), null, 2));
   console.error("  ntfy.json");

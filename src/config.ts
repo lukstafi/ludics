@@ -43,10 +43,14 @@ export interface ProjectConfig {
   codex_review_prompt?: string;
 }
 
+export type GlobalAdapterMode = "t3code" | "tmux";
+
 export interface LudicsFullConfig {
   state_repo: string;
   state_path: string;
   staleThresholdSeconds: number;
+  /** Global orchestration backend: "t3code" (default) or "tmux". */
+  adapter?: GlobalAdapterMode;
   slots?: { count?: number };
   projects?: ProjectConfig[];
   adapters?: Record<string, AdapterConfigEntry>;
@@ -195,10 +199,21 @@ export function loadConfigSync(): LudicsFullConfig {
   const staleEnv = process.env.SESSIONS_STALE_THRESHOLD;
   const staleThresholdSeconds = staleEnv ? parseInt(staleEnv, 10) : DEFAULT_STALE_THRESHOLD;
 
+  const rawAdapter = data.adapter as string | undefined;
+  let adapter: GlobalAdapterMode | undefined;
+  if (rawAdapter) {
+    if (rawAdapter === "t3code" || rawAdapter === "tmux") {
+      adapter = rawAdapter;
+    } else {
+      console.error(`ludics: config warning: unknown adapter "${rawAdapter}" — expected "t3code" or "tmux"`);
+    }
+  }
+
   return {
     state_repo: (data.state_repo as string) ?? "",
     state_path: (data.state_path as string) || "harness",
     staleThresholdSeconds,
+    adapter,
     slots: data.slots as LudicsFullConfig["slots"],
     projects: data.projects as LudicsFullConfig["projects"],
     adapters: data.adapters as LudicsFullConfig["adapters"],
@@ -213,6 +228,19 @@ export function loadConfigSync(): LudicsFullConfig {
 // Async wrapper for backward compatibility with Phase 1 callers
 export async function loadConfig(): Promise<LudicsFullConfig> {
   return loadConfigSync();
+}
+
+/**
+ * Return the global orchestration adapter mode.
+ * Defaults to "t3code" when the key is absent for backward compatibility.
+ */
+export function globalAdapter(): GlobalAdapterMode {
+  try {
+    const config = loadConfigSync();
+    return config.adapter ?? "t3code";
+  } catch {
+    return "t3code";
+  }
 }
 
 /**

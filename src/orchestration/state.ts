@@ -135,6 +135,10 @@ export interface OrchestrationState {
   prCodexApproved?: boolean;
   /** Phase token for the current phase — persisted for crash-recovery dedup. */
   currentPhaseToken?: string;
+  /** Which orchestration backend was used to create this state ("t3code" or "tmux").
+   *  The runner reads this to select the correct transport, preventing split-brain
+   *  when the global config differs from the slot's original backend.  */
+  backend?: "t3code" | "tmux";
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {

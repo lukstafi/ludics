@@ -6,7 +6,6 @@ import YAML from "yaml";
 import { ludicsRoot, pointerConfigPath, harnessDir } from "./config.ts";
 import { dashboardInstall, dashboardStop, dashboardServe } from "./dashboard.ts";
 import { triggersInstall } from "./triggers.ts";
-import { stopServer, ensureServer } from "./t3code/server.ts";
 
 const POINTER_CONFIG_TEMPLATE = `# ludics pointer config — edit state_repo, then run: ludics init
 state_repo: your-username/your-private-repo
@@ -21,7 +20,6 @@ export async function runInit(args: string[]): Promise<void> {
   const noHooks = args.includes("--no-hooks");
   const noDashboard = args.includes("--no-dashboard");
   const noTriggers = args.includes("--no-triggers");
-  const restartT3code = args.includes("--restart-t3code");
 
   const root = ludicsRoot();
 
@@ -78,25 +76,45 @@ export async function runInit(args: string[]): Promise<void> {
     }
   }
 
-  // 8b. t3code restart (opt-in)
-  if (restartT3code && repoDir) {
-    const resolvedHarnessDir = join(repoDir, statePath);
-    console.log("\n--- t3code server restart ---");
-    try {
-      const stopped = await stopServer({ harnessDir: resolvedHarnessDir });
-      console.log(stopped ? "  stopped existing server" : "  no running server found");
-      // Wait for file locks to be released after server shutdown
-      if (stopped) await new Promise((r) => setTimeout(r, 1500));
-      const record = await ensureServer({ harnessDir: resolvedHarnessDir });
-      console.log(`  started t3code server on ${record.webUrl} (pid ${record.pid})`);
-    } catch (err) {
-      console.warn(`warning: t3code restart failed: ${err instanceof Error ? err.message : String(err)}`);
+  // 9. Backend-specific setup
+  {
+    const { globalAdapter } = await import("./config.ts");
+    const adapter = globalAdapter();
+    if (adapter === "tmux") {
+      console.log("\n--- tmux backend ---");
+      const hasTmux = Bun.spawnSync(["which", "tmux"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+      if (!hasTmux) {
+        console.error("error: tmux adapter requires tmux to be installed");
+        process.exit(1);
+      }
+      console.log("  tmux: available");
+      const hasTtyd = Bun.spawnSync(["which", "ttyd"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+      if (!hasTtyd) {
+        console.error(
+          "error: tmux adapter requires ttyd to be installed.\n" +
+          "  Install from https://github.com/nicely/ttyd\n" +
+          "  macOS: brew install ttyd\n" +
+          "  Linux: see https://github.com/nicely/ttyd#installation"
+        );
+        process.exit(1);
+      }
+      console.log("  ttyd: available");
+      // Pre-create the ludics tmux session if not already running
+      const { tmuxHasSession, tmuxNewSession } = await import("./adapters/tmux.ts");
+      if (!tmuxHasSession("ludics")) {
+        tmuxNewSession("ludics");
+        // Disable mouse to prevent copy-mode lockups
+        Bun.spawnSync(["tmux", "set-option", "-t", "ludics", "mouse", "off"], {
+          stdout: "pipe", stderr: "pipe",
+        });
+        console.log("  created tmux session 'ludics'");
+      } else {
+        console.log("  tmux session 'ludics' already exists");
+      }
     }
-  } else if (restartT3code && !repoDir) {
-    console.warn("warning: --restart-t3code skipped — state repo not configured");
   }
 
-  // 9. Triggers
+  // 10. Triggers
   if (!noTriggers && configOk) {
     console.log("\n--- Triggers ---");
     try {

@@ -3,6 +3,8 @@
 state_repo: lukstafi/self-improve
 state_path: harness
 
+# adapter: t3code    # Global orchestration backend: "t3code" (default) or "tmux"
+
 slots:
   count: 6
 

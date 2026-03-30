@@ -17,7 +17,7 @@ import {
   serverStatus,
   writeSlotState,
 } from "../t3code/server.ts";
-import { loadConfigSync } from "../config.ts";
+import { globalAdapter, loadConfigSync } from "../config.ts";
 import {
   toWireProvider,
   threadModel,
@@ -603,37 +603,9 @@ function orchestrationProjectDir(workspaceRoot: string): string {
   return getMainRepoFromWorktree(workspaceRoot) ?? workspaceRoot;
 }
 
-export async function startOrchestrationProcess(slot: number, harnessDir: string, feature: string): Promise<number> {
-  const logPath = join(harnessDir, "orchestration", `slot-${slot}-${feature}.log`);
-  const logFd = openSync(logPath, "a");
-  // Wrap in setsid to isolate the orchestrator in its own process group.
-  // Prevents SIGINT from parent terminals from killing the orchestrator.
-  const orchCommand = ludicsSelfCommand(["orch", "run-internal", String(slot)]);
-  const setsidBin = Bun.which("setsid");
-  const wrappedCommand = setsidBin
-    ? [setsidBin, ...orchCommand]
-    : ["perl", "-e", `use POSIX qw(setsid); setsid(); exec @ARGV`, "--", ...orchCommand];
-  const proc = Bun.spawn(wrappedCommand, {
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: logFd,
-    env: {
-      ...(process.env as Record<string, string>),
-      LUDICS_HARNESS_DIR: harnessDir,
-    },
-  });
-  if (typeof (proc as { unref?: () => void }).unref === "function") {
-    (proc as { unref: () => void }).unref();
-  }
-
-  await Bun.sleep(500);
-  if (proc.exitCode !== null) {
-    const log = readFileSync(logPath, "utf-8").slice(-2000);
-    throw new Error(`Orchestration runner exited immediately (code ${proc.exitCode}):\n${log}`);
-  }
-
-  return proc.pid;
-}
+// Import from shared module; re-export for backward compat
+import { startOrchestrationProcess } from "../orchestration/process.ts";
+export { startOrchestrationProcess };
 
 function killPid(pid?: number): void {
   if (!pid || pid <= 0) return;
@@ -760,7 +732,8 @@ export function selectOrchestrationFlags(effort: string): { adapter: string; arg
   }
 
   const args = [...modeArgs, ...phaseFlags].join(" ");
-  return { adapter: "t3code", args };
+  // Use the global adapter setting so orchestration flags work with either backend
+  return { adapter: globalAdapter(), args };
 }
 
 /** Resolve the final model for an agent, applying config and adapter arg overrides. */
@@ -941,6 +914,7 @@ async function startOrchestratedThreads(
     rootWorktree: setup.rootWorktree,
     peerSyncDir: setup.peerSyncDir,
     threadIds: Object.fromEntries(slotThreads.map((thread, index) => [agents[index]!.name, thread.threadId])),
+    backend: "t3code",
     taskId: ctx.taskId || undefined,
     slotTitle: title,
     stagingRepo: (() => {
