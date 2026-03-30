@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { ttydPort } from "./transport-tmux.ts";
+import { describe, expect, test, spyOn, beforeEach, afterEach } from "bun:test";
+import { ttydPort, TmuxTransport } from "./transport-tmux.ts";
+import * as tmux from "../adapters/tmux.ts";
+import * as fs from "fs";
+import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState, type AgentConfig } from "./state.ts";
 
 describe("ttydPort fixed-port mapping", () => {
   test("slot 1 coder → 7681", () => {
@@ -70,5 +73,120 @@ describe("TmuxTransport class", () => {
     // No subscribeEvents — pure polling
     const asTransport = transport as import("./transport.ts").OrchestrationTransport;
     expect(asTransport.subscribeEvents).toBeUndefined();
+  });
+});
+
+describe("sendTurn prompt injection via paste-buffer", () => {
+  let spawnCalls: string[][];
+  let sendKeysCalls: string[];
+  let writeFileCalls: { path: string; data: string }[];
+  let spawnSyncSpy: ReturnType<typeof spyOn>;
+  let sendKeysSpy: ReturnType<typeof spyOn>;
+  let sendCommandSpy: ReturnType<typeof spyOn>;
+  let writeFileSpy: ReturnType<typeof spyOn>;
+  let panePidSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    spawnCalls = [];
+    sendKeysCalls = [];
+    writeFileCalls = [];
+
+    spawnSyncSpy = spyOn(Bun, "spawnSync").mockImplementation((...args: unknown[]) => {
+      const cmd = args[0] as string[];
+      spawnCalls.push(cmd);
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as never;
+    });
+    // Stub Bun.sleep to avoid actual delays
+    spyOn(Bun, "sleep").mockResolvedValue(undefined as never);
+
+    sendKeysSpy = spyOn(tmux, "tmuxSendKeys").mockImplementation((_target: string, keys: string) => {
+      sendKeysCalls.push(keys);
+      return true;
+    });
+    sendCommandSpy = spyOn(tmux, "tmuxSendCommand").mockImplementation(() => true);
+    writeFileSpy = spyOn(fs, "writeFileSync").mockImplementation((path: unknown, data: unknown) => {
+      writeFileCalls.push({ path: String(path), data: String(data) });
+    });
+    // isAgentCliAlive checks tmuxPanePid — return a pid so it thinks agent is alive
+    // (avoids the boot path). We also need spawnSync to return pgrep output.
+    panePidSpy = spyOn(tmux, "tmuxPanePid").mockReturnValue(12345);
+    // Override spawnSync to also handle pgrep and ps for isAgentCliAlive
+    spawnSyncSpy.mockImplementation((...args: unknown[]) => {
+      const cmd = args[0] as string[];
+      spawnCalls.push(cmd);
+      if (cmd[0] === "pgrep") {
+        return { exitCode: 0, stdout: Buffer.from("99999\n"), stderr: Buffer.from("") } as never;
+      }
+      if (cmd[0] === "ps") {
+        return { exitCode: 0, stdout: Buffer.from("claude\n"), stderr: Buffer.from("") } as never;
+      }
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as never;
+    });
+  });
+
+  afterEach(() => {
+    spawnSyncSpy.mockRestore();
+    sendKeysSpy.mockRestore();
+    sendCommandSpy.mockRestore();
+    writeFileSpy.mockRestore();
+    panePidSpy.mockRestore();
+  });
+
+  test("uses load-buffer and paste-buffer, not $(cat ...)", async () => {
+    const transport = new TmuxTransport();
+    const agent: AgentConfig = {
+      name: "coder",
+      role: "coder",
+      provider: "claude-code",
+      model: "claude-opus-4-6",
+      branch: "test-branch",
+      worktreePath: "/tmp/test-worktree",
+    };
+    const state = {
+      slot: 1,
+      feature: "test-feature",
+      mode: "duo" as const,
+      phase: "work" as const,
+      round: 1,
+      mergeRound: 0,
+      agents: [agent],
+      agentStates: initAgentRuntimeState(["coder"]),
+      config: defaultOrchestrationConfig(),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/test",
+      rootWorktree: "/tmp/test",
+      peerSyncDir: "/tmp/test/.peer-sync",
+      threadIds: {},
+      currentPhaseToken: "phase-test",
+    } satisfies OrchestrationState;
+
+    const promptText = "Hello, this is a test prompt with special chars: $HOME `backticks` $(dangerous)";
+    await transport.sendTurn(state, agent, promptText);
+
+    // Verify prompt was written to a temp file
+    expect(writeFileCalls.length).toBe(1);
+    expect(writeFileCalls[0]!.data).toBe(promptText);
+    const promptFile = writeFileCalls[0]!.path;
+    expect(promptFile).toMatch(/^\/tmp\/ludics-prompt-/);
+
+    // Verify tmux load-buffer was called with the prompt file
+    const loadBufferCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "load-buffer");
+    expect(loadBufferCall).toBeDefined();
+    expect(loadBufferCall![2]).toBe(promptFile);
+
+    // Verify tmux paste-buffer was called with the correct target
+    const pasteBufferCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "paste-buffer");
+    expect(pasteBufferCall).toBeDefined();
+    expect(pasteBufferCall![3]).toBe("ludics:slot-1-coder");
+
+    // Verify NO $(cat ...) was sent via send-keys
+    for (const keys of sendKeysCalls) {
+      expect(keys).not.toContain("$(cat");
+      expect(keys).not.toContain("$(/");
+    }
+
+    // Verify Enter was sent after paste-buffer
+    expect(sendKeysCalls).toContain("Enter");
   });
 });

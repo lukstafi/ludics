@@ -77,22 +77,26 @@ export async function runInit(args: string[]): Promise<void> {
   }
 
   // 9. Backend-specific setup
-  try {
+  {
     const { globalAdapter } = await import("./config.ts");
     const adapter = globalAdapter();
     if (adapter === "tmux") {
       console.log("\n--- tmux backend ---");
       const hasTmux = Bun.spawnSync(["which", "tmux"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
-      if (!hasTmux) throw new Error("adapter: tmux requires tmux to be installed");
+      if (!hasTmux) {
+        console.error("error: tmux adapter requires tmux to be installed");
+        process.exit(1);
+      }
       console.log("  tmux: available");
       const hasTtyd = Bun.spawnSync(["which", "ttyd"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
       if (!hasTtyd) {
-        throw new Error(
-          "adapter: tmux requires ttyd to be installed.\n" +
+        console.error(
+          "error: tmux adapter requires ttyd to be installed.\n" +
           "  Install from https://github.com/nicely/ttyd\n" +
           "  macOS: brew install ttyd\n" +
           "  Linux: see https://github.com/nicely/ttyd#installation"
         );
+        process.exit(1);
       }
       console.log("  ttyd: available");
       // Pre-create the ludics tmux session if not already running
@@ -108,8 +112,6 @@ export async function runInit(args: string[]): Promise<void> {
         console.log("  tmux session 'ludics' already exists");
       }
     }
-  } catch (err) {
-    console.warn(`warning: backend setup failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // 10. Triggers

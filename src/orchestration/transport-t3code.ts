@@ -5,6 +5,7 @@ import { T3CodeClient } from "../t3code/client.ts";
 import { readServerRecord } from "../t3code/server.ts";
 import { toWireProvider } from "../t3code/types.ts";
 import type { T3CodeServerRecord, T3Snapshot } from "../t3code/types.ts";
+import { emitEvent } from "../events.ts";
 import { agentParticipatesInPhase } from "./phases.ts";
 import { readStopHookRecord } from "./peer-sync.ts";
 import type { OrchestrationTransport } from "./transport.ts";
@@ -170,6 +171,60 @@ export class T3CodeTransport implements OrchestrationTransport {
             lc.turnCompletedAt = latestTurn.completedAt ?? isoNow();
             lc.completionSource = "stop-hook";
           }
+        }
+
+        // Snapshot reconciliation for stuck dispatched lifecycles:
+        // If lifecycle is still "dispatched", no stop-hook arrived, but the snapshot
+        // shows a terminal latestTurn requested AFTER our dispatch, settle the lifecycle.
+        if (lc.state === "dispatched" && !activeTurnId && latestTurn
+            && (latestTurn.state === "completed" || latestTurn.state === "error")
+            && sessionStatus !== null && sessionStatus !== undefined) {
+          const turnRequested = latestTurn.requestedAt
+            ? new Date(latestTurn.requestedAt).getTime()
+            : 0;
+          const dispatched = new Date(lc.dispatchedAt).getTime();
+          if (turnRequested >= dispatched) {
+            lc.observedTurnId = latestTurn.turnId;
+            lc.state = latestTurn.state === "error" ? "error" : "settled";
+            lc.turnCompletedAt = latestTurn.completedAt ?? isoNow();
+            lc.completionSource = "snapshot";
+            emitEvent({
+              event_type: "orchestration_snapshot_reconcile",
+              source: "orchestration",
+              scope: "slot",
+              slot: state.slot,
+              task: state.feature,
+              agent: agent.name,
+              message: `${agent.name}: reconciled stuck dispatched lifecycle via snapshot (latestTurn.requestedAt >= dispatchedAt)`,
+            });
+          }
+        }
+
+        // Post-nudge outcome classification
+        if ((lc.stallDetectedAt ?? null) !== null && lc.state === "settled") {
+          const nudgeAttempts = lc.nudgeAttempts ?? 0;
+          if (nudgeAttempts > 0) {
+            const currentAMId = latestTurn?.assistantMessageId ?? null;
+            const preAMId = lc.preNudgeAssistantMessageId ?? null;
+            const agentResponded = currentAMId !== null && currentAMId !== preAMId;
+            emitEvent({
+              event_type: agentResponded
+                ? "orchestration_nudge_settled_alive"
+                : "orchestration_nudge_settled_dead",
+              source: "orchestration",
+              scope: "slot",
+              slot: state.slot,
+              task: state.feature,
+              agent: agent.name,
+              nudgeAttempts,
+              message: `${agent.name}: stall resolved (${agentResponded ? "alive" : "dead"}) after ${nudgeAttempts} nudge(s)`,
+            });
+          }
+          // Clear stall bookkeeping
+          lc.stallDetectedAt = null;
+          lc.nudgeAttempts = 0;
+          lc.lastNudgeAt = null;
+          lc.preNudgeAssistantMessageId = null;
         }
       }
     }
