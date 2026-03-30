@@ -9,6 +9,7 @@ import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
 import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
+import { emitEvent } from "./events.ts";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -378,10 +379,17 @@ export function startDashboardServer(
         try {
           const holdFile = join(harnessDir(), "mag", "queue-hold");
           if (stateParam === "true") {
+            const alreadyHeld = existsSync(holdFile);
             mkdirSync(join(harnessDir(), "mag"), { recursive: true });
             writeFileSync(holdFile, "");
+            if (!alreadyHeld) {
+              emitEvent({ event_type: "queue_hold", source: "dashboard", scope: "queue", action: "hold" });
+            }
           } else {
-            if (existsSync(holdFile)) unlinkSync(holdFile);
+            if (existsSync(holdFile)) {
+              unlinkSync(holdFile);
+              emitEvent({ event_type: "queue_hold", source: "dashboard", scope: "queue", action: "resume" });
+            }
           }
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
