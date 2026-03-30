@@ -46,6 +46,12 @@ This skill is invoked when:
      flag as warning: "Active [agent] session on [project] has no slot (all slots occupied)"
    - If unmatched sessions exist:
      flag as info: "Unrecognized session at [cwd] — not matched to any configured project"
+   - For each active `Mode=t3code` slot, read orchestration state:
+     `cat "$LUDICS_STATE_PATH/orchestration/slot-<N>.json" 2>/dev/null`
+     - Check each agent's `turnLifecycle.stallDetectedAt`
+     - If non-null, report: slot number, agent name, phase, stall age, nudge count
+     - Build stable issue key: `slot-stall:<slot>:<agent>`
+     - Severity: warning if nudgeAttempts < 2, critical if >= 2
 
 3. **Check queue health**:
    - Read `mag/queue.jsonl`
