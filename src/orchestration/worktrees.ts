@@ -9,7 +9,7 @@ export interface WorktreeSetup {
   branches: Record<string, string>;
 }
 
-function runGit(projectDir: string, args: string[]): string {
+export function runGit(projectDir: string, args: string[]): string {
   const result = Bun.spawnSync(["git", ...args], {
     cwd: projectDir,
     stdout: "pipe",
@@ -169,4 +169,67 @@ export function cleanupWorktrees(
       removeIfRegistered(projectDir, join(parentDir, `${stem}-${slugify(agent.name)}`));
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-commit helpers
+// ---------------------------------------------------------------------------
+
+/** Paths that the orchestrator writes into worktrees but must never be committed. */
+const ORCHESTRATION_EXCLUDES = [
+  ":!.peer-sync",
+  ":!.ludics-orchestration.json",
+  ":!.claude",
+];
+
+export interface AutoCommitResult {
+  /** Whether the worktree had eligible uncommitted changes. */
+  dirty: boolean;
+  /** Whether a commit was created. */
+  committed: boolean;
+  /** SHA of the created commit, if any. */
+  commitSha?: string;
+  /** Error message if something went wrong. */
+  error?: string;
+}
+
+/**
+ * Auto-commit any uncommitted changes in the given directory, excluding
+ * orchestration-internal paths (.peer-sync, .ludics-orchestration.json, .claude).
+ * Returns a structured result. Safe to call on clean worktrees (no-op).
+ */
+export function autoCommitWorktree(
+  worktreePath: string,
+  commitMessage: string,
+): AutoCommitResult {
+  // Use runGit (throws on failure) in try/catch so we can distinguish
+  // "clean tree" from "git command failed". maybeGit collapses both to "".
+  let status: string;
+  try {
+    status = runGit(worktreePath, [
+      "status", "--porcelain", "--", ".", ...ORCHESTRATION_EXCLUDES,
+    ]);
+  } catch (err) {
+    return { dirty: false, committed: false, error: `status check failed: ${err}` };
+  }
+
+  if (!status) return { dirty: false, committed: false }; // clean tree
+
+  try {
+    runGit(worktreePath, ["add", "-A", "--", ".", ...ORCHESTRATION_EXCLUDES]);
+    runGit(worktreePath, ["commit", "-m", commitMessage]);
+    const sha = maybeGit(worktreePath, ["rev-parse", "--short", "HEAD"]);
+    return { dirty: true, committed: true, commitSha: sha || undefined };
+  } catch (err) {
+    return { dirty: true, committed: false, error: String(err) };
+  }
+}
+
+/**
+ * Push the current branch, setting upstream tracking if needed.
+ * Freshly-created worktree branches may not have an upstream, so
+ * we use `git push -u origin <branch>`.
+ */
+export function pushBranch(worktreePath: string, branch: string): void {
+  runGit(worktreePath, ["push", "-u", "origin", branch]);
 }

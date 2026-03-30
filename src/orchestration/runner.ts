@@ -22,6 +22,7 @@ import { fetchNewPrCommentCount, hasPrApprovalReaction, isPrMerged, postCodexRev
 import { updateFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, harnessDir } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
+import { autoCommitWorktree, pushBranch } from "./worktrees.ts";
 
 async function withClient<T>(
   record: T3CodeServerRecord,
@@ -608,6 +609,95 @@ async function handleTimeout(state: OrchestrationState): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Auto-commit helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Auto-commit any uncommitted changes for an agent and optionally push.
+ * Logs events for commits, warnings for failures. No-op on clean worktree.
+ */
+export function autoCommitAgent(
+  state: OrchestrationState,
+  agent: AgentConfig,
+  push: boolean = false,
+): void {
+  const runtime = state.agentStates[agent.name];
+  if (!runtime) return;
+
+  // Build commit message: "<agent> <phase>: <status message or WIP>"
+  const statusMsg = runtime.statusMessage?.replace(/\s+/g, " ").trim() || "WIP";
+  const commitMessage = `${agent.name} ${state.phase}: ${statusMsg}`;
+
+  const result = autoCommitWorktree(agent.worktreePath, commitMessage);
+
+  if (result.committed) {
+    emitEvent({
+      event_type: "auto_commit",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.feature,
+      message: `auto-committed ${result.commitSha ?? ""} in ${agent.worktreePath}: ${commitMessage}`,
+    });
+  } else if (result.error) {
+    emitEvent({
+      event_type: "orchestration_warning",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.feature,
+      message: `auto-commit failed for ${agent.name}: ${result.error}`,
+    });
+  }
+  // dirty===false && !error → clean tree, silent no-op
+
+  if (result.committed && push) {
+    try {
+      pushBranch(agent.worktreePath, agent.branch);
+    } catch (err) {
+      // Best-effort push — warn but don't block phase transition
+      emitEvent({
+        event_type: "orchestration_warning",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.feature,
+        message: `auto-commit push failed for ${agent.name}: ${err}`,
+      });
+    }
+  }
+}
+
+/**
+ * Auto-commit all agents, deduplicating by worktreePath (pair mode: both
+ * agents share rootWorktree). Attributes the commit to the agent with
+ * the newest statusEpoch for deterministic pair-mode attribution.
+ */
+export function autoCommitAllAgents(
+  state: OrchestrationState,
+  agents: AgentConfig[],
+  push: boolean,
+): void {
+  // Deduplicate by worktreePath → pick the agent with the newest status.
+  const byPath = new Map<string, AgentConfig>();
+  for (const agent of agents) {
+    const existing = byPath.get(agent.worktreePath);
+    if (!existing) {
+      byPath.set(agent.worktreePath, agent);
+    } else {
+      const existingEpoch = state.agentStates[existing.name]?.statusEpoch ?? 0;
+      const candidateEpoch = state.agentStates[agent.name]?.statusEpoch ?? 0;
+      if (candidateEpoch > existingEpoch) {
+        byPath.set(agent.worktreePath, agent);
+      }
+    }
+  }
+  for (const agent of byPath.values()) {
+    autoCommitAgent(state, agent, push);
+  }
+}
+
 async function pollUntilDone(state: OrchestrationState): Promise<void> {
   const timeout = state.config.timeouts[state.phase] ?? 600;
   const deadline = state.phaseStartedAt + timeout;
@@ -791,12 +881,29 @@ export async function runOrchestration(
     persistState(state);
 
     await pollUntilDone(state);
+
+    // Auto-commit any uncommitted work after agents finish their turn.
+    // Push=false here; push happens before PR-related phases below.
+    const participating = state.agents.filter(a => agentParticipatesInPhase(state, a));
+    autoCommitAllAgents(state, participating, /* push */ false);
+
     const evaluated = evaluateTransition(state);
     const next = maybeOverrideTransition(state, evaluated);
 
     if (!next) {
       await sleep(state.config.pollInterval * 1000);
       continue;
+    }
+
+    // Before phases that require committed+pushed code, ensure nothing is lost.
+    // Iterate ALL agents: non-participating agents may have leftover uncommitted
+    // work from a previous phase that needs to be pushed before PR creation.
+    const pushBeforePhases = new Set([
+      "pr-create", "forward-pr", "final-merge",
+      "merge-execute", "merge-review",
+    ]);
+    if (pushBeforePhases.has(next)) {
+      autoCommitAllAgents(state, state.agents, /* push */ true);
     }
 
     applyPhaseSideEffects(state, next);
