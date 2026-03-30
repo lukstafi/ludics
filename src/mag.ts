@@ -18,7 +18,8 @@ import {
   expirePendingRevises,
   expirePendingFollowupRevises,
 } from "./notify.ts";
-import { slotAssign, slotClear, slotStart, taskCompleteDirectly } from "./slots/index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, taskCompleteDirectly } from "./slots/index.ts";
+import { readSlotState } from "./t3code/server.ts";
 import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
 import { selectOrchestrationFlags } from "./adapters/t3code.ts";
 import YAML from "yaml";
@@ -2123,6 +2124,88 @@ function maybeFillEmptySlots(): void {
   }
 }
 
+// --- Auto-resume dead orchestrator processes ---
+
+/**
+ * Detect dead orchestrator processes and auto-resume via slotResume().
+ * Follows the maybeClearDoneSlots() pattern.
+ * Rate-limited: at most 1 resume per keepalive invocation.
+ */
+async function maybeResumeDeadOrchestrators(): Promise<void> {
+  if (startSessionsAutonomy() === "manual") return;
+
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return;
+
+  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  let resumed = 0;
+
+  for (const [slotNum, block] of blocks) {
+    if (resumed >= 1) break; // rate-limit: at most 1 per invocation
+
+    // IMPORTANT: use `slotProcess` not `process` to avoid shadowing the global
+    const slotProcess = getProcess(block).trim();
+    if (!slotProcess || slotProcess === "(empty)") continue;
+
+    const mode = getMode(block).trim();
+    if (mode !== "t3code") continue;
+
+    const taskId = getTask(block).trim();
+    if (!taskId || taskId === "null") continue;
+
+    const orchState = readOrchestrationState(slotNum);
+    if (!orchState) continue;
+    if (orchState.phase === "done") continue;
+
+    // Guard: orchestration state must match slot's current task
+    if (orchState.taskId && orchState.taskId !== taskId) continue;
+
+    const slotState = readSlotState(slotNum);
+    if (!slotState?.orchestration?.pid) continue;
+
+    const pid = slotState.orchestration.pid;
+    let alive = true;
+    try {
+      process.kill(pid, 0); // global process — PID liveness check
+    } catch {
+      alive = false;
+    }
+    if (alive) continue;
+
+    console.error(
+      `ludics: detected dead orchestrator for slot ${slotNum} ` +
+      `(pid ${pid}, task ${taskId}, phase ${orchState.phase}) — auto-resuming`,
+    );
+    try {
+      await slotResume(slotNum);
+      resumed += 1;
+      emitEvent({
+        event_type: "orchestration_auto_resume",
+        source: "keepalive",
+        scope: "slot",
+        slot: slotNum,
+        task: taskId,
+        deadPid: pid,
+        message: `auto-resumed dead orchestrator (pid ${pid}, phase=${orchState.phase})`,
+      });
+    } catch (err) {
+      console.error(
+        `ludics: failed to auto-resume slot ${slotNum}: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      );
+      emitEvent({
+        event_type: "orchestration_auto_resume_failed",
+        source: "keepalive",
+        scope: "slot",
+        slot: slotNum,
+        task: taskId,
+        status: "failed",
+        message: `auto-resume failed for slot ${slotNum}: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+}
+
 // --- Auto-clear slots whose task reached done status ---
 
 function maybeClearDoneSlots(): void {
@@ -2206,6 +2289,9 @@ export async function magStart(args: string[]): Promise<void> {
 
     // Auto-clear slots whose task reached done status
     maybeClearDoneSlots();
+
+    // Auto-resume dead orchestrator processes
+    await maybeResumeDeadOrchestrators();
 
     // Auto-fill empty slots with ready elaborated tasks
     maybeFillEmptySlots();

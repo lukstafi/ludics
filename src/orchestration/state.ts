@@ -53,6 +53,17 @@ export interface AgentTurnLifecycle {
   statusFileFingerprint: string | null;
   /** ISO timestamp of the most recent stop hook for this agent. */
   lastStopHookAt: string | null;
+  // --- Stall detection & nudge fields ---
+  /** ISO timestamp when stall was first detected (null = no active stall). */
+  stallDetectedAt?: string | null;
+  /** Number of nudge messages sent during this stall episode. */
+  nudgeAttempts?: number;
+  /** ISO timestamp of the most recent nudge dispatch. */
+  lastNudgeAt?: string | null;
+  /** assistantMessageId from the thread's latestTurn at the moment a nudge was sent.
+   *  Used to classify post-nudge outcome: if it changes after settlement,
+   *  the agent was alive; if unchanged, the session was dead. */
+  preNudgeAssistantMessageId?: string | null;
 }
 
 export interface AgentRuntimeState {

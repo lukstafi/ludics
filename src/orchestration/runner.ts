@@ -24,6 +24,16 @@ import { findProjectConfig, harnessDir } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
 import { autoCommitWorktree, pushBranch } from "./worktrees.ts";
 
+// --- Stall detection constants ---
+/** Seconds after turnStartedAt before a running-but-done-status agent is stalled. */
+const STALL_THRESHOLD_S = 180;
+/** Seconds after dispatchedAt before a never-started dispatch is stalled. */
+const DISPATCH_STALL_THRESHOLD_S = 300;
+/** Minimum seconds between nudge attempts per agent. */
+const NUDGE_COOLDOWN_S = 120;
+/** Force-settle via interruptAgent() after this many failed nudges. */
+const MAX_NUDGE_ATTEMPTS = 2;
+
 async function withClient<T>(
   record: T3CodeServerRecord,
   fn: (client: T3CodeClient) => Promise<T>,
@@ -97,8 +107,69 @@ export function refreshAgentStatuses(state: OrchestrationState, snapshot: T3Snap
       }
     }
 
+    // --- 3c. Snapshot reconciliation for stuck dispatched lifecycles ---
+    // If lifecycle is still "dispatched", no stop-hook arrived, but the snapshot
+    // shows a terminal latestTurn that was requested AFTER our dispatch, settle
+    // the lifecycle. This handles the case where t3code processed the turn but
+    // the orchestrator never observed it running (e.g. very fast completion,
+    // snapshot polling gap).
+    if (lc && lc.state === "dispatched" && !activeTurnId && latestTurn
+        && (latestTurn.state === "completed" || latestTurn.state === "error")
+        && sessionStatus !== null && sessionStatus !== undefined) {
+      const turnRequested = latestTurn.requestedAt
+        ? new Date(latestTurn.requestedAt).getTime()
+        : 0;
+      const dispatched = new Date(lc.dispatchedAt).getTime();
+      if (turnRequested >= dispatched) {
+        lc.observedTurnId = latestTurn.turnId;
+        lc.state = latestTurn.state === "error" ? "error" : "settled";
+        lc.turnCompletedAt = latestTurn.completedAt ?? isoNow();
+        lc.completionSource = "snapshot";
+        emitEvent({
+          event_type: "orchestration_snapshot_reconcile",
+          source: "orchestration",
+          scope: "slot",
+          slot: state.slot,
+          task: state.feature,
+          agent: agent.name,
+          message: `${agent.name}: reconciled stuck dispatched lifecycle via snapshot (latestTurn.requestedAt >= dispatchedAt)`,
+        });
+      }
+    }
+
     // --- 4. Detect inconsistencies ---
     detectAgentInconsistencies(state, agent, runtime);
+
+    // --- 5. Post-nudge outcome classification ---
+    if (lc && (lc.stallDetectedAt ?? null) !== null && lc.state === "settled") {
+      const nudgeAttempts = lc.nudgeAttempts ?? 0;
+      if (nudgeAttempts > 0) {
+        // Deterministic classification via assistantMessageId comparison.
+        const currentAMId = thread?.latestTurn?.assistantMessageId ?? null;
+        const preAMId = lc.preNudgeAssistantMessageId ?? null;
+        // If the assistantMessageId changed (or appeared), agent responded to nudge.
+        // If unchanged (or both null), session was dead / settled without response.
+        const agentResponded = currentAMId !== null && currentAMId !== preAMId;
+        const eventType = agentResponded
+          ? "orchestration_nudge_settled_alive"
+          : "orchestration_nudge_settled_dead";
+        emitEvent({
+          event_type: eventType,
+          source: "orchestration",
+          scope: "slot",
+          slot: state.slot,
+          task: state.feature,
+          agent: agent.name,
+          nudgeAttempts,
+          message: `${agent.name}: stall resolved (${agentResponded ? "alive" : "dead"}) after ${nudgeAttempts} nudge(s)`,
+        });
+      }
+      // Clear stall bookkeeping
+      lc.stallDetectedAt = null;
+      lc.nudgeAttempts = 0;
+      lc.lastNudgeAt = null;
+      lc.preNudgeAssistantMessageId = null;
+    }
   }
 }
 
@@ -171,6 +242,145 @@ function detectAgentInconsistencies(
       task: state.feature,
       message: `${agent.name}: peer-sync says "${runtime.status}" but turn lifecycle is "${lc.state}"`,
     });
+  }
+}
+
+/**
+ * Detect stalled agents and send phase-aware nudge messages.
+ * Called from pollUntilDone() after refreshAgentStatuses(), before allAgentsDone().
+ *
+ * Stall conditions (only reached if snapshot reconciliation didn't resolve it):
+ * 1. Running stall: DONE_STATUSES.has(status) && lc.state === "running" && age > STALL_THRESHOLD_S
+ * 2. Dispatch stall: lc.state === "dispatched" && age > DISPATCH_STALL_THRESHOLD_S
+ *
+ * Recovery progression: detect → nudge (up to MAX_NUDGE_ATTEMPTS) → force-settle
+ */
+export async function detectAndNudgeStalls(
+  state: OrchestrationState,
+  snapshot: T3Snapshot | null,
+): Promise<void> {
+  for (const agent of state.agents) {
+    if (!agentParticipatesInPhase(state, agent)) continue;
+    const runtime = state.agentStates[agent.name]!;
+    const lc = runtime.turnLifecycle;
+    if (!lc || lc.state === "settled" || lc.state === "error") continue;
+    if (runtime.interrupted) continue;
+
+    const now = nowEpoch();
+    let isStalled = false;
+    let stallType: "running" | "dispatch" | null = null;
+
+    // Running stall: peer-sync done + turn still running
+    if (DONE_STATUSES.has(runtime.status) && lc.state === "running" && lc.turnStartedAt) {
+      const age = now - Math.floor(new Date(lc.turnStartedAt).getTime() / 1000);
+      if (age > STALL_THRESHOLD_S) {
+        isStalled = true;
+        stallType = "running";
+      }
+    }
+    // Dispatch stall: turn never started (snapshot reconciliation didn't help)
+    else if (lc.state === "dispatched") {
+      const age = now - Math.floor(new Date(lc.dispatchedAt).getTime() / 1000);
+      if (age > DISPATCH_STALL_THRESHOLD_S) {
+        isStalled = true;
+        stallType = "dispatch";
+      }
+    }
+
+    if (!isStalled) continue;
+
+    // --- First detection ---
+    if (!(lc.stallDetectedAt ?? null)) {
+      lc.stallDetectedAt = isoNow();
+      emitEvent({
+        event_type: "orchestration_stall_detected",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.feature,
+        agent: agent.name,
+        phase: state.phase,
+        stallType,
+        message: `${agent.name}: stall detected (${stallType}), lc.state=${lc.state}, status=${runtime.status}`,
+      });
+    }
+
+    const attempts = lc.nudgeAttempts ?? 0;
+
+    // --- Force-settle after MAX_NUDGE_ATTEMPTS ---
+    if (attempts >= MAX_NUDGE_ATTEMPTS) {
+      emitEvent({
+        event_type: "orchestration_force_settle",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.feature,
+        agent: agent.name,
+        phase: state.phase,
+        attempts,
+        message: `${agent.name}: force-settling after ${attempts} nudge attempts`,
+      });
+      await interruptAgent(state, agent);
+      continue;
+    }
+
+    // --- Nudge cooldown ---
+    const lastNudge = lc.lastNudgeAt
+      ? Math.floor(new Date(lc.lastNudgeAt).getTime() / 1000)
+      : 0;
+    if (now - lastNudge < NUDGE_COOLDOWN_S) continue;
+
+    // --- Pre-nudge snapshot guard (avoid nudging a naturally settling turn) ---
+    const thread = snapshot
+      ? threadSnapshot(snapshot, state.threadIds[agent.name])
+      : null;
+    if (snapshot && thread) {
+      const activeTurnId = thread.session?.activeTurnId ?? null;
+      const sessionStatus = thread.session?.status;
+      if (sessionStatus !== "running" || !activeTurnId) {
+        // Turn appears settled in latest snapshot — let the next
+        // refreshAgentStatuses() advance the lifecycle naturally.
+        continue;
+      }
+    }
+
+    // --- Capture pre-nudge assistant message ID for outcome classification ---
+    const preNudgeAMId = thread?.latestTurn?.assistantMessageId ?? null;
+
+    // --- Send phase-aware nudge ---
+    try {
+      const nudgeMessage = stallType === "dispatch"
+        ? `Your session appears stuck. Please respond to confirm you are working on the ${state.phase} phase.`
+        : `Your work for the ${state.phase} phase is complete. Stop and wait for further instructions.`;
+      await sendTurnMessage(state, agent, nudgeMessage);
+      lc.nudgeAttempts = attempts + 1;
+      lc.lastNudgeAt = isoNow();
+      lc.preNudgeAssistantMessageId = preNudgeAMId;
+      emitEvent({
+        event_type: "orchestration_nudge_sent",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.feature,
+        agent: agent.name,
+        phase: state.phase,
+        attempt: attempts + 1,
+        stallType,
+        message: `${agent.name}: nudge #${attempts + 1} sent (${stallType})`,
+      });
+    } catch (err) {
+      // Nudge dispatch failed — log, don't throw. Next cycle retries.
+      emitEvent({
+        event_type: "orchestration_nudge_failed",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.feature,
+        agent: agent.name,
+        message: `${agent.name}: nudge dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      // Do NOT increment nudgeAttempts on failure — the next poll cycle will retry.
+    }
   }
 }
 
@@ -342,6 +552,10 @@ async function enterPhase(state: OrchestrationState): Promise<void> {
       completionSource: null,
       statusFileFingerprint: statusFileFingerprint(state.peerSyncDir, agent.name),
       lastStopHookAt: null,
+      stallDetectedAt: null,
+      nudgeAttempts: 0,
+      lastNudgeAt: null,
+      preNudgeAssistantMessageId: null,
     };
 
     // Persist after each agent dispatch — crash recovery will have lifecycle data
@@ -382,6 +596,10 @@ async function redispatchForPrComments(state: OrchestrationState): Promise<void>
       completionSource: null,
       statusFileFingerprint: statusFileFingerprint(state.peerSyncDir, agent.name),
       lastStopHookAt: null,
+      stallDetectedAt: null,
+      nudgeAttempts: 0,
+      lastNudgeAt: null,
+      preNudgeAssistantMessageId: null,
     };
   }
 }
@@ -734,6 +952,9 @@ async function pollUntilDone(state: OrchestrationState): Promise<void> {
     while (true) {
       const snapshot = await fetchSnapshot(record);
       refreshAgentStatuses(state, snapshot);
+
+      // Detect stalled agents and send nudges / force-settle.
+      await detectAndNudgeStalls(state, snapshot);
 
       // Validate pr files when coder finishes pr-create (auto-create PR from markdown if needed).
       if (state.phase === "pr-create") {

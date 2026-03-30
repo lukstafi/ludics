@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
-import { updateTurnLifecycle, refreshAgentStatuses, maybePostCodexReviewRequests, autoCommitAgent, autoCommitAllAgents } from "./runner.ts";
+import { updateTurnLifecycle, refreshAgentStatuses, maybePostCodexReviewRequests, autoCommitAgent, autoCommitAllAgents, detectAndNudgeStalls, interruptAgent } from "./runner.ts";
+import * as events from "../events.ts";
+import * as t3codeServer from "../t3code/server.ts";
 import * as github from "./github.ts";
 import { orchOnStop } from "./index.ts";
 import { readStopHookRecord, writeStopHookRecord, writeAgentMarkerFiles, readAgentMarkerFile } from "./peer-sync.ts";
@@ -30,6 +32,10 @@ function makeLifecycle(overrides: Partial<AgentTurnLifecycle> = {}): AgentTurnLi
     completionSource: null,
     statusFileFingerprint: null,
     lastStopHookAt: null,
+    stallDetectedAt: null,
+    nudgeAttempts: 0,
+    lastNudgeAt: null,
+    preNudgeAssistantMessageId: null,
     ...overrides,
   };
 }
@@ -640,15 +646,23 @@ describe("refreshAgentStatuses", () => {
       hookEventName: "Stop",
     });
 
+    // Use a requestedAt BEFORE the dispatch time to simulate a turn from a prior
+    // phase/dispatch. This ensures the snapshot reconciliation guard (which checks
+    // requestedAt >= dispatchedAt) correctly rejects this stale turn.
     const snapshot = makeSnapshot([{
       id: "t1",
       session: { status: "ready", activeTurnId: null },
-      latestTurn: { turnId: "turn-x", state: "completed", completedAt: new Date().toISOString() },
+      latestTurn: {
+        turnId: "turn-x",
+        state: "completed",
+        completedAt: new Date().toISOString(),
+        requestedAt: new Date(Date.now() - 120_000).toISOString(), // before dispatchedAt
+      },
     }]);
 
     refreshAgentStatuses(state, snapshot);
 
-    // Stale phaseToken — lifecycle stays dispatched.
+    // Stale phaseToken AND stale requestedAt — lifecycle stays dispatched.
     expect(state.agentStates.coder.turnLifecycle!.state).toBe("dispatched");
   });
 
@@ -1616,5 +1630,416 @@ describe("autoCommitAllAgents", () => {
     expect(gitCommitCount(repo2)).toBe(2);
     expect(gitLastCommitMsg(repo1)).toBe("coder work: coded");
     expect(gitLastCommitMsg(repo2)).toBe("reviewer work: reviewed");
+  });
+});
+
+// ===========================================================================
+// Snapshot reconciliation for stuck dispatched lifecycles
+// ===========================================================================
+
+describe("snapshot reconciliation for stuck dispatched", () => {
+  let tmpDir: string;
+  let origHarnessDir: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    origHarnessDir = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = join(tmpDir, "harness");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    if (origHarnessDir !== undefined) process.env.LUDICS_HARNESS_DIR = origHarnessDir;
+    else delete process.env.LUDICS_HARNESS_DIR;
+  });
+
+  test("dispatched + completed latestTurn with requestedAt >= dispatchedAt → settled", () => {
+    const dispatchedAt = new Date(Date.now() - 60_000).toISOString();
+    const requestedAt = new Date(Date.now() - 30_000).toISOString();
+    const completedAt = new Date(Date.now() - 10_000).toISOString();
+
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "dispatched",
+      dispatchedAt,
+    });
+
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "idle", activeTurnId: null },
+      latestTurn: { turnId: "turn-reconcile", state: "completed", requestedAt, completedAt },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.state).toBe("settled");
+    expect(lc.observedTurnId).toBe("turn-reconcile");
+    expect(lc.completionSource).toBe("snapshot");
+  });
+
+  test("dispatched + completed latestTurn with requestedAt < dispatchedAt → stays dispatched", () => {
+    const dispatchedAt = new Date(Date.now() - 10_000).toISOString();
+    const requestedAt = new Date(Date.now() - 60_000).toISOString(); // before dispatch
+
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "dispatched",
+      dispatchedAt,
+    });
+
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "idle", activeTurnId: null },
+      latestTurn: { turnId: "turn-old", state: "completed", requestedAt, completedAt: new Date().toISOString() },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    expect(state.agentStates.coder.turnLifecycle!.state).toBe("dispatched");
+  });
+
+  test("dispatched + null sessionStatus (snapshot fetch failure) → stays dispatched", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched" });
+
+    // null snapshot → sessionStatus will be undefined/null
+    refreshAgentStatuses(state, null);
+
+    expect(state.agentStates.coder.turnLifecycle!.state).toBe("dispatched");
+  });
+
+  test("dispatched + error latestTurn with requestedAt >= dispatchedAt → error", () => {
+    const dispatchedAt = new Date(Date.now() - 60_000).toISOString();
+    const requestedAt = new Date(Date.now() - 30_000).toISOString();
+
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "work-active|0|coding" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "dispatched",
+      dispatchedAt,
+    });
+
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "idle", activeTurnId: null },
+      latestTurn: { turnId: "turn-err", state: "error", requestedAt },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.state).toBe("error");
+    expect(lc.observedTurnId).toBe("turn-err");
+    expect(lc.completionSource).toBe("snapshot");
+  });
+});
+
+// ===========================================================================
+// detectAndNudgeStalls — stall detection and nudge logic
+// ===========================================================================
+
+describe("detectAndNudgeStalls", () => {
+  let tmpDir: string;
+  let serverRecordSpy: ReturnType<typeof spyOn>;
+  let emitSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    mkdirSync(join(tmpDir, "plans"), { recursive: true });
+    mkdirSync(join(tmpDir, "reviews"), { recursive: true });
+    // Mock readServerRecord to return null (prevents actual WebSocket)
+    serverRecordSpy = spyOn(t3codeServer, "readServerRecord").mockReturnValue(null);
+    emitSpy = spyOn(events, "emitEvent");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    serverRecordSpy.mockRestore();
+    emitSpy.mockRestore();
+  });
+
+  test("running stall: done status + running lifecycle + age > threshold → stall detected", async () => {
+    const state = makeState({ phase: "work" }, tmpDir);
+    state.agentStates.coder.status = "done";
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date(Date.now() - 200_000).toISOString(), // 200s ago > 180s threshold
+    });
+
+    await detectAndNudgeStalls(state, null);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.stallDetectedAt).not.toBeNull();
+    // Nudge attempt won't succeed (readServerRecord returns null) so nudgeAttempts stays 0
+    // but stall is detected
+    const stallEvent = emitSpy.mock.calls.find(
+      (c: unknown[]) => (c[0] as { event_type?: string }).event_type === "orchestration_stall_detected",
+    );
+    expect(stallEvent).toBeDefined();
+  });
+
+  test("dispatch stall: dispatched lifecycle + age > threshold → stall detected", async () => {
+    const state = makeState({ phase: "work" }, tmpDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "dispatched",
+      dispatchedAt: new Date(Date.now() - 400_000).toISOString(), // 400s > 300s threshold
+    });
+
+    await detectAndNudgeStalls(state, null);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.stallDetectedAt).not.toBeNull();
+  });
+
+  test("below threshold: no stall detected", async () => {
+    const state = makeState({ phase: "work" }, tmpDir);
+    state.agentStates.coder.status = "done";
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date(Date.now() - 60_000).toISOString(), // 60s < 180s threshold
+    });
+
+    await detectAndNudgeStalls(state, null);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.stallDetectedAt).toBeNull();
+  });
+
+  test("nudge cooldown respected: recent lastNudgeAt → no nudge", async () => {
+    const state = makeState({ phase: "work" }, tmpDir);
+    state.agentStates.coder.status = "done";
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date(Date.now() - 200_000).toISOString(),
+      stallDetectedAt: new Date(Date.now() - 100_000).toISOString(),
+      nudgeAttempts: 1,
+      lastNudgeAt: new Date(Date.now() - 30_000).toISOString(), // 30s ago < 120s cooldown
+    });
+
+    await detectAndNudgeStalls(state, null);
+
+    // nudgeAttempts should stay at 1 (cooldown prevented another nudge)
+    expect(state.agentStates.coder.turnLifecycle!.nudgeAttempts).toBe(1);
+  });
+
+  test("force-settle after MAX_NUDGE_ATTEMPTS: interruptAgent called", async () => {
+    const state = makeState({ phase: "work" }, tmpDir);
+    state.agentStates.coder.status = "done";
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date(Date.now() - 600_000).toISOString(),
+      stallDetectedAt: new Date(Date.now() - 500_000).toISOString(),
+      nudgeAttempts: 2, // >= MAX_NUDGE_ATTEMPTS
+      lastNudgeAt: new Date(Date.now() - 200_000).toISOString(),
+    });
+
+    await detectAndNudgeStalls(state, null);
+
+    // interruptAgent sets interrupted = true and status = "interrupted"
+    expect(state.agentStates.coder.interrupted).toBe(true);
+    expect(state.agentStates.coder.status).toBe("interrupted");
+    const forceEvent = emitSpy.mock.calls.find(
+      (c: unknown[]) => (c[0] as { event_type?: string }).event_type === "orchestration_force_settle",
+    );
+    expect(forceEvent).toBeDefined();
+  });
+
+  test("pre-nudge snapshot guard: settled session → no nudge", async () => {
+    const state = makeState({ phase: "work" }, tmpDir);
+    state.agentStates.coder.status = "done";
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date(Date.now() - 200_000).toISOString(),
+      stallDetectedAt: new Date(Date.now() - 100_000).toISOString(),
+      nudgeAttempts: 0,
+    });
+
+    // Snapshot shows session is idle (already settled)
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "idle", activeTurnId: null },
+    }]);
+
+    await detectAndNudgeStalls(state, snapshot);
+
+    // nudgeAttempts should stay 0 because the snapshot guard skipped the nudge
+    expect(state.agentStates.coder.turnLifecycle!.nudgeAttempts).toBe(0);
+  });
+
+  test("settled lifecycle is skipped", async () => {
+    const state = makeState({ phase: "work" }, tmpDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-1",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+
+    await detectAndNudgeStalls(state, null);
+
+    expect(state.agentStates.coder.turnLifecycle!.stallDetectedAt).toBeNull();
+  });
+
+  test("interrupted agent is skipped", async () => {
+    const state = makeState({ phase: "work" }, tmpDir);
+    state.agentStates.coder.interrupted = true;
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date(Date.now() - 200_000).toISOString(),
+    });
+    state.agentStates.coder.status = "done";
+
+    await detectAndNudgeStalls(state, null);
+
+    expect(state.agentStates.coder.turnLifecycle!.stallDetectedAt).toBeNull();
+  });
+});
+
+// ===========================================================================
+// Post-nudge outcome classification
+// ===========================================================================
+
+describe("post-nudge outcome classification", () => {
+  let tmpDir: string;
+  let origHarnessDir: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    origHarnessDir = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = join(tmpDir, "harness");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    if (origHarnessDir !== undefined) process.env.LUDICS_HARNESS_DIR = origHarnessDir;
+    else delete process.env.LUDICS_HARNESS_DIR;
+  });
+
+  test("settlement after nudge with changed assistantMessageId → alive", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "done|1|done" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date(Date.now() - 200_000).toISOString(),
+      stallDetectedAt: new Date(Date.now() - 100_000).toISOString(),
+      nudgeAttempts: 1,
+      lastNudgeAt: new Date(Date.now() - 50_000).toISOString(),
+      preNudgeAssistantMessageId: "msg-old",
+    });
+
+    // Snapshot shows settled session with new assistant message
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "idle", activeTurnId: null },
+      latestTurn: {
+        turnId: "turn-1",
+        state: "completed",
+        completedAt: new Date().toISOString(),
+        assistantMessageId: "msg-new", // changed
+      },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    // Stall should be cleared after settlement
+    expect(lc.stallDetectedAt).toBeNull();
+    expect(lc.nudgeAttempts).toBe(0);
+
+    // Check events journal
+    const eventsPath = join(tmpDir, "harness", "journal", "events.jsonl");
+    if (existsSync(eventsPath)) {
+      const evts = readFileSync(eventsPath, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+      const aliveEvent = evts.find((e: { event_type?: string }) => e.event_type === "orchestration_nudge_settled_alive");
+      expect(aliveEvent).toBeDefined();
+    }
+  });
+
+  test("settlement after nudge with unchanged assistantMessageId → dead", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "done|1|done" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date(Date.now() - 200_000).toISOString(),
+      stallDetectedAt: new Date(Date.now() - 100_000).toISOString(),
+      nudgeAttempts: 1,
+      lastNudgeAt: new Date(Date.now() - 50_000).toISOString(),
+      preNudgeAssistantMessageId: "msg-same",
+    });
+
+    // Snapshot shows settled with same assistant message
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "idle", activeTurnId: null },
+      latestTurn: {
+        turnId: "turn-1",
+        state: "completed",
+        completedAt: new Date().toISOString(),
+        assistantMessageId: "msg-same", // unchanged
+      },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.stallDetectedAt).toBeNull();
+    expect(lc.nudgeAttempts).toBe(0);
+
+    const eventsPath = join(tmpDir, "harness", "journal", "events.jsonl");
+    if (existsSync(eventsPath)) {
+      const evts = readFileSync(eventsPath, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+      const deadEvent = evts.find((e: { event_type?: string }) => e.event_type === "orchestration_nudge_settled_dead");
+      expect(deadEvent).toBeDefined();
+    }
+  });
+
+  test("settlement without any nudge (nudgeAttempts=0) → no outcome event, stall cleared", () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "done|1|done" });
+    const state = makeState({ phase: "work" }, peerSyncDir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-1",
+      turnStartedAt: new Date(Date.now() - 200_000).toISOString(),
+      stallDetectedAt: new Date(Date.now() - 100_000).toISOString(),
+      nudgeAttempts: 0, // no nudge was sent
+    });
+
+    const snapshot = makeSnapshot([{
+      id: "t1",
+      session: { status: "idle", activeTurnId: null },
+      latestTurn: {
+        turnId: "turn-1",
+        state: "completed",
+        completedAt: new Date().toISOString(),
+      },
+    }]);
+
+    refreshAgentStatuses(state, snapshot);
+
+    const lc = state.agentStates.coder.turnLifecycle!;
+    expect(lc.stallDetectedAt).toBeNull();
+    expect(lc.nudgeAttempts).toBe(0);
+
+    // No nudge outcome event should be emitted
+    const eventsPath = join(tmpDir, "harness", "journal", "events.jsonl");
+    if (existsSync(eventsPath)) {
+      const evts = readFileSync(eventsPath, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+      const outcomeEvent = evts.find((e: { event_type?: string }) =>
+        e.event_type === "orchestration_nudge_settled_alive" || e.event_type === "orchestration_nudge_settled_dead",
+      );
+      expect(outcomeEvent).toBeUndefined();
+    }
   });
 });
