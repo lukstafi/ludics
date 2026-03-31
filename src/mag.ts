@@ -2056,14 +2056,20 @@ function maybeNagQuestions(): void {
     const id = String(fm.id ?? "").trim();
     const title = String(fm.title ?? "").trim();
     const status = String(fm.status ?? "").trim();
-    if (status !== "ready") continue;
+    if (status !== "ready" && status !== "in-progress") continue;
+
+    // Check if task is assigned to a slot (increases urgency)
+    const slotNum = fm.slot ? Number(fm.slot) : null;
+    const isSlotted = slotNum !== null && slotNum > 0;
+    // Shorter interval when a slot is blocked
+    const interval = isSlotted ? Math.floor(NAG_INTERVAL_SECONDS / 2) : NAG_INTERVAL_SECONDS;
 
     // Debounce check
     const nagFile = join(nagDir, `${encodeURIComponent(id)}.epoch`);
     if (existsSync(nagFile)) {
       try {
         const lastEpoch = parseInt(readFileSync(nagFile, "utf-8").trim(), 10);
-        if ((Math.floor(Date.now() / 1000) - lastEpoch) < NAG_INTERVAL_SECONDS) continue;
+        if ((Math.floor(Date.now() / 1000) - lastEpoch) < interval) continue;
       } catch { /* proceed */ }
     }
 
@@ -2071,11 +2077,12 @@ function maybeNagQuestions(): void {
     const questionsMatch = content.match(/## Questions\n\n([\s\S]*?)(?=\n##|\n---|\s*$)/);
     const questions = questionsMatch?.[1]?.trim();
     if (!questions || questions.toLowerCase() === "none.") continue;
+    const slotNote = isSlotted ? ` (slot ${slotNum} blocked)` : "";
 
     // Send nag notification
     try {
       const result = Bun.spawnSync(
-        ["ludics", "notify", "outgoing", `Unanswered questions — ${id}: ${title}\n\n${questions}`],
+        ["ludics", "notify", "outgoing", `Unanswered questions${slotNote} — ${id}: ${title}\n\n${questions}`],
         { stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
       );
       if (result.exitCode === 0) {
