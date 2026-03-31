@@ -154,25 +154,12 @@ fi
 # Uses a simple state machine to handle YAML list items
 in_projects=false
 current_repo=""
+current_staging_repo=""
 current_path=""
 
-clone_if_missing() {
+clone_repo() {
   local repo="$1"
-  local path="$2"
-
-  if [[ -z "$repo" || "$repo" == *"your-username"* ]]; then
-    return
-  fi
-
-  # Determine local path
-  local local_dir=""
-  if [[ -n "$path" ]]; then
-    # Expand ~/
-    local_dir="${path/#\~/$HOME}"
-  else
-    # Default: ~/<repo-tail>
-    local_dir="$HOME/${repo##*/}"
-  fi
+  local local_dir="$2"
 
   if [[ -d "$local_dir" ]]; then
     info "project $repo: already at $local_dir"
@@ -185,11 +172,41 @@ clone_if_missing() {
   fi
 }
 
+clone_if_missing() {
+  local repo="$1"
+  local staging_repo="$2"
+  local path="$3"
+
+  if [[ -z "$repo" || "$repo" == *"your-username"* ]]; then
+    return
+  fi
+
+  # Working repo = staging_repo if set, otherwise repo
+  local working_repo="${staging_repo:-$repo}"
+
+  # path points to the working repo checkout
+  local local_dir=""
+  if [[ -n "$path" ]]; then
+    local_dir="${path/#\~/$HOME}"
+  else
+    local_dir="$HOME/${working_repo##*/}"
+  fi
+
+  clone_repo "$working_repo" "$local_dir"
+
+  # Also clone upstream alongside when staging is configured
+  if [[ -n "$staging_repo" && "$staging_repo" != "$repo" ]]; then
+    local upstream_dir="$HOME/${repo##*/}"
+    clone_repo "$repo" "$upstream_dir"
+  fi
+}
+
 flush_project() {
   if [[ -n "$current_repo" ]]; then
-    clone_if_missing "$current_repo" "$current_path"
+    clone_if_missing "$current_repo" "$current_staging_repo" "$current_path"
   fi
   current_repo=""
+  current_staging_repo=""
   current_path=""
 }
 
@@ -216,8 +233,12 @@ while IFS= read -r line; do
     flush_project
   fi
 
+  # Extract staging_repo (must come before repo — "staging_repo:" contains "repo:")
+  if [[ "$line" =~ staging_repo:[[:space:]]*(.+) ]]; then
+    current_staging_repo="${BASH_REMATCH[1]}"
+    current_staging_repo=$(echo "$current_staging_repo" | tr -d '"' | tr -d "'" | xargs)
   # Extract repo
-  if [[ "$line" =~ repo:[[:space:]]*(.+) ]]; then
+  elif [[ "$line" =~ repo:[[:space:]]*(.+) ]]; then
     current_repo="${BASH_REMATCH[1]}"
     current_repo=$(echo "$current_repo" | tr -d '"' | tr -d "'" | xargs)
   fi

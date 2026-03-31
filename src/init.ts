@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readlinkSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, lstatSync, symlinkSync, unlinkSync, chmodSync } from "fs";
 import { join, dirname } from "path";
 import YAML from "yaml";
-import { ludicsRoot, pointerConfigPath, harnessDir } from "./config.ts";
+import { ludicsRoot, pointerConfigPath, harnessDir, loadConfigSync } from "./config.ts";
 import { dashboardInstall, dashboardStop, dashboardServe } from "./dashboard.ts";
 import { triggersInstall } from "./triggers.ts";
 
@@ -14,6 +14,33 @@ state_path: harness
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateProjectPaths(): void {
+  let config;
+  try { config = loadConfigSync(); } catch { return; }
+
+  for (const p of config.projects ?? []) {
+    const repo = String(p.repo ?? "");
+    const stagingRepo = String(p.staging_repo ?? "");
+    if (!stagingRepo || stagingRepo === repo || !p.path) continue;
+
+    const repoTail = repo.split("/").pop() ?? "";
+    const pathStr = String(p.path);
+    // Check if path ends with upstream repo tail — likely misconfigured
+    const pathTail = pathStr.replace(/\/+$/, "").split("/").pop() ?? "";
+    if (pathTail === repoTail) {
+      console.error(
+        `\n` +
+        `ERROR: project "${p.name}" has staging_repo "${stagingRepo}" but path "${pathStr}"\n` +
+        `       points to the upstream repo "${repo}".\n` +
+        `       When staging_repo is set, path should point to the staging fork checkout\n` +
+        `       (the working repo where agents create PRs).\n` +
+        `       Expected path ending in: ${stagingRepo.split("/").pop()}\n`,
+      );
+      process.exit(1);
+    }
+  }
 }
 
 export async function runInit(args: string[]): Promise<void> {
@@ -28,6 +55,11 @@ export async function runInit(args: string[]): Promise<void> {
 
   // 2. Config file
   const configOk = ensureConfig();
+
+  // 2b. Validate project paths vs staging repos
+  if (configOk) {
+    validateProjectPaths();
+  }
 
   // 3. State repo
   const { repoDir, statePath } = cloneStateRepo();

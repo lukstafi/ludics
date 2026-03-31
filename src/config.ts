@@ -342,14 +342,22 @@ export function resolveProjectPath(projectName: string): string {
           : String(p.path);
         if (existsSync(resolved)) return resolved;
       }
-      // Fallback: try ~/repoTail and ~/repos/repoTail
+      // Fallback: working repo = staging_repo if set, otherwise repo
+      const workingRepo = String(p.staging_repo ?? "") || repo;
+      const workingTail = workingRepo.split("/").pop() ?? "";
       const home = process.env.HOME ?? "~";
-      for (const candidate of [
-        join(home, repoTail),
-        join(home, "repos", repoTail),
-        join(home, repoTail.toLowerCase()),
-      ]) {
-        if (existsSync(candidate)) return candidate;
+      // Try working repo tail first, then upstream repo tail
+      const tails = workingTail !== repoTail
+        ? [workingTail, repoTail]
+        : [repoTail];
+      for (const tail of tails) {
+        for (const candidate of [
+          join(home, tail),
+          join(home, "repos", tail),
+          join(home, tail.toLowerCase()),
+        ]) {
+          if (existsSync(candidate)) return candidate;
+        }
       }
     }
   }
