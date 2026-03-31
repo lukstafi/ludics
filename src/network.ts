@@ -1,8 +1,20 @@
 // Network configuration — hostname detection and URL helpers
 
-import { loadConfigSync } from "./config.ts";
+import { loadConfigSync, harnessDir } from "./config.ts";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
+import YAML from "yaml";
 
 export function networkMode(): string {
+  // Check federation.transport (new config), then legacy network.mode
+  try {
+    const configPath = join(harnessDir(), "config.yaml");
+    if (existsSync(configPath)) {
+      const raw = YAML.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+      const transport = (raw.federation as Record<string, unknown> | undefined)?.transport as string | undefined;
+      if (transport && transport !== "local") return transport;
+    }
+  } catch { /* fall through */ }
   const config = loadConfigSync();
   return config.network?.mode ?? "localhost";
 }
