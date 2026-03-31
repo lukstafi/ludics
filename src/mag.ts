@@ -2112,13 +2112,6 @@ function maybeFillEmptySlots(): void {
   if (startSessionsAutonomy() === "manual") return;
   if (isQueueHeld()) return; // hold suppresses auto-assignment
 
-  // Check if draft-proposal is already in queue
-  const qFile = join(harnessDir(), "mag", "queue.jsonl");
-  if (existsSync(qFile)) {
-    const qContent = readFileSync(qFile, "utf-8");
-    if (qContent.includes('"draft-proposal"')) return;
-  }
-
   // Find empty slots
   const sFile = slotsFilePath();
   if (!existsSync(sFile)) return;
