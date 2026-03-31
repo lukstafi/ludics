@@ -1959,6 +1959,7 @@ function maybeUnstickAssignedSlots(): void {
  *  Uses the same sorted candidate list as maybeFillEmptySlots. */
 function maybeQueueProposals(): void {
   if (startSessionsAutonomy() === "manual") return;
+  if (isQueueHeld()) return; // hold suppresses proposals too
 
   // Check if draft-proposal is already in queue
   const qFile = join(harnessDir(), "mag", "queue.jsonl");
