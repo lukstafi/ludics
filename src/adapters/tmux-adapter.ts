@@ -35,7 +35,7 @@ import { parseT3CodeAdapterArgs } from "./t3code.ts";
 // Constants
 // ---------------------------------------------------------------------------
 
-const TMUX_SESSION = "ludics";
+const TMUX_SESSION = "ludics-workers";
 const PORT_BASE = 7681; // port 7680 reserved
 
 // ---------------------------------------------------------------------------

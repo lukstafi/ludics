@@ -732,9 +732,9 @@ export async function slotResume(slotNum: number): Promise<void> {
     }
 
     // Ensure the base tmux session exists
-    if (!tmuxHasSession("ludics")) {
-      tmuxNewSession("ludics");
-      Bun.spawnSync(["tmux", "set-option", "-t", "ludics", "mouse", "off"], {
+    if (!tmuxHasSession("ludics-workers")) {
+      tmuxNewSession("ludics-workers");
+      Bun.spawnSync(["tmux", "set-option", "-t", "ludics-workers", "mouse", "off"], {
         stdout: "pipe", stderr: "pipe",
       });
       console.error("ludics: re-created tmux session 'ludics' for resume");
@@ -757,7 +757,7 @@ export async function slotResume(slotNum: number): Promise<void> {
 
       // Check if the tmux window exists
       const windowCheck = Bun.spawnSync(
-        ["tmux", "list-windows", "-t", "ludics", "-F", "#{window_name}"],
+        ["tmux", "list-windows", "-t", "ludics-workers", "-F", "#{window_name}"],
         { stdout: "pipe", stderr: "pipe" },
       );
       const existingWindows = windowCheck.exitCode === 0
@@ -769,7 +769,7 @@ export async function slotResume(slotNum: number): Promise<void> {
         // Recreate the tmux window in the agent's worktree
         const cwd = agent.worktreePath;
         const result = Bun.spawnSync(
-          ["tmux", "new-window", "-t", "ludics", "-n", windowName, "-c", cwd],
+          ["tmux", "new-window", "-t", "ludics-workers", "-n", windowName, "-c", cwd],
           { stdout: "pipe", stderr: "pipe" },
         );
         if (result.exitCode !== 0) {
