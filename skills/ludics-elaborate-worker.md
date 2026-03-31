@@ -77,17 +77,62 @@ cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
 - Read project-specific memory: `$LUDICS_STATE_PATH/mag/memory/projects/<project>.md`
 - Identify and read relevant code files in the project repository
 
-### 3. Elaborate
+### 3. Derive authoritative acceptance criteria
 
-- Break down into subtasks
-- Identify specific files to modify
+**Source-first**: Before any codebase exploration, read the authoritative source:
+- GitHub issue body + comments (via `gh issue view <number> --repo <repo> --json body,comments`)
+- Task creation context (from the Context section)
+- Explicit user decisions noted in the task file
+
+**Write Acceptance Criteria from the source ONLY:**
+- Each criterion must be directly derivable from the source — no agent inferences
+- If the source says "consider X", the criterion is "evaluate X and document the decision", NOT "implement X"
+- If the source is vague or exploratory, keep criteria vague: "investigate and report findings"
+- Do NOT add implementation details, code locations, or design decisions to this section
+
+### 4. Explore codebase and write tentative design
+
+Now explore the codebase for implementation context:
+- Identify specific files to modify, relevant code patterns
 - Note edge cases and potential blockers
-- Add implementation hints
-- Define test cases
+- Consider implementation approaches
 
-### 4. Update task file
+Write this as a **Tentative Design** section, clearly marked:
 
-Expand the task file with detailed specification sections:
+```markdown
+## Tentative Design
+
+*Agent analysis — not validated by user.*
+
+[implementation ideas, code pointers, trade-offs]
+```
+
+### 5. Collect questions
+
+Identify **genuine ambiguities** where:
+- The source intent is unclear and multiple reasonable interpretations exist
+- A design choice matters AND is debatable (not obvious from context)
+- Missing information would significantly change the implementation approach
+
+Write a **Questions** section in the task file:
+
+```markdown
+## Questions
+
+1. [Specific question about a real ambiguity]
+2. [Design option where choice matters: "Option A does X, Option B does Y — which?"]
+```
+
+Do NOT ask questions that:
+- Can be answered by reading the codebase
+- Are implementation details (agent should decide these)
+- Ask permission to proceed (just note the trade-off)
+
+If there are no genuine questions, write `## Questions\n\nNone.`
+
+### 6. Update task file
+
+Expand the task file with the sections above:
 
 ```markdown
 ---
@@ -96,31 +141,21 @@ elaborated: <today's date>
 ---
 
 ## Context
-[existing context, enriched]
+[existing context, enriched with source quote]
 
 ## Acceptance Criteria
-[refined criteria]
+[authoritative — derived from user intent only]
 
-## Implementation Plan
-[high-level — describe interactions between components, NOT micro-managed steps]
+## Tentative Design
 
-## Technical Notes
+*Agent analysis — not validated by user.*
 
-### Code Pointers
-- [relevant files and functions]
+[implementation ideas, code pointers, edge cases, effort estimate]
 
-### Edge Cases
-- [potential issues]
+## Questions
 
-## Estimated Effort
-[e.g., Medium (2-3 days)]
+[numbered questions about genuine ambiguities, or "None."]
 ```
-
-### 5. Collect questions
-
-If elaboration identified missing context, unclear requirements, risky edge
-cases, or other issues needing user input, collect them as concise numbered
-questions.
 
 ## Final Response
 

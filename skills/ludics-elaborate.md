@@ -54,9 +54,14 @@ content as a pre-formatted string and send as-is in the questions notification s
 
 ## Skill-Specific: Questions Notification
 
-If `questions` is not `"none"` and is non-empty, send as notification text:
-- JSON array path: format each element as a numbered list (e.g., `1. <q1>\n2. <q2>`)
-- Legacy pre-formatted string (fallback path): send as-is
+If `questions` is not `"none"` and is non-empty:
+
+1. **Add `has_questions: true`** to the task file frontmatter (this blocks proposal generation
+   until the user answers the questions and removes the field).
+
+2. Send as notification text:
+   - JSON array path: format each element as a numbered list (e.g., `1. <q1>\n2. <q2>`)
+   - Legacy pre-formatted string (fallback path): send as-is
 
 ```bash
 ludics notify outgoing "<formatted questions>"
@@ -64,7 +69,7 @@ ludics notify outgoing "<formatted questions>"
 
 Use title: "Elaboration questions — <task_id>: <title>"
 
-Skip if `questions` is `"none"` or an empty array/string.
+If `questions` is `"none"` or an empty array/string, do NOT add `has_questions` to frontmatter.
 
 ## Skill-Specific Result Fields
 

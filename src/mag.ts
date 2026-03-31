@@ -1853,6 +1853,50 @@ function markAutoProposalQueued(taskId: string): void {
   writeFileSync(file, String(Math.floor(Date.now() / 1000)));
 }
 
+/** Auto-start slots that have proposals but no active session. */
+function maybeAutoStartSlots(): void {
+  if (startSessionsAutonomy() === "manual") return;
+
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return;
+
+  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  const tasksDir = join(harnessDir(), "tasks");
+  if (!existsSync(tasksDir)) return;
+
+  for (const [slotNum, block] of blocks) {
+    const process = getProcess(block).trim();
+    if (!process || process === "(empty)") continue;
+
+    const taskId = getTask(block).trim();
+    if (!taskId || taskId === "null") continue;
+
+    // Skip if the slot has an active session
+    const orchState = readOrchestrationState(slotNum);
+    if (orchState && orchState.phase !== "setup") continue;
+    const sessionStarted = getSessionStarted(block).trim();
+    if (sessionStarted && sessionStarted !== "null") continue;
+
+    // Read task file — check for proposal
+    const taskFile = join(tasksDir, `${taskId}.md`);
+    if (!existsSync(taskFile)) continue;
+    const content = readFileSync(taskFile, "utf-8");
+    if (!content.includes("\nproposal:")) continue;
+
+    // Task has a proposal but no session — auto-start
+    try {
+      slotStart(slotNum);
+      emitEvent({ event_type: "slot_auto_start", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)` });
+      console.error(`ludics: auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)`);
+    } catch (err) {
+      console.error(`ludics: failed to auto-start slot ${slotNum}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+/** Queue draft-proposals for the top ready queue tasks (up to 12) that are
+ *  elaborated, have no unanswered questions, and have no proposal yet.
+ *  This runs independently of slot assignment — proposals are prepared ahead. */
 function maybeQueueProposals(): void {
   if (startSessionsAutonomy() === "manual") return;
 
@@ -1863,61 +1907,123 @@ function maybeQueueProposals(): void {
     if (qContent.includes('"draft-proposal"')) return;
   }
 
-  // Read slots to find tasks that are active but missing proposals
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return;
-
-  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
   const tasksDir = join(harnessDir(), "tasks");
   if (!existsSync(tasksDir)) return;
 
-  const candidates: string[] = [];
+  const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+  const candidates: Array<{ id: string; priority: string; project: string; milestone?: string }> = [];
 
-  for (const [slotNum, block] of blocks) {
-    if (candidates.length >= 2) break;
-    const process = getProcess(block).trim();
-    if (!process || process === "(empty)") continue;
+  for (const f of files) {
+    const content = readFileSync(join(tasksDir, f), "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) continue;
 
-    const taskId = getTask(block).trim();
-    if (!taskId || taskId === "null") continue;
+    let fm: Record<string, unknown>;
+    try { fm = YAML.parse(fmMatch[1]!) as Record<string, unknown>; } catch { continue; }
 
-    // Skip if the slot has an active orchestration session (agents are already working)
-    const orchState = readOrchestrationState(slotNum);
-    if (orchState && orchState.phase !== "setup") continue;
-    const sessionStarted = getSessionStarted(block).trim();
-    if (sessionStarted && sessionStarted !== "null") continue;
+    const id = String(fm.id ?? "").trim();
+    if (!id) continue;
 
-    // Read task file — skip terminal statuses, queue draft if no proposal yet
-    const taskFile = join(tasksDir, `${taskId}.md`);
-    if (!existsSync(taskFile)) continue;
-    const content = readFileSync(taskFile, "utf-8");
-    const statusMatch = content.match(/^status:\s*(.+)$/m);
-    const taskStatus = statusMatch ? statusMatch[1]!.trim() : "ready";
-    if (["abandoned", "done"].includes(taskStatus)) continue;
+    const status = String(fm.status ?? "ready").trim();
+    if (status !== "ready") continue;
 
-    // Task has a proposal but no session — auto-start the slot directly
-    if (content.includes("\nproposal:")) {
-      try {
-        slotStart(slotNum);
-        emitEvent({ event_type: "slot_auto_start", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)` });
-        console.error(`ludics: auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)`);
-      } catch (err) {
-        console.error(`ludics: failed to auto-start slot ${slotNum}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      continue;
-    }
+    // Must be elaborated
+    if (!isElaborated(content)) continue;
 
-    if (autoProposalDebounced(taskId)) continue;
+    // Must not have unanswered questions
+    if (fm.has_questions) continue;
 
-    candidates.push(taskId);
+    // Must not already have a proposal
+    if (content.includes("\nproposal:")) continue;
+
+    // Must not be blocked
+    const deps = (fm.dependencies as Record<string, unknown>) ?? {};
+    const blockedBy = deps.blocked_by;
+    if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
+
+    const priority = String(fm.priority ?? "B").trim();
+    const project = String(fm.project ?? "").trim();
+    const milestone = fm.milestone ? String(fm.milestone).trim() : undefined;
+
+    candidates.push({ id, priority, project, milestone });
   }
 
   if (candidates.length === 0) return;
 
-  for (const taskId of candidates) {
-    queueRequest("draft-proposal", `"task":"${taskId}"`);
-    markAutoProposalQueued(taskId);
-    console.error(`ludics: auto-queued draft-proposal for ${taskId}`);
+  // Sort by effective priority (same logic as maybeFillEmptySlots)
+  candidates.sort((a, b) => {
+    const pd = effectivePriorityValue(a.priority, a.project) - effectivePriorityValue(b.priority, b.project);
+    return pd;
+  });
+
+  // Queue proposals for up to 2 of the top 12 per keepalive cycle
+  const top12 = candidates.slice(0, 12);
+  let queued = 0;
+  for (const task of top12) {
+    if (queued >= 2) break;
+    if (autoProposalDebounced(task.id)) continue;
+
+    queueRequest("draft-proposal", `"task":"${task.id}"`);
+    markAutoProposalQueued(task.id);
+    console.error(`ludics: auto-queued draft-proposal for ${task.id} (ready queue position)`);
+    queued++;
+  }
+}
+
+/** Nag user about tasks with unanswered questions (has_questions: true). */
+function maybeNagQuestions(): void {
+  const tasksDir = join(harnessDir(), "tasks");
+  if (!existsSync(tasksDir)) return;
+
+  // Debounce: nag at most once per hour per task
+  const NAG_INTERVAL_SECONDS = 3600;
+  const nagDir = join(magStateDir(), "question-nag-debounce");
+
+  const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+
+  for (const f of files) {
+    const content = readFileSync(join(tasksDir, f), "utf-8");
+    if (!content.includes("\nhas_questions:")) continue;
+
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) continue;
+
+    let fm: Record<string, unknown>;
+    try { fm = YAML.parse(fmMatch[1]!) as Record<string, unknown>; } catch { continue; }
+
+    if (!fm.has_questions) continue;
+
+    const id = String(fm.id ?? "").trim();
+    const title = String(fm.title ?? "").trim();
+    const status = String(fm.status ?? "").trim();
+    if (status !== "ready") continue;
+
+    // Debounce check
+    const nagFile = join(nagDir, `${encodeURIComponent(id)}.epoch`);
+    if (existsSync(nagFile)) {
+      try {
+        const lastEpoch = parseInt(readFileSync(nagFile, "utf-8").trim(), 10);
+        if ((Math.floor(Date.now() / 1000) - lastEpoch) < NAG_INTERVAL_SECONDS) continue;
+      } catch { /* proceed */ }
+    }
+
+    // Extract questions section from task body
+    const questionsMatch = content.match(/## Questions\n\n([\s\S]*?)(?=\n##|\n---|\s*$)/);
+    const questions = questionsMatch?.[1]?.trim();
+    if (!questions || questions.toLowerCase() === "none.") continue;
+
+    // Send nag notification
+    try {
+      const result = Bun.spawnSync(
+        ["ludics", "notify", "outgoing", `Unanswered questions — ${id}: ${title}\n\n${questions}`],
+        { stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
+      );
+      if (result.exitCode === 0) {
+        mkdirSync(nagDir, { recursive: true });
+        writeFileSync(nagFile, String(Math.floor(Date.now() / 1000)));
+        console.error(`ludics: nagged about unanswered questions for ${id}`);
+      }
+    } catch { /* non-critical */ }
   }
 }
 
@@ -2284,8 +2390,14 @@ export async function magStart(args: string[]): Promise<void> {
     expirePendingRevises();
     expirePendingFollowupRevises();
 
-    // Auto-queue proposals for elaborated leaf tasks already in slots
+    // Auto-start slots that have proposals but no active session
+    maybeAutoStartSlots();
+
+    // Auto-queue proposals for top ready queue tasks (not slot-dependent)
     maybeQueueProposals();
+
+    // Nag user about tasks with unanswered questions
+    maybeNagQuestions();
 
     // Auto-clear slots whose task reached done status
     maybeClearDoneSlots();
