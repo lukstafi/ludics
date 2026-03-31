@@ -2390,26 +2390,32 @@ export async function magStart(args: string[]): Promise<void> {
     expirePendingRevises();
     expirePendingFollowupRevises();
 
-    // Auto-start slots that have proposals but no active session
-    maybeAutoStartSlots();
+    // Pause: suppress all autonomous activity when mag/paused sentinel exists.
+    // Queue draining (below) still runs so explicit user commands work.
+    const magPaused = existsSync(join(harnessDir(), "mag", "paused"));
 
-    // Auto-queue proposals for top ready queue tasks (not slot-dependent)
-    maybeQueueProposals();
+    if (!magPaused) {
+      // Auto-start slots that have proposals but no active session
+      maybeAutoStartSlots();
 
-    // Nag user about tasks with unanswered questions
-    maybeNagQuestions();
+      // Auto-queue proposals for top ready queue tasks (not slot-dependent)
+      maybeQueueProposals();
 
-    // Auto-clear slots whose task reached done status
-    maybeClearDoneSlots();
+      // Nag user about tasks with unanswered questions
+      maybeNagQuestions();
 
-    // Auto-resume dead orchestrator processes
-    await maybeResumeDeadOrchestrators();
+      // Auto-clear slots whose task reached done status
+      maybeClearDoneSlots();
 
-    // Auto-fill empty slots with ready elaborated tasks
-    maybeFillEmptySlots();
+      // Auto-resume dead orchestrator processes
+      await maybeResumeDeadOrchestrators();
 
-    // If startup got stuck (e.g. Claude helper hung), recover automatically.
-    maybeRecoverStuckStartup();
+      // Auto-fill empty slots with ready elaborated tasks
+      maybeFillEmptySlots();
+
+      // If startup got stuck (e.g. Claude helper hung), recover automatically.
+      maybeRecoverStuckStartup();
+    }
 
     // Execute programmatic head requests immediately; only nudge when the next
     // queued request requires a Mag turn (skill/direct message).
