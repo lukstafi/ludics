@@ -2457,40 +2457,35 @@ export async function magStart(args: string[]): Promise<void> {
     expirePendingRevises();
     expirePendingFollowupRevises();
 
-    // Pause: suppress all autonomous activity when mag/paused sentinel exists.
-    // Queue draining (below) still runs so explicit user commands work.
-    const magPaused = existsSync(join(harnessDir(), "mag", "paused"));
+    // When paused, skip all automation — nothing queues, drains, or nudges
+    if (existsSync(join(harnessDir(), "mag", "paused"))) return;
 
-    if (!magPaused) {
-      // Auto-start slots that have proposals but no active session
-      maybeAutoStartSlots();
+    // Auto-start slots that have proposals but no active session
+    maybeAutoStartSlots();
 
-      // Detect stuck slots (assigned but no proposal/session) and re-queue
-      maybeUnstickAssignedSlots();
+    // Detect stuck slots (assigned but no proposal/session) and re-queue
+    maybeUnstickAssignedSlots();
 
-      // Auto-queue proposals for top ready queue tasks (not slot-dependent)
-      maybeQueueProposals();
+    // Auto-queue proposals for top ready queue tasks (not slot-dependent)
+    maybeQueueProposals();
 
-      // Nag user about tasks with unanswered questions
-      maybeNagQuestions();
+    // Nag user about tasks with unanswered questions
+    maybeNagQuestions();
 
-      // Auto-clear slots whose task reached done status
-      maybeClearDoneSlots();
+    // Auto-clear slots whose task reached done status
+    maybeClearDoneSlots();
 
-      // Auto-resume dead orchestrator processes
-      await maybeResumeDeadOrchestrators();
+    // Auto-resume dead orchestrator processes
+    await maybeResumeDeadOrchestrators();
 
-      // Auto-fill empty slots with ready elaborated tasks
-      maybeFillEmptySlots();
+    // Auto-fill empty slots with ready elaborated tasks
+    maybeFillEmptySlots();
 
-      // If startup got stuck (e.g. Claude helper hung), recover automatically.
-      maybeRecoverStuckStartup();
-    }
+    // If startup got stuck (e.g. Claude helper hung), recover automatically.
+    maybeRecoverStuckStartup();
 
     // Execute programmatic head requests immediately; only nudge when the next
     // queued request requires a Mag turn (skill/direct message).
-    // When paused, leave queue items accumulated — don't drain or nudge.
-    if (magPaused) return;
     const queueNeedsMagTurn = queuePending() ? await drainProgrammaticQueueHead() : false;
     if (queueNeedsMagTurn && !nudgeThrottled()) {
       const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -3154,6 +3149,8 @@ export async function runMag(args: string[]): Promise<void> {
       }
       writeStopHookTimestamp();
       clearStartupWatchdogEpoch();
+      // When paused, don't pop — items accumulate and are processed on unpause
+      if (existsSync(join(harnessDir(), "mag", "paused"))) break;
       const skillCommand = await queuePopSkill();
       if (skillCommand) {
         console.log(JSON.stringify({ decision: "block", reason: skillCommand }));
