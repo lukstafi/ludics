@@ -2010,10 +2010,29 @@ function maybeQueueProposals(): void {
 
   if (candidates.length === 0) return;
 
-  // Sort by effective priority (same logic as maybeFillEmptySlots)
+  // Sort by milestone position then effective priority (same logic as maybeFillEmptySlots)
+  const msProjects = milestonesEnabledProjects();
+  const msPosition = new Map<string, number>();
+  if (msProjects.size > 0) {
+    const projectMs = new Map<string, Set<string>>();
+    for (const c of candidates) {
+      if (!msProjects.has(c.project) || !c.milestone) continue;
+      let ms = projectMs.get(c.project);
+      if (!ms) { ms = new Set(); projectMs.set(c.project, ms); }
+      ms.add(c.milestone);
+    }
+    for (const [project, ms] of projectMs) {
+      const sorted = [...ms].sort();
+      for (let i = 0; i < sorted.length; i++) {
+        msPosition.set(`${project}\0${sorted[i]}`, i);
+      }
+    }
+  }
   candidates.sort((a, b) => {
-    const pd = effectivePriorityValue(a.priority, a.project) - effectivePriorityValue(b.priority, b.project);
-    return pd;
+    const ma = a.milestone && msProjects.has(a.project) ? (msPosition.get(`${a.project}\0${a.milestone}`) ?? 0) : 0;
+    const mb = b.milestone && msProjects.has(b.project) ? (msPosition.get(`${b.project}\0${b.milestone}`) ?? 0) : 0;
+    if (ma !== mb) return ma - mb;
+    return effectivePriorityValue(a.priority, a.project) - effectivePriorityValue(b.priority, b.project);
   });
 
   // Queue proposals for up to 1 of the top candidates per keepalive cycle
