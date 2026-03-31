@@ -24,4 +24,25 @@
         if (current === p.href) a.className = 'active';
         nav.appendChild(a);
     }
+
+    // Update t3code link from data — works on all pages
+    const dataPath = 'data/';
+    fetch(dataPath + 't3code.json')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+            if (!data) return;
+            const link = document.getElementById('t3code-link');
+            if (!link) return;
+            if (data.available && data.webUrl) {
+                link.href = data.webUrl;
+                link.title = 't3code Web client';
+                link.style.opacity = '';
+                link.style.pointerEvents = '';
+            } else {
+                link.style.opacity = '0.4';
+                link.style.pointerEvents = 'none';
+                link.title = 't3code server not running';
+            }
+        })
+        .catch(() => { /* ignore */ });
 })();
