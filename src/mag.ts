@@ -1954,9 +1954,9 @@ function maybeUnstickAssignedSlots(): void {
   }
 }
 
-/** Queue draft-proposals for the top ready queue tasks (up to 12) that are
+/** Queue draft-proposals for the top ready queue tasks that are
  *  elaborated, have no unanswered questions, and have no proposal yet.
- *  This runs independently of slot assignment — proposals are prepared ahead. */
+ *  Uses the same sorted candidate list as maybeFillEmptySlots. */
 function maybeQueueProposals(): void {
   if (startSessionsAutonomy() === "manual") return;
 
@@ -1967,86 +1967,29 @@ function maybeQueueProposals(): void {
     if (qContent.includes('"draft-proposal"')) return;
   }
 
+  // Reuse the sorted ready queue from maybeFillEmptySlots logic
+  const sorted = getSortedReadyCandidates();
+  if (sorted.length === 0) return;
+
   const tasksDir = join(harnessDir(), "tasks");
-  if (!existsSync(tasksDir)) return;
 
-  const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
-  const candidates: Array<{ id: string; priority: string; project: string; milestone?: string }> = [];
+  // Find the first candidate that needs a proposal
+  for (const task of sorted.slice(0, slotsCount())) {
+    if (!task.elaborated) continue;
 
-  for (const f of files) {
-    const content = readFileSync(join(tasksDir, f), "utf-8");
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fmMatch) continue;
+    // Read task content for additional checks
+    const taskFile = join(tasksDir, `${task.id}.md`);
+    if (!existsSync(taskFile)) continue;
+    const content = readFileSync(taskFile, "utf-8");
 
-    let fm: Record<string, unknown>;
-    try { fm = YAML.parse(fmMatch[1]!) as Record<string, unknown>; } catch { continue; }
-
-    const id = String(fm.id ?? "").trim();
-    if (!id) continue;
-
-    const status = String(fm.status ?? "ready").trim();
-    if (status !== "ready") continue;
-
-    // Must be elaborated
-    if (!isElaborated(content)) continue;
-
-    // Must not have unanswered questions
-    if (fm.has_questions) continue;
-
-    // Must not already have a proposal
+    if (content.includes("\nhas_questions:")) continue;
     if (content.includes("\nproposal:")) continue;
-
-    // Must not be blocked
-    const deps = (fm.dependencies as Record<string, unknown>) ?? {};
-    const blockedBy = deps.blocked_by;
-    if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
-
-    const priority = String(fm.priority ?? "B").trim();
-    const project = String(fm.project ?? "").trim();
-    const milestone = fm.milestone ? String(fm.milestone).trim() : undefined;
-
-    candidates.push({ id, priority, project, milestone });
-  }
-
-  if (candidates.length === 0) return;
-
-  // Sort by milestone position then effective priority (same logic as maybeFillEmptySlots)
-  const msProjects = milestonesEnabledProjects();
-  const msPosition = new Map<string, number>();
-  if (msProjects.size > 0) {
-    const projectMs = new Map<string, Set<string>>();
-    for (const c of candidates) {
-      if (!msProjects.has(c.project) || !c.milestone) continue;
-      let ms = projectMs.get(c.project);
-      if (!ms) { ms = new Set(); projectMs.set(c.project, ms); }
-      ms.add(c.milestone);
-    }
-    for (const [project, ms] of projectMs) {
-      const sorted = [...ms].sort();
-      for (let i = 0; i < sorted.length; i++) {
-        msPosition.set(`${project}\0${sorted[i]}`, i);
-      }
-    }
-  }
-  candidates.sort((a, b) => {
-    const ma = a.milestone && msProjects.has(a.project) ? (msPosition.get(`${a.project}\0${a.milestone}`) ?? 0) : 0;
-    const mb = b.milestone && msProjects.has(b.project) ? (msPosition.get(`${b.project}\0${b.milestone}`) ?? 0) : 0;
-    if (ma !== mb) return ma - mb;
-    return effectivePriorityValue(a.priority, a.project) - effectivePriorityValue(b.priority, b.project);
-  });
-
-  // Queue proposals for up to 1 of the top candidates per keepalive cycle
-  // Limited to slot count to avoid proposal spam for far-future tasks
-  const topN = candidates.slice(0, slotsCount());
-  let queued = 0;
-  for (const task of topN) {
-    if (queued >= 1) break;
     if (autoProposalDebounced(task.id)) continue;
 
     queueRequest("draft-proposal", `"task":"${task.id}"`);
     markAutoProposalQueued(task.id);
     console.error(`ludics: auto-queued draft-proposal for ${task.id} (ready queue position)`);
-    queued++;
+    return; // one per cycle
   }
 }
 
@@ -2126,42 +2069,31 @@ function isQueueHeld(): boolean {
   return existsSync(queueHoldFilePath());
 }
 
-// --- Auto-fill empty slots ---
+// --- Sorted ready queue (shared) ---
 
-function maybeFillEmptySlots(): void {
-  if (startSessionsAutonomy() === "manual") return;
-  if (isQueueHeld()) return; // hold suppresses auto-assignment
+interface ReadyCandidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string; elaborated: boolean }
 
-  // Find empty slots
+/** Compute the sorted ready queue — single source of truth for task ordering.
+ *  Used by maybeFillEmptySlots, maybeQueueProposals, and dashboard generation. */
+function getSortedReadyCandidates(): ReadyCandidate[] {
+  const tasksDir = join(harnessDir(), "tasks");
+  if (!existsSync(tasksDir)) return [];
+
+  // Determine which tasks are already in slots
   const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return;
-
-  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
-  const count = slotsCount();
-  const emptySlots: number[] = [];
   const tasksInSlots = new Set<string>();
-
-  for (let i = 1; i <= count; i++) {
-    const block = blocks.get(i);
-    const process = block ? getProcess(block).trim() : "(empty)";
-    if (!process || process === "(empty)") {
-      emptySlots.push(i);
-    } else {
+  if (existsSync(sFile)) {
+    const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+    const count = slotsCount();
+    for (let i = 1; i <= count; i++) {
+      const block = blocks.get(i);
       const taskId = block ? getTask(block).trim() : "";
       if (taskId && taskId !== "null") tasksInSlots.add(taskId);
     }
   }
 
-  if (emptySlots.length === 0) return;
-
-  // Find ready, elaborated tasks not already in a slot
-  const tasksDir = join(harnessDir(), "tasks");
-  if (!existsSync(tasksDir)) return;
-
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
-
-  interface Candidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string; elaborated: boolean }
-  const candidates: Candidate[] = [];
+  const candidates: ReadyCandidate[] = [];
   const allTasksForAffinity: AffinityInput[] = [];
 
   for (const f of files) {
@@ -2178,10 +2110,8 @@ function maybeFillEmptySlots(): void {
     const status = String(fm.status ?? "ready").trim();
     const deps = (fm.dependencies as Record<string, unknown>) ?? {};
 
-    // Collect affinity data for ALL tasks (needed for graph construction)
     allTasksForAffinity.push({
-      id,
-      status,
+      id, status,
       completed: fm.completed ? String(fm.completed) : null,
       dependencies: {
         blocks: Array.isArray(deps.blocks) ? deps.blocks as string[] : [],
@@ -2190,10 +2120,8 @@ function maybeFillEmptySlots(): void {
       },
     });
 
-    // Filter for candidates: ready, unblocked, not already slotted
     if (tasksInSlots.has(id)) continue;
     if (status !== "ready") continue;
-
     const blockedBy = deps.blocked_by;
     if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
 
@@ -2208,23 +2136,14 @@ function maybeFillEmptySlots(): void {
     candidates.push({ id, priority, project, milestone, hasDeadline: !!deadline, deadline, effort, elaborated });
   }
 
-  if (candidates.length === 0) return;
+  if (candidates.length === 0) return [];
 
-  // Sort by: relative milestone position > effective priority > affinity tier > deadline.
-  //
-  // Relative milestone position: for each milestone-enabled project, sort its
-  // milestones lexicographically and assign positions 0, 1, 2, ... starting from
-  // the earliest milestone that has open (candidate) tasks.  Projects without
-  // milestones get position 0 (single implicit milestone).  This makes milestone
-  // ordering globally consistent and transitive across projects.
+  // Sort by: relative milestone position > effective priority > affinity tier > deadline
   const milestonesProjects = milestonesEnabledProjects();
-  // Build affinity lookup once for tie-breaking
   const affinity = buildAffinityLookup(allTasksForAffinity, tasksInSlots);
 
-  // Compute relative milestone positions per project
-  const milestonePosition = new Map<string, number>(); // key: "project\0milestone" → position
+  const milestonePosition = new Map<string, number>();
   if (milestonesProjects.size > 0) {
-    // Collect distinct milestones per project from candidates
     const projectMilestones = new Map<string, Set<string>>();
     for (const c of candidates) {
       if (!milestonesProjects.has(c.project) || !c.milestone) continue;
@@ -2232,7 +2151,6 @@ function maybeFillEmptySlots(): void {
       if (!ms) { ms = new Set(); projectMilestones.set(c.project, ms); }
       ms.add(c.milestone);
     }
-    // Sort milestones lexicographically and assign positions
     for (const [project, ms] of projectMilestones) {
       const sorted = [...ms].sort();
       for (let i = 0; i < sorted.length; i++) {
@@ -2241,16 +2159,14 @@ function maybeFillEmptySlots(): void {
     }
   }
 
-  function relMilestonePos(c: Candidate): number {
+  function relMilestonePos(c: ReadyCandidate): number {
     if (!c.milestone || !milestonesProjects.has(c.project)) return 0;
     return milestonePosition.get(`${c.project}\0${c.milestone}`) ?? 0;
   }
 
   candidates.sort((a, b) => {
-    // Relative milestone position (globally comparable, 0 = earliest/no milestone)
     const mp = relMilestonePos(a) - relMilestonePos(b);
     if (mp !== 0) return mp;
-    // Effective priority (with priority project boost)
     const pd = effectivePriorityValue(a.priority, a.project) - effectivePriorityValue(b.priority, b.project);
     if (pd !== 0) return pd;
     const td = affinity.getTier(a.id) - affinity.getTier(b.id);
@@ -2258,6 +2174,34 @@ function maybeFillEmptySlots(): void {
     if (a.hasDeadline !== b.hasDeadline) return a.hasDeadline ? -1 : 1;
     return (a.deadline || "9999").localeCompare(b.deadline || "9999");
   });
+
+  return candidates;
+}
+
+// --- Auto-fill empty slots ---
+
+function maybeFillEmptySlots(): void {
+  if (startSessionsAutonomy() === "manual") return;
+  if (isQueueHeld()) return;
+
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return;
+
+  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  const count = slotsCount();
+  const emptySlots: number[] = [];
+
+  for (let i = 1; i <= count; i++) {
+    const block = blocks.get(i);
+    const process = block ? getProcess(block).trim() : "(empty)";
+    if (!process || process === "(empty)") {
+      emptySlots.push(i);
+    }
+  }
+
+  if (emptySlots.length === 0) return;
+
+  const candidates = getSortedReadyCandidates();
 
   // Fill at most 1 empty slot per keepalive cycle (conservative)
   // If the top candidate isn't elaborated, queue elaboration instead of assigning
@@ -2300,7 +2244,7 @@ function maybeFillEmptySlots(): void {
   console.error(`ludics: auto-assigned ${task.id} to slot ${slot} with effort=${task.effort} (${autoAdapter} ${autoArgs})`);
 
   // Queue draft-proposal only if the task doesn't already have a proposal
-  const taskFile = join(tasksDir, `${task.id}.md`);
+  const taskFile = join(harnessDir(), "tasks", `${task.id}.md`);
   const taskContent = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
   if (!taskContent.includes("\nproposal:")) {
     queueRequest("draft-proposal", `"task":"${task.id}"`);
