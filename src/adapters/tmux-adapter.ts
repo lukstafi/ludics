@@ -35,7 +35,6 @@ import { parseT3CodeAdapterArgs } from "./t3code.ts";
 // Constants
 // ---------------------------------------------------------------------------
 
-const TMUX_SESSION = "ludics-workers";
 const PORT_BASE = 7681; // port 7680 reserved
 
 // ---------------------------------------------------------------------------
@@ -86,12 +85,15 @@ function removeTmuxSlotState(slot: number, harnessDir: string): void {
 // Naming / port helpers
 // ---------------------------------------------------------------------------
 
-function tmuxWindowName(slot: number, agentName: string): string {
-  return `slot-${slot}-${agentName}`;
+/** Session name matches t3code thread title: s<slot>.<role>.<taskId> */
+function tmuxSessionName(slot: number, agentName: string, taskId?: string): string {
+  const suffix = taskId && taskId !== "null" ? taskId : agentName;
+  return `s${slot}.${agentName}.${suffix}`;
 }
 
-function tmuxTarget(slot: number, agentName: string): string {
-  return `${TMUX_SESSION}:${tmuxWindowName(slot, agentName)}`;
+/** Target for tmux commands — just the session name (one window per session) */
+function tmuxTarget(slot: number, agentName: string, taskId?: string): string {
+  return tmuxSessionName(slot, agentName, taskId);
 }
 
 function ttydPort(slot: number, role: "coder" | "reviewer"): number {
@@ -216,35 +218,24 @@ function resolveAgentThinkingEffort(
 // tmux window + ttyd setup
 // ---------------------------------------------------------------------------
 
-function ensureTmuxSession(): void {
-  if (!tmuxHasSession(TMUX_SESSION)) {
-    tmuxNewSession(TMUX_SESSION);
-    // Disable mouse to prevent copy-mode lockups
-    Bun.spawnSync(["tmux", "set-option", "-t", TMUX_SESSION, "mouse", "off"], {
-      stdout: "pipe", stderr: "pipe",
-    });
+/** Create a dedicated tmux session for an agent. One session per agent for full isolation. */
+function createTmuxAgentSession(slot: number, agentName: string, cwd: string, taskId?: string): void {
+  const sessionName = tmuxSessionName(slot, agentName, taskId);
+  // Kill existing session if present (stale from prior run)
+  if (tmuxHasSession(sessionName)) {
+    tmuxKillSession(sessionName);
   }
-}
-
-function createTmuxWindow(slot: number, agentName: string, cwd: string): void {
-  const windowName = tmuxWindowName(slot, agentName);
-  // Kill existing window if present (stale from prior run)
-  Bun.spawnSync(["tmux", "kill-window", "-t", `${TMUX_SESSION}:${windowName}`], {
+  // Create new session
+  tmuxNewSession(sessionName, cwd);
+  // Disable mouse to prevent copy-mode lockups
+  Bun.spawnSync(["tmux", "set-option", "-t", sessionName, "mouse", "off"], {
     stdout: "pipe", stderr: "pipe",
   });
-  // Create new window
-  const result = Bun.spawnSync(
-    ["tmux", "new-window", "-t", TMUX_SESSION, "-n", windowName, "-c", cwd],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  if (result.exitCode !== 0) {
-    throw new Error(`tmux new-window failed for ${windowName}: ${result.stderr.toString().trim()}`);
-  }
 }
 
-function startTtyd(slot: number, agentName: string, role: "coder" | "reviewer"): number {
+function startTtyd(slot: number, agentName: string, role: "coder" | "reviewer", taskId?: string): number {
   const port = ttydPort(slot, role);
-  const target = tmuxTarget(slot, agentName);
+  const target = tmuxTarget(slot, agentName, taskId);
 
   // Kill any stale ttyd on this port
   Bun.spawnSync(["pkill", "-f", `ttyd.*--port ${port}`], {
@@ -270,11 +261,12 @@ function killTtydForSlot(slot: number): void {
   }
 }
 
-function killTmuxWindowsForSlot(slot: number, agentNames: string[]): void {
+function killTmuxSessionsForSlot(slot: number, agentNames: string[], taskId?: string): void {
   for (const name of agentNames) {
-    Bun.spawnSync(["tmux", "kill-window", "-t", tmuxTarget(slot, name)], {
-      stdout: "pipe", stderr: "pipe",
-    });
+    const session = tmuxSessionName(slot, name, taskId);
+    if (tmuxHasSession(session)) {
+      tmuxKillSession(session);
+    }
   }
 }
 
@@ -291,8 +283,9 @@ function bootAgentCli(
   agent: { name: string; provider: string },
   peerSyncDir: string,
   phaseToken: string,
+  taskId?: string,
 ): void {
-  const target = tmuxTarget(slot, agent.name);
+  const target = tmuxTarget(slot, agent.name, taskId);
 
   // Export environment variables needed by stop hooks
   const envCmd = [
@@ -320,8 +313,8 @@ function bootAgentCli(
 // isAgentAlive — check if an agent CLI process is running in the tmux pane
 // ---------------------------------------------------------------------------
 
-function isAgentAlive(slot: number, agentName: string): boolean {
-  const target = tmuxTarget(slot, agentName);
+function isAgentAlive(slot: number, agentName: string, taskId?: string): boolean {
+  const target = tmuxTarget(slot, agentName, taskId);
   const panePid = tmuxPanePid(target);
   if (!panePid) return false;
 
@@ -399,16 +392,16 @@ async function start(ctx: AdapterContext): Promise<string> {
   );
   writeAgentMarkerFiles(setup.peerSyncDir, setup.agentWorktrees);
 
-  // --- tmux-specific setup: create windows + ttyd + boot agent CLIs ---
-  ensureTmuxSession();
+  // --- tmux-specific setup: create sessions + ttyd + boot agent CLIs ---
+  const taskId = ctx.taskId && ctx.taskId !== "null" ? ctx.taskId : undefined;
   const ttydPids: Record<string, number> = {};
   for (let i = 0; i < agents.length; i++) {
     const agent = agents[i]!;
-    createTmuxWindow(ctx.slot, agent.name, agent.worktreePath);
+    createTmuxAgentSession(ctx.slot, agent.name, agent.worktreePath, taskId);
     const role = agentPortRole(agent, i);
-    ttydPids[agent.name] = startTtyd(ctx.slot, agent.name, role);
-    // Boot persistent interactive agent CLI in the pane
-    bootAgentCli(ctx.slot, agent, setup.peerSyncDir, "setup");
+    ttydPids[agent.name] = startTtyd(ctx.slot, agent.name, role, taskId);
+    // Boot persistent interactive agent CLI in the session
+    bootAgentCli(ctx.slot, agent, setup.peerSyncDir, "setup", taskId);
   }
 
   // --- Build orchestration state (no t3code threadIds) ---
@@ -481,9 +474,9 @@ async function stop(ctx: AdapterContext): Promise<string> {
   // Kill ttyd processes
   killTtydForSlot(ctx.slot);
 
-  // Kill tmux windows
+  // Kill tmux agent sessions
   if (orchState) {
-    killTmuxWindowsForSlot(ctx.slot, orchState.agents.map((a) => a.name));
+    killTmuxSessionsForSlot(ctx.slot, orchState.agents.map((a) => a.name), orchState.feature);
     removePeerSyncSession(orchState.projectDir, orchState.feature);
     cleanupWorktrees(orchState.projectDir, orchState.feature, orchState.agents, ctx.slot, orchState.mode);
     removeOrchestrationState(ctx.slot, ctx.harnessDir);
@@ -521,7 +514,7 @@ async function readState(ctx: AdapterContext): Promise<string | null> {
       const agent = orchState.agents[i]!;
       const role = agentPortRole(agent, i);
       const port = ttydPort(ctx.slot, role);
-      const alive = isAgentAlive(ctx.slot, agent.name);
+      const alive = isAgentAlive(ctx.slot, agent.name, orchState.feature);
       md.bullet(`${agent.name} (${agent.provider}:${agent.model})`);
       md.detail(`Status: ${alive ? "running" : "idle"}`);
       md.detail(`Terminal: http://localhost:${port}`);

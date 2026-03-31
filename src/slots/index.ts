@@ -731,23 +731,15 @@ export async function slotResume(slotNum: number): Promise<void> {
       }
     }
 
-    // Ensure the base tmux session exists
-    if (!tmuxHasSession("ludics-workers")) {
-      tmuxNewSession("ludics-workers");
-      Bun.spawnSync(["tmux", "set-option", "-t", "ludics-workers", "mouse", "off"], {
-        stdout: "pipe", stderr: "pipe",
-      });
-      console.error("ludics: re-created tmux session 'ludics' for resume");
-    }
-
-    // Recreate missing tmux windows, ttyd, and agent CLIs for each agent
+    // Recreate missing tmux sessions, ttyd, and agent CLIs for each agent
     const newTtydPids: Record<string, number> = { ...(tmuxState?.ttydPids ?? {}) };
+    const taskId = orchState.feature;
     for (let i = 0; i < orchState.agents.length; i++) {
       const agent = orchState.agents[i];
-      const windowName = `slot-${slotNum}-${agent.name}`;
-      const target = `ludics:${windowName}`;
-      // Derive port role: use explicit role if set, otherwise index-based
-      // (even index → coder, odd → reviewer) to avoid port collisions in duo mode.
+      // Session name matches t3code thread title: s<slot>.<role>.<taskId>
+      const suffix = taskId && taskId !== "null" ? taskId : agent.name;
+      const sessionName = `s${slotNum}.${agent.name}.${suffix}`;
+      // Derive port role
       const role: "coder" | "reviewer" =
         agent.role === "coder" || agent.role === "reviewer"
           ? agent.role
@@ -755,28 +747,17 @@ export async function slotResume(slotNum: number): Promise<void> {
       const portBase = 7681;
       const port = portBase + (slotNum - 1) * 2 + (role === "reviewer" ? 1 : 0);
 
-      // Check if the tmux window exists
-      const windowCheck = Bun.spawnSync(
-        ["tmux", "list-windows", "-t", "ludics-workers", "-F", "#{window_name}"],
-        { stdout: "pipe", stderr: "pipe" },
-      );
-      const existingWindows = windowCheck.exitCode === 0
-        ? windowCheck.stdout.toString().trim().split("\n")
-        : [];
-      const windowExists = existingWindows.includes(windowName);
+      // Check if the tmux session exists
+      const sessionExists = tmuxHasSession(sessionName);
 
-      if (!windowExists) {
-        // Recreate the tmux window in the agent's worktree
+      if (!sessionExists) {
+        // Recreate the tmux session in the agent's worktree
         const cwd = agent.worktreePath;
-        const result = Bun.spawnSync(
-          ["tmux", "new-window", "-t", "ludics-workers", "-n", windowName, "-c", cwd],
-          { stdout: "pipe", stderr: "pipe" },
-        );
-        if (result.exitCode !== 0) {
-          console.error(`ludics: failed to recreate tmux window ${windowName}: ${result.stderr.toString().trim()}`);
-          continue;
-        }
-        console.error(`ludics: re-created tmux window '${windowName}'`);
+        tmuxNewSession(sessionName, cwd);
+        Bun.spawnSync(["tmux", "set-option", "-t", sessionName, "mouse", "off"], {
+          stdout: "pipe", stderr: "pipe",
+        });
+        console.error(`ludics: re-created tmux session '${sessionName}'`);
 
         // Boot persistent agent CLI in the recreated pane
         const envCmd = [
@@ -785,19 +766,19 @@ export async function slotResume(slotNum: number): Promise<void> {
           `LUDICS_PEER_SYNC_DIR="${orchState.peerSyncDir}"`,
           `LUDICS_PHASE_TOKEN="${orchState.currentPhaseToken ?? ""}"`,
         ].join(" ");
-        tmuxSendCommand(target, envCmd);
+        tmuxSendCommand(sessionName, envCmd);
         const cliCmd = agent.provider === "claude-code"
           ? "claude --dangerously-skip-permissions"
           : "codex --full-auto";
-        tmuxSendCommand(target, cliCmd);
-        console.error(`ludics: booted ${agent.provider} CLI in '${windowName}'`);
+        tmuxSendCommand(sessionName, cliCmd);
+        console.error(`ludics: booted ${agent.provider} CLI in '${sessionName}'`);
       }
 
       // Re-create ttyd if the port is not in use
       const portInUse = Bun.spawnSync(["lsof", "-i", `:${port}`], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
       if (!portInUse) {
         const proc = Bun.spawn(
-          ["ttyd", "--writable", "--port", String(port), "tmux", "attach", "-t", target],
+          ["ttyd", "--writable", "--port", String(port), "tmux", "attach", "-t", sessionName],
           { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
         );
         if (typeof (proc as { unref?: () => void }).unref === "function") {
