@@ -228,15 +228,38 @@ triggers:
     interval: 300             # 5 minutes in seconds
     action: federation tick
 
-# Multi-machine setup via Tailscale
-network:
-  mode: localhost             # localhost (single machine) or tailscale (multi-machine)
-  hostname: ""                # Optional explicit hostname override
-
-  # Nodes listed in seniority order (highest first = leader)
-  nodes: []
-    # Example:
-    # - name: mac-mini
-    #   tailscale_hostname: mac-mini.tailnet-name.ts.net
-    # - name: macbook
-    #   tailscale_hostname: macbook.tailnet-name.ts.net
+# Federation — multi-machine coordination via Tailscale (or SSH)
+#
+# Roles:
+#   leader  — always-on machine that runs mag, dashboard, triggers, and worker slots.
+#             Exactly one machine should be leader. Implicitly also a worker.
+#   console — primary user surface. The user is considered active/available when this
+#             machine is online. Runs worker slots when available.
+#   worker  — runs worker slots only. Joins the federation when online.
+#
+# Slot distribution: slots are dynamically assigned to online machines by the leader.
+# Machines with `always_on: true` are preferred. GPU affinity can route specific
+# projects to machines with matching hardware.
+federation:
+  transport: local            # local (single machine) | tailscale | ssh
+  domain: ""                  # Tailscale MagicDNS domain (e.g. your-tailnet.ts.net)
+  machines: []
+    # - name: desktop
+    #   host: desktop.your-tailnet.ts.net
+    #   os: macos              # macos | linux | windows
+    #   role: leader
+    #   always_on: true
+    #   gpu: apple-silicon     # apple-silicon | nvidia | amd | (omit if none)
+    #
+    # - name: laptop
+    #   host: laptop.your-tailnet.ts.net
+    #   os: macos
+    #   role: console
+    #   always_on: false
+    #
+    # - name: gpu-server
+    #   host: gpu-server.your-tailnet.ts.net
+    #   os: linux
+    #   role: worker
+    #   always_on: false
+    #   gpu: nvidia
