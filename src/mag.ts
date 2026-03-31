@@ -2016,11 +2016,12 @@ function maybeQueueProposals(): void {
     return pd;
   });
 
-  // Queue proposals for up to 2 of the top 12 per keepalive cycle
-  const top12 = candidates.slice(0, 12);
+  // Queue proposals for up to 1 of the top candidates per keepalive cycle
+  // Limited to slot count to avoid proposal spam for far-future tasks
+  const topN = candidates.slice(0, slotsCount());
   let queued = 0;
-  for (const task of top12) {
-    if (queued >= 2) break;
+  for (const task of topN) {
+    if (queued >= 1) break;
     if (autoProposalDebounced(task.id)) continue;
 
     queueRequest("draft-proposal", `"task":"${task.id}"`);
