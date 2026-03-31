@@ -1894,6 +1894,66 @@ function maybeAutoStartSlots(): void {
   }
 }
 
+/** Detect slots assigned but stuck: no proposal and no active session.
+ *  Re-queues draft-proposal if the task is elaborated and has no unanswered questions.
+ *  Logs slot_unstick events for visibility. */
+function maybeUnstickAssignedSlots(): void {
+  if (startSessionsAutonomy() === "manual") return;
+
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return;
+
+  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  const tasksDir = join(harnessDir(), "tasks");
+  if (!existsSync(tasksDir)) return;
+
+  for (const [slotNum, block] of blocks) {
+    const process = getProcess(block).trim();
+    if (!process || process === "(empty)") continue;
+
+    const taskId = getTask(block).trim();
+    if (!taskId || taskId === "null") continue;
+
+    // Skip if session is active
+    const sessionStarted = getSessionStarted(block).trim();
+    if (sessionStarted && sessionStarted !== "null") continue;
+
+    // Skip if there's an active orchestration
+    const orchState = readOrchestrationState(slotNum);
+    if (orchState && orchState.phase !== "done") continue;
+
+    // Read task file
+    const taskFile = join(tasksDir, `${taskId}.md`);
+    if (!existsSync(taskFile)) continue;
+    const content = readFileSync(taskFile, "utf-8");
+
+    // Already has proposal — maybeAutoStartSlots handles this
+    if (content.includes("\nproposal:")) continue;
+
+    // Has unanswered questions — by design, wait for user
+    if (content.includes("\nhas_questions:")) continue;
+
+    // Not elaborated — needs elaboration first
+    if (!isElaborated(content)) {
+      if (!autoProposalDebounced(taskId)) {
+        queueRequest("elaborate", `"task":"${taskId}"`);
+        markAutoProposalQueued(taskId);
+        emitEvent({ event_type: "slot_unstick", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `queued elaboration for stuck slot ${slotNum}` });
+        console.error(`ludics: slot ${slotNum} stuck — queued elaboration for ${taskId}`);
+      }
+      continue;
+    }
+
+    // Elaborated, no questions, no proposal — re-queue draft-proposal
+    if (!autoProposalDebounced(taskId)) {
+      queueRequest("draft-proposal", `"task":"${taskId}"`);
+      markAutoProposalQueued(taskId);
+      emitEvent({ event_type: "slot_unstick", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `re-queued draft-proposal for stuck slot ${slotNum}` });
+      console.error(`ludics: slot ${slotNum} stuck — re-queued draft-proposal for ${taskId}`);
+    }
+  }
+}
+
 /** Queue draft-proposals for the top ready queue tasks (up to 12) that are
  *  elaborated, have no unanswered questions, and have no proposal yet.
  *  This runs independently of slot assignment — proposals are prepared ahead. */
@@ -2397,6 +2457,9 @@ export async function magStart(args: string[]): Promise<void> {
     if (!magPaused) {
       // Auto-start slots that have proposals but no active session
       maybeAutoStartSlots();
+
+      // Detect stuck slots (assigned but no proposal/session) and re-queue
+      maybeUnstickAssignedSlots();
 
       // Auto-queue proposals for top ready queue tasks (not slot-dependent)
       maybeQueueProposals();
