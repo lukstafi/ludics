@@ -37,22 +37,20 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 2. **Resolve project path**: Use the project path from `$ARGUMENTS`. If the
    `personal` project, use `$LUDICS_STATE_PATH/..` (the state repository root).
 
-3. **Explore project codebase**:
-   - Read relevant source files mentioned in the task elaboration
-   - Understand existing patterns, architecture, related code
-   - Check for existing docs, README, ARCHITECTURE files
-
-4. **Surface task-statement ambiguities**:
-   - Cross-check the task description and elaboration against the codebase.
-     Watch out for staleness, unjustified assumptions, missing context.
+3. **Check preconditions**:
+   - Verify `has_questions` is NOT set in frontmatter. If it is, the task
+     has unanswered questions — report `STATUS: error` with message
+     "task has unanswered questions" and stop.
    - If the task is clearly stale (work already done or goal no longer applies),
      report `STATUS: stale` in your final response and stop.
-
-5. **Check for multi-concern**:
    - If the task covers multiple independent concerns (different modules,
      separable features, could be merged to main independently), report
-     `STATUS: split-needed` and stop. The orchestrator will queue the
-     split skill.
+     `STATUS: split-needed` and stop.
+
+4. **Explore project codebase**:
+   - Read relevant source files mentioned in the task elaboration
+   - Understand existing patterns, architecture, related code
+   - Use code pointers from the Tentative Design section as starting points
 
 6. **Use provided proposals path**:
    Create the directory if it doesn't exist:
@@ -65,21 +63,34 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    ```markdown
    # <Title>
 
-   ## Motivation
+   ## Goal
    Why this change is needed. Link to issue if applicable.
 
-   ## Current State
-   How things work now. Key files and code pointers.
+   ## Acceptance Criteria
+   What success looks like — faithful to the user's intent as expressed in the
+   GitHub issue, task context, and resolved questions. Each criterion should be
+   verifiable. Do NOT invent requirements beyond what the user stated or implied.
 
-   ## Proposed Change
-   What should change. Acceptance criteria. Edge cases to consider.
+   ## Context
+   How things work now. Key files and code pointers (saves agent grep time).
+
+   ## Approach (optional)
+   Include ONLY when:
+   - The approach is straightforward (obvious from context), OR
+   - The approach was iterated on with the user (noted in task questions/notes)
+
+   Omit when the approach is a creative choice — the task should be marked for
+   duo-mode to let two independent implementations compete.
+
+   Mark as tentative: "*Suggested approach — agents may deviate if they find
+   a better path.*"
 
    ## Scope
    What's in/out of scope. Dependencies on other tasks.
    ```
 
    **Key:** No implementation plan, no effort estimates, no micro-managed steps.
-   Why/What focus. Coding agents handle the How via their own plan/clarify phases.
+   Goal/What focus. Coding agents handle the How via their plan phase.
 
 8. **Commit and push**:
    Strip the `<project_path>/` prefix from `<proposals_path>` to get the repo-relative path:

@@ -14,8 +14,8 @@ isolated worker, then handles notifications and result reporting.
 
 This skill is invoked when:
 - The user runs `ludics mag draft-proposal <task-id>`
-- Auto-queued during keepalive for tasks assigned to slots that are missing proposals
-  (when `start_sessions` autonomy is not `manual`)
+- Auto-queued during keepalive for top ready queue tasks that are elaborated,
+  have no unanswered questions (`has_questions` not set), and have no proposal yet
 
 ## Arguments
 
@@ -52,6 +52,14 @@ in the same config entry. Then compute the absolute proposals directory:
 The worker will create the directory; this step only resolves the path.
 
 Worker: `/ludics-draft-proposal-worker <task_id> <project_path> <proposals_path> <context_brief>`
+
+## Skill-Specific: Precondition Check
+
+Before delegating to the worker, check the task file for `has_questions: true`.
+If set, the task has unanswered questions from elaboration — skip the proposal:
+- Write result JSON with `"status": "blocked"` and message `"unanswered questions"`
+- Do NOT delegate to the worker
+- The Mag nag system will remind the user to answer the questions
 
 ## Skill-Specific: Status Routing
 

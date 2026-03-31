@@ -77,42 +77,44 @@ cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
 - Read project-specific memory: `$LUDICS_STATE_PATH/mag/memory/projects/<project>.md`
 - Identify and read relevant code files in the project repository
 
-### 3. Derive authoritative acceptance criteria
+### 3. Cross-task awareness
 
-**Source-first**: Before any codebase exploration, read the authoritative source:
-- GitHub issue body + comments (via `gh issue view <number> --repo <repo> --json body,comments`)
-- Task creation context (from the Context section)
-- Explicit user decisions noted in the task file
+- Check for related tasks (same project, similar scope, overlapping files)
+- Check milestone dependencies and ordering
+- Note if this task would conflict with or be subsumed by other work
+- Note any project-wide patterns or conventions relevant to this task
 
-**Write Acceptance Criteria from the source ONLY:**
-- Each criterion must be directly derivable from the source — no agent inferences
-- If the source says "consider X", the criterion is "evaluate X and document the decision", NOT "implement X"
-- If the source is vague or exploratory, keep criteria vague: "investigate and report findings"
-- Do NOT add implementation details, code locations, or design decisions to this section
+### 4. Explore codebase for context
 
-### 4. Explore codebase and write tentative design
-
-Now explore the codebase for implementation context:
-- Identify specific files to modify, relevant code patterns
+Explore the codebase to understand the current state:
+- Identify relevant files, patterns, architecture
 - Note edge cases and potential blockers
-- Consider implementation approaches
+- Understand what exists vs. what needs to be built
 
-Write this as a **Tentative Design** section, clearly marked:
+Write findings as a **Tentative Design** section, clearly marked:
 
 ```markdown
 ## Tentative Design
 
 *Agent analysis — not validated by user.*
 
-[implementation ideas, code pointers, trade-offs]
+### Code Pointers
+- [relevant files and functions with line numbers]
+
+### Observations
+- [what exists, patterns, potential approaches]
+
+### Edge Cases
+- [potential issues to consider]
 ```
 
-### 5. Collect questions
+### 5. Surface ambiguities and questions
 
 Identify **genuine ambiguities** where:
 - The source intent is unclear and multiple reasonable interpretations exist
 - A design choice matters AND is debatable (not obvious from context)
 - Missing information would significantly change the implementation approach
+- The approach is a creative choice (flag for possible duo-mode experiment)
 
 Write a **Questions** section in the task file:
 
@@ -132,7 +134,8 @@ If there are no genuine questions, write `## Questions\n\nNone.`
 
 ### 6. Update task file
 
-Expand the task file with the sections above:
+The elaboration does NOT write acceptance criteria — those belong in the
+proposal phase, after questions are resolved.
 
 ```markdown
 ---
@@ -141,16 +144,13 @@ elaborated: <today's date>
 ---
 
 ## Context
-[existing context, enriched with source quote]
-
-## Acceptance Criteria
-[authoritative — derived from user intent only]
+[existing context, enriched with source quote from GitHub issue]
 
 ## Tentative Design
 
 *Agent analysis — not validated by user.*
 
-[implementation ideas, code pointers, edge cases, effort estimate]
+[code pointers, observations, edge cases]
 
 ## Questions
 
