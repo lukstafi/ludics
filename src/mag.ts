@@ -2419,6 +2419,8 @@ export async function magStart(args: string[]): Promise<void> {
 
     // Execute programmatic head requests immediately; only nudge when the next
     // queued request requires a Mag turn (skill/direct message).
+    // When paused, leave queue items accumulated — don't drain or nudge.
+    if (magPaused) return;
     const queueNeedsMagTurn = queuePending() ? await drainProgrammaticQueueHead() : false;
     if (queueNeedsMagTurn && !nudgeThrottled()) {
       const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
