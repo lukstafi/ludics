@@ -20,7 +20,6 @@ import { runQuote } from "./quote.ts";
 import { runEvents } from "./events.ts";
 import { runT3Code } from "./t3code/index.ts";
 import { runOrchestrationCli } from "./orchestration/index.ts";
-import { globalAdapter } from "./config.ts";
 
 const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   sessions: runSessions,
@@ -50,19 +49,9 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   quote: async () => runQuote(),
   events: async (args) => runEvents(args),
   t3code: async (args) => {
-    if (globalAdapter() === "tmux") {
-      console.error("ludics is configured for tmux mode — t3code commands are not available.");
-      console.error("  Use 'ludics tmux status' to check tmux backend state.");
-      process.exit(1);
-    }
     await runT3Code(args);
   },
   tmux: async (args) => {
-    if (globalAdapter() !== "tmux") {
-      console.error("ludics is configured for t3code mode — tmux commands are not available.");
-      console.error("  Set 'adapter: tmux' in config.yaml to enable tmux mode.");
-      process.exit(1);
-    }
     await runTmuxCli(args);
   },
   orch: runOrchestrationCli,
