@@ -51,13 +51,13 @@ install_pkg() {
 }
 
 # bun
+export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+export PATH="$BUN_INSTALL/bin:$PATH"
 if command -v bun &>/dev/null; then
   info "bun: $(bun --version)"
 else
   warn "bun not found — installing..."
   curl -fsSL https://bun.sh/install | bash
-  export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
-  export PATH="$BUN_INSTALL/bin:$PATH"
   info "bun: $(bun --version)"
 fi
 
@@ -70,9 +70,12 @@ else
   info "tmux: $(tmux -V)"
 fi
 
-# tailscale
+# tailscale (on macOS the CLI lives inside the app bundle)
+TAILSCALE_MACOS_CLI="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 if command -v tailscale &>/dev/null; then
   info "tailscale: $(tailscale version | head -1)"
+elif is_macos && [[ -x "$TAILSCALE_MACOS_CLI" ]]; then
+  info "tailscale: $("$TAILSCALE_MACOS_CLI" version | head -1) (app bundle)"
 else
   warn "tailscale not found — installing..."
   if is_macos; then
@@ -93,6 +96,15 @@ else
   warn "gh not found — installing..."
   install_pkg gh
   info "gh: $(gh --version | head -1)"
+fi
+
+# ttyd (web terminal)
+if command -v ttyd &>/dev/null; then
+  info "ttyd: $(ttyd --version 2>&1 | head -1)"
+else
+  warn "ttyd not found — installing..."
+  install_pkg ttyd
+  info "ttyd installed"
 fi
 
 # ── Step 2: Build & initialize Ludics ────────────────────────────────────────
@@ -117,7 +129,22 @@ export PATH="$HOME/.local/bin:$PATH"
 bin/ludics init --no-triggers --no-dashboard
 info "ludics init complete"
 
-# ── Step 3: Clone missing project repos ──────────────────────────────────────
+# ── Step 3: Clone t3code-ludics ──────────────────────────────────────────────
+
+step "Checking t3code-ludics"
+
+T3CODE_DIR="$HOME/t3code-ludics"
+if [[ -d "$T3CODE_DIR" ]]; then
+  info "t3code-ludics: already at $T3CODE_DIR"
+else
+  warn "t3code-ludics not found — cloning..."
+  gh repo clone lukstafi/t3code-ludics "$T3CODE_DIR" || warn "failed to clone t3code-ludics"
+  if [[ -d "$T3CODE_DIR" ]]; then
+    info "t3code-ludics: cloned to $T3CODE_DIR"
+  fi
+fi
+
+# ── Step 4: Clone missing project repos ──────────────────────────────────────
 
 step "Checking project repositories"
 
@@ -254,4 +281,13 @@ done < "$RESOLVED_CONFIG"
 flush_project
 
 step "Setup complete"
+
+# Check if ~/.local/bin is in the user's default PATH (not just this session)
+if ! echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin" || \
+   ! grep -qsE '\.local/bin' "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile" 2>/dev/null; then
+  warn "~/.local/bin may not be in your shell's PATH"
+  echo "  Add this to your shell profile (~/.zshrc, ~/.bashrc, etc.):"
+  echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+fi
+
 echo "Run 'ludics status' to verify everything is working."
