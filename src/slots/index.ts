@@ -771,7 +771,6 @@ export async function slotResume(slotNum: number): Promise<void> {
           `export LUDICS_SLOT=${slotNum}`,
           `LUDICS_AGENT=${agent.name}`,
           `LUDICS_PEER_SYNC_DIR="${orchState.peerSyncDir}"`,
-          `LUDICS_PHASE_TOKEN="${orchState.currentPhaseToken ?? ""}"`,
         ].join(" ");
         tmuxSendCommand(sessionName, envCmd);
         tmuxSendCommand(sessionName, agentCliCommand(agent.provider));

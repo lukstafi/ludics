@@ -38,10 +38,8 @@ export class TmuxTransport implements OrchestrationTransport {
     const target = tmuxSessionName(state.slot, agent.name, state.taskId);
     const commandId = makeId("cmd");
 
-    // Update environment variables for the current phase token (stop hook needs it)
-    const envUpdateCmd = `export LUDICS_PHASE_TOKEN="${state.currentPhaseToken ?? ""}"`;
-    tmuxSendCommand(target, envUpdateCmd);
-    await Bun.sleep(100);
+    // Phase token is read from peer-sync/phase-token file by orchOnStop —
+    // no need to inject env vars into the agent CLI session.
 
     // Check if the agent CLI is already running in the pane (persistent session).
     // If not, reboot it — this handles crash recovery and first-turn-after-resume.
@@ -77,17 +75,7 @@ export class TmuxTransport implements OrchestrationTransport {
         continue;
       }
 
-      // Peer-sync status is authoritative: if agent wrote a done status,
-      // settle immediately even if the process is still alive (TUI stuck).
-      // This handles the t3code/Claude Code case where the TUI hangs after completion.
-      if (DONE_STATUSES.has(runtime.status) && (lc.state === "dispatched" || lc.state === "running")) {
-        lc.state = "settled";
-        lc.turnCompletedAt = isoNow();
-        lc.completionSource = "snapshot";
-        continue;
-      }
-
-      // Track pane output changes for stall detection
+      // Track pane output changes for stall detection and completion detection
       const target = tmuxSessionName(state.slot, agent.name, state.taskId);
       const paneHash = tmuxPaneOutputHash(target);
       if (paneHash && paneHash !== lc.lastPaneHash) {
@@ -95,8 +83,25 @@ export class TmuxTransport implements OrchestrationTransport {
         lc.lastPaneChangeAt = isoNow();
       }
 
-      // Check process state as secondary signal
+      // Check process state
       const alive = isAgentAlive(state.slot, agent.name, state.taskId);
+
+      // Peer-sync status done + pane static or process dead → settle.
+      // The agent skill writes the status file before the turn ends (while still
+      // writing artifacts). Only settle when pane output has stopped changing,
+      // confirming the agent truly finished.
+      if (DONE_STATUSES.has(runtime.status) && (lc.state === "dispatched" || lc.state === "running")) {
+        const paneStatic = lc.lastPaneChangeAt
+          ? (nowEpoch() - Math.floor(new Date(lc.lastPaneChangeAt).getTime() / 1000)) > 30
+          : false;
+        if (!alive || paneStatic) {
+          lc.state = "settled";
+          lc.turnCompletedAt = isoNow();
+          lc.completionSource = "snapshot";
+          continue;
+        }
+        // Agent wrote done status but pane is still active — wait for stop hook or pane to settle
+      }
 
       switch (lc.state) {
         case "dispatched": {

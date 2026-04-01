@@ -284,17 +284,17 @@ function bootAgentCli(
   slot: number,
   agent: { name: string; provider: string },
   peerSyncDir: string,
-  phaseToken: string,
+  _phaseToken: string,
   taskId?: string,
 ): void {
   const target = tmuxTarget(slot, agent.name, taskId);
 
-  // Export environment variables needed by stop hooks
+  // Export environment variables needed by stop hooks.
+  // Phase token is read from peer-sync/phase-token file, not env var.
   const envCmd = [
     `export LUDICS_SLOT=${slot}`,
     `LUDICS_AGENT=${agent.name}`,
     `LUDICS_PEER_SYNC_DIR="${peerSyncDir}"`,
-    `LUDICS_PHASE_TOKEN="${phaseToken}"`,
   ].join(" ");
   tmuxSendCommand(target, envCmd);
 
