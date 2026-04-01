@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
-import { autoCommitWorktree, cleanupWorktrees, createWorktrees, symlinkPeerSync } from "./worktrees.ts";
+import { autoCommitWorktree, cleanupWorktrees, createWorktrees, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, symlinkPeerSync } from "./worktrees.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
 
@@ -200,5 +200,167 @@ describe("autoCommitWorktree", () => {
     expect(r2.dirty).toBe(false);
     expect(r2.committed).toBe(false);
     expect(gitLogCount(repo)).toBe(2); // init + first, no second
+  });
+
+  test("ignores .agents and node_modules (expanded ORCHESTRATION_EXCLUDES)", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "auto-commit-expanded-excludes");
+    initRepo(repo);
+    ensureGitExcludes(repo);
+    mkdirSync(join(repo, ".agents"), { recursive: true });
+    writeFileSync(join(repo, ".agents", "marker"), "1\n");
+    mkdirSync(join(repo, ".agent-sessions"), { recursive: true });
+    writeFileSync(join(repo, ".agent-sessions", "s1"), "data\n");
+    // Create a node_modules symlink (like createWorktrees does)
+    try { symlinkSync("/tmp", join(repo, "node_modules")); } catch { /* */ }
+
+    const result = autoCommitWorktree(repo, "should not commit");
+    expect(result.dirty).toBe(false);
+    expect(result.committed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ensureGitExcludes
+// ---------------------------------------------------------------------------
+
+function readExcludeFile(repoPath: string): string {
+  const result = Bun.spawnSync(["git", "rev-parse", "--git-common-dir"], {
+    cwd: repoPath, stdout: "pipe", stderr: "pipe",
+    env: process.env as Record<string, string>,
+  });
+  const gitDir = result.stdout.toString().trim();
+  const resolved = gitDir.startsWith("/") ? gitDir : join(repoPath, gitDir);
+  const excludePath = join(resolved, "info", "exclude");
+  try { return readFileSync(excludePath, "utf-8"); } catch { return ""; }
+}
+
+describe("ensureGitExcludes", () => {
+  test("writes all entries to a repo's info/exclude", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "exclude-basic");
+    initRepo(repo);
+
+    ensureGitExcludes(repo);
+
+    const content = readExcludeFile(repo);
+    for (const entry of GIT_EXCLUDE_ENTRIES) {
+      expect(content).toContain(entry);
+    }
+  });
+
+  test("idempotent: calling twice does not duplicate entries", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "exclude-idempotent");
+    initRepo(repo);
+
+    ensureGitExcludes(repo);
+    ensureGitExcludes(repo);
+
+    const content = readExcludeFile(repo);
+    for (const entry of GIT_EXCLUDE_ENTRIES) {
+      const count = content.split("\n").filter((l: string) => l === entry).length;
+      expect(count).toBe(1);
+    }
+  });
+
+  test("preserves existing exclude content", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "exclude-preserve");
+    initRepo(repo);
+    writeFileSync(join(repo, ".git", "info", "exclude"), "my-custom-ignore\n");
+
+    ensureGitExcludes(repo);
+
+    const content = readExcludeFile(repo);
+    expect(content).toContain("my-custom-ignore");
+    for (const entry of GIT_EXCLUDE_ENTRIES) {
+      expect(content).toContain(entry);
+    }
+  });
+
+  test("createWorktrees writes excludes to projectDir and all worktrees", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "repo-excludes");
+    mkdirSync(repo, { recursive: true });
+    run(["git", "init", "-b", "main"], repo);
+    run(["git", "config", "user.email", "test@example.com"], repo);
+    run(["git", "config", "user.name", "Test User"], repo);
+    writeFileSync(join(repo, "README.md"), "hello\n");
+    run(["git", "add", "README.md"], repo);
+    run(["git", "commit", "-m", "init"], repo);
+
+    const setup = createWorktrees(repo, "excl", [{ name: "a1" }, { name: "a2" }], "main", 7);
+
+    // Check projectDir
+    const mainContent = readExcludeFile(repo);
+    for (const entry of GIT_EXCLUDE_ENTRIES) {
+      expect(mainContent).toContain(entry);
+    }
+
+    // Check root worktree
+    const rootContent = readExcludeFile(setup.rootWorktree);
+    for (const entry of GIT_EXCLUDE_ENTRIES) {
+      expect(rootContent).toContain(entry);
+    }
+
+    // Check agent worktrees
+    for (const wt of Object.values(setup.agentWorktrees)) {
+      const content = readExcludeFile(wt);
+      for (const entry of GIT_EXCLUDE_ENTRIES) {
+        expect(content).toContain(entry);
+      }
+    }
+
+    cleanupWorktrees(repo, "excl", [{ name: "a1" }, { name: "a2" }], 7);
+  });
+
+  test("git add -A in a worktree ignores orchestration files", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "repo-gitadd");
+    mkdirSync(repo, { recursive: true });
+    run(["git", "init", "-b", "main"], repo);
+    run(["git", "config", "user.email", "test@example.com"], repo);
+    run(["git", "config", "user.name", "Test User"], repo);
+    writeFileSync(join(repo, "README.md"), "hello\n");
+    run(["git", "add", "README.md"], repo);
+    run(["git", "commit", "-m", "init"], repo);
+
+    const setup = createWorktrees(repo, "ga", [{ name: "c1" }], "main", 8);
+    const wt = setup.agentWorktrees.c1!;
+
+    // Create orchestration files
+    writeFileSync(join(wt, ".ludics-orchestration.json"), "{}");
+    mkdirSync(join(wt, ".peer-sync"), { recursive: true });
+    writeFileSync(join(wt, ".peer-sync", "foo"), "x");
+    mkdirSync(join(wt, ".claude"), { recursive: true });
+    writeFileSync(join(wt, ".claude", "settings.json"), "{}");
+    mkdirSync(join(wt, ".agents"), { recursive: true });
+    writeFileSync(join(wt, ".agents", "marker"), "1");
+    mkdirSync(join(wt, ".agent-sessions"), { recursive: true });
+    writeFileSync(join(wt, ".agent-sessions", "s1"), "1");
+    try { symlinkSync("/tmp", join(wt, "node_modules")); } catch { /* */ }
+
+    // Create a real source file
+    mkdirSync(join(wt, "src"), { recursive: true });
+    writeFileSync(join(wt, "src", "main.ts"), "export const x = 1;\n");
+
+    run(["git", "add", "-A"], wt);
+    const status = Bun.spawnSync(["git", "status", "--porcelain"], {
+      cwd: wt, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+
+    expect(status).toContain("src/main.ts");
+    expect(status).not.toContain(".peer-sync");
+    expect(status).not.toContain(".ludics-orchestration.json");
+    expect(status).not.toContain(".claude");
+    expect(status).not.toContain(".agents");
+    expect(status).not.toContain(".agent-sessions");
+    expect(status).not.toContain("node_modules");
+
+    cleanupWorktrees(repo, "ga", [{ name: "c1" }], 8);
   });
 });
