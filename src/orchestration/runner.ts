@@ -946,6 +946,16 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   }
   if ((state.phase === "update-docs" || state.phase === "review") && next === "work") {
     state.round += 1;
+    // Reset all agent statuses so stale done-statuses from the previous round
+    // don't prevent dispatch in the next round's phases.
+    for (const agent of state.agents) {
+      const runtime = state.agentStates[agent.name];
+      if (!runtime) continue;
+      runtime.status = "idle";
+      runtime.statusEpoch = nowEpoch();
+      runtime.statusMessage = `round ${state.round} starting`;
+      runtime.turnLifecycle = null;
+    }
   }
   // Track plan-merge iterations: increment planMergeRound each time we loop back.
   // Only increment if the plan-review phase actually dispatched and ran (phaseDispatched is true).
