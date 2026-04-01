@@ -365,22 +365,17 @@ export async function sendPromptToAgent(
     stdout: "pipe", stderr: "pipe",
   });
 
-  // Submit: sleep after paste to let the TUI process the pasted content,
-  // then send Enter. Codex needs longer delay and triple Enter for reliability.
+  // Submit: sleep after paste, then two separate C-m commands.
+  // Enter on an empty prompt is a no-op, so the second is harmless
+  // if the first already submitted.
   await Bun.sleep(provider === "codex" ? 1500 : 500);
-  Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"], {
+  Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
     stdout: "pipe", stderr: "pipe",
   });
-  if (provider === "codex") {
-    await Bun.sleep(500);
-    Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"], {
-      stdout: "pipe", stderr: "pipe",
-    });
-    await Bun.sleep(300);
-    Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"], {
-      stdout: "pipe", stderr: "pipe",
-    });
-  }
+  await Bun.sleep(500);
+  Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
+    stdout: "pipe", stderr: "pipe",
+  });
 
   // Cleanup temp file
   try { unlinkSync(promptFile); } catch { /* ignore */ }
