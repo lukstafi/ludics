@@ -7,7 +7,8 @@ import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
-import { federationShouldRunMag } from "./federation.ts";
+import { federationShouldRunMag, federationIsController, selectMachineForSlot } from "./federation.ts";
+import { stateCheckpoint } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
@@ -2229,8 +2230,11 @@ function maybeFillEmptySlots(): void {
   // Resolve project path from config
   const projectPath = resolveProjectPath(task.project);
 
+  // Select machine for slot assignment (federation-aware)
+  const machine = selectMachineForSlot({ project: task.project, effort: task.effort });
+
   // Assign task to the empty slot using the auto-selected adapter, path, and flags
-  slotAssign(slot, task.id, autoAdapter, "", projectPath, autoArgs);
+  slotAssign(slot, task.id, autoAdapter, "", projectPath, autoArgs, machine);
   emitEvent({
     event_type: "slot_auto_fill",
     source: "keepalive",
@@ -2240,9 +2244,10 @@ function maybeFillEmptySlots(): void {
     adapter: autoAdapter,
     effort: task.effort,
     flags: autoArgs,
-    message: `auto-assigned ${task.id} to slot ${slot} with effort=${task.effort}: ${autoArgs}`,
+    machine: machine || undefined,
+    message: `auto-assigned ${task.id} to slot ${slot} with effort=${task.effort}: ${autoArgs}${machine ? ` on ${machine}` : ""}`,
   });
-  console.error(`ludics: auto-assigned ${task.id} to slot ${slot} with effort=${task.effort} (${autoAdapter} ${autoArgs})`);
+  console.error(`ludics: auto-assigned ${task.id} to slot ${slot} with effort=${task.effort} (${autoAdapter} ${autoArgs})${machine ? ` on ${machine}` : ""}`);
 
   // Queue draft-proposal only if the task doesn't already have a proposal
   const taskFile = join(harnessDir(), "tasks", `${task.id}.md`);
@@ -2456,6 +2461,9 @@ export async function magStart(args: string[]): Promise<void> {
         emitEvent({ event_type: "mag_nudge_failed", source: "keepalive", scope: "mag", status: "failed", message: "tmux send-keys failed" });
       }
     }
+
+    // Checkpoint accumulated state changes from keepalive automations
+    try { stateCheckpoint("keepalive"); } catch { /* ignore */ }
     return;
   }
 
@@ -2562,6 +2570,7 @@ export function magStop(): void {
     writeFileSync(stateFile, content + `stopped=${stopped}\n`);
   }
 
+  try { stateCheckpoint("mag stopped"); } catch { /* ignore */ }
   console.log("Mag session stopped.");
 }
 
@@ -2798,6 +2807,10 @@ export function magDoctor(): void {
 }
 
 export function magBriefing(wait: boolean = true, timeout: number = 300): void {
+  if (!federationIsController()) {
+    console.error("ludics: mag briefing skipped — not the federation controller");
+    return;
+  }
   const requestId = queueRequest("briefing");
   console.log(`Queued briefing request: ${requestId}`);
 
@@ -2947,6 +2960,10 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "health-check":
+      if (!federationIsController()) {
+        console.error("ludics: mag health-check skipped — not the federation controller");
+        break;
+      }
       queueRequest("health-check");
       console.log("Queued health-check request");
       break;
@@ -3039,6 +3056,10 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "adopt-sessions": {
+      if (!federationIsController()) {
+        console.error("ludics: mag adopt-sessions skipped — not the federation controller");
+        break;
+      }
       const force = args.includes("--force");
       const refresh = Bun.spawnSync(ludicsSelfCommand(["sessions", "report"]), { stdout: "pipe", stderr: "pipe" });
       if (refresh.exitCode !== 0) {

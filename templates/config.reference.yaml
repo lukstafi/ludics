@@ -263,3 +263,4 @@ federation:
     #   role: worker
     #   always_on: false
     #   gpu: nvidia
+    #   ludics_path: /home/user/.local/bin/ludics  # optional, defaults to "ludics" (in PATH)

@@ -12,6 +12,7 @@ import { runMag } from "./mag.ts";
 import { runDashboard } from "./dashboard.ts";
 import { runNetwork } from "./network.ts";
 import { runFederation } from "./federation.ts";
+import { runWorkerSignal } from "./worker-signal.ts";
 import { runTriggers, triggersPause, triggersUninstall } from "./triggers.ts";
 import { runInit } from "./init.ts";
 import { slotsList } from "./slots/index.ts";
@@ -32,6 +33,7 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   dashboard: runDashboard,
   network: runNetwork,
   federation: runFederation,
+  "worker-signal": runWorkerSignal,
   triggers: runTriggers,
   stop: async (args) => {
     const sub = args[0] ?? "";

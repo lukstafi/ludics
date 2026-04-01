@@ -579,9 +579,15 @@ export async function runTasks(args: string[]): Promise<void> {
   const sub = args[0] ?? "";
 
   switch (sub) {
-    case "sync":
+    case "sync": {
+      const { federationIsController } = await import("../federation.ts");
+      if (!federationIsController()) {
+        console.error("ludics: tasks sync skipped — not the federation controller");
+        break;
+      }
       await tasksSync();
       break;
+    }
     case "list":
       tasksList();
       break;
