@@ -2960,6 +2960,10 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "health-check":
+      if (!federationIsController()) {
+        console.error("ludics: mag health-check skipped — not the federation controller");
+        break;
+      }
       queueRequest("health-check");
       console.log("Queued health-check request");
       break;
@@ -3052,6 +3056,10 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "adopt-sessions": {
+      if (!federationIsController()) {
+        console.error("ludics: mag adopt-sessions skipped — not the federation controller");
+        break;
+      }
       const force = args.includes("--force");
       const refresh = Bun.spawnSync(ludicsSelfCommand(["sessions", "report"]), { stdout: "pipe", stderr: "pipe" });
       if (refresh.exitCode !== 0) {

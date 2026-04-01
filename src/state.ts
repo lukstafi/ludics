@@ -4,6 +4,17 @@ import { existsSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { stateRepoDir } from "./config.ts";
 
+/** Lazy check to avoid circular import (federation.ts imports state.ts). */
+function isController(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { federationIsController } = require("./federation.ts");
+    return federationIsController();
+  } catch {
+    return true; // if federation module unavailable, allow push
+  }
+}
+
 function run(cmd: string[], cwd: string): { success: boolean; stdout: string } {
   const result = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
   return {
@@ -98,7 +109,8 @@ export function stateCheckpoint(
   }
   clearDirtyFlag();
 
-  if (push) {
+  // Only the controller should push to the shared state repo
+  if (push && isController()) {
     statePush();
   }
 }

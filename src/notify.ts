@@ -1200,9 +1200,15 @@ export async function runNotify(args: string[]): Promise<void> {
       notifyProposal(taskId, title, summary, filePath);
       break;
     }
-    case "subscribe":
+    case "subscribe": {
+      const { federationIsController } = await import("./federation.ts");
+      if (!federationIsController()) {
+        console.error("ludics: notify subscribe skipped — not the federation controller");
+        break;
+      }
       await subscribeIncoming();
       break;
+    }
     case "recent":
       notifyRecent(args[1] ? parseInt(args[1], 10) : 10);
       break;

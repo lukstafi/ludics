@@ -575,6 +575,20 @@ export async function slotStart(slotNum: number): Promise<void> {
   // Remote dispatch: if slot is owned by another machine, delegate via SSH
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
     console.error(`ludics: slot ${slotNum}: dispatching start to remote machine ${ctx.machine}`);
+
+    // Stamp Session Started on the controller side BEFORE dispatching, so
+    // maybeAutoStartSlots() won't re-fire on every keepalive.
+    const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
+    const updated = setField(block, "Session Started", sessionStartedAt);
+    if (updated !== block) {
+      blocks.set(slotNum, updated);
+      writeSlotFile(file, blocks, count);
+    }
+
+    // Checkpoint and push state so the worker sees fresh slot/task metadata
+    const { stateCheckpoint } = await import("../state.ts");
+    try { stateCheckpoint(`remote start slot ${slotNum}`, { push: true }); } catch { /* ignore */ }
+
     remoteExecAsync(ctx.machine, ["slot", String(slotNum), "start"]);
     journalAppend("slot", `Slot ${slotNum} remote start dispatched to ${ctx.machine}`);
     emitEvent({ event_type: "slot_start", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `remote dispatch to ${ctx.machine}` });
