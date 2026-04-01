@@ -467,6 +467,39 @@ export function federationStatus(): void {
   }
 }
 
+// --- Machine selection for slot assignment ---
+
+/**
+ * Select which machine should run a task.
+ * Returns current machine name if no federation or no suitable remote workers.
+ */
+export function selectMachineForSlot(
+  _task: { project: string; effort: string },
+): string {
+  if (!federationEnabled()) return "";
+
+  const current = federationCurrentMachineName();
+  if (!current) return "";
+
+  const machines = federationMachines();
+  const onlineMachines = machines.filter((m) => heartbeatIsFresh(m.name));
+
+  if (onlineMachines.length === 0) return current;
+
+  // Prefer always-on workers for background work
+  const alwaysOnWorkers = onlineMachines.filter(
+    (m) => m.always_on && m.name !== current,
+  );
+  if (alwaysOnWorkers.length > 0) return alwaysOnWorkers[0]!.name;
+
+  // Fall back to any online worker that isn't the controller
+  const otherOnline = onlineMachines.filter((m) => m.name !== current);
+  if (otherOnline.length > 0) return otherOnline[0]!.name;
+
+  // Only this machine is online
+  return current;
+}
+
 export async function runFederation(args: string[]): Promise<void> {
   const sub = args[0] ?? "";
 
