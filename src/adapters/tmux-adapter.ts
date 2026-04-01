@@ -357,17 +357,17 @@ export async function sendPromptToAgent(
   });
   await Bun.sleep(100);
 
-  // Paste prompt via load-buffer + paste-buffer (avoids shell escaping issues)
-  Bun.spawnSync(["tmux", "load-buffer", promptFile], {
-    stdout: "pipe", stderr: "pipe",
-  });
-  Bun.spawnSync(["tmux", "paste-buffer", "-t", target], {
+  // Inject prompt via send-keys -l (literal mode) — this goes through the
+  // terminal's input handling, unlike paste-buffer which only renders on screen.
+  // Agent-duo uses this approach for all message sends.
+  const { readFileSync } = await import("fs");
+  const content = readFileSync(promptFile, "utf-8");
+  Bun.spawnSync(["tmux", "send-keys", "-t", target, "-l", content], {
     stdout: "pipe", stderr: "pipe",
   });
 
-  // Submit: sleep after paste, then two separate C-m commands.
-  // Enter on an empty prompt is a no-op, so the second is harmless
-  // if the first already submitted.
+  // Submit: sleep to let the TUI process the input, then send C-m.
+  // Second C-m is harmless (empty prompt = no-op).
   await Bun.sleep(provider === "codex" ? 1500 : 500);
   Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
     stdout: "pipe", stderr: "pipe",
