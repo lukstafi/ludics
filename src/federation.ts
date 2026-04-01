@@ -58,13 +58,15 @@ export function federationConfig(): FederationConfig {
           console.error("ludics: DEPRECATED — network.nodes is deprecated; migrate to federation.machines in config.yaml");
           _networkNodesDeprecationWarned = true;
         }
+        // Map first node as "leader", rest as "console" to preserve
+        // seniority-based failover via computeController()'s leader→console cascade.
         machines = legacyNodes
           .filter((n) => n && n.name)
           .map((n, i) => ({
             name: String(n.name),
             host: String(n.tailscale_hostname ?? ""),
             os: "linux",
-            role: i === 0 ? "leader" : "worker",
+            role: i === 0 ? "leader" : "console",
             always_on: false,
             gpu: "",
           }));
