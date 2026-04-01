@@ -11,6 +11,7 @@ import { getUrl, networkHostname } from "./network.ts";
 import { inspectManagedServerProcess, readServerRecord, t3codeStartingPath } from "./t3code/server.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
+import { federationIsController } from "./federation.ts";
 
 function dashboardDataDir(): string {
   return join(harnessDir(), "dashboard", "data");
@@ -934,6 +935,10 @@ export function dashboardGenerate(): void {
 // --- Serve ---
 
 export function dashboardServe(port: number = 7678): void {
+  if (!federationIsController()) {
+    console.error("ludics: dashboard serve skipped — not the federation controller");
+    return;
+  }
   const dashboardDir = join(harnessDir(), "dashboard");
   if (!existsSync(dashboardDir)) {
     throw new Error("dashboard not installed. Run: ludics dashboard install");

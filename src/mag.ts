@@ -7,7 +7,7 @@ import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
-import { federationShouldRunMag } from "./federation.ts";
+import { federationShouldRunMag, federationIsController } from "./federation.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
@@ -2798,6 +2798,10 @@ export function magDoctor(): void {
 }
 
 export function magBriefing(wait: boolean = true, timeout: number = 300): void {
+  if (!federationIsController()) {
+    console.error("ludics: mag briefing skipped — not the federation controller");
+    return;
+  }
   const requestId = queueRequest("briefing");
   console.log(`Queued briefing request: ${requestId}`);
 
