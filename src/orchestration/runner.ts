@@ -18,6 +18,8 @@ import { fetchNewPrCommentCount, getPrVerification, hasCodexSubmittedReview, isP
 import { updateFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
+import { workerReportStatus } from "../worker-signal.ts";
+import { federationRole } from "../federation.ts";
 import { autoCommitWorktree, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 
@@ -1200,6 +1202,21 @@ export async function runOrchestration(
         3,
         `Slot ${state.slot}: task done`,
       );
+
+      // On worker machines, write a signal file so the controller discovers
+      // completion quickly via controllerPollWorkers() instead of waiting
+      // for the slower state-repo sync path (maybeClearDoneSlots).
+      if (federationRole() === "worker") {
+        try {
+          workerReportStatus(state.slot, {
+            taskId: state.taskId,
+            status: "done",
+            message: `orchestration completed for ${state.taskId}`,
+          });
+        } catch (err) {
+          console.error(`ludics: worker signal write failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
 
       // Collect retrospective data before threads are cleaned up
       try {
