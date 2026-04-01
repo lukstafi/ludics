@@ -8,6 +8,7 @@ import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, get
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag, federationIsController } from "./federation.ts";
+import { stateCheckpoint } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
@@ -2456,6 +2457,9 @@ export async function magStart(args: string[]): Promise<void> {
         emitEvent({ event_type: "mag_nudge_failed", source: "keepalive", scope: "mag", status: "failed", message: "tmux send-keys failed" });
       }
     }
+
+    // Checkpoint accumulated state changes from keepalive automations
+    try { stateCheckpoint("keepalive"); } catch { /* ignore */ }
     return;
   }
 
@@ -2562,6 +2566,7 @@ export function magStop(): void {
     writeFileSync(stateFile, content + `stopped=${stopped}\n`);
   }
 
+  try { stateCheckpoint("mag stopped"); } catch { /* ignore */ }
   console.log("Mag session stopped.");
 }
 

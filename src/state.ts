@@ -1,5 +1,7 @@
 // State repository git operations (git via Bun.$)
 
+import { existsSync, writeFileSync, unlinkSync } from "fs";
+import { join } from "path";
 import { stateRepoDir } from "./config.ts";
 
 function run(cmd: string[], cwd: string): { success: boolean; stdout: string } {
@@ -10,11 +12,45 @@ function run(cmd: string[], cwd: string): { success: boolean; stdout: string } {
   };
 }
 
+function dirtyFlagPath(): string {
+  // Place outside git tree to avoid committing the flag itself
+  return join(process.env.HOME ?? "/tmp", ".ludics-state-dirty");
+}
+
+/** Mark state as dirty (has uncommitted file writes). Cheap no-op if already dirty. */
+export function stateMarkDirty(): void {
+  const flag = dirtyFlagPath();
+  if (!existsSync(flag)) {
+    writeFileSync(flag, String(Math.floor(Date.now() / 1000)));
+  }
+}
+
+export function stateIsDirty(): boolean {
+  return existsSync(dirtyFlagPath());
+}
+
+function clearDirtyFlag(): void {
+  const flag = dirtyFlagPath();
+  if (existsSync(flag)) {
+    try { unlinkSync(flag); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Mark state dirty. Replaces the old immediate-commit behavior so that
+ * existing callers accumulate changes until the next checkpoint.
+ */
 export function stateCommit(message: string): void {
+  void message; // message is informational only — actual commit happens at checkpoint
+  stateMarkDirty();
+}
+
+/** Immediately commit and optionally push. For critical moments like controller handoff. */
+export function stateCommitImmediate(message: string): void {
   const repoDir = stateRepoDir();
   const { success: hasDiff } = (() => {
     const r = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
-    return { success: r.exitCode !== 0 }; // exitCode 1 means there ARE diffs
+    return { success: r.exitCode !== 0 };
   })();
 
   const { success: hasCached } = (() => {
@@ -22,12 +58,48 @@ export function stateCommit(message: string): void {
     return { success: r.exitCode !== 0 };
   })();
 
-  if (!hasDiff && !hasCached) return;
+  if (!hasDiff && !hasCached) {
+    clearDirtyFlag();
+    return;
+  }
 
   run(["git", "add", "-A"], repoDir);
   const result = run(["git", "commit", "-m", message], repoDir);
   if (result.success) {
     console.error(`ludics: committed: ${message}`);
+  }
+  clearDirtyFlag();
+}
+
+/**
+ * Batch checkpoint: commit accumulated changes and optionally push.
+ * No-op if nothing is dirty and no git diff exists.
+ */
+export function stateCheckpoint(
+  message: string,
+  opts: { push?: boolean } = {},
+): void {
+  const repoDir = stateRepoDir();
+  const push = opts.push ?? true;
+
+  // Check both dirty flag and actual git diff
+  const hasDirtyFlag = stateIsDirty();
+  const { success: hasDiff } = (() => {
+    const r = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+    return { success: r.exitCode !== 0 };
+  })();
+
+  if (!hasDirtyFlag && !hasDiff) return;
+
+  run(["git", "add", "-A"], repoDir);
+  const result = run(["git", "commit", "-m", `checkpoint: ${message}`], repoDir);
+  if (result.success) {
+    console.error(`ludics: checkpoint committed: ${message}`);
+  }
+  clearDirtyFlag();
+
+  if (push) {
+    statePush();
   }
 }
 
@@ -76,12 +148,12 @@ export function statePush(): void {
 }
 
 export function stateSync(message: string): void {
-  stateCommit(message);
+  stateCommitImmediate(message);
   statePush();
 }
 
 export function stateFullSync(): void {
   statePull();
-  stateCommit("sync");
+  stateCommitImmediate("sync");
   statePush();
 }

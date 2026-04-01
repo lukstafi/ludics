@@ -6,7 +6,7 @@ import { harnessDir, loadConfigSync } from "./config.ts";
 import { networkNodes, networkCurrentNode, hostnameTailscale } from "./network.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
-import { stateCommit, statePull, statePush } from "./state.ts";
+import { stateCommit, stateCheckpoint, stateCommitImmediate, statePull, statePush } from "./state.ts";
 
 const HEARTBEAT_TIMEOUT = parseInt(process.env.LUDICS_HEARTBEAT_TIMEOUT ?? "900", 10);
 
@@ -340,8 +340,7 @@ export function federationTick(): void {
     }
   }
 
-  try { stateCommit("federation heartbeat"); } catch { /* ignore */ }
-  try { statePush(); } catch { /* ignore */ }
+  try { stateCheckpoint("federation tick"); } catch { /* ignore */ }
 
   console.error("ludics: federation: tick complete");
 }
