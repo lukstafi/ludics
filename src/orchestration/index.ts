@@ -191,27 +191,10 @@ export function orchOnStop(args: string[]): void {
     hookEventName: hookEventName ?? "",
   });
 
-  // Auto-commit agent changes at end of turn (all adapters).
-  try {
-    autoCommitOnStop(cwd, agentName, phase);
-  } catch {
-    // Non-critical: don't break the stop hook if auto-commit fails
-  }
+  // Note: auto-commit happens at round end in the orchestration runner
+  // (after all agents are done), not on every stop hook.
 }
 
-/**
- * Auto-commit all changes in the agent's worktree at end of turn.
- * Ported from agent-duo's `lib_commit_round()` pattern.
- */
-function autoCommitOnStop(cwd: string, agent: string, phase: string): void {
-  const status = Bun.spawnSync(["git", "status", "--porcelain"], { cwd, stdout: "pipe", stderr: "pipe" });
-  const output = status.stdout.toString().trim();
-  if (!output) return; // nothing to commit
-
-  Bun.spawnSync(["git", "add", "-A"], { cwd, stdout: "pipe", stderr: "pipe" });
-  const msg = `ludics: auto-commit after ${phase} (${agent})`;
-  Bun.spawnSync(["git", "commit", "-m", msg, "--no-verify"], { cwd, stdout: "pipe", stderr: "pipe" });
-}
 
 function readFileIfExists(path: string): string | null {
   try {
