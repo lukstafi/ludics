@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { assertRepoRelativeProposalPath } from "../adapters/task-launch.ts";
+import { assertRepoRelativeProposalPath, readFrontmatterField } from "../adapters/task-launch.ts";
 import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
 import type { Phase } from "./phases.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
@@ -94,10 +94,9 @@ function taskSpecBriefText(state: OrchestrationState): string {
   const title = state.slotTitle?.trim() || state.feature;
   const path = join(harnessDir(), "tasks", `${taskId}.md`);
   const content = readFileIfExists(path);
-  const proposalMatch = content?.match(/^proposal:\s*(.+)$/m);
-  const proposalValue = proposalMatch?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "";
+  const proposalValue = (content ? readFrontmatterField(content, "proposal") : null) ?? "";
   const proposalRef =
-    proposalValue && proposalValue !== "inline" && proposalValue.toLowerCase() !== "null"
+    proposalValue && proposalValue !== "inline"
       ? proposalValue
       : "";
   const proposalLine = proposalRef
@@ -116,10 +115,9 @@ function taskSpecText(state: OrchestrationState): string {
   if (!content) return taskId;
 
   // When proposal is a file path, append a pointer + summary rather than inlining content.
-  const proposalMatch = content.match(/^proposal:\s*(.+)$/m);
-  if (proposalMatch) {
-    const proposalValue = proposalMatch[1]!.trim().replace(/^["']|["']$/g, "");
-    if (proposalValue && proposalValue !== "inline" && proposalValue.toLowerCase() !== "null") {
+  const proposalValue = readFrontmatterField(content, "proposal");
+  if (proposalValue) {
+    if (proposalValue !== "inline") {
       const proposalFile = resolveProposalAbsPath(state.projectDir, proposalValue);
       // Only read proposal file contents if it is inside the project tree, to avoid
       // exposing arbitrary local file content through the Proposal summary line.
@@ -240,9 +238,8 @@ export function buildSkillContext(
   // Extract proposal path from task frontmatter for templates that need just a reference
   const _taskPath = state.taskId ? join(harnessDir(), "tasks", `${state.taskId}.md`) : null;
   const _taskContent = _taskPath ? readFileIfExists(_taskPath) : null;
-  const _proposalMatch = _taskContent?.match(/^proposal:\s*(.+)$/m);
-  const _proposalPath = _proposalMatch?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "";
-  const proposalPath = _proposalPath && _proposalPath !== "inline" && _proposalPath.toLowerCase() !== "null"
+  const _proposalPath = (_taskContent ? readFrontmatterField(_taskContent, "proposal") : null) ?? "";
+  const proposalPath = _proposalPath && _proposalPath !== "inline"
     ? _proposalPath : "";
 
   const result: Record<string, string> = {
