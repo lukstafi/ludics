@@ -265,18 +265,23 @@ export async function detectAndNudgeStalls(
     let isStalled = false;
     let stallType: "running" | "dispatch" | null = null;
 
-    // Running stall: peer-sync done + turn still running
+    // Running stall: peer-sync done + turn still running + pane output static.
+    // If pane output is still changing, the agent is actively working — not stalled.
     if (DONE_STATUSES.has(runtime.status) && lc.state === "running" && lc.turnStartedAt) {
-      const age = now - Math.floor(new Date(lc.turnStartedAt).getTime() / 1000);
-      if (age > STALL_THRESHOLD_S) {
+      const paneStaticSince = lc.lastPaneChangeAt
+        ? now - Math.floor(new Date(lc.lastPaneChangeAt).getTime() / 1000)
+        : now - Math.floor(new Date(lc.turnStartedAt).getTime() / 1000);
+      if (paneStaticSince > STALL_THRESHOLD_S) {
         isStalled = true;
         stallType = "running";
       }
     }
-    // Dispatch stall: turn never started (snapshot reconciliation didn't help)
+    // Dispatch stall: turn never started + pane output static.
     else if (lc.state === "dispatched") {
-      const age = now - Math.floor(new Date(lc.dispatchedAt).getTime() / 1000);
-      if (age > DISPATCH_STALL_THRESHOLD_S) {
+      const paneStaticSince = lc.lastPaneChangeAt
+        ? now - Math.floor(new Date(lc.lastPaneChangeAt).getTime() / 1000)
+        : now - Math.floor(new Date(lc.dispatchedAt).getTime() / 1000);
+      if (paneStaticSince > DISPATCH_STALL_THRESHOLD_S) {
         isStalled = true;
         stallType = "dispatch";
       }

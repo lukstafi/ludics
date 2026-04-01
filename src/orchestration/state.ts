@@ -64,6 +64,10 @@ export interface AgentTurnLifecycle {
    *  Used to classify post-nudge outcome: if it changes after settlement,
    *  the agent was alive; if unchanged, the session was dead. */
   preNudgeAssistantMessageId?: string | null;
+  /** Hash of last tmux pane capture — used to detect static (stuck) terminals. */
+  lastPaneHash?: string | null;
+  /** ISO timestamp when pane output last changed. */
+  lastPaneChangeAt?: string | null;
 }
 
 export interface AgentRuntimeState {

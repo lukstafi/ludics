@@ -319,6 +319,19 @@ export function isAgentAlive(slot: number, agentName: string, taskId?: string): 
   return result.exitCode === 0;
 }
 
+/**
+ * Capture tmux pane output and return its hash.
+ * Returns null if capture fails. Used for stall detection:
+ * if the hash hasn't changed between polls, the terminal is static.
+ */
+export function tmuxPaneOutputHash(target: string, lines: number = 50): string | null {
+  const raw = tmuxCapture(target, lines);
+  if (!raw) return null;
+  const hasher = new Bun.CryptoHasher("md5");
+  hasher.update(raw);
+  return hasher.digest("hex");
+}
+
 /** Get the CLI launch command for an agent provider */
 export function agentCliCommand(provider: string): string {
   if (provider === "claude-code") return "claude --dangerously-skip-permissions";

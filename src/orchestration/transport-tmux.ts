@@ -7,7 +7,7 @@ import {
 } from "../adapters/tmux.ts";
 import {
   tmuxSessionName, isAgentAlive, agentCliCommand, sendPromptToAgent,
-  ttydPort,
+  ttydPort, tmuxPaneOutputHash,
 } from "../adapters/tmux-adapter.ts";
 
 // Re-export for backwards compatibility (used by tests)
@@ -85,6 +85,14 @@ export class TmuxTransport implements OrchestrationTransport {
         lc.turnCompletedAt = isoNow();
         lc.completionSource = "snapshot";
         continue;
+      }
+
+      // Track pane output changes for stall detection
+      const target = tmuxSessionName(state.slot, agent.name, state.taskId);
+      const paneHash = tmuxPaneOutputHash(target);
+      if (paneHash && paneHash !== lc.lastPaneHash) {
+        lc.lastPaneHash = paneHash;
+        lc.lastPaneChangeAt = isoNow();
       }
 
       // Check process state as secondary signal
