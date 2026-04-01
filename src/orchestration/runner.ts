@@ -994,6 +994,12 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   if (state.phase === "merge-review" && next === "merge-amend") {
     state.mergeRound += 1;
   }
+  // Clear stale deferral timer when leaving pr-comments (e.g. pr-comments → merge-vote
+  // in duo mode), so merge-loop re-entries don't see an expired timer and post spurious
+  // fallback comments.
+  if (state.phase === "pr-comments" && state.prCodexReviewDeferredSince) {
+    state.prCodexReviewDeferredSince = undefined;
+  }
   if (state.phase === "update-docs" && next === "pr-comments") {
     state.lastLearningAt = nowEpoch();
     state.lastLearningRound = state.round;

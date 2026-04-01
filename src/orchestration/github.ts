@@ -82,7 +82,7 @@ export function hasCodexSubmittedReview(prUrl: string): boolean {
   try {
     const result = Bun.spawnSync(
       [
-        "gh", "api",
+        "gh", "api", "--paginate",
         `repos/${repo}/pulls/${prNumber}/reviews`,
         "--jq",
         '[.[] | select(.state != "PENDING" and .user.login == "chatgpt-codex-connector[bot]")] | length',
@@ -90,7 +90,10 @@ export function hasCodexSubmittedReview(prUrl: string): boolean {
       { stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string> },
     );
     if (result.exitCode !== 0) return false;
-    return parseInt(result.stdout.toString().trim(), 10) > 0;
+    // --paginate + --jq outputs one number per page; sum them
+    const total = result.stdout.toString().trim().split("\n")
+      .reduce((sum, line) => sum + (parseInt(line, 10) || 0), 0);
+    return total > 0;
   } catch {
     return false;
   }
