@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
-import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone, pairReviewVerdict } from "./phases.ts";
+import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone, pairReviewVerdict, phaseTimeoutExpired } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
   statusFileFingerprint, writeInterrupt, writePeerSync,
@@ -14,7 +14,7 @@ import {
   type AgentConfig, type OrchestrationState,
 } from "./state.ts";
 import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
-import { fetchNewPrCommentCount, hasPrApprovalReaction, isPrMerged, postCodexReviewComment, validateAndFixPrFile } from "./github.ts";
+import { fetchNewPrCommentCount, getPrVerification, hasPrApprovalReaction, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile } from "./github.ts";
 import { updateFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
@@ -28,6 +28,155 @@ const STALL_THRESHOLD_S = 180;
 const DISPATCH_STALL_THRESHOLD_S = 300;
 /** Minimum seconds between nudge attempts per agent. */
 const NUDGE_COOLDOWN_S = 120;
+
+// --- Verification gate constants and types ---
+type VerificationDecision = "advance" | "redispatch" | "hold" | "skip";
+export const MAX_VERIFY_ATTEMPTS = 3;
+
+/**
+ * After pr-create agents are done, verify the PR actually exists on GitHub.
+ * Returns a decision: advance (PR verified), redispatch (retry), hold (max retries), skip (not applicable).
+ */
+function verifyPrCreateOutcome(state: OrchestrationState): VerificationDecision {
+  if (state.phase !== "pr-create") return "skip";
+  if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return "skip";
+
+  const prUrl = getFirstPrUrl(state);
+  if (!prUrl) {
+    return handleVerifyFailure(state, "prCreate", "No PR URL found in agent state or .pr artifact");
+  }
+
+  const v = getPrVerification(prUrl);
+  if (v.exists) {
+    emitEvent({
+      event_type: "pr_verified",
+      source: "orchestration", scope: "slot",
+      slot: state.slot, task: state.feature,
+      action: "pr-create verification", status: "success",
+      message: `PR verified (${v.state}): ${prUrl}`,
+    });
+    state.phaseRetryContext = null;
+    return "advance";
+  }
+
+  return handleVerifyFailure(state, "prCreate", `${v.reason}: ${prUrl}`);
+}
+
+/**
+ * After final-merge agents are done, verify the PR is actually merged on GitHub.
+ */
+function verifyFinalMergeOutcome(state: OrchestrationState): VerificationDecision {
+  if (state.phase !== "final-merge") return "skip";
+  if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return "skip";
+
+  const prUrl = getFirstPrUrl(state);
+  if (!prUrl) {
+    return handleVerifyFailure(state, "finalMerge", "No PR URL found");
+  }
+
+  const v = getPrVerification(prUrl);
+  if (v.exists && v.merged) {
+    emitEvent({
+      event_type: "merge_verified",
+      source: "orchestration", scope: "slot",
+      slot: state.slot, task: state.feature,
+      action: "final-merge verification", status: "success",
+      message: `PR merge verified: ${prUrl}`,
+    });
+    state.phaseRetryContext = null;
+    return "advance";
+  }
+
+  // Build detailed failure reason for the retry prompt
+  let detail = v.reason;
+  if (v.exists && !v.merged) {
+    detail = `PR is ${v.state} but not merged`;
+    if (v.mergeableState && v.mergeableState !== "clean") {
+      detail += ` (mergeable_state: ${v.mergeableState})`;
+    }
+  }
+  return handleVerifyFailure(state, "finalMerge", `${detail}: ${prUrl}`);
+}
+
+function handleVerifyFailure(
+  state: OrchestrationState,
+  gate: "prCreate" | "finalMerge",
+  reason: string,
+): VerificationDecision {
+  const attemptsKey = gate === "prCreate" ? "prCreateVerifyAttempts" : "finalMergeVerifyAttempts";
+  const eventType = gate === "prCreate" ? "pr_missing" : "merge_failed";
+  const phaseLabel = gate === "prCreate" ? "pr-create" : "final-merge";
+
+  // Already at max retries — hold silently without re-emitting events/notifications.
+  if ((state[attemptsKey] ?? 0) >= MAX_VERIFY_ATTEMPTS) {
+    return "hold";
+  }
+
+  state[attemptsKey] = (state[attemptsKey] ?? 0) + 1;
+  const attempts = state[attemptsKey]!;
+
+  emitEvent({
+    event_type: eventType,
+    source: "orchestration", scope: "slot",
+    slot: state.slot, task: state.feature,
+    action: `${phaseLabel} verification`, status: "failed",
+    message: `${reason} (attempt ${attempts}/${MAX_VERIFY_ATTEMPTS})`,
+  });
+
+  if (attempts >= MAX_VERIFY_ATTEMPTS) {
+    emitEvent({
+      event_type: "manual_intervention_required",
+      source: "orchestration", scope: "slot",
+      slot: state.slot, task: state.feature,
+      action: `${phaseLabel} verification exhausted`, status: "blocked",
+      message: `${phaseLabel} failed after ${MAX_VERIFY_ATTEMPTS} attempts — manual intervention needed`,
+    });
+    notifyAgents(
+      `Slot ${state.slot} [${state.taskId ?? state.feature}]: ${phaseLabel} verification failed ${MAX_VERIFY_ATTEMPTS} times — needs human`,
+      3,
+      `Slot ${state.slot}: manual intervention`,
+    );
+    return "hold";
+  }
+
+  // Prepare for re-dispatch
+  state.phaseRetryContext = reason;
+  preparePhaseRedispatch(state);
+  return "redispatch";
+}
+
+/** Get the first available PR URL from agent runtime state, falling back to peer-sync artifact. */
+function getFirstPrUrl(state: OrchestrationState): string | null {
+  for (const agent of state.agents) {
+    const url = state.agentStates[agent.name]?.prUrl;
+    if (url) return url;
+  }
+  // Fallback: read directly from .pr file (runtime.prUrl may be null if refresh didn't run)
+  for (const agent of state.agents) {
+    const url = readPrUrl(state.peerSyncDir, agent.name);
+    if (url && isPrUrl(url)) return url;
+  }
+  return null;
+}
+
+/**
+ * Reset participating agents' done status so the main loop re-enters the phase
+ * and re-dispatches them with retry context.
+ */
+function preparePhaseRedispatch(state: OrchestrationState): void {
+  for (const agent of state.agents) {
+    if (!agentParticipatesInPhase(state, agent)) continue;
+    const runtime = state.agentStates[agent.name];
+    if (!runtime) continue;
+    runtime.turnLifecycle = null;
+    runtime.status = "idle";
+    runtime.statusEpoch = nowEpoch();
+    runtime.statusMessage = "verification failed — retry pending";
+    runtime.interrupted = false;
+  }
+  state.phaseDispatched = false;
+  state.currentPhaseToken = undefined;
+}
 /** Force-settle via interruptAgent() after this many failed nudges. */
 const MAX_NUDGE_ATTEMPTS = 2;
 
@@ -716,6 +865,15 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
 }
 
 function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationState["phase"]): void {
+  // Reset verification retry counters when entering the relevant phase fresh.
+  if (next === "pr-create") {
+    state.prCreateVerifyAttempts = 0;
+    state.phaseRetryContext = null;
+  }
+  if (next === "final-merge") {
+    state.finalMergeVerifyAttempts = 0;
+    state.phaseRetryContext = null;
+  }
   if (state.phase === "review" && next === "update-docs" && !shouldRunUpdateDocs(state)) {
     state.lastLearningAt = state.lastLearningAt ?? 0;
   }
@@ -838,10 +996,23 @@ export async function runOrchestration(
     const participating = state.agents.filter(a => agentParticipatesInPhase(state, a));
     autoCommitAllAgents(state, participating, /* push */ false);
 
+    // --- Verification gates: confirm actual outcome before allowing transition ---
+    const prCreateDecision = verifyPrCreateOutcome(state);
+    const finalMergeDecision = verifyFinalMergeOutcome(state);
+    const gateDecision = [prCreateDecision, finalMergeDecision].find(d => d !== "skip") ?? "skip";
+
+    if (gateDecision === "redispatch" || gateDecision === "hold") {
+      persistState(state);
+      await sleep(state.config.pollInterval * 1000);
+      continue; // re-enter loop: redispatch runs enterPhase, hold waits for timeout/human
+    }
+    // gateDecision === "advance" or "skip" → proceed to evaluateTransition normally
+
     const evaluated = evaluateTransition(state);
     const next = maybeOverrideTransition(state, evaluated);
 
     if (!next) {
+      persistState(state);
       await sleep(state.config.pollInterval * 1000);
       continue;
     }

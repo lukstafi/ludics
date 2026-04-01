@@ -133,6 +133,12 @@ export interface OrchestrationState {
    * any agent's PR during the pr-comments phase.  Triggers immediate transition to final-merge.
    */
   prCodexApproved?: boolean;
+  /** Number of verification failures for pr-create. Reset on fresh phase entry. */
+  prCreateVerifyAttempts?: number;
+  /** Number of verification failures for final-merge. Reset on fresh phase entry. */
+  finalMergeVerifyAttempts?: number;
+  /** Context string from the last verification failure, passed to the agent on re-dispatch. */
+  phaseRetryContext?: string | null;
   /** Phase token for the current phase — persisted for crash-recovery dedup. */
   currentPhaseToken?: string;
   /** Which orchestration backend was used to create this state ("t3code" or "tmux").
