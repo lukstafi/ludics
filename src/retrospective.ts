@@ -20,6 +20,14 @@ export interface RetrospectiveVerdict {
   reviewer: string | null;
 }
 
+export interface RetrospectiveReview {
+  round: number;
+  type: "review" | "plan-review";
+  reviewer: string;
+  verdict: "approve" | "request_changes" | "timeout";
+  content: string;
+}
+
 export interface RetrospectiveThread {
   threadId: string;
   agentName: string;
@@ -63,6 +71,7 @@ export interface RetrospectiveData {
   planMergeRound: number;
   agents: string[];
   verdicts: RetrospectiveVerdict[];
+  reviews: RetrospectiveReview[];
   threads: RetrospectiveThread[];
   turns: RetrospectiveTurn[];
   missingThreads: MissingThread[];
@@ -291,6 +300,60 @@ function extractVerdicts(peerSyncDir: string): RetrospectiveVerdict[] {
   return verdicts;
 }
 
+export function extractReviews(peerSyncDir: string): RetrospectiveReview[] {
+  const reviewsDir = join(peerSyncDir, "reviews");
+  if (!existsSync(reviewsDir)) return [];
+
+  const reviews: RetrospectiveReview[] = [];
+
+  try {
+    const files = readdirSync(reviewsDir).filter((f: string) => f.endsWith(".md"));
+
+    for (const f of files) {
+      // Normal review: round-N-<reviewer>.md
+      const roundMatch = f.match(/^round-(\d+)-(.+)\.md$/);
+      if (roundMatch) {
+        const round = parseInt(roundMatch[1]!, 10);
+        const reviewer = roundMatch[2]!;
+        try {
+          const content = readFileSync(join(reviewsDir, f), "utf-8");
+          const verdict = parseVerdictFromContent(content);
+          reviews.push({ round, type: "review", reviewer, verdict, content });
+        } catch {
+          // skip unreadable file
+        }
+        continue;
+      }
+
+      // Plan-review: plan-merge-N-<reviewer>.md
+      const planMatch = f.match(/^plan-merge-(\d+)-(.+)\.md$/);
+      if (planMatch) {
+        const round = parseInt(planMatch[1]!, 10);
+        const reviewer = planMatch[2]!;
+        try {
+          const content = readFileSync(join(reviewsDir, f), "utf-8");
+          const verdict = parseVerdictFromContent(content);
+          reviews.push({ round, type: "plan-review", reviewer, verdict, content });
+        } catch {
+          // skip unreadable file
+        }
+      }
+      // Unrecognized filenames silently skipped
+    }
+  } catch {
+    // directory read error — return empty
+  }
+
+  // Sort: round ASC, plan-review before review at same round, reviewer alpha
+  reviews.sort((a, b) => {
+    if (a.round !== b.round) return a.round - b.round;
+    if (a.type !== b.type) return a.type === "plan-review" ? -1 : 1;
+    return a.reviewer.localeCompare(b.reviewer);
+  });
+
+  return reviews;
+}
+
 function parseVerdictFromContent(content: string): "approve" | "request_changes" | "timeout" {
   const upper = content.toUpperCase();
   if (upper.includes("APPROVE") && !upper.includes("REQUEST_CHANGES")) return "approve";
@@ -486,8 +549,14 @@ export async function collectAndWriteRetrospective(state: OrchestrationState): P
   // Sort turns chronologically
   allTurns.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-  // Extract review verdicts
-  const verdicts = extractVerdicts(state.peerSyncDir);
+  // Extract full reviews and derive verdicts for backward compatibility
+  const reviews = extractReviews(state.peerSyncDir);
+  const verdicts: RetrospectiveVerdict[] = reviews.map((r) => ({
+    round: r.round,
+    type: r.type,
+    verdict: r.verdict,
+    reviewer: r.reviewer,
+  }));
 
   // Extract artifact summaries
   const suggestRefactorSummary = extractArtifactSummary(state.peerSyncDir, /^suggest-refactor.*\.md$/);
@@ -514,6 +583,7 @@ export async function collectAndWriteRetrospective(state: OrchestrationState): P
     planMergeRound: state.planMergeRound ?? 0,
     agents: state.agents.map((a) => a.name),
     verdicts,
+    reviews,
     threads: allThreads,
     turns: allTurns,
     missingThreads: allMissing,
@@ -597,6 +667,7 @@ export async function collectRetrospectiveFallback(taskId: string): Promise<void
     planMergeRound: 0,
     agents: [],
     verdicts: [],
+    reviews: [],
     threads: allThreads,
     turns: allTurns,
     missingThreads: allMissing,
