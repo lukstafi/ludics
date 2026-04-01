@@ -36,7 +36,7 @@ function maybeGit(projectDir: string, args: string[]): string {
 
 /** Paths that the orchestrator manages inside worktrees and must never be committed. */
 export const GIT_EXCLUDE_ENTRIES = [
-  ".peer-sync",
+  PEER_SYNC_DIRNAME,
   ".ludics-orchestration.json",
   ".claude",
   ".agents",
