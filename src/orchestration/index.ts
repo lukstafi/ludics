@@ -81,9 +81,23 @@ export async function runOrchestrationCli(args: string[]): Promise<void> {
     case "log":
       orchLog(requireSlot(args[1]));
       return;
-    case "run-internal":
-      await runOrchestrationForSlot(requireSlot(args[1]));
+    case "run-internal": {
+      // Catch crashes and unhandled rejections — orchestrator runs detached,
+      // stderr goes to log file, silent deaths are unacceptable.
+      const crashHandler = (err: unknown) => {
+        console.error(`ludics: orchestrator crashed: ${err instanceof Error ? err.message : String(err)}`);
+        if (err instanceof Error && err.stack) console.error(err.stack);
+        process.exit(1);
+      };
+      process.on("uncaughtException", crashHandler);
+      process.on("unhandledRejection", crashHandler);
+      try {
+        await runOrchestrationForSlot(requireSlot(args[1]));
+      } catch (err) {
+        crashHandler(err);
+      }
       return;
+    }
     case "on-stop":
       orchOnStop(args.slice(1));
       return;
