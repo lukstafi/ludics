@@ -9,6 +9,7 @@ export interface AdapterContext {
   adapterArgs: string;
   started?: string;
   process: string;
+  machine?: string;
   harnessDir: string;
   stateRepoDir: string;
 }

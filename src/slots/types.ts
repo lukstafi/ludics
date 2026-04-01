@@ -10,6 +10,7 @@ export interface SlotBlock {
   started: string;
   adapterArgs: string;
   terminals: string;
+  machine: string;
   runtime: string;
   git: string;
   raw: string; // full Markdown block

@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from
 import { join } from "path";
 import { globalAdapter, harnessDir, slotsFilePath, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
 import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
-         getSessionStarted, setField,
+         getSessionStarted, getMachine, setField,
          emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
 import { stateCommit } from "../state.ts";
 import { journalAppend } from "../journal.ts";
@@ -17,6 +17,7 @@ import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState } from "../t3code/server.ts";
 import { readOrchestrationState, persistState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
+import { remoteExec, remoteExecAsync, isRemoteMachine } from "../remote.ts";
 
 function ensureSlotsFile(): string {
   const file = slotsFilePath();
@@ -114,7 +115,9 @@ export function slotsList(): void {
   for (let i = 1; i <= count; i++) {
     const block = blocks.get(i);
     const process = block ? getProcess(block) : "(empty)";
-    console.log(`Slot ${i}: ${process}`);
+    const machineName = block ? getMachine(block).trim() : "";
+    const machineStr = machineName && machineName !== "null" ? ` [${machineName}]` : "";
+    console.log(`Slot ${i}: ${process}${machineStr}`);
   }
 }
 
@@ -138,6 +141,7 @@ export function slotAssign(
   session: string = "",
   path: string = "",
   adapterArgs: string = "",
+  machine: string = "",
 ): void {
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
@@ -192,6 +196,7 @@ export function slotAssign(
 **Path:** ${path || "null"}
 **Started:** ${started}
 **Adapter Args:** ${adapterArgs || "null"}
+**Machine:** ${machine || "null"}
 **Session Started:** null
 
 **Terminals:**
@@ -524,6 +529,7 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
   const taskIdRaw = getTask(block).trim();
   const adapterArgs = getAdapterArgs(block).trim();
   const process = getProcess(block).trim();
+  const machineName = getMachine(block).trim();
 
   let resolvedPath = path === "null" ? "" : path;
 
@@ -548,6 +554,7 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
     taskId: taskIdRaw === "null" ? "" : taskIdRaw,
     adapterArgs: adapterArgs === "null" ? "" : adapterArgs,
     process: process === "(empty)" ? "" : process,
+    machine: machineName === "null" ? "" : machineName,
     harnessDir: harnessDir(),
     stateRepoDir: stateRepoDir(),
   };
@@ -564,6 +571,15 @@ export async function slotStart(slotNum: number): Promise<void> {
 
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
+
+  // Remote dispatch: if slot is owned by another machine, delegate via SSH
+  if (ctx.machine && isRemoteMachine(ctx.machine)) {
+    console.error(`ludics: slot ${slotNum}: dispatching start to remote machine ${ctx.machine}`);
+    remoteExecAsync(ctx.machine, ["slot", String(slotNum), "start"]);
+    journalAppend("slot", `Slot ${slotNum} remote start dispatched to ${ctx.machine}`);
+    emitEvent({ event_type: "slot_start", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `remote dispatch to ${ctx.machine}` });
+    return;
+  }
 
   if ((ctx.mode === "t3code" || ctx.mode === "tmux") && !ctx.adapterArgs.trim()) {
     throw new Error(
@@ -600,7 +616,7 @@ export async function slotStart(slotNum: number): Promise<void> {
   emitEvent({ event_type: "slot_start", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
 }
 
-export async function slotStop(slotNum: number): Promise<void> {
+export async function slotStop(slotNum: number, force: boolean = false): Promise<void> {
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
@@ -612,7 +628,18 @@ export async function slotStop(slotNum: number): Promise<void> {
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
-  await runAdapterAction("stop", ctx);
+  // Remote dispatch: if slot is owned by another machine, delegate via SSH
+  if (ctx.machine && isRemoteMachine(ctx.machine) && !force) {
+    console.error(`ludics: slot ${slotNum}: dispatching stop to remote machine ${ctx.machine}`);
+    const result = remoteExec(ctx.machine, ["slot", String(slotNum), "stop"]);
+    if (!result.success) {
+      console.error(`ludics: slot ${slotNum}: remote stop failed on ${ctx.machine}: ${result.stderr}`);
+      console.error(`  use 'ludics slot ${slotNum} stop --force' to clear local state without remote exec`);
+      return;
+    }
+  } else {
+    await runAdapterAction("stop", ctx);
+  }
 
   // Clear the session-active marker so the mode toggle becomes available again
   const updated = setField(block, "Session Started", "null");
@@ -639,6 +666,16 @@ export async function slotResume(slotNum: number): Promise<void> {
 
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode — nothing to resume`);
+
+  // Remote dispatch: if slot is owned by another machine, delegate via SSH
+  if (ctx.machine && isRemoteMachine(ctx.machine)) {
+    console.error(`ludics: slot ${slotNum}: dispatching resume to remote machine ${ctx.machine}`);
+    remoteExecAsync(ctx.machine, ["slot", String(slotNum), "resume"]);
+    journalAppend("slot", `Slot ${slotNum} remote resume dispatched to ${ctx.machine}`);
+    emitEvent({ event_type: "slot_resume", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine });
+    return;
+  }
+
   if (ctx.mode !== "t3code" && ctx.mode !== "tmux") {
     throw new Error(`slot ${slotNum} has Mode=${ctx.mode} — resume only supports t3code and tmux`);
   }
@@ -962,6 +999,7 @@ export async function runSlot(args: string[]): Promise<void> {
       let session = "";
       let path = "";
       const adapterArgFragments: string[] = [];
+      let machine = "";
       let hasDirectOrchFlags = false;    // true only if a direct shorthand flag was used (not -A)
       let firstDirectOrchFlagIdx = -1;   // fragment index of the first direct --coder/--reviewer/--plan
       for (let i = 3; i < args.length; i++) {
@@ -969,6 +1007,7 @@ export async function runSlot(args: string[]): Promise<void> {
           case "-a": adapter = args[++i] ?? "manual"; break;
           case "-s": session = args[++i] ?? ""; break;
           case "-p": path = args[++i] ?? ""; break;
+          case "--machine": machine = args[++i] ?? ""; break;
           case "-A":
           case "--adapter-args": {
             const raw = args[++i];
@@ -1041,7 +1080,7 @@ export async function runSlot(args: string[]): Promise<void> {
       }
 
       const adapterArgs = adapterArgFragments.join(" ");
-      slotAssign(slotNum, taskOrDesc, adapter, session, path, adapterArgs);
+      slotAssign(slotNum, taskOrDesc, adapter, session, path, adapterArgs, machine);
       break;
     }
 
@@ -1059,9 +1098,11 @@ export async function runSlot(args: string[]): Promise<void> {
       await slotStart(slotNum);
       break;
 
-    case "stop":
-      await slotStop(slotNum);
+    case "stop": {
+      const forceStop = args.includes("--force");
+      await slotStop(slotNum, forceStop);
       break;
+    }
 
     case "resume":
       await slotResume(slotNum);
