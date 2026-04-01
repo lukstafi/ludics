@@ -7,6 +7,7 @@ import { existsSync, readdirSync } from "fs";
 import { join, resolve } from "path";
 import { tmuxAvailable, tmuxHasSession, tmuxPaneCwd } from "./tmux.ts";
 import { readStatusFile, formatAgentStatus, timeAgo, isGitWorktree, getMainRepoFromWorktree, getGitBranch, resolveProjectDir, latestMtime } from "./base.ts";
+import { PEER_SYNC_DIRNAME } from "../orchestration/peer-sync.ts";
 import { readAgentSessionFile } from "./peer-sync.ts";
 import { getUrl } from "../network.ts";
 import { MarkdownBuilder } from "./markdown.ts";
@@ -193,7 +194,7 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
 
     // Agent status
     if (sessionInfo?.workdir) {
-      const statusPath = join(sessionInfo.workdir, ".peer-sync", cfg.statusFileName);
+      const statusPath = join(sessionInfo.workdir, PEER_SYNC_DIRNAME, cfg.statusFileName);
       const status = readStatusFile(statusPath);
       if (status && status.status) {
         md.bullet(`Status: ${formatAgentStatus(status)}`);
@@ -274,7 +275,7 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
     if (sessionFile) paths.push(sessionFile);
     // Check agent status file in workdir
     if (sessionInfo?.workdir) {
-      paths.push(join(sessionInfo.workdir, ".peer-sync", cfg.statusFileName));
+      paths.push(join(sessionInfo.workdir, PEER_SYNC_DIRNAME, cfg.statusFileName));
     }
     return latestMtime(paths);
   }

@@ -3,6 +3,44 @@ import { dirname, join } from "path";
 import type { OrchestrationState } from "./state.ts";
 import { makeId } from "./util.ts";
 
+/** Canonical directory name for peer-sync state. */
+export const PEER_SYNC_DIRNAME = ".peer-sync";
+
+/** Build the peer-sync path for a given worktree root. */
+export function peerSyncPath(rootWorktree: string): string {
+  return join(rootWorktree, PEER_SYNC_DIRNAME);
+}
+
+/**
+ * Resolve the peer-sync directory using a priority chain:
+ *   CLI arg (if valid) > LUDICS_PEER_SYNC_DIR env var (if valid) > null.
+ *
+ * A directory is considered valid if it contains a `phase` file.
+ * This mirrors the resolution order in `templates/hooks/ludics-on-stop.sh`.
+ */
+export function resolvePeerSyncDir(opts: { cliArg?: string }): string | null {
+  // 1. CLI arg (if it has a phase file)
+  if (opts.cliArg) {
+    try {
+      const content = readFileSync(join(opts.cliArg, "phase"), "utf-8").trim();
+      if (content) return opts.cliArg;
+    } catch {
+      // not valid — fall through
+    }
+  }
+  // 2. LUDICS_PEER_SYNC_DIR env var
+  const envDir = process.env.LUDICS_PEER_SYNC_DIR;
+  if (envDir) {
+    try {
+      const content = readFileSync(join(envDir, "phase"), "utf-8").trim();
+      if (content) return envDir;
+    } catch {
+      // not valid — fall through
+    }
+  }
+  return null;
+}
+
 export interface AgentStatusSnapshot {
   status: string;
   epoch: number;

@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
+import { PEER_SYNC_DIRNAME, peerSyncPath } from "./peer-sync.ts";
 import { slugify } from "./util.ts";
 
 export interface WorktreeSetup {
@@ -35,7 +36,7 @@ function maybeGit(projectDir: string, args: string[]): string {
 
 /** Paths that the orchestrator manages inside worktrees and must never be committed. */
 export const GIT_EXCLUDE_ENTRIES = [
-  ".peer-sync",
+  PEER_SYNC_DIRNAME,
   ".ludics-orchestration.json",
   ".claude",
   ".agents",
@@ -127,7 +128,7 @@ export function createWorktrees(
   const repoName = basename(resolve(projectDir));
   const stem = `${repoName}-${featureSlug}${slotSuffix}`;
   const rootWorktree = join(parentDir, stem);
-  const peerSyncDir = join(rootWorktree, ".peer-sync");
+  const peerSyncDir = peerSyncPath(rootWorktree);
   const branches: Record<string, string> = {
     root: `ludics/${featureSlug}${slotSuffix}/root`,
   };
@@ -183,7 +184,7 @@ export function symlinkPeerSync(
   const uniquePaths = new Set(Object.values(agentWorktrees));
   for (const worktreePath of uniquePaths) {
     mkdirSync(worktreePath, { recursive: true });
-    const linkPath = join(worktreePath, ".peer-sync");
+    const linkPath = join(worktreePath, PEER_SYNC_DIRNAME);
     // If peerSyncDir is already inside this worktree, skip symlinking
     if (resolve(peerSyncDir).startsWith(resolve(worktreePath))) continue;
     try {

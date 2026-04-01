@@ -52,6 +52,10 @@ fi
 
 # Determine peer-sync directory and agent name.
 # Priority: env var > marker file > directory walk.
+# NOTE: The TypeScript equivalent is resolvePeerSyncDir() in src/orchestration/peer-sync.ts
+# which implements: CLI arg > env var > null.  The shell hook has additional fallbacks
+# (marker file walk-up, deprecated dir walk-up) because it runs before the TypeScript
+# binary and must bootstrap without prior context.
 peer_sync_dir=""
 
 # 1. Env var set externally (e.g. by a wrapper or test harness).
