@@ -365,13 +365,17 @@ export async function sendPromptToAgent(
     stdout: "pipe", stderr: "pipe",
   });
 
-  // Enter must be a separate send-keys call with a sleep gap.
-  // Codex needs a double Enter (input buffering workaround).
-  await Bun.sleep(500);
+  // Submit: sleep after paste to let the TUI process the pasted content,
+  // then send Enter. Codex needs longer delay and triple Enter for reliability.
+  await Bun.sleep(provider === "codex" ? 1500 : 500);
   Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"], {
     stdout: "pipe", stderr: "pipe",
   });
   if (provider === "codex") {
+    await Bun.sleep(500);
+    Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"], {
+      stdout: "pipe", stderr: "pipe",
+    });
     await Bun.sleep(300);
     Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"], {
       stdout: "pipe", stderr: "pipe",
