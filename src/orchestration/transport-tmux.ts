@@ -12,7 +12,7 @@ import {
 
 // Re-export for backwards compatibility (used by tests)
 export { ttydPort };
-import { agentParticipatesInPhase } from "./phases.ts";
+import { agentParticipatesInPhase, DONE_STATUSES } from "./phases.ts";
 import { readStopHookRecord } from "./peer-sync.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
@@ -74,6 +74,16 @@ export class TmuxTransport implements OrchestrationTransport {
           lc.turnCompletedAt = stopRecord.observedAt ?? isoNow();
           lc.completionSource = "stop-hook";
         }
+        continue;
+      }
+
+      // Peer-sync status is authoritative: if agent wrote a done status,
+      // settle immediately even if the process is still alive (TUI stuck).
+      // This handles the t3code/Claude Code case where the TUI hangs after completion.
+      if (DONE_STATUSES.has(runtime.status) && (lc.state === "dispatched" || lc.state === "running")) {
+        lc.state = "settled";
+        lc.turnCompletedAt = isoNow();
+        lc.completionSource = "snapshot";
         continue;
       }
 
