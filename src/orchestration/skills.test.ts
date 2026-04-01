@@ -499,6 +499,53 @@ describe("skills", () => {
     }
   });
 
+  test("substituteTemplate: {{#IF VAR}} includes block when var is truthy", () => {
+    const text = substituteTemplate("before{{#IF STAGING_REPO}} staging content{{/IF}} after", {
+      ...baseCtx(),
+      STAGING_REPO: "owner/repo",
+    });
+    expect(text).toBe("before staging content after");
+  });
+
+  test("substituteTemplate: {{#IF VAR}} removes block when var is missing", () => {
+    const text = substituteTemplate("before{{#IF STAGING_REPO}} staging content{{/IF}} after", baseCtx());
+    expect(text).toBe("before after");
+  });
+
+  test("substituteTemplate: {{#IF VAR}} removes block when var is empty string", () => {
+    const text = substituteTemplate("before{{#IF STAGING_REPO}} staging content{{/IF}} after", {
+      ...baseCtx(),
+      STAGING_REPO: "",
+    });
+    expect(text).toBe("before after");
+  });
+
+  test("substituteTemplate: nested {{VAR}} inside conditional block gets substituted", () => {
+    const text = substituteTemplate("{{#IF STAGING_REPO}}repo: {{STAGING_REPO}}{{/IF}}", {
+      ...baseCtx(),
+      STAGING_REPO: "owner/fork",
+    });
+    expect(text).toBe("repo: owner/fork");
+  });
+
+  test("substituteTemplate: multi-line conditional block", () => {
+    const template = "header\n{{#IF STAGING_REPO}}\nLine 1\nLine 2\n{{/IF}}\nfooter";
+    const included = substituteTemplate(template, { ...baseCtx(), STAGING_REPO: "x" });
+    expect(included).toBe("header\n\nLine 1\nLine 2\n\nfooter");
+    const excluded = substituteTemplate(template, baseCtx());
+    expect(excluded).toBe("header\n\nfooter");
+  });
+
+  test("substituteTemplate: multiple independent {{#IF}} blocks", () => {
+    const template = "{{#IF A}}blockA{{/IF}} mid {{#IF B}}blockB{{/IF}}";
+    const both = substituteTemplate(template, { ...baseCtx(), A: "1", B: "2" });
+    expect(both).toBe("blockA mid blockB");
+    const onlyA = substituteTemplate(template, { ...baseCtx(), A: "1", B: "" });
+    expect(onlyA).toBe("blockA mid ");
+    const neither = substituteTemplate(template, { ...baseCtx(), A: "", B: "" });
+    expect(neither).toBe(" mid ");
+  });
+
   test("buildSkillContext: exposes staging sidecar file variables", async () => {
     const { buildSkillContext } = await import("./skills.ts");
     const state = makeState();
