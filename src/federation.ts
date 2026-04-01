@@ -312,7 +312,7 @@ export function federationShouldRunMag(): boolean {
 
 // --- Federation tick ---
 
-export function federationTick(): void {
+export async function federationTick(): Promise<void> {
   console.error("ludics: federation: running tick...");
 
   try { statePull(); } catch { /* ignore */ }
@@ -338,6 +338,14 @@ export function federationTick(): void {
       console.error("ludics: federation: yielding controller role (failback)");
       emitEvent({ event_type: "federation_failback", source: "federation", scope: "federation", message: `${currentNodeName} yielded controller to ${controller ?? "none"}` });
     }
+  }
+
+  // Controller polls remote workers for completion signals
+  if (federationIsController()) {
+    try {
+      const { controllerPollWorkers } = await import("./worker-signal.ts");
+      controllerPollWorkers();
+    } catch { /* ignore */ }
   }
 
   try { stateCheckpoint("federation tick"); } catch { /* ignore */ }
@@ -468,7 +476,7 @@ export async function runFederation(args: string[]): Promise<void> {
       federationStatus();
       break;
     case "tick":
-      federationTick();
+      await federationTick();
       break;
     case "elect":
       federationElect();
