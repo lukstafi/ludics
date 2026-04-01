@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, symlinkSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { slugify } from "./util.ts";
 
@@ -31,6 +31,47 @@ function maybeGit(projectDir: string, args: string[]): string {
   });
   if (result.exitCode !== 0) return "";
   return result.stdout.toString().trim();
+}
+
+/** Paths that the orchestrator manages inside worktrees and must never be committed. */
+export const GIT_EXCLUDE_ENTRIES = [
+  ".peer-sync",
+  ".ludics-orchestration.json",
+  ".claude",
+  ".agents",
+  ".agent-sessions",
+  "node_modules",
+];
+
+/**
+ * Ensure that all {@link GIT_EXCLUDE_ENTRIES} are present in the local
+ * `.git/info/exclude` for the given repo or worktree path.
+ * Uses `--git-common-dir` so that worktrees write to the shared exclude
+ * file that git actually reads (not the per-worktree git dir).
+ * Idempotent: only appends entries that are not already present.
+ * Throws on failure — this is required setup, not best-effort.
+ */
+export function ensureGitExcludes(repoPath: string): void {
+  const commonDir = runGit(repoPath, ["rev-parse", "--git-common-dir"]);
+  const resolvedGitDir = resolve(repoPath, commonDir);
+  const infoDir = join(resolvedGitDir, "info");
+  const excludePath = join(infoDir, "exclude");
+
+  mkdirSync(infoDir, { recursive: true });
+
+  let existing = "";
+  try {
+    existing = readFileSync(excludePath, "utf-8");
+  } catch {
+    // File doesn't exist yet — will be created.
+  }
+
+  const existingLines = new Set(existing.split("\n"));
+  const missing = GIT_EXCLUDE_ENTRIES.filter((e) => !existingLines.has(e));
+  if (missing.length === 0) return;
+
+  const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+  writeFileSync(excludePath, existing + prefix + missing.join("\n") + "\n");
 }
 
 function worktreeExists(projectDir: string, path: string): boolean {
@@ -123,6 +164,14 @@ export function createWorktrees(
     }
   }
 
+  // Write .git/info/exclude so orchestration files are never committed,
+  // even if agents run their own git add / git commit -a.
+  ensureGitExcludes(resolve(projectDir));
+  const allWorktrees = new Set([rootWorktree, ...Object.values(agentWorktrees)]);
+  for (const wt of allWorktrees) {
+    ensureGitExcludes(wt);
+  }
+
   return { rootWorktree, peerSyncDir, agentWorktrees, branches };
 }
 
@@ -175,12 +224,8 @@ export function cleanupWorktrees(
 // Auto-commit helpers
 // ---------------------------------------------------------------------------
 
-/** Paths that the orchestrator writes into worktrees but must never be committed. */
-const ORCHESTRATION_EXCLUDES = [
-  ":!.peer-sync",
-  ":!.ludics-orchestration.json",
-  ":!.claude",
-];
+/** Pathspec exclusions derived from {@link GIT_EXCLUDE_ENTRIES} for autoCommitWorktree. */
+const ORCHESTRATION_EXCLUDES = GIT_EXCLUDE_ENTRIES.map((e) => `:!${e}`);
 
 export interface AutoCommitResult {
   /** Whether the worktree had eligible uncommitted changes. */
@@ -195,7 +240,7 @@ export interface AutoCommitResult {
 
 /**
  * Auto-commit any uncommitted changes in the given directory, excluding
- * orchestration-internal paths (.peer-sync, .ludics-orchestration.json, .claude).
+ * orchestration-internal paths listed in {@link GIT_EXCLUDE_ENTRIES}.
  * Returns a structured result. Safe to call on clean worktrees (no-op).
  */
 export function autoCommitWorktree(
