@@ -107,6 +107,11 @@ function handleVerifyFailure(
   const eventType = gate === "prCreate" ? "pr_missing" : "merge_failed";
   const phaseLabel = gate === "prCreate" ? "pr-create" : "final-merge";
 
+  // Already at max retries — hold silently without re-emitting events/notifications.
+  if ((state[attemptsKey] ?? 0) >= MAX_VERIFY_ATTEMPTS) {
+    return "hold";
+  }
+
   state[attemptsKey] = (state[attemptsKey] ?? 0) + 1;
   const attempts = state[attemptsKey]!;
 
