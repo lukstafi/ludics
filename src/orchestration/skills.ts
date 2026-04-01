@@ -315,12 +315,15 @@ export function buildSkillContext(
 
 export function substituteTemplate(template: string, values: Record<string, string>): string {
   // Phase 1: process conditional blocks {{#IF VAR}}...{{/IF}}
-  let result = template.replace(
-    /\{\{#IF\s+([A-Z0-9_]+)\}\}([\s\S]*?)\{\{\/IF\}\}/g,
-    (_match, key: string, body: string) => {
+  // Process innermost (leaf) blocks first, repeat until no more conditionals remain.
+  // The body must not contain another {{#IF to ensure inside-out evaluation.
+  let result = template;
+  const leafIf = /\{\{#IF\s+([A-Z0-9_]+)\}\}((?:(?!\{\{#IF\s)[\s\S])*?)\{\{\/IF\}\}/g;
+  while (leafIf.test(result)) {
+    result = result.replace(leafIf, (_match, key: string, body: string) => {
       return (values[key] ?? "") !== "" ? body : "";
-    },
-  );
+    });
+  }
   // Phase 2: substitute variables
   result = result.replace(/\{\{([A-Z0-9_]+)\}\}/g, (match, key: string) => {
     if (!(key in values)) {
