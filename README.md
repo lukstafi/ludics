@@ -425,13 +425,18 @@ ludics federation heartbeat        # Publish heartbeat only
 Enable federation in your harness `config.yaml`:
 
 ```yaml
-network:
-  mode: tailscale
-  nodes:
+federation:
+  transport: tailscale
+  machines:
     - name: mac-mini
-      tailscale_hostname: mac-mini.tailnet-name.ts.net
+      host: mac-mini.tailnet-name.ts.net
+      os: macos
+      role: leader
+      always_on: true
     - name: macbook
-      tailscale_hostname: macbook.tailnet-name.ts.net
+      host: macbook.tailnet-name.ts.net
+      os: macos
+      role: console
 
 triggers:
   federation:

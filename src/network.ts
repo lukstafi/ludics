@@ -71,38 +71,6 @@ export function getUrl(port: number | string, protocol: string = "http"): string
   return `${protocol}://${networkHostname()}:${port}`;
 }
 
-interface NodeConfig {
-  name: string;
-  tailscale_hostname?: string;
-}
-
-export function networkNodes(): NodeConfig[] {
-  const config = loadConfigSync();
-  const nodes = config.network?.nodes as NodeConfig[] | undefined;
-  if (!Array.isArray(nodes)) return [];
-  return nodes.filter((n) => n && n.name);
-}
-
-export function networkNodeHostname(nodeName: string): string {
-  const nodes = networkNodes();
-  const node = nodes.find((n) => n.name === nodeName);
-  return node?.tailscale_hostname ?? "";
-}
-
-export function networkCurrentNode(): string | null {
-  const tsHost = hostnameTailscale();
-  if (!tsHost) return null;
-
-  const nodes = networkNodes();
-  const normalizedCurrent = tsHost.replace(/\.$/, "");
-
-  for (const node of nodes) {
-    const normalizedNode = (node.tailscale_hostname ?? "").replace(/\.$/, "");
-    if (normalizedNode === normalizedCurrent) return node.name;
-  }
-
-  return null;
-}
 
 export function networkStatus(): void {
   const mode = networkMode();
@@ -134,24 +102,8 @@ export function networkStatus(): void {
   console.log("");
   console.log(`Effective hostname: ${effectiveHost}`);
   console.log(`Example URL: ${getUrl(7679)}`);
-
-  const nodes = networkNodes();
   console.log("");
-  console.log("Configured nodes (by seniority):");
-  if (nodes.length === 0) {
-    console.log("  (no nodes configured)");
-  } else {
-    for (let i = 0; i < nodes.length; i++) {
-      console.log(`  ${i + 1}. ${nodes[i]!.name} -> ${nodes[i]!.tailscale_hostname ?? "(not set)"}`);
-    }
-  }
-
-  const currentNode = networkCurrentNode();
-  if (currentNode) {
-    const rank = nodes.findIndex((n) => n.name === currentNode) + 1;
-    console.log("");
-    console.log(`This machine: ${currentNode} (seniority: ${rank})`);
-  }
+  console.log("For multi-machine status, use: ludics federation status");
 }
 
 export async function runNetwork(args: string[]): Promise<void> {
