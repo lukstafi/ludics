@@ -67,29 +67,55 @@
         }
         function renderTerminals(terminals, activeSlots) {
             const grid = document.querySelector('.terminal-grid');
-            grid.innerHTML = '';
+            // Build on first render, then update in-place to avoid iframe reconnects
+            const isFirstRender = grid.children.length === 0;
             for (let slot = 1; slot <= 6; slot++) {
-                const pair = document.createElement('div');
-                pair.className = 'terminal-pair';
+                let pair;
+                if (isFirstRender) {
+                    pair = document.createElement('div');
+                    pair.className = 'terminal-pair';
+                    pair.dataset.slot = slot;
+                    grid.appendChild(pair);
+                } else {
+                    pair = grid.children[slot - 1];
+                }
                 const slotActive = activeSlots.includes(slot);
-                for (const role of ['coder', 'reviewer']) {
-                    const cell = document.createElement('div');
+                for (let ri = 0; ri < 2; ri++) {
+                    const role = ri === 0 ? 'coder' : 'reviewer';
                     const entry = terminals.find(
                         t => t.slot === slot && t.role === role
                     );
                     const port = entry?.port ?? (7681 + (slot-1)*2 + (role === 'reviewer' ? 1 : 0));
                     const host = entry?.host ?? window.location.hostname;
                     const active = slotActive && entry?.active !== false;
+                    const src = `http://${host}:${port}`;
+                    const cellId = `cell-${slot}-${role}`;
+
+                    let cell = document.getElementById(cellId);
+                    if (!cell) {
+                        cell = document.createElement('div');
+                        cell.id = cellId;
+                        pair.appendChild(cell);
+                    }
+
+                    const prevActive = cell.dataset.active === 'true';
+                    const prevSrc = cell.dataset.src || '';
+
+                    // Only rebuild cell content if active state or URL changed
+                    if (prevActive === active && prevSrc === src) {
+                        continue;
+                    }
+
+                    cell.dataset.active = active;
+                    cell.dataset.src = src;
                     cell.className = 'terminal-cell' + (active ? '' : ' inactive');
                     cell.innerHTML = active
                         ? `<div class="terminal-label">Slot ${slot} ${role} (:${port})</div>
-                           <iframe class="terminal-frame" src="http://${host}:${port}" loading="lazy"
+                           <iframe class="terminal-frame" src="${src}" loading="lazy"
                                    allow="clipboard-read; clipboard-write"
                                    sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>`
                         : `<div class="terminal-label">Slot ${slot} ${role} (:${port})</div>`;
-                    pair.appendChild(cell);
                 }
-                grid.appendChild(pair);
             }
         }
         function renderFallback() { renderTerminals([], []); }
