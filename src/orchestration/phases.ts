@@ -243,8 +243,8 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
 
       // Status file unchanged since dispatch AND not a done status.
       // The agent was likely interrupted (e.g. model capacity error, crash)
-      // without completing its work. Do NOT treat as done — the stall detector
-      // or timeout handler will eventually re-dispatch.
+      // without completing its work. Flag for nudge — the runner's
+      // detectAndNudgeStalls will send "Continue." to resume the agent.
       return false;
     }
 

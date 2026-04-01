@@ -855,6 +855,54 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
 
       if (allAgentsDone(state)) return;
 
+      // Nudge agents whose turn settled (stop hook fired) but didn't write
+      // a done status — they were likely interrupted (model capacity, crash)
+      // and need a "Continue." to resume.
+      for (const agent of state.agents) {
+        if (!agentParticipatesInPhase(state, agent)) continue;
+        const rt = state.agentStates[agent.name]!;
+        const alc = rt.turnLifecycle;
+        if (!alc || alc.state !== "settled") continue;
+        if (DONE_STATUSES.has(rt.status)) continue; // actually done
+        if (rt.interrupted) continue;
+
+        // Settled but not done — nudge with "Continue."
+        const nudgeCooldown = alc.lastNudgeAt
+          ? nowEpoch() - Math.floor(new Date(alc.lastNudgeAt).getTime() / 1000)
+          : Infinity;
+        if (nudgeCooldown < NUDGE_COOLDOWN_S) continue;
+
+        // Reset lifecycle so transport can re-dispatch
+        alc.state = "dispatched";
+        alc.dispatchCommandId = makeId("nudge");
+        alc.dispatchedAt = isoNow();
+        alc.turnStartedAt = null;
+        alc.turnCompletedAt = null;
+        alc.completionSource = null;
+        alc.lastNudgeAt = isoNow();
+        alc.nudgeAttempts = (alc.nudgeAttempts ?? 0) + 1;
+        alc.stallDetectedAt = null;
+
+        await transport.sendTurn(state, agent, "Continue.");
+        alc.state = "running";
+        alc.turnStartedAt = isoNow();
+        alc.observedTurnId = makeId("tmux-turn");
+
+        emitEvent({
+          event_type: "orchestration_nudge_sent",
+          source: "orchestration",
+          scope: "slot",
+          slot: state.slot,
+          task: state.feature,
+          agent: agent.name,
+          phase: state.phase,
+          attempt: alc.nudgeAttempts,
+          stallType: "interrupted",
+          message: `${agent.name}: nudged with Continue (turn settled without done status)`,
+        });
+        persistState(state);
+      }
+
       if (nowEpoch() >= deadline) {
         await handleTimeout(state, transport);
         return;
