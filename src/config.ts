@@ -66,6 +66,11 @@ export interface LudicsFullConfig {
   };
   dashboard?: { port?: number; ttl?: number };
   network?: { mode?: string; hostname?: string; nodes?: unknown[] };
+  federation?: {
+    transport?: string;
+    domain?: string;
+    machines?: Array<Record<string, unknown>>;
+  };
 }
 
 export function ludicsRoot(): string {
@@ -222,6 +227,7 @@ export function loadConfigSync(): LudicsFullConfig {
     notifications: data.notifications as LudicsFullConfig["notifications"],
     dashboard: data.dashboard as LudicsFullConfig["dashboard"],
     network: data.network as LudicsFullConfig["network"],
+    federation: data.federation as LudicsFullConfig["federation"],
   };
 }
 
