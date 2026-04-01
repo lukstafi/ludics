@@ -89,17 +89,6 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBeNull();
   });
 
-  test("pr-comments transitions to final-merge immediately when Codex +1 approval detected", () => {
-    const state = makeState({ phase: "pr-comments", prCodexApproved: true });
-    state.agentStates.agent1.prUrl = "https://github.com/owner/repo/pull/1";
-    expect(evaluateTransition(state)).toBe("final-merge");
-  });
-
-  test("pr-comments stays null when Codex approved but no PR present", () => {
-    const state = makeState({ phase: "pr-comments", prCodexApproved: true });
-    expect(evaluateTransition(state)).toBeNull();
-  });
-
   test("pr-comments transitions to suggest-refactor when merged marker present", () => {
     const state = makeState({ phase: "pr-comments" });
     state.agentStates.agent1.status = "merged";
@@ -215,23 +204,6 @@ describe("evaluateTransition", () => {
   });
 
   // --- Staging-aware transitions ---
-
-  test("pr-comments with staging + no forwarding transitions to forward-pr on Codex approval", () => {
-    const state = makeState({
-      mode: "pair",
-      phase: "pr-comments",
-      prCodexApproved: true,
-      stagingRepo: "owner/staging-fork",
-      agents: [
-        { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
-        { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
-      ],
-      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
-      threadIds: { coder: "t1", reviewer: "t2" },
-    });
-    state.agentStates.coder.prUrl = "https://github.com/owner/staging-fork/pull/1";
-    expect(evaluateTransition(state)).toBe("forward-pr");
-  });
 
   test("pr-comments with staging + no forwarding transitions to forward-pr on quiet period", () => {
     const quietStart = Math.floor(Date.now() / 1000) - 2000;

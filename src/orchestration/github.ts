@@ -5,11 +5,18 @@ export function isPrUrl(value: string): boolean {
   return /^https?:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(value.trim());
 }
 
+/** Parse a GitHub PR URL into repo slug and PR number. */
+function parsePrUrl(prUrl: string): { repo: string; prNumber: string } | null {
+  const match = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+  if (!match) return null;
+  return { repo: match[1], prNumber: match[2] };
+}
+
 /** Returns the count of new comments/reviews on a PR since sinceEpoch (Unix seconds). */
 export function fetchNewPrCommentCount(prUrl: string, sinceEpoch: number): number {
-  const match = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
-  if (!match) return 0;
-  const [, repo, prNumber] = match;
+  const parsed = parsePrUrl(prUrl);
+  if (!parsed) return 0;
+  const { repo, prNumber } = parsed;
   const since = new Date(sinceEpoch * 1000).toISOString();
 
   function countViaGhApi(args: string[]): number {
@@ -47,9 +54,9 @@ export function fetchNewPrCommentCount(prUrl: string, sinceEpoch: number): numbe
 
 /** Check if a GitHub PR has been merged. */
 export function isPrMerged(prUrl: string): boolean {
-  const match = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
-  if (!match) return false;
-  const [, repo, prNumber] = match;
+  const parsed = parsePrUrl(prUrl);
+  if (!parsed) return false;
+  const { repo, prNumber } = parsed;
   try {
     const result = Bun.spawnSync(
       ["gh", "api", `repos/${repo}/pulls/${prNumber}`, "--jq", ".merged"],
@@ -63,20 +70,22 @@ export function isPrMerged(prUrl: string): boolean {
 }
 
 /**
- * Returns true if the PR has a `+1` (thumbs-up) reaction from the Codex connector bot
- * (`chatgpt-codex-connector[bot]`), indicating automated approval.
+ * Returns true if the PR has a submitted (non-PENDING) review from
+ * `chatgpt-codex-connector[bot]`.  Used to detect whether the repo-level
+ * auto-triggered Codex review succeeded, so we can skip the explicit fallback.
+ * Fails closed: returns false on API failure so the fallback still fires.
  */
-export function hasPrApprovalReaction(prUrl: string): boolean {
-  const match = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
-  if (!match) return false;
-  const [, repo, prNumber] = match;
+export function hasCodexSubmittedReview(prUrl: string): boolean {
+  const parsed = parsePrUrl(prUrl);
+  if (!parsed) return false;
+  const { repo, prNumber } = parsed;
   try {
     const result = Bun.spawnSync(
       [
         "gh", "api",
-        `repos/${repo}/issues/${prNumber}/reactions`,
+        `repos/${repo}/pulls/${prNumber}/reviews`,
         "--jq",
-        '[.[] | select(.content == "+1" and (.user.login | test("codex")))] | length',
+        '[.[] | select(.state != "PENDING" and .user.login == "chatgpt-codex-connector[bot]")] | length',
       ],
       { stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string> },
     );
@@ -148,9 +157,9 @@ export interface PrVerification {
  * pr-create (does it exist?) and final-merge (is it merged?) gates.
  */
 export function getPrVerification(prUrl: string): PrVerification {
-  const match = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
-  if (!match) return { exists: false, reason: "malformed PR URL" };
-  const [, repo, prNumber] = match;
+  const parsed = parsePrUrl(prUrl);
+  if (!parsed) return { exists: false, reason: "malformed PR URL" };
+  const { repo, prNumber } = parsed;
   try {
     const result = Bun.spawnSync(
       ["gh", "api", `repos/${repo}/pulls/${prNumber}`, "--jq",

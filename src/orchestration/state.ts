@@ -132,11 +132,9 @@ export interface OrchestrationState {
    * Set to 0 to indicate quiet period was reset due to new comments.
    */
   prCommentsQuietSince?: number;
-  /**
-   * Set to true when a `+1` reaction from `chatgpt-codex-connector[bot]` is detected on
-   * any agent's PR during the pr-comments phase.  Triggers immediate transition to final-merge.
-   */
-  prCodexApproved?: boolean;
+  /** Epoch (seconds) when Codex review deferral was armed; set on initial pr-comments entry.
+   *  Cleared once all unique PRs have been resolved (review found or fallback posted). */
+  prCodexReviewDeferredSince?: number;
   /** Number of verification failures for pr-create. Reset on fresh phase entry. */
   prCreateVerifyAttempts?: number;
   /** Number of verification failures for final-merge. Reset on fresh phase entry. */

@@ -14,7 +14,7 @@ import {
   type AgentConfig, type OrchestrationState,
 } from "./state.ts";
 import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
-import { fetchNewPrCommentCount, getPrVerification, hasPrApprovalReaction, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile } from "./github.ts";
+import { fetchNewPrCommentCount, getPrVerification, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile } from "./github.ts";
 import { updateFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
@@ -533,7 +533,7 @@ async function redispatchForPrComments(state: OrchestrationState, transport: Orc
  * Poll GitHub for new PR comments during the pr-comments phase.
  * Re-dispatches agents when new comments are found; updates prCommentsQuietSince otherwise.
  */
-async function checkAndRedispatchPrComments(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
+export async function checkAndRedispatchPrComments(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
   const now = nowEpoch();
   const checkInterval = state.config.prCommentsCheckInterval;
   const lastCheck = state.prCommentsLastCheckAt ?? state.phaseStartedAt;
@@ -624,23 +624,39 @@ async function checkAndRedispatchPrComments(state: OrchestrationState, transport
   const allDone = participants.every((a) => isAgentDone(state, a));
   if (!allDone) return;
 
-  // Check for Codex thumbs-up approval reaction — triggers immediate transition to final-merge.
-  if (!state.prCodexApproved) {
+  // --- Deferred Codex review request (per-PR resolution) ---
+  if (state.prCodexReviewDeferredSince) {
+    const deferralTimeout = Math.min(600, Math.floor(state.config.prCommentsTimeout / 2));
+    const elapsed = now - state.prCodexReviewDeferredSince;
+    const deadlineReached = elapsed >= deferralTimeout;
+
+    // Collect unique PR URLs
+    const uniquePrUrls = new Set<string>();
     for (const agent of agentsWithPr) {
-      const prUrl = state.agentStates[agent.name]!.prUrl!;
-      if (hasPrApprovalReaction(prUrl)) {
-        state.prCodexApproved = true;
-        emitEvent({
-          event_type: "pr_codex_approved",
-          source: "orchestration",
-          scope: "slot",
-          slot: state.slot,
-          task: state.feature,
-          message: `Codex +1 approval reaction detected on PR: ${prUrl} — bypassing quiet period`,
-        });
-        break;
+      uniquePrUrls.add(state.agentStates[agent.name]!.prUrl!);
+    }
+
+    // Partition: which PRs already have a review, which don't
+    const urlsMissingReview: string[] = [];
+    for (const prUrl of uniquePrUrls) {
+      if (!hasCodexSubmittedReview(prUrl)) {
+        urlsMissingReview.push(prUrl);
       }
     }
+
+    if (urlsMissingReview.length === 0) {
+      // All PRs have auto-triggered reviews — clear early
+      state.prCodexReviewDeferredSince = undefined;
+    } else if (deadlineReached) {
+      // Post fallback only for PRs that still lack a submitted review
+      const projectEntry = findProjectConfig(state.projectDir);
+      const customPrompt = projectEntry?.codex_review_prompt ?? undefined;
+      for (const prUrl of urlsMissingReview) {
+        postCodexReviewComment(prUrl, customPrompt);
+      }
+      state.prCodexReviewDeferredSince = undefined;
+    }
+    // else: within window, some PRs still missing review — keep waiting
   }
 
   // Count new comments since the last check.
@@ -978,11 +994,6 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   if (state.phase === "merge-review" && next === "merge-amend") {
     state.mergeRound += 1;
   }
-  // Reset pr-comments approval state when re-entering after forward-pr,
-  // so Codex +1 from the staging PR doesn't auto-transition the upstream monitoring.
-  if (state.phase === "forward-pr" && next === "pr-comments") {
-    state.prCodexApproved = false;
-  }
   if (state.phase === "update-docs" && next === "pr-comments") {
     state.lastLearningAt = nowEpoch();
     state.lastLearningRound = state.round;
@@ -991,40 +1002,33 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
 }
 
 /**
- * Post @codex review on each unique PR when first entering pr-comments
- * after PR creation.  Only fires on the initial pr-comments entry paths
- * (pr-create, update-docs, review), NOT on merge-loop re-entries
- * (merge-review -> pr-comments).
+ * Arm deferred Codex review request on initial entry to pr-comments.
+ * Instead of posting `@codex review` immediately, sets
+ * `prCodexReviewDeferredSince` so that `checkAndRedispatchPrComments()`
+ * can check for an auto-triggered review first and only post the
+ * explicit request as a fallback after `min(10m, quiet_period/2)`.
+ *
+ * Only fires on initial pr-comments entry paths (pr-create, update-docs,
+ * review), NOT on merge-loop re-entries (merge-review -> pr-comments).
  */
 export function maybePostCodexReviewRequests(
   state: OrchestrationState,
   from: OrchestrationState["phase"],
   next: OrchestrationState["phase"],
 ): void {
-  // Only on initial entry to pr-comments (not merge-loop re-entries).
   const initialPrCommentsPaths: OrchestrationState["phase"][] = ["pr-create", "update-docs", "review"];
   if (next !== "pr-comments" || !initialPrCommentsPaths.includes(from)) return;
 
-  // Only when the reviewer agent is Codex — matches the acceptance criterion
-  // "when reviewer is Codex".  Avoids noise in non-Codex setups and in setups
-  // where only the coder is Codex.
   const hasCodexReviewer = state.agents.some(
     (a) => a.role === "reviewer" && a.provider === "codex",
   );
   if (!hasCodexReviewer) return;
 
-  const projectEntry = findProjectConfig(state.projectDir);
-  const customPrompt = projectEntry?.codex_review_prompt ?? undefined;
+  const hasAnyPrUrl = state.agents.some((a) => !!state.agentStates[a.name]?.prUrl);
+  if (!hasAnyPrUrl) return;
 
-  // De-duplicate PR URLs (pair mode: both agents may point to same PR after merge).
-  const seen = new Set<string>();
-  for (const agent of state.agents) {
-    const prUrl = state.agentStates[agent.name]?.prUrl;
-    if (prUrl && !seen.has(prUrl)) {
-      seen.add(prUrl);
-      postCodexReviewComment(prUrl, customPrompt);
-    }
-  }
+  // Arm deferral — use nowEpoch() because phaseStartedAt hasn't been updated yet
+  state.prCodexReviewDeferredSince = nowEpoch();
 }
 
 function maybeOverrideTransition(state: OrchestrationState, next: OrchestrationState["phase"] | null) {
