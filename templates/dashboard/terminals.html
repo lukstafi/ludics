@@ -83,7 +83,9 @@
                     cell.className = 'terminal-cell' + (active ? '' : ' inactive');
                     cell.innerHTML = active
                         ? `<div class="terminal-label">Slot ${slot} ${role} (:${port})</div>
-                           <iframe class="terminal-frame" src="http://${host}:${port}" loading="lazy"></iframe>`
+                           <iframe class="terminal-frame" src="http://${host}:${port}" loading="lazy"
+                                   allow="clipboard-read; clipboard-write"
+                                   sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>`
                         : `<div class="terminal-label">Slot ${slot} ${role} (:${port})</div>`;
                     pair.appendChild(cell);
                 }
