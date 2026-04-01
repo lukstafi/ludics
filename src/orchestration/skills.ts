@@ -314,7 +314,18 @@ export function buildSkillContext(
 }
 
 export function substituteTemplate(template: string, values: Record<string, string>): string {
-  return template.replace(/\{\{([A-Z0-9_]+)\}\}/g, (match, key: string) => {
+  // Phase 1: process conditional blocks {{#IF VAR}}...{{/IF}}
+  // Process innermost (leaf) blocks first, repeat until no more conditionals remain.
+  // The body must not contain another {{#IF to ensure inside-out evaluation.
+  let result = template;
+  const leafIf = /\{\{#IF\s+([A-Z0-9_]+)\}\}((?:(?!\{\{#IF\s)[\s\S])*?)\{\{\/IF\}\}/g;
+  while (leafIf.test(result)) {
+    result = result.replace(leafIf, (_match, key: string, body: string) => {
+      return (values[key] ?? "") !== "" ? body : "";
+    });
+  }
+  // Phase 2: substitute variables
+  result = result.replace(/\{\{([A-Z0-9_]+)\}\}/g, (match, key: string) => {
     if (!(key in values)) {
       if (process.env.LUDICS_DEV || process.env.DEBUG) {
         console.error(`ludics: template warning: unknown variable {{${key}}}`);
@@ -322,6 +333,7 @@ export function substituteTemplate(template: string, values: Record<string, stri
     }
     return values[key] ?? "";
   });
+  return result;
 }
 
 async function magTailorSkill(message: string): Promise<string> {
