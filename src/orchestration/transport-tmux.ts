@@ -45,8 +45,16 @@ export class TmuxTransport implements OrchestrationTransport {
     // If not, reboot it — this handles crash recovery and first-turn-after-resume.
     if (!isAgentAlive(state.slot, agent.name, state.taskId)) {
       tmuxSendCommand(target, agentCliCommand(agent.provider));
-      // Wait for the CLI to boot and show its prompt
-      await Bun.sleep(3000);
+      // Wait for the CLI to boot, then verify it's alive before pasting.
+      // Codex can take longer to start than Claude Code.
+      for (let wait = 0; wait < 15; wait++) {
+        await Bun.sleep(1000);
+        if (isAgentAlive(state.slot, agent.name, state.taskId)) break;
+      }
+      if (!isAgentAlive(state.slot, agent.name, state.taskId)) {
+        console.error(`ludics: agent ${agent.name} CLI failed to start in slot ${state.slot} — skipping prompt`);
+        return commandId;
+      }
     }
 
     // Inject prompt via shared helper (handles copy-mode, paste-buffer, provider-specific Enter)
