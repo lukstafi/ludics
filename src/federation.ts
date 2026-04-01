@@ -74,14 +74,40 @@ export function federationMachine(name: string): FederationMachine | undefined {
 export function federationCurrentMachine(): FederationMachine | undefined {
   if (!federationEnabled()) return undefined;
 
-  const tsHost = hostnameTailscale();
-  if (!tsHost) return undefined;
+  const machines = federationMachines();
 
-  const normalized = tsHost.replace(/\.$/, "").toLowerCase();
-  return federationMachines().find((m) => {
-    const mHost = m.host.replace(/\.$/, "").toLowerCase();
-    return mHost === normalized;
-  });
+  // Collect candidate hostnames: Tailscale DNS, system hostname, OS hostname
+  const candidates: string[] = [];
+  const tsHost = hostnameTailscale();
+  if (tsHost) candidates.push(tsHost);
+
+  // Fallback: system hostname (works for ssh transport or when Tailscale is down)
+  try {
+    const sysResult = Bun.spawnSync(["hostname"], { stdout: "pipe", stderr: "pipe" });
+    if (sysResult.exitCode === 0) {
+      const h = sysResult.stdout.toString().trim();
+      if (h) candidates.push(h);
+    }
+  } catch { /* ignore */ }
+
+  for (const host of candidates) {
+    const normalized = host.replace(/\.$/, "").toLowerCase();
+    const match = machines.find((m) => {
+      const mHost = m.host.replace(/\.$/, "").toLowerCase();
+      // Match full host or just the hostname prefix (before first dot)
+      return mHost === normalized || mHost.split(".")[0] === normalized;
+    });
+    if (match) return match;
+  }
+
+  // Also try matching by machine name directly (e.g., name: "desktop" matches hostname "desktop")
+  for (const host of candidates) {
+    const normalized = host.replace(/\.$/, "").toLowerCase();
+    const nameMatch = machines.find((m) => m.name.toLowerCase() === normalized);
+    if (nameMatch) return nameMatch;
+  }
+
+  return undefined;
 }
 
 export function federationCurrentMachineName(): string | null {

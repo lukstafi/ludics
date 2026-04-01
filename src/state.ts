@@ -52,15 +52,33 @@ function clearDirtyFlag(): void {
 }
 
 /**
- * Mark state dirty. Replaces the old immediate-commit behavior so that
- * existing callers accumulate changes until the next checkpoint.
+ * Commit accumulated changes immediately (git add + commit, no push).
+ * Used by CLI slot/task mutations to ensure state is persisted before
+ * the command returns. Push happens at the next checkpoint.
  */
 export function stateCommit(message: string): void {
-  void message; // message is informational only — actual commit happens at checkpoint
-  stateMarkDirty();
+  const repoDir = stateRepoDir();
+  const { success: hasDiff } = (() => {
+    const r = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+    return { success: r.exitCode !== 0 };
+  })();
+
+  const { success: hasCached } = (() => {
+    const r = Bun.spawnSync(["git", "diff", "--cached", "--quiet"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+    return { success: r.exitCode !== 0 };
+  })();
+
+  if (!hasDiff && !hasCached) return;
+
+  run(["git", "add", "-A"], repoDir);
+  const result = run(["git", "commit", "-m", message], repoDir);
+  if (result.success) {
+    console.error(`ludics: committed: ${message}`);
+  }
+  clearDirtyFlag();
 }
 
-/** Immediately commit and optionally push. For critical moments like controller handoff. */
+/** Immediately commit and push. For critical moments like controller handoff. */
 export function stateCommitImmediate(message: string): void {
   const repoDir = stateRepoDir();
   const { success: hasDiff } = (() => {
