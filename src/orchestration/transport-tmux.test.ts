@@ -164,11 +164,11 @@ describe("sendTurn prompt injection via paste-buffer", () => {
     const promptText = "Hello, this is a test prompt with special chars: $HOME `backticks` $(dangerous)";
     await transport.sendTurn(state, agent, promptText);
 
-    // Verify send-keys -l was called with the prompt content (no temp file needed)
-    const sendLiteralCall = spawnCalls.find(c =>
-      c[0] === "tmux" && c[1] === "send-keys" && c.includes("-l")
-    );
-    expect(sendLiteralCall).toBeDefined();
+    // Claude Code uses load-buffer + paste-buffer
+    const loadBufferCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "load-buffer");
+    expect(loadBufferCall).toBeDefined();
+    const pasteBufferCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "paste-buffer");
+    expect(pasteBufferCall).toBeDefined();
 
     // Verify C-m was sent after the prompt
     const enterCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "send-keys" && c.includes("C-m"));

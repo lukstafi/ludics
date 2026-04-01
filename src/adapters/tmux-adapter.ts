@@ -339,8 +339,10 @@ export function agentCliCommand(provider: string): string {
 }
 
 /**
- * Inject a prompt into a live agent CLI session via tmux send-keys -l.
- * Uses literal mode so the terminal's input handling processes it properly.
+ * Inject a prompt into a live agent CLI session.
+ * Uses load-buffer + paste-buffer (works reliably for Claude Code).
+ * For Codex, paste-buffer doesn't register as input — fall back to
+ * send-keys -l in chunks to avoid tmux buffer limits.
  * Handles copy-mode exit and provider-specific Enter timing.
  */
 export async function sendPromptToAgent(
@@ -354,11 +356,30 @@ export async function sendPromptToAgent(
   });
   await Bun.sleep(100);
 
-  // Inject prompt via send-keys -l (literal mode) — goes through the
-  // terminal's input handling, matching agent-duo's approach.
-  Bun.spawnSync(["tmux", "send-keys", "-t", target, "-l", message], {
-    stdout: "pipe", stderr: "pipe",
-  });
+  if (provider === "codex") {
+    // Codex: send-keys -l in chunks (tmux corrupts long literals).
+    // Agent-duo uses send-keys for all Codex message sends.
+    const CHUNK_SIZE = 512;
+    for (let i = 0; i < message.length; i += CHUNK_SIZE) {
+      const chunk = message.slice(i, i + CHUNK_SIZE);
+      Bun.spawnSync(["tmux", "send-keys", "-t", target, "-l", chunk], {
+        stdout: "pipe", stderr: "pipe",
+      });
+      await Bun.sleep(50);
+    }
+  } else {
+    // Claude Code: load-buffer + paste-buffer works reliably.
+    const promptFile = `/tmp/ludics-prompt-${target}-${Date.now()}.txt`;
+    const { writeFileSync, unlinkSync } = await import("fs");
+    writeFileSync(promptFile, message);
+    Bun.spawnSync(["tmux", "load-buffer", promptFile], {
+      stdout: "pipe", stderr: "pipe",
+    });
+    Bun.spawnSync(["tmux", "paste-buffer", "-t", target], {
+      stdout: "pipe", stderr: "pipe",
+    });
+    try { unlinkSync(promptFile); } catch { /* ignore */ }
+  }
 
   // Submit: sleep to let the TUI process the input, then send C-m.
   // Second C-m is harmless (empty prompt = no-op).
