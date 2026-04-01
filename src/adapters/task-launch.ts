@@ -17,7 +17,7 @@ export function readFrontmatterField(content: string, field: string): string | n
   if (!fmMatch) return null;
 
   const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = fmMatch[1]!.match(new RegExp(`^\\s*${escapedField}:\\s*(.+)$`, "m"));
+  const match = fmMatch[1]!.match(new RegExp(`^${escapedField}:\\s*(.+)$`, "m"));
   if (!match) return null;
 
   const value = normalizeYamlScalar(match[1]!);
