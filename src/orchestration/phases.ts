@@ -241,33 +241,10 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
         return false;
       }
 
-      // Status file unchanged since dispatch — apply grace period.
-      const settledAgeS = lc.turnCompletedAt
-        ? (Date.now() - Date.parse(lc.turnCompletedAt)) / 1000
-        : 0;
-      if (settledAgeS > SETTLED_GRACE_PERIOD_S) {
-        // Even after grace period, require artifacts for phases that need them.
-        if (!hasRequiredArtifact(state, agent)) {
-          emitEvent({
-            event_type: "orchestration_warning",
-            source: "orchestration",
-            scope: "slot",
-            slot: state.slot,
-            task: state.feature,
-            message: `${agent.name}: turn settled ${Math.round(settledAgeS)}s ago, status unchanged, required artifact still missing — not done`,
-          });
-          return false;
-        }
-        emitEvent({
-          event_type: "orchestration_warning",
-          source: "orchestration",
-          scope: "slot",
-          slot: state.slot,
-          task: state.feature,
-          message: `${agent.name}: turn settled ${Math.round(settledAgeS)}s ago but status file unchanged — treating as done`,
-        });
-        return true;
-      }
+      // Status file unchanged since dispatch AND not a done status.
+      // The agent was likely interrupted (e.g. model capacity error, crash)
+      // without completing its work. Do NOT treat as done — the stall detector
+      // or timeout handler will eventually re-dispatch.
       return false;
     }
 
