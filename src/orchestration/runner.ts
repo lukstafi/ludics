@@ -342,11 +342,18 @@ export async function detectAndNudgeHungAgents(
       : 0;
     if (now - lastNudge < HUNG_NUDGE_COOLDOWN_S) continue;
 
-    // --- Send phase-aware nudge ---
+    // --- Send phase-aware nudge or re-dispatch ---
     try {
-      const nudgeMessage = hungType === "dispatch"
-        ? `Your session appears stuck. Please respond to confirm you are working on the ${state.phase} phase.`
-        : `Your work for the ${state.phase} phase is complete. Stop and wait for further instructions.`;
+      // Dispatch hung with idle status = prompt injection failed. Re-send the full skill prompt.
+      // Running hung with done status = agent finished but TUI froze. Tell it to stop.
+      let nudgeMessage: string;
+      if (hungType === "dispatch" && runtime.status === "idle") {
+        nudgeMessage = await composeSkillMessage(state, agent);
+      } else if (hungType === "dispatch") {
+        nudgeMessage = `Your session appears stuck. Please respond to confirm you are working on the ${state.phase} phase.`;
+      } else {
+        nudgeMessage = `Your work for the ${state.phase} phase is complete. Stop and wait for further instructions.`;
+      }
       await transport.sendTurn(state, agent, nudgeMessage);
       lc.nudgeAttempts = attempts + 1;
       lc.lastNudgeAt = isoNow();
