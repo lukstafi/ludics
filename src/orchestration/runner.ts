@@ -25,12 +25,15 @@ import type { OrchestrationTransport } from "./transport.ts";
 // A "hung agent" appears to be working (lifecycle running/dispatched) but the
 // terminal output is static — the agent is frozen or finished without signaling.
 // Rare in tmux, more common in t3code (process liveness bug).
-/** Seconds of static pane output before a running agent is considered hung. */
-const HUNG_RUNNING_THRESHOLD_S = 1800;
-/** Seconds of static pane output before a dispatched (never-started) agent is considered hung. */
-const HUNG_DISPATCH_THRESHOLD_S = 600;
+/** Seconds of static pane output before a running agent is considered hung.
+ *  Lower than agent-duo timeouts because this only fires when terminal is static
+ *  (no evidence of work), not when the agent is actively producing output. */
+const HUNG_RUNNING_THRESHOLD_S = 300;
+/** Seconds of static pane output before a dispatched (never-started) agent is considered hung.
+ *  Short because a failed dispatch should be detected quickly. */
+const HUNG_DISPATCH_THRESHOLD_S = 120;
 /** Minimum seconds between nudge attempts for hung agents. */
-const HUNG_NUDGE_COOLDOWN_S = 300;
+const HUNG_NUDGE_COOLDOWN_S = 120;
 
 // --- Verification gate constants and types ---
 type VerificationDecision = "advance" | "redispatch" | "hold" | "skip";
