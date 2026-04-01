@@ -21,13 +21,16 @@ import { notifyAgents } from "../notify.ts";
 import { autoCommitWorktree, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 
-// --- Stall detection constants ---
-/** Seconds after turnStartedAt before a running-but-done-status agent is stalled. */
-const STALL_THRESHOLD_S = 180;
-/** Seconds after dispatchedAt before a never-started dispatch is stalled. */
-const DISPATCH_STALL_THRESHOLD_S = 300;
+// --- Stall detection constants (aligned with agent-duo defaults) ---
+/** Seconds after turnStartedAt before a running-but-done-status agent is stalled.
+ *  Only applies when agent process has exited without a stop hook (crash recovery).
+ *  Agent-duo uses 1800s for reviews, 3600s for work — we use a conservative middle ground. */
+const STALL_THRESHOLD_S = 1800;
+/** Seconds after dispatchedAt before a never-started dispatch is stalled.
+ *  Agent-duo uses 600s for plan/gather phases. */
+const DISPATCH_STALL_THRESHOLD_S = 600;
 /** Minimum seconds between nudge attempts per agent. */
-const NUDGE_COOLDOWN_S = 120;
+const NUDGE_COOLDOWN_S = 300;
 
 // --- Verification gate constants and types ---
 type VerificationDecision = "advance" | "redispatch" | "hold" | "skip";

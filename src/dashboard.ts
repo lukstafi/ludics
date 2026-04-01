@@ -133,9 +133,18 @@ function lookupSlotOrchestrationLinks(
     }
   }
 
-  // Build t3code thread links from threadIds + server webUrl
+  // Build agent links — t3code threads or tmux ttyd URLs
   let t3codeThreadLinks: Record<string, string> | null = null;
-  if (t3codeWebUrl && orchState.threadIds && Object.keys(orchState.threadIds).length > 0) {
+  if (orchState.backend === "tmux") {
+    // Generate ttyd URLs for each agent
+    const host = networkHostname();
+    t3codeThreadLinks = {};
+    for (const agent of orchState.agents) {
+      const roleIndex = agent.role === "reviewer" ? 1 : 0;
+      const port = 7681 + (orchState.slot - 1) * 2 + roleIndex;
+      t3codeThreadLinks[agent.name] = `http://${host}:${port}`;
+    }
+  } else if (t3codeWebUrl && orchState.threadIds && Object.keys(orchState.threadIds).length > 0) {
     t3codeThreadLinks = {};
     for (const [agentName, threadId] of Object.entries(orchState.threadIds)) {
       t3codeThreadLinks[agentName] = `${t3codeWebUrl}/${encodeURIComponent(threadId)}`;
@@ -739,7 +748,8 @@ function generateTerminals(): Record<string, unknown> {
     const blocks = parseSlotBlocks(readFileSync(slotsFile, "utf-8"));
     for (const [num, block] of blocks) {
       const mode = getMode(block).trim();
-      if (mode === "tmux") activeSlots.push(num);
+      const sessionStarted = getSessionStarted(block).trim();
+      if (mode === "tmux" && sessionStarted && sessionStarted !== "null") activeSlots.push(num);
     }
   }
 

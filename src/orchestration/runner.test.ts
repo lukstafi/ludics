@@ -1867,7 +1867,7 @@ describe("detectAndNudgeStalls", () => {
     state.agentStates.coder.turnLifecycle = makeLifecycle({
       state: "running",
       observedTurnId: "turn-1",
-      turnStartedAt: new Date(Date.now() - 200_000).toISOString(), // 200s ago > 180s threshold
+      turnStartedAt: new Date(Date.now() - 2000_000).toISOString(), // 2000s ago > 1800s threshold
     });
 
     await detectAndNudgeStalls(state, noopTransport);
@@ -1886,7 +1886,7 @@ describe("detectAndNudgeStalls", () => {
     const state = makeState({ phase: "work" }, tmpDir);
     state.agentStates.coder.turnLifecycle = makeLifecycle({
       state: "dispatched",
-      dispatchedAt: new Date(Date.now() - 400_000).toISOString(), // 400s > 300s threshold
+      dispatchedAt: new Date(Date.now() - 700_000).toISOString(), // 700s > 600s threshold
     });
 
     await detectAndNudgeStalls(state, noopTransport);
@@ -1916,10 +1916,10 @@ describe("detectAndNudgeStalls", () => {
     state.agentStates.coder.turnLifecycle = makeLifecycle({
       state: "running",
       observedTurnId: "turn-1",
-      turnStartedAt: new Date(Date.now() - 200_000).toISOString(),
+      turnStartedAt: new Date(Date.now() - 2000_000).toISOString(),
       stallDetectedAt: new Date(Date.now() - 100_000).toISOString(),
       nudgeAttempts: 1,
-      lastNudgeAt: new Date(Date.now() - 30_000).toISOString(), // 30s ago < 120s cooldown
+      lastNudgeAt: new Date(Date.now() - 30_000).toISOString(), // 30s ago < 300s cooldown
     });
 
     await detectAndNudgeStalls(state, noopTransport);
@@ -1934,10 +1934,10 @@ describe("detectAndNudgeStalls", () => {
     state.agentStates.coder.turnLifecycle = makeLifecycle({
       state: "running",
       observedTurnId: "turn-1",
-      turnStartedAt: new Date(Date.now() - 600_000).toISOString(),
-      stallDetectedAt: new Date(Date.now() - 500_000).toISOString(),
+      turnStartedAt: new Date(Date.now() - 2000_000).toISOString(),
+      stallDetectedAt: new Date(Date.now() - 1500_000).toISOString(),
       nudgeAttempts: 2, // >= MAX_NUDGE_ATTEMPTS
-      lastNudgeAt: new Date(Date.now() - 200_000).toISOString(),
+      lastNudgeAt: new Date(Date.now() - 400_000).toISOString(),
     });
 
     await detectAndNudgeStalls(state, noopTransport);

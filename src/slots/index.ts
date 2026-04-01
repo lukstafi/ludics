@@ -222,6 +222,17 @@ export function slotAssign(
   blocks.set(slotNum, block);
   writeSlotFile(file, blocks, count);
 
+  // Remove stale orchestration state — may have been restored by git pull/stash-pop
+  // after a previous slotClear deleted it
+  const orchFile = join(harnessDir(), "orchestration", `slot-${slotNum}.json`);
+  if (existsSync(orchFile)) {
+    try { unlinkSync(orchFile); } catch { /* ignore */ }
+  }
+  const tmuxSlotFile = join(harnessDir(), "orchestration", `tmux-slot-${slotNum}.json`);
+  if (existsSync(tmuxSlotFile)) {
+    try { unlinkSync(tmuxSlotFile); } catch { /* ignore */ }
+  }
+
   // Update task file
   if (taskId !== "null") {
     taskUpdateForSlotAssign(taskId, slotNum, adapter, started);
@@ -714,8 +725,8 @@ export async function slotResume(slotNum: number): Promise<void> {
 
   // --- tmux-specific: verify/recreate tmux session, windows, ttyd, agent CLIs ---
   if (ctx.mode === "tmux") {
-    const { tmuxHasSession, tmuxNewSession, tmuxPanePid, tmuxSendCommand } = await import("../adapters/tmux.ts");
-    const { readTmuxSlotState, writeTmuxSlotState } = await import("../adapters/tmux-adapter.ts");
+    const { tmuxHasSession, tmuxNewSession, tmuxSendCommand } = await import("../adapters/tmux.ts");
+    const { readTmuxSlotState, writeTmuxSlotState, tmuxSessionName, ttydPort, agentCliCommand } = await import("../adapters/tmux-adapter.ts");
     const tmuxState = readTmuxSlotState(slotNum, ctx.harnessDir);
 
     // Kill stale orchestration runner from tmux state first
@@ -736,16 +747,12 @@ export async function slotResume(slotNum: number): Promise<void> {
     const taskId = orchState.feature;
     for (let i = 0; i < orchState.agents.length; i++) {
       const agent = orchState.agents[i];
-      // Session name matches t3code thread title: s<slot>.<role>.<taskId>
-      const suffix = taskId && taskId !== "null" ? taskId : agent.name;
-      const sessionName = `s${slotNum}.${agent.name}.${suffix}`;
-      // Derive port role
+      const sessionName = tmuxSessionName(slotNum, agent.name, taskId);
       const role: "coder" | "reviewer" =
         agent.role === "coder" || agent.role === "reviewer"
           ? agent.role
           : i % 2 === 0 ? "coder" : "reviewer";
-      const portBase = 7681;
-      const port = portBase + (slotNum - 1) * 2 + (role === "reviewer" ? 1 : 0);
+      const port = ttydPort(slotNum, role);
 
       // Check if the tmux session exists
       const sessionExists = tmuxHasSession(sessionName);
@@ -767,10 +774,7 @@ export async function slotResume(slotNum: number): Promise<void> {
           `LUDICS_PHASE_TOKEN="${orchState.currentPhaseToken ?? ""}"`,
         ].join(" ");
         tmuxSendCommand(sessionName, envCmd);
-        const cliCmd = agent.provider === "claude-code"
-          ? "claude --dangerously-skip-permissions"
-          : "codex --full-auto";
-        tmuxSendCommand(sessionName, cliCmd);
+        tmuxSendCommand(sessionName, agentCliCommand(agent.provider));
         console.error(`ludics: booted ${agent.provider} CLI in '${sessionName}'`);
       }
 

@@ -178,7 +178,7 @@ describe("sendTurn prompt injection via paste-buffer", () => {
     // Verify tmux paste-buffer was called with the correct target
     const pasteBufferCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "paste-buffer");
     expect(pasteBufferCall).toBeDefined();
-    expect(pasteBufferCall![3]).toBe("ludics:slot-1-coder");
+    expect(pasteBufferCall![3]).toBe("s1_coder_coder");
 
     // Verify NO $(cat ...) was sent via send-keys
     for (const keys of sendKeysCalls) {
@@ -186,7 +186,8 @@ describe("sendTurn prompt injection via paste-buffer", () => {
       expect(keys).not.toContain("$(/");
     }
 
-    // Verify Enter was sent after paste-buffer
-    expect(sendKeysCalls).toContain("Enter");
+    // Verify Enter was sent after paste-buffer (via Bun.spawnSync in sendPromptToAgent)
+    const enterCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "send-keys" && c.includes("Enter"));
+    expect(enterCall).toBeDefined();
   });
 });

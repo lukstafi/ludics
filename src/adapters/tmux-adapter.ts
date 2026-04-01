@@ -86,9 +86,11 @@ function removeTmuxSlotState(slot: number, harnessDir: string): void {
 // ---------------------------------------------------------------------------
 
 /** Session name matches t3code thread title: s<slot>.<role>.<taskId> */
-function tmuxSessionName(slot: number, agentName: string, taskId?: string): string {
+export function tmuxSessionName(slot: number, agentName: string, taskId?: string): string {
   const suffix = taskId && taskId !== "null" ? taskId : agentName;
-  return `s${slot}.${agentName}.${suffix}`;
+  // tmux silently replaces dots with underscores in session names, so use underscores
+  // to keep names consistent between creation and attachment
+  return `s${slot}_${agentName}_${suffix}`;
 }
 
 /** Target for tmux commands — just the session name (one window per session) */
@@ -96,7 +98,7 @@ function tmuxTarget(slot: number, agentName: string, taskId?: string): string {
   return tmuxSessionName(slot, agentName, taskId);
 }
 
-function ttydPort(slot: number, role: "coder" | "reviewer"): number {
+export function ttydPort(slot: number, role: "coder" | "reviewer"): number {
   const roleIndex = role === "reviewer" ? 1 : 0;
   return PORT_BASE + (slot - 1) * 2 + roleIndex;
 }
@@ -296,24 +298,15 @@ function bootAgentCli(
   ].join(" ");
   tmuxSendCommand(target, envCmd);
 
-  // Determine CLI command based on provider
-  let cliCmd: string;
-  if (agent.provider === "claude-code") {
-    cliCmd = "claude --dangerously-skip-permissions";
-  } else {
-    // codex — interactive full-auto mode
-    cliCmd = "codex --full-auto";
-  }
-
   // Boot the CLI (runs persistently in the pane)
-  tmuxSendCommand(target, cliCmd);
+  tmuxSendCommand(target, agentCliCommand(agent.provider));
 }
 
 // ---------------------------------------------------------------------------
 // isAgentAlive — check if an agent CLI process is running in the tmux pane
 // ---------------------------------------------------------------------------
 
-function isAgentAlive(slot: number, agentName: string, taskId?: string): boolean {
+export function isAgentAlive(slot: number, agentName: string, taskId?: string): boolean {
   const target = tmuxTarget(slot, agentName, taskId);
   const panePid = tmuxPanePid(target);
   if (!panePid) return false;
@@ -324,6 +317,56 @@ function isAgentAlive(slot: number, agentName: string, taskId?: string): boolean
     { stdout: "pipe", stderr: "pipe" },
   );
   return result.exitCode === 0;
+}
+
+/** Get the CLI launch command for an agent provider */
+export function agentCliCommand(provider: string): string {
+  if (provider === "claude-code") return "claude --dangerously-skip-permissions";
+  return "codex --full-auto";
+}
+
+/**
+ * Inject a prompt into a live agent CLI session via tmux paste-buffer.
+ * Handles copy-mode exit, paste, and provider-specific Enter behavior.
+ */
+export async function sendPromptToAgent(
+  target: string,
+  message: string,
+  provider: string,
+): Promise<void> {
+  const promptFile = `/tmp/ludics-prompt-${target}-${Date.now()}.txt`;
+  const { writeFileSync, unlinkSync } = await import("fs");
+  writeFileSync(promptFile, message);
+
+  // Exit copy mode if active (user may have scrolled)
+  Bun.spawnSync(["tmux", "send-keys", "-t", target, "-X", "cancel"], {
+    stdout: "pipe", stderr: "pipe",
+  });
+  await Bun.sleep(100);
+
+  // Paste prompt via load-buffer + paste-buffer (avoids shell escaping issues)
+  Bun.spawnSync(["tmux", "load-buffer", promptFile], {
+    stdout: "pipe", stderr: "pipe",
+  });
+  Bun.spawnSync(["tmux", "paste-buffer", "-t", target], {
+    stdout: "pipe", stderr: "pipe",
+  });
+
+  // Enter must be a separate send-keys call with a sleep gap.
+  // Codex needs a double Enter (input buffering workaround).
+  await Bun.sleep(500);
+  Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"], {
+    stdout: "pipe", stderr: "pipe",
+  });
+  if (provider === "codex") {
+    await Bun.sleep(300);
+    Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"], {
+      stdout: "pipe", stderr: "pipe",
+    });
+  }
+
+  // Cleanup temp file
+  try { unlinkSync(promptFile); } catch { /* ignore */ }
 }
 
 // ---------------------------------------------------------------------------
