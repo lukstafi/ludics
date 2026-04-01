@@ -287,6 +287,13 @@ export function buildSkillContext(
     FORWARDED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.forwarded`),
     PEER_SYNC_DIR: state.peerSyncDir,
     DONE_STATUS: doneStatusForPhase(state.phase),
+    VERIFICATION_CONTEXT: state.phaseRetryContext
+      ? `> **RETRY — Previous attempt failed**: ${state.phaseRetryContext}\n> This is attempt ${
+          (state.phase === "pr-create"
+            ? (state.prCreateVerifyAttempts ?? 0)
+            : (state.finalMergeVerifyAttempts ?? 0)) + 1
+        } of 3.\n`
+      : "",
     STAGING_REPO: stagingRepo ?? "",
     STAGING_REPO_NOTE: stagingRepo
       ? `\n> **Staging fork**: This project uses a staging fork (\`${stagingRepo}\`). Create the PR against the staging fork, not the upstream repo.\n`

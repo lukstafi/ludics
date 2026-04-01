@@ -135,6 +135,50 @@ export function validateAndFixPrFile(
   }
 }
 
+export interface PrVerification {
+  exists: boolean;
+  state?: "open" | "closed";
+  merged?: boolean;
+  mergeableState?: string | null;
+  reason: string;
+}
+
+/**
+ * Inspect a GitHub PR via the API. Returns structured info for both
+ * pr-create (does it exist?) and final-merge (is it merged?) gates.
+ */
+export function getPrVerification(prUrl: string): PrVerification {
+  const match = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+  if (!match) return { exists: false, reason: "malformed PR URL" };
+  const [, repo, prNumber] = match;
+  try {
+    const result = Bun.spawnSync(
+      ["gh", "api", `repos/${repo}/pulls/${prNumber}`, "--jq",
+       "[.state, .merged, .mergeable_state] | @tsv"],
+      { stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
+    );
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr.toString().trim();
+      const is404 = stderr.includes("404") || stderr.includes("Not Found");
+      return {
+        exists: false,
+        reason: is404 ? "PR not found on GitHub" : `GitHub API error: ${stderr.slice(0, 120)}`,
+      };
+    }
+    const parts = result.stdout.toString().trim().split("\t");
+    const [prState, mergedStr, mergeableState] = parts;
+    return {
+      exists: true,
+      state: prState as "open" | "closed",
+      merged: mergedStr === "true",
+      mergeableState: mergeableState === "null" ? null : (mergeableState ?? null),
+      reason: "ok",
+    };
+  } catch (err) {
+    return { exists: false, reason: `gh CLI error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
 /** Default focus prompt for the @codex review PR comment. */
 export const DEFAULT_CODEX_REVIEW_PROMPT =
   "Focus on bugs, correctness issues, and edge cases. Do not check adherence to a spec or plan.";

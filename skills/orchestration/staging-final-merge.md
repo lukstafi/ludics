@@ -1,5 +1,5 @@
 # Final Merge — Staging Cleanup
-
+{{VERIFICATION_CONTEXT}}
 The upstream PR has been merged. Perform staging fork cleanup from `{{WORKTREE_PATH}}`.
 
 1. Read the staging and upstream PR URLs:

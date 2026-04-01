@@ -1,5 +1,5 @@
 # Final Merge
-
+{{VERIFICATION_CONTEXT}}
 Merge the feature branch into main from `{{WORKTREE_PATH}}`.
 
 Rebase onto `origin/main`, force-push with lease, verify the build is green, then merge:
