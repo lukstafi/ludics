@@ -2,7 +2,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { harnessDir } from "../config.ts";
 import type { Phase } from "./phases.ts";
-import { readAgentMarkerFile, readAgentStatus, readPhaseToken, writeStopHookRecord } from "./peer-sync.ts";
+import { readAgentMarkerFile, readAgentStatus, readPhaseToken, resolvePeerSyncDir, writeStopHookRecord } from "./peer-sync.ts";
 import { confirmPhase, interruptCurrentPhase, runOrchestrationForSlot, skipToPhase } from "./runner.ts";
 import { readOrchestrationState } from "./state.ts";
 import { isoNow } from "./util.ts";
@@ -125,13 +125,7 @@ export function orchOnStop(args: string[]): void {
   }
 
   // Resolve peerSyncDir: CLI arg (if valid) > env var > give up.
-  let peerSyncDir = cliPeerSyncDir || undefined;
-  if (!peerSyncDir || !readFileIfExists(join(peerSyncDir, "phase"))) {
-    const envDir = process.env.LUDICS_PEER_SYNC_DIR;
-    if (envDir && readFileIfExists(join(envDir, "phase"))) {
-      peerSyncDir = envDir;
-    }
-  }
+  const peerSyncDir = resolvePeerSyncDir({ cliArg: cliPeerSyncDir || undefined });
   if (!peerSyncDir) return; // No active orchestration found.
 
   // Determine which agent this stop belongs to by checking which agent's

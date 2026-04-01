@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { harnessDir } from "../config.ts";
+import { PEER_SYNC_DIRNAME } from "../orchestration/peer-sync.ts";
 import type { AgentStatus } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -198,11 +199,11 @@ export function resolveProjectDir(session: string, checkPeerSync: boolean = fals
       if (existsSync(`${home}/${session}`)) return `${home}/${session}`;
       if (existsSync(`${home}/repos/${session}`)) return `${home}/repos/${session}`;
       if (checkPeerSync) {
-        if (existsSync(`${home}/${session}/.peer-sync`)) return `${home}/${session}`;
-        if (existsSync(`${home}/repos/${session}/.peer-sync`)) return `${home}/repos/${session}`;
+        if (existsSync(`${home}/${session}/${PEER_SYNC_DIRNAME}`)) return `${home}/${session}`;
+        if (existsSync(`${home}/repos/${session}/${PEER_SYNC_DIRNAME}`)) return `${home}/repos/${session}`;
       }
     }
   }
-  if (checkPeerSync && existsSync(`${process.cwd()}/.peer-sync`)) return process.cwd();
+  if (checkPeerSync && existsSync(`${process.cwd()}/${PEER_SYNC_DIRNAME}`)) return process.cwd();
   return process.cwd();
 }
