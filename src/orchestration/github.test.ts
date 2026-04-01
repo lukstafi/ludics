@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_CODEX_REVIEW_PROMPT, postCodexReviewComment } from "./github.ts";
+import { DEFAULT_CODEX_REVIEW_PROMPT, hasCodexSubmittedReview, postCodexReviewComment } from "./github.ts";
 
 // ---------------------------------------------------------------------------
 // postCodexReviewComment — body-building logic
@@ -35,6 +35,28 @@ describe("postCodexReviewComment", () => {
 
   test("returns false when custom prompt provided (still fails on bogus URL)", () => {
     const result = postCodexReviewComment("not-a-url", "Focus on memory safety");
+    expect(result).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasCodexSubmittedReview — Codex review detection
+// ---------------------------------------------------------------------------
+
+describe("hasCodexSubmittedReview", () => {
+  test("returns false for malformed URL", () => {
+    expect(hasCodexSubmittedReview("not-a-url")).toBe(false);
+  });
+
+  test("returns false for empty string", () => {
+    expect(hasCodexSubmittedReview("")).toBe(false);
+  });
+
+  test("returns false when gh API fails (non-existent repo)", () => {
+    // gh will exit non-zero for a repo that doesn't exist
+    const result = hasCodexSubmittedReview(
+      "https://github.com/nonexistent-owner-zzz/nonexistent-repo-zzz/pull/1"
+    );
     expect(result).toBe(false);
   });
 });

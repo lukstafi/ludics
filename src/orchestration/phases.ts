@@ -415,8 +415,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
       const forwarded = isStaging && hasForwardedPr(state);
 
       if (isStaging && !forwarded) {
-        // Monitoring staging PR — transition to forward-pr on approval/quiet
-        if (state.prCodexApproved && hasAnyPr(state)) return "forward-pr";
+        // Monitoring staging PR — transition to forward-pr on quiet period
         const quietPeriodStaging = state.config.prCommentsTimeout;
         if (
           hasAnyPr(state)
@@ -440,8 +439,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
       }
 
       // Non-staging (or duo with staging_repo — treated as non-staging):
-      // existing behavior unchanged
-      if (state.prCodexApproved && hasAnyPr(state)) return "final-merge";
+      // quiet period is the sole advancement mechanism
       const quietPeriod = state.config.prCommentsTimeout;
       if (
         hasAnyPr(state)

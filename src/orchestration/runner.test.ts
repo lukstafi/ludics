@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent } from "./runner.ts";
 import * as events from "../events.ts";
 import * as github from "./github.ts";
 import { orchOnStop } from "./index.ts";
@@ -1402,16 +1402,6 @@ describe("pairReviewVerdict", () => {
 // ---------------------------------------------------------------------------
 
 describe("maybePostCodexReviewRequests", () => {
-  let postSpy: ReturnType<typeof spyOn>;
-
-  beforeEach(() => {
-    postSpy = spyOn(github, "postCodexReviewComment").mockReturnValue(true);
-  });
-
-  afterEach(() => {
-    postSpy.mockRestore();
-  });
-
   function makeCodexState(
     overrides: Partial<OrchestrationState> = {},
   ): OrchestrationState {
@@ -1436,32 +1426,31 @@ describe("maybePostCodexReviewRequests", () => {
     return state;
   }
 
-  test("posts on pr-create -> pr-comments with codex reviewer", () => {
+  test("arms deferral on pr-create -> pr-comments with codex reviewer", () => {
     const state = makeCodexState({ phase: "pr-create" });
     maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
-    expect(postSpy).toHaveBeenCalledTimes(1);
-    expect(postSpy.mock.calls[0]![0]).toBe("https://github.com/test/repo/pull/42");
+    expect(state.prCodexReviewDeferredSince).toBeGreaterThan(0);
   });
 
-  test("posts on update-docs -> pr-comments with codex reviewer", () => {
+  test("arms deferral on update-docs -> pr-comments with codex reviewer", () => {
     const state = makeCodexState({ phase: "update-docs" });
     maybePostCodexReviewRequests(state, "update-docs", "pr-comments");
-    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(state.prCodexReviewDeferredSince).toBeGreaterThan(0);
   });
 
-  test("posts on review -> pr-comments with codex reviewer", () => {
+  test("arms deferral on review -> pr-comments with codex reviewer", () => {
     const state = makeCodexState({ phase: "review" });
     maybePostCodexReviewRequests(state, "review", "pr-comments");
-    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(state.prCodexReviewDeferredSince).toBeGreaterThan(0);
   });
 
-  test("does NOT post on merge-review -> pr-comments", () => {
+  test("does NOT arm on merge-review -> pr-comments", () => {
     const state = makeCodexState({ phase: "merge-review" });
     maybePostCodexReviewRequests(state, "merge-review", "pr-comments");
-    expect(postSpy).not.toHaveBeenCalled();
+    expect(state.prCodexReviewDeferredSince).toBeUndefined();
   });
 
-  test("does NOT post when reviewer provider is claude-code", () => {
+  test("does NOT arm when reviewer provider is claude-code", () => {
     const state = makeCodexState({
       phase: "pr-create",
       agents: [
@@ -1470,10 +1459,10 @@ describe("maybePostCodexReviewRequests", () => {
       ],
     });
     maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
-    expect(postSpy).not.toHaveBeenCalled();
+    expect(state.prCodexReviewDeferredSince).toBeUndefined();
   });
 
-  test("does NOT post when coder is codex but reviewer is claude-code", () => {
+  test("does NOT arm when coder is codex but reviewer is claude-code", () => {
     const state = makeCodexState({
       phase: "pr-create",
       agents: [
@@ -1482,52 +1471,16 @@ describe("maybePostCodexReviewRequests", () => {
       ],
     });
     maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
-    expect(postSpy).not.toHaveBeenCalled();
+    expect(state.prCodexReviewDeferredSince).toBeUndefined();
   });
 
-  test("does NOT post when next phase is not pr-comments", () => {
+  test("does NOT arm when next phase is not pr-comments", () => {
     const state = makeCodexState({ phase: "pr-create" });
     maybePostCodexReviewRequests(state, "pr-create", "work");
-    expect(postSpy).not.toHaveBeenCalled();
+    expect(state.prCodexReviewDeferredSince).toBeUndefined();
   });
 
-  test("de-duplicates identical PR URLs", () => {
-    const state = makeCodexState({
-      phase: "pr-create",
-      agentStates: {
-        coder: {
-          status: "pr-create-done", statusEpoch: 0, statusMessage: "",
-          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
-        },
-        reviewer: {
-          status: "pr-create-done", statusEpoch: 0, statusMessage: "",
-          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
-        },
-      },
-    });
-    maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
-    expect(postSpy).toHaveBeenCalledTimes(1);
-  });
-
-  test("posts once per distinct PR URL", () => {
-    const state = makeCodexState({
-      phase: "pr-create",
-      agentStates: {
-        coder: {
-          status: "pr-create-done", statusEpoch: 0, statusMessage: "",
-          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
-        },
-        reviewer: {
-          status: "pr-create-done", statusEpoch: 0, statusMessage: "",
-          prUrl: "https://github.com/test/repo/pull/43", interrupted: false,
-        },
-      },
-    });
-    maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
-    expect(postSpy).toHaveBeenCalledTimes(2);
-  });
-
-  test("skips agents without a prUrl", () => {
+  test("does NOT arm when no agents have a prUrl", () => {
     const state = makeCodexState({
       phase: "pr-create",
       agentStates: {
@@ -1542,6 +1495,138 @@ describe("maybePostCodexReviewRequests", () => {
       },
     });
     maybePostCodexReviewRequests(state, "pr-create", "pr-comments");
+    expect(state.prCodexReviewDeferredSince).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkAndRedispatchPrComments — deferred Codex review fallback logic
+// ---------------------------------------------------------------------------
+
+describe("checkAndRedispatchPrComments deferred review fallback", () => {
+  let reviewSpy: ReturnType<typeof spyOn>;
+  let postSpy: ReturnType<typeof spyOn>;
+  let mergedSpy: ReturnType<typeof spyOn>;
+  let commentCountSpy: ReturnType<typeof spyOn>;
+  let eventSpy: ReturnType<typeof spyOn>;
+
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const dummyTransport: OrchestrationTransport = {
+    sendTurn: async () => "cmd-1",
+    refreshAgentTransportState: async () => {},
+    interruptAgent: async () => {},
+  };
+
+  function makePrCommentsState(
+    overrides: Partial<OrchestrationState> = {},
+  ): OrchestrationState {
+    return makeState({
+      phase: "pr-comments",
+      phaseStartedAt: nowSec - 120, // 2 min ago
+      prCommentsLastCheckAt: nowSec - 120, // force poll eligibility
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+        { name: "reviewer", provider: "codex", role: "reviewer", model: "o3-pro", branch: "b", worktreePath: "/tmp/b" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done", statusEpoch: nowSec, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
+          turnLifecycle: null,
+        },
+        reviewer: {
+          status: "idle", statusEpoch: nowSec, statusMessage: "",
+          prUrl: null, interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+      ...overrides,
+    });
+  }
+
+  beforeEach(() => {
+    reviewSpy = spyOn(github, "hasCodexSubmittedReview").mockReturnValue(false);
+    postSpy = spyOn(github, "postCodexReviewComment").mockReturnValue(true);
+    mergedSpy = spyOn(github, "isPrMerged").mockReturnValue(false);
+    commentCountSpy = spyOn(github, "fetchNewPrCommentCount").mockReturnValue(0);
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    reviewSpy.mockRestore();
+    postSpy.mockRestore();
+    mergedSpy.mockRestore();
+    commentCountSpy.mockRestore();
+    eventSpy.mockRestore();
+  });
+
+  test("clears deferral early when all PRs have submitted reviews", async () => {
+    reviewSpy.mockReturnValue(true);
+    const state = makePrCommentsState({
+      prCodexReviewDeferredSince: nowSec - 60, // armed 60s ago (within window)
+    });
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(state.prCodexReviewDeferredSince).toBeUndefined();
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("posts fallback after deadline when no review exists", async () => {
+    reviewSpy.mockReturnValue(false);
+    const state = makePrCommentsState({
+      prCodexReviewDeferredSince: nowSec - 700, // 700s ago, past 600s deadline
+    });
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(postSpy.mock.calls[0]![0]).toBe("https://github.com/test/repo/pull/42");
+    expect(state.prCodexReviewDeferredSince).toBeUndefined();
+  });
+
+  test("keeps waiting within deferral window when no review yet", async () => {
+    reviewSpy.mockReturnValue(false);
+    const state = makePrCommentsState({
+      prCodexReviewDeferredSince: nowSec - 60, // only 60s, well within 600s window
+    });
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(postSpy).not.toHaveBeenCalled();
+    expect(state.prCodexReviewDeferredSince).toBe(nowSec - 60); // unchanged
+  });
+
+  test("posts fallback only for PRs missing review (per-PR resolution)", async () => {
+    // PR 42 has review, PR 43 does not
+    reviewSpy.mockImplementation((url: string) =>
+      url.includes("pull/42")
+    );
+    const state = makePrCommentsState({
+      prCodexReviewDeferredSince: nowSec - 700,
+      mode: "duo",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+        { name: "reviewer", provider: "codex", role: "reviewer", model: "o3-pro", branch: "b", worktreePath: "/tmp/b" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done", statusEpoch: nowSec, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
+          turnLifecycle: null,
+        },
+        reviewer: {
+          status: "pr-comments-done", statusEpoch: nowSec, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/43", interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+    });
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(postSpy.mock.calls[0]![0]).toBe("https://github.com/test/repo/pull/43");
+    expect(state.prCodexReviewDeferredSince).toBeUndefined();
+  });
+
+  test("does nothing when prCodexReviewDeferredSince is not set", async () => {
+    const state = makePrCommentsState(); // no deferral armed
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(reviewSpy).not.toHaveBeenCalled();
     expect(postSpy).not.toHaveBeenCalled();
   });
 });
