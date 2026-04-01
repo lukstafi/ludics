@@ -24,8 +24,12 @@ function run(cmd: string[], cwd: string): { success: boolean; stdout: string } {
 }
 
 function dirtyFlagPath(): string {
-  // Place outside git tree to avoid committing the flag itself
-  return join(process.env.HOME ?? "/tmp", ".ludics-state-dirty");
+  // Place outside git tree, scoped to this state repo to avoid cross-workspace interference.
+  const repoDir = stateRepoDir();
+  const hasher = new Bun.CryptoHasher("md5");
+  hasher.update(repoDir);
+  const suffix = hasher.digest("hex").slice(0, 8);
+  return join(process.env.HOME ?? "/tmp", `.ludics-state-dirty-${suffix}`);
 }
 
 /** Mark state as dirty (has uncommitted file writes). Cheap no-op if already dirty. */

@@ -288,7 +288,12 @@ export function federationRole(): "controller" | "worker" | "standalone" {
   }
 
   const machine = federationCurrentMachine();
-  if (!machine) return "standalone"; // can't determine which machine we are
+  if (!machine) {
+    // Federation is enabled but this host doesn't match any configured machine.
+    // Safe default: treat as worker (don't run controller duties) to avoid split-brain.
+    console.error("ludics: federation: WARNING — this host not found in federation.machines; defaulting to worker role");
+    return "worker";
+  }
 
   if (machine.role === "leader") return "controller";
 

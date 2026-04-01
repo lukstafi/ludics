@@ -643,13 +643,18 @@ export async function slotStop(slotNum: number, force: boolean = false): Promise
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
   // Remote dispatch: if slot is owned by another machine, delegate via SSH
-  if (ctx.machine && isRemoteMachine(ctx.machine) && !force) {
-    console.error(`ludics: slot ${slotNum}: dispatching stop to remote machine ${ctx.machine}`);
-    const result = remoteExec(ctx.machine, ["slot", String(slotNum), "stop"]);
-    if (!result.success) {
-      console.error(`ludics: slot ${slotNum}: remote stop failed on ${ctx.machine}: ${result.stderr}`);
-      console.error(`  use 'ludics slot ${slotNum} stop --force' to clear local state without remote exec`);
-      return;
+  if (ctx.machine && isRemoteMachine(ctx.machine)) {
+    if (force) {
+      // --force: clear controller-side state without contacting the remote machine
+      console.error(`ludics: slot ${slotNum}: force-clearing local state (skipping remote stop on ${ctx.machine})`);
+    } else {
+      console.error(`ludics: slot ${slotNum}: dispatching stop to remote machine ${ctx.machine}`);
+      const result = remoteExec(ctx.machine, ["slot", String(slotNum), "stop"]);
+      if (!result.success) {
+        console.error(`ludics: slot ${slotNum}: remote stop failed on ${ctx.machine}: ${result.stderr}`);
+        console.error(`  use 'ludics slot ${slotNum} stop --force' to clear local state without remote exec`);
+        return;
+      }
     }
   } else {
     await runAdapterAction("stop", ctx);
