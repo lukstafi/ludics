@@ -970,6 +970,16 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   // having run, which would desync planMergeRound from the artifact filenames.
   if (state.phase === "plan-review" && next === "plan-merge" && state.phaseDispatched) {
     state.planMergeRound = (state.planMergeRound ?? 0) + 1;
+    // Reset agent statuses so stale plan-merge-done from previous iteration
+    // doesn't prevent dispatch.
+    for (const agent of state.agents) {
+      const runtime = state.agentStates[agent.name];
+      if (!runtime) continue;
+      runtime.status = "idle";
+      runtime.statusEpoch = nowEpoch();
+      runtime.statusMessage = `plan-merge iteration ${state.planMergeRound}`;
+      runtime.turnLifecycle = null;
+    }
   }
   if (state.phase === "merge-vote") {
     const votes = readMergeVotes(state.peerSyncDir, state.mergeRound);

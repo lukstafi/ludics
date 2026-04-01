@@ -187,7 +187,7 @@ describe("sendTurn prompt injection via paste-buffer", () => {
     }
 
     // Verify Enter was sent after paste-buffer (via Bun.spawnSync in sendPromptToAgent)
-    const enterCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "send-keys" && c.includes("Enter"));
+    const enterCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "send-keys" && c.includes("C-m"));
     expect(enterCall).toBeDefined();
   });
 });
