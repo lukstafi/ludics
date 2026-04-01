@@ -75,7 +75,7 @@ export class TmuxTransport implements OrchestrationTransport {
         continue;
       }
 
-      // Track pane output changes for stall detection and completion detection
+      // Track pane output changes for hung-agent detection and completion detection
       const target = tmuxSessionName(state.slot, agent.name, state.taskId);
       const paneHash = tmuxPaneOutputHash(target);
       if (paneHash && paneHash !== lc.lastPaneHash) {

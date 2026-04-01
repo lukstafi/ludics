@@ -27,7 +27,7 @@ function orchStatus(slot: number): void {
     const lc = runtime?.turnLifecycle;
     const lcInfo = lc ? ` turn=${lc.state}${lc.observedTurnId ? ` id=${lc.observedTurnId.slice(0, 8)}` : ""}` : "";
     const stallInfo = lc?.stallDetectedAt
-      ? ` STALL(nudges=${lc.nudgeAttempts ?? 0}, since=${lc.stallDetectedAt})`
+      ? ` HUNG(nudges=${lc.nudgeAttempts ?? 0}, since=${lc.stallDetectedAt})`
       : "";
     console.log(
       `${agent.name}: status=${runtime?.status ?? "unknown"} provider=${agent.provider} model=${agent.model}${effort} pr=${runtime?.prUrl ?? "-"}${lcInfo}${stallInfo}`,

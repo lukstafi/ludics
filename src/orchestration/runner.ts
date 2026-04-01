@@ -21,16 +21,16 @@ import { notifyAgents } from "../notify.ts";
 import { autoCommitWorktree, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 
-// --- Stall detection constants (aligned with agent-duo defaults) ---
-/** Seconds after turnStartedAt before a running-but-done-status agent is stalled.
- *  Only applies when agent process has exited without a stop hook (crash recovery).
- *  Agent-duo uses 1800s for reviews, 3600s for work — we use a conservative middle ground. */
-const STALL_THRESHOLD_S = 1800;
-/** Seconds after dispatchedAt before a never-started dispatch is stalled.
- *  Agent-duo uses 600s for plan/gather phases. */
-const DISPATCH_STALL_THRESHOLD_S = 600;
-/** Minimum seconds between nudge attempts per agent. */
-const NUDGE_COOLDOWN_S = 300;
+// --- Hung agent detection constants ---
+// A "hung agent" appears to be working (lifecycle running/dispatched) but the
+// terminal output is static — the agent is frozen or finished without signaling.
+// Rare in tmux, more common in t3code (process liveness bug).
+/** Seconds of static pane output before a running agent is considered hung. */
+const HUNG_RUNNING_THRESHOLD_S = 1800;
+/** Seconds of static pane output before a dispatched (never-started) agent is considered hung. */
+const HUNG_DISPATCH_THRESHOLD_S = 600;
+/** Minimum seconds between nudge attempts for hung agents. */
+const HUNG_NUDGE_COOLDOWN_S = 300;
 
 // --- Verification gate constants and types ---
 type VerificationDecision = "advance" | "redispatch" | "hold" | "skip";
@@ -181,7 +181,15 @@ function preparePhaseRedispatch(state: OrchestrationState): void {
   state.currentPhaseToken = undefined;
 }
 /** Force-settle via interruptAgent() after this many failed nudges. */
-const MAX_NUDGE_ATTEMPTS = 2;
+/** Force-settle a hung agent after this many failed nudges. */
+const HUNG_MAX_NUDGE_ATTEMPTS = 2;
+
+// --- Interrupted agent constants ---
+// An "interrupted agent" had its turn settle (stop hook fired) but never wrote
+// a done status — cut short by provider error, capacity limit, etc.
+// Detection is immediate; recovery is a "Continue." nudge.
+/** Minimum seconds between "Continue." nudges for interrupted agents. */
+const INTERRUPTED_NUDGE_COOLDOWN_S = 300;
 
 function phaseActiveStatus(phase: OrchestrationState["phase"]): string {
   return `${phase}-active`;
@@ -241,16 +249,17 @@ function detectAgentInconsistencies(
 }
 
 /**
- * Detect stalled agents and send phase-aware nudge messages.
- * Called from pollUntilDone() after refreshAgentStatuses(), before allAgentsDone().
+ * Detect hung agents and send nudge messages.
+ * A "hung agent" appears to be working (lifecycle running/dispatched) but its
+ * terminal output is static — the agent is frozen or finished without signaling.
  *
- * Stall conditions (only reached if snapshot reconciliation didn't resolve it):
- * 1. Running stall: DONE_STATUSES.has(status) && lc.state === "running" && age > STALL_THRESHOLD_S
- * 2. Dispatch stall: lc.state === "dispatched" && age > DISPATCH_STALL_THRESHOLD_S
+ * Hung conditions (only reached if snapshot reconciliation didn't resolve it):
+ * 1. Running hung: DONE_STATUSES + lc.state === "running" + pane static > HUNG_RUNNING_THRESHOLD_S
+ * 2. Dispatch hung: lc.state === "dispatched" + pane static > HUNG_DISPATCH_THRESHOLD_S
  *
- * Recovery progression: detect → nudge (up to MAX_NUDGE_ATTEMPTS) → force-settle
+ * Recovery progression: detect → nudge (up to HUNG_MAX_NUDGE_ATTEMPTS) → force-settle
  */
-export async function detectAndNudgeStalls(
+export async function detectAndNudgeHungAgents(
   state: OrchestrationState,
   transport: OrchestrationTransport,
 ): Promise<void> {
@@ -262,8 +271,8 @@ export async function detectAndNudgeStalls(
     if (runtime.interrupted) continue;
 
     const now = nowEpoch();
-    let isStalled = false;
-    let stallType: "running" | "dispatch" | null = null;
+    let isHung = false;
+    let hungType: "running" | "dispatch" | null = null;
 
     // Running stall: peer-sync done + turn still running + pane output static.
     // If pane output is still changing, the agent is actively working — not stalled.
@@ -271,9 +280,9 @@ export async function detectAndNudgeStalls(
       const paneStaticSince = lc.lastPaneChangeAt
         ? now - Math.floor(new Date(lc.lastPaneChangeAt).getTime() / 1000)
         : now - Math.floor(new Date(lc.turnStartedAt).getTime() / 1000);
-      if (paneStaticSince > STALL_THRESHOLD_S) {
-        isStalled = true;
-        stallType = "running";
+      if (paneStaticSince > HUNG_RUNNING_THRESHOLD_S) {
+        isHung = true;
+        hungType = "running";
       }
     }
     // Dispatch stall: turn never started + pane output static.
@@ -281,36 +290,36 @@ export async function detectAndNudgeStalls(
       const paneStaticSince = lc.lastPaneChangeAt
         ? now - Math.floor(new Date(lc.lastPaneChangeAt).getTime() / 1000)
         : now - Math.floor(new Date(lc.dispatchedAt).getTime() / 1000);
-      if (paneStaticSince > DISPATCH_STALL_THRESHOLD_S) {
-        isStalled = true;
-        stallType = "dispatch";
+      if (paneStaticSince > HUNG_DISPATCH_THRESHOLD_S) {
+        isHung = true;
+        hungType = "dispatch";
       }
     }
 
-    if (!isStalled) continue;
+    if (!isHung) continue;
 
     // --- First detection ---
     if (!(lc.stallDetectedAt ?? null)) {
       lc.stallDetectedAt = isoNow();
       emitEvent({
-        event_type: "orchestration_stall_detected",
+        event_type: "orchestration_hung_detected",
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
         task: state.feature,
         agent: agent.name,
         phase: state.phase,
-        stallType,
-        message: `${agent.name}: stall detected (${stallType}), lc.state=${lc.state}, status=${runtime.status}`,
+        hungType,
+        message: `${agent.name}: hung agent detected (${hungType}), lc.state=${lc.state}, status=${runtime.status}`,
       });
     }
 
     const attempts = lc.nudgeAttempts ?? 0;
 
-    // --- Force-settle after MAX_NUDGE_ATTEMPTS ---
-    if (attempts >= MAX_NUDGE_ATTEMPTS) {
+    // --- Force-settle after HUNG_MAX_NUDGE_ATTEMPTS ---
+    if (attempts >= HUNG_MAX_NUDGE_ATTEMPTS) {
       emitEvent({
-        event_type: "orchestration_force_settle",
+        event_type: "orchestration_hung_force_settle",
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
@@ -318,7 +327,7 @@ export async function detectAndNudgeStalls(
         agent: agent.name,
         phase: state.phase,
         attempts,
-        message: `${agent.name}: force-settling after ${attempts} nudge attempts`,
+        message: `${agent.name}: force-settling hung agent after ${attempts} nudge attempts`,
       });
       await interruptAgent(state, agent, transport);
       continue;
@@ -328,11 +337,11 @@ export async function detectAndNudgeStalls(
     const lastNudge = lc.lastNudgeAt
       ? Math.floor(new Date(lc.lastNudgeAt).getTime() / 1000)
       : 0;
-    if (now - lastNudge < NUDGE_COOLDOWN_S) continue;
+    if (now - lastNudge < HUNG_NUDGE_COOLDOWN_S) continue;
 
     // --- Send phase-aware nudge ---
     try {
-      const nudgeMessage = stallType === "dispatch"
+      const nudgeMessage = hungType === "dispatch"
         ? `Your session appears stuck. Please respond to confirm you are working on the ${state.phase} phase.`
         : `Your work for the ${state.phase} phase is complete. Stop and wait for further instructions.`;
       await transport.sendTurn(state, agent, nudgeMessage);
@@ -347,8 +356,8 @@ export async function detectAndNudgeStalls(
         agent: agent.name,
         phase: state.phase,
         attempt: attempts + 1,
-        stallType,
-        message: `${agent.name}: nudge #${attempts + 1} sent (${stallType})`,
+        hungType,
+        message: `${agent.name}: hung nudge #${attempts + 1} sent (${hungType})`,
       });
     } catch (err) {
       // Nudge dispatch failed — log, don't throw. Next cycle retries.
@@ -834,8 +843,8 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
     while (true) {
       await refreshAgentStatuses(state, transport);
 
-      // Detect stalled agents and send nudges / force-settle.
-      await detectAndNudgeStalls(state, transport);
+      // Detect hung agents (static terminal) and send nudges / force-settle.
+      await detectAndNudgeHungAgents(state, transport);
 
       // Validate pr files when coder finishes pr-create (auto-create PR from markdown if needed).
       if (state.phase === "pr-create") {
@@ -855,9 +864,8 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
 
       if (allAgentsDone(state)) return;
 
-      // Nudge agents whose turn settled (stop hook fired) but didn't write
-      // a done status — they were likely interrupted (model capacity, crash)
-      // and need a "Continue." to resume.
+      // Nudge interrupted agents: turn settled (stop hook fired) but no done
+      // status — cut short by provider error, capacity limit, etc.
       for (const agent of state.agents) {
         if (!agentParticipatesInPhase(state, agent)) continue;
         const rt = state.agentStates[agent.name]!;
@@ -870,7 +878,7 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
         const nudgeCooldown = alc.lastNudgeAt
           ? nowEpoch() - Math.floor(new Date(alc.lastNudgeAt).getTime() / 1000)
           : Infinity;
-        if (nudgeCooldown < NUDGE_COOLDOWN_S) continue;
+        if (nudgeCooldown < INTERRUPTED_NUDGE_COOLDOWN_S) continue;
 
         // Reset lifecycle so transport can re-dispatch
         alc.state = "dispatched";

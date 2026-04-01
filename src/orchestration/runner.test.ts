@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, autoCommitAgent, autoCommitAllAgents, detectAndNudgeStalls, interruptAgent } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent } from "./runner.ts";
 import * as events from "../events.ts";
 import * as github from "./github.ts";
 import { orchOnStop } from "./index.ts";
@@ -1842,10 +1842,10 @@ describe("snapshot reconciliation for stuck dispatched", () => {
 });
 
 // ===========================================================================
-// detectAndNudgeStalls — stall detection and nudge logic
+// detectAndNudgeHungAgents — stall detection and nudge logic
 // ===========================================================================
 
-describe("detectAndNudgeStalls", () => {
+describe("detectAndNudgeHungAgents", () => {
   let tmpDir: string;
   let emitSpy: ReturnType<typeof spyOn>;
 
@@ -1870,14 +1870,14 @@ describe("detectAndNudgeStalls", () => {
       turnStartedAt: new Date(Date.now() - 2000_000).toISOString(), // 2000s ago > 1800s threshold
     });
 
-    await detectAndNudgeStalls(state, noopTransport);
+    await detectAndNudgeHungAgents(state, noopTransport);
 
     const lc = state.agentStates.coder.turnLifecycle!;
     expect(lc.stallDetectedAt).not.toBeNull();
     // Nudge attempt won't succeed (readServerRecord returns null) so nudgeAttempts stays 0
     // but stall is detected
     const stallEvent = emitSpy.mock.calls.find(
-      (c: unknown[]) => (c[0] as { event_type?: string }).event_type === "orchestration_stall_detected",
+      (c: unknown[]) => (c[0] as { event_type?: string }).event_type === "orchestration_hung_detected",
     );
     expect(stallEvent).toBeDefined();
   });
@@ -1889,7 +1889,7 @@ describe("detectAndNudgeStalls", () => {
       dispatchedAt: new Date(Date.now() - 700_000).toISOString(), // 700s > 600s threshold
     });
 
-    await detectAndNudgeStalls(state, noopTransport);
+    await detectAndNudgeHungAgents(state, noopTransport);
 
     const lc = state.agentStates.coder.turnLifecycle!;
     expect(lc.stallDetectedAt).not.toBeNull();
@@ -1904,7 +1904,7 @@ describe("detectAndNudgeStalls", () => {
       turnStartedAt: new Date(Date.now() - 60_000).toISOString(), // 60s < 180s threshold
     });
 
-    await detectAndNudgeStalls(state, noopTransport);
+    await detectAndNudgeHungAgents(state, noopTransport);
 
     const lc = state.agentStates.coder.turnLifecycle!;
     expect(lc.stallDetectedAt).toBeNull();
@@ -1922,7 +1922,7 @@ describe("detectAndNudgeStalls", () => {
       lastNudgeAt: new Date(Date.now() - 30_000).toISOString(), // 30s ago < 300s cooldown
     });
 
-    await detectAndNudgeStalls(state, noopTransport);
+    await detectAndNudgeHungAgents(state, noopTransport);
 
     // nudgeAttempts should stay at 1 (cooldown prevented another nudge)
     expect(state.agentStates.coder.turnLifecycle!.nudgeAttempts).toBe(1);
@@ -1940,13 +1940,13 @@ describe("detectAndNudgeStalls", () => {
       lastNudgeAt: new Date(Date.now() - 400_000).toISOString(),
     });
 
-    await detectAndNudgeStalls(state, noopTransport);
+    await detectAndNudgeHungAgents(state, noopTransport);
 
     // interruptAgent sets interrupted = true and status = "interrupted"
     expect(state.agentStates.coder.interrupted).toBe(true);
     expect(state.agentStates.coder.status).toBe("interrupted");
     const forceEvent = emitSpy.mock.calls.find(
-      (c: unknown[]) => (c[0] as { event_type?: string }).event_type === "orchestration_force_settle",
+      (c: unknown[]) => (c[0] as { event_type?: string }).event_type === "orchestration_hung_force_settle",
     );
     expect(forceEvent).toBeDefined();
   });
@@ -1960,7 +1960,7 @@ describe("detectAndNudgeStalls", () => {
       completionSource: "snapshot",
     });
 
-    await detectAndNudgeStalls(state, noopTransport);
+    await detectAndNudgeHungAgents(state, noopTransport);
 
     expect(state.agentStates.coder.turnLifecycle!.stallDetectedAt).toBeNull();
   });
@@ -1975,7 +1975,7 @@ describe("detectAndNudgeStalls", () => {
     });
     state.agentStates.coder.status = "done";
 
-    await detectAndNudgeStalls(state, noopTransport);
+    await detectAndNudgeHungAgents(state, noopTransport);
 
     expect(state.agentStates.coder.turnLifecycle!.stallDetectedAt).toBeNull();
   });
