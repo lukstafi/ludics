@@ -114,20 +114,15 @@ triggers:
     interval: 300
     action: federation tick
 
-# Network settings for multi-machine access via Tailscale
+# Network settings for dashboard/URL binding
 network:
   # Mode: localhost (default) | tailscale
+  # Overridden by federation.transport when federation is configured.
   mode: localhost
 
   # Explicit hostname override (optional)
   # If not set and mode is tailscale, auto-detects from `tailscale status`
   hostname: ""
 
-  # Node definitions for federation (seniority order: first = highest priority)
-  # The highest-seniority online node becomes Mag leader
-  nodes: []
-  # Example:
-  #   - name: mac-mini
-  #     tailscale_hostname: mac-mini.tailnet-name.ts.net
-  #   - name: macbook
-  #     tailscale_hostname: macbook.tailnet-name.ts.net
+  # NOTE: network.nodes is deprecated. Use federation.machines instead.
+  # See the federation section in config.reference.yaml.

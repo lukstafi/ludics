@@ -745,9 +745,15 @@ dashboard:
 network:
   mode: tailscale
   hostname: machine.example.com
-  nodes:
+
+federation:
+  transport: tailscale
+  machines:
     - name: primary
-      tailscale_hostname: primary.tail123456.ts.net
+      host: primary.tail123456.ts.net
+      os: macos
+      role: leader
+      always_on: true
 
 triggers:
   startup:

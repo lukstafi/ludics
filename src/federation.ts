@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { harnessDir, loadConfigSync } from "./config.ts";
-import { networkNodes, networkCurrentNode, hostnameTailscale } from "./network.ts";
+import { hostnameTailscale } from "./network.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
 import { stateCommit, stateCheckpoint, stateCommitImmediate, statePull, statePush } from "./state.ts";
@@ -28,15 +28,16 @@ interface FederationConfig {
   machines: FederationMachine[];
 }
 
+let _networkNodesDeprecationWarned = false;
+
 export function federationConfig(): FederationConfig {
   try {
     const config = loadConfigSync();
     const raw = config as unknown as Record<string, unknown>;
     const fed = raw.federation as Record<string, unknown> | undefined;
-    if (!fed) return { transport: "local", domain: "", machines: [] };
 
-    const rawMachines = fed.machines as Array<Record<string, unknown>> | undefined;
-    const machines: FederationMachine[] = (rawMachines ?? [])
+    const rawMachines = (fed?.machines as Array<Record<string, unknown>> | undefined) ?? [];
+    let machines: FederationMachine[] = rawMachines
       .filter((m) => m && m.name && m.host)
       .map((m) => ({
         name: String(m.name),
@@ -48,9 +49,40 @@ export function federationConfig(): FederationConfig {
         ludics_path: m.ludics_path ? String(m.ludics_path) : undefined,
       }));
 
+    // Compat shim: auto-convert legacy network.nodes → federation.machines
+    if (machines.length === 0) {
+      const net = raw.network as Record<string, unknown> | undefined;
+      const legacyNodes = net?.nodes as Array<Record<string, unknown>> | undefined;
+      if (Array.isArray(legacyNodes) && legacyNodes.length > 0) {
+        if (!_networkNodesDeprecationWarned) {
+          console.error("ludics: DEPRECATED — network.nodes is deprecated; migrate to federation.machines in config.yaml");
+          _networkNodesDeprecationWarned = true;
+        }
+        machines = legacyNodes
+          .filter((n) => n && n.name)
+          .map((n, i) => ({
+            name: String(n.name),
+            host: String(n.tailscale_hostname ?? ""),
+            os: "linux",
+            role: i === 0 ? "leader" : "worker",
+            always_on: false,
+            gpu: "",
+          }));
+      }
+    }
+
+    const transport = String(fed?.transport ?? "local");
+    // Compat: derive transport from legacy network.mode if not set
+    let effectiveTransport = transport;
+    if (transport === "local" && machines.length > 0) {
+      const net = raw.network as Record<string, unknown> | undefined;
+      const legacyMode = net?.mode as string | undefined;
+      if (legacyMode && legacyMode !== "localhost") effectiveTransport = legacyMode;
+    }
+
     return {
-      transport: String(fed.transport ?? "local"),
-      domain: String(fed.domain ?? ""),
+      transport: effectiveTransport,
+      domain: String(fed?.domain ?? ""),
       machines,
     };
   } catch {
@@ -129,9 +161,8 @@ function leaderFile(): string {
 // --- Heartbeat functions ---
 
 export function heartbeatPublish(): boolean {
-  // Prefer federation machine name, fall back to legacy network node name
   const machine = federationCurrentMachine();
-  const nodeName = machine?.name ?? networkCurrentNode();
+  const nodeName = machine?.name ?? null;
 
   if (!nodeName) {
     console.error("ludics: federation: cannot determine current node name");
@@ -220,11 +251,6 @@ function computeController(): string | null {
     return null;
   }
 
-  // Legacy fallback: first online node by seniority
-  const nodes = networkNodes();
-  for (const node of nodes) {
-    if (heartbeatIsFresh(node.name)) return node.name;
-  }
   return null;
 }
 
@@ -294,7 +320,7 @@ export function federationCurrentController(): string | null {
 }
 
 export function federationIsLeader(): boolean {
-  const currentNode = federationCurrentMachineName() ?? networkCurrentNode();
+  const currentNode = federationCurrentMachineName();
   if (!currentNode) return false;
   return currentNode === currentLeader();
 }
@@ -306,12 +332,7 @@ export function federationIsLeader(): boolean {
  * - "worker" — this machine is a worker, defer controller duties
  */
 export function federationRole(): "controller" | "worker" | "standalone" {
-  if (!federationEnabled()) {
-    // Legacy: check network.nodes for backward compat
-    const nodes = networkNodes();
-    if (nodes.length === 0) return "standalone";
-    return federationIsLeader() ? "controller" : "worker";
-  }
+  if (!federationEnabled()) return "standalone";
 
   const machine = federationCurrentMachine();
   if (!machine) {
@@ -349,7 +370,7 @@ export async function federationTick(): Promise<void> {
   try { statePull(); } catch { /* ignore */ }
 
   const prevController = currentLeader();
-  const currentNodeName = federationCurrentMachineName() ?? networkCurrentNode();
+  const currentNodeName = federationCurrentMachineName();
 
   heartbeatPublish();
 
@@ -419,7 +440,7 @@ export function federationStatus(): void {
   console.log("");
 
   const machine = federationCurrentMachine();
-  const currentNode = machine?.name ?? networkCurrentNode() ?? "unknown";
+  const currentNode = machine?.name ?? "unknown";
   console.log(`Current node: ${currentNode}`);
 
   const role = federationRole();
@@ -458,22 +479,10 @@ export function federationStatus(): void {
     }
   }
 
-  // Show legacy nodes if configured and no federation machines
   if (machines.length === 0) {
     console.log("");
-    console.log("Configured nodes (by seniority):");
-    const nodes = networkNodes();
-    if (nodes.length === 0) {
-      console.log("  (no nodes configured)");
-      console.log("");
-      console.log("Federation is disabled - Mag will run on any machine.");
-    } else {
-      for (let i = 0; i < nodes.length; i++) {
-        const node = nodes[i]!;
-        const nodeStatus = formatNodeStatus(node.name, controller);
-        console.log(`  ${i + 1}. ${node.name} - ${nodeStatus}`);
-      }
-    }
+    console.log("No federation machines configured — Mag will run on any machine.");
+    console.log("Configure federation.machines in config.yaml for multi-machine coordination.");
   }
 
   // Check for missing roles

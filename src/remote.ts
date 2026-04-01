@@ -1,17 +1,13 @@
 // Remote execution — SSH-based command dispatch to federation machines
 
 import { federationMachine, federationCurrentMachineName } from "./federation.ts";
-import { networkNodeHostname } from "./network.ts";
 
 const SSH_CONNECT_TIMEOUT = "5";
 
 function resolveHostname(machineName: string): string {
   const machine = federationMachine(machineName);
   if (machine?.host) return machine.host;
-  // Legacy fallback
-  const legacy = networkNodeHostname(machineName);
-  if (legacy) return legacy;
-  throw new Error(`federation: unknown machine "${machineName}" — not found in federation.machines or network.nodes`);
+  throw new Error(`federation: unknown machine "${machineName}" — not found in federation.machines`);
 }
 
 function remoteLudicsPath(machineName: string): string {
