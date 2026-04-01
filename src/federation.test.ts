@@ -192,4 +192,48 @@ describe("legacy network.nodes compat", () => {
 
     expect(controller).toBeNull();
   });
+
+  it("3-node legacy: elects second node (not third) when primary is offline", () => {
+    writeConfig({
+      network: {
+        mode: "tailscale",
+        nodes: [
+          { name: "primary", tailscale_hostname: "primary.ts.net" },
+          { name: "secondary", tailscale_hostname: "secondary.ts.net" },
+          { name: "tertiary", tailscale_hostname: "tertiary.ts.net" },
+        ],
+      },
+    });
+
+    // primary offline, secondary and tertiary online
+    writeHeartbeat("secondary", 10);
+    writeHeartbeat("tertiary", 10);
+
+    const { federationElect } = require("./federation.ts");
+    const controller = federationElect();
+
+    // Should elect secondary (next by seniority), not tertiary
+    expect(controller).toBe("secondary");
+  });
+
+  it("3-node legacy: elects tertiary only when primary and secondary are offline", () => {
+    writeConfig({
+      network: {
+        mode: "tailscale",
+        nodes: [
+          { name: "primary", tailscale_hostname: "primary.ts.net" },
+          { name: "secondary", tailscale_hostname: "secondary.ts.net" },
+          { name: "tertiary", tailscale_hostname: "tertiary.ts.net" },
+        ],
+      },
+    });
+
+    // Only tertiary is online
+    writeHeartbeat("tertiary", 10);
+
+    const { federationElect } = require("./federation.ts");
+    const controller = federationElect();
+
+    expect(controller).toBe("tertiary");
+  });
 });

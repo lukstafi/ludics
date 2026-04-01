@@ -350,7 +350,13 @@ export function federationRole(): "controller" | "worker" | "standalone" {
     // Failover: check if any leader is online
     const leaders = federationMachines().filter((m) => m.role === "leader");
     const leaderOnline = leaders.some((m) => heartbeatIsFresh(m.name));
-    return leaderOnline ? "worker" : "controller";
+    if (leaderOnline) return "worker";
+    // Among consoles, only the first online (by config order) becomes controller.
+    // This preserves seniority-based failover and prevents split-brain with
+    // multiple consoles (including legacy network.nodes converted to consoles).
+    const consoles = federationMachines().filter((m) => m.role === "console");
+    const firstOnlineConsole = consoles.find((m) => heartbeatIsFresh(m.name));
+    return firstOnlineConsole?.name === machine.name ? "controller" : "worker";
   }
 
   return "worker";
