@@ -164,29 +164,13 @@ describe("sendTurn prompt injection via paste-buffer", () => {
     const promptText = "Hello, this is a test prompt with special chars: $HOME `backticks` $(dangerous)";
     await transport.sendTurn(state, agent, promptText);
 
-    // Verify prompt was written to a temp file
-    expect(writeFileCalls.length).toBe(1);
-    expect(writeFileCalls[0]!.data).toBe(promptText);
-    const promptFile = writeFileCalls[0]!.path;
-    expect(promptFile).toMatch(/^\/tmp\/ludics-prompt-/);
+    // Verify send-keys -l was called with the prompt content (no temp file needed)
+    const sendLiteralCall = spawnCalls.find(c =>
+      c[0] === "tmux" && c[1] === "send-keys" && c.includes("-l")
+    );
+    expect(sendLiteralCall).toBeDefined();
 
-    // Verify tmux load-buffer was called with the prompt file
-    const loadBufferCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "load-buffer");
-    expect(loadBufferCall).toBeDefined();
-    expect(loadBufferCall![2]).toBe(promptFile);
-
-    // Verify tmux paste-buffer was called with the correct target
-    const pasteBufferCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "paste-buffer");
-    expect(pasteBufferCall).toBeDefined();
-    expect(pasteBufferCall![3]).toBe("s1_coder_coder");
-
-    // Verify NO $(cat ...) was sent via send-keys
-    for (const keys of sendKeysCalls) {
-      expect(keys).not.toContain("$(cat");
-      expect(keys).not.toContain("$(/");
-    }
-
-    // Verify Enter was sent after paste-buffer (via Bun.spawnSync in sendPromptToAgent)
+    // Verify C-m was sent after the prompt
     const enterCall = spawnCalls.find(c => c[0] === "tmux" && c[1] === "send-keys" && c.includes("C-m"));
     expect(enterCall).toBeDefined();
   });

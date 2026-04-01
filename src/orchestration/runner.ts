@@ -953,16 +953,6 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   }
   if ((state.phase === "update-docs" || state.phase === "review") && next === "work") {
     state.round += 1;
-    // Reset all agent statuses so stale done-statuses from the previous round
-    // don't prevent dispatch in the next round's phases.
-    for (const agent of state.agents) {
-      const runtime = state.agentStates[agent.name];
-      if (!runtime) continue;
-      runtime.status = "idle";
-      runtime.statusEpoch = nowEpoch();
-      runtime.statusMessage = `round ${state.round} starting`;
-      runtime.turnLifecycle = null;
-    }
   }
   // Track plan-merge iterations: increment planMergeRound each time we loop back.
   // Only increment if the plan-review phase actually dispatched and ran (phaseDispatched is true).
@@ -970,16 +960,6 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   // having run, which would desync planMergeRound from the artifact filenames.
   if (state.phase === "plan-review" && next === "plan-merge" && state.phaseDispatched) {
     state.planMergeRound = (state.planMergeRound ?? 0) + 1;
-    // Reset agent statuses so stale plan-merge-done from previous iteration
-    // doesn't prevent dispatch.
-    for (const agent of state.agents) {
-      const runtime = state.agentStates[agent.name];
-      if (!runtime) continue;
-      runtime.status = "idle";
-      runtime.statusEpoch = nowEpoch();
-      runtime.statusMessage = `plan-merge iteration ${state.planMergeRound}`;
-      runtime.turnLifecycle = null;
-    }
   }
   if (state.phase === "merge-vote") {
     const votes = readMergeVotes(state.peerSyncDir, state.mergeRound);
@@ -1123,6 +1103,18 @@ export async function runOrchestration(
     }
 
     applyPhaseSideEffects(state, next);
+
+    // Reset all agent statuses and lifecycles on every phase transition.
+    // Stale done-statuses from the previous phase must not prevent dispatch
+    // in the next phase (e.g., plan-done blocking plan-merge dispatch).
+    for (const agent of state.agents) {
+      const runtime = state.agentStates[agent.name];
+      if (!runtime) continue;
+      runtime.status = "idle";
+      runtime.statusEpoch = nowEpoch();
+      runtime.statusMessage = `entering ${next}`;
+      runtime.turnLifecycle = null;
+    }
 
     emitEvent({
       event_type: "phase_transition",

@@ -339,30 +339,24 @@ export function agentCliCommand(provider: string): string {
 }
 
 /**
- * Inject a prompt into a live agent CLI session via tmux paste-buffer.
- * Handles copy-mode exit, paste, and provider-specific Enter behavior.
+ * Inject a prompt into a live agent CLI session via tmux send-keys -l.
+ * Uses literal mode so the terminal's input handling processes it properly.
+ * Handles copy-mode exit and provider-specific Enter timing.
  */
 export async function sendPromptToAgent(
   target: string,
   message: string,
   provider: string,
 ): Promise<void> {
-  const promptFile = `/tmp/ludics-prompt-${target}-${Date.now()}.txt`;
-  const { writeFileSync, unlinkSync } = await import("fs");
-  writeFileSync(promptFile, message);
-
   // Exit copy mode if active (user may have scrolled)
   Bun.spawnSync(["tmux", "send-keys", "-t", target, "-X", "cancel"], {
     stdout: "pipe", stderr: "pipe",
   });
   await Bun.sleep(100);
 
-  // Inject prompt via send-keys -l (literal mode) — this goes through the
-  // terminal's input handling, unlike paste-buffer which only renders on screen.
-  // Agent-duo uses this approach for all message sends.
-  const { readFileSync } = await import("fs");
-  const content = readFileSync(promptFile, "utf-8");
-  Bun.spawnSync(["tmux", "send-keys", "-t", target, "-l", content], {
+  // Inject prompt via send-keys -l (literal mode) — goes through the
+  // terminal's input handling, matching agent-duo's approach.
+  Bun.spawnSync(["tmux", "send-keys", "-t", target, "-l", message], {
     stdout: "pipe", stderr: "pipe",
   });
 
@@ -376,9 +370,6 @@ export async function sendPromptToAgent(
   Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
     stdout: "pipe", stderr: "pipe",
   });
-
-  // Cleanup temp file
-  try { unlinkSync(promptFile); } catch { /* ignore */ }
 }
 
 // ---------------------------------------------------------------------------
