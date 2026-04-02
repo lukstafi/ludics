@@ -288,10 +288,13 @@ async function fetchMagStatus() {
         if (!response.ok) throw new Error('Failed to fetch mag status');
         const mag = await response.json();
         renderMagStatus(mag);
-        // Update queue hold state from mag data
-        queueHeld = !!mag.queueHeld;
-        updateQueueHoldUI();
+        // Update queue hold state from mag data only if field is present
+        if ('queueHeld' in mag) {
+            queueHeld = mag.queueHeld;
+            updateQueueHoldUI();
+        }
     } catch (error) {
+        // On fetch failure, keep existing queueHeld state intact to avoid flipping UI
         console.warn('Using placeholder mag status');
         renderMagStatus({ status: 'unknown', lastActivity: null });
     }
