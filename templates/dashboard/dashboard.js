@@ -113,6 +113,14 @@ function renderSlots(slots) {
                     + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon">✕</button>'
                     + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)">↓</button>'
                     + '</span>';
+            } else if (slot.liveness === 'interrupted') {
+                statusDiv.className = 'slot-status interrupted';
+                statusText.innerHTML = 'Interrupted <button class="start-slot-btn" onclick="resumeSlot(' + i + ')" title="Resume session">resume</button>'
+                    + ' <span class="slot-action-btns">'
+                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done">✓</button>'
+                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon">✕</button>'
+                    + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)">↓</button>'
+                    + '</span>';
             } else {
                 statusDiv.className = 'slot-status active';
                 statusText.innerHTML = 'Active <span class="slot-action-btns">'
@@ -638,6 +646,28 @@ async function startSlot(slotNum) {
     } catch {
         btn.textContent = 'error';
         setTimeout(() => { btn.textContent = 'start'; btn.disabled = false; }, 3000);
+    }
+}
+
+// Resume an interrupted slot session
+async function resumeSlot(slotNum) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+        const response = await fetch(`/api/slot-resume?slot=${slotNum}`);
+        if (response.ok) {
+            btn.textContent = 'resumed';
+            fetchAllData();
+        } else {
+            const msg = await response.text();
+            btn.textContent = 'error';
+            console.error('slot resume failed:', msg);
+            setTimeout(() => { btn.textContent = 'resume'; btn.disabled = false; }, 3000);
+        }
+    } catch {
+        btn.textContent = 'error';
+        setTimeout(() => { btn.textContent = 'resume'; btn.disabled = false; }, 3000);
     }
 }
 

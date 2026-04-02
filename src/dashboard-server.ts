@@ -223,6 +223,27 @@ export function startDashboardServer(
         }
       }
 
+      // API: resume an interrupted slot session
+      if (pathname === "/api/slot-resume") {
+        const slotParam = url.searchParams.get("slot");
+        if (!slotParam || !/^[1-6]$/.test(slotParam)) {
+          return new Response("Bad Request: slot must be 1-6", { status: 400 });
+        }
+        try {
+          const proc = Bun.spawnSync(
+            [process.execPath, "slot", slotParam, "resume"],
+            { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
+          );
+          if (proc.exitCode !== 0) {
+            return new Response(proc.stderr.toString() || "slot resume failed", { status: 500 });
+          }
+          lastGenerated = 0;
+          return new Response("OK", { status: 200 });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
       // API: postpone a slot (decrease task priority one level + clear as ready)
       if (pathname === "/api/slot-postpone") {
         const slotParam = url.searchParams.get("slot");

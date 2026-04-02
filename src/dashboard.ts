@@ -8,7 +8,8 @@ import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStar
 import { priorityValue } from "./tasks/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl, networkHostname } from "./network.ts";
-import { inspectManagedServerProcess, readServerRecord, t3codeStartingPath } from "./t3code/server.ts";
+import { inspectManagedServerProcess, processAlive, readServerRecord, readSlotState, t3codeStartingPath } from "./t3code/server.ts";
+import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
 import { federationIsController } from "./federation.ts";
@@ -40,6 +41,26 @@ interface SlotJson {
   githubUrl: string | null;
   t3codeThreadLinks: Record<string, string> | null;
   effort: string | null;
+  liveness: "alive" | "interrupted" | null;
+}
+
+export function computeSlotLiveness(
+  slotNum: number,
+  mode: string | null,
+): "alive" | "interrupted" | null {
+  if (!mode) return null;
+  let orchPid: number | undefined;
+  if (mode === "t3code") {
+    const slotState = readSlotState(slotNum);
+    orchPid = slotState?.orchestration?.pid;
+  } else if (mode === "tmux") {
+    const tmuxState = readTmuxSlotState(slotNum, harnessDir());
+    orchPid = tmuxState?.orchestration?.pid;
+  }
+  if (orchPid !== undefined && orchPid > 0) {
+    return processAlive(orchPid) ? "alive" : "interrupted";
+  }
+  return null;
 }
 
 interface TaskMetadata {
@@ -238,6 +259,12 @@ function generateSlots(): SlotJson[] {
     const rawSessionStarted = getSessionStarted(block).trim();
     const sessionStarted = (rawSessionStarted && rawSessionStarted !== "null") ? rawSessionStarted : null;
 
+    // Compute liveness — only for non-empty slots with a phase (would render as "Active")
+    let liveness: "alive" | "interrupted" | null = null;
+    if (!empty && phase && phase !== "done") {
+      liveness = computeSlotLiveness(num, getMode(block).trim() || null);
+    }
+
     result.push({
       number: num,
       empty,
@@ -258,6 +285,7 @@ function generateSlots(): SlotJson[] {
       githubUrl: empty ? null : githubUrl,
       t3codeThreadLinks: empty ? null : orchLinks.t3codeThreadLinks,
       effort: taskEffort,
+      liveness,
     });
   }
 
