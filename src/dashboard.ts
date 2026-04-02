@@ -4,7 +4,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFi
 import { join, dirname } from "path";
 import YAML from "yaml";
 import { globalAdapter, harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
-import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted } from "./slots/markdown.ts";
+import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted, getMachine } from "./slots/markdown.ts";
+import { isRemoteMachine } from "./remote.ts";
 import { priorityValue } from "./tasks/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl, networkHostname } from "./network.ts";
@@ -259,10 +260,14 @@ function generateSlots(): SlotJson[] {
     const rawSessionStarted = getSessionStarted(block).trim();
     const sessionStarted = (rawSessionStarted && rawSessionStarted !== "null") ? rawSessionStarted : null;
 
-    // Compute liveness — only for non-empty slots with a phase (would render as "Active")
+    // Compute liveness — only for non-empty, local slots with a phase (would render as "Active").
+    // Skip remote-owned slots: their orchestrator PID won't exist in the local process table.
     let liveness: "alive" | "interrupted" | null = null;
     if (!empty && phase && phase !== "done") {
-      liveness = computeSlotLiveness(num, getMode(block).trim() || null);
+      const machineName = getMachine(block).trim();
+      if (!machineName || machineName === "null" || !isRemoteMachine(machineName)) {
+        liveness = computeSlotLiveness(num, getMode(block).trim() || null);
+      }
     }
 
     result.push({
