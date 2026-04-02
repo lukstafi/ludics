@@ -785,7 +785,7 @@ function tasksNeedsElaborationList(tasksDir: string): string[] {
 
     const statusMatch = content.match(/^status:\s*(.+)$/m);
     const status = statusMatch ? statusMatch[1]!.trim() : "";
-    if (["merged", "done", "abandoned"].includes(status)) continue;
+    if (["merged", "done", "abandoned", "needs-confirmation"].includes(status)) continue;
 
     if (!isElaborated(content)) result.push(id);
   }
