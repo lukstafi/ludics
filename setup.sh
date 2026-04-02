@@ -228,9 +228,21 @@ clone_if_missing() {
   fi
 }
 
+project_paths=()
+
 flush_project() {
   if [[ -n "$current_repo" ]]; then
     clone_if_missing "$current_repo" "$current_staging_repo" "$current_path"
+
+    # Accumulate resolved project path for Codex trust
+    local resolved_path=""
+    if [[ -n "$current_path" ]]; then
+      resolved_path="${current_path/#\~/$HOME}"
+    else
+      local working_repo="${current_staging_repo:-$current_repo}"
+      resolved_path="$HOME/${working_repo##*/}"
+    fi
+    project_paths+=("$resolved_path")
   fi
   current_repo=""
   current_staging_repo=""
@@ -279,6 +291,40 @@ done < "$RESOLVED_CONFIG"
 
 # Flush last project
 flush_project
+
+# ── Step 5: Pre-trust project directories for Codex ────────────────────────
+
+step "Pre-trusting project directories for Codex"
+
+CODEX_STATE="$HOME/.codex/.codex-global-state.json"
+mkdir -p "$HOME/.codex"
+
+if [[ ${#project_paths[@]} -gt 0 ]]; then
+  if [[ ! -f "$CODEX_STATE" ]]; then
+    echo '{"electron-saved-workspace-roots":[]}' > "$CODEX_STATE"
+  fi
+
+  if command -v jq &>/dev/null; then
+    jq --argjson paths "$(printf '%s\n' "${project_paths[@]}" | jq -R . | jq -s .)" \
+       '."electron-saved-workspace-roots" |= (. + $paths | unique)' \
+       "$CODEX_STATE" > "${CODEX_STATE}.tmp" \
+       && mv "${CODEX_STATE}.tmp" "$CODEX_STATE"
+  else
+    # Fallback: use bun for JSON manipulation when jq is not available
+    bun -e "
+      const fs = require('fs');
+      const state = JSON.parse(fs.readFileSync('${CODEX_STATE}', 'utf8'));
+      const roots = new Set(state['electron-saved-workspace-roots'] || []);
+      $(printf "roots.add('%s');\n" "${project_paths[@]}")
+      state['electron-saved-workspace-roots'] = [...roots].sort();
+      fs.writeFileSync('${CODEX_STATE}', JSON.stringify(state, null, 2) + '\n');
+    "
+  fi
+
+  info "Codex trust: ${#project_paths[@]} project directories registered"
+else
+  info "Codex trust: no project directories to register"
+fi
 
 step "Setup complete"
 
