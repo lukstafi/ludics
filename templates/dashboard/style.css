@@ -10,6 +10,7 @@
     --success: #4ade80;
     --warning: #fbbf24;
     --empty: #6b7280;
+    --interrupted: #f87171;
     --border: #374151;
 }
 
@@ -205,6 +206,27 @@ main {
     display: flex;
     align-items: center;
     gap: 0.25rem;
+}
+
+.slot-status.interrupted .status-indicator {
+    background-color: var(--interrupted);
+}
+
+.slot-status.interrupted .status-text {
+    color: var(--interrupted);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.slot-status.interrupted .start-slot-btn {
+    border-color: var(--interrupted);
+    color: var(--interrupted);
+}
+
+.slot-status.interrupted .start-slot-btn:hover {
+    background: var(--interrupted);
+    color: var(--bg-primary);
 }
 
 .slot-status.empty .status-text {

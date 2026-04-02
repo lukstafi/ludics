@@ -402,7 +402,7 @@ function writeJsonFile(path: string, value: unknown): void {
   renameSync(tmp, path);
 }
 
-function processAlive(pid: number): boolean {
+export function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
