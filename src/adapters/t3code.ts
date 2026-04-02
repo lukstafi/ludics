@@ -101,14 +101,14 @@ function normalizeWorkspacePath(ctx: AdapterContext): string {
   return resolve(raw);
 }
 
-/** Build orchestrated thread title: s<slot>.<role>.<taskId-or-feature> */
+/** Build orchestrated thread title: s<slot>_<role>_<taskId-or-feature> */
 export function orchestratedThreadTitle(slot: number, role: string, taskId: string | undefined, feature: string): string {
   const suffix = taskId && taskId !== "null" ? taskId : feature;
-  return `s${slot}.${role}.${suffix}`;
+  return `s${slot}_${role}_${suffix}`;
 }
 
 function defaultTitle(ctx: AdapterContext, workspacePath: string): string {
-  const prefix = `s${ctx.slot}.`;
+  const prefix = `s${ctx.slot}_`;
   if (ctx.taskId && ctx.taskId !== "null") return `${prefix}${ctx.taskId}`;
   if (ctx.process && ctx.process !== "(empty)") return `${prefix}${ctx.process}`;
   return `${prefix}${basename(workspacePath) || "thread"}`;

@@ -85,11 +85,9 @@ function removeTmuxSlotState(slot: number, harnessDir: string): void {
 // Naming / port helpers
 // ---------------------------------------------------------------------------
 
-/** Session name matches t3code thread title: s<slot>.<role>.<taskId> */
+/** Session name: s<slot>_<agent>_<taskId> — shared convention with t3code thread titles */
 export function tmuxSessionName(slot: number, agentName: string, taskId?: string): string {
   const suffix = taskId && taskId !== "null" ? taskId : agentName;
-  // tmux silently replaces dots with underscores in session names, so use underscores
-  // to keep names consistent between creation and attachment
   return `s${slot}_${agentName}_${suffix}`;
 }
 
@@ -490,7 +488,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     threadIds: {}, // tmux mode doesn't use t3code threads
     backend: "tmux",
     taskId: ctx.taskId || undefined,
-    slotTitle: options.title ?? `s${ctx.slot}.${ctx.taskId || feature}`,
+    slotTitle: options.title ?? `s${ctx.slot}_${ctx.taskId || feature}`,
     stagingRepo: (() => {
       const cfg = loadConfigSync();
       const proj = cfg.projects?.find((p) => {

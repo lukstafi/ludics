@@ -95,33 +95,33 @@ describe("parseT3CodeAdapterArgs", () => {
 });
 
 describe("orchestratedThreadTitle", () => {
-  test("produces s<slot>.<role>.<taskId> when taskId is present", () => {
+  test("produces s<slot>_<role>_<taskId> when taskId is present", () => {
     expect(orchestratedThreadTitle(2, "coder", "task-0df412c1", "my-feature")).toBe(
-      "s2.coder.task-0df412c1",
+      "s2_coder_task-0df412c1",
     );
   });
 
   test("falls back to feature when taskId is empty string", () => {
     expect(orchestratedThreadTitle(3, "reviewer", "", "gh-ludics-68")).toBe(
-      "s3.reviewer.gh-ludics-68",
+      "s3_reviewer_gh-ludics-68",
     );
   });
 
   test("falls back to feature when taskId is undefined", () => {
     expect(orchestratedThreadTitle(5, "agent-a", undefined, "my-feature")).toBe(
-      "s5.agent-a.my-feature",
+      "s5_agent-a_my-feature",
     );
   });
 
   test("falls back to feature when taskId is 'null' string", () => {
     expect(orchestratedThreadTitle(1, "coder", "null", "fallback-feat")).toBe(
-      "s1.coder.fallback-feat",
+      "s1_coder_fallback-feat",
     );
   });
 
   test("uses agent name as role in duo mode", () => {
     expect(orchestratedThreadTitle(4, "agent-b", "task-abc", "feat")).toBe(
-      "s4.agent-b.task-abc",
+      "s4_agent-b_task-abc",
     );
   });
 });
