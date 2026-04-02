@@ -800,7 +800,7 @@ export async function slotResume(slotNum: number): Promise<void> {
 
     // Recreate missing tmux sessions, ttyd, and agent CLIs for each agent
     const newTtydPids: Record<string, number> = { ...(tmuxState?.ttydPids ?? {}) };
-    const taskId = orchState.feature;
+    const taskId = orchState.taskId;
     for (let i = 0; i < orchState.agents.length; i++) {
       const agent = orchState.agents[i];
       const sessionName = tmuxSessionName(slotNum, agent.name, taskId);

@@ -96,31 +96,31 @@ describe("parseT3CodeAdapterArgs", () => {
 
 describe("orchestratedThreadTitle", () => {
   test("produces s<slot>_<role>_<taskId> when taskId is present", () => {
-    expect(orchestratedThreadTitle(2, "coder", "task-0df412c1", "my-feature")).toBe(
+    expect(orchestratedThreadTitle(2, "coder", "task-0df412c1")).toBe(
       "s2_coder_task-0df412c1",
     );
   });
 
-  test("falls back to feature when taskId is empty string", () => {
-    expect(orchestratedThreadTitle(3, "reviewer", "", "gh-ludics-68")).toBe(
-      "s3_reviewer_gh-ludics-68",
+  test("falls back to role when taskId is empty string", () => {
+    expect(orchestratedThreadTitle(3, "reviewer", "")).toBe(
+      "s3_reviewer_reviewer",
     );
   });
 
-  test("falls back to feature when taskId is undefined", () => {
-    expect(orchestratedThreadTitle(5, "agent-a", undefined, "my-feature")).toBe(
-      "s5_agent-a_my-feature",
+  test("falls back to role when taskId is undefined", () => {
+    expect(orchestratedThreadTitle(5, "agent-a", undefined)).toBe(
+      "s5_agent-a_agent-a",
     );
   });
 
-  test("falls back to feature when taskId is 'null' string", () => {
-    expect(orchestratedThreadTitle(1, "coder", "null", "fallback-feat")).toBe(
-      "s1_coder_fallback-feat",
+  test("falls back to role when taskId is 'null' string", () => {
+    expect(orchestratedThreadTitle(1, "coder", "null")).toBe(
+      "s1_coder_coder",
     );
   });
 
   test("uses agent name as role in duo mode", () => {
-    expect(orchestratedThreadTitle(4, "agent-b", "task-abc", "feat")).toBe(
+    expect(orchestratedThreadTitle(4, "agent-b", "task-abc")).toBe(
       "s4_agent-b_task-abc",
     );
   });

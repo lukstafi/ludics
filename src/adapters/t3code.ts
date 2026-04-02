@@ -103,8 +103,8 @@ function normalizeWorkspacePath(ctx: AdapterContext): string {
 }
 
 /** Build orchestrated thread title — delegates to shared slotSessionName convention */
-export function orchestratedThreadTitle(slot: number, role: string, taskId: string | undefined, feature: string): string {
-  return slotSessionName(slot, role, taskId, feature);
+export function orchestratedThreadTitle(slot: number, role: string, taskId?: string): string {
+  return slotSessionName(slot, role, taskId);
 }
 
 function defaultTitle(ctx: AdapterContext, workspacePath: string): string {
@@ -869,7 +869,7 @@ async function startOrchestratedThreads(
     for (const agent of agents) {
       const desired: DesiredThreadConfig = {
         worktreePath: agent.worktreePath,
-        title: orchestratedThreadTitle(ctx.slot, agent.role ?? agent.name, ctx.taskId, feature),
+        title: orchestratedThreadTitle(ctx.slot, agent.role ?? agent.name, ctx.taskId),
         model: agent.model,
         provider: agent.provider,
         runtimeMode: options.runtimeMode,

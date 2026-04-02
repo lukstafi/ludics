@@ -540,7 +540,7 @@ async function stop(ctx: AdapterContext): Promise<string> {
 
   // Kill tmux agent sessions
   if (orchState) {
-    killTmuxSessionsForSlot(ctx.slot, orchState.agents.map((a) => a.name), orchState.feature);
+    killTmuxSessionsForSlot(ctx.slot, orchState.agents.map((a) => a.name), orchState.taskId);
     removePeerSyncSession(orchState.projectDir, orchState.feature);
     cleanupWorktrees(orchState.projectDir, orchState.feature, orchState.agents, ctx.slot, orchState.mode);
     removeOrchestrationState(ctx.slot, ctx.harnessDir);
@@ -578,7 +578,7 @@ async function readState(ctx: AdapterContext): Promise<string | null> {
       const agent = orchState.agents[i]!;
       const role = agentPortRole(agent, i);
       const port = ttydPort(ctx.slot, role);
-      const alive = isAgentAlive(ctx.slot, agent.name, orchState.feature);
+      const alive = isAgentAlive(ctx.slot, agent.name, orchState.taskId);
       md.bullet(`${agent.name} (${agent.provider}:${agent.model})`);
       md.detail(`Status: ${alive ? "running" : "idle"}`);
       md.detail(`Terminal: http://localhost:${port}`);

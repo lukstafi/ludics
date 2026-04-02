@@ -21,7 +21,7 @@ import type { AgentStatus } from "./types.ts";
  *
  * Suffix is taskId when present, otherwise the provided fallback (or role).
  */
-export function slotSessionName(slot: number, role: string | undefined, taskId?: string, fallback?: string): string {
+export function slotSessionName(slot: number, role?: string, taskId?: string, fallback?: string): string {
   const suffix = taskId && taskId !== "null" ? taskId : (fallback ?? role ?? "unknown");
   return role ? `s${slot}_${role}_${suffix}` : `s${slot}_${suffix}`;
 }
