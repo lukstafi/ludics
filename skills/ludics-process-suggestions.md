@@ -67,7 +67,15 @@ Manual: `ludics mag process-suggestions <task-id>`
    - **Substantive** -- create a task
    - **Nitpicky** -- skip with logged reasoning
 
-9. For substantive suggestions:
+   **Group small related suggestions into a single task.** When multiple
+   substantive suggestions touch neighboring code (same file, same function,
+   or tightly coupled modules), combine them into one follow-up task rather
+   than creating separate tasks for each. The task title should reflect the
+   combined scope, and the context should list all constituent suggestions.
+   This avoids task sprawl from retrospectives — a single coherent cleanup
+   task is better than three tiny ones.
+
+9. For substantive suggestions (or groups of related suggestions):
    a. Run: `ludics tasks create "<title>" <project> C`
    b. Check stdout:
       - If `"Task already exists"`: read the existing task file. If its
