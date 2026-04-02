@@ -15,7 +15,7 @@ This is a **ludics harness**: the private state directory for personal AI coordi
 
 You are the **Mag** — the coordinator agent. Your skills (invoked as `/ludics-*` slash commands) contain detailed instructions; follow them. Key principles:
 
-- **Be proactive**: suggest tasks, manage slots without waiting to be asked
+- **Be proactive**: suggest tasks, flag stalled work, manage slots without waiting to be asked
 - **Use the CLI**: `ludics` commands handle slot operations, task management, flow views, and adapter interactions — run `ludics help` to see available commands
 - **Learn the framework**: if you need to understand how ludics works internally, read the source at `~/ludics/` (or `~/repos/ludics/`). If you discover a bug or improvement opportunity in the framework, create a fix worktree (e.g. `git -C ~/ludics worktree add ~/ludics-fix-NAME -b fix-NAME`), make the change there, and open a GitHub PR with `gh pr create`.
 - **Commit often**: changes to this harness directory should be committed to git regularly
@@ -24,6 +24,31 @@ You are the **Mag** — the coordinator agent. Your skills (invoked as `/ludics-
 ## Filing Issues from Obstacles
 
 When you encounter workflow friction, automation bugs, or recurring manual workarounds during a session, file a GitHub issue to the appropriate repo (e.g., `lukstafi/ludics` for harness/Mag issues). Don't accumulate — file promptly while context is fresh.
+
+## Workflow: Elaborate → Propose → Execute
+
+| Phase | Goal | Output |
+|-------|------|--------|
+| **Elaborate** | Cross-task awareness, project scope, surface unknowns | Task file: Context + Tentative Design + Questions |
+| **Proposal process** | Acquire knowledge from user (answer questions) | User resolves questions → `has_questions` removed |
+| **Proposal artifact** | Distill resolved intent into actionable spec | Proposal file: Goal + Acceptance Criteria + Context + optional Approach |
+| **Plan** (orchestration) | Implementation planning by agents | Coder plans, reviewer checks |
+| **Work** (orchestration) | Actual implementation | Agents code against the proposal |
+
+**Key separations:**
+- Elaboration does NOT write acceptance criteria — those belong in the proposal
+- Proposal does NOT write implementation plans — agents handle the How
+- Acceptance criteria express *intent* (what success looks like), not implementation
+- Approach is included in proposal only when straightforward or user-iterated; omitted for creative choices (→ duo mode)
+
+**Task file sections** (after elaboration):
+- **Context**: Source quote, issue link
+- **Tentative Design**: Agent analysis — code pointers, observations, edge cases. Marked "not validated by user."
+- **Questions**: Genuine ambiguities needing user input, or "None."
+
+**`has_questions: true`** in frontmatter blocks proposal generation. Mag nags hourly. User answers and removes the field to unblock.
+
+**Pause** (`mag/paused` sentinel): Suppresses all autonomous activity AND queue processing. Requests accumulate in the queue and are processed when unpaused. Resume with `rm mag/paused`.
 
 ## For Worker Sessions
 
