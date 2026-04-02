@@ -77,7 +77,7 @@ gh pr list --repo owner/repo
 gh pr view 123 --json state,reviews
 
 # API
-gh api repos/owner/repo/issues/123/comments
+gh api --paginate repos/owner/repo/issues/123/comments
 ```
 
 ### Gotchas
