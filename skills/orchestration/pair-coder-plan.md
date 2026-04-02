@@ -1,6 +1,6 @@
 # Pair Plan (Coder)
 
-Write an implementation plan for `{{FEATURE}}` to `{{PLAN_FILE}}` from `{{WORKTREE_PATH}}`.
+Write an implementation plan for `{{TASK_ID}}` to `{{PLAN_FILE}}` from `{{WORKTREE_PATH}}`.
 
 {{TASK_SPEC}}
 

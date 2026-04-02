@@ -60,7 +60,7 @@ function formatSessionMarkdown(session: MergedSession, classification: "classifi
   if (session.orchestration) {
     const o = session.orchestration;
     lines.push(
-      `- **Orchestration:** ${o.type} (feature: ${o.feature || "?"}, phase: ${o.phase || "?"}, round: ${o.round || "?"})`,
+      `- **Orchestration:** ${o.type} (task: ${o.taskId || "?"}, phase: ${o.phase || "?"}, round: ${o.round || "?"})`,
     );
   }
 

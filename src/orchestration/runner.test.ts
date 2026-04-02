@@ -182,7 +182,7 @@ function makeMockTransport(snapshot: T3Snapshot | null): OrchestrationTransport 
                 source: "orchestration",
                 scope: "slot",
                 slot: state.slot,
-                task: state.feature,
+                task: state.taskId,
                 agent: agent.name,
                 message: `${agent.name}: reconciled stuck dispatched lifecycle via snapshot`,
               });
@@ -203,7 +203,7 @@ function makeMockTransport(snapshot: T3Snapshot | null): OrchestrationTransport 
                 source: "orchestration",
                 scope: "slot",
                 slot: state.slot,
-                task: state.feature,
+                task: state.taskId,
                 agent: agent.name,
                 nudgeAttempts,
                 message: `${agent.name}: stall resolved (${agentResponded ? "alive" : "dead"}) after ${nudgeAttempts} nudge(s)`,

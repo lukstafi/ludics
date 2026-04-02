@@ -13,7 +13,7 @@ import { readSingleFile } from "./base.ts";
 // ---------------------------------------------------------------------------
 
 export interface SessionInfo {
-  feature: string;
+  taskId: string;
   rootWorktree: string;
   peerSyncPath: string;
 }
@@ -22,7 +22,7 @@ export interface BasicState {
   phase: string;
   round: string;
   session: string;
-  feature: string;
+  taskId: string;
   mode: string;
 }
 
@@ -121,9 +121,9 @@ export function listSessions(projectDir: string): SessionInfo[] {
     // Validate target exists
     if (!existsSync(peerSyncPath)) continue;
 
-    const feature = basename(entry, ".session");
+    const taskId = basename(entry, ".session");
     const rootWorktree = dirname(peerSyncPath);
-    results.push({ feature, rootWorktree, peerSyncPath });
+    results.push({ taskId, rootWorktree, peerSyncPath });
   }
 
   return results;
@@ -145,13 +145,14 @@ export function sessionCount(projectDir: string, modeFilter?: string): number {
 
 /** Read basic state from a .peer-sync directory. Falls back to state.json. */
 export function readBasicState(syncDir: string): BasicState {
-  const state: BasicState = { phase: "", round: "", session: "", feature: "", mode: "" };
+  const state: BasicState = { phase: "", round: "", session: "", taskId: "", mode: "" };
 
   // Primary: individual files
   state.phase = readSingleFile(join(syncDir, "phase")) ?? "";
   state.round = readSingleFile(join(syncDir, "round")) ?? "";
   state.session = readSingleFile(join(syncDir, "session")) ?? "";
-  state.feature = readSingleFile(join(syncDir, "feature")) ?? "";
+  // Read from "feature" file on disk (legacy name) — contains taskId
+  state.taskId = readSingleFile(join(syncDir, "feature")) ?? "";
   state.mode = readSingleFile(join(syncDir, "mode")) ?? "";
 
   // Fallback to JSON state file if individual files are empty
@@ -164,7 +165,7 @@ export function readBasicState(syncDir: string): BasicState {
           state.phase = typeof parsed.phase === "string" ? parsed.phase : "";
           state.round = String(parsed.round ?? "");
           state.session = typeof parsed.session === "string" ? parsed.session : "";
-          state.feature = typeof parsed.feature === "string" ? parsed.feature : "";
+          state.taskId = typeof parsed.feature === "string" ? parsed.feature : "";
           state.mode = typeof parsed.mode === "string" ? parsed.mode : "";
         }
       } catch {

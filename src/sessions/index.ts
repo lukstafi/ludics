@@ -86,7 +86,7 @@ function printSessionDetail(session: MergedSession): void {
   }
   if (session.orchestration) {
     const o = session.orchestration;
-    console.log(`  orchestration: ${o.type} feature=${o.feature} phase=${o.phase} round=${o.round}`);
+    console.log(`  orchestration: ${o.type} task=${o.taskId} phase=${o.phase} round=${o.round}`);
   }
   for (const src of session.sources) {
     if (src.meta.git_branch) console.log(`  git branch: ${src.meta.git_branch}`);

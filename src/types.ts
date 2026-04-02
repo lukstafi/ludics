@@ -18,7 +18,7 @@ export interface DiscoveredSession {
 export interface Orchestration {
   type: string;
   mode: string;
-  feature: string;
+  taskId: string;
   phase: string;
   round: string;
   peerSyncPath: string;

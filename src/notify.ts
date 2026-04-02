@@ -435,8 +435,8 @@ function resolveAdapterProjectDir(ctx: AdapterContext): string {
 
 type SessionSelectionDepth = "shallow" | "deep";
 
-function normalizeSessionFeatureForTaskMatch(feature: string): string {
-  return feature;
+function normalizeSessionTaskId(taskId: string): string {
+  return taskId;
 }
 
 function countFollowupSuffixes(value: string): number {
@@ -461,7 +461,7 @@ function compareSessionTaskMatch(
       ? b.followupDepth - a.followupDepth
       : a.followupDepth - b.followupDepth;
   }
-  return a.session.feature.localeCompare(b.session.feature);
+  return a.session.taskId.localeCompare(b.session.taskId);
 }
 
 function selectSessionForTask(
@@ -472,14 +472,14 @@ function selectSessionForTask(
   if (sessions.length === 0) return null;
   if (!taskId) return sessions.length === 1 ? sessions[0]! : null;
 
-  // Prefer proposal-derived feature names; task ID is only a fallback.
+  // Try proposal-derived aliases first, then the raw task ID.
   const candidates = Array.from(
-    new Set([...taskFeatureAliases(taskId), taskId].map((v) => v.trim()).filter(Boolean)),
+    new Set([...taskAliases(taskId), taskId].map((v) => v.trim()).filter(Boolean)),
   );
 
   let best: SessionTaskMatch | null = null;
   for (const s of sessions) {
-    const normalized = normalizeSessionFeatureForTaskMatch(s.feature);
+    const normalized = normalizeSessionTaskId(s.taskId);
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i]!;
       let match: SessionTaskMatch | null = null;
@@ -514,16 +514,16 @@ function selectSessionForTask(
     const boundaryPattern = new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`);
     let bestBoundary: SessionInfo | null = null;
     for (const s of sessions) {
-      if (!boundaryPattern.test(s.feature)) continue;
+      if (!boundaryPattern.test(s.taskId)) continue;
       if (!bestBoundary) {
         bestBoundary = s;
         continue;
       }
-      const currentDepth = countFollowupSuffixes(normalizeSessionFeatureForTaskMatch(s.feature));
-      const bestDepth = countFollowupSuffixes(normalizeSessionFeatureForTaskMatch(bestBoundary.feature));
+      const currentDepth = countFollowupSuffixes(normalizeSessionTaskId(s.taskId));
+      const bestDepth = countFollowupSuffixes(normalizeSessionTaskId(bestBoundary.taskId));
       if (depthPreference === "deep" ? currentDepth > bestDepth : currentDepth < bestDepth) {
         bestBoundary = s;
-      } else if (currentDepth === bestDepth && s.feature.localeCompare(bestBoundary.feature) < 0) {
+      } else if (currentDepth === bestDepth && s.taskId.localeCompare(bestBoundary.taskId) < 0) {
         bestBoundary = s;
       }
     }
@@ -534,7 +534,7 @@ function selectSessionForTask(
   return null;
 }
 
-function taskFeatureAliases(taskId: string): string[] {
+function taskAliases(taskId: string): string[] {
   const aliases = new Set<string>();
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
   if (!existsSync(taskFile)) return [];
@@ -554,8 +554,8 @@ function taskFeatureAliases(taskId: string): string[] {
         ? raw.slice(1, -1).trim()
         : raw;
     const base = unquoted.split("/").pop() ?? "";
-    const feature = base.replace(/\.md$/i, "").trim();
-    if (feature) aliases.add(feature);
+    const proposalName = base.replace(/\.md$/i, "").trim();
+    if (proposalName) aliases.add(proposalName);
   } catch {
     return [];
   }

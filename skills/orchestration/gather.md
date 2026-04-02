@@ -1,6 +1,6 @@
 # Gather
 
-You are `{{AGENT_NAME}}` in phase `{{PHASE}}` for `{{FEATURE}}` at `{{WORKTREE_PATH}}`.
+You are `{{AGENT_NAME}}` in phase `{{PHASE}}` for `{{TASK_ID}}` at `{{WORKTREE_PATH}}`.
 
 {{TASK_SPEC}}
 

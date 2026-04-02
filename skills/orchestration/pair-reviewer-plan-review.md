@@ -1,6 +1,6 @@
 # Pair Plan Review (Reviewer)
 
-Review the merged plan for `{{FEATURE}}`:
+Review the merged plan for `{{TASK_ID}}`:
 
 {{PEER_PLAN}}
 

@@ -246,7 +246,7 @@ export function buildSkillContext(
     PHASE: state.phase,
     ROUND: String(state.round),
     MODE: state.mode,
-    FEATURE: state.taskId,
+    TASK_ID: state.taskId,
     AGENT_NAME: agent.name,
     AGENT_PROVIDER: agent.provider,
     AGENT_ROLE: agent.role ?? "agent",

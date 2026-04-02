@@ -1,6 +1,6 @@
 # Pair Plan Merge (Coder)
 
-Merge the two independent plans for `{{FEATURE}}` into one at `{{MERGED_PLAN_FILE}}`.
+Merge the two independent plans for `{{TASK_ID}}` into one at `{{MERGED_PLAN_FILE}}`.
 
 **Your plan**: `{{PLAN_FILE}}`
 

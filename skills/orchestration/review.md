@@ -1,6 +1,6 @@
 # Review
 
-Review the peer's implementation for `{{FEATURE}}`. If a proposal exists, read it for acceptance criteria: `{{PROPOSAL_PATH}}`.
+Review the peer's implementation for `{{TASK_ID}}`. If a proposal exists, read it for acceptance criteria: `{{PROPOSAL_PATH}}`.
 
 Peer status: `{{PEER_STATUS}}`, worktree: `{{PEER_WORKTREE_PATH}}`.
 

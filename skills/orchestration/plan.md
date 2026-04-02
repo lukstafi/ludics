@@ -1,6 +1,6 @@
 # Plan
 
-Produce an implementation plan for `{{FEATURE}}` from `{{WORKTREE_PATH}}`.
+Produce an implementation plan for `{{TASK_ID}}` from `{{WORKTREE_PATH}}`.
 
 Task spec:
 

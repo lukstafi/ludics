@@ -29,7 +29,7 @@ function enrichFromT3codeSlots(): Map<string, Orchestration> {
       orchestrations.set(cwd, {
         type,
         mode: orch.mode,
-        feature: "",  // t3code slot state does not track feature name
+        taskId: "",  // t3code slot state does not track task ID here
         phase: "",
         round: "",
         peerSyncPath: orch.stateFile ?? "",

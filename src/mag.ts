@@ -474,7 +474,7 @@ interface AdoptFingerprintSession {
   cwdNormalized: string;
   agents: string[];
   ids: string[];
-  orchestration: { type: string; feature: string; phase: string; round: string } | null;
+  orchestration: { type: string; taskId: string; phase: string; round: string } | null;
   meta: {
     tmux_session?: string;
     git_branch?: string;
@@ -500,7 +500,7 @@ function adoptSessionsFingerprintData(
       const orchestration = orchObj
         ? {
           type: String(orchObj.type ?? ""),
-          feature: String(orchObj.feature ?? ""),
+          taskId: String(orchObj.feature ?? orchObj.taskId ?? ""),
           phase: String(orchObj.phase ?? ""),
           round: String(orchObj.round ?? ""),
         }
@@ -1591,7 +1591,7 @@ function computeSessionProjectMatches(): string {
     stale: boolean;
     slot: number | null;
     slotPath: string | null;
-    orchestration: { type: string; feature: string; phase: string; round: string } | null;
+    orchestration: { type: string; taskId: string; phase: string; round: string } | null;
     meta?: { tmux_session?: string; git_branch?: string; summary?: string; message_count?: number; port?: string };
   }
 
@@ -1743,7 +1743,7 @@ function computeSessionProjectMatches(): string {
       }
       if (session.orchestration) {
         const o = session.orchestration;
-        matchedSessions.push(`- **Orchestration:** ${o.type} (feature: ${o.feature || "?"}, phase: ${o.phase || "?"})`);
+        matchedSessions.push(`- **Orchestration:** ${o.type} (task: ${o.taskId || "?"}, phase: ${o.phase || "?"})`);
       }
       // Determine recommended adapter based on what infrastructure exists
       const hasAgentSessions = existsSync(join(session.cwdNormalized, ".agent-sessions"));

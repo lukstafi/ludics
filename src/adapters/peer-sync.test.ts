@@ -39,7 +39,7 @@ describe("readBasicState", () => {
     expect(state.phase).toBe("work");
     expect(state.round).toBe("2");
     expect(state.session).toBe("test-session");
-    expect(state.feature).toBe("my-feature");
+    expect(state.taskId).toBe("my-feature");
     expect(state.mode).toBe("duo");
   });
 
@@ -61,7 +61,7 @@ describe("readBasicState", () => {
     expect(state.phase).toBe("review");
     expect(state.round).toBe("3");
     expect(state.session).toBe("json-session");
-    expect(state.feature).toBe("json-feat");
+    expect(state.taskId).toBe("json-feat");
     expect(state.mode).toBe("pair");
   });
 
@@ -219,7 +219,7 @@ describe("listSessions", () => {
 
     const sessions = listSessions(TMP);
     expect(sessions.length).toBe(1);
-    expect(sessions[0]!.feature).toBe("my-feature");
+    expect(sessions[0]!.taskId).toBe("my-feature");
   });
 });
 

@@ -33,7 +33,7 @@ function baseCtx(): Record<string, string> {
     PHASE: "review",
     ROUND: "1",
     MODE: "duo",
-    FEATURE: "feat",
+    TASK_ID: "feat",
     AGENT_NAME: "agent1",
     AGENT_PROVIDER: "codex",
     AGENT_ROLE: "agent",
