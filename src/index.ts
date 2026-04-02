@@ -227,24 +227,31 @@ Commands:
 
 async function runTmuxCli(args: string[]): Promise<void> {
   const sub = args[0] ?? "status";
+  const { tmuxHasSession, tmuxFindSessions, tmuxCapture } = await import("./adapters/tmux.ts");
 
   if (sub === "status") {
-    const { tmuxHasSession, tmuxCapture } = await import("./adapters/tmux.ts");
-    const hasSession = tmuxHasSession("ludics");
-    console.log(`tmux session 'ludics': ${hasSession ? "active" : "not found"}`);
-    if (hasSession) {
-      // List windows
-      const result = Bun.spawnSync(
-        ["tmux", "list-windows", "-t", "ludics", "-F", "#{window_index}: #{window_name} (#{pane_current_command})"],
-        { stdout: "pipe", stderr: "pipe" },
-      );
-      if (result.exitCode === 0) {
-        console.log("\nWindows:");
-        for (const line of result.stdout.toString().trim().split("\n")) {
-          if (line.trim()) console.log(`  ${line}`);
-        }
+    // Mag session
+    const magSession = process.env.LUDICS_MAG_SESSION ?? "ludics-mag";
+    const magRunning = tmuxHasSession(magSession);
+    console.log(`Mag session '${magSession}': ${magRunning ? "active" : "not running"}`);
+
+    // Slot sessions (named s<N>_<agent>_<taskId>)
+    const slotSessions = tmuxFindSessions("s");
+    const slotMatches = slotSessions.filter((s) => /^s\d+_/.test(s));
+    if (slotMatches.length > 0) {
+      console.log("\nSlot sessions:");
+      for (const name of slotMatches) {
+        const result = Bun.spawnSync(
+          ["tmux", "list-panes", "-t", name, "-F", "pid=#{pane_pid} cmd=#{pane_current_command}"],
+          { stdout: "pipe", stderr: "pipe" },
+        );
+        const paneInfo = result.exitCode === 0 ? result.stdout.toString().trim() : "";
+        console.log(`  ${name}${paneInfo ? ` (${paneInfo})` : ""}`);
       }
+    } else {
+      console.log("\nNo slot sessions running.");
     }
+
     // Show ttyd processes
     const ttyd = Bun.spawnSync(["pgrep", "-fa", "ttyd"], { stdout: "pipe", stderr: "pipe" });
     if (ttyd.exitCode === 0) {
@@ -259,17 +266,26 @@ async function runTmuxCli(args: string[]): Promise<void> {
   }
 
   if (sub === "list-panes") {
-    const result = Bun.spawnSync(
-      ["tmux", "list-panes", "-s", "-t", "ludics", "-F",
-       "#{window_name}: pid=#{pane_pid} cmd=#{pane_current_command} active=#{pane_active}"],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    if (result.exitCode !== 0) {
-      console.error("tmux session 'ludics' not found or no panes.");
+    const allSessions = tmuxFindSessions("s");
+    const slotSessions = allSessions.filter((s) => /^s\d+_/.test(s));
+    const magSession = process.env.LUDICS_MAG_SESSION ?? "ludics-mag";
+    const sessions = tmuxHasSession(magSession) ? [magSession, ...slotSessions] : slotSessions;
+
+    if (sessions.length === 0) {
+      console.error("No ludics tmux sessions found.");
       return;
     }
-    for (const line of result.stdout.toString().trim().split("\n")) {
-      if (line.trim()) console.log(line);
+    for (const session of sessions) {
+      const result = Bun.spawnSync(
+        ["tmux", "list-panes", "-t", session, "-F",
+         `${session}: pid=#{pane_pid} cmd=#{pane_current_command} active=#{pane_active}`],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      if (result.exitCode === 0) {
+        for (const line of result.stdout.toString().trim().split("\n")) {
+          if (line.trim()) console.log(line);
+        }
+      }
     }
     return;
   }
@@ -281,7 +297,11 @@ async function runTmuxCli(args: string[]): Promise<void> {
       process.exit(1);
     }
     const agent = args[2] ?? "coder";
-    const target = `ludics:slot-${slot}-${agent}`;
+    const target = resolveSlotSession(slot, agent);
+    if (!target) {
+      console.error(`No tmux session found for slot ${slot} agent '${agent}'`);
+      process.exit(1);
+    }
     console.log(`Attaching to ${target}...`);
     const proc = Bun.spawn(["tmux", "attach", "-t", target], {
       stdin: "inherit", stdout: "inherit", stderr: "inherit",
@@ -297,8 +317,11 @@ async function runTmuxCli(args: string[]): Promise<void> {
       process.exit(1);
     }
     const agent = args[2] ?? "coder";
-    const target = `ludics:slot-${slot}-${agent}`;
-    const { tmuxCapture } = await import("./adapters/tmux.ts");
+    const target = resolveSlotSession(slot, agent);
+    if (!target) {
+      console.error(`No tmux session found for slot ${slot} agent '${agent}'`);
+      process.exit(1);
+    }
     const content = tmuxCapture(target, 200);
     if (content === null) {
       console.error(`Could not capture pane content from ${target}`);
@@ -309,6 +332,18 @@ async function runTmuxCli(args: string[]): Promise<void> {
   }
 
   throw new Error(`unknown tmux subcommand: ${sub} (use: status, list-panes, attach, capture)`);
+}
+
+/** Find the tmux session for a slot+agent by matching s<slot>_<agent>_* */
+function resolveSlotSession(slot: number, agent: string): string | null {
+  const result = Bun.spawnSync(
+    ["tmux", "list-sessions", "-F", "#{session_name}"],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  if (result.exitCode !== 0) return null;
+  const prefix = `s${slot}_${agent}_`;
+  const sessions = result.stdout.toString().trim().split("\n");
+  return sessions.find((s) => s.startsWith(prefix)) ?? null;
 }
 
 async function main(): Promise<void> {

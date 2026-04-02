@@ -131,18 +131,6 @@ export async function runInit(args: string[]): Promise<void> {
         process.exit(1);
       }
       console.log("  ttyd: available");
-      // Pre-create the ludics tmux session if not already running
-      const { tmuxHasSession, tmuxNewSession } = await import("./adapters/tmux.ts");
-      if (!tmuxHasSession("ludics")) {
-        tmuxNewSession("ludics");
-        // Disable mouse to prevent copy-mode lockups
-        Bun.spawnSync(["tmux", "set-option", "-t", "ludics", "mouse", "off"], {
-          stdout: "pipe", stderr: "pipe",
-        });
-        console.log("  created tmux session 'ludics'");
-      } else {
-        console.log("  tmux session 'ludics' already exists");
-      }
     }
   }
 
