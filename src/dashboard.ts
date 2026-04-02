@@ -729,11 +729,15 @@ function generateMag(): Record<string, unknown> {
     }
   }
 
+  // Check queue hold state
+  const queueHeld = existsSync(join(harness, "mag", "queue-hold"));
+
   return {
     status,
     lastActivity,
     pendingRequests: pending,
     terminal: terminal || null,
+    queueHeld,
   };
 }
 
