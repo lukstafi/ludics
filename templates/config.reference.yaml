@@ -88,23 +88,23 @@ mag:
     reviewer_effort: "high"      # Effort level for the reviewer: low | medium | high | max; default: high
     # Legacy aliases (still accepted): coder_thinking_effort, reviewer_thinking_effort
     phase_timeouts:              # Per-phase timeout overrides in seconds (unset phases use built-in defaults)
-      work: 3600
-      review: 1800
-      gather: 600
-      clarify: 600
-      pushback: 600
-      plan: 600
-      plan-review: 600
-      update-docs: 600
-      pr-create: 600
-      pr-comments: 86400
-      merge-vote: 600
-      merge-debate: 600
-      merge-execute: 1800
-      merge-review: 600
-      merge-amend: 600
-      suggest-refactor: 600
-      final-merge: 1800
+      work: 7200
+      review: 3600
+      gather: 1200
+      clarify: 1200
+      pushback: 1200
+      plan: 1200
+      plan-review: 1200
+      update-docs: 1200
+      pr-create: 1200
+      pr-comments: 7200
+      merge-vote: 1200
+      merge-debate: 1200
+      merge-execute: 3600
+      merge-review: 1200
+      merge-amend: 1200
+      suggest-refactor: 1200
+      final-merge: 3600
 
   # Focus project: tasks from this project receive a virtual one-level priority boost
   # during auto-fill and flow ready sorting (A→S, B→A, C→B relative to other projects).

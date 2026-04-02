@@ -151,25 +151,25 @@ export interface OrchestrationState {
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {
-  work: 3600,
-  review: 1800,
-  gather: 600,
-  clarify: 600,
-  pushback: 600,
-  plan: 600,
-  "plan-merge": 600,
-  "plan-review": 600,
-  "update-docs": 600,
-  "pr-create": 600,
-  "pr-comments": 86400, // hard cap; quiet-period timeout governs normal exit
-  "merge-vote": 600,
-  "merge-debate": 600,
-  "merge-execute": 1800,
-  "merge-review": 600,
-  "merge-amend": 600,
-  "suggest-refactor": 600,
-  "forward-pr": 1800,
-  "final-merge": 1800,
+  work: 7200,
+  review: 3600,
+  gather: 1200,
+  clarify: 1200,
+  pushback: 1200,
+  plan: 1200,
+  "plan-merge": 1200,
+  "plan-review": 1200,
+  "update-docs": 1200,
+  "pr-create": 1200,
+  "pr-comments": 7200, // hard cap; quiet-period timeout governs normal exit
+  "merge-vote": 1200,
+  "merge-debate": 1200,
+  "merge-execute": 3600,
+  "merge-review": 1200,
+  "merge-amend": 1200,
+  "suggest-refactor": 1200,
+  "forward-pr": 3600,
+  "final-merge": 3600,
 };
 
 export const DEFAULT_PR_COMMENTS_TIMEOUT = 1200; // 20 min quiet before auto-merging
