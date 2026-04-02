@@ -228,9 +228,21 @@ clone_if_missing() {
   fi
 }
 
+project_paths=()
+
 flush_project() {
   if [[ -n "$current_repo" ]]; then
     clone_if_missing "$current_repo" "$current_staging_repo" "$current_path"
+
+    # Accumulate resolved project path for Codex trust
+    local resolved_path=""
+    if [[ -n "$current_path" ]]; then
+      resolved_path="${current_path/#\~/$HOME}"
+    else
+      local working_repo="${current_staging_repo:-$current_repo}"
+      resolved_path="$HOME/${working_repo##*/}"
+    fi
+    project_paths+=("$resolved_path")
   fi
   current_repo=""
   current_staging_repo=""
@@ -279,6 +291,79 @@ done < "$RESOLVED_CONFIG"
 
 # Flush last project
 flush_project
+
+# ── Step 5: Pre-trust project directories for Codex & Claude Code ───────────
+
+step "Pre-trusting project directories for Codex and Claude Code"
+
+if [[ ${#project_paths[@]} -gt 0 ]]; then
+  # ── Codex trust ──
+  CODEX_STATE="$HOME/.codex/.codex-global-state.json"
+  mkdir -p "$HOME/.codex"
+
+  if [[ ! -f "$CODEX_STATE" ]]; then
+    echo '{"electron-saved-workspace-roots":[]}' > "$CODEX_STATE"
+  fi
+
+  # Build path data for both jq and bun fallbacks
+  PATHS_LINES="$(printf '%s\n' "${project_paths[@]}")"
+  if command -v jq &>/dev/null; then
+    PATHS_JSON="$(echo "$PATHS_LINES" | jq -R . | jq -s .)"
+  fi
+
+  if command -v jq &>/dev/null; then
+    jq --argjson paths "$PATHS_JSON" \
+       '."electron-saved-workspace-roots" |= (. + $paths | unique)' \
+       "$CODEX_STATE" > "${CODEX_STATE}.tmp" \
+       && mv "${CODEX_STATE}.tmp" "$CODEX_STATE"
+  else
+    # Pass paths via stdin and file path via env to avoid interpolating into JS source
+    echo "$PATHS_LINES" | CODEX_STATE="$CODEX_STATE" bun -e '
+      const fs = require("fs");
+      const stateFile = process.env.CODEX_STATE;
+      const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+      const roots = new Set(state["electron-saved-workspace-roots"] || []);
+      const lines = fs.readFileSync("/dev/stdin", "utf8").trim().split("\n");
+      for (const p of lines) roots.add(p);
+      state["electron-saved-workspace-roots"] = [...roots].sort();
+      fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\n");
+    '
+  fi
+
+  info "Codex trust: ${#project_paths[@]} project directories registered"
+
+  # ── Claude Code trust ──
+  CLAUDE_STATE="$HOME/.claude.json"
+
+  if [[ ! -f "$CLAUDE_STATE" ]]; then
+    echo '{}' > "$CLAUDE_STATE"
+  fi
+
+  if command -v jq &>/dev/null; then
+    jq --argjson paths "$PATHS_JSON" '
+      .projects //= {} |
+      reduce $paths[] as $p (.; .projects[$p] = ((.projects[$p] // {}) + {"hasTrustDialogAccepted": true}))
+    ' "$CLAUDE_STATE" > "${CLAUDE_STATE}.tmp" \
+       && mv "${CLAUDE_STATE}.tmp" "$CLAUDE_STATE"
+  else
+    # Pass paths via stdin to avoid interpolating into JS source
+    echo "$PATHS_LINES" | CLAUDE_STATE="$CLAUDE_STATE" bun -e '
+      const fs = require("fs");
+      const stateFile = process.env.CLAUDE_STATE;
+      const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+      if (!state.projects) state.projects = {};
+      const lines = fs.readFileSync("/dev/stdin", "utf8").trim().split("\n");
+      for (const p of lines) {
+        state.projects[p] = Object.assign({}, state.projects[p] || {}, {hasTrustDialogAccepted: true});
+      }
+      fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\n");
+    '
+  fi
+
+  info "Claude Code trust: ${#project_paths[@]} project directories registered"
+else
+  info "No project directories to register for trust"
+fi
 
 step "Setup complete"
 
