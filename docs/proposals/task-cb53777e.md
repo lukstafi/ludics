@@ -63,3 +63,7 @@ info "Codex trust: ${#project_paths[@]} project directories registered"
 - Paths already present -- `unique` in `jq` deduplicates.
 
 **Scope**: Only `setup.sh` is modified. No changes to adapters or runtime code.
+
+### Claude Code trust (scope expansion)
+
+Claude Code has its own trust mechanism, separate from Codex. It stores per-project trust in `~/.claude.json` under `projects.<path>.hasTrustDialogAccepted` (boolean). The same Step 5 also sets this flag to `true` for each configured project directory, preventing Claude Code's interactive trust prompt during unattended agent sessions. The implementation mirrors the Codex approach: `jq` with a `bun -e` fallback, paths passed via stdin/env (not interpolated into source), and existing project settings preserved via merge.

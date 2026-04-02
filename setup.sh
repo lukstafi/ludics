@@ -305,20 +305,29 @@ if [[ ${#project_paths[@]} -gt 0 ]]; then
     echo '{"electron-saved-workspace-roots":[]}' > "$CODEX_STATE"
   fi
 
+  # Build path data for both jq and bun fallbacks
+  PATHS_LINES="$(printf '%s\n' "${project_paths[@]}")"
   if command -v jq &>/dev/null; then
-    jq --argjson paths "$(printf '%s\n' "${project_paths[@]}" | jq -R . | jq -s .)" \
+    PATHS_JSON="$(echo "$PATHS_LINES" | jq -R . | jq -s .)"
+  fi
+
+  if command -v jq &>/dev/null; then
+    jq --argjson paths "$PATHS_JSON" \
        '."electron-saved-workspace-roots" |= (. + $paths | unique)' \
        "$CODEX_STATE" > "${CODEX_STATE}.tmp" \
        && mv "${CODEX_STATE}.tmp" "$CODEX_STATE"
   else
-    bun -e "
-      const fs = require('fs');
-      const state = JSON.parse(fs.readFileSync('${CODEX_STATE}', 'utf8'));
-      const roots = new Set(state['electron-saved-workspace-roots'] || []);
-      $(printf "roots.add('%s');\n" "${project_paths[@]}")
-      state['electron-saved-workspace-roots'] = [...roots].sort();
-      fs.writeFileSync('${CODEX_STATE}', JSON.stringify(state, null, 2) + '\n');
-    "
+    # Pass paths via stdin and file path via env to avoid interpolating into JS source
+    echo "$PATHS_LINES" | CODEX_STATE="$CODEX_STATE" bun -e '
+      const fs = require("fs");
+      const stateFile = process.env.CODEX_STATE;
+      const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+      const roots = new Set(state["electron-saved-workspace-roots"] || []);
+      const lines = fs.readFileSync("/dev/stdin", "utf8").trim().split("\n");
+      for (const p of lines) roots.add(p);
+      state["electron-saved-workspace-roots"] = [...roots].sort();
+      fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\n");
+    '
   fi
 
   info "Codex trust: ${#project_paths[@]} project directories registered"
@@ -331,28 +340,24 @@ if [[ ${#project_paths[@]} -gt 0 ]]; then
   fi
 
   if command -v jq &>/dev/null; then
-    jq --argjson paths "$(printf '%s\n' "${project_paths[@]}" | jq -R . | jq -s .)" '
+    jq --argjson paths "$PATHS_JSON" '
       .projects //= {} |
       reduce $paths[] as $p (.; .projects[$p] = ((.projects[$p] // {}) + {"hasTrustDialogAccepted": true}))
     ' "$CLAUDE_STATE" > "${CLAUDE_STATE}.tmp" \
        && mv "${CLAUDE_STATE}.tmp" "$CLAUDE_STATE"
   else
-    # Build a JSON array of paths for bun
-    PATHS_JSON="["
-    for p in "${project_paths[@]}"; do
-      PATHS_JSON+="\"$p\","
-    done
-    PATHS_JSON="${PATHS_JSON%,}]"
-
-    bun -e "
-      const fs = require('fs');
-      const state = JSON.parse(fs.readFileSync('${CLAUDE_STATE}', 'utf8'));
+    # Pass paths via stdin to avoid interpolating into JS source
+    echo "$PATHS_LINES" | CLAUDE_STATE="$CLAUDE_STATE" bun -e '
+      const fs = require("fs");
+      const stateFile = process.env.CLAUDE_STATE;
+      const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
       if (!state.projects) state.projects = {};
-      for (const p of ${PATHS_JSON}) {
+      const lines = fs.readFileSync("/dev/stdin", "utf8").trim().split("\n");
+      for (const p of lines) {
         state.projects[p] = Object.assign({}, state.projects[p] || {}, {hasTrustDialogAccepted: true});
       }
-      fs.writeFileSync('${CLAUDE_STATE}', JSON.stringify(state, null, 2) + '\n');
-    "
+      fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\n");
+    '
   fi
 
   info "Claude Code trust: ${#project_paths[@]} project directories registered"
