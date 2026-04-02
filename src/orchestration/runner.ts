@@ -468,10 +468,13 @@ async function enterPhase(state: OrchestrationState, transport: OrchestrationTra
         const baseline = rt.dispatchStatusFingerprint;
         const isStale = baseline != null
           && statusFileFingerprint(state.peerSyncDir, agent.name) === baseline;
-        if (!isStale) {
+        // Also verify the agent fully satisfies isAgentDone() — a fresh status
+        // without the required artifact (e.g. review-done but no review file)
+        // must not skip dispatch, otherwise the phase deadlocks until timeout.
+        if (!isStale && isAgentDone(state, agent)) {
           continue; // genuinely done — skip dispatch
         }
-        // Stale status — fall through to dispatch
+        // Stale status or missing artifact — fall through to dispatch
       }
     }
 
