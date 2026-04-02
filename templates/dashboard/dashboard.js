@@ -44,7 +44,6 @@ async function fetchAllData() {
             fetchReadyQueue(),
             fetchNeedsConfirmation(),
             fetchUnansweredQuestions(),
-            fetchQueueHoldState(),
             fetchNotifications(),
             fetchMagStatus(),
             fetchT3codeLink(),
@@ -289,6 +288,9 @@ async function fetchMagStatus() {
         if (!response.ok) throw new Error('Failed to fetch mag status');
         const mag = await response.json();
         renderMagStatus(mag);
+        // Update queue hold state from mag data
+        queueHeld = !!mag.queueHeld;
+        updateQueueHoldUI();
     } catch (error) {
         console.warn('Using placeholder mag status');
         renderMagStatus({ status: 'unknown', lastActivity: null });
@@ -661,17 +663,6 @@ async function toggleSlotMode(slotNum, mode) {
         btn.textContent = 'error';
         setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2000);
     }
-}
-
-// Fetch queue hold state and update UI
-async function fetchQueueHoldState() {
-    try {
-        const response = await fetch('/api/queue-hold-state');
-        if (!response.ok) return;
-        const data = await response.json();
-        queueHeld = data.held;
-        updateQueueHoldUI();
-    } catch { /* ignore */ }
 }
 
 // Update hold button and badge to reflect current queueHeld state

@@ -362,14 +362,6 @@ export function startDashboardServer(
         }
       }
 
-      // API: get queue hold state
-      if (pathname === "/api/queue-hold-state") {
-        const holdFile = join(harnessDir(), "mag", "queue-hold");
-        return new Response(JSON.stringify({ held: existsSync(holdFile) }), {
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-
       // API: set queue hold state (state=true → hold, state=false → resume)
       if (pathname === "/api/queue-hold") {
         const stateParam = url.searchParams.get("state");
