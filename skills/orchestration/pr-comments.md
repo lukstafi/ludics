@@ -5,7 +5,7 @@ Address reviewer feedback on the PR in `{{PR_FILE}}` from `{{WORKTREE_PATH}}`.
 Fetch both top-level reviews and inline file comments:
 ```sh
 gh pr view --json reviews,comments --jq '.reviews,.comments'
-gh api repos/{owner}/{repo}/pulls/{number}/comments --jq '.[] | {path, line, body}'
+gh api --paginate repos/{owner}/{repo}/pulls/{number}/comments --jq '.[] | {path, line, body}'
 ```
 
 For each actionable comment, make the change, commit, and push.

@@ -21,13 +21,15 @@ export function fetchNewPrCommentCount(prUrl: string, sinceEpoch: number): numbe
 
   function countViaGhApi(args: string[]): number {
     try {
-      const result = Bun.spawnSync(["gh", "api", ...args], {
+      const result = Bun.spawnSync(["gh", "api", "--paginate", ...args], {
         stdout: "pipe",
         stderr: "ignore",
         env: process.env as Record<string, string>,
       });
       if (result.exitCode !== 0) return 0;
-      return parseInt(result.stdout.toString().trim(), 10) || 0;
+      // --paginate + --jq outputs one number per page; sum them
+      return result.stdout.toString().trim().split("\n")
+        .reduce((sum, line) => sum + (parseInt(line, 10) || 0), 0);
     } catch {
       return 0;
     }
