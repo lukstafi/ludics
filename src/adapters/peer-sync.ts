@@ -151,8 +151,7 @@ export function readBasicState(syncDir: string): BasicState {
   state.phase = readSingleFile(join(syncDir, "phase")) ?? "";
   state.round = readSingleFile(join(syncDir, "round")) ?? "";
   state.session = readSingleFile(join(syncDir, "session")) ?? "";
-  // Read from "feature" file on disk (legacy name) — contains taskId
-  state.taskId = readSingleFile(join(syncDir, "feature")) ?? "";
+  state.taskId = readSingleFile(join(syncDir, "task-id")) ?? readSingleFile(join(syncDir, "feature")) ?? "";
   state.mode = readSingleFile(join(syncDir, "mode")) ?? "";
 
   // Fallback to JSON state file if individual files are empty

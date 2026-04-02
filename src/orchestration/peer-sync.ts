@@ -64,7 +64,7 @@ export function initPeerSync(
   mkdirSync(join(peerSyncDir, "reviews"), { recursive: true });
   mkdirSync(join(peerSyncDir, "plans"), { recursive: true });
   mkdirSync(join(peerSyncDir, "merge-votes"), { recursive: true });
-  writeFile(join(peerSyncDir, "feature"), taskId);
+  writeFile(join(peerSyncDir, "task-id"), taskId);
   writeFile(join(peerSyncDir, "mode"), mode);
   writeFile(join(peerSyncDir, "phase"), "setup");
   writeFile(join(peerSyncDir, "phase-token"), makeId("phase"));
@@ -114,7 +114,7 @@ export function writePeerSync(state: OrchestrationState, phaseToken?: string): v
   writeFile(join(dir, "phase"), state.phase);
   writeFile(join(dir, "phase-token"), phaseToken ?? makeId("phase"));
   writeFile(join(dir, "round"), String(state.round));
-  writeFile(join(dir, "feature"), state.taskId);
+  writeFile(join(dir, "task-id"), state.taskId);
   writeFile(join(dir, "mode"), state.mode);
   writeFile(join(dir, "state.json"), JSON.stringify({
     feature: state.taskId,

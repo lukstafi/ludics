@@ -43,6 +43,33 @@ describe("readBasicState", () => {
     expect(state.mode).toBe("duo");
   });
 
+  test("reads task-id file when present (new canonical name)", () => {
+    const syncDir = join(TMP, "sync-new-taskid");
+    mkdirSync(syncDir);
+    writeFileSync(join(syncDir, "phase"), "work");
+    writeFileSync(join(syncDir, "round"), "1");
+    writeFileSync(join(syncDir, "session"), "s1");
+    writeFileSync(join(syncDir, "task-id"), "task-abc123");
+    writeFileSync(join(syncDir, "mode"), "duo");
+
+    const state = readBasicState(syncDir);
+    expect(state.taskId).toBe("task-abc123");
+  });
+
+  test("prefers task-id over legacy feature file", () => {
+    const syncDir = join(TMP, "sync-both");
+    mkdirSync(syncDir);
+    writeFileSync(join(syncDir, "phase"), "work");
+    writeFileSync(join(syncDir, "round"), "1");
+    writeFileSync(join(syncDir, "session"), "s1");
+    writeFileSync(join(syncDir, "task-id"), "new-value");
+    writeFileSync(join(syncDir, "feature"), "old-value");
+    writeFileSync(join(syncDir, "mode"), "duo");
+
+    const state = readBasicState(syncDir);
+    expect(state.taskId).toBe("new-value");
+  });
+
   test("falls back to state.json when individual files missing", () => {
     const syncDir = join(TMP, "sync-json");
     mkdirSync(syncDir);
