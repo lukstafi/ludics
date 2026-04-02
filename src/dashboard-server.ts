@@ -281,7 +281,10 @@ export function startDashboardServer(
             }
           }
 
-          // Clear the slot first; only update priority if this succeeds.
+          // Demote priority BEFORE clearing the slot, so the task never appears
+          // in the ready queue at its old priority (race with auto-assign).
+          pendingPriorityWrite?.();
+
           const proc = Bun.spawnSync(
             [process.execPath, "slot", slotParam, "clear", "ready"],
             { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
@@ -289,9 +292,6 @@ export function startDashboardServer(
           if (proc.exitCode !== 0) {
             return new Response(proc.stderr.toString() || "slot clear failed", { status: 500 });
           }
-
-          // Clear succeeded — now safely write the demoted priority.
-          pendingPriorityWrite?.();
 
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
