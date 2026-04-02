@@ -749,6 +749,24 @@ main {
     text-decoration: underline;
 }
 
+/* Unanswered Questions */
+.unanswered-q-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    padding: 0.3em 0.5em;
+    cursor: default;
+}
+
+.unanswered-q-link {
+    color: #e0e0e0;
+    text-decoration: none;
+}
+.unanswered-q-link:hover {
+    color: #fff;
+    text-decoration: underline;
+}
+
 .confirm-btn {
     border-color: #4a9;
     color: #4a9;

@@ -43,6 +43,7 @@ async function fetchAllData() {
             fetchSlots(),
             fetchReadyQueue(),
             fetchNeedsConfirmation(),
+            fetchUnansweredQuestions(),
             fetchQueueHoldState(),
             fetchNotifications(),
             fetchMagStatus(),
@@ -531,6 +532,45 @@ function renderNeedsConfirmation(tasks) {
                     <button class="confirm-btn" onclick="confirmTask('${escapeHtml(task.id)}')" title="Confirm: move to ready">&#x2713;</button>
                     <button class="dismiss-btn" onclick="dismissTask('${escapeHtml(task.id)}')" title="Dismiss: abandon">&#x2715;</button>
                 </span>
+            </li>`;
+        });
+        newHtml = items.join('');
+    }
+
+    if (list.innerHTML !== newHtml) {
+        list.innerHTML = newHtml;
+    }
+}
+
+// Fetch unanswered-questions tasks
+async function fetchUnansweredQuestions() {
+    try {
+        const response = await fetch(CONFIG.dataPath + 'unanswered-questions.json');
+        if (!response.ok) throw new Error('Failed to fetch unanswered-questions');
+        const tasks = await response.json();
+        renderUnansweredQuestions(tasks);
+    } catch (error) {
+        console.warn('Using placeholder unanswered-questions');
+        renderUnansweredQuestions([]);
+    }
+}
+
+// Render unanswered-questions tasks
+function renderUnansweredQuestions(tasks) {
+    const list = document.getElementById('unanswered-questions-list');
+    if (!list) return;
+
+    let newHtml;
+    if (tasks.length === 0) {
+        newHtml = '<li class="empty">No unanswered questions</li>';
+    } else {
+        const items = tasks.map(task => {
+            const priority = task.priority || '-';
+            const priorityClass = `priority-${priority}`;
+            return `
+            <li class="unanswered-q-item">
+                <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>
+                <a class="task-title unanswered-q-link" href="task-files/${escapeHtml(task.id)}.md" target="_blank">${escapeHtml(task.title || task.id)}</a>
             </li>`;
         });
         newHtml = items.join('');

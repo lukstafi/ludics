@@ -300,6 +300,7 @@ interface DashboardTask {
     relates_to: string[];
     subtask_of: string | null;
   };
+  hasQuestions: boolean;
 }
 
 interface NeedsConfirmationTask {
@@ -309,6 +310,13 @@ interface NeedsConfirmationTask {
   priority: string;
   created: string | null;
   relatesTo: string[];
+}
+
+interface UnansweredQuestionsTask {
+  id: string;
+  title: string;
+  project: string;
+  priority: string;
 }
 
 interface TasksTreeNode {
@@ -388,8 +396,9 @@ function readDashboardTasks(): DashboardTask[] {
           blocks: Array.isArray(deps.blocks) ? (deps.blocks as string[]) : [],
           blocked_by: Array.isArray(deps.blocked_by) ? (deps.blocked_by as string[]) : [],
           relates_to: Array.isArray(deps.relates_to) ? (deps.relates_to as string[]) : [],
-          subtask_of: deps.subtask_of ? String(deps.subtask_of) : null,
+          subtask_of: isNonNullValue(deps.subtask_of) ? String(deps.subtask_of) : null,
         },
+        hasQuestions: !!data.has_questions,
       });
     } catch {
       // skip
@@ -460,6 +469,17 @@ function generateNeedsConfirmation(tasks: DashboardTask[]): NeedsConfirmationTas
       priority: task.priority,
       created: task.created,
       relatesTo: task.dependencies.relates_to,
+    }));
+}
+
+function generateUnansweredQuestions(tasks: DashboardTask[]): UnansweredQuestionsTask[] {
+  return tasks
+    .filter((task) => task.hasQuestions && !task.isCompleted)
+    .map((task) => ({
+      id: task.id,
+      title: task.title,
+      project: task.project,
+      priority: task.priority,
     }));
 }
 
@@ -901,6 +921,9 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "needs-confirmation.json"), JSON.stringify(generateNeedsConfirmation(tasks), null, 2));
   console.error("  needs-confirmation.json");
+
+  writeFileSync(join(dataDir, "unanswered-questions.json"), JSON.stringify(generateUnansweredQuestions(tasks), null, 2));
+  console.error("  unanswered-questions.json");
 
   writeFileSync(join(dataDir, "tasks-tree.json"), JSON.stringify(generateTasksTree(tasks), null, 2));
   console.error("  tasks-tree.json");
