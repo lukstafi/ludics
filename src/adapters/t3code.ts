@@ -6,6 +6,7 @@ import {
   isGitWorktree,
   latestMtime,
   resolveProjectDir,
+  slotSessionName,
 } from "./base.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { Adapter, AdapterContext } from "./types.ts";
@@ -101,17 +102,14 @@ function normalizeWorkspacePath(ctx: AdapterContext): string {
   return resolve(raw);
 }
 
-/** Build orchestrated thread title: s<slot>_<role>_<taskId-or-feature> */
+/** Build orchestrated thread title — delegates to shared slotSessionName convention */
 export function orchestratedThreadTitle(slot: number, role: string, taskId: string | undefined, feature: string): string {
-  const suffix = taskId && taskId !== "null" ? taskId : feature;
-  return `s${slot}_${role}_${suffix}`;
+  return slotSessionName(slot, role, taskId, feature);
 }
 
 function defaultTitle(ctx: AdapterContext, workspacePath: string): string {
-  const prefix = `s${ctx.slot}_`;
-  if (ctx.taskId && ctx.taskId !== "null") return `${prefix}${ctx.taskId}`;
-  if (ctx.process && ctx.process !== "(empty)") return `${prefix}${ctx.process}`;
-  return `${prefix}${basename(workspacePath) || "thread"}`;
+  const fallback = (ctx.process && ctx.process !== "(empty)") ? ctx.process : (basename(workspacePath) || "thread");
+  return slotSessionName(ctx.slot, undefined, ctx.taskId, fallback);
 }
 
 function parseArgs(raw: string): string[] {

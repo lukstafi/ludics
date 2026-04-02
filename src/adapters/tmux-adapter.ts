@@ -3,7 +3,7 @@
 
 import { existsSync } from "fs";
 import { basename, join, resolve } from "path";
-import { getMainRepoFromWorktree, latestMtime, resolveProjectDir } from "./base.ts";
+import { getMainRepoFromWorktree, latestMtime, resolveProjectDir, slotSessionName } from "./base.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { Adapter, AdapterContext } from "./types.ts";
 import { loadConfigSync } from "../config.ts";
@@ -85,10 +85,9 @@ function removeTmuxSlotState(slot: number, harnessDir: string): void {
 // Naming / port helpers
 // ---------------------------------------------------------------------------
 
-/** Session name: s<slot>_<agent>_<taskId> — shared convention with t3code thread titles */
+/** Tmux session name — delegates to shared slotSessionName convention */
 export function tmuxSessionName(slot: number, agentName: string, taskId?: string): string {
-  const suffix = taskId && taskId !== "null" ? taskId : agentName;
-  return `s${slot}_${agentName}_${suffix}`;
+  return slotSessionName(slot, agentName, taskId);
 }
 
 /** Target for tmux commands — just the session name (one window per session) */
@@ -488,7 +487,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     threadIds: {}, // tmux mode doesn't use t3code threads
     backend: "tmux",
     taskId: ctx.taskId || undefined,
-    slotTitle: options.title ?? `s${ctx.slot}_${ctx.taskId || feature}`,
+    slotTitle: options.title ?? slotSessionName(ctx.slot, undefined, ctx.taskId, feature),
     stagingRepo: (() => {
       const cfg = loadConfigSync();
       const proj = cfg.projects?.find((p) => {

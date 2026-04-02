@@ -10,6 +10,23 @@ import { PEER_SYNC_DIRNAME } from "../orchestration/peer-sync.ts";
 import type { AgentStatus } from "./types.ts";
 
 // ---------------------------------------------------------------------------
+// Session / thread naming — single convention for tmux sessions and t3code threads
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical name for a slot session or thread.
+ *
+ * With role:    s<slot>_<role>_<suffix>   (per-agent session)
+ * Without role: s<slot>_<suffix>          (slot-level title)
+ *
+ * Suffix is taskId when present, otherwise the provided fallback (or role).
+ */
+export function slotSessionName(slot: number, role: string | undefined, taskId?: string, fallback?: string): string {
+  const suffix = taskId && taskId !== "null" ? taskId : (fallback ?? role ?? "unknown");
+  return role ? `s${slot}_${role}_${suffix}` : `s${slot}_${suffix}`;
+}
+
+// ---------------------------------------------------------------------------
 // State directory
 // ---------------------------------------------------------------------------
 
