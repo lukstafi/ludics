@@ -100,7 +100,7 @@ export interface OrchestrationConfig {
 
 export interface OrchestrationState {
   slot: number;
-  feature: string;
+  taskId: string;
   mode: "duo" | "pair";
   phase: Phase;
   round: number;
@@ -117,7 +117,8 @@ export interface OrchestrationState {
   mergeWinner?: string;
   /** Tracks how many plan-merge → plan-review iterations have completed (pair mode only). */
   planMergeRound?: number;
-  taskId?: string;
+  /** @deprecated Alias for taskId — kept for backward compat with persisted state */
+  feature?: string;
   slotTitle?: string;
   /** Staging fork repo slug (e.g. "lukstafi/ocannl-staging"). Set from project config at init. */
   stagingRepo?: string;
@@ -213,7 +214,13 @@ export function readOrchestrationState(
   slot: number,
   harnessDir: string = defaultHarnessDir(),
 ): OrchestrationState | null {
-  return readJsonFile<OrchestrationState>(stateFilePath(slot, harnessDir));
+  const state = readJsonFile<OrchestrationState>(stateFilePath(slot, harnessDir));
+  if (!state) return null;
+  // Migrate legacy state: feature → taskId
+  if (!state.taskId && (state as unknown as Record<string, unknown>).feature) {
+    state.taskId = String((state as unknown as Record<string, unknown>).feature);
+  }
+  return state;
 }
 
 export function persistState(

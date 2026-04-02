@@ -59,7 +59,7 @@ function verifyPrCreateOutcome(state: OrchestrationState): VerificationDecision 
     emitEvent({
       event_type: "pr_verified",
       source: "orchestration", scope: "slot",
-      slot: state.slot, task: state.feature,
+      slot: state.slot, task: state.taskId,
       action: "pr-create verification", status: "success",
       message: `PR verified (${v.state}): ${prUrl}`,
     });
@@ -87,7 +87,7 @@ function verifyFinalMergeOutcome(state: OrchestrationState): VerificationDecisio
     emitEvent({
       event_type: "merge_verified",
       source: "orchestration", scope: "slot",
-      slot: state.slot, task: state.feature,
+      slot: state.slot, task: state.taskId,
       action: "final-merge verification", status: "success",
       message: `PR merge verified: ${prUrl}`,
     });
@@ -126,7 +126,7 @@ function handleVerifyFailure(
   emitEvent({
     event_type: eventType,
     source: "orchestration", scope: "slot",
-    slot: state.slot, task: state.feature,
+    slot: state.slot, task: state.taskId,
     action: `${phaseLabel} verification`, status: "failed",
     message: `${reason} (attempt ${attempts}/${MAX_VERIFY_ATTEMPTS})`,
   });
@@ -135,12 +135,12 @@ function handleVerifyFailure(
     emitEvent({
       event_type: "manual_intervention_required",
       source: "orchestration", scope: "slot",
-      slot: state.slot, task: state.feature,
+      slot: state.slot, task: state.taskId,
       action: `${phaseLabel} verification exhausted`, status: "blocked",
       message: `${phaseLabel} failed after ${MAX_VERIFY_ATTEMPTS} attempts — manual intervention needed`,
     });
     notifyAgents(
-      `Slot ${state.slot} [${state.taskId ?? state.feature}]: ${phaseLabel} verification failed ${MAX_VERIFY_ATTEMPTS} times — needs human`,
+      `Slot ${state.slot} [${state.taskId}]: ${phaseLabel} verification failed ${MAX_VERIFY_ATTEMPTS} times — needs human`,
       3,
       `Slot ${state.slot}: manual intervention`,
     );
@@ -247,7 +247,7 @@ function detectAgentInconsistencies(
       source: "orchestration",
       scope: "slot",
       slot: state.slot,
-      task: state.feature,
+      task: state.taskId,
       message: `${agent.name}: peer-sync says "${runtime.status}" but turn lifecycle is "${lc.state}"`,
     });
   }
@@ -311,7 +311,7 @@ export async function detectAndNudgeHungAgents(
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
-        task: state.feature,
+        task: state.taskId,
         agent: agent.name,
         phase: state.phase,
         hungType,
@@ -328,7 +328,7 @@ export async function detectAndNudgeHungAgents(
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
-        task: state.feature,
+        task: state.taskId,
         agent: agent.name,
         phase: state.phase,
         attempts,
@@ -364,7 +364,7 @@ export async function detectAndNudgeHungAgents(
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
-        task: state.feature,
+        task: state.taskId,
         agent: agent.name,
         phase: state.phase,
         attempt: attempts + 1,
@@ -378,7 +378,7 @@ export async function detectAndNudgeHungAgents(
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
-        task: state.feature,
+        task: state.taskId,
         agent: agent.name,
         message: `${agent.name}: nudge dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
       });
@@ -572,10 +572,10 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
             source: "orchestration",
             scope: "slot",
             slot: state.slot,
-            task: state.feature,
+            task: state.taskId,
             message: `Upstream PR merged: ${prUrl}`,
           });
-          const mergedTaskLabel = state.taskId ?? state.feature;
+          const mergedTaskLabel = state.taskId;
           notifyAgents(
             `Slot ${state.slot} [${mergedTaskLabel}]: upstream PR merged: ${prUrl}`,
             3,
@@ -592,7 +592,7 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
           source: "orchestration",
           scope: "slot",
           slot: state.slot,
-          task: state.feature,
+          task: state.taskId,
           message: `Staging PR merged before forwarding: ${prUrl} — will still forward to upstream`,
         });
       } else {
@@ -605,10 +605,10 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
           source: "orchestration",
           scope: "slot",
           slot: state.slot,
-          task: state.feature,
+          task: state.taskId,
           message: `PR merged: ${prUrl}`,
         });
-        const mergedTaskLabel = state.taskId ?? state.feature;
+        const mergedTaskLabel = state.taskId;
         notifyAgents(
           `Slot ${state.slot} [${mergedTaskLabel}]: PR merged: ${prUrl}`,
           3,
@@ -701,7 +701,7 @@ function validateAgentPrFiles(state: OrchestrationState): void {
     const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch);
     if (fixedUrl && !runtime.prUrl) {
       runtime.prUrl = fixedUrl;
-      const prTaskLabel = state.taskId ?? state.feature;
+      const prTaskLabel = state.taskId;
       notifyAgents(
         `Slot ${state.slot} [${prTaskLabel}]: PR created by ${agent.name}: ${fixedUrl}`,
         3,
@@ -784,7 +784,7 @@ export function autoCommitAgent(
       source: "orchestration",
       scope: "slot",
       slot: state.slot,
-      task: state.feature,
+      task: state.taskId,
       message: `auto-committed ${result.commitSha ?? ""} in ${agent.worktreePath}: ${commitMessage}`,
     });
   } else if (result.error) {
@@ -793,7 +793,7 @@ export function autoCommitAgent(
       source: "orchestration",
       scope: "slot",
       slot: state.slot,
-      task: state.feature,
+      task: state.taskId,
       message: `auto-commit failed for ${agent.name}: ${result.error}`,
     });
   }
@@ -809,7 +809,7 @@ export function autoCommitAgent(
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
-        task: state.feature,
+        task: state.taskId,
         message: `auto-commit push failed for ${agent.name}: ${err}`,
       });
     }
@@ -929,7 +929,7 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
           source: "orchestration",
           scope: "slot",
           slot: state.slot,
-          task: state.feature,
+          task: state.taskId,
           agent: agent.name,
           phase: state.phase,
           attempt: alc.nudgeAttempts,
@@ -1133,14 +1133,14 @@ export async function runOrchestration(
       source: "orchestration",
       scope: "slot",
       slot: state.slot,
-      task: state.feature,
+      task: state.taskId,
       action: `${state.phase} → ${next}`,
       status: next,
       message: `round ${state.round}`,
     });
 
     {
-      const taskLabel = state.taskId ?? state.feature;
+      const taskLabel = state.taskId;
       const slotLabel = `Slot ${state.slot} [${taskLabel}]`;
       if (state.phase === "review" && state.mode === "pair") {
         // Use the parsed verdict from the review file. Falls back to "timeout" when

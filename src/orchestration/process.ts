@@ -9,8 +9,8 @@ import { ludicsSelfCommand } from "./util.ts";
  * Spawn the orchestration runner as a detached background process for a slot.
  * Returns the PID of the spawned process. Throws if the process exits immediately.
  */
-export async function startOrchestrationProcess(slot: number, harnessDir: string, feature: string): Promise<number> {
-  const logPath = join(harnessDir, "orchestration", `slot-${slot}-${feature}.log`);
+export async function startOrchestrationProcess(slot: number, harnessDir: string, taskId: string): Promise<number> {
+  const logPath = join(harnessDir, "orchestration", `slot-${slot}-${taskId}.log`);
   const logFd = openSync(logPath, "a");
   const proc = Bun.spawn(ludicsSelfCommand(["orch", "run-internal", String(slot)]), {
     stdin: "ignore",

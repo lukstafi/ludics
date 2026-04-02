@@ -891,7 +891,7 @@ export async function slotResume(slotNum: number): Promise<void> {
   persistState(orchState, ctx.harnessDir);
 
   // Restart orchestration runner (reuses existing state)
-  const newPid = await startOrchestrationProcess(slotNum, ctx.harnessDir, orchState.feature);
+  const newPid = await startOrchestrationProcess(slotNum, ctx.harnessDir, orchState.taskId);
 
   // Update PID in slot state (only after successful spawn)
   if (ctx.mode === "t3code") {

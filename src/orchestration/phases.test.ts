@@ -6,7 +6,7 @@ import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationSt
 function makeState(overrides: Partial<OrchestrationState> = {}): OrchestrationState {
   return {
     slot: 1,
-    feature: "feat",
+    taskId: "feat",
     mode: "duo",
     phase: "setup",
     round: 1,

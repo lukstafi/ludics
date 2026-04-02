@@ -156,7 +156,7 @@ describe("slotStart guard", () => {
     mkdirSync(orchDir, { recursive: true });
     const orchState: OrchestrationState = {
       slot: 1,
-      feature: "task-guard-1",
+      taskId: "task-guard-1",
       mode: "pair",
       phase: "work",
       round: 1,
@@ -170,7 +170,6 @@ describe("slotStart guard", () => {
       rootWorktree: "/tmp/root",
       peerSyncDir: "/tmp/peersync",
       threadIds: {},
-      taskId: "task-guard-1",
     };
     persistState(orchState, harness);
 

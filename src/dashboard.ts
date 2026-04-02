@@ -121,7 +121,7 @@ function lookupSlotOrchestrationLinks(
   const orchState = readOrchestrationState(slotNum);
   if (!orchState) return { prUrl: null, t3codeThreadLinks: null };
   // Skip stale orchestration state from a previous task
-  if (currentTaskId && orchState.taskId && orchState.taskId !== currentTaskId && orchState.feature !== currentTaskId) {
+  if (currentTaskId && orchState.taskId && orchState.taskId !== currentTaskId) {
     return { prUrl: null, t3codeThreadLinks: null };
   }
 
@@ -208,7 +208,7 @@ function generateSlots(): SlotJson[] {
     let round: number | null = null;
     if (!empty) {
       const orchState = readOrchestrationState(num);
-      if (orchState && (!taskId || orchState.taskId === taskId || orchState.feature === taskId)) {
+      if (orchState && (!taskId || orchState.taskId === taskId)) {
         phase = orchState.phase ?? null;
         round = orchState.round ?? null;
       }

@@ -90,8 +90,8 @@ function extractProposalSummary(proposalFile: string): string | null {
 
 function taskSpecBriefText(state: OrchestrationState): string {
   const taskId = state.taskId?.trim();
-  if (!taskId) return state.slotTitle?.trim() || state.feature;
-  const title = state.slotTitle?.trim() || state.feature;
+  if (!taskId) return state.slotTitle?.trim() || state.taskId;
+  const title = state.slotTitle?.trim() || state.taskId;
   const path = join(harnessDir(), "tasks", `${taskId}.md`);
   const content = readFileIfExists(path);
   const proposalValue = (content ? readFrontmatterField(content, "proposal") : null) ?? "";
@@ -108,7 +108,7 @@ function taskSpecBriefText(state: OrchestrationState): string {
 function taskSpecText(state: OrchestrationState): string {
   const taskId = state.taskId?.trim();
   if (!taskId) {
-    return state.slotTitle?.trim() || state.feature;
+    return state.slotTitle?.trim() || state.taskId;
   }
   const path = join(harnessDir(), "tasks", `${taskId}.md`);
   const content = readFileIfExists(path);
@@ -246,7 +246,7 @@ export function buildSkillContext(
     PHASE: state.phase,
     ROUND: String(state.round),
     MODE: state.mode,
-    FEATURE: state.feature,
+    FEATURE: state.taskId,
     AGENT_NAME: agent.name,
     AGENT_PROVIDER: agent.provider,
     AGENT_ROLE: agent.role ?? "agent",

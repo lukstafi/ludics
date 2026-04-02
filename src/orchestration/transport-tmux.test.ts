@@ -144,7 +144,7 @@ describe("sendTurn prompt injection via paste-buffer", () => {
     };
     const state = {
       slot: 1,
-      feature: "test-feature",
+      taskId: "test-feature",
       mode: "duo" as const,
       phase: "work" as const,
       round: 1,

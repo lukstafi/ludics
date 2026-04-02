@@ -226,7 +226,7 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
             source: "orchestration",
             scope: "slot",
             slot: state.slot,
-            task: state.feature,
+            task: state.taskId,
             message: `${agent.name}: status is "${runtime.status}" but required artifact missing: ${requiredArtifactPath(state, agent)}`,
           });
           return false;

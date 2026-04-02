@@ -45,7 +45,7 @@ import {
 } from "../orchestration/state.ts";
 import { initPeerSync, removePeerSyncSession, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
 import { createWorktrees, cleanupWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
-import { isoNow, ludicsSelfCommand, makeId, nowEpoch, slugify } from "../orchestration/util.ts";
+import { isoNow, ludicsSelfCommand, makeId, nowEpoch } from "../orchestration/util.ts";
 
 interface ParsedAgentToken {
   name: string;
@@ -58,7 +58,6 @@ interface ParsedAgentToken {
 
 interface ParsedOrchestrationArgs {
   mode: "duo" | "pair";
-  feature?: string;
   config: Partial<OrchestrationConfig>;
   agents: ParsedAgentToken[];
   /** Explicit coder model override from --coder-model flag. */
@@ -217,7 +216,6 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   const duoAgents: ParsedOrchestrationArgs["agents"] = [];
   let coderToken: string | null = null;
   let reviewerToken: string | null = null;
-  let feature: string | undefined;
   let coderModelOverride: string | undefined;
   let reviewerModelOverride: string | undefined;
   let coderThinkingEffort: string | undefined;
@@ -301,11 +299,6 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         reviewerThinkingEffort = next;
         i++;
         break;
-      case "--feature":
-        if (!next) throw new Error("t3code adapter args: --feature requires a value");
-        feature = next;
-        i++;
-        break;
       case "--clarify":
         orchestrationConfig.enableClarify = true;
         break;
@@ -383,7 +376,6 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
       ];
     parsed.orchestration = {
       mode,
-      feature,
       config: orchestrationConfig,
       agents,
       coderModelOverride,
@@ -400,7 +392,6 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   const reviewerParsed = parseProviderToken(reviewerToken ?? "reviewer:codex:gpt-5.4", "reviewer", parsed.model);
   parsed.orchestration = {
     mode,
-    feature,
     config: orchestrationConfig,
     agents: [
       { ...coderParsed, role: "coder", modelExplicit: coderToken !== null && coderParsed.modelExplicit },
@@ -588,13 +579,6 @@ async function cleanupStaleThreads(
       // ignore
     }
   }
-}
-
-function makeOrchestrationFeature(ctx: AdapterContext, requested?: string): string {
-  if (requested?.trim()) return slugify(requested);
-  if (ctx.taskId?.trim()) return slugify(ctx.taskId);
-  if (ctx.process?.trim()) return slugify(ctx.process);
-  return `slot-${ctx.slot}`;
 }
 
 function orchestrationProjectDir(workspaceRoot: string): string {
@@ -802,7 +786,10 @@ async function startOrchestratedThreads(
   workspaceRoot: string,
 ): Promise<string> {
   const orchestration = options.orchestration!;
-  const feature = makeOrchestrationFeature(ctx, orchestration.feature);
+  const taskId = ctx.taskId && ctx.taskId !== "null" ? ctx.taskId : undefined;
+  if (!taskId) {
+    throw new Error(`slot ${ctx.slot}: taskId is required for orchestration. Assign a task first.`);
+  }
   const title = options.title ?? defaultTitle(ctx, workspaceRoot);
   const projectDir = orchestrationProjectDir(workspaceRoot);
   const existing = readSlotState(ctx.slot, ctx.harnessDir);
@@ -818,7 +805,7 @@ async function startOrchestratedThreads(
     orchestration.config.timeouts = { ...configPhaseTimeouts, ...(orchestration.config.timeouts ?? {}) };
   }
 
-  const setup = createWorktrees(projectDir, feature, orchestration.agents, undefined, ctx.slot, orchestration.mode);
+  const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode);
   symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);
 
   const agents: AgentConfig[] = orchestration.agents.map((agent, index) => ({
@@ -845,7 +832,7 @@ async function startOrchestratedThreads(
 
   initPeerSync(
     setup.peerSyncDir,
-    feature,
+    taskId,
     orchestration.mode,
     projectDir,
     agents,
@@ -898,7 +885,7 @@ async function startOrchestratedThreads(
 
   const state: OrchestrationState = {
     slot: ctx.slot,
-    feature,
+    taskId,
     mode: orchestration.mode,
     phase: "setup",
     round: 1,
@@ -913,7 +900,6 @@ async function startOrchestratedThreads(
     peerSyncDir: setup.peerSyncDir,
     threadIds: Object.fromEntries(slotThreads.map((thread, index) => [agents[index]!.name, thread.threadId])),
     backend: "t3code",
-    taskId: ctx.taskId || undefined,
     slotTitle: title,
     stagingRepo: (() => {
       const cfg = loadConfigSync();
@@ -933,7 +919,7 @@ async function startOrchestratedThreads(
   };
   persistState(state, ctx.harnessDir);
 
-  const pid = await startOrchestrationProcess(ctx.slot, ctx.harnessDir, feature);
+  const pid = await startOrchestrationProcess(ctx.slot, ctx.harnessDir, taskId);
   writeSlotState({
     slot: ctx.slot,
     threads: slotThreads,
@@ -1002,7 +988,7 @@ async function readState(ctx: AdapterContext): Promise<string | null> {
 
   if (orchestration) {
     md.section("Orchestration");
-    md.bullet(`Feature: ${orchestration.feature}`);
+    md.bullet(`Task: ${orchestration.taskId}`);
     md.bullet(`Phase: ${orchestration.phase}`);
     md.bullet(`Round: ${orchestration.round}`);
     md.bullet(`Peer sync: ${orchestration.peerSyncDir}`);
@@ -1088,8 +1074,8 @@ async function stop(ctx: AdapterContext): Promise<string> {
   }
 
   if (orchestrationState) {
-    removePeerSyncSession(orchestrationState.projectDir, orchestrationState.feature);
-    cleanupWorktrees(orchestrationState.projectDir, orchestrationState.feature, orchestrationState.agents, ctx.slot, orchestrationState.mode);
+    removePeerSyncSession(orchestrationState.projectDir, orchestrationState.taskId);
+    cleanupWorktrees(orchestrationState.projectDir, orchestrationState.taskId, orchestrationState.agents, ctx.slot, orchestrationState.mode);
     removeOrchestrationState(ctx.slot, ctx.harnessDir);
   }
 

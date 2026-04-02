@@ -7,7 +7,7 @@ import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationSt
 function makeState(): OrchestrationState {
   return {
     slot: 1,
-    feature: "feat",
+    taskId: "feat",
     mode: "pair",
     phase: "review",
     round: 2,
@@ -425,12 +425,14 @@ describe("skills", () => {
     }
   });
 
-  test("TASK_SPEC round-conditional: no taskId uses slotTitle on round 2+", async () => {
+  test("TASK_SPEC round-conditional: uses slotTitle on round 2+", async () => {
     const { buildSkillContext } = await import("./skills.ts");
-    const state = { ...makeState(), taskId: undefined, slotTitle: "My Feature Title", round: 2 };
+    const state = { ...makeState(), slotTitle: "My Feature Title", round: 2 };
     const ctx = buildSkillContext(state, state.agents[0]!);
-    expect(ctx["TASK_SPEC"]).toBe("My Feature Title");
-    expect(ctx["TASK_SPEC_BRIEF"]).toBe("My Feature Title");
+    expect(ctx["TASK_SPEC"]).toContain("My Feature Title");
+    expect(ctx["TASK_SPEC"]).toContain("Full task spec was provided in round 1");
+    expect(ctx["TASK_SPEC_BRIEF"]).toContain("My Feature Title");
+    expect(ctx["TASK_SPEC_BRIEF"]).toContain("Full task spec was provided in round 1");
   });
 
   test("buildSkillContext: discovers staging_repo via configured path", async () => {

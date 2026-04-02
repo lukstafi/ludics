@@ -89,7 +89,7 @@ interface PhaseEntry {
   since: number; // epoch seconds
 }
 
-function buildPhaseTimeline(taskId: string, slot: number | null, feature?: string): {
+function buildPhaseTimeline(taskId: string, slot: number | null): {
   phases: string[];
   timeline: PhaseEntry[];
 } {
@@ -107,12 +107,11 @@ function buildPhaseTimeline(taskId: string, slot: number | null, feature?: strin
   const lines = content.split("\n");
   const entries: PhaseEntry[] = [];
 
-  // Phase-transition events use `task: state.feature` (not state.taskId) and store
-  // the destination phase in `event.status` (e.g. "review").  `event.action` is a
-  // human-readable label like "work → review" and must not be used as the phase value.
-  // Match by taskId or feature (they may differ).
+  // Phase-transition events store the task identifier in the `task` field.
+  // Legacy events may use a slugified feature value; match by taskId and its slug.
   const matchIds = new Set<string>([taskId]);
-  if (feature && feature !== taskId) matchIds.add(feature);
+  const slugified = taskId.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (slugified !== taskId) matchIds.add(slugified);
 
   for (const line of lines) {
     try {
@@ -494,7 +493,7 @@ function writeRetrospective(data: RetrospectiveData): void {
 // --- Primary collector ---
 
 export async function collectAndWriteRetrospective(state: OrchestrationState): Promise<void> {
-  const taskId = state.taskId ?? state.feature;
+  const taskId = state.taskId;
   const fm = readTaskFrontmatter(taskId);
 
   // Extract PR URL from agent states
@@ -507,7 +506,7 @@ export async function collectAndWriteRetrospective(state: OrchestrationState): P
   }
 
   // Build phase timeline
-  const { phases, timeline } = buildPhaseTimeline(taskId, state.slot, state.feature);
+  const { phases, timeline } = buildPhaseTimeline(taskId, state.slot);
 
   // Get t3code snapshot
   const allThreads: RetrospectiveThread[] = [];

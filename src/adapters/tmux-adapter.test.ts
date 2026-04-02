@@ -51,7 +51,7 @@ describe("orchestration state backend field", () => {
     const { defaultOrchestrationConfig, initAgentRuntimeState } = await import("../orchestration/state.ts");
     const state = {
       slot: 1,
-      feature: "test",
+      taskId: "test",
       mode: "pair" as const,
       phase: "setup" as const,
       round: 1,
@@ -75,7 +75,7 @@ describe("orchestration state backend field", () => {
     type OrchestrationState = import("../orchestration/state.ts").OrchestrationState;
     const state: OrchestrationState = {
       slot: 1,
-      feature: "test",
+      taskId: "test",
       mode: "pair" as const,
       phase: "setup" as const,
       round: 1,

@@ -27,7 +27,7 @@ import {
 } from "../orchestration/state.ts";
 import { initPeerSync, removePeerSyncSession, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
 import { createWorktrees, cleanupWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
-import { isoNow, makeId, nowEpoch, slugify } from "../orchestration/util.ts";
+import { isoNow, makeId, nowEpoch } from "../orchestration/util.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { parseT3CodeAdapterArgs } from "./t3code.ts";
 
@@ -123,13 +123,6 @@ function normalizeWorkspacePath(ctx: AdapterContext): string {
     return resolve(process.env.HOME ?? "~", raw.slice(2));
   }
   return resolve(raw);
-}
-
-function makeOrchestrationFeature(ctx: AdapterContext, requested?: string): string {
-  if (requested?.trim()) return slugify(requested);
-  if (ctx.taskId?.trim()) return slugify(ctx.taskId);
-  if (ctx.process?.trim()) return slugify(ctx.process);
-  return `slot-${ctx.slot}`;
 }
 
 function orchestrationProjectDir(workspaceRoot: string): string {
@@ -408,7 +401,10 @@ async function start(ctx: AdapterContext): Promise<string> {
   }
 
   const orchestration = options.orchestration;
-  const feature = makeOrchestrationFeature(ctx, orchestration.feature);
+  const taskId = ctx.taskId && ctx.taskId !== "null" ? ctx.taskId : undefined;
+  if (!taskId) {
+    throw new Error(`slot ${ctx.slot}: taskId is required for orchestration. Assign a task first.`);
+  }
   const projectDir = orchestrationProjectDir(workspaceRoot);
   const existing = readTmuxSlotState(ctx.slot, ctx.harnessDir);
 
@@ -421,7 +417,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     orchestration.config.timeouts = { ...configPhaseTimeouts, ...(orchestration.config.timeouts ?? {}) };
   }
 
-  const setup = createWorktrees(projectDir, feature, orchestration.agents, undefined, ctx.slot, orchestration.mode);
+  const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode);
   symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);
 
   const agents: AgentConfig[] = orchestration.agents.map((agent, index) => ({
@@ -448,7 +444,7 @@ async function start(ctx: AdapterContext): Promise<string> {
 
   initPeerSync(
     setup.peerSyncDir,
-    feature,
+    taskId,
     orchestration.mode,
     projectDir,
     agents,
@@ -457,7 +453,6 @@ async function start(ctx: AdapterContext): Promise<string> {
   writeAgentMarkerFiles(setup.peerSyncDir, setup.agentWorktrees);
 
   // --- tmux-specific setup: create sessions + ttyd + boot agent CLIs ---
-  const taskId = ctx.taskId && ctx.taskId !== "null" ? ctx.taskId : undefined;
   const ttydPids: Record<string, number> = {};
   for (let i = 0; i < agents.length; i++) {
     const agent = agents[i]!;
@@ -471,7 +466,7 @@ async function start(ctx: AdapterContext): Promise<string> {
   // --- Build orchestration state (no t3code threadIds) ---
   const state: OrchestrationState = {
     slot: ctx.slot,
-    feature,
+    taskId,
     mode: orchestration.mode,
     phase: "setup",
     round: 1,
@@ -486,8 +481,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     peerSyncDir: setup.peerSyncDir,
     threadIds: {}, // tmux mode doesn't use t3code threads
     backend: "tmux",
-    taskId: ctx.taskId || undefined,
-    slotTitle: options.title ?? slotSessionName(ctx.slot, undefined, ctx.taskId, feature),
+    slotTitle: options.title ?? slotSessionName(ctx.slot, undefined, taskId),
     stagingRepo: (() => {
       const cfg = loadConfigSync();
       const proj = cfg.projects?.find((p) => {
@@ -506,7 +500,7 @@ async function start(ctx: AdapterContext): Promise<string> {
   };
   persistState(state, ctx.harnessDir);
 
-  const pid = await startOrchestrationProcess(ctx.slot, ctx.harnessDir, feature);
+  const pid = await startOrchestrationProcess(ctx.slot, ctx.harnessDir, taskId);
   writeTmuxSlotState({
     slot: ctx.slot,
     ttydPids,
@@ -541,8 +535,8 @@ async function stop(ctx: AdapterContext): Promise<string> {
   // Kill tmux agent sessions
   if (orchState) {
     killTmuxSessionsForSlot(ctx.slot, orchState.agents.map((a) => a.name), orchState.taskId);
-    removePeerSyncSession(orchState.projectDir, orchState.feature);
-    cleanupWorktrees(orchState.projectDir, orchState.feature, orchState.agents, ctx.slot, orchState.mode);
+    removePeerSyncSession(orchState.projectDir, orchState.taskId);
+    cleanupWorktrees(orchState.projectDir, orchState.taskId, orchState.agents, ctx.slot, orchState.mode);
     removeOrchestrationState(ctx.slot, ctx.harnessDir);
   }
 
@@ -563,7 +557,7 @@ async function readState(ctx: AdapterContext): Promise<string | null> {
 
   if (orchState) {
     md.section("Orchestration");
-    md.keyValue("Feature", orchState.feature);
+    md.keyValue("Task", orchState.taskId);
     md.keyValue("Phase", orchState.phase);
     md.keyValue("Round", String(orchState.round));
 

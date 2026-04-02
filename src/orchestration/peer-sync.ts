@@ -54,7 +54,7 @@ function writeFile(path: string, value: string): void {
 
 export function initPeerSync(
   peerSyncDir: string,
-  feature: string,
+  taskId: string,
   mode: "duo" | "pair",
   projectDir: string,
   agents: OrchestrationState["agents"],
@@ -64,18 +64,18 @@ export function initPeerSync(
   mkdirSync(join(peerSyncDir, "reviews"), { recursive: true });
   mkdirSync(join(peerSyncDir, "plans"), { recursive: true });
   mkdirSync(join(peerSyncDir, "merge-votes"), { recursive: true });
-  writeFile(join(peerSyncDir, "feature"), feature);
+  writeFile(join(peerSyncDir, "feature"), taskId);
   writeFile(join(peerSyncDir, "mode"), mode);
   writeFile(join(peerSyncDir, "phase"), "setup");
   writeFile(join(peerSyncDir, "phase-token"), makeId("phase"));
   writeFile(join(peerSyncDir, "round"), "1");
-  writeFile(join(peerSyncDir, "session"), feature);
+  writeFile(join(peerSyncDir, "session"), taskId);
   writeFile(join(peerSyncDir, "state.json"), JSON.stringify({
-    feature,
+    feature: taskId,
     mode,
     phase: "setup",
     round: 1,
-    session: feature,
+    session: taskId,
   }, null, 2));
   writeFile(join(peerSyncDir, "worktrees.json"), JSON.stringify(worktrees, null, 2));
 
@@ -90,7 +90,7 @@ export function initPeerSync(
 
   const sessionsDir = join(projectDir, ".agent-sessions");
   mkdirSync(sessionsDir, { recursive: true });
-  const sessionLink = join(sessionsDir, `${feature}.session`);
+  const sessionLink = join(sessionsDir, `${taskId}.session`);
   try {
     if (existsSync(sessionLink)) unlinkSync(sessionLink);
   } catch {
@@ -99,8 +99,8 @@ export function initPeerSync(
   symlinkSync(peerSyncDir, sessionLink);
 }
 
-export function removePeerSyncSession(projectDir: string, feature: string): void {
-  const sessionLink = join(projectDir, ".agent-sessions", `${feature}.session`);
+export function removePeerSyncSession(projectDir: string, taskId: string): void {
+  const sessionLink = join(projectDir, ".agent-sessions", `${taskId}.session`);
   try {
     if (existsSync(sessionLink)) unlinkSync(sessionLink);
   } catch {
@@ -114,14 +114,14 @@ export function writePeerSync(state: OrchestrationState, phaseToken?: string): v
   writeFile(join(dir, "phase"), state.phase);
   writeFile(join(dir, "phase-token"), phaseToken ?? makeId("phase"));
   writeFile(join(dir, "round"), String(state.round));
-  writeFile(join(dir, "feature"), state.feature);
+  writeFile(join(dir, "feature"), state.taskId);
   writeFile(join(dir, "mode"), state.mode);
   writeFile(join(dir, "state.json"), JSON.stringify({
-    feature: state.feature,
+    feature: state.taskId,
     mode: state.mode,
     phase: state.phase,
     round: state.round,
-    session: state.feature,
+    session: state.taskId,
   }, null, 2));
 }
 

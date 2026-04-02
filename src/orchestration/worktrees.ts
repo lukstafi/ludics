@@ -116,13 +116,13 @@ function defaultMainBranch(projectDir: string): string {
 
 export function createWorktrees(
   projectDir: string,
-  feature: string,
+  taskId: string,
   agents: Array<{ name: string }>,
   mainBranch: string = defaultMainBranch(projectDir),
   slot?: number,
   mode: "duo" | "pair" = "duo",
 ): WorktreeSetup {
-  const featureSlug = slugify(feature);
+  const featureSlug = slugify(taskId);
   const slotSuffix = slot ? `-s${slot}` : "";
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));
@@ -202,12 +202,12 @@ export function symlinkPeerSync(
 
 export function cleanupWorktrees(
   projectDir: string,
-  feature: string,
+  taskId: string,
   agents: Array<{ name: string }>,
   slot?: number,
   mode: "duo" | "pair" = "duo",
 ): void {
-  const featureSlug = slugify(feature);
+  const featureSlug = slugify(taskId);
   const slotSuffix = slot ? `-s${slot}` : "";
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));

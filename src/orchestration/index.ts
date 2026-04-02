@@ -16,7 +16,7 @@ function orchStatus(slot: number): void {
   const state = readOrchestrationState(slot);
   if (!state) throw new Error(`orchestration state not found for slot ${slot}`);
   console.log(`slot: ${state.slot}`);
-  console.log(`feature: ${state.feature}`);
+  console.log(`task: ${state.taskId}`);
   console.log(`mode: ${state.mode}`);
   console.log(`phase: ${state.phase}`);
   console.log(`round: ${state.round}`);

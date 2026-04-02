@@ -50,7 +50,7 @@ function makeState(
   mkdirSync(join(dir, "reviews"), { recursive: true });
   return {
     slot: 1,
-    feature: "feat",
+    taskId: "feat",
     mode: "pair",
     phase: "work",
     round: 1,
