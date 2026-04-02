@@ -4,7 +4,7 @@ import { emitEvent } from "../events.ts";
 import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone, pairReviewVerdict, phaseTimeoutExpired } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
-  statusFileFingerprint, writeInterrupt, writePeerSync,
+  statusFileFingerprint, touchStatusFile, writeInterrupt, writePeerSync,
 } from "./peer-sync.ts";
 import { determineWinner, hasConsensus, readMergeVotes } from "./merge.ts";
 import { shouldRunUpdateDocs } from "./learning.ts";
@@ -456,18 +456,41 @@ async function enterPhase(state: OrchestrationState, transport: OrchestrationTra
     // Only match the current phase's done status — a leftover "pr-comments-done"
     // must not prevent dispatch in "final-merge".
     {
-      const agentStatus = state.agentStates[agent.name]!.status;
+      const rt = state.agentStates[agent.name]!;
+      const agentStatus = rt.status;
       const currentPhaseDone = `${state.phase}-done`;
-      if (agentStatus === currentPhaseDone || agentStatus === "done" || agentStatus === "merged") {
-        continue;
+
+      // "merged" is driven by the <agent>.merged marker, not .status — always skip.
+      if (agentStatus === "merged") continue;
+
+      if (agentStatus === currentPhaseDone || agentStatus === "done") {
+        // On resume, .status may be stale. Check fingerprint against dispatch baseline.
+        const baseline = rt.dispatchStatusFingerprint;
+        const isStale = baseline != null
+          && statusFileFingerprint(state.peerSyncDir, agent.name) === baseline;
+        // Also verify the agent fully satisfies isAgentDone() — a fresh status
+        // without the required artifact (e.g. review-done but no review file)
+        // must not skip dispatch, otherwise the phase deadlocks until timeout.
+        if (!isStale && isAgentDone(state, agent)) {
+          continue; // genuinely done — skip dispatch
+        }
+        // Stale status or missing artifact — fall through to dispatch
       }
     }
+
+    // Touch status file BEFORE dispatch to establish a fresh fingerprint baseline.
+    // Must happen before sendTurn() — a fast agent could update .status before we
+    // capture the fingerprint if we do it after dispatch.
+    touchStatusFile(state.peerSyncDir, agent.name);
+    const dispatchFp = statusFileFingerprint(state.peerSyncDir, agent.name);
+
+    const runtime = state.agentStates[agent.name]!;
+    runtime.dispatchStatusFingerprint = dispatchFp;
 
     const skillMessage = await composeSkillMessage(state, agent);
     const commandId = await transport.sendTurn(state, agent, skillMessage);
 
     // Initialize per-agent turn lifecycle for this phase.
-    const runtime = state.agentStates[agent.name]!;
     runtime.turnLifecycle = {
       dispatchCommandId: commandId,
       dispatchedAt: isoNow(),
@@ -477,7 +500,7 @@ async function enterPhase(state: OrchestrationState, transport: OrchestrationTra
       turnStartedAt: null,
       turnCompletedAt: null,
       completionSource: null,
-      statusFileFingerprint: statusFileFingerprint(state.peerSyncDir, agent.name),
+      statusFileFingerprint: dispatchFp,
       lastStopHookAt: null,
       stallDetectedAt: null,
       nudgeAttempts: 0,
@@ -509,6 +532,10 @@ async function redispatchForPrComments(state: OrchestrationState, transport: Orc
     runtime.status = "pr-comments-active";
     runtime.statusEpoch = nowEpoch();
     runtime.statusMessage = "re-dispatched for new PR comments";
+    // Touch + capture baseline BEFORE sendTurn.
+    touchStatusFile(state.peerSyncDir, agent.name);
+    const dispatchFp = statusFileFingerprint(state.peerSyncDir, agent.name);
+    runtime.dispatchStatusFingerprint = dispatchFp;
     const skillMessage = await composeSkillMessage(state, agent);
     const commandId = await transport.sendTurn(state, agent, skillMessage);
     // Reset lifecycle for the re-dispatched turn.
@@ -521,7 +548,7 @@ async function redispatchForPrComments(state: OrchestrationState, transport: Orc
       turnStartedAt: null,
       turnCompletedAt: null,
       completionSource: null,
-      statusFileFingerprint: statusFileFingerprint(state.peerSyncDir, agent.name),
+      statusFileFingerprint: dispatchFp,
       lastStopHookAt: null,
       stallDetectedAt: null,
       nudgeAttempts: 0,

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
-import { evaluateTransition } from "./phases.ts";
+import { evaluateTransition, isAgentDone, phaseTimeoutExpired } from "./phases.ts";
+import { statusFileFingerprint } from "./peer-sync.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "./state.ts";
 
 function makeState(overrides: Partial<OrchestrationState> = {}): OrchestrationState {
@@ -313,5 +316,137 @@ describe("evaluateTransition", () => {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("isAgentDone — stale status detection (gh-ludics-122)", () => {
+  function makePairState(tmpDir: string, overrides: Partial<OrchestrationState> = {}): OrchestrationState {
+    return makeState({
+      mode: "pair",
+      phase: "review",
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      agents: [
+        { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
+        { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      threadIds: { coder: "t1", reviewer: "t2" },
+      peerSyncDir: tmpDir,
+      ...overrides,
+    });
+  }
+
+  test("null lifecycle + unchanged fingerprint → not done (stale)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh122-"));
+    const state = makePairState(tmpDir);
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "review-done|0|done\n");
+    const baseline = statusFileFingerprint(tmpDir, "reviewer");
+
+    state.agentStates.reviewer.status = "review-done";
+    state.agentStates.reviewer.turnLifecycle = null;
+    state.agentStates.reviewer.dispatchStatusFingerprint = baseline;
+
+    expect(isAgentDone(state, state.agents[1])).toBe(false);
+  });
+
+  test("null lifecycle + changed fingerprint + artifact present → done", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh122-"));
+    mkdirSync(join(tmpDir, "reviews"), { recursive: true });
+    const state = makePairState(tmpDir, { phaseStartedAt: Math.floor(Date.now() / 1000) - 10 });
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "idle|0|\n");
+    const baseline = statusFileFingerprint(tmpDir, "reviewer");
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "review-done|0|done\n");
+    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "APPROVE\n");
+
+    state.agentStates.reviewer.status = "review-done";
+    state.agentStates.reviewer.turnLifecycle = null;
+    state.agentStates.reviewer.dispatchStatusFingerprint = baseline;
+
+    expect(isAgentDone(state, state.agents[1])).toBe(true);
+  });
+
+  test("null lifecycle + changed fingerprint + missing artifact → not done", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh122-"));
+    const state = makePairState(tmpDir, { phaseStartedAt: Math.floor(Date.now() / 1000) - 10 });
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "idle|0|\n");
+    const baseline = statusFileFingerprint(tmpDir, "reviewer");
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "review-done|0|done\n");
+
+    state.agentStates.reviewer.status = "review-done";
+    state.agentStates.reviewer.turnLifecycle = null;
+    state.agentStates.reviewer.dispatchStatusFingerprint = baseline;
+
+    expect(isAgentDone(state, state.agents[1])).toBe(false);
+  });
+
+  test("timeout still overrides stale status", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh122-"));
+    const state = makePairState(tmpDir, { phaseStartedAt: 0 });
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "review-done|0|done\n");
+    const baseline = statusFileFingerprint(tmpDir, "reviewer");
+
+    state.agentStates.reviewer.status = "review-done";
+    state.agentStates.reviewer.turnLifecycle = null;
+    state.agentStates.reviewer.dispatchStatusFingerprint = baseline;
+
+    expect(isAgentDone(state, state.agents[1])).toBe(false);
+    expect(phaseTimeoutExpired(state)).toBe(true);
+    expect(evaluateTransition(state)).not.toBeNull();
+  });
+
+  test("regression: REQUEST_CHANGES + fresh status → review transitions to work", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh122-"));
+    mkdirSync(join(tmpDir, "reviews"), { recursive: true });
+    const state = makePairState(tmpDir, { phaseStartedAt: Math.floor(Date.now() / 1000) - 10 });
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "idle|0|\n");
+    const baseline = statusFileFingerprint(tmpDir, "reviewer");
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "review-done|0|done\n");
+    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "## Verdict\nREQUEST_CHANGES\n");
+
+    state.agentStates.reviewer.status = "review-done";
+    state.agentStates.reviewer.turnLifecycle = null;
+    state.agentStates.reviewer.dispatchStatusFingerprint = baseline;
+
+    expect(evaluateTransition(state)).toBe("work");
+  });
+
+  test("null lifecycle + no baseline (legacy) → trusts done status + artifact", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh122-"));
+    mkdirSync(join(tmpDir, "reviews"), { recursive: true });
+    const state = makePairState(tmpDir, { phaseStartedAt: Math.floor(Date.now() / 1000) - 10 });
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "review-done|0|done\n");
+    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "APPROVE\n");
+
+    state.agentStates.reviewer.status = "review-done";
+    state.agentStates.reviewer.turnLifecycle = null;
+
+    expect(isAgentDone(state, state.agents[1])).toBe(true);
+  });
+
+  test("plan-review: stale status + no review file → stays in plan-review", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh122-"));
+    const state = makePairState(tmpDir, {
+      phase: "plan-review",
+      planMergeRound: 1,
+    });
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "plan-review-done|0|done\n");
+    const baseline = statusFileFingerprint(tmpDir, "reviewer");
+
+    state.agentStates.reviewer.status = "plan-review-done";
+    state.agentStates.reviewer.turnLifecycle = null;
+    state.agentStates.reviewer.dispatchStatusFingerprint = baseline;
+
+    expect(isAgentDone(state, state.agents[1])).toBe(false);
+    expect(evaluateTransition(state)).toBeNull();
   });
 });
