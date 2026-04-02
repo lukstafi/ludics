@@ -292,14 +292,15 @@ done < "$RESOLVED_CONFIG"
 # Flush last project
 flush_project
 
-# ── Step 5: Pre-trust project directories for Codex ────────────────────────
+# ── Step 5: Pre-trust project directories for Codex & Claude Code ───────────
 
-step "Pre-trusting project directories for Codex"
-
-CODEX_STATE="$HOME/.codex/.codex-global-state.json"
-mkdir -p "$HOME/.codex"
+step "Pre-trusting project directories for Codex and Claude Code"
 
 if [[ ${#project_paths[@]} -gt 0 ]]; then
+  # ── Codex trust ──
+  CODEX_STATE="$HOME/.codex/.codex-global-state.json"
+  mkdir -p "$HOME/.codex"
+
   if [[ ! -f "$CODEX_STATE" ]]; then
     echo '{"electron-saved-workspace-roots":[]}' > "$CODEX_STATE"
   fi
@@ -310,7 +311,6 @@ if [[ ${#project_paths[@]} -gt 0 ]]; then
        "$CODEX_STATE" > "${CODEX_STATE}.tmp" \
        && mv "${CODEX_STATE}.tmp" "$CODEX_STATE"
   else
-    # Fallback: use bun for JSON manipulation when jq is not available
     bun -e "
       const fs = require('fs');
       const state = JSON.parse(fs.readFileSync('${CODEX_STATE}', 'utf8'));
@@ -322,8 +322,42 @@ if [[ ${#project_paths[@]} -gt 0 ]]; then
   fi
 
   info "Codex trust: ${#project_paths[@]} project directories registered"
+
+  # ── Claude Code trust ──
+  CLAUDE_STATE="$HOME/.claude.json"
+
+  if [[ ! -f "$CLAUDE_STATE" ]]; then
+    echo '{}' > "$CLAUDE_STATE"
+  fi
+
+  if command -v jq &>/dev/null; then
+    jq --argjson paths "$(printf '%s\n' "${project_paths[@]}" | jq -R . | jq -s .)" '
+      .projects //= {} |
+      reduce $paths[] as $p (.; .projects[$p] = ((.projects[$p] // {}) + {"hasTrustDialogAccepted": true}))
+    ' "$CLAUDE_STATE" > "${CLAUDE_STATE}.tmp" \
+       && mv "${CLAUDE_STATE}.tmp" "$CLAUDE_STATE"
+  else
+    # Build a JSON array of paths for bun
+    PATHS_JSON="["
+    for p in "${project_paths[@]}"; do
+      PATHS_JSON+="\"$p\","
+    done
+    PATHS_JSON="${PATHS_JSON%,}]"
+
+    bun -e "
+      const fs = require('fs');
+      const state = JSON.parse(fs.readFileSync('${CLAUDE_STATE}', 'utf8'));
+      if (!state.projects) state.projects = {};
+      for (const p of ${PATHS_JSON}) {
+        state.projects[p] = Object.assign({}, state.projects[p] || {}, {hasTrustDialogAccepted: true});
+      }
+      fs.writeFileSync('${CLAUDE_STATE}', JSON.stringify(state, null, 2) + '\n');
+    "
+  fi
+
+  info "Claude Code trust: ${#project_paths[@]} project directories registered"
 else
-  info "Codex trust: no project directories to register"
+  info "No project directories to register for trust"
 fi
 
 step "Setup complete"
