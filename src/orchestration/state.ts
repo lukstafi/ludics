@@ -78,6 +78,11 @@ export interface AgentRuntimeState {
   interrupted: boolean;
   /** Current phase's turn lifecycle tracking.  Null for phases that don't dispatch turns (e.g. setup). */
   turnLifecycle?: AgentTurnLifecycle | null;
+  /** Status file fingerprint captured at dispatch time.
+   *  Persisted on AgentRuntimeState (not turnLifecycle) so it survives
+   *  slotResume() clearing turnLifecycle. Used by isAgentDone() to detect
+   *  stale status files after crash/resume. */
+  dispatchStatusFingerprint?: string | null;
 }
 
 export interface OrchestrationConfig {
@@ -249,6 +254,7 @@ export function initAgentRuntimeState(names: string[]): Record<string, AgentRunt
       prUrl: null,
       interrupted: false,
       turnLifecycle: null,
+      dispatchStatusFingerprint: null,
     };
   }
   return out;

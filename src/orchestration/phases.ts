@@ -206,8 +206,47 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
 
   const lc = runtime.turnLifecycle;
 
-  // No lifecycle → pre-existing / setup state. Trust peer-sync alone.
-  if (!lc) return DONE_STATUSES.has(runtime.status);
+  // No lifecycle → pre-existing / setup state, or resume after crash.
+  // Apply dispatch-scoped freshness gate + artifact validation.
+  if (!lc) {
+    if (!DONE_STATUSES.has(runtime.status)) return false;
+
+    // Dispatch-scoped freshness gate: reject status files that haven't changed
+    // since the last dispatch. On resume, slotResume() clears turnLifecycle but
+    // phaseDispatched=false triggers re-dispatch which touches the .status file
+    // and captures a new dispatchStatusFingerprint. The agent must write AFTER
+    // that touch for the fingerprint to differ.
+    const baseline = runtime.dispatchStatusFingerprint;
+    if (baseline !== undefined && baseline !== null) {
+      const currentFp = statusFileFingerprint(state.peerSyncDir, agent.name);
+      if (currentFp === baseline) {
+        emitEvent({
+          event_type: "orchestration_warning",
+          source: "orchestration",
+          scope: "slot",
+          slot: state.slot,
+          task: state.taskId,
+          message: `${agent.name}: status "${runtime.status}" is stale (fingerprint unchanged since dispatch)`,
+        });
+        return false;
+      }
+    }
+
+    // Artifact validation (same gate as the settled branch).
+    if (!hasRequiredArtifact(state, agent)) {
+      emitEvent({
+        event_type: "orchestration_warning",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.taskId,
+        message: `${agent.name}: status is "${runtime.status}" but required artifact missing: ${requiredArtifactPath(state, agent)}`,
+      });
+      return false;
+    }
+
+    return true;
+  }
 
   switch (lc.state) {
     case "dispatched":

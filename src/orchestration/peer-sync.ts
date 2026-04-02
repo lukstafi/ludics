@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import type { OrchestrationState } from "./state.ts";
 import { makeId } from "./util.ts";
@@ -178,6 +178,22 @@ export function statusFileFingerprint(dir: string, agent: string): string | null
     return `${content}|${mtime}`;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Touch the agent's .status file to update its mtime without changing content.
+ * Used at dispatch to establish a fresh fingerprint baseline so that pre-crash
+ * content becomes stale by fingerprint comparison.
+ */
+export function touchStatusFile(dir: string, agent: string): void {
+  const path = join(dir, `${agent}.status`);
+  if (!existsSync(path)) return;
+  try {
+    const now = new Date();
+    utimesSync(path, now, now);
+  } catch {
+    // File may have been removed between check and touch — ignore.
   }
 }
 
