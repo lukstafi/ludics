@@ -3157,6 +3157,8 @@ export async function runMag(args: string[]): Promise<void> {
       clearStartupWatchdogEpoch();
       // When paused, don't pop — items accumulate and are processed on unpause
       if (existsSync(join(harnessDir(), "mag", "paused"))) break;
+      // Only the federation controller pops the queue — workers must not run Mag skills
+      if (!federationIsController()) break;
       const skillCommand = await queuePopSkill();
       if (skillCommand) {
         console.log(JSON.stringify({ decision: "block", reason: skillCommand }));
