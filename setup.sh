@@ -177,6 +177,9 @@ if [[ -n "$STATE_REPO" && "$STATE_REPO" != *"your-username"* ]]; then
   fi
 fi
 
+# Harness directory: the state repo's harness subdirectory (mirrors harnessDir() in config.ts)
+HARNESS_DIR="${REPO_NAME:+$HOME/$REPO_NAME/$STATE_PATH}"
+
 # Parse projects from config — extract repo and path fields
 # Uses a simple state machine to handle YAML list items
 in_projects=false
@@ -367,6 +370,12 @@ fi
 
 step "Claude Code memory symlink"
 
+if [[ -z "$HARNESS_DIR" ]]; then
+  info "No state repo configured — skipping memory symlink"
+elif [[ ! -d "$HARNESS_DIR" ]]; then
+  warn "Harness directory $HARNESS_DIR does not exist — skipping memory symlink"
+else
+
 # Symlink Claude Code auto-memory into the harness repo so it's git-synced
 # across machines. The project key is derived from the harness parent directory.
 HARNESS_PARENT="$(dirname "$HARNESS_DIR")"
@@ -392,6 +401,8 @@ if [[ -d "$CLAUDE_MEMORY_SRC" ]]; then
 else
   info "No claude-memory directory in harness — skipping symlink"
 fi
+
+fi  # end HARNESS_DIR guard
 
 step "Setup complete"
 
