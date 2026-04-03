@@ -67,7 +67,7 @@ describe("computeSlotLiveness", () => {
   // Dynamic import to pick up env changes
   async function getLiveness(slot: number, mode: string | null) {
     const { computeSlotLiveness } = await import("./dashboard.ts");
-    return computeSlotLiveness(slot, mode);
+    return computeSlotLiveness({ slotNum: slot, mode });
   }
 
   test("t3code slot with alive PID returns 'alive'", async () => {
@@ -130,13 +130,13 @@ describe("computeSlotLiveness", () => {
   test("explicit Liveness field 'interrupted' in slot block returns 'interrupted'", async () => {
     const { computeSlotLiveness } = await import("./dashboard.ts");
     const block = `## Slot 1\n\n**Process:** test\n**Liveness:** interrupted\n`;
-    expect(computeSlotLiveness(1, null, block)).toBe("interrupted");
+    expect(computeSlotLiveness({ slotNum: 1, mode: null, slotBlock: block })).toBe("interrupted");
   });
 
   test("explicit Liveness field 'null' in slot block falls through to PID check", async () => {
     const { computeSlotLiveness } = await import("./dashboard.ts");
     const block = `## Slot 1\n\n**Process:** test\n**Liveness:** null\n`;
-    expect(computeSlotLiveness(1, null, block)).toBe(null);
+    expect(computeSlotLiveness({ slotNum: 1, mode: null, slotBlock: block })).toBe(null);
   });
 });
 

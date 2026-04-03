@@ -45,11 +45,14 @@ interface SlotJson {
   liveness: "alive" | "interrupted" | null;
 }
 
-export function computeSlotLiveness(
-  slotNum: number,
-  mode: string | null,
-  slotBlock?: string,
-): "alive" | "interrupted" | null {
+export interface SlotLivenessContext {
+  slotNum: number;
+  mode: string | null;
+  slotBlock?: string;
+}
+
+export function computeSlotLiveness(ctx: SlotLivenessContext): "alive" | "interrupted" | null {
+  const { slotNum, mode, slotBlock } = ctx;
   // Check explicit Liveness field from slot block (set by markSlotSetupFailed)
   if (slotBlock) {
     const explicit = getLiveness(slotBlock).trim();
@@ -275,7 +278,7 @@ function generateSlots(): SlotJson[] {
       const explicitLiveness = getLiveness(block).trim();
       const shouldCheck = (phase && phase !== "done") || explicitLiveness === "interrupted";
       if (shouldCheck && (!machineName || machineName === "null" || !isRemoteMachine(machineName))) {
-        liveness = computeSlotLiveness(num, getMode(block).trim() || null, block);
+        liveness = computeSlotLiveness({ slotNum: num, mode: getMode(block).trim() || null, slotBlock: block });
       }
     }
 
