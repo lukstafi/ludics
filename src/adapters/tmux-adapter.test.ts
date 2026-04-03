@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import type { AdapterContext } from "./types.ts";
 
 describe("tmux adapter exports", () => {
   test("adapter module is importable", async () => {
@@ -91,5 +95,98 @@ describe("orchestration state backend field", () => {
       threadIds: {},
     };
     expect(state.backend).toBeUndefined();
+  });
+});
+
+describe("tmux adapter stop — preserveState", () => {
+  let TMP = "";
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-tmux-stop-"));
+  });
+
+  afterEach(() => {
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  function makeHarness(): string {
+    const harness = join(TMP, "harness");
+    mkdirSync(join(harness, "orchestration"), { recursive: true });
+    return harness;
+  }
+
+  function makeCtx(harness: string): AdapterContext {
+    return {
+      slot: 1,
+      mode: "tmux",
+      session: "test",
+      path: "/tmp",
+      taskId: "test-task",
+      adapterArgs: "",
+      process: "test",
+      harnessDir: harness,
+      stateRepoDir: TMP,
+    };
+  }
+
+  function writeTmuxState(harness: string): void {
+    writeFileSync(
+      join(harness, "orchestration", "tmux-slot-1.json"),
+      JSON.stringify({ slot: 1, ttydPids: {}, orchestration: { stateFile: "slot-1.json", mode: "pair" } }),
+    );
+  }
+
+  function writeOrchState(harness: string): void {
+    const { defaultOrchestrationConfig, initAgentRuntimeState } = require("../orchestration/state.ts");
+    const { persistState } = require("../orchestration/state.ts");
+    const state = {
+      slot: 1,
+      taskId: "test-task",
+      mode: "pair",
+      phase: "work",
+      round: 1,
+      mergeRound: 0,
+      agents: [],
+      agentStates: initAgentRuntimeState([]),
+      config: defaultOrchestrationConfig({}),
+      phaseStartedAt: 0,
+      startedAt: "2026-01-01T00:00:00Z",
+      projectDir: "/tmp/nonexistent-project",
+      rootWorktree: "/tmp",
+      peerSyncDir: "/tmp/nonexistent-peersync",
+      threadIds: {},
+      backend: "tmux",
+    };
+    persistState(state, harness);
+  }
+
+  test("preserveState: true keeps tmux slot state and orchestration state", async () => {
+    const harness = makeHarness();
+    writeTmuxState(harness);
+    writeOrchState(harness);
+
+    const { stop } = await import("./tmux-adapter.ts");
+    const ctx = makeCtx(harness);
+    const result = await stop(ctx, { preserveState: true });
+
+    expect(result).toContain("stopped");
+    expect(existsSync(join(harness, "orchestration", "tmux-slot-1.json"))).toBe(true);
+    expect(existsSync(join(harness, "orchestration", "slot-1.json"))).toBe(true);
+  });
+
+  test("preserveState: false removes tmux slot state", async () => {
+    const harness = makeHarness();
+    // Write tmux state without orchestration reference — tests adapter state removal only
+    writeFileSync(
+      join(harness, "orchestration", "tmux-slot-1.json"),
+      JSON.stringify({ slot: 1, ttydPids: {} }),
+    );
+
+    const { stop } = await import("./tmux-adapter.ts");
+    const ctx = makeCtx(harness);
+    const result = await stop(ctx, { preserveState: false });
+
+    expect(result).toContain("stopped");
+    expect(existsSync(join(harness, "orchestration", "tmux-slot-1.json"))).toBe(false);
   });
 });

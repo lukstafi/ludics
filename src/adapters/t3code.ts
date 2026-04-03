@@ -1034,7 +1034,7 @@ async function readState(ctx: AdapterContext): Promise<string | null> {
   return md.toString();
 }
 
-async function stop(ctx: AdapterContext): Promise<string> {
+async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }): Promise<string> {
   const slotState = readSlotState(ctx.slot, ctx.harnessDir);
   if (!slotState || slotState.threads.length === 0) {
     return `t3code slot ${ctx.slot} already stopped`;
@@ -1060,26 +1060,30 @@ async function stop(ctx: AdapterContext): Promise<string> {
         } catch {
           // ignore
         }
-        try {
-          await client.dispatchCommand({
-            type: "thread.delete",
-            commandId: makeId("cmd"),
-            threadId: thread.threadId,
-          });
-        } catch {
-          // ignore
+        if (!options?.preserveState) {
+          try {
+            await client.dispatchCommand({
+              type: "thread.delete",
+              commandId: makeId("cmd"),
+              threadId: thread.threadId,
+            });
+          } catch {
+            // ignore
+          }
         }
       }
     });
   }
 
-  if (orchestrationState) {
+  if (orchestrationState && !options?.preserveState) {
     removePeerSyncSession(orchestrationState.projectDir, orchestrationState.taskId);
     cleanupWorktrees(orchestrationState.projectDir, orchestrationState.taskId, orchestrationState.agents, ctx.slot, orchestrationState.mode);
     removeOrchestrationState(ctx.slot, ctx.harnessDir);
   }
 
-  removeSlotState(ctx.slot, ctx.harnessDir);
+  if (!options?.preserveState) {
+    removeSlotState(ctx.slot, ctx.harnessDir);
+  }
   return `t3code slot ${ctx.slot} stopped`;
 }
 

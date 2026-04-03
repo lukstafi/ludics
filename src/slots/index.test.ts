@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotResume, slotStart, runSlot, markSlotSetupFailed } from "./index.ts";
-import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "../orchestration/state.ts";
+import { slotAssign, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed } from "./index.ts";
+import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
+import { existsSync } from "fs";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -441,5 +442,203 @@ describe("slotResume — interrupted fallback to fresh start", () => {
       const msg = err instanceof Error ? err.message : String(err);
       expect(msg).not.toContain("has recoverable orchestration state");
     }
+  });
+});
+
+describe("slotSetMode — preserve state on mode toggle", () => {
+  function makeOrchState(harness: string, slot: number, taskId: string): OrchestrationState {
+    const orchDir = join(harness, "orchestration");
+    mkdirSync(orchDir, { recursive: true });
+    const orchState: OrchestrationState = {
+      slot,
+      taskId,
+      mode: "pair",
+      phase: "work",
+      round: 1,
+      mergeRound: 0,
+      agents: [],
+      agentStates: {},
+      config: defaultOrchestrationConfig(),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/project",
+      rootWorktree: "/tmp/root",
+      peerSyncDir: "/tmp/peersync",
+      threadIds: {},
+      backend: "tmux",
+    };
+    persistState(orchState, harness);
+    return orchState;
+  }
+
+  function stampSessionStarted(harness: string): void {
+    const slotsFile = join(harness, "slots.md");
+    const content = readFileSync(slotsFile, "utf-8");
+    const updated = content.replace(
+      /\*\*Session Started:\*\* null/,
+      "**Session Started:** 2026-04-03T20:00Z",
+    );
+    writeFileSync(slotsFile, updated);
+  }
+
+  test("toggling active tmux slot to manual preserves orchestration state", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-toggle-1", "Toggle test");
+    slotAssign(1, "task-toggle-1", "tmux");
+
+    makeOrchState(harness, 1, "task-toggle-1");
+    stampSessionStarted(harness);
+
+    await slotSetMode(1, "manual");
+
+    // Mode should be updated
+    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
+    expect(slots).toContain("**Mode:** manual");
+
+    // Session Started should be cleared
+    expect(slots).toContain("**Session Started:** null");
+
+    // Orchestration state should still exist (preserved)
+    const orchState = readOrchestrationState(1, harness);
+    expect(orchState).not.toBeNull();
+    expect(orchState!.taskId).toBe("task-toggle-1");
+
+    // Task frontmatter adapter field should be updated
+    const task = readFileSync(join(tasksDir, "task-toggle-1.md"), "utf-8");
+    expect(task).toContain("adapter: manual");
+  });
+
+  test("toggling active t3code slot to manual preserves orchestration state", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-toggle-2", "Toggle test t3code");
+    slotAssign(1, "task-toggle-2", "t3code");
+
+    makeOrchState(harness, 1, "task-toggle-2");
+    stampSessionStarted(harness);
+
+    await slotSetMode(1, "manual");
+
+    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
+    expect(slots).toContain("**Mode:** manual");
+    expect(slots).toContain("**Session Started:** null");
+
+    const orchState = readOrchestrationState(1, harness);
+    expect(orchState).not.toBeNull();
+  });
+
+  test("toggling from manual to automated with active session is still rejected", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-toggle-3", "Toggle reject test");
+    slotAssign(1, "task-toggle-3", "manual");
+    stampSessionStarted(harness);
+
+    await expect(slotSetMode(1, "t3code")).rejects.toThrow("has an active session");
+  });
+
+  test("runSlot mode subcommand awaits slotSetMode correctly", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-toggle-4", "CLI toggle test");
+    slotAssign(1, "task-toggle-4", "tmux");
+
+    makeOrchState(harness, 1, "task-toggle-4");
+    stampSessionStarted(harness);
+
+    await runSlot(["1", "mode", "manual"]);
+
+    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
+    expect(slots).toContain("**Mode:** manual");
+  });
+});
+
+describe("slotStop — preserve-state flag", () => {
+  test("slotStop with preserveState clears Session Started but keeps orch state", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-preserve-1", "Preserve stop test");
+    slotAssign(1, "task-preserve-1", "tmux");
+
+    // Write orchestration state
+    const orchDir = join(harness, "orchestration");
+    mkdirSync(orchDir, { recursive: true });
+    const orchState: OrchestrationState = {
+      slot: 1,
+      taskId: "task-preserve-1",
+      mode: "pair",
+      phase: "work",
+      round: 1,
+      mergeRound: 0,
+      agents: [],
+      agentStates: {},
+      config: defaultOrchestrationConfig(),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/project",
+      rootWorktree: "/tmp/root",
+      peerSyncDir: "/tmp/peersync",
+      threadIds: {},
+      backend: "tmux",
+    };
+    persistState(orchState, harness);
+
+    // Stamp session started
+    const slotsFile = join(harness, "slots.md");
+    const content = readFileSync(slotsFile, "utf-8");
+    writeFileSync(slotsFile, content.replace(
+      /\*\*Session Started:\*\* null/,
+      "**Session Started:** 2026-04-03T20:00Z",
+    ));
+
+    await slotStop(1, false, true);
+
+    // Session Started should be cleared
+    const slots = readFileSync(slotsFile, "utf-8");
+    expect(slots).toContain("**Session Started:** null");
+
+    // Orchestration state should still exist
+    expect(readOrchestrationState(1, harness)).not.toBeNull();
+  });
+
+  test("CLI --preserve-state flag is parsed", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-preserve-2", "CLI preserve test");
+    slotAssign(1, "task-preserve-2", "tmux");
+
+    // Write orch state
+    const orchDir = join(harness, "orchestration");
+    mkdirSync(orchDir, { recursive: true });
+    persistState({
+      slot: 1,
+      taskId: "task-preserve-2",
+      mode: "pair",
+      phase: "work",
+      round: 1,
+      mergeRound: 0,
+      agents: [],
+      agentStates: {},
+      config: defaultOrchestrationConfig(),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/project",
+      rootWorktree: "/tmp/root",
+      peerSyncDir: "/tmp/peersync",
+      threadIds: {},
+      backend: "tmux",
+    } satisfies OrchestrationState, harness);
+
+    await runSlot(["1", "stop", "--preserve-state"]);
+
+    // Orchestration state should still exist
+    expect(readOrchestrationState(1, harness)).not.toBeNull();
   });
 });

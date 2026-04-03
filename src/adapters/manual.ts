@@ -12,6 +12,7 @@ import {
 } from "./base.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { AdapterContext, Adapter } from "./types.ts";
+import { readOrchestrationState } from "../orchestration/state.ts";
 
 const ADAPTER_NAME = "manual";
 
@@ -25,28 +26,44 @@ function statusFile(ctx: AdapterContext): string {
 
 export function readState(ctx: AdapterContext): string | null {
   const sf = statusFile(ctx);
-  if (!existsSync(sf)) return null;
+  if (existsSync(sf)) {
+    const data = readStateFile(sf);
+    const status = data.get("status") ?? "active";
+    const started = data.get("started") ?? "unknown";
+    const task = data.get("task") ?? "";
 
-  const data = readStateFile(sf);
-  const status = data.get("status") ?? "active";
-  const started = data.get("started") ?? "unknown";
-  const task = data.get("task") ?? "";
+    const md = new MarkdownBuilder();
+    md.keyValue("Mode", "manual (human work)");
+    md.separator();
+    md.keyValue("Status", status);
+    md.keyValue("Started", started);
+    if (task) md.keyValue("Task", task);
 
-  const md = new MarkdownBuilder();
-  md.keyValue("Mode", "manual (human work)");
-  md.separator();
-  md.keyValue("Status", status);
-  md.keyValue("Started", started);
-  if (task) md.keyValue("Task", task);
+    // Show notes if file exists
+    const nf = slotFile(ctx);
+    if (existsSync(nf)) {
+      md.section("Notes");
+      md.line(readFileSync(nf, "utf-8"));
+    }
 
-  // Show notes if file exists
-  const nf = slotFile(ctx);
-  if (existsSync(nf)) {
-    md.section("Notes");
-    md.line(readFileSync(nf, "utf-8"));
+    return md.toString();
   }
 
-  return md.toString();
+  // Fallback: check for preserved orchestration state (paused automated session)
+  const orchState = readOrchestrationState(ctx.slot, ctx.harnessDir);
+  if (orchState) {
+    const md = new MarkdownBuilder();
+    md.keyValue("Mode", "manual (paused orchestration)");
+    md.separator();
+    md.keyValue("Status", "paused");
+    md.keyValue("Task", orchState.taskId);
+    md.keyValue("Phase", orchState.phase);
+    md.keyValue("Round", String(orchState.round));
+    md.keyValue("Original Backend", orchState.backend ?? "unknown");
+    return md.toString();
+  }
+
+  return null;
 }
 
 export function start(ctx: AdapterContext): string {

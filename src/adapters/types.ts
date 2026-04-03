@@ -20,7 +20,7 @@ export type MaybePromise<T> = T | Promise<T>;
 export interface Adapter {
   readState(ctx: AdapterContext): MaybePromise<string | null>;
   start(ctx: AdapterContext): MaybePromise<string>;
-  stop(ctx: AdapterContext): MaybePromise<string>;
+  stop(ctx: AdapterContext, options?: { preserveState?: boolean }): MaybePromise<string>;
   /** Return ISO timestamp of last real work activity, or null if unknown. */
   lastActivity(ctx: AdapterContext): MaybePromise<string | null>;
 }
