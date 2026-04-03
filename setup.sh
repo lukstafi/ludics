@@ -365,6 +365,34 @@ else
   info "No project directories to register for trust"
 fi
 
+step "Claude Code memory symlink"
+
+# Symlink Claude Code auto-memory into the harness repo so it's git-synced
+# across machines. The project key is derived from the harness parent directory.
+HARNESS_PARENT="$(dirname "$HARNESS_DIR")"
+# Claude Code encodes paths by replacing / with - and stripping the leading -
+PROJECT_KEY="-$(echo "$HARNESS_PARENT" | tr '/' '-' | sed 's/^-//')"
+CLAUDE_MEMORY_SRC="$HARNESS_DIR/claude-memory"
+CLAUDE_MEMORY_DST="$HOME/.claude/projects/$PROJECT_KEY/memory"
+
+if [[ -d "$CLAUDE_MEMORY_SRC" ]]; then
+  mkdir -p "$(dirname "$CLAUDE_MEMORY_DST")"
+  if [[ -L "$CLAUDE_MEMORY_DST" ]]; then
+    info "Claude memory symlink already exists"
+  elif [[ -d "$CLAUDE_MEMORY_DST" ]]; then
+    # Merge existing local memories into repo, then replace with symlink
+    cp -n "$CLAUDE_MEMORY_DST"/* "$CLAUDE_MEMORY_SRC/" 2>/dev/null || true
+    rm -rf "$CLAUDE_MEMORY_DST"
+    ln -s "$CLAUDE_MEMORY_SRC" "$CLAUDE_MEMORY_DST"
+    info "Merged local memories and created symlink"
+  else
+    ln -s "$CLAUDE_MEMORY_SRC" "$CLAUDE_MEMORY_DST"
+    info "Created Claude memory symlink: $CLAUDE_MEMORY_DST -> $CLAUDE_MEMORY_SRC"
+  fi
+else
+  info "No claude-memory directory in harness — skipping symlink"
+fi
+
 step "Setup complete"
 
 # Check if ~/.local/bin is in the user's default PATH (not just this session)
