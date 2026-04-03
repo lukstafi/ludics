@@ -395,21 +395,28 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
     case "plan":
       if (allAgentsDone(state) || phaseTimeoutExpired(state)) {
         if (state.mode !== "pair") return "plan-review";
-        // Pair mode: skip plan-merge when fewer than 2 plan files exist (e.g., reviewer
-        // didn't produce a plan).  Count files matching round-{round}-*.md excluding merged.
+        // Pair mode: skip plan-merge when only the coder plan exists (reviewer didn't
+        // produce a plan).  If only the reviewer's plan exists we must still enter
+        // plan-merge so the coder gets a chance to process it — skipping would have the
+        // reviewer effectively review their own plan.
         const plansDir = join(state.peerSyncDir, "plans");
         const planPrefix = `round-${state.round}-`;
+        const coder = state.agents.find((a) => a.role === "coder");
         let planCount = 0;
+        let coderPlanExists = false;
         try {
           for (const f of readdirSync(plansDir)) {
             if (f.startsWith(planPrefix) && f.endsWith(".md") && !f.includes("-merged-")) {
               planCount++;
+              if (coder && f === `round-${state.round}-${coder.name}.md`) coderPlanExists = true;
             }
           }
         } catch {
           // plans dir may not exist yet
         }
-        return planCount >= 2 ? "plan-merge" : "plan-review";
+        // Only skip plan-merge when there's exactly one plan and it's the coder's.
+        if (planCount < 2 && coderPlanExists) return "plan-review";
+        return "plan-merge";
       }
       return null;
 

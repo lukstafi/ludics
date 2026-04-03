@@ -193,6 +193,30 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBe("plan-merge");
   });
 
+  test("pair plan phase does NOT skip plan-merge when only reviewer plan exists", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh138-"));
+    mkdirSync(join(tmpDir, "plans"), { recursive: true });
+    // Only the reviewer plan exists — coder timed out
+    writeFileSync(join(tmpDir, "plans", "round-1-reviewer.md"), "# Reviewer Plan\n");
+    const state = makeState({
+      mode: "pair",
+      config: defaultOrchestrationConfig({ enablePlan: true }),
+      phase: "plan",
+      round: 1,
+      agents: [
+        { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
+        { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      threadIds: { coder: "t1", reviewer: "t2" },
+      peerSyncDir: tmpDir,
+    });
+    state.agentStates.coder.status = "plan-done";
+    state.agentStates.reviewer.status = "plan-done";
+    // Must still go through plan-merge so coder can process the reviewer's plan
+    expect(evaluateTransition(state)).toBe("plan-merge");
+  });
+
   test("plan-merge transitions to plan-review when done", () => {
     const state = makeState({
       mode: "pair",
