@@ -637,7 +637,7 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
     const markerFile = join(state.peerSyncDir, `${agent.name}.merged`);
 
     if (!existsSync(markerFile) && isPrMerged(prUrl)) {
-      const isStaging = !!state.stagingRepo && state.mode === "pair";
+      const isStaging = !!state.stagingRepo && state.duoPeerSlot == null;
       const forwarded = state.agents.some((a) =>
         existsSync(join(state.peerSyncDir, `${a.name}.forwarded`))
       );

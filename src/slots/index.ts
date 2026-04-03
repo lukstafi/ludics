@@ -249,11 +249,27 @@ export function slotAssign(
   stateCommit(`slot ${slotNum}: assign ${taskOrDesc}`);
 }
 
+/** Clear duoPeerSlot on the sibling slot when one duo slot is cleared/stopped. */
+function clearDuoPeerLink(slotNum: number): void {
+  const orchState = readOrchestrationState(slotNum);
+  if (!orchState?.duoPeerSlot) return;
+  const siblingState = readOrchestrationState(orchState.duoPeerSlot);
+  if (!siblingState) return;
+  if (siblingState.duoPeerSlot === slotNum) {
+    siblingState.duoPeerSlot = null;
+    persistState(siblingState);
+    console.error(`ludics: cleared duoPeerSlot on sibling slot ${orchState.duoPeerSlot}`);
+  }
+}
+
 export function slotClear(slotNum: number, finalStatus: string = "ready"): void {
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
   validateRange(slotNum, count);
+
+  // Hierarchical duo: clear duoPeerSlot on sibling so it becomes a regular pair slot
+  clearDuoPeerLink(slotNum);
 
   const block = blocks.get(slotNum) ?? "";
   const taskId = block ? getTask(block) : "null";
@@ -692,6 +708,9 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
   const blocks = loadBlocks(file);
   const count = slotsCount();
   validateRange(slotNum, count);
+
+  // Hierarchical duo: clear duoPeerSlot on sibling so it becomes a regular pair slot
+  clearDuoPeerLink(slotNum);
 
   const block = blocks.get(slotNum);
   if (!block) throw new Error(`slot ${slotNum} not found`);
