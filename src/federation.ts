@@ -137,7 +137,13 @@ export function federationCurrentMachine(): FederationMachine | undefined {
   // Also try matching by machine name directly (e.g., name: "desktop" matches hostname "desktop")
   for (const host of candidates) {
     const normalized = host.replace(/\.$/, "").toLowerCase();
-    const nameMatch = machines.find((m) => m.name.toLowerCase() === normalized);
+    const prefix = normalized.split(".")[0];
+    const nameMatch = machines.find((m) => {
+      const mName = m.name.toLowerCase();
+      // Exact match, or machine name appears in hostname prefix
+      // (e.g., name "mac-studio" matches hostname "lukaszs-mac-studio.fritz.box")
+      return mName === normalized || mName === prefix || prefix.includes(mName);
+    });
     if (nameMatch) return nameMatch;
   }
 
