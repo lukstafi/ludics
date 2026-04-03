@@ -30,12 +30,12 @@ import type { OrchestrationTransport } from "./transport.ts";
 /** Seconds of static pane output before a running agent is considered hung.
  *  Lower than agent-duo timeouts because this only fires when terminal is static
  *  (no evidence of work), not when the agent is actively producing output. */
-const HUNG_RUNNING_THRESHOLD_S = 300;
+const HUNG_RUNNING_THRESHOLD_S = 180;
 /** Seconds of static pane output before a dispatched (never-started) agent is considered hung.
  *  Short because a failed dispatch should be detected quickly. */
-const HUNG_DISPATCH_THRESHOLD_S = 120;
+const HUNG_DISPATCH_THRESHOLD_S = 90;
 /** Minimum seconds between nudge attempts for hung agents. */
-const HUNG_NUDGE_COOLDOWN_S = 120;
+const HUNG_NUDGE_COOLDOWN_S = 90;
 
 // --- Verification gate constants and types ---
 type VerificationDecision = "advance" | "redispatch" | "hold" | "skip";
