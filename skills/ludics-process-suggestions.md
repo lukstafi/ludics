@@ -43,10 +43,12 @@ Manual: `ludics mag process-suggestions <task-id>`
    - `workflowFeedback` (object keyed by agent name, values are strings)
    - `reviews` (array of `{ round, type, reviewer, verdict, content }`)
 
-   Filter `reviews` to only entries with `verdict === "request_changes"`.
-   Skip `approve` and `timeout` verdicts entirely. When multiple
-   `request_changes` reviews exist for the same `type` (e.g., two "review"
-   rounds), keep only the highest-round entry (earlier rounds are superseded).
+   For each review `type` ("review", "plan-review"), keep only the
+   highest-round entry (earlier rounds are superseded by later ones
+   regardless of verdict). Then discard any entry whose verdict is not
+   `request_changes`. This ordering matters: a round 2 `approve` supersedes
+   a round 1 `request_changes`, meaning the issue was resolved and should
+   NOT generate a follow-up task.
 
 4. If all three sources are empty/null — `suggestRefactorSummary` is null,
    `workflowFeedback` has no entries, AND no `request_changes` reviews remain
