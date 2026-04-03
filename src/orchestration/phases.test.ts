@@ -113,17 +113,23 @@ describe("evaluateTransition", () => {
   });
 
   // plan-merge phase (pair mode)
-  test("pair plan phase transitions to plan-merge (not plan-review)", () => {
+  test("pair plan phase transitions to plan-merge when both plans exist", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh138-orig-"));
+    mkdirSync(join(tmpDir, "plans"), { recursive: true });
+    writeFileSync(join(tmpDir, "plans", "round-1-coder.md"), "# Coder Plan\n");
+    writeFileSync(join(tmpDir, "plans", "round-1-reviewer.md"), "# Reviewer Plan\n");
     const state = makeState({
       mode: "pair",
       config: defaultOrchestrationConfig({ enablePlan: true }),
       phase: "plan",
+      round: 1,
       agents: [
         { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
         { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
       ],
       agentStates: initAgentRuntimeState(["coder", "reviewer"]),
       threadIds: { coder: "t1", reviewer: "t2" },
+      peerSyncDir: tmpDir,
     });
     state.agentStates.coder.status = "plan-done";
     state.agentStates.reviewer.status = "plan-done";
@@ -139,6 +145,52 @@ describe("evaluateTransition", () => {
     state.agentStates.agent1.status = "plan-done";
     state.agentStates.agent2.status = "plan-done";
     expect(evaluateTransition(state)).toBe("plan-review");
+  });
+
+  test("pair plan phase skips plan-merge when only one plan file exists", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh138-"));
+    mkdirSync(join(tmpDir, "plans"), { recursive: true });
+    // Only the coder plan exists — reviewer didn't produce one
+    writeFileSync(join(tmpDir, "plans", "round-1-coder.md"), "# Coder Plan\n");
+    const state = makeState({
+      mode: "pair",
+      config: defaultOrchestrationConfig({ enablePlan: true }),
+      phase: "plan",
+      round: 1,
+      agents: [
+        { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
+        { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      threadIds: { coder: "t1", reviewer: "t2" },
+      peerSyncDir: tmpDir,
+    });
+    state.agentStates.coder.status = "plan-done";
+    state.agentStates.reviewer.status = "plan-done";
+    expect(evaluateTransition(state)).toBe("plan-review");
+  });
+
+  test("pair plan phase transitions to plan-merge when two plan files exist", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh138-"));
+    mkdirSync(join(tmpDir, "plans"), { recursive: true });
+    writeFileSync(join(tmpDir, "plans", "round-1-coder.md"), "# Coder Plan\n");
+    writeFileSync(join(tmpDir, "plans", "round-1-reviewer.md"), "# Reviewer Plan\n");
+    const state = makeState({
+      mode: "pair",
+      config: defaultOrchestrationConfig({ enablePlan: true }),
+      phase: "plan",
+      round: 1,
+      agents: [
+        { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
+        { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      threadIds: { coder: "t1", reviewer: "t2" },
+      peerSyncDir: tmpDir,
+    });
+    state.agentStates.coder.status = "plan-done";
+    state.agentStates.reviewer.status = "plan-done";
+    expect(evaluateTransition(state)).toBe("plan-merge");
   });
 
   test("plan-merge transitions to plan-review when done", () => {

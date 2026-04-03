@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { isPrUrl } from "./github.ts";
@@ -394,10 +394,22 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "plan":
       if (allAgentsDone(state) || phaseTimeoutExpired(state)) {
-        // Pair mode: both agents wrote independent plans — move to plan-merge so the
-        // coder can combine them before the reviewer does a formal review.
-        // Duo mode: go straight to plan-review (original behaviour).
-        return state.mode === "pair" ? "plan-merge" : "plan-review";
+        if (state.mode !== "pair") return "plan-review";
+        // Pair mode: skip plan-merge when fewer than 2 plan files exist (e.g., reviewer
+        // didn't produce a plan).  Count files matching round-{round}-*.md excluding merged.
+        const plansDir = join(state.peerSyncDir, "plans");
+        const planPrefix = `round-${state.round}-`;
+        let planCount = 0;
+        try {
+          for (const f of readdirSync(plansDir)) {
+            if (f.startsWith(planPrefix) && f.endsWith(".md") && !f.includes("-merged-")) {
+              planCount++;
+            }
+          }
+        } catch {
+          // plans dir may not exist yet
+        }
+        return planCount >= 2 ? "plan-merge" : "plan-review";
       }
       return null;
 
