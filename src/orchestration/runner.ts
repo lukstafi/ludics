@@ -184,6 +184,7 @@ function preparePhaseRedispatch(state: OrchestrationState): void {
   }
   state.phaseDispatched = false;
   state.currentPhaseToken = undefined;
+  state.phaseStartedAt = nowEpoch(); // Reset timer so retries get a fresh timeout window
 }
 /** Force-settle via interruptAgent() after this many failed nudges. */
 /** Force-settle a hung agent after this many failed nudges. */
@@ -850,6 +851,8 @@ async function handleTimeout(state: OrchestrationState, transport: Orchestration
   if (
     state.phase === "work"
     || state.phase === "review"
+    || state.phase === "update-docs"
+    || state.phase === "pr-create"
     || state.phase === "pr-comments"
     || state.phase === "final-merge"
     || state.phase === "forward-pr"
