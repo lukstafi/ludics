@@ -57,17 +57,19 @@ interface ParsedAgentToken {
 }
 
 interface ParsedOrchestrationArgs {
-  mode: "duo" | "pair";
+  mode: "pair";
   config: Partial<OrchestrationConfig>;
   agents: ParsedAgentToken[];
   /** Explicit coder model override from --coder-model flag. */
   coderModelOverride?: string;
   /** Explicit reviewer model override from --reviewer-model flag. */
   reviewerModelOverride?: string;
-  /** Thinking effort for the coder agent (pair) or first duo agent. */
+  /** Thinking effort for the coder agent. */
   coderThinkingEffort?: string;
-  /** Thinking effort for the reviewer agent (pair) or second duo agent. */
+  /** Thinking effort for the reviewer agent. */
   reviewerThinkingEffort?: string;
+  /** For hierarchical-duo: the peer slot number. Set via --duo-peer-slot=N. */
+  duoPeerSlot?: number;
 }
 
 interface ParsedAdapterArgs {
@@ -213,13 +215,13 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
 
   const orchestrationConfig: Partial<OrchestrationConfig> = {};
   let mode: ParsedOrchestrationArgs["mode"] | null = null;
-  const duoAgents: ParsedOrchestrationArgs["agents"] = [];
   let coderToken: string | null = null;
   let reviewerToken: string | null = null;
   let coderModelOverride: string | undefined;
   let reviewerModelOverride: string | undefined;
   let coderThinkingEffort: string | undefined;
   let reviewerThinkingEffort: string | undefined;
+  let duoPeerSlot: number | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -250,16 +252,17 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         i++;
         break;
       case "--duo":
-        mode = "duo";
+        // Hierarchical duo: --duo is now treated as --pair at the adapter level.
+        // The two-slot expansion happens in maybeFillEmptySlots / slot CLI, not here.
+        console.error("ludics: --duo is now hierarchical duo (two pair slots) — treating as --pair");
+        mode = "pair";
         break;
       case "--pair":
         mode = "pair";
         break;
       case "--agent":
-        if (!next) throw new Error("t3code adapter args: --agent requires name:provider:model");
-        duoAgents.push(parseProviderToken(next, `agent${duoAgents.length + 1}`, parsed.model));
-        i++;
-        break;
+        // Legacy duo --agent flag is no longer supported; use --coder/--reviewer instead.
+        throw new Error("t3code adapter args: --agent is no longer supported (duo mode now uses --coder/--reviewer). Use --coder and --reviewer instead.");
       case "--coder":
         if (!next) throw new Error("t3code adapter args: --coder requires provider[:model[:name]]");
         coderToken = next;
@@ -360,31 +363,19 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         break;
       }
       default:
+        // Handle --duo-peer-slot=N (= syntax)
+        if (arg.startsWith("--duo-peer-slot=")) {
+          const val = arg.slice("--duo-peer-slot=".length);
+          const n = parseInt(val, 10);
+          if (isNaN(n) || n < 1) throw new Error(`t3code adapter args: --duo-peer-slot requires a positive integer, got "${val}"`);
+          duoPeerSlot = n;
+          break;
+        }
         throw new Error(`t3code adapter args: unsupported flag ${arg}`);
     }
   }
 
   if (!mode) return parsed;
-
-  if (mode === "duo") {
-    // Default fallback agents must have modelExplicit=false so config.yaml defaults apply.
-    const agents = duoAgents.length > 0
-      ? duoAgents
-      : [
-        { ...parseProviderToken("agent1:codex:gpt-5.4", "agent1", parsed.model), modelExplicit: false },
-        { ...parseProviderToken("agent2:codex:gpt-5.4", "agent2", parsed.model), modelExplicit: false },
-      ];
-    parsed.orchestration = {
-      mode,
-      config: orchestrationConfig,
-      agents,
-      coderModelOverride,
-      reviewerModelOverride,
-      coderThinkingEffort,
-      reviewerThinkingEffort,
-    };
-    return parsed;
-  }
 
   // For pair mode: modelExplicit is only true when the user explicitly provided the token
   // (i.e. --coder/--reviewer flag was given) AND that token included an explicit model.
@@ -401,6 +392,7 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
     reviewerModelOverride,
     coderThinkingEffort,
     reviewerThinkingEffort,
+    duoPeerSlot,
   };
   return parsed;
 }
@@ -669,11 +661,12 @@ const CLAUDE_OPUS_MODEL = "claude-opus-4-6";
  *
  * @returns An object with the recommended adapter name ("t3code") and args string.
  */
-export function selectOrchestrationFlags(effort: string): { adapter: string; args: string } {
+export function selectOrchestrationFlags(effort: string): { adapter: string; args: string; isDuo: boolean } {
   const orchCfg = loadConfigOrchestration();
   const mode = (orchCfg?.default_mode as string | undefined)?.trim() || "pair";
   const coder = (orchCfg?.default_coder as string | undefined)?.trim() || "claude-code";
   const reviewer = (orchCfg?.default_reviewer as string | undefined)?.trim() || "codex";
+  const isDuo = mode === "duo";
 
   const norm = (effort ?? "").toLowerCase().trim();
   const phaseFlags: string[] = [];
@@ -696,26 +689,18 @@ export function selectOrchestrationFlags(effort: string): { adapter: string; arg
   }
   // small / unknown: no pre-work phases
 
-  let modeArgs: string[];
-  if (mode === "duo") {
-    // Duo mode: --agent name:provider[:model] (parsed as name:provider:model by parseProviderToken)
-    modeArgs = [
-      "--duo",
-      `--agent coder:${coder}${coderModelSuffix}`,
-      `--agent reviewer:${reviewer}`,
-    ];
-  } else {
-    // Pair mode: --coder provider[:model] --reviewer provider
-    modeArgs = [
-      "--pair",
-      `--coder ${coder}${coderModelSuffix}`,
-      `--reviewer ${reviewer}`,
-    ];
-  }
+  // Hierarchical duo: both duo and pair produce pair-mode args.
+  // For duo, the actual two-slot expansion with swapped roles is done by callers
+  // (maybeFillEmptySlots / slot assign CLI) using expandDuoSlots().
+  const modeArgs = [
+    "--pair",
+    `--coder ${coder}${coderModelSuffix}`,
+    `--reviewer ${reviewer}`,
+  ];
 
   const args = [...modeArgs, ...phaseFlags].join(" ");
   // Use the global adapter setting so orchestration flags work with either backend
-  return { adapter: globalAdapter(), args };
+  return { adapter: globalAdapter(), args, isDuo };
 }
 
 /** Resolve the final model for an agent, applying config and adapter arg overrides. */
@@ -837,6 +822,7 @@ async function startOrchestratedThreads(
     projectDir,
     agents,
     { root: setup.rootWorktree, ...setup.agentWorktrees },
+    ctx.slot,
   );
   writeAgentMarkerFiles(setup.peerSyncDir, setup.agentWorktrees);
 
@@ -901,6 +887,7 @@ async function startOrchestratedThreads(
     threadIds: Object.fromEntries(slotThreads.map((thread, index) => [agents[index]!.name, thread.threadId])),
     backend: "t3code",
     slotTitle: title,
+    duoPeerSlot: orchestration.duoPeerSlot ?? null,
     stagingRepo: (() => {
       const cfg = loadConfigSync();
       const proj = cfg.projects?.find((p) => {
@@ -1076,7 +1063,7 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
   }
 
   if (orchestrationState && !options?.preserveState) {
-    removePeerSyncSession(orchestrationState.projectDir, orchestrationState.taskId);
+    removePeerSyncSession(orchestrationState.projectDir, orchestrationState.taskId, ctx.slot);
     cleanupWorktrees(orchestrationState.projectDir, orchestrationState.taskId, orchestrationState.agents, ctx.slot, orchestrationState.mode);
     removeOrchestrationState(ctx.slot, ctx.harnessDir);
   }

@@ -263,12 +263,25 @@ describe("slot assign — direct orchestration flags", () => {
     expect(readAdapterArgs()).toBe("--pair --coder foo");
   });
 
-  test("does not inject --pair when -A already contains a mode flag (--duo)", async () => {
+  test("--duo in -A triggers hierarchical duo expansion into two pair-mode slots", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
-    await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--duo --agent coder:claude-code", "--plan"]);
-    // --plan is a direct shorthand, but --duo already set a mode in the raw fragment
-    expect(readAdapterArgs()).toBe("--duo --agent coder:claude-code --plan");
+    await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--duo", "--plan"]);
+    // --duo expands into two pair slots with swapped coder/reviewer and --duo-peer-slot
+    const args = readAdapterArgs();
+    expect(args).toContain("--pair");
+    expect(args).toContain("--duo-peer-slot=");
+    expect(args).toContain("--plan");
+  });
+
+  test("direct --duo shorthand triggers hierarchical duo expansion", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    await runSlot(["1", "assign", "My task", "-a", "t3code", "--duo", "--plan"]);
+    const args = readAdapterArgs();
+    expect(args).toContain("--pair");
+    expect(args).toContain("--duo-peer-slot=");
+    expect(args).toContain("--plan");
   });
 
   test("does not inject --pair when -A already contains --pair", async () => {

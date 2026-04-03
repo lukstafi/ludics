@@ -5,7 +5,7 @@
 // - Unknown sessions are never harvested.
 // - Cleanup runs after 3 consecutive detached sweeps.
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { basename, join } from "path";
 import { slotsCount, slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getMode, getTask, getPath, getSession } from "../slots/markdown.ts";
@@ -129,10 +129,20 @@ function knownSessionStillPresent(record: KnownSessionRecord, t3codeSnapshot: T3
   if (byTask) return true;
 
   // Fallback: exact basename match if task lookup fails.
+  // Also check slot-qualified links (${taskId}-s${slot}.session).
   const sessionsDir = join(record.projectDir, ".agent-sessions");
   if (!existsSync(sessionsDir)) return false;
-  return existsSync(join(sessionsDir, `${record.name}.session`))
-    || existsSync(join(sessionsDir, basename(record.name) + ".session"));
+  if (existsSync(join(sessionsDir, `${record.name}.session`))
+    || existsSync(join(sessionsDir, basename(record.name) + ".session"))) return true;
+  // Check for slot-qualified session links
+  try {
+    const base = basename(record.name);
+    for (const entry of readdirSync(sessionsDir)) {
+      if (entry.startsWith(`${base}-s`) && entry.endsWith(".session")) return true;
+      if (entry.startsWith(`${record.name}-s`) && entry.endsWith(".session")) return true;
+    }
+  } catch { /* ignore */ }
+  return false;
 }
 
 function runCleanup(record: KnownSessionRecord): { ok: boolean; detail: string } {

@@ -13,6 +13,7 @@ import { runAdapterAction, readAdapterState, readAdapterLastActivity } from "../
 import type { AdapterContext } from "../adapters/index.ts";
 import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
+import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState } from "../t3code/server.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
@@ -248,11 +249,27 @@ export function slotAssign(
   stateCommit(`slot ${slotNum}: assign ${taskOrDesc}`);
 }
 
+/** Clear duoPeerSlot on the sibling slot when one duo slot is cleared/stopped. */
+function clearDuoPeerLink(slotNum: number): void {
+  const orchState = readOrchestrationState(slotNum);
+  if (!orchState?.duoPeerSlot) return;
+  const siblingState = readOrchestrationState(orchState.duoPeerSlot);
+  if (!siblingState) return;
+  if (siblingState.duoPeerSlot === slotNum) {
+    siblingState.duoPeerSlot = null;
+    persistState(siblingState);
+    console.error(`ludics: cleared duoPeerSlot on sibling slot ${orchState.duoPeerSlot}`);
+  }
+}
+
 export function slotClear(slotNum: number, finalStatus: string = "ready"): void {
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
   validateRange(slotNum, count);
+
+  // Hierarchical duo: clear duoPeerSlot on sibling so it becomes a regular pair slot
+  clearDuoPeerLink(slotNum);
 
   const block = blocks.get(slotNum) ?? "";
   const taskId = block ? getTask(block) : "null";
@@ -719,6 +736,10 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
     await runAdapterAction("stop", ctx, { preserveState });
   }
 
+  // Hierarchical duo: clear duoPeerSlot on sibling AFTER stop succeeds,
+  // so a failed stop doesn't prematurely detach the sibling.
+  clearDuoPeerLink(slotNum);
+
   // Clear the session-active marker so the mode toggle becomes available again
   const updated = setField(block, "Session Started", "null");
   if (updated !== block) {
@@ -1115,6 +1136,11 @@ export async function runSlot(args: string[]): Promise<void> {
             // --pair itself is the mode flag; no need to record it as an auto-prepend target
             adapterArgFragments.push("--pair");
             break;
+          case "--duo":
+            hasDirectOrchFlags = true;
+            // Hierarchical duo: handled after arg parsing by isDuoAssign check
+            adapterArgFragments.push("--duo");
+            break;
           case "--coder": {
             const val = args[++i];
             if (!val || val.startsWith("-")) throw new Error("--coder requires a provider value (got a flag instead)");
@@ -1161,21 +1187,52 @@ export async function runSlot(args: string[]): Promise<void> {
         }
       }
 
-      // Auto-prepend --pair when any direct orchestration shorthand is present without an
-      // explicit mode flag. Splice at the position of the first such shorthand to preserve
-      // fragment ordering (raw -A fragments that precede it are left undisturbed).
-      // Also scan raw -A fragments for an existing mode word (--pair or --duo) so we don't
-      // clobber an intentional duo-mode config passed via --adapter-args.
-      const hasModeDirectFlag = adapterArgFragments.includes("--pair");
-      const hasModeInRawFragments = adapterArgFragments.some(
-        f => /(?:^|\s)--(?:pair|duo)(?:\s|$)/.test(f)
+      // Check for --duo flag (direct or in -A raw fragments) — triggers two-slot expansion.
+      const hasDuoDirectFlag = adapterArgFragments.includes("--duo");
+      const hasDuoInRawFragments = adapterArgFragments.some(
+        f => /(?:^|\s)--duo(?:\s|$)/.test(f) && !/--duo-peer-slot/.test(f)
       );
-      if (hasDirectOrchFlags && !hasModeDirectFlag && !hasModeInRawFragments && firstDirectOrchFlagIdx !== -1) {
-        adapterArgFragments.splice(firstDirectOrchFlagIdx, 0, "--pair");
-      }
+      const isDuoAssign = hasDuoDirectFlag || hasDuoInRawFragments;
 
-      const adapterArgs = adapterArgFragments.join(" ");
-      slotAssign(slotNum, taskOrDesc, adapter, session, path, adapterArgs, machine);
+      if (isDuoAssign) {
+        // Hierarchical duo: assign TWO pair-mode slots with swapped coder/reviewer.
+        // Find a second empty slot.
+        const allBlocks = loadBlocks(ensureSlotsFile());
+        const totalSlots = slotsCount();
+        let secondSlot: number | null = null;
+        for (let s = 1; s <= totalSlots; s++) {
+          if (s === slotNum) continue;
+          const blk = allBlocks.get(s);
+          const proc = blk ? getProcess(blk).trim() : "(empty)";
+          if (!proc || proc === "(empty)") { secondSlot = s; break; }
+        }
+        if (secondSlot === null) {
+          throw new Error(`duo mode requires two empty slots; only slot ${slotNum} is available`);
+        }
+        // Strip --duo from fragments before expansion
+        const cleanedFragments = adapterArgFragments
+          .map(f => f.replace(/(?:^|\s)--duo(?:\s|$)/g, " ").trim())
+          .filter(Boolean);
+        const baseArgs = cleanedFragments.join(" ");
+        const expansion = expandDuoSlots(slotNum, secondSlot, baseArgs);
+        slotAssign(slotNum, taskOrDesc, adapter, session, path, expansion.slotA.args, machine);
+        slotAssign(secondSlot, taskOrDesc, adapter, "", path, expansion.slotB.args, machine);
+        console.error(`ludics: duo assign → slots ${slotNum}+${secondSlot}`);
+      } else {
+        // Auto-prepend --pair when any direct orchestration shorthand is present without an
+        // explicit mode flag. Splice at the position of the first such shorthand to preserve
+        // fragment ordering (raw -A fragments that precede it are left undisturbed).
+        const hasModeDirectFlag = adapterArgFragments.includes("--pair");
+        const hasModeInRawFragments = adapterArgFragments.some(
+          f => /(?:^|\s)--(?:pair|duo)(?:\s|$)/.test(f)
+        );
+        if (hasDirectOrchFlags && !hasModeDirectFlag && !hasModeInRawFragments && firstDirectOrchFlagIdx !== -1) {
+          adapterArgFragments.splice(firstDirectOrchFlagIdx, 0, "--pair");
+        }
+
+        const adapterArgs = adapterArgFragments.join(" ");
+        slotAssign(slotNum, taskOrDesc, adapter, session, path, adapterArgs, machine);
+      }
       break;
     }
 

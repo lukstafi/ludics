@@ -5,6 +5,7 @@ import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
 import type { Phase } from "./phases.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { readMergeVotes } from "./merge.ts";
+import { readDuoPeerState } from "./cross-slot.ts";
 
 function readFileIfExists(path: string): string | null {
   if (!existsSync(path)) return null;
@@ -200,9 +201,8 @@ export function buildSkillContext(
     ? join(state.peerSyncDir, "reviews", `plan-merge-${planMergeRound}-${agent.name}.md`)
     : join(state.peerSyncDir, "reviews", `round-${state.round}-${agent.name}.md`);
 
-  // In pair plan-review the reviewer reads the merged plan produced by the coder in plan-merge.
-  // In duo plan-review (no plan-merge phase) each agent reviews the other's independent plan.
-  const peerPlan = state.phase === "plan-review" && state.mode === "pair"
+  // In plan-review the reviewer reads the merged plan produced by the coder in plan-merge.
+  const peerPlan = state.phase === "plan-review"
     ? readFileIfExists(mergedPlanFile)
     : peer
       ? readFileIfExists(join(state.peerSyncDir, "plans", `round-${state.round}-${peer.name}.md`))
@@ -228,12 +228,9 @@ export function buildSkillContext(
     .map(([name, vote]) => `${name}: ${vote}`)
     .join("\n");
   const _projectEntry = findProjectConfig(state.projectDir);
-  // Staging is pair-mode only. In duo mode, staging_repo is ignored because the
-  // two-agent winner-selection flow doesn't compose with staging→upstream forwarding.
-  // Suppressing the variables here prevents pr-create and other prompts from
-  // instructing the agent to target the staging fork when the state machine won't
-  // perform the staging forwarding flow.
-  const stagingRepo = state.mode === "pair" ? (_projectEntry?.staging_repo ?? null) : null;
+  // Staging is suppressed for hierarchical-duo slots (duoPeerSlot set) because the
+  // cross-slot winner-selection flow doesn't compose with staging→upstream forwarding.
+  const stagingRepo = state.duoPeerSlot == null ? (_projectEntry?.staging_repo ?? null) : null;
 
   // Extract proposal path from task frontmatter for templates that need just a reference
   const _taskPath = state.taskId ? join(harnessDir(), "tasks", `${state.taskId}.md`) : null;
@@ -307,6 +304,15 @@ export function buildSkillContext(
     }
   }
 
+  // Cross-slot context for hierarchical-duo merge phases
+  if (state.duoPeerSlot != null) {
+    const peerState = readDuoPeerState(state);
+    result.PEER_SLOT = String(state.duoPeerSlot);
+    result.PEER_PR_URL = peerState?.peerPrUrl ?? "";
+    result.PEER_BRANCH = peerState?.peerBranch ?? "";
+    result.PEER_PEER_SYNC_DIR = peerState?.peerPeerSyncDir ?? "";
+  }
+
   return result;
 }
 
@@ -343,7 +349,7 @@ export async function composeSkillMessage(
   templateOverride?: string,
 ): Promise<string> {
   const context = buildSkillContext(state, agent);
-  const isStaging = !!state.stagingRepo && state.mode === "pair";
+  const isStaging = !!state.stagingRepo && state.duoPeerSlot == null;
   const templatePath = templateOverride
     ?? resolveTemplatePath(state.phase, state.mode, agent.role, isStaging);
   const template = readFileSync(templatePath, "utf-8");

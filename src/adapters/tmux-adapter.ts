@@ -449,6 +449,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     projectDir,
     agents,
     { root: setup.rootWorktree, ...setup.agentWorktrees },
+    ctx.slot,
   );
   writeAgentMarkerFiles(setup.peerSyncDir, setup.agentWorktrees);
 
@@ -482,6 +483,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     threadIds: {}, // tmux mode doesn't use t3code threads
     backend: "tmux",
     slotTitle: options.title ?? slotSessionName(ctx.slot, undefined, taskId),
+    duoPeerSlot: orchestration.duoPeerSlot ?? null,
     stagingRepo: (() => {
       const cfg = loadConfigSync();
       const proj = cfg.projects?.find((p) => {
@@ -537,7 +539,7 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
     killTmuxSessionsForSlot(ctx.slot, orchState.agents.map((a) => a.name), orchState.taskId);
 
     if (!options?.preserveState) {
-      removePeerSyncSession(orchState.projectDir, orchState.taskId);
+      removePeerSyncSession(orchState.projectDir, orchState.taskId, ctx.slot);
       cleanupWorktrees(orchState.projectDir, orchState.taskId, orchState.agents, ctx.slot, orchState.mode);
       removeOrchestrationState(ctx.slot, ctx.harnessDir);
     }

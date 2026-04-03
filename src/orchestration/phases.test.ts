@@ -10,22 +10,22 @@ function makeState(overrides: Partial<OrchestrationState> = {}): OrchestrationSt
   return {
     slot: 1,
     taskId: "feat",
-    mode: "duo",
+    mode: "pair",
     phase: "setup",
     round: 1,
     mergeRound: 0,
     agents: [
-      { name: "agent1", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a" },
-      { name: "agent2", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b" },
+      { name: "coder", provider: "claude-code", role: "coder", model: "claude-opus-4-6", branch: "a", worktreePath: "/tmp/a" },
+      { name: "reviewer", provider: "codex", role: "reviewer", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b" },
     ],
-    agentStates: initAgentRuntimeState(["agent1", "agent2"]),
+    agentStates: initAgentRuntimeState(["coder", "reviewer"]),
     config: defaultOrchestrationConfig(),
     phaseStartedAt: 0,
     startedAt: "2026-03-07T00:00:00Z",
     projectDir: "/tmp/project",
     rootWorktree: "/tmp/project-feat",
     peerSyncDir: "/tmp/project-feat/.peer-sync",
-    threadIds: { agent1: "t1", agent2: "t2" },
+    threadIds: { coder: "t1", reviewer: "t2" },
     ...overrides,
   };
 }
@@ -44,38 +44,38 @@ describe("evaluateTransition", () => {
 
   test("moves from work to review when both agents finish", () => {
     const state = makeState({ phase: "work" });
-    state.agentStates.agent1.status = "done";
-    state.agentStates.agent2.status = "done";
+    state.agentStates.coder.status = "done";
+    state.agentStates.reviewer.status = "done";
     expect(evaluateTransition(state)).toBe("review");
   });
 
-  test("moves from update-docs back to work when no PR exists", () => {
+  test("moves from update-docs to pr-create when no PR exists", () => {
     const state = makeState({ phase: "update-docs" });
-    state.agentStates.agent1.status = "update-docs-done";
-    state.agentStates.agent2.status = "update-docs-done";
-    expect(evaluateTransition(state)).toBe("work");
+    state.agentStates.coder.status = "update-docs-done";
+    state.agentStates.reviewer.status = "update-docs-done";
+    expect(evaluateTransition(state)).toBe("pr-create");
   });
 
   test("moves from update-docs to pr-comments when a PR exists", () => {
     const state = makeState({ phase: "update-docs" });
-    state.agentStates.agent1.status = "update-docs-done";
-    state.agentStates.agent2.status = "update-docs-done";
-    state.agentStates.agent1.prUrl = "https://example.com/pr/1";
+    state.agentStates.coder.status = "update-docs-done";
+    state.agentStates.reviewer.status = "update-docs-done";
+    state.agentStates.coder.prUrl = "https://example.com/pr/1";
     expect(evaluateTransition(state)).toBe("pr-comments");
   });
 
   test("pr-create blocks advancement when no prUrl is set", () => {
     const state = makeState({ phase: "pr-create" });
-    state.agentStates.agent1.status = "pr-create-done";
-    state.agentStates.agent2.status = "pr-create-done";
+    state.agentStates.coder.status = "pr-create-done";
+    state.agentStates.reviewer.status = "pr-create-done";
     expect(evaluateTransition(state)).toBeNull();
   });
 
   test("pr-create advances to pr-comments when prUrl is set", () => {
     const state = makeState({ phase: "pr-create" });
-    state.agentStates.agent1.status = "pr-create-done";
-    state.agentStates.agent2.status = "pr-create-done";
-    state.agentStates.agent1.prUrl = "https://github.com/owner/repo/pull/1";
+    state.agentStates.coder.status = "pr-create-done";
+    state.agentStates.reviewer.status = "pr-create-done";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
     expect(evaluateTransition(state)).toBe("pr-comments");
   });
 
@@ -90,7 +90,7 @@ describe("evaluateTransition", () => {
       phase: "pr-comments",
       prCommentsQuietSince: quietStart,
     });
-    state.agentStates.agent1.prUrl = "https://github.com/owner/repo/pull/1";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
     expect(evaluateTransition(state)).toBe("final-merge");
   });
 
@@ -103,27 +103,27 @@ describe("evaluateTransition", () => {
       prCommentsQuietSince: quietStart,
       config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
     });
-    state.agentStates.agent1.prUrl = "https://github.com/owner/repo/pull/1";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
     expect(evaluateTransition(state)).toBeNull();
   });
 
   test("pr-comments transitions to suggest-refactor when merged marker present", () => {
     const state = makeState({ phase: "pr-comments" });
-    state.agentStates.agent1.status = "merged";
+    state.agentStates.coder.status = "merged";
     expect(evaluateTransition(state)).toBe("suggest-refactor");
   });
 
   test("final-merge transitions to suggest-refactor when done", () => {
     const state = makeState({ phase: "final-merge" });
-    state.agentStates.agent1.status = "final-merge-done";
-    state.agentStates.agent2.status = "final-merge-done";
+    state.agentStates.coder.status = "final-merge-done";
+    state.agentStates.reviewer.status = "final-merge-done";
     expect(evaluateTransition(state)).toBe("suggest-refactor");
   });
 
   test("suggest-refactor always transitions to done", () => {
     const state = makeState({ phase: "suggest-refactor" });
-    state.agentStates.agent1.status = "suggest-refactor-done";
-    state.agentStates.agent2.status = "suggest-refactor-done";
+    state.agentStates.coder.status = "suggest-refactor-done";
+    state.agentStates.reviewer.status = "suggest-refactor-done";
     expect(evaluateTransition(state)).toBe("done");
   });
 
@@ -151,15 +151,15 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBe("plan-merge");
   });
 
-  test("duo plan phase still transitions to plan-review", () => {
+  test("plan phase goes through plan-merge when no plan files on disk (default)", () => {
     const state = makeState({
-      mode: "duo",
       config: defaultOrchestrationConfig({ enablePlan: true }),
       phase: "plan",
     });
-    state.agentStates.agent1.status = "plan-done";
-    state.agentStates.agent2.status = "plan-done";
-    expect(evaluateTransition(state)).toBe("plan-review");
+    state.agentStates.coder.status = "plan-done";
+    state.agentStates.reviewer.status = "plan-done";
+    // No plan files on disk → plan-merge (can't skip without verifying coder-only plan)
+    expect(evaluateTransition(state)).toBe("plan-merge");
   });
 
   test("pair plan phase skips plan-merge when only one plan file exists", () => {
@@ -326,19 +326,17 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBe("work"); // timeout → forward (no verdict file)
   });
 
-  test("plan-review in duo mode always proceeds to work", () => {
+  test("plan-review proceeds to work when no verdict (timeout)", () => {
     const state = makeState({
-      mode: "duo",
       phase: "plan-review",
     });
-    state.agentStates.agent1.status = "plan-review-done";
-    state.agentStates.agent2.status = "plan-review-done";
+    state.agentStates.coder.status = "plan-review-done";
+    state.agentStates.reviewer.status = "plan-review-done";
     expect(evaluateTransition(state)).toBe("work");
   });
 
-  test("plan-review in pair mode proceeds to work after 3 REQUEST_CHANGES rounds", () => {
+  test("plan-review proceeds to work after 3 REQUEST_CHANGES rounds", () => {
     const state = makeState({
-      mode: "pair",
       phase: "plan-review",
       planMergeRound: 3, // at max iterations
       agents: [
@@ -381,33 +379,27 @@ describe("evaluateTransition", () => {
       phase: "pr-comments",
       prCommentsQuietSince: quietStart,
     });
-    state.agentStates.agent1.prUrl = "https://github.com/owner/repo/pull/1";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
     expect(evaluateTransition(state)).toBe("final-merge");
   });
 
-  test("duo mode with staging_repo ignores staging and transitions to final-merge", () => {
+  test("hierarchical duo with staging_repo ignores staging and transitions to final-merge", () => {
     const quietStart = Math.floor(Date.now() / 1000) - 2000;
     const state = makeState({
-      mode: "duo",
       phase: "pr-comments",
       prCommentsQuietSince: quietStart,
       stagingRepo: "owner/staging-fork",
+      duoPeerSlot: 2, // hierarchical duo suppresses staging
     });
-    state.agentStates.agent1.prUrl = "https://github.com/owner/staging-fork/pull/1";
-    // Duo mode ignores stagingRepo → non-staging path → final-merge
-    expect(evaluateTransition(state)).toBe("final-merge");
+    state.agentStates.coder.prUrl = "https://github.com/owner/staging-fork/pull/1";
+    // duoPeerSlot set → staging suppressed → non-staging path
+    // But duoPeerSlot is set, so cross-slot coordination kicks in — returns null (waiting for peer)
+    expect(evaluateTransition(state)).toBeNull();
   });
 
   test("forward-pr transitions to pr-comments when done", () => {
     const state = makeState({
       phase: "forward-pr",
-      mode: "pair",
-      agents: [
-        { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
-        { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
-      ],
-      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
-      threadIds: { coder: "t1", reviewer: "t2" },
     });
     state.agentStates.coder.status = "forward-pr-done";
     expect(evaluateTransition(state)).toBe("pr-comments");

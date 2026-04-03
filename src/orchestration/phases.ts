@@ -4,6 +4,7 @@ import { emitEvent } from "../events.ts";
 import { isPrUrl } from "./github.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
+import { readDuoPeerState, bothSlotsReadyForMerge, isMergeCoordinator } from "./cross-slot.ts";
 import { nowEpoch } from "./util.ts";
 
 export type Phase =
@@ -152,8 +153,7 @@ export function agentParticipatesInPhase(
   agent: AgentConfig,
 ): boolean {
   if (state.phase === "setup" || state.phase === "done") return false;
-  if (state.mode === "duo") return true;
-  // Pair mode: strict role separation
+  // Strict role separation for all slots (pair and hierarchical-duo)
   switch (state.phase) {
     case "gather":
     case "review":
@@ -172,13 +172,15 @@ export function agentParticipatesInPhase(
     case "pr-comments":
     case "suggest-refactor":
       return agent.role === "coder";
-    // Merge phases are duo-only; should never be reached in pair mode
+    // Merge phases: only active in hierarchical-duo slots (duoPeerSlot set)
     case "merge-vote":
     case "merge-debate":
+      return state.duoPeerSlot != null;
     case "merge-execute":
     case "merge-amend":
+      return state.duoPeerSlot != null && agent.role === "coder";
     case "merge-review":
-      return false;
+      return state.duoPeerSlot != null && agent.role === "reviewer";
     default:
       return true;
   }
@@ -303,10 +305,6 @@ function hasAnyPr(state: OrchestrationState): boolean {
   return state.agents.some((agent) => !!state.agentStates[agent.name]?.prUrl);
 }
 
-function hasTwoPrs(state: OrchestrationState): boolean {
-  return state.agents.filter((agent) => !!state.agentStates[agent.name]?.prUrl).length >= 2;
-}
-
 function isMerged(state: OrchestrationState): boolean {
   return state.agents.some((agent) => state.agentStates[agent.name]?.status === "merged");
 }
@@ -421,8 +419,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "plan":
       if (allAgentsDone(state) || phaseTimeoutExpired(state)) {
-        if (state.mode !== "pair") return "plan-review";
-        // Pair mode: skip plan-merge when only the coder plan exists (reviewer didn't
+        // Skip plan-merge when only the coder plan exists (reviewer didn't
         // produce a plan).  If only the reviewer's plan exists we must still enter
         // plan-merge so the coder gets a chance to process it — skipping would have the
         // reviewer effectively review their own plan.
@@ -442,13 +439,11 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "plan-review": {
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
-      // In pair mode, honour the reviewer's verdict and loop back to plan-merge on
+      // Honour the reviewer's verdict and loop back to plan-merge on
       // REQUEST_CHANGES (up to 3 iterations total before forcing forward to work).
-      if (state.mode === "pair") {
-        const verdict = pairReviewVerdict(state);
-        if (verdict === "request_changes" && (state.planMergeRound ?? 0) < 3) {
-          return "plan-merge";
-        }
+      const planVerdict = pairReviewVerdict(state);
+      if (planVerdict === "request_changes" && (state.planMergeRound ?? 0) < 3) {
+        return "plan-merge";
       }
       return "work";
     }
@@ -459,18 +454,16 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "review":
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
-      if (state.mode === "pair") {
-        const verdict = pairReviewVerdict(state);
-        if (verdict === "request_changes") return "work";
-        // APPROVE or timeout: proceed to update-docs
+      {
+        const reviewVerdict = pairReviewVerdict(state);
+        if (reviewVerdict === "request_changes") return "work";
       }
       return "update-docs";
 
     case "update-docs":
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
       if (hasAnyPr(state)) return "pr-comments";
-      if (state.mode === "pair") return "pr-create";
-      return "work";
+      return "pr-create";
 
     case "pr-create":
       // NOTE: Runner verifies PR exists on GitHub before agents reach done state here.
@@ -481,12 +474,22 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "pr-comments": {
       if (isMerged(state)) return "suggest-refactor";
-      if (state.mode === "duo" && hasTwoPrs(state)) return "merge-vote";
 
-      // Staging forwarding is pair-mode only. In duo mode, stagingRepo is ignored
-      // because the two-agent winner-selection flow doesn't compose with the
-      // single-PR staging→upstream forwarding model.
-      const isStaging = !!state.stagingRepo && state.mode === "pair";
+      // Hierarchical duo: cross-slot merge coordination.
+      // Lower-numbered slot (coordinator) triggers merge after both slots have PRs.
+      // Higher-numbered slot waits until coordinator reaches done.
+      if (state.duoPeerSlot != null) {
+        if (isMergeCoordinator(state) && bothSlotsReadyForMerge(state)) {
+          return "merge-vote";
+        }
+        const peer = readDuoPeerState(state);
+        if (peer?.peerDone) return "done";
+        return null;
+      }
+
+      // Staging forwarding is pair-mode only. Suppressed for hierarchical-duo slots
+      // (duoPeerSlot != null) because cross-slot merge doesn't compose with staging.
+      const isStaging = !!state.stagingRepo && state.duoPeerSlot == null;
       const forwarded = isStaging && hasForwardedPr(state);
 
       if (isStaging && !forwarded) {
@@ -505,16 +508,11 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
       if (forwarded) {
         // Monitoring upstream PR — ONLY transition on actual upstream merge.
-        // No quiet-period, no Codex approval, no phase timeout.
-        // The upstream PR may take days to merge; the automation must not
-        // run cleanup on a non-merged PR. If the PR sits idle indefinitely,
-        // the human intervenes (merge or cancel the task).
         if (hasUpstreamMergedMarker(state)) return "final-merge";
         return null;
       }
 
-      // Non-staging (or duo with staging_repo — treated as non-staging):
-      // quiet period is the sole advancement mechanism
+      // Non-staging: quiet period is the sole advancement mechanism
       const quietPeriod = state.config.prCommentsTimeout;
       if (
         hasAnyPr(state)
