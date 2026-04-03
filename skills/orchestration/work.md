@@ -1,5 +1,9 @@
 # Work
 
+{{#IF PROPOSAL_PATH}}
+**Step 0**: Read the proposal file at `{{PROPOSAL_PATH}}` in the project repo before starting. The proposal contains the authoritative acceptance criteria and full scope.
+{{/IF}}
+
 Implement the task in `{{WORKTREE_PATH}}`.
 
 {{TASK_SPEC}}
