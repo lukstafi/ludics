@@ -2437,6 +2437,11 @@ export async function magStart(args: string[]): Promise<void> {
 
   // Session already exists - keepalive path
   if (magIsRunning()) {
+    // Re-check federation on keepalive — controller may have changed since session started
+    if (!skipFederation && !federationShouldRunMag()) {
+      console.error("ludics: Mag keepalive blocked: not the federation leader");
+      return;
+    }
     if (useTtyd) ensureTtyd();
 
     // Ensure t3code server is running (idempotent)
