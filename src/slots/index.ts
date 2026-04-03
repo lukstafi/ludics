@@ -703,9 +703,10 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
       if (preserveState) remoteArgs.push("--preserve-state");
       const result = remoteExec(ctx.machine, remoteArgs);
       if (!result.success) {
-        console.error(`ludics: slot ${slotNum}: remote stop failed on ${ctx.machine}: ${result.stderr}`);
-        console.error(`  use 'ludics slot ${slotNum} stop --force' to clear local state without remote exec`);
-        return;
+        throw new Error(
+          `slot ${slotNum}: remote stop failed on ${ctx.machine}: ${result.stderr}\n` +
+          `  use 'ludics slot ${slotNum} stop --force' to clear local state without remote exec`,
+        );
       }
     }
   } else {
