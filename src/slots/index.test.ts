@@ -360,3 +360,28 @@ slot: 1
     expect(slotsContent).toContain("**Liveness:** interrupted");
   });
 });
+
+describe("slotResume — interrupted without orchestration state", () => {
+  test("falls back to slotStart when interrupted slot has no orchestration state", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-resume-fallback-1", "Resume fallback test");
+
+    // Assign and mark as interrupted (simulating pre-persistState failure)
+    slotAssign(1, "task-resume-fallback-1", "tmux", "", "", "--pair --coder claude --reviewer claude");
+    markSlotSetupFailed(1, "worktree creation failed");
+
+    // slotResume should fall back to slotStart, which will fail because tmux
+    // isn't available in test — but it should NOT throw the "no persisted
+    // orchestration state" error.
+    try {
+      await slotResume(1);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Should NOT be the old "no persisted orchestration state" error
+      expect(msg).not.toContain("no persisted orchestration state");
+      // Instead it should be a slotStart error (adapter-level failure is expected in test)
+    }
+  });
+});

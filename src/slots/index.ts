@@ -746,6 +746,13 @@ export async function slotResume(slotNum: number): Promise<void> {
   if (ctx.mode === "t3code") {
     const slotState = readSlotState(slotNum, ctx.harnessDir);
     if (!slotState || slotState.threads.length === 0) {
+      // If slot was interrupted before state was persisted, fall back to fresh start
+      const slotLiveness = getLiveness(block).trim();
+      if (slotLiveness === "interrupted") {
+        console.error(`ludics: slot ${slotNum}: no recoverable t3code state — falling back to fresh start`);
+        await slotStart(slotNum);
+        return;
+      }
       throw new Error(
         `slot ${slotNum} has no persisted t3code state (t3code/slot-${slotNum}.json) — use 'slot start' for fresh start`
       );
@@ -755,6 +762,13 @@ export async function slotResume(slotNum: number): Promise<void> {
   // Require persisted orchestration state (orchestrated sessions only)
   const orchState = readOrchestrationState(slotNum);
   if (!orchState) {
+    // If slot was interrupted before orchestration state was persisted, fall back to fresh start
+    const slotLiveness = getLiveness(block).trim();
+    if (slotLiveness === "interrupted") {
+      console.error(`ludics: slot ${slotNum}: no recoverable orchestration state — falling back to fresh start`);
+      await slotStart(slotNum);
+      return;
+    }
     throw new Error(
       `slot ${slotNum} has no persisted orchestration state — ` +
       `resume only supports orchestrated sessions. Use 'slot start' for fresh start`
