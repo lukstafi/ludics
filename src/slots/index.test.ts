@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotResume, slotStart, runSlot } from "./index.ts";
+import { slotAssign, slotResume, slotStart, runSlot, markSlotSetupFailed } from "./index.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "../orchestration/state.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
@@ -309,5 +309,54 @@ describe("slotStart — t3code empty-args guard", () => {
     // Assign with whitespace adapterArgs — stored as-is since "   " is truthy
     slotAssign(1, "task-whitespace-args-1", "t3code", "", "", "   ");
     await expect(slotStart(1)).rejects.toThrow("requires orchestration flags");
+  });
+});
+
+describe("markSlotSetupFailed", () => {
+  test("marks slot as interrupted without clearing it", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-setup-fail-1", "Setup fail test");
+
+    slotAssign(1, "task-setup-fail-1", "tmux");
+
+    // Task should be in-progress after assign
+    const taskBefore = readFileSync(join(tasksDir, "task-setup-fail-1.md"), "utf-8");
+    expect(taskBefore).toContain("status: in-progress");
+
+    markSlotSetupFailed(1, "tmux session creation failed");
+
+    // Slot should NOT be empty — process should still be set
+    const slotsContent = readFileSync(join(harness, "slots.md"), "utf-8");
+    expect(slotsContent).toContain("**Process:** Setup fail test");
+    expect(slotsContent).toContain("**Liveness:** interrupted");
+
+    // Task status should be reset to ready (not orphaned in-progress)
+    const taskAfter = readFileSync(join(tasksDir, "task-setup-fail-1.md"), "utf-8");
+    expect(taskAfter).toContain("status: ready");
+  });
+
+  test("does not reset task status if not in-progress", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    // Write a task with "ready" status explicitly
+    writeFileSync(join(tasksDir, "task-setup-fail-2.md"), `---
+id: task-setup-fail-2
+title: "Already ready"
+project: demo
+status: ready
+priority: B
+slot: 1
+---
+`);
+
+    slotAssign(1, "task-setup-fail-2", "tmux");
+    markSlotSetupFailed(1, "worktree creation failed");
+
+    const slotsContent = readFileSync(join(harness, "slots.md"), "utf-8");
+    expect(slotsContent).toContain("**Liveness:** interrupted");
   });
 });

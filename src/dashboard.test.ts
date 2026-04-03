@@ -117,6 +117,18 @@ describe("computeSlotLiveness", () => {
   test("unknown mode returns null", async () => {
     expect(await getLiveness(1, "manual")).toBe(null);
   });
+
+  test("explicit Liveness field 'interrupted' in slot block returns 'interrupted'", async () => {
+    const { computeSlotLiveness } = await import("./dashboard.ts");
+    const block = `## Slot 1\n\n**Process:** test\n**Liveness:** interrupted\n`;
+    expect(computeSlotLiveness(1, null, block)).toBe("interrupted");
+  });
+
+  test("explicit Liveness field 'null' in slot block falls through to PID check", async () => {
+    const { computeSlotLiveness } = await import("./dashboard.ts");
+    const block = `## Slot 1\n\n**Process:** test\n**Liveness:** null\n`;
+    expect(computeSlotLiveness(1, null, block)).toBe(null);
+  });
 });
 
 // Note: /api/slot-resume follows the exact same pattern as /api/slot-start

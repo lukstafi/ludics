@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from
 import { join } from "path";
 import { globalAdapter, harnessDir, slotsFilePath, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
 import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
-         getSessionStarted, getMachine, setField,
+         getSessionStarted, getMachine, getLiveness, setField,
          emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
 import { stateCommit } from "../state.ts";
 import { journalAppend } from "../journal.ts";
@@ -310,6 +310,54 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
 }
 
 /**
+ * Mark a slot as interrupted due to orchestration setup failure.
+ * Unlike slotClear, this keeps the slot assigned (not empty) so that
+ * maybeFillEmptySlots won't overwrite it with a different task.
+ * The dashboard will show "Interrupted" with a Resume button.
+ */
+export function markSlotSetupFailed(slotNum: number, error: string): void {
+  const file = ensureSlotsFile();
+  const blocks = loadBlocks(file);
+  const count = slotsCount();
+  validateRange(slotNum, count);
+
+  const block = blocks.get(slotNum);
+  if (!block) return;
+
+  const taskId = getTask(block).trim();
+
+  // Mark slot as interrupted
+  let updated = setField(block, "Liveness", "interrupted");
+  // Clear Session Started so maybeAutoStartSlots doesn't think it's active
+  updated = setField(updated, "Session Started", "null");
+  blocks.set(slotNum, updated);
+  writeSlotFile(file, blocks, count);
+
+  // Reset task status from in-progress back to ready so it's not orphaned
+  if (taskId && taskId !== "null") {
+    const taskFile = taskFilePath(taskId);
+    if (existsSync(taskFile)) {
+      const content = readFileSync(taskFile, "utf-8");
+      const statusMatch = content.match(/^status:\s*(.+)$/m);
+      if (statusMatch && statusMatch[1]!.trim() === "in-progress") {
+        taskUpdateFrontmatter(taskId, "status", "ready");
+      }
+    }
+  }
+
+  journalAppend("slot", `Slot ${slotNum} setup failed: ${error}`);
+  emitEvent({
+    event_type: "slot_setup_failed",
+    source: "cli",
+    scope: "slot",
+    slot: slotNum,
+    task: taskId !== "null" ? taskId : undefined,
+    message: `setup failed: ${error}`,
+  });
+  stateCommit(`slot ${slotNum}: setup failed (interrupted)`);
+}
+
+/**
  * Mark a task as done directly (without a slot clear).
  * Used when a task has no slot assignment but needs to be completed,
  * e.g. from `ludics mag completed <proposal-name>`.
@@ -611,10 +659,10 @@ export async function slotStart(slotNum: number): Promise<void> {
 
   await runAdapterAction("start", ctx);
 
-  // Stamp the block so the mode-toggle guard can detect an active session
-  // regardless of which adapter is in use (manual has no phase marker).
+  // Clear any prior interrupted liveness and stamp active session marker
   const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
-  const updated = setField(block, "Session Started", sessionStartedAt);
+  let updated = setField(block, "Session Started", sessionStartedAt);
+  updated = setField(updated, "Liveness", "null");
   if (updated !== block) {
     blocks.set(slotNum, updated);
     writeSlotFile(file, blocks, count);
@@ -914,9 +962,10 @@ export async function slotResume(slotNum: number): Promise<void> {
     }
   }
 
-  // Stamp session-active marker
+  // Clear interrupted liveness and stamp session-active marker
   const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
-  const updated = setField(block, "Session Started", sessionStartedAt);
+  let updated = setField(block, "Session Started", sessionStartedAt);
+  updated = setField(updated, "Liveness", "null");
   if (updated !== block) {
     blocks.set(slotNum, updated);
     writeSlotFile(file, blocks, count);

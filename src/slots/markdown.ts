@@ -68,6 +68,7 @@ export function getStarted(block: string): string { return getField(block, "Star
 export function getAdapterArgs(block: string): string { return getField(block, "Adapter Args"); }
 export function getSessionStarted(block: string): string { return getField(block, "Session Started"); }
 export function getMachine(block: string): string { return getField(block, "Machine"); }
+export function getLiveness(block: string): string { return getField(block, "Liveness"); }
 
 /**
  * Update (or insert) a structured `**Field:** value` header line in a slot block.

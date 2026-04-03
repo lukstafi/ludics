@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rename
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
-import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted } from "./slots/markdown.ts";
+import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted, getLiveness } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag, federationIsController, selectMachineForSlot } from "./federation.ts";
@@ -19,7 +19,7 @@ import {
   expirePendingRevises,
   expirePendingFollowupRevises,
 } from "./notify.ts";
-import { slotAssign, slotClear, slotResume, slotStart, taskCompleteDirectly } from "./slots/index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, taskCompleteDirectly, markSlotSetupFailed } from "./slots/index.ts";
 import { readSlotState } from "./t3code/server.ts";
 import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
 import { selectOrchestrationFlags } from "./adapters/t3code.ts";
@@ -957,8 +957,10 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
     let rollbackStatus = "rollback skipped";
     try {
       if (selection.taskSlot === null) {
-        slotClear(slotNum, "ready");
-        rollbackStatus = "slot cleared back to ready";
+        // Mark slot as interrupted instead of clearing — prevents maybeFillEmptySlots
+        // from overwriting with a different task before the user can investigate.
+        markSlotSetupFailed(slotNum, detail);
+        rollbackStatus = "slot marked interrupted";
       } else {
         slotAssign(
           slotNum,
@@ -1872,6 +1874,10 @@ function maybeAutoStartSlots(): void {
     const taskId = getTask(block).trim();
     if (!taskId || taskId === "null") continue;
 
+    // Skip slots already marked as interrupted (setup failure) — needs manual resume
+    const slotLiveness = getLiveness(block).trim();
+    if (slotLiveness === "interrupted") continue;
+
     // Skip if the slot has an active session
     const orchState = readOrchestrationState(slotNum);
     if (orchState && orchState.phase !== "setup") continue;
@@ -1890,7 +1896,9 @@ function maybeAutoStartSlots(): void {
       emitEvent({ event_type: "slot_auto_start", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)` });
       console.error(`ludics: auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)`);
     } catch (err) {
-      console.error(`ludics: failed to auto-start slot ${slotNum}: ${err instanceof Error ? err.message : String(err)}`);
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`ludics: failed to auto-start slot ${slotNum}: ${detail}`);
+      markSlotSetupFailed(slotNum, detail);
     }
   }
 }
@@ -1914,6 +1922,10 @@ function maybeUnstickAssignedSlots(): void {
 
     const taskId = getTask(block).trim();
     if (!taskId || taskId === "null") continue;
+
+    // Skip slots marked as interrupted — needs manual resume
+    const slotLiveness = getLiveness(block).trim();
+    if (slotLiveness === "interrupted") continue;
 
     // Skip if session is active
     const sessionStarted = getSessionStarted(block).trim();
