@@ -15,7 +15,7 @@ import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, par
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState } from "../t3code/server.ts";
-import { readOrchestrationState, persistState } from "../orchestration/state.ts";
+import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { remoteExec, remoteExecAsync, isRemoteMachine } from "../remote.ts";
 
@@ -750,6 +750,8 @@ export async function slotResume(slotNum: number): Promise<void> {
       const slotLiveness = getLiveness(block).trim();
       if (slotLiveness === "interrupted") {
         console.error(`ludics: slot ${slotNum}: no recoverable t3code state — falling back to fresh start`);
+        // Clean up any stale orchestration state that slotStart's guard would reject
+        try { removeOrchestrationState(slotNum, ctx.harnessDir); } catch { /* ignore */ }
         await slotStart(slotNum);
         return;
       }

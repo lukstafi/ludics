@@ -361,7 +361,7 @@ slot: 1
   });
 });
 
-describe("slotResume — interrupted without orchestration state", () => {
+describe("slotResume — interrupted fallback to fresh start", () => {
   test("falls back to slotStart when interrupted slot has no orchestration state", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
@@ -382,6 +382,64 @@ describe("slotResume — interrupted without orchestration state", () => {
       // Should NOT be the old "no persisted orchestration state" error
       expect(msg).not.toContain("no persisted orchestration state");
       // Instead it should be a slotStart error (adapter-level failure is expected in test)
+    }
+  });
+
+  test("cleans stale orch state when interrupted slot has orch state but incomplete setup", async () => {
+    // Regression test for: setup fails after persistState() but before
+    // writeSlotState()/writeTmuxSlotState(). Resume should clean up stale
+    // orch state and fall back to slotStart, not loop into "use resume" error.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    const orchDir = join(harness, "orchestration");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(orchDir, { recursive: true });
+    writeTask(tasksDir, "task-resume-fallback-2", "Post-persistState failure");
+
+    // Use tmux mode (fails fast in test, unlike t3code which hangs on ensureServer)
+    slotAssign(1, "task-resume-fallback-2", "tmux", "", "", "--pair --coder claude --reviewer claude");
+    markSlotSetupFailed(1, "runner start failed after persistState");
+
+    // Simulate: orchestration state was persisted before the failure,
+    // but tmux slot state was NOT written (the failure point).
+    const orchState: OrchestrationState = {
+      slot: 1,
+      taskId: "task-resume-fallback-2",
+      mode: "pair",
+      phase: "setup",
+      round: 1,
+      mergeRound: 0,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "sonnet", branch: "test-coder", worktreePath: "/tmp/wt-coder" },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "sonnet", branch: "test-reviewer", worktreePath: "/tmp/wt-reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      config: defaultOrchestrationConfig({}),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/fake-project",
+      rootWorktree: "/tmp/fake-root",
+      peerSyncDir: "/tmp/fake-peersync",
+      threadIds: {},
+      backend: "tmux",
+      slotTitle: "test",
+    };
+    persistState(orchState, harness);
+
+    // Verify the stale orch state file exists before resume
+    const { existsSync } = await import("fs");
+    const orchFile = join(orchDir, "slot-1.json");
+    expect(existsSync(orchFile)).toBe(true);
+
+    // slotResume sees orch state exists → passes orch-state guard → but
+    // tmux slot state is missing. For tmux it reaches the resume logic.
+    // The key assertion: it should NOT throw "has recoverable orchestration state"
+    // (which was the loop bug when falling back to slotStart with stale orch).
+    try {
+      await slotResume(1);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      expect(msg).not.toContain("has recoverable orchestration state");
     }
   });
 });
