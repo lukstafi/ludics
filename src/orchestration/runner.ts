@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
-import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone, pairReviewVerdict, phaseTimeoutExpired } from "./phases.ts";
+import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, pairReviewVerdict, phaseTimeoutExpired } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
   statusFileFingerprint, touchStatusFile, writeInterrupt, writePeerSync,
@@ -1081,6 +1081,20 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
   }
   if ((state.phase === "update-docs" || state.phase === "review") && next === "work") {
     state.round += 1;
+  }
+  // When plan-merge is skipped (plan → plan-review directly), copy the solo plan file
+  // to the merged plan path so plan-review skill templates read it via the same path.
+  if (state.phase === "plan" && next === "plan-review" && state.mode === "pair") {
+    const plansDir = join(state.peerSyncDir, "plans");
+    const mergedPath = join(plansDir, `round-${state.round}-merged-0.md`);
+    const { files } = findPlanFiles(state.peerSyncDir, state.round, undefined);
+    if (files.length > 0) {
+      try {
+        copyFileSync(join(plansDir, files[0]), mergedPath);
+      } catch {
+        // plans dir missing — plan-review will handle gracefully
+      }
+    }
   }
   // Track plan-merge iterations: increment planMergeRound each time we loop back.
   // Only increment if the plan-review phase actually dispatched and ran (phaseDispatched is true).

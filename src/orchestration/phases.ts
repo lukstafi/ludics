@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { isPrUrl } from "./github.ts";
@@ -368,6 +368,33 @@ function nextAfterPrework(state: OrchestrationState): Phase {
   return "work";
 }
 
+/**
+ * Scan the plans directory for individual plan files for a given round
+ * (excluding merged files).  Returns the list of filenames and whether
+ * the coder's plan is among them.
+ */
+export function findPlanFiles(
+  peerSyncDir: string,
+  round: number,
+  coderName: string | undefined,
+): { files: string[]; coderPlanExists: boolean } {
+  const plansDir = join(peerSyncDir, "plans");
+  const planPrefix = `round-${round}-`;
+  const files: string[] = [];
+  let coderPlanExists = false;
+  try {
+    for (const f of readdirSync(plansDir)) {
+      if (f.startsWith(planPrefix) && f.endsWith(".md") && !f.includes("-merged-")) {
+        files.push(f);
+        if (coderName && f === `round-${round}-${coderName}.md`) coderPlanExists = true;
+      }
+    }
+  } catch {
+    // plans dir may not exist yet
+  }
+  return { files, coderPlanExists };
+}
+
 export function evaluateTransition(state: OrchestrationState): Phase | null {
   switch (state.phase) {
     case "setup":
@@ -394,10 +421,18 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "plan":
       if (allAgentsDone(state) || phaseTimeoutExpired(state)) {
-        // Pair mode: both agents wrote independent plans — move to plan-merge so the
-        // coder can combine them before the reviewer does a formal review.
-        // Duo mode: go straight to plan-review (original behaviour).
-        return state.mode === "pair" ? "plan-merge" : "plan-review";
+        if (state.mode !== "pair") return "plan-review";
+        // Pair mode: skip plan-merge when only the coder plan exists (reviewer didn't
+        // produce a plan).  If only the reviewer's plan exists we must still enter
+        // plan-merge so the coder gets a chance to process it — skipping would have the
+        // reviewer effectively review their own plan.
+        const coder = state.agents.find((a) => a.role === "coder");
+        const { files: planFiles, coderPlanExists } = findPlanFiles(
+          state.peerSyncDir, state.round, coder?.name,
+        );
+        // Only skip plan-merge when there's exactly one plan and it's the coder's.
+        if (planFiles.length < 2 && coderPlanExists) return "plan-review";
+        return "plan-merge";
       }
       return null;
 
