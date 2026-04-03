@@ -2,6 +2,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rena
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "path";
 import { Database } from "bun:sqlite";
+import { setsidWrap } from "../orchestration/util.ts";
 
 /**
  * Migrate legacy `<t3codeDir>/state/` → `<t3codeDir>/userdata/`.
@@ -308,14 +309,8 @@ export async function ensureServer(
       } catch { /* ignore */ }
     }
     try {
-      // Wrap in setsid to isolate the server in its own process group.
-      // This prevents SIGINT from parent terminals or sibling processes
-      // (e.g., ludics CLI invocations) from killing the server.
-      const setsidBin = Bun.which("setsid");
-      const wrappedCommand = setsidBin
-        ? [setsidBin, ...command]  // Linux: setsid binary available
-        : ["perl", "-e", `use POSIX qw(setsid); setsid(); exec @ARGV`, "--", ...command]; // macOS: use perl
-      proc = Bun.spawn(wrappedCommand, {
+      // Wrap in setsid to isolate the server in its own session/process group.
+      proc = Bun.spawn(setsidWrap(command), {
         stdin: "ignore",
         stdout: "ignore",
         stderr: Bun.file(stderrPath),

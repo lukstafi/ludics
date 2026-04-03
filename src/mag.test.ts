@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand } from "./mag.ts";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode } from "./mag.ts";
 
 describe("normalizeLaunchAdapter", () => {
   test("t3code passes through unchanged", () => {
@@ -192,5 +195,75 @@ describe("resolveQueueRequestCommand — backward compat parsing", () => {
       false,
     );
     expect(result).toBeNull();
+  });
+});
+
+describe("orchPidForSlotMode", () => {
+  const ORIGINAL_HOME = process.env.HOME;
+  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+  const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
+  let TMP = "";
+
+  function writeConfig(homeDir: string): string {
+    const configDir = join(homeDir, ".config", "ludics");
+    mkdirSync(configDir, { recursive: true });
+    const configPath = join(configDir, "config.yaml");
+    writeFileSync(configPath, `state_repo: owner/ludics-state\nstate_path: harness\nslots:\n  count: 2\n`);
+    return configPath;
+  }
+
+  function testHarnessDir(): string {
+    return join(TMP, "harness");
+  }
+
+  function writeT3codeSlotState(slot: number, state: object): void {
+    const dir = join(testHarnessDir(), "t3code");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `slot-${slot}.json`), JSON.stringify(state));
+  }
+
+  function writeTmuxSlotState(slot: number, state: object): void {
+    const dir = join(testHarnessDir(), "orchestration");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `tmux-slot-${slot}.json`), JSON.stringify(state));
+  }
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-mag-"));
+    process.env.HOME = TMP;
+    process.env.LUDICS_CONFIG = writeConfig(TMP);
+    process.env.LUDICS_HARNESS_DIR = testHarnessDir();
+    mkdirSync(testHarnessDir(), { recursive: true });
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HOME === undefined) delete process.env.HOME; else process.env.HOME = ORIGINAL_HOME;
+    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+    if (ORIGINAL_HARNESS_DIR === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  test("tmux mode reads PID from tmux slot state", () => {
+    writeTmuxSlotState(1, {
+      slot: 1, ttydPids: {},
+      orchestration: { stateFile: "orch.json", mode: "duo", pid: 12345 },
+    });
+    expect(orchPidForSlotMode(1, "tmux")).toBe(12345);
+  });
+
+  test("t3code mode reads PID from t3code slot state", () => {
+    writeT3codeSlotState(1, {
+      slot: 1, threads: [],
+      orchestration: { stateFile: "orch.json", mode: "pair", pid: 67890 },
+    });
+    expect(orchPidForSlotMode(1, "t3code")).toBe(67890);
+  });
+
+  test("unknown mode returns undefined", () => {
+    expect(orchPidForSlotMode(1, "manual")).toBeUndefined();
+  });
+
+  test("missing state file returns undefined", () => {
+    expect(orchPidForSlotMode(99, "tmux")).toBeUndefined();
   });
 });

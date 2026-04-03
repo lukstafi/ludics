@@ -88,6 +88,15 @@ describe("computeSlotLiveness", () => {
     expect(await getLiveness(1, "t3code")).toBe("interrupted");
   });
 
+  test("tmux slot with alive PID returns 'alive'", async () => {
+    writeTmuxSlotState(1, {
+      slot: 1,
+      ttydPids: {},
+      orchestration: { stateFile: "orch.json", mode: "duo", pid: process.pid },
+    });
+    expect(await getLiveness(1, "tmux")).toBe("alive");
+  });
+
   test("tmux slot with dead PID returns 'interrupted'", async () => {
     writeTmuxSlotState(1, {
       slot: 1,
