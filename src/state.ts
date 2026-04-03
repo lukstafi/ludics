@@ -166,17 +166,19 @@ export function statePush(): void {
   // Resolve federation identity lazily to avoid state.ts → federation.ts import cycle
   let currentMachine = "";
   let isCurrentMachineController = true; // standalone default
+  let controllerMachine = ""; // the controller's machine name
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { federationCurrentMachineName, federationIsController } = require("./federation.ts");
+    const { federationCurrentMachineName, federationIsController, federationCurrentController } = require("./federation.ts");
     currentMachine = federationCurrentMachineName() ?? "";
     isCurrentMachineController = federationIsController();
+    controllerMachine = federationCurrentController() ?? currentMachine;
   } catch { /* standalone mode — no federation */ }
 
-  if (!pullRebasePush(repoDir, currentMachine, isCurrentMachineController)) {
+  if (!pullRebasePush(repoDir, currentMachine, isCurrentMachineController, controllerMachine)) {
     // Retry once: another machine may have pushed between our pull and push
     console.error("ludics: push rejected or conflict, retrying...");
-    if (!pullRebasePush(repoDir, currentMachine, isCurrentMachineController)) {
+    if (!pullRebasePush(repoDir, currentMachine, isCurrentMachineController, controllerMachine)) {
       console.error("ludics: push failed after retry (will retry next checkpoint)");
     }
   }
@@ -187,6 +189,7 @@ function pullRebasePush(
   repoDir: string,
   currentMachine: string,
   isController: boolean,
+  controllerMachine: string,
 ): boolean {
   const pullResult = run(["git", "pull", "--rebase"], repoDir);
   if (!pullResult.success) {
@@ -197,7 +200,7 @@ function pullRebasePush(
       const MAX_CONFLICT_STEPS = 5;
       let resolved = false;
       for (let step = 0; step < MAX_CONFLICT_STEPS; step++) {
-        const stepOk = resolveRebaseConflicts(repoDir, currentMachine, isController);
+        const stepOk = resolveRebaseConflicts(repoDir, currentMachine, isController, controllerMachine);
         if (stepOk) { resolved = true; break; }
 
         // Check if rebase --continue hit another conflict
@@ -234,6 +237,7 @@ function resolveRebaseConflicts(
   repoDir: string,
   currentMachine: string,
   isController: boolean,
+  controllerMachine: string,
 ): boolean {
   const { stdout } = run(["git", "diff", "--name-only", "--diff-filter=U"], repoDir);
   if (!stdout) return true;
@@ -249,7 +253,7 @@ function resolveRebaseConflicts(
     } else if (file.startsWith(`${prefix}orchestration/`)) {
       resolveByRecency(repoDir, file);
     } else if (file === `${prefix}slots.md`) {
-      resolveSlotsMd(repoDir, file, currentMachine, isController);
+      resolveSlotsMd(repoDir, file, currentMachine, isController, controllerMachine);
     } else {
       // In rebase, --theirs = our local commit being replayed
       run(["git", "checkout", "--theirs", file], repoDir);
@@ -325,6 +329,7 @@ function resolveSlotsMd(
   file: string,
   currentMachine: string,
   isController: boolean,
+  controllerMachine: string,
 ): void {
   const upstreamRaw = run(["git", "show", `:2:${file}`], repoDir).stdout;
   const localRaw = run(["git", "show", `:3:${file}`], repoDir).stdout;
@@ -363,9 +368,11 @@ function resolveSlotsMd(
 
     // CASE 1: controller-owned slot (no Machine field, or Machine matches controller)
     // Controller owns both identity and runtime — its full block wins regardless
-    // of which machine is rebasing.
+    // of which machine is rebasing. selectMachineForSlot() writes the controller's
+    // own machine name for local slots, so we must match against it.
     const slotMachine = getMachine(ctrlBlock).trim() || getMachine(wrkBlock).trim();
-    const slotIsControllerOwned = !slotMachine || slotMachine === "null";
+    const slotIsControllerOwned = !slotMachine || slotMachine === "null"
+      || slotMachine === controllerMachine;
 
     if (slotIsControllerOwned) {
       merged.set(i, ctrlBlock);
