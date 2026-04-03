@@ -13,7 +13,7 @@ import { inspectManagedServerProcess, processAlive, readServerRecord, readSlotSt
 import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
-import { federationIsController } from "./federation.ts";
+import { federationIsController, heartbeatIsFresh, federationCurrentMachineName } from "./federation.ts";
 
 function dashboardDataDir(): string {
   return join(harnessDir(), "dashboard", "data");
@@ -43,6 +43,7 @@ interface SlotJson {
   t3codeThreadLinks: Record<string, string> | null;
   effort: string | null;
   liveness: "alive" | "interrupted" | null;
+  machine: string | null;
 }
 
 export interface SlotLivenessContext {
@@ -269,18 +270,23 @@ function generateSlots(): SlotJson[] {
     const rawSessionStarted = getSessionStarted(block).trim();
     const sessionStarted = (rawSessionStarted && rawSessionStarted !== "null") ? rawSessionStarted : null;
 
-    // Compute liveness — for non-empty local slots.
-    // Check explicit Liveness field (setup failures) even without a phase.
-    // Skip remote-owned slots: their orchestrator PID won't exist in the local process table.
+    // Compute liveness — for local slots use PID check, for remote slots use heartbeat.
+    const machineName = getMachine(block).trim();
     let liveness: "alive" | "interrupted" | null = null;
     if (!empty) {
-      const machineName = getMachine(block).trim();
       const explicitLiveness = getLiveness(block).trim();
       const shouldCheck = (phase && phase !== "done") || explicitLiveness === "interrupted";
-      if (shouldCheck && (!machineName || machineName === "null" || !isRemoteMachine(machineName))) {
-        liveness = computeSlotLiveness({ slotNum: num, mode: getMode(block).trim() || null, slotBlock: block });
+      if (shouldCheck) {
+        if (!machineName || machineName === "null" || !isRemoteMachine(machineName)) {
+          liveness = computeSlotLiveness({ slotNum: num, mode: getMode(block).trim() || null, slotBlock: block });
+        } else {
+          // Remote slot: use heartbeat freshness as liveness proxy
+          liveness = heartbeatIsFresh(machineName) ? "alive" : "interrupted";
+        }
       }
     }
+
+    const machine = (machineName && machineName !== "null") ? machineName : null;
 
     result.push({
       number: num,
@@ -303,6 +309,7 @@ function generateSlots(): SlotJson[] {
       t3codeThreadLinks: empty ? null : orchLinks.t3codeThreadLinks,
       effort: taskEffort,
       liveness,
+      machine,
     });
   }
 
@@ -961,6 +968,10 @@ export function dashboardGenerate(): void {
   const tasks = readDashboardTasks();
 
   console.error("ludics: generating dashboard data...");
+
+  const meta = { controllerMachine: federationCurrentMachineName() ?? null };
+  writeFileSync(join(dataDir, "meta.json"), JSON.stringify(meta, null, 2));
+  console.error("  meta.json");
 
   writeFileSync(join(dataDir, "slots.json"), JSON.stringify(generateSlots(), null, 2));
   console.error("  slots.json");

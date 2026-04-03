@@ -40,6 +40,7 @@ document.addEventListener('visibilitychange', () => {
 async function fetchAllData() {
     try {
         await Promise.all([
+            fetchMeta(),
             fetchSlots(),
             fetchReadyQueue(),
             fetchNeedsConfirmation(),
@@ -54,6 +55,18 @@ async function fetchAllData() {
     } catch (error) {
         console.error('Failed to fetch data:', error);
         setConnectionStatus(false);
+    }
+}
+
+// Fetch dashboard metadata (controller machine name, etc.)
+async function fetchMeta() {
+    try {
+        const response = await fetch(CONFIG.dataPath + 'meta.json');
+        if (!response.ok) return;
+        const meta = await response.json();
+        window.__controllerMachine = meta.controllerMachine || null;
+    } catch {
+        // meta.json may not exist on older installations
     }
 }
 
@@ -133,6 +146,9 @@ function renderSlots(slots) {
             const meta = [];
             if (hasTask) meta.push(`<span class="task-id">${escapeHtml(slot.task)}</span>`);
             if (slot.effort) meta.push(`<span class="effort" data-effort="${escapeHtml(slot.effort)}">${escapeHtml(slot.effort)}</span>`);
+            if (slot.machine && slot.machine !== window.__controllerMachine) {
+                meta.push(`<span class="machine-badge">${escapeHtml(slot.machine)}</span>`);
+            }
             if (slot.mode) {
                 // Always allow toggling to manual — it signals "stop automating".
                 // From manual, allow toggling back to the default automated adapter.

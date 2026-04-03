@@ -200,7 +200,7 @@ export function heartbeatPublish(): boolean {
   return true;
 }
 
-function heartbeatIsFresh(nodeName: string): boolean {
+export function heartbeatIsFresh(nodeName: string): boolean {
   const file = join(heartbeatsDir(), `${nodeName}.json`);
   if (!existsSync(file)) return false;
 
