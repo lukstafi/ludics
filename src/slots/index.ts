@@ -519,26 +519,34 @@ export function slotNote(slotNum: number, note: string): void {
   writeSlotFile(file, blocks, count);
 }
 
-export function slotSetMode(slotNum: number, mode: string): void {
+export async function slotSetMode(slotNum: number, mode: string): Promise<void> {
   const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  let blocks = loadBlocks(file);
   const count = slotsCount();
   validateRange(slotNum, count);
 
-  const block = blocks.get(slotNum);
+  let block = blocks.get(slotNum);
   if (!block) {
     throw new Error(`slot ${slotNum} not found`);
   }
 
-  // Switching TO manual is always safe — it just disables automation.
-  // Switching FROM manual to an automated adapter while a session is running
-  // could cause adapter mismatch, so block that.
   const sessionStarted = getSessionStarted(block).trim();
   const hasActiveSession = sessionStarted && sessionStarted !== "null";
-  if (hasActiveSession && mode !== "manual") {
-    throw new Error(
-      `slot ${slotNum} has an active session (started at ${sessionStarted}); stop or clear the slot before switching to ${mode}`,
-    );
+
+  if (hasActiveSession) {
+    const currentMode = getMode(block).trim();
+    const isAutomated = currentMode === "tmux" || currentMode === "t3code";
+    if (isAutomated && mode === "manual") {
+      // Kill processes but preserve state for later resume
+      await slotStop(slotNum, false, true);
+      // Re-read blocks since slotStop modified the file
+      blocks = loadBlocks(file);
+      block = blocks.get(slotNum)!;
+    } else {
+      throw new Error(
+        `slot ${slotNum} has an active session (started at ${sessionStarted}); stop or clear the slot before switching to ${mode}`,
+      );
+    }
   }
 
   // Update the Mode field in-place
@@ -672,7 +680,7 @@ export async function slotStart(slotNum: number): Promise<void> {
   emitEvent({ event_type: "slot_start", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
 }
 
-export async function slotStop(slotNum: number, force: boolean = false): Promise<void> {
+export async function slotStop(slotNum: number, force: boolean = false, preserveState: boolean = false): Promise<void> {
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
@@ -691,7 +699,9 @@ export async function slotStop(slotNum: number, force: boolean = false): Promise
       console.error(`ludics: slot ${slotNum}: force-clearing local state (skipping remote stop on ${ctx.machine})`);
     } else {
       console.error(`ludics: slot ${slotNum}: dispatching stop to remote machine ${ctx.machine}`);
-      const result = remoteExec(ctx.machine, ["slot", String(slotNum), "stop"]);
+      const remoteArgs = ["slot", String(slotNum), "stop"];
+      if (preserveState) remoteArgs.push("--preserve-state");
+      const result = remoteExec(ctx.machine, remoteArgs);
       if (!result.success) {
         console.error(`ludics: slot ${slotNum}: remote stop failed on ${ctx.machine}: ${result.stderr}`);
         console.error(`  use 'ludics slot ${slotNum} stop --force' to clear local state without remote exec`);
@@ -699,7 +709,7 @@ export async function slotStop(slotNum: number, force: boolean = false): Promise
       }
     }
   } else {
-    await runAdapterAction("stop", ctx);
+    await runAdapterAction("stop", ctx, { preserveState });
   }
 
   // Clear the session-active marker so the mode toggle becomes available again
@@ -1178,7 +1188,8 @@ export async function runSlot(args: string[]): Promise<void> {
 
     case "stop": {
       const forceStop = args.includes("--force");
-      await slotStop(slotNum, forceStop);
+      const preserveState = args.includes("--preserve-state");
+      await slotStop(slotNum, forceStop, preserveState);
       break;
     }
 
@@ -1196,7 +1207,7 @@ export async function runSlot(args: string[]): Promise<void> {
     case "mode": {
       const modeVal = args[2];
       if (!modeVal) throw new Error("mode value required (e.g., manual, t3code)");
-      slotSetMode(slotNum, modeVal);
+      await slotSetMode(slotNum, modeVal);
       break;
     }
 

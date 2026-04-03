@@ -28,13 +28,16 @@ function getAdapter(mode: string): Adapter {
   return adapter;
 }
 
-export async function runAdapterAction(action: string, ctx: AdapterContext): Promise<string> {
+export async function runAdapterAction(
+  action: string, ctx: AdapterContext,
+  options?: { preserveState?: boolean },
+): Promise<string> {
   const adapter = getAdapter(ctx.mode);
   switch (action) {
     case "start":
       return await adapter.start(ctx);
     case "stop":
-      return await adapter.stop(ctx);
+      return await adapter.stop(ctx, options);
     case "read_state":
       return (await adapter.readState(ctx)) ?? "";
     default:

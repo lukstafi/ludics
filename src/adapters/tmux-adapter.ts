@@ -516,7 +516,7 @@ async function start(ctx: AdapterContext): Promise<string> {
   return `tmux slot ${ctx.slot} started — ttyd at http://localhost:${port0}`;
 }
 
-async function stop(ctx: AdapterContext): Promise<string> {
+async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }): Promise<string> {
   const slotState = readTmuxSlotState(ctx.slot, ctx.harnessDir);
   if (!slotState) {
     return `tmux slot ${ctx.slot} already stopped`;
@@ -535,12 +535,17 @@ async function stop(ctx: AdapterContext): Promise<string> {
   // Kill tmux agent sessions
   if (orchState) {
     killTmuxSessionsForSlot(ctx.slot, orchState.agents.map((a) => a.name), orchState.taskId);
-    removePeerSyncSession(orchState.projectDir, orchState.taskId);
-    cleanupWorktrees(orchState.projectDir, orchState.taskId, orchState.agents, ctx.slot, orchState.mode);
-    removeOrchestrationState(ctx.slot, ctx.harnessDir);
+
+    if (!options?.preserveState) {
+      removePeerSyncSession(orchState.projectDir, orchState.taskId);
+      cleanupWorktrees(orchState.projectDir, orchState.taskId, orchState.agents, ctx.slot, orchState.mode);
+      removeOrchestrationState(ctx.slot, ctx.harnessDir);
+    }
   }
 
-  removeTmuxSlotState(ctx.slot, ctx.harnessDir);
+  if (!options?.preserveState) {
+    removeTmuxSlotState(ctx.slot, ctx.harnessDir);
+  }
   return `tmux slot ${ctx.slot} stopped`;
 }
 
