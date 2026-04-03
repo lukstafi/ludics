@@ -709,9 +709,6 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
   const count = slotsCount();
   validateRange(slotNum, count);
 
-  // Hierarchical duo: clear duoPeerSlot on sibling so it becomes a regular pair slot
-  clearDuoPeerLink(slotNum);
-
   const block = blocks.get(slotNum);
   if (!block) throw new Error(`slot ${slotNum} not found`);
 
@@ -738,6 +735,10 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
   } else {
     await runAdapterAction("stop", ctx, { preserveState });
   }
+
+  // Hierarchical duo: clear duoPeerSlot on sibling AFTER stop succeeds,
+  // so a failed stop doesn't prematurely detach the sibling.
+  clearDuoPeerLink(slotNum);
 
   // Clear the session-active marker so the mode toggle becomes available again
   const updated = setField(block, "Session Started", "null");
