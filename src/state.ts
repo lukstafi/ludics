@@ -244,14 +244,15 @@ function resolveRebaseConflicts(
     if (file === `${prefix}journal/events.jsonl`) {
       resolveAppendOnly(repoDir, file);
     } else if (file.startsWith(`${prefix}federation/heartbeats/`)) {
-      // Each machine owns its own heartbeat file — accept ours
-      run(["git", "checkout", "--ours", file], repoDir);
+      // Each machine owns its own heartbeat file — accept local (theirs in rebase)
+      run(["git", "checkout", "--theirs", file], repoDir);
     } else if (file.startsWith(`${prefix}orchestration/`)) {
       resolveByRecency(repoDir, file);
     } else if (file === `${prefix}slots.md`) {
       resolveSlotsMd(repoDir, file, currentMachine, isController);
     } else {
-      run(["git", "checkout", "--ours", file], repoDir);
+      // In rebase, --theirs = our local commit being replayed
+      run(["git", "checkout", "--theirs", file], repoDir);
       console.error(`ludics: merge conflict on ${file} — accepted local version`);
     }
     run(["git", "add", file], repoDir);
@@ -291,13 +292,14 @@ function resolveByRecency(repoDir: string, file: string): void {
     const upstreamEpoch = Number(upstream.phaseStartedAt ?? 0);
     const localEpoch = Number(local.phaseStartedAt ?? 0);
 
+    // In rebase: --ours = upstream (:2:), --theirs = local (:3:)
     if (upstreamEpoch > localEpoch) {
-      run(["git", "checkout", "--ours", file], repoDir);
+      run(["git", "checkout", "--ours", file], repoDir); // keep upstream
     } else {
-      run(["git", "checkout", "--theirs", file], repoDir);
+      run(["git", "checkout", "--theirs", file], repoDir); // keep local
     }
   } catch {
-    // Parse failed — accept our local commit
+    // Parse failed — accept our local commit (theirs in rebase)
     run(["git", "checkout", "--theirs", file], repoDir);
   }
 }
@@ -359,12 +361,13 @@ function resolveSlotsMd(
       continue;
     }
 
-    // CASE 1: controller-owned slot (local or no Machine)
+    // CASE 1: controller-owned slot (no Machine field, or Machine matches controller)
+    // Controller owns both identity and runtime — its full block wins regardless
+    // of which machine is rebasing.
     const slotMachine = getMachine(ctrlBlock).trim() || getMachine(wrkBlock).trim();
-    const slotIsLocal = !slotMachine || slotMachine === "null"
-      || slotMachine === currentMachine;
+    const slotIsControllerOwned = !slotMachine || slotMachine === "null";
 
-    if (slotIsLocal && isController) {
+    if (slotIsControllerOwned) {
       merged.set(i, ctrlBlock);
       continue;
     }
