@@ -2204,6 +2204,10 @@ function maybeFillEmptySlots(): void {
   if (emptySlots.length === 0) return;
 
   const candidates = getSortedReadyCandidates();
+  if (candidates.length > 0) {
+    const top5 = candidates.slice(0, 5).map((c) => `${c.id}(p=${c.priority},ep=${effectivePriorityValue(c.priority, c.project)},elab=${c.elaborated})`);
+    console.error(`ludics: auto-fill candidates (top 5): ${top5.join(", ")}`);
+  }
 
   // Fill at most 1 empty slot per keepalive cycle (conservative)
   // If the top candidate isn't elaborated, queue elaboration instead of assigning
