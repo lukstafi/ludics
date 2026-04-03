@@ -21,6 +21,7 @@ import {
 } from "./notify.ts";
 import { slotAssign, slotClear, slotResume, slotStart, taskCompleteDirectly } from "./slots/index.ts";
 import { readSlotState } from "./t3code/server.ts";
+import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
 import { selectOrchestrationFlags } from "./adapters/t3code.ts";
 import YAML from "yaml";
@@ -2271,6 +2272,19 @@ function maybeFillEmptySlots(): void {
  * Follows the maybeClearDoneSlots() pattern.
  * Rate-limited: at most 1 resume per keepalive invocation.
  */
+export function orchPidForSlotMode(
+  slotNum: number,
+  mode: string,
+): number | undefined {
+  if (mode === "t3code") {
+    return readSlotState(slotNum)?.orchestration?.pid;
+  }
+  if (mode === "tmux") {
+    return readTmuxSlotState(slotNum, harnessDir())?.orchestration?.pid;
+  }
+  return undefined;
+}
+
 async function maybeResumeDeadOrchestrators(): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
 
@@ -2288,7 +2302,7 @@ async function maybeResumeDeadOrchestrators(): Promise<void> {
     if (!slotProcess || slotProcess === "(empty)") continue;
 
     const mode = getMode(block).trim();
-    if (mode !== "t3code") continue;
+    if (mode !== "t3code" && mode !== "tmux") continue;
 
     const taskId = getTask(block).trim();
     if (!taskId || taskId === "null") continue;
@@ -2300,10 +2314,9 @@ async function maybeResumeDeadOrchestrators(): Promise<void> {
     // Guard: orchestration state must match slot's current task
     if (orchState.taskId && orchState.taskId !== taskId) continue;
 
-    const slotState = readSlotState(slotNum);
-    if (!slotState?.orchestration?.pid) continue;
-
-    const pid = slotState.orchestration.pid;
+    const orchPid = orchPidForSlotMode(slotNum, mode);
+    if (!orchPid || orchPid <= 0) continue;
+    const pid = orchPid;
     let alive = true;
     try {
       process.kill(pid, 0); // global process — PID liveness check

@@ -3,7 +3,7 @@
 
 import { openSync, readFileSync } from "fs";
 import { join } from "path";
-import { ludicsSelfCommand } from "./util.ts";
+import { ludicsSelfCommand, setsidWrap } from "./util.ts";
 
 /**
  * Spawn the orchestration runner as a detached background process for a slot.
@@ -12,7 +12,7 @@ import { ludicsSelfCommand } from "./util.ts";
 export async function startOrchestrationProcess(slot: number, harnessDir: string, taskId: string): Promise<number> {
   const logPath = join(harnessDir, "orchestration", `slot-${slot}-${taskId}.log`);
   const logFd = openSync(logPath, "a");
-  const proc = Bun.spawn(ludicsSelfCommand(["orch", "run-internal", String(slot)]), {
+  const proc = Bun.spawn(setsidWrap(ludicsSelfCommand(["orch", "run-internal", String(slot)])), {
     stdin: "ignore",
     stdout: "ignore",
     stderr: logFd,

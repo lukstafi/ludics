@@ -55,3 +55,29 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Build a command array that runs in its own session, immune to SIGHUP
+ * when the parent exits.  Accepts an optional resolved setsid path so
+ * callers (and tests) can control which branch is taken.
+ *
+ * - Linux: prepend the setsid binary.
+ * - macOS (no setsid binary): use perl POSIX::setsid as a fallback.
+ */
+export function setsidWrap(
+  command: string[],
+  resolvedSetsid?: string | null,
+): string[] {
+  const setsidBin = resolvedSetsid !== undefined
+    ? resolvedSetsid
+    : (Bun.which("setsid") ?? null);
+  if (setsidBin) {
+    return [setsidBin, ...command];
+  }
+  return [
+    "perl", "-e",
+    "use POSIX qw(setsid); setsid(); exec @ARGV",
+    "--",
+    ...command,
+  ];
+}
+

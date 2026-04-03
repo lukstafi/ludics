@@ -82,6 +82,7 @@ export async function runOrchestrationCli(args: string[]): Promise<void> {
       orchLog(requireSlot(args[1]));
       return;
     case "run-internal": {
+      console.error(`ludics: orchestration runner starting — slot ${args[1]}, pid ${process.pid}, ${new Date().toISOString()}`);
       // Catch crashes and unhandled rejections — orchestrator runs detached,
       // stderr goes to log file, silent deaths are unacceptable.
       const crashHandler = (err: unknown) => {
