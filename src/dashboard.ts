@@ -355,20 +355,9 @@ interface DashboardTask {
   hasQuestions: boolean;
 }
 
-interface NeedsConfirmationTask {
-  id: string;
-  title: string;
-  project: string;
-  priority: string;
-  created: string | null;
-  relatesTo: string[];
-}
-
-interface UnansweredQuestionsTask {
-  id: string;
-  title: string;
-  project: string;
-  priority: string;
+interface FilteredTaskTileConfig {
+  filter: (task: DashboardTask) => boolean;
+  extraFields: (task: DashboardTask) => Record<string, unknown>;
 }
 
 interface TasksTreeNode {
@@ -511,29 +500,27 @@ function generateReady(tasks: DashboardTask[]): ReadyTask[] {
   return ready;
 }
 
-function generateNeedsConfirmation(tasks: DashboardTask[]): NeedsConfirmationTask[] {
+function generateFilteredTaskList(tasks: DashboardTask[], config: FilteredTaskTileConfig): Record<string, unknown>[] {
   return tasks
-    .filter((task) => task.status === "needs-confirmation")
+    .filter(config.filter)
     .map((task) => ({
       id: task.id,
       title: task.title,
       project: task.project,
       priority: task.priority,
-      created: task.created,
-      relatesTo: task.dependencies.relates_to,
+      ...config.extraFields(task),
     }));
 }
 
-function generateUnansweredQuestions(tasks: DashboardTask[]): UnansweredQuestionsTask[] {
-  return tasks
-    .filter((task) => task.hasQuestions && !task.isCompleted)
-    .map((task) => ({
-      id: task.id,
-      title: task.title,
-      project: task.project,
-      priority: task.priority,
-    }));
-}
+const needsConfirmationConfig: FilteredTaskTileConfig = {
+  filter: (task) => task.status === "needs-confirmation",
+  extraFields: (task) => ({ created: task.created, relatesTo: task.dependencies.relates_to }),
+};
+
+const unansweredQuestionsConfig: FilteredTaskTileConfig = {
+  filter: (task) => task.hasQuestions && !task.isCompleted,
+  extraFields: () => ({}),
+};
 
 function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
   if (tasks.length === 0) return [];
@@ -979,10 +966,10 @@ export function dashboardGenerate(): void {
   writeFileSync(join(dataDir, "ready.json"), JSON.stringify(generateReady(tasks), null, 2));
   console.error("  ready.json");
 
-  writeFileSync(join(dataDir, "needs-confirmation.json"), JSON.stringify(generateNeedsConfirmation(tasks), null, 2));
+  writeFileSync(join(dataDir, "needs-confirmation.json"), JSON.stringify(generateFilteredTaskList(tasks, needsConfirmationConfig), null, 2));
   console.error("  needs-confirmation.json");
 
-  writeFileSync(join(dataDir, "unanswered-questions.json"), JSON.stringify(generateUnansweredQuestions(tasks), null, 2));
+  writeFileSync(join(dataDir, "unanswered-questions.json"), JSON.stringify(generateFilteredTaskList(tasks, unansweredQuestionsConfig), null, 2));
   console.error("  unanswered-questions.json");
 
   writeFileSync(join(dataDir, "tasks-tree.json"), JSON.stringify(generateTasksTree(tasks), null, 2));
