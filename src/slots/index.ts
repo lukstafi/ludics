@@ -286,6 +286,12 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
     try { unlinkSync(tmuxSlotFile); } catch { /* ignore */ }
   }
 
+  // Remove t3code slot state if present (e.g. preserved from a paused session)
+  const t3codeSlotFile = join(harnessDir(), "t3code", `slot-${slotNum}.json`);
+  if (existsSync(t3codeSlotFile)) {
+    try { unlinkSync(t3codeSlotFile); } catch { /* ignore */ }
+  }
+
   if (taskId && taskId !== "null") {
     taskUpdateForSlotClear(taskId, finalStatus);
     journalAppend("slot", `Slot ${slotNum} cleared: task=${taskId} status=${finalStatus}`);
