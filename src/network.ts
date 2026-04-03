@@ -68,6 +68,13 @@ export function networkHostname(): string {
     const configHost = hostnameFromConfig();
     if (configHost) return configHost;
 
+    // Fallback: use federation machine host field (works from launchd where Tailscale CLI is unavailable)
+    try {
+      const { federationCurrentMachine } = require("./federation.ts");
+      const machine = federationCurrentMachine();
+      if (machine?.host) return machine.host;
+    } catch { /* federation not available */ }
+
     console.error("ludics: tailscale mode enabled but cannot determine hostname");
     return "localhost";
   }
