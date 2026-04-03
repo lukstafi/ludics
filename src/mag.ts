@@ -20,6 +20,7 @@ import {
   expirePendingFollowupRevises,
 } from "./notify.ts";
 import { slotAssign, slotClear, slotResume, slotStart, taskCompleteDirectly, markSlotSetupFailed } from "./slots/index.ts";
+import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
 import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
@@ -2239,32 +2240,70 @@ function maybeFillEmptySlots(): void {
   }
 
   const task = candidates[0]!;
-  const slot = emptySlots[0]!;
 
   // Auto-select orchestration flags based on task effort
-  const { adapter: autoAdapter, args: autoArgs } = selectOrchestrationFlags(task.effort);
+  const { adapter: autoAdapter, args: autoArgs, isDuo } = selectOrchestrationFlags(task.effort);
 
-  // Resolve project path from config
-  const projectPath = resolveProjectPath(task.project);
+  // Hierarchical duo: need 2 empty slots; assign both with swapped coder/reviewer
+  if (isDuo) {
+    if (emptySlots.length < 2) {
+      console.error(`ludics: duo task ${task.id} needs 2 empty slots but only ${emptySlots.length} available — skipping`);
+      // Try next non-duo candidate (if any)
+      return;
+    }
+    // Guard: check task isn't already assigned to any active slot
+    for (const [, block] of blocks) {
+      if (block && getTask(block).trim() === task.id) {
+        console.error(`ludics: duo task ${task.id} already assigned — skipping`);
+        return;
+      }
+    }
+    const slotA = emptySlots[0]!;
+    const slotB = emptySlots[1]!;
+    const expansion = expandDuoSlots(slotA, slotB, autoArgs);
+    const projectPath = resolveProjectPath(task.project);
+    const machine = selectMachineForSlot({ project: task.project, effort: task.effort });
 
-  // Select machine for slot assignment (federation-aware)
-  const machine = selectMachineForSlot({ project: task.project, effort: task.effort });
+    slotAssign(slotA, task.id, autoAdapter, "", projectPath, expansion.slotA.args, machine);
+    slotAssign(slotB, task.id, autoAdapter, "", projectPath, expansion.slotB.args, machine);
+    emitEvent({
+      event_type: "slot_auto_fill_duo",
+      source: "keepalive",
+      scope: "slot",
+      slot: slotA,
+      task: task.id,
+      adapter: autoAdapter,
+      effort: task.effort,
+      flags: expansion.slotA.args,
+      machine: machine || undefined,
+      message: `auto-assigned duo ${task.id} to slots ${slotA}+${slotB} with effort=${task.effort}${machine ? ` on ${machine}` : ""}`,
+    });
+    console.error(`ludics: auto-assigned duo ${task.id} to slots ${slotA}+${slotB} with effort=${task.effort} (${autoAdapter})${machine ? ` on ${machine}` : ""}`);
+  } else {
+    const slot = emptySlots[0]!;
 
-  // Assign task to the empty slot using the auto-selected adapter, path, and flags
-  slotAssign(slot, task.id, autoAdapter, "", projectPath, autoArgs, machine);
-  emitEvent({
-    event_type: "slot_auto_fill",
-    source: "keepalive",
-    scope: "slot",
-    slot,
-    task: task.id,
-    adapter: autoAdapter,
-    effort: task.effort,
-    flags: autoArgs,
-    machine: machine || undefined,
-    message: `auto-assigned ${task.id} to slot ${slot} with effort=${task.effort}: ${autoArgs}${machine ? ` on ${machine}` : ""}`,
-  });
-  console.error(`ludics: auto-assigned ${task.id} to slot ${slot} with effort=${task.effort} (${autoAdapter} ${autoArgs})${machine ? ` on ${machine}` : ""}`);
+    // Resolve project path from config
+    const projectPath = resolveProjectPath(task.project);
+
+    // Select machine for slot assignment (federation-aware)
+    const machine = selectMachineForSlot({ project: task.project, effort: task.effort });
+
+    // Assign task to the empty slot using the auto-selected adapter, path, and flags
+    slotAssign(slot, task.id, autoAdapter, "", projectPath, autoArgs, machine);
+    emitEvent({
+      event_type: "slot_auto_fill",
+      source: "keepalive",
+      scope: "slot",
+      slot,
+      task: task.id,
+      adapter: autoAdapter,
+      effort: task.effort,
+      flags: autoArgs,
+      machine: machine || undefined,
+      message: `auto-assigned ${task.id} to slot ${slot} with effort=${task.effort}: ${autoArgs}${machine ? ` on ${machine}` : ""}`,
+    });
+    console.error(`ludics: auto-assigned ${task.id} to slot ${slot} with effort=${task.effort} (${autoAdapter} ${autoArgs})${machine ? ` on ${machine}` : ""}`);
+  }
 
   // Queue draft-proposal only if the task doesn't already have a proposal
   const taskFile = join(harnessDir(), "tasks", `${task.id}.md`);

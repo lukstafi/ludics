@@ -158,6 +158,10 @@ export interface OrchestrationState {
    *  Keyed by agent name. Reset on fresh transition into pr-comments via
    *  applyPhaseSideEffects(), NOT on resume re-entry. */
   prMergeableStates?: Record<string, string | null>;
+  /** For hierarchical-duo: the peer slot number running the same task. null for plain pair mode. */
+  duoPeerSlot?: number | null;
+  /** For hierarchical-duo: true when this slot has a PR and is waiting for the peer slot. */
+  duoAwaitingPeer?: boolean;
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {
@@ -229,6 +233,11 @@ export function readOrchestrationState(
   // Migrate legacy state: feature → taskId
   if (!state.taskId && (state as unknown as Record<string, unknown>).feature) {
     state.taskId = String((state as unknown as Record<string, unknown>).feature);
+  }
+  // Migrate legacy duo state: old single-slot duo states have wrong worktree topology
+  // and no sibling metadata.  Load without crashing but flag for re-assignment.
+  if (state.mode === "duo" && state.duoPeerSlot == null) {
+    console.error(`ludics: slot ${slot} has legacy mode="duo" without duoPeerSlot — should be cleared and re-assigned`);
   }
   return state;
 }

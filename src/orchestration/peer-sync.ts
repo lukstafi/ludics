@@ -59,6 +59,7 @@ export function initPeerSync(
   projectDir: string,
   agents: OrchestrationState["agents"],
   worktrees: Record<string, string>,
+  slot?: number,
 ): void {
   mkdirSync(peerSyncDir, { recursive: true });
   mkdirSync(join(peerSyncDir, "reviews"), { recursive: true });
@@ -90,7 +91,9 @@ export function initPeerSync(
 
   const sessionsDir = join(projectDir, ".agent-sessions");
   mkdirSync(sessionsDir, { recursive: true });
-  const sessionLink = join(sessionsDir, `${taskId}.session`);
+  // Qualify session link with slot number to avoid collision when two slots share a task ID
+  const linkName = slot != null ? `${taskId}-s${slot}.session` : `${taskId}.session`;
+  const sessionLink = join(sessionsDir, linkName);
   try {
     if (existsSync(sessionLink)) unlinkSync(sessionLink);
   } catch {
@@ -99,8 +102,11 @@ export function initPeerSync(
   symlinkSync(peerSyncDir, sessionLink);
 }
 
-export function removePeerSyncSession(projectDir: string, taskId: string): void {
-  const sessionLink = join(projectDir, ".agent-sessions", `${taskId}.session`);
+export function removePeerSyncSession(projectDir: string, taskId: string, slot?: number): void {
+  const sessionsDir = join(projectDir, ".agent-sessions");
+  // Remove slot-qualified link if slot provided, otherwise remove legacy unqualified link
+  const linkName = slot != null ? `${taskId}-s${slot}.session` : `${taskId}.session`;
+  const sessionLink = join(sessionsDir, linkName);
   try {
     if (existsSync(sessionLink)) unlinkSync(sessionLink);
   } catch {

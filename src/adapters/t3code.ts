@@ -68,6 +68,8 @@ interface ParsedOrchestrationArgs {
   coderThinkingEffort?: string;
   /** Thinking effort for the reviewer agent (pair) or second duo agent. */
   reviewerThinkingEffort?: string;
+  /** For hierarchical-duo: the peer slot number. Set via --duo-peer-slot=N. */
+  duoPeerSlot?: number;
 }
 
 interface ParsedAdapterArgs {
@@ -220,6 +222,7 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   let reviewerModelOverride: string | undefined;
   let coderThinkingEffort: string | undefined;
   let reviewerThinkingEffort: string | undefined;
+  let duoPeerSlot: number | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -360,6 +363,14 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         break;
       }
       default:
+        // Handle --duo-peer-slot=N (= syntax)
+        if (arg.startsWith("--duo-peer-slot=")) {
+          const val = arg.slice("--duo-peer-slot=".length);
+          const n = parseInt(val, 10);
+          if (isNaN(n) || n < 1) throw new Error(`t3code adapter args: --duo-peer-slot requires a positive integer, got "${val}"`);
+          duoPeerSlot = n;
+          break;
+        }
         throw new Error(`t3code adapter args: unsupported flag ${arg}`);
     }
   }
@@ -382,6 +393,7 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
       reviewerModelOverride,
       coderThinkingEffort,
       reviewerThinkingEffort,
+      duoPeerSlot,
     };
     return parsed;
   }
@@ -401,6 +413,7 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
     reviewerModelOverride,
     coderThinkingEffort,
     reviewerThinkingEffort,
+    duoPeerSlot,
   };
   return parsed;
 }
@@ -669,11 +682,12 @@ const CLAUDE_OPUS_MODEL = "claude-opus-4-6";
  *
  * @returns An object with the recommended adapter name ("t3code") and args string.
  */
-export function selectOrchestrationFlags(effort: string): { adapter: string; args: string } {
+export function selectOrchestrationFlags(effort: string): { adapter: string; args: string; isDuo: boolean } {
   const orchCfg = loadConfigOrchestration();
   const mode = (orchCfg?.default_mode as string | undefined)?.trim() || "pair";
   const coder = (orchCfg?.default_coder as string | undefined)?.trim() || "claude-code";
   const reviewer = (orchCfg?.default_reviewer as string | undefined)?.trim() || "codex";
+  const isDuo = mode === "duo";
 
   const norm = (effort ?? "").toLowerCase().trim();
   const phaseFlags: string[] = [];
@@ -696,26 +710,18 @@ export function selectOrchestrationFlags(effort: string): { adapter: string; arg
   }
   // small / unknown: no pre-work phases
 
-  let modeArgs: string[];
-  if (mode === "duo") {
-    // Duo mode: --agent name:provider[:model] (parsed as name:provider:model by parseProviderToken)
-    modeArgs = [
-      "--duo",
-      `--agent coder:${coder}${coderModelSuffix}`,
-      `--agent reviewer:${reviewer}`,
-    ];
-  } else {
-    // Pair mode: --coder provider[:model] --reviewer provider
-    modeArgs = [
-      "--pair",
-      `--coder ${coder}${coderModelSuffix}`,
-      `--reviewer ${reviewer}`,
-    ];
-  }
+  // Hierarchical duo: both duo and pair produce pair-mode args.
+  // For duo, the actual two-slot expansion with swapped roles is done by callers
+  // (maybeFillEmptySlots / slot assign CLI) using expandDuoSlots().
+  const modeArgs = [
+    "--pair",
+    `--coder ${coder}${coderModelSuffix}`,
+    `--reviewer ${reviewer}`,
+  ];
 
   const args = [...modeArgs, ...phaseFlags].join(" ");
   // Use the global adapter setting so orchestration flags work with either backend
-  return { adapter: globalAdapter(), args };
+  return { adapter: globalAdapter(), args, isDuo };
 }
 
 /** Resolve the final model for an agent, applying config and adapter arg overrides. */
@@ -837,6 +843,7 @@ async function startOrchestratedThreads(
     projectDir,
     agents,
     { root: setup.rootWorktree, ...setup.agentWorktrees },
+    ctx.slot,
   );
   writeAgentMarkerFiles(setup.peerSyncDir, setup.agentWorktrees);
 
@@ -901,6 +908,7 @@ async function startOrchestratedThreads(
     threadIds: Object.fromEntries(slotThreads.map((thread, index) => [agents[index]!.name, thread.threadId])),
     backend: "t3code",
     slotTitle: title,
+    duoPeerSlot: orchestration.duoPeerSlot ?? null,
     stagingRepo: (() => {
       const cfg = loadConfigSync();
       const proj = cfg.projects?.find((p) => {
@@ -1076,7 +1084,7 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
   }
 
   if (orchestrationState && !options?.preserveState) {
-    removePeerSyncSession(orchestrationState.projectDir, orchestrationState.taskId);
+    removePeerSyncSession(orchestrationState.projectDir, orchestrationState.taskId, ctx.slot);
     cleanupWorktrees(orchestrationState.projectDir, orchestrationState.taskId, orchestrationState.agents, ctx.slot, orchestrationState.mode);
     removeOrchestrationState(ctx.slot, ctx.harnessDir);
   }
