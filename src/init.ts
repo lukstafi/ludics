@@ -6,6 +6,7 @@ import YAML from "yaml";
 import { ludicsRoot, pointerConfigPath, harnessDir, loadConfigSync } from "./config.ts";
 import { dashboardInstall, dashboardStop, dashboardServe } from "./dashboard.ts";
 import { triggersInstall } from "./triggers.ts";
+import { federationTick } from "./federation.ts";
 
 const POINTER_CONFIG_TEMPLATE = `# ludics pointer config — edit state_repo, then run: ludics init
 state_repo: your-username/your-private-repo
@@ -134,7 +135,18 @@ export async function runInit(args: string[]): Promise<void> {
     }
   }
 
-  // 10. Triggers
+  // 10. Federation tick (heartbeat + election before triggers, so this machine
+  //     can establish itself as controller before launchd/systemd units start)
+  if (configOk) {
+    console.log("\n--- Federation ---");
+    try {
+      await federationTick();
+    } catch (err) {
+      console.warn(`warning: federation tick failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // 11. Triggers
   if (!noTriggers && configOk) {
     console.log("\n--- Triggers ---");
     try {
