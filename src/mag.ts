@@ -1468,6 +1468,13 @@ ${journalOutput}
   writeFileSync(contextFile + ".tmp", contextContent);
   renameSync(contextFile + ".tmp", contextFile);
   console.error(`ludics: briefing context written to ${contextFile}`);
+
+  // Auto-queue feedback-digest during briefing (dedup/cooldown make double-queuing safe)
+  if (!queueHasPendingFeedbackDigest("ludics") && feedbackDigestCooldownRemaining("ludics") === 0) {
+    queueRequest("feedback-digest");
+    markFeedbackDigestQueued("ludics");
+    console.error("ludics: briefing queued feedback-digest for ludics");
+  }
 }
 
 // --- Session-project matching for adopt-sessions ---
