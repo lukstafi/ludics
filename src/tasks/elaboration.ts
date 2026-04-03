@@ -1,5 +1,4 @@
 const ELABORATED_FIELD_RE = /^elaborated:\s*(.+)$/m;
-const TBD_PLACEHOLDER_RE = /(?:^|\r?\n)- \[ \] TBD(?:\r?\n|$)/;
 
 export function isElaborated(content: string): boolean {
   const elaboratedMatch = content.match(ELABORATED_FIELD_RE);
@@ -14,5 +13,5 @@ export function isElaborated(content: string): boolean {
     return false;
   }
 
-  return !TBD_PLACEHOLDER_RE.test(content);
+  return true;
 }

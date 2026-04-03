@@ -135,10 +135,7 @@ If there are no genuine questions, write `## Questions\n\nNone.`
 ### 6. Update task file
 
 The elaboration does NOT write acceptance criteria — those belong in the
-proposal phase, after questions are resolved. However, you MUST remove
-any `- [ ] TBD` placeholder from the Acceptance Criteria section, as this
-placeholder blocks the task from being recognized as elaborated. Leave the
-section header with an empty body or omit it entirely.
+proposal phase, after questions are resolved.
 
 ```markdown
 ---
