@@ -596,7 +596,7 @@ describe("skills", () => {
     expect(result).toContain("/tmp/worktree");
     expect(result).toContain("/tmp/peer-sync/coder.status");
     expect(result).toContain("pr-comments-done");
-    expect(result).toContain("git rebase origin/main");
+    expect(result).toContain("git rebase \"origin/$BASE\"");
     expect(result).toContain("Force-push with lease");
   });
 });

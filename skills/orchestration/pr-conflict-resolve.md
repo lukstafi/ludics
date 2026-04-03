@@ -7,9 +7,10 @@ Your PR in `{{PR_FILE}}` has merge conflicts with the base branch. From `{{WORKT
    git fetch origin
    ```
 
-2. Rebase onto the base branch and resolve all conflicts:
+2. Determine the PR's base branch and rebase onto it:
    ```sh
-   git rebase origin/main
+   BASE=$(gh pr view --json baseRefName -q .baseRefName)
+   git rebase "origin/$BASE"
    ```
    Resolve each conflict carefully — keep your changes where they are correct, accept upstream where appropriate.
 
