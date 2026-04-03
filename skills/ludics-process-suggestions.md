@@ -65,9 +65,13 @@ Manual: `ludics mag process-suggestions <task-id>`
    suggestions -- split those too.
 
    For each filtered `request_changes` review: strip the leading verdict
-   keyword line (e.g., `REQUEST_CHANGES`) from `content`. Split the remaining
-   text by numbered items or bullet points into individual suggestion items.
-   Tag each item with its source review metadata (round, reviewer, type).
+   keyword line from `content`. The verdict line may appear in several formats
+   — plain `REQUEST_CHANGES`, bolded `**Verdict**: REQUEST_CHANGES`, or
+   similar variants. Strip any line whose uppercased text contains
+   `REQUEST_CHANGES` and appears before the first actionable item. Split the
+   remaining text by numbered items or bullet points into individual
+   suggestion items. Tag each item with its source review metadata (round,
+   reviewer, type).
 
    Merge near-duplicate items across all three sources. Reviews may overlap
    with `suggestRefactorSummary` content since both can originate from the
