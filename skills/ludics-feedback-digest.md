@@ -2,7 +2,6 @@
 name: ludics-feedback-digest
 description: Summarize workflow feedback, file GitHub issues
 queue-action: feedback-digest
-queue-args: [repo]
 ---
 
 # /ludics-feedback-digest - Workflow Feedback Digest (Orchestrator)
@@ -13,12 +12,13 @@ then handles result reporting.
 ## Trigger
 
 This skill is invoked when:
-- The user runs `ludics mag feedback-digest <repo>`
-- Auto-triggered by agent-duo on session completion (if `auto_digest=true`)
+- The user runs `ludics mag feedback-digest`
+- Auto-queued daily via the briefing trigger
 
 ## Arguments
 
-- `$ARGUMENTS`: `<repo>` — GitHub repo (e.g., `owner/repo`)
+None. All workflow feedback is filed to the ludics repo regardless of which
+project generated it (feedback is about the Ludics workflow, not project code).
 
 ## Inputs
 
@@ -33,9 +33,9 @@ Follow [orchestrator-conventions.md](orchestrator-conventions.md):
 - **E** (Result JSON): write result with request ID
 - **F** (Error Handling): standard error patterns
 
-Sections A, B, C do not apply — this skill takes `<repo>`, not `<task_id>`.
+Sections A, B, C do not apply — this skill has no task_id or repo argument.
 
-Worker: `/ludics-feedback-digest-worker <repo>`
+Worker: `/ludics-feedback-digest-worker`
 
 ## Skill-Specific: Status Routing
 
@@ -66,8 +66,7 @@ Output format: `"Created N issues, updated N, skipped N (N files processed)"`
 
 ## Error Handling
 
-Per [orchestrator-conventions.md](orchestrator-conventions.md) Section F, plus:
-- Repo not specified: Write result with `"status": "error"`, stop
+Per [orchestrator-conventions.md](orchestrator-conventions.md) Section F.
 
 ## Delegation Strategy
 

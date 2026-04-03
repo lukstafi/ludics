@@ -3066,25 +3066,20 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "feedback-digest": {
-      const repo = args[1];
-      if (!repo) throw new Error("repo required (e.g., owner/repo)");
-
-      if (queueHasPendingFeedbackDigest(repo)) {
-        console.log(`Skipped feedback-digest request for ${repo}: already pending in queue`);
+      if (queueHasPendingFeedbackDigest("ludics")) {
+        console.log("Skipped feedback-digest: already pending in queue");
         break;
       }
 
-      const remainingCooldown = feedbackDigestCooldownRemaining(repo);
+      const remainingCooldown = feedbackDigestCooldownRemaining("ludics");
       if (remainingCooldown > 0) {
-        console.log(
-          `Skipped feedback-digest request for ${repo}: cooldown active (${remainingCooldown}s remaining)`
-        );
+        console.log(`Skipped feedback-digest: cooldown active (${remainingCooldown}s remaining)`);
         break;
       }
 
-      queueRequest("feedback-digest", `"repo":"${repo}"`);
-      markFeedbackDigestQueued(repo);
-      console.log(`Queued feedback-digest request for ${repo}`);
+      queueRequest("feedback-digest");
+      markFeedbackDigestQueued("ludics");
+      console.log("Queued feedback-digest request");
       break;
     }
     case "adopt-sessions": {
