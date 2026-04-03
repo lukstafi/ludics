@@ -66,16 +66,16 @@ describe("evaluateTransition", () => {
 
   test("pr-create blocks advancement when no prUrl is set", () => {
     const state = makeState({ phase: "pr-create" });
-    state.agentStates.agent1.status = "pr-create-done";
-    state.agentStates.agent2.status = "pr-create-done";
+    state.agentStates.coder.status = "pr-create-done";
+    state.agentStates.reviewer.status = "pr-create-done";
     expect(evaluateTransition(state)).toBeNull();
   });
 
   test("pr-create advances to pr-comments when prUrl is set", () => {
     const state = makeState({ phase: "pr-create" });
-    state.agentStates.agent1.status = "pr-create-done";
-    state.agentStates.agent2.status = "pr-create-done";
-    state.agentStates.agent1.prUrl = "https://github.com/owner/repo/pull/1";
+    state.agentStates.coder.status = "pr-create-done";
+    state.agentStates.reviewer.status = "pr-create-done";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
     expect(evaluateTransition(state)).toBe("pr-comments");
   });
 

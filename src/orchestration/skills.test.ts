@@ -577,7 +577,7 @@ describe("skills", () => {
   });
 
   test("work template includes proposal instruction when PROPOSAL_PATH is set", () => {
-    const templatePath = join(import.meta.dir, "../../skills/orchestration/work.md");
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-work.md");
     const template = readFileSync(templatePath, "utf-8");
     const withProposal = substituteTemplate(template, {
       ...baseCtx(),
