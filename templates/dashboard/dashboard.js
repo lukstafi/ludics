@@ -518,29 +518,38 @@ async function promoteTask(taskId) {
     }
 }
 
-// Fetch needs-confirmation tasks
-async function fetchNeedsConfirmation() {
+// Shared fetch-and-render for filtered task list tiles
+async function fetchAndRenderTaskList({ jsonFile, listId, emptyText, renderItem }) {
+    let tasks = [];
     try {
-        const response = await fetch(CONFIG.dataPath + 'needs-confirmation.json');
-        if (!response.ok) throw new Error('Failed to fetch needs-confirmation');
-        const tasks = await response.json();
-        renderNeedsConfirmation(tasks);
+        const response = await fetch(CONFIG.dataPath + jsonFile);
+        if (!response.ok) throw new Error('Failed to fetch ' + jsonFile);
+        tasks = await response.json();
     } catch (error) {
-        console.warn('Using placeholder needs-confirmation');
-        renderNeedsConfirmation([]);
+        console.warn('Using placeholder ' + jsonFile);
     }
-}
 
-// Render needs-confirmation tasks
-function renderNeedsConfirmation(tasks) {
-    const list = document.getElementById('needs-confirmation-list');
+    const list = document.getElementById(listId);
     if (!list) return;
 
     let newHtml;
     if (tasks.length === 0) {
-        newHtml = '<li class="empty">No tasks need confirmation</li>';
+        newHtml = `<li class="empty">${emptyText}</li>`;
     } else {
-        const items = tasks.map(task => {
+        newHtml = tasks.map(renderItem).join('');
+    }
+
+    if (list.innerHTML !== newHtml) {
+        list.innerHTML = newHtml;
+    }
+}
+
+function fetchNeedsConfirmation() {
+    return fetchAndRenderTaskList({
+        jsonFile: 'needs-confirmation.json',
+        listId: 'needs-confirmation-list',
+        emptyText: 'No tasks need confirmation',
+        renderItem(task) {
             const priority = task.priority || '-';
             const priorityClass = `priority-${priority}`;
             const source = task.relatesTo?.length ? ` (from ${escapeHtml(task.relatesTo[0])})` : '';
@@ -553,38 +562,16 @@ function renderNeedsConfirmation(tasks) {
                     <button class="dismiss-btn" onclick="dismissTask('${escapeHtml(task.id)}')" title="Dismiss: abandon">&#x2715;</button>
                 </span>
             </li>`;
-        });
-        newHtml = items.join('');
-    }
-
-    if (list.innerHTML !== newHtml) {
-        list.innerHTML = newHtml;
-    }
+        },
+    });
 }
 
-// Fetch unanswered-questions tasks
-async function fetchUnansweredQuestions() {
-    try {
-        const response = await fetch(CONFIG.dataPath + 'unanswered-questions.json');
-        if (!response.ok) throw new Error('Failed to fetch unanswered-questions');
-        const tasks = await response.json();
-        renderUnansweredQuestions(tasks);
-    } catch (error) {
-        console.warn('Using placeholder unanswered-questions');
-        renderUnansweredQuestions([]);
-    }
-}
-
-// Render unanswered-questions tasks
-function renderUnansweredQuestions(tasks) {
-    const list = document.getElementById('unanswered-questions-list');
-    if (!list) return;
-
-    let newHtml;
-    if (tasks.length === 0) {
-        newHtml = '<li class="empty">No unanswered questions</li>';
-    } else {
-        const items = tasks.map(task => {
+function fetchUnansweredQuestions() {
+    return fetchAndRenderTaskList({
+        jsonFile: 'unanswered-questions.json',
+        listId: 'unanswered-questions-list',
+        emptyText: 'No unanswered questions',
+        renderItem(task) {
             const priority = task.priority || '-';
             const priorityClass = `priority-${priority}`;
             return `
@@ -592,13 +579,8 @@ function renderUnansweredQuestions(tasks) {
                 <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>
                 <a class="task-title unanswered-q-link" href="task-files/${escapeHtml(task.id)}.md" target="_blank">${escapeHtml(task.title || task.id)}</a>
             </li>`;
-        });
-        newHtml = items.join('');
-    }
-
-    if (list.innerHTML !== newHtml) {
-        list.innerHTML = newHtml;
-    }
+        },
+    });
 }
 
 // Confirm a needs-confirmation task (move to ready)
