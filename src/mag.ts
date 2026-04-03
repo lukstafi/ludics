@@ -2851,6 +2851,14 @@ export function magBriefing(wait: boolean = true, timeout: number = 300): void {
   const requestId = queueRequest("briefing");
   console.log(`Queued briefing request: ${requestId}`);
 
+  // Auto-queue feedback-digest once daily alongside the briefing trigger.
+  // Existing cooldown/dedup guards prevent redundant runs.
+  if (!queueHasPendingFeedbackDigest("ludics") && feedbackDigestCooldownRemaining("ludics") === 0) {
+    queueRequest("feedback-digest", `"repo":"ludics"`);
+    markFeedbackDigestQueued("ludics");
+    console.error("ludics: briefing queued feedback-digest for ludics");
+  }
+
   if (!wait) {
     console.log("Mag will process when ready");
     return;
@@ -3082,7 +3090,7 @@ export async function runMag(args: string[]): Promise<void> {
         break;
       }
 
-      queueRequest("feedback-digest");
+      queueRequest("feedback-digest", `"repo":"ludics"`);
       markFeedbackDigestQueued("ludics");
       console.log("Queued feedback-digest request");
       break;
