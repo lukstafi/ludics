@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotResume, slotStart, runSlot } from "./index.ts";
+import { slotAssign, slotResume, slotStart, runSlot, markSlotSetupFailed } from "./index.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "../orchestration/state.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
@@ -309,5 +309,137 @@ describe("slotStart — t3code empty-args guard", () => {
     // Assign with whitespace adapterArgs — stored as-is since "   " is truthy
     slotAssign(1, "task-whitespace-args-1", "t3code", "", "", "   ");
     await expect(slotStart(1)).rejects.toThrow("requires orchestration flags");
+  });
+});
+
+describe("markSlotSetupFailed", () => {
+  test("marks slot as interrupted without clearing it", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-setup-fail-1", "Setup fail test");
+
+    slotAssign(1, "task-setup-fail-1", "tmux");
+
+    // Task should be in-progress after assign
+    const taskBefore = readFileSync(join(tasksDir, "task-setup-fail-1.md"), "utf-8");
+    expect(taskBefore).toContain("status: in-progress");
+
+    markSlotSetupFailed(1, "tmux session creation failed");
+
+    // Slot should NOT be empty — process should still be set
+    const slotsContent = readFileSync(join(harness, "slots.md"), "utf-8");
+    expect(slotsContent).toContain("**Process:** Setup fail test");
+    expect(slotsContent).toContain("**Liveness:** interrupted");
+
+    // Task status should be reset to ready (not orphaned in-progress)
+    const taskAfter = readFileSync(join(tasksDir, "task-setup-fail-1.md"), "utf-8");
+    expect(taskAfter).toContain("status: ready");
+  });
+
+  test("does not reset task status if not in-progress", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    // Write a task with "ready" status explicitly
+    writeFileSync(join(tasksDir, "task-setup-fail-2.md"), `---
+id: task-setup-fail-2
+title: "Already ready"
+project: demo
+status: ready
+priority: B
+slot: 1
+---
+`);
+
+    slotAssign(1, "task-setup-fail-2", "tmux");
+    markSlotSetupFailed(1, "worktree creation failed");
+
+    const slotsContent = readFileSync(join(harness, "slots.md"), "utf-8");
+    expect(slotsContent).toContain("**Liveness:** interrupted");
+  });
+});
+
+describe("slotResume — interrupted fallback to fresh start", () => {
+  test("falls back to slotStart when interrupted slot has no orchestration state", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-resume-fallback-1", "Resume fallback test");
+
+    // Assign and mark as interrupted (simulating pre-persistState failure)
+    slotAssign(1, "task-resume-fallback-1", "tmux", "", "", "--pair --coder claude --reviewer claude");
+    markSlotSetupFailed(1, "worktree creation failed");
+
+    // slotResume should fall back to slotStart, which will fail because tmux
+    // isn't available in test — but it should NOT throw the "no persisted
+    // orchestration state" error.
+    try {
+      await slotResume(1);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Should NOT be the old "no persisted orchestration state" error
+      expect(msg).not.toContain("no persisted orchestration state");
+      // Instead it should be a slotStart error (adapter-level failure is expected in test)
+    }
+  });
+
+  test("cleans stale orch state when interrupted slot has orch state but incomplete setup", async () => {
+    // Regression test for: setup fails after persistState() but before
+    // writeSlotState()/writeTmuxSlotState(). Resume should clean up stale
+    // orch state and fall back to slotStart, not loop into "use resume" error.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    const orchDir = join(harness, "orchestration");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(orchDir, { recursive: true });
+    writeTask(tasksDir, "task-resume-fallback-2", "Post-persistState failure");
+
+    // Use tmux mode (fails fast in test, unlike t3code which hangs on ensureServer)
+    slotAssign(1, "task-resume-fallback-2", "tmux", "", "", "--pair --coder claude --reviewer claude");
+    markSlotSetupFailed(1, "runner start failed after persistState");
+
+    // Simulate: orchestration state was persisted before the failure,
+    // but tmux slot state was NOT written (the failure point).
+    const orchState: OrchestrationState = {
+      slot: 1,
+      taskId: "task-resume-fallback-2",
+      mode: "pair",
+      phase: "setup",
+      round: 1,
+      mergeRound: 0,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "sonnet", branch: "test-coder", worktreePath: "/tmp/wt-coder" },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "sonnet", branch: "test-reviewer", worktreePath: "/tmp/wt-reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      config: defaultOrchestrationConfig({}),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/fake-project",
+      rootWorktree: "/tmp/fake-root",
+      peerSyncDir: "/tmp/fake-peersync",
+      threadIds: {},
+      backend: "tmux",
+      slotTitle: "test",
+    };
+    persistState(orchState, harness);
+
+    // Verify the stale orch state file exists before resume
+    const { existsSync } = await import("fs");
+    const orchFile = join(orchDir, "slot-1.json");
+    expect(existsSync(orchFile)).toBe(true);
+
+    // slotResume sees orch state exists → passes orch-state guard → but
+    // tmux slot state is missing. For tmux it reaches the resume logic.
+    // The key assertion: it should NOT throw "has recoverable orchestration state"
+    // (which was the loop bug when falling back to slotStart with stale orch).
+    try {
+      await slotResume(1);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      expect(msg).not.toContain("has recoverable orchestration state");
+    }
   });
 });

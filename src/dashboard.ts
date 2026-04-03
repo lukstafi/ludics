@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFi
 import { join, dirname } from "path";
 import YAML from "yaml";
 import { globalAdapter, harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
-import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted, getMachine } from "./slots/markdown.ts";
+import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted, getMachine, getLiveness } from "./slots/markdown.ts";
 import { isRemoteMachine } from "./remote.ts";
 import { priorityValue } from "./tasks/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
@@ -48,7 +48,13 @@ interface SlotJson {
 export function computeSlotLiveness(
   slotNum: number,
   mode: string | null,
+  slotBlock?: string,
 ): "alive" | "interrupted" | null {
+  // Check explicit Liveness field from slot block (set by markSlotSetupFailed)
+  if (slotBlock) {
+    const explicit = getLiveness(slotBlock).trim();
+    if (explicit === "interrupted") return "interrupted";
+  }
   if (!mode) return null;
   let orchPid: number | undefined;
   if (mode === "t3code") {
@@ -260,13 +266,16 @@ function generateSlots(): SlotJson[] {
     const rawSessionStarted = getSessionStarted(block).trim();
     const sessionStarted = (rawSessionStarted && rawSessionStarted !== "null") ? rawSessionStarted : null;
 
-    // Compute liveness — only for non-empty, local slots with a phase (would render as "Active").
+    // Compute liveness — for non-empty local slots.
+    // Check explicit Liveness field (setup failures) even without a phase.
     // Skip remote-owned slots: their orchestrator PID won't exist in the local process table.
     let liveness: "alive" | "interrupted" | null = null;
-    if (!empty && phase && phase !== "done") {
+    if (!empty) {
       const machineName = getMachine(block).trim();
-      if (!machineName || machineName === "null" || !isRemoteMachine(machineName)) {
-        liveness = computeSlotLiveness(num, getMode(block).trim() || null);
+      const explicitLiveness = getLiveness(block).trim();
+      const shouldCheck = (phase && phase !== "done") || explicitLiveness === "interrupted";
+      if (shouldCheck && (!machineName || machineName === "null" || !isRemoteMachine(machineName))) {
+        liveness = computeSlotLiveness(num, getMode(block).trim() || null, block);
       }
     }
 
