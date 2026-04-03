@@ -16,7 +16,7 @@ import {
 import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
 import { fetchNewPrCommentCount, getPrVerification, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile } from "./github.ts";
 import { updateFrontmatterField } from "../tasks/markdown.ts";
-import { findProjectConfig, globalAdapter, harnessDir } from "../config.ts";
+import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
 import { workerReportStatus } from "../worker-signal.ts";
 import { federationRole } from "../federation.ts";
@@ -432,6 +432,7 @@ async function enterPhase(state: OrchestrationState, transport: OrchestrationTra
   if (state.phase === "pr-comments") {
     state.prCommentsLastCheckAt = state.phaseStartedAt - 600;
     state.prCommentsQuietSince = undefined;
+    if (!state.prMergeableStates) state.prMergeableStates = {};  // defensive only; real reset is in applyPhaseSideEffects
     state.phaseDispatched = true;
     state.currentPhaseToken = undefined;
     return;
@@ -558,6 +559,57 @@ async function redispatchForPrComments(state: OrchestrationState, transport: Orc
   }
 }
 
+/** Re-dispatch specific agents to resolve PR merge conflicts. */
+async function redispatchForConflict(
+  state: OrchestrationState,
+  transport: OrchestrationTransport,
+  conflictAgents: AgentConfig[],
+): Promise<void> {
+  const templatePath = join(ludicsRoot(), "skills", "orchestration", "pr-conflict-resolve.md");
+  const phaseToken = readPhaseToken(state.peerSyncDir) ?? makeId("phase");
+
+  for (const agent of conflictAgents) {
+    if (!agentParticipatesInPhase(state, agent)) continue;
+    const runtime = state.agentStates[agent.name]!;
+    runtime.interrupted = false;
+    clearInterrupt(state.peerSyncDir, agent.name);
+    runtime.status = "pr-comments-active";
+    runtime.statusEpoch = nowEpoch();
+    runtime.statusMessage = "re-dispatched for PR conflict resolution";
+    touchStatusFile(state.peerSyncDir, agent.name);
+    const dispatchFp = statusFileFingerprint(state.peerSyncDir, agent.name);
+    runtime.dispatchStatusFingerprint = dispatchFp;
+
+    const skillMessage = await composeSkillMessage(state, agent, templatePath);
+    const commandId = await transport.sendTurn(state, agent, skillMessage);
+    runtime.turnLifecycle = {
+      dispatchCommandId: commandId,
+      dispatchedAt: isoNow(),
+      phaseToken,
+      observedTurnId: null,
+      state: "dispatched",
+      turnStartedAt: null,
+      turnCompletedAt: null,
+      completionSource: null,
+      statusFileFingerprint: dispatchFp,
+      lastStopHookAt: null,
+      stallDetectedAt: null,
+      nudgeAttempts: 0,
+      lastNudgeAt: null,
+      preNudgeAssistantMessageId: null,
+    };
+
+    emitEvent({
+      event_type: "pr_conflict_detected",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      message: `PR conflict detected for ${agent.name}, dispatching conflict resolution`,
+    });
+  }
+}
+
 /**
  * Poll GitHub for new PR comments during the pr-comments phase.
  * Re-dispatches agents when new comments are found; updates prCommentsQuietSince otherwise.
@@ -652,6 +704,34 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
   const participants = state.agents.filter((a) => agentParticipatesInPhase(state, a));
   const allDone = participants.every((a) => isAgentDone(state, a));
   if (!allDone) return;
+
+  // --- Conflict detection: edge-triggered on non-dirty → dirty transition ---
+  if (!state.prMergeableStates) state.prMergeableStates = {};
+  const conflictAgents: AgentConfig[] = [];
+  for (const agent of agentsWithPr) {
+    const runtime = state.agentStates[agent.name]!;
+    const prUrl = runtime.prUrl!;
+    const verification = getPrVerification(prUrl);
+    const current = verification.mergeableState ?? null;
+    const previous = state.prMergeableStates[agent.name] ?? null;
+
+    // Only update tracked state for non-unknown values
+    if (current && current !== "unknown") {
+      state.prMergeableStates[agent.name] = current;
+    }
+
+    // Edge trigger: fire only on transition TO dirty
+    if (current === "dirty" && previous !== "dirty") {
+      conflictAgents.push(agent);
+    }
+  }
+  if (conflictAgents.length > 0) {
+    await redispatchForConflict(state, transport, conflictAgents);
+    state.prCommentsQuietSince = 0; // Reset quiet period
+    // Do NOT advance prCommentsLastCheckAt — preserve pending comments for next poll.
+    // Caller (pollUntilDone) persists state after this function returns.
+    return;
+  }
 
   // --- Deferred Codex review request (per-PR resolution) ---
   if (state.prCodexReviewDeferredSince) {
@@ -983,7 +1063,7 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
   }
 }
 
-function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationState["phase"]): void {
+export function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationState["phase"]): void {
   // Reset verification retry counters when entering the relevant phase fresh.
   if (next === "pr-create") {
     state.prCreateVerifyAttempts = 0;
@@ -992,6 +1072,9 @@ function applyPhaseSideEffects(state: OrchestrationState, next: OrchestrationSta
   if (next === "final-merge") {
     state.finalMergeVerifyAttempts = 0;
     state.phaseRetryContext = null;
+  }
+  if (next === "pr-comments") {
+    state.prMergeableStates = {};
   }
   if (state.phase === "review" && next === "update-docs" && !shouldRunUpdateDocs(state)) {
     state.lastLearningAt = state.lastLearningAt ?? 0;

@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects } from "./runner.ts";
 import * as events from "../events.ts";
 import * as github from "./github.ts";
 import { orchOnStop } from "./index.ts";
@@ -2202,5 +2202,239 @@ describe("post-nudge outcome classification", () => {
       );
       expect(outcomeEvent).toBeUndefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkAndRedispatchPrComments — PR conflict detection
+// ---------------------------------------------------------------------------
+
+describe("checkAndRedispatchPrComments conflict detection", () => {
+  let verificationSpy: ReturnType<typeof spyOn>;
+  let mergedSpy: ReturnType<typeof spyOn>;
+  let commentCountSpy: ReturnType<typeof spyOn>;
+  let eventSpy: ReturnType<typeof spyOn>;
+  let reviewSpy: ReturnType<typeof spyOn>;
+
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  function makeConflictTransport(): OrchestrationTransport & { sendTurnCalls: Array<{ agent: string }> } {
+    const calls: Array<{ agent: string }> = [];
+    return {
+      sendTurnCalls: calls,
+      sendTurn: async (_state: OrchestrationState, agent: { name: string }) => {
+        calls.push({ agent: agent.name });
+        return "cmd-conflict";
+      },
+      refreshAgentTransportState: async () => {},
+      interruptAgent: async () => {},
+    };
+  }
+
+  function makeConflictState(
+    overrides: Partial<OrchestrationState> = {},
+  ): OrchestrationState {
+    return makeState({
+      phase: "pr-comments",
+      phaseStartedAt: nowSec - 120,
+      prCommentsLastCheckAt: nowSec - 120, // force poll eligibility
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+        { name: "reviewer", provider: "codex", role: "reviewer", model: "o3-pro", branch: "b", worktreePath: "/tmp/b" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done", statusEpoch: nowSec, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
+          turnLifecycle: null,
+        },
+        reviewer: {
+          status: "idle", statusEpoch: nowSec, statusMessage: "",
+          prUrl: null, interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+      prMergeableStates: {},
+      ...overrides,
+    });
+  }
+
+  beforeEach(() => {
+    verificationSpy = spyOn(github, "getPrVerification");
+    mergedSpy = spyOn(github, "isPrMerged").mockReturnValue(false);
+    commentCountSpy = spyOn(github, "fetchNewPrCommentCount").mockReturnValue(0);
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    reviewSpy = spyOn(github, "hasCodexSubmittedReview").mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    verificationSpy.mockRestore();
+    mergedSpy.mockRestore();
+    commentCountSpy.mockRestore();
+    eventSpy.mockRestore();
+    reviewSpy.mockRestore();
+  });
+
+  test("clean → dirty triggers one redispatch", async () => {
+    verificationSpy.mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "dirty", reason: "ok",
+    });
+    const transport = makeConflictTransport();
+    const state = makeConflictState({ prMergeableStates: { coder: "clean" } });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(transport.sendTurnCalls).toHaveLength(1);
+    expect(transport.sendTurnCalls[0]!.agent).toBe("coder");
+    expect(state.prMergeableStates!.coder).toBe("dirty");
+  });
+
+  test("dirty → dirty does NOT redispatch", async () => {
+    verificationSpy.mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "dirty", reason: "ok",
+    });
+    const transport = makeConflictTransport();
+    const state = makeConflictState({ prMergeableStates: { coder: "dirty" } });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(transport.sendTurnCalls).toHaveLength(0);
+  });
+
+  test("dirty → clean → dirty redispatches again", async () => {
+    const transport = makeConflictTransport();
+    const state = makeConflictState({ prMergeableStates: { coder: "dirty" } });
+
+    // First poll: dirty → clean
+    verificationSpy.mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "clean", reason: "ok",
+    });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(transport.sendTurnCalls).toHaveLength(0);
+    expect(state.prMergeableStates!.coder).toBe("clean");
+
+    // Reset poll eligibility and agent done status
+    state.prCommentsLastCheckAt = nowSec - 120;
+    state.agentStates.coder!.status = "pr-comments-done";
+    state.agentStates.coder!.turnLifecycle = null;
+
+    // Second poll: clean → dirty
+    verificationSpy.mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "dirty", reason: "ok",
+    });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(transport.sendTurnCalls).toHaveLength(1);
+    expect(transport.sendTurnCalls[0]!.agent).toBe("coder");
+  });
+
+  test("unknown does not dispatch and does not overwrite prior state", async () => {
+    verificationSpy.mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "unknown", reason: "ok",
+    });
+    const transport = makeConflictTransport();
+    const state = makeConflictState({ prMergeableStates: { coder: "clean" } });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(transport.sendTurnCalls).toHaveLength(0);
+    expect(state.prMergeableStates!.coder).toBe("clean"); // preserved
+  });
+
+  test("behind does not dispatch", async () => {
+    verificationSpy.mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "behind", reason: "ok",
+    });
+    const transport = makeConflictTransport();
+    const state = makeConflictState({ prMergeableStates: { coder: "clean" } });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(transport.sendTurnCalls).toHaveLength(0);
+    expect(state.prMergeableStates!.coder).toBe("behind");
+  });
+
+  test("only affected agent redispatched in duo mode", async () => {
+    verificationSpy.mockImplementation((url: string) => {
+      if (url.includes("pull/42")) {
+        return { exists: true, state: "open", merged: false, mergeableState: "dirty", reason: "ok" };
+      }
+      return { exists: true, state: "open", merged: false, mergeableState: "clean", reason: "ok" };
+    });
+    const transport = makeConflictTransport();
+    const state = makeConflictState({
+      mode: "duo",
+      prMergeableStates: { coder: "clean", reviewer: "clean" },
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+        { name: "reviewer", provider: "codex", role: "reviewer", model: "o3-pro", branch: "b", worktreePath: "/tmp/b" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done", statusEpoch: nowSec, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
+          turnLifecycle: null,
+        },
+        reviewer: {
+          status: "pr-comments-done", statusEpoch: nowSec, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/43", interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+    });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(transport.sendTurnCalls).toHaveLength(1);
+    expect(transport.sendTurnCalls[0]!.agent).toBe("coder");
+  });
+
+  test("does NOT advance prCommentsLastCheckAt on conflict dispatch", async () => {
+    verificationSpy.mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "dirty", reason: "ok",
+    });
+    const transport = makeConflictTransport();
+    const originalCheckAt = nowSec - 120;
+    const state = makeConflictState({
+      prMergeableStates: { coder: "clean" },
+      prCommentsLastCheckAt: originalCheckAt,
+    });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(state.prCommentsLastCheckAt).toBe(originalCheckAt);
+  });
+
+  test("resets prCommentsQuietSince on conflict dispatch", async () => {
+    verificationSpy.mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "dirty", reason: "ok",
+    });
+    const transport = makeConflictTransport();
+    const state = makeConflictState({
+      prMergeableStates: { coder: "clean" },
+      prCommentsQuietSince: nowSec - 60,
+    });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(state.prCommentsQuietSince).toBe(0);
+  });
+
+  test("resume preserves prMergeableStates during conflict check", async () => {
+    // Simulate resume scenario: prMergeableStates already populated with "dirty"
+    // from a prior poll. dirty→dirty should NOT redispatch — proving the map survived.
+    verificationSpy.mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "dirty", reason: "ok",
+    });
+    const transport = makeConflictTransport();
+    const state = makeConflictState({ prMergeableStates: { coder: "dirty" } });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(transport.sendTurnCalls).toHaveLength(0);
+    expect(state.prMergeableStates).toEqual({ coder: "dirty" });
+  });
+
+  test("defensive init creates prMergeableStates when undefined (legacy state)", async () => {
+    verificationSpy.mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "clean", reason: "ok",
+    });
+    const transport = makeConflictTransport();
+    const state = makeConflictState({ prMergeableStates: undefined });
+    await checkAndRedispatchPrComments(state, transport);
+    expect(state.prMergeableStates).toBeDefined();
+    expect(state.prMergeableStates!.coder).toBe("clean");
+  });
+
+  test("fresh re-entry resets prMergeableStates via applyPhaseSideEffects", () => {
+    const state = makeConflictState({
+      phase: "pr-create",
+      prMergeableStates: { coder: "dirty" },
+    });
+    applyPhaseSideEffects(state, "pr-comments");
+    expect(state.prMergeableStates).toEqual({});
   });
 });

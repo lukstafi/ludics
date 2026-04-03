@@ -153,6 +153,11 @@ export interface OrchestrationState {
    *  The runner reads this to select the correct transport, preventing split-brain
    *  when the global config differs from the slot's original backend.  */
   backend?: "t3code" | "tmux";
+  /** Last non-unknown mergeable_state observed per agent PR during pr-comments.
+   *  Persisted so crash/resume doesn't re-trigger the same conflict dispatch.
+   *  Keyed by agent name. Reset on fresh transition into pr-comments via
+   *  applyPhaseSideEffects(), NOT on resume re-entry. */
+  prMergeableStates?: Record<string, string | null>;
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {

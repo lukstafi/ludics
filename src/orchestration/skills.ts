@@ -340,10 +340,12 @@ async function magTailorSkill(message: string): Promise<string> {
 export async function composeSkillMessage(
   state: OrchestrationState,
   agent: AgentConfig,
+  templateOverride?: string,
 ): Promise<string> {
   const context = buildSkillContext(state, agent);
   const isStaging = !!state.stagingRepo && state.mode === "pair";
-  const templatePath = resolveTemplatePath(state.phase, state.mode, agent.role, isStaging);
+  const templatePath = templateOverride
+    ?? resolveTemplatePath(state.phase, state.mode, agent.role, isStaging);
   const template = readFileSync(templatePath, "utf-8");
   let message = substituteTemplate(template, context);
   if (state.config.useMagTailoring) {
