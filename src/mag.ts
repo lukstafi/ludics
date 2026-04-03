@@ -7,7 +7,7 @@ import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted, getLiveness } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
-import { federationShouldRunMag, federationIsController, selectMachineForSlot } from "./federation.ts";
+import { federationShouldRunMag, federationIsController, selectMachineForSlot, heartbeatPublish } from "./federation.ts";
 import { stateCheckpoint } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
@@ -2490,6 +2490,9 @@ export async function magStart(args: string[]): Promise<void> {
         emitEvent({ event_type: "mag_nudge_failed", source: "keepalive", scope: "mag", status: "failed", message: "tmux send-keys failed" });
       }
     }
+
+    // Publish heartbeat so controller can infer remote slot liveness
+    try { heartbeatPublish(); } catch { /* ignore */ }
 
     // Checkpoint accumulated state changes from keepalive automations
     try { stateCheckpoint("keepalive"); } catch { /* ignore */ }
