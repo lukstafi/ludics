@@ -24,13 +24,21 @@ function hostnameFromConfig(): string {
   return (config.network as Record<string, unknown> | undefined)?.hostname as string ?? "";
 }
 
-export function hostnameTailscale(): string | null {
-  // Check if tailscale is available first
+function findTailscaleCli(): string | null {
   const which = Bun.spawnSync(["which", "tailscale"], { stdout: "pipe", stderr: "pipe" });
-  if (which.exitCode !== 0) return null;
+  if (which.exitCode === 0) return which.stdout.toString().trim();
+  // macOS: Tailscale app bundle CLI
+  const macosPath = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+  try { if (Bun.file(macosPath).size > 0) return macosPath; } catch { /* not installed */ }
+  return null;
+}
+
+export function hostnameTailscale(): string | null {
+  const tsCli = findTailscaleCli();
+  if (!tsCli) return null;
 
   try {
-    const result = Bun.spawnSync(["tailscale", "status", "--json"], { stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync([tsCli, "status", "--json"], { stdout: "pipe", stderr: "pipe" });
     if (result.exitCode !== 0) return null;
 
     const data = JSON.parse(result.stdout.toString()) as Record<string, unknown>;
