@@ -134,19 +134,10 @@ function renderSlots(slots) {
             if (hasTask) meta.push(`<span class="task-id">${escapeHtml(slot.task)}</span>`);
             if (slot.effort) meta.push(`<span class="effort" data-effort="${escapeHtml(slot.effort)}">${escapeHtml(slot.effort)}</span>`);
             if (slot.mode) {
-                // Only allow toggling when no session is actively running.
-                // slotStart() stamps slot.sessionStarted for all adapters (manual included),
-                // and slotStop() clears it. The phase fallback was removed because phase
-                // text written by slotsRefresh() is never cleared by slotStop(), which
-                // would permanently block the toggle after a session ends.
-                const isToggleable = (slot.mode === 'manual' || slot.mode === 't3code')
-                    && !slot.sessionStarted;
-                if (isToggleable) {
-                    const otherMode = slot.mode === 'manual' ? 't3code' : 'manual';
-                    meta.push(`<button class="mode-toggle-btn mode-${escapeHtml(slot.mode)}" onclick="toggleSlotMode(${i}, '${otherMode}')" title="Mode: ${escapeHtml(slot.mode)} — click to switch to ${otherMode}">${escapeHtml(slot.mode)}</button>`);
-                } else {
-                    meta.push(escapeHtml(slot.mode));
-                }
+                // Always allow toggling to manual — it signals "stop automating".
+                // From manual, allow toggling back to the default automated adapter.
+                const otherMode = slot.mode === 'manual' ? 'tmux' : 'manual';
+                meta.push(`<button class="mode-toggle-btn mode-${escapeHtml(slot.mode)}" onclick="toggleSlotMode(${i}, '${otherMode}')" title="Mode: ${escapeHtml(slot.mode)} — click to switch to ${otherMode}">${escapeHtml(slot.mode)}</button>`);
             }
             if (slot.started) meta.push(formatTime(slot.started));
             if (meta.length > 0) html += `<p class="slot-meta">${meta.join(' · ')}</p>`;

@@ -482,20 +482,14 @@ export function slotSetMode(slotNum: number, mode: string): void {
     throw new Error(`slot ${slotNum} not found`);
   }
 
-  // Refuse to toggle mode while a session is actively running.
-  // The Mode field doubles as the live adapter identity once a session has started;
-  // changing it mid-session would cause slotClear(), slotsRefresh(), and slotStop()
-  // to target the wrong adapter and lose t3code thread persistence.
-  //
-  // Use only the structured "Session Started" field (written by slotStart() for
-  // every adapter, cleared by slotStop()). The old phase-marker fallback was
-  // removed because slotStop() does not clear phase text written by slotsRefresh(),
-  // which would permanently block mode toggling after a session ends.
+  // Switching TO manual is always safe — it just disables automation.
+  // Switching FROM manual to an automated adapter while a session is running
+  // could cause adapter mismatch, so block that.
   const sessionStarted = getSessionStarted(block).trim();
   const hasActiveSession = sessionStarted && sessionStarted !== "null";
-  if (hasActiveSession) {
+  if (hasActiveSession && mode !== "manual") {
     throw new Error(
-      `slot ${slotNum} has an active session (started at ${sessionStarted}); stop or clear the slot before changing mode`,
+      `slot ${slotNum} has an active session (started at ${sessionStarted}); stop or clear the slot before switching to ${mode}`,
     );
   }
 
