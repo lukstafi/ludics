@@ -38,10 +38,21 @@ Manual: `ludics mag process-suggestions <task-id>`
    ```
    If file is missing, write an error result and stop.
 
-3. Parse JSON and extract `suggestRefactorSummary` (string or null) and
-   `workflowFeedback` (object keyed by agent name, values are strings).
+3. Parse JSON and extract:
+   - `suggestRefactorSummary` (string or null)
+   - `workflowFeedback` (object keyed by agent name, values are strings)
+   - `reviews` (array of `{ round, type, reviewer, verdict, content }`)
 
-4. If both fields are empty/null, write an empty result and stop.
+   For each review `type` ("review", "plan-review"), keep only the
+   highest-round entry (earlier rounds are superseded by later ones
+   regardless of verdict). Then discard any entry whose verdict is not
+   `request_changes`. This ordering matters: a round 2 `approve` supersedes
+   a round 1 `request_changes`, meaning the issue was resolved and should
+   NOT generate a follow-up task.
+
+4. If all three sources are empty/null — `suggestRefactorSummary` is null,
+   `workflowFeedback` has no entries, AND no `request_changes` reviews remain
+   after filtering — write an empty result and stop.
 
 5. Read the source task file to recover project name:
    ```bash
@@ -53,7 +64,20 @@ Manual: `ludics mag process-suggestions <task-id>`
    items. The `suggestRefactorSummary` may be a single text blob -- split by
    logical suggestion boundaries (numbered items, bullet points, paragraph
    breaks). Each `workflowFeedback` entry may also contain multiple
-   suggestions -- split those too. Merge near-duplicate items.
+   suggestions -- split those too.
+
+   For each filtered `request_changes` review: strip the leading verdict
+   keyword line from `content`. The verdict line may appear in several formats
+   — plain `REQUEST_CHANGES`, bolded `**Verdict**: REQUEST_CHANGES`, or
+   similar variants. Strip any line whose uppercased text contains
+   `REQUEST_CHANGES` and appears before the first actionable item. Split the
+   remaining text by numbered items or bullet points into individual
+   suggestion items. Tag each item with its source review metadata (round,
+   reviewer, type).
+
+   Merge near-duplicate items across all three sources. Reviews may overlap
+   with `suggestRefactorSummary` content since both can originate from the
+   same reviewer agent -- dedupe these.
 
 7. **Idempotency guard**: Before creating any tasks, scan existing task files
    for follow-ups already created from this source task:
@@ -88,9 +112,12 @@ Manual: `ludics mag process-suggestions <task-id>`
       - `status: needs-confirmation` (replace `status: ready`)
       - `effort: small` (replace `effort: medium`)
       - `relates_to: [$ARGUMENTS]` (replace `relates_to: []`)
-      - Replace Context section body with:
-        "Auto-generated from retrospective of `<source-task-id>`.
-         Original suggestion: <brief summary>"
+      - Replace Context section body with context appropriate to the source:
+        - **From review artifact**: "Auto-generated from review round N by
+          <reviewer> (REQUEST_CHANGES) of `<source-task-id>`. Issue identified:
+          <brief summary>"
+        - **From other sources**: "Auto-generated from retrospective of
+          `<source-task-id>`. Original suggestion: <brief summary>"
 
 10. Write result JSON:
     ```bash
@@ -117,6 +144,10 @@ Manual: `ludics mag process-suggestions <task-id>`
 - Missing test coverage for important code paths
 - Security or correctness concerns
 - Workflow improvements that reduce friction across multiple tasks
+- Items from `REQUEST_CHANGES` reviews: these are high-signal because the
+  reviewer explicitly flagged the issue and the coder did not address it
+  before task completion. Lean toward "substantive" classification unless the
+  issue is purely stylistic (variable naming, formatting).
 
 **Skip (nitpicky)**:
 - Variable/function renaming for style preference
