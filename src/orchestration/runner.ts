@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
-import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, isAgentDone, pairReviewVerdict, phaseTimeoutExpired } from "./phases.ts";
+import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, pairReviewVerdict, phaseTimeoutExpired } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
   statusFileFingerprint, touchStatusFile, writeInterrupt, writePeerSync,
@@ -1086,17 +1086,14 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
   // to the merged plan path so plan-review skill templates read it via the same path.
   if (state.phase === "plan" && next === "plan-review" && state.mode === "pair") {
     const plansDir = join(state.peerSyncDir, "plans");
-    const planPrefix = `round-${state.round}-`;
     const mergedPath = join(plansDir, `round-${state.round}-merged-0.md`);
-    try {
-      for (const f of readdirSync(plansDir)) {
-        if (f.startsWith(planPrefix) && f.endsWith(".md") && !f.includes("-merged-")) {
-          copyFileSync(join(plansDir, f), mergedPath);
-          break;
-        }
+    const { files } = findPlanFiles(state.peerSyncDir, state.round, undefined);
+    if (files.length > 0) {
+      try {
+        copyFileSync(join(plansDir, files[0]), mergedPath);
+      } catch {
+        // plans dir missing — plan-review will handle gracefully
       }
-    } catch {
-      // plans dir missing — plan-review will handle gracefully
     }
   }
   // Track plan-merge iterations: increment planMergeRound each time we loop back.

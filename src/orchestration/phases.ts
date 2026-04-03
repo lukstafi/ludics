@@ -368,6 +368,33 @@ function nextAfterPrework(state: OrchestrationState): Phase {
   return "work";
 }
 
+/**
+ * Scan the plans directory for individual plan files for a given round
+ * (excluding merged files).  Returns the list of filenames and whether
+ * the coder's plan is among them.
+ */
+export function findPlanFiles(
+  peerSyncDir: string,
+  round: number,
+  coderName: string | undefined,
+): { files: string[]; coderPlanExists: boolean } {
+  const plansDir = join(peerSyncDir, "plans");
+  const planPrefix = `round-${round}-`;
+  const files: string[] = [];
+  let coderPlanExists = false;
+  try {
+    for (const f of readdirSync(plansDir)) {
+      if (f.startsWith(planPrefix) && f.endsWith(".md") && !f.includes("-merged-")) {
+        files.push(f);
+        if (coderName && f === `round-${round}-${coderName}.md`) coderPlanExists = true;
+      }
+    }
+  } catch {
+    // plans dir may not exist yet
+  }
+  return { files, coderPlanExists };
+}
+
 export function evaluateTransition(state: OrchestrationState): Phase | null {
   switch (state.phase) {
     case "setup":
@@ -399,23 +426,12 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
         // produce a plan).  If only the reviewer's plan exists we must still enter
         // plan-merge so the coder gets a chance to process it — skipping would have the
         // reviewer effectively review their own plan.
-        const plansDir = join(state.peerSyncDir, "plans");
-        const planPrefix = `round-${state.round}-`;
         const coder = state.agents.find((a) => a.role === "coder");
-        let planCount = 0;
-        let coderPlanExists = false;
-        try {
-          for (const f of readdirSync(plansDir)) {
-            if (f.startsWith(planPrefix) && f.endsWith(".md") && !f.includes("-merged-")) {
-              planCount++;
-              if (coder && f === `round-${state.round}-${coder.name}.md`) coderPlanExists = true;
-            }
-          }
-        } catch {
-          // plans dir may not exist yet
-        }
+        const { files: planFiles, coderPlanExists } = findPlanFiles(
+          state.peerSyncDir, state.round, coder?.name,
+        );
         // Only skip plan-merge when there's exactly one plan and it's the coder's.
-        if (planCount < 2 && coderPlanExists) return "plan-review";
+        if (planFiles.length < 2 && coderPlanExists) return "plan-review";
         return "plan-merge";
       }
       return null;

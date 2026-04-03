@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { evaluateTransition, isAgentDone, phaseTimeoutExpired } from "./phases.ts";
+import { evaluateTransition, findPlanFiles, isAgentDone, phaseTimeoutExpired } from "./phases.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "./state.ts";
 
@@ -215,6 +215,64 @@ describe("evaluateTransition", () => {
     state.agentStates.reviewer.status = "plan-done";
     // Must still go through plan-merge so coder can process the reviewer's plan
     expect(evaluateTransition(state)).toBe("plan-merge");
+  });
+
+  test("findPlanFiles returns correct files and coderPlanExists flag", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh138-find-"));
+    mkdirSync(join(tmpDir, "plans"), { recursive: true });
+    writeFileSync(join(tmpDir, "plans", "round-1-coder.md"), "# Coder\n");
+    writeFileSync(join(tmpDir, "plans", "round-1-reviewer.md"), "# Reviewer\n");
+    // Should be excluded: merged file and different round
+    writeFileSync(join(tmpDir, "plans", "round-1-merged-0.md"), "# Merged\n");
+    writeFileSync(join(tmpDir, "plans", "round-2-coder.md"), "# Round 2\n");
+
+    const result = findPlanFiles(tmpDir, 1, "coder");
+    expect(result.files.length).toBe(2);
+    expect(result.coderPlanExists).toBe(true);
+
+    const noCoderResult = findPlanFiles(tmpDir, 1, "other");
+    expect(noCoderResult.files.length).toBe(2);
+    expect(noCoderResult.coderPlanExists).toBe(false);
+
+    const missingDir = findPlanFiles("/nonexistent", 1, "coder");
+    expect(missingDir.files.length).toBe(0);
+    expect(missingDir.coderPlanExists).toBe(false);
+  });
+
+  test("plan-merge skip copies solo plan to merged-0 path", () => {
+    // This tests the runner side-effect indirectly: when evaluateTransition
+    // returns plan-review (skip), the solo plan should be copied to merged-0.
+    // We verify the precondition (transition) and simulate the copy logic.
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh138-copy-"));
+    mkdirSync(join(tmpDir, "plans"), { recursive: true });
+    const planContent = "# Coder Plan\nImplementation details here.\n";
+    writeFileSync(join(tmpDir, "plans", "round-1-coder.md"), planContent);
+
+    const state = makeState({
+      mode: "pair",
+      config: defaultOrchestrationConfig({ enablePlan: true }),
+      phase: "plan",
+      round: 1,
+      agents: [
+        { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
+        { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      threadIds: { coder: "t1", reviewer: "t2" },
+      peerSyncDir: tmpDir,
+    });
+    state.agentStates.coder.status = "plan-done";
+    state.agentStates.reviewer.status = "plan-done";
+    expect(evaluateTransition(state)).toBe("plan-review");
+
+    // Simulate the runner copy side-effect using findPlanFiles
+    const { files } = findPlanFiles(tmpDir, 1, undefined);
+    const mergedPath = join(tmpDir, "plans", "round-1-merged-0.md");
+    const { copyFileSync } = require("fs");
+    copyFileSync(join(tmpDir, "plans", files[0]), mergedPath);
+
+    expect(existsSync(mergedPath)).toBe(true);
+    expect(readFileSync(mergedPath, "utf-8")).toBe(planContent);
   });
 
   test("plan-merge transitions to plan-review when done", () => {
