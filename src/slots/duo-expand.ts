@@ -11,20 +11,24 @@ export interface DuoExpansion {
 }
 
 /**
- * Strip any existing --pair, --duo, --coder, --reviewer flags from baseArgs.
+ * Strip mode flags (--pair, --duo) and role flags with their values
+ * (--coder <val>, --reviewer <val>, --agent <val>) from baseArgs.
  * Returns only the non-mode/non-role fragments (e.g. --plan, --gather, --effort).
  */
 function stripModeAndRoleFlags(baseArgs: string): string {
-  return baseArgs
-    .split(/\s+/)
-    .filter((tok) => {
-      if (tok === "--pair" || tok === "--duo") return false;
-      if (tok.startsWith("--coder") || tok.startsWith("--reviewer")) return false;
-      if (tok.startsWith("--agent")) return false;
-      return true;
-    })
-    .join(" ")
-    .trim();
+  const tokens = baseArgs.split(/\s+/).filter(Boolean);
+  const result: string[] = [];
+  // Flags that are standalone (no value)
+  const standaloneFlags = new Set(["--pair", "--duo"]);
+  // Flags that consume the next token as their value
+  const valuedFlags = new Set(["--coder", "--reviewer", "--agent"]);
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i]!;
+    if (standaloneFlags.has(tok)) continue;
+    if (valuedFlags.has(tok)) { i++; continue; } // skip flag + its value
+    result.push(tok);
+  }
+  return result.join(" ");
 }
 
 /**

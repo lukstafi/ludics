@@ -1135,6 +1135,11 @@ export async function runSlot(args: string[]): Promise<void> {
             // --pair itself is the mode flag; no need to record it as an auto-prepend target
             adapterArgFragments.push("--pair");
             break;
+          case "--duo":
+            hasDirectOrchFlags = true;
+            // Hierarchical duo: handled after arg parsing by isDuoAssign check
+            adapterArgFragments.push("--duo");
+            break;
           case "--coder": {
             const val = args[++i];
             if (!val || val.startsWith("-")) throw new Error("--coder requires a provider value (got a flag instead)");

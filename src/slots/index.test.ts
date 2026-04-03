@@ -274,6 +274,16 @@ describe("slot assign — direct orchestration flags", () => {
     expect(args).toContain("--plan");
   });
 
+  test("direct --duo shorthand triggers hierarchical duo expansion", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    await runSlot(["1", "assign", "My task", "-a", "t3code", "--duo", "--plan"]);
+    const args = readAdapterArgs();
+    expect(args).toContain("--pair");
+    expect(args).toContain("--duo-peer-slot=");
+    expect(args).toContain("--plan");
+  });
+
   test("does not inject --pair when -A already contains --pair", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });

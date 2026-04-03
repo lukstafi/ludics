@@ -57,16 +57,16 @@ interface ParsedAgentToken {
 }
 
 interface ParsedOrchestrationArgs {
-  mode: "duo" | "pair";
+  mode: "pair";
   config: Partial<OrchestrationConfig>;
   agents: ParsedAgentToken[];
   /** Explicit coder model override from --coder-model flag. */
   coderModelOverride?: string;
   /** Explicit reviewer model override from --reviewer-model flag. */
   reviewerModelOverride?: string;
-  /** Thinking effort for the coder agent (pair) or first duo agent. */
+  /** Thinking effort for the coder agent. */
   coderThinkingEffort?: string;
-  /** Thinking effort for the reviewer agent (pair) or second duo agent. */
+  /** Thinking effort for the reviewer agent. */
   reviewerThinkingEffort?: string;
   /** For hierarchical-duo: the peer slot number. Set via --duo-peer-slot=N. */
   duoPeerSlot?: number;
@@ -215,7 +215,6 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
 
   const orchestrationConfig: Partial<OrchestrationConfig> = {};
   let mode: ParsedOrchestrationArgs["mode"] | null = null;
-  const duoAgents: ParsedOrchestrationArgs["agents"] = [];
   let coderToken: string | null = null;
   let reviewerToken: string | null = null;
   let coderModelOverride: string | undefined;
@@ -253,16 +252,17 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         i++;
         break;
       case "--duo":
-        mode = "duo";
+        // Hierarchical duo: --duo is now treated as --pair at the adapter level.
+        // The two-slot expansion happens in maybeFillEmptySlots / slot CLI, not here.
+        console.error("ludics: --duo is now hierarchical duo (two pair slots) — treating as --pair");
+        mode = "pair";
         break;
       case "--pair":
         mode = "pair";
         break;
       case "--agent":
-        if (!next) throw new Error("t3code adapter args: --agent requires name:provider:model");
-        duoAgents.push(parseProviderToken(next, `agent${duoAgents.length + 1}`, parsed.model));
-        i++;
-        break;
+        // Legacy duo --agent flag is no longer supported; use --coder/--reviewer instead.
+        throw new Error("t3code adapter args: --agent is no longer supported (duo mode now uses --coder/--reviewer). Use --coder and --reviewer instead.");
       case "--coder":
         if (!next) throw new Error("t3code adapter args: --coder requires provider[:model[:name]]");
         coderToken = next;
@@ -376,27 +376,6 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   }
 
   if (!mode) return parsed;
-
-  if (mode === "duo") {
-    // Default fallback agents must have modelExplicit=false so config.yaml defaults apply.
-    const agents = duoAgents.length > 0
-      ? duoAgents
-      : [
-        { ...parseProviderToken("agent1:codex:gpt-5.4", "agent1", parsed.model), modelExplicit: false },
-        { ...parseProviderToken("agent2:codex:gpt-5.4", "agent2", parsed.model), modelExplicit: false },
-      ];
-    parsed.orchestration = {
-      mode,
-      config: orchestrationConfig,
-      agents,
-      coderModelOverride,
-      reviewerModelOverride,
-      coderThinkingEffort,
-      reviewerThinkingEffort,
-      duoPeerSlot,
-    };
-    return parsed;
-  }
 
   // For pair mode: modelExplicit is only true when the user explicitly provided the token
   // (i.e. --coder/--reviewer flag was given) AND that token included an explicit model.

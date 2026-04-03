@@ -80,12 +80,15 @@ describe("parseT3CodeAdapterArgs", () => {
     expect(parsed.orchestration).toBeNull();
   });
 
-  test("parses duo orchestration defaults", () => {
+  test("--duo is treated as --pair (hierarchical duo expansion happens at slot level)", () => {
     const parsed = parseT3CodeAdapterArgs("--duo --clarify --plan");
-    expect(parsed.orchestration?.mode).toBe("duo");
+    expect(parsed.orchestration?.mode).toBe("pair");
     expect(parsed.orchestration?.config.enableClarify).toBe(true);
     expect(parsed.orchestration?.config.enablePlan).toBe(true);
+    // --duo now produces pair-mode agents (coder + reviewer), not old duo agents
     expect(parsed.orchestration?.agents).toHaveLength(2);
+    expect(parsed.orchestration?.agents[0]?.role).toBe("coder");
+    expect(parsed.orchestration?.agents[1]?.role).toBe("reviewer");
   });
 
   test("parses pair role overrides", () => {
