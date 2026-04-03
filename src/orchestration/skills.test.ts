@@ -558,4 +558,45 @@ describe("skills", () => {
     expect(ctx["UPSTREAM_MERGED_MARKER_FILE"]).toContain("upstream-merged");
     expect(ctx["FORWARDED_MARKER_FILE"]).toContain("forwarded");
   });
+
+  test("composeSkillMessage uses templateOverride when provided", async () => {
+    const { writeFileSync: writeFs, unlinkSync: unlinkFs, mkdtempSync: mkTmp } = require("fs");
+    const { join: joinPath } = require("path");
+    const { tmpdir: osTmpdir } = require("os");
+    const tmpDir = mkTmp(joinPath(osTmpdir(), "ludics-skills-test-"));
+    const overridePath = joinPath(tmpDir, "override.md");
+    writeFs(overridePath, "Override for {{AGENT_NAME}} in {{WORKTREE_PATH}}");
+    try {
+      const state = makeState();
+      state.phase = "pr-comments";
+      const coder = state.agents.find((a) => a.role === "coder")!;
+      const result = await composeSkillMessage(state, coder, overridePath);
+      expect(result).toContain("Override for coder");
+      expect(result).toContain(coder.worktreePath);
+      // Should NOT contain content from the normal pr-comments template
+      expect(result).not.toContain("Address reviewer feedback");
+    } finally {
+      unlinkFs(overridePath);
+    }
+  });
+
+  test("substituteTemplate renders pr-conflict-resolve.md correctly", () => {
+    const ctx = baseCtx();
+    ctx["PR_FILE"] = "/tmp/peer-sync/coder.pr";
+    ctx["WORKTREE_PATH"] = "/tmp/worktree";
+    ctx["STATUS_FILE"] = "/tmp/peer-sync/coder.status";
+    ctx["DONE_STATUS"] = "pr-comments-done";
+    const { readFileSync: readFs } = require("fs");
+    const { join: joinPath } = require("path");
+    const { ludicsRoot } = require("../config.ts");
+    const templatePath = joinPath(ludicsRoot(), "skills", "orchestration", "pr-conflict-resolve.md");
+    const template = readFs(templatePath, "utf-8");
+    const result = substituteTemplate(template, ctx);
+    expect(result).toContain("/tmp/peer-sync/coder.pr");
+    expect(result).toContain("/tmp/worktree");
+    expect(result).toContain("/tmp/peer-sync/coder.status");
+    expect(result).toContain("pr-comments-done");
+    expect(result).toContain("git rebase origin/main");
+    expect(result).toContain("Force-push with lease");
+  });
 });
