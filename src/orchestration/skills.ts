@@ -100,7 +100,7 @@ function taskSpecBriefText(state: OrchestrationState): string {
       ? proposalValue
       : "";
   const proposalLine = proposalRef
-    ? `\nProposal file: \`${proposalRef}\` (already read in round 1)`
+    ? `\nProposal file: \`${proposalRef}\` — re-read if you need to verify scope or acceptance criteria.`
     : "";
   return `**Task** ${taskId}: ${title}${proposalLine}\n(Full task spec was provided in round 1 — refer to earlier context.)`;
 }

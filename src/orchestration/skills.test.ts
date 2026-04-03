@@ -375,7 +375,7 @@ describe("skills", () => {
       expect(ctxR2["TASK_SPEC"]).toContain("task-r2");
       expect(ctxR2["TASK_SPEC"]).toContain("Round Two Task");
       expect(ctxR2["TASK_SPEC"]).toContain("docs/proposals/round2.md");
-      expect(ctxR2["TASK_SPEC"]).toContain("round 1");
+      expect(ctxR2["TASK_SPEC"]).toContain("re-read if you need to verify");
       expect(ctxR2["TASK_SPEC"]).not.toContain("Acceptance Criteria"); // full body not included
 
       // Round 3: still brief
@@ -578,6 +578,51 @@ describe("skills", () => {
     } finally {
       unlinkFs(overridePath);
     }
+  });
+
+  test("work template includes proposal instruction when PROPOSAL_PATH is set", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/work.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+    });
+    expect(withProposal).toContain("Step 0");
+    expect(withProposal).toContain("docs/proposals/my-feature.md");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+    });
+    expect(withoutProposal).not.toContain("Step 0");
+  });
+
+  test("pair-coder-plan template includes proposal instruction when PROPOSAL_PATH is set", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-plan.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+    });
+    expect(withProposal).toContain("Step 0");
+    expect(withProposal).toContain("docs/proposals/my-feature.md");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+    });
+    expect(withoutProposal).not.toContain("Step 0");
+  });
+
+  test("pair-coder-plan-merge template uses merge-specific proposal wording", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-plan-merge.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+    });
+    expect(rendered).toContain("Reference the proposal file");
+    expect(rendered).toContain("resolving conflicts between the two plans");
   });
 
   test("substituteTemplate renders pr-conflict-resolve.md correctly", () => {
