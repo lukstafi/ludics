@@ -77,9 +77,9 @@ mag:
   nudge_throttle_seconds: 60  # Minimum seconds between automatic "Continue." nudges (default: 60)
   nudge_backoff_seconds: 600  # If no stop hook fired since last nudge, suppress repeat nudges for this long (default: 600)
 
-  # Duo/pair orchestration settings (overridable per-task via adapter -A args)
+  # Orchestration settings (overridable per-task via adapter -A args)
   orchestration:
-    default_mode: pair           # Default orchestration mode for auto-selected sessions: pair | duo
+    default_mode: pair           # pair = one slot per task; duo = hierarchical duo (two pair slots per task with swapped roles)
     default_coder: claude-code   # Default coder provider for auto-selected sessions: claude-code | codex
     default_reviewer: codex      # Default reviewer provider for auto-selected sessions: codex | claude-code
     coder_model: ""              # Model ID for the coder agent (e.g. claude-opus-4-6); empty = provider default

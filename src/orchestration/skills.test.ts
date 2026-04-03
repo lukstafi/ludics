@@ -175,7 +175,7 @@ describe("skills", () => {
   });
 
   test("pr-create template renders staging note when STAGING_REPO is set", () => {
-    const templatePath = join(import.meta.dir, "../../skills/orchestration/pr-create.md");
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-pr-create.md");
     const template = readFileSync(templatePath, "utf-8");
     const stagingFork = "owner/staging-fork";
     const rendered = substituteTemplate(template, {
@@ -207,7 +207,7 @@ describe("skills", () => {
     expect(rendered).not.toContain("STAGING_PR_FILE");
   });
 
-  test("buildSkillContext: duo mode suppresses STAGING_REPO even when config has staging_repo", async () => {
+  test("buildSkillContext: hierarchical duo suppresses STAGING_REPO when duoPeerSlot is set", async () => {
     const tmpCfg = "/tmp/ludics-skills-duo-staging-test.yaml";
     writeFileSync(tmpCfg, [
       "state_repo: test/testrepo",
@@ -226,16 +226,12 @@ describe("skills", () => {
       const { buildSkillContext } = await import("./skills.ts");
       const state = {
         ...makeState(),
-        mode: "duo" as const,
+        mode: "pair" as const,
+        duoPeerSlot: 2, // hierarchical duo: staging is suppressed
         projectDir: "/tmp/my-proj-checkout",
-        agents: [
-          { name: "agent1", provider: "codex" as const, model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a" },
-          { name: "agent2", provider: "codex" as const, model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b" },
-        ],
-        agentStates: initAgentRuntimeState(["agent1", "agent2"]),
       };
       const ctx = buildSkillContext(state, state.agents[0]!);
-      // Duo mode must suppress staging variables
+      // Hierarchical duo (duoPeerSlot set) must suppress staging variables
       expect(ctx["STAGING_REPO"]).toBe("");
       expect(ctx["STAGING_REPO_NOTE"]).toBe("");
     } finally {
