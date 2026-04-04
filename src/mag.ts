@@ -7,7 +7,7 @@ import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted, getLiveness } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
-import { federationShouldRunMag, federationIsController, selectMachineForSlot, heartbeatPublish } from "./federation.ts";
+import { federationShouldRunMag, federationIsController, selectMachineForSlot } from "./federation.ts";
 import { stateCheckpoint } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
@@ -2452,6 +2452,25 @@ function maybeClearDoneSlots(): void {
   }
 }
 
+// --- Worker keepalive (machine-local automations, no controller duties) ---
+
+async function workerKeepalive(): Promise<void> {
+  console.error("ludics: worker keepalive");
+
+  // Pull fresh state so automations see latest slot assignments
+  try { const { statePull } = await import("./state.ts"); statePull(); } catch { /* ignore */ }
+
+  // Publish terminal state for this machine's sessions
+  publishTerminalState();
+
+  // Resume dead orchestrator processes on this machine's slots
+  await maybeResumeDeadOrchestrators();
+
+  // Checkpoint and push if anything changed.
+  // Heartbeat is NOT published here — federation trigger handles it.
+  try { stateCheckpoint("keepalive"); } catch { /* ignore */ }
+}
+
 // --- Mag CLI commands ---
 
 export async function magStart(args: string[]): Promise<void> {
@@ -2465,20 +2484,17 @@ export async function magStart(args: string[]): Promise<void> {
 
   if (!tmuxAvailable()) throw new Error("mag start: tmux is required but not installed");
 
-  // Check federation
-  if (!skipFederation) {
-    if (!federationShouldRunMag()) {
-      console.error("ludics: Mag blocked: not the federation leader");
-      console.log("To override, use: ludics mag start --skip-federation");
-      return;
-    }
+  // Check federation — on worker nodes, run machine-local automations only
+  if (!skipFederation && !federationShouldRunMag()) {
+    await workerKeepalive();
+    return;
   }
 
   // Session already exists - keepalive path
   if (magIsRunning()) {
     // Re-check federation on keepalive — controller may have changed since session started
     if (!skipFederation && !federationShouldRunMag()) {
-      console.error("ludics: Mag keepalive blocked: not the federation leader");
+      await workerKeepalive();
       return;
     }
     if (useTtyd) ensureTtyd();
@@ -2535,10 +2551,9 @@ export async function magStart(args: string[]): Promise<void> {
       }
     }
 
-    // Publish heartbeat so controller can infer remote slot liveness
-    try { heartbeatPublish(); } catch { /* ignore */ }
-
-    // Checkpoint accumulated state changes from keepalive automations
+    // Checkpoint accumulated state changes and sync with remote.
+    // Heartbeat is NOT published here — federation trigger handles it on a
+    // slower cadence, avoiding needless commits when nothing changed.
     try { stateCheckpoint("keepalive"); } catch { /* ignore */ }
     return;
   }
