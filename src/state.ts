@@ -139,32 +139,30 @@ export function statePull(): boolean {
     }
   }
 
-  // Check for uncommitted changes
+  // Commit any uncommitted changes before pulling so rebase handles conflicts
+  // properly instead of stash-pop which can conflict and pile up stashes
   const diffResult = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
   const hasChanges = diffResult.exitCode !== 0;
 
   if (hasChanges) {
-    run(["git", "stash", "push", "-m", "ludics auto-stash before pull"], repoDir);
+    Bun.spawnSync(["git", "add", "-A"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+    Bun.spawnSync(["git", "commit", "-m", "auto-commit before pull"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
   }
+
+  squashLocalCommits(repoDir);
 
   const pullResult = run(["git", "pull", "--rebase"], repoDir);
   if (pullResult.success) {
     console.error("ludics: pulled latest from remote");
   } else {
-    console.error("ludics: pull failed (may need manual intervention)");
-    if (hasChanges) {
-      run(["git", "stash", "pop"], repoDir);
+    // Rebase conflict — abort to preserve local state (will be resolved on next checkpoint push)
+    if (isRebaseInProgress(repoDir)) {
+      run(["git", "rebase", "--abort"], repoDir);
+      console.error("ludics: pull rebase conflicted — aborted, keeping local state");
+    } else {
+      console.error("ludics: pull failed (may need manual intervention)");
     }
     return false;
-  }
-
-  if (hasChanges) {
-    const popResult = run(["git", "stash", "pop"], repoDir);
-    if (popResult.success) {
-      console.error("ludics: restored local changes");
-    } else {
-      console.error("ludics: conflict restoring local changes (check git stash)");
-    }
   }
 
   return true;
