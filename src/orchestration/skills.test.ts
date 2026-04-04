@@ -343,6 +343,7 @@ describe("skills", () => {
     const { join: j } = await import("path");
     const tmpDir = mkdtempSync("/tmp/ludics-skills-badpath-test-");
     const origHarness = process.env.LUDICS_HARNESS_DIR;
+    const spy = spyOn(console, "error");
     try {
       const harnessTasks = j(tmpDir, "harness", "tasks");
       mkdir2(harnessTasks, { recursive: true });
@@ -351,15 +352,14 @@ describe("skills", () => {
         "", "## Acceptance Criteria", "", "- [ ] Legacy content here",
       ].join("\n"));
       process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
-      const spy = spyOn(console, "error");
       const { buildSkillContext } = await import("./skills.ts");
       const state = { ...makeState(), taskId: "task-bad", projectDir: j(tmpDir, "project"), round: 1 };
       const ctx = buildSkillContext(state, state.agents[0]!);
       expect(ctx["TASK_SPEC"]).toContain("Legacy content here");
       expect(ctx["TASK_SPEC"]).not.toContain("Read the full proposal");
       expect(spy).toHaveBeenCalledWith(expect.stringContaining("ignoring bad proposal path"));
-      spy.mockRestore();
     } finally {
+      spy.mockRestore();
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
       rmSync(tmpDir, { recursive: true, force: true });

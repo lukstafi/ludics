@@ -118,8 +118,15 @@ function taskSpecText(state: OrchestrationState): string {
   const proposalValue = readFrontmatterField(content, "proposal");
   if (proposalValue) {
     if (proposalValue !== "inline") {
+      let proposalFile: string;
       try {
-        const proposalFile = resolveProposalAbsPath(state.projectDir, proposalValue);
+        proposalFile = resolveProposalAbsPath(state.projectDir, proposalValue);
+      } catch (err) {
+        console.error(`ludics: taskSpecText: ignoring bad proposal path: ${(err as Error).message}`);
+        // Fall through to legacy/inline path below.
+        proposalFile = "";
+      }
+      if (proposalFile) {
         // Only read proposal file contents if it is inside the project tree, to avoid
         // exposing arbitrary local file content through the Proposal summary line.
         const projectRoot = state.projectDir.endsWith("/") ? state.projectDir : `${state.projectDir}/`;
@@ -139,8 +146,6 @@ function taskSpecText(state: OrchestrationState): string {
           }
         }
         return contentWithPointer;
-      } catch (err) {
-        console.error(`ludics: taskSpecText: ignoring bad proposal path: ${(err as Error).message}`);
       }
     }
   }
