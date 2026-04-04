@@ -129,6 +129,16 @@ export function stateCheckpoint(
 export function statePull(): boolean {
   const repoDir = stateRepoDir();
 
+  // Recover from a previously stuck rebase before pulling
+  if (isRebaseInProgress(repoDir)) {
+    console.error("ludics: detected stuck rebase in statePull, recovering...");
+    if (!finishStuckRebase(repoDir)) {
+      run(["git", "rebase", "--abort"], repoDir);
+      run(["git", "checkout", "--", "."], repoDir);
+      console.error("ludics: aborted stuck rebase before pull");
+    }
+  }
+
   // Check for uncommitted changes
   const diffResult = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
   const hasChanges = diffResult.exitCode !== 0;
@@ -184,6 +194,45 @@ export function statePush(): void {
   }
 }
 
+/**
+ * Finish a stuck rebase where remaining commits are empty (conflict resolution
+ * made both sides identical). Loops `git rebase --skip` until the rebase completes
+ * or a real conflict appears. Returns true if the rebase finishes cleanly.
+ */
+function finishStuckRebase(repoDir: string): boolean {
+  const MAX_SKIP_STEPS = 250;
+  for (let i = 0; i < MAX_SKIP_STEPS; i++) {
+    if (!isRebaseInProgress(repoDir)) return true;
+
+    // Try --continue first (works if commit is non-empty)
+    const env = { ...process.env, GIT_EDITOR: "true" };
+    const contResult = Bun.spawnSync(["git", "rebase", "--continue"], {
+      cwd: repoDir, env, stdout: "pipe", stderr: "pipe",
+    });
+    if (contResult.exitCode === 0) {
+      if (!isRebaseInProgress(repoDir)) return true;
+      continue;
+    }
+
+    // --continue failed — check for real conflicts
+    const unmerged = run(["git", "diff", "--name-only", "--diff-filter=U"], repoDir).stdout;
+    if (unmerged) return false; // real conflict, caller must handle
+
+    // No conflicts, commit is empty — skip it
+    const skipResult = Bun.spawnSync(["git", "rebase", "--skip"], {
+      cwd: repoDir, stdout: "pipe", stderr: "pipe",
+    });
+    if (skipResult.exitCode === 0 && !isRebaseInProgress(repoDir)) return true;
+  }
+  return !isRebaseInProgress(repoDir);
+}
+
+/** Check if a rebase is currently in progress. */
+function isRebaseInProgress(repoDir: string): boolean {
+  return existsSync(join(repoDir, ".git", "rebase-merge"))
+    || existsSync(join(repoDir, ".git", "rebase-apply"));
+}
+
 /** Pull with rebase, resolve conflicts, push. Returns true on success. */
 function pullRebasePush(
   repoDir: string,
@@ -191,26 +240,64 @@ function pullRebasePush(
   isController: boolean,
   controllerMachine: string,
 ): boolean {
+  // Recover from a previously stuck rebase before attempting pull
+  if (isRebaseInProgress(repoDir)) {
+    console.error("ludics: detected stuck rebase, recovering...");
+    if (!finishStuckRebase(repoDir)) {
+      run(["git", "rebase", "--abort"], repoDir);
+      // Abort can leave staged/dirty files from partial conflict resolution
+      run(["git", "checkout", "--", "."], repoDir);
+      console.error("ludics: aborted stuck rebase, will retry pull");
+    }
+  }
+
+  // Ensure clean index before pull --rebase (stash if dirty)
+  const prePullDiff = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+  const prePullCached = Bun.spawnSync(["git", "diff", "--cached", "--quiet"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+  const needsStash = prePullDiff.exitCode !== 0 || prePullCached.exitCode !== 0;
+  if (needsStash) {
+    run(["git", "stash", "push", "-m", "ludics auto-stash before push"], repoDir);
+  }
+
+  // Squash local commits ahead of the merge-base into one before rebasing.
+  // This avoids O(N*M) conflict resolutions when N local keepalive checkpoints
+  // each touch the same append-only files as M remote commits.
+  squashLocalCommits(repoDir);
+
   const pullResult = run(["git", "pull", "--rebase"], repoDir);
   if (!pullResult.success) {
     // Check if we're in a conflicted rebase
     const hasConflict = run(["git", "diff", "--name-only", "--diff-filter=U"], repoDir).stdout;
     if (hasConflict) {
-      // Resolve conflicts in a loop — rebase may replay multiple commits
+      // Resolve conflicts — after squash there should be at most 1 local commit to replay
       const MAX_CONFLICT_STEPS = 5;
       let resolved = false;
       for (let step = 0; step < MAX_CONFLICT_STEPS; step++) {
         const stepOk = resolveRebaseConflicts(repoDir, currentMachine, isController, controllerMachine);
         if (stepOk) { resolved = true; break; }
 
-        // Check if rebase --continue hit another conflict
+        // rebase --continue failed — check why
         const moreConflicts = run(["git", "diff", "--name-only", "--diff-filter=U"], repoDir).stdout;
-        if (!moreConflicts) { resolved = true; break; }
+        if (!moreConflicts) {
+          // No unmerged files but rebase didn't finish — commit became empty after
+          // conflict resolution. Skip the empty commit and check if rebase completes.
+          if (isRebaseInProgress(repoDir)) {
+            if (finishStuckRebase(repoDir)) { resolved = true; break; }
+          } else {
+            resolved = true; break;
+          }
+        }
       }
       if (!resolved) {
         run(["git", "rebase", "--abort"], repoDir);
         console.error("ludics: push aborted — too many rebase conflicts");
         return false;
+      }
+    } else if (isRebaseInProgress(repoDir)) {
+      // Pull started a rebase that paused on an empty commit (no conflicts, but not done)
+      if (!finishStuckRebase(repoDir)) {
+        run(["git", "rebase", "--abort"], repoDir);
+        console.error("ludics: aborted stuck rebase after pull");
       }
     } else {
       // Pull failed for non-conflict reason (no remote, network)
@@ -219,11 +306,50 @@ function pullRebasePush(
   }
 
   const pushResult = run(["git", "push"], repoDir);
+  if (needsStash) {
+    run(["git", "stash", "pop"], repoDir);
+  }
   if (pushResult.success) {
     console.error("ludics: pushed to remote");
     return true;
   }
   return false;
+}
+
+/**
+ * Squash all local commits ahead of the remote tracking branch into a single
+ * commit. This turns N local keepalive checkpoints into 1 commit, so the
+ * subsequent `git pull --rebase` only needs to replay 1 commit instead of N,
+ * avoiding O(N) conflict resolution steps on append-only files.
+ *
+ * No-op if local branch is not ahead of its upstream.
+ */
+function squashLocalCommits(repoDir: string): void {
+  // Find the merge base with upstream
+  const upstream = run(["git", "rev-parse", "@{u}"], repoDir);
+  if (!upstream.success) return; // no upstream tracking
+
+  const mergeBase = run(["git", "merge-base", "HEAD", upstream.stdout], repoDir);
+  if (!mergeBase.success) return;
+
+  // Count local commits ahead of merge base
+  const aheadCount = run(
+    ["git", "rev-list", "--count", `${mergeBase.stdout}..HEAD`],
+    repoDir,
+  );
+  if (!aheadCount.success || parseInt(aheadCount.stdout, 10) <= 1) return;
+
+  // Soft-reset to merge base, then re-commit everything as one commit
+  const resetResult = run(["git", "reset", "--soft", mergeBase.stdout], repoDir);
+  if (!resetResult.success) return;
+
+  const commitResult = run(
+    ["git", "commit", "-m", "checkpoint: squashed for sync"],
+    repoDir,
+  );
+  if (commitResult.success) {
+    console.error(`ludics: squashed ${aheadCount.stdout} local commits for rebase`);
+  }
 }
 
 // --- Merge conflict resolution ---
@@ -245,7 +371,11 @@ function resolveRebaseConflicts(
   const prefix = harnessPrefix();
 
   for (const file of stdout.split("\n").filter(Boolean)) {
-    if (file === `${prefix}journal/events.jsonl`) {
+    if (file === `${prefix}journal/events.jsonl`
+        || file === `${prefix}journal/notifications.jsonl`) {
+      resolveAppendOnly(repoDir, file);
+    } else if (file.startsWith(`${prefix}journal/`)) {
+      // Daily journal markdown — append-only merge (both machines add entries)
       resolveAppendOnly(repoDir, file);
     } else if (file.startsWith(`${prefix}federation/heartbeats/`)) {
       // Each machine owns its own heartbeat file — accept local (theirs in rebase)
@@ -269,7 +399,7 @@ function resolveRebaseConflicts(
   return result.exitCode === 0;
 }
 
-/** Append-only file merge: concatenate upstream + local-only lines, deduplicate. */
+/** Append-only file merge: deduplicate lines and sort JSONL by epoch. */
 function resolveAppendOnly(repoDir: string, file: string): void {
   const upstreamRaw = run(["git", "show", `:2:${file}`], repoDir).stdout;
   const localRaw = run(["git", "show", `:3:${file}`], repoDir).stdout;
@@ -277,11 +407,28 @@ function resolveAppendOnly(repoDir: string, file: string): void {
   const upstreamLines = upstreamRaw.split("\n").filter(Boolean);
   const localLines = localRaw.split("\n").filter(Boolean);
 
-  const upstreamSet = new Set(upstreamLines);
-  const localOnly = localLines.filter(l => !upstreamSet.has(l));
+  // Deduplicate
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const line of [...upstreamLines, ...localLines]) {
+    if (!seen.has(line)) {
+      seen.add(line);
+      unique.push(line);
+    }
+  }
 
-  const merged = [...upstreamLines, ...localOnly].join("\n") + "\n";
-  writeFileSync(join(repoDir, file), merged);
+  // For JSONL files, sort by epoch so events from both machines interleave chronologically
+  if (file.endsWith(".jsonl")) {
+    unique.sort((a, b) => {
+      try {
+        const ea = (JSON.parse(a) as Record<string, unknown>).epoch;
+        const eb = (JSON.parse(b) as Record<string, unknown>).epoch;
+        return Number(ea ?? 0) - Number(eb ?? 0);
+      } catch { return 0; }
+    });
+  }
+
+  writeFileSync(join(repoDir, file), unique.join("\n") + "\n");
 }
 
 /** JSON file merge: keep the version with a more recent phaseStartedAt epoch. */
