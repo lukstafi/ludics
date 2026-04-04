@@ -21,6 +21,7 @@ const CONFIG = {
 // State
 let lastUpdate = null;
 let queueHeld = false;
+window.__globalAdapter = 'tmux';
 
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', () => {
@@ -39,9 +40,10 @@ document.addEventListener('visibilitychange', () => {
 // Fetch all dashboard data
 async function fetchAllData() {
     try {
-        await Promise.all([
-            fetchMeta(),
+        const [, slots] = await Promise.all([
+            fetchAdapter(),
             fetchSlots(),
+            fetchMeta(),
             fetchReadyQueue(),
             fetchNeedsConfirmation(),
             fetchUnansweredQuestions(),
@@ -50,6 +52,7 @@ async function fetchAllData() {
             fetchT3codeLink(),
             fetchRecentlyCompleted()
         ]);
+        renderSlots(slots);
         updateTimestamp();
         setConnectionStatus(true);
     } catch (error) {
@@ -70,17 +73,30 @@ async function fetchMeta() {
     }
 }
 
+// Fetch global adapter setting
+async function fetchAdapter() {
+    try {
+        const response = await fetch(CONFIG.dataPath + 'adapter.json');
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.adapter === 'tmux' || data.adapter === 't3code') {
+            window.__globalAdapter = data.adapter;
+        }
+    } catch (e) {
+        console.error('Failed to fetch adapter:', e);
+    }
+}
+
 // Fetch slot data
 async function fetchSlots() {
     try {
         const response = await fetch(CONFIG.dataPath + 'slots.json');
         if (!response.ok) throw new Error('Failed to fetch slots');
-        const slots = await response.json();
-        renderSlots(slots);
+        return await response.json();
     } catch (error) {
         // Use placeholder data if fetch fails
         console.warn('Using placeholder slot data');
-        renderSlots(getPlaceholderSlots());
+        return getPlaceholderSlots();
     }
 }
 
@@ -152,7 +168,7 @@ function renderSlots(slots) {
             if (slot.mode) {
                 // Always allow toggling to manual — it signals "stop automating".
                 // From manual, allow toggling back to the default automated adapter.
-                const otherMode = slot.mode === 'manual' ? 'tmux' : 'manual';
+                const otherMode = slot.mode === 'manual' ? (window.__globalAdapter || 'tmux') : 'manual';
                 meta.push(`<button class="mode-toggle-btn mode-${escapeHtml(slot.mode)}" onclick="toggleSlotMode(${i}, '${otherMode}')" title="Mode: ${escapeHtml(slot.mode)} — click to switch to ${otherMode}">${escapeHtml(slot.mode)}</button>`);
             }
             if (slot.started) meta.push(formatTime(slot.started));
@@ -665,7 +681,7 @@ async function resumeSlot(slotNum) {
     }
 }
 
-// Toggle slot mode between manual and t3code
+// Toggle slot mode between manual and automated adapter (tmux/t3code)
 async function toggleSlotMode(slotNum, mode) {
     const btn = event.target;
     btn.disabled = true;
