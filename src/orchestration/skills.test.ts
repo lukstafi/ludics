@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { readFileSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { composeSkillMessage, resolveTemplatePath, substituteTemplate } from "./skills.ts";
@@ -331,6 +331,34 @@ describe("skills", () => {
       const ctx = buildSkillContext(state, state.agents[0]!);
       expect(ctx["TASK_SPEC"]).toContain("Big inline proposal here.");
       expect(ctx["TASK_SPEC"]).not.toContain("Read the full proposal");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("taskSpecText: bad proposal path falls through to legacy content", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-skills-badpath-test-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-bad.md"), [
+        "---", "id: task-bad", "proposal: /etc/passwd", "---",
+        "", "## Acceptance Criteria", "", "- [ ] Legacy content here",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const spy = spyOn(console, "error");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-bad", projectDir: j(tmpDir, "project"), round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["TASK_SPEC"]).toContain("Legacy content here");
+      expect(ctx["TASK_SPEC"]).not.toContain("Read the full proposal");
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("ignoring bad proposal path"));
+      spy.mockRestore();
     } finally {
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
