@@ -1240,6 +1240,12 @@ export async function runOrchestration(
     const participating = state.agents.filter(a => agentParticipatesInPhase(state, a));
     autoCommitAllAgents(state, participating, /* push */ false);
 
+    // Capture tmux pane output for retrospective (only runs when backend === "tmux")
+    if (state.backend === "tmux") {
+      const { captureTmuxAgentOutputs } = await import("./tmux-capture.ts");
+      captureTmuxAgentOutputs(state);
+    }
+
     // --- Verification gates: confirm actual outcome before allowing transition ---
     const prCreateDecision = verifyPrCreateOutcome(state);
     const finalMergeDecision = verifyFinalMergeOutcome(state);
