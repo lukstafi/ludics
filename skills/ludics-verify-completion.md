@@ -44,11 +44,16 @@ Worker: `/ludics-verify-completion-worker <task_id> <project_path> <context_brie
 Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
 Parse the JSON for `status`, `verdict`, `followups`, `questions`, `slot`, `title`, and `evidence`.
 
-If no JSON block is found, fall back to line-based parsing: look for `STATUS: <value>`,
-`VERDICT: <value>`, `FOLLOWUPS: <value>`, `QUESTIONS: <value>`, `SLOT: <value>`, `TITLE: <value>`,
-and `EVIDENCE: <value>` lines. On the legacy path: treat `QUESTIONS:` content as a
-pre-formatted string (send as-is in the uncertain branch); treat each numbered item in
-`FOLLOWUPS:` as `{"title": "<item text>", "priority": "B"}`.
+### Expected Worker Fields
+
+1. `status` — error check. Absent: error (malformed response).
+2. `verdict` — primary routing. Absent: error (malformed response).
+3. `followups` — follow-up task creation. Absent: treat as `"none"`, skip.
+4. `questions` — uncertain notification. Absent: send generic uncertainty message.
+5. `slot` — slot clearing. Absent: error if verdict requires clearing.
+6. `title` — notification text. Absent: fall back to task_id.
+7. `evidence` — result context. Absent: use empty string.
+8. `task_id` — not consumed by orchestrator.
 
 **Check `status` first:**
 - **status: error** — write result JSON with `"status": "error"`, stop
@@ -83,9 +88,8 @@ Then act on `verdict`:
 
 ### VERDICT: uncertain
 - Do NOT clear the slot
-- Send notification with questions. Format depends on the source:
-  - JSON array: format each element as a numbered list before sending
-  - Legacy pre-formatted string (fallback path): send as-is
+- Send notification with questions:
+  - Format each element as a numbered list before sending
   ```bash
   ludics notify outgoing "<formatted questions or generic uncertainty message>" 3 "Completion check — <task_id>"
   ```

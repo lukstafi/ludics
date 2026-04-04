@@ -67,11 +67,16 @@ Extract the JSON block from the worker's response (the last fenced ` ```json ` b
 Parse the JSON for `status`, `proposal_path`, `ambiguities`, `start_confidence`,
 `start_rationale`, `title`, and `summary`.
 
-If no JSON block is found, fall back to line-based parsing: look for `STATUS: <value>`,
-`PROPOSAL_PATH: <value>`, `AMBIGUITIES: <value>`, `START_CONFIDENCE: <value>`,
-`START_RATIONALE: <value>`, `TITLE: <value>`, and `SUMMARY: <value>` lines. On the
-legacy path, treat `AMBIGUITIES:` content as a pre-formatted string and send as-is
-in the questions notification step.
+### Expected Worker Fields
+
+1. `status` — primary routing. Absent: error (malformed response).
+2. `proposal_path` — notification, result JSON. Expected absent for stale/split-needed/error.
+3. `ambiguities` — questions notification. Absent: treat as `"none"`, skip.
+4. `start_confidence` — auto-start evaluation. Absent: default to `"low"` (defer to user).
+5. `start_rationale` — auto-start evaluation. Absent: default to empty string.
+6. `title` — notification title. Absent: fall back to task_id.
+7. `summary` — notification body, result JSON. Absent: use empty string.
+8. `task_id` — not consumed by orchestrator.
 
 - **status: completed** — proceed to auto-start evaluation (next section)
 - **status: stale** — write result JSON with `"status": "stale"`, stop
@@ -139,8 +144,7 @@ ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<propos
 ## Skill-Specific: Questions Notification
 
 If `ambiguities` is not `"none"` and is non-empty, send as notification text:
-- JSON array path: format each element as a numbered list
-- Legacy pre-formatted string (fallback path): send as-is
+- Format each element as a numbered list
 
 ```bash
 ludics notify outgoing "<formatted ambiguities>"

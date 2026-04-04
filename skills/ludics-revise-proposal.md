@@ -55,9 +55,15 @@ Extract the JSON block from the worker's response (the last fenced ` ```json ` b
 Parse the JSON for `status`, `proposal_path`, `proposal_mode`, `changes_summary`,
 `title`, and `summary`.
 
-If no JSON block is found, fall back to line-based parsing: look for `STATUS: <value>`,
-`PROPOSAL_PATH: <value>`, `PROPOSAL_MODE: <value>`, `CHANGES_SUMMARY: <value>`,
-`TITLE: <value>`, and `SUMMARY: <value>` lines.
+### Expected Worker Fields
+
+1. `status` — primary routing. Absent: error (malformed response).
+2. `proposal_path` — re-notification, result JSON. Expected absent when `proposal_mode = "inline"`.
+3. `proposal_mode` — mode branching. Absent when `status = "revised"`: error (malformed response). Do NOT default to `"file"`.
+4. `changes_summary` — result JSON. Absent: use empty string.
+5. `title` — notification title. Absent: fall back to task_id.
+6. `summary` — notification body. Absent: use empty string.
+7. `task_id` — not consumed by orchestrator.
 
 - **status: revised** — proceed to re-notification
 - **status: no-changes** — write result JSON with `"status": "no-changes"`, stop

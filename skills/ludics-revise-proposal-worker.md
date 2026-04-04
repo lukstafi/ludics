@@ -56,7 +56,7 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
         "import os; r=os.path.relpath('$proposal_abs','<project_path>'); print(r)")
       ```
       If `$proposal_rel` starts with `..` or equals `..`, the proposal lives outside the
-      project repo and cannot be committed. Report `STATUS: error` with this message and stop:
+      project repo and cannot be committed. Report `status: "error"` with this message and stop:
       ```
       Proposal file is outside the project tree (<proposal_abs>). Cannot revise and commit
       safely. Move the proposal to <project_path>/<proposals_path>/<feature>.md and update
@@ -149,13 +149,23 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
 7. **Assess changes**:
    If after re-examination the proposal is already solid and no meaningful
-   changes were needed, report `STATUS: no-changes` instead of making
+   changes were needed, report `status: "no-changes"` instead of making
    trivial edits.
 
 ## Final Response
 
 Use the structured response format from worker-conventions.md. Emit a fenced JSON block
 as the last code block in your response:
+
+### Response Contract
+
+1. `status` — string, required. Values: `"revised"`, `"no-changes"`, `"error"`.
+2. `task_id` — string, required.
+3. `proposal_path` — string, conditional. Present only when `proposal_mode = "file"`. Omitted for inline.
+4. `proposal_mode` — string, conditional. Required when `status = "revised"` (`"file"` or `"inline"`). Omitted for `"no-changes"`.
+5. `changes_summary` — string, required. What changed, or why nothing changed.
+6. `title` — string, required.
+7. `summary` — string, required.
 
 ```json
 {
@@ -169,15 +179,10 @@ as the last code block in your response:
 }
 ```
 
-For **inline mode**: omit `proposal_path` entirely and set `"proposal_mode": "inline"`.
-For **file-based mode**: include `proposal_path` as the project-relative path and set
-`"proposal_mode": "file"`.
-`proposal_mode` is required when `status` is `"revised"`.
-
 ## Error Handling
 
-- Task not found: Report `STATUS: error` with explanation
-- Proposal file not found: Report `STATUS: error` — orchestrator should not
+- Task not found: Report `status: "error"` with explanation
+- Proposal file not found: Report `status: "error"` — orchestrator should not
   have invoked revision without a proposal
-- Project path not found: Report `STATUS: error`
+- Project path not found: Report `status: "error"`
 - Git push fails: Log warning, continue — edits are still written locally

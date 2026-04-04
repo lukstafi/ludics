@@ -39,13 +39,13 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
 3. **Check preconditions**:
    - Verify `has_questions` is NOT set in frontmatter. If it is, the task
-     has unanswered questions — report `STATUS: error` with message
+     has unanswered questions — report `status: "error"` with message
      "task has unanswered questions" and stop.
    - If the task is clearly stale (work already done or goal no longer applies),
-     report `STATUS: stale` in your final response and stop.
+     report `status: "stale"` in your final response and stop.
    - If the task covers multiple independent concerns (different modules,
      separable features, could be merged to main independently), report
-     `STATUS: split-needed` and stop.
+     `status: "split-needed"` and stop.
 
 4. **Explore project codebase**:
    - Read relevant source files mentioned in the task elaboration
@@ -110,6 +110,17 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 Use the structured response format from worker-conventions.md. Emit a fenced JSON block
 as the last code block in your response:
 
+### Response Contract
+
+1. `status` — string, required. Values: `"completed"`, `"stale"`, `"split-needed"`, `"already-exists"`, `"error"`.
+2. `task_id` — string, required.
+3. `proposal_path` — string, conditional. Present only when `status = "completed"` or `"already-exists"`.
+4. `ambiguities` — string[], required. `"none"` when empty.
+5. `start_confidence` — string, conditional. Present only when `status = "completed"`. Values: `"high"`, `"low"`.
+6. `start_rationale` — string, conditional. Present only when `status = "completed"`.
+7. `title` — string, required.
+8. `summary` — string, required.
+
 ```json
 {
   "status": "completed | stale | split-needed | already-exists | error",
@@ -122,9 +133,6 @@ as the last code block in your response:
   "summary": "<one-line summary of what was proposed>"
 }
 ```
-
-Omit `proposal_path` if status is `"stale"`, `"split-needed"`, or `"error"`. Use
-`"none"` for `ambiguities` when there are none.
 
 **START_CONFIDENCE guidance:**
 - `high`: task is a clear, bounded improvement with specific scope — derived from
@@ -139,7 +147,7 @@ Omit `proposal_path` if status is `"stale"`, `"split-needed"`, or `"error"`. Use
 
 ## Error Handling
 
-- Task not found: Report `STATUS: error` with explanation
-- Project path not found: Report `STATUS: error`
-- Already has proposal: Report `STATUS: already-exists` with the existing path
+- Task not found: Report `status: "error"` with explanation
+- Project path not found: Report `status: "error"`
+- Already has proposal: Report `status: "already-exists"` with the existing path
 - Git push fails: Log warning, continue — the proposal is still written locally

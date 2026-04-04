@@ -49,6 +49,21 @@ Rules:
 - Keep the response concise — the orchestrator handles notifications,
   result JSON, and downstream actions
 
+## Field Annotations
+
+Each worker documents response fields in a "Response Contract" with these
+annotations:
+
+- **required**: Always present in non-error responses. List-like required fields
+  use `"none"` when empty.
+- **conditional**: Present only when a specific condition holds. Omitted entirely
+  otherwise — never `null`.
+
+The `status` field is always required. When `status` is `"error"`, only `status`
+plus a narrative field are guaranteed — other fields may be absent.
+
+Orchestrators MUST handle the absence of conditional fields gracefully.
+
 ## Error Handling
 
 Follow these conventions for all error conditions:

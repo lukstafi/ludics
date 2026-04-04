@@ -46,8 +46,9 @@ revise-proposal includes user feedback verbatim) are noted in each skill.
 - Worker runs in forked context (`context: fork`) — its file reads, git
   operations, and tool outputs do not enter Mag's conversation history
 - Only the worker's structured response returns to the orchestrator
-- Each orchestrator parses its own required response fields (STATUS plus
-  skill-specific keys); do not assume a shared field set across workers
+- Each orchestrator parses the worker's JSON response for `status` plus
+  skill-specific fields; the exact field set is documented per-skill in an
+  "Expected Worker Fields" section
 
 ## Section E — Result JSON
 
@@ -72,7 +73,9 @@ Read the request ID and write the result file:
 ## Section F — Error Handling
 
 - Task not found: result with `"status": "error"`, descriptive output
-- Worker returns `STATUS: error`: propagate to result JSON
+- Worker returns `"status": "error"` in its JSON response: propagate to result JSON
+- Each orchestrator documents per-field fallback behavior in its "Expected
+  Worker Fields" section
 - **State-mutation failure** (slot clear/start, task creation): report the
   failure in result JSON — do NOT continue as if successful. State mutations
   that fail can desync Mag from actual repo/slot state.

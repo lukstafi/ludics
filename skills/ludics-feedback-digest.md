@@ -43,9 +43,14 @@ Extract the JSON block from the worker's response (the last fenced ` ```json ` b
 Parse the JSON for `status`, `issues_created`, `issues_updated`, `issues_skipped`,
 `files_processed`, and `summary`.
 
-If no JSON block is found, fall back to line-based parsing: look for `STATUS: <value>`,
-`ISSUES_CREATED: <value>`, `ISSUES_UPDATED: <value>`, `ISSUES_SKIPPED: <value>`,
-`FILES_PROCESSED: <value>`, and `SUMMARY: <value>` lines.
+### Expected Worker Fields
+
+1. `status` — primary routing. Absent: error (malformed response).
+2. `issues_created` — result JSON. Absent: default to 0.
+3. `issues_updated` — result JSON. Absent: default to 0.
+4. `issues_skipped` — result JSON. Absent: default to 0.
+5. `files_processed` — result JSON. Absent: default to 0.
+6. `summary` — result output. Absent: use empty string.
 
 - **status: completed** — write result JSON
 - **status: empty** — write result JSON indicating nothing to process
