@@ -804,22 +804,28 @@ function generateAdapter(): Record<string, unknown> {
 // --- Generate terminals.json ---
 
 function generateTerminals(): Record<string, unknown> {
-  const host = networkHostname();
   const slotsFile = slotsFilePath();
   const activeSlots: number[] = [];
+  const slotMachines: Map<number, string> = new Map();
 
   if (existsSync(slotsFile)) {
     const blocks = parseSlotBlocks(readFileSync(slotsFile, "utf-8"));
     for (const [num, block] of blocks) {
       const mode = getMode(block).trim();
       const sessionStarted = getSessionStarted(block).trim();
-      if (mode === "tmux" && sessionStarted && sessionStarted !== "null") activeSlots.push(num);
+      if (mode === "tmux" && sessionStarted && sessionStarted !== "null") {
+        activeSlots.push(num);
+        const machine = getMachine(block).trim();
+        if (machine) slotMachines.set(num, machine);
+      }
     }
   }
 
   const terminals: { slot: number; role: string; port: number; host: string; active: boolean }[] = [];
   for (let slot = 1; slot <= 6; slot++) {
     const slotActive = activeSlots.includes(slot);
+    const host = slotMachines.get(slot);
+    if (!host) continue;
     for (const role of ["coder", "reviewer"]) {
       const roleIndex = role === "reviewer" ? 1 : 0;
       const port = 7681 + (slot - 1) * 2 + roleIndex;
