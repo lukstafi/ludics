@@ -98,8 +98,9 @@ function installPlist(label: string, content: string): void {
   writeFileSync(plist, content);
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   Bun.spawnSync(["launchctl", "enable", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
-  Bun.spawnSync(["launchctl", "unload", plist], { stdout: "pipe", stderr: "pipe" });
-  Bun.spawnSync(["launchctl", "load", plist], { stdout: "pipe", stderr: "pipe" });
+  // Use bootout/bootstrap (modern API) instead of deprecated load/unload
+  Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
+  Bun.spawnSync(["launchctl", "bootstrap", `gui/${uid}`, plist], { stdout: "pipe", stderr: "pipe" });
 }
 
 // --- macOS launchd ---
@@ -468,7 +469,7 @@ function triggersPauseMacos(): void {
     if (!existsSync(plist)) continue;
     foundAny = true;
     Bun.spawnSync(["launchctl", "disable", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
-    Bun.spawnSync(["launchctl", "unload", plist], { stdout: "pipe", stderr: "pipe" });
+    Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
     console.log(`Paused launchd trigger: ${name}`);
   }
 
@@ -480,7 +481,7 @@ function triggersPauseMacos(): void {
       const name = label.replace("com.ludics.", "");
       const plist = join(agentsDir, f);
       Bun.spawnSync(["launchctl", "disable", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
-      Bun.spawnSync(["launchctl", "unload", plist], { stdout: "pipe", stderr: "pipe" });
+      Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
       console.log(`Paused launchd trigger: ${name}`);
     }
   }
@@ -548,12 +549,13 @@ function triggersPauseLinux(): void {
 
 function triggersUninstallMacos(): void {
   const agentsDir = join(process.env.HOME!, "Library/LaunchAgents");
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const labels = KNOWN_LUDICS_TRIGGER_NAMES.map((name) => `com.ludics.${name}`);
 
   for (const label of labels) {
     const plist = join(agentsDir, `${label}.plist`);
     if (existsSync(plist)) {
-      Bun.spawnSync(["launchctl", "unload", plist], { stdout: "pipe", stderr: "pipe" });
+      Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
       unlinkSync(plist);
       console.log(`Uninstalled launchd trigger: ${label.replace("com.ludics.", "")}`);
     }
@@ -563,8 +565,9 @@ function triggersUninstallMacos(): void {
   if (existsSync(agentsDir)) {
     for (const f of readdirSync(agentsDir)) {
       if (f.startsWith("com.ludics.watch-") && f.endsWith(".plist")) {
+        const label = f.replace(".plist", "");
         const plist = join(agentsDir, f);
-        Bun.spawnSync(["launchctl", "unload", plist], { stdout: "pipe", stderr: "pipe" });
+        Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
         unlinkSync(plist);
         console.log(`Uninstalled launchd trigger: ${f.replace("com.ludics.", "").replace(".plist", "")}`);
       }
@@ -580,7 +583,7 @@ function triggersUninstallMacos(): void {
   for (const label of legacyLabels) {
     const plist = join(agentsDir, `${label}.plist`);
     if (existsSync(plist)) {
-      Bun.spawnSync(["launchctl", "unload", plist], { stdout: "pipe", stderr: "pipe" });
+      Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
       unlinkSync(plist);
       console.log(`Uninstalled legacy launchd trigger: ${label}`);
     }
@@ -588,8 +591,9 @@ function triggersUninstallMacos(): void {
   if (existsSync(agentsDir)) {
     for (const f of readdirSync(agentsDir)) {
       if (f.startsWith("com.pai-lite.watch-") && f.endsWith(".plist")) {
+        const label = f.replace(".plist", "");
         const plist = join(agentsDir, f);
-        Bun.spawnSync(["launchctl", "unload", plist], { stdout: "pipe", stderr: "pipe" });
+        Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
         unlinkSync(plist);
         console.log(`Uninstalled legacy launchd trigger: ${f.replace(".plist", "")}`);
       }

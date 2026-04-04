@@ -2561,6 +2561,10 @@ export async function magStart(args: string[]): Promise<void> {
 
   // Check federation — on worker nodes, run machine-local automations only
   if (!skipFederation && !federationShouldRunMag()) {
+    if (magIsRunning()) {
+      console.error("ludics: mag session exists but this node is no longer controller — stopping mag");
+      tmuxKillSession(MAG_SESSION_NAME);
+    }
     await workerKeepalive();
     return;
   }
@@ -2569,6 +2573,8 @@ export async function magStart(args: string[]): Promise<void> {
   if (magIsRunning()) {
     // Re-check federation on keepalive — controller may have changed since session started
     if (!skipFederation && !federationShouldRunMag()) {
+      console.error("ludics: mag session exists but this node is no longer controller — stopping mag");
+      tmuxKillSession(MAG_SESSION_NAME);
       await workerKeepalive();
       return;
     }
