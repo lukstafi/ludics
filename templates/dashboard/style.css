@@ -804,6 +804,65 @@ main {
     text-decoration: underline;
 }
 
+/* Deferred Launch */
+.deferred-launch-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    padding: 0.3em 0.5em;
+    cursor: default;
+}
+
+.deferred-task-id {
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text-secondary, #999);
+    white-space: nowrap;
+}
+
+.deferred-task-title {
+    color: #e0e0e0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.deferred-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 0.25em;
+    flex-shrink: 0;
+}
+
+.view-btn, .approve-btn, .abandon-btn {
+    border: 1px solid;
+    border-radius: 4px;
+    padding: 0.15em 0.4em;
+    cursor: pointer;
+    font-size: 0.85em;
+    background: transparent;
+    text-decoration: none;
+}
+
+.view-btn {
+    border-color: #7af;
+    color: #7af;
+}
+.view-btn:hover { background: #7af; color: #fff; }
+
+.approve-btn {
+    border-color: #4a9;
+    color: #4a9;
+}
+.approve-btn:hover { background: #4a9; color: #fff; }
+
+.abandon-btn {
+    border-color: #c55;
+    color: #c55;
+}
+.abandon-btn:hover { background: #c55; color: #fff; }
+
 .confirm-btn {
     border-color: #4a9;
     color: #4a9;

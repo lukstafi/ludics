@@ -47,6 +47,7 @@ async function fetchAllData() {
             fetchReadyQueue(),
             fetchNeedsConfirmation(),
             fetchUnansweredQuestions(),
+            fetchDeferredLaunch(),
             fetchNotifications(),
             fetchMagStatus(),
             fetchT3codeLink(),
@@ -597,6 +598,68 @@ function fetchUnansweredQuestions() {
             </li>`;
         },
     });
+}
+
+function fetchDeferredLaunch() {
+    return fetchAndRenderTaskList({
+        jsonFile: 'deferred-launch.json',
+        listId: 'deferred-launch-list',
+        emptyText: 'No tasks awaiting launch',
+        renderItem(task) {
+            const priority = task.priority || '-';
+            const priorityClass = `priority-${priority}`;
+            const viewLink = task.hasProposal
+                ? `proposal.html?task=${encodeURIComponent(task.id)}`
+                : `task-files/${encodeURIComponent(task.id)}.md`;
+            return `
+            <li class="deferred-launch-item">
+                <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>
+                <span class="deferred-task-id">${escapeHtml(task.id)}</span>
+                <span class="deferred-task-title">${escapeHtml(task.title || '')}</span>
+                <span class="deferred-actions">
+                    <a class="view-btn" href="${viewLink}" target="_blank" title="View proposal">View</a>
+                    <button class="approve-btn" onclick="approveDeferred('${escapeHtml(task.id)}')" title="Approve: enable auto-start">Approve</button>
+                    <button class="abandon-btn" onclick="abandonDeferred('${escapeHtml(task.id)}')" title="Abandon task">Abandon</button>
+                </span>
+            </li>`;
+        },
+    });
+}
+
+async function approveDeferred(taskId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '\u2026';
+    try {
+        const response = await fetch(`/api/deferred-approve?task=${encodeURIComponent(taskId)}`);
+        if (response.ok) {
+            fetchAllData();
+        } else {
+            btn.textContent = 'Approve';
+            setTimeout(() => { btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = 'Approve';
+        setTimeout(() => { btn.disabled = false; }, 2000);
+    }
+}
+
+async function abandonDeferred(taskId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '\u2026';
+    try {
+        const response = await fetch(`/api/deferred-abandon?task=${encodeURIComponent(taskId)}`);
+        if (response.ok) {
+            fetchAllData();
+        } else {
+            btn.textContent = 'Abandon';
+            setTimeout(() => { btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = 'Abandon';
+        setTimeout(() => { btn.disabled = false; }, 2000);
+    }
 }
 
 // Confirm a needs-confirmation task (move to ready)
