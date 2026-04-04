@@ -6,6 +6,7 @@ import { slotAssign, slotResume, slotStart, slotSetMode, slotStop, runSlot, mark
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
+import { readSlotIntent, clearSlotIntent } from "../slot-intents.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -672,5 +673,102 @@ describe("slotStop — preserve-state flag", () => {
 
     // Orchestration state should still exist
     expect(readOrchestrationState(1, harness)).not.toBeNull();
+  });
+});
+
+describe("remote slot dispatch via intent files", () => {
+  // In test env without federation config, isRemoteMachine("worker-a") returns true
+  // because federationCurrentMachineName() returns null (fail-closed).
+
+  test("remote slotStart writes a start intent and does not stamp Session Started", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-remote-1", "Remote start test");
+
+    slotAssign(1, "task-remote-1", "tmux", "", "", "", "worker-a");
+
+    await slotStart(1);
+
+    // Intent file should exist
+    const intent = readSlotIntent(1);
+    expect(intent).not.toBeNull();
+    expect(intent!.action).toBe("start");
+    expect(intent!.machine).toBe("worker-a");
+
+    // Session Started should NOT be stamped on controller side
+    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
+    expect(slots).toContain("**Session Started:** null");
+
+    clearSlotIntent(1);
+  });
+
+  test("remote slotStop (non-force) writes a stop intent and returns early", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-remote-2", "Remote stop test");
+
+    slotAssign(1, "task-remote-2", "tmux", "", "", "", "worker-a");
+
+    // Stamp Session Started to simulate an active session
+    const slotsFile = join(harness, "slots.md");
+    const content = readFileSync(slotsFile, "utf-8");
+    writeFileSync(slotsFile, content.replace(
+      /\*\*Session Started:\*\* null/,
+      "**Session Started:** 2026-04-04T20:00Z",
+    ));
+
+    await slotStop(1, false, false);
+
+    // Intent file should exist
+    const intent = readSlotIntent(1);
+    expect(intent).not.toBeNull();
+    expect(intent!.action).toBe("stop");
+    expect(intent!.machine).toBe("worker-a");
+
+    // Session Started should NOT be cleared (early return before cleanup)
+    const slots = readFileSync(slotsFile, "utf-8");
+    expect(slots).toContain("**Session Started:** 2026-04-04T20:00Z");
+
+    clearSlotIntent(1);
+  });
+
+  test("remote slotStop with --force does not write intent, clears state", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-remote-3", "Remote force stop test");
+
+    slotAssign(1, "task-remote-3", "tmux", "", "", "", "worker-a");
+
+    await slotStop(1, true, false);
+
+    // No intent file — force stop skips remote dispatch
+    const intent = readSlotIntent(1);
+    expect(intent).toBeNull();
+
+    // Session Started should be cleared (force path runs cleanup)
+    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
+    expect(slots).toContain("**Session Started:** null");
+  });
+
+  test("remote slotResume writes a resume intent", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-remote-4", "Remote resume test");
+
+    slotAssign(1, "task-remote-4", "tmux", "", "", "", "worker-a");
+
+    await slotResume(1);
+
+    // Intent file should exist
+    const intent = readSlotIntent(1);
+    expect(intent).not.toBeNull();
+    expect(intent!.action).toBe("resume");
+    expect(intent!.machine).toBe("worker-a");
+
+    clearSlotIntent(1);
   });
 });

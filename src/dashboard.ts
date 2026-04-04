@@ -15,6 +15,14 @@ import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
 import { federationIsController, heartbeatIsFresh, federationCurrentMachineName } from "./federation.ts";
+import { readSlotIntent, intentIsFresh } from "./slot-intents.ts";
+import type { SlotIntent } from "./slot-intents.ts";
+
+function readSlotIntentForDashboard(slotNum: number): SlotIntent | null {
+  const intent = readSlotIntent(slotNum);
+  if (intent && intentIsFresh(intent)) return intent;
+  return null;
+}
 
 function dashboardDataDir(): string {
   return join(harnessDir(), "dashboard", "data");
@@ -45,6 +53,8 @@ interface SlotJson {
   effort: string | null;
   liveness: "alive" | "interrupted" | null;
   machine: string | null;
+  /** Pending controller action for remote slots, derived from intent files. */
+  pendingAction: "starting" | "stopping" | "resuming" | null;
 }
 
 export interface SlotLivenessContext {
@@ -293,6 +303,16 @@ function generateSlots(): SlotJson[] {
 
     const machine = (machineName && machineName !== "null") ? machineName : null;
 
+    // Pending controller action derived from intent files
+    let pendingAction: "starting" | "stopping" | "resuming" | null = null;
+    if (!empty && machine) {
+      const intent = readSlotIntentForDashboard(num);
+      if (intent) {
+        const actionMap = { start: "starting", stop: "stopping", resume: "resuming" } as const;
+        pendingAction = actionMap[intent.action] ?? null;
+      }
+    }
+
     result.push({
       number: num,
       empty,
@@ -315,6 +335,7 @@ function generateSlots(): SlotJson[] {
       effort: taskEffort,
       liveness,
       machine,
+      pendingAction,
     });
   }
 

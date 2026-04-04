@@ -18,7 +18,8 @@ import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState } from "../t3code/server.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
-import { remoteExec, remoteExecAsync, isRemoteMachine } from "../remote.ts";
+import { isRemoteMachine } from "../remote.ts";
+import { writeSlotIntent } from "../slot-intents.ts";
 
 function ensureSlotsFile(): string {
   const file = slotsFilePath();
@@ -645,26 +646,18 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
-  // Remote dispatch: if slot is owned by another machine, delegate via SSH
+  // Remote dispatch: if slot is owned by another machine, write intent file
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
-    console.error(`ludics: slot ${slotNum}: dispatching start to remote machine ${ctx.machine}`);
+    console.error(`ludics: slot ${slotNum}: queuing start intent for remote machine ${ctx.machine}`);
 
-    // Stamp Session Started on the controller side BEFORE dispatching, so
-    // maybeAutoStartSlots() won't re-fire on every keepalive.
-    const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
-    const updated = setField(block, "Session Started", sessionStartedAt);
-    if (updated !== block) {
-      blocks.set(slotNum, updated);
-      writeSlotFile(file, blocks, count);
-    }
+    writeSlotIntent(slotNum, { action: "start", epoch: Math.floor(Date.now() / 1000), machine: ctx.machine });
 
-    // Checkpoint and push state so the worker sees fresh slot/task metadata
+    // Checkpoint and push state so the worker sees fresh slot/task metadata + intent
     const { stateCheckpoint } = await import("../state.ts");
-    try { stateCheckpoint(`remote start slot ${slotNum}`, { push: true }); } catch { /* ignore */ }
+    try { stateCheckpoint(`remote start intent slot ${slotNum}`, { push: true }); } catch { /* ignore */ }
 
-    remoteExecAsync(ctx.machine, ["slot", String(slotNum), "start"]);
-    journalAppend("slot", `Slot ${slotNum} remote start dispatched to ${ctx.machine}`);
-    emitEvent({ event_type: "slot_start", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `remote dispatch to ${ctx.machine}` });
+    journalAppend("slot", `Slot ${slotNum} start queued for ${ctx.machine}`);
+    emitEvent({ event_type: "slot_start_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `start queued for ${ctx.machine}` });
     return;
   }
 
@@ -721,16 +714,15 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
       // --force: clear controller-side state without contacting the remote machine
       console.error(`ludics: slot ${slotNum}: force-clearing local state (skipping remote stop on ${ctx.machine})`);
     } else {
-      console.error(`ludics: slot ${slotNum}: dispatching stop to remote machine ${ctx.machine}`);
-      const remoteArgs = ["slot", String(slotNum), "stop"];
-      if (preserveState) remoteArgs.push("--preserve-state");
-      const result = remoteExec(ctx.machine, remoteArgs);
-      if (!result.success) {
-        throw new Error(
-          `slot ${slotNum}: remote stop failed on ${ctx.machine}: ${result.stderr}\n` +
-          `  use 'ludics slot ${slotNum} stop --force' to clear local state without remote exec`,
-        );
-      }
+      // Async stop: write intent, return early. Worker processes on next keepalive.
+      // Do NOT clear Session Started or duo peer link — worker hasn't stopped yet.
+      console.error(`ludics: slot ${slotNum}: queuing stop intent for remote machine ${ctx.machine}`);
+      writeSlotIntent(slotNum, { action: "stop", epoch: Math.floor(Date.now() / 1000), machine: ctx.machine, preserveState });
+      const { stateCheckpoint } = await import("../state.ts");
+      try { stateCheckpoint(`remote stop intent slot ${slotNum}`, { push: true }); } catch { /* ignore */ }
+      journalAppend("slot", `Slot ${slotNum} stop queued for ${ctx.machine}`);
+      emitEvent({ event_type: "slot_stop_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `stop queued for ${ctx.machine}` });
+      return;
     }
   } else {
     await runAdapterAction("stop", ctx, { preserveState });
@@ -766,12 +758,14 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode — nothing to resume`);
 
-  // Remote dispatch: if slot is owned by another machine, delegate via SSH
+  // Remote dispatch: if slot is owned by another machine, write intent file
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
-    console.error(`ludics: slot ${slotNum}: dispatching resume to remote machine ${ctx.machine}`);
-    remoteExecAsync(ctx.machine, ["slot", String(slotNum), "resume"]);
-    journalAppend("slot", `Slot ${slotNum} remote resume dispatched to ${ctx.machine}`);
-    emitEvent({ event_type: "slot_resume", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine });
+    console.error(`ludics: slot ${slotNum}: queuing resume intent for remote machine ${ctx.machine}`);
+    writeSlotIntent(slotNum, { action: "resume", epoch: Math.floor(Date.now() / 1000), machine: ctx.machine });
+    const { stateCheckpoint } = await import("../state.ts");
+    try { stateCheckpoint(`remote resume intent slot ${slotNum}`, { push: true }); } catch { /* ignore */ }
+    journalAppend("slot", `Slot ${slotNum} resume queued for ${ctx.machine}`);
+    emitEvent({ event_type: "slot_resume_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `resume queued for ${ctx.machine}` });
     return;
   }
 
