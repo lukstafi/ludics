@@ -877,8 +877,8 @@ export async function slotResume(slotNum: number): Promise<void> {
 
   // --- tmux-specific: verify/recreate tmux session, windows, ttyd, agent CLIs ---
   if (ctx.mode === "tmux") {
-    const { tmuxHasSession, tmuxNewSession, tmuxSendCommand } = await import("../adapters/tmux.ts");
-    const { readTmuxSlotState, writeTmuxSlotState, tmuxSessionName, ttydPort, agentCliCommand } = await import("../adapters/tmux-adapter.ts");
+    const { tmuxHasSession, tmuxNewSession, tmuxSendCommand, tmuxSendKeys } = await import("../adapters/tmux.ts");
+    const { readTmuxSlotState, writeTmuxSlotState, tmuxSessionName, ttydPort, agentCliCommand, isAgentAlive } = await import("../adapters/tmux-adapter.ts");
     const tmuxState = readTmuxSlotState(slotNum, ctx.harnessDir);
 
     // Kill stale orchestration runner from tmux state first
@@ -897,6 +897,18 @@ export async function slotResume(slotNum: number): Promise<void> {
     // Recreate missing tmux sessions, ttyd, and agent CLIs for each agent
     const newTtydPids: Record<string, number> = { ...(tmuxState?.ttydPids ?? {}) };
     const taskId = orchState.taskId;
+
+    // Local helper: export env vars and launch agent CLI in an existing tmux session
+    const bootCliInSession = (session: string, agent: { name: string; provider: string }) => {
+      const envCmd = [
+        `export LUDICS_SLOT=${slotNum}`,
+        `LUDICS_AGENT=${agent.name}`,
+        `LUDICS_PEER_SYNC_DIR="${orchState.peerSyncDir}"`,
+      ].join(" ");
+      tmuxSendCommand(session, envCmd);
+      tmuxSendCommand(session, agentCliCommand(agent.provider));
+    };
+
     for (let i = 0; i < orchState.agents.length; i++) {
       const agent = orchState.agents[i];
       const sessionName = tmuxSessionName(slotNum, agent.name, taskId);
@@ -918,15 +930,22 @@ export async function slotResume(slotNum: number): Promise<void> {
         });
         console.error(`ludics: re-created tmux session '${sessionName}'`);
 
-        // Boot persistent agent CLI in the recreated pane
-        const envCmd = [
-          `export LUDICS_SLOT=${slotNum}`,
-          `LUDICS_AGENT=${agent.name}`,
-          `LUDICS_PEER_SYNC_DIR="${orchState.peerSyncDir}"`,
-        ].join(" ");
-        tmuxSendCommand(sessionName, envCmd);
-        tmuxSendCommand(sessionName, agentCliCommand(agent.provider));
+        bootCliInSession(sessionName, agent);
         console.error(`ludics: booted ${agent.provider} CLI in '${sessionName}'`);
+      } else {
+        // Session exists — reset shell state in case it's stuck (e.g. bquote> mode)
+        tmuxSendKeys(sessionName, "C-c");
+        tmuxSendKeys(sessionName, "C-c");
+        tmuxSendKeys(sessionName, "Enter");
+        await Bun.sleep(200);
+
+        // Re-boot agent CLI if it died while the tmux session persisted
+        if (!isAgentAlive(slotNum, agent.name, taskId)) {
+          bootCliInSession(sessionName, agent);
+          console.error(`ludics: re-booted ${agent.provider} CLI in existing session '${sessionName}'`);
+        } else {
+          console.error(`ludics: session '${sessionName}' exists, agent CLI alive — reset shell state only`);
+        }
       }
 
       // Re-create ttyd if the port is not in use
