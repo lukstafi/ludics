@@ -354,6 +354,7 @@ interface DashboardTask {
     subtask_of: string | null;
   };
   hasQuestions: boolean;
+  deferredLaunch: boolean;
 }
 
 interface FilteredTaskTileConfig {
@@ -441,6 +442,7 @@ function readDashboardTasks(): DashboardTask[] {
           subtask_of: isNonNullValue(deps.subtask_of) ? String(deps.subtask_of) : null,
         },
         hasQuestions: !!data.has_questions,
+        deferredLaunch: !!data.deferred_launch,
       });
     } catch {
       // skip
@@ -521,6 +523,14 @@ const needsConfirmationConfig: FilteredTaskTileConfig = {
 const unansweredQuestionsConfig: FilteredTaskTileConfig = {
   filter: (task) => task.hasQuestions && !task.isCompleted,
   extraFields: () => ({}),
+};
+
+const deferredLaunchConfig: FilteredTaskTileConfig = {
+  filter: (task) => task.deferredLaunch && !task.isCompleted && task.status !== "abandoned",
+  extraFields: (task) => ({
+    hasProposal: task.hasProposal,
+    proposalPath: task.proposalPath,
+  }),
 };
 
 function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
@@ -979,6 +989,9 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "unanswered-questions.json"), JSON.stringify(generateFilteredTaskList(tasks, unansweredQuestionsConfig), null, 2));
   console.error("  unanswered-questions.json");
+
+  writeFileSync(join(dataDir, "deferred-launch.json"), JSON.stringify(generateFilteredTaskList(tasks, deferredLaunchConfig), null, 2));
+  console.error("  deferred-launch.json");
 
   writeFileSync(join(dataDir, "tasks-tree.json"), JSON.stringify(generateTasksTree(tasks), null, 2));
   console.error("  tasks-tree.json");

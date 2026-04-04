@@ -19,6 +19,7 @@ import {
   expirePendingRevises,
   expirePendingFollowupRevises,
 } from "./notify.ts";
+import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField } from "./tasks/markdown.ts";
 import { slotAssign, slotClear, slotResume, slotStart, taskCompleteDirectly, markSlotSetupFailed } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
@@ -635,7 +636,7 @@ function ensureTtyd(): void {
 
 // --- Queue pop for skills ---
 
-function findSlotForTask(taskId: string): number | null {
+export function findSlotForTask(taskId: string): number | null {
   const sFile = slotsFilePath();
   if (!existsSync(sFile)) return null;
 
@@ -647,22 +648,55 @@ function findSlotForTask(taskId: string): number | null {
   return null;
 }
 
+function readTaskDeferralFlags(taskId: string): { deferred: boolean; approved: boolean } {
+  const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+  if (!existsSync(taskFile)) return { deferred: false, approved: false };
+  const content = readFileSync(taskFile, "utf-8");
+  return {
+    deferred: /^deferred_launch:\s*true/m.test(content),
+    approved: /^approved:\s*true/m.test(content),
+  };
+}
+
 function abandonTaskFromNotification(taskId: string): void {
   const slotNum = findSlotForTask(taskId);
   if (slotNum === null) {
-    console.error(`ludics: abandon request ignored: task ${taskId} is not assigned to any slot`);
-    emitEvent({
-      event_type: "notify_abandon_ignored",
-      source: "notify",
-      scope: "mag",
-      task: taskId,
-      message: "task not assigned to any slot",
-    });
+    // Handle unslotted deferred tasks — abandon directly via frontmatter
+    const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+    if (existsSync(taskFile)) {
+      updateFrontmatterField(taskFile, "status", "abandoned");
+      updateFrontmatterField(taskFile, "completed", new Date().toISOString().slice(0, 19) + "Z");
+      removeFrontmatterField(taskFile, "deferred_launch");
+      removeFrontmatterField(taskFile, "approved");
+      emitEvent({
+        event_type: "notify_abandon",
+        source: "notify",
+        scope: "mag",
+        task: taskId,
+        status: "abandoned",
+        message: "abandoned deferred task via notification (no slot)",
+      });
+      console.error(`ludics: abandoned deferred task ${taskId} via notification (no slot)`);
+    } else {
+      console.error(`ludics: abandon request ignored: task ${taskId} not found`);
+      emitEvent({
+        event_type: "notify_abandon_ignored",
+        source: "notify",
+        scope: "mag",
+        task: taskId,
+        message: "task not found",
+      });
+    }
     return;
   }
 
   try {
     slotClear(slotNum, "abandoned");
+    const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+    if (existsSync(taskFile)) {
+      removeFrontmatterField(taskFile, "deferred_launch");
+      removeFrontmatterField(taskFile, "approved");
+    }
     emitEvent({
       event_type: "notify_abandon",
       source: "notify",
@@ -692,6 +726,8 @@ function completeTaskFromNotification(taskId: string): void {
   try {
     if (slotNum !== null) {
       slotClear(slotNum, "done");
+      const doneTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+      if (existsSync(doneTaskFile)) removeFrontmatterField(doneTaskFile, "deferred_launch");
       emitEvent({
         event_type: "notify_done",
         source: "notify",
@@ -719,6 +755,7 @@ function completeTaskFromNotification(taskId: string): void {
     }
 
     taskCompleteDirectly(taskId);
+    removeFrontmatterField(taskFile, "deferred_launch");
     emitEvent({
       event_type: "notify_done",
       source: "notify",
@@ -954,6 +991,8 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
     // Notification button actions are always treated as fresh starts.
     slotAssign(slotNum, taskId, adapter, "", path, launchArgs);
     await slotStart(slotNum);
+    const launchTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+    if (existsSync(launchTaskFile)) removeFrontmatterField(launchTaskFile, "deferred_launch");
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     let rollbackStatus = "rollback skipped";
@@ -1101,8 +1140,23 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       const content = String(request.content ?? "");
       if (!content) return null;
 
+      // Approve a deferred task for auto-start (does not launch immediately)
+      const approveMatch = content.match(/^Approve task ([\w.-]+)$/);
+      if (approveMatch) {
+        if (executeProgrammatic) {
+          const tid = approveMatch[1]!;
+          const tf = join(harnessDir(), "tasks", `${tid}.md`);
+          if (existsSync(tf)) {
+            removeFrontmatterField(tf, "deferred_launch");
+            addFrontmatterField(tf, "approved", "true");
+            console.error(`ludics: approved deferred task ${tid} for auto-start`);
+          }
+        }
+        return null;
+      }
+
       // Intercept button-tap launch messages from ntfy notifications
-      // New format: "Launch task <id>"
+      // Legacy format: "Launch task <id>" — kept for backward compat
       const launchNewMatch = content.match(/^Launch task ([\w.-]+)$/);
       if (launchNewMatch) {
         if (executeProgrammatic) {
@@ -1892,9 +1946,14 @@ function maybeAutoStartSlots(): void {
     const content = readFileSync(taskFile, "utf-8");
     if (!content.includes("\nproposal:")) continue;
 
+    // Skip deferred tasks unless approved
+    const flags = readTaskDeferralFlags(taskId);
+    if (flags.deferred && !flags.approved) continue;
+
     // Task has a proposal but no session — auto-start
     try {
       slotStart(slotNum);
+      removeFrontmatterField(taskFile, "deferred_launch");
       emitEvent({ event_type: "slot_auto_start", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)` });
       console.error(`ludics: auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)`);
     } catch (err) {
@@ -2138,6 +2197,8 @@ function getSortedReadyCandidates(): ReadyCandidate[] {
 
     if (tasksInSlots.has(id)) continue;
     if (status !== "ready") continue;
+    // Skip deferred tasks unless approved
+    if (!!fm.deferred_launch && !fm.approved) continue;
     const blockedBy = deps.blocked_by;
     if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
 
@@ -3200,6 +3261,19 @@ export async function runMag(args: string[]): Promise<void> {
         startSessionsAutonomy(),
         findSlotForTask(taskId) !== null,
       );
+      // Side effect: set or clear deferred_launch in task frontmatter
+      const evalTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+      if (existsSync(evalTaskFile)) {
+        if (result.decision === "defer-to-user") {
+          const evalContent = readFileSync(evalTaskFile, "utf-8");
+          const isApproved = /^approved:\s*true/m.test(evalContent);
+          if (!isApproved) {
+            addFrontmatterField(evalTaskFile, "deferred_launch", "true");
+          }
+        } else {
+          removeFrontmatterField(evalTaskFile, "deferred_launch");
+        }
+      }
       console.log(JSON.stringify(result));
       break;
     }

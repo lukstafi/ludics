@@ -112,7 +112,7 @@ export function buildProposalNotificationActions(
   });
 
   return [
-    action("launch", `Launch task ${taskId}`),
+    action("approve", `Approve task ${taskId}`),
     action("revise", `Revise proposal for ${taskId}`),
     action("abandon", `Abandon task ${taskId}`),
   ];

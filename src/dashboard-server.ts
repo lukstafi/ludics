@@ -8,7 +8,8 @@ import { resolve, extname, join } from "path";
 import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
-import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
+import { updateFrontmatterField, addFrontmatterField, removeFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
+import { findSlotForTask } from "./mag.ts";
 import { emitEvent } from "./events.ts";
 import { stateCheckpoint } from "./state.ts";
 
@@ -375,6 +376,63 @@ export function startDashboardServer(
             });
           }
           updateFrontmatterField(taskFile, "status", "abandoned");
+          lastGenerated = 0;
+          return new Response(JSON.stringify({ status: "abandoned" }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: approve a deferred-launch task (clear deferred_launch, set approved=true)
+      if (pathname === "/api/deferred-approve") {
+        const taskParam = url.searchParams.get("task");
+        if (!taskParam || !TASK_ID_RE.test(taskParam)) {
+          return new Response("Bad Request: invalid task id", { status: 400 });
+        }
+        try {
+          const resolved = resolveTaskFile(taskParam);
+          if ("error" in resolved) return resolved.error;
+          const taskFile = resolved.path;
+          removeFrontmatterField(taskFile, "deferred_launch");
+          addFrontmatterField(taskFile, "approved", "true");
+          lastGenerated = 0;
+          return new Response(JSON.stringify({ status: "approved" }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: abandon a deferred-launch task (clear slot if assigned, set abandoned)
+      if (pathname === "/api/deferred-abandon") {
+        const taskParam = url.searchParams.get("task");
+        if (!taskParam || !TASK_ID_RE.test(taskParam)) {
+          return new Response("Bad Request: invalid task id", { status: 400 });
+        }
+        try {
+          const resolved = resolveTaskFile(taskParam);
+          if ("error" in resolved) return resolved.error;
+          const taskFile = resolved.path;
+
+          // Check if task is assigned to a slot — if so, clear it synchronously
+          const slotNum = findSlotForTask(taskParam);
+          if (slotNum !== null) {
+            const proc = Bun.spawnSync(
+              [process.execPath, "slot", String(slotNum), "clear", "abandoned"],
+              { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
+            );
+            if (proc.exitCode !== 0) {
+              return new Response(proc.stderr.toString() || "slot clear failed", { status: 500 });
+            }
+          } else {
+            updateFrontmatterField(taskFile, "status", "abandoned");
+            updateFrontmatterField(taskFile, "completed", new Date().toISOString().slice(0, 19) + "Z");
+          }
+          removeFrontmatterField(taskFile, "deferred_launch");
+          removeFrontmatterField(taskFile, "approved");
           lastGenerated = 0;
           return new Response(JSON.stringify({ status: "abandoned" }), {
             headers: { "Content-Type": "application/json" },
