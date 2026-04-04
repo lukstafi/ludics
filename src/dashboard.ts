@@ -9,7 +9,7 @@ import { isRemoteMachine } from "./remote.ts";
 import { federationMachine } from "./federation.ts";
 import { priorityValue } from "./tasks/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
-import { getUrl, networkHostname } from "./network.ts";
+import { getUrl } from "./network.ts";
 import { inspectManagedServerProcess, processAlive, readServerRecord, readSlotState, t3codeStartingPath } from "./t3code/server.ts";
 import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
@@ -150,6 +150,7 @@ function lookupSlotOrchestrationLinks(
   slotNum: number,
   t3codeWebUrl: string | null,
   currentTaskId: string | null,
+  machineName: string | null,
 ): { prUrl: string | null; t3codeThreadLinks: Record<string, string> | null } {
   const orchState = readOrchestrationState(slotNum);
   if (!orchState) return { prUrl: null, t3codeThreadLinks: null };
@@ -171,12 +172,14 @@ function lookupSlotOrchestrationLinks(
   let t3codeThreadLinks: Record<string, string> | null = null;
   if (orchState.backend === "tmux") {
     // Generate ttyd URLs for each agent
-    const host = networkHostname();
-    t3codeThreadLinks = {};
-    for (const agent of orchState.agents) {
-      const roleIndex = agent.role === "reviewer" ? 1 : 0;
-      const port = 7681 + (orchState.slot - 1) * 2 + roleIndex;
-      t3codeThreadLinks[agent.name] = `http://${host}:${port}`;
+    const host = (machineName && federationMachine(machineName)?.host) || machineName;
+    if (host) {
+      t3codeThreadLinks = {};
+      for (const agent of orchState.agents) {
+        const roleIndex = agent.role === "reviewer" ? 1 : 0;
+        const port = 7681 + (orchState.slot - 1) * 2 + roleIndex;
+        t3codeThreadLinks[agent.name] = `http://${host}:${port}`;
+      }
     }
   } else if (t3codeWebUrl && orchState.threadIds && Object.keys(orchState.threadIds).length > 0) {
     t3codeThreadLinks = {};
@@ -259,11 +262,13 @@ function generateSlots(): SlotJson[] {
     const slotProposalLink = slotHasProposal && taskId ? `/proposal.html?task=${encodeURIComponent(taskId)}` : null;
     const githubUrl = taskMeta.githubUrl;
 
+    const machineName = getMachine(block).trim();
+
     // Read orchestration state for PR URL and t3code thread links.
     // Only use the state if its feature matches the slot's current task
     // to avoid showing stale links from a previous task.
     const orchLinks = empty ? { prUrl: null, t3codeThreadLinks: null }
-      : lookupSlotOrchestrationLinks(num, t3codeWebUrl, taskId);
+      : lookupSlotOrchestrationLinks(num, t3codeWebUrl, taskId, machineName || null);
 
     // Check for preemption stash
     const stash = readStash(num);
@@ -272,7 +277,6 @@ function generateSlots(): SlotJson[] {
     const sessionStarted = (rawSessionStarted && rawSessionStarted !== "null") ? rawSessionStarted : null;
 
     // Compute liveness — for local slots use PID check, for remote slots use heartbeat.
-    const machineName = getMachine(block).trim();
     let liveness: "alive" | "interrupted" | null = null;
     if (!empty) {
       const explicitLiveness = getLiveness(block).trim();
