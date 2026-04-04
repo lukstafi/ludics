@@ -63,6 +63,17 @@ export class TmuxTransport implements OrchestrationTransport {
     return commandId;
   }
 
+  async sendEnter(state: OrchestrationState, agent: AgentConfig): Promise<void> {
+    const target = tmuxSessionName(state.slot, agent.name, state.taskId);
+    Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
+      stdout: "pipe", stderr: "pipe",
+    });
+    await Bun.sleep(500);
+    Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
+      stdout: "pipe", stderr: "pipe",
+    });
+  }
+
   async refreshAgentTransportState(state: OrchestrationState): Promise<void> {
     for (const agent of state.agents) {
       if (!agentParticipatesInPhase(state, agent)) continue;

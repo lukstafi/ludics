@@ -30,6 +30,16 @@ export interface OrchestrationTransport {
   refreshAgentTransportState(state: OrchestrationState): Promise<void>;
 
   /**
+   * Send just an Enter keystroke to an agent's session.
+   * Used as a lightweight nudge when the prompt may already be in the input
+   * buffer but the submit key didn't fire.
+   */
+  sendEnter(
+    state: OrchestrationState,
+    agent: AgentConfig,
+  ): Promise<void>;
+
+  /**
    * Interrupt an agent's current turn via the transport backend.
    * The runner also writes the peer-sync interrupt marker separately.
    */

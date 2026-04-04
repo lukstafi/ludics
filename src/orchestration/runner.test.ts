@@ -134,6 +134,7 @@ function makeSnapshot(
 function makeMockTransport(snapshot: T3Snapshot | null): OrchestrationTransport {
   return {
     async sendTurn() { return "cmd-mock"; },
+    async sendEnter() {},
     async refreshAgentTransportState(state: OrchestrationState) {
       // Replicate T3CodeTransport.refreshAgentTransportState using the snapshot
       const { agentParticipatesInPhase } = await import("./phases.ts");
@@ -224,6 +225,7 @@ function makeMockTransport(snapshot: T3Snapshot | null): OrchestrationTransport 
 /** Noop transport for tests that don't need transport behavior. */
 const noopTransport: OrchestrationTransport = {
   async sendTurn() { return "cmd-noop"; },
+  async sendEnter() {},
   async refreshAgentTransportState() {},
   async interruptAgent() {},
 };
@@ -1525,6 +1527,7 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
 
   const dummyTransport: OrchestrationTransport = {
     sendTurn: async () => "cmd-1",
+    sendEnter: async () => {},
     refreshAgentTransportState: async () => {},
     interruptAgent: async () => {},
   };
@@ -2053,7 +2056,7 @@ describe("detectAndNudgeHungAgents", () => {
       observedTurnId: "turn-1",
       turnStartedAt: new Date(Date.now() - 400_000).toISOString(),
       stallDetectedAt: new Date(Date.now() - 1500_000).toISOString(),
-      nudgeAttempts: 2, // >= MAX_NUDGE_ATTEMPTS
+      nudgeAttempts: 3, // >= MAX_NUDGE_ATTEMPTS
       lastNudgeAt: new Date(Date.now() - 400_000).toISOString(),
     });
 
@@ -2258,6 +2261,7 @@ describe("checkAndRedispatchPrComments conflict detection", () => {
         calls.push({ agent: agent.name });
         return "cmd-conflict";
       },
+      sendEnter: async () => {},
       refreshAgentTransportState: async () => {},
       interruptAgent: async () => {},
     };

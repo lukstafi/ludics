@@ -34,6 +34,10 @@ const HUNG_RUNNING_THRESHOLD_S = 180;
 /** Seconds of static pane output before a dispatched (never-started) agent is considered hung.
  *  Short because a failed dispatch should be detected quickly. */
 const HUNG_DISPATCH_THRESHOLD_S = 90;
+/** Seconds of static pane output before a running agent that never wrote a done
+ *  status is considered hung.  Covers prompt-injection failures (agent alive but
+ *  never received its task) and incoherent agents that stop producing output. */
+const HUNG_IDLE_RUNNING_THRESHOLD_S = 180;
 /** Minimum seconds between nudge attempts for hung agents. */
 const HUNG_NUDGE_COOLDOWN_S = 90;
 
@@ -186,9 +190,9 @@ function preparePhaseRedispatch(state: OrchestrationState): void {
   state.currentPhaseToken = undefined;
   state.phaseStartedAt = nowEpoch(); // Reset timer so retries get a fresh timeout window
 }
-/** Force-settle via interruptAgent() after this many failed nudges. */
-/** Force-settle a hung agent after this many failed nudges. */
-const HUNG_MAX_NUDGE_ATTEMPTS = 2;
+/** Force-settle a hung agent after this many failed nudges.
+ *  Escalation: Enter → "Continue." → full re-dispatch → force-settle. */
+const HUNG_MAX_NUDGE_ATTEMPTS = 3;
 
 // --- Interrupted agent constants ---
 // An "interrupted agent" had its turn settle (stop hook fired) but never wrote
@@ -262,6 +266,8 @@ function detectAgentInconsistencies(
  * Hung conditions (only reached if snapshot reconciliation didn't resolve it):
  * 1. Running hung: DONE_STATUSES + lc.state === "running" + pane static > HUNG_RUNNING_THRESHOLD_S
  * 2. Dispatch hung: lc.state === "dispatched" + pane static > HUNG_DISPATCH_THRESHOLD_S
+ * 3. Idle running hung: lc.state === "running" + NOT done + pane static > HUNG_IDLE_RUNNING_THRESHOLD_S
+ *    (prompt injection failed or agent went incoherent and stopped producing output)
  *
  * Recovery progression: detect → nudge (up to HUNG_MAX_NUDGE_ATTEMPTS) → force-settle
  */
@@ -299,6 +305,19 @@ export async function detectAndNudgeHungAgents(
       if (paneStaticSince > HUNG_DISPATCH_THRESHOLD_S) {
         isHung = true;
         hungType = "dispatch";
+      }
+    }
+    // Idle-running stall: agent process is alive (state === "running") but
+    // never wrote a done status and pane output has gone static.  Catches
+    // prompt-injection failures (agent alive but idle) and incoherent agents
+    // that stopped producing output without signaling completion.
+    else if (!DONE_STATUSES.has(runtime.status) && lc.state === "running" && lc.turnStartedAt) {
+      const paneStaticSince = lc.lastPaneChangeAt
+        ? now - Math.floor(new Date(lc.lastPaneChangeAt).getTime() / 1000)
+        : now - Math.floor(new Date(lc.turnStartedAt).getTime() / 1000);
+      if (paneStaticSince > HUNG_IDLE_RUNNING_THRESHOLD_S) {
+        isHung = true;
+        hungType = "running";
       }
     }
 
@@ -345,19 +364,29 @@ export async function detectAndNudgeHungAgents(
       : 0;
     if (now - lastNudge < HUNG_NUDGE_COOLDOWN_S) continue;
 
-    // --- Send phase-aware nudge or re-dispatch ---
+    // --- Send phase-aware nudge with escalation ---
+    // Idle agents: Enter → "Continue." → full re-dispatch → force-settle
+    // Done agents: "stop" message → force-settle
+    // Dispatch stuck: "are you there?" → force-settle
     try {
-      // Dispatch hung with idle status = prompt injection failed. Re-send the full skill prompt.
-      // Running hung with done status = agent finished but TUI froze. Tell it to stop.
-      let nudgeMessage: string;
-      if (hungType === "dispatch" && runtime.status === "idle") {
-        nudgeMessage = await composeSkillMessage(state, agent);
-      } else if (hungType === "dispatch") {
-        nudgeMessage = `Your session appears stuck. Please respond to confirm you are working on the ${state.phase} phase.`;
+      if (runtime.status === "idle" && attempts === 0) {
+        // Nudge #1: prompt may be buffered but Enter didn't fire
+        await transport.sendEnter(state, agent);
+      } else if (runtime.status === "idle" && attempts === 1) {
+        // Nudge #2: lightweight poke — agent may be alive but waiting for input
+        await transport.sendTurn(state, agent, "Continue.");
       } else {
-        nudgeMessage = `Your work for the ${state.phase} phase is complete. Stop and wait for further instructions.`;
+        let nudgeMessage: string;
+        if (runtime.status === "idle") {
+          // Nudge #3: full re-dispatch — prompt injection likely failed entirely
+          nudgeMessage = await composeSkillMessage(state, agent);
+        } else if (hungType === "dispatch") {
+          nudgeMessage = `Your session appears stuck. Please respond to confirm you are working on the ${state.phase} phase.`;
+        } else {
+          nudgeMessage = `Your work for the ${state.phase} phase is complete. Stop and wait for further instructions.`;
+        }
+        await transport.sendTurn(state, agent, nudgeMessage);
       }
-      await transport.sendTurn(state, agent, nudgeMessage);
       lc.nudgeAttempts = attempts + 1;
       lc.lastNudgeAt = isoNow();
       emitEvent({
