@@ -109,8 +109,17 @@ describe("evaluateAutoStartDecisionPure", () => {
 });
 
 describe("resolveQueueRequestCommand — backward compat parsing", () => {
-  // New format — recognized as programmatic (returns null)
-  test("new format: 'Launch task <id>' is recognized", async () => {
+  // Approve format — recognized as programmatic (returns null)
+  test("'Approve task <id>' is recognized", async () => {
+    const result = await resolveQueueRequestCommand(
+      { action: "message", content: "Approve task task-042" },
+      false,
+    );
+    expect(result).toBeNull();
+  });
+
+  // Legacy launch format — recognized as programmatic (returns null)
+  test("legacy format: 'Launch task <id>' is recognized", async () => {
     const result = await resolveQueueRequestCommand(
       { action: "message", content: "Launch task task-042" },
       false,

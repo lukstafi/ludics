@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { buildProposalNotificationActions, chunkNotificationActions } from "./notify.ts";
 
 describe("buildProposalNotificationActions", () => {
-  test("includes launch, revise, and abandon buttons", () => {
+  test("includes approve, revise, and abandon buttons", () => {
     const actions = buildProposalNotificationActions(
       "task-042",
       "project-x",
@@ -11,11 +11,11 @@ describe("buildProposalNotificationActions", () => {
     );
 
     expect(actions.map((action) => String(action.label))).toEqual([
-      "launch",
+      "approve",
       "revise",
       "abandon",
     ]);
-    expect(String(actions[0]!.body)).toBe("Launch task task-042");
+    expect(String(actions[0]!.body)).toBe("Approve task task-042");
     expect(String(actions[1]!.body)).toBe("Revise proposal for task-042");
     expect(String(actions[2]!.body)).toBe("Abandon task task-042");
   });
@@ -52,6 +52,6 @@ describe("buildProposalNotificationActions — t3code-only format", () => {
     }
 
     // Verify exact modern format
-    expect(String(actions[0]!.body)).toBe("Launch task task-042");
+    expect(String(actions[0]!.body)).toBe("Approve task task-042");
   });
 });
