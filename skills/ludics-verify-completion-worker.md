@@ -73,6 +73,17 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 Use the structured response format from worker-conventions.md. Emit a fenced JSON block
 as the last code block in your response:
 
+### Response Contract
+
+1. `status` — string, required. Always `"completed"` in non-error cases.
+2. `task_id` — string, required.
+3. `title` — string, required.
+4. `slot` — number, required.
+5. `verdict` — string, required. Values: `"complete"`, `"complete-with-followups"`, `"uncertain"`, `"incomplete"`.
+6. `followups` — object[], required. Array of `{"title", "priority"}`. `"none"` when empty.
+7. `questions` — string[], required. `"none"` when empty.
+8. `evidence` — string, required.
+
 ```json
 {
   "status": "completed",
@@ -86,13 +97,9 @@ as the last code block in your response:
 }
 ```
 
-Note: `status` is always `"completed"` for this worker in non-error cases. The
-orchestrator checks `status` first to handle errors, then uses `verdict` for
-success-path routing. Use `"none"` for `followups` and `questions` when they are empty.
-
 ## Error Handling
 
-- Task not found: Report `STATUS: error`
+- Task not found: Report `status: "error"`
 - Project path not found: Attempt verification from task file and git history only,
-  note limitation in EVIDENCE
-- No acceptance criteria: Report `VERDICT: uncertain` — cannot verify without criteria
+  note limitation in evidence
+- No acceptance criteria: Report `verdict: "uncertain"` — cannot verify without criteria

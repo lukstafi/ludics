@@ -38,7 +38,7 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 - If a duplicate is found:
   - Prefer the version that is already elaborated, or has richer context
   - Run `ludics tasks merge <target> <this_task_id>` to merge
-  - Report `STATUS: merged` and stop
+  - Report `status: "merged"` and stop
 
 ### 0b. Milestone-aware blocking (watch tasks)
 
@@ -162,6 +162,16 @@ elaborated: <today's date>
 Use the structured response format from worker-conventions.md. Emit a fenced JSON block
 as the last code block in your response:
 
+### Response Contract
+
+1. `status` — string, required. Values: `"completed"`, `"merged"`, `"already-elaborated"`, `"error"`.
+2. `task_id` — string, required.
+3. `title` — string, required.
+4. `merge_target` — string, conditional. Present only when `status = "merged"`.
+5. `elaborated_date` — string, conditional. Present only when `status = "already-elaborated"`.
+6. `questions` — string[], required. `"none"` when empty.
+7. `summary` — string, required.
+
 ```json
 {
   "status": "completed | merged | already-elaborated | error",
@@ -174,11 +184,8 @@ as the last code block in your response:
 }
 ```
 
-Omit `merge_target` and `elaborated_date` when not applicable. Use `"none"` for
-`questions` when there are no questions.
-
 ## Error Handling
 
-- Task not found: Report `STATUS: error`
-- Already elaborated: Report `STATUS: already-elaborated` with existing date
+- Task not found: Report `status: "error"`
+- Already elaborated: Report `status: "already-elaborated"` with existing date
 - Missing context: Note gaps in elaboration and proceed with available information

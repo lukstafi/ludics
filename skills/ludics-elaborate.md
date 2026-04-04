@@ -43,9 +43,15 @@ Worker: `/ludics-elaborate-worker <task_id> <project_path> <context_brief>`
 Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
 Parse the JSON for `status`, `questions`, and `summary`.
 
-If no JSON block is found, fall back to line-based parsing: look for `STATUS: <value>`,
-`QUESTIONS: <value>`, and `SUMMARY: <value>` lines. On the legacy path, treat `QUESTIONS:`
-content as a pre-formatted string and send as-is in the questions notification step.
+### Expected Worker Fields
+
+1. `status` — primary routing. Absent: error (malformed response).
+2. `questions` — questions notification. Absent: treat as `"none"`, skip notification.
+3. `summary` — result context. Absent: use empty string.
+4. `merge_target` — result JSON (merged path). Only expected when `status = "merged"`.
+5. `elaborated_date` — already-elaborated path. Only expected when `status = "already-elaborated"`.
+6. `title` — notification title. Absent: fall back to task_id.
+7. `task_id` — not consumed by orchestrator.
 
 - **status: completed** — proceed to notifications
 - **status: merged** — write result JSON noting the merge, stop
@@ -60,8 +66,7 @@ If `questions` is not `"none"` and is non-empty:
    until the user answers the questions and removes the field).
 
 2. Send as notification text:
-   - JSON array path: format each element as a numbered list (e.g., `1. <q1>\n2. <q2>`)
-   - Legacy pre-formatted string (fallback path): send as-is
+   - Format each element as a numbered list (e.g., `1. <q1>\n2. <q2>`)
 
 ```bash
 ludics notify outgoing "<formatted questions>"

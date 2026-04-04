@@ -27,7 +27,7 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
 Read all `.md` files from `$LUDICS_STATE_PATH/feedback/` (skip the `processed/`
 subdirectory). Files are named `<task-id>--workflow-feedback-<agent>.md`.
-If no files exist, report `STATUS: empty` and stop.
+If no files exist, report `status: "empty"` and stop.
 
 ### 2. Extract individual data points
 
@@ -95,6 +95,18 @@ mv "$LUDICS_STATE_PATH/feedback/"*.md "$LUDICS_STATE_PATH/feedback/processed/"
 Use the structured response format from worker-conventions.md. Emit a fenced JSON block
 as the last code block in your response:
 
+### Response Contract
+
+1. `status` — string, required. Values: `"completed"`, `"empty"`, `"error"`.
+2. `issues_created` — number, required. 0 when none created.
+3. `issues_updated` — number, required. 0 when none updated.
+4. `issues_skipped` — number, required. 0 when none skipped.
+5. `files_processed` — number, required. 0 when none processed.
+6. `summary` — string, required.
+
+Note: when `status = "error"`, count fields may be absent. The `summary` or
+`error` field carries the explanation.
+
 ```json
 {
   "status": "completed | empty | error",
@@ -108,6 +120,6 @@ as the last code block in your response:
 
 ## Error Handling
 
-- `gh` not authenticated or repo inaccessible: Report `STATUS: error`
+- `gh` not authenticated or repo inaccessible: Report `status: "error"`
 - Some issues fail to create: Continue with the rest, report partial results
 - Always move processed files even if some issue creation fails
