@@ -3290,6 +3290,9 @@ export async function runMag(args: string[]): Promise<void> {
       const taskIds = taskArg.split(",");
       const feedback = args.slice(2).join(" ");
       for (const taskId of taskIds) {
+        // Clear approved so re-evaluation after revision can re-defer if warranted
+        const reviseTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+        if (existsSync(reviseTaskFile)) removeFrontmatterField(reviseTaskFile, "approved");
         if (feedback) {
           const escaped = JSON.stringify(feedback);
           queueRequest("revise-proposal", `"task":"${taskId}","feedback":${escaped}`);
