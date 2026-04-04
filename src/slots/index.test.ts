@@ -380,7 +380,6 @@ describe("slotResume — interrupted fallback to fresh start", () => {
   // Track tmux sessions created during tests so we can clean them up.
   // slotResume/slotStart may create real tmux sessions as a side effect.
   const createdTmuxSessions: string[] = [];
-
   afterEach(() => {
     for (const session of createdTmuxSessions) {
       try { if (tmuxHasSession(session)) tmuxKillSession(session); } catch { /* ignore */ }
@@ -406,7 +405,7 @@ describe("slotResume — interrupted fallback to fresh start", () => {
       "s1_coder_task-resume-fallback-1", "s1_reviewer_task-resume-fallback-1",
     );
     try {
-      await slotResume(1);
+      await slotResume(1, { startTtyd: false });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // Should NOT be the old "no persisted orchestration state" error
@@ -470,7 +469,7 @@ describe("slotResume — interrupted fallback to fresh start", () => {
       "s1_coder_task-resume-fallback-2", "s1_reviewer_task-resume-fallback-2",
     );
     try {
-      await slotResume(1);
+      await slotResume(1, { startTtyd: false });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       expect(msg).not.toContain("has recoverable orchestration state");

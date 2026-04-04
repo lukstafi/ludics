@@ -633,7 +633,7 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
   };
 }
 
-export async function slotStart(slotNum: number): Promise<void> {
+export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
@@ -688,7 +688,7 @@ export async function slotStart(slotNum: number): Promise<void> {
     }
   }
 
-  await runAdapterAction("start", ctx);
+  await runAdapterAction("start", { ...ctx, startTtyd: shouldStartTtyd });
 
   // Clear any prior interrupted liveness and stamp active session marker
   const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
@@ -754,7 +754,7 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
 /** Resume a crashed orchestrated t3code session from persisted state.
  *  Unlike slotStart(), does not reinitialize threads/worktrees/orchestration.
  *  Only supports orchestrated t3code sessions — single-thread sessions have no state to resume. */
-export async function slotResume(slotNum: number): Promise<void> {
+export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
@@ -790,7 +790,7 @@ export async function slotResume(slotNum: number): Promise<void> {
         console.error(`ludics: slot ${slotNum}: no recoverable t3code state — falling back to fresh start`);
         // Clean up any stale orchestration state that slotStart's guard would reject
         try { removeOrchestrationState(slotNum, ctx.harnessDir); } catch { /* ignore */ }
-        await slotStart(slotNum);
+        await slotStart(slotNum, { startTtyd: shouldStartTtyd });
         return;
       }
       throw new Error(
@@ -806,7 +806,7 @@ export async function slotResume(slotNum: number): Promise<void> {
     const slotLiveness = getLiveness(block).trim();
     if (slotLiveness === "interrupted") {
       console.error(`ludics: slot ${slotNum}: no recoverable orchestration state — falling back to fresh start`);
-      await slotStart(slotNum);
+      await slotStart(slotNum, { startTtyd: shouldStartTtyd });
       return;
     }
     throw new Error(
@@ -878,7 +878,7 @@ export async function slotResume(slotNum: number): Promise<void> {
   // --- tmux-specific: verify/recreate tmux session, windows, ttyd, agent CLIs ---
   if (ctx.mode === "tmux") {
     const { tmuxHasSession, tmuxNewSession, tmuxSendCommand, tmuxSendKeys } = await import("../adapters/tmux.ts");
-    const { readTmuxSlotState, writeTmuxSlotState, tmuxSessionName, ttydPort, agentCliCommand, isAgentAlive } = await import("../adapters/tmux-adapter.ts");
+    const { readTmuxSlotState, writeTmuxSlotState, tmuxSessionName, ttydPort, agentCliCommand, isAgentAlive, startTtyd } = await import("../adapters/tmux-adapter.ts");
     const tmuxState = readTmuxSlotState(slotNum, ctx.harnessDir);
 
     // Kill stale orchestration runner from tmux state first
@@ -949,17 +949,12 @@ export async function slotResume(slotNum: number): Promise<void> {
       }
 
       // Re-create ttyd if the port is not in use
-      const portInUse = Bun.spawnSync(["lsof", "-i", `:${port}`], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
-      if (!portInUse) {
-        const proc = Bun.spawn(
-          ["ttyd", "--writable", "--port", String(port), "tmux", "attach", "-t", sessionName],
-          { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
-        );
-        if (typeof (proc as { unref?: () => void }).unref === "function") {
-          (proc as { unref: () => void }).unref();
+      if (shouldStartTtyd) {
+        const portInUse = Bun.spawnSync(["lsof", "-i", `:${port}`], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+        if (!portInUse) {
+          newTtydPids[agent.name] = startTtyd(slotNum, agent.name, role, taskId);
+          console.error(`ludics: re-started ttyd on port ${port} for ${agent.name}`);
         }
-        newTtydPids[agent.name] = proc.pid;
-        console.error(`ludics: re-started ttyd on port ${port} for ${agent.name}`);
       }
     }
 

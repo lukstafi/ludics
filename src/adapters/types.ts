@@ -12,6 +12,7 @@ export interface AdapterContext {
   machine?: string;
   harnessDir: string;
   stateRepoDir: string;
+  startTtyd?: boolean;
 }
 
 /** Allow adapter methods to return sync or async results. */

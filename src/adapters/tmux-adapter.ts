@@ -225,7 +225,7 @@ function createTmuxAgentSession(slot: number, agentName: string, cwd: string, ta
   });
 }
 
-function startTtyd(slot: number, agentName: string, role: "coder" | "reviewer", taskId?: string): number {
+export function startTtyd(slot: number, agentName: string, role: "coder" | "reviewer", taskId?: string): number {
   const port = ttydPort(slot, role);
   const target = tmuxTarget(slot, agentName, taskId);
 
@@ -235,7 +235,7 @@ function startTtyd(slot: number, agentName: string, role: "coder" | "reviewer", 
   });
 
   const proc = Bun.spawn(
-    ["ttyd", "--writable", "--port", String(port), "tmux", "attach", "-t", target],
+    ["nohup", "ttyd", "--writable", "--port", String(port), "tmux", "attach", "-t", target],
     { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
   );
   if (typeof (proc as { unref?: () => void }).unref === "function") {
@@ -459,7 +459,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     const agent = agents[i]!;
     createTmuxAgentSession(ctx.slot, agent.name, agent.worktreePath, taskId);
     const role = agentPortRole(agent, i);
-    ttydPids[agent.name] = startTtyd(ctx.slot, agent.name, role, taskId);
+    if (ctx.startTtyd !== false) ttydPids[agent.name] = startTtyd(ctx.slot, agent.name, role, taskId);
     // Boot persistent interactive agent CLI in the session
     bootAgentCli(ctx.slot, agent, setup.peerSyncDir, "setup", taskId);
   }
