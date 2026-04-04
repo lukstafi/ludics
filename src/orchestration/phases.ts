@@ -3,6 +3,7 @@ import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { isPrUrl } from "./github.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
+import { reviewFilePath } from "./review-files.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { readDuoPeerState, bothSlotsReadyForMerge, isMergeCoordinator } from "./cross-slot.ts";
 import { nowEpoch } from "./util.ts";
@@ -82,9 +83,9 @@ function requiredArtifactPath(state: OrchestrationState, agent: AgentConfig): st
     case "plan-review":
       // Uses planMergeRound to give each iteration its own review file so the
       // artifact gate isn't bypassed by a stale file from a previous iteration.
-      return join(dir, "reviews", `plan-merge-${state.planMergeRound ?? 0}-${agent.name}.md`);
+      return reviewFilePath(dir, "plan-review", state.planMergeRound ?? 0, agent.name);
     case "review":
-      return join(dir, "reviews", `round-${state.round}-${agent.name}.md`);
+      return reviewFilePath(dir, "review", state.round, agent.name);
     case "pr-create":
       return join(dir, `${agent.name}.pr`);
     default:
@@ -334,8 +335,8 @@ export function pairReviewVerdict(state: OrchestrationState): "approve" | "reque
   if (!reviewer) return null;
   // plan-review uses per-iteration files keyed by planMergeRound to avoid stale verdicts.
   const reviewFile = state.phase === "plan-review"
-    ? join(state.peerSyncDir, "reviews", `plan-merge-${state.planMergeRound ?? 0}-${reviewer.name}.md`)
-    : join(state.peerSyncDir, "reviews", `round-${state.round}-${reviewer.name}.md`);
+    ? reviewFilePath(state.peerSyncDir, "plan-review", state.planMergeRound ?? 0, reviewer.name)
+    : reviewFilePath(state.peerSyncDir, "review", state.round, reviewer.name);
   if (!existsSync(reviewFile)) return null;
   const content = readFileSync(reviewFile, "utf-8").toUpperCase();
   if (/\bAPPROVE\b/.test(content) && !/\bREQUEST_CHANGES\b/.test(content)) return "approve";

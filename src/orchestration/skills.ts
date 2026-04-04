@@ -3,6 +3,7 @@ import { join } from "path";
 import { assertRepoRelativeProposalPath, readFrontmatterField } from "../adapters/task-launch.ts";
 import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
 import type { Phase } from "./phases.ts";
+import { parseReviewFilename, reviewFilePath } from "./review-files.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { readMergeVotes } from "./merge.ts";
 import { readDuoPeerState } from "./cross-slot.ts";
@@ -17,14 +18,12 @@ function readFileIfExists(path: string): string | null {
 function findLatestReview(peerSyncDir: string, peerName: string): string | null {
   const reviewsDir = join(peerSyncDir, "reviews");
   if (!existsSync(reviewsDir)) return null;
-  const pattern = new RegExp(`^round-(\\d+)-${peerName}\\.md$`);
   let maxRound = -1;
   let maxFile: string | null = null;
   for (const entry of readdirSync(reviewsDir)) {
-    const m = entry.match(pattern);
-    if (m) {
-      const n = parseInt(m[1]!, 10);
-      if (n > maxRound) { maxRound = n; maxFile = join(reviewsDir, entry); }
+    const parsed = parseReviewFilename(entry);
+    if (parsed && parsed.type === "review" && parsed.agentName === peerName) {
+      if (parsed.round > maxRound) { maxRound = parsed.round; maxFile = join(reviewsDir, entry); }
     }
   }
   return maxFile ? readFileIfExists(maxFile) : null;
@@ -198,8 +197,8 @@ export function buildSkillContext(
 
   // plan-review uses per-iteration review files to avoid stale verdicts from a prior loop.
   const reviewFile = state.phase === "plan-review"
-    ? join(state.peerSyncDir, "reviews", `plan-merge-${planMergeRound}-${agent.name}.md`)
-    : join(state.peerSyncDir, "reviews", `round-${state.round}-${agent.name}.md`);
+    ? reviewFilePath(state.peerSyncDir, "plan-review", planMergeRound, agent.name)
+    : reviewFilePath(state.peerSyncDir, "review", state.round, agent.name);
 
   // In plan-review the reviewer reads the merged plan produced by the coder in plan-merge.
   const peerPlan = state.phase === "plan-review"
@@ -215,13 +214,13 @@ export function buildSkillContext(
     if (state.phase === "plan-merge") {
       if (planMergeRound === 0) return null; // first iteration: no prior review
       return readFileIfExists(
-        join(state.peerSyncDir, "reviews", `plan-merge-${planMergeRound - 1}-${peer.name}.md`),
+        reviewFilePath(state.peerSyncDir, "plan-review", planMergeRound - 1, peer.name),
       );
     }
     return (state.round > 1
-        ? readFileIfExists(join(state.peerSyncDir, "reviews", `round-${state.round - 1}-${peer.name}.md`))
+        ? readFileIfExists(reviewFilePath(state.peerSyncDir, "review", state.round - 1, peer.name))
         : null)
-      ?? readFileIfExists(join(state.peerSyncDir, "reviews", `round-${state.round}-${peer.name}.md`))
+      ?? readFileIfExists(reviewFilePath(state.peerSyncDir, "review", state.round, peer.name))
       ?? findLatestReview(state.peerSyncDir, peer.name);
   })();
   const mergeVotes = Object.entries(readMergeVotes(state.peerSyncDir, state.mergeRound))
@@ -257,7 +256,7 @@ export function buildSkillContext(
     PEER_PLAN: peerPlan ?? "(no plan yet)",
     GIT_DIFF_STAT: gitOutput(agent.worktreePath, ["diff", "--stat"]) ?? "(no changes yet)",
     PREVIOUS_ROUND_SUMMARY: (state.round > 1 && peer
-      ? readFileIfExists(join(state.peerSyncDir, "reviews", `round-${state.round - 1}-${peer.name}.md`))
+      ? readFileIfExists(reviewFilePath(state.peerSyncDir, "review", state.round - 1, peer.name))
       : null) ?? "(no previous round summary)",
     MERGE_VOTES: mergeVotes || "(no merge votes yet)",
     WORKTREE_PATH: agent.worktreePath,

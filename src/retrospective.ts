@@ -6,6 +6,7 @@ import { basename, join } from "path";
 import YAML from "yaml";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
+import { parseReviewFilename } from "./orchestration/review-files.ts";
 import { queueRequest } from "./queue.ts";
 import type { OrchestrationState } from "./orchestration/state.ts";
 import type { T3Thread, T3ThreadMessage } from "./t3code/types.ts";
@@ -270,25 +271,11 @@ function extractVerdicts(peerSyncDir: string): RetrospectiveVerdict[] {
     const files = readdirSync(reviewsDir).filter((f: string) => f.endsWith(".md"));
 
     for (const f of files) {
-      // Normal review: round-N-reviewer.md or round-N-coder.md
-      const roundMatch = f.match(/^round-(\d+)-(\w+)\.md$/);
-      if (roundMatch) {
-        const round = parseInt(roundMatch[1]!, 10);
-        const reviewer = roundMatch[2]!;
+      const parsed = parseReviewFilename(f);
+      if (parsed) {
         const content = readFileSync(join(reviewsDir, f), "utf-8");
         const verdict = parseVerdictFromContent(content);
-        verdicts.push({ round, type: "review", verdict, reviewer });
-        continue;
-      }
-
-      // Plan-review: plan-merge-M-reviewer.md or plan-merge-M-coder.md
-      const planMatch = f.match(/^plan-merge-(\d+)-(\w+)\.md$/);
-      if (planMatch) {
-        const round = parseInt(planMatch[1]!, 10);
-        const reviewer = planMatch[2]!;
-        const content = readFileSync(join(reviewsDir, f), "utf-8");
-        const verdict = parseVerdictFromContent(content);
-        verdicts.push({ round, type: "plan-review", verdict, reviewer });
+        verdicts.push({ round: parsed.round, type: parsed.type, verdict, reviewer: parsed.agentName });
       }
     }
   } catch {
@@ -309,35 +296,15 @@ export function extractReviews(peerSyncDir: string): RetrospectiveReview[] {
     const files = readdirSync(reviewsDir).filter((f: string) => f.endsWith(".md"));
 
     for (const f of files) {
-      // Normal review: round-N-<reviewer>.md
-      const roundMatch = f.match(/^round-(\d+)-(.+)\.md$/);
-      if (roundMatch) {
-        const round = parseInt(roundMatch[1]!, 10);
-        const reviewer = roundMatch[2]!;
-        try {
-          const content = readFileSync(join(reviewsDir, f), "utf-8");
-          const verdict = parseVerdictFromContent(content);
-          reviews.push({ round, type: "review", reviewer, verdict, content });
-        } catch {
-          // skip unreadable file
-        }
-        continue;
+      const parsed = parseReviewFilename(f);
+      if (!parsed) continue; // Unrecognized filenames silently skipped
+      try {
+        const content = readFileSync(join(reviewsDir, f), "utf-8");
+        const verdict = parseVerdictFromContent(content);
+        reviews.push({ round: parsed.round, type: parsed.type, reviewer: parsed.agentName, verdict, content });
+      } catch {
+        // skip unreadable file
       }
-
-      // Plan-review: plan-merge-N-<reviewer>.md
-      const planMatch = f.match(/^plan-merge-(\d+)-(.+)\.md$/);
-      if (planMatch) {
-        const round = parseInt(planMatch[1]!, 10);
-        const reviewer = planMatch[2]!;
-        try {
-          const content = readFileSync(join(reviewsDir, f), "utf-8");
-          const verdict = parseVerdictFromContent(content);
-          reviews.push({ round, type: "plan-review", reviewer, verdict, content });
-        } catch {
-          // skip unreadable file
-        }
-      }
-      // Unrecognized filenames silently skipped
     }
   } catch {
     // directory read error — return empty
