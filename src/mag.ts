@@ -8,6 +8,8 @@ import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, get
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag, federationIsController, selectMachineForSlot, federationCurrentMachineName } from "./federation.ts";
+import { isRemoteMachine } from "./remote.ts";
+import { readSlotIntent, intentIsFresh, clearSlotIntent } from "./slot-intents.ts";
 import { stateCheckpoint } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
@@ -20,7 +22,7 @@ import {
   expirePendingFollowupRevises,
 } from "./notify.ts";
 import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField } from "./tasks/markdown.ts";
-import { slotAssign, slotClear, slotResume, slotStart, taskCompleteDirectly, markSlotSetupFailed } from "./slots/index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
 import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
@@ -1940,6 +1942,14 @@ function maybeAutoStartSlots(): void {
     const sessionStarted = getSessionStarted(block).trim();
     if (sessionStarted && sessionStarted !== "null") continue;
 
+    // Skip remote slots that already have a fresh pending start intent —
+    // prevents re-writing the intent every keepalive and defeating TTL.
+    const slotMachine = getMachine(block).trim();
+    if (slotMachine && slotMachine !== "null" && isRemoteMachine(slotMachine)) {
+      const existingIntent = readSlotIntent(slotNum);
+      if (existingIntent && existingIntent.action === "start" && intentIsFresh(existingIntent)) continue;
+    }
+
     // Read task file — check for proposal
     const taskFile = join(tasksDir, `${taskId}.md`);
     if (!existsSync(taskFile)) continue;
@@ -2524,10 +2534,14 @@ async function workerKeepalive(): Promise<void> {
   // Publish terminal state for this machine's sessions
   publishTerminalState();
 
+  // Process explicit intent files from controller (start/stop/resume)
+  await processSlotIntents();
+
   // Resume dead orchestrator processes on this machine's slots
   await maybeResumeDeadOrchestrators();
 
-  // Start slots assigned to this machine that were dispatched but never started
+  // MIGRATION: recover legacy dispatches that used Session Started stamps.
+  // Remove after all workers have upgraded to intent-based dispatch.
   await maybeStartDispatchedSlots();
 
   // Checkpoint and push if anything changed.
@@ -2535,10 +2549,75 @@ async function workerKeepalive(): Promise<void> {
   try { stateCheckpoint("keepalive"); } catch { /* ignore */ }
 }
 
+/** Process intent files written by the controller for slots on this machine. */
+async function processSlotIntents(): Promise<void> {
+  const currentMachine = federationCurrentMachineName();
+  if (!currentMachine) return;
+
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return;
+  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+
+  for (const [slotNum, block] of blocks) {
+    const machine = getMachine(block).trim();
+    if (machine !== currentMachine) continue;
+
+    const intent = readSlotIntent(slotNum);
+    if (!intent) continue;
+
+    // Drop: machine mismatch (slot reassigned after intent was written)
+    if (intent.machine !== currentMachine) {
+      clearSlotIntent(slotNum);
+      continue;
+    }
+
+    // Drop: stale intent beyond TTL
+    if (!intentIsFresh(intent)) {
+      console.error(`ludics: dropping stale ${intent.action} intent for slot ${slotNum} (age: ${Math.floor(Date.now() / 1000) - intent.epoch}s)`);
+      clearSlotIntent(slotNum);
+      continue;
+    }
+
+    let shouldClear = true;
+    try {
+      switch (intent.action) {
+        case "start":
+          await slotStart(slotNum);
+          break;
+        case "stop":
+          await slotStop(slotNum, false, intent.preserveState ?? false);
+          break;
+        case "resume":
+          await slotResume(slotNum);
+          break;
+      }
+      emitEvent({
+        event_type: `slot_intent_${intent.action}`,
+        source: "keepalive",
+        scope: "slot",
+        slot: slotNum,
+        message: `processed ${intent.action} intent`,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`ludics: failed to process ${intent.action} intent for slot ${slotNum}: ${detail}`);
+      // Retain intent on actionable failure — next keepalive retries.
+      shouldClear = false;
+    }
+    if (shouldClear) {
+      clearSlotIntent(slotNum);
+      break; // rate-limit: one successful action per keepalive invocation
+    }
+    // On failure: continue to next slot so a persistently failing intent
+    // doesn't starve other slots' intents. Failed intent is retained for retry.
+  }
+}
+
 /**
- * Detect slots assigned to this machine that have Session Started set
- * (controller dispatched them) but no orchestration state and no running
- * sessions — the start was lost (e.g. due to sync failure). Start them fresh.
+ * MIGRATION: Detect slots assigned to this machine that have Session Started set
+ * (controller dispatched them via the old SSH scheme) but no orchestration state
+ * and no running sessions. Start them fresh.
+ * Remove after all workers have upgraded to intent-based dispatch.
  */
 async function maybeStartDispatchedSlots(): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
@@ -2566,9 +2645,14 @@ async function maybeStartDispatchedSlots(): Promise<void> {
     const machine = getMachine(block).trim();
     if (machine !== currentMachine) continue;
 
-    // Must have Session Started (controller dispatched it)
+    // Must have Session Started (controller dispatched it via old SSH scheme)
     const sessionStarted = getSessionStarted(block).trim();
     if (!sessionStarted || sessionStarted === "null") continue;
+
+    // MIGRATION TTL guard: only recover recent legacy dispatches (10 min window).
+    // Prevents stale Session Started stamps from becoming unbounded start signals.
+    const dispatchedAt = new Date(sessionStarted).getTime();
+    if (isNaN(dispatchedAt) || (Date.now() - dispatchedAt) > 600_000) continue;
 
     // Skip if orchestration state exists — maybeResumeDeadOrchestrators handles that
     const orchState = readOrchestrationState(slotNum);

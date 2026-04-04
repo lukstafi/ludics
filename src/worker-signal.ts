@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { join } from "path";
 import { harnessDir, slotsFilePath } from "./config.ts";
 import { parseSlotBlocks, getTask, getMachine } from "./slots/markdown.ts";
-import { remoteExec, isRemoteMachine } from "./remote.ts";
+import { isRemoteMachine } from "./remote.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
 
@@ -58,6 +58,8 @@ export function workerClearSignal(slotNum: number): void {
 /**
  * Controller polls all remote slots for worker signals and reconciles.
  * Called from federationTick() on the controller machine.
+ * Reads signal files locally from the state repo (committed by worker keepalive,
+ * pulled by federationTick before this function is called).
  */
 export function controllerPollWorkers(): void {
   const sFile = slotsFilePath();
@@ -73,30 +75,31 @@ export function controllerPollWorkers(): void {
     const currentTaskId = getTask(block).trim();
     if (!currentTaskId || currentTaskId === "null") continue;
 
-    // Poll the remote machine for a signal
-    let signalJson: string;
-    try {
-      const result = remoteExec(machineName, ["worker-signal", "read", String(slotNum)]);
-      if (!result.success || !result.stdout) continue;
-      signalJson = result.stdout;
-    } catch {
-      // Machine unreachable — skip, retry next tick
-      continue;
-    }
+    // Read signal locally (committed by worker keepalive, pulled by federationTick)
+    const signalContent = workerReadSignal(slotNum);
+    if (!signalContent) continue;
 
     let signal: WorkerSignal;
     try {
-      signal = JSON.parse(signalJson) as WorkerSignal;
+      signal = JSON.parse(signalContent) as WorkerSignal;
     } catch {
-      console.error(`ludics: worker-signal: invalid JSON from ${machineName} slot ${slotNum}`);
+      console.error(`ludics: worker-signal: invalid JSON for slot ${slotNum}`);
       continue;
     }
 
     // Validate task ID matches current slot assignment
     if (signal.taskId !== currentTaskId) {
-      console.error(`ludics: worker-signal: stale signal for ${signal.taskId} on slot ${slotNum} (current: ${currentTaskId}) — ignoring`);
-      // Clear the stale signal on the remote
-      try { remoteExec(machineName, ["worker-signal", "clear", String(slotNum)]); } catch { /* ignore */ }
+      console.error(`ludics: worker-signal: stale signal for ${signal.taskId} on slot ${slotNum} (current: ${currentTaskId}) — clearing`);
+      workerClearSignal(slotNum);
+      continue;
+    }
+
+    // Discard signals older than 30 minutes — guards against stale signals
+    // surviving a slot reassignment that reuses the same task ID.
+    const signalAge = Math.floor(Date.now() / 1000) - signal.epoch;
+    if (signalAge > 1800) {
+      console.error(`ludics: worker-signal: expired signal for slot ${slotNum} (age: ${signalAge}s) — clearing`);
+      workerClearSignal(slotNum);
       continue;
     }
 
@@ -134,8 +137,8 @@ export function controllerPollWorkers(): void {
         break;
     }
 
-    // Clear the processed signal on the remote
-    try { remoteExec(machineName, ["worker-signal", "clear", String(slotNum)]); } catch { /* ignore */ }
+    // Clear the processed signal locally (committed by stateCheckpoint at end of federationTick)
+    workerClearSignal(slotNum);
   }
 }
 
