@@ -13,6 +13,12 @@ describe("reviewFilename", () => {
   test("handles hyphenated agent names", () => {
     expect(reviewFilename("review", 2, "codex-reviews-claude")).toBe("round-2-codex-reviews-claude.md");
   });
+
+  test("throws on invalid agent names", () => {
+    expect(() => reviewFilename("review", 1, "alice.dev")).toThrow("invalid agent name");
+    expect(() => reviewFilename("review", 1, "has space")).toThrow("invalid agent name");
+    expect(() => reviewFilename("plan-review", 0, "a/b")).toThrow("invalid agent name");
+  });
 });
 
 describe("reviewFilePath", () => {
