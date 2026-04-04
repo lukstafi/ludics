@@ -4,10 +4,10 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rename
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
-import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted, getLiveness } from "./slots/markdown.ts";
+import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted, getLiveness, getMachine } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
-import { federationShouldRunMag, federationIsController, selectMachineForSlot } from "./federation.ts";
+import { federationShouldRunMag, federationIsController, selectMachineForSlot, federationCurrentMachineName } from "./federation.ts";
 import { stateCheckpoint } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
@@ -2466,9 +2466,84 @@ async function workerKeepalive(): Promise<void> {
   // Resume dead orchestrator processes on this machine's slots
   await maybeResumeDeadOrchestrators();
 
+  // Start slots assigned to this machine that were dispatched but never started
+  await maybeStartDispatchedSlots();
+
   // Checkpoint and push if anything changed.
   // Heartbeat is NOT published here — federation trigger handles it.
   try { stateCheckpoint("keepalive"); } catch { /* ignore */ }
+}
+
+/**
+ * Detect slots assigned to this machine that have Session Started set
+ * (controller dispatched them) but no orchestration state and no running
+ * sessions — the start was lost (e.g. due to sync failure). Start them fresh.
+ */
+async function maybeStartDispatchedSlots(): Promise<void> {
+  if (startSessionsAutonomy() === "manual") return;
+
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return;
+
+  const currentMachine = federationCurrentMachineName();
+  if (!currentMachine) return;
+
+  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  const tasksDir = join(harnessDir(), "tasks");
+
+  for (const [slotNum, block] of blocks) {
+    const slotProcess = getProcess(block).trim();
+    if (!slotProcess || slotProcess === "(empty)") continue;
+
+    const taskId = getTask(block).trim();
+    if (!taskId || taskId === "null") continue;
+
+    const mode = getMode(block).trim();
+    if (mode !== "t3code" && mode !== "tmux") continue;
+
+    // Only act on slots assigned to this machine
+    const machine = getMachine(block).trim();
+    if (machine !== currentMachine) continue;
+
+    // Must have Session Started (controller dispatched it)
+    const sessionStarted = getSessionStarted(block).trim();
+    if (!sessionStarted || sessionStarted === "null") continue;
+
+    // Skip if orchestration state exists — maybeResumeDeadOrchestrators handles that
+    const orchState = readOrchestrationState(slotNum);
+    if (orchState) continue;
+
+    // Skip if marked interrupted — needs manual intervention
+    const liveness = getLiveness(block).trim();
+    if (liveness === "interrupted") continue;
+
+    // Check that the task has a proposal (required for start)
+    if (existsSync(tasksDir)) {
+      const taskFile = join(tasksDir, `${taskId}.md`);
+      if (!existsSync(taskFile)) continue;
+      const content = readFileSync(taskFile, "utf-8");
+      if (!content.includes("\nproposal:")) continue;
+    }
+
+    // Dispatched but never started — start fresh
+    console.error(`ludics: slot ${slotNum} was dispatched to this machine but never started — starting now`);
+    try {
+      await slotStart(slotNum);
+      emitEvent({
+        event_type: "slot_auto_start",
+        source: "keepalive",
+        scope: "slot",
+        slot: slotNum,
+        task: taskId,
+        message: `auto-started slot ${slotNum} for ${taskId} (dispatched but never started)`,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`ludics: failed to start dispatched slot ${slotNum}: ${detail}`);
+      markSlotSetupFailed(slotNum, detail);
+    }
+    break; // rate-limit: at most 1 per invocation
+  }
 }
 
 // --- Mag CLI commands ---
