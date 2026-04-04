@@ -78,7 +78,10 @@ Parse the JSON for `status`, `proposal_path`, `ambiguities`, `start_confidence`,
 7. `summary` — notification body, result JSON. Absent: use empty string.
 8. `task_id` — not consumed by orchestrator.
 
-- **status: completed** — proceed to auto-start evaluation (next section)
+- **status: completed** — write `proposal: <proposal_path>` to the task file
+  frontmatter (the orchestrator does this, not the worker, to avoid git sync
+  races from the worker's isolated context). Then proceed to auto-start
+  evaluation (next section)
 - **status: stale** — write result JSON with `"status": "stale"`, stop
 - **status: split-needed** — queue the split skill and stop:
   ```bash
