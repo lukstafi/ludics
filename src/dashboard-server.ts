@@ -10,6 +10,7 @@ import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
 import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
 import { emitEvent } from "./events.ts";
+import { stateCheckpoint } from "./state.ts";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -404,6 +405,8 @@ export function startDashboardServer(
               emitEvent({ event_type: "queue_hold", source: "dashboard", scope: "queue", action: "resume" });
             }
           }
+          // Commit the hold/resume change so state sync doesn't revert it
+          try { stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
         } catch (e) {
