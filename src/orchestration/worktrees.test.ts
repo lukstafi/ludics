@@ -364,3 +364,15 @@ describe("ensureGitExcludes", () => {
     cleanupWorktrees(repo, "ga", [{ name: "c1" }], 8);
   });
 });
+
+// ---------------------------------------------------------------------------
+// cleanupWorktrees resilience
+// ---------------------------------------------------------------------------
+
+describe("cleanupWorktrees resilience", () => {
+  test("does not throw when projectDir does not exist", () => {
+    expect(() =>
+      cleanupWorktrees("/nonexistent/path/xxxxx", "task-1", [{ name: "a1" }, { name: "a2" }], 1),
+    ).not.toThrow();
+  });
+});

@@ -24,14 +24,18 @@ export function runGit(projectDir: string, args: string[]): string {
 }
 
 function maybeGit(projectDir: string, args: string[]): string {
-  const result = Bun.spawnSync(["git", ...args], {
-    cwd: projectDir,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: process.env as Record<string, string>,
-  });
-  if (result.exitCode !== 0) return "";
-  return result.stdout.toString().trim();
+  try {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd: projectDir,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env as Record<string, string>,
+    });
+    if (result.exitCode !== 0) return "";
+    return result.stdout.toString().trim();
+  } catch {
+    return "";
+  }
 }
 
 /** Paths that the orchestrator manages inside worktrees and must never be committed. */
