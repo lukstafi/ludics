@@ -76,12 +76,11 @@ describe("resolveSkillCommand — single-arg skills", () => {
     expect(resolveSkillCommand("verify-completion", { task: "task-042" })).toBe("/ludics-verify-completion task-042");
   });
 
-  test("feedback-digest with repo", () => {
-    expect(resolveSkillCommand("feedback-digest", { repo: "owner/repo" })).toBe("/ludics-feedback-digest owner/repo");
+  test("feedback-digest with repo (no queue-args declared, repo ignored)", () => {
+    expect(resolveSkillCommand("feedback-digest", { repo: "owner/repo" })).toBe("/ludics-feedback-digest");
   });
 
   test("feedback-digest without repo returns command only", () => {
-    // repo is optional — no required-args guard
     expect(resolveSkillCommand("feedback-digest", {})).toBe("/ludics-feedback-digest");
   });
 });
