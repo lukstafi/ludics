@@ -618,17 +618,21 @@ describe("orchOnStop handler", () => {
 describe("refreshAgentStatuses", () => {
   let tmpDir: string;
   let origHarnessDir: string | undefined;
+  let eventSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     tmpDir = makeTmpDir();
     origHarnessDir = process.env.LUDICS_HARNESS_DIR;
     process.env.LUDICS_HARNESS_DIR = join(tmpDir, "harness");
+    // Mock emitEvent to prevent test events leaking into production journal
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
     if (origHarnessDir !== undefined) process.env.LUDICS_HARNESS_DIR = origHarnessDir;
     else delete process.env.LUDICS_HARNESS_DIR;
+    eventSpy.mockRestore();
   });
 
   test("null snapshot does not crash or transition dispatched lifecycle", async () => {
@@ -835,6 +839,10 @@ describe("refreshAgentStatuses", () => {
   });
 
   test("inconsistency: peer-sync done + lifecycle dispatched emits warning", async () => {
+    // This test verifies actual event emission to the journal file,
+    // so restore the real emitEvent for this test only.
+    eventSpy.mockRestore();
+
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "done|1|done" });
     const state = makeState({ phase: "work" }, peerSyncDir);
     state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "dispatched" });
@@ -844,11 +852,14 @@ describe("refreshAgentStatuses", () => {
     // Read the events journal to verify a warning was emitted.
     const eventsPath = join(tmpDir, "harness", "journal", "events.jsonl");
     expect(existsSync(eventsPath)).toBe(true);
-    const events = readFileSync(eventsPath, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
-    const warning = events.find((e: { event_type?: string }) => e.event_type === "orchestration_warning");
+    const eventsData = readFileSync(eventsPath, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    const warning = eventsData.find((e: { event_type?: string }) => e.event_type === "orchestration_warning");
     expect(warning).toBeDefined();
     expect(warning.message).toContain('peer-sync says "done"');
     expect(warning.message).toContain('"dispatched"');
+
+    // Re-enable mock for afterEach cleanup
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
   });
 });
 

@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { slotAssign, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed } from "./index.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
+import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
 
 const ORIGINAL_HOME = process.env.HOME;
@@ -376,6 +377,17 @@ slot: 1
 });
 
 describe("slotResume — interrupted fallback to fresh start", () => {
+  // Track tmux sessions created during tests so we can clean them up.
+  // slotResume/slotStart may create real tmux sessions as a side effect.
+  const createdTmuxSessions: string[] = [];
+
+  afterEach(() => {
+    for (const session of createdTmuxSessions) {
+      try { if (tmuxHasSession(session)) tmuxKillSession(session); } catch { /* ignore */ }
+    }
+    createdTmuxSessions.length = 0;
+  });
+
   test("falls back to slotStart when interrupted slot has no orchestration state", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
@@ -389,6 +401,10 @@ describe("slotResume — interrupted fallback to fresh start", () => {
     // slotResume should fall back to slotStart, which will fail because tmux
     // isn't available in test — but it should NOT throw the "no persisted
     // orchestration state" error.
+    // Register possible tmux sessions for cleanup (slotStart may create these)
+    createdTmuxSessions.push(
+      "s1_coder_task-resume-fallback-1", "s1_reviewer_task-resume-fallback-1",
+    );
     try {
       await slotResume(1);
     } catch (err) {
@@ -449,6 +465,10 @@ describe("slotResume — interrupted fallback to fresh start", () => {
     // tmux slot state is missing. For tmux it reaches the resume logic.
     // The key assertion: it should NOT throw "has recoverable orchestration state"
     // (which was the loop bug when falling back to slotStart with stale orch).
+    // Register possible tmux sessions for cleanup
+    createdTmuxSessions.push(
+      "s1_coder_task-resume-fallback-2", "s1_reviewer_task-resume-fallback-2",
+    );
     try {
       await slotResume(1);
     } catch (err) {
