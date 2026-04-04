@@ -94,6 +94,15 @@ export function controllerPollWorkers(): void {
       continue;
     }
 
+    // Discard signals older than 30 minutes — guards against stale signals
+    // surviving a slot reassignment that reuses the same task ID.
+    const signalAge = Math.floor(Date.now() / 1000) - signal.epoch;
+    if (signalAge > 1800) {
+      console.error(`ludics: worker-signal: expired signal for slot ${slotNum} (age: ${signalAge}s) — clearing`);
+      workerClearSignal(slotNum);
+      continue;
+    }
+
     // Process the signal
     switch (signal.status) {
       case "done":

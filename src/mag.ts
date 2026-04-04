@@ -2604,8 +2604,12 @@ async function processSlotIntents(): Promise<void> {
       // Retain intent on actionable failure — next keepalive retries.
       shouldClear = false;
     }
-    if (shouldClear) clearSlotIntent(slotNum);
-    break; // rate-limit: one intent per keepalive invocation
+    if (shouldClear) {
+      clearSlotIntent(slotNum);
+      break; // rate-limit: one successful action per keepalive invocation
+    }
+    // On failure: continue to next slot so a persistently failing intent
+    // doesn't starve other slots' intents. Failed intent is retained for retry.
   }
 }
 
