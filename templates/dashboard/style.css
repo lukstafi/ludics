@@ -344,6 +344,11 @@ main {
     color: var(--success);
 }
 
+.mode-toggle-btn.mode-tmux {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
 .mode-toggle-btn.mode-manual {
     border-color: var(--warning);
     color: var(--warning);
