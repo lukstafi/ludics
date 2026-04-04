@@ -882,9 +882,11 @@ export function autoCommitAgent(
   const runtime = state.agentStates[agent.name];
   if (!runtime) return;
 
-  // Build commit message: "<agent> <phase>: <status message or WIP>"
-  const statusMsg = runtime.statusMessage?.replace(/\s+/g, " ").trim() || "WIP";
-  const commitMessage = `${agent.name} ${state.phase}: ${statusMsg}`;
+  // Build commit message: "[round N] <status message, slot title, or WIP>"
+  const statusMsg = runtime.statusMessage?.replace(/\s+/g, " ").trim()
+    || state.slotTitle?.trim()
+    || "WIP";
+  const commitMessage = `[round ${state.round}] ${statusMsg}`;
 
   const result = autoCommitWorktree(agent.worktreePath, commitMessage);
 

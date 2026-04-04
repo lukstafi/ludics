@@ -1666,7 +1666,7 @@ describe("autoCommitAgent", () => {
     rmSync(join(import.meta.dir, ".test-tmp-autocommit"), { recursive: true, force: true });
   });
 
-  test("commit message format: '<agent> <phase>: <statusMessage>'", () => {
+  test("commit message format: '[round N] <statusMessage>'", () => {
     if (!Bun.which("git")) return;
     const repo = join(import.meta.dir, ".test-tmp-autocommit", "msg-fmt");
     initGitRepo(repo);
@@ -1674,6 +1674,7 @@ describe("autoCommitAgent", () => {
 
     const state = makeState({
       phase: "work",
+      round: 3,
       agents: [{ name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "main", worktreePath: repo }],
       agentStates: {
         coder: { status: "done", statusEpoch: 100, statusMessage: "implemented tensor syntax", prUrl: null, interrupted: false },
@@ -1681,10 +1682,30 @@ describe("autoCommitAgent", () => {
     });
 
     autoCommitAgent(state, state.agents[0]!, false);
-    expect(gitLastCommitMsg(repo)).toBe("coder work: implemented tensor syntax");
+    expect(gitLastCommitMsg(repo)).toBe("[round 3] implemented tensor syntax");
   });
 
-  test("falls back to WIP when statusMessage is empty", () => {
+  test("falls back to slotTitle when statusMessage is empty", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(import.meta.dir, ".test-tmp-autocommit", "title-fallback");
+    initGitRepo(repo);
+    writeFileSync(join(repo, "code.ts"), "export const x = 1;\n");
+
+    const state = makeState({
+      phase: "review",
+      round: 2,
+      slotTitle: "add widget support",
+      agents: [{ name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "main", worktreePath: repo }],
+      agentStates: {
+        reviewer: { status: "done", statusEpoch: 100, statusMessage: "", prUrl: null, interrupted: false },
+      },
+    });
+
+    autoCommitAgent(state, state.agents[0]!, false);
+    expect(gitLastCommitMsg(repo)).toBe("[round 2] add widget support");
+  });
+
+  test("falls back to WIP when both statusMessage and slotTitle are empty", () => {
     if (!Bun.which("git")) return;
     const repo = join(import.meta.dir, ".test-tmp-autocommit", "wip-fallback");
     initGitRepo(repo);
@@ -1699,7 +1720,7 @@ describe("autoCommitAgent", () => {
     });
 
     autoCommitAgent(state, state.agents[0]!, false);
-    expect(gitLastCommitMsg(repo)).toBe("reviewer review: WIP");
+    expect(gitLastCommitMsg(repo)).toBe("[round 1] WIP");
   });
 
   test("collapses multiline statusMessage to single line", () => {
@@ -1717,7 +1738,7 @@ describe("autoCommitAgent", () => {
     });
 
     autoCommitAgent(state, state.agents[0]!, false);
-    expect(gitLastCommitMsg(repo)).toBe("coder work: line1 line2 line3");
+    expect(gitLastCommitMsg(repo)).toBe("[round 1] line1 line2 line3");
   });
 
   test("no-op on clean worktree", () => {
@@ -1788,7 +1809,7 @@ describe("autoCommitAllAgents", () => {
 
     autoCommitAllAgents(state, state.agents, false);
     // Reviewer has higher epoch → commit attributed to reviewer
-    expect(gitLastCommitMsg(repo)).toBe("reviewer work: reviewed it");
+    expect(gitLastCommitMsg(repo)).toBe("[round 1] reviewed it");
   });
 
   test("duo mode: commits independently per worktree", () => {
@@ -1816,8 +1837,8 @@ describe("autoCommitAllAgents", () => {
     autoCommitAllAgents(state, state.agents, false);
     expect(gitCommitCount(repo1)).toBe(2);
     expect(gitCommitCount(repo2)).toBe(2);
-    expect(gitLastCommitMsg(repo1)).toBe("coder work: coded");
-    expect(gitLastCommitMsg(repo2)).toBe("reviewer work: reviewed");
+    expect(gitLastCommitMsg(repo1)).toBe("[round 1] coded");
+    expect(gitLastCommitMsg(repo2)).toBe("[round 1] reviewed");
   });
 });
 
