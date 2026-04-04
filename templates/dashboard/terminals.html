@@ -32,6 +32,11 @@
             content: 'No session'; display: flex; align-items: center;
             justify-content: center; flex: 1; color: #555; font-family: monospace;
         }
+        .terminal-grid.error::after {
+            content: attr(data-error); display: flex; align-items: center;
+            justify-content: center; padding: 2rem; color: #f55;
+            font-family: monospace; font-size: 14px; white-space: pre-line;
+        }
     </style>
 </head>
 <body>
@@ -55,15 +60,31 @@
         <!-- Populated by JS from data/terminals.json -->
     </div>
     <script>
+        function showError(msg) {
+            const grid = document.querySelector('.terminal-grid');
+            grid.classList.add('error');
+            grid.dataset.error = msg;
+        }
+        function clearError() {
+            const grid = document.querySelector('.terminal-grid');
+            grid.classList.remove('error');
+            delete grid.dataset.error;
+        }
         async function loadTerminals() {
             try {
                 const resp = await fetch('data/terminals.json');
-                if (!resp.ok) return renderFallback();
+                if (!resp.ok) {
+                    showError(`Failed to load terminals: ${resp.status} ${resp.statusText}`);
+                    return;
+                }
                 const data = await resp.json();
+                clearError();
                 renderTerminals(data.terminals || [], data.activeSlots || []);
                 document.getElementById('last-update').textContent =
                     'Last update: ' + new Date().toLocaleTimeString();
-            } catch { renderFallback(); }
+            } catch (err) {
+                showError(`Failed to connect to dashboard data:\n${err.message}`);
+            }
         }
         function renderTerminals(terminals, activeSlots) {
             const grid = document.querySelector('.terminal-grid');
@@ -85,9 +106,10 @@
                     const entry = terminals.find(
                         t => t.slot === slot && t.role === role
                     );
-                    const port = entry?.port ?? (7681 + (slot-1)*2 + (role === 'reviewer' ? 1 : 0));
-                    const host = entry?.host ?? window.location.hostname;
-                    const active = slotActive && entry?.active !== false;
+                    if (!entry) continue;
+                    const port = entry.port;
+                    const host = entry.host;
+                    const active = slotActive && entry.active !== false;
                     const src = `http://${host}:${port}`;
                     const cellId = `cell-${slot}-${role}`;
 
@@ -118,7 +140,6 @@
                 }
             }
         }
-        function renderFallback() { renderTerminals([], []); }
         loadTerminals();
         setInterval(loadTerminals, 30000);
     </script>
