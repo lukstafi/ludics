@@ -1,6 +1,6 @@
 // Mag queue functions — queue-based communication with Claude Code Mag session
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync } from "fs";
 import { join, dirname } from "path";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
@@ -65,6 +65,41 @@ export function queuePop(): string | null {
   writeFileSync(file, lines.slice(1).join("\n") + (lines.length > 1 ? "\n" : ""));
   emitEvent({ event_type: "queue_pop", source: "keepalive", scope: "queue", message: first.slice(0, 200) });
   return first;
+}
+
+function readQueueLines(): string[] {
+  const file = queueFile();
+  if (!existsSync(file)) return [];
+  const content = readFileSync(file, "utf-8");
+  if (!content || content === "\n") return [];
+  const lines = content.endsWith("\n") ? content.slice(0, -1).split("\n") : content.split("\n");
+  // Blank lines are not valid JSONL entries — drop them as corruption.
+  // Non-blank malformed JSON is preserved as-is.
+  return lines.filter(l => l.length > 0);
+}
+
+function writeQueueLines(lines: string[]): void {
+  const file = queueFile();
+  const tmp = file + ".tmp";
+  writeFileSync(tmp, lines.length > 0 ? lines.join("\n") + "\n" : "");
+  renameSync(tmp, file);
+}
+
+export function queuePopOne(): string | null {
+  const lines = readQueueLines();
+  if (lines.length === 0) return null;
+  const first = lines[0]!;
+  writeQueueLines(lines.slice(1));
+  emitEvent({ event_type: "queue_pop", source: "cli", scope: "queue", message: first.slice(0, 200) });
+  return first;
+}
+
+export function queuePopAll(): string[] {
+  const lines = readQueueLines();
+  if (lines.length === 0) return [];
+  writeQueueLines([]);
+  emitEvent({ event_type: "queue_pop", source: "cli", scope: "queue", message: `popped ${lines.length} items` });
+  return lines;
 }
 
 export function queuePending(): boolean {

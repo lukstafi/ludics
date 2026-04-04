@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, readFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -45,6 +45,87 @@ describe("queueHasPendingFeedbackDigest", () => {
     const { queueRequest, queueHasPendingFeedbackDigest } = await loadQueue();
     queueRequest("briefing");
     expect(queueHasPendingFeedbackDigest("ludics")).toBe(false);
+  });
+});
+
+describe("queuePopOne", () => {
+  test("returns null for missing queue file", async () => {
+    const { queuePopOne } = await loadQueue();
+    expect(queuePopOne()).toBeNull();
+  });
+
+  test("returns null for empty queue file", async () => {
+    writeFileSync(join(tmpDir, "mag", "queue.jsonl"), "");
+    const { queuePopOne } = await loadQueue();
+    expect(queuePopOne()).toBeNull();
+  });
+
+  test("returns first line and leaves tail with newline termination", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"a"}\n{"id":"b"}\n{"id":"c"}\n');
+    const { queuePopOne } = await loadQueue();
+    expect(queuePopOne()).toBe('{"id":"a"}');
+    expect(readFileSync(qf, "utf-8")).toBe('{"id":"b"}\n{"id":"c"}\n');
+  });
+
+  test("single-item queue leaves empty file content", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"a"}\n');
+    const { queuePopOne } = await loadQueue();
+    expect(queuePopOne()).toBe('{"id":"a"}');
+    expect(readFileSync(qf, "utf-8")).toBe("");
+  });
+
+  test("returns raw line even if malformed JSON", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, "not-json-but-not-blank\n");
+    const { queuePopOne } = await loadQueue();
+    expect(queuePopOne()).toBe("not-json-but-not-blank");
+  });
+
+  test("skips blank lines from corruption", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"a"}\n\n{"id":"b"}\n');
+    const { queuePopOne } = await loadQueue();
+    expect(queuePopOne()).toBe('{"id":"a"}');
+    expect(readFileSync(qf, "utf-8")).toBe('{"id":"b"}\n');
+  });
+});
+
+describe("queuePopAll", () => {
+  test("returns [] for missing queue file", async () => {
+    const { queuePopAll } = await loadQueue();
+    expect(queuePopAll()).toEqual([]);
+  });
+
+  test("returns [] for empty queue file", async () => {
+    writeFileSync(join(tmpDir, "mag", "queue.jsonl"), "");
+    const { queuePopAll } = await loadQueue();
+    expect(queuePopAll()).toEqual([]);
+  });
+
+  test("returns all lines in FIFO order and empties the file", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"a"}\n{"id":"b"}\n');
+    const { queuePopAll } = await loadQueue();
+    expect(queuePopAll()).toEqual(['{"id":"a"}', '{"id":"b"}']);
+    expect(readFileSync(qf, "utf-8")).toBe("");
+  });
+
+  test("single-item queue returns [item] and empties file", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"a"}\n');
+    const { queuePopAll } = await loadQueue();
+    expect(queuePopAll()).toEqual(['{"id":"a"}']);
+    expect(readFileSync(qf, "utf-8")).toBe("");
+  });
+
+  test("skips blank lines from corruption", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"a"}\n\n{"id":"b"}\n');
+    const { queuePopAll } = await loadQueue();
+    expect(queuePopAll()).toEqual(['{"id":"a"}', '{"id":"b"}']);
+    expect(readFileSync(qf, "utf-8")).toBe("");
   });
 });
 
