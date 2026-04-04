@@ -147,6 +147,8 @@ Commands:
   mag process-suggestions <id> Queue suggestion processing for completed task
   mag message "text"           Send async message to Mag
   mag queue                    Show pending queue requests
+  mag queue pop one            Pop and print first queue item (JSONL)
+  mag queue pop all            Pop and print all queue items (JSONL)
   mag context                  Pre-compute briefing context file
 
   notify outgoing <msg>        Send notification to user

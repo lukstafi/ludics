@@ -3154,9 +3154,36 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "queue": {
-      // Reuse the existing queueShow
-      const { queueShow } = await import("./queue.ts");
-      queueShow();
+      const sub2 = args[1];
+      if (sub2 === "pop") {
+        const mode = args[2];
+        if (args.length > 3) {
+          throw new Error(`unexpected trailing arguments: ${args.slice(3).join(" ")} (usage: mag queue pop one|all)`);
+        }
+        const { queuePopOne, queuePopAll } = await import("./queue.ts");
+        if (mode === "one") {
+          const line = queuePopOne();
+          if (line === null) {
+            process.exitCode = 1;
+          } else {
+            console.log(line);
+          }
+        } else if (mode === "all") {
+          const lines = queuePopAll();
+          if (lines.length === 0) {
+            process.exitCode = 1;
+          } else {
+            for (const l of lines) console.log(l);
+          }
+        } else {
+          throw new Error(`unknown queue pop mode: ${mode ?? "(missing)"} (use: one, all)`);
+        }
+      } else if (!sub2) {
+        const { queueShow } = await import("./queue.ts");
+        queueShow();
+      } else {
+        throw new Error(`unknown queue subcommand: ${sub2} (use: pop one, pop all)`);
+      }
       break;
     }
     case "context":
@@ -3314,6 +3341,6 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     default:
-      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, process-suggestions, completed, message, queue, queue-pop, context, feedback-digest)`);
+      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, process-suggestions, completed, message, queue, queue pop one, queue pop all, queue-pop, context, feedback-digest)`);
   }
 }
