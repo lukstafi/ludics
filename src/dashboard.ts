@@ -6,6 +6,7 @@ import YAML from "yaml";
 import { globalAdapter, harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
 import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted, getMachine, getLiveness } from "./slots/markdown.ts";
 import { isRemoteMachine } from "./remote.ts";
+import { federationMachine } from "./federation.ts";
 import { priorityValue } from "./tasks/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl, networkHostname } from "./network.ts";
@@ -816,7 +817,8 @@ function generateTerminals(): Record<string, unknown> {
       if (mode === "tmux" && sessionStarted && sessionStarted !== "null") {
         activeSlots.push(num);
         const machine = getMachine(block).trim();
-        if (machine) slotMachines.set(num, machine);
+        const host = (machine && federationMachine(machine)?.host) || machine;
+        if (host) slotMachines.set(num, host);
       }
     }
   }
