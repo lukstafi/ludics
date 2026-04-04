@@ -118,26 +118,35 @@ function taskSpecText(state: OrchestrationState): string {
   const proposalValue = readFrontmatterField(content, "proposal");
   if (proposalValue) {
     if (proposalValue !== "inline") {
-      const proposalFile = resolveProposalAbsPath(state.projectDir, proposalValue);
-      // Only read proposal file contents if it is inside the project tree, to avoid
-      // exposing arbitrary local file content through the Proposal summary line.
-      const projectRoot = state.projectDir.endsWith("/") ? state.projectDir : `${state.projectDir}/`;
-      const isInProjectTree = proposalFile.startsWith(projectRoot);
-      const summary = isInProjectTree ? extractProposalSummary(proposalFile) : null;
-      const summaryLine = summary ? `Proposal summary: ${summary}\n` : "";
-      const contentWithPointer =
-        `${content}\n\n---\n${summaryLine}Read the full proposal at \`${proposalValue}\` in the project repo.\n`;
-
-      const urlMatch = contentWithPointer.match(
-        /^url:\s*"?https:\/\/github\.com\/([^/\s"]+\/[^/\s"]+)\/issues\/(\d+)"?/m,
-      );
-      if (urlMatch) {
-        const issueBody = ghIssueBody(urlMatch[1]!, urlMatch[2]!);
-        if (issueBody) {
-          return `${contentWithPointer}\n\n---\n## GitHub Issue Body\n\n${issueBody}`;
-        }
+      let proposalFile: string;
+      try {
+        proposalFile = resolveProposalAbsPath(state.projectDir, proposalValue);
+      } catch (err) {
+        console.error(`ludics: taskSpecText: ignoring bad proposal path: ${(err as Error).message}`);
+        // Fall through to legacy/inline path below.
+        proposalFile = "";
       }
-      return contentWithPointer;
+      if (proposalFile) {
+        // Only read proposal file contents if it is inside the project tree, to avoid
+        // exposing arbitrary local file content through the Proposal summary line.
+        const projectRoot = state.projectDir.endsWith("/") ? state.projectDir : `${state.projectDir}/`;
+        const isInProjectTree = proposalFile.startsWith(projectRoot);
+        const summary = isInProjectTree ? extractProposalSummary(proposalFile) : null;
+        const summaryLine = summary ? `Proposal summary: ${summary}\n` : "";
+        const contentWithPointer =
+          `${content}\n\n---\n${summaryLine}Read the full proposal at \`${proposalValue}\` in the project repo.\n`;
+
+        const urlMatch = contentWithPointer.match(
+          /^url:\s*"?https:\/\/github\.com\/([^/\s"]+\/[^/\s"]+)\/issues\/(\d+)"?/m,
+        );
+        if (urlMatch) {
+          const issueBody = ghIssueBody(urlMatch[1]!, urlMatch[2]!);
+          if (issueBody) {
+            return `${contentWithPointer}\n\n---\n## GitHub Issue Body\n\n${issueBody}`;
+          }
+        }
+        return contentWithPointer;
+      }
     }
   }
 
