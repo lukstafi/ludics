@@ -1,14 +1,18 @@
 # CLAUDE.md — Harness Directory
 
-This is a **ludics harness**: the private state directory for personal AI coordination. All task files, journals, slot state, and Mag memory live here.
+This is a **ludics harness**: the private state directory for personal AI coordination. All task files, journals, slot state, orchestration state, and Mag memory live here.
 
 ## Quick Reference
 
-- `config.yaml` — projects, adapters, Mag settings, triggers
+- `config.yaml` — projects, adapters (t3code + tmux), Mag settings, federation, triggers
 - `slots.md` — current slot assignments (6 slots)
-- `tasks/` — task files (`task-NNN.md`), git-backed
-- `journal/` — daily logs, notifications
-- `mag/` — Mag's context, inbox, memory, and request results
+- `tasks/` — task files (`task-NNN.md`), git-backed, source of truth
+- `journal/` — daily logs, `events.jsonl` (structured event log), `notifications.jsonl`
+- `mag/` — Mag's context, memory, request queue/results, `queue-hold` sentinel
+- `orchestration/` — per-slot orchestration state (`slot-{n}.json`)
+- `t3code/` — t3code server connection record and per-slot thread metadata
+- `retrospectives/` — post-completion retrospective data per task
+- `federation/` — leader election, heartbeats, slot intent files
 - `briefing.md`, `agenda.md`, `sessions.md` — generated views
 
 ## For Mag Sessions
@@ -16,10 +20,12 @@ This is a **ludics harness**: the private state directory for personal AI coordi
 You are the **Mag** — the coordinator agent. Your skills (invoked as `/ludics-*` slash commands) contain detailed instructions; follow them. Key principles:
 
 - **Be proactive**: suggest tasks, flag stalled work, manage slots without waiting to be asked
-- **Use the CLI**: `ludics` commands handle slot operations, task management, flow views, and adapter interactions — run `ludics help` to see available commands
+- **Use the CLI**: `ludics` commands handle slot operations, task management, flow views, orchestration control, and adapter interactions — run `ludics help` to see available commands
 - **Learn the framework**: if you need to understand how ludics works internally, read the source at `~/ludics/` (or `~/repos/ludics/`). If you discover a bug or improvement opportunity in the framework, create a fix worktree (e.g. `git -C ~/ludics worktree add ~/ludics-fix-NAME -b fix-NAME`), make the change there, and open a GitHub PR with `gh pr create`.
 - **Commit often**: changes to this harness directory should be committed to git regularly
 - **Queue pipeline**: requests in `mag/queue.jsonl` are pending — they will be popped by the stop hook and delivered to you as `/ludics-*` skill commands. You may read the queue for situational awareness, but don't act on those requests directly; each one will arrive as a translated skill command when it's your turn to process it.
+- **Deferred launches**: tasks with `deferred_launch: true` await user approval before auto-start. When `approved: true` is set (via dashboard or CLI), the keepalive will auto-start them.
+- **Orchestration awareness**: slots running t3code orchestrated sessions have state in `orchestration/slot-{n}.json`. Use `ludics orch status <slot>` to inspect. Hung agents are auto-detected and nudged; PR merge conflicts trigger automatic coder redispatch.
 
 ## Filing Issues from Obstacles
 
@@ -32,8 +38,10 @@ When you encounter workflow friction, automation bugs, or recurring manual worka
 | **Elaborate** | Cross-task awareness, project scope, surface unknowns | Task file: Context + Tentative Design + Questions |
 | **Proposal process** | Acquire knowledge from user (answer questions) | User resolves questions → `has_questions` removed |
 | **Proposal artifact** | Distill resolved intent into actionable spec | Proposal file: Goal + Acceptance Criteria + Context + optional Approach |
-| **Plan** (orchestration) | Implementation planning by agents | Coder plans, reviewer checks |
+| **Auto-start / Deferred** | Evaluate confidence + autonomy → launch or defer to user | Session starts or `deferred_launch: true` set |
+| **Plan** (orchestration) | Implementation planning by agents | Coder plans, reviewer checks (up to 3 merge→review iterations) |
 | **Work** (orchestration) | Actual implementation | Agents code against the proposal |
+| **Review → PR → Merge** | Review, create PR, resolve conflicts, merge | PR merged, retrospective collected |
 
 **Key separations:**
 - Elaboration does NOT write acceptance criteria — those belong in the proposal
@@ -55,5 +63,8 @@ When you encounter workflow friction, automation bugs, or recurring manual worka
 If you are an agent assigned to a slot working on a task:
 
 - Your task file is in `tasks/` — read it for context and acceptance criteria
+- Your proposal file (if any) is referenced in the task frontmatter — read it for acceptance criteria and scope
+- The `.peer-sync/` directory contains orchestration coordination state — the orchestrator writes, you read (phase, round, peer status, plans, reviews)
 - Update the task's Notes section with progress as you work
+- Auto-commits use `[round N]` prefix format
 - Do not modify files outside your task scope (especially `slots.md` or other tasks)

@@ -4,13 +4,15 @@ Instructions for AI agents working on this repository.
 
 ## Project Overview
 
-ludics is a lightweight personal AI infrastructure — a harness for humans working with AI agents. It manages concurrent agent sessions (slots), orchestrates autonomous task analysis (Mag), and maintains flow-based task management.
+ludics is a lightweight personal AI infrastructure — a harness for humans working with AI agents. It manages concurrent agent sessions (slots), runs multi-agent coding workflows via t3code or tmux, orchestrates autonomous task analysis (Mag), and maintains flow-based task management.
 
 ## Key Concepts
 
-- **Slots**: Like CPUs, not memory. Each slot runs one process, holds runtime state, has no persistent identity.
-- **Adapters**: Thin integrations with different agent systems (agent-duo, Claude Code, Codex, etc.)
-- **Mag**: Persistent Claude Code session (Opus 4.5) that provides autonomous strategic coordination.
+- **Slots**: Like CPUs, not memory. Each slot runs one process, holds runtime state, has no persistent identity. Supports preemption and mode toggle.
+- **Adapters**: Thin integrations with different agent systems (t3code, Claude Code via tmux, Codex, etc.). The `t3code` adapter supports orchestrated multi-agent workflows; tmux-based adapters (`agent-claude`, `agent-codex`) are currently primary due to t3code stability issues, but t3code remains the target as its stability improves.
+- **Orchestration**: Phase-driven multi-agent workflow engine (21 phases) — pair mode (coder + reviewer), hierarchical duo mode (two paired slots with swapped roles), cross-slot merge coordination.
+- **Mag**: Persistent Claude Code session (Opus) providing autonomous strategic coordination. Skills use orchestrator/worker pattern for context isolation.
+- **Federation**: Multi-machine coordination with seniority-based leader election. Slot intent files for cross-machine dispatch (replaced SSH).
 - **State**: Stored in a separate private repo, not here. This repo is public tooling only.
 
 ## Architecture
@@ -30,18 +32,22 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full details.
 ```
 ludics/
 ├── bin/ludics              # Compiled standalone binary (~60MB)
-├── src/                    # TypeScript source (~22 modules, ~9K lines)
+├── src/                    # TypeScript source (~80 modules, ~27K lines)
 │   ├── index.ts            # CLI entry point & command dispatcher
 │   ├── config.ts           # Two-tier config loading
-│   ├── slots/              # Slot management (assign, clear, preempt)
-│   ├── tasks/              # Task aggregation and management
-│   ├── adapters/           # Adapter registry + implementations
-│   ├── sessions/           # Session discovery pipeline
+│   ├── mag.ts              # Mag lifecycle, queue, auto-start, deferred launch (~3.5K lines)
 │   ├── flow.ts             # Flow engine (ready/blocked/critical)
-│   ├── mag.ts              # Mag lifecycle & queue
-│   ├── federation.ts       # Multi-machine leader election
+│   ├── federation.ts       # Multi-machine leader election + worker keepalive (~590 lines)
+│   ├── slot-intents.ts     # Cross-machine slot intent files
+│   ├── slots/              # Slot management (assign, clear, preempt, duo-expand, mode toggle)
+│   ├── tasks/              # Task aggregation and management
+│   ├── adapters/           # Adapter registry + implementations (t3code + tmux)
+│   ├── orchestration/      # Multi-agent workflow engine (~9K lines, 21 phases)
+│   ├── t3code/             # t3code server integration (~1K lines)
+│   ├── sessions/           # Session discovery pipeline
 │   └── ...
-├── skills/                 # Mag skills (15 Markdown files)
+├── skills/                 # Mag skills (22 files: 15 skills + 5 workers + conventions)
+├── skills/orchestration/   # Orchestration phase templates (24 files)
 ├── templates/              # Config templates, launchd/systemd, dashboard HTML
 └── tests/                  # Test suite
 ```
@@ -66,7 +72,7 @@ When making changes:
 ### Adding an adapter
 
 1. Create `src/adapters/<name>.ts`
-2. Implement the `Adapter` interface: `readState()`, `start()`, `stop()`
+2. Implement the `Adapter` interface: `readState()`, `start()`, `stop()`, `lastActivity()`
 3. Register in `src/adapters/index.ts`
 
 ### Adding a trigger type
@@ -84,4 +90,5 @@ When making changes:
 
 - Never store user data in this repo — all state goes to the user's private repo
 - Keep dependencies minimal
-- Prefer reading state from existing sources (like agent-duo's `.peer-sync/`) over creating new state
+- Prefer reading state from existing sources (like `.peer-sync/` orchestration data) over creating new state
+- tmux-based adapters (`agent-claude`, `agent-codex`) are currently used for most orchestrated workflows; t3code adapter has richer functionality but is pending stability improvements. Both paths are maintained.

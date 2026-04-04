@@ -1,8 +1,63 @@
 # Changelog
 
+## v0.6.0 — 2026-04-05
+
+Hardening release. Hierarchical duo mode with cross-slot merge coordination, federation intent files replacing SSH dispatch, deferred launch approval flow, hung agent detection, PR conflict auto-resolution, and robust state sync.
+
+### New features
+
+- **Hierarchical duo mode** — `--duo` now expands into two paired slots via `expandDuoSlots()` with swapped coder/reviewer roles. Cross-slot merge coordination (`bothSlotsReadyForMerge()`, `isMergeCoordinator()`) ensures both slots synchronize at merge time. New `forward-pr` phase and `duoPeerSlot`/`duoAwaitingPeer` state fields. Legacy duo-only templates removed.
+- **Federation intent files** — SSH remote dispatch replaced with state-repo intent files (`federation/slot-intents/slot-{N}.json`). Controller writes intents, worker nodes consume and clear them. 10-minute TTL, one-shot command pattern.
+- **Worker keepalive** — Separated from federation trigger. Worker nodes independently detect dispatched-but-lost slots (proposal exists, no active session) and auto-start them via intent consumption.
+- **Deferred launch approval** — Two-stage gate for task launches: `deferred_launch` flag set when auto-start defers to user, dashboard tile with View/Approve/Abandon buttons. On approve, `approved: true` triggers keepalive auto-start. Proposal revision clears approval.
+- **Hung agent detection** — Three-branch detection: running-hung (done + pane static >180s), dispatch-hung (dispatched + static >90s), idle-running-hung (running + static >180s for prompt injection failures). Escalating nudges: Enter → "Continue." → re-dispatch → force-settle. Unified paste-buffer prompt injection across all providers.
+- **PR merge conflict detection** — During `pr-comments` phase, tracks PR mergeable state transitions. On conflict detection, redispatches coder with `pr-conflict-resolve.md` template for rebase and resolution.
+- **Process-suggestions skill** — `/ludics-process-suggestions` extracts actionable items from `REQUEST_CHANGES` review artifacts. Auto-queued when retrospective has request_changes reviews.
+- **Atomic queue pop** — `ludics mag queue pop one` and `ludics mag queue pop all` for reliable queue consumption. Gated on `federationIsController`.
+- **Adapter preserve-state** — `stop({ preserveState: true })` skips destructive cleanup (worktrees, peer-sync, threads). Used by `slot mode` toggle for switching adapter without losing orchestration state.
+- **Dashboard tiles** — Deferred Launch tile, Unanswered Questions tile (`has_questions` flag), adapter toggle button on slot tiles. Shared `FilteredTaskTileConfig` abstraction for filtered-task tiles.
+- **Auto-commit round prefix** — Orchestrated agent commits use `[round N]` prefix format.
+- **Auto-queue feedback-digest** — Queued during briefing precompute, scoped to briefing trigger.
+- **Staging repo support** — `staging_repo` field in project config, plumbed into skill contexts and PR creation templates.
+- **Dashboard shared markdown renderer** — Extracted `markdown.js` from duplicated `markdownToHtml()` calls.
+- **Direct orchestration flag parsing** — Slot assign accepts orchestration flags (`--duo`, `--pair`, etc.) directly.
+
+### Fixes
+
+- **Robust state sync** — Recover stuck rebases, squash-before-rebase strategy, sort JSONL merges to prevent conflicts. Replace stash-pop with commit-before-pull in `statePull`.
+- **Federation hostname resolution** — Improved hostname matching for non-Tailscale contexts, fallback to federation machine host, find Tailscale CLI in macOS app bundle path. Run federation tick before trigger install in init.
+- **Terminal host resolution** — Use per-slot Machine field instead of local hostname; resolve via federation config for proper FQDN.
+- **Orchestration resilience** — Orchestration runners survive parent exit via `setsid` detachment. Mark slot as Interrupted on setup failure instead of clearing. Slot resume falls back to `slotStart` for interrupted slots. Clean stale orch state before fallback. Reset turnLifecycle and phaseDispatched on resume.
+- **Plan-merge skip** — Skip plan-merge phase when only one plan file exists (unless it's the coder's own plan).
+- **PR workflow** — Gate `pr-create → pr-comments` transition on `prUrl` being set. Derive PR base branch dynamically. Don't dispatch pr-comments prompt until comments arrive. Look back 10min for comments from prior phases.
+- **Review filename validation** — Consolidated into shared `review-files.ts` module. Validate agent name to keep writer/parser aligned. Select latest round per review type before filtering by verdict.
+- **State sync safety** — Commit queue-hold state change so sync doesn't revert it. Catch spawn exceptions in `maybeGit` to prevent cleanup crashes.
+- **Shell state reset** — Reset shell state before re-booting agent CLI on tmux resume.
+- **Dashboard fixes** — Remove fallback guessing in terminals tab, show explicit errors. Resolve slot machine host for tile terminal links.
+- **LaunchAgent fixes** — Use modern `launchctl` API and kill stale mag on non-controller nodes. Daemonize ttyd with nohup.
+- **Duo mode fixes** — Strip flag values in duo expansion, remove legacy startup path. Move `clearDuoPeerLink` after stop succeeds. Don't inject `--pair` over `-A` mode flag.
+- **Various** — Proposal revision clears approved flag. Scope feedback-digest auto-queue to briefing trigger. Re-check federation on mag keepalive path. Undelete soft-deleted t3code threads on slot resume. Prefix non-orchestrated thread titles with slot number.
+
+### Refactoring
+
+- Consolidated review filename logic into shared `review-files.ts` module.
+- Extracted shared tile abstraction (`FilteredTaskTileConfig`) for dashboard filtered-task tiles.
+- Extracted `findPlanFiles` helper and `orchestrator-conventions.md` shared boilerplate.
+- Refactored `computeSlotLiveness` to take a `SlotLivenessContext` struct.
+- Flattened `SkillContext` into `Record<string,string>` with auto-inject and dev warnings.
+- Removed `focusProject()` in favor of `priority: true` on project config.
+- Worker/orchestrator skill response format converted to JSON blocks.
+- Pure `evaluateAutoStartDecision` function, audit of legacy adapter refs.
+
+### Removals
+
+- **SSH remote dispatch** — Replaced by state-repo intent files.
+- **Legacy duo startup path** — Duo-only templates and pre-PR branches removed.
+- **`focusProject()` helper** — Replaced by project `priority: true` config.
+
 ## v0.5.0 — 2026-03-27
 
-Major release. Full migration to t3code as the agent runtime, multi-agent orchestration engine with collaborative pair-mode planning, retrospective collection, dashboard action buttons, crash recovery, and milestone-aware scheduling.
+Major release. Multi-agent orchestration engine with collaborative pair-mode planning, t3code and tmux runtime support, retrospective collection, dashboard action buttons, crash recovery, and milestone-aware scheduling.
 
 ### Breaking changes
 
