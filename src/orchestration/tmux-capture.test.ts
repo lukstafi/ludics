@@ -2,7 +2,7 @@ import { describe, expect, test, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { extractCleanPaneOutput, readTmuxCaptures } from "./tmux-capture.ts";
+import { extractCleanPaneOutput, parseCaptureHeader, readTmuxCaptures } from "./tmux-capture.ts";
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "ludics-tmux-capture-test-"));
@@ -92,7 +92,7 @@ describe("readTmuxCaptures", () => {
     const capturesDir = join(tmp, "captures");
     mkdirSync(capturesDir, { recursive: true });
 
-    writeFileSync(join(capturesDir, "round-1-work-coder.txt"), [
+    writeFileSync(join(capturesDir, "round-001-work-coder.txt"), [
       "agent: coder",
       "phase: work",
       "round: 1",
@@ -103,7 +103,7 @@ describe("readTmuxCaptures", () => {
       "  Some output here",
     ].join("\n"));
 
-    writeFileSync(join(capturesDir, "round-2-work-coder.txt"), [
+    writeFileSync(join(capturesDir, "round-002-work-coder.txt"), [
       "agent: coder",
       "phase: work",
       "round: 2",
@@ -133,7 +133,7 @@ describe("readTmuxCaptures", () => {
     mkdirSync(capturesDir, { recursive: true });
 
     const makeFile = (round: number, agent: string) =>
-      writeFileSync(join(capturesDir, `round-${round}-work-${agent}.txt`), [
+      writeFileSync(join(capturesDir, `round-${String(round).padStart(3, '0')}-work-${agent}.txt`), [
         `agent: ${agent}`,
         "phase: work",
         `round: ${round}`,
@@ -166,9 +166,74 @@ describe("readTmuxCaptures", () => {
     const capturesDir = join(tmp, "captures");
     mkdirSync(capturesDir, { recursive: true });
 
-    writeFileSync(join(capturesDir, "round-1-work-coder.txt"), "no header separator here");
+    writeFileSync(join(capturesDir, "round-001-work-coder.txt"), "no header separator here");
 
     const entries = readTmuxCaptures(tmp);
     expect(entries).toHaveLength(0);
+  });
+
+  test("sorts correctly with round >= 10", () => {
+    tmp = makeTmpDir();
+    const capturesDir = join(tmp, "captures");
+    mkdirSync(capturesDir, { recursive: true });
+
+    const makeFile = (round: number, agent: string) =>
+      writeFileSync(join(capturesDir, `round-${String(round).padStart(3, '0')}-work-${agent}.txt`), [
+        `agent: ${agent}`,
+        "phase: work",
+        `round: ${round}`,
+        "timestamp: 2026-04-04T20:00:00Z",
+        "hash: h1",
+        "---",
+        "content",
+      ].join("\n"));
+
+    makeFile(12, "coder");
+    makeFile(2, "coder");
+    makeFile(1, "coder");
+
+    const entries = readTmuxCaptures(tmp);
+    expect(entries).toHaveLength(3);
+    expect(entries[0]!.round).toBe(1);
+    expect(entries[1]!.round).toBe(2);
+    expect(entries[2]!.round).toBe(12);
+  });
+});
+
+describe("parseCaptureHeader", () => {
+  test("parses valid header", () => {
+    const raw = [
+      "agent: coder",
+      "phase: work",
+      "round: 3",
+      "timestamp: 2026-04-04T20:00:00Z",
+      "hash: abc123",
+      "---",
+      "some content here",
+    ].join("\n");
+
+    const result = parseCaptureHeader(raw);
+    expect(result).not.toBeNull();
+    expect(result!.header.agentName).toBe("coder");
+    expect(result!.header.phase).toBe("work");
+    expect(result!.header.round).toBe(3);
+    expect(result!.header.timestamp).toBe("2026-04-04T20:00:00Z");
+    expect(result!.header.hash).toBe("abc123");
+    expect(result!.content).toBe("some content here");
+  });
+
+  test("returns null for missing separator", () => {
+    expect(parseCaptureHeader("no separator here")).toBeNull();
+  });
+
+  test("returns null for missing fields", () => {
+    const raw = [
+      "agent: coder",
+      "phase: work",
+      "---",
+      "content",
+    ].join("\n");
+
+    expect(parseCaptureHeader(raw)).toBeNull();
   });
 });

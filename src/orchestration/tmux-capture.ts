@@ -18,6 +18,45 @@ export interface TmuxCaptureEntry {
   hash: string;
 }
 
+export interface CaptureHeader {
+  agentName: string;
+  phase: string;
+  round: number;
+  timestamp: string;
+  hash: string;
+}
+
+/**
+ * Parse the structured header block from a capture file.
+ * Returns null if the separator or any required field is missing.
+ */
+export function parseCaptureHeader(raw: string): { header: CaptureHeader; content: string } | null {
+  const separatorIdx = raw.indexOf("\n---\n");
+  if (separatorIdx === -1) return null;
+
+  const headerText = raw.slice(0, separatorIdx);
+  const content = raw.slice(separatorIdx + 5).trim();
+
+  const agentMatch = headerText.match(/^agent:\s*(.+)$/m);
+  const phaseMatch = headerText.match(/^phase:\s*(.+)$/m);
+  const roundMatch = headerText.match(/^round:\s*(\d+)$/m);
+  const timestampMatch = headerText.match(/^timestamp:\s*(.+)$/m);
+  const hashMatch = headerText.match(/^hash:\s*(.+)$/m);
+
+  if (!agentMatch || !phaseMatch || !roundMatch || !timestampMatch || !hashMatch) return null;
+
+  return {
+    header: {
+      agentName: agentMatch[1]!.trim(),
+      phase: phaseMatch[1]!.trim(),
+      round: parseInt(roundMatch[1]!, 10),
+      timestamp: timestampMatch[1]!.trim(),
+      hash: hashMatch[1]!.trim(),
+    },
+    content,
+  };
+}
+
 /**
  * Extract clean structured output from raw tmux pane text.
  * Reuses the publishTerminalState pattern from mag.ts:
@@ -78,17 +117,12 @@ function lastCaptureHash(peerSyncDir: string, agentName: string): string | null 
   try {
     const files = readdirSync(dir)
       .filter((f: string) => f.endsWith(`-${agentName}.txt`))
-      .sort((a, b) => {
-        const roundA = parseInt(a.match(/^round-(\d+)/)?.[1] ?? "0", 10);
-        const roundB = parseInt(b.match(/^round-(\d+)/)?.[1] ?? "0", 10);
-        if (roundA !== roundB) return roundA - roundB;
-        return a.localeCompare(b);
-      });
+      .sort();
     if (files.length === 0) return null;
 
-    const content = readFileSync(join(dir, files[files.length - 1]!), "utf-8");
-    const hashMatch = content.match(/^hash:\s*(.+)$/m);
-    return hashMatch?.[1]?.trim() ?? null;
+    const raw = readFileSync(join(dir, files[files.length - 1]!), "utf-8");
+    const parsed = parseCaptureHeader(raw);
+    return parsed?.header.hash ?? null;
   } catch {
     return null;
   }
@@ -130,7 +164,7 @@ export function captureTmuxAgentOutputs(state: OrchestrationState): void {
       "---",
     ].join("\n");
 
-    const filename = `round-${state.round}-${state.phase}-${agent.name}.txt`;
+    const filename = `round-${String(state.round).padStart(3, '0')}-${state.phase}-${agent.name}.txt`;
     writeFileSync(join(dir, filename), `${header}\n${cleaned}\n`);
   }
 }
@@ -146,32 +180,17 @@ export function readTmuxCaptures(peerSyncDir: string): TmuxCaptureEntry[] {
   const entries: TmuxCaptureEntry[] = [];
 
   try {
-    const files = readdirSync(dir).filter((f: string) => f.endsWith(".txt")).sort();
+    const files = readdirSync(dir).filter((f: string) => f.endsWith(".txt"));
 
     for (const f of files) {
       try {
         const raw = readFileSync(join(dir, f), "utf-8");
-        const separatorIdx = raw.indexOf("\n---\n");
-        if (separatorIdx === -1) continue;
-
-        const header = raw.slice(0, separatorIdx);
-        const content = raw.slice(separatorIdx + 5).trim(); // skip \n---\n
-
-        const agentMatch = header.match(/^agent:\s*(.+)$/m);
-        const phaseMatch = header.match(/^phase:\s*(.+)$/m);
-        const roundMatch = header.match(/^round:\s*(\d+)$/m);
-        const timestampMatch = header.match(/^timestamp:\s*(.+)$/m);
-        const hashMatch = header.match(/^hash:\s*(.+)$/m);
-
-        if (!agentMatch || !phaseMatch || !roundMatch || !timestampMatch || !hashMatch) continue;
+        const parsed = parseCaptureHeader(raw);
+        if (!parsed) continue;
 
         entries.push({
-          agentName: agentMatch[1]!.trim(),
-          phase: phaseMatch[1]!.trim(),
-          round: parseInt(roundMatch[1]!, 10),
-          timestamp: timestampMatch[1]!.trim(),
-          content,
-          hash: hashMatch[1]!.trim(),
+          ...parsed.header,
+          content: parsed.content,
         });
       } catch {
         continue;
