@@ -474,7 +474,7 @@ function tryQueueFeedbackDigest(repo: string): { queued: boolean; reason?: strin
   if (remaining > 0) {
     return { queued: false, reason: `cooldown active (${remaining}s remaining)` };
   }
-  queueRequest("feedback-digest", `"repo":"${repo}"`);
+  queueRequest({ action: "feedback-digest", repo });
   markFeedbackDigestQueued(repo);
   return { queued: true };
 }
@@ -2033,7 +2033,7 @@ function maybeUnstickAssignedSlots(): void {
     // Not elaborated — needs elaboration first
     if (!isElaborated(content)) {
       if (!autoProposalDebounced(taskId)) {
-        queueRequest("elaborate", `"task":"${taskId}"`);
+        queueRequest({ action: "elaborate", task: taskId });
         markAutoProposalQueued(taskId);
         emitEvent({ event_type: "slot_unstick", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `queued elaboration for stuck slot ${slotNum}` });
         console.error(`ludics: slot ${slotNum} stuck — queued elaboration for ${taskId}`);
@@ -2043,7 +2043,7 @@ function maybeUnstickAssignedSlots(): void {
 
     // Elaborated, no questions, no proposal — re-queue draft-proposal
     if (!autoProposalDebounced(taskId)) {
-      queueRequest("draft-proposal", `"task":"${taskId}"`);
+      queueRequest({ action: "draft-proposal", task: taskId });
       markAutoProposalQueued(taskId);
       emitEvent({ event_type: "slot_unstick", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `re-queued draft-proposal for stuck slot ${slotNum}` });
       console.error(`ludics: slot ${slotNum} stuck — re-queued draft-proposal for ${taskId}`);
@@ -2084,7 +2084,7 @@ function maybeQueueProposals(): void {
     if (content.includes("\nproposal:")) continue;
     if (autoProposalDebounced(task.id)) continue;
 
-    queueRequest("draft-proposal", `"task":"${task.id}"`);
+    queueRequest({ action: "draft-proposal", task: task.id });
     markAutoProposalQueued(task.id);
     console.error(`ludics: auto-queued draft-proposal for ${task.id} (ready queue position)`);
     return; // one per cycle
@@ -2313,7 +2313,7 @@ function maybeFillEmptySlots(): void {
   const topCandidate = candidates[0]!;
   if (!topCandidate.elaborated) {
     if (!autoProposalDebounced(topCandidate.id)) {
-      queueRequest("elaborate", `"task":"${topCandidate.id}"`);
+      queueRequest({ action: "elaborate", task: topCandidate.id });
       markAutoProposalQueued(topCandidate.id); // reuse debounce to avoid re-queuing
       emitEvent({ event_type: "task_elaborate_queued", source: "keepalive", scope: "task", task: topCandidate.id, message: `top candidate needs elaboration` });
       console.error(`ludics: top candidate ${topCandidate.id} needs elaboration — queued`);
@@ -2402,7 +2402,7 @@ function maybeFillEmptySlots(): void {
   const taskFile = join(harnessDir(), "tasks", `${task.id}.md`);
   const taskContent = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
   if (!taskContent.includes("\nproposal:")) {
-    queueRequest("draft-proposal", `"task":"${task.id}"`);
+    queueRequest({ action: "draft-proposal", task: task.id });
     markAutoProposalQueued(task.id);
     emitEvent({ event_type: "mag_auto_proposal", source: "keepalive", scope: "mag", task: task.id, message: `auto-queued draft-proposal for ${task.id}` });
     console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
@@ -3068,7 +3068,7 @@ export function magBriefing(wait: boolean = true, timeout: number = 300): void {
     console.error("ludics: mag briefing skipped — not the federation controller");
     return;
   }
-  const requestId = queueRequest("briefing");
+  const requestId = queueRequest({ action: "briefing" });
   console.log(`Queued briefing request: ${requestId}`);
 
   // Auto-queue feedback-digest once daily alongside the briefing trigger.
@@ -3115,7 +3115,7 @@ export function magBriefing(wait: boolean = true, timeout: number = 300): void {
 }
 
 function magMessage(text: string): void {
-  queueRequest("message", `"content":${JSON.stringify(text)}`);
+  queueRequest({ action: "message", content: text });
   console.log("Message queued for Mag");
 }
 
@@ -3212,13 +3212,13 @@ export async function runMag(args: string[]): Promise<void> {
       magBriefing();
       break;
     case "suggest":
-      queueRequest("suggest");
+      queueRequest({ action: "suggest" });
       console.log("Queued suggest request");
       break;
     case "elaborate": {
       const taskId = args[1];
       if (!taskId) throw new Error("task id required");
-      queueRequest("elaborate", `"task":"${taskId}"`);
+      queueRequest({ action: "elaborate", task: taskId });
       console.log(`Queued elaborate request for ${taskId}`);
       break;
     }
@@ -3227,7 +3227,7 @@ export async function runMag(args: string[]): Promise<void> {
         console.error("ludics: mag health-check skipped — not the federation controller");
         break;
       }
-      queueRequest("health-check");
+      queueRequest({ action: "health-check" });
       console.log("Queued health-check request");
       break;
     case "message": {
@@ -3302,7 +3302,7 @@ export async function runMag(args: string[]): Promise<void> {
     case "draft-proposal": {
       const taskId = args[1];
       if (!taskId) throw new Error("task id required");
-      queueRequest("draft-proposal", `"task":"${taskId}"`);
+      queueRequest({ action: "draft-proposal", task: taskId });
       console.log(`Queued draft-proposal request for ${taskId}`);
       break;
     }
@@ -3316,10 +3316,9 @@ export async function runMag(args: string[]): Promise<void> {
         const reviseTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
         if (existsSync(reviseTaskFile)) removeFrontmatterField(reviseTaskFile, "approved");
         if (feedback) {
-          const escaped = JSON.stringify(feedback);
-          queueRequest("revise-proposal", `"task":"${taskId}","feedback":${escaped}`);
+          queueRequest({ action: "revise-proposal", task: taskId, feedback });
         } else {
-          queueRequest("revise-proposal", `"task":"${taskId}"`);
+          queueRequest({ action: "revise-proposal", task: taskId });
         }
       }
       console.log(`Queued revise-proposal request for ${taskIds.join(", ")}`);
@@ -3328,14 +3327,14 @@ export async function runMag(args: string[]): Promise<void> {
     case "split-task": {
       const taskId = args[1];
       if (!taskId) throw new Error("task id required");
-      queueRequest("split-task", `"task":"${taskId}"`);
+      queueRequest({ action: "split-task", task: taskId });
       console.log(`Queued split-task request for ${taskId}`);
       break;
     }
     case "verify-completion": {
       const taskId = args[1];
       if (!taskId) throw new Error("task id required");
-      queueRequest("verify-completion", `"task":"${taskId}"`);
+      queueRequest({ action: "verify-completion", task: taskId });
       console.log(`Queued verify-completion request for ${taskId}`);
       break;
     }
@@ -3387,14 +3386,14 @@ export async function runMag(args: string[]): Promise<void> {
         break;
       }
 
-      queueRequest("adopt-sessions");
+      queueRequest({ action: "adopt-sessions" });
       console.log(`Queued adopt-sessions request (${fingerprint.unclassifiedCount} unclassified session(s))`);
       break;
     }
     case "process-suggestions": {
       const taskId = args[1];
       if (!taskId) throw new Error("task id required");
-      queueRequest("process-suggestions", `"task":"${taskId}"`);
+      queueRequest({ action: "process-suggestions", task: taskId });
       console.log(`Queued process-suggestions request for ${taskId}`);
       break;
     }

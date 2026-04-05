@@ -740,7 +740,7 @@ export function expirePendingRevises(timeoutSec: number = 900): void {
       const ts = parseInt(readFileSync(join(magDir, f), "utf-8").trim(), 10);
       if (now - ts > timeoutSec) {
         unlinkSync(join(magDir, f));
-        queueRequest("revise-proposal", `"task":"${taskId}"`);
+        queueRequest({ action: "revise-proposal", task: taskId });
         console.log(`ludics: pending revise for ${taskId} timed out, queued without feedback`);
       }
     } catch {
@@ -769,7 +769,7 @@ export function expirePendingFollowupRevises(timeoutSec: number = 900): void {
       }
       if (now - created > timeoutSec) {
         unlinkSync(filePath);
-        queueRequest("adapter-followup", `"task":"${taskId}","adapter":"${adapter}"`);
+        queueRequest({ action: "adapter-followup", task: taskId, adapter });
         console.log(`ludics: pending followup revise for ${taskId} (${adapter}) timed out, queued without feedback`);
       }
     } catch {
@@ -858,41 +858,34 @@ export async function subscribeIncoming(): Promise<void> {
                 setPendingFollowupRevise(taskId, adapter);
               } else if (followupNewMatch) {
                 // New format — route as t3code followup
-                queueRequest("adapter-followup", `"task":"${followupNewMatch[1]!}","adapter":"t3code","followup_msg":""`);
+                queueRequest({ action: "adapter-followup", task: followupNewMatch[1]!, adapter: "t3code", followup_msg: "" });
               } else if (followupLegacyMatch) {
                 // Legacy format
                 const adapter = followupLegacyMatch[1]!;
                 const taskId = followupLegacyMatch[2]!;
-                queueRequest("adapter-followup", `"task":"${taskId}","adapter":"${adapter}","followup_msg":""`);
+                queueRequest({ action: "adapter-followup", task: taskId, adapter, followup_msg: "" });
               } else if (doneMatch) {
-                queueRequest("complete-task", `"task":"${doneMatch[1]!}"`);
+                queueRequest({ action: "complete-task", task: doneMatch[1]! });
               } else if (launchNewMatch || launchLegacyMatch) {
                 // Both new and legacy launch — route to mag queue as message
-                const escaped = JSON.stringify(msg);
-                queueRequest("message", `"content":${escaped}`);
+                queueRequest({ action: "message", content: msg });
               } else if (abandonMatch) {
                 // Route Abandon messages directly — bypass pending-revise consumption
-                const escaped = JSON.stringify(msg);
-                queueRequest("message", `"content":${escaped}`);
+                queueRequest({ action: "message", content: msg });
               } else {
                 const pendingTaskIds = consumeAllPendingRevises();
                 const pendingFollowups = consumeAllPendingFollowupRevises();
 
                 if (pendingTaskIds.length > 0 || pendingFollowups.length > 0) {
-                  const escaped = JSON.stringify(msg);
                   for (const taskId of pendingTaskIds) {
-                    queueRequest("revise-proposal", `"task":"${taskId}","feedback":${escaped}`);
+                    queueRequest({ action: "revise-proposal", task: taskId, feedback: msg });
                   }
                   for (const pending of pendingFollowups) {
-                    queueRequest(
-                      "adapter-followup",
-                      `"task":"${pending.taskId}","adapter":"${pending.adapter}","followup_msg":${escaped}`,
-                    );
+                    queueRequest({ action: "adapter-followup", task: pending.taskId, adapter: pending.adapter, followup_msg: msg });
                   }
                 } else {
                   // Normal message — direct queue injection
-                  const escaped = JSON.stringify(msg);
-                  queueRequest("message", `"content":${escaped}`);
+                  queueRequest({ action: "message", content: msg });
                 }
               }
 
