@@ -948,7 +948,12 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
 
       // Re-create ttyd if the port is not in use
       if (shouldStartTtyd) {
-        const portInUse = Bun.spawnSync(["lsof", "-i", `:${port}`], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+        let portInUse = false;
+        try {
+          // Use absolute path — launchd has a minimal $PATH that may not include /usr/sbin
+          const lsofBin = process.platform === "darwin" ? "/usr/sbin/lsof" : "lsof";
+          portInUse = Bun.spawnSync([lsofBin, "-i", `:${port}`], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+        } catch { /* lsof not available — assume port is free */ }
         if (!portInUse) {
           newTtydPids[agent.name] = startTtyd(slotNum, agent.name, role, taskId);
           console.error(`ludics: re-started ttyd on port ${port} for ${agent.name}`);
