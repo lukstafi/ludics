@@ -542,17 +542,17 @@ export function selectMachineForSlot(
 
   if (onlineMachines.length === 0) return current;
 
-  // Prefer always-on workers for background work
-  const alwaysOnWorkers = onlineMachines.filter(
-    (m) => m.always_on && m.name !== current,
-  );
-  if (alwaysOnWorkers.length > 0) return alwaysOnWorkers[0]!.name;
+  // Primary signal: prefer always_on machines; tiebreak: prefer non-current for load balance
+  const alwaysOn = onlineMachines.filter((m) => m.always_on);
+  if (alwaysOn.length > 0) {
+    const remote = alwaysOn.find((m) => m.name !== current);
+    return remote ? remote.name : alwaysOn[0]!.name;
+  }
 
-  // Fall back to any online worker that isn't the controller
+  // No always_on machines online — fall back to any online, prefer non-current
   const otherOnline = onlineMachines.filter((m) => m.name !== current);
   if (otherOnline.length > 0) return otherOnline[0]!.name;
 
-  // Only this machine is online
   return current;
 }
 
