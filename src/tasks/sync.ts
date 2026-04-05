@@ -6,7 +6,7 @@ import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCou
 import { slotsFilePath } from "../config.ts";
 import { parseSlotBlocks, getProcess, getTask } from "../slots/markdown.ts";
 import { listStashes } from "../slots/preempt.ts";
-import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter } from "./markdown.ts";
+import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
 import { queueRequest } from "../queue.ts";
@@ -669,7 +669,62 @@ export async function tasksUpdate(): Promise<void> {
   );
 }
 
+/**
+ * Heal blocked_by/blocks links: remove done/abandoned tasks from blocked_by,
+ * and ensure each blocked_by reference has a matching blocks backlink.
+ */
+function healBlockedByLinks(tasksDir: string): void {
+  const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+
+  // Build id -> { status, filePath, fm } map
+  const taskMap = new Map<string, { status: string; filePath: string; fm: ReturnType<typeof parseTaskFrontmatter> }>();
+  for (const f of files) {
+    const filePath = join(tasksDir, f);
+    const content = readFileSync(filePath, "utf-8");
+    let fm;
+    try { fm = parseTaskFrontmatter(content); } catch { continue; }
+    taskMap.set(fm.id, { status: fm.status ?? "ready", filePath, fm });
+  }
+
+  const terminalStatuses = new Set(["done", "abandoned"]);
+  let healed = 0;
+
+  for (const [taskId, entry] of taskMap) {
+    const blockedBy = entry.fm.dependencies?.blocked_by ?? [];
+    if (blockedBy.length === 0) continue;
+
+    // Ensure each blocker has a blocks backlink (preserving full graph in blocks)
+    for (const depId of blockedBy) {
+      const dep = taskMap.get(depId);
+      if (!dep) continue;
+      const blocks = dep.fm.dependencies?.blocks ?? [];
+      if (!blocks.includes(taskId)) {
+        updateDependencyArray(dep.filePath, "blocks", [...blocks, taskId]);
+        healed++;
+      }
+    }
+
+    // Remove done/abandoned tasks from blocked_by (keep unknown refs — may be external)
+    const pruned = blockedBy.filter((depId) => {
+      const dep = taskMap.get(depId);
+      return dep == null || !terminalStatuses.has(dep.status);
+    });
+
+    if (pruned.length !== blockedBy.length) {
+      updateDependencyArray(entry.filePath, "blocked_by", pruned);
+      healed++;
+    }
+  }
+
+  if (healed > 0) {
+    console.error(`ludics: healed ${healed} blocked_by/blocks link(s)`);
+  }
+}
+
 function tasksReconcileBlockedStatus(tasksDir: string): void {
+  // Heal stale blocked_by links before checking status
+  healBlockedByLinks(tasksDir);
+
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
   let reconciled = 0;
 
