@@ -12,6 +12,28 @@ function parsePrUrl(prUrl: string): { repo: string; prNumber: string } | null {
   return { repo: match[1], prNumber: match[2] };
 }
 
+/**
+ * Run `gh api --paginate <endpoint> --jq <jqFilter>`, sum the per-page
+ * integers from stdout, and return the total.  Returns 0 on any error.
+ * Appends `per_page=100` to reduce pagination round-trips.
+ */
+function paginatedGhApiCount(endpoint: string, jqFilter: string): number {
+  const sep = endpoint.includes("?") ? "&" : "?";
+  const fullEndpoint = `${endpoint}${sep}per_page=100`;
+  try {
+    const result = Bun.spawnSync(
+      ["gh", "api", "--paginate", fullEndpoint, "--jq", jqFilter],
+      { stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string> },
+    );
+    if (result.exitCode !== 0) return 0;
+    // --paginate + --jq outputs one number per page; sum them
+    return result.stdout.toString().trim().split("\n")
+      .reduce((sum, line) => sum + (parseInt(line, 10) || 0), 0);
+  } catch {
+    return 0;
+  }
+}
+
 /** Returns the count of new comments/reviews on a PR since sinceEpoch (Unix seconds). */
 export function fetchNewPrCommentCount(prUrl: string, sinceEpoch: number): number {
   const parsed = parsePrUrl(prUrl);
@@ -19,37 +41,18 @@ export function fetchNewPrCommentCount(prUrl: string, sinceEpoch: number): numbe
   const { repo, prNumber } = parsed;
   const since = new Date(sinceEpoch * 1000).toISOString();
 
-  function countViaGhApi(args: string[]): number {
-    try {
-      const result = Bun.spawnSync(["gh", "api", "--paginate", ...args], {
-        stdout: "pipe",
-        stderr: "ignore",
-        env: process.env as Record<string, string>,
-      });
-      if (result.exitCode !== 0) return 0;
-      // --paginate + --jq outputs one number per page; sum them
-      return result.stdout.toString().trim().split("\n")
-        .reduce((sum, line) => sum + (parseInt(line, 10) || 0), 0);
-    } catch {
-      return 0;
-    }
-  }
-
-  const reviewComments = countViaGhApi([
+  const reviewComments = paginatedGhApiCount(
     `repos/${repo}/pulls/${prNumber}/comments`,
-    "--jq",
     `[.[] | select(.created_at > "${since}")] | length`,
-  ]);
-  const issueComments = countViaGhApi([
+  );
+  const issueComments = paginatedGhApiCount(
     `repos/${repo}/issues/${prNumber}/comments`,
-    "--jq",
     `[.[] | select(.created_at > "${since}")] | length`,
-  ]);
-  const reviews = countViaGhApi([
+  );
+  const reviews = paginatedGhApiCount(
     `repos/${repo}/pulls/${prNumber}/reviews`,
-    "--jq",
     `[.[] | select(.submitted_at > "${since}")] | length`,
-  ]);
+  );
 
   return reviewComments + issueComments + reviews;
 }
@@ -81,24 +84,10 @@ export function hasCodexSubmittedReview(prUrl: string): boolean {
   const parsed = parsePrUrl(prUrl);
   if (!parsed) return false;
   const { repo, prNumber } = parsed;
-  try {
-    const result = Bun.spawnSync(
-      [
-        "gh", "api", "--paginate",
-        `repos/${repo}/pulls/${prNumber}/reviews`,
-        "--jq",
-        '[.[] | select(.state != "PENDING" and .user.login == "chatgpt-codex-connector[bot]")] | length',
-      ],
-      { stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string> },
-    );
-    if (result.exitCode !== 0) return false;
-    // --paginate + --jq outputs one number per page; sum them
-    const total = result.stdout.toString().trim().split("\n")
-      .reduce((sum, line) => sum + (parseInt(line, 10) || 0), 0);
-    return total > 0;
-  } catch {
-    return false;
-  }
+  return paginatedGhApiCount(
+    `repos/${repo}/pulls/${prNumber}/reviews`,
+    '[.[] | select(.state != "PENDING" and .user.login == "chatgpt-codex-connector[bot]")] | length',
+  ) > 0;
 }
 
 /**
