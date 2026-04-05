@@ -1368,12 +1368,11 @@ export async function runOrchestration(
         `Slot ${state.slot}: task done`,
       );
 
-      // On worker machines, write a signal file so the controller discovers
-      // completion quickly via controllerPollWorkers() instead of waiting
-      // for the slower state-repo sync path (maybeClearDoneSlots).
+      // On worker machines, report status via HTTP to controller so it discovers
+      // completion immediately instead of waiting for health-check sync.
       if (federationRole() === "worker") {
         try {
-          workerReportStatus(state.slot, {
+          await workerReportStatus(state.slot, {
             taskId: state.taskId,
             status: "done",
             message: `orchestration completed for ${state.taskId}`,

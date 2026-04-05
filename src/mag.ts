@@ -2596,8 +2596,8 @@ function maybeClearDoneSlots(): void {
 async function workerKeepalive(): Promise<void> {
   console.error("ludics: worker keepalive");
 
-  // Pull fresh state so automations see latest slot assignments
-  try { const { statePull } = await import("./state.ts"); statePull(); } catch { /* ignore */ }
+  // No statePull() — intents arrive via HTTP, signals retry via HTTP.
+  // Git sync only happens at health-check periodicity.
 
   // Publish terminal state for this machine's sessions
   publishTerminalState();
@@ -2608,8 +2608,14 @@ async function workerKeepalive(): Promise<void> {
   // Resume dead orchestrator processes on this machine's slots
   await maybeResumeDeadOrchestrators();
 
-  // State is written to disk but NOT committed here — periodic health-check
-  // handles git commits at lower frequency to avoid commit spam (task-4179d454).
+  // Retry undelivered worker signals via HTTP
+  try {
+    const { retryUndeliveredSignals } = await import("./worker-signal.ts");
+    await retryUndeliveredSignals();
+  } catch { /* ignore */ }
+
+  // State is written to disk but NOT committed — periodic health-check
+  // handles git commits. All coordination uses HTTP, not git.
 }
 
 /**

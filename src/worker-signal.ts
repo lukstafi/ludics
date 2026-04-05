@@ -1,13 +1,14 @@
 // Worker-to-controller signaling — workers report task status, controller polls and reconciles
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync } from "fs";
 import { join } from "path";
 import { harnessDir, slotsFilePath } from "./config.ts";
 import { parseSlotBlocks, getTask, getMachine } from "./slots/markdown.ts";
 import { isRemoteMachine } from "./remote.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
-import { federationCurrentMachineName } from "./federation.ts";
+import { federationCurrentMachineName, federationCurrentController, federationMachine } from "./federation.ts";
+import { federationHttpPost } from "./federation-http.ts";
 
 interface WorkerSignal {
   taskId: string;
@@ -25,11 +26,11 @@ function signalFilePath(slotNum: number): string {
   return join(signalsDir(), `slot-${slotNum}.json`);
 }
 
-/** Write a status signal on the worker machine (called by worker). */
-export function workerReportStatus(
+/** Write a status signal on the worker machine and POST to controller via HTTP. */
+export async function workerReportStatus(
   slotNum: number,
   payload: { taskId: string; status: string; message: string; machine?: string },
-): void {
+): Promise<void> {
   const dir = signalsDir();
   mkdirSync(dir, { recursive: true });
 
@@ -39,8 +40,27 @@ export function workerReportStatus(
     machine: payload.machine ?? federationCurrentMachineName() ?? "",
   };
 
+  // Write local signal file (observability + retry source)
   writeFileSync(signalFilePath(slotNum), JSON.stringify(signal, null, 2) + "\n");
   console.error(`ludics: worker signal written for slot ${slotNum}: ${payload.status}`);
+
+  // POST to controller via HTTP — local file is NOT a cross-node delivery mechanism
+  const controllerName = federationCurrentController();
+  if (controllerName) {
+    const controllerMachine = federationMachine(controllerName);
+    if (controllerMachine) {
+      const result = await federationHttpPost(controllerMachine, "/federation/signal", {
+        ...signal, slot: slotNum,
+      });
+      if (result.ok) {
+        // Controller processed — clear local file
+        workerClearSignal(slotNum);
+        console.error(`ludics: worker signal for slot ${slotNum} delivered via HTTP`);
+      } else {
+        console.error(`ludics: worker signal HTTP delivery failed for slot ${slotNum} (status=${result.status}) — will retry`);
+      }
+    }
+  }
 }
 
 /** Read and output a local signal file (called remotely by controller via SSH). */
@@ -58,11 +78,65 @@ export function workerClearSignal(slotNum: number): void {
   }
 }
 
+const SIGNAL_MAX_AGE_SECONDS = 1800; // 30 minutes
+
+/**
+ * Worker-side retry for undelivered signals. Called from workerKeepalive().
+ * Checks for local signal files and retries HTTP POST to controller.
+ * Clears expired signals (>30 min). Local files are NOT delivered via git.
+ */
+export async function retryUndeliveredSignals(): Promise<void> {
+  const dir = signalsDir();
+  if (!existsSync(dir)) return;
+
+  const controllerName = federationCurrentController();
+  if (!controllerName) return;
+  const controllerMachine = federationMachine(controllerName);
+  if (!controllerMachine) return;
+
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((f) => f.startsWith("slot-") && f.endsWith(".json"));
+  } catch { return; }
+
+  const now = Math.floor(Date.now() / 1000);
+
+  for (const file of files) {
+    const filePath = join(dir, file);
+    let signal: WorkerSignal;
+    try {
+      signal = JSON.parse(readFileSync(filePath, "utf-8")) as WorkerSignal;
+    } catch { continue; }
+
+    // Expire old signals
+    if (signal.epoch > 0 && (now - signal.epoch) > SIGNAL_MAX_AGE_SECONDS) {
+      console.error(`ludics: worker-signal: expired signal for ${file} (age: ${now - signal.epoch}s) — clearing`);
+      try { unlinkSync(filePath); } catch { /* ignore */ }
+      continue;
+    }
+
+    // Extract slot number from filename
+    const slotMatch = file.match(/^slot-(\d+)\.json$/);
+    if (!slotMatch) continue;
+    const slotNum = parseInt(slotMatch[1]!, 10);
+
+    const result = await federationHttpPost(controllerMachine, "/federation/signal", {
+      ...signal, slot: slotNum,
+    });
+
+    if (result.ok) {
+      try { unlinkSync(filePath); } catch { /* ignore */ }
+      console.error(`ludics: worker-signal: retried signal for slot ${slotNum} delivered via HTTP`);
+      break; // rate-limit: one successful retry per keepalive
+    }
+  }
+}
+
 /**
  * Controller polls all remote slots for worker signals and reconciles.
  * Called from federationTick() on the controller machine.
- * Reads signal files locally from the state repo (committed by worker keepalive,
- * pulled by federationTick before this function is called).
+ * Legacy path for signals that arrived via git before HTTP was enabled;
+ * HTTP signals are processed inline in the /federation/signal handler.
  */
 export function controllerPollWorkers(): void {
   const sFile = slotsFilePath();
@@ -194,7 +268,7 @@ export async function runWorkerSignal(args: string[]): Promise<void> {
       if (!status || !taskId) {
         throw new Error("--status and --task are required");
       }
-      workerReportStatus(slotNum, { taskId, status, message, machine });
+      await workerReportStatus(slotNum, { taskId, status, message, machine });
       break;
     }
 
