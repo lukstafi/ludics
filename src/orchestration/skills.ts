@@ -247,6 +247,9 @@ export function buildSkillContext(
   const _proposalPath = (_taskContent ? readFrontmatterField(_taskContent, "proposal") : null) ?? "";
   const proposalPath = _proposalPath && _proposalPath !== "inline"
     ? _proposalPath : "";
+  const proposalInstruction = proposalPath
+    ? `**Step 0**: Read the proposal file at \`${proposalPath}\` in the project repo before starting. The proposal contains the authoritative acceptance criteria and full scope.`
+    : "";
 
   const result: Record<string, string> = {
     PHASE: state.phase,
@@ -261,6 +264,7 @@ export function buildSkillContext(
     TASK_SPEC: state.round <= 1 ? taskSpecText(state) : taskSpecBriefText(state),
     TASK_SPEC_BRIEF: taskSpecBriefText(state),
     PROPOSAL_PATH: proposalPath,
+    PROPOSAL_INSTRUCTION: proposalInstruction,
     PEER_REVIEW: peerReview ?? "(no review yet)",
     PEER_STATUS: peer ? (state.agentStates[peer.name]?.status ?? "unknown") : "unknown",
     PEER_PLAN: peerPlan ?? "(no plan yet)",
