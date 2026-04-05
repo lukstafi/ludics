@@ -3,6 +3,7 @@ import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { isPrUrl } from "./github.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
+import { planFilePath, parsePlanFilename } from "./plan-files.ts";
 import { reviewFilePath } from "./review-files.ts";
 import type { AgentConfig, AgentRuntimeState, OrchestrationState } from "./state.ts";
 import { readDuoPeerState, bothSlotsReadyForMerge, isMergeCoordinator } from "./cross-slot.ts";
@@ -75,11 +76,11 @@ function requiredArtifactPath(state: OrchestrationState, agent: AgentConfig): st
   const dir = state.peerSyncDir;
   switch (state.phase) {
     case "plan":
-      return join(dir, "plans", `round-${state.round}-${agent.name}.md`);
+      return planFilePath(dir, "plan", state.round, agent.name);
     case "plan-merge":
       // Only coder participates; writes a merged plan file keyed by planMergeRound so that
       // each retry iteration requires a fresh file and can't be satisfied by a stale one.
-      return join(dir, "plans", `round-${state.round}-merged-${state.planMergeRound ?? 0}.md`);
+      return planFilePath(dir, "merged", state.round, state.planMergeRound ?? 0);
     case "plan-review":
       // Uses planMergeRound to give each iteration its own review file so the
       // artifact gate isn't bypassed by a stale file from a previous iteration.
@@ -368,14 +369,14 @@ export function findPlanFiles(
   coderName: string | undefined,
 ): { files: string[]; coderPlanExists: boolean } {
   const plansDir = join(peerSyncDir, "plans");
-  const planPrefix = `round-${round}-`;
   const files: string[] = [];
   let coderPlanExists = false;
   try {
     for (const f of readdirSync(plansDir)) {
-      if (f.startsWith(planPrefix) && f.endsWith(".md") && !f.includes("-merged-")) {
+      const parsed = parsePlanFilename(f);
+      if (parsed && parsed.type === "plan" && parsed.round === round) {
         files.push(f);
-        if (coderName && f === `round-${round}-${coderName}.md`) coderPlanExists = true;
+        if (coderName && parsed.agentName === coderName) coderPlanExists = true;
       }
     }
   } catch {
