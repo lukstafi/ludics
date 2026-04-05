@@ -1,6 +1,6 @@
 // Config reading for ludics (Phase 2: native YAML parsing)
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import { basename, join } from "path";
 import YAML from "yaml";
 
@@ -377,6 +377,23 @@ export function resolveProjectPath(projectName: string): string {
     if (existsSync(candidate)) return candidate;
   }
   return "";
+}
+
+/**
+ * Resolve the absolute proposals directory for a project.
+ * Uses configuredPath (relative to projectDir) if provided.
+ * Otherwise probes docs/, doc/, .docs/ and appends proposals/.
+ * Falls back to docs/proposals/.
+ */
+export function resolveProposalsPath(projectDir: string, configuredPath?: string): string {
+  if (configuredPath) return join(projectDir, configuredPath);
+  for (const candidate of ["docs", "doc", ".docs"]) {
+    const p = join(projectDir, candidate);
+    if (existsSync(p) && statSync(p).isDirectory()) {
+      return join(projectDir, candidate, "proposals");
+    }
+  }
+  return join(projectDir, "docs", "proposals");
 }
 
 /** Set of projects with `priority: true` in config, cached per process. */
