@@ -466,6 +466,19 @@ function markFeedbackDigestQueued(repo: string): void {
   writeFileSync(feedbackDigestStateFile(), JSON.stringify(state));
 }
 
+function tryQueueFeedbackDigest(repo: string): { queued: boolean; reason?: string } {
+  if (queueHasPendingFeedbackDigest(repo)) {
+    return { queued: false, reason: "already pending in queue" };
+  }
+  const remaining = feedbackDigestCooldownRemaining(repo);
+  if (remaining > 0) {
+    return { queued: false, reason: `cooldown active (${remaining}s remaining)` };
+  }
+  queueRequest("feedback-digest", `"repo":"${repo}"`);
+  markFeedbackDigestQueued(repo);
+  return { queued: true };
+}
+
 function lastCaptureHashFile(): string {
   return join(magStateDir(), "last-capture.hash");
 }
@@ -3059,10 +3072,8 @@ export function magBriefing(wait: boolean = true, timeout: number = 300): void {
   console.log(`Queued briefing request: ${requestId}`);
 
   // Auto-queue feedback-digest once daily alongside the briefing trigger.
-  // Existing cooldown/dedup guards prevent redundant runs.
-  if (!queueHasPendingFeedbackDigest("ludics") && feedbackDigestCooldownRemaining("ludics") === 0) {
-    queueRequest("feedback-digest", `"repo":"ludics"`);
-    markFeedbackDigestQueued("ludics");
+  const fdResult = tryQueueFeedbackDigest("ludics");
+  if (fdResult.queued) {
     console.error("ludics: briefing queued feedback-digest for ludics");
   }
 
@@ -3329,20 +3340,12 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "feedback-digest": {
-      if (queueHasPendingFeedbackDigest("ludics")) {
-        console.log("Skipped feedback-digest: already pending in queue");
-        break;
+      const fdResult = tryQueueFeedbackDigest("ludics");
+      if (fdResult.queued) {
+        console.log("Queued feedback-digest request");
+      } else {
+        console.log(`Skipped feedback-digest: ${fdResult.reason}`);
       }
-
-      const remainingCooldown = feedbackDigestCooldownRemaining("ludics");
-      if (remainingCooldown > 0) {
-        console.log(`Skipped feedback-digest: cooldown active (${remainingCooldown}s remaining)`);
-        break;
-      }
-
-      queueRequest("feedback-digest", `"repo":"ludics"`);
-      markFeedbackDigestQueued("ludics");
-      console.log("Queued feedback-digest request");
       break;
     }
     case "adopt-sessions": {
