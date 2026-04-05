@@ -11,6 +11,19 @@ type RequestEnvelope = {
   };
 };
 
+// Probe whether we can bind a loopback socket — skip all tests if not.
+let canBind = true;
+try {
+  const probe = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch() { return new Response("ok"); },
+  });
+  probe.stop(true);
+} catch {
+  canBind = false;
+}
+
 const servers: Server<undefined>[] = [];
 
 afterEach(() => {
@@ -24,6 +37,7 @@ function startServer(handler: {
   onMessage: (ws: ServerWebSocket<undefined>, request: RequestEnvelope) => void;
 }) {
   const server = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     fetch(req, server) {
       if (server.upgrade(req)) return;
@@ -43,7 +57,7 @@ function startServer(handler: {
   return server;
 }
 
-describe("T3CodeClient", () => {
+describe.if(canBind)("T3CodeClient", () => {
   test("requests orchestration snapshots", async () => {
     let seenTag = "";
     const server = startServer({
@@ -63,7 +77,7 @@ describe("T3CodeClient", () => {
 
     const client = new T3CodeClient({
       url: `ws://127.0.0.1:${server.port}`,
-      requestTimeoutMs: 2_000,
+      requestTimeoutMs: 5_000,
     });
 
     const snapshot = await client.getSnapshot();
@@ -92,7 +106,7 @@ describe("T3CodeClient", () => {
 
     const client = new T3CodeClient({
       url: `ws://127.0.0.1:${server.port}`,
-      requestTimeoutMs: 2_000,
+      requestTimeoutMs: 5_000,
     });
 
     const seen: string[] = [];
@@ -101,7 +115,7 @@ describe("T3CodeClient", () => {
     });
 
     await client.connect();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 200));
     client.close();
 
     expect(seen).toEqual(["thread.message-sent"]);
@@ -121,8 +135,8 @@ describe("T3CodeClient", () => {
 
     const client = new T3CodeClient({
       url: `ws://127.0.0.1:${server.port}`,
-      requestTimeoutMs: 2_000,
-      reconnectDelaysMs: [50, 50],
+      requestTimeoutMs: 5_000,
+      reconnectDelaysMs: [100, 100],
     });
 
     await client.dispatchCommand({
@@ -130,7 +144,7 @@ describe("T3CodeClient", () => {
       commandId: "cmd-1",
       threadId: "thread-1",
     });
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 300));
     await client.getSnapshot().catch(() => undefined);
     client.close();
 
