@@ -7,6 +7,10 @@
 #   1. Orchestration agents: writes a stop-hook record to .peer-sync for the runner
 #   2. Mag sessions: pops the next queued request and outputs a JSON decision
 #
+# Invocation modes:
+#   - Claude Code: called as Stop hook with JSON on stdin ({hook_event_name, cwd, ...})
+#   - Codex: called as notify command with $1 = "codex" (no stdin; uses $PWD for cwd)
+#
 # Peer-sync routing (priority order):
 #   1. Env vars LUDICS_PEER_SYNC_DIR / LUDICS_AGENT_NAME — set at session
 #      startup via a project-level SessionStart hook in .claude/settings.local.json
@@ -20,17 +24,26 @@
 # Ensure Bash 4+ and tools like jq/yq are available (macOS system bash is v3)
 export PATH="/opt/homebrew/bin:$PATH"
 
-# Read Stop event input from stdin
-input=$(cat)
+# Detect invocation mode: Codex passes "codex" as $1; Claude Code provides JSON on stdin.
+invocation_mode="${1:-claude}"
 
-# Ignore subagent stops; only handle top-level Stop events.
-hook_event_name=$(echo "$input" | jq -r '.hook_event_name // ""' 2>/dev/null)
-if [[ "$hook_event_name" == "SubagentStop" ]]; then
-  exit 0
+if [[ "$invocation_mode" == "codex" ]]; then
+  # Codex notify hook: no stdin JSON, use PWD for cwd.
+  cwd="$PWD"
+  hook_event_name="Stop"
+else
+  # Claude Code Stop hook: read JSON from stdin.
+  input=$(cat)
+
+  # Ignore subagent stops; only handle top-level Stop events.
+  hook_event_name=$(echo "$input" | jq -r '.hook_event_name // ""' 2>/dev/null)
+  if [[ "$hook_event_name" == "SubagentStop" ]]; then
+    exit 0
+  fi
+
+  # Extract cwd from the stop event
+  cwd=$(echo "$input" | jq -r '.cwd // ""' 2>/dev/null)
 fi
-
-# Extract cwd from the stop event
-cwd=$(echo "$input" | jq -r '.cwd // ""' 2>/dev/null)
 
 # Resolve ludics binary
 ludics_bin=""
@@ -93,5 +106,10 @@ if [[ -n "$peer_sync_dir" ]]; then
   exec "$ludics_bin" orch on-stop "$cwd" "$peer_sync_dir" "$hook_event_name"
 fi
 
-# Mag session — queue-pop behavior
+# Codex only needs orchestration routing — no Mag queue-pop support.
+if [[ "$invocation_mode" == "codex" ]]; then
+  exit 0
+fi
+
+# Mag session — queue-pop behavior (Claude Code only)
 exec "$ludics_bin" mag queue-pop "$cwd" "$hook_event_name"

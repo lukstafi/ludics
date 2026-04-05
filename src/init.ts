@@ -80,9 +80,10 @@ export async function runInit(args: string[]): Promise<void> {
     installSkills(root, repoDir, statePath);
   }
 
-  // 7. Stop hook
+  // 7. Stop hook (Claude Code + Codex)
   if (!noHooks) {
     installStopHook(root);
+    installCodexNotifyHook();
   }
 
   // 8. Dashboard
@@ -399,5 +400,60 @@ function installStopHook(root: string): void {
     mkdirSync(dirname(settingsPath), { recursive: true });
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
     console.log("configured stop hook in ~/.claude/settings.json");
+  }
+}
+
+/**
+ * Configure Codex notify hook in ~/.codex/config.toml.
+ * Codex's `notify` config is a top-level TOML key (not inside a [section]):
+ *   notify = ["/path/to/ludics-on-stop", "codex"]
+ * The "codex" argument tells the hook script to use $PWD instead of JSON stdin.
+ */
+function installCodexNotifyHook(): void {
+  console.log("\n--- Codex notify hook ---");
+  const hookDest = join(process.env.HOME!, ".local", "bin", "ludics-on-stop");
+  const codexConfig = join(process.env.HOME!, ".codex", "config.toml");
+  const notifyLine = `notify = ["${hookDest}", "codex"]`;
+
+  if (!existsSync(hookDest)) {
+    console.warn("warning: ludics-on-stop not installed yet — skipping Codex config");
+    return;
+  }
+
+  if (existsSync(codexConfig)) {
+    let content: string;
+    try {
+      content = readFileSync(codexConfig, "utf-8");
+    } catch {
+      console.warn("warning: could not read ~/.codex/config.toml — skipping");
+      return;
+    }
+
+    // Check if notify is already configured
+    if (/^notify\s*=/m.test(content)) {
+      if (content.includes("ludics-on-stop")) {
+        console.log("Codex notify hook already configured with ludics-on-stop");
+      } else {
+        console.log("Codex config already has 'notify' setting — not overwriting");
+        console.log(`  to use ludics, set: ${notifyLine}`);
+      }
+      return;
+    }
+
+    // Insert before first [section] header, or append if no sections
+    const sectionMatch = content.match(/^\[/m);
+    if (sectionMatch && sectionMatch.index !== undefined) {
+      const before = content.slice(0, sectionMatch.index);
+      const after = content.slice(sectionMatch.index);
+      content = before + `# Ludics notify hook for orchestration stop signals\n${notifyLine}\n\n` + after;
+    } else {
+      content += `\n# Ludics notify hook for orchestration stop signals\n${notifyLine}\n`;
+    }
+    writeFileSync(codexConfig, content);
+    console.log("added notify hook to ~/.codex/config.toml");
+  } else {
+    mkdirSync(dirname(codexConfig), { recursive: true });
+    writeFileSync(codexConfig, `# Ludics notify hook for orchestration stop signals\n${notifyLine}\n`);
+    console.log("created ~/.codex/config.toml with notify hook");
   }
 }
