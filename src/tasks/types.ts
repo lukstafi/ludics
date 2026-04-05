@@ -14,6 +14,7 @@ export interface TaskFrontmatter {
     subtask_of: string | null;
   };
   effort: string; // small, medium, large
+  requirements?: { os?: string; gpu?: string };
   context: string;
   uses_browser: boolean;
   slot: string | null;

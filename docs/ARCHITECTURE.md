@@ -705,6 +705,7 @@ For multi-machine setups (e.g., laptop + always-on Mac Mini), ludics includes a 
 - **Network support**: Tailscale hostname detection (`src/network.ts`)
 - **Slot intent files** (`src/slot-intents.ts`, ~50 lines): Replace SSH remote dispatch with state-repo intent files (`federation/slot-intents/slot-{N}.json`). The controller writes a `SlotIntent` (action, epoch, machine, preserveState), the worker reads and clears it. 10-minute TTL. One-shot command pattern for cross-machine slot operations.
 - **Worker keepalive** (`src/federation.ts`): Separate from the federation trigger, worker nodes run their own keepalive that detects dispatched-but-lost slots (proposal exists, no active session) and auto-starts them via intent consumption.
+- **Machine selection** (`selectMachineForSlot` in `src/federation.ts`): Tasks with `requirements` frontmatter (optional `os`, `gpu` fields) are matched against federation machine capabilities. Selection priority: (1) filter by requirements, (2) prefer `always_on` machines, (3) tiebreak by preferring non-current machine for load balance. Returns `null` (blocks assignment) if no federation machine matches requirements. Offline but matching machines are still selected — the slot is assigned but start is blocked until the machine comes online, with an "offline" badge on the dashboard.
 
 ### Triggers
 
@@ -786,6 +787,7 @@ federation:
       os: macos
       role: leader
       always_on: true
+      gpu: ""            # empty string = no GPU; matched against task requirements.gpu
 
 triggers:
   startup:

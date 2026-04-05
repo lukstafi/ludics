@@ -20,6 +20,7 @@ import { readOrchestrationState, persistState, removeOrchestrationState } from "
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
 import { writeSlotIntent } from "../slot-intents.ts";
+import { heartbeatIsFresh } from "../federation.ts";
 
 function ensureSlotsFile(): string {
   const file = slotsFilePath();
@@ -648,6 +649,9 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
 
   // Remote dispatch: if slot is owned by another machine, write intent file
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
+    if (!heartbeatIsFresh(ctx.machine)) {
+      throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot start`);
+    }
     console.error(`ludics: slot ${slotNum}: queuing start intent for remote machine ${ctx.machine}`);
 
     writeSlotIntent(slotNum, { action: "start", epoch: Math.floor(Date.now() / 1000), machine: ctx.machine });

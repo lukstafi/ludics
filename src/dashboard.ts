@@ -55,6 +55,8 @@ interface SlotJson {
   machine: string | null;
   /** Pending controller action for remote slots, derived from intent files. */
   pendingAction: "starting" | "stopping" | "resuming" | null;
+  /** True when the assigned machine exists but is not online. */
+  machineOffline: boolean;
 }
 
 export interface SlotLivenessContext {
@@ -336,6 +338,7 @@ function generateSlots(): SlotJson[] {
       liveness,
       machine,
       pendingAction,
+      machineOffline: !empty && !!machine && isRemoteMachine(machine) && !heartbeatIsFresh(machine),
     });
   }
 

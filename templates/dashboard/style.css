@@ -446,6 +446,12 @@ main {
     flex-shrink: 0;
 }
 
+.slot-details .offline-machine-badge {
+    background-color: rgba(233, 69, 96, 0.15);
+    color: #e94560;
+    border-color: rgba(233, 69, 96, 0.5);
+}
+
 .slot-details .task-content {
     background-color: var(--bg-secondary);
     border: 1px solid var(--border);

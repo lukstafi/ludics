@@ -164,7 +164,9 @@ function renderSlots(slots) {
             if (hasTask) meta.push(`<span class="task-id">${escapeHtml(slot.task)}</span>`);
             if (slot.effort) meta.push(`<span class="effort" data-effort="${escapeHtml(slot.effort)}">${escapeHtml(slot.effort)}</span>`);
             if (slot.machine && slot.machine !== window.__controllerMachine) {
-                meta.push(`<span class="machine-badge">${escapeHtml(slot.machine)}</span>`);
+                const badgeClass = slot.machineOffline ? 'machine-badge offline-machine-badge' : 'machine-badge';
+                const offlineLabel = slot.machineOffline ? ' (offline)' : '';
+                meta.push(`<span class="${badgeClass}">${escapeHtml(slot.machine)}${offlineLabel}</span>`);
             }
             if (slot.mode) {
                 // Always allow toggling to manual — it signals "stop automating".

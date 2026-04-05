@@ -2156,7 +2156,7 @@ function isQueueHeld(): boolean {
 
 // --- Sorted ready queue (shared) ---
 
-interface ReadyCandidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string; elaborated: boolean }
+interface ReadyCandidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string; elaborated: boolean; requirements?: { os?: string; gpu?: string } }
 
 /** Compute the sorted ready queue — single source of truth for task ordering.
  *  Used by maybeFillEmptySlots, maybeQueueProposals, and dashboard generation. */
@@ -2219,8 +2219,9 @@ function getSortedReadyCandidates(): ReadyCandidate[] {
     const deadline = deadlineRaw && deadlineRaw !== "null" ? deadlineRaw : "";
     const effort = String(fm.effort ?? "small").trim();
     const elaborated = isElaborated(content);
+    const requirements = fm.requirements ? fm.requirements as { os?: string; gpu?: string } : undefined;
 
-    candidates.push({ id, priority, project, milestone, hasDeadline: !!deadline, deadline, effort, elaborated });
+    candidates.push({ id, priority, project, milestone, hasDeadline: !!deadline, deadline, effort, elaborated, requirements });
   }
 
   if (candidates.length === 0) return [];
@@ -2333,7 +2334,11 @@ function maybeFillEmptySlots(): void {
     const slotB = emptySlots[1]!;
     const expansion = expandDuoSlots(slotA, slotB, autoArgs);
     const projectPath = resolveProjectPath(task.project);
-    const machine = selectMachineForSlot({ project: task.project, effort: task.effort });
+    const machine = selectMachineForSlot({ project: task.project, effort: task.effort, requirements: task.requirements });
+    if (machine === null) {
+      console.error(`ludics: no machine meets requirements for ${task.id} — skipping`);
+      return;
+    }
 
     slotAssign(slotA, task.id, autoAdapter, "", projectPath, expansion.slotA.args, machine);
     slotAssign(slotB, task.id, autoAdapter, "", projectPath, expansion.slotB.args, machine);
@@ -2357,7 +2362,11 @@ function maybeFillEmptySlots(): void {
     const projectPath = resolveProjectPath(task.project);
 
     // Select machine for slot assignment (federation-aware)
-    const machine = selectMachineForSlot({ project: task.project, effort: task.effort });
+    const machine = selectMachineForSlot({ project: task.project, effort: task.effort, requirements: task.requirements });
+    if (machine === null) {
+      console.error(`ludics: no machine meets requirements for ${task.id} — skipping`);
+      return;
+    }
 
     // Assign task to the empty slot using the auto-selected adapter, path, and flags
     slotAssign(slot, task.id, autoAdapter, "", projectPath, autoArgs, machine);

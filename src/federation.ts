@@ -530,30 +530,45 @@ export function federationStatus(): void {
  * Returns current machine name if no federation or no suitable remote workers.
  */
 export function selectMachineForSlot(
-  _task: { project: string; effort: string },
-): string {
+  _task: { project: string; effort: string; requirements?: { os?: string; gpu?: string } },
+): string | null {
   if (!federationEnabled()) return "";
 
   const current = federationCurrentMachineName();
   if (!current) return "";
 
   const machines = federationMachines();
-  const onlineMachines = machines.filter((m) => heartbeatIsFresh(m.name));
 
-  if (onlineMachines.length === 0) return current;
+  // Filter by task requirements first (all machines, not just online)
+  let eligible = [...machines];
+  const reqs = _task.requirements;
+  if (reqs) {
+    if (reqs.os) eligible = eligible.filter((m) => m.os === reqs.os);
+    if (reqs.gpu) eligible = eligible.filter((m) => m.gpu === reqs.gpu);
+    if (eligible.length === 0) {
+      console.error(`ludics: no federation machine meets requirements (os=${reqs.os ?? "any"}, gpu=${reqs.gpu ?? "any"}) — ${machines.length} machines checked`);
+      return null;
+    }
+  }
+
+  // Among eligible, prefer online machines
+  const online = eligible.filter((m) => heartbeatIsFresh(m.name));
+
+  // Pick from online if available, otherwise from all eligible (task will wait for machine to come online)
+  const pool = online.length > 0 ? online : eligible;
 
   // Primary signal: prefer always_on machines; tiebreak: prefer non-current for load balance
-  const alwaysOn = onlineMachines.filter((m) => m.always_on);
+  const alwaysOn = pool.filter((m) => m.always_on);
   if (alwaysOn.length > 0) {
     const remote = alwaysOn.find((m) => m.name !== current);
     return remote ? remote.name : alwaysOn[0]!.name;
   }
 
-  // No always_on machines online — fall back to any online, prefer non-current
-  const otherOnline = onlineMachines.filter((m) => m.name !== current);
-  if (otherOnline.length > 0) return otherOnline[0]!.name;
+  // No always_on machines eligible — prefer non-current for load balance
+  const other = pool.filter((m) => m.name !== current);
+  if (other.length > 0) return other[0]!.name;
 
-  return current;
+  return pool[0]?.name ?? current;
 }
 
 export async function runFederation(args: string[]): Promise<void> {

@@ -21,9 +21,11 @@ Hardening release. Hierarchical duo mode with cross-slot merge coordination, fed
 - **Staging repo support** — `staging_repo` field in project config, plumbed into skill contexts and PR creation templates.
 - **Dashboard shared markdown renderer** — Extracted `markdown.js` from duplicated `markdownToHtml()` calls.
 - **Direct orchestration flag parsing** — Slot assign accepts orchestration flags (`--duo`, `--pair`, etc.) directly.
+- **Task hardware requirements** — Tasks can specify `requirements` frontmatter with optional `os` and `gpu` fields. Machine selection filters federation machines by these capabilities before applying `always_on`/load-balance sorting. Assignment is blocked when no federation machine matches; start is blocked when the assigned machine is offline. Dashboard shows offline machines with a red badge.
 
 ### Fixes
 
+- **Machine selection always_on preference** — `selectMachineForSlot` no longer skips the current machine when it is `always_on`, fixing a bug where the always-on controller dispatched all work to a non-always-on laptop.
 - **Robust state sync** — Recover stuck rebases, squash-before-rebase strategy, sort JSONL merges to prevent conflicts. Replace stash-pop with commit-before-pull in `statePull`.
 - **Federation hostname resolution** — Improved hostname matching for non-Tailscale contexts, fallback to federation machine host, find Tailscale CLI in macOS app bundle path. Run federation tick before trigger install in init.
 - **Terminal host resolution** — Use per-slot Machine field instead of local hostname; resolve via federation config for proper FQDN.
