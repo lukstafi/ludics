@@ -10,6 +10,7 @@ import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
 import { updateFrontmatterField, addFrontmatterField, removeFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
 import { findSlotForTask, setQueueHold } from "./mag.ts";
+import { handleFederationRequest } from "./federation-http.ts";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -149,6 +150,11 @@ export function startDashboardServer(
 
       // Default to index.html
       if (pathname === "/") pathname = "/index.html";
+
+      // Federation HTTP endpoints — cross-node coordination via HTTP
+      if (pathname.startsWith("/federation/")) {
+        return handleFederationRequest(req, pathname);
+      }
 
       // Regenerate data if stale on any request to /data/
       if (pathname.startsWith("/data/")) {

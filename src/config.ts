@@ -69,6 +69,7 @@ export interface LudicsFullConfig {
   federation?: {
     transport?: string;
     domain?: string;
+    secret?: string;
     machines?: Array<Record<string, unknown>>;
   };
 }

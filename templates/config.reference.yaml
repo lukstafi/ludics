@@ -243,6 +243,7 @@ triggers:
 federation:
   transport: local            # local (single machine) | tailscale | ssh
   domain: ""                  # Tailscale MagicDNS domain (e.g. your-tailnet.ts.net)
+  secret: ""                  # Shared secret for HTTP federation endpoints (required for HTTP transport)
   machines: []
     # - name: desktop
     #   host: desktop.your-tailnet.ts.net
@@ -250,6 +251,7 @@ federation:
     #   role: leader
     #   always_on: true
     #   gpu: apple-silicon     # apple-silicon | nvidia | amd | (omit if none)
+    #   dashboard_port: 7678   # optional, defaults to dashboard.port
     #
     # - name: laptop
     #   host: laptop.your-tailnet.ts.net

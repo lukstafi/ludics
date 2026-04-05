@@ -20,6 +20,7 @@ export interface FederationMachine {
   always_on: boolean;
   gpu: string;
   ludics_path?: string;
+  dashboard_port?: number;
 }
 
 interface FederationConfig {
@@ -45,6 +46,7 @@ export function federationConfig(): FederationConfig {
         always_on: Boolean(m.always_on),
         gpu: String(m.gpu ?? ""),
         ludics_path: m.ludics_path ? String(m.ludics_path) : undefined,
+        dashboard_port: m.dashboard_port ? Number(m.dashboard_port) : undefined,
       }));
 
     const transport = String(fed?.transport ?? "local");
