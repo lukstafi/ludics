@@ -528,7 +528,7 @@ export async function collectAndWriteRetrospective(state: OrchestrationState): P
 
     for (const [agentName, caps] of agentCaptures) {
       allThreads.push({
-        threadId: "tmux-capture",
+        threadId: `tmux-capture-${agentName}`,
         agentName,
         title: `tmux capture for ${agentName}`,
         model: "unknown",
@@ -539,7 +539,7 @@ export async function collectAndWriteRetrospective(state: OrchestrationState): P
 
       for (let i = 0; i < caps.length; i++) {
         allTurns.push({
-          threadId: "tmux-capture",
+          threadId: `tmux-capture-${agentName}`,
           agentName,
           turnIndex: i,
           turnId: null,
