@@ -7,12 +7,14 @@ import { parseSlotBlocks, getTask, getMachine } from "./slots/markdown.ts";
 import { isRemoteMachine } from "./remote.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
+import { federationCurrentMachineName } from "./federation.ts";
 
 interface WorkerSignal {
   taskId: string;
   status: string;   // "done" | "error" | "progress"
   message: string;
   epoch: number;
+  machine: string;
 }
 
 function signalsDir(): string {
@@ -26,7 +28,7 @@ function signalFilePath(slotNum: number): string {
 /** Write a status signal on the worker machine (called by worker). */
 export function workerReportStatus(
   slotNum: number,
-  payload: { taskId: string; status: string; message: string },
+  payload: { taskId: string; status: string; message: string; machine?: string },
 ): void {
   const dir = signalsDir();
   mkdirSync(dir, { recursive: true });
@@ -34,6 +36,7 @@ export function workerReportStatus(
   const signal: WorkerSignal = {
     ...payload,
     epoch: Math.floor(Date.now() / 1000),
+    machine: payload.machine ?? federationCurrentMachineName() ?? "",
   };
 
   writeFileSync(signalFilePath(slotNum), JSON.stringify(signal, null, 2) + "\n");
@@ -94,11 +97,14 @@ export function controllerPollWorkers(): void {
       continue;
     }
 
-    // Discard signals older than 30 minutes — guards against stale signals
-    // surviving a slot reassignment that reuses the same task ID.
-    const signalAge = Math.floor(Date.now() / 1000) - signal.epoch;
-    if (signalAge > 1800) {
-      console.error(`ludics: worker-signal: expired signal for slot ${slotNum} (age: ${signalAge}s) — clearing`);
+    // Validate machine matches current slot assignment
+    if (!signal.machine) {
+      console.error(`ludics: worker-signal: missing machine field for slot ${slotNum} — clearing`);
+      workerClearSignal(slotNum);
+      continue;
+    }
+    if (signal.machine !== machineName) {
+      console.error(`ludics: worker-signal: machine mismatch for slot ${slotNum} (signal: ${signal.machine}, slot: ${machineName}) — clearing`);
       workerClearSignal(slotNum);
       continue;
     }
@@ -167,17 +173,19 @@ export async function runWorkerSignal(args: string[]): Promise<void> {
       let status = "";
       let taskId = "";
       let message = "";
+      let machine: string | undefined;
       for (let i = 2; i < args.length; i++) {
         switch (args[i]) {
           case "--status": status = args[++i] ?? ""; break;
           case "--task": taskId = args[++i] ?? ""; break;
           case "--message": message = args[++i] ?? ""; break;
+          case "--machine": machine = args[++i] ?? ""; break;
         }
       }
       if (!status || !taskId) {
         throw new Error("--status and --task are required");
       }
-      workerReportStatus(slotNum, { taskId, status, message });
+      workerReportStatus(slotNum, { taskId, status, message, machine });
       break;
     }
 

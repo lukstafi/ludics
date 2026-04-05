@@ -446,6 +446,16 @@ main {
     flex-shrink: 0;
 }
 
+.slot-details .pending-action-badge {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    background-color: rgba(245, 158, 11, 0.12);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.4);
+    flex-shrink: 0;
+}
+
 .slot-details .offline-machine-badge {
     background-color: rgba(233, 69, 96, 0.15);
     color: #e94560;
