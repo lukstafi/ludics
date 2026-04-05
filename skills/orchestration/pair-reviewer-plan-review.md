@@ -1,5 +1,7 @@
 # Pair Plan Review (Reviewer)
 
+{{PROPOSAL_INSTRUCTION}}
+
 Review the merged plan for `{{TASK_ID}}`:
 
 {{PEER_PLAN}}

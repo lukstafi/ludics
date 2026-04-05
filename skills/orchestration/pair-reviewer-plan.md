@@ -1,5 +1,7 @@
 # Pair Plan (Reviewer)
 
+{{PROPOSAL_INSTRUCTION}}
+
 Write an implementation plan for `{{TASK_ID}}` to `{{PLAN_FILE}}` from `{{WORKTREE_PATH}}`.
 
 {{TASK_SPEC}}

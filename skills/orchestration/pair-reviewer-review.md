@@ -1,6 +1,6 @@
 # Pair Review (Reviewer) — Round {{ROUND}}
 
-Review the coder's implementation for `{{TASK_ID}}`. If a proposal exists, read it for acceptance criteria: `{{PROPOSAL_PATH}}`.
+Review the coder's implementation for `{{TASK_ID}}`. {{PROPOSAL_INSTRUCTION}}
 
 **IMPORTANT**: Write your review to exactly this file path: `{{REVIEW_FILE}}`
 First line must be `APPROVE` or `REQUEST_CHANGES`, then action items, then non-blocking observations.
