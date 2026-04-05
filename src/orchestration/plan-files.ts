@@ -31,7 +31,10 @@ export function planFilename(type: PlanFileType, round: number, third: string | 
 export function planFilePath(peerSyncDir: string, type: "plan", round: number, agentName: string): string;
 export function planFilePath(peerSyncDir: string, type: "merged", round: number, mergeRound: number): string;
 export function planFilePath(peerSyncDir: string, type: PlanFileType, round: number, third: string | number): string {
-  return join(peerSyncDir, "plans", (planFilename as Function)(type, round, third));
+  const name = type === "merged"
+    ? planFilename("merged", round, third as number)
+    : planFilename("plan", round, third as string);
+  return join(peerSyncDir, "plans", name);
 }
 
 /** Parse a plan filename into components, or null if it doesn't match. */
