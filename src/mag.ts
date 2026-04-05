@@ -10,7 +10,7 @@ import { getUrl } from "./network.ts";
 import { federationShouldRunMag, federationIsController, selectMachineForSlot, federationCurrentMachineName } from "./federation.ts";
 import { isRemoteMachine } from "./remote.ts";
 import { readSlotIntent, intentIsFresh, clearSlotIntent } from "./slot-intents.ts";
-import { stateCheckpoint } from "./state.ts";
+import { stateCheckpoint, stateMarkDirty } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
@@ -2176,7 +2176,7 @@ export function queueHold(): void {
   mkdirSync(join(harnessDir(), "mag"), { recursive: true });
   writeFileSync(queueHoldFilePath(), "");
   emitEvent({ event_type: "queue_hold", source: "cli", scope: "queue", action: "hold" });
-  try { stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
+  try { stateMarkDirty(); stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
   console.log("Queue held — auto-assignment suppressed.");
 }
 
@@ -2188,7 +2188,7 @@ export function queueResume(): void {
   }
   unlinkSync(queueHoldFilePath());
   emitEvent({ event_type: "queue_hold", source: "cli", scope: "queue", action: "resume" });
-  try { stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
+  try { stateMarkDirty(); stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
   console.log("Queue resumed — auto-assignment enabled.");
 }
 
