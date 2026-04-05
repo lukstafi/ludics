@@ -1,8 +1,8 @@
 # Changelog
 
-## v0.6.0 — 2026-04-05
+## v0.6.0 — 2026-04-06
 
-Hardening release. Hierarchical duo mode with cross-slot merge coordination, federation intent files replacing SSH dispatch, deferred launch approval flow, hung agent detection, PR conflict auto-resolution, and robust state sync.
+Hardening release. Hierarchical duo mode with cross-slot merge coordination, federation intent files replacing SSH dispatch, deferred launch approval flow, hung agent detection, PR conflict auto-resolution, robust state sync, and CLI ergonomics.
 
 ### New features
 
@@ -22,6 +22,12 @@ Hardening release. Hierarchical duo mode with cross-slot merge coordination, fed
 - **Dashboard shared markdown renderer** — Extracted `markdown.js` from duplicated `markdownToHtml()` calls.
 - **Direct orchestration flag parsing** — Slot assign accepts orchestration flags (`--duo`, `--pair`, etc.) directly.
 - **Task hardware requirements** — Tasks can specify `requirements` frontmatter with optional `os` and `gpu` fields. Machine selection filters federation machines by these capabilities before applying `always_on`/load-balance sorting. Assignment is blocked when no federation machine matches; start is blocked when the assigned machine is offline. Dashboard shows offline machines with a red badge.
+- **Codex stop hook** — Codex adapter now supports stop hook for orchestration state transitions, matching tmux-based adapters.
+- **Queue hold/resume CLI** — `ludics queue hold`, `ludics queue resume`, `ludics queue status` commands for controlling automatic slot assignment from the command line.
+- **Config proposals-path** — `ludics config proposals-path <project>` CLI subcommand for resolving a project's proposals directory.
+- **Dashboard pendingAction badge** — Worker signals include machine field; dashboard renders a pending-action badge when a worker signal is active.
+- **Tmux capture at round end** — Tmux pane output is captured at each round boundary for retrospective transcripts.
+- **Auto-fill orchestration flags** — `slotStart` auto-fills missing orchestration flags (defaulting to small effort) instead of throwing, making bare `slot start` work without explicit `--pair`/`--duo`.
 
 ### Fixes
 
@@ -39,6 +45,19 @@ Hardening release. Hierarchical duo mode with cross-slot merge coordination, fed
 - **LaunchAgent fixes** — Use modern `launchctl` API and kill stale mag on non-controller nodes. Daemonize ttyd with nohup.
 - **Duo mode fixes** — Strip flag values in duo expansion, remove legacy startup path. Move `clearDuoPeerLink` after stop succeeds. Don't inject `--pair` over `-A` mode flag.
 - **Various** — Proposal revision clears approved flag. Scope feedback-digest auto-queue to briefing trigger. Re-check federation on mag keepalive path. Undelete soft-deleted t3code threads on slot resume. Prefix non-orchestrated thread titles with slot number.
+- **Dead orchestrator scope** — `maybeResumeDeadOrchestrators` skips slots assigned to remote federation machines.
+- **Dashboard stateMarkDirty** — Fixed state not being marked dirty before checkpoint in queue hold/resume; extracted `setQueueHold` helper.
+- **Zero-pad round numbers** — Round numbers in capture filenames are zero-padded for correct lexicographic sorting; extracted `parseCaptureHeader` helper.
+- **Per-agent threadId for tmux captures** — Retrospective tmux captures use per-agent threadId instead of shared session id.
+- **Tolerate duplicate YAML keys** — Task frontmatter parsing no longer crashes on duplicate keys.
+- **Proposals-path resolution** — Use directory check in autodetection; match project config by both name and repo tail.
+- **enterPhase fingerprint guard** — Restored fingerprint guard for `skipToPhase` edge case that could cause phase re-entry.
+- **planFilePath type safety** — Replaced unsafe Function cast with typed branch in `planFilePath`.
+- **Epoch TTL defense-in-depth** — Reinstated epoch TTL alongside machine validation to prevent stale dispatch acceptance.
+- **ttyd survives launchd keepalive** — Use `setsidWrap` for ttyd so it isn't killed when launchd restarts the keepalive agent.
+- **Absolute lsof path** — Use absolute path for `lsof` in `slotResume` to fix launchd PATH resolution.
+- **Capture file sort order** — Sort capture files by round number for correct dedup hash lookup.
+- **Heal stale blocked_by** — Heal stale `blocked_by` links before reconciling blocked status.
 
 ### Refactoring
 
@@ -50,12 +69,25 @@ Hardening release. Hierarchical duo mode with cross-slot merge coordination, fed
 - Removed `focusProject()` in favor of `priority: true` on project config.
 - Worker/orchestrator skill response format converted to JSON blocks.
 - Pure `evaluateAutoStartDecision` function, audit of legacy adapter refs.
+- Extracted `paginatedGhApiCount` helper with `per_page=100` for GitHub API pagination.
+- Extracted `planFilename` helper to consolidate plan file path patterns.
+- Extracted `tryQueueFeedbackDigest` helper to centralize dedup+cooldown+queue logic.
+- Extracted `validateDoneStatus` helper; simplified `enterPhase` skip-done guard.
+- Consolidated `PROPOSAL_INSTRUCTION` across orchestration templates.
+- Made `queueRequest` type-safe with discriminated union.
+
+### Tests
+
+- Regression tests for `addFrontmatterField` body-scope bug, WorkerSignal machine validation, PR verification retry loop, `statusEpoch` reset in `preparePhaseRedispatch`.
+- Repaired pre-existing test failures in phases and slots tests.
+- Hardened t3code client tests: bind to 127.0.0.1, skip when socket binding is unavailable, increase timeouts.
 
 ### Removals
 
 - **SSH remote dispatch** — Replaced by state-repo intent files.
 - **Legacy duo startup path** — Duo-only templates and pre-PR branches removed.
 - **`focusProject()` helper** — Replaced by project `priority: true` config.
+- **Legacy migration code** — Removed `maybeStartDispatchedSlots`, dir-walk fallback, and `network.nodes` shim.
 
 ## v0.5.0 — 2026-03-27
 
