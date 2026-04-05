@@ -64,8 +64,13 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
         process.exit(1);
       }
       const cfg = loadConfigSync();
+      const lowerProject = project.toLowerCase();
       const projCfg = (cfg.projects ?? []).find(
-        (p: any) => String(p.name ?? "").toLowerCase() === project.toLowerCase()
+        (p: any) => {
+          const name = String(p.name ?? "").toLowerCase();
+          const repoTail = (String(p.repo ?? "").split("/").pop() ?? "").toLowerCase();
+          return name === lowerProject || repoTail === lowerProject;
+        }
       );
       console.log(resolveProposalsPath(projectDir, projCfg?.proposals_path));
     } else {
