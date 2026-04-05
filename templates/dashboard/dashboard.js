@@ -168,6 +168,10 @@ function renderSlots(slots) {
                 const offlineLabel = slot.machineOffline ? ' (offline)' : '';
                 meta.push(`<span class="${badgeClass}">${escapeHtml(slot.machine)}${offlineLabel}</span>`);
             }
+            if (slot.pendingAction) {
+                const label = slot.pendingAction.charAt(0).toUpperCase() + slot.pendingAction.slice(1) + '...';
+                meta.push(`<span class="pending-action-badge">${escapeHtml(label)}</span>`);
+            }
             if (slot.mode) {
                 // Always allow toggling to manual — it signals "stop automating".
                 // From manual, allow toggling back to the default automated adapter.
