@@ -2562,11 +2562,13 @@ describe("preparePhaseRedispatch", () => {
     // Set coder to done state (coder participates in pr-create)
     state.agentStates.coder!.turnLifecycle = makeLifecycle({ state: "settled" });
     state.agentStates.coder!.status = "done";
+    state.agentStates.coder!.statusEpoch = 1000;
     state.agentStates.coder!.statusMessage = "finished";
     state.agentStates.coder!.interrupted = true;
     // Set reviewer to done state (reviewer does NOT participate in pr-create)
     state.agentStates.reviewer!.turnLifecycle = makeLifecycle({ state: "settled" });
     state.agentStates.reviewer!.status = "done";
+    state.agentStates.reviewer!.statusEpoch = 1000;
     state.agentStates.reviewer!.statusMessage = "finished review";
 
     preparePhaseRedispatch(state);
@@ -2574,12 +2576,14 @@ describe("preparePhaseRedispatch", () => {
     // Coder (participating) should be reset
     expect(state.agentStates.coder!.turnLifecycle).toBeNull();
     expect(state.agentStates.coder!.status).toBe("idle");
+    expect(state.agentStates.coder!.statusEpoch).not.toBe(1000);
     expect(state.agentStates.coder!.statusMessage).toBe("verification failed — retry pending");
     expect(state.agentStates.coder!.interrupted).toBe(false);
 
     // Reviewer (non-participating) should be untouched
     expect(state.agentStates.reviewer!.turnLifecycle).not.toBeNull();
     expect(state.agentStates.reviewer!.status).toBe("done");
+    expect(state.agentStates.reviewer!.statusEpoch).toBe(1000);
     expect(state.agentStates.reviewer!.statusMessage).toBe("finished review");
 
     // Phase flags should be cleared
