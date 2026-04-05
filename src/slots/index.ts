@@ -677,8 +677,10 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
       throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but task file not found: ${tf}`);
     }
     const content = readFileSync(tf, "utf-8");
-    const fm = parseTaskFrontmatter(content);
-    const effort = String(fm.effort ?? "small").trim();
+    // Extract effort directly from YAML — parseTaskFrontmatter defaults missing effort
+    // to "medium", but auto-fill should use lightweight "small" when effort is absent.
+    const effortMatch = content.match(/^effort:\s*(.+)/m);
+    const effort = effortMatch ? effortMatch[1]!.trim() || "small" : "small";
     const { args: autoArgs } = selectOrchestrationFlags(effort);
     if (!autoArgs.trim()) {
       throw new Error(`slot ${slotNum}: selectOrchestrationFlags returned empty args for effort="${effort}"`);
