@@ -390,7 +390,9 @@ export async function federationTick(): Promise<void> {
     } catch { /* ignore */ }
   }
 
-  try { stateCheckpoint("federation tick"); } catch { /* ignore */ }
+  // State is written to disk but NOT committed here — periodic health-check
+  // handles git commits at lower frequency (task-4179d454).
+  // Remote slot intents still commit+push individually via { push: true }.
 
   console.error("ludics: federation: tick complete");
 }

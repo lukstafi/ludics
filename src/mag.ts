@@ -2607,9 +2607,8 @@ async function workerKeepalive(): Promise<void> {
   // Resume dead orchestrator processes on this machine's slots
   await maybeResumeDeadOrchestrators();
 
-  // Checkpoint and push if anything changed.
-  // Heartbeat is NOT published here — federation trigger handles it.
-  try { stateCheckpoint("keepalive"); } catch { /* ignore */ }
+  // State is written to disk but NOT committed here — periodic health-check
+  // handles git commits at lower frequency to avoid commit spam (task-4179d454).
 }
 
 /** Process intent files written by the controller for slots on this machine. */
@@ -2762,10 +2761,8 @@ export async function magStart(args: string[]): Promise<void> {
       }
     }
 
-    // Checkpoint accumulated state changes and sync with remote.
-    // Heartbeat is NOT published here — federation trigger handles it on a
-    // slower cadence, avoiding needless commits when nothing changed.
-    try { stateCheckpoint("keepalive"); } catch { /* ignore */ }
+    // State is written to disk but NOT committed here — periodic health-check
+    // handles git commits at lower frequency to avoid commit spam (task-4179d454).
     return;
   }
 
