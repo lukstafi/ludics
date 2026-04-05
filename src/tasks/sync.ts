@@ -818,7 +818,7 @@ function tasksQueueElaborations(): void {
 
     if (alreadyQueued.includes(`"task":"${taskId}"`)) continue;
 
-    queueRequest("elaborate", `"task":"${taskId}"`);
+    queueRequest({ action: "elaborate", task: taskId });
     emitEvent({ event_type: "task_elaborate_queued", source: "sync", scope: "task", task: taskId });
     count++;
   }
@@ -906,7 +906,7 @@ function tasksQueuePreemptions(): void {
     if (alreadyQueuedForTask) continue;
 
     const autonomy = preemptAutonomy();
-    queueRequest("preempt", `"task":"${id}","autonomy":"${autonomy}"`);
+    queueRequest({ action: "preempt", task: id, autonomy });
     emitEvent({ event_type: "task_preempt_queued", source: "sync", scope: "task", task: id, message: `priority project: ${project}` });
     // Mark task immediately so subsequent syncs won't re-queue it
     // (closes the race window between queue-pop and actual slot assignment)

@@ -451,7 +451,7 @@ function writeRetrospective(data: RetrospectiveData): void {
   const hasRequestChanges = data.reviews?.some(r => r.verdict === "request_changes") ?? false;
   if (data.suggestRefactorSummary || Object.keys(data.workflowFeedback).length > 0 || hasRequestChanges) {
     try {
-      queueRequest("process-suggestions", `"task":"${data.taskId}"`);
+      queueRequest({ action: "process-suggestions", task: data.taskId });
     } catch {
       // Non-critical: don't fail retrospective write if queue append fails
     }

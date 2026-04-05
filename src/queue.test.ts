@@ -29,21 +29,14 @@ describe("queueHasPendingFeedbackDigest", () => {
 
   test("matches feedback-digest with repo field", async () => {
     const { queueRequest, queueHasPendingFeedbackDigest } = await loadQueue();
-    queueRequest("feedback-digest", `"repo":"ludics"`);
+    queueRequest({ action: "feedback-digest", repo: "ludics" });
     expect(queueHasPendingFeedbackDigest("ludics")).toBe(true);
     expect(queueHasPendingFeedbackDigest("other-repo")).toBe(false);
   });
 
-  test("does not match feedback-digest without repo field", async () => {
-    const { queueRequest, queueHasPendingFeedbackDigest } = await loadQueue();
-    queueRequest("feedback-digest");
-    // Without repo field, repo check should not match
-    expect(queueHasPendingFeedbackDigest("ludics")).toBe(false);
-  });
-
   test("does not match other actions", async () => {
     const { queueRequest, queueHasPendingFeedbackDigest } = await loadQueue();
-    queueRequest("briefing");
+    queueRequest({ action: "briefing" });
     expect(queueHasPendingFeedbackDigest("ludics")).toBe(false);
   });
 });
@@ -132,7 +125,7 @@ describe("queuePopAll", () => {
 describe("queueRequest includes extra fields", () => {
   test("feedback-digest with repo field is parseable", async () => {
     const { queueRequest } = await loadQueue();
-    queueRequest("feedback-digest", `"repo":"ludics"`);
+    queueRequest({ action: "feedback-digest", repo: "ludics" });
     const content = readFileSync(join(tmpDir, "mag", "queue.jsonl"), "utf-8").trim();
     const parsed = JSON.parse(content);
     expect(parsed.action).toBe("feedback-digest");

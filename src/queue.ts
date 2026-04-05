@@ -34,22 +34,25 @@ function nextRequestId(): string {
   return `req-${epoch}-${suffix}`;
 }
 
-export function queueRequest(action: string, extra?: string): string {
+export type QueueAction =
+  | { action: "briefing" | "suggest" | "health-check" | "adopt-sessions" }
+  | { action: "elaborate" | "draft-proposal" | "split-task" | "verify-completion" | "complete-task" | "process-suggestions"; task: string }
+  | { action: "revise-proposal"; task: string; feedback?: string }
+  | { action: "preempt"; task: string; autonomy: string }
+  | { action: "feedback-digest"; repo: string }
+  | { action: "message"; content: string }
+  | { action: "adapter-followup"; task: string; adapter: string; followup_msg?: string };
+
+export function queueRequest(req: QueueAction): string {
   const file = queueFile();
   mkdirSync(dirname(file), { recursive: true });
 
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const requestId = nextRequestId();
 
-  let request: string;
-  if (extra) {
-    request = `{"id":"${requestId}","action":"${action}","timestamp":"${timestamp}",${extra}}`;
-  } else {
-    request = `{"id":"${requestId}","action":"${action}","timestamp":"${timestamp}"}`;
-  }
-
-  appendFileSync(file, request + "\n");
-  emitEvent({ event_type: "queue_request", source: "cli", scope: "queue", action, message: requestId });
+  const record = { id: requestId, ...req, timestamp };
+  appendFileSync(file, JSON.stringify(record) + "\n");
+  emitEvent({ event_type: "queue_request", source: "cli", scope: "queue", action: req.action, message: requestId });
   return requestId;
 }
 
