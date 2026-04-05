@@ -10,7 +10,7 @@ import { getUrl } from "./network.ts";
 import { federationShouldRunMag, federationIsController, selectMachineForSlot, federationCurrentMachineName } from "./federation.ts";
 import { isRemoteMachine } from "./remote.ts";
 import { readSlotIntent, intentIsFresh, clearSlotIntent } from "./slot-intents.ts";
-import { stateCheckpoint } from "./state.ts";
+import { stateCheckpoint, stateMarkDirty } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
@@ -2163,8 +2163,42 @@ function queueHoldFilePath(): string {
 }
 
 /** Returns true when the queue is held (auto-assignment suppressed). */
-function isQueueHeld(): boolean {
+export function isQueueHeld(): boolean {
   return existsSync(queueHoldFilePath());
+}
+
+/** CLI: hold the queue (suppress auto-assignment). */
+export function queueHold(): void {
+  if (isQueueHeld()) {
+    console.log("Queue is already held — no change.");
+    return;
+  }
+  mkdirSync(join(harnessDir(), "mag"), { recursive: true });
+  writeFileSync(queueHoldFilePath(), "");
+  emitEvent({ event_type: "queue_hold", source: "cli", scope: "queue", action: "hold" });
+  try { stateMarkDirty(); stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
+  console.log("Queue held — auto-assignment suppressed.");
+}
+
+/** CLI: resume the queue (re-enable auto-assignment). */
+export function queueResume(): void {
+  if (!isQueueHeld()) {
+    console.log("Queue is not held — no change.");
+    return;
+  }
+  unlinkSync(queueHoldFilePath());
+  emitEvent({ event_type: "queue_hold", source: "cli", scope: "queue", action: "resume" });
+  try { stateMarkDirty(); stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
+  console.log("Queue resumed — auto-assignment enabled.");
+}
+
+/** CLI: print current queue hold status. */
+export function queueHoldStatus(): void {
+  if (isQueueHeld()) {
+    console.log("Queue is currently HELD — auto-assignment suppressed.");
+  } else {
+    console.log("Queue is ACTIVE — auto-assignment enabled.");
+  }
 }
 
 // --- Sorted ready queue (shared) ---
