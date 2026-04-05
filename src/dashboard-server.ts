@@ -3,15 +3,13 @@
 // Serves static files from the dashboard directory and lazily regenerates
 // data/*.json files when they become stale (TTL-based).
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, statSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import { resolve, extname, join } from "path";
 import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
 import { updateFrontmatterField, addFrontmatterField, removeFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
-import { findSlotForTask } from "./mag.ts";
-import { emitEvent } from "./events.ts";
-import { stateCheckpoint } from "./state.ts";
+import { findSlotForTask, setQueueHold } from "./mag.ts";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -449,22 +447,8 @@ export function startDashboardServer(
           return new Response("Bad Request: state must be true or false", { status: 400 });
         }
         try {
-          const holdFile = join(harnessDir(), "mag", "queue-hold");
-          if (stateParam === "true") {
-            const alreadyHeld = existsSync(holdFile);
-            mkdirSync(join(harnessDir(), "mag"), { recursive: true });
-            writeFileSync(holdFile, "");
-            if (!alreadyHeld) {
-              emitEvent({ event_type: "queue_hold", source: "dashboard", scope: "queue", action: "hold" });
-            }
-          } else {
-            if (existsSync(holdFile)) {
-              unlinkSync(holdFile);
-              emitEvent({ event_type: "queue_hold", source: "dashboard", scope: "queue", action: "resume" });
-            }
-          }
-          // Commit the hold/resume change so state sync doesn't revert it
-          try { stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
+          const held = stateParam === "true";
+          setQueueHold(held, "dashboard");
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
         } catch (e) {
