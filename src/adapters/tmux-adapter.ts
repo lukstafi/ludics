@@ -7,6 +7,7 @@ import { getMainRepoFromWorktree, latestMtime, resolveProjectDir, slotSessionNam
 import { MarkdownBuilder } from "./markdown.ts";
 import type { Adapter, AdapterContext } from "./types.ts";
 import { loadConfigSync } from "../config.ts";
+import { setsidWrap } from "../orchestration/util.ts";
 import {
   tmuxHasSession,
   tmuxNewSession,
@@ -234,8 +235,10 @@ export function startTtyd(slot: number, agentName: string, role: "coder" | "revi
     stdout: "pipe", stderr: "pipe",
   });
 
+  // Use setsidWrap to detach ttyd into its own process session so it survives
+  // when the parent (launchd oneshot keepalive) exits.
   const proc = Bun.spawn(
-    ["nohup", "ttyd", "--writable", "--port", String(port), "tmux", "attach", "-t", target],
+    setsidWrap(["ttyd", "--writable", "--port", String(port), "tmux", "attach", "-t", target]),
     { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
   );
   if (typeof (proc as { unref?: () => void }).unref === "function") {
