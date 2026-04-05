@@ -1,10 +1,33 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { evaluateTransition, findPlanFiles, isAgentDone, phaseTimeoutExpired } from "./phases.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "./state.ts";
+
+const ORIGINAL_HOME = process.env.HOME;
+const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+let TEST_TMP = "";
+
+// Isolate tests from real harness state (evaluateTransition reads peer slot state via harnessDir)
+beforeEach(() => {
+  TEST_TMP = mkdtempSync(join(tmpdir(), "ludics-phases-test-"));
+  process.env.HOME = TEST_TMP;
+  const configDir = join(TEST_TMP, ".config", "ludics");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, "config.yaml"), `state_repo: test/ludics-state\nstate_path: harness\n`);
+  process.env.LUDICS_CONFIG = join(configDir, "config.yaml");
+});
+
+afterEach(() => {
+  process.env.HOME = ORIGINAL_HOME;
+  if (ORIGINAL_CONFIG === undefined) {
+    delete process.env.LUDICS_CONFIG;
+  } else {
+    process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+  }
+});
 
 function makeState(overrides: Partial<OrchestrationState> = {}): OrchestrationState {
   return {
