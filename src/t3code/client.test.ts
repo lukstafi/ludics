@@ -11,6 +11,19 @@ type RequestEnvelope = {
   };
 };
 
+// Probe whether we can bind a loopback socket — skip all tests if not.
+let canBind = true;
+try {
+  const probe = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch() { return new Response("ok"); },
+  });
+  probe.stop(true);
+} catch {
+  canBind = false;
+}
+
 const servers: Server<undefined>[] = [];
 
 afterEach(() => {
@@ -44,7 +57,7 @@ function startServer(handler: {
   return server;
 }
 
-describe("T3CodeClient", () => {
+describe.if(canBind)("T3CodeClient", () => {
   test("requests orchestration snapshots", async () => {
     let seenTag = "";
     const server = startServer({
