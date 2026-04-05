@@ -306,25 +306,51 @@ describe("slot assign — direct orchestration flags", () => {
   });
 });
 
-describe("slotStart — t3code empty-args guard", () => {
-  test("throws with descriptive message when t3code slot has empty adapterArgs", async () => {
+describe("slotStart — t3code empty-args auto-fill", () => {
+  function readAdapterArgsFromSlots(): string {
+    const content = readFileSync(join(TMP, "ludics-state", "harness", "slots.md"), "utf-8");
+    const m = content.match(/\*\*Adapter Args:\*\*\s*(.+)/);
+    return m ? m[1]!.trim() : "";
+  }
+
+  test("auto-fills orchestration flags when t3code slot has empty adapterArgs", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
     writeTask(tasksDir, "task-empty-args-1", "Empty args test");
     // slotAssign with no adapterArgs stores "null" which makeAdapterContext converts to ""
     slotAssign(1, "task-empty-args-1", "t3code");
-    await expect(slotStart(1)).rejects.toThrow("requires orchestration flags");
-  });
+    // slotStart auto-fills flags then proceeds to adapter start (which fails in test env)
+    try { await slotStart(1); } catch { /* adapter startup fails in test env */ }
+    // Verify auto-filled flags were written back to slot block
+    const args = readAdapterArgsFromSlots();
+    expect(args).toContain("--pair");
+    expect(args).toContain("--coder");
+    expect(args).toContain("--reviewer");
+  }, 15_000);
 
-  test("throws when adapterArgs is whitespace-only", async () => {
+  test("auto-fills orchestration flags when adapterArgs is whitespace-only", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
     writeTask(tasksDir, "task-whitespace-args-1", "Whitespace args test");
     // Assign with whitespace adapterArgs — stored as-is since "   " is truthy
     slotAssign(1, "task-whitespace-args-1", "t3code", "", "", "   ");
-    await expect(slotStart(1)).rejects.toThrow("requires orchestration flags");
+    // slotStart auto-fills flags then proceeds to adapter start (which fails in test env)
+    try { await slotStart(1); } catch { /* adapter startup fails in test env */ }
+    // Verify auto-filled flags were written back to slot block
+    const args = readAdapterArgsFromSlots();
+    expect(args).toContain("--pair");
+    expect(args).toContain("--coder");
+    expect(args).toContain("--reviewer");
+  }, 15_000);
+
+  test("throws when no task is assigned and adapterArgs is empty", async () => {
+    // Assign with no task — slotAssign requires a task, so use slotSetMode instead
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    slotAssign(1, "null", "t3code");
+    await expect(slotStart(1)).rejects.toThrow("no task is assigned");
   });
 });
 
