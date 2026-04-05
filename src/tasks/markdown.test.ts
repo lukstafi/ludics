@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, updateFrontmatterField } from "./markdown.ts";
+import { addFrontmatterField } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
