@@ -6,7 +6,8 @@ import { harnessDir, loadConfigSync } from "./config.ts";
 import { hostnameTailscale } from "./network.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
-import { stateCommit, stateCheckpoint, stateCommitImmediate, statePull, statePush } from "./state.ts";
+// State imports removed — federation tick no longer calls statePull/statePush.
+// Git sync happens only at health-check periodicity.
 
 const HEARTBEAT_TIMEOUT = parseInt(process.env.LUDICS_HEARTBEAT_TIMEOUT ?? "900", 10);
 
@@ -20,6 +21,7 @@ export interface FederationMachine {
   always_on: boolean;
   gpu: string;
   ludics_path?: string;
+  dashboard_port?: number;
 }
 
 interface FederationConfig {
@@ -45,6 +47,7 @@ export function federationConfig(): FederationConfig {
         always_on: Boolean(m.always_on),
         gpu: String(m.gpu ?? ""),
         ludics_path: m.ludics_path ? String(m.ludics_path) : undefined,
+        dashboard_port: m.dashboard_port ? Number(m.dashboard_port) : undefined,
       }));
 
     const transport = String(fed?.transport ?? "local");
@@ -165,18 +168,35 @@ export function heartbeatPublish(): boolean {
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const epoch = Math.floor(Date.now() / 1000);
 
-  const heartbeat = JSON.stringify({
+  const heartbeatData = {
     node: nodeName,
     role: machine?.role ?? "",
     timestamp,
     epoch,
     mag_running: magRunning,
     controller_running: federationIsController(),
-  });
+  };
 
-  writeFileSync(join(dir, `${nodeName}.json`), heartbeat + "\n");
+  // Write local heartbeat file
+  writeFileSync(join(dir, `${nodeName}.json`), JSON.stringify(heartbeatData) + "\n");
   emitEvent({ event_type: "federation_heartbeat", source: "federation", scope: "federation", message: nodeName });
   console.error(`ludics: federation: published heartbeat for ${nodeName}`);
+
+  // POST heartbeat to controller via HTTP (workers only — controller's own heartbeat is already local).
+  // Uses resolveControllerCandidates() instead of currentLeader() to avoid stale leader.json.
+  if (!federationIsController()) {
+    const candidates = resolveControllerCandidates();
+    if (candidates.length > 0) {
+      // Fire-and-forget — try candidates in priority order until one accepts
+      import("./federation-http.ts").then(async ({ federationHttpPost }) => {
+        for (const candidate of candidates) {
+          const result = await federationHttpPost(candidate, "/federation/heartbeat", heartbeatData);
+          if (result.ok) break; // delivered to controller
+        }
+      }).catch(() => {});
+    }
+  }
+
   return true;
 }
 
@@ -296,9 +316,22 @@ export function federationElect(): string | null {
   return null;
 }
 
-/** Returns the machine name that should be controller right now. */
+/** Returns the machine name that should be controller right now (from local leader.json). */
 export function federationCurrentController(): string | null {
   return currentLeader();
+}
+
+/**
+ * Resolve the controller machine for worker-side HTTP delivery.
+ * Does NOT depend on leader.json (which may be stale on workers).
+ * Returns machines in role priority: leader first, then consoles.
+ * Caller should try them in order until one responds.
+ */
+export function resolveControllerCandidates(): FederationMachine[] {
+  const machines = federationMachines();
+  const leaders = machines.filter((m) => m.role === "leader");
+  const consoles = machines.filter((m) => m.role === "console");
+  return [...leaders, ...consoles];
 }
 
 export function federationIsLeader(): boolean {
@@ -357,7 +390,8 @@ export function federationShouldRunMag(): boolean {
 export async function federationTick(): Promise<void> {
   console.error("ludics: federation: running tick...");
 
-  try { statePull(); } catch { /* ignore */ }
+  // No statePull() here — heartbeats arrive via HTTP, signals arrive via HTTP,
+  // intents are delivered via HTTP. Git sync only happens at health-check periodicity.
 
   const prevController = currentLeader();
   const currentNodeName = federationCurrentMachineName();
@@ -382,7 +416,9 @@ export async function federationTick(): Promise<void> {
     }
   }
 
-  // Controller polls remote workers for completion signals
+  // Controller polls remote workers for completion signals (legacy path for
+  // signals that arrived via git before HTTP was enabled; HTTP signals are
+  // processed inline in the /federation/signal handler).
   if (federationIsController()) {
     try {
       const { controllerPollWorkers } = await import("./worker-signal.ts");
@@ -390,9 +426,9 @@ export async function federationTick(): Promise<void> {
     } catch { /* ignore */ }
   }
 
-  // State is written to disk but NOT committed here — periodic health-check
-  // handles git commits at lower frequency (task-4179d454).
-  // Remote slot intents still commit+push individually via { push: true }.
+  // State is written to disk but NOT committed — periodic health-check
+  // handles git commits at lower frequency. All coordination (intents,
+  // heartbeats, signals) now uses HTTP, not git.
 
   console.error("ludics: federation: tick complete");
 }

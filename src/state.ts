@@ -126,8 +126,9 @@ export function stateCheckpoint(
   }
 }
 
-export function statePull(): boolean {
+export function statePull(opts?: { autoCommit?: boolean }): boolean {
   const repoDir = stateRepoDir();
+  const autoCommit = opts?.autoCommit ?? true;
 
   // Recover from a previously stuck rebase before pulling
   if (isRebaseInProgress(repoDir)) {
@@ -140,13 +141,17 @@ export function statePull(): boolean {
   }
 
   // Commit any uncommitted changes before pulling so rebase handles conflicts
-  // properly instead of stash-pop which can conflict and pile up stashes
-  const diffResult = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
-  const hasChanges = diffResult.exitCode !== 0;
+  // properly instead of stash-pop which can conflict and pile up stashes.
+  // Callers can opt out (autoCommit: false) to avoid creating commits during
+  // routine keepalive loops — only health-check should auto-commit.
+  if (autoCommit) {
+    const diffResult = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+    const hasChanges = diffResult.exitCode !== 0;
 
-  if (hasChanges) {
-    Bun.spawnSync(["git", "add", "-A"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
-    Bun.spawnSync(["git", "commit", "-m", "auto-commit before pull"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+    if (hasChanges) {
+      Bun.spawnSync(["git", "add", "-A"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+      Bun.spawnSync(["git", "commit", "-m", "auto-commit before pull"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+    }
   }
 
   squashLocalCommits(repoDir);
@@ -624,6 +629,34 @@ function replaceSections(block: string, sections: SlotSections): string {
   }
 
   return output.join("\n");
+}
+
+/**
+ * Ensure the state repo's .gitignore excludes coordination artifacts
+ * (slot-intents, worker-signals) so they never propagate via git.
+ * Called during init and health-check. Idempotent.
+ */
+export function ensureCoordinationGitignore(): void {
+  const repoDir = stateRepoDir();
+  const gitignorePath = join(repoDir, ".gitignore");
+
+  const entries = [
+    "# Coordination artifacts — local-only, delivered via HTTP not git",
+    "harness/federation/slot-intents/",
+    "harness/worker-signals/",
+  ];
+
+  let existing = "";
+  if (existsSync(gitignorePath)) {
+    existing = readFileSync(gitignorePath, "utf-8");
+  }
+
+  const linesToAdd = entries.filter((e) => !existing.includes(e));
+  if (linesToAdd.length === 0) return;
+
+  const suffix = existing.endsWith("\n") || !existing ? "" : "\n";
+  writeFileSync(gitignorePath, existing + suffix + linesToAdd.join("\n") + "\n");
+  console.error("ludics: updated .gitignore to exclude coordination artifacts");
 }
 
 export function stateSync(message: string): void {

@@ -7,7 +7,8 @@ import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted, getLiveness, getMachine } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
-import { federationShouldRunMag, federationIsController, selectMachineForSlot, federationCurrentMachineName } from "./federation.ts";
+import { federationShouldRunMag, federationIsController, selectMachineForSlot, federationCurrentMachineName, federationMachine } from "./federation.ts";
+import { federationHttpPost } from "./federation-http.ts";
 import { isRemoteMachine } from "./remote.ts";
 import { readSlotIntent, intentIsFresh, clearSlotIntent } from "./slot-intents.ts";
 import { stateCheckpoint, stateMarkDirty } from "./state.ts";
@@ -2595,8 +2596,8 @@ function maybeClearDoneSlots(): void {
 async function workerKeepalive(): Promise<void> {
   console.error("ludics: worker keepalive");
 
-  // Pull fresh state so automations see latest slot assignments
-  try { const { statePull } = await import("./state.ts"); statePull(); } catch { /* ignore */ }
+  // No statePull() — intents arrive via HTTP, signals retry via HTTP.
+  // Git sync only happens at health-check periodicity.
 
   // Publish terminal state for this machine's sessions
   publishTerminalState();
@@ -2607,8 +2608,66 @@ async function workerKeepalive(): Promise<void> {
   // Resume dead orchestrator processes on this machine's slots
   await maybeResumeDeadOrchestrators();
 
-  // State is written to disk but NOT committed here — periodic health-check
-  // handles git commits at lower frequency to avoid commit spam (task-4179d454).
+  // Retry undelivered worker signals via HTTP
+  try {
+    const { retryUndeliveredSignals } = await import("./worker-signal.ts");
+    await retryUndeliveredSignals();
+  } catch { /* ignore */ }
+
+  // State is written to disk but NOT committed — periodic health-check
+  // handles git commits. All coordination uses HTTP, not git.
+}
+
+/**
+ * Controller-side retry for failed HTTP intents.
+ * When HTTP delivery to a remote worker fails, the controller writes a local intent file
+ * for dashboard visibility. On each keepalive, retry HTTP delivery for any outstanding
+ * intent files on remote slots. Intent files are local-only — never delivered via git.
+ */
+async function retryFailedIntents(): Promise<void> {
+  if (!federationIsController()) return;
+
+  const sFile = slotsFilePath();
+  if (!existsSync(sFile)) return;
+  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+
+  for (const [slotNum, block] of blocks) {
+    const machineName = getMachine(block).trim();
+    if (!machineName || machineName === "null" || !isRemoteMachine(machineName)) continue;
+
+    const intent = readSlotIntent(slotNum);
+    if (!intent) continue;
+
+    // Check TTL — expire stale intents
+    if (!intentIsFresh(intent)) {
+      console.error(`ludics: retry-intents: expired ${intent.action} intent for slot ${slotNum} (age: ${Math.floor(Date.now() / 1000) - intent.epoch}s) — clearing`);
+      clearSlotIntent(slotNum);
+      emitEvent({ event_type: "slot_intent_expired", source: "keepalive", scope: "slot", slot: slotNum, message: `${intent.action} intent expired` });
+      continue;
+    }
+
+    // Retry HTTP delivery
+    const targetMachine = federationMachine(machineName);
+    if (!targetMachine) continue;
+
+    const taskId = getTask(block).trim();
+    const result = await federationHttpPost(targetMachine, "/federation/intent", {
+      action: intent.action,
+      slot: slotNum,
+      epoch: intent.epoch,
+      machine: intent.machine,
+      taskId: taskId !== "null" ? taskId : "",
+      preserveState: intent.preserveState,
+    });
+
+    if (result.ok) {
+      clearSlotIntent(slotNum);
+      console.error(`ludics: retry-intents: ${intent.action} intent for slot ${slotNum} delivered via HTTP retry`);
+      emitEvent({ event_type: "slot_intent_retried", source: "keepalive", scope: "slot", slot: slotNum, message: `${intent.action} intent delivered via retry` });
+      break; // rate-limit: one successful retry per keepalive
+    }
+    // HTTP still failing — leave intent file for next retry
+  }
 }
 
 /** Process intent files written by the controller for slots on this machine. */
@@ -2714,6 +2773,9 @@ export async function magStart(args: string[]): Promise<void> {
 
     // Publish terminal state to ntfy (dedup'd)
     publishTerminalState();
+
+    // Retry failed HTTP intents for remote slots (controller-side)
+    await retryFailedIntents();
 
     // Expire pending-revise flags that timed out (15 min)
     expirePendingRevises();

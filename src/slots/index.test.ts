@@ -702,11 +702,12 @@ describe("slotStop — preserve-state flag", () => {
   });
 });
 
-describe("remote slot dispatch via intent files", () => {
+describe("remote slot dispatch via HTTP", () => {
   // In test env without federation config, isRemoteMachine("worker-a") returns true
   // because federationCurrentMachineName() returns null (fail-closed).
+  // federationMachine("worker-a") returns undefined (no config) → fail-fast.
 
-  test("remote slotStart writes a start intent and does not stamp Session Started", async () => {
+  test("remote slotStart fails fast when no federation config for machine", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
@@ -719,19 +720,24 @@ describe("remote slot dispatch via intent files", () => {
 
     slotAssign(1, "task-remote-1", "tmux", "", "", "", "worker-a");
 
-    await slotStart(1);
-
-    // Intent file should exist
-    const intent = readSlotIntent(1);
-    expect(intent).not.toBeNull();
-    expect(intent!.action).toBe("start");
-    expect(intent!.machine).toBe("worker-a");
+    // Should throw — no federation config for "worker-a"
+    await expect(slotStart(1)).rejects.toThrow("no federation config for machine worker-a");
 
     // Session Started should NOT be stamped on controller side
     const slots = readFileSync(join(harness, "slots.md"), "utf-8");
     expect(slots).toContain("**Session Started:** null");
+  });
 
-    clearSlotIntent(1);
+  test("remote slotStart fails fast when machine is offline", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-remote-1b", "Remote start offline test");
+
+    slotAssign(1, "task-remote-1b", "tmux", "", "", "", "worker-a");
+
+    // No heartbeat → machine offline
+    await expect(slotStart(1)).rejects.toThrow("offline — cannot start");
   });
 
   test("remote slotStop (non-force) writes a stop intent and returns early", async () => {
@@ -752,7 +758,7 @@ describe("remote slot dispatch via intent files", () => {
 
     await slotStop(1, false, false);
 
-    // Intent file should exist
+    // Intent file should exist (stop is best-effort, queues locally without config)
     const intent = readSlotIntent(1);
     expect(intent).not.toBeNull();
     expect(intent!.action).toBe("stop");
@@ -784,7 +790,7 @@ describe("remote slot dispatch via intent files", () => {
     expect(slots).toContain("**Session Started:** null");
   });
 
-  test("remote slotResume writes a resume intent", async () => {
+  test("remote slotResume fails fast when machine is offline", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
@@ -792,14 +798,24 @@ describe("remote slot dispatch via intent files", () => {
 
     slotAssign(1, "task-remote-4", "tmux", "", "", "", "worker-a");
 
-    await slotResume(1);
+    // No heartbeat → machine offline → should throw
+    await expect(slotResume(1)).rejects.toThrow("offline — cannot resume");
+  });
 
-    // Intent file should exist
-    const intent = readSlotIntent(1);
-    expect(intent).not.toBeNull();
-    expect(intent!.action).toBe("resume");
-    expect(intent!.machine).toBe("worker-a");
+  test("remote slotResume fails fast when no federation config for machine", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeTask(tasksDir, "task-remote-4b", "Remote resume config test");
 
-    clearSlotIntent(1);
+    // Create a fresh heartbeat
+    const heartbeatsDir = join(harness, "federation", "heartbeats");
+    mkdirSync(heartbeatsDir, { recursive: true });
+    writeFileSync(join(heartbeatsDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
+
+    slotAssign(1, "task-remote-4b", "tmux", "", "", "", "worker-a");
+
+    // Heartbeat is fresh but no federation config → should throw
+    await expect(slotResume(1)).rejects.toThrow("no federation config for machine worker-a");
   });
 });
