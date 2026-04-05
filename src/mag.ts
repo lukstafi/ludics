@@ -1583,7 +1583,7 @@ function taskIsConcluded(taskId: string, harness: string): boolean {
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     if (!fmMatch) return false;
 
-    const data = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
+    const data = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>;
     const status = String(data.status ?? "").trim().toLowerCase();
     if (status === "done" || status === "abandoned") return true;
 
@@ -1753,7 +1753,7 @@ function computeSessionProjectMatches(): string {
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
       if (fmMatch) {
         try {
-          const fm = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
+          const fm = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>;
           const deps = fm.dependencies as Record<string, unknown> | undefined;
           const blockedBy = deps?.blocked_by;
           if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
@@ -2110,7 +2110,7 @@ function maybeNagQuestions(): void {
     if (!fmMatch) continue;
 
     let fm: Record<string, unknown>;
-    try { fm = YAML.parse(fmMatch[1]!) as Record<string, unknown>; } catch { continue; }
+    try { fm = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>; } catch { continue; }
 
     if (!fm.has_questions) continue;
 
@@ -2234,7 +2234,7 @@ function getSortedReadyCandidates(): ReadyCandidate[] {
     if (!fmMatch) continue;
 
     let fm: Record<string, unknown>;
-    try { fm = YAML.parse(fmMatch[1]!) as Record<string, unknown>; } catch { continue; }
+    try { fm = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>; } catch { continue; }
 
     const id = String(fm.id ?? "").trim();
     if (!id) continue;
@@ -3176,7 +3176,7 @@ function magCompleted(proposalName: string): void {
 
     let data: Record<string, unknown>;
     try {
-      data = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
+      data = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>;
     } catch { continue; }
 
     const status = String(data.status ?? "");

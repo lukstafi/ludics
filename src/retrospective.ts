@@ -405,7 +405,7 @@ function readTaskFrontmatter(taskId: string): TaskFrontmatter | null {
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     if (!fmMatch) return null;
 
-    const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
+    const data = (YAML.parse(fmMatch[1]!, { uniqueKeys: false }) ?? {}) as Record<string, unknown>;
 
     // Parse t3code_threads: [id1, id2]
     let threads: string[] = [];

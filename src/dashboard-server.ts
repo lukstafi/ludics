@@ -44,7 +44,7 @@ export function startDashboardServer(
       const content = readFileSync(taskFilePath, "utf-8");
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
       if (!fmMatch) return null;
-      const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
+      const data = (YAML.parse(fmMatch[1]!, { uniqueKeys: false }) ?? {}) as Record<string, unknown>;
       const rawProject = String(data.project ?? "").trim();
       const rawProposal = String(data.proposal ?? "").trim();
       const proposal = rawProposal && rawProposal.toLowerCase() !== "null" ? rawProposal : null;

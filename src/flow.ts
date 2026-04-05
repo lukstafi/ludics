@@ -40,7 +40,7 @@ function collectTasks(): TaskData[] {
     if (!fmMatch) continue;
 
     try {
-      const data = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
+      const data = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>;
       const deps = (data.dependencies as Record<string, unknown>) ?? {};
       tasks.push({
         id: String(data.id ?? ""),

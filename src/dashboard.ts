@@ -111,7 +111,7 @@ function lookupTaskMetadata(taskId: string): TaskMetadata {
   try {
     const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
     if (!fmMatch) return { content, githubUrl: null, effort: null, hasProposal: false };
-    const data = (YAML.parse(fmMatch[1]!) ?? {}) as Record<string, unknown>;
+    const data = (YAML.parse(fmMatch[1]!, { uniqueKeys: false }) ?? {}) as Record<string, unknown>;
     const urlVal = data.url;
     const githubUrl =
       urlVal && typeof urlVal === "string" && urlVal.trim() !== "" && urlVal.trim().toLowerCase() !== "null"
@@ -438,7 +438,7 @@ function readDashboardTasks(): DashboardTask[] {
     if (!fmMatch) continue;
 
     try {
-      const data = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
+      const data = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>;
       const deps = (data.dependencies as Record<string, unknown>) ?? {};
       const id = String(data.id ?? "");
       if (!id) continue;

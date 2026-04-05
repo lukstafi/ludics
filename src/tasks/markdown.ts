@@ -33,7 +33,7 @@ export function parseTaskFrontmatter(content: string): Partial<TaskFrontmatter> 
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
   if (!fmMatch) throw new Error("no frontmatter found");
 
-  const data = YAML.parse(fmMatch[1]!) as Record<string, unknown>;
+  const data = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>;
   const deps = (data.dependencies as Record<string, unknown>) ?? {};
   return {
     id: String(data.id ?? ""),
