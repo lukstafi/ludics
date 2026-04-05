@@ -13,7 +13,6 @@
 #      (written by orchestration setup).  This is the primary path.
 #   2. Marker file .ludics-orchestration.json at the worktree root — fallback
 #      for Codex sessions or environments without Claude Code hook support.
-#   3. Directory walk up from cwd to find .peer-sync/phase — legacy fallback.
 #
 # Loop prevention (Mag): when the queue is empty, mag_queue_pop outputs nothing
 # (exit 0), so Claude stops naturally.
@@ -51,10 +50,10 @@ if [[ -z "$ludics_bin" ]]; then
 fi
 
 # Determine peer-sync directory and agent name.
-# Priority: env var > marker file > directory walk.
+# Priority: env var > marker file.
 # NOTE: The TypeScript equivalent is resolvePeerSyncDir() in src/orchestration/peer-sync.ts
 # which implements: CLI arg > env var > null.  The shell hook has additional fallbacks
-# (marker file walk-up, deprecated dir walk-up) because it runs before the TypeScript
+# (marker file walk-up) because it runs before the TypeScript
 # binary and must bootstrap without prior context.
 peer_sync_dir=""
 
@@ -85,24 +84,8 @@ if [[ -z "$peer_sync_dir" ]]; then
   done
 fi
 
-# 3. Fallback: walk up from cwd to find .peer-sync/phase.
-#    DEPRECATED: This heuristic is fragile (may match wrong .peer-sync in nested
-#    worktrees) and will be removed in a future release. Ensure LUDICS_PEER_SYNC_DIR
-#    is set (via SessionStart hook) or .ludics-orchestration.json markers are present.
-if [[ -z "$peer_sync_dir" ]]; then
-  check_dir="$cwd"
-  while [[ -n "$check_dir" && "$check_dir" != "/" ]]; do
-    if [[ -f "$check_dir/.peer-sync/phase" ]]; then
-      peer_sync_dir="$check_dir/.peer-sync"
-      echo "[ludics] WARNING: stop hook resolved peer-sync via directory walk (deprecated). Set LUDICS_PEER_SYNC_DIR env var instead." >&2
-      break
-    fi
-    check_dir=$(dirname "$check_dir")
-  done
-fi
-
 # Orchestration stop-hook routing.  Only exec into orch on-stop when the shell
-# successfully resolved a peer-sync dir (via env var, marker file, or dir walk).
+# successfully resolved a peer-sync dir (via env var or marker file).
 # If peer_sync_dir is empty, fall through to mag queue-pop — do NOT check the
 # raw LUDICS_PEER_SYNC_DIR env var here, because it may be stale (no phase file),
 # and exec-ing would prevent the Mag fallback from running.

@@ -28,8 +28,6 @@ interface FederationConfig {
   machines: FederationMachine[];
 }
 
-let _networkNodesDeprecationWarned = false;
-
 export function federationConfig(): FederationConfig {
   try {
     const config = loadConfigSync();
@@ -48,30 +46,6 @@ export function federationConfig(): FederationConfig {
         gpu: String(m.gpu ?? ""),
         ludics_path: m.ludics_path ? String(m.ludics_path) : undefined,
       }));
-
-    // Compat shim: auto-convert legacy network.nodes → federation.machines
-    if (machines.length === 0) {
-      const net = raw.network as Record<string, unknown> | undefined;
-      const legacyNodes = net?.nodes as Array<Record<string, unknown>> | undefined;
-      if (Array.isArray(legacyNodes) && legacyNodes.length > 0) {
-        if (!_networkNodesDeprecationWarned) {
-          console.error("ludics: DEPRECATED — network.nodes is deprecated; migrate to federation.machines in config.yaml");
-          _networkNodesDeprecationWarned = true;
-        }
-        // Map first node as "leader", rest as "console" to preserve
-        // seniority-based failover via computeController()'s leader→console cascade.
-        machines = legacyNodes
-          .filter((n) => n && n.name)
-          .map((n, i) => ({
-            name: String(n.name),
-            host: String(n.tailscale_hostname ?? ""),
-            os: "linux",
-            role: i === 0 ? "leader" : "console",
-            always_on: false,
-            gpu: "",
-          }));
-      }
-    }
 
     const transport = String(fed?.transport ?? "local");
     // Compat: derive transport from legacy network.mode if not set

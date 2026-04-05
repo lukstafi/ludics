@@ -124,5 +124,3 @@ network:
   # If not set and mode is tailscale, auto-detects from `tailscale status`
   hostname: ""
 
-  # NOTE: network.nodes is deprecated. Use federation.machines instead.
-  # See the federation section in config.reference.yaml.

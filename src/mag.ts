@@ -2549,10 +2549,6 @@ async function workerKeepalive(): Promise<void> {
   // Resume dead orchestrator processes on this machine's slots
   await maybeResumeDeadOrchestrators();
 
-  // MIGRATION: recover legacy dispatches that used Session Started stamps.
-  // Remove after all workers have upgraded to intent-based dispatch.
-  await maybeStartDispatchedSlots();
-
   // Checkpoint and push if anything changed.
   // Heartbeat is NOT published here — federation trigger handles it.
   try { stateCheckpoint("keepalive"); } catch { /* ignore */ }
@@ -2619,84 +2615,6 @@ async function processSlotIntents(): Promise<void> {
     }
     // On failure: continue to next slot so a persistently failing intent
     // doesn't starve other slots' intents. Failed intent is retained for retry.
-  }
-}
-
-/**
- * MIGRATION: Detect slots assigned to this machine that have Session Started set
- * (controller dispatched them via the old SSH scheme) but no orchestration state
- * and no running sessions. Start them fresh.
- * Remove after all workers have upgraded to intent-based dispatch.
- */
-async function maybeStartDispatchedSlots(): Promise<void> {
-  if (startSessionsAutonomy() === "manual") return;
-
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return;
-
-  const currentMachine = federationCurrentMachineName();
-  if (!currentMachine) return;
-
-  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
-  const tasksDir = join(harnessDir(), "tasks");
-
-  for (const [slotNum, block] of blocks) {
-    const slotProcess = getProcess(block).trim();
-    if (!slotProcess || slotProcess === "(empty)") continue;
-
-    const taskId = getTask(block).trim();
-    if (!taskId || taskId === "null") continue;
-
-    const mode = getMode(block).trim();
-    if (mode !== "t3code" && mode !== "tmux") continue;
-
-    // Only act on slots assigned to this machine
-    const machine = getMachine(block).trim();
-    if (machine !== currentMachine) continue;
-
-    // Must have Session Started (controller dispatched it via old SSH scheme)
-    const sessionStarted = getSessionStarted(block).trim();
-    if (!sessionStarted || sessionStarted === "null") continue;
-
-    // MIGRATION TTL guard: only recover recent legacy dispatches (10 min window).
-    // Prevents stale Session Started stamps from becoming unbounded start signals.
-    const dispatchedAt = new Date(sessionStarted).getTime();
-    if (isNaN(dispatchedAt) || (Date.now() - dispatchedAt) > 600_000) continue;
-
-    // Skip if orchestration state exists — maybeResumeDeadOrchestrators handles that
-    const orchState = readOrchestrationState(slotNum);
-    if (orchState) continue;
-
-    // Skip if marked interrupted — needs manual intervention
-    const liveness = getLiveness(block).trim();
-    if (liveness === "interrupted") continue;
-
-    // Check that the task has a proposal (required for start)
-    if (existsSync(tasksDir)) {
-      const taskFile = join(tasksDir, `${taskId}.md`);
-      if (!existsSync(taskFile)) continue;
-      const content = readFileSync(taskFile, "utf-8");
-      if (!content.includes("\nproposal:")) continue;
-    }
-
-    // Dispatched but never started — start fresh
-    console.error(`ludics: slot ${slotNum} was dispatched to this machine but never started — starting now`);
-    try {
-      await slotStart(slotNum);
-      emitEvent({
-        event_type: "slot_auto_start",
-        source: "keepalive",
-        scope: "slot",
-        slot: slotNum,
-        task: taskId,
-        message: `auto-started slot ${slotNum} for ${taskId} (dispatched but never started)`,
-      });
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      console.error(`ludics: failed to start dispatched slot ${slotNum}: ${detail}`);
-      markSlotSetupFailed(slotNum, detail);
-    }
-    break; // rate-limit: at most 1 per invocation
   }
 }
 
