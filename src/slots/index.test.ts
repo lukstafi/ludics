@@ -712,6 +712,11 @@ describe("remote slot dispatch via intent files", () => {
     mkdirSync(tasksDir, { recursive: true });
     writeTask(tasksDir, "task-remote-1", "Remote start test");
 
+    // Create a fresh heartbeat so heartbeatIsFresh("worker-a") returns true
+    const heartbeatsDir = join(harness, "federation", "heartbeats");
+    mkdirSync(heartbeatsDir, { recursive: true });
+    writeFileSync(join(heartbeatsDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
+
     slotAssign(1, "task-remote-1", "tmux", "", "", "", "worker-a");
 
     await slotStart(1);
