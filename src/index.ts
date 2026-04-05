@@ -49,6 +49,30 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   },
   init: runInit,
   quote: async () => runQuote(),
+  config: async (args) => {
+    const sub = args[0] ?? "";
+    if (sub === "proposals-path") {
+      const project = args[1];
+      if (!project) {
+        console.error("usage: ludics config proposals-path <project>");
+        process.exit(1);
+      }
+      const { resolveProjectPath, resolveProposalsPath, loadConfigSync } = await import("./config.ts");
+      const projectDir = resolveProjectPath(project);
+      if (!projectDir) {
+        console.error(`project not found: ${project}`);
+        process.exit(1);
+      }
+      const cfg = loadConfigSync();
+      const projCfg = (cfg.projects ?? []).find(
+        (p: any) => String(p.name ?? "").toLowerCase() === project.toLowerCase()
+      );
+      console.log(resolveProposalsPath(projectDir, projCfg?.proposals_path));
+    } else {
+      console.error(`unknown config subcommand: ${sub} (available: proposals-path)`);
+      process.exit(1);
+    }
+  },
   events: async (args) => runEvents(args),
   t3code: async (args) => {
     await runT3Code(args);
@@ -223,6 +247,9 @@ Commands:
   queue hold                   Suppress automatic slot assignments
   queue resume                 Re-enable automatic slot assignments
   queue status                 Show whether queue is held or active
+
+  config proposals-path <project>
+                               Print resolved proposals directory path for a project
 
   quote                        Print a random quote
 

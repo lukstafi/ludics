@@ -379,6 +379,22 @@ export function resolveProjectPath(projectName: string): string {
   return "";
 }
 
+/**
+ * Resolve the absolute proposals directory for a project.
+ * Uses configuredPath (relative to projectDir) if provided.
+ * Otherwise probes docs/, doc/, .docs/ and appends proposals/.
+ * Falls back to docs/proposals/.
+ */
+export function resolveProposalsPath(projectDir: string, configuredPath?: string): string {
+  if (configuredPath) return join(projectDir, configuredPath);
+  for (const candidate of ["docs", "doc", ".docs"]) {
+    if (existsSync(join(projectDir, candidate))) {
+      return join(projectDir, candidate, "proposals");
+    }
+  }
+  return join(projectDir, "docs", "proposals");
+}
+
 /** Set of projects with `priority: true` in config, cached per process. */
 let _priorityProjectsCache: Set<string> | null = null;
 function priorityProjectSet(): Set<string> {
