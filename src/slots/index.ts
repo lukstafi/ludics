@@ -21,7 +21,8 @@ import { readOrchestrationState, persistState, removeOrchestrationState } from "
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
 import { writeSlotIntent } from "../slot-intents.ts";
-import { heartbeatIsFresh } from "../federation.ts";
+import { heartbeatIsFresh, federationMachine } from "../federation.ts";
+import { federationHttpPost } from "../federation-http.ts";
 
 function ensureSlotsFile(): string {
   const file = slotsFilePath();
@@ -648,21 +649,29 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
-  // Remote dispatch: if slot is owned by another machine, write intent file
+  // Remote dispatch: if slot is owned by another machine, send via HTTP
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
     if (!heartbeatIsFresh(ctx.machine)) {
       throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot start`);
     }
-    console.error(`ludics: slot ${slotNum}: queuing start intent for remote machine ${ctx.machine}`);
-
-    writeSlotIntent(slotNum, { action: "start", epoch: Math.floor(Date.now() / 1000), machine: ctx.machine });
-
-    // Checkpoint and push state so the worker sees fresh slot/task metadata + intent
-    const { stateCheckpoint } = await import("../state.ts");
-    try { stateCheckpoint(`remote start intent slot ${slotNum}`, { push: true }); } catch { /* ignore */ }
-
-    journalAppend("slot", `Slot ${slotNum} start queued for ${ctx.machine}`);
-    emitEvent({ event_type: "slot_start_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `start queued for ${ctx.machine}` });
+    const targetMachine = federationMachine(ctx.machine);
+    if (!targetMachine) {
+      throw new Error(`slot ${slotNum}: no federation config for machine ${ctx.machine}`);
+    }
+    const epoch = Math.floor(Date.now() / 1000);
+    const result = await federationHttpPost(targetMachine, "/federation/intent", {
+      action: "start", slot: slotNum, epoch, machine: ctx.machine, taskId: ctx.taskId,
+    });
+    if (!result.ok) {
+      // Write local intent file for dashboard visibility + controller-side HTTP retry
+      writeSlotIntent(slotNum, { action: "start", epoch, machine: ctx.machine });
+      console.error(`ludics: slot ${slotNum}: start intent failed (HTTP status=${result.status}) — queued locally`);
+      journalAppend("slot", `Slot ${slotNum} start failed — remote ${ctx.machine} unreachable`);
+    } else {
+      console.error(`ludics: slot ${slotNum}: start intent delivered via HTTP to ${ctx.machine}`);
+      journalAppend("slot", `Slot ${slotNum} start sent to ${ctx.machine}`);
+    }
+    emitEvent({ event_type: "slot_start_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `start ${result.ok ? "sent" : "queued"} for ${ctx.machine}` });
     return;
   }
 
@@ -737,19 +746,31 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
-  // Remote dispatch: if slot is owned by another machine, delegate via SSH
+  // Remote dispatch: if slot is owned by another machine, send via HTTP
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
     if (force) {
       // --force: clear controller-side state without contacting the remote machine
       console.error(`ludics: slot ${slotNum}: force-clearing local state (skipping remote stop on ${ctx.machine})`);
     } else {
-      // Async stop: write intent, return early. Worker processes on next keepalive.
-      // Do NOT clear Session Started or duo peer link — worker hasn't stopped yet.
-      console.error(`ludics: slot ${slotNum}: queuing stop intent for remote machine ${ctx.machine}`);
-      writeSlotIntent(slotNum, { action: "stop", epoch: Math.floor(Date.now() / 1000), machine: ctx.machine, preserveState });
-      const { stateCheckpoint } = await import("../state.ts");
-      try { stateCheckpoint(`remote stop intent slot ${slotNum}`, { push: true }); } catch { /* ignore */ }
-      journalAppend("slot", `Slot ${slotNum} stop queued for ${ctx.machine}`);
+      // Async stop via HTTP. Do NOT clear Session Started or duo peer link — worker hasn't stopped yet.
+      const targetMachine = federationMachine(ctx.machine);
+      const epoch = Math.floor(Date.now() / 1000);
+      if (targetMachine) {
+        const result = await federationHttpPost(targetMachine, "/federation/intent", {
+          action: "stop", slot: slotNum, epoch, machine: ctx.machine, taskId: ctx.taskId, preserveState,
+        });
+        if (!result.ok) {
+          writeSlotIntent(slotNum, { action: "stop", epoch, machine: ctx.machine, preserveState });
+          console.error(`ludics: slot ${slotNum}: stop intent failed (HTTP status=${result.status}) — queued locally`);
+          journalAppend("slot", `Slot ${slotNum} stop failed — remote ${ctx.machine} unreachable`);
+        } else {
+          console.error(`ludics: slot ${slotNum}: stop intent delivered via HTTP to ${ctx.machine}`);
+          journalAppend("slot", `Slot ${slotNum} stop sent to ${ctx.machine}`);
+        }
+      } else {
+        writeSlotIntent(slotNum, { action: "stop", epoch, machine: ctx.machine, preserveState });
+        console.error(`ludics: slot ${slotNum}: no federation config for ${ctx.machine} — queued locally`);
+      }
       emitEvent({ event_type: "slot_stop_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `stop queued for ${ctx.machine}` });
       return;
     }
@@ -787,14 +808,28 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode — nothing to resume`);
 
-  // Remote dispatch: if slot is owned by another machine, write intent file
+  // Remote dispatch: if slot is owned by another machine, send via HTTP
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
-    console.error(`ludics: slot ${slotNum}: queuing resume intent for remote machine ${ctx.machine}`);
-    writeSlotIntent(slotNum, { action: "resume", epoch: Math.floor(Date.now() / 1000), machine: ctx.machine });
-    const { stateCheckpoint } = await import("../state.ts");
-    try { stateCheckpoint(`remote resume intent slot ${slotNum}`, { push: true }); } catch { /* ignore */ }
-    journalAppend("slot", `Slot ${slotNum} resume queued for ${ctx.machine}`);
-    emitEvent({ event_type: "slot_resume_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `resume queued for ${ctx.machine}` });
+    if (!heartbeatIsFresh(ctx.machine)) {
+      throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot resume`);
+    }
+    const targetMachine = federationMachine(ctx.machine);
+    if (!targetMachine) {
+      throw new Error(`slot ${slotNum}: no federation config for machine ${ctx.machine}`);
+    }
+    const epoch = Math.floor(Date.now() / 1000);
+    const result = await federationHttpPost(targetMachine, "/federation/intent", {
+      action: "resume", slot: slotNum, epoch, machine: ctx.machine, taskId: ctx.taskId,
+    });
+    if (!result.ok) {
+      writeSlotIntent(slotNum, { action: "resume", epoch, machine: ctx.machine });
+      console.error(`ludics: slot ${slotNum}: resume intent failed (HTTP status=${result.status}) — queued locally`);
+      journalAppend("slot", `Slot ${slotNum} resume failed — remote ${ctx.machine} unreachable`);
+    } else {
+      console.error(`ludics: slot ${slotNum}: resume intent delivered via HTTP to ${ctx.machine}`);
+      journalAppend("slot", `Slot ${slotNum} resume sent to ${ctx.machine}`);
+    }
+    emitEvent({ event_type: "slot_resume_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `resume ${result.ok ? "sent" : "queued"} for ${ctx.machine}` });
     return;
   }
 
