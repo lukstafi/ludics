@@ -24,6 +24,7 @@ function startServer(handler: {
   onMessage: (ws: ServerWebSocket<undefined>, request: RequestEnvelope) => void;
 }) {
   const server = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     fetch(req, server) {
       if (server.upgrade(req)) return;
