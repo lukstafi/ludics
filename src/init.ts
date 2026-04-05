@@ -136,9 +136,13 @@ export async function runInit(args: string[]): Promise<void> {
     }
   }
 
-  // 10. Federation tick (heartbeat + election before triggers, so this machine
-  //     can establish itself as controller before launchd/systemd units start)
+  // 10. Ensure coordination artifacts are gitignored + federation tick
   if (configOk) {
+    try {
+      const { ensureCoordinationGitignore } = await import("./state.ts");
+      ensureCoordinationGitignore();
+    } catch { /* ignore */ }
+
     console.log("\n--- Federation ---");
     try {
       await federationTick();
