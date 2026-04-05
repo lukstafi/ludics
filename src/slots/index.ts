@@ -16,6 +16,7 @@ import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState } from "../t3code/server.ts";
+import { selectOrchestrationFlags } from "../adapters/t3code.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
@@ -641,7 +642,7 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
   const count = slotsCount();
   validateRange(slotNum, count);
 
-  const block = blocks.get(slotNum);
+  let block = blocks.get(slotNum);
   if (!block) throw new Error(`slot ${slotNum} not found`);
 
   const ctx = makeAdapterContext(slotNum, block);
@@ -666,12 +667,36 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
   }
 
   if ((ctx.mode === "t3code" || ctx.mode === "tmux") && !ctx.adapterArgs.trim()) {
-    throw new Error(
-      `slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags.\n` +
-      `  Reassign with one of:\n` +
-      `    ludics slot ${slotNum} assign <task> -a ${ctx.mode} --pair --coder <provider> --reviewer <provider>\n` +
-      `    ludics slot ${slotNum} assign <task> -a ${ctx.mode} -A "<flags>"`
-    );
+    // Auto-fill orchestration flags from task effort instead of throwing
+    const taskId = ctx.taskId;
+    if (!taskId || taskId === "null") {
+      throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but no task is assigned`);
+    }
+    const tf = taskFilePath(taskId);
+    if (!existsSync(tf)) {
+      throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but task file not found: ${tf}`);
+    }
+    const content = readFileSync(tf, "utf-8");
+    // Extract effort directly from YAML — parseTaskFrontmatter defaults missing effort
+    // to "medium", but auto-fill should use lightweight "small" when effort is absent.
+    const effortMatch = content.match(/^effort:\s*(.+)/m);
+    const effort = effortMatch ? effortMatch[1]!.trim() || "small" : "small";
+    const { args: autoArgs } = selectOrchestrationFlags(effort);
+    if (!autoArgs.trim()) {
+      throw new Error(`slot ${slotNum}: selectOrchestrationFlags returned empty args for effort="${effort}"`);
+    }
+
+    // Write auto-filled flags back to the slot block
+    const updatedBlock = setField(block, "Adapter Args", autoArgs);
+    if (updatedBlock !== block) {
+      block = updatedBlock;
+      blocks.set(slotNum, block);
+      writeSlotFile(file, blocks, count);
+    }
+    ctx.adapterArgs = autoArgs;
+
+    console.error(`ludics: slot ${slotNum}: auto-filled adapter args from task effort="${effort}": ${autoArgs}`);
+    journalAppend("slot", `Slot ${slotNum} auto-filled adapter args: ${autoArgs} (effort=${effort})`);
   }
 
   // Guard: check for recoverable orchestration state matching current task
