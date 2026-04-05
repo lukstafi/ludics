@@ -2489,6 +2489,10 @@ async function maybeResumeDeadOrchestrators(): Promise<void> {
     const mode = getMode(block).trim();
     if (mode !== "t3code" && mode !== "tmux") continue;
 
+    // Skip slots owned by a different machine — their PIDs are meaningless locally
+    const slotMachine = getMachine(block).trim();
+    if (slotMachine && slotMachine !== "null" && isRemoteMachine(slotMachine)) continue;
+
     const taskId = getTask(block).trim();
     if (!taskId || taskId === "null") continue;
 
