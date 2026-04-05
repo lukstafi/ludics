@@ -513,6 +513,44 @@ export async function collectAndWriteRetrospective(state: OrchestrationState): P
     }
   }
 
+  // Tmux capture fallback: when backend is tmux and t3code produced no turns,
+  // read accumulated pane captures from disk.
+  if (state.backend === "tmux" && allTurns.length === 0) {
+    const { readTmuxCaptures } = await import("./orchestration/tmux-capture.ts");
+    const captures = readTmuxCaptures(state.peerSyncDir);
+
+    const agentCaptures = new Map<string, typeof captures>();
+    for (const cap of captures) {
+      const list = agentCaptures.get(cap.agentName) ?? [];
+      list.push(cap);
+      agentCaptures.set(cap.agentName, list);
+    }
+
+    for (const [agentName, caps] of agentCaptures) {
+      allThreads.push({
+        threadId: "tmux-capture",
+        agentName,
+        title: `tmux capture for ${agentName}`,
+        model: "unknown",
+        createdAt: caps[0]!.timestamp,
+        updatedAt: caps[caps.length - 1]!.timestamp,
+        turnCount: caps.length,
+      });
+
+      for (let i = 0; i < caps.length; i++) {
+        allTurns.push({
+          threadId: "tmux-capture",
+          agentName,
+          turnIndex: i,
+          turnId: null,
+          phase: caps[i]!.phase,
+          timestamp: caps[i]!.timestamp,
+          message: caps[i]!.content,
+        });
+      }
+    }
+  }
+
   // Sort turns chronologically
   allTurns.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
