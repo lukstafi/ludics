@@ -182,17 +182,18 @@ export function heartbeatPublish(): boolean {
   emitEvent({ event_type: "federation_heartbeat", source: "federation", scope: "federation", message: nodeName });
   console.error(`ludics: federation: published heartbeat for ${nodeName}`);
 
-  // POST heartbeat to controller via HTTP (workers only — controller's own heartbeat is already local)
+  // POST heartbeat to controller via HTTP (workers only — controller's own heartbeat is already local).
+  // Uses resolveControllerCandidates() instead of currentLeader() to avoid stale leader.json.
   if (!federationIsController()) {
-    const leaderName = currentLeader();
-    if (leaderName) {
-      const leaderMachine = federationMachine(leaderName);
-      if (leaderMachine) {
-        // Fire-and-forget — failure is silently ignored (controller sees stale heartbeat)
-        import("./federation-http.ts").then(({ federationHttpPost }) => {
-          federationHttpPost(leaderMachine, "/federation/heartbeat", heartbeatData).catch(() => {});
-        }).catch(() => {});
-      }
+    const candidates = resolveControllerCandidates();
+    if (candidates.length > 0) {
+      // Fire-and-forget — try candidates in priority order until one accepts
+      import("./federation-http.ts").then(async ({ federationHttpPost }) => {
+        for (const candidate of candidates) {
+          const result = await federationHttpPost(candidate, "/federation/heartbeat", heartbeatData);
+          if (result.ok) break; // delivered to controller
+        }
+      }).catch(() => {});
     }
   }
 
@@ -315,9 +316,22 @@ export function federationElect(): string | null {
   return null;
 }
 
-/** Returns the machine name that should be controller right now. */
+/** Returns the machine name that should be controller right now (from local leader.json). */
 export function federationCurrentController(): string | null {
   return currentLeader();
+}
+
+/**
+ * Resolve the controller machine for worker-side HTTP delivery.
+ * Does NOT depend on leader.json (which may be stale on workers).
+ * Returns machines in role priority: leader first, then consoles.
+ * Caller should try them in order until one responds.
+ */
+export function resolveControllerCandidates(): FederationMachine[] {
+  const machines = federationMachines();
+  const leaders = machines.filter((m) => m.role === "leader");
+  const consoles = machines.filter((m) => m.role === "console");
+  return [...leaders, ...consoles];
 }
 
 export function federationIsLeader(): boolean {

@@ -7,7 +7,7 @@ import { parseSlotBlocks, getTask, getMachine } from "./slots/markdown.ts";
 import { isRemoteMachine } from "./remote.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
-import { federationCurrentMachineName, federationCurrentController, federationMachine } from "./federation.ts";
+import { federationCurrentMachineName, resolveControllerCandidates } from "./federation.ts";
 import { federationHttpPost } from "./federation-http.ts";
 
 interface WorkerSignal {
@@ -44,22 +44,20 @@ export async function workerReportStatus(
   writeFileSync(signalFilePath(slotNum), JSON.stringify(signal, null, 2) + "\n");
   console.error(`ludics: worker signal written for slot ${slotNum}: ${payload.status}`);
 
-  // POST to controller via HTTP — local file is NOT a cross-node delivery mechanism
-  const controllerName = federationCurrentController();
-  if (controllerName) {
-    const controllerMachine = federationMachine(controllerName);
-    if (controllerMachine) {
-      const result = await federationHttpPost(controllerMachine, "/federation/signal", {
-        ...signal, slot: slotNum,
-      });
-      if (result.ok) {
-        // Controller processed — clear local file
-        workerClearSignal(slotNum);
-        console.error(`ludics: worker signal for slot ${slotNum} delivered via HTTP`);
-      } else {
-        console.error(`ludics: worker signal HTTP delivery failed for slot ${slotNum} (status=${result.status}) — will retry`);
-      }
+  // POST to controller via HTTP — try candidates in priority order (leader > console).
+  // Uses resolveControllerCandidates() instead of currentLeader() to avoid stale leader.json.
+  const candidates = resolveControllerCandidates();
+  for (const candidate of candidates) {
+    const result = await federationHttpPost(candidate, "/federation/signal", {
+      ...signal, slot: slotNum,
+    });
+    if (result.ok) {
+      // Controller processed — clear local file
+      workerClearSignal(slotNum);
+      console.error(`ludics: worker signal for slot ${slotNum} delivered via HTTP to ${candidate.name}`);
+      break;
     }
+    console.error(`ludics: worker signal HTTP delivery to ${candidate.name} failed (status=${result.status})`);
   }
 }
 
@@ -89,10 +87,9 @@ export async function retryUndeliveredSignals(): Promise<void> {
   const dir = signalsDir();
   if (!existsSync(dir)) return;
 
-  const controllerName = federationCurrentController();
-  if (!controllerName) return;
-  const controllerMachine = federationMachine(controllerName);
-  if (!controllerMachine) return;
+  // Use resolveControllerCandidates() instead of currentLeader() to avoid stale leader.json
+  const candidates = resolveControllerCandidates();
+  if (candidates.length === 0) return;
 
   let files: string[];
   try {
@@ -120,15 +117,21 @@ export async function retryUndeliveredSignals(): Promise<void> {
     if (!slotMatch) continue;
     const slotNum = parseInt(slotMatch[1]!, 10);
 
-    const result = await federationHttpPost(controllerMachine, "/federation/signal", {
-      ...signal, slot: slotNum,
-    });
-
-    if (result.ok) {
-      try { unlinkSync(filePath); } catch { /* ignore */ }
-      console.error(`ludics: worker-signal: retried signal for slot ${slotNum} delivered via HTTP`);
-      break; // rate-limit: one successful retry per keepalive
+    // Try candidates in priority order until one accepts
+    let delivered = false;
+    for (const candidate of candidates) {
+      const result = await federationHttpPost(candidate, "/federation/signal", {
+        ...signal, slot: slotNum,
+      });
+      if (result.ok) {
+        delivered = true;
+        try { unlinkSync(filePath); } catch { /* ignore */ }
+        console.error(`ludics: worker-signal: retried signal for slot ${slotNum} delivered via HTTP to ${candidate.name}`);
+        break;
+      }
     }
+
+    if (delivered) break; // rate-limit: one successful retry per keepalive
   }
 }
 
