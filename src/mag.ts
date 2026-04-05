@@ -2167,28 +2167,35 @@ export function isQueueHeld(): boolean {
   return existsSync(queueHoldFilePath());
 }
 
+/** Shared helper: set queue hold state. Returns true if state changed, false if already matched. */
+export function setQueueHold(held: boolean, source: string): boolean {
+  if (held === isQueueHeld()) return false;
+  if (held) {
+    mkdirSync(join(harnessDir(), "mag"), { recursive: true });
+    writeFileSync(queueHoldFilePath(), "");
+  } else {
+    unlinkSync(queueHoldFilePath());
+  }
+  emitEvent({ event_type: "queue_hold", source, scope: "queue", action: held ? "hold" : "resume" });
+  try { stateMarkDirty(); stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
+  return true;
+}
+
 /** CLI: hold the queue (suppress auto-assignment). */
 export function queueHold(): void {
-  if (isQueueHeld()) {
+  if (!setQueueHold(true, "cli")) {
     console.log("Queue is already held — no change.");
     return;
   }
-  mkdirSync(join(harnessDir(), "mag"), { recursive: true });
-  writeFileSync(queueHoldFilePath(), "");
-  emitEvent({ event_type: "queue_hold", source: "cli", scope: "queue", action: "hold" });
-  try { stateMarkDirty(); stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
   console.log("Queue held — auto-assignment suppressed.");
 }
 
 /** CLI: resume the queue (re-enable auto-assignment). */
 export function queueResume(): void {
-  if (!isQueueHeld()) {
+  if (!setQueueHold(false, "cli")) {
     console.log("Queue is not held — no change.");
     return;
   }
-  unlinkSync(queueHoldFilePath());
-  emitEvent({ event_type: "queue_hold", source: "cli", scope: "queue", action: "resume" });
-  try { stateMarkDirty(); stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
   console.log("Queue resumed — auto-assignment enabled.");
 }
 
