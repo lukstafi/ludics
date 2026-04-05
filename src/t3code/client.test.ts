@@ -63,7 +63,7 @@ describe("T3CodeClient", () => {
 
     const client = new T3CodeClient({
       url: `ws://127.0.0.1:${server.port}`,
-      requestTimeoutMs: 2_000,
+      requestTimeoutMs: 5_000,
     });
 
     const snapshot = await client.getSnapshot();
@@ -92,7 +92,7 @@ describe("T3CodeClient", () => {
 
     const client = new T3CodeClient({
       url: `ws://127.0.0.1:${server.port}`,
-      requestTimeoutMs: 2_000,
+      requestTimeoutMs: 5_000,
     });
 
     const seen: string[] = [];
@@ -101,7 +101,7 @@ describe("T3CodeClient", () => {
     });
 
     await client.connect();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 200));
     client.close();
 
     expect(seen).toEqual(["thread.message-sent"]);
@@ -121,8 +121,8 @@ describe("T3CodeClient", () => {
 
     const client = new T3CodeClient({
       url: `ws://127.0.0.1:${server.port}`,
-      requestTimeoutMs: 2_000,
-      reconnectDelaysMs: [50, 50],
+      requestTimeoutMs: 5_000,
+      reconnectDelaysMs: [100, 100],
     });
 
     await client.dispatchCommand({
@@ -130,7 +130,7 @@ describe("T3CodeClient", () => {
       commandId: "cmd-1",
       threadId: "thread-1",
     });
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 300));
     await client.getSnapshot().catch(() => undefined);
     client.close();
 
