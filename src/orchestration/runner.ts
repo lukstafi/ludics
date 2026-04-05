@@ -495,14 +495,9 @@ async function enterPhase(state: OrchestrationState, transport: OrchestrationTra
       if (agentStatus === "merged") continue;
 
       if (agentStatus === currentPhaseDone || agentStatus === "done") {
-        // On resume, .status may be stale. Check fingerprint against dispatch baseline.
-        const baseline = rt.dispatchStatusFingerprint;
-        const isStale = baseline != null
-          && statusFileFingerprint(state.peerSyncDir, agent.name) === baseline;
-        // Also verify the agent fully satisfies isAgentDone() — a fresh status
-        // without the required artifact (e.g. review-done but no review file)
-        // must not skip dispatch, otherwise the phase deadlocks until timeout.
-        if (!isStale && isAgentDone(state, agent)) {
+        // isAgentDone() already handles freshness (fingerprint gate) and artifact
+        // validation, so no need for an inline staleness check here.
+        if (isAgentDone(state, agent)) {
           continue; // genuinely done — skip dispatch
         }
         // Stale status or missing artifact — fall through to dispatch

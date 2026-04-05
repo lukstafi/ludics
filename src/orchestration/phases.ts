@@ -4,7 +4,7 @@ import { emitEvent } from "../events.ts";
 import { isPrUrl } from "./github.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
 import { reviewFilePath } from "./review-files.ts";
-import type { AgentConfig, OrchestrationState } from "./state.ts";
+import type { AgentConfig, AgentRuntimeState, OrchestrationState } from "./state.ts";
 import { readDuoPeerState, bothSlotsReadyForMerge, isMergeCoordinator } from "./cross-slot.ts";
 import { nowEpoch } from "./util.ts";
 
@@ -187,6 +187,23 @@ export function agentParticipatesInPhase(
   }
 }
 
+/** Check done-status + required artifact. Shared by both lifecycle branches of isAgentDone. */
+function validateDoneStatus(state: OrchestrationState, agent: AgentConfig, runtime: AgentRuntimeState): boolean {
+  if (!DONE_STATUSES.has(runtime.status)) return false;
+  if (!hasRequiredArtifact(state, agent)) {
+    emitEvent({
+      event_type: "orchestration_warning",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      message: `${agent.name}: status is "${runtime.status}" but required artifact missing: ${requiredArtifactPath(state, agent)}`,
+    });
+    return false;
+  }
+  return true;
+}
+
 /**
  * Determine if an agent has finished its work for the current phase.
  *
@@ -235,20 +252,7 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
       }
     }
 
-    // Artifact validation (same gate as the settled branch).
-    if (!hasRequiredArtifact(state, agent)) {
-      emitEvent({
-        event_type: "orchestration_warning",
-        source: "orchestration",
-        scope: "slot",
-        slot: state.slot,
-        task: state.taskId,
-        message: `${agent.name}: status is "${runtime.status}" but required artifact missing: ${requiredArtifactPath(state, agent)}`,
-      });
-      return false;
-    }
-
-    return true;
+    return validateDoneStatus(state, agent, runtime);
   }
 
   switch (lc.state) {
@@ -260,21 +264,7 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
 
     case "settled": {
       // Turn settled — check for a done status from peer-sync.
-      if (DONE_STATUSES.has(runtime.status)) {
-        // Validate required phase artifact before treating as done.
-        if (!hasRequiredArtifact(state, agent)) {
-          emitEvent({
-            event_type: "orchestration_warning",
-            source: "orchestration",
-            scope: "slot",
-            slot: state.slot,
-            task: state.taskId,
-            message: `${agent.name}: status is "${runtime.status}" but required artifact missing: ${requiredArtifactPath(state, agent)}`,
-          });
-          return false;
-        }
-        return true;
-      }
+      if (validateDoneStatus(state, agent, runtime)) return true;
 
       // Status file may not have been updated yet. Check fingerprint.
       const currentFp = statusFileFingerprint(state.peerSyncDir, agent.name);
