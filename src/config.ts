@@ -1,6 +1,6 @@
 // Config reading for ludics (Phase 2: native YAML parsing)
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import { basename, join } from "path";
 import YAML from "yaml";
 
@@ -388,7 +388,8 @@ export function resolveProjectPath(projectName: string): string {
 export function resolveProposalsPath(projectDir: string, configuredPath?: string): string {
   if (configuredPath) return join(projectDir, configuredPath);
   for (const candidate of ["docs", "doc", ".docs"]) {
-    if (existsSync(join(projectDir, candidate))) {
+    const p = join(projectDir, candidate);
+    if (existsSync(p) && statSync(p).isDirectory()) {
       return join(projectDir, candidate, "proposals");
     }
   }
