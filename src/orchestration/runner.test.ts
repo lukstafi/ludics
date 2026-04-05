@@ -4,7 +4,9 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPrCreateOutcome, verifyFinalMergeOutcome, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, MAX_VERIFY_ATTEMPTS } from "./runner.ts";
+import * as notify from "../notify.ts";
+import * as peerSync from "./peer-sync.ts";
 import * as events from "../events.ts";
 import * as github from "./github.ts";
 import { orchOnStop } from "./index.ts";
@@ -2472,5 +2474,288 @@ describe("checkAndRedispatchPrComments conflict detection", () => {
     });
     applyPhaseSideEffects(state, "pr-comments");
     expect(state.prMergeableStates).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleVerifyFailure
+// ---------------------------------------------------------------------------
+
+describe("handleVerifyFailure", () => {
+  let eventSpy: ReturnType<typeof spyOn>;
+  let notifySpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    notifySpy = spyOn(notify, "notifyAgents").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    eventSpy.mockRestore();
+    notifySpy.mockRestore();
+  });
+
+  test("increments attempt counter and returns redispatch on first failure", () => {
+    const state = makeState({ phase: "pr-create", prCreateVerifyAttempts: 0 });
+    const result = handleVerifyFailure(state, "prCreate", "No PR");
+    expect(result).toBe("redispatch");
+    expect(state.prCreateVerifyAttempts).toBe(1);
+    expect(eventSpy).toHaveBeenCalledTimes(1);
+    expect(eventSpy.mock.calls[0][0].event_type).toBe("pr_missing");
+  });
+
+  test("emits finalMerge event type for finalMerge gate", () => {
+    const state = makeState({ phase: "final-merge", finalMergeVerifyAttempts: 0 });
+    const result = handleVerifyFailure(state, "finalMerge", "not merged");
+    expect(result).toBe("redispatch");
+    expect(state.finalMergeVerifyAttempts).toBe(1);
+    expect(eventSpy.mock.calls[0][0].event_type).toBe("merge_failed");
+  });
+
+  test("emits manual_intervention_required and notifies at MAX_VERIFY_ATTEMPTS boundary", () => {
+    const state = makeState({
+      phase: "pr-create",
+      prCreateVerifyAttempts: MAX_VERIFY_ATTEMPTS - 1,
+    });
+    const result = handleVerifyFailure(state, "prCreate", "still missing");
+    expect(result).toBe("hold");
+    expect(state.prCreateVerifyAttempts).toBe(MAX_VERIFY_ATTEMPTS);
+    // Two events: the failure event + the manual_intervention_required event
+    expect(eventSpy).toHaveBeenCalledTimes(2);
+    expect(eventSpy.mock.calls[1][0].event_type).toBe("manual_intervention_required");
+    expect(notifySpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("returns hold silently when already at max retries (event spam guard)", () => {
+    const state = makeState({
+      phase: "pr-create",
+      prCreateVerifyAttempts: MAX_VERIFY_ATTEMPTS,
+    });
+    const result = handleVerifyFailure(state, "prCreate", "still missing");
+    expect(result).toBe("hold");
+    // No events or notifications should be emitted
+    expect(eventSpy).not.toHaveBeenCalled();
+    expect(notifySpy).not.toHaveBeenCalled();
+    // Counter should NOT increase further
+    expect(state.prCreateVerifyAttempts).toBe(MAX_VERIFY_ATTEMPTS);
+  });
+
+  test("returns hold silently when above max retries", () => {
+    const state = makeState({
+      phase: "pr-create",
+      prCreateVerifyAttempts: MAX_VERIFY_ATTEMPTS + 5,
+    });
+    const result = handleVerifyFailure(state, "prCreate", "still missing");
+    expect(result).toBe("hold");
+    expect(eventSpy).not.toHaveBeenCalled();
+    expect(notifySpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preparePhaseRedispatch
+// ---------------------------------------------------------------------------
+
+describe("preparePhaseRedispatch", () => {
+  test("resets participating agents and clears phase flags", () => {
+    const state = makeState({ phase: "pr-create", phaseDispatched: true, currentPhaseToken: "tok-1" });
+    // Set coder to done state (coder participates in pr-create)
+    state.agentStates.coder!.turnLifecycle = makeLifecycle({ state: "settled" });
+    state.agentStates.coder!.status = "done";
+    state.agentStates.coder!.statusEpoch = 1000;
+    state.agentStates.coder!.statusMessage = "finished";
+    state.agentStates.coder!.interrupted = true;
+    // Set reviewer to done state (reviewer does NOT participate in pr-create)
+    state.agentStates.reviewer!.turnLifecycle = makeLifecycle({ state: "settled" });
+    state.agentStates.reviewer!.status = "done";
+    state.agentStates.reviewer!.statusEpoch = 1000;
+    state.agentStates.reviewer!.statusMessage = "finished review";
+
+    preparePhaseRedispatch(state);
+
+    // Coder (participating) should be reset
+    expect(state.agentStates.coder!.turnLifecycle).toBeNull();
+    expect(state.agentStates.coder!.status).toBe("idle");
+    expect(state.agentStates.coder!.statusEpoch).not.toBe(1000);
+    expect(state.agentStates.coder!.statusMessage).toBe("verification failed — retry pending");
+    expect(state.agentStates.coder!.interrupted).toBe(false);
+
+    // Reviewer (non-participating) should be untouched
+    expect(state.agentStates.reviewer!.turnLifecycle).not.toBeNull();
+    expect(state.agentStates.reviewer!.status).toBe("done");
+    expect(state.agentStates.reviewer!.statusEpoch).toBe(1000);
+    expect(state.agentStates.reviewer!.statusMessage).toBe("finished review");
+
+    // Phase flags should be cleared
+    expect(state.phaseDispatched).toBe(false);
+    expect(state.currentPhaseToken).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFirstPrUrl
+// ---------------------------------------------------------------------------
+
+describe("getFirstPrUrl", () => {
+  test("returns prUrl from agentStates when available", () => {
+    const state = makeState();
+    state.agentStates.coder!.prUrl = "https://github.com/org/repo/pull/42";
+    expect(getFirstPrUrl(state)).toBe("https://github.com/org/repo/pull/42");
+  });
+
+  test("falls back to peer-sync .pr file", () => {
+    const dir = makeTmpDir();
+    const state = makeState({}, dir);
+    // No prUrl in agentStates — write a .pr file instead
+    writeFileSync(join(dir, "coder.pr"), "https://github.com/org/repo/pull/99\n");
+    // Mock isPrUrl to return true for our URL
+    const isPrUrlSpy = spyOn(github, "isPrUrl").mockReturnValue(true);
+    expect(getFirstPrUrl(state)).toBe("https://github.com/org/repo/pull/99");
+    isPrUrlSpy.mockRestore();
+  });
+
+  test("returns null when no PR URL exists anywhere", () => {
+    const state = makeState();
+    expect(getFirstPrUrl(state)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyPrCreateOutcome
+// ---------------------------------------------------------------------------
+
+describe("verifyPrCreateOutcome", () => {
+  let eventSpy: ReturnType<typeof spyOn>;
+  let notifySpy: ReturnType<typeof spyOn>;
+  let verificationSpy: ReturnType<typeof spyOn>;
+  let isPrUrlSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    notifySpy = spyOn(notify, "notifyAgents").mockImplementation(() => {});
+    verificationSpy = spyOn(github, "getPrVerification");
+    isPrUrlSpy = spyOn(github, "isPrUrl").mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    eventSpy.mockRestore();
+    notifySpy.mockRestore();
+    verificationSpy.mockRestore();
+    isPrUrlSpy.mockRestore();
+  });
+
+  test("returns skip when phase is not pr-create", () => {
+    const state = makeState({ phase: "work" });
+    expect(verifyPrCreateOutcome(state)).toBe("skip");
+  });
+
+  test("returns skip when agents are not done", () => {
+    const state = makeState({ phase: "pr-create" });
+    // Agents default to idle/not-done, so this should skip
+    expect(verifyPrCreateOutcome(state)).toBe("skip");
+  });
+
+  function makePrCreateDoneState(overrides: Partial<OrchestrationState> = {}) {
+    const dir = makeTmpDir();
+    const prUrl = "https://github.com/org/repo/pull/1";
+    // Write the .pr artifact so hasRequiredArtifact passes
+    writeFileSync(join(dir, "coder.pr"), prUrl);
+    const state = makeState({ phase: "pr-create", ...overrides }, dir);
+    state.agentStates.coder!.status = "done";
+    state.agentStates.coder!.prUrl = prUrl;
+    state.agentStates.coder!.turnLifecycle = makeLifecycle({ state: "settled" });
+    // Reviewer doesn't participate in pr-create — not checked by allAgentsDone
+    return state;
+  }
+
+  test("returns advance when PR is verified", () => {
+    const state = makePrCreateDoneState();
+    verificationSpy.mockReturnValue({ exists: true, state: "open" });
+
+    expect(verifyPrCreateOutcome(state)).toBe("advance");
+    expect(eventSpy.mock.calls.some((c: any[]) => c[0].event_type === "pr_verified")).toBe(true);
+  });
+
+  test("returns redispatch on first verification failure", () => {
+    const state = makePrCreateDoneState({ prCreateVerifyAttempts: 0 });
+    verificationSpy.mockReturnValue({ exists: false, reason: "not found" });
+
+    expect(verifyPrCreateOutcome(state)).toBe("redispatch");
+    expect(state.prCreateVerifyAttempts).toBe(1);
+  });
+
+  test("returns hold at max retries", () => {
+    const state = makePrCreateDoneState({ prCreateVerifyAttempts: MAX_VERIFY_ATTEMPTS - 1 });
+    verificationSpy.mockReturnValue({ exists: false, reason: "not found" });
+
+    expect(verifyPrCreateOutcome(state)).toBe("hold");
+    expect(state.prCreateVerifyAttempts).toBe(MAX_VERIFY_ATTEMPTS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyFinalMergeOutcome
+// ---------------------------------------------------------------------------
+
+describe("verifyFinalMergeOutcome", () => {
+  let eventSpy: ReturnType<typeof spyOn>;
+  let notifySpy: ReturnType<typeof spyOn>;
+  let verificationSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    notifySpy = spyOn(notify, "notifyAgents").mockImplementation(() => {});
+    verificationSpy = spyOn(github, "getPrVerification");
+  });
+
+  afterEach(() => {
+    eventSpy.mockRestore();
+    notifySpy.mockRestore();
+    verificationSpy.mockRestore();
+  });
+
+  test("returns skip when phase is not final-merge", () => {
+    const state = makeState({ phase: "work" });
+    expect(verifyFinalMergeOutcome(state)).toBe("skip");
+  });
+
+  test("returns skip when agents are not done", () => {
+    const state = makeState({ phase: "final-merge" });
+    expect(verifyFinalMergeOutcome(state)).toBe("skip");
+  });
+
+  function makeFinalMergeDoneState(overrides: Partial<OrchestrationState> = {}) {
+    const state = makeState({ phase: "final-merge", ...overrides });
+    state.agentStates.coder!.status = "done";
+    state.agentStates.coder!.prUrl = "https://github.com/org/repo/pull/1";
+    state.agentStates.coder!.turnLifecycle = makeLifecycle({ state: "settled" });
+    // Reviewer doesn't participate in final-merge
+    return state;
+  }
+
+  test("returns advance when PR is merged", () => {
+    const state = makeFinalMergeDoneState();
+    verificationSpy.mockReturnValue({ exists: true, merged: true, state: "closed" });
+
+    expect(verifyFinalMergeOutcome(state)).toBe("advance");
+    expect(eventSpy.mock.calls.some((c: any[]) => c[0].event_type === "merge_verified")).toBe(true);
+  });
+
+  test("returns redispatch when PR exists but is not merged", () => {
+    const state = makeFinalMergeDoneState({ finalMergeVerifyAttempts: 0 });
+    verificationSpy.mockReturnValue({ exists: true, merged: false, state: "open", mergeableState: "dirty" });
+
+    expect(verifyFinalMergeOutcome(state)).toBe("redispatch");
+    expect(state.finalMergeVerifyAttempts).toBe(1);
+    // Check the failure reason includes mergeableState detail
+    expect(eventSpy.mock.calls[0][0].message).toContain("mergeable_state: dirty");
+  });
+
+  test("returns hold at max retries for final-merge", () => {
+    const state = makeFinalMergeDoneState({ finalMergeVerifyAttempts: MAX_VERIFY_ATTEMPTS - 1 });
+    verificationSpy.mockReturnValue({ exists: false, reason: "404" });
+
+    expect(verifyFinalMergeOutcome(state)).toBe("hold");
+    expect(state.finalMergeVerifyAttempts).toBe(MAX_VERIFY_ATTEMPTS);
   });
 });

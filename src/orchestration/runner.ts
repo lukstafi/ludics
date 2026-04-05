@@ -49,7 +49,7 @@ export const MAX_VERIFY_ATTEMPTS = 3;
  * After pr-create agents are done, verify the PR actually exists on GitHub.
  * Returns a decision: advance (PR verified), redispatch (retry), hold (max retries), skip (not applicable).
  */
-function verifyPrCreateOutcome(state: OrchestrationState): VerificationDecision {
+export function verifyPrCreateOutcome(state: OrchestrationState): VerificationDecision {
   if (state.phase !== "pr-create") return "skip";
   if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return "skip";
 
@@ -77,7 +77,7 @@ function verifyPrCreateOutcome(state: OrchestrationState): VerificationDecision 
 /**
  * After final-merge agents are done, verify the PR is actually merged on GitHub.
  */
-function verifyFinalMergeOutcome(state: OrchestrationState): VerificationDecision {
+export function verifyFinalMergeOutcome(state: OrchestrationState): VerificationDecision {
   if (state.phase !== "final-merge") return "skip";
   if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return "skip";
 
@@ -110,7 +110,7 @@ function verifyFinalMergeOutcome(state: OrchestrationState): VerificationDecisio
   return handleVerifyFailure(state, "finalMerge", `${detail}: ${prUrl}`);
 }
 
-function handleVerifyFailure(
+export function handleVerifyFailure(
   state: OrchestrationState,
   gate: "prCreate" | "finalMerge",
   reason: string,
@@ -158,7 +158,7 @@ function handleVerifyFailure(
 }
 
 /** Get the first available PR URL from agent runtime state, falling back to peer-sync artifact. */
-function getFirstPrUrl(state: OrchestrationState): string | null {
+export function getFirstPrUrl(state: OrchestrationState): string | null {
   for (const agent of state.agents) {
     const url = state.agentStates[agent.name]?.prUrl;
     if (url) return url;
@@ -175,7 +175,7 @@ function getFirstPrUrl(state: OrchestrationState): string | null {
  * Reset participating agents' done status so the main loop re-enters the phase
  * and re-dispatches them with retry context.
  */
-function preparePhaseRedispatch(state: OrchestrationState): void {
+export function preparePhaseRedispatch(state: OrchestrationState): void {
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
     const runtime = state.agentStates[agent.name];
