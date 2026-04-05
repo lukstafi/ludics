@@ -85,6 +85,14 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
     const { magDoctor } = await import("./mag.ts");
     magDoctor();
   },
+  queue: async (args) => {
+    const sub = args[0] ?? "status";
+    const { queueHold, queueResume, queueHoldStatus } = await import("./mag.ts");
+    if (sub === "hold") { queueHold(); }
+    else if (sub === "resume") { queueResume(); }
+    else if (sub === "status") { queueHoldStatus(); }
+    else { throw new Error(`unknown queue subcommand: ${sub} (use: hold, resume, status)`); }
+  },
 };
 
 const USAGE = `Usage: ludics <command>
@@ -211,6 +219,10 @@ Commands:
   federation tick              Publish heartbeat and run leader election
   federation elect             Run leader election only
   federation heartbeat         Publish heartbeat only
+
+  queue hold                   Suppress automatic slot assignments
+  queue resume                 Re-enable automatic slot assignments
+  queue status                 Show whether queue is held or active
 
   quote                        Print a random quote
 
