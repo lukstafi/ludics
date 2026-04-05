@@ -78,7 +78,12 @@ function lastCaptureHash(peerSyncDir: string, agentName: string): string | null 
   try {
     const files = readdirSync(dir)
       .filter((f: string) => f.endsWith(`-${agentName}.txt`))
-      .sort();
+      .sort((a, b) => {
+        const roundA = parseInt(a.match(/^round-(\d+)/)?.[1] ?? "0", 10);
+        const roundB = parseInt(b.match(/^round-(\d+)/)?.[1] ?? "0", 10);
+        if (roundA !== roundB) return roundA - roundB;
+        return a.localeCompare(b);
+      });
     if (files.length === 0) return null;
 
     const content = readFileSync(join(dir, files[files.length - 1]!), "utf-8");
