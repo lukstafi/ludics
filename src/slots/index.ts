@@ -655,23 +655,27 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
       throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot start`);
     }
     const targetMachine = federationMachine(ctx.machine);
-    if (!targetMachine) {
-      throw new Error(`slot ${slotNum}: no federation config for machine ${ctx.machine}`);
-    }
     const epoch = Math.floor(Date.now() / 1000);
-    const result = await federationHttpPost(targetMachine, "/federation/intent", {
-      action: "start", slot: slotNum, epoch, machine: ctx.machine, taskId: ctx.taskId,
-    });
-    if (!result.ok) {
+    let delivered = false;
+    if (targetMachine) {
+      const result = await federationHttpPost(targetMachine, "/federation/intent", {
+        action: "start", slot: slotNum, epoch, machine: ctx.machine, taskId: ctx.taskId,
+      });
+      delivered = result.ok;
+      if (!result.ok) {
+        console.error(`ludics: slot ${slotNum}: start intent failed (HTTP status=${result.status}) — queued locally`);
+      } else {
+        console.error(`ludics: slot ${slotNum}: start intent delivered via HTTP to ${ctx.machine}`);
+        journalAppend("slot", `Slot ${slotNum} start sent to ${ctx.machine}`);
+      }
+    }
+    if (!delivered) {
       // Write local intent file for dashboard visibility + controller-side HTTP retry
       writeSlotIntent(slotNum, { action: "start", epoch, machine: ctx.machine });
-      console.error(`ludics: slot ${slotNum}: start intent failed (HTTP status=${result.status}) — queued locally`);
-      journalAppend("slot", `Slot ${slotNum} start failed — remote ${ctx.machine} unreachable`);
-    } else {
-      console.error(`ludics: slot ${slotNum}: start intent delivered via HTTP to ${ctx.machine}`);
-      journalAppend("slot", `Slot ${slotNum} start sent to ${ctx.machine}`);
+      if (!targetMachine) console.error(`ludics: slot ${slotNum}: no federation config for ${ctx.machine} — queued locally`);
+      journalAppend("slot", `Slot ${slotNum} start queued for ${ctx.machine}`);
     }
-    emitEvent({ event_type: "slot_start_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `start ${result.ok ? "sent" : "queued"} for ${ctx.machine}` });
+    emitEvent({ event_type: "slot_start_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `start ${delivered ? "sent" : "queued"} for ${ctx.machine}` });
     return;
   }
 
@@ -810,26 +814,29 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
 
   // Remote dispatch: if slot is owned by another machine, send via HTTP
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
-    if (!heartbeatIsFresh(ctx.machine)) {
-      throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot resume`);
-    }
     const targetMachine = federationMachine(ctx.machine);
-    if (!targetMachine) {
-      throw new Error(`slot ${slotNum}: no federation config for machine ${ctx.machine}`);
-    }
     const epoch = Math.floor(Date.now() / 1000);
-    const result = await federationHttpPost(targetMachine, "/federation/intent", {
-      action: "resume", slot: slotNum, epoch, machine: ctx.machine, taskId: ctx.taskId,
-    });
-    if (!result.ok) {
-      writeSlotIntent(slotNum, { action: "resume", epoch, machine: ctx.machine });
-      console.error(`ludics: slot ${slotNum}: resume intent failed (HTTP status=${result.status}) — queued locally`);
-      journalAppend("slot", `Slot ${slotNum} resume failed — remote ${ctx.machine} unreachable`);
-    } else {
-      console.error(`ludics: slot ${slotNum}: resume intent delivered via HTTP to ${ctx.machine}`);
-      journalAppend("slot", `Slot ${slotNum} resume sent to ${ctx.machine}`);
+    let delivered = false;
+    if (targetMachine && heartbeatIsFresh(ctx.machine)) {
+      const result = await federationHttpPost(targetMachine, "/federation/intent", {
+        action: "resume", slot: slotNum, epoch, machine: ctx.machine, taskId: ctx.taskId,
+      });
+      delivered = result.ok;
+      if (!result.ok) {
+        console.error(`ludics: slot ${slotNum}: resume intent failed (HTTP status=${result.status}) — queued locally`);
+      } else {
+        console.error(`ludics: slot ${slotNum}: resume intent delivered via HTTP to ${ctx.machine}`);
+        journalAppend("slot", `Slot ${slotNum} resume sent to ${ctx.machine}`);
+      }
     }
-    emitEvent({ event_type: "slot_resume_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `resume ${result.ok ? "sent" : "queued"} for ${ctx.machine}` });
+    if (!delivered) {
+      // Write local intent file for dashboard visibility + controller-side HTTP retry
+      writeSlotIntent(slotNum, { action: "resume", epoch, machine: ctx.machine });
+      if (!targetMachine) console.error(`ludics: slot ${slotNum}: no federation config for ${ctx.machine} — queued locally`);
+      else if (!heartbeatIsFresh(ctx.machine)) console.error(`ludics: slot ${slotNum}: ${ctx.machine} offline — resume queued locally`);
+      journalAppend("slot", `Slot ${slotNum} resume queued for ${ctx.machine}`);
+    }
+    emitEvent({ event_type: "slot_resume_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `resume ${delivered ? "sent" : "queued"} for ${ctx.machine}` });
     return;
   }
 
