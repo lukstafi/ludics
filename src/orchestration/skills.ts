@@ -3,6 +3,7 @@ import { join } from "path";
 import { assertRepoRelativeProposalPath, readFrontmatterField } from "../adapters/task-launch.ts";
 import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
 import type { Phase } from "./phases.ts";
+import { planFilePath } from "./plan-files.ts";
 import { parseReviewFilename, reviewFilePath } from "./review-files.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { readMergeVotes } from "./merge.ts";
@@ -198,11 +199,11 @@ export function buildSkillContext(
   agent: AgentConfig,
 ): Record<string, string> {
   const peer = state.agents.find((candidate) => candidate.name !== agent.name) ?? null;
-  const planFile = join(state.peerSyncDir, "plans", `round-${state.round}-${agent.name}.md`);
+  const planFile = planFilePath(state.peerSyncDir, "plan", state.round, agent.name);
   const planMergeRound = state.planMergeRound ?? 0;
   // Key the merged plan file by planMergeRound so each retry iteration writes a fresh file,
   // preventing a stale merged plan from satisfying the artifact gate in later iterations.
-  const mergedPlanFile = join(state.peerSyncDir, "plans", `round-${state.round}-merged-${planMergeRound}.md`);
+  const mergedPlanFile = planFilePath(state.peerSyncDir, "merged", state.round, planMergeRound);
 
   // plan-review uses per-iteration review files to avoid stale verdicts from a prior loop.
   const reviewFile = state.phase === "plan-review"
@@ -213,7 +214,7 @@ export function buildSkillContext(
   const peerPlan = state.phase === "plan-review"
     ? readFileIfExists(mergedPlanFile)
     : peer
-      ? readFileIfExists(join(state.peerSyncDir, "plans", `round-${state.round}-${peer.name}.md`))
+      ? readFileIfExists(planFilePath(state.peerSyncDir, "plan", state.round, peer.name))
       : null;
 
   // In plan-merge (iteration > 0) the coder reads the reviewer's feedback from the previous round.
