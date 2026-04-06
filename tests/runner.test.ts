@@ -1,13 +1,7 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
+import { describe, test, expect, beforeEach } from "bun:test";
+import { mkdtempSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-
-// Mock events to suppress emission during tests.
-mock.module("../src/events.ts", () => ({
-  emitEvent: () => {},
-}));
-
 import { skipToPhase } from "../src/orchestration/runner.ts";
 import { persistState } from "../src/orchestration/state.ts";
 import type { OrchestrationState } from "../src/orchestration/state.ts";

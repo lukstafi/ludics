@@ -1,17 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync, statSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import { isAgentDone } from "../src/orchestration/phases.ts";
+import * as peerSync from "../src/orchestration/peer-sync.ts";
 import type { AgentConfig, AgentRuntimeState, OrchestrationState } from "../src/orchestration/state.ts";
-
-// Mock statusFileFingerprint — controls what "current" fingerprint is returned.
-let mockFingerprint: string | null = null;
-mock.module("../src/orchestration/peer-sync.ts", () => ({
-  statusFileFingerprint: () => mockFingerprint,
-}));
-
-// Suppress event emission during tests.
-mock.module("../src/events.ts", () => ({
-  emitEvent: () => {},
-}));
 
 function makeAgent(name = "coder"): AgentConfig {
   return {
@@ -75,11 +68,16 @@ function makeState(
 }
 
 describe("isAgentDone — settled branch freshness gate", () => {
-  beforeEach(() => {
-    mockFingerprint = null;
+  let fpSpy: ReturnType<typeof spyOn>;
+
+  afterEach(() => {
+    fpSpy?.mockRestore();
   });
 
   test("returns false when settled + done status but fingerprint unchanged (stale)", () => {
+    // Spy returns same fingerprint as baseline → stale
+    fpSpy = spyOn(peerSync, "statusFileFingerprint").mockReturnValue("abc|123");
+
     const runtime = makeRuntime({
       status: "done",
       dispatchStatusFingerprint: "abc|123",
@@ -96,14 +94,15 @@ describe("isAgentDone — settled branch freshness gate", () => {
         lastStopHookAt: null,
       },
     });
-    // Current fingerprint matches baseline → stale
-    mockFingerprint = "abc|123";
 
     const state = makeState("coder", runtime);
     expect(isAgentDone(state, makeAgent("coder"))).toBe(false);
   });
 
   test("returns true when settled + done status and fingerprint changed (fresh)", () => {
+    // Spy returns different fingerprint → fresh
+    fpSpy = spyOn(peerSync, "statusFileFingerprint").mockReturnValue("xyz|456");
+
     const runtime = makeRuntime({
       status: "done",
       dispatchStatusFingerprint: "abc|123",
@@ -120,14 +119,17 @@ describe("isAgentDone — settled branch freshness gate", () => {
         lastStopHookAt: null,
       },
     });
-    // Current fingerprint differs from baseline → fresh
-    mockFingerprint = "xyz|456";
 
     const state = makeState("coder", runtime);
     expect(isAgentDone(state, makeAgent("coder"))).toBe(true);
   });
 
   test("returns true when settled + done status and no baseline fingerprint", () => {
+    // No spy needed — no baseline means freshness gate is skipped.
+    // But statusFileFingerprint may still be called by the post-validateDoneStatus
+    // fingerprint check in the settled branch, so stub it to avoid file I/O.
+    fpSpy = spyOn(peerSync, "statusFileFingerprint").mockReturnValue(null);
+
     const runtime = makeRuntime({
       status: "done",
       // No dispatchStatusFingerprint set → freshness gate skipped
