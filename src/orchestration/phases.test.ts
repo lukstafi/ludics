@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as peerSyncMod from "./peer-sync.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -592,6 +593,60 @@ describe("isAgentDone — stale status detection (gh-ludics-122)", () => {
 
     state.agentStates.reviewer.status = "review-done";
     state.agentStates.reviewer.turnLifecycle = null;
+
+    expect(isAgentDone(state, state.agents[1])).toBe(true);
+  });
+
+  test("settled lifecycle + stale fingerprint → not done", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh122-"));
+    const state = makePairState(tmpDir);
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "review-done|0|done\n");
+    const baseline = statusFileFingerprint(tmpDir, "reviewer");
+
+    state.agentStates.reviewer.status = "review-done";
+    state.agentStates.reviewer.dispatchStatusFingerprint = baseline;
+    state.agentStates.reviewer.turnLifecycle = {
+      dispatchCommandId: "cmd-1",
+      dispatchedAt: new Date().toISOString(),
+      phaseToken: "tok",
+      observedTurnId: "turn-1",
+      state: "settled",
+      turnStartedAt: new Date().toISOString(),
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+      statusFileFingerprint: baseline,
+      lastStopHookAt: null,
+    };
+
+    expect(isAgentDone(state, state.agents[1])).toBe(false);
+  });
+
+  test("settled lifecycle + fresh fingerprint + artifact present → done", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh122-"));
+    mkdirSync(join(tmpDir, "reviews"), { recursive: true });
+    const state = makePairState(tmpDir, { phaseStartedAt: Math.floor(Date.now() / 1000) - 10 });
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "idle|0|\n");
+    const baseline = statusFileFingerprint(tmpDir, "reviewer");
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "review-done|0|done\n");
+    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "APPROVE\n");
+
+    state.agentStates.reviewer.status = "review-done";
+    state.agentStates.reviewer.dispatchStatusFingerprint = baseline;
+    state.agentStates.reviewer.turnLifecycle = {
+      dispatchCommandId: "cmd-1",
+      dispatchedAt: new Date().toISOString(),
+      phaseToken: "tok",
+      observedTurnId: "turn-1",
+      state: "settled",
+      turnStartedAt: new Date().toISOString(),
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+      statusFileFingerprint: baseline,
+      lastStopHookAt: null,
+    };
 
     expect(isAgentDone(state, state.agents[1])).toBe(true);
   });
