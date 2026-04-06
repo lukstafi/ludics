@@ -8,9 +8,9 @@ import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, get
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { federationShouldRunMag, federationIsController, selectMachineForSlot, federationCurrentMachineName, federationMachine } from "./federation.ts";
-import { federationHttpPost } from "./federation-http.ts";
+// federation-http imports are lazy to avoid import cycles
 import { isRemoteMachine } from "./remote.ts";
-import { readSlotIntent, intentIsFresh, clearSlotIntent } from "./slot-intents.ts";
+// slot-intents.ts deleted — intents use in-memory store via federation-http.ts
 import { stateCheckpoint, stateMarkDirty } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
@@ -1957,11 +1957,14 @@ function maybeAutoStartSlots(): void {
     if (sessionStarted && sessionStarted !== "null") continue;
 
     // Skip remote slots that already have a fresh pending start intent —
-    // prevents re-writing the intent every keepalive and defeating TTL.
+    // prevents re-recording the intent every keepalive.
     const slotMachine = getMachine(block).trim();
     if (slotMachine && slotMachine !== "null" && isRemoteMachine(slotMachine)) {
-      const existingIntent = readSlotIntent(slotNum);
-      if (existingIntent && existingIntent.action === "start" && intentIsFresh(existingIntent)) continue;
+      try {
+        const { getIntentForDashboard } = require("./federation-http.ts");
+        const existing = getIntentForDashboard(slotNum);
+        if (existing && existing.action === "start") continue;
+      } catch { /* ignore */ }
     }
 
     // Read task file — check for proposal
@@ -2471,13 +2474,18 @@ export function orchPidForSlotMode(
   return undefined;
 }
 
-async function maybeResumeDeadOrchestrators(): Promise<void> {
+async function maybeResumeDeadOrchestrators(freshSlotsContent?: string | null): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
 
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return;
+  // On worker: use in-memory slots content from HTTP fetch
+  let slotsContent: string | null = freshSlotsContent ?? null;
+  if (!slotsContent) {
+    const sFile = slotsFilePath();
+    if (!existsSync(sFile)) return;
+    slotsContent = readFileSync(sFile, "utf-8");
+  }
 
-  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  const blocks = parseSlotBlocks(slotsContent);
   let resumed = 0;
 
   for (const [slotNum, block] of blocks) {
@@ -2596,84 +2604,70 @@ function maybeClearDoneSlots(): void {
 async function workerKeepalive(): Promise<void> {
   console.error("ludics: worker keepalive");
 
-  // No statePull() — intents arrive via HTTP, signals retry via HTTP.
-  // Git sync only happens at health-check periodicity.
+  // Fetch fresh slots state from controller — in-memory only, never written to harness
+  let freshSlotsContent: string | null = null;
+  try {
+    const { federationGetSlots } = await import("./federation-http.ts");
+    const result = await federationGetSlots();
+    if (result.ok && typeof result.data === "string") {
+      freshSlotsContent = result.data;
+    }
+  } catch { /* null → downstream functions skip worker-specific work */ }
 
   // Publish terminal state for this machine's sessions
   publishTerminalState();
 
-  // Process explicit intent files from controller (start/stop/resume)
-  await processSlotIntents();
+  // Poll controller for pending intents via HTTP (pure pull model)
+  await processSlotIntents(freshSlotsContent);
 
   // Resume dead orchestrator processes on this machine's slots
-  await maybeResumeDeadOrchestrators();
-
-  // State is written to disk but NOT committed — periodic health-check
-  // handles git commits. All coordination uses HTTP, not git.
+  await maybeResumeDeadOrchestrators(freshSlotsContent);
 }
 
-/** Process intent files written by the controller for slots on this machine. */
-async function processSlotIntents(): Promise<void> {
+/** Poll controller for pending intents and execute them (pure pull model). */
+async function processSlotIntents(freshSlotsContent: string | null): Promise<void> {
   const currentMachine = federationCurrentMachineName();
   if (!currentMachine) return;
 
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return;
-  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
-
-  for (const [slotNum, block] of blocks) {
-    const machine = getMachine(block).trim();
-    if (machine !== currentMachine) continue;
-
-    const intent = readSlotIntent(slotNum);
-    if (!intent) continue;
-
-    // Drop: machine mismatch (slot reassigned after intent was written)
-    if (intent.machine !== currentMachine) {
-      clearSlotIntent(slotNum);
-      continue;
-    }
-
-    // Drop: stale intent beyond TTL
-    if (!intentIsFresh(intent)) {
-      console.error(`ludics: dropping stale ${intent.action} intent for slot ${slotNum} (age: ${Math.floor(Date.now() / 1000) - intent.epoch}s)`);
-      clearSlotIntent(slotNum);
-      continue;
-    }
-
-    let shouldClear = true;
-    try {
-      switch (intent.action) {
-        case "start":
-          await slotStart(slotNum);
-          break;
-        case "stop":
-          await slotStop(slotNum, false, intent.preserveState ?? false);
-          break;
-        case "resume":
-          await slotResume(slotNum);
-          break;
+  // On worker: poll controller for pending intents via HTTP
+  try {
+    const { federationIsController } = require("./federation.ts");
+    if (!federationIsController()) {
+      if (!freshSlotsContent) return; // no fresh state — skip
+      const { federationGetIntents, federationDeleteIntent } = await import("./federation-http.ts");
+      const result = await federationGetIntents();
+      if (!result.ok || !result.data) return;
+      const intents = (result.data as { intents?: Record<string, unknown> })?.intents ?? result.data;
+      for (const [slotStr, rawIntent] of Object.entries(intents as Record<string, unknown>)) {
+        const slotNum = Number(slotStr);
+        const intent = rawIntent as { action: string; machine: string; epoch: number; preserveState?: boolean };
+        if (intent.machine !== currentMachine) continue;
+        if ((Math.floor(Date.now() / 1000) - intent.epoch) > 900) {
+          await federationDeleteIntent(slotNum).catch(() => {});
+          continue;
+        }
+        let shouldAck = true;
+        try {
+          switch (intent.action) {
+            case "start": await slotStart(slotNum); break;
+            case "stop": await slotStop(slotNum, false, intent.preserveState ?? false); break;
+            case "resume": await slotResume(slotNum); break;
+          }
+          emitEvent({ event_type: `slot_intent_${intent.action}`, source: "keepalive", scope: "slot", slot: slotNum, message: `processed ${intent.action} intent` });
+        } catch (err) {
+          console.error(`ludics: intent ${intent.action} slot ${slotNum}: ${err instanceof Error ? err.message : String(err)}`);
+          shouldAck = false;
+        }
+        if (shouldAck) {
+          await federationDeleteIntent(slotNum).catch(() => {});
+          break; // rate-limit
+        }
       }
-      emitEvent({
-        event_type: `slot_intent_${intent.action}`,
-        source: "keepalive",
-        scope: "slot",
-        slot: slotNum,
-        message: `processed ${intent.action} intent`,
-      });
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      console.error(`ludics: failed to process ${intent.action} intent for slot ${slotNum}: ${detail}`);
-      // Retain intent on actionable failure — next keepalive retries.
-      shouldClear = false;
+      return;
     }
-    if (shouldClear) {
-      clearSlotIntent(slotNum);
-      break; // rate-limit: one successful action per keepalive invocation
-    }
-    // On failure: continue to next slot so a persistently failing intent
-    // doesn't starve other slots' intents. Failed intent is retained for retry.
-  }
+  } catch { /* standalone */ }
+
+  // Controller path: no intents to process (controller dispatches directly)
 }
 
 // --- Mag CLI commands ---

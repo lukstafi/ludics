@@ -15,13 +15,10 @@ import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
 import { federationIsController, heartbeatIsFresh, federationCurrentMachineName } from "./federation.ts";
-import { readSlotIntent, intentIsFresh } from "./slot-intents.ts";
-import type { SlotIntent } from "./slot-intents.ts";
+import { getIntentForDashboard } from "./federation-http.ts";
 
-function readSlotIntentForDashboard(slotNum: number): SlotIntent | null {
-  const intent = readSlotIntent(slotNum);
-  if (intent && intentIsFresh(intent)) return intent;
-  return null;
+function readSlotIntentForDashboard(slotNum: number): { action: string } | null {
+  return getIntentForDashboard(slotNum);
 }
 
 function dashboardDataDir(): string {
@@ -310,7 +307,7 @@ function generateSlots(): SlotJson[] {
     if (!empty && machine) {
       const intent = readSlotIntentForDashboard(num);
       if (intent) {
-        const actionMap = { start: "starting", stop: "stopping", resume: "resuming" } as const;
+        const actionMap: Record<string, "starting" | "stopping" | "resuming"> = { start: "starting", stop: "stopping", resume: "resuming" };
         pendingAction = actionMap[intent.action] ?? null;
       }
     }
