@@ -206,6 +206,34 @@ function validateDoneStatus(state: OrchestrationState, agent: AgentConfig, runti
 }
 
 /**
+ * Check whether the status file has changed since dispatch.
+ * Returns `true` if the status is fresh (fingerprint differs from baseline)
+ * or if there is no baseline to compare against.
+ * Returns `false` and emits a warning if the fingerprint is unchanged (stale).
+ */
+function isStatusFresh(
+  state: OrchestrationState,
+  agent: AgentConfig,
+  runtime: AgentRuntimeState,
+): boolean {
+  const baseline = runtime.dispatchStatusFingerprint;
+  if (baseline === undefined || baseline === null) return true;
+  const currentFp = statusFileFingerprint(state.peerSyncDir, agent.name);
+  if (currentFp === baseline) {
+    emitEvent({
+      event_type: "orchestration_warning",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      message: `${agent.name}: status "${runtime.status}" is stale (fingerprint unchanged since dispatch)`,
+    });
+    return false;
+  }
+  return true;
+}
+
+/**
  * Determine if an agent has finished its work for the current phase.
  *
  * Uses the dispatch-scoped AgentTurnLifecycle for identity-based tracking
@@ -237,21 +265,7 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
     // phaseDispatched=false triggers re-dispatch which touches the .status file
     // and captures a new dispatchStatusFingerprint. The agent must write AFTER
     // that touch for the fingerprint to differ.
-    const baseline = runtime.dispatchStatusFingerprint;
-    if (baseline !== undefined && baseline !== null) {
-      const currentFp = statusFileFingerprint(state.peerSyncDir, agent.name);
-      if (currentFp === baseline) {
-        emitEvent({
-          event_type: "orchestration_warning",
-          source: "orchestration",
-          scope: "slot",
-          slot: state.slot,
-          task: state.taskId,
-          message: `${agent.name}: status "${runtime.status}" is stale (fingerprint unchanged since dispatch)`,
-        });
-        return false;
-      }
-    }
+    if (!isStatusFresh(state, agent, runtime)) return false;
 
     return validateDoneStatus(state, agent, runtime);
   }
@@ -264,6 +278,9 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
       return false;
 
     case "settled": {
+      // Fingerprint freshness gate: reject stale status from before dispatch.
+      if (!isStatusFresh(state, agent, runtime)) return false;
+
       // Turn settled — check for a done status from peer-sync.
       if (validateDoneStatus(state, agent, runtime)) return true;
 
