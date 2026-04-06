@@ -1,33 +1,6 @@
-// Remote utilities — hostname resolution, reachability checks, machine identity
+// Remote utilities — machine identity checks
 
-import { federationMachine, federationCurrentMachineName } from "./federation.ts";
-
-const SSH_CONNECT_TIMEOUT = "5";
-
-function resolveHostname(machineName: string): string {
-  const machine = federationMachine(machineName);
-  if (machine?.host) return machine.host;
-  throw new Error(`federation: unknown machine "${machineName}" — not found in federation.machines`);
-}
-
-function sshArgs(hostname: string): string[] {
-  return [
-    "ssh",
-    "-o", `ConnectTimeout=${SSH_CONNECT_TIMEOUT}`,
-    "-o", "BatchMode=yes",   // never prompt for password
-    hostname,
-  ];
-}
-
-/** Check if a remote machine is reachable via SSH. */
-export function remotePing(machineName: string): boolean {
-  const hostname = resolveHostname(machineName);
-  const result = Bun.spawnSync(
-    [...sshArgs(hostname), "true"],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  return result.exitCode === 0;
-}
+import { federationCurrentMachineName } from "./federation.ts";
 
 /**
  * Check if the given machine name refers to a remote machine (not this one).

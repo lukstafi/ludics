@@ -11,7 +11,7 @@ import { federationShouldRunMag, federationIsController, selectMachineForSlot, f
 // federation-http imports are lazy to avoid import cycles
 import { isRemoteMachine } from "./remote.ts";
 // slot-intents.ts deleted — intents use in-memory store via federation-http.ts
-import { stateCheckpoint, stateMarkDirty } from "./state.ts";
+import { stateMarkDirty } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
@@ -2181,7 +2181,7 @@ export function setQueueHold(held: boolean, source: string): boolean {
     unlinkSync(queueHoldFilePath());
   }
   emitEvent({ event_type: "queue_hold", source, scope: "queue", action: held ? "hold" : "resume" });
-  try { stateMarkDirty(); stateCheckpoint("queue-hold"); } catch { /* best-effort */ }
+  try { stateMarkDirty(); } catch { /* best-effort */ }
   return true;
 }
 
@@ -2864,7 +2864,7 @@ export function magStop(): void {
     writeFileSync(stateFile, content + `stopped=${stopped}\n`);
   }
 
-  try { stateCheckpoint("mag stopped"); } catch { /* ignore */ }
+  try { stateMarkDirty(); } catch { /* ignore */ }
   console.log("Mag session stopped.");
 }
 

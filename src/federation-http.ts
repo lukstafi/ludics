@@ -392,13 +392,8 @@ function handleSignal(body: Record<string, unknown>): Response {
     return jsonResponse(409, { error: `signal expired (age: ${now - epoch}s)` });
   }
 
-  // Write signal file for local audit
-  const signalsDir = join(harnessDir(), "worker-signals");
-  mkdirSync(signalsDir, { recursive: true });
-  writeFileSync(
-    join(signalsDir, `slot-${slot}.json`),
-    JSON.stringify({ taskId, status, message, epoch, machine }, null, 2) + "\n",
-  );
+  // Also clear any pending intent for this slot
+  clearIntent(slot);
 
   // Process inline
   switch (status) {
@@ -433,15 +428,6 @@ function handleSignal(body: Record<string, unknown>): Response {
       // "progress" or other — log only
       break;
   }
-
-  // Clear signal file after processing
-  const signalFile = join(signalsDir, `slot-${slot}.json`);
-  try {
-    if (existsSync(signalFile)) {
-      const { unlinkSync } = require("fs");
-      unlinkSync(signalFile);
-    }
-  } catch { /* ignore */ }
 
   return jsonResponse(200, { ok: true, status, slot, taskId });
 }

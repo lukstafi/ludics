@@ -420,16 +420,6 @@ export async function federationTick(): Promise<void> {
     }
   }
 
-  // Controller polls remote workers for completion signals (legacy path for
-  // signals that arrived via git before HTTP was enabled; HTTP signals are
-  // processed inline in the /federation/signal handler).
-  if (federationIsController()) {
-    try {
-      const { controllerPollWorkers } = await import("./worker-signal.ts");
-      controllerPollWorkers();
-    } catch { /* ignore */ }
-  }
-
   // State is written to disk but NOT committed — periodic health-check
   // handles git commits at lower frequency. All coordination (intents,
   // heartbeats, signals) now uses HTTP, not git.
@@ -607,9 +597,11 @@ export async function runFederation(args: string[]): Promise<void> {
     case "ping": {
       const target = args[1];
       if (!target) throw new Error("usage: ludics federation ping <machine-name>");
-      const { remotePing } = await import("./remote.ts");
-      const ok = remotePing(target);
-      console.log(`${target}: ${ok ? "reachable" : "unreachable"}`);
+      const targetMachine = federationMachine(target);
+      if (!targetMachine) throw new Error(`unknown machine: ${target}`);
+      const { federationHttpGet } = await import("./federation-http.ts");
+      const result = await federationHttpGet(targetMachine, "/api/federation/leader");
+      console.log(`${target}: ${result.ok ? "reachable" : "unreachable"}`);
       break;
     }
     default:

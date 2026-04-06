@@ -6,7 +6,7 @@ import { globalAdapter, harnessDir, slotsFilePath, slotsCount, stateRepoDir, res
 import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
          getSessionStarted, getMachine, getLiveness, setField,
          emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
-import { stateCommit } from "../state.ts";
+import { stateMarkDirty } from "../state.ts";
 import { journalAppend } from "../journal.ts";
 import { emitEvent } from "../events.ts";
 import { runAdapterAction, readAdapterState, readAdapterLastActivity } from "../adapters/index.ts";
@@ -248,7 +248,7 @@ export function slotAssign(
 
   journalAppend("slot", `Slot ${slotNum} assigned: ${processDesc} (task=${taskId}, adapter=${adapter})`);
   emitEvent({ event_type: "slot_assign", source: "cli", scope: "slot", slot: slotNum, task: taskId !== "null" ? taskId : undefined, adapter, message: processDesc });
-  stateCommit(`slot ${slotNum}: assign ${taskOrDesc}`);
+  stateMarkDirty();
 }
 
 /** Clear duoPeerSlot on the sibling slot when one duo slot is cleared/stopped. */
@@ -325,7 +325,7 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
     emitEvent({ event_type: "slot_clear", source: "cli", scope: "slot", slot: slotNum });
   }
 
-  stateCommit(`slot ${slotNum}: cleared (status=${finalStatus})`);
+  stateMarkDirty();
 
   // Auto-restore preempted work when priority task completes
   if (finalStatus === "done" && hasStash(slotNum)) {
@@ -379,7 +379,7 @@ export function markSlotSetupFailed(slotNum: number, error: string): void {
     task: taskId !== "null" ? taskId : undefined,
     message: `setup failed: ${error}`,
   });
-  stateCommit(`slot ${slotNum}: setup failed (interrupted)`);
+  stateMarkDirty();
 }
 
 /**
@@ -399,7 +399,7 @@ export function taskCompleteDirectly(taskId: string): void {
   taskUpdateFrontmatter(taskId, "completed", completed);
   pruneBlockedBy(taskId);
   emitEvent({ event_type: "task_completed", source: "cli", scope: "task", task: taskId, status: "done", message: "direct completion (no slot)" });
-  stateCommit(`completed: ${taskId} (direct)`);
+  stateMarkDirty();
 }
 
 /**
@@ -494,7 +494,7 @@ export function slotPreempt(
 
   journalAppend("slot", `Slot ${slotNum} preempted: ${currentProcess} → ${taskId}`);
   emitEvent({ event_type: "slot_preempt", source: "cli", scope: "slot", slot: slotNum, task: taskId, message: `preempted ${currentProcess}` });
-  stateCommit(`slot ${slotNum}: preempt for ${taskId}`);
+  stateMarkDirty();
 }
 
 export function slotRestore(slotNum: number): void {
@@ -526,7 +526,7 @@ export function slotRestore(slotNum: number): void {
 
   journalAppend("slot", `Slot ${slotNum} restored: ${stash.previousProcess} (from preempt by ${stash.preemptingTask})`);
   emitEvent({ event_type: "slot_restore", source: "cli", scope: "slot", slot: slotNum, task: stash.previousTask !== "null" ? stash.previousTask : undefined, message: `restored from preempt by ${stash.preemptingTask}` });
-  stateCommit(`slot ${slotNum}: restored ${stash.previousProcess}`);
+  stateMarkDirty();
 }
 
 export function slotNote(slotNum: number, note: string): void {
@@ -593,7 +593,7 @@ export async function slotSetMode(slotNum: number, mode: string): Promise<void> 
 
   journalAppend("slot", `Slot ${slotNum} mode set to ${mode}`);
   emitEvent({ event_type: "slot_mode", source: "cli", scope: "slot", slot: slotNum, message: `mode=${mode}` });
-  stateCommit(`slot ${slotNum}: mode=${mode}`);
+  stateMarkDirty();
 }
 
 function makeAdapterContext(slotNum: number, block: string): AdapterContext {
@@ -1118,7 +1118,7 @@ export async function slotsRefresh(): Promise<void> {
 
   if (anyUpdated) {
     writeSlotFile(file, blocks, count);
-    stateCommit("slots refresh");
+    stateMarkDirty();
   }
 }
 
