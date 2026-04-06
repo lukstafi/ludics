@@ -19,7 +19,7 @@ import { fetchNewPrCommentCount, getPrVerification, hasCodexSubmittedReview, isP
 import { updateFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
-import { workerReportStatus } from "../worker-signal.ts";
+// workerReportStatus replaced by federationReportWorkerSignal (lazy import)
 import { federationRole } from "../federation.ts";
 import { autoCommitWorktree, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
@@ -1349,11 +1349,25 @@ export async function runOrchestration(
   // Orchestration complete — mark the task as done so maybeClearDoneSlots()
   // auto-clears the slot on the next keepalive tick.
   if (state.taskId) {
-    const taskFile = join(harnessDir(), "tasks", `${state.taskId}.md`);
-    if (existsSync(taskFile)) {
-      updateFrontmatterField(taskFile, "status", "done");
-      updateFrontmatterField(taskFile, "completed", isoNow());
-      emitEvent({
+    let taskUpdated = false;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { federationIsController, federationCurrentMachineName } = require("../federation.ts");
+      if (federationCurrentMachineName() && !federationIsController()) {
+        const { federationPostTaskUpdate } = await import("../federation-http.ts");
+        await federationPostTaskUpdate(state.taskId, "status", "done");
+        await federationPostTaskUpdate(state.taskId, "completed", isoNow());
+        taskUpdated = true;
+      }
+    } catch { /* standalone mode */ }
+    if (!taskUpdated) {
+      const taskFile = join(harnessDir(), "tasks", `${state.taskId}.md`);
+      if (existsSync(taskFile)) {
+        updateFrontmatterField(taskFile, "status", "done");
+        updateFrontmatterField(taskFile, "completed", isoNow());
+      }
+    }
+    emitEvent({
         event_type: "task_completed",
         source: "orchestration",
         scope: "task",
@@ -1372,11 +1386,9 @@ export async function runOrchestration(
       // completion immediately instead of waiting for health-check sync.
       if (federationRole() === "worker") {
         try {
-          await workerReportStatus(state.slot, {
-            taskId: state.taskId,
-            status: "done",
-            message: `orchestration completed for ${state.taskId}`,
-          });
+          const { federationReportWorkerSignal } = await import("../federation-http.ts");
+          await federationReportWorkerSignal(state.slot, state.taskId, "done",
+            `orchestration completed for ${state.taskId}`);
         } catch (err) {
           console.error(`ludics: worker signal write failed: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -1389,7 +1401,6 @@ export async function runOrchestration(
       } catch (err) {
         console.error(`ludics: retrospective collection failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-    }
   }
 }
 

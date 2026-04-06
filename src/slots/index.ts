@@ -6,7 +6,7 @@ import { globalAdapter, harnessDir, slotsFilePath, slotsCount, stateRepoDir, res
 import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
          getSessionStarted, getMachine, getLiveness, setField,
          emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
-import { stateCommit } from "../state.ts";
+import { stateMarkDirty } from "../state.ts";
 import { journalAppend } from "../journal.ts";
 import { emitEvent } from "../events.ts";
 import { runAdapterAction, readAdapterState, readAdapterLastActivity } from "../adapters/index.ts";
@@ -20,13 +20,22 @@ import { selectOrchestrationFlags } from "../adapters/t3code.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
-import { writeSlotIntent } from "../slot-intents.ts";
 import { heartbeatIsFresh, federationMachine } from "../federation.ts";
-import { federationHttpPost } from "../federation-http.ts";
+
+// Worker-side override: when set, loadBlocks uses this content instead of reading
+// from the local harness file. Set by processSlotIntents before executing worker
+// intents so that slot operations use fresh controller-fetched state.
+let workerSlotsOverride: string | null = null;
+
+/** Set the in-memory slots content override for worker intent execution.
+ *  Call with null to clear. */
+export function setWorkerSlotsOverride(content: string | null): void {
+  workerSlotsOverride = content;
+}
 
 function ensureSlotsFile(): string {
   const file = slotsFilePath();
-  if (!existsSync(file)) {
+  if (!existsSync(file) && !workerSlotsOverride) {
     const count = slotsCount();
     const blocks = new Map<number, string>();
     writeSlotFile(file, blocks, count);
@@ -35,8 +44,44 @@ function ensureSlotsFile(): string {
 }
 
 function loadBlocks(file: string): Map<number, string> {
+  // Use controller-fetched content when available (worker context)
+  if (workerSlotsOverride) {
+    return parseSlotBlocks(workerSlotsOverride);
+  }
   const content = readFileSync(file, "utf-8");
   return parseSlotBlocks(content);
+}
+
+function isWorkerContext(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { federationIsController, federationCurrentMachineName } = require("../federation.ts");
+    return !!(federationCurrentMachineName() && !federationIsController());
+  } catch {
+    return false;
+  }
+}
+
+/** Write slot blocks to file, or POST runtime sections to controller on workers. */
+function writeSlotFileOrHttp(
+  file: string,
+  blocks: Map<number, string>,
+  count: number,
+  slotNum: number,
+): void {
+  if (isWorkerContext()) {
+    // POST runtime sections to controller — don't write local harness
+    const block = blocks.get(slotNum);
+    if (!block) return;
+    import("../federation-http.ts").then(({ federationPostSlotUpdate }) => {
+      federationPostSlotUpdate(slotNum, {
+        sessionStarted: getSessionStarted(block) || undefined,
+        liveness: getLiveness(block) || undefined,
+      }).catch(() => {});
+    }).catch(() => {});
+    return;
+  }
+  writeSlotFile(file, blocks, count);
 }
 
 function validateRange(slot: number, count: number): void {
@@ -250,7 +295,7 @@ export function slotAssign(
 
   journalAppend("slot", `Slot ${slotNum} assigned: ${processDesc} (task=${taskId}, adapter=${adapter})`);
   emitEvent({ event_type: "slot_assign", source: "cli", scope: "slot", slot: slotNum, task: taskId !== "null" ? taskId : undefined, adapter, message: processDesc });
-  stateCommit(`slot ${slotNum}: assign ${taskOrDesc}`);
+  stateMarkDirty();
 }
 
 /** Clear duoPeerSlot on the sibling slot when one duo slot is cleared/stopped. */
@@ -327,7 +372,7 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
     emitEvent({ event_type: "slot_clear", source: "cli", scope: "slot", slot: slotNum });
   }
 
-  stateCommit(`slot ${slotNum}: cleared (status=${finalStatus})`);
+  stateMarkDirty();
 
   // Auto-restore preempted work when priority task completes
   if (finalStatus === "done" && hasStash(slotNum)) {
@@ -381,7 +426,7 @@ export function markSlotSetupFailed(slotNum: number, error: string): void {
     task: taskId !== "null" ? taskId : undefined,
     message: `setup failed: ${error}`,
   });
-  stateCommit(`slot ${slotNum}: setup failed (interrupted)`);
+  stateMarkDirty();
 }
 
 /**
@@ -401,7 +446,7 @@ export function taskCompleteDirectly(taskId: string): void {
   taskUpdateFrontmatter(taskId, "completed", completed);
   pruneBlockedBy(taskId);
   emitEvent({ event_type: "task_completed", source: "cli", scope: "task", task: taskId, status: "done", message: "direct completion (no slot)" });
-  stateCommit(`completed: ${taskId} (direct)`);
+  stateMarkDirty();
 }
 
 /**
@@ -496,7 +541,7 @@ export function slotPreempt(
 
   journalAppend("slot", `Slot ${slotNum} preempted: ${currentProcess} → ${taskId}`);
   emitEvent({ event_type: "slot_preempt", source: "cli", scope: "slot", slot: slotNum, task: taskId, message: `preempted ${currentProcess}` });
-  stateCommit(`slot ${slotNum}: preempt for ${taskId}`);
+  stateMarkDirty();
 }
 
 export function slotRestore(slotNum: number): void {
@@ -528,7 +573,7 @@ export function slotRestore(slotNum: number): void {
 
   journalAppend("slot", `Slot ${slotNum} restored: ${stash.previousProcess} (from preempt by ${stash.preemptingTask})`);
   emitEvent({ event_type: "slot_restore", source: "cli", scope: "slot", slot: slotNum, task: stash.previousTask !== "null" ? stash.previousTask : undefined, message: `restored from preempt by ${stash.preemptingTask}` });
-  stateCommit(`slot ${slotNum}: restored ${stash.previousProcess}`);
+  stateMarkDirty();
 }
 
 export function slotNote(slotNum: number, note: string): void {
@@ -595,7 +640,7 @@ export async function slotSetMode(slotNum: number, mode: string): Promise<void> 
 
   journalAppend("slot", `Slot ${slotNum} mode set to ${mode}`);
   emitEvent({ event_type: "slot_mode", source: "cli", scope: "slot", slot: slotNum, message: `mode=${mode}` });
-  stateCommit(`slot ${slotNum}: mode=${mode}`);
+  stateMarkDirty();
 }
 
 function makeAdapterContext(slotNum: number, block: string): AdapterContext {
@@ -649,7 +694,7 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
   const ctx = makeAdapterContext(slotNum, block);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
-  // Remote dispatch: if slot is owned by another machine, send via HTTP
+  // Remote dispatch: record intent in controller memory (pure pull model)
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
     if (!heartbeatIsFresh(ctx.machine)) {
       throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot start`);
@@ -658,20 +703,12 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
     if (!targetMachine) {
       throw new Error(`slot ${slotNum}: no federation config for machine ${ctx.machine}`);
     }
+    const { recordIntent } = await import("../federation-http.ts");
     const epoch = Math.floor(Date.now() / 1000);
-    const result = await federationHttpPost(targetMachine, "/federation/intent", {
-      action: "start", slot: slotNum, epoch, machine: ctx.machine, taskId: ctx.taskId,
-    });
-    if (result.ok) {
-      console.error(`ludics: slot ${slotNum}: start intent delivered via HTTP to ${ctx.machine}`);
-      journalAppend("slot", `Slot ${slotNum} start sent to ${ctx.machine}`);
-    } else {
-      // Transient HTTP failure — queue locally for controller-side HTTP retry
-      writeSlotIntent(slotNum, { action: "start", epoch, machine: ctx.machine });
-      console.error(`ludics: slot ${slotNum}: start intent failed (HTTP status=${result.status}) — queued locally for retry`);
-      journalAppend("slot", `Slot ${slotNum} start queued for ${ctx.machine}`);
-    }
-    emitEvent({ event_type: "slot_start_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `start ${result.ok ? "sent" : "queued"} for ${ctx.machine}` });
+    recordIntent(slotNum, { action: "start", epoch, machine: ctx.machine, taskId: ctx.taskId });
+    console.error(`ludics: slot ${slotNum}: start intent recorded for ${ctx.machine}`);
+    journalAppend("slot", `Slot ${slotNum} start intent recorded for ${ctx.machine}`);
+    emitEvent({ event_type: "slot_start_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `start intent recorded for ${ctx.machine}` });
     return;
   }
 
@@ -681,11 +718,23 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
     if (!taskId || taskId === "null") {
       throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but no task is assigned`);
     }
-    const tf = taskFilePath(taskId);
-    if (!existsSync(tf)) {
-      throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but task file not found: ${tf}`);
+
+    // Read task content — on worker, fetch via HTTP; on controller, read locally
+    let content: string | null = null;
+    if (isWorkerContext()) {
+      try {
+        const { federationGetTask } = await import("../federation-http.ts");
+        const result = await federationGetTask(taskId);
+        if (result.ok && typeof result.data === "string") content = result.data;
+      } catch { /* ignore */ }
+    } else {
+      const tf = taskFilePath(taskId);
+      if (existsSync(tf)) content = readFileSync(tf, "utf-8");
     }
-    const content = readFileSync(tf, "utf-8");
+    if (!content) {
+      throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but task file not found`);
+    }
+
     // Extract effort directly from YAML — parseTaskFrontmatter defaults missing effort
     // to "medium", but auto-fill should use lightweight "small" when effort is absent.
     const effortMatch = content.match(/^effort:\s*(.+)/m);
@@ -700,7 +749,14 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
     if (updatedBlock !== block) {
       block = updatedBlock;
       blocks.set(slotNum, block);
-      writeSlotFile(file, blocks, count);
+      if (isWorkerContext()) {
+        // POST adapter args to controller — don't write local harness
+        import("../federation-http.ts").then(({ federationPostSlotUpdate }) => {
+          federationPostSlotUpdate(slotNum, { adapterArgs: autoArgs }).catch(() => {});
+        }).catch(() => {});
+      } else {
+        writeSlotFile(file, blocks, count);
+      }
     }
     ctx.adapterArgs = autoArgs;
 
@@ -727,7 +783,7 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
   updated = setField(updated, "Liveness", "null");
   if (updated !== block) {
     blocks.set(slotNum, updated);
-    writeSlotFile(file, blocks, count);
+    writeSlotFileOrHttp(file, blocks, count, slotNum);
   }
 
   journalAppend("slot", `Slot ${slotNum} started (adapter=${ctx.mode})`);
@@ -752,26 +808,13 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
       // --force: clear controller-side state without contacting the remote machine
       console.error(`ludics: slot ${slotNum}: force-clearing local state (skipping remote stop on ${ctx.machine})`);
     } else {
-      // Async stop via HTTP. Do NOT clear Session Started or duo peer link — worker hasn't stopped yet.
-      const targetMachine = federationMachine(ctx.machine);
+      // Record stop intent — worker polls and executes on next keepalive (pure pull model)
+      const { recordIntent } = await import("../federation-http.ts");
       const epoch = Math.floor(Date.now() / 1000);
-      if (targetMachine) {
-        const result = await federationHttpPost(targetMachine, "/federation/intent", {
-          action: "stop", slot: slotNum, epoch, machine: ctx.machine, taskId: ctx.taskId, preserveState,
-        });
-        if (!result.ok) {
-          writeSlotIntent(slotNum, { action: "stop", epoch, machine: ctx.machine, preserveState });
-          console.error(`ludics: slot ${slotNum}: stop intent failed (HTTP status=${result.status}) — queued locally`);
-          journalAppend("slot", `Slot ${slotNum} stop failed — remote ${ctx.machine} unreachable`);
-        } else {
-          console.error(`ludics: slot ${slotNum}: stop intent delivered via HTTP to ${ctx.machine}`);
-          journalAppend("slot", `Slot ${slotNum} stop sent to ${ctx.machine}`);
-        }
-      } else {
-        writeSlotIntent(slotNum, { action: "stop", epoch, machine: ctx.machine, preserveState });
-        console.error(`ludics: slot ${slotNum}: no federation config for ${ctx.machine} — queued locally`);
-      }
-      emitEvent({ event_type: "slot_stop_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `stop queued for ${ctx.machine}` });
+      recordIntent(slotNum, { action: "stop", epoch, machine: ctx.machine, taskId: ctx.taskId, preserveState });
+      console.error(`ludics: slot ${slotNum}: stop intent recorded for ${ctx.machine}`);
+      journalAppend("slot", `Slot ${slotNum} stop intent recorded for ${ctx.machine}`);
+      emitEvent({ event_type: "slot_stop_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `stop intent recorded for ${ctx.machine}` });
       return;
     }
   } else {
@@ -786,7 +829,7 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
   const updated = setField(block, "Session Started", "null");
   if (updated !== block) {
     blocks.set(slotNum, updated);
-    writeSlotFile(file, blocks, count);
+    writeSlotFileOrHttp(file, blocks, count, slotNum);
   }
 
   journalAppend("slot", `Slot ${slotNum} stopped (adapter=${ctx.mode})`);
@@ -817,20 +860,12 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     if (!targetMachine) {
       throw new Error(`slot ${slotNum}: no federation config for machine ${ctx.machine}`);
     }
+    const { recordIntent } = await import("../federation-http.ts");
     const epoch = Math.floor(Date.now() / 1000);
-    const result = await federationHttpPost(targetMachine, "/federation/intent", {
-      action: "resume", slot: slotNum, epoch, machine: ctx.machine, taskId: ctx.taskId,
-    });
-    if (result.ok) {
-      console.error(`ludics: slot ${slotNum}: resume intent delivered via HTTP to ${ctx.machine}`);
-      journalAppend("slot", `Slot ${slotNum} resume sent to ${ctx.machine}`);
-    } else {
-      // Transient HTTP failure — queue locally for controller-side HTTP retry
-      writeSlotIntent(slotNum, { action: "resume", epoch, machine: ctx.machine });
-      console.error(`ludics: slot ${slotNum}: resume intent failed (HTTP status=${result.status}) — queued locally for retry`);
-      journalAppend("slot", `Slot ${slotNum} resume queued for ${ctx.machine}`);
-    }
-    emitEvent({ event_type: "slot_resume_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `resume ${result.ok ? "sent" : "queued"} for ${ctx.machine}` });
+    recordIntent(slotNum, { action: "resume", epoch, machine: ctx.machine, taskId: ctx.taskId });
+    console.error(`ludics: slot ${slotNum}: resume intent recorded for ${ctx.machine}`);
+    journalAppend("slot", `Slot ${slotNum} resume intent recorded for ${ctx.machine}`);
+    emitEvent({ event_type: "slot_resume_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `resume intent recorded for ${ctx.machine}` });
     return;
   }
 
@@ -1100,7 +1135,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   updated = setField(updated, "Liveness", "null");
   if (updated !== block) {
     blocks.set(slotNum, updated);
-    writeSlotFile(file, blocks, count);
+    writeSlotFileOrHttp(file, blocks, count, slotNum);
   }
 
   journalAppend("slot", `Slot ${slotNum} resumed (adapter=${ctx.mode}, phase=${orchState.phase}, task=${ctx.taskId})`);
@@ -1120,6 +1155,7 @@ export async function slotsRefresh(): Promise<void> {
   const blocks = loadBlocks(file);
   const count = slotsCount();
   let anyUpdated = false;
+  const updatedSlots: number[] = [];
 
   for (let i = 1; i <= count; i++) {
     const block = blocks.get(i);
@@ -1133,6 +1169,7 @@ export async function slotsRefresh(): Promise<void> {
     if (output) {
       blocks.set(i, mergeAdapterState(block, output));
       anyUpdated = true;
+      updatedSlots.push(i);
       console.error(`ludics: refreshed slot ${i} (${mode})`);
     }
 
@@ -1141,15 +1178,43 @@ export async function slotsRefresh(): Promise<void> {
     if (taskId && taskId !== "null") {
       const activity = await readAdapterLastActivity(ctx);
       if (activity) {
-        const tf = taskFilePath(taskId);
-        addFrontmatterField(tf, "modified", activity);
+        if (isWorkerContext()) {
+          // Route through controller — don't write local harness
+          try {
+            const { federationPostTaskUpdate } = await import("../federation-http.ts");
+            await federationPostTaskUpdate(taskId, "modified", activity);
+          } catch { /* ignore */ }
+        } else {
+          const tf = taskFilePath(taskId);
+          addFrontmatterField(tf, "modified", activity);
+        }
       }
     }
   }
 
   if (anyUpdated) {
-    writeSlotFile(file, blocks, count);
-    stateCommit("slots refresh");
+    if (isWorkerContext()) {
+      // POST each updated slot's runtime state to controller
+      try {
+        const { federationPostSlotUpdate } = await import("../federation-http.ts");
+        const { extractSections } = await import("../state.ts");
+        for (const slotNum of updatedSlots) {
+          const block = blocks.get(slotNum);
+          if (!block) continue;
+          const sections = extractSections(block);
+          await federationPostSlotUpdate(slotNum, {
+            sessionStarted: getSessionStarted(block) || undefined,
+            liveness: getLiveness(block) || undefined,
+            terminals: sections.terminals || undefined,
+            runtime: sections.runtime || undefined,
+            git: sections.git || undefined,
+          }).catch(() => {});
+        }
+      } catch { /* ignore */ }
+    } else {
+      writeSlotFile(file, blocks, count);
+      stateMarkDirty();
+    }
   }
 }
 

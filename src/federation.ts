@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
-import { harnessDir, loadConfigSync } from "./config.ts";
+import { harnessDir, loadConfigSync, stateRepoDir } from "./config.ts";
 import { hostnameTailscale } from "./network.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
@@ -135,8 +135,12 @@ function federationDir(): string {
   return join(harnessDir(), "federation");
 }
 
-function heartbeatsDir(): string {
-  return join(federationDir(), "heartbeats");
+export function heartbeatsDir(): string {
+  // Runtime dir outside harness — never committed to git
+  const hasher = new Bun.CryptoHasher("md5");
+  hasher.update(stateRepoDir());
+  const suffix = hasher.digest("hex").slice(0, 8);
+  return join(process.env.HOME ?? "/tmp", `.ludics-heartbeats-${suffix}`);
 }
 
 function leaderFile(): string {
@@ -416,16 +420,6 @@ export async function federationTick(): Promise<void> {
     }
   }
 
-  // Controller polls remote workers for completion signals (legacy path for
-  // signals that arrived via git before HTTP was enabled; HTTP signals are
-  // processed inline in the /federation/signal handler).
-  if (federationIsController()) {
-    try {
-      const { controllerPollWorkers } = await import("./worker-signal.ts");
-      controllerPollWorkers();
-    } catch { /* ignore */ }
-  }
-
   // State is written to disk but NOT committed — periodic health-check
   // handles git commits at lower frequency. All coordination (intents,
   // heartbeats, signals) now uses HTTP, not git.
@@ -603,9 +597,11 @@ export async function runFederation(args: string[]): Promise<void> {
     case "ping": {
       const target = args[1];
       if (!target) throw new Error("usage: ludics federation ping <machine-name>");
-      const { remotePing } = await import("./remote.ts");
-      const ok = remotePing(target);
-      console.log(`${target}: ${ok ? "reachable" : "unreachable"}`);
+      const targetMachine = federationMachine(target);
+      if (!targetMachine) throw new Error(`unknown machine: ${target}`);
+      const { federationHttpGet } = await import("./federation-http.ts");
+      const result = await federationHttpGet(targetMachine, "/api/federation/leader");
+      console.log(`${target}: ${result.ok ? "reachable" : "unreachable"}`);
       break;
     }
     default:

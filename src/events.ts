@@ -28,6 +28,21 @@ function eventsFile(): string {
  *  Best-effort only: never fails the caller. */
 export function emitEvent(event: Omit<LudicsEvent, "ts" | "epoch">): void {
   try {
+    // Worker → forward to controller via HTTP (no local harness write)
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { federationIsController, federationCurrentMachineName } = require("./federation.ts");
+    if (federationCurrentMachineName() && !federationIsController()) {
+      const now = new Date();
+      const ts = now.toISOString().replace(/\.\d{3}Z$/, "Z");
+      const epoch = Math.floor(now.getTime() / 1000);
+      import("./federation-http.ts").then(({ federationPostEvent }) => {
+        federationPostEvent({ ts, epoch, ...event }).catch(() => {});
+      }).catch(() => {});
+      return;
+    }
+  } catch { /* standalone mode — fall through */ }
+
+  try {
     const now = new Date();
     const ts = now.toISOString().replace(/\.\d{3}Z$/, "Z");
     const epoch = Math.floor(now.getTime() / 1000);

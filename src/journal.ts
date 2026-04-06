@@ -19,6 +19,18 @@ function journalFile(): string {
 }
 
 export function journalAppend(category: string, message: string): void {
+  // Worker → forward to controller via HTTP (no local harness write)
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { federationIsController, federationCurrentMachineName } = require("./federation.ts");
+    if (federationCurrentMachineName() && !federationIsController()) {
+      import("./federation-http.ts").then(({ federationPostJournal }) => {
+        federationPostJournal(category, message).catch(() => {});
+      }).catch(() => {});
+      return;
+    }
+  } catch { /* standalone mode — fall through to local write */ }
+
   const dir = journalDir();
   mkdirSync(dir, { recursive: true });
 

@@ -6,7 +6,8 @@ import { slotAssign, slotResume, slotStart, slotSetMode, slotStop, runSlot, mark
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
-import { readSlotIntent, clearSlotIntent } from "../slot-intents.ts";
+import { getIntentForDashboard, clearIntent } from "../federation-http.ts";
+import { heartbeatsDir as getHeartbeatsDir } from "../federation.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -714,9 +715,9 @@ describe("remote slot dispatch via HTTP", () => {
     writeTask(tasksDir, "task-remote-1", "Remote start test");
 
     // Create a fresh heartbeat so heartbeatIsFresh("worker-a") returns true
-    const heartbeatsDir = join(harness, "federation", "heartbeats");
-    mkdirSync(heartbeatsDir, { recursive: true });
-    writeFileSync(join(heartbeatsDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
+    const hbDir = getHeartbeatsDir();
+    mkdirSync(hbDir, { recursive: true });
+    writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
 
     slotAssign(1, "task-remote-1", "tmux", "", "", "", "worker-a");
 
@@ -758,8 +759,8 @@ describe("remote slot dispatch via HTTP", () => {
 
     await slotStop(1, false, false);
 
-    // Intent file should exist (stop is best-effort, queues locally without config)
-    const intent = readSlotIntent(1);
+    // Intent should be recorded in memory (pure pull model)
+    const intent = getIntentForDashboard(1);
     expect(intent).not.toBeNull();
     expect(intent!.action).toBe("stop");
     expect(intent!.machine).toBe("worker-a");
@@ -768,7 +769,7 @@ describe("remote slot dispatch via HTTP", () => {
     const slots = readFileSync(slotsFile, "utf-8");
     expect(slots).toContain("**Session Started:** 2026-04-04T20:00Z");
 
-    clearSlotIntent(1);
+    clearIntent(1);
   });
 
   test("remote slotStop with --force does not write intent, clears state", async () => {
@@ -781,8 +782,8 @@ describe("remote slot dispatch via HTTP", () => {
 
     await slotStop(1, true, false);
 
-    // No intent file — force stop skips remote dispatch
-    const intent = readSlotIntent(1);
+    // No intent recorded — force stop skips remote dispatch
+    const intent = getIntentForDashboard(1);
     expect(intent).toBeNull();
 
     // Session Started should be cleared (force path runs cleanup)
@@ -809,9 +810,9 @@ describe("remote slot dispatch via HTTP", () => {
     writeTask(tasksDir, "task-remote-4b", "Remote resume config test");
 
     // Create a fresh heartbeat
-    const heartbeatsDir = join(harness, "federation", "heartbeats");
-    mkdirSync(heartbeatsDir, { recursive: true });
-    writeFileSync(join(heartbeatsDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
+    const hbDir = getHeartbeatsDir();
+    mkdirSync(hbDir, { recursive: true });
+    writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
 
     slotAssign(1, "task-remote-4b", "tmux", "", "", "", "worker-a");
 
