@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from "fs";
+import { existsSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
 import { harnessDir as defaultHarnessDir } from "../config.ts";
 import type { T3ProviderKind } from "../t3code/types.ts";
@@ -224,28 +224,64 @@ export function stateFilePath(slot: number, harnessDir: string = defaultHarnessD
   return join(orchestrationDir(harnessDir), `slot-${slot}.json`);
 }
 
-export function readOrchestrationState(
-  slot: number,
-  harnessDir: string = defaultHarnessDir(),
-): OrchestrationState | null {
-  const state = readJsonFile<OrchestrationState>(stateFilePath(slot, harnessDir));
-  if (!state) return null;
-  // Migrate legacy state: feature → taskId
+// Non-harness local cache for worker-side orchestration state
+function workerCacheDir(): string {
+  return join(process.env.HOME ?? "/tmp", ".ludics-orch-cache");
+}
+
+function workerCacheFilePath(slot: number): string {
+  return join(workerCacheDir(), `slot-${slot}.json`);
+}
+
+function isWorkerContext(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { federationIsController, federationCurrentMachineName } = require("../federation.ts");
+    return !!(federationCurrentMachineName() && !federationIsController());
+  } catch {
+    return false;
+  }
+}
+
+function migrateState(state: OrchestrationState, slot: number): OrchestrationState {
   if (!state.taskId && (state as unknown as Record<string, unknown>).feature) {
     state.taskId = String((state as unknown as Record<string, unknown>).feature);
   }
-  // Migrate legacy duo state: old single-slot duo states have wrong worktree topology
-  // and no sibling metadata.  Load without crashing but flag for re-assignment.
   if (state.mode === "duo" && state.duoPeerSlot == null) {
     console.error(`ludics: slot ${slot} has legacy mode="duo" without duoPeerSlot — should be cleared and re-assigned`);
   }
   return state;
 }
 
+export function readOrchestrationState(
+  slot: number,
+  harnessDir: string = defaultHarnessDir(),
+): OrchestrationState | null {
+  // Worker: read from non-harness cache
+  if (isWorkerContext()) {
+    const state = readJsonFile<OrchestrationState>(workerCacheFilePath(slot));
+    if (state) return migrateState(state, slot);
+    return null;
+  }
+  // Controller/standalone: read from harness
+  const state = readJsonFile<OrchestrationState>(stateFilePath(slot, harnessDir));
+  if (!state) return null;
+  return migrateState(state, slot);
+}
+
 export function persistState(
   state: OrchestrationState,
   harnessDir: string = defaultHarnessDir(),
 ): void {
+  // Worker: write to non-harness cache + POST to controller
+  if (isWorkerContext()) {
+    mkdirSync(workerCacheDir(), { recursive: true });
+    writeJsonFile(workerCacheFilePath(state.slot), state);
+    import("../federation-http.ts").then(({ federationPostOrchestrationState }) => {
+      federationPostOrchestrationState(state.slot, state).catch(() => {});
+    }).catch(() => {});
+    return;
+  }
   writeJsonFile(stateFilePath(state.slot, harnessDir), state);
 }
 
@@ -253,6 +289,12 @@ export function removeOrchestrationState(
   slot: number,
   harnessDir: string = defaultHarnessDir(),
 ): void {
+  // Worker: remove from non-harness cache
+  if (isWorkerContext()) {
+    const cachePath = workerCacheFilePath(slot);
+    if (existsSync(cachePath)) unlinkSync(cachePath);
+    return;
+  }
   const path = stateFilePath(slot, harnessDir);
   if (!existsSync(path)) return;
   unlinkSync(path);
