@@ -567,14 +567,14 @@ function mergeSlotBlock(controllerBlock: string, workerBlock: string): string {
   return result;
 }
 
-interface SlotSections {
+export interface SlotSections {
   terminals: string;
   runtime: string;
   git: string;
 }
 
 /** Extract content of Terminals/Runtime/Git sections from a slot block. */
-function extractSections(block: string): SlotSections {
+export function extractSections(block: string): SlotSections {
   let terminals = "";
   let runtime = "";
   let git = "";
@@ -597,7 +597,7 @@ function extractSections(block: string): SlotSections {
 }
 
 /** Replace Terminals/Runtime/Git sections in a block with provided content. */
-function replaceSections(block: string, sections: SlotSections): string {
+export function replaceSections(block: string, sections: SlotSections): string {
   const output: string[] = [];
   let skipUntilNext = false;
 

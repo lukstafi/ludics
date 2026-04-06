@@ -152,7 +152,7 @@ export function startDashboardServer(
       if (pathname === "/") pathname = "/index.html";
 
       // Federation HTTP endpoints — cross-node coordination via HTTP
-      if (pathname.startsWith("/federation/")) {
+      if (pathname.startsWith("/federation/") || pathname.startsWith("/api/federation/")) {
         return handleFederationRequest(req, pathname);
       }
 
