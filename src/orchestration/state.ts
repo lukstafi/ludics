@@ -289,7 +289,7 @@ export function removeOrchestrationState(
   slot: number,
   harnessDir: string = defaultHarnessDir(),
 ): void {
-  // Worker: remove from non-harness cache
+  // Worker: remove from non-harness cache (controller handles its own removal via slotClear)
   if (isWorkerContext()) {
     const cachePath = workerCacheFilePath(slot);
     if (existsSync(cachePath)) unlinkSync(cachePath);

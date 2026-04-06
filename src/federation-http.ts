@@ -570,9 +570,10 @@ function handlePostSlotUpdate(body: Record<string, unknown>): Response {
   let block: string | undefined = blocks.get(slot);
   if (!block) return jsonResponse(404, { error: `slot ${slot} not found` });
 
-  // Merge runtime fields only
+  // Merge runtime fields + adapter args (for worker auto-fill)
   if (body.sessionStarted !== undefined) block = setField(block, "Session Started", String(body.sessionStarted));
   if (body.liveness !== undefined) block = setField(block, "Liveness", String(body.liveness));
+  if (body.adapterArgs !== undefined) block = setField(block, "Adapter Args", String(body.adapterArgs));
 
   // Merge sections (Terminals, Runtime, Git)
   if (body.terminals !== undefined || body.runtime !== undefined || body.git !== undefined) {

@@ -718,11 +718,23 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
     if (!taskId || taskId === "null") {
       throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but no task is assigned`);
     }
-    const tf = taskFilePath(taskId);
-    if (!existsSync(tf)) {
-      throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but task file not found: ${tf}`);
+
+    // Read task content — on worker, fetch via HTTP; on controller, read locally
+    let content: string | null = null;
+    if (isWorkerContext()) {
+      try {
+        const { federationGetTask } = await import("../federation-http.ts");
+        const result = await federationGetTask(taskId);
+        if (result.ok && typeof result.data === "string") content = result.data;
+      } catch { /* ignore */ }
+    } else {
+      const tf = taskFilePath(taskId);
+      if (existsSync(tf)) content = readFileSync(tf, "utf-8");
     }
-    const content = readFileSync(tf, "utf-8");
+    if (!content) {
+      throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but task file not found`);
+    }
+
     // Extract effort directly from YAML — parseTaskFrontmatter defaults missing effort
     // to "medium", but auto-fill should use lightweight "small" when effort is absent.
     const effortMatch = content.match(/^effort:\s*(.+)/m);
@@ -737,7 +749,14 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
     if (updatedBlock !== block) {
       block = updatedBlock;
       blocks.set(slotNum, block);
-      writeSlotFile(file, blocks, count);
+      if (isWorkerContext()) {
+        // POST adapter args to controller — don't write local harness
+        import("../federation-http.ts").then(({ federationPostSlotUpdate }) => {
+          federationPostSlotUpdate(slotNum, { adapterArgs: autoArgs }).catch(() => {});
+        }).catch(() => {});
+      } else {
+        writeSlotFile(file, blocks, count);
+      }
     }
     ctx.adapterArgs = autoArgs;
 
@@ -1159,8 +1178,16 @@ export async function slotsRefresh(): Promise<void> {
     if (taskId && taskId !== "null") {
       const activity = await readAdapterLastActivity(ctx);
       if (activity) {
-        const tf = taskFilePath(taskId);
-        addFrontmatterField(tf, "modified", activity);
+        if (isWorkerContext()) {
+          // Route through controller — don't write local harness
+          try {
+            const { federationPostTaskUpdate } = await import("../federation-http.ts");
+            await federationPostTaskUpdate(taskId, "modified", activity);
+          } catch { /* ignore */ }
+        } else {
+          const tf = taskFilePath(taskId);
+          addFrontmatterField(tf, "modified", activity);
+        }
       }
     }
   }
