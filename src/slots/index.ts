@@ -22,9 +22,20 @@ import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
 import { heartbeatIsFresh, federationMachine } from "../federation.ts";
 
+// Worker-side override: when set, loadBlocks uses this content instead of reading
+// from the local harness file. Set by processSlotIntents before executing worker
+// intents so that slot operations use fresh controller-fetched state.
+let workerSlotsOverride: string | null = null;
+
+/** Set the in-memory slots content override for worker intent execution.
+ *  Call with null to clear. */
+export function setWorkerSlotsOverride(content: string | null): void {
+  workerSlotsOverride = content;
+}
+
 function ensureSlotsFile(): string {
   const file = slotsFilePath();
-  if (!existsSync(file)) {
+  if (!existsSync(file) && !workerSlotsOverride) {
     const count = slotsCount();
     const blocks = new Map<number, string>();
     writeSlotFile(file, blocks, count);
@@ -33,8 +44,44 @@ function ensureSlotsFile(): string {
 }
 
 function loadBlocks(file: string): Map<number, string> {
+  // Use controller-fetched content when available (worker context)
+  if (workerSlotsOverride) {
+    return parseSlotBlocks(workerSlotsOverride);
+  }
   const content = readFileSync(file, "utf-8");
   return parseSlotBlocks(content);
+}
+
+function isWorkerContext(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { federationIsController, federationCurrentMachineName } = require("../federation.ts");
+    return !!(federationCurrentMachineName() && !federationIsController());
+  } catch {
+    return false;
+  }
+}
+
+/** Write slot blocks to file, or POST runtime sections to controller on workers. */
+function writeSlotFileOrHttp(
+  file: string,
+  blocks: Map<number, string>,
+  count: number,
+  slotNum: number,
+): void {
+  if (isWorkerContext()) {
+    // POST runtime sections to controller — don't write local harness
+    const block = blocks.get(slotNum);
+    if (!block) return;
+    import("../federation-http.ts").then(({ federationPostSlotUpdate }) => {
+      federationPostSlotUpdate(slotNum, {
+        sessionStarted: getSessionStarted(block) || undefined,
+        liveness: getLiveness(block) || undefined,
+      }).catch(() => {});
+    }).catch(() => {});
+    return;
+  }
+  writeSlotFile(file, blocks, count);
 }
 
 function validateRange(slot: number, count: number): void {
@@ -717,7 +764,7 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
   updated = setField(updated, "Liveness", "null");
   if (updated !== block) {
     blocks.set(slotNum, updated);
-    writeSlotFile(file, blocks, count);
+    writeSlotFileOrHttp(file, blocks, count, slotNum);
   }
 
   journalAppend("slot", `Slot ${slotNum} started (adapter=${ctx.mode})`);
@@ -763,7 +810,7 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
   const updated = setField(block, "Session Started", "null");
   if (updated !== block) {
     blocks.set(slotNum, updated);
-    writeSlotFile(file, blocks, count);
+    writeSlotFileOrHttp(file, blocks, count, slotNum);
   }
 
   journalAppend("slot", `Slot ${slotNum} stopped (adapter=${ctx.mode})`);
@@ -1069,7 +1116,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   updated = setField(updated, "Liveness", "null");
   if (updated !== block) {
     blocks.set(slotNum, updated);
-    writeSlotFile(file, blocks, count);
+    writeSlotFileOrHttp(file, blocks, count, slotNum);
   }
 
   journalAppend("slot", `Slot ${slotNum} resumed (adapter=${ctx.mode}, phase=${orchState.phase}, task=${ctx.taskId})`);
@@ -1089,6 +1136,7 @@ export async function slotsRefresh(): Promise<void> {
   const blocks = loadBlocks(file);
   const count = slotsCount();
   let anyUpdated = false;
+  const updatedSlots: number[] = [];
 
   for (let i = 1; i <= count; i++) {
     const block = blocks.get(i);
@@ -1102,6 +1150,7 @@ export async function slotsRefresh(): Promise<void> {
     if (output) {
       blocks.set(i, mergeAdapterState(block, output));
       anyUpdated = true;
+      updatedSlots.push(i);
       console.error(`ludics: refreshed slot ${i} (${mode})`);
     }
 
@@ -1117,8 +1166,28 @@ export async function slotsRefresh(): Promise<void> {
   }
 
   if (anyUpdated) {
-    writeSlotFile(file, blocks, count);
-    stateMarkDirty();
+    if (isWorkerContext()) {
+      // POST each updated slot's runtime state to controller
+      try {
+        const { federationPostSlotUpdate } = await import("../federation-http.ts");
+        const { extractSections } = await import("../state.ts");
+        for (const slotNum of updatedSlots) {
+          const block = blocks.get(slotNum);
+          if (!block) continue;
+          const sections = extractSections(block);
+          await federationPostSlotUpdate(slotNum, {
+            sessionStarted: getSessionStarted(block) || undefined,
+            liveness: getLiveness(block) || undefined,
+            terminals: sections.terminals || undefined,
+            runtime: sections.runtime || undefined,
+            git: sections.git || undefined,
+          }).catch(() => {});
+        }
+      } catch { /* ignore */ }
+    } else {
+      writeSlotFile(file, blocks, count);
+      stateMarkDirty();
+    }
   }
 }
 

@@ -2635,6 +2635,7 @@ async function processSlotIntents(freshSlotsContent: string | null): Promise<voi
     if (!federationIsController()) {
       if (!freshSlotsContent) return; // no fresh state — skip
       const { federationGetIntents, federationDeleteIntent } = await import("./federation-http.ts");
+      const { setWorkerSlotsOverride } = await import("./slots/index.ts");
       const result = await federationGetIntents();
       if (!result.ok || !result.data) return;
       const intents = (result.data as { intents?: Record<string, unknown> })?.intents ?? result.data;
@@ -2648,10 +2649,16 @@ async function processSlotIntents(freshSlotsContent: string | null): Promise<voi
         }
         let shouldAck = true;
         try {
-          switch (intent.action) {
-            case "start": await slotStart(slotNum); break;
-            case "stop": await slotStop(slotNum, false, intent.preserveState ?? false); break;
-            case "resume": await slotResume(slotNum); break;
+          // Set fresh controller state so slot operations use it instead of stale local harness
+          setWorkerSlotsOverride(freshSlotsContent);
+          try {
+            switch (intent.action) {
+              case "start": await slotStart(slotNum); break;
+              case "stop": await slotStop(slotNum, false, intent.preserveState ?? false); break;
+              case "resume": await slotResume(slotNum); break;
+            }
+          } finally {
+            setWorkerSlotsOverride(null);
           }
           emitEvent({ event_type: `slot_intent_${intent.action}`, source: "keepalive", scope: "slot", slot: slotNum, message: `processed ${intent.action} intent` });
         } catch (err) {
