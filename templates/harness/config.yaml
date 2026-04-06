@@ -90,12 +90,15 @@ triggers:
   morning:
     enabled: true
     hour: 8
-    minute: 0
+    minute: 20
     action: mag briefing
 
   health:
     enabled: true
-    interval: 14400
+    schedule:
+      - { hour: 14, minute: 20 }
+      - { hour: 20, minute: 20 }
+      - { hour: 2,  minute: 20 }
     action: mag health-check
 
   sessions-sweep:

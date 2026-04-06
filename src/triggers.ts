@@ -41,6 +41,20 @@ function triggerGet(section: string, key: string): string {
   return String(val);
 }
 
+function triggerGetSchedule(section: string): { hour: number; minute: number }[] | null {
+  const config = loadConfigSync();
+  const triggers = config.triggers as Record<string, unknown> | undefined;
+  if (!triggers) return null;
+  const sectionData = triggers[section] as Record<string, unknown> | undefined;
+  if (!sectionData) return null;
+  const schedule = sectionData["schedule"];
+  if (!Array.isArray(schedule)) return null;
+  return schedule.map((entry: unknown) => {
+    const e = entry as Record<string, unknown>;
+    return { hour: Number(e.hour ?? 0), minute: Number(e.minute ?? 0) };
+  });
+}
+
 function triggerGetWatchRules(): { action: string; paths: string[] }[] {
   const config = loadConfigSync();
   const triggers = config.triggers as Record<string, unknown> | undefined;
@@ -165,19 +179,37 @@ function triggersInstallMacos(): void {
   // Health check trigger
   if (triggerGet("health", "enabled") === "true") {
     const action = commandFromAction(triggerGet("health", "action"));
-    const interval = triggerGet("health", "interval") || "14400";
     const label = "com.ludics.health";
+    const schedule = triggerGetSchedule("health");
+
+    let scheduleXml: string;
+    if (schedule && schedule.length > 0) {
+      const entries = schedule
+        .map(({ hour, minute }) =>
+          `    <dict>\n      <key>Hour</key>\n      <integer>${hour}</integer>\n      <key>Minute</key>\n      <integer>${minute}</integer>\n    </dict>`
+        )
+        .join("\n");
+      scheduleXml = `  <key>StartCalendarInterval</key>\n  <array>\n${entries}\n  </array>`;
+    } else {
+      const interval = triggerGet("health", "interval") || "14400";
+      scheduleXml = `  <key>StartInterval</key>\n  <integer>${interval}</integer>`;
+    }
+
     const content = [
       PLIST_HEADER,
       `  <key>Label</key>\n  <string>${label}</string>`,
-      `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
+      scheduleXml,
       plistEnv(),
       plistArgs(bin, ...action.split(" ")),
       plistLogs("health"),
       PLIST_FOOTER,
     ].join("\n");
     installPlist(label, content);
-    console.log(`Installed launchd trigger: health (every ${Math.floor(parseInt(interval) / 3600)}h)`);
+
+    const desc = schedule
+      ? schedule.map(({ hour, minute }) => `${hour}:${String(minute).padStart(2, "0")}`).join(", ")
+      : "interval";
+    console.log(`Installed launchd trigger: health (${desc})`);
   }
 
   // Sessions adoption trigger
@@ -331,6 +363,8 @@ function writeSystemdUnit(name: string, content: string): void {
 function enableSystemdUnit(unitName: string): void {
   Bun.spawnSync(["systemctl", "--user", "daemon-reload"], { stdout: "pipe", stderr: "pipe" });
   Bun.spawnSync(["systemctl", "--user", "enable", "--now", unitName], { stdout: "pipe", stderr: "pipe" });
+  // Restart to pick up changed unit definitions (enable --now alone may keep the old config)
+  Bun.spawnSync(["systemctl", "--user", "restart", unitName], { stdout: "pipe", stderr: "pipe" });
 }
 
 function triggersInstallLinux(): void {
@@ -368,11 +402,27 @@ function triggersInstallLinux(): void {
   // Health
   if (triggerGet("health", "enabled") === "true") {
     const action = commandFromAction(triggerGet("health", "action"));
-    const interval = triggerGet("health", "interval") || "14400";
+    const schedule = triggerGetSchedule("health");
     writeSystemdUnit("ludics-health.service", `[Unit]\nDescription=ludics health check\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
-    writeSystemdUnit("ludics-health.timer", `[Unit]\nDescription=ludics health check timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-health.service\n\n[Install]\nWantedBy=timers.target\n`);
+
+    let timerSection: string;
+    if (schedule && schedule.length > 0) {
+      const onCalendarLines = schedule
+        .map(({ hour, minute }) => `OnCalendar=*-*-* ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00`)
+        .join("\n");
+      timerSection = `[Timer]\n${onCalendarLines}\nPersistent=true\nUnit=ludics-health.service`;
+    } else {
+      const interval = triggerGet("health", "interval") || "14400";
+      timerSection = `[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-health.service`;
+    }
+
+    writeSystemdUnit("ludics-health.timer", `[Unit]\nDescription=ludics health check timer\n\n${timerSection}\n\n[Install]\nWantedBy=timers.target\n`);
     enableSystemdUnit("ludics-health.timer");
-    console.log(`Installed systemd trigger: health (every ${Math.floor(parseInt(interval) / 3600)}h)`);
+
+    const desc = schedule
+      ? schedule.map(({ hour, minute }) => `${hour}:${String(minute).padStart(2, "0")}`).join(", ")
+      : "interval";
+    console.log(`Installed systemd trigger: health (${desc})`);
   }
 
   // Sessions adoption
