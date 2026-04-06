@@ -363,6 +363,8 @@ function writeSystemdUnit(name: string, content: string): void {
 function enableSystemdUnit(unitName: string): void {
   Bun.spawnSync(["systemctl", "--user", "daemon-reload"], { stdout: "pipe", stderr: "pipe" });
   Bun.spawnSync(["systemctl", "--user", "enable", "--now", unitName], { stdout: "pipe", stderr: "pipe" });
+  // Restart to pick up changed unit definitions (enable --now alone may keep the old config)
+  Bun.spawnSync(["systemctl", "--user", "restart", unitName], { stdout: "pipe", stderr: "pipe" });
 }
 
 function triggersInstallLinux(): void {

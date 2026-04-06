@@ -90,7 +90,7 @@ triggers:
   morning:
     enabled: true
     hour: 8
-    minute: 0
+    minute: 20
     action: mag briefing
 
   health:
