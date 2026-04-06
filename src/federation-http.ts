@@ -7,7 +7,6 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { harnessDir, loadConfigSync, slotsFilePath } from "./config.ts";
 import { parseSlotBlocks, getTask, getMachine } from "./slots/markdown.ts";
-import { writeSlotIntent, intentIsFresh } from "./slot-intents.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
 import type { FederationMachine } from "./federation.ts";
@@ -99,7 +98,6 @@ function checkAuth(req: Request): Response | null {
 
 // --- Server handlers ---
 
-const INTENT_TTL_SECONDS = 600; // 10 minutes
 const SIGNAL_MAX_AGE_SECONDS = 1800; // 30 minutes
 
 /** Main federation request dispatcher — called from dashboard-server.ts. */
@@ -123,7 +121,6 @@ export async function handleFederationRequest(req: Request, pathname: string): P
   }
 
   switch (pathname) {
-    case "/federation/intent": return handleIntent(body);
     case "/federation/heartbeat": return handleHeartbeat(body);
     case "/federation/signal": return handleSignal(body);
     default:
@@ -131,68 +128,6 @@ export async function handleFederationRequest(req: Request, pathname: string): P
         status: 404, headers: { "Content-Type": "application/json" },
       });
   }
-}
-
-// --- Intent handler (runs on worker) ---
-
-function handleIntent(body: Record<string, unknown>): Response {
-  const action = String(body.action ?? "");
-  const slot = Number(body.slot);
-  const epoch = Number(body.epoch ?? 0);
-  const machine = String(body.machine ?? "");
-  const taskId = String(body.taskId ?? "");
-
-  if (!["start", "stop", "resume"].includes(action) || !Number.isFinite(slot) || !machine) {
-    return jsonResponse(400, { error: "missing or invalid fields: action, slot, machine required" });
-  }
-
-  // Validate machine matches this machine's identity
-  let currentMachine: string | null = null;
-  try {
-    const { federationCurrentMachineName } = require("./federation.ts");
-    currentMachine = federationCurrentMachineName();
-  } catch { /* standalone mode */ }
-
-  if (currentMachine && machine !== currentMachine) {
-    return jsonResponse(409, { error: `intent for ${machine} but this machine is ${currentMachine}` });
-  }
-
-  // Validate slot assignment: slot must still be assigned to this machine with matching task
-  const sFile = slotsFilePath();
-  if (existsSync(sFile)) {
-    const content = readFileSync(sFile, "utf-8");
-    const blocks = parseSlotBlocks(content);
-    const block = blocks.get(slot);
-    if (block) {
-      const slotMachine = getMachine(block).trim();
-      if (slotMachine && slotMachine !== "null" && slotMachine !== machine) {
-        return jsonResponse(409, { error: `slot ${slot} reassigned to ${slotMachine}` });
-      }
-      if (taskId) {
-        const slotTask = getTask(block).trim();
-        if (slotTask && slotTask !== "null" && slotTask !== taskId) {
-          return jsonResponse(409, { error: `slot ${slot} task changed to ${slotTask}` });
-        }
-      }
-    }
-  }
-
-  // Validate freshness
-  const now = Math.floor(Date.now() / 1000);
-  if (epoch > 0 && (now - epoch) > INTENT_TTL_SECONDS) {
-    return jsonResponse(409, { error: `intent expired (age: ${now - epoch}s)` });
-  }
-
-  // Write intent file — worker keepalive processes it locally
-  writeSlotIntent(slot, {
-    action: action as "start" | "stop" | "resume",
-    epoch: epoch || now,
-    machine,
-    preserveState: Boolean(body.preserveState),
-  });
-
-  console.error(`ludics: federation HTTP: received ${action} intent for slot ${slot}`);
-  return jsonResponse(200, { ok: true, action, slot });
 }
 
 // --- Heartbeat handler (runs on controller) ---
@@ -205,8 +140,12 @@ function handleHeartbeat(body: Record<string, unknown>): Response {
     return jsonResponse(400, { error: "missing fields: node, epoch required" });
   }
 
-  // Write heartbeat file to disk
-  const heartbeatsDir = join(harnessDir(), "federation", "heartbeats");
+  // Write heartbeat file to runtime dir (outside harness)
+  const { stateRepoDir } = require("./config.ts");
+  const hasher = new Bun.CryptoHasher("md5");
+  hasher.update(stateRepoDir());
+  const suffix = hasher.digest("hex").slice(0, 8);
+  const heartbeatsDir = join(process.env.HOME ?? "/tmp", `.ludics-heartbeats-${suffix}`);
   mkdirSync(heartbeatsDir, { recursive: true });
   const heartbeatFile = join(heartbeatsDir, `${node}.json`);
   writeFileSync(heartbeatFile, JSON.stringify(body, null, 2) + "\n");

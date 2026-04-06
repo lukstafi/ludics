@@ -7,6 +7,7 @@ import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOr
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
 import { readSlotIntent, clearSlotIntent } from "../slot-intents.ts";
+import { heartbeatsDir as getHeartbeatsDir } from "../federation.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -714,9 +715,9 @@ describe("remote slot dispatch via HTTP", () => {
     writeTask(tasksDir, "task-remote-1", "Remote start test");
 
     // Create a fresh heartbeat so heartbeatIsFresh("worker-a") returns true
-    const heartbeatsDir = join(harness, "federation", "heartbeats");
-    mkdirSync(heartbeatsDir, { recursive: true });
-    writeFileSync(join(heartbeatsDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
+    const hbDir = getHeartbeatsDir();
+    mkdirSync(hbDir, { recursive: true });
+    writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
 
     slotAssign(1, "task-remote-1", "tmux", "", "", "", "worker-a");
 
@@ -809,9 +810,9 @@ describe("remote slot dispatch via HTTP", () => {
     writeTask(tasksDir, "task-remote-4b", "Remote resume config test");
 
     // Create a fresh heartbeat
-    const heartbeatsDir = join(harness, "federation", "heartbeats");
-    mkdirSync(heartbeatsDir, { recursive: true });
-    writeFileSync(join(heartbeatsDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
+    const hbDir = getHeartbeatsDir();
+    mkdirSync(hbDir, { recursive: true });
+    writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
 
     slotAssign(1, "task-remote-4b", "tmux", "", "", "", "worker-a");
 

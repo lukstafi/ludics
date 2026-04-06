@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
-import { harnessDir, loadConfigSync } from "./config.ts";
+import { harnessDir, loadConfigSync, stateRepoDir } from "./config.ts";
 import { hostnameTailscale } from "./network.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
@@ -135,8 +135,12 @@ function federationDir(): string {
   return join(harnessDir(), "federation");
 }
 
-function heartbeatsDir(): string {
-  return join(federationDir(), "heartbeats");
+export function heartbeatsDir(): string {
+  // Runtime dir outside harness — never committed to git
+  const hasher = new Bun.CryptoHasher("md5");
+  hasher.update(stateRepoDir());
+  const suffix = hasher.digest("hex").slice(0, 8);
+  return join(process.env.HOME ?? "/tmp", `.ludics-heartbeats-${suffix}`);
 }
 
 function leaderFile(): string {
