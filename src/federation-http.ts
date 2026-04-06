@@ -127,7 +127,7 @@ export async function federationHttpGet(
   }
 }
 
-// --- In-memory intent store (controller-side) ---
+// --- File-backed intent store (controller-side, runtime dir outside harness) ---
 
 export interface PendingIntent {
   action: "start" | "stop" | "resume";
@@ -137,43 +137,83 @@ export interface PendingIntent {
   preserveState?: boolean;
 }
 
-const pendingIntents = new Map<number, PendingIntent>();
 const INTENT_TTL = 900; // seconds
 
+function intentsDir(): string {
+  const { stateRepoDir } = require("./config.ts");
+  const hasher = new Bun.CryptoHasher("md5");
+  hasher.update(stateRepoDir());
+  const suffix = hasher.digest("hex").slice(0, 8);
+  return join(process.env.HOME ?? "/tmp", `.ludics-intents-${suffix}`);
+}
+
+function intentFilePath(slot: number): string {
+  return join(intentsDir(), `slot-${slot}.json`);
+}
+
 export function recordIntent(slot: number, intent: PendingIntent): void {
-  pendingIntents.set(slot, intent);
+  const dir = intentsDir();
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(intentFilePath(slot), JSON.stringify(intent) + "\n");
 }
 
 export function clearIntent(slot: number): void {
-  pendingIntents.delete(slot);
+  const file = intentFilePath(slot);
+  try { if (existsSync(file)) { const { unlinkSync } = require("fs"); unlinkSync(file); } } catch { /* ignore */ }
 }
 
 export function getIntentForDashboard(slot: number): PendingIntent | null {
-  const intent = pendingIntents.get(slot);
-  if (!intent) return null;
-  if ((Math.floor(Date.now() / 1000) - intent.epoch) >= INTENT_TTL) {
-    pendingIntents.delete(slot);
-    return null;
-  }
-  return intent;
+  const file = intentFilePath(slot);
+  if (!existsSync(file)) return null;
+  try {
+    const intent = JSON.parse(readFileSync(file, "utf-8")) as PendingIntent;
+    if ((Math.floor(Date.now() / 1000) - intent.epoch) >= INTENT_TTL) {
+      clearIntent(slot);
+      return null;
+    }
+    return intent;
+  } catch { return null; }
 }
 
 function getIntentsForMachine(machine: string): Record<number, PendingIntent> {
   const now = Math.floor(Date.now() / 1000);
   const result: Record<number, PendingIntent> = {};
-  for (const [slot, intent] of pendingIntents) {
-    if (intent.machine === machine && (now - intent.epoch) < INTENT_TTL) {
-      result[slot] = intent;
+  const dir = intentsDir();
+  if (!existsSync(dir)) return result;
+  try {
+    const { readdirSync } = require("fs");
+    for (const file of readdirSync(dir) as string[]) {
+      const match = file.match(/^slot-(\d+)\.json$/);
+      if (!match) continue;
+      const slot = Number(match[1]);
+      try {
+        const intent = JSON.parse(readFileSync(join(dir, file), "utf-8")) as PendingIntent;
+        if (intent.machine === machine && (now - intent.epoch) < INTENT_TTL) {
+          result[slot] = intent;
+        } else if ((now - intent.epoch) >= INTENT_TTL) {
+          clearIntent(slot);
+        }
+      } catch { /* skip malformed */ }
     }
-  }
+  } catch { /* ignore */ }
   return result;
 }
 
 function expireStaleIntents(): void {
+  const dir = intentsDir();
+  if (!existsSync(dir)) return;
   const now = Math.floor(Date.now() / 1000);
-  for (const [slot, intent] of pendingIntents) {
-    if ((now - intent.epoch) >= INTENT_TTL) pendingIntents.delete(slot);
-  }
+  try {
+    const { readdirSync } = require("fs");
+    for (const file of readdirSync(dir) as string[]) {
+      const match = file.match(/^slot-(\d+)\.json$/);
+      if (!match) continue;
+      try {
+        const intent = JSON.parse(readFileSync(join(dir, file), "utf-8")) as PendingIntent;
+        if ((now - intent.epoch) >= INTENT_TTL) clearIntent(Number(match[1]));
+      } catch { /* skip */ }
+    }
+  } catch { /* ignore */ }
 }
 
 // --- Client helpers for worker → controller communication ---
@@ -450,9 +490,23 @@ function handleGetIntents(req: Request): Response {
   if (machine) {
     return jsonResponse(200, { intents: getIntentsForMachine(machine) });
   }
-  // Return all pending intents
+  // Return all pending intents — scan runtime directory
+  const dir = intentsDir();
   const all: Record<number, PendingIntent> = {};
-  for (const [slot, intent] of pendingIntents) all[slot] = intent;
+  if (existsSync(dir)) {
+    const now = Math.floor(Date.now() / 1000);
+    try {
+      const { readdirSync } = require("fs");
+      for (const file of readdirSync(dir) as string[]) {
+        const match = file.match(/^slot-(\d+)\.json$/);
+        if (!match) continue;
+        try {
+          const intent = JSON.parse(readFileSync(join(dir, file), "utf-8")) as PendingIntent;
+          if ((now - intent.epoch) < INTENT_TTL) all[Number(match[1])] = intent;
+        } catch { /* skip */ }
+      }
+    } catch { /* ignore */ }
+  }
   return jsonResponse(200, { intents: all });
 }
 
