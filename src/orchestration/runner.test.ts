@@ -4,14 +4,14 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPrCreateOutcome, verifyFinalMergeOutcome, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, MAX_VERIFY_ATTEMPTS } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPrCreateOutcome, verifyFinalMergeOutcome, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS } from "./runner.ts";
 import * as notify from "../notify.ts";
 import * as peerSync from "./peer-sync.ts";
 import * as events from "../events.ts";
 import * as github from "./github.ts";
 import { orchOnStop } from "./index.ts";
 import { readStopHookRecord, writeStopHookRecord, writeAgentMarkerFiles, readAgentMarkerFile } from "./peer-sync.ts";
-import { defaultOrchestrationConfig, initAgentRuntimeState, type AgentTurnLifecycle, type OrchestrationState } from "./state.ts";
+import { defaultOrchestrationConfig, initAgentRuntimeState, persistState, type AgentTurnLifecycle, type OrchestrationState } from "./state.ts";
 import type { T3Snapshot, T3ThreadSession, T3LatestTurn } from "../t3code/types.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 
@@ -1019,6 +1019,39 @@ describe("AgentTurnLifecycle state machine via isAgentDone", () => {
     });
     state.agentStates.coder.status = "done";
     expect(isAgentDone(state, state.agents[0]!)).toBe(true);
+  });
+
+  test("settled + done status + stale fingerprint → not done", () => {
+    const state = makeState({ phase: "work" });
+    const staleFingerprint = "done|1234567890";
+    state.agentStates.coder.dispatchStatusFingerprint = staleFingerprint;
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-123",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.coder.status = "done";
+    // Make statusFileFingerprint return the same value as baseline → stale
+    const fpSpy = spyOn(peerSync, "statusFileFingerprint").mockReturnValue(staleFingerprint);
+    expect(isAgentDone(state, state.agents[0]!)).toBe(false);
+    fpSpy.mockRestore();
+  });
+
+  test("settled + done status + fresh fingerprint → done", () => {
+    const state = makeState({ phase: "work" });
+    state.agentStates.coder.dispatchStatusFingerprint = "old|111";
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-123",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+    state.agentStates.coder.status = "done";
+    // Make statusFileFingerprint return a different value → fresh
+    const fpSpy = spyOn(peerSync, "statusFileFingerprint").mockReturnValue("new|222");
+    expect(isAgentDone(state, state.agents[0]!)).toBe(true);
+    fpSpy.mockRestore();
   });
 
   test("error state → done (terminal)", () => {
@@ -2757,5 +2790,46 @@ describe("verifyFinalMergeOutcome", () => {
 
     expect(verifyFinalMergeOutcome(state)).toBe("hold");
     expect(state.finalMergeVerifyAttempts).toBe(MAX_VERIFY_ATTEMPTS);
+  });
+});
+
+// ===========================================================================
+// skipToPhase — lifecycle cleanup
+// ===========================================================================
+
+describe("skipToPhase", () => {
+  test("clears turnLifecycle and resets status for all agents", () => {
+    const harnessDir = makeTmpDir();
+    const slot = 99;
+    mkdirSync(join(harnessDir, "orchestration"), { recursive: true });
+
+    const state: OrchestrationState = {
+      ...makeState({ phase: "work" }),
+      slot,
+    };
+    // Give both agents stale settled lifecycles
+    for (const agent of state.agents) {
+      const runtime = state.agentStates[agent.name];
+      runtime.status = "done";
+      runtime.turnLifecycle = makeLifecycle({
+        state: "settled",
+        observedTurnId: "turn-old",
+        turnCompletedAt: new Date().toISOString(),
+        completionSource: "snapshot",
+      });
+    }
+    persistState(state, harnessDir);
+
+    const result = skipToPhase(slot, "review", harnessDir);
+
+    expect(result.phase).toBe("review");
+    expect(result.phaseDispatched).toBe(false);
+
+    for (const agent of result.agents) {
+      const runtime = result.agentStates[agent.name];
+      expect(runtime.turnLifecycle).toBeNull();
+      expect(runtime.status).toBe("idle");
+      expect(runtime.statusMessage).toBe("skip to review");
+    }
   });
 });

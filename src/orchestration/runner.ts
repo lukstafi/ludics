@@ -1452,6 +1452,17 @@ export function skipToPhase(
   state.phase = phase;
   state.phaseStartedAt = nowEpoch();
   state.phaseDispatched = false;
+
+  // Reset all agent statuses and lifecycles — same invariants as enterPhase().
+  for (const agent of state.agents) {
+    const runtime = state.agentStates[agent.name];
+    if (!runtime) continue;
+    runtime.status = "idle";
+    runtime.statusEpoch = nowEpoch();
+    runtime.statusMessage = `skip to ${phase}`;
+    runtime.turnLifecycle = null;
+  }
+
   persistState(state, harnessDir);
   return state;
 }
