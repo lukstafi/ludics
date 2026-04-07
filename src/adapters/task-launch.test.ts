@@ -76,7 +76,7 @@ describe("readProposalLaunchMetadata", () => {
     );
   });
 
-  test("returns null for proposal: inline (legacy mode, no file required)", () => {
+  test("returns null for proposal: inline (deprecated sentinel, no file required)", () => {
     const harnessDir = join(TMP, "harness");
     const projectDir = join(TMP, "project");
     mkdirSync(join(harnessDir, "tasks"), { recursive: true });
