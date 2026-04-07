@@ -1,5 +1,7 @@
 # Pair Clarify (Coder)
 
+{{PROPOSAL_INSTRUCTION}}
+
 Clarify the implementation approach from the coder perspective.
 
 Use `{{PLAN_FILE}}` for any blocking questions or assumptions.

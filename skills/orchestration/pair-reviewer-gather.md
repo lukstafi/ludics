@@ -1,5 +1,7 @@
 # Pair Gather
 
+{{PROPOSAL_INSTRUCTION}}
+
 You are the reviewer. Gather the codebase context the coder should rely on.
 
 Task spec:

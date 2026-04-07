@@ -1,5 +1,7 @@
 # Pair Clarify (Reviewer)
 
+{{PROPOSAL_INSTRUCTION}}
+
 Clarify the task from the reviewer perspective. Focus on risk, edge cases, and missing acceptance criteria.
 
 Write concise notes to `{{PLAN_FILE}}`, then:
