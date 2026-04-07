@@ -3,6 +3,7 @@
 import { existsSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { loadConfigSync, ludicsRoot } from "./config.ts";
+import { safeSyncOutput } from "./spawn.ts";
 
 const KNOWN_LUDICS_TRIGGER_NAMES = [
   "startup",
@@ -111,10 +112,10 @@ function installPlist(label: string, content: string): void {
 
   writeFileSync(plist, content);
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-  Bun.spawnSync(["launchctl", "enable", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
+  safeSyncOutput(["launchctl", "enable", `gui/${uid}/${label}`]);
   // Use bootout/bootstrap (modern API) instead of deprecated load/unload
-  Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
-  Bun.spawnSync(["launchctl", "bootstrap", `gui/${uid}`, plist], { stdout: "pipe", stderr: "pipe" });
+  safeSyncOutput(["launchctl", "bootout", `gui/${uid}/${label}`]);
+  safeSyncOutput(["launchctl", "bootstrap", `gui/${uid}`, plist]);
 }
 
 // --- macOS launchd ---
@@ -361,10 +362,10 @@ function writeSystemdUnit(name: string, content: string): void {
 }
 
 function enableSystemdUnit(unitName: string): void {
-  Bun.spawnSync(["systemctl", "--user", "daemon-reload"], { stdout: "pipe", stderr: "pipe" });
-  Bun.spawnSync(["systemctl", "--user", "enable", "--now", unitName], { stdout: "pipe", stderr: "pipe" });
+  safeSyncOutput(["systemctl", "--user", "daemon-reload"]);
+  safeSyncOutput(["systemctl", "--user", "enable", "--now", unitName]);
   // Restart to pick up changed unit definitions (enable --now alone may keep the old config)
-  Bun.spawnSync(["systemctl", "--user", "restart", unitName], { stdout: "pipe", stderr: "pipe" });
+  safeSyncOutput(["systemctl", "--user", "restart", unitName]);
 }
 
 function triggersInstallLinux(): void {
@@ -518,8 +519,8 @@ function triggersPauseMacos(): void {
     const plist = join(agentsDir, `${label}.plist`);
     if (!existsSync(plist)) continue;
     foundAny = true;
-    Bun.spawnSync(["launchctl", "disable", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
-    Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
+    safeSyncOutput(["launchctl", "disable", `gui/${uid}/${label}`]);
+    safeSyncOutput(["launchctl", "bootout", `gui/${uid}/${label}`]);
     console.log(`Paused launchd trigger: ${name}`);
   }
 
@@ -530,8 +531,8 @@ function triggersPauseMacos(): void {
       const label = f.replace(".plist", "");
       const name = label.replace("com.ludics.", "");
       const plist = join(agentsDir, f);
-      Bun.spawnSync(["launchctl", "disable", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
-      Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["launchctl", "disable", `gui/${uid}/${label}`]);
+      safeSyncOutput(["launchctl", "bootout", `gui/${uid}/${label}`]);
       console.log(`Paused launchd trigger: ${name}`);
     }
   }
@@ -555,15 +556,15 @@ function triggersPauseLinux(): void {
     let hasAny = false;
 
     if (existsSync(timerFile)) {
-      Bun.spawnSync(["systemctl", "--user", "disable", "--now", `ludics-${name}.timer`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", `ludics-${name}.timer`]);
       hasAny = true;
     }
     if (existsSync(pathFile)) {
-      Bun.spawnSync(["systemctl", "--user", "disable", "--now", `ludics-${name}.path`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", `ludics-${name}.path`]);
       hasAny = true;
     }
     if (existsSync(serviceFile)) {
-      Bun.spawnSync(["systemctl", "--user", "disable", "--now", `ludics-${name}.service`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", `ludics-${name}.service`]);
       hasAny = true;
     }
 
@@ -579,9 +580,9 @@ function triggersPauseLinux(): void {
       const unitName = f.replace(".service", "");
       const pathFile = join(systemdDir, `${unitName}.path`);
       if (existsSync(pathFile)) {
-        Bun.spawnSync(["systemctl", "--user", "disable", "--now", `${unitName}.path`], { stdout: "pipe", stderr: "pipe" });
+        safeSyncOutput(["systemctl", "--user", "disable", "--now", `${unitName}.path`]);
       }
-      Bun.spawnSync(["systemctl", "--user", "disable", "--now", `${unitName}.service`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", `${unitName}.service`]);
       foundAny = true;
       console.log(`Paused systemd trigger: ${unitName.replace("ludics-", "")}`);
     }
@@ -605,7 +606,7 @@ function triggersUninstallMacos(): void {
   for (const label of labels) {
     const plist = join(agentsDir, `${label}.plist`);
     if (existsSync(plist)) {
-      Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["launchctl", "bootout", `gui/${uid}/${label}`]);
       unlinkSync(plist);
       console.log(`Uninstalled launchd trigger: ${label.replace("com.ludics.", "")}`);
     }
@@ -617,7 +618,7 @@ function triggersUninstallMacos(): void {
       if (f.startsWith("com.ludics.watch-") && f.endsWith(".plist")) {
         const label = f.replace(".plist", "");
         const plist = join(agentsDir, f);
-        Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
+        safeSyncOutput(["launchctl", "bootout", `gui/${uid}/${label}`]);
         unlinkSync(plist);
         console.log(`Uninstalled launchd trigger: ${f.replace("com.ludics.", "").replace(".plist", "")}`);
       }
@@ -633,7 +634,7 @@ function triggersUninstallMacos(): void {
   for (const label of legacyLabels) {
     const plist = join(agentsDir, `${label}.plist`);
     if (existsSync(plist)) {
-      Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["launchctl", "bootout", `gui/${uid}/${label}`]);
       unlinkSync(plist);
       console.log(`Uninstalled legacy launchd trigger: ${label}`);
     }
@@ -643,7 +644,7 @@ function triggersUninstallMacos(): void {
       if (f.startsWith("com.pai-lite.watch-") && f.endsWith(".plist")) {
         const label = f.replace(".plist", "");
         const plist = join(agentsDir, f);
-        Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${label}`], { stdout: "pipe", stderr: "pipe" });
+        safeSyncOutput(["launchctl", "bootout", `gui/${uid}/${label}`]);
         unlinkSync(plist);
         console.log(`Uninstalled legacy launchd trigger: ${f.replace(".plist", "")}`);
       }
@@ -663,15 +664,15 @@ function triggersUninstallLinux(): void {
     const pathFile = join(systemdDir, `ludics-${name}.path`);
 
     if (existsSync(timerFile)) {
-      Bun.spawnSync(["systemctl", "--user", "disable", "--now", `ludics-${name}.timer`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", `ludics-${name}.timer`]);
       unlinkSync(timerFile);
     }
     if (existsSync(pathFile)) {
-      Bun.spawnSync(["systemctl", "--user", "disable", "--now", `ludics-${name}.path`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", `ludics-${name}.path`]);
       unlinkSync(pathFile);
     }
     if (existsSync(serviceFile)) {
-      Bun.spawnSync(["systemctl", "--user", "disable", "--now", `ludics-${name}.service`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", `ludics-${name}.service`]);
       unlinkSync(serviceFile);
       console.log(`Uninstalled systemd trigger: ${name}`);
     }
@@ -684,10 +685,10 @@ function triggersUninstallLinux(): void {
         const unitName = f.replace(".service", "");
         const pathFile = join(systemdDir, `${unitName}.path`);
         if (existsSync(pathFile)) {
-          Bun.spawnSync(["systemctl", "--user", "disable", "--now", `${unitName}.path`], { stdout: "pipe", stderr: "pipe" });
+          safeSyncOutput(["systemctl", "--user", "disable", "--now", `${unitName}.path`]);
           unlinkSync(pathFile);
         }
-        Bun.spawnSync(["systemctl", "--user", "disable", "--now", `${unitName}.service`], { stdout: "pipe", stderr: "pipe" });
+        safeSyncOutput(["systemctl", "--user", "disable", "--now", `${unitName}.service`]);
         unlinkSync(join(systemdDir, f));
         console.log(`Uninstalled systemd trigger: ${unitName.replace("ludics-", "")}`);
       }
@@ -702,15 +703,15 @@ function triggersUninstallLinux(): void {
     const pathFile = join(systemdDir, `pai-lite-${name}.path`);
 
     if (existsSync(timerFile)) {
-      Bun.spawnSync(["systemctl", "--user", "disable", "--now", `pai-lite-${name}.timer`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", `pai-lite-${name}.timer`]);
       unlinkSync(timerFile);
     }
     if (existsSync(pathFile)) {
-      Bun.spawnSync(["systemctl", "--user", "disable", "--now", `pai-lite-${name}.path`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", `pai-lite-${name}.path`]);
       unlinkSync(pathFile);
     }
     if (existsSync(serviceFile)) {
-      Bun.spawnSync(["systemctl", "--user", "disable", "--now", `pai-lite-${name}.service`], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", `pai-lite-${name}.service`]);
       unlinkSync(serviceFile);
       console.log(`Uninstalled legacy systemd trigger: pai-lite-${name}`);
     }
@@ -721,17 +722,17 @@ function triggersUninstallLinux(): void {
         const unitName = f.replace(".service", "");
         const pathFile = join(systemdDir, `${unitName}.path`);
         if (existsSync(pathFile)) {
-          Bun.spawnSync(["systemctl", "--user", "disable", "--now", `${unitName}.path`], { stdout: "pipe", stderr: "pipe" });
+          safeSyncOutput(["systemctl", "--user", "disable", "--now", `${unitName}.path`]);
           unlinkSync(pathFile);
         }
-        Bun.spawnSync(["systemctl", "--user", "disable", "--now", `${unitName}.service`], { stdout: "pipe", stderr: "pipe" });
+        safeSyncOutput(["systemctl", "--user", "disable", "--now", `${unitName}.service`]);
         unlinkSync(join(systemdDir, f));
         console.log(`Uninstalled legacy systemd trigger: ${unitName}`);
       }
     }
   }
 
-  Bun.spawnSync(["systemctl", "--user", "daemon-reload"], { stdout: "pipe", stderr: "pipe" });
+  safeSyncOutput(["systemctl", "--user", "daemon-reload"]);
   console.log("All ludics systemd triggers uninstalled");
 }
 
@@ -752,8 +753,8 @@ function triggersStatusMacos(): void {
     foundAny = true;
 
     const name = label.replace("com.ludics.", "");
-    const check = Bun.spawnSync(["launchctl", "list", label], { stdout: "pipe", stderr: "pipe" });
-    const status = check.exitCode === 0 ? "loaded" : "not loaded";
+    const check = safeSyncOutput(["launchctl", "list", label]);
+    const status = check.ok ? "loaded" : "not loaded";
     console.log(`  ${name.padEnd(20)} ${status}`);
   }
 
@@ -764,8 +765,8 @@ function triggersStatusMacos(): void {
         foundAny = true;
         const label = f.replace(".plist", "");
         const name = label.replace("com.ludics.", "");
-        const check = Bun.spawnSync(["launchctl", "list", label], { stdout: "pipe", stderr: "pipe" });
-        const status = check.exitCode === 0 ? "loaded" : "not loaded";
+        const check = safeSyncOutput(["launchctl", "list", label]);
+        const status = check.ok ? "loaded" : "not loaded";
         console.log(`  ${name.padEnd(20)} ${status}`);
       }
     }
@@ -800,8 +801,8 @@ function triggersStatusLinux(): void {
     if (existsSync(timerFile)) unitToCheck = `ludics-${name}.timer`;
     else if (existsSync(pathFile)) unitToCheck = `ludics-${name}.path`;
 
-    const check = Bun.spawnSync(["systemctl", "--user", "is-active", unitToCheck], { stdout: "pipe", stderr: "pipe" });
-    const status = check.stdout.toString().trim() || "inactive";
+    const check = safeSyncOutput(["systemctl", "--user", "is-active", unitToCheck]);
+    const status = check.stdout || "inactive";
     console.log(`  ${name.padEnd(20)} ${status}`);
   }
 
@@ -814,8 +815,8 @@ function triggersStatusLinux(): void {
         const name = unitName.replace("ludics-", "");
         const pathFile = join(systemdDir, `${unitName}.path`);
         const unitToCheck = existsSync(pathFile) ? `${unitName}.path` : `${unitName}.service`;
-        const check = Bun.spawnSync(["systemctl", "--user", "is-active", unitToCheck], { stdout: "pipe", stderr: "pipe" });
-        const status = check.stdout.toString().trim() || "inactive";
+        const check = safeSyncOutput(["systemctl", "--user", "is-active", unitToCheck]);
+        const status = check.stdout || "inactive";
         console.log(`  ${name.padEnd(20)} ${status}`);
       }
     }
@@ -832,8 +833,8 @@ function triggersStatusLinux(): void {
 // --- Public API ---
 
 function currentPlatform(): string {
-  const result = Bun.spawnSync(["uname", "-s"], { stdout: "pipe", stderr: "pipe" });
-  return result.stdout.toString().trim();
+  const result = safeSyncOutput(["uname", "-s"]);
+  return result.stdout;
 }
 
 export function triggersInstall(): void {

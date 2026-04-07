@@ -3,13 +3,11 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { stateRepoDir } from "./config.ts";
+import { safeSyncOutput } from "./spawn.ts";
 
 function run(cmd: string[], cwd: string): { success: boolean; stdout: string } {
-  const result = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
-  return {
-    success: result.exitCode === 0,
-    stdout: result.stdout.toString().trim(),
-  };
+  const r = safeSyncOutput(cmd, { cwd });
+  return { success: r.ok, stdout: r.stdout };
 }
 
 function dirtyFlagPath(): string {
@@ -47,15 +45,8 @@ function clearDirtyFlag(): void {
  */
 export function stateCommit(message: string): void {
   const repoDir = stateRepoDir();
-  const { success: hasDiff } = (() => {
-    const r = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
-    return { success: r.exitCode !== 0 };
-  })();
-
-  const { success: hasCached } = (() => {
-    const r = Bun.spawnSync(["git", "diff", "--cached", "--quiet"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
-    return { success: r.exitCode !== 0 };
-  })();
+  const hasDiff = !safeSyncOutput(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir }).ok;
+  const hasCached = !safeSyncOutput(["git", "diff", "--cached", "--quiet"], { cwd: repoDir }).ok;
 
   if (!hasDiff && !hasCached) return;
 
@@ -70,15 +61,8 @@ export function stateCommit(message: string): void {
 /** Immediately commit and push. For critical moments like controller handoff. */
 export function stateCommitImmediate(message: string): void {
   const repoDir = stateRepoDir();
-  const { success: hasDiff } = (() => {
-    const r = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
-    return { success: r.exitCode !== 0 };
-  })();
-
-  const { success: hasCached } = (() => {
-    const r = Bun.spawnSync(["git", "diff", "--cached", "--quiet"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
-    return { success: r.exitCode !== 0 };
-  })();
+  const hasDiff = !safeSyncOutput(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir }).ok;
+  const hasCached = !safeSyncOutput(["git", "diff", "--cached", "--quiet"], { cwd: repoDir }).ok;
 
   if (!hasDiff && !hasCached) {
     clearDirtyFlag();
@@ -106,10 +90,7 @@ export function stateCheckpoint(
 
   // Check both dirty flag and actual git diff
   const hasDirtyFlag = stateIsDirty();
-  const { success: hasDiff } = (() => {
-    const r = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
-    return { success: r.exitCode !== 0 };
-  })();
+  const hasDiff = !safeSyncOutput(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir }).ok;
 
   if (!hasDirtyFlag && !hasDiff) return;
 
@@ -139,10 +120,9 @@ export function statePull(opts?: { autoCommit?: boolean }): boolean {
 
   // Commit uncommitted changes before pulling (controller-only writes, simple commit)
   if (autoCommit) {
-    const diffResult = Bun.spawnSync(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
-    if (diffResult.exitCode !== 0) {
-      Bun.spawnSync(["git", "add", "-A"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
-      Bun.spawnSync(["git", "commit", "-m", "auto-commit before pull"], { cwd: repoDir, stdout: "pipe", stderr: "pipe" });
+    if (!safeSyncOutput(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir }).ok) {
+      run(["git", "add", "-A"], repoDir);
+      run(["git", "commit", "-m", "auto-commit before pull"], repoDir);
     }
   }
 

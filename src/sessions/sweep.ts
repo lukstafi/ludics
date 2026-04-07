@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { basename, join } from "path";
 import { slotsCount, slotsFilePath } from "../config.ts";
+import { safeSyncOutput } from "../spawn.ts";
 import { parseSlotBlocks, getMode, getTask, getPath, getSession } from "../slots/markdown.ts";
 import { resolveProjectDir } from "../adapters/base.ts";
 import { findSessionByPrefixOrTask } from "../adapters/peer-sync.ts";
@@ -146,18 +147,11 @@ function knownSessionStillPresent(record: KnownSessionRecord, t3codeSnapshot: T3
 }
 
 function runCleanup(record: KnownSessionRecord): { ok: boolean; detail: string } {
-  const result = Bun.spawnSync(record.cleanupCommand, {
-    cwd: record.projectDir,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: process.env as Record<string, string>,
-  });
-  if (result.exitCode === 0) {
-    return { ok: true, detail: result.stdout.toString().trim() || "ok" };
+  const result = safeSyncOutput(record.cleanupCommand, { cwd: record.projectDir });
+  if (result.ok) {
+    return { ok: true, detail: result.stdout || "ok" };
   }
-  const stderr = result.stderr.toString().trim();
-  const stdout = result.stdout.toString().trim();
-  return { ok: false, detail: stderr || stdout || `exit ${result.exitCode}` };
+  return { ok: false, detail: result.stderr || result.stdout || `exit ${result.exitCode}` };
 }
 
 export async function runSessionSweep(options: SweepOptions): Promise<void> {

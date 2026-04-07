@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { harnessDir, loadConfigSync, stateRepoDir } from "./config.ts";
+import { safeSyncOutput } from "./spawn.ts";
 import { hostnameTailscale } from "./network.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
@@ -93,13 +94,8 @@ export function federationCurrentMachine(): FederationMachine | undefined {
   if (tsHost) candidates.push(tsHost);
 
   // Fallback: system hostname (works for ssh transport or when Tailscale is down)
-  try {
-    const sysResult = Bun.spawnSync(["hostname"], { stdout: "pipe", stderr: "pipe" });
-    if (sysResult.exitCode === 0) {
-      const h = sysResult.stdout.toString().trim();
-      if (h) candidates.push(h);
-    }
-  } catch { /* ignore */ }
+  const sysResult = safeSyncOutput(["hostname"]);
+  if (sysResult.ok && sysResult.stdout) candidates.push(sysResult.stdout);
 
   for (const host of candidates) {
     const normalized = host.replace(/\.$/, "").toLowerCase();
@@ -162,12 +158,7 @@ export function heartbeatPublish(): boolean {
   mkdirSync(dir, { recursive: true });
 
   const magSession = process.env.LUDICS_MAG_SESSION ?? "ludics-mag";
-  let magRunning = false;
-  const tmuxResult = Bun.spawnSync(["tmux", "has-session", "-t", magSession], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (tmuxResult.exitCode === 0) magRunning = true;
+  const magRunning = safeSyncOutput(["tmux", "has-session", "-t", magSession]).ok;
 
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const epoch = Math.floor(Date.now() / 1000);

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
+import { safeSyncOutput } from "../spawn.ts";
 
 /** Returns true if value looks like a GitHub PR URL. */
 export function isPrUrl(value: string): boolean {
@@ -20,18 +21,12 @@ function parsePrUrl(prUrl: string): { repo: string; prNumber: string } | null {
 function paginatedGhApiCount(endpoint: string, jqFilter: string): number {
   const sep = endpoint.includes("?") ? "&" : "?";
   const fullEndpoint = `${endpoint}${sep}per_page=100`;
-  try {
-    const result = Bun.spawnSync(
-      ["gh", "api", "--paginate", fullEndpoint, "--jq", jqFilter],
-      { stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string> },
-    );
-    if (result.exitCode !== 0) return 0;
-    // --paginate + --jq outputs one number per page; sum them
-    return result.stdout.toString().trim().split("\n")
-      .reduce((sum, line) => sum + (parseInt(line, 10) || 0), 0);
-  } catch {
-    return 0;
-  }
+  const r = safeSyncOutput(
+    ["gh", "api", "--paginate", fullEndpoint, "--jq", jqFilter],
+  );
+  if (!r.ok) return 0;
+  // --paginate + --jq outputs one number per page; sum them
+  return r.stdout.split("\n").reduce((sum, line) => sum + (parseInt(line, 10) || 0), 0);
 }
 
 /** Returns the count of new comments/reviews on a PR since sinceEpoch (Unix seconds). */
@@ -62,16 +57,10 @@ export function isPrMerged(prUrl: string): boolean {
   const parsed = parsePrUrl(prUrl);
   if (!parsed) return false;
   const { repo, prNumber } = parsed;
-  try {
-    const result = Bun.spawnSync(
-      ["gh", "api", `repos/${repo}/pulls/${prNumber}`, "--jq", ".merged"],
-      { stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string> },
-    );
-    if (result.exitCode !== 0) return false;
-    return result.stdout.toString().trim() === "true";
-  } catch {
-    return false;
-  }
+  const r = safeSyncOutput(
+    ["gh", "api", `repos/${repo}/pulls/${prNumber}`, "--jq", ".merged"],
+  );
+  return r.ok && r.stdout === "true";
 }
 
 /**
@@ -108,34 +97,21 @@ export function validateAndFixPrFile(
 
   // Content looks like a PR description — try to create the PR automatically.
   // First ensure the branch is pushed (coder may have committed but not pushed).
-  try {
-    Bun.spawnSync(
-      ["git", "push", "-u", "origin", branch],
-      { cwd: worktreePath, stdout: "ignore", stderr: "ignore", env: process.env as Record<string, string> },
-    );
-  } catch { /* best-effort — gh pr create will fail if push fails */ }
+  safeSyncOutput(["git", "push", "-u", "origin", branch], { cwd: worktreePath });
+  // best-effort — gh pr create will fail if push fails
 
   const titleMatch = content.match(/^#\s+(.+)$/m);
   const title = titleMatch ? titleMatch[1]!.trim() : `feat: ${branch}`;
 
-  try {
-    const result = Bun.spawnSync(
-      ["gh", "pr", "create", "--title", title, "--body", content, "--head", branch],
-      {
-        cwd: worktreePath,
-        stdout: "pipe",
-        stderr: "pipe",
-        env: process.env as Record<string, string>,
-      },
-    );
-    if (result.exitCode !== 0) return null;
-    const url = result.stdout.toString().trim();
-    if (!isPrUrl(url)) return null;
-    writeFileSync(prFile, url + "\n");
-    return url;
-  } catch {
-    return null;
-  }
+  const result = safeSyncOutput(
+    ["gh", "pr", "create", "--title", title, "--body", content, "--head", branch],
+    { cwd: worktreePath },
+  );
+  if (!result.ok) return null;
+  const url = result.stdout;
+  if (!isPrUrl(url)) return null;
+  writeFileSync(prFile, url + "\n");
+  return url;
 }
 
 export interface PrVerification {
@@ -154,32 +130,26 @@ export function getPrVerification(prUrl: string): PrVerification {
   const parsed = parsePrUrl(prUrl);
   if (!parsed) return { exists: false, reason: "malformed PR URL" };
   const { repo, prNumber } = parsed;
-  try {
-    const result = Bun.spawnSync(
-      ["gh", "api", `repos/${repo}/pulls/${prNumber}`, "--jq",
-       "[.state, .merged, .mergeable_state] | @tsv"],
-      { stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
-    );
-    if (result.exitCode !== 0) {
-      const stderr = result.stderr.toString().trim();
-      const is404 = stderr.includes("404") || stderr.includes("Not Found");
-      return {
-        exists: false,
-        reason: is404 ? "PR not found on GitHub" : `GitHub API error: ${stderr.slice(0, 120)}`,
-      };
-    }
-    const parts = result.stdout.toString().trim().split("\t");
-    const [prState, mergedStr, mergeableState] = parts;
+  const result = safeSyncOutput(
+    ["gh", "api", `repos/${repo}/pulls/${prNumber}`, "--jq",
+     "[.state, .merged, .mergeable_state] | @tsv"],
+  );
+  if (!result.ok) {
+    const is404 = result.stderr.includes("404") || result.stderr.includes("Not Found");
     return {
-      exists: true,
-      state: prState as "open" | "closed",
-      merged: mergedStr === "true",
-      mergeableState: mergeableState === "null" ? null : (mergeableState ?? null),
-      reason: "ok",
+      exists: false,
+      reason: is404 ? "PR not found on GitHub" : `GitHub API error: ${result.stderr.slice(0, 120)}`,
     };
-  } catch (err) {
-    return { exists: false, reason: `gh CLI error: ${err instanceof Error ? err.message : String(err)}` };
   }
+  const parts = result.stdout.split("\t");
+  const [prState, mergedStr, mergeableState] = parts;
+  return {
+    exists: true,
+    state: prState as "open" | "closed",
+    merged: mergedStr === "true",
+    mergeableState: mergeableState === "null" ? null : (mergeableState ?? null),
+    reason: "ok",
+  };
 }
 
 /** Default focus prompt for the @codex review PR comment. */
@@ -199,13 +169,5 @@ export function postCodexReviewComment(
   const body = trimmed
     ? `@codex review ${trimmed}`
     : `@codex review ${DEFAULT_CODEX_REVIEW_PROMPT}`;
-  try {
-    const result = Bun.spawnSync(
-      ["gh", "pr", "comment", prUrl, "--body", body],
-      { stdout: "ignore", stderr: "ignore", env: process.env as Record<string, string> },
-    );
-    return result.exitCode === 0;
-  } catch {
-    return false;
-  }
+  return safeSyncOutput(["gh", "pr", "comment", prUrl, "--body", body]).ok;
 }

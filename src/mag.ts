@@ -44,6 +44,7 @@ import {
   tmuxSwitchClient,
   tmuxRunShell,
 } from "./adapters/tmux.ts";
+import { safeSyncOutput } from "./spawn.ts";
 
 const MAG_SESSION_NAME = process.env.LUDICS_MAG_SESSION ?? "ludics-mag";
 const MAG_DEFAULT_PORT = process.env.LUDICS_MAG_PORT ?? "7679";
@@ -98,7 +99,7 @@ function triggerSkill(session: string, cmd: string): boolean {
   const sent = tmuxSendKeys(session, cmd, true);
   if (!sent) return false;
   // Small delay before Enter
-  Bun.spawnSync(["sleep", "0.5"], { stdout: "pipe", stderr: "pipe" });
+  safeSyncOutput(["sleep", "0.5"]);
   return tmuxSendKeys(session, "Enter");
 }
 
@@ -311,23 +312,21 @@ function latestResultEpoch(): number | null {
 }
 
 function readPsCommand(pid: number): string {
-  const out = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "pipe" });
-  if (out.exitCode !== 0) return "";
-  return out.stdout.toString().trim();
+  const out = safeSyncOutput(["ps", "-p", String(pid), "-o", "command="]);
+  return out.ok ? out.stdout : "";
 }
 
 function readPsElapsedSeconds(pid: number): number | null {
-  const out = Bun.spawnSync(["ps", "-p", String(pid), "-o", "etimes="], { stdout: "pipe", stderr: "pipe" });
-  if (out.exitCode !== 0) return null;
-  const parsed = parseInt(out.stdout.toString().trim(), 10);
+  const out = safeSyncOutput(["ps", "-p", String(pid), "-o", "etimes="]);
+  if (!out.ok) return null;
+  const parsed = parseInt(out.stdout, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function childPids(parentPid: number): number[] {
-  const out = Bun.spawnSync(["pgrep", "-P", String(parentPid)], { stdout: "pipe", stderr: "pipe" });
-  if (out.exitCode !== 0) return [];
+  const out = safeSyncOutput(["pgrep", "-P", String(parentPid)]);
+  if (!out.ok) return [];
   return out.stdout
-    .toString()
     .split("\n")
     .map((s) => parseInt(s.trim(), 10))
     .filter((n) => Number.isFinite(n) && n > 0);
@@ -361,9 +360,9 @@ function restartClaudeInMag(reason: string): boolean {
   if (claudePid) {
     const descendants = childPids(claudePid);
     if (descendants.length > 0) {
-      Bun.spawnSync(["kill", "-9", ...descendants.map((pid) => String(pid))], { stdout: "pipe", stderr: "pipe" });
+      safeSyncOutput(["kill", "-9", ...descendants.map((pid) => String(pid))]);
     }
-    Bun.spawnSync(["kill", "-9", String(claudePid)], { stdout: "pipe", stderr: "pipe" });
+    safeSyncOutput(["kill", "-9", String(claudePid)]);
   }
 
   const launched = tmuxSendCommand(MAG_SESSION_NAME, claudeLaunchCommand());
@@ -621,22 +620,17 @@ function getTtydPort(): string {
 }
 
 function ensureTtyd(): void {
-  const hasTtyd = Bun.spawnSync(["which", "ttyd"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
-  if (!hasTtyd) {
+  const ttydWhich = safeSyncOutput(["which", "ttyd"]);
+  if (!ttydWhich.ok) {
     console.error("ludics: ttyd not installed; skipping web access");
     return;
   }
 
   // Check if already running
-  const pgrep = Bun.spawnSync(["pgrep", "-f", `ttyd.*${MAG_SESSION_NAME}`], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (pgrep.exitCode === 0) return;
+  if (safeSyncOutput(["pgrep", "-f", `ttyd.*${MAG_SESSION_NAME}`]).ok) return;
 
   const port = getTtydPort();
-  const ttydBin = Bun.spawnSync(["which", "ttyd"], { stdout: "pipe", stderr: "pipe" })
-    .stdout.toString().trim();
+  const ttydBin = ttydWhich.stdout;
 
   console.error(`ludics: Starting ttyd on port ${port}...`);
 
@@ -1432,11 +1426,8 @@ async function briefingPrecomputeContext(): Promise<void> {
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
   // Capture slots
-  let slotsOutput = "(unavailable)";
-  try {
-    const r = Bun.spawnSync(ludicsSelfCommand(["slots"]), { stdout: "pipe", stderr: "pipe" });
-    if (r.exitCode === 0) slotsOutput = r.stdout.toString().trim();
-  } catch { /* ignore */ }
+  const slotsR = safeSyncOutput(ludicsSelfCommand(["slots"]));
+  let slotsOutput = slotsR.ok ? slotsR.stdout : "(unavailable)";
 
   // Capture sessions
   let sessionsContent = "(no sessions report available)";
@@ -1446,32 +1437,20 @@ async function briefingPrecomputeContext(): Promise<void> {
   }
 
   // Flow ready
-  let flowReadyOutput = "(unavailable)";
-  try {
-    const r = Bun.spawnSync(ludicsSelfCommand(["flow", "ready"]), { stdout: "pipe", stderr: "pipe" });
-    if (r.exitCode === 0) flowReadyOutput = r.stdout.toString().trim();
-  } catch { /* ignore */ }
+  const flowReadyR = safeSyncOutput(ludicsSelfCommand(["flow", "ready"]));
+  let flowReadyOutput = flowReadyR.ok ? flowReadyR.stdout : "(unavailable)";
 
   // Flow critical
-  let flowCriticalOutput = "(unavailable)";
-  try {
-    const r = Bun.spawnSync(ludicsSelfCommand(["flow", "critical"]), { stdout: "pipe", stderr: "pipe" });
-    if (r.exitCode === 0) flowCriticalOutput = r.stdout.toString().trim();
-  } catch { /* ignore */ }
+  const flowCriticalR = safeSyncOutput(ludicsSelfCommand(["flow", "critical"]));
+  let flowCriticalOutput = flowCriticalR.ok ? flowCriticalR.stdout : "(unavailable)";
 
   // Tasks needing elaboration
-  let needsElabOutput = "None";
-  try {
-    const r = Bun.spawnSync(ludicsSelfCommand(["tasks", "needs-elaboration"]), { stdout: "pipe", stderr: "pipe" });
-    if (r.exitCode === 0 && r.stdout.toString().trim()) needsElabOutput = r.stdout.toString().trim();
-  } catch { /* ignore */ }
+  const needsElabR = safeSyncOutput(ludicsSelfCommand(["tasks", "needs-elaboration"]));
+  let needsElabOutput = needsElabR.ok && needsElabR.stdout ? needsElabR.stdout : "None";
 
   // Recent journal
-  let journalOutput = "(no journal entries)";
-  try {
-    const r = Bun.spawnSync(ludicsSelfCommand(["journal", "recent", "20"]), { stdout: "pipe", stderr: "pipe" });
-    if (r.exitCode === 0) journalOutput = r.stdout.toString().trim();
-  } catch { /* ignore */ }
+  const journalR = safeSyncOutput(ludicsSelfCommand(["journal", "recent", "20"]));
+  let journalOutput = journalR.ok ? journalR.stdout : "(no journal entries)";
 
   // Same-day check
   let samedayStatus = "new";
@@ -2145,17 +2124,16 @@ function maybeNagQuestions(): void {
     const slotNote = isSlotted ? ` (slot ${slotNum} blocked)` : "";
 
     // Send nag notification
-    try {
-      const result = Bun.spawnSync(
+    {
+      const result = safeSyncOutput(
         ["ludics", "notify", "outgoing", `Unanswered questions${slotNote} — ${id}: ${title}\n\n${questions}`],
-        { stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
       );
-      if (result.exitCode === 0) {
+      if (result.ok) {
         mkdirSync(nagDir, { recursive: true });
         writeFileSync(nagFile, String(Math.floor(Date.now() / 1000)));
         console.error(`ludics: nagged about unanswered questions for ${id}`);
       }
-    } catch { /* non-critical */ }
+    }
   }
 }
 
@@ -2784,7 +2762,7 @@ export async function magStart(args: string[]): Promise<void> {
   console.error(`ludics: Creating Mag tmux session '${MAG_SESSION_NAME}' in ${workingDir}`);
   tmuxNewSession(MAG_SESSION_NAME, workingDir);
   // Prevent accidental wheel-scroll copy-mode lockups in web terminals.
-  Bun.spawnSync(["tmux", "set-option", "-t", MAG_SESSION_NAME, "mouse", "off"], { stdout: "pipe", stderr: "pipe" });
+  safeSyncOutput(["tmux", "set-option", "-t", MAG_SESSION_NAME, "mouse", "off"]);
 
   magSignal("running", "session started");
   emitEvent({ event_type: "mag_start", source: "cli", scope: "mag", message: `Mag session ${MAG_SESSION_NAME} started` });
@@ -2797,10 +2775,10 @@ export async function magStart(args: string[]): Promise<void> {
   if (!envExported) {
     console.error("ludics: failed to export environment variables in Mag tmux session");
   }
-  Bun.spawnSync(["sleep", "0.5"], { stdout: "pipe", stderr: "pipe" });
+  safeSyncOutput(["sleep", "0.5"]);
 
   // Start Claude Code
-  const hasClaude = Bun.spawnSync(["which", "claude"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+  const hasClaude = safeSyncOutput(["which", "claude"]).ok;
   if (hasClaude) {
     writeStartupWatchdogEpoch();
     const claudeStarted = tmuxSendCommand(MAG_SESSION_NAME, claudeLaunchCommand());
@@ -2826,7 +2804,7 @@ export async function magStart(args: string[]): Promise<void> {
   await drainProgrammaticQueueHead();
   const skillCmd = await queuePopSkill();
   if (skillCmd) {
-    Bun.spawnSync(["sleep", "5"], { stdout: "pipe", stderr: "pipe" });
+    safeSyncOutput(["sleep", "5"]);
     console.error(`ludics: Mag fresh start, sending queued request: ${skillCmd}`);
     const sent = triggerSkill(MAG_SESSION_NAME, skillCmd);
     if (!sent) {
@@ -2847,16 +2825,10 @@ export function magStop(): void {
   magSignal("stopped", "session stopped by user");
 
   // Kill ttyd
-  const pgrep = Bun.spawnSync(["pgrep", "-f", `ttyd.*${MAG_SESSION_NAME}`], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (pgrep.exitCode === 0) {
-    const pids = pgrep.stdout.toString().trim();
-    if (pids) {
-      console.error("ludics: Stopping ttyd process(es)...");
-      Bun.spawnSync(["kill", ...pids.split("\n")], { stdout: "pipe", stderr: "pipe" });
-    }
+  const pgrep = safeSyncOutput(["pgrep", "-f", `ttyd.*${MAG_SESSION_NAME}`]);
+  if (pgrep.ok && pgrep.stdout) {
+    console.error("ludics: Stopping ttyd process(es)...");
+    safeSyncOutput(["kill", ...pgrep.stdout.split("\n")]);
   }
 
   console.error(`ludics: Stopping Mag tmux session '${MAG_SESSION_NAME}'...`);
@@ -2972,8 +2944,12 @@ export function magAttach(): void {
   if (process.env.TMUX) {
     if (tmuxSwitchClient(MAG_SESSION_NAME)) return;
   }
-  // exec replaces the process — Bun.spawnSync with inherit so user gets the terminal
-  Bun.spawnSync(["tmux", "attach", "-t", MAG_SESSION_NAME], { stdio: ["inherit", "inherit", "inherit"] });
+  // EXCEPTION: inherited-stdio terminal-attach — cannot use safeSyncOutput (output not piped).
+  try {
+    Bun.spawnSync(["tmux", "attach", "-t", MAG_SESSION_NAME], { stdio: ["inherit", "inherit", "inherit"] });
+  } catch {
+    // Ignore — tmux session may have ended before attach.
+  }
 }
 
 export function magLogs(lines: number = 100): void {
@@ -3015,18 +2991,17 @@ export function magDoctor(): void {
   // tmux
   const hasTmux = tmuxAvailable();
   if (hasTmux) {
-    const ver = Bun.spawnSync(["tmux", "-V"], { stdout: "pipe", stderr: "pipe" });
-    console.log(`tmux: ${ver.stdout.toString().trim()}`);
+    const ver = safeSyncOutput(["tmux", "-V"]);
+    console.log(`tmux: ${ver.stdout}`);
   } else {
     console.log("tmux: NOT FOUND (required)");
     allOk = false;
   }
 
   // claude
-  const hasClaude = Bun.spawnSync(["which", "claude"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
-  if (hasClaude) {
-    const path = Bun.spawnSync(["which", "claude"], { stdout: "pipe", stderr: "pipe" });
-    console.log(`claude: found at ${path.stdout.toString().trim()}`);
+  const claudeWhich = safeSyncOutput(["which", "claude"]);
+  if (claudeWhich.ok) {
+    console.log(`claude: found at ${claudeWhich.stdout}`);
   } else {
     console.log("claude: NOT FOUND");
     console.log("  Install: npm install -g @anthropic-ai/claude-code");
@@ -3034,8 +3009,7 @@ export function magDoctor(): void {
   }
 
   // jq
-  const hasJq = Bun.spawnSync(["which", "jq"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
-  if (hasJq) {
+  if (safeSyncOutput(["which", "jq"]).ok) {
     console.log("jq: found");
   } else {
     console.log("jq: NOT FOUND (required for queue processing)");
@@ -3043,10 +3017,9 @@ export function magDoctor(): void {
   }
 
   // ttyd
-  const hasTtyd = Bun.spawnSync(["which", "ttyd"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
-  if (hasTtyd) {
-    const path = Bun.spawnSync(["which", "ttyd"], { stdout: "pipe", stderr: "pipe" });
-    console.log(`ttyd: found at ${path.stdout.toString().trim()}`);
+  const ttydWhich = safeSyncOutput(["which", "ttyd"]);
+  if (ttydWhich.ok) {
+    console.log(`ttyd: found at ${ttydWhich.stdout}`);
   } else {
     console.log("ttyd: NOT FOUND (optional, for web access)");
     console.log("  Install: brew install ttyd (macOS) or apt install ttyd (Linux)");
@@ -3397,10 +3370,9 @@ export async function runMag(args: string[]): Promise<void> {
         break;
       }
       const force = args.includes("--force");
-      const refresh = Bun.spawnSync(ludicsSelfCommand(["sessions", "report"]), { stdout: "pipe", stderr: "pipe" });
-      if (refresh.exitCode !== 0) {
-        const stderr = refresh.stderr.toString().trim();
-        throw new Error(stderr ? `adopt-sessions: failed to refresh sessions: ${stderr}` : "adopt-sessions: failed to refresh sessions");
+      const refresh = safeSyncOutput(ludicsSelfCommand(["sessions", "report"]));
+      if (!refresh.ok) {
+        throw new Error(refresh.stderr ? `adopt-sessions: failed to refresh sessions: ${refresh.stderr}` : "adopt-sessions: failed to refresh sessions");
       }
 
       const sessionsFile = join(harnessDir(), "sessions.json");

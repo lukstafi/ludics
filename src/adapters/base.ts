@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { harnessDir } from "../config.ts";
+import { safeSyncOutput } from "../spawn.ts";
 import { PEER_SYNC_DIRNAME } from "../orchestration/peer-sync.ts";
 import type { AgentStatus } from "./types.ts";
 
@@ -161,13 +162,8 @@ export function getMainRepoFromWorktree(dir: string): string | null {
 
 /** Get the current git branch of a directory. */
 export function getGitBranch(dir: string): string | null {
-  const result = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (result.exitCode !== 0) return null;
-  const branch = result.stdout.toString().trim();
-  return branch || null;
+  const r = safeSyncOutput(["git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD"]);
+  return r.ok && r.stdout ? r.stdout : null;
 }
 
 // ---------------------------------------------------------------------------

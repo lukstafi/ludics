@@ -10,6 +10,7 @@ import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFront
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
 import { queueRequest } from "../queue.ts";
+import { safeSyncOutput } from "../spawn.ts";
 
 function yamlEscape(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -44,16 +45,15 @@ interface GhIssueState extends GhIssue {
 }
 
 async function fetchGitHubIssues(repo: string): Promise<GhIssue[]> {
-  const result = Bun.spawnSync(
+  const r = safeSyncOutput(
     ["gh", "issue", "list", "-R", repo, "--state", "open", "--limit", "200", "--json", "number,title,url,labels"],
-    { stdout: "pipe", stderr: "pipe" },
   );
-  if (result.exitCode !== 0) {
-    console.error(`ludics: failed to fetch issues from ${repo}: ${result.stderr.toString().trim()}`);
+  if (!r.ok) {
+    console.error(`ludics: failed to fetch issues from ${repo}: ${r.stderr}`);
     return [];
   }
   try {
-    return JSON.parse(result.stdout.toString()) as GhIssue[];
+    return JSON.parse(r.stdout) as GhIssue[];
   } catch {
     return [];
   }
@@ -311,25 +311,22 @@ function parseIssueNumberFromTaskId(taskId: string): number | null {
 }
 
 function fetchGitHubIssuesAll(repo: string): Map<number, GhIssueState> {
-  const result = Bun.spawnSync(
-    [
-      "gh", "issue", "list",
-      "-R", repo,
-      "--state", "all",
-      "--limit", "1000",
-      "--json", "number,title,url,labels,state,stateReason,closedAt,updatedAt,milestone",
-    ],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+  const result = safeSyncOutput([
+    "gh", "issue", "list",
+    "-R", repo,
+    "--state", "all",
+    "--limit", "1000",
+    "--json", "number,title,url,labels,state,stateReason,closedAt,updatedAt,milestone",
+  ]);
 
-  if (result.exitCode !== 0) {
-    console.error(`ludics: failed to fetch issue metadata from ${repo}: ${result.stderr.toString().trim()}`);
+  if (!result.ok) {
+    console.error(`ludics: failed to fetch issue metadata from ${repo}: ${result.stderr}`);
     return new Map<number, GhIssueState>();
   }
 
   let issues: GhIssueState[] = [];
   try {
-    issues = JSON.parse(result.stdout.toString()) as GhIssueState[];
+    issues = JSON.parse(result.stdout) as GhIssueState[];
   } catch {
     console.error(`ludics: failed to parse issue metadata from ${repo}`);
     return new Map<number, GhIssueState>();
@@ -648,13 +645,13 @@ export async function tasksUpdate(): Promise<void> {
       ghArgs.push("--reason", "not planned");
     }
 
-    const closeResult = Bun.spawnSync(ghArgs, { stdout: "pipe", stderr: "pipe" });
-    if (closeResult.exitCode === 0) {
+    const closeResult = safeSyncOutput(ghArgs);
+    if (closeResult.ok) {
       emitEvent({ event_type: "task_github_reverse_close", source: "sync", scope: "task", task: rec.id, status: rec.status, message: `closed ${repo}#${issueNumber} as ${rec.status}` });
       issuesClosed++;
       console.error(`ludics: closed ${repo}#${issueNumber} as ${rec.status}`);
     } else {
-      console.error(`ludics: failed to close ${repo}#${issueNumber}: ${closeResult.stderr.toString().trim()}`);
+      console.error(`ludics: failed to close ${repo}#${issueNumber}: ${closeResult.stderr}`);
     }
   }
 

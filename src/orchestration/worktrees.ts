@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, s
 import { basename, dirname, join, resolve } from "path";
 import { PEER_SYNC_DIRNAME, peerSyncPath } from "./peer-sync.ts";
 import { slugify } from "./util.ts";
+import { safeSyncOutput } from "../spawn.ts";
 
 export interface WorktreeSetup {
   rootWorktree: string;
@@ -11,31 +12,13 @@ export interface WorktreeSetup {
 }
 
 export function runGit(projectDir: string, args: string[]): string {
-  const result = Bun.spawnSync(["git", ...args], {
-    cwd: projectDir,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: process.env as Record<string, string>,
-  });
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr.toString().trim() || `git ${args.join(" ")} failed`);
-  }
-  return result.stdout.toString().trim();
+  const r = safeSyncOutput(["git", ...args], { cwd: projectDir });
+  if (!r.ok) throw new Error(r.stderr || `git ${args.join(" ")} failed`);
+  return r.stdout;
 }
 
 function maybeGit(projectDir: string, args: string[]): string {
-  try {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd: projectDir,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env as Record<string, string>,
-    });
-    if (result.exitCode !== 0) return "";
-    return result.stdout.toString().trim();
-  } catch {
-    return "";
-  }
+  return safeSyncOutput(["git", ...args], { cwd: projectDir }).stdout;
 }
 
 /** Paths that the orchestrator manages inside worktrees and must never be committed. */
@@ -95,15 +78,10 @@ function addWorktree(projectDir: string, path: string, branch: string, base: str
   if (existsSync(path)) {
     throw new Error(`refusing to reuse non-worktree path: ${path}`);
   }
-  const branchExists = Bun.spawnSync(
+  const branchExists = safeSyncOutput(
     ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-    {
-      cwd: projectDir,
-      stdout: "ignore",
-      stderr: "ignore",
-      env: process.env as Record<string, string>,
-    },
-  ).exitCode === 0;
+    { cwd: projectDir },
+  ).ok;
   if (branchExists) {
     runGit(projectDir, ["worktree", "add", path, branch]);
   } else {

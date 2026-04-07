@@ -4,6 +4,7 @@ import { loadConfigSync, harnessDir } from "./config.ts";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import YAML from "yaml";
+import { safeSyncOutput } from "./spawn.ts";
 
 export function networkMode(): string {
   // Check federation.transport (new config), then legacy network.mode
@@ -25,8 +26,8 @@ function hostnameFromConfig(): string {
 }
 
 function findTailscaleCli(): string | null {
-  const which = Bun.spawnSync(["which", "tailscale"], { stdout: "pipe", stderr: "pipe" });
-  if (which.exitCode === 0) return which.stdout.toString().trim();
+  const which = safeSyncOutput(["which", "tailscale"]);
+  if (which.ok) return which.stdout;
   // macOS: Tailscale app bundle CLI
   const macosPath = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
   try { if (Bun.file(macosPath).size > 0) return macosPath; } catch { /* not installed */ }
@@ -37,11 +38,11 @@ export function hostnameTailscale(): string | null {
   const tsCli = findTailscaleCli();
   if (!tsCli) return null;
 
-  try {
-    const result = Bun.spawnSync([tsCli, "status", "--json"], { stdout: "pipe", stderr: "pipe" });
-    if (result.exitCode !== 0) return null;
+  const result = safeSyncOutput([tsCli, "status", "--json"]);
+  if (!result.ok) return null;
 
-    const data = JSON.parse(result.stdout.toString()) as Record<string, unknown>;
+  try {
+    const data = JSON.parse(result.stdout) as Record<string, unknown>;
     const self = data.Self as Record<string, unknown> | undefined;
     if (!self) return null;
 
@@ -51,7 +52,7 @@ export function hostnameTailscale(): string | null {
     const hostName = self.HostName as string | undefined;
     if (hostName) return hostName;
   } catch {
-    // parse failure or command not found
+    // parse failure
   }
   return null;
 }
@@ -94,7 +95,7 @@ export function networkStatus(): void {
   console.log(`Mode: ${mode}`);
 
   if (mode === "tailscale") {
-    const hasTailscale = Bun.spawnSync(["which", "tailscale"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+    const hasTailscale = safeSyncOutput(["which", "tailscale"]).ok;
     if (hasTailscale) {
       console.log("Tailscale CLI: available");
       const tsHost = hostnameTailscale();

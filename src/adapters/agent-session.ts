@@ -6,6 +6,7 @@
 import { existsSync, readdirSync } from "fs";
 import { join, resolve } from "path";
 import { tmuxAvailable, tmuxHasSession, tmuxPaneCwd } from "./tmux.ts";
+import { safeSyncOutput } from "../spawn.ts";
 import { readStatusFile, formatAgentStatus, timeAgo, isGitWorktree, getMainRepoFromWorktree, getGitBranch, resolveProjectDir, latestMtime } from "./base.ts";
 import { PEER_SYNC_DIRNAME } from "../orchestration/peer-sync.ts";
 import { readAgentSessionFile } from "./peer-sync.ts";
@@ -212,16 +213,10 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
       || ctx.session
       || `slot-${ctx.slot}`;
 
-    const result = Bun.spawnSync([cfg.command, task, "--bare"], {
-      cwd: projectDir,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env as Record<string, string>,
-    });
+    const result = safeSyncOutput([cfg.command, task, "--bare"], { cwd: projectDir });
 
-    if (result.exitCode !== 0) {
-      const stderr = result.stderr.toString().trim();
-      throw new Error(`${cfg.command} start failed: ${stderr}`);
+    if (!result.ok) {
+      throw new Error(`${cfg.command} start failed: ${result.stderr}`);
     }
 
     const knownName = task.trim();
@@ -245,19 +240,13 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
       || ctx.session
       || `slot-${ctx.slot}`;
 
-    const result = Bun.spawnSync([cfg.command, "cleanup", task], {
-      cwd: projectDir,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env as Record<string, string>,
-    });
+    const result = safeSyncOutput([cfg.command, "cleanup", task], { cwd: projectDir });
 
-    if (result.exitCode !== 0) {
-      const stderr = result.stderr.toString().trim();
-      throw new Error(`${cfg.command} cleanup failed: ${stderr}`);
+    if (!result.ok) {
+      throw new Error(`${cfg.command} cleanup failed: ${result.stderr}`);
     }
 
-    return result.stdout.toString().trim() || `${cfg.command} session stopped for ${task}`;
+    return result.stdout || `${cfg.command} session stopped for ${task}`;
   }
 
   function lastActivity(ctx: AdapterContext): string | null {
