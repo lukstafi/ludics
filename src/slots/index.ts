@@ -44,6 +44,7 @@ function ensureSlotsFile(): string {
 }
 
 function loadBlocks(file: string): Map<number, string> {
+  // WORKER-SAFE: uses workerSlotsOverride when in worker context
   // Use controller-fetched content when available (worker context)
   if (workerSlotsOverride) {
     return parseSlotBlocks(workerSlotsOverride);
@@ -69,6 +70,7 @@ function writeSlotFileOrHttp(
   count: number,
   slotNum: number,
 ): void {
+  // WORKER-SAFE: POSTs to controller when in worker context
   if (isWorkerContext()) {
     // POST runtime sections to controller — don't write local harness
     const block = blocks.get(slotNum);
@@ -193,6 +195,7 @@ export function slotAssign(
   adapterArgs: string = "",
   machine: string = "",
 ): void {
+  // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
@@ -312,6 +315,7 @@ function clearDuoPeerLink(slotNum: number): void {
 }
 
 export function slotClear(slotNum: number, finalStatus: string = "ready"): void {
+  // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
@@ -388,6 +392,7 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
  * The dashboard will show "Interrupted" with a Resume button.
  */
 export function markSlotSetupFailed(slotNum: number, error: string): void {
+  // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
@@ -435,6 +440,7 @@ export function markSlotSetupFailed(slotNum: number, error: string): void {
  * e.g. from `ludics mag completed <proposal-name>`.
  */
 export function taskCompleteDirectly(taskId: string): void {
+  // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   const file = taskFilePath(taskId);
   if (!existsSync(file)) {
     console.error(`ludics: task file not found: ${taskId} (skipping task update)`);
@@ -495,6 +501,7 @@ export function slotPreempt(
   path: string = "",
   adapterArgs: string = "",
 ): void {
+  // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
@@ -545,6 +552,7 @@ export function slotPreempt(
 }
 
 export function slotRestore(slotNum: number): void {
+  // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   const count = slotsCount();
   validateRange(slotNum, count);
 
@@ -682,6 +690,17 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
   };
 }
 
+/**
+ * Start the adapter session for a slot.
+ *
+ * Remote dispatch behavior:
+ * - If the target machine is offline, throws an Error (caller must handle).
+ * - If the target machine is online, queues a start intent and returns normally;
+ *   success/failure is observed asynchronously via slot intent events / journal.
+ * - Callers wanting synchronous confirmation must poll intent state.
+ *
+ * @throws {Error} If the assigned remote machine is offline or has no federation config.
+ */
 export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
@@ -711,6 +730,10 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
     emitEvent({ event_type: "slot_start_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `start intent recorded for ${ctx.machine}` });
     return;
   }
+
+  // --- LOCAL EXECUTION ONLY (worker side or local slot) ---
+  // Code below this point runs only when this machine owns the slot.
+  // Remote-slot paths returned above after queuing an intent.
 
   if ((ctx.mode === "t3code" || ctx.mode === "tmux") && !ctx.adapterArgs.trim()) {
     // Auto-fill orchestration flags from task effort instead of throwing
@@ -790,6 +813,20 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
   emitEvent({ event_type: "slot_start", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
 }
 
+/**
+ * Stop the adapter session for a slot.
+ *
+ * Remote dispatch behavior:
+ * - If the target machine is offline, throws an Error (caller must handle).
+ * - Async intent path (worker target, non-force): returns normally after queuing
+ *   a stop intent; success is observed later via slot intent events / journal.
+ * - Force (`force=true`): skips remote contact entirely and clears controller-side
+ *   state (Session Started, duo peer link) locally — a controller-side override
+ *   for stuck remote slots.
+ * - Callers wanting synchronous confirmation must poll intent state.
+ *
+ * @throws {Error} If slot not found or has no Mode.
+ */
 export async function slotStop(slotNum: number, force: boolean = false, preserveState: boolean = false): Promise<void> {
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
@@ -821,6 +858,10 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
     await runAdapterAction("stop", ctx, { preserveState });
   }
 
+  // --- LOCAL EXECUTION ONLY (worker side or local slot) ---
+  // Code below this point runs only when this machine owns the slot.
+  // Remote-slot paths returned above after queuing an intent.
+
   // Hierarchical duo: clear duoPeerSlot on sibling AFTER stop succeeds,
   // so a failed stop doesn't prematurely detach the sibling.
   clearDuoPeerLink(slotNum);
@@ -836,9 +877,19 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
   emitEvent({ event_type: "slot_stop", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
 }
 
-/** Resume a crashed orchestrated t3code session from persisted state.
- *  Unlike slotStart(), does not reinitialize threads/worktrees/orchestration.
- *  Only supports orchestrated t3code sessions — single-thread sessions have no state to resume. */
+/**
+ * Resume a crashed orchestrated session from persisted state.
+ * Unlike slotStart(), does not reinitialize threads/worktrees/orchestration.
+ * Supports orchestrated t3code and tmux sessions.
+ *
+ * Remote dispatch behavior:
+ * - If the target machine is offline, throws an Error (caller must handle).
+ * - If the target machine is online, queues a resume intent and returns normally;
+ *   success/failure is observed asynchronously via slot intent events / journal.
+ * - Callers wanting synchronous confirmation must poll intent state.
+ *
+ * @throws {Error} If the assigned remote machine is offline or has no federation config.
+ */
 export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
@@ -868,6 +919,10 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     emitEvent({ event_type: "slot_resume_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `resume intent recorded for ${ctx.machine}` });
     return;
   }
+
+  // --- LOCAL EXECUTION ONLY (worker side or local slot) ---
+  // Code below this point runs only when this machine owns the slot.
+  // Remote-slot paths returned above after queuing an intent.
 
   if (ctx.mode !== "t3code" && ctx.mode !== "tmux") {
     throw new Error(`slot ${slotNum} has Mode=${ctx.mode} — resume only supports t3code and tmux`);
@@ -1151,6 +1206,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
 }
 
 export async function slotsRefresh(): Promise<void> {
+  // WORKER-SAFE: reads via workerSlotsOverride when in worker context
   const file = ensureSlotsFile();
   const blocks = loadBlocks(file);
   const count = slotsCount();
