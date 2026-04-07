@@ -271,7 +271,7 @@ export function slotAssign(
         updateFrontmatterField(oldTaskFile, "slot", "null");
         const oldContent = readFileSync(oldTaskFile, "utf-8");
         const oldStatus = oldContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
-        if (oldStatus === "in-progress") {
+        if (oldStatus === "in-progress" || oldStatus === "deferred") {
           updateFrontmatterField(oldTaskFile, "status", "ready");
         }
       }
@@ -417,7 +417,7 @@ export function markSlotSetupFailed(slotNum: number, error: string): void {
     if (existsSync(taskFile)) {
       const content = readFileSync(taskFile, "utf-8");
       const statusMatch = content.match(/^status:\s*(.+)$/m);
-      if (statusMatch && statusMatch[1]!.trim() === "in-progress") {
+      if (statusMatch && (statusMatch[1]!.trim() === "in-progress" || statusMatch[1]!.trim() === "deferred")) {
         taskUpdateFrontmatter(taskId, "status", "ready");
       }
     }

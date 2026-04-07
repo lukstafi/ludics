@@ -160,6 +160,7 @@ Commands:
   tasks duplicates             Find potential duplicate tasks
   tasks migrate-refs [--dry-run]
                                Migrate legacy task-<number> IDs to deterministic IDs and rewrite references
+  tasks migrate-deferred       Migrate legacy deferred_launch/approved fields to status: deferred
 
   flow ready                   Priority-sorted ready tasks
   flow blocked                 What's blocked and why

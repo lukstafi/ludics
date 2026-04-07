@@ -390,7 +390,7 @@ export function startDashboardServer(
         }
       }
 
-      // API: approve a deferred-launch task (clear deferred_launch, set approved=true)
+      // API: approve a deferred task (set status: ready)
       if (pathname === "/api/deferred-approve") {
         const taskParam = url.searchParams.get("task");
         if (!taskParam || !TASK_ID_RE.test(taskParam)) {
@@ -400,8 +400,15 @@ export function startDashboardServer(
           const resolved = resolveTaskFile(taskParam);
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
-          removeFrontmatterField(taskFile, "deferred_launch");
-          addFrontmatterField(taskFile, "approved", "true");
+          const approveContent = readFileSync(taskFile, "utf-8");
+          const approveStatus = approveContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+          if (approveStatus !== "deferred") {
+            return new Response(
+              JSON.stringify({ error: `task is ${approveStatus}, not deferred` }),
+              { status: 409, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          updateFrontmatterField(taskFile, "status", "ready");
           lastGenerated = 0;
           return new Response(JSON.stringify({ status: "approved" }), {
             headers: { "Content-Type": "application/json" },
@@ -411,7 +418,7 @@ export function startDashboardServer(
         }
       }
 
-      // API: abandon a deferred-launch task (clear slot if assigned, set abandoned)
+      // API: abandon a deferred task (clear slot if assigned, set abandoned)
       if (pathname === "/api/deferred-abandon") {
         const taskParam = url.searchParams.get("task");
         if (!taskParam || !TASK_ID_RE.test(taskParam)) {
@@ -436,8 +443,6 @@ export function startDashboardServer(
             updateFrontmatterField(taskFile, "status", "abandoned");
             updateFrontmatterField(taskFile, "completed", new Date().toISOString().slice(0, 19) + "Z");
           }
-          removeFrontmatterField(taskFile, "deferred_launch");
-          removeFrontmatterField(taskFile, "approved");
           lastGenerated = 0;
           return new Response(JSON.stringify({ status: "abandoned" }), {
             headers: { "Content-Type": "application/json" },

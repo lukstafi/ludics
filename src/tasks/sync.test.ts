@@ -186,19 +186,19 @@ describe("tasksReconcileBlockedStatus", () => {
     expect(readFileSync(join(tasksDir, "task-should-unblock.md"), "utf-8")).toContain("status: ready");
   });
 
-  test("skips terminal statuses (done, abandoned, merged, in-progress, preempt-queued, preempted)", () => {
+  test("skips terminal and active statuses (done, abandoned, merged, in-progress, deferred, preempt-queued, preempted)", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
 
-    const terminalStatuses = ["done", "abandoned", "merged", "in-progress", "preempt-queued", "preempted"];
-    for (const s of terminalStatuses) {
+    const skippedStatuses = ["done", "abandoned", "merged", "in-progress", "deferred", "preempt-queued", "preempted"];
+    for (const s of skippedStatuses) {
       writeTaskWithBlockedBy(tasksDir, `task-${s}`, s, ["task-dep"]);
     }
 
     tasksReconcileBlockedStatus(tasksDir);
 
-    for (const s of terminalStatuses) {
+    for (const s of skippedStatuses) {
       expect(readFileSync(join(tasksDir, `task-${s}.md`), "utf-8")).toContain(`status: ${s}`);
     }
   });
