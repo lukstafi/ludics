@@ -1151,8 +1151,14 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
           const tid = approveMatch[1]!;
           const tf = join(harnessDir(), "tasks", `${tid}.md`);
           if (existsSync(tf)) {
-            updateFrontmatterField(tf, "status", "ready");
-            console.error(`ludics: approved deferred task ${tid} for auto-start`);
+            const tfContent = readFileSync(tf, "utf-8");
+            const tfStatus = tfContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+            if (tfStatus === "deferred") {
+              updateFrontmatterField(tf, "status", "ready");
+              console.error(`ludics: approved deferred task ${tid} for auto-start`);
+            } else {
+              console.error(`ludics: ignoring approve for ${tid} — status is ${tfStatus}, not deferred`);
+            }
           }
         }
         return null;

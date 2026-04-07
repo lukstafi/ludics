@@ -400,6 +400,14 @@ export function startDashboardServer(
           const resolved = resolveTaskFile(taskParam);
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
+          const approveContent = readFileSync(taskFile, "utf-8");
+          const approveStatus = approveContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+          if (approveStatus !== "deferred") {
+            return new Response(
+              JSON.stringify({ error: `task is ${approveStatus}, not deferred` }),
+              { status: 409, headers: { "Content-Type": "application/json" } },
+            );
+          }
           updateFrontmatterField(taskFile, "status", "ready");
           lastGenerated = 0;
           return new Response(JSON.stringify({ status: "approved" }), {
