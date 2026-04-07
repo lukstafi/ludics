@@ -267,9 +267,10 @@ function collectProjectsWithQueuedPreemption(tasksDir: string, queueContent: str
   }
 
   for (const line of queueContent.split("\n")) {
-    if (!line.includes('"action":"preempt"')) continue;
+    if (!line) continue;
     try {
       const req = JSON.parse(line) as Record<string, unknown>;
+      if (req.action !== "preempt") continue;
       const qTask = String(req.task ?? "");
       const project = readTaskProjectName(tasksDir, qTask);
       if (project && priProjects.includes(project)) {
