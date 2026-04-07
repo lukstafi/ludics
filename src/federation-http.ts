@@ -315,6 +315,32 @@ export async function federationReportWorkerSignal(
 
 const SIGNAL_MAX_AGE_SECONDS = 1800; // 30 minutes
 
+/**
+ * Pure validation of a worker signal against current slot state.
+ * Returns `{ valid: true }` on success, or `{ valid: false; reason; httpStatus }` on failure.
+ * Pass `nowEpoch` explicitly in tests for deterministic TTL checks.
+ */
+export function validateSignal(
+  signal: { taskId: string; machine: string; epoch: number },
+  slotTaskId: string,
+  slotMachine: string,
+  nowEpoch: number = Math.floor(Date.now() / 1000),
+): { valid: true } | { valid: false; reason: string; httpStatus: number } {
+  if (signal.taskId !== slotTaskId) {
+    return { valid: false, reason: "stale-task", httpStatus: 409 };
+  }
+  if (!signal.machine) {
+    return { valid: false, reason: "missing-machine", httpStatus: 400 };
+  }
+  if (slotMachine && slotMachine !== "null" && slotMachine !== signal.machine) {
+    return { valid: false, reason: "machine-mismatch", httpStatus: 409 };
+  }
+  if (signal.epoch > 0 && (nowEpoch - signal.epoch) > SIGNAL_MAX_AGE_SECONDS) {
+    return { valid: false, reason: "expired", httpStatus: 409 };
+  }
+  return { valid: true };
+}
+
 /** Main federation request dispatcher — called from dashboard-server.ts. */
 export async function handleFederationRequest(req: Request, pathname: string): Promise<Response> {
   const authError = checkAuth(req);
@@ -417,19 +443,15 @@ function handleSignal(body: Record<string, unknown>): Response {
   }
 
   const currentTaskId = getTask(block).trim();
-  if (currentTaskId !== taskId) {
-    return jsonResponse(409, { error: `slot ${slot} task is ${currentTaskId}, signal is for ${taskId}` });
-  }
-
   const currentMachine = getMachine(block).trim();
-  if (currentMachine && currentMachine !== "null" && currentMachine !== machine) {
-    return jsonResponse(409, { error: `slot ${slot} machine is ${currentMachine}, signal from ${machine}` });
-  }
 
-  // Check signal age
-  const now = Math.floor(Date.now() / 1000);
-  if (epoch > 0 && (now - epoch) > SIGNAL_MAX_AGE_SECONDS) {
-    return jsonResponse(409, { error: `signal expired (age: ${now - epoch}s)` });
+  const validation = validateSignal(
+    { taskId, machine, epoch },
+    currentTaskId,
+    currentMachine,
+  );
+  if (!validation.valid) {
+    return jsonResponse(validation.httpStatus, { error: `signal rejected: ${validation.reason}` });
   }
 
   // Also clear any pending intent for this slot
