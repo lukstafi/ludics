@@ -311,7 +311,10 @@ export function allAgentsDone(state: OrchestrationState): boolean {
 }
 
 function hasAnyPr(state: OrchestrationState): boolean {
-  return state.agents.some((agent) => !!state.agentStates[agent.name]?.prUrl);
+  return state.agents.some((agent) => {
+    const url = state.agentStates[agent.name]?.prUrl;
+    return typeof url === "string" && url.startsWith("https://");
+  });
 }
 
 function isMerged(state: OrchestrationState): boolean {
