@@ -1,5 +1,7 @@
 # Pair Pushback (Reviewer)
 
+{{PROPOSAL_INSTRUCTION}}
+
 Review the task critically and suggest improvements before coding continues.
 
 Write pushback notes to `{{PLAN_FILE}}`, then:

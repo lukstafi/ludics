@@ -661,6 +661,82 @@ describe("skills", () => {
     expect(withoutProposal).not.toContain("Step 0");
   });
 
+  test("pair-reviewer-gather template includes proposal instruction when PROPOSAL_INSTRUCTION is set", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-gather.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+      PROPOSAL_INSTRUCTION: "**Step 0**: Read the proposal file at `docs/proposals/my-feature.md` in the project repo before starting. The proposal contains the authoritative acceptance criteria and full scope.",
+    });
+    expect(withProposal).toContain("Step 0");
+    expect(withProposal).toContain("docs/proposals/my-feature.md");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+    });
+    expect(withoutProposal).not.toContain("Step 0");
+  });
+
+  test("pair-coder-clarify template includes proposal instruction when PROPOSAL_INSTRUCTION is set", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-clarify.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+      PROPOSAL_INSTRUCTION: "**Step 0**: Read the proposal file at `docs/proposals/my-feature.md` in the project repo before starting. The proposal contains the authoritative acceptance criteria and full scope.",
+    });
+    expect(withProposal).toContain("Step 0");
+    expect(withProposal).toContain("docs/proposals/my-feature.md");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+    });
+    expect(withoutProposal).not.toContain("Step 0");
+  });
+
+  test("pair-reviewer-clarify template includes proposal instruction when PROPOSAL_INSTRUCTION is set", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-clarify.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+      PROPOSAL_INSTRUCTION: "**Step 0**: Read the proposal file at `docs/proposals/my-feature.md` in the project repo before starting. The proposal contains the authoritative acceptance criteria and full scope.",
+    });
+    expect(withProposal).toContain("Step 0");
+    expect(withProposal).toContain("docs/proposals/my-feature.md");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+    });
+    expect(withoutProposal).not.toContain("Step 0");
+  });
+
+  test("pair-reviewer-pushback template includes proposal instruction when PROPOSAL_INSTRUCTION is set", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-pushback.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+      PROPOSAL_INSTRUCTION: "**Step 0**: Read the proposal file at `docs/proposals/my-feature.md` in the project repo before starting. The proposal contains the authoritative acceptance criteria and full scope.",
+    });
+    expect(withProposal).toContain("Step 0");
+    expect(withProposal).toContain("docs/proposals/my-feature.md");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+    });
+    expect(withoutProposal).not.toContain("Step 0");
+  });
+
   test("substituteTemplate renders pr-conflict-resolve.md correctly", () => {
     const ctx = baseCtx();
     ctx["PR_FILE"] = "/tmp/peer-sync/coder.pr";
