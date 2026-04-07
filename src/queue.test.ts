@@ -41,6 +41,32 @@ describe("queueHasPendingFeedbackDigest", () => {
   });
 });
 
+describe("queueHasPendingAction", () => {
+  test("returns false on empty queue", async () => {
+    const { queueHasPendingAction } = await loadQueue();
+    expect(queueHasPendingAction("adopt-sessions")).toBe(false);
+  });
+
+  test("matches queued action", async () => {
+    const { queueRequest, queueHasPendingAction } = await loadQueue();
+    queueRequest({ action: "adopt-sessions" });
+    expect(queueHasPendingAction("adopt-sessions")).toBe(true);
+  });
+
+  test("does not match different action", async () => {
+    const { queueRequest, queueHasPendingAction } = await loadQueue();
+    queueRequest({ action: "briefing" });
+    expect(queueHasPendingAction("adopt-sessions")).toBe(false);
+  });
+
+  test("returns false after action is popped", async () => {
+    const { queueRequest, queuePopOne, queueHasPendingAction } = await loadQueue();
+    queueRequest({ action: "adopt-sessions" });
+    queuePopOne();
+    expect(queueHasPendingAction("adopt-sessions")).toBe(false);
+  });
+});
+
 describe("queuePopOne", () => {
   test("returns null for missing queue file", async () => {
     const { queuePopOne } = await loadQueue();
