@@ -78,6 +78,44 @@ describe("extractCleanPaneOutput", () => {
     expect(result).not.toBeNull();
     expect(result).not.toContain("$ npm test");
   });
+
+  test("extracts codex output using • marker", () => {
+    const raw = [
+      "some old output",
+      "• Reading file src/index.ts",
+      "  Line 1 of output",
+      "  Line 2 of output",
+      "  Line 3 of output",
+      "  Line 4 of output",
+      "  Line 5 of output",
+      "$ codex --help",
+    ].join("\n");
+
+    const result = extractCleanPaneOutput(raw, "codex");
+    expect(result).not.toBeNull();
+    expect(result).toContain("• Reading file");
+    expect(result).toContain("Line 5 of output");
+    expect(result).not.toContain("$ codex");
+    expect(result).not.toContain("some old output");
+  });
+
+  test("codex provider does not match ⏺ marker", () => {
+    const raw = [
+      "⏺ Claude Code output",
+      "  Line 1",
+      "  Line 2",
+      "  Line 3",
+      "  Line 4",
+      "  Line 5",
+      "❯ ",
+    ].join("\n");
+
+    // With codex provider, ⏺ is not recognized as a marker so startIdx stays 0
+    const result = extractCleanPaneOutput(raw, "codex");
+    // Still captures from beginning since no • marker found
+    expect(result).not.toBeNull();
+    expect(result).toContain("⏺ Claude Code output");
+  });
 });
 
 describe("readTmuxCaptures", () => {

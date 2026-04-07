@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "path";
 import { tmuxCapture } from "../adapters/tmux.ts";
 import { tmuxSessionName } from "../adapters/tmux-adapter.ts";
+import type { T3ProviderKind } from "../t3code/types.ts";
 import { agentParticipatesInPhase } from "./phases.ts";
 import type { OrchestrationState } from "./state.ts";
 
@@ -57,18 +58,28 @@ export function parseCaptureHeader(raw: string): { header: CaptureHeader; conten
   };
 }
 
+/** Output-entry marker per provider. */
+const ENTRY_MARKERS: Record<T3ProviderKind, string> = {
+  "claude-code": "⏺",
+  "codex": "• ",
+};
+
 /**
  * Extract clean structured output from raw tmux pane text.
  * Reuses the publishTerminalState pattern from mag.ts:
  * find last output marker, trim to prompt, strip separator lines.
+ *
+ * @param provider — selects the entry marker: ⏺ for claude-code, • for codex.
+ *                    Defaults to "claude-code".
  */
-export function extractCleanPaneOutput(raw: string): string | null {
+export function extractCleanPaneOutput(raw: string, provider: T3ProviderKind = "claude-code"): string | null {
   const lines = raw.split("\n");
+  const marker = ENTRY_MARKERS[provider];
 
-  // Find last ⏺ line (Claude Code output marker)
+  // Find last entry-marker line (provider-specific)
   let startIdx = 0;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i]!.includes("⏺")) {
+    if (lines[i]!.includes(marker)) {
       startIdx = i;
       break;
     }
@@ -145,7 +156,7 @@ export function captureTmuxAgentOutputs(state: OrchestrationState): void {
     const raw = tmuxCapture(session, 200);
     if (!raw) continue;
 
-    const cleaned = extractCleanPaneOutput(raw);
+    const cleaned = extractCleanPaneOutput(raw, agent.provider);
     if (!cleaned) continue;
 
     const hash = hashContent(cleaned);
