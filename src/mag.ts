@@ -1914,7 +1914,7 @@ function markAutoProposalQueued(taskId: string): void {
 }
 
 /** Auto-start slots that have proposals but no active session. */
-function maybeAutoStartSlots(): void {
+async function maybeAutoStartSlots(): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
 
   const sFile = slotsFilePath();
@@ -1963,7 +1963,7 @@ function maybeAutoStartSlots(): void {
 
     // Task has a proposal but no session — auto-start
     try {
-      slotStart(slotNum);
+      await slotStart(slotNum);
       emitEvent({ event_type: "slot_auto_start", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)` });
       console.error(`ludics: auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)`);
     } catch (err) {
@@ -2705,7 +2705,7 @@ export async function magStart(args: string[]): Promise<void> {
     if (existsSync(join(harnessDir(), "mag", "paused"))) return;
 
     // Auto-start slots that have proposals but no active session
-    maybeAutoStartSlots();
+    await maybeAutoStartSlots();
 
     // Detect stuck slots (assigned but no proposal/session) and re-queue
     maybeUnstickAssignedSlots();
