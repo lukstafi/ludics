@@ -148,6 +148,40 @@ describe("queuePopAll", () => {
   });
 });
 
+describe("writeResult", () => {
+  test("round-trips output containing quotes, backslashes, and newlines", async () => {
+    const { writeResult } = await loadQueue();
+    const resultsDir = join(tmpDir, "mag", "results");
+
+    // Create an output file with tricky content
+    const outputContent = 'line1\nline2\twith\ttabs\n"quoted" and \\backslashes\\ and emoji 🎉';
+    const outputFile = join(tmpDir, "output.txt");
+    writeFileSync(outputFile, outputContent);
+
+    writeResult("req-test-1", "ok", outputFile);
+
+    const resultJson = readFileSync(join(resultsDir, "req-test-1.json"), "utf-8");
+    const parsed = JSON.parse(resultJson);
+    expect(parsed.id).toBe("req-test-1");
+    expect(parsed.status).toBe("ok");
+    expect(parsed.output).toBe(outputContent);
+    expect(typeof parsed.timestamp).toBe("string");
+  });
+
+  test("omits output field when no outputFile is provided", async () => {
+    const { writeResult } = await loadQueue();
+    const resultsDir = join(tmpDir, "mag", "results");
+
+    writeResult("req-test-2", "error");
+
+    const resultJson = readFileSync(join(resultsDir, "req-test-2.json"), "utf-8");
+    const parsed = JSON.parse(resultJson);
+    expect(parsed.id).toBe("req-test-2");
+    expect(parsed.status).toBe("error");
+    expect(parsed.output).toBeUndefined();
+  });
+});
+
 describe("queueRequest includes extra fields", () => {
   test("feedback-digest with repo field is parseable", async () => {
     const { queueRequest } = await loadQueue();

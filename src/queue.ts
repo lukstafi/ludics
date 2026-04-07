@@ -182,11 +182,10 @@ export function writeResult(requestId: string, status: string, outputFile?: stri
 
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
+  const result: Record<string, unknown> = { id: requestId, status, timestamp };
   if (outputFile && existsSync(outputFile)) {
-    const content = JSON.stringify(readFileSync(outputFile, "utf-8"));
-    writeFileSync(resultFile, `{"id":"${requestId}","status":"${status}","timestamp":"${timestamp}","output":${content}}\n`);
-  } else {
-    writeFileSync(resultFile, `{"id":"${requestId}","status":"${status}","timestamp":"${timestamp}"}\n`);
+    result.output = readFileSync(outputFile, "utf-8");
   }
+  writeFileSync(resultFile, JSON.stringify(result) + "\n");
   emitEvent({ event_type: "queue_result", source: "mag", scope: "queue", status, message: requestId });
 }

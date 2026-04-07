@@ -123,6 +123,41 @@ describe("tasksQueuePreemptions", () => {
     expect(readFileSync(join(tasksDir, "task-beta-ready.md"), "utf-8")).toContain("status: preempt-queued");
   });
 
+  test("skips malformed and non-preempt queue lines when scanning for existing preemptions", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(join(harness, "mag"), { recursive: true });
+
+    // alpha already has a queued preemption (valid line), beta does not
+    writeTask(tasksDir, "task-alpha-active", "alpha", "in-progress");
+    writeTask(tasksDir, "task-beta-active", "beta", "in-progress");
+    writeTask(tasksDir, "task-alpha-ready", "alpha", "ready");
+    writeTask(tasksDir, "task-beta-ready", "beta", "ready");
+
+    const slots = new Map<number, string>();
+    slots.set(1, emptyBlock(1).replace("**Process:** (empty)", "**Process:** alpha active").replace("**Task:** null", "**Task:** task-alpha-active"));
+    slots.set(2, emptyBlock(2).replace("**Process:** (empty)", "**Process:** beta active").replace("**Task:** null", "**Task:** task-beta-active"));
+    writeSlotFile(join(harness, "slots.md"), slots, 2);
+
+    // Pre-seed queue with: malformed line, non-preempt action, and a valid preempt for alpha
+    const queueFile = join(harness, "mag", "queue.jsonl");
+    const lines = [
+      "not valid json at all",
+      JSON.stringify({ id: "req-1", action: "elaborate", task: "task-alpha-ready", timestamp: "2026-04-01T00:00:00Z" }),
+      JSON.stringify({ id: "req-2", action: "preempt", task: "task-alpha-ready", autonomy: "auto", timestamp: "2026-04-01T00:00:00Z" }),
+    ];
+    writeFileSync(queueFile, lines.join("\n") + "\n");
+
+    tasksQueuePreemptions();
+
+    // Only beta-ready should be newly queued; alpha-ready is already queued
+    const allLines = readFileSync(queueFile, "utf-8").trim().split("\n").filter(Boolean);
+    const newEntries = allLines.slice(lines.length); // entries added by tasksQueuePreemptions
+    const newTasks = newEntries.map((l) => (JSON.parse(l) as { task?: string }).task ?? "");
+    expect(newTasks).toEqual(["task-beta-ready"]);
+  });
+
   test("keeps the limit per project when one project already has a stashed preemption", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
