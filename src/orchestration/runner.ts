@@ -515,6 +515,19 @@ async function enterPhase(state: OrchestrationState, transport: OrchestrationTra
     state.prCommentsLastCheckAt = state.phaseStartedAt - 600;
     state.prCommentsQuietSince = undefined;
     if (!state.prMergeableStates) state.prMergeableStates = {};  // defensive only; real reset is in applyPhaseSideEffects
+    // Clear stale lifecycle/fingerprint from the preceding phase so that
+    // isAgentDone accepts the previous phase's done status.  Without this,
+    // isStatusFresh permanently rejects the status as stale (fingerprint
+    // unchanged since prior dispatch) and checkAndRedispatchPrComments
+    // never progresses past the allDone gate.
+    for (const agent of state.agents) {
+      if (!agentParticipatesInPhase(state, agent)) continue;
+      const rt = state.agentStates[agent.name];
+      if (rt) {
+        rt.turnLifecycle = null;
+        rt.dispatchStatusFingerprint = undefined;
+      }
+    }
     state.phaseDispatched = true;
     state.currentPhaseToken = undefined;
     return;
@@ -1526,6 +1539,7 @@ export function skipToPhase(
     runtime.statusEpoch = nowEpoch();
     runtime.statusMessage = `skip to ${phase}`;
     runtime.turnLifecycle = null;
+    runtime.dispatchStatusFingerprint = undefined;
   }
 
   persistState(state, harnessDir);
