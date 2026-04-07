@@ -41,6 +41,8 @@ const HUNG_DISPATCH_THRESHOLD_S = 90;
 const HUNG_IDLE_RUNNING_THRESHOLD_S = 180;
 /** Minimum seconds between nudge attempts for hung agents. */
 const HUNG_NUDGE_COOLDOWN_S = 90;
+/** Seconds between ttyd liveness checks in the poll loop. */
+const TTYD_HEALTH_CHECK_INTERVAL_S = 30;
 
 // --- Verification gate constants and types ---
 type VerificationDecision = "advance" | "redispatch" | "hold" | "skip";
@@ -416,6 +418,55 @@ export async function detectAndNudgeHungAgents(
       // Do NOT increment nudgeAttempts on failure — the next poll cycle will retry.
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// ttyd health check — restart dead ttyd processes so dashboard terminals stay live
+// ---------------------------------------------------------------------------
+
+let lastTtydCheckAt = 0;
+
+async function ensureTtydAlive(state: OrchestrationState): Promise<void> {
+  if (state.backend !== "tmux") return;
+  const now = nowEpoch();
+  if (now - lastTtydCheckAt < TTYD_HEALTH_CHECK_INTERVAL_S) return;
+  lastTtydCheckAt = now;
+
+  const { readTmuxSlotState, writeTmuxSlotState, startTtyd, agentPortRole } =
+    await import("../adapters/tmux-adapter.ts");
+  const dir = harnessDir();
+  const tmuxState = readTmuxSlotState(state.slot, dir);
+  if (!tmuxState) return;
+
+  let changed = false;
+  for (let i = 0; i < state.agents.length; i++) {
+    const agent = state.agents[i]!;
+    const pid = tmuxState.ttydPids[agent.name];
+
+    // Check if PID is alive
+    let alive = false;
+    if (pid) {
+      try { process.kill(pid, 0); alive = true; } catch { /* dead */ }
+    }
+    if (alive) continue;
+
+    // Dead or missing — restart
+    const role = agentPortRole(agent, i);
+    const newPid = startTtyd(state.slot, agent.name, role, state.taskId);
+    tmuxState.ttydPids[agent.name] = newPid;
+    changed = true;
+    emitEvent({
+      event_type: "ttyd_restarted",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      agent: agent.name,
+      pid: newPid,
+      message: `${agent.name}: ttyd died (was pid ${pid ?? "none"}), restarted as pid ${newPid}`,
+    });
+  }
+  if (changed) writeTmuxSlotState(tmuxState, dir);
 }
 
 function markActiveAgents(state: OrchestrationState): void {
@@ -1015,6 +1066,9 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
 
       // Detect hung agents (static terminal) and send nudges / force-settle.
       await detectAndNudgeHungAgents(state, transport);
+
+      // Restart dead ttyd processes so dashboard terminals stay live.
+      await ensureTtydAlive(state);
 
       // Validate pr files when coder finishes pr-create (auto-create PR from markdown if needed).
       if (state.phase === "pr-create") {

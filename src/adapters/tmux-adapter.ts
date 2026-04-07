@@ -631,5 +631,5 @@ async function lastActivity(ctx: AdapterContext): Promise<string | null> {
 
 const adapter = { readState, start, stop, lastActivity } satisfies Adapter;
 
-export { readState, start, stop, lastActivity, readTmuxSlotState, writeTmuxSlotState, removeTmuxSlotState };
+export { readState, start, stop, lastActivity, readTmuxSlotState, writeTmuxSlotState, removeTmuxSlotState, agentPortRole };
 export default adapter;
