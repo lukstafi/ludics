@@ -1129,6 +1129,13 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       await briefingPrecomputeContext();
     } else if (action === "adopt-sessions") {
       adoptSessionsPrecomputeContext();
+    } else if (action === "health-check") {
+      try {
+        const { runAllTestHealth } = await import("./health.ts");
+        runAllTestHealth();
+      } catch (err) {
+        console.error("ludics: test health check failed:", err);
+      }
     }
   }
 

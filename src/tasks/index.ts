@@ -69,7 +69,7 @@ function tasksShow(taskId: string): void {
   throw new Error(`task not found: ${taskId}`);
 }
 
-function tasksCreate(
+export function tasksCreate(
   title: string,
   project: string = "personal",
   priority: string = "B",
