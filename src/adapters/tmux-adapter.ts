@@ -7,7 +7,7 @@ import { getMainRepoFromWorktree, latestMtime, resolveProjectDir, slotSessionNam
 import { safeSyncOutput } from "../spawn.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { Adapter, AdapterContext } from "./types.ts";
-import { loadConfigSync } from "../config.ts";
+import { findProjectConfig, loadConfigSync } from "../config.ts";
 import { setsidWrap } from "../orchestration/util.ts";
 import {
   tmuxHasSession,
@@ -466,18 +466,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
     stagingRepo: (() => {
       const cfg = loadConfigSync();
-      const proj = cfg.projects?.find((p) => {
-        if (p.path) {
-          const expanded = (String(p.path).startsWith("~/")
-            ? join(process.env.HOME ?? "~", String(p.path).slice(2))
-            : String(p.path)).replace(/\/+$/, "");
-          if (projectDir === expanded || projectDir.startsWith(expanded + "/")) return true;
-        }
-        const dir = basename(projectDir).toLowerCase();
-        const repoTail = String(p.repo ?? "").split("/").pop()?.toLowerCase() ?? "";
-        return dir === String(p.name ?? "").toLowerCase() || dir === repoTail;
-      });
-      return proj?.staging_repo || undefined;
+      return findProjectConfig(projectDir, cfg)?.staging_repo || undefined;
     })(),
   };
   persistState(state, ctx.harnessDir);
