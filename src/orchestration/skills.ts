@@ -80,7 +80,7 @@ function taskSpecBriefText(state: OrchestrationState): string {
   const content = readFileIfExists(path);
   const proposalValue = (content ? readFrontmatterField(content, "proposal") : null) ?? "";
   const proposalRef =
-    proposalValue && proposalValue !== "inline"
+    proposalValue && proposalValue !== "inline" // deprecated sentinel — kept for backward compat
       ? proposalValue
       : "";
   const proposalLine = proposalRef
@@ -101,6 +101,7 @@ function taskSpecText(state: OrchestrationState): string {
   // When proposal is a file path, append a pointer + summary rather than inlining content.
   const proposalValue = readFrontmatterField(content, "proposal");
   if (proposalValue) {
+    // Deprecated sentinel — kept for backward compat; skip file resolution for inline proposals.
     if (proposalValue !== "inline") {
       let proposalFile: string;
       try {
@@ -228,7 +229,7 @@ export function buildSkillContext(
   const _taskPath = state.taskId ? join(harnessDir(), "tasks", `${state.taskId}.md`) : null;
   const _taskContent = _taskPath ? readFileIfExists(_taskPath) : null;
   const _proposalPath = (_taskContent ? readFrontmatterField(_taskContent, "proposal") : null) ?? "";
-  const proposalPath = _proposalPath && _proposalPath !== "inline"
+  const proposalPath = _proposalPath && _proposalPath !== "inline" // deprecated sentinel — kept for backward compat
     ? _proposalPath : "";
   const proposalInstruction = proposalPath
     ? `**Step 0**: Read the proposal file at \`${proposalPath}\` in the project repo before starting. The proposal contains the authoritative acceptance criteria and full scope.`

@@ -331,6 +331,8 @@ describe("skills", () => {
       const ctx = buildSkillContext(state, state.agents[0]!);
       expect(ctx["TASK_SPEC"]).toContain("Big inline proposal here.");
       expect(ctx["TASK_SPEC"]).not.toContain("Read the full proposal");
+      // PROPOSAL_PATH must be empty for inline so {{#IF PROPOSAL_PATH}} blocks are skipped
+      expect(ctx["PROPOSAL_PATH"]).toBe("");
     } finally {
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;

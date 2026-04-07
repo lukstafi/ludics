@@ -93,7 +93,7 @@ export function startDashboardServer(
     const parsed = parseTaskFrontmatter(taskFilePath);
     if (!parsed || !parsed.proposal) return null;
 
-    // "inline" means the proposal is written directly in the task file
+    // Deprecated sentinel — kept for backward compat; resolve inline to the task file itself.
     if (parsed.proposal === "inline") return taskFilePath;
 
     const normalizedProposal = parsed.proposal.startsWith("~/")
