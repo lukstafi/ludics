@@ -41,6 +41,9 @@ export interface ProjectConfig {
   adapter_profiles?: Record<string, { args?: string[] | string } | string[] | string>;
   /** Custom prompt for the @codex review PR comment. Overrides the default review focus. */
   codex_review_prompt?: string;
+  /** Command to run the project's test suite locally (e.g. "bun test", "dune runtest").
+   *  Auto-detected from project directory contents when unset. */
+  test_command?: string;
 }
 
 export type GlobalAdapterMode = "t3code" | "tmux";

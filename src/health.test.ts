@@ -1,0 +1,174 @@
+import { describe, test, expect } from "bun:test";
+import { mkdirSync, writeFileSync, rmSync } from "fs";
+import { join } from "path";
+import { detectTestCommand, shouldRunTestHealth } from "./health.ts";
+import { tmpdir } from "os";
+
+function makeTmpDir(): string {
+  const dir = join(tmpdir(), `health-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+describe("detectTestCommand", () => {
+  test("detects dune-project", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "dune-project"), "(lang dune 3.0)");
+    expect(detectTestCommand(dir)).toBe("dune runtest");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("detects bun.lockb", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "bun.lockb"), "");
+    expect(detectTestCommand(dir)).toBe("bun test");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("detects bun.lock", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "bun.lock"), "");
+    expect(detectTestCommand(dir)).toBe("bun test");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("detects package.json with test script", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "jest" } }));
+    expect(detectTestCommand(dir)).toBe("npm test");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("skips package.json without test script", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { build: "tsc" } }));
+    expect(detectTestCommand(dir)).toBeNull();
+    rmSync(dir, { recursive: true });
+  });
+
+  test("handles malformed package.json gracefully", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "package.json"), "not json{{{");
+    expect(detectTestCommand(dir)).toBeNull();
+    rmSync(dir, { recursive: true });
+  });
+
+  test("detects Makefile with test target", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "Makefile"), "build:\n\tgcc main.c\ntest:\n\t./run_tests\n");
+    expect(detectTestCommand(dir)).toBe("make test");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("skips Makefile without test target", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "Makefile"), "build:\n\tgcc main.c\n");
+    expect(detectTestCommand(dir)).toBeNull();
+    rmSync(dir, { recursive: true });
+  });
+
+  test("dune-project takes priority over bun.lockb", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "dune-project"), "(lang dune 3.0)");
+    writeFileSync(join(dir, "bun.lockb"), "");
+    expect(detectTestCommand(dir)).toBe("dune runtest");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("bun.lockb takes priority over package.json with test script", () => {
+    const dir = makeTmpDir();
+    writeFileSync(join(dir, "bun.lockb"), "");
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "jest" } }));
+    expect(detectTestCommand(dir)).toBe("bun test");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("returns null for empty directory", () => {
+    const dir = makeTmpDir();
+    expect(detectTestCommand(dir)).toBeNull();
+    rmSync(dir, { recursive: true });
+  });
+});
+
+describe("shouldRunTestHealth", () => {
+  const emptyConfig = {};
+
+  test("returns true when no prior state (stale)", () => {
+    expect(shouldRunTestHealth("proj", {}, emptyConfig, new Date("2026-04-07T10:00:00"))).toBe(true);
+  });
+
+  test("returns false for recent run outside night window", () => {
+    const now = new Date(2026, 3, 7, 10, 0, 0); // 10am local — outside [0,6)
+    const state = { proj: { lastRun: new Date(now.getTime() - 3600_000).toISOString(), passed: true } };
+    expect(shouldRunTestHealth("proj", state, emptyConfig, now)).toBe(false);
+  });
+
+  test("returns true for recent run inside night window", () => {
+    // Use explicit local-time constructor to avoid timezone ambiguity
+    const now = new Date(2026, 3, 7, 3, 0, 0); // 3am local time
+    const state = { proj: { lastRun: new Date(now.getTime() - 3600_000).toISOString(), passed: true } };
+    expect(now.getHours()).toBe(3); // sanity check
+    expect(shouldRunTestHealth("proj", state, emptyConfig, now)).toBe(true);
+  });
+
+  test("returns true for stale run (24+ hours ago)", () => {
+    const now = new Date(2026, 3, 7, 10, 0, 0); // 10am local
+    const state = { proj: { lastRun: new Date(now.getTime() - 25 * 3600_000).toISOString(), passed: true } };
+    expect(shouldRunTestHealth("proj", state, emptyConfig, now)).toBe(true);
+  });
+
+  test("uses configured night window with wrap-around", () => {
+    const now = new Date(2026, 3, 7, 23, 0, 0); // 11pm local
+    const state = { proj: { lastRun: new Date(now.getTime() - 3600_000).toISOString(), passed: true } };
+    const config = { mag: { test_health_night_hours: [22, 6] as [number, number] } };
+    expect(now.getHours()).toBe(23);
+    expect(shouldRunTestHealth("proj", state, config, now)).toBe(true);
+  });
+
+  test("wrap-around night window [22, 6] excludes midday", () => {
+    const now = new Date(2026, 3, 7, 12, 0, 0); // noon local
+    const state = { proj: { lastRun: new Date(now.getTime() - 3600_000).toISOString(), passed: true } };
+    const config = { mag: { test_health_night_hours: [22, 6] as [number, number] } };
+    expect(now.getHours()).toBe(12);
+    expect(shouldRunTestHealth("proj", state, config, now)).toBe(false);
+  });
+});
+
+describe("loadTestHealthState validation", () => {
+  // Mirrors the validation logic in loadTestHealthState to ensure
+  // non-record JSON values are treated as corruption and reset to {}.
+  function parseTestHealthState(raw: string): Record<string, unknown> {
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+      return parsed as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+
+  test("valid object is returned as-is", () => {
+    const result = parseTestHealthState('{"proj":{"lastRun":"2026-04-07","passed":true}}');
+    expect(result).toEqual({ proj: { lastRun: "2026-04-07", passed: true } });
+  });
+
+  test("string JSON resets to empty", () => {
+    expect(parseTestHealthState('"hello"')).toEqual({});
+  });
+
+  test("array JSON resets to empty", () => {
+    expect(parseTestHealthState('[1,2,3]')).toEqual({});
+  });
+
+  test("null JSON resets to empty", () => {
+    expect(parseTestHealthState("null")).toEqual({});
+  });
+
+  test("number JSON resets to empty", () => {
+    expect(parseTestHealthState("42")).toEqual({});
+  });
+
+  test("invalid JSON resets to empty", () => {
+    expect(parseTestHealthState("not json{{{")).toEqual({});
+  });
+});

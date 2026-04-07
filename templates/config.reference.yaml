@@ -31,6 +31,9 @@ projects:
                           # Auto-detected from docs/, doc/, .docs/ if unset; defaults to docs/proposals/
     codex_review_prompt: ""   # Optional: custom focus for GitHub-native @codex review comments.
                               # Default: "Focus on bugs, correctness issues, and edge cases."
+    test_command: ""          # Optional: command to run the project's test suite locally
+                              # (e.g. "bun test", "dune runtest", "npm test").
+                              # Auto-detected from project directory contents when unset.
     # Optional per-project adapter args profile.
     # Later layers override earlier layers:
     # adapter default args -> project profile -> slot Adapter Args -> task frontmatter adapter_args
@@ -76,6 +79,9 @@ mag:
   ensure_t3code: true         # Auto-start shared t3code server on keepalive (default: true)
   nudge_throttle_seconds: 60  # Minimum seconds between automatic "Continue." nudges (default: 60)
   nudge_backoff_seconds: 600  # If no stop hook fired since last nudge, suppress repeat nudges for this long (default: 600)
+  test_health_night_hours: [0, 6]  # Local-time hour window [start, end) during which test suites
+                                   # are eligible to run. Uses local time to match launchd semantics.
+                                   # Tests also run if last run was 24+ hours ago (stale fallback).
 
   # Orchestration settings (overridable per-task via adapter -A args)
   orchestration:

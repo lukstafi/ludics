@@ -57,7 +57,22 @@ This skill is invoked when:
    - Read `mag/queue.jsonl`
    - Flag if requests have been pending > 1h
 
-4. **Detect deltas since previous health check**:
+4. **Check test suite health**:
+   - Read `$LUDICS_STATE_PATH/mag/test-health.json` for the latest test run results
+     (tests were executed programmatically before this skill was invoked).
+   - For each project with an entry in the state file:
+     - If `passed: true`: note as "tests passing" in the Info section.
+     - If `passed: false`: report as Warning: "⚠ <project> tests FAILED — fix task auto-filed".
+       Include the `failures` field content (truncated) in the report.
+   - Projects with no entry in the state file should be silently omitted — do not
+     report "no test data" as a finding. Only mention a missing project if it has
+     `test_command` configured explicitly, as low-priority Info "awaiting first test run".
+   - Issue key format: `test-health:<project-name>` (for delta tracking against
+     health-last.json — unchanged failures are "ongoing", not "new").
+   - Do NOT run tests yourself; the programmatic pre-hook has already executed them
+     with rate-limiting before this skill was invoked.
+
+5. **Detect deltas since previous health check**:
    - Prefer git diff in state repo for scope awareness:
      `git -C "$LUDICS_STATE_PATH" diff --name-only HEAD~1..HEAD -- tasks/ slots.md sessions.md mag/queue.jsonl journal/notifications.jsonl 2>/dev/null || true`
    - Build stable issue keys for all findings (examples:
@@ -65,11 +80,11 @@ This skill is invoked when:
    - Read previous snapshot from `$LUDICS_STATE_PATH/mag/health-last.json` if it exists
    - Mark each finding as `new`, `ongoing`, or `resolved`
 
-5. **Report task elaboration status**:
+6. **Report task elaboration status**:
    - Run `ludics tasks needs-elaboration` to count unprocessed tasks
    - Note: Elaboration queueing is handled automatically by `tasks_queue_elaborations()` in `tasks_sync()` -- no need to enqueue here
 
-6. **Queue completion verification for potentially done tasks**:
+7. **Queue completion verification for potentially done tasks**:
    - Read `slots.md` to find slots with active in-progress tasks
    - For each slotted in-progress task (where `completed` is null):
      a. Quick-check for completion signals (lightweight, no deep codebase inspection):
@@ -86,18 +101,18 @@ This skill is invoked when:
      c. Note queued verifications in the health report
      d. Build stable issue keys: `completion:<task-id>` for delta tracking
 
-7. **Generate report**:
+8. **Generate report**:
    - Categorize issues by severity
    - Explicitly call out `new` and `resolved` findings since last check
    - Include actionable recommendations
 
-8. **Send notifications** for critical issues:
+9. **Send notifications** for critical issues:
    - Notify only on `new` critical issues or severity escalation (`warning` -> `critical`)
    ```bash
    ludics notify outgoing "Critical: task-042 deadline in 2 days" 5 "Health Check"
    ```
 
-9. **Persist snapshot**:
+10. **Persist snapshot**:
    - Write current finding keys/severities/timestamp to
      `$LUDICS_STATE_PATH/mag/health-last.json`
 
@@ -114,6 +129,7 @@ This skill is invoked when:
 ## Warnings
 - **DEADLINE**: task-101 due in 6 days
 - **SLOT**: Slot 3 has been active for 28 hours without update
+- **TEST-HEALTH**: ⚠ my-project tests FAILED — fix task auto-filed
 
 ## Info
 - Active slots: 2/6
@@ -121,6 +137,7 @@ This skill is invoked when:
 - Blocked tasks: 3
 - Queue pending: 0
 - Tasks needing elaboration: 5
+- Test suites: ludics passing, other-project passing
 
 ## Elaboration Status
 - 2 tasks awaiting elaboration (queued automatically by mag keepalive)
