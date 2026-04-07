@@ -360,16 +360,26 @@ export async function sendPromptToAgent(
   });
   try { unlinkSync(promptFile); } catch { /* ignore */ }
 
-  // Submit: sleep to let the TUI process the input, then send C-m.
-  // Second C-m is harmless (empty prompt = no-op).
-  await Bun.sleep(provider === "codex" ? 1500 : 500);
+  // Submit: sleep to let the TUI process the pasted input, then send C-m.
+  // Scale delay with paste size — large pastes (8KB+) need more time for TUI processing.
+  const baseDelay = provider === "codex" ? 1500 : 500;
+  const sizeDelay = Math.min(Math.floor(message.length / 1000) * 500, 5000);
+  await Bun.sleep(baseDelay + sizeDelay);
   Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
     stdout: "pipe", stderr: "pipe",
   });
-  await Bun.sleep(500);
-  Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
-    stdout: "pipe", stderr: "pipe",
-  });
+
+  // Verify submission: if pane still shows "[Pasted Content" after Enter,
+  // the TUI didn't accept it yet — retry with increasing delays.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await Bun.sleep(1500);
+    const paneText = tmuxCapture(target, 5);
+    if (!paneText || !paneText.includes("[Pasted Content")) break;
+    // Still showing pasted content — resend Enter
+    Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
+      stdout: "pipe", stderr: "pipe",
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
