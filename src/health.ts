@@ -94,7 +94,7 @@ export function checkProjectTestHealth(
   const projectPath = resolveProjectPath(project.name);
   if (!existsSync(projectPath)) return { skipped: true, reason: "path-not-found" };
 
-  const testCmd = project.test_command ?? detectTestCommand(projectPath);
+  const testCmd = (project.test_command?.trim() || null) ?? detectTestCommand(projectPath);
   if (!testCmd) return { skipped: true, reason: "no-test-command" };
 
   const config = loadConfigSync();
@@ -128,7 +128,15 @@ export function checkProjectTestHealth(
   saveTestHealthState(state);
 
   if (!passed) {
-    tasksCreate(`Fix broken test suite: ${project.name}`, project.name, "A");
+    // Redirect stdout to stderr during task creation to avoid corrupting
+    // the queue-pop protocol (stdout is used for hook decision payloads).
+    const origWrite = process.stdout.write;
+    process.stdout.write = process.stderr.write.bind(process.stderr);
+    try {
+      tasksCreate(`Fix broken test suite: ${project.name}`, project.name, "A");
+    } finally {
+      process.stdout.write = origWrite;
+    }
   }
 
   return { skipped: false, passed, duration, failures };
