@@ -797,10 +797,17 @@ function tasksQueueElaborations(): void {
   if (!existsSync(tasksDir)) return;
 
   const queueFile = join(harness, "mag", "queue.jsonl");
-  let alreadyQueued = "";
+  const alreadyQueuedElaborateTasks = new Set<string>();
   if (existsSync(queueFile)) {
-    const content = readFileSync(queueFile, "utf-8");
-    alreadyQueued = content.split("\n").filter((l) => l.includes('"action":"elaborate"')).join("\n");
+    for (const line of readFileSync(queueFile, "utf-8").split("\n")) {
+      if (!line) continue;
+      try {
+        const req = JSON.parse(line) as Record<string, unknown>;
+        if (req.action === "elaborate" && typeof req.task === "string") {
+          alreadyQueuedElaborateTasks.add(req.task);
+        }
+      } catch { /* skip malformed lines */ }
+    }
   }
 
   const needsElab = tasksNeedsElaborationList(tasksDir);
@@ -816,7 +823,7 @@ function tasksQueueElaborations(): void {
 
     if (isElaborated(content)) continue;
 
-    if (alreadyQueued.includes(`"task":"${taskId}"`)) continue;
+    if (alreadyQueuedElaborateTasks.has(taskId)) continue;
 
     queueRequest({ action: "elaborate", task: taskId });
     emitEvent({ event_type: "task_elaborate_queued", source: "sync", scope: "task", task: taskId });
@@ -872,8 +879,18 @@ function tasksQueuePreemptions(): void {
 
   const queueFile = join(harness, "mag", "queue.jsonl");
   let alreadyQueued = "";
+  const alreadyQueuedPreemptTasks = new Set<string>();
   if (existsSync(queueFile)) {
     alreadyQueued = readFileSync(queueFile, "utf-8");
+    for (const line of alreadyQueued.split("\n")) {
+      if (!line) continue;
+      try {
+        const req = JSON.parse(line) as Record<string, unknown>;
+        if (req.action === "preempt" && typeof req.task === "string") {
+          alreadyQueuedPreemptTasks.add(req.task);
+        }
+      } catch { /* skip malformed lines */ }
+    }
   }
 
   // Limit active preemptions per project, not globally. A priority project already
@@ -899,11 +916,7 @@ function tasksQueuePreemptions(): void {
 
     if (!priProjects.includes(project)) continue;
     if (projectsInFlight.has(project)) continue; // one preemption per project at a time
-    // Check per-line that this exact task already has a preempt entry queued
-    const alreadyQueuedForTask = alreadyQueued.split("\n").some(
-      (line) => line.includes(`"task":"${id}"`) && line.includes('"action":"preempt"'),
-    );
-    if (alreadyQueuedForTask) continue;
+    if (alreadyQueuedPreemptTasks.has(id)) continue;
 
     const autonomy = preemptAutonomy();
     queueRequest({ action: "preempt", task: id, autonomy });
