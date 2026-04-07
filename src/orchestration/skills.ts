@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { assertRepoRelativeProposalPath, readFrontmatterField } from "../adapters/task-launch.ts";
 import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
+import { safeSyncOutput } from "../spawn.ts";
 import type { Phase } from "./phases.ts";
 import { planFilePath } from "./plan-files.ts";
 import { parseReviewFilename, reviewFilePath } from "./review-files.ts";
@@ -31,19 +32,8 @@ function findLatestReview(peerSyncDir: string, peerName: string): string | null 
 }
 
 function gitOutput(cwd: string, args: string[]): string | null {
-  try {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      stdout: "pipe",
-      stderr: "ignore",
-      env: process.env as Record<string, string>,
-    });
-    if (result.exitCode !== 0) return null;
-    const out = result.stdout.toString().trim();
-    return out || null;
-  } catch {
-    return null;
-  }
+  const r = safeSyncOutput(["git", ...args], { cwd });
+  return r.ok && r.stdout ? r.stdout : null;
 }
 
 function doneStatusForPhase(phase: Phase): string {
@@ -53,17 +43,10 @@ function doneStatusForPhase(phase: Phase): string {
 }
 
 function ghIssueBody(repo: string, issue: string): string | null {
-  try {
-    const result = Bun.spawnSync(
-      ["gh", "issue", "view", issue, "--repo", repo, "--json", "body", "-q", ".body"],
-      { stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string> },
-    );
-    if (result.exitCode !== 0) return null;
-    const body = result.stdout.toString().trim();
-    return body || null;
-  } catch {
-    return null;
-  }
+  const r = safeSyncOutput(
+    ["gh", "issue", "view", issue, "--repo", repo, "--json", "body", "-q", ".body"],
+  );
+  return r.ok && r.stdout ? r.stdout : null;
 }
 
 /** Resolve a proposal frontmatter value to an absolute filesystem path.

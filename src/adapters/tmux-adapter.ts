@@ -4,6 +4,7 @@
 import { existsSync } from "fs";
 import { basename, join, resolve } from "path";
 import { getMainRepoFromWorktree, latestMtime, resolveProjectDir, slotSessionName } from "./base.ts";
+import { safeSyncOutput } from "../spawn.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { Adapter, AdapterContext } from "./types.ts";
 import { loadConfigSync } from "../config.ts";
@@ -221,9 +222,7 @@ function createTmuxAgentSession(slot: number, agentName: string, cwd: string, ta
   // Create new session
   tmuxNewSession(sessionName, cwd);
   // Disable mouse to prevent copy-mode lockups
-  Bun.spawnSync(["tmux", "set-option", "-t", sessionName, "mouse", "off"], {
-    stdout: "pipe", stderr: "pipe",
-  });
+  safeSyncOutput(["tmux", "set-option", "-t", sessionName, "mouse", "off"]);
 }
 
 export function startTtyd(slot: number, agentName: string, role: "coder" | "reviewer", taskId?: string): number {
@@ -231,9 +230,7 @@ export function startTtyd(slot: number, agentName: string, role: "coder" | "revi
   const target = tmuxTarget(slot, agentName, taskId);
 
   // Kill any stale ttyd on this port
-  Bun.spawnSync(["pkill", "-f", `ttyd.*--port ${port}`], {
-    stdout: "pipe", stderr: "pipe",
-  });
+  safeSyncOutput(["pkill", "-f", `ttyd.*--port ${port}`]);
 
   // Use setsidWrap to detach ttyd into its own process session so it survives
   // when the parent (launchd oneshot keepalive) exits.
@@ -250,9 +247,7 @@ export function startTtyd(slot: number, agentName: string, role: "coder" | "revi
 function killTtydForSlot(slot: number): void {
   for (const role of ["coder", "reviewer"] as const) {
     const port = ttydPort(slot, role);
-    Bun.spawnSync(["pkill", "-f", `ttyd.*--port ${port}`], {
-      stdout: "pipe", stderr: "pipe",
-    });
+    safeSyncOutput(["pkill", "-f", `ttyd.*--port ${port}`]);
   }
 }
 
@@ -305,11 +300,7 @@ export function isAgentAlive(slot: number, agentName: string, taskId?: string): 
   if (!panePid) return false;
 
   // Check child processes of the pane shell for agent CLIs
-  const result = Bun.spawnSync(
-    ["pgrep", "-P", String(panePid), "-f", "(claude|codex)"],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  return result.exitCode === 0;
+  return safeSyncOutput(["pgrep", "-P", String(panePid), "-f", "(claude|codex)"]).ok;
 }
 
 /**
@@ -343,21 +334,15 @@ export async function sendPromptToAgent(
   provider: string,
 ): Promise<void> {
   // Exit copy mode if active (user may have scrolled)
-  Bun.spawnSync(["tmux", "send-keys", "-t", target, "-X", "cancel"], {
-    stdout: "pipe", stderr: "pipe",
-  });
+  safeSyncOutput(["tmux", "send-keys", "-t", target, "-X", "cancel"]);
   await Bun.sleep(100);
 
   // Atomic paste via load-buffer + paste-buffer for all providers.
   const promptFile = `/tmp/ludics-prompt-${target}-${Date.now()}.txt`;
   const { writeFileSync, unlinkSync } = await import("fs");
   writeFileSync(promptFile, message);
-  Bun.spawnSync(["tmux", "load-buffer", promptFile], {
-    stdout: "pipe", stderr: "pipe",
-  });
-  Bun.spawnSync(["tmux", "paste-buffer", "-t", target], {
-    stdout: "pipe", stderr: "pipe",
-  });
+  safeSyncOutput(["tmux", "load-buffer", promptFile]);
+  safeSyncOutput(["tmux", "paste-buffer", "-t", target]);
   try { unlinkSync(promptFile); } catch { /* ignore */ }
 
   // Submit: sleep to let the TUI process the pasted input, then send C-m.
@@ -365,9 +350,7 @@ export async function sendPromptToAgent(
   const baseDelay = provider === "codex" ? 1500 : 500;
   const sizeDelay = Math.min(Math.floor(message.length / 1000) * 500, 5000);
   await Bun.sleep(baseDelay + sizeDelay);
-  Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
-    stdout: "pipe", stderr: "pipe",
-  });
+  safeSyncOutput(["tmux", "send-keys", "-t", target, "C-m"]);
 
   // Verify submission: if pane still shows "[Pasted Content" after Enter,
   // the TUI didn't accept it yet — retry with increasing delays.
@@ -376,9 +359,7 @@ export async function sendPromptToAgent(
     const paneText = tmuxCapture(target, 5);
     if (!paneText || !paneText.includes("[Pasted Content")) break;
     // Still showing pasted content — resend Enter
-    Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
-      stdout: "pipe", stderr: "pipe",
-    });
+    safeSyncOutput(["tmux", "send-keys", "-t", target, "C-m"]);
   }
 }
 

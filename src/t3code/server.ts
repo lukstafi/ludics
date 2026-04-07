@@ -22,6 +22,7 @@ import { harnessDir as defaultHarnessDir } from "../config.ts";
 import { networkHostname } from "../network.ts";
 import { T3CodeClient } from "./client.ts";
 import type { T3CodeServerRecord, T3CodeSlotState, T3Snapshot } from "./types.ts";
+import { safeSyncOutput } from "../spawn.ts";
 
 export interface T3CodeServerStatus {
   running: boolean;
@@ -409,18 +410,8 @@ export function processAlive(pid: number): boolean {
 
 function processCommandLine(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  try {
-    const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env as Record<string, string>,
-    });
-    if (result.exitCode !== 0) return null;
-    const output = result.stdout.toString().trim();
-    return output || null;
-  } catch {
-    return null;
-  }
+  const r = safeSyncOutput(["ps", "-p", String(pid), "-o", "command="]);
+  return r.ok && r.stdout ? r.stdout : null;
 }
 
 export function commandLineMatchesServerRecord(
@@ -738,12 +729,10 @@ export async function doctorServer(
         } catch { /* may be hoisted into .bun only */ }
         const effectiveVersion = installedVersion ?? latestCached;
         // Compare against npm registry latest
-        const npmLatest = (() => { try {
-          const result = Bun.spawnSync(["npm", "view", "@anthropic-ai/claude-agent-sdk", "version"], {
-            stdout: "pipe", stderr: "ignore", env: process.env as Record<string, string>,
-          });
-          return result.stdout.toString().trim() || null;
-        } catch { return null; } })();
+        const npmLatest = (() => {
+          const r = safeSyncOutput(["npm", "view", "@anthropic-ai/claude-agent-sdk", "version"]);
+          return r.ok && r.stdout ? r.stdout : null;
+        })();
         if (effectiveVersion && npmLatest && effectiveVersion !== npmLatest) {
           checks.push({
             name: "SDK version freshness",
@@ -763,21 +752,15 @@ export async function doctorServer(
     // 8. stderr log hints (last few lines if file exists)
     const stderrPath = join(t3codeDir(harnessDir), "server-stderr.log");
     if (existsSync(stderrPath)) {
-      try {
-        const content = Bun.spawnSync(["tail", "-n", "5", stderrPath], {
-          stdout: "pipe",
-          stderr: "pipe",
-          env: process.env as Record<string, string>,
-        }).stdout.toString().trim();
-        if (content) {
+      {
+        const r = safeSyncOutput(["tail", "-n", "5", stderrPath]);
+        if (r.ok && r.stdout) {
           checks.push({
             name: "server-stderr.log (last 5 lines)",
             passed: true,
-            detail: content,
+            detail: r.stdout,
           });
         }
-      } catch {
-        // ignore
       }
     }
   }
@@ -902,16 +885,13 @@ function checkAndRecoverDb(dbPath: string): boolean {
     try { unlinkSync(recoveredPath); } catch { /* ignore */ }
   }
 
-  const recoverResult = Bun.spawnSync(
-    [
-      "bash",
-      "-c",
-      `sqlite3 ${JSON.stringify(dbPath)} ".recover" | sqlite3 ${JSON.stringify(recoveredPath)}`,
-    ],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+  const recoverResult = safeSyncOutput([
+    "bash",
+    "-c",
+    `sqlite3 ${JSON.stringify(dbPath)} ".recover" | sqlite3 ${JSON.stringify(recoveredPath)}`,
+  ]);
 
-  if (recoverResult.exitCode === 0 && existsSync(recoveredPath)) {
+  if (recoverResult.ok && existsSync(recoveredPath)) {
     // Verify the recovered DB before committing to it
     let recoveredOk = false;
     try {

@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, statSync } from "fs";
 import { resolve, extname, join } from "path";
 import YAML from "yaml";
+import { safeSyncOutput } from "./spawn.ts";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
 import { updateFrontmatterField, addFrontmatterField, removeFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
@@ -169,12 +170,12 @@ export function startDashboardServer(
           return new Response("Bad Request: slot must be 1-6", { status: 400 });
         }
         try {
-          const proc = Bun.spawnSync(
+          const proc = safeSyncOutput(
             [process.execPath, "slot", slotParam, "clear", status],
-            { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
+            { cwd: process.env.HOME },
           );
-          if (proc.exitCode !== 0) {
-            return new Response(proc.stderr.toString() || "slot clear failed", { status: 500 });
+          if (!proc.ok) {
+            return new Response(proc.stderr || "slot clear failed", { status: 500 });
           }
           lastGenerated = 0; // force regeneration on next data request
           return new Response("OK", { status: 200 });
@@ -194,12 +195,12 @@ export function startDashboardServer(
           return new Response("Bad Request: mode must be manual, tmux, or t3code", { status: 400 });
         }
         try {
-          const proc = Bun.spawnSync(
+          const proc = safeSyncOutput(
             [process.execPath, "slot", slotParam, "mode", mode],
-            { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
+            { cwd: process.env.HOME },
           );
-          if (proc.exitCode !== 0) {
-            return new Response(proc.stderr.toString() || "slot mode failed", { status: 500 });
+          if (!proc.ok) {
+            return new Response(proc.stderr || "slot mode failed", { status: 500 });
           }
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
@@ -215,12 +216,12 @@ export function startDashboardServer(
           return new Response("Bad Request: slot must be 1-6", { status: 400 });
         }
         try {
-          const proc = Bun.spawnSync(
+          const proc = safeSyncOutput(
             [process.execPath, "slot", slotParam, "start"],
-            { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
+            { cwd: process.env.HOME },
           );
-          if (proc.exitCode !== 0) {
-            return new Response(proc.stderr.toString() || "slot start failed", { status: 500 });
+          if (!proc.ok) {
+            return new Response(proc.stderr || "slot start failed", { status: 500 });
           }
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
@@ -236,12 +237,12 @@ export function startDashboardServer(
           return new Response("Bad Request: slot must be 1-6", { status: 400 });
         }
         try {
-          const proc = Bun.spawnSync(
+          const proc = safeSyncOutput(
             [process.execPath, "slot", slotParam, "resume"],
-            { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
+            { cwd: process.env.HOME },
           );
-          if (proc.exitCode !== 0) {
-            return new Response(proc.stderr.toString() || "slot resume failed", { status: 500 });
+          if (!proc.ok) {
+            return new Response(proc.stderr || "slot resume failed", { status: 500 });
           }
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
@@ -291,12 +292,12 @@ export function startDashboardServer(
           // in the ready queue at its old priority (race with auto-assign).
           pendingPriorityWrite?.();
 
-          const proc = Bun.spawnSync(
+          const proc = safeSyncOutput(
             [process.execPath, "slot", slotParam, "clear", "ready"],
-            { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
+            { cwd: process.env.HOME },
           );
-          if (proc.exitCode !== 0) {
-            return new Response(proc.stderr.toString() || "slot clear failed", { status: 500 });
+          if (!proc.ok) {
+            return new Response(proc.stderr || "slot clear failed", { status: 500 });
           }
 
           lastGenerated = 0;
@@ -424,12 +425,12 @@ export function startDashboardServer(
           // Check if task is assigned to a slot — if so, clear it synchronously
           const slotNum = findSlotForTask(taskParam);
           if (slotNum !== null) {
-            const proc = Bun.spawnSync(
+            const proc = safeSyncOutput(
               [process.execPath, "slot", String(slotNum), "clear", "abandoned"],
-              { stdout: "pipe", stderr: "pipe", cwd: process.env.HOME, env: process.env as Record<string, string> },
+              { cwd: process.env.HOME },
             );
-            if (proc.exitCode !== 0) {
-              return new Response(proc.stderr.toString() || "slot clear failed", { status: 500 });
+            if (!proc.ok) {
+              return new Response(proc.stderr || "slot clear failed", { status: 500 });
             }
           } else {
             updateFrontmatterField(taskFile, "status", "abandoned");

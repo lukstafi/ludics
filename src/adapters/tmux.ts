@@ -1,20 +1,16 @@
 // Shared tmux operation wrappers — used by adapters and mag.ts
 
+import { safeSyncOutput } from "../spawn.ts";
+
+// trim: false — callers do their own .trim() or split on raw newlines (tmuxCapture, tmuxFindSessions)
 function run(args: string[]): { exitCode: number; stdout: string; stderr: string } {
-  const result = Bun.spawnSync(["tmux", ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return {
-    exitCode: result.exitCode,
-    stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
-  };
+  const r = safeSyncOutput(["tmux", ...args], { trim: false });
+  return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 }
 
 /** Check if tmux is installed and available on PATH. */
 export function tmuxAvailable(): boolean {
-  return Bun.spawnSync(["which", "tmux"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+  return safeSyncOutput(["which", "tmux"]).ok;
 }
 
 /** Check if a specific tmux session exists. */

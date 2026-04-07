@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync, statSync } from "fs";
 import { join, dirname } from "path";
 import YAML from "yaml";
+import { safeSyncOutput } from "./spawn.ts";
 import { globalAdapter, harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
 import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted, getMachine, getLiveness } from "./slots/markdown.ts";
 import { isRemoteMachine } from "./remote.ts";
@@ -129,13 +130,10 @@ function lookupTaskMetadata(taskId: string): TaskMetadata {
 // Discover running ttyd processes and map tmux session names to their URLs
 function discoverTtydUrls(): Map<string, string> {
   const result = new Map<string, string>();
-  try {
-    const proc = Bun.spawnSync(["pgrep", "-fa", "ttyd"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (proc.exitCode !== 0) return result;
-    const lines = proc.stdout.toString().trim().split("\n");
+  {
+    const proc = safeSyncOutput(["pgrep", "-fa", "ttyd"]);
+    if (!proc.ok) return result;
+    const lines = proc.stdout.split("\n");
     for (const line of lines) {
       if (!line.trim()) continue;
       // Match port: -p PORT or --port PORT or --port=PORT
@@ -149,8 +147,6 @@ function discoverTtydUrls(): Map<string, string> {
         if (url) result.set(session, url);
       }
     }
-  } catch {
-    // ignore — pgrep may not be available or ttyd may not be running
   }
   return result;
 }
@@ -744,8 +740,7 @@ function generateMag(): Record<string, unknown> {
   let status = "unknown";
   const config = loadConfigSync();
   const magSession = String((config.mag as Record<string, unknown> | undefined)?.session ?? "ludics-mag");
-  const tmuxResult = Bun.spawnSync(["tmux", "has-session", "-t", magSession], { stdout: "pipe", stderr: "pipe" });
-  if (tmuxResult.exitCode === 0) status = "running";
+  if (safeSyncOutput(["tmux", "has-session", "-t", magSession]).ok) status = "running";
 
   // Get ttyd port for mag terminal
   const magPort = String((config.mag as Record<string, unknown> | undefined)?.ttyd_port ?? "7679");
@@ -1113,15 +1108,12 @@ export function dashboardInstall(): void {
 
 export function dashboardStop(): void {
   try {
-    const result = Bun.spawnSync(["pgrep", "-f", "ludics dashboard serve"], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (result.exitCode !== 0) {
+    const result = safeSyncOutput(["pgrep", "-f", "ludics dashboard serve"]);
+    if (!result.ok) {
       console.error("ludics: no dashboard server running");
       return;
     }
-    const pids = result.stdout.toString().trim().split("\n").filter(Boolean);
+    const pids = result.stdout.split("\n").filter(Boolean);
     const myPid = String(process.pid);
     const targetPids: number[] = [];
     for (const pid of pids) {

@@ -17,14 +17,13 @@ import { readStopHookRecord } from "./peer-sync.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { isoNow, makeId, nowEpoch } from "./util.ts";
+import { safeSyncOutput } from "../spawn.ts";
 
 /** Get child PIDs of a given parent PID */
 function childPids(parentPid: number): number[] {
-  const result = Bun.spawnSync(["pgrep", "-P", String(parentPid)], {
-    stdout: "pipe", stderr: "pipe",
-  });
-  if (result.exitCode !== 0) return [];
-  return result.stdout.toString().trim().split("\n")
+  const result = safeSyncOutput(["pgrep", "-P", String(parentPid)]);
+  if (!result.ok) return [];
+  return result.stdout.split("\n")
     .map(s => parseInt(s.trim(), 10))
     .filter(n => Number.isFinite(n) && n > 0);
 }
@@ -65,13 +64,9 @@ export class TmuxTransport implements OrchestrationTransport {
 
   async sendEnter(state: OrchestrationState, agent: AgentConfig): Promise<void> {
     const target = tmuxSessionName(state.slot, agent.name, state.taskId);
-    Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
-      stdout: "pipe", stderr: "pipe",
-    });
+    safeSyncOutput(["tmux", "send-keys", "-t", target, "C-m"]);
     await Bun.sleep(500);
-    Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-m"], {
-      stdout: "pipe", stderr: "pipe",
-    });
+    safeSyncOutput(["tmux", "send-keys", "-t", target, "C-m"]);
   }
 
   async refreshAgentTransportState(state: OrchestrationState): Promise<void> {

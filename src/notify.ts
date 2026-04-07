@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync, readdirSync, unlinkSync } from "fs";
 import { basename, join, resolve } from "path";
 import { loadConfigSync, harnessDir, slotsFilePath } from "./config.ts";
+import { safeSyncOutput } from "./spawn.ts";
 import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
 import { parseSlotBlocks, getTask, getPath } from "./slots/markdown.ts";
@@ -44,8 +45,8 @@ function notifySend(topic: string, message: string, priority: number, title: str
   if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
   curlArgs.push(`https://ntfy.sh/${topic}`);
 
-  const result = Bun.spawnSync(curlArgs, { stdout: "pipe", stderr: "pipe" });
-  const httpCode = result.stdout.toString().trim();
+  const result = safeSyncOutput(curlArgs);
+  const httpCode = result.stdout;
   if (httpCode !== "200") {
     console.error(`ludics: ntfy.sh notification failed (HTTP ${httpCode}), logged locally`);
   }
@@ -295,14 +296,14 @@ function notifyPublishMessage(
   if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
   curlArgs.push(`https://ntfy.sh/${topic}`);
 
-  const result = Bun.spawnSync(curlArgs, { stdout: "pipe", stderr: "pipe" });
-  const stdout = result.stdout.toString();
+  const result = safeSyncOutput(curlArgs, { trim: false });
+  const stdout = result.stdout;
   const splitAt = stdout.lastIndexOf("\n");
   const body = splitAt >= 0 ? stdout.slice(0, splitAt).trim() : "";
   const httpCode = splitAt >= 0 ? stdout.slice(splitAt + 1).trim() : stdout.trim();
   return {
     httpCode,
-    stderr: result.stderr.toString().trim(),
+    stderr: result.stderr.trim(),
     body,
   };
 }
@@ -332,14 +333,14 @@ function notifyPublishFile(
   if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
   curlArgs.push(`https://ntfy.sh/${topic}`);
 
-  const result = Bun.spawnSync(curlArgs, { stdout: "pipe", stderr: "pipe" });
-  const stdout = result.stdout.toString();
+  const result = safeSyncOutput(curlArgs, { trim: false });
+  const stdout = result.stdout;
   const splitAt = stdout.lastIndexOf("\n");
   const body = splitAt >= 0 ? stdout.slice(0, splitAt).trim() : "";
   const httpCode = splitAt >= 0 ? stdout.slice(splitAt + 1).trim() : stdout.trim();
   return {
     httpCode,
-    stderr: result.stderr.toString().trim(),
+    stderr: result.stderr.trim(),
     body,
   };
 }

@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, readlinkSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, lstatSync, symlinkSync, unlinkSync, chmodSync } from "fs";
 import { join, dirname } from "path";
 import YAML from "yaml";
+import { safeSyncOutput } from "./spawn.ts";
 import { ludicsRoot, pointerConfigPath, harnessDir, loadConfigSync } from "./config.ts";
 import { dashboardInstall, dashboardStop, dashboardServe } from "./dashboard.ts";
 import { triggersInstall } from "./triggers.ts";
@@ -92,8 +93,8 @@ export async function runInit(args: string[]): Promise<void> {
     try {
       dashboardInstall();
       // Restart the dashboard server if it was running (picks up new binary)
-      const pgrep = Bun.spawnSync(["pgrep", "-f", "ludics dashboard serve"], { stdout: "pipe", stderr: "pipe" });
-      const pids = pgrep.exitCode === 0 ? pgrep.stdout.toString().trim().split("\n").filter((p) => p.trim() !== String(process.pid)) : [];
+      const pgrep = safeSyncOutput(["pgrep", "-f", "ludics dashboard serve"]);
+      const pids = pgrep.ok ? pgrep.stdout.split("\n").filter((p) => p.trim() !== String(process.pid)) : [];
       if (pids.length > 0) {
         console.log("  restarting dashboard server...");
         dashboardStop();
@@ -116,13 +117,13 @@ export async function runInit(args: string[]): Promise<void> {
     const adapter = globalAdapter();
     if (adapter === "tmux") {
       console.log("\n--- tmux backend ---");
-      const hasTmux = Bun.spawnSync(["which", "tmux"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+      const hasTmux = safeSyncOutput(["which", "tmux"]).ok;
       if (!hasTmux) {
         console.error("error: tmux adapter requires tmux to be installed");
         process.exit(1);
       }
       console.log("  tmux: available");
-      const hasTtyd = Bun.spawnSync(["which", "ttyd"], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+      const hasTtyd = safeSyncOutput(["which", "ttyd"]).ok;
       if (!hasTtyd) {
         console.error(
           "error: tmux adapter requires ttyd to be installed.\n" +
@@ -256,12 +257,10 @@ function cloneStateRepo(): { repoDir: string | null; statePath: string } {
     console.log(`state repo already exists: ${repoDir}`);
   } else {
     console.log(`cloning git@github.com:${stateRepo}.git to ${repoDir}...`);
-    const result = Bun.spawnSync(["git", "clone", `git@github.com:${stateRepo}.git`, repoDir], {
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    if (result.exitCode !== 0) {
+    const cloneResult = safeSyncOutput(["git", "clone", `git@github.com:${stateRepo}.git`, repoDir]);
+    if (!cloneResult.ok) {
       console.error("error: git clone failed");
+      if (cloneResult.stderr) console.error(cloneResult.stderr);
       return { repoDir: null, statePath };
     }
   }

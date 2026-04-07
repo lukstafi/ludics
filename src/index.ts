@@ -21,6 +21,7 @@ import { runQuote } from "./quote.ts";
 import { runEvents } from "./events.ts";
 import { runT3Code } from "./t3code/index.ts";
 import { runOrchestrationCli } from "./orchestration/index.ts";
+import { safeSyncOutput } from "./spawn.ts";
 
 const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   sessions: runSessions,
@@ -287,11 +288,10 @@ async function runTmuxCli(args: string[]): Promise<void> {
     if (slotMatches.length > 0) {
       console.log("\nSlot sessions:");
       for (const name of slotMatches) {
-        const result = Bun.spawnSync(
+        const result = safeSyncOutput(
           ["tmux", "list-panes", "-t", name, "-F", "pid=#{pane_pid} cmd=#{pane_current_command}"],
-          { stdout: "pipe", stderr: "pipe" },
         );
-        const paneInfo = result.exitCode === 0 ? result.stdout.toString().trim() : "";
+        const paneInfo = result.ok ? result.stdout : "";
         console.log(`  ${name}${paneInfo ? ` (${paneInfo})` : ""}`);
       }
     } else {
@@ -299,10 +299,10 @@ async function runTmuxCli(args: string[]): Promise<void> {
     }
 
     // Show ttyd processes
-    const ttyd = Bun.spawnSync(["pgrep", "-fa", "ttyd"], { stdout: "pipe", stderr: "pipe" });
-    if (ttyd.exitCode === 0) {
+    const ttyd = safeSyncOutput(["pgrep", "-fa", "ttyd"]);
+    if (ttyd.ok) {
       console.log("\nttyd processes:");
-      for (const line of ttyd.stdout.toString().trim().split("\n")) {
+      for (const line of ttyd.stdout.split("\n")) {
         if (line.trim()) console.log(`  ${line}`);
       }
     } else {
@@ -322,13 +322,12 @@ async function runTmuxCli(args: string[]): Promise<void> {
       return;
     }
     for (const session of sessions) {
-      const result = Bun.spawnSync(
+      const result = safeSyncOutput(
         ["tmux", "list-panes", "-t", session, "-F",
          `${session}: pid=#{pane_pid} cmd=#{pane_current_command} active=#{pane_active}`],
-        { stdout: "pipe", stderr: "pipe" },
       );
-      if (result.exitCode === 0) {
-        for (const line of result.stdout.toString().trim().split("\n")) {
+      if (result.ok) {
+        for (const line of result.stdout.split("\n")) {
           if (line.trim()) console.log(line);
         }
       }
@@ -382,14 +381,10 @@ async function runTmuxCli(args: string[]): Promise<void> {
 
 /** Find the tmux session for a slot+agent by matching s<slot>_<agent>_* */
 function resolveSlotSession(slot: number, agent: string): string | null {
-  const result = Bun.spawnSync(
-    ["tmux", "list-sessions", "-F", "#{session_name}"],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  if (result.exitCode !== 0) return null;
+  const result = safeSyncOutput(["tmux", "list-sessions", "-F", "#{session_name}"]);
+  if (!result.ok) return null;
   const prefix = `s${slot}_${agent}_`;
-  const sessions = result.stdout.toString().trim().split("\n");
-  return sessions.find((s) => s.startsWith(prefix)) ?? null;
+  return result.stdout.split("\n").find((s) => s.startsWith(prefix)) ?? null;
 }
 
 async function main(): Promise<void> {

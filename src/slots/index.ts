@@ -21,6 +21,7 @@ import { readOrchestrationState, persistState, removeOrchestrationState } from "
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
 import { heartbeatIsFresh, federationMachine } from "../federation.ts";
+import { safeSyncOutput } from "../spawn.ts";
 
 // Worker-side override: when set, loadBlocks uses this content instead of reading
 // from the local harness file. Set by processSlotIntents before executing worker
@@ -1074,9 +1075,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
         // Recreate the tmux session in the agent's worktree
         const cwd = agent.worktreePath;
         tmuxNewSession(sessionName, cwd);
-        Bun.spawnSync(["tmux", "set-option", "-t", sessionName, "mouse", "off"], {
-          stdout: "pipe", stderr: "pipe",
-        });
+        safeSyncOutput(["tmux", "set-option", "-t", sessionName, "mouse", "off"]);
         console.error(`ludics: re-created tmux session '${sessionName}'`);
 
         bootCliInSession(sessionName, agent);
@@ -1103,7 +1102,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
         try {
           // Use absolute path — launchd has a minimal $PATH that may not include /usr/sbin
           const lsofBin = process.platform === "darwin" ? "/usr/sbin/lsof" : "lsof";
-          portInUse = Bun.spawnSync([lsofBin, "-i", `:${port}`], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+          portInUse = safeSyncOutput([lsofBin, "-i", `:${port}`]).ok;
         } catch { /* lsof not available — assume port is free */ }
         if (!portInUse) {
           newTtydPids[agent.name] = startTtyd(slotNum, agent.name, role, taskId);
