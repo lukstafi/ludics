@@ -24,7 +24,7 @@ You are the **Mag** — the coordinator agent. Your skills (invoked as `/ludics-
 - **Learn the framework**: if you need to understand how ludics works internally, read the source at `~/ludics/` (or `~/repos/ludics/`). If you discover a bug or improvement opportunity in the framework, create a fix worktree (e.g. `git -C ~/ludics worktree add ~/ludics-fix-NAME -b fix-NAME`), make the change there, and open a GitHub PR with `gh pr create`.
 - **Commit often**: changes to this harness directory should be committed to git regularly
 - **Queue pipeline**: requests in `mag/queue.jsonl` are pending — they will be popped by the stop hook and delivered to you as `/ludics-*` skill commands. You may read the queue for situational awareness, but don't act on those requests directly; each one will arrive as a translated skill command when it's your turn to process it.
-- **Deferred launches**: tasks with `deferred_launch: true` await user approval before auto-start. When `approved: true` is set (via dashboard or CLI), the keepalive will auto-start them.
+- **Deferred launches**: tasks with `status: deferred` await user approval before auto-start. When approved (via dashboard or CLI), the task transitions to `status: ready` and the keepalive auto-starts it.
 - **Orchestration awareness**: slots running t3code orchestrated sessions have state in `orchestration/slot-{n}.json`. Use `ludics orch status <slot>` to inspect. Hung agents are auto-detected and nudged; PR merge conflicts trigger automatic coder redispatch.
 
 ## Filing Issues from Obstacles
@@ -38,7 +38,7 @@ When you encounter workflow friction, automation bugs, or recurring manual worka
 | **Elaborate** | Cross-task awareness, project scope, surface unknowns | Task file: Context + Tentative Design + Questions |
 | **Proposal process** | Acquire knowledge from user (answer questions) | User resolves questions → `has_questions` removed |
 | **Proposal artifact** | Distill resolved intent into actionable spec | Proposal file: Goal + Acceptance Criteria + Context + optional Approach |
-| **Auto-start / Deferred** | Evaluate confidence + autonomy → launch or defer to user | Session starts or `deferred_launch: true` set |
+| **Auto-start / Deferred** | Evaluate confidence + autonomy → launch or defer to user | Session starts or `status: deferred` set |
 | **Plan** (orchestration) | Implementation planning by agents | Coder plans, reviewer checks (up to 3 merge→review iterations) |
 | **Work** (orchestration) | Actual implementation | Agents code against the proposal |
 | **Review → PR → Merge** | Review, create PR, resolve conflicts, merge | PR merged, retrospective collected |

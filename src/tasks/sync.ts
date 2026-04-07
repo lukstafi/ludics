@@ -737,7 +737,7 @@ function tasksReconcileBlockedStatus(tasksDir: string): void {
     const blockedBy = fm.dependencies?.blocked_by ?? [];
 
     // Skip terminal and active statuses
-    if (["done", "abandoned", "merged", "in-progress", "preempt-queued", "preempted"].includes(status)) continue;
+    if (["done", "abandoned", "merged", "in-progress", "deferred", "preempt-queued", "preempted"].includes(status)) continue;
 
     if (blockedBy.length > 0 && status === "ready") {
       if (setFrontmatterScalar(filePath, "status", "blocked")) {

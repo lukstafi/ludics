@@ -172,9 +172,9 @@ When a proposal is ready, ludics evaluates whether to automatically launch a cod
 
 Exposed via `ludics auto-start-evaluate <taskId> [high|low] [rationale...]`.
 
-**Deferred launch** (task frontmatter flags: `deferred_launch`, `approved`):
+**Deferred launch** (task status: `deferred`):
 
-When auto-start defers to the user, the task gets `deferred_launch: true`. The dashboard shows a Deferred Launch tile with View/Approve/Abandon buttons. On approve: `deferred_launch` is removed and `approved: true` is set, which the keepalive picks up for auto-start. On proposal revision, `approved` is cleared to require re-approval.
+When auto-start defers to the user, the task gets `status: deferred`. The dashboard shows a Deferred Launch tile with View/Approve/Abandon buttons. On approve: the status transitions to `ready`, and the keepalive picks it up for auto-start. On proposal revision, the status is set back to `deferred` to require re-approval.
 
 **How automation invokes Mag:**
 

@@ -658,14 +658,20 @@ export function findSlotForTask(taskId: string): number | null {
   return null;
 }
 
-function readTaskDeferralFlags(taskId: string): { deferred: boolean; approved: boolean } {
+function isTaskDeferred(taskId: string): boolean {
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
-  if (!existsSync(taskFile)) return { deferred: false, approved: false };
+  if (!existsSync(taskFile)) return false;
   const content = readFileSync(taskFile, "utf-8");
-  return {
-    deferred: /^deferred_launch:\s*true/m.test(content),
-    approved: /^approved:\s*true/m.test(content),
-  };
+  const statusMatch = content.match(/^status:\s*(.+)$/m);
+  if (statusMatch && statusMatch[1]!.trim() === "deferred") return true;
+  // Legacy shim: treat deferred_launch: true as deferred, opportunistically migrate in-place
+  if (/^deferred_launch:\s*true/m.test(content)) {
+    updateFrontmatterField(taskFile, "status", "deferred");
+    removeFrontmatterField(taskFile, "deferred_launch");
+    removeFrontmatterField(taskFile, "approved");
+    return true;
+  }
+  return false;
 }
 
 function abandonTaskFromNotification(taskId: string): void {
@@ -676,8 +682,6 @@ function abandonTaskFromNotification(taskId: string): void {
     if (existsSync(taskFile)) {
       updateFrontmatterField(taskFile, "status", "abandoned");
       updateFrontmatterField(taskFile, "completed", new Date().toISOString().slice(0, 19) + "Z");
-      removeFrontmatterField(taskFile, "deferred_launch");
-      removeFrontmatterField(taskFile, "approved");
       emitEvent({
         event_type: "notify_abandon",
         source: "notify",
@@ -702,11 +706,6 @@ function abandonTaskFromNotification(taskId: string): void {
 
   try {
     slotClear(slotNum, "abandoned");
-    const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
-    if (existsSync(taskFile)) {
-      removeFrontmatterField(taskFile, "deferred_launch");
-      removeFrontmatterField(taskFile, "approved");
-    }
     emitEvent({
       event_type: "notify_abandon",
       source: "notify",
@@ -736,8 +735,6 @@ function completeTaskFromNotification(taskId: string): void {
   try {
     if (slotNum !== null) {
       slotClear(slotNum, "done");
-      const doneTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
-      if (existsSync(doneTaskFile)) removeFrontmatterField(doneTaskFile, "deferred_launch");
       emitEvent({
         event_type: "notify_done",
         source: "notify",
@@ -765,7 +762,6 @@ function completeTaskFromNotification(taskId: string): void {
     }
 
     taskCompleteDirectly(taskId);
-    removeFrontmatterField(taskFile, "deferred_launch");
     emitEvent({
       event_type: "notify_done",
       source: "notify",
@@ -1001,8 +997,6 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
     // Notification button actions are always treated as fresh starts.
     slotAssign(slotNum, taskId, adapter, "", path, launchArgs);
     await slotStart(slotNum);
-    const launchTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
-    if (existsSync(launchTaskFile)) removeFrontmatterField(launchTaskFile, "deferred_launch");
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     let rollbackStatus = "rollback skipped";
@@ -1157,8 +1151,7 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
           const tid = approveMatch[1]!;
           const tf = join(harnessDir(), "tasks", `${tid}.md`);
           if (existsSync(tf)) {
-            removeFrontmatterField(tf, "deferred_launch");
-            addFrontmatterField(tf, "approved", "true");
+            updateFrontmatterField(tf, "status", "ready");
             console.error(`ludics: approved deferred task ${tid} for auto-start`);
           }
         }
@@ -1952,14 +1945,12 @@ function maybeAutoStartSlots(): void {
     const content = readFileSync(taskFile, "utf-8");
     if (!content.includes("\nproposal:")) continue;
 
-    // Skip deferred tasks unless approved
-    const flags = readTaskDeferralFlags(taskId);
-    if (flags.deferred && !flags.approved) continue;
+    // Skip deferred tasks
+    if (isTaskDeferred(taskId)) continue;
 
     // Task has a proposal but no session — auto-start
     try {
       slotStart(slotNum);
-      removeFrontmatterField(taskFile, "deferred_launch");
       emitEvent({ event_type: "slot_auto_start", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)` });
       console.error(`ludics: auto-started slot ${slotNum} for ${taskId} (proposal exists, no session)`);
     } catch (err) {
@@ -2100,7 +2091,7 @@ function maybeNagQuestions(): void {
     const id = String(fm.id ?? "").trim();
     const title = String(fm.title ?? "").trim();
     const status = String(fm.status ?? "").trim();
-    if (status !== "ready" && status !== "in-progress") continue;
+    if (status !== "ready" && status !== "in-progress" && status !== "deferred") continue;
 
     // Check if task is assigned to a slot (increases urgency)
     const slotNum = fm.slot ? Number(fm.slot) : null;
@@ -2243,8 +2234,6 @@ function getSortedReadyCandidates(): ReadyCandidate[] {
 
     if (tasksInSlots.has(id)) continue;
     if (status !== "ready") continue;
-    // Skip deferred tasks unless approved
-    if (!!fm.deferred_launch && !fm.approved) continue;
     const blockedBy = deps.blocked_by;
     if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
 
@@ -3300,17 +3289,18 @@ export async function runMag(args: string[]): Promise<void> {
         startSessionsAutonomy(),
         findSlotForTask(taskId) !== null,
       );
-      // Side effect: set or clear deferred_launch in task frontmatter
+      // Side effect: set or clear deferred status in task frontmatter
       const evalTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
       if (existsSync(evalTaskFile)) {
         if (result.decision === "defer-to-user") {
-          const evalContent = readFileSync(evalTaskFile, "utf-8");
-          const isApproved = /^approved:\s*true/m.test(evalContent);
-          if (!isApproved) {
-            addFrontmatterField(evalTaskFile, "deferred_launch", "true");
-          }
+          updateFrontmatterField(evalTaskFile, "status", "deferred");
         } else {
-          removeFrontmatterField(evalTaskFile, "deferred_launch");
+          // Only clear deferred — do not downgrade other statuses
+          const evalContent = readFileSync(evalTaskFile, "utf-8");
+          const evalStatus = evalContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+          if (evalStatus === "deferred") {
+            updateFrontmatterField(evalTaskFile, "status", "ready");
+          }
         }
       }
       console.log(JSON.stringify(result));
@@ -3329,9 +3319,15 @@ export async function runMag(args: string[]): Promise<void> {
       const taskIds = taskArg.split(",");
       const feedback = args.slice(2).join(" ");
       for (const taskId of taskIds) {
-        // Clear approved so re-evaluation after revision can re-defer if warranted
+        // Set status back to deferred so re-evaluation after revision can re-assess
         const reviseTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
-        if (existsSync(reviseTaskFile)) removeFrontmatterField(reviseTaskFile, "approved");
+        if (existsSync(reviseTaskFile)) {
+          const revContent = readFileSync(reviseTaskFile, "utf-8");
+          const revStatus = revContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+          if (revStatus === "in-progress" || revStatus === "ready") {
+            updateFrontmatterField(reviseTaskFile, "status", "deferred");
+          }
+        }
         if (feedback) {
           queueRequest({ action: "revise-proposal", task: taskId, feedback });
         } else {

@@ -375,7 +375,6 @@ interface DashboardTask {
     subtask_of: string | null;
   };
   hasQuestions: boolean;
-  deferredLaunch: boolean;
 }
 
 interface FilteredTaskTileConfig {
@@ -463,7 +462,6 @@ function readDashboardTasks(): DashboardTask[] {
           subtask_of: isNonNullValue(deps.subtask_of) ? String(deps.subtask_of) : null,
         },
         hasQuestions: !!data.has_questions,
-        deferredLaunch: !!data.deferred_launch,
       });
     } catch {
       // skip
@@ -547,7 +545,7 @@ const unansweredQuestionsConfig: FilteredTaskTileConfig = {
 };
 
 const deferredLaunchConfig: FilteredTaskTileConfig = {
-  filter: (task) => task.deferredLaunch && !task.isCompleted && task.status !== "abandoned",
+  filter: (task) => task.status === "deferred",
   extraFields: (task) => ({
     hasProposal: task.hasProposal,
     proposalPath: task.proposalPath,

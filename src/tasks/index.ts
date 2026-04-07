@@ -673,9 +673,38 @@ export async function runTasks(args: string[]): Promise<void> {
       tasksMigrateRefs(dryRun);
       break;
     }
+    case "migrate-deferred": {
+      const dir = tasksDir();
+      if (!existsSync(dir)) {
+        console.error("No tasks directory found");
+        break;
+      }
+      const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+      let migrated = 0;
+      for (const f of files) {
+        const filePath = join(dir, f);
+        const content = readFileSync(filePath, "utf-8");
+        const hasDeferredLaunch = /^deferred_launch:\s*true/m.test(content);
+        const hasApproved = /^approved:\s*true/m.test(content);
+        if (hasDeferredLaunch) {
+          updateFrontmatterField(filePath, "status", "deferred");
+          removeFrontmatterField(filePath, "deferred_launch");
+          if (hasApproved) removeFrontmatterField(filePath, "approved");
+          console.log(`migrated: ${f} → status: deferred`);
+          migrated++;
+        } else if (hasApproved) {
+          // Orphaned approved field without deferred_launch — clean up
+          removeFrontmatterField(filePath, "approved");
+          console.log(`cleaned: ${f} → removed orphaned approved field`);
+          migrated++;
+        }
+      }
+      console.log(`${migrated} file(s) migrated`);
+      break;
+    }
     default:
       throw new Error(
-        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, check, merge, unmerge, duplicates, migrate-refs)`,
+        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, check, merge, unmerge, duplicates, migrate-refs, migrate-deferred)`,
       );
   }
 }
