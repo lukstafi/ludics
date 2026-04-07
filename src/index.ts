@@ -51,33 +51,8 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   init: runInit,
   quote: async () => runQuote(),
   config: async (args) => {
-    const sub = args[0] ?? "";
-    if (sub === "proposals-path") {
-      const project = args[1];
-      if (!project) {
-        console.error("usage: ludics config proposals-path <project>");
-        process.exit(1);
-      }
-      const { resolveProjectPath, resolveProposalsPath, loadConfigSync } = await import("./config.ts");
-      const projectDir = resolveProjectPath(project);
-      if (!projectDir) {
-        console.error(`project not found: ${project}`);
-        process.exit(1);
-      }
-      const cfg = loadConfigSync();
-      const lowerProject = project.toLowerCase();
-      const projCfg = (cfg.projects ?? []).find(
-        (p: any) => {
-          const name = String(p.name ?? "").toLowerCase();
-          const repoTail = (String(p.repo ?? "").split("/").pop() ?? "").toLowerCase();
-          return name === lowerProject || repoTail === lowerProject;
-        }
-      );
-      console.log(resolveProposalsPath(projectDir, projCfg?.proposals_path));
-    } else {
-      console.error(`unknown config subcommand: ${sub} (available: proposals-path)`);
-      process.exit(1);
-    }
+    const { runConfigCli } = await import("./config-cli.ts");
+    await runConfigCli(args);
   },
   events: async (args) => runEvents(args),
   t3code: async (args) => {

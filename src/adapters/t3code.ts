@@ -18,7 +18,7 @@ import {
   serverStatus,
   writeSlotState,
 } from "../t3code/server.ts";
-import { globalAdapter, loadConfigSync } from "../config.ts";
+import { findProjectConfig, globalAdapter, loadConfigSync } from "../config.ts";
 import {
   toWireProvider,
   threadModel,
@@ -890,18 +890,7 @@ async function startOrchestratedThreads(
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
     stagingRepo: (() => {
       const cfg = loadConfigSync();
-      const proj = cfg.projects?.find((p) => {
-        if (p.path) {
-          const expanded = (String(p.path).startsWith("~/")
-            ? join(process.env.HOME ?? "~", String(p.path).slice(2))
-            : String(p.path)).replace(/\/+$/, "");
-          if (projectDir === expanded || projectDir.startsWith(expanded + "/")) return true;
-        }
-        const dir = basename(projectDir).toLowerCase();
-        const repoTail = String(p.repo ?? "").split("/").pop()?.toLowerCase() ?? "";
-        return dir === String(p.name ?? "").toLowerCase() || dir === repoTail;
-      });
-      return proj?.staging_repo || undefined;
+      return findProjectConfig(projectDir, cfg)?.staging_repo || undefined;
     })(),
   };
   persistState(state, ctx.harnessDir);
