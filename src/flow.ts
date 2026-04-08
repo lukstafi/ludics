@@ -158,6 +158,7 @@ export function flowReady(): void {
     .filter(
       (t) =>
         t.status === "ready" &&
+        !slottedIds.has(t.id) &&
         (!t.dependencies.blocked_by || t.dependencies.blocked_by.length === 0),
     );
 

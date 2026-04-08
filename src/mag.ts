@@ -3377,7 +3377,13 @@ export async function runMag(args: string[]): Promise<void> {
       const evalTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
       if (existsSync(evalTaskFile)) {
         if (result.decision === "defer-to-user") {
-          updateFrontmatterField(evalTaskFile, "status", "deferred");
+          // If the task is already in a slot, clear the slot to free it for other work
+          const evalSlot = findSlotForTask(taskId);
+          if (evalSlot !== null) {
+            slotClear(evalSlot, "deferred");
+          } else {
+            updateFrontmatterField(evalTaskFile, "status", "deferred");
+          }
         } else {
           // Only clear deferred — do not downgrade other statuses
           const evalContent = readFileSync(evalTaskFile, "utf-8");
@@ -3408,8 +3414,13 @@ export async function runMag(args: string[]): Promise<void> {
         if (existsSync(reviseTaskFile)) {
           const revContent = readFileSync(reviseTaskFile, "utf-8");
           const revStatus = revContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
-          if (revStatus === "in-progress" || revStatus === "ready") {
-            updateFrontmatterField(reviseTaskFile, "status", "deferred");
+          if (revStatus === "ready" || revStatus === "in-progress") {
+            const revSlot = findSlotForTask(taskId);
+            if (revSlot !== null) {
+              slotClear(revSlot, "deferred");
+            } else {
+              updateFrontmatterField(reviseTaskFile, "status", "deferred");
+            }
           }
         }
         if (feedback) {

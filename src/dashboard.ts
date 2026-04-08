@@ -472,8 +472,21 @@ function readDashboardTasks(): DashboardTask[] {
 }
 
 function generateReady(tasks: DashboardTask[]): ReadyTask[] {
+  // Exclude tasks already assigned to a slot (status may lag due to state-sync races)
+  const slotsFile = slotsFilePath();
+  const slottedIds = new Set<string>();
+  if (existsSync(slotsFile)) {
+    const slotsContent = readFileSync(slotsFile, "utf-8");
+    const re = /^\*\*Task:\*\*\s*(.+)$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(slotsContent)) !== null) {
+      const id = m[1]!.trim();
+      if (id && id !== "(empty)" && id !== "null") slottedIds.add(id);
+    }
+  }
+
   const ready: ReadyTask[] = tasks
-    .filter((task) => task.status === "ready" && task.dependencies.blocked_by.length === 0)
+    .filter((task) => task.status === "ready" && !slottedIds.has(task.id) && task.dependencies.blocked_by.length === 0)
     .map((task) => ({
       id: task.id,
       title: task.title,
