@@ -377,15 +377,15 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBe("work");
   });
 
-  // --- Staging-aware transitions ---
+  // --- Upstream-aware transitions ---
 
-  test("pr-comments with staging + no forwarding transitions to forward-pr on quiet period", () => {
+  test("pr-comments with upstream + no forwarding transitions to forward-pr on quiet period", () => {
     const quietStart = Math.floor(Date.now() / 1000) - 2000;
     const state = makeState({
       mode: "pair",
       phase: "pr-comments",
       prCommentsQuietSince: quietStart,
-      stagingRepo: "owner/staging-fork",
+      upstreamRepo: "owner/staging-fork",
       agents: [
         { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
         { name: "reviewer", provider: "codex", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b", role: "reviewer" },
@@ -397,7 +397,7 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBe("forward-pr");
   });
 
-  test("pr-comments without staging still transitions to final-merge on quiet period", () => {
+  test("pr-comments without upstream still transitions to final-merge on quiet period", () => {
     const quietStart = Math.floor(Date.now() / 1000) - 2000;
     const state = makeState({
       phase: "pr-comments",
@@ -466,32 +466,32 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBeNull();
   });
 
-  test("pr-comments shortcut suppressed for staging non-forwarded PRs", () => {
+  test("pr-comments shortcut suppressed for upstream non-forwarded PRs", () => {
     const now = Math.floor(Date.now() / 1000);
     const state = makeState({
       phase: "pr-comments",
       phaseStartedAt: now - 90,
       prCommentsCoderDispatched: true,
-      stagingRepo: "owner/staging-fork",
+      upstreamRepo: "owner/staging-fork",
       config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
     });
     state.agentStates.coder.status = "pr-comments-done";
     state.agentStates.reviewer.status = "pr-comments-done";
     state.agentStates.coder.prUrl = "https://github.com/owner/staging-fork/pull/1";
-    // Staging + not forwarded — must still require quiet period for forward-pr
+    // Upstream + not forwarded — must still require quiet period for forward-pr
     expect(evaluateTransition(state)).toBeNull();
   });
 
-  test("hierarchical duo with staging_repo ignores staging and transitions to final-merge", () => {
+  test("hierarchical duo with upstream_repo ignores upstream forwarding and transitions to final-merge", () => {
     const quietStart = Math.floor(Date.now() / 1000) - 2000;
     const state = makeState({
       phase: "pr-comments",
       prCommentsQuietSince: quietStart,
-      stagingRepo: "owner/staging-fork",
-      duoPeerSlot: 2, // hierarchical duo suppresses staging
+      upstreamRepo: "owner/staging-fork",
+      duoPeerSlot: 2, // hierarchical duo suppresses upstream forwarding
     });
     state.agentStates.coder.prUrl = "https://github.com/owner/staging-fork/pull/1";
-    // duoPeerSlot set → staging suppressed → non-staging path
+    // duoPeerSlot set → upstream forwarding suppressed
     // But duoPeerSlot is set, so cross-slot coordination kicks in — returns null (waiting for peer)
     expect(evaluateTransition(state)).toBeNull();
   });
@@ -504,7 +504,7 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBe("pr-comments");
   });
 
-  test("pr-comments with staging + forwarded + upstream-merged transitions to final-merge", () => {
+  test("pr-comments with upstream + forwarded + upstream-merged transitions to final-merge", () => {
     const { mkdtempSync, writeFileSync: write } = require("fs");
     const { rmSync } = require("fs");
     const tmpDir = mkdtempSync("/tmp/ludics-phases-staging-test-");
@@ -514,7 +514,7 @@ describe("evaluateTransition", () => {
       const state = makeState({
         mode: "pair",
         phase: "pr-comments",
-        stagingRepo: "owner/staging-fork",
+        upstreamRepo: "owner/staging-fork",
         peerSyncDir: tmpDir,
         agents: [
           { name: "coder", provider: "codex", model: "gpt-5.4", branch: "a", worktreePath: "/tmp/a", role: "coder" },
@@ -530,7 +530,7 @@ describe("evaluateTransition", () => {
     }
   });
 
-  test("pr-comments with staging + forwarded but no upstream-merged stays null (no timeout escape)", () => {
+  test("pr-comments with upstream + forwarded but no upstream-merged stays null (no timeout escape)", () => {
     const { mkdtempSync, writeFileSync: write } = require("fs");
     const { rmSync } = require("fs");
     const tmpDir = mkdtempSync("/tmp/ludics-phases-staging-wait-test-");
@@ -539,7 +539,7 @@ describe("evaluateTransition", () => {
       const state = makeState({
         mode: "pair",
         phase: "pr-comments",
-        stagingRepo: "owner/staging-fork",
+        upstreamRepo: "owner/staging-fork",
         peerSyncDir: tmpDir,
         phaseStartedAt: 0, // phase timeout long expired
         prCommentsQuietSince: 1, // quiet period long expired

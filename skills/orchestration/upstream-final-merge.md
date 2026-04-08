@@ -1,31 +1,31 @@
-# Final Merge — Staging Cleanup
+# Final Merge — Upstream Merge Cleanup
 {{VERIFICATION_CONTEXT}}
-The upstream PR has been merged. Perform staging fork cleanup from `{{WORKTREE_PATH}}`.
+The upstream PR has been merged. Perform upstream merge cleanup from `{{WORKTREE_PATH}}`.
 
-1. Read the staging and upstream PR URLs:
+1. Read the working repo and upstream PR URLs:
 ```sh
-STAGING_PR_URL=$(cat "{{STAGING_PR_FILE}}" 2>/dev/null)
-STAGING_PR_NUM=$(echo "$STAGING_PR_URL" | grep -oP '\d+$')
+WORKING_PR_URL=$(cat "{{UPSTREAM_PR_FILE}}" 2>/dev/null)
+WORKING_PR_NUM=$(echo "$WORKING_PR_URL" | grep -oP '\d+$')
 UPSTREAM_PR_URL=$(cat "{{PR_FILE}}" 2>/dev/null)
 ```
 
 2. Set up upstream remote and detect default branch:
 ```sh
-git remote add upstream https://github.com/{{PROJECT_REPO}}.git 2>/dev/null || true
+git remote add upstream https://github.com/{{UPSTREAM_REPO}}.git 2>/dev/null || true
 git fetch upstream
 UPSTREAM_DEFAULT=$(git remote show upstream | sed -n 's/.*HEAD branch: //p')
 ```
 
-3. Sync staging fork's default branch from upstream:
+3. Sync working repo's default branch from upstream:
 ```sh
 git push origin upstream/$UPSTREAM_DEFAULT:$UPSTREAM_DEFAULT
 ```
 
-4. Comment on the staging PR and close it:
+4. Comment on the working repo PR and close it:
 ```sh
-gh pr comment "$STAGING_PR_NUM" --repo "{{STAGING_REPO}}" \
-  --body "Merged upstream: $UPSTREAM_PR_URL — staging fork synced."
-gh pr close "$STAGING_PR_NUM" --repo "{{STAGING_REPO}}"
+gh pr comment "$WORKING_PR_NUM" --repo "{{PROJECT_REPO}}" \
+  --body "Merged upstream: $UPSTREAM_PR_URL — working repo synced."
+gh pr close "$WORKING_PR_NUM" --repo "{{PROJECT_REPO}}"
 ```
 
 5. Clean up feature branches on both remotes. Query the upstream PR's head ref
@@ -45,7 +45,7 @@ fi
 6. Create merged marker and signal completion:
 ```sh
 touch "{{MERGED_MARKER_FILE}}"
-printf '%s|%s|staging cleanup complete\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
+printf '%s|%s|upstream merge cleanup complete\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
 ```
 
 Do not write the merged marker until all cleanup steps succeed.

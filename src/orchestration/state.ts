@@ -125,8 +125,8 @@ export interface OrchestrationState {
   /** @deprecated Alias for taskId — kept for backward compat with persisted state */
   feature?: string;
   slotTitle?: string;
-  /** Staging fork repo slug (e.g. "lukstafi/ocannl-staging"). Set from project config at init. */
-  stagingRepo?: string;
+  /** Upstream repo slug for PR forwarding (e.g. "ahrefs/ocannl"). Set from project config at init. */
+  upstreamRepo?: string;
   lastLearningAt?: number;
   lastLearningRound?: number;
   confirmedPhase?: Phase | null;

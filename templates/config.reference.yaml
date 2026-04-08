@@ -20,7 +20,7 @@ slots:
 projects:
   - name: my-project
     repo: your-username/my-project
-    staging_repo: ""      # Optional: staging fork for PR creation. `repo` remains upstream for issue syncing.
+    upstream_repo: ""      # Optional: upstream repo for PR forwarding. `repo` is the working repo where agents create PRs.
     path: ~/my-project    # Local checkout path (used for slot start, worktree creation)
     issues: true          # Include GitHub issues as tasks
     priority: false       # Priority project: preempt slots when tasks arrive

@@ -464,9 +464,9 @@ async function start(ctx: AdapterContext): Promise<string> {
     backend: "tmux",
     slotTitle: options.title ?? slotSessionName(ctx.slot, undefined, taskId),
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
-    stagingRepo: (() => {
+    upstreamRepo: (() => {
       const cfg = loadConfigSync();
-      return findProjectConfig(projectDir, cfg)?.staging_repo || undefined;
+      return findProjectConfig(projectDir, cfg)?.upstream_repo || undefined;
     })(),
   };
   persistState(state, ctx.harnessDir);

@@ -24,21 +24,25 @@ function validateProjectPaths(): void {
 
   for (const p of config.projects ?? []) {
     const repo = String(p.repo ?? "");
-    const stagingRepo = String(p.staging_repo ?? "");
-    if (!stagingRepo || stagingRepo === repo || !p.path) continue;
+    const upstreamRepo = String(p.upstream_repo ?? "");
+    if (!upstreamRepo || upstreamRepo === repo || !p.path) continue;
 
     const repoTail = repo.split("/").pop() ?? "";
+    const upstreamTail = upstreamRepo.split("/").pop() ?? "";
+    // When both repos share the same tail (e.g. lukstafi/ocannl vs ahrefs/ocannl),
+    // path-tail comparison cannot distinguish them — skip the heuristic.
+    if (repoTail === upstreamTail) continue;
     const pathStr = String(p.path);
     // Check if path ends with upstream repo tail — likely misconfigured
     const pathTail = pathStr.replace(/\/+$/, "").split("/").pop() ?? "";
-    if (pathTail === repoTail) {
+    if (pathTail === upstreamTail) {
       console.error(
         `\n` +
-        `ERROR: project "${p.name}" has staging_repo "${stagingRepo}" but path "${pathStr}"\n` +
-        `       points to the upstream repo "${repo}".\n` +
-        `       When staging_repo is set, path should point to the staging fork checkout\n` +
-        `       (the working repo where agents create PRs).\n` +
-        `       Expected path ending in: ${stagingRepo.split("/").pop()}\n`,
+        `ERROR: project "${p.name}" has upstream_repo "${upstreamRepo}" but path "${pathStr}"\n` +
+        `       points to the upstream repo, not the working repo "${repo}".\n` +
+        `       When upstream_repo is set, path should point to the working repo checkout\n` +
+        `       (where agents create PRs), not the upstream.\n` +
+        `       Expected path ending in: ${repo.split("/").pop()}\n`,
       );
       process.exit(1);
     }

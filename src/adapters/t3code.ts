@@ -888,9 +888,9 @@ async function startOrchestratedThreads(
     backend: "t3code",
     slotTitle: title,
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
-    stagingRepo: (() => {
+    upstreamRepo: (() => {
       const cfg = loadConfigSync();
-      return findProjectConfig(projectDir, cfg)?.staging_repo || undefined;
+      return findProjectConfig(projectDir, cfg)?.upstream_repo || undefined;
     })(),
   };
   persistState(state, ctx.harnessDir);

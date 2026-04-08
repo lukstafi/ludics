@@ -733,12 +733,12 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
     const markerFile = join(state.peerSyncDir, `${agent.name}.merged`);
 
     if (!existsSync(markerFile) && isPrMerged(prUrl)) {
-      const isStaging = !!state.stagingRepo && state.duoPeerSlot == null;
+      const hasUpstream = !!state.upstreamRepo && state.duoPeerSlot == null;
       const forwarded = state.agents.some((a) =>
         existsSync(join(state.peerSyncDir, `${a.name}.forwarded`))
       );
 
-      if (isStaging && forwarded) {
+      if (hasUpstream && forwarded) {
         // Upstream PR merged — write upstream-merged marker (NOT .merged)
         const upstreamMarkerFile = join(state.peerSyncDir, `${agent.name}.upstream-merged`);
         if (!existsSync(upstreamMarkerFile)) {
@@ -758,10 +758,10 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
             `Slot ${state.slot}: upstream PR merged`,
           );
         }
-      } else if (isStaging && !forwarded) {
-        // Staging PR merged before forwarding — do NOT write .merged marker.
+      } else if (hasUpstream && !forwarded) {
+        // Working repo PR merged before forwarding — do NOT write .merged marker.
         // Writing .merged would cause isMerged() → suggest-refactor, skipping the
-        // entire staging→upstream forwarding flow. The workflow should still proceed
+        // entire upstream forwarding flow. The workflow should still proceed
         // to forward-pr to create the upstream PR. Emit a warning.
         emitEvent({
           event_type: "orchestration_warning",
@@ -769,10 +769,10 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
           scope: "slot",
           slot: state.slot,
           task: state.taskId,
-          message: `Staging PR merged before forwarding: ${prUrl} — will still forward to upstream`,
+          message: `Working repo PR merged before forwarding: ${prUrl} — will still forward to upstream`,
         });
       } else {
-        // Non-staging: existing behavior
+        // No upstream: existing behavior
         writeFileSync(markerFile, "merged\n");
         state.agentStates[agent.name]!.status = "merged";
         state.agentStates[agent.name]!.statusMessage = "PR merged externally";

@@ -63,9 +63,9 @@ function baseCtx(): Record<string, string> {
     PLAN_MERGE_ROUND: "0",
     PEER_SYNC_DIR: "/tmp/peer-sync",
     DONE_STATUS: "review-done",
-    STAGING_REPO: "",
-    STAGING_REPO_NOTE: "",
-    STAGING_PR_FILE: "/tmp/staging-pr",
+    UPSTREAM_REPO: "",
+    UPSTREAM_REPO_NOTE: "",
+    UPSTREAM_PR_FILE: "/tmp/upstream-pr",
     UPSTREAM_MERGED_MARKER_FILE: "/tmp/upstream-merged",
     FORWARDED_MARKER_FILE: "/tmp/forwarded",
   };
@@ -77,19 +77,19 @@ describe("skills", () => {
     expect(path.endsWith("pair-reviewer-review.md")).toBe(true);
   });
 
-  test("resolveTemplatePath: staging flag selects staging-final-merge.md", () => {
+  test("resolveTemplatePath: hasUpstream flag selects upstream-final-merge.md", () => {
     const path = resolveTemplatePath("final-merge", "pair", "coder", true);
-    expect(path.endsWith("staging-final-merge.md")).toBe(true);
+    expect(path.endsWith("upstream-final-merge.md")).toBe(true);
   });
 
-  test("resolveTemplatePath: non-staging uses plain final-merge.md", () => {
+  test("resolveTemplatePath: no upstream uses plain final-merge.md", () => {
     const path = resolveTemplatePath("final-merge", "pair", "coder", false);
     expect(path.endsWith("final-merge.md")).toBe(true);
-    expect(path).not.toContain("staging-");
+    expect(path).not.toContain("upstream-final");
   });
 
-  test("resolveTemplatePath: staging flag without staging template falls through to generic", () => {
-    // review has no staging variant — should fall through to pair-reviewer-review.md
+  test("resolveTemplatePath: hasUpstream flag without upstream template falls through to generic", () => {
+    // review has no upstream variant — should fall through to pair-reviewer-review.md
     const path = resolveTemplatePath("review", "pair", "reviewer", true);
     expect(path.endsWith("pair-reviewer-review.md")).toBe(true);
   });
@@ -158,64 +158,64 @@ describe("skills", () => {
     expect(ctx["MERGED_PLAN_FILE"]).toContain("round-2-merged-2.md");
   });
 
-  test("substituteTemplate: STAGING_REPO and STAGING_REPO_NOTE are empty when not set", () => {
-    const text = substituteTemplate("{{STAGING_REPO}}|{{STAGING_REPO_NOTE}}", baseCtx());
+  test("substituteTemplate: UPSTREAM_REPO and UPSTREAM_REPO_NOTE are empty when not set", () => {
+    const text = substituteTemplate("{{UPSTREAM_REPO}}|{{UPSTREAM_REPO_NOTE}}", baseCtx());
     expect(text).toBe("|");
   });
 
-  test("substituteTemplate: STAGING_REPO and STAGING_REPO_NOTE render when set", () => {
-    const stagingFork = "owner/staging-fork";
-    const text = substituteTemplate("{{STAGING_REPO}}|{{STAGING_REPO_NOTE}}", {
+  test("substituteTemplate: UPSTREAM_REPO and UPSTREAM_REPO_NOTE render when set", () => {
+    const upstreamRepo = "owner/upstream-repo";
+    const text = substituteTemplate("{{UPSTREAM_REPO}}|{{UPSTREAM_REPO_NOTE}}", {
       ...baseCtx(),
-      STAGING_REPO: stagingFork,
-      STAGING_REPO_NOTE: `\n> **Staging fork**: This project uses a staging fork (\`${stagingFork}\`). Create the PR against the staging fork, not the upstream repo.\n`,
+      UPSTREAM_REPO: upstreamRepo,
+      UPSTREAM_REPO_NOTE: `\n> **Upstream forwarding**: This project forwards approved PRs to upstream (\`${upstreamRepo}\`). Create the PR against the working repo, not upstream.\n`,
     });
-    expect(text).toContain("owner/staging-fork");
-    expect(text).toContain("staging fork");
+    expect(text).toContain("owner/upstream-repo");
+    expect(text).toContain("Upstream forwarding");
   });
 
-  test("pr-create template renders staging note when STAGING_REPO is set", () => {
+  test("pr-create template renders upstream note when UPSTREAM_REPO is set", () => {
     const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-pr-create.md");
     const template = readFileSync(templatePath, "utf-8");
-    const stagingFork = "owner/staging-fork";
+    const upstreamRepo = "owner/upstream-repo";
     const rendered = substituteTemplate(template, {
       ...baseCtx(),
-      STAGING_REPO: stagingFork,
-      STAGING_REPO_NOTE: `\n> **Staging fork**: This project uses a staging fork (\`${stagingFork}\`). Create the PR against the staging fork, not the upstream repo.\n`,
+      UPSTREAM_REPO: upstreamRepo,
+      UPSTREAM_REPO_NOTE: `\n> **Upstream forwarding**: This project forwards approved PRs to upstream (\`${upstreamRepo}\`). Create the PR against the working repo, not upstream.\n`,
     });
-    expect(rendered).toContain("owner/staging-fork");
-    expect(rendered).toContain("staging fork");
-    // Note must be absent when STAGING_REPO is empty
+    expect(rendered).toContain("owner/upstream-repo");
+    expect(rendered).toContain("Upstream forwarding");
+    // Note must be absent when UPSTREAM_REPO is empty
     const renderedNull = substituteTemplate(template, baseCtx());
-    expect(renderedNull).not.toContain("staging fork");
+    expect(renderedNull).not.toContain("Upstream forwarding");
   });
 
-  test("staging-final-merge template does NOT contain gh pr merge (non-staging merge command)", () => {
-    const templatePath = join(import.meta.dir, "../../skills/orchestration/staging-final-merge.md");
+  test("upstream-final-merge template does NOT contain gh pr merge (non-upstream merge command)", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/upstream-final-merge.md");
     const template = readFileSync(templatePath, "utf-8");
     const rendered = substituteTemplate(template, baseCtx());
     expect(rendered).not.toContain("gh pr merge");
-    expect(rendered).toContain("staging cleanup");
+    expect(rendered).toContain("upstream merge cleanup");
   });
 
-  test("non-staging final-merge template does NOT contain staging cleanup", () => {
+  test("non-upstream final-merge template does NOT contain upstream merge cleanup", () => {
     const templatePath = join(import.meta.dir, "../../skills/orchestration/final-merge.md");
     const template = readFileSync(templatePath, "utf-8");
     const rendered = substituteTemplate(template, baseCtx());
     expect(rendered).toContain("gh pr merge");
-    expect(rendered).not.toContain("staging cleanup");
-    expect(rendered).not.toContain("STAGING_PR_FILE");
+    expect(rendered).not.toContain("upstream merge cleanup");
+    expect(rendered).not.toContain("UPSTREAM_PR_FILE");
   });
 
-  test("buildSkillContext: hierarchical duo suppresses STAGING_REPO when duoPeerSlot is set", async () => {
-    const tmpCfg = "/tmp/ludics-skills-duo-staging-test.yaml";
+  test("buildSkillContext: hierarchical duo suppresses UPSTREAM_REPO when duoPeerSlot is set", async () => {
+    const tmpCfg = "/tmp/ludics-skills-duo-upstream-test.yaml";
     writeFileSync(tmpCfg, [
       "state_repo: test/testrepo",
       "state_path: harness",
       "projects:",
       "  - name: my-proj",
-      "    repo: upstream/my-proj",
-      "    staging_repo: owner/my-proj-staging",
+      "    repo: owner/my-proj-staging",
+      "    upstream_repo: upstream/my-proj",
       "    path: /tmp/my-proj-checkout",
     ].join("\n"));
     const origConfig = process.env.LUDICS_CONFIG;
@@ -227,13 +227,13 @@ describe("skills", () => {
       const state = {
         ...makeState(),
         mode: "pair" as const,
-        duoPeerSlot: 2, // hierarchical duo: staging is suppressed
+        duoPeerSlot: 2, // hierarchical duo: upstream forwarding is suppressed
         projectDir: "/tmp/my-proj-checkout",
       };
       const ctx = buildSkillContext(state, state.agents[0]!);
-      // Hierarchical duo (duoPeerSlot set) must suppress staging variables
-      expect(ctx["STAGING_REPO"]).toBe("");
-      expect(ctx["STAGING_REPO_NOTE"]).toBe("");
+      // Hierarchical duo (duoPeerSlot set) must suppress upstream variables
+      expect(ctx["UPSTREAM_REPO"]).toBe("");
+      expect(ctx["UPSTREAM_REPO_NOTE"]).toBe("");
     } finally {
       if (origConfig !== undefined) process.env.LUDICS_CONFIG = origConfig;
       else delete process.env.LUDICS_CONFIG;
@@ -461,15 +461,15 @@ describe("skills", () => {
     expect(ctx["TASK_SPEC_BRIEF"]).toContain("Full task spec was provided in round 1");
   });
 
-  test("buildSkillContext: discovers staging_repo via configured path", async () => {
-    const tmpCfg = "/tmp/ludics-skills-staging-test.yaml";
+  test("buildSkillContext: discovers upstream_repo via configured path", async () => {
+    const tmpCfg = "/tmp/ludics-skills-upstream-test.yaml";
     writeFileSync(tmpCfg, [
       "state_repo: test/testrepo",
       "state_path: harness",
       "projects:",
       "  - name: my-proj",
-      "    repo: upstream/my-proj",
-      "    staging_repo: owner/my-proj-staging",
+      "    repo: owner/my-proj-staging",
+      "    upstream_repo: upstream/my-proj",
       "    path: /tmp/my-proj-checkout",
     ].join("\n"));
     const origConfig = process.env.LUDICS_CONFIG;
@@ -481,7 +481,7 @@ describe("skills", () => {
       const state = { ...makeState(), projectDir: "/tmp/my-proj-checkout" };
       const coder = state.agents.find((a) => a.role === "coder")!;
       const ctx = buildSkillContext(state, coder);
-      expect(ctx["STAGING_REPO"]).toBe("owner/my-proj-staging");
+      expect(ctx["UPSTREAM_REPO"]).toBe("upstream/my-proj");
     } finally {
       if (origConfig !== undefined) process.env.LUDICS_CONFIG = origConfig;
       else delete process.env.LUDICS_CONFIG;
@@ -498,8 +498,8 @@ describe("skills", () => {
       "state_path: harness",
       "projects:",
       "  - name: my-proj",
-      "    repo: upstream/my-proj",
-      "    staging_repo: owner/my-proj-staging",
+      "    repo: owner/my-proj-staging",
+      "    upstream_repo: upstream/my-proj",
       "    path: /tmp/my-proj-checkout",
       "    proposals_path: docs/proposals",
     ].join("\n"));
@@ -513,8 +513,8 @@ describe("skills", () => {
       const coder = state.agents.find((a) => a.role === "coder")!;
       const ctx = buildSkillContext(state, coder);
       expect(ctx["PROJECT_NAME"]).toBe("my-proj");
-      expect(ctx["PROJECT_REPO"]).toBe("upstream/my-proj");
-      expect(ctx["PROJECT_STAGING_REPO"]).toBe("owner/my-proj-staging");
+      expect(ctx["PROJECT_REPO"]).toBe("owner/my-proj-staging");
+      expect(ctx["PROJECT_UPSTREAM_REPO"]).toBe("upstream/my-proj");
       expect(ctx["PROJECT_PROPOSALS_PATH"]).toBe("docs/proposals");
       // Non-string fields should NOT be injected (e.g., boolean issues)
       expect(ctx["PROJECT_ISSUES"]).toBeUndefined();
@@ -528,37 +528,37 @@ describe("skills", () => {
   });
 
   test("substituteTemplate: {{#IF VAR}} includes block when var is truthy", () => {
-    const text = substituteTemplate("before{{#IF STAGING_REPO}} staging content{{/IF}} after", {
+    const text = substituteTemplate("before{{#IF UPSTREAM_REPO}} staging content{{/IF}} after", {
       ...baseCtx(),
-      STAGING_REPO: "owner/repo",
+      UPSTREAM_REPO: "owner/repo",
     });
     expect(text).toBe("before staging content after");
   });
 
   test("substituteTemplate: {{#IF VAR}} removes block when var is missing", () => {
-    const text = substituteTemplate("before{{#IF STAGING_REPO}} staging content{{/IF}} after", baseCtx());
+    const text = substituteTemplate("before{{#IF UPSTREAM_REPO}} staging content{{/IF}} after", baseCtx());
     expect(text).toBe("before after");
   });
 
   test("substituteTemplate: {{#IF VAR}} removes block when var is empty string", () => {
-    const text = substituteTemplate("before{{#IF STAGING_REPO}} staging content{{/IF}} after", {
+    const text = substituteTemplate("before{{#IF UPSTREAM_REPO}} staging content{{/IF}} after", {
       ...baseCtx(),
-      STAGING_REPO: "",
+      UPSTREAM_REPO: "",
     });
     expect(text).toBe("before after");
   });
 
   test("substituteTemplate: nested {{VAR}} inside conditional block gets substituted", () => {
-    const text = substituteTemplate("{{#IF STAGING_REPO}}repo: {{STAGING_REPO}}{{/IF}}", {
+    const text = substituteTemplate("{{#IF UPSTREAM_REPO}}repo: {{UPSTREAM_REPO}}{{/IF}}", {
       ...baseCtx(),
-      STAGING_REPO: "owner/fork",
+      UPSTREAM_REPO: "owner/fork",
     });
     expect(text).toBe("repo: owner/fork");
   });
 
   test("substituteTemplate: multi-line conditional block", () => {
-    const template = "header\n{{#IF STAGING_REPO}}\nLine 1\nLine 2\n{{/IF}}\nfooter";
-    const included = substituteTemplate(template, { ...baseCtx(), STAGING_REPO: "x" });
+    const template = "header\n{{#IF UPSTREAM_REPO}}\nLine 1\nLine 2\n{{/IF}}\nfooter";
+    const included = substituteTemplate(template, { ...baseCtx(), UPSTREAM_REPO: "x" });
     expect(included).toBe("header\n\nLine 1\nLine 2\n\nfooter");
     const excluded = substituteTemplate(template, baseCtx());
     expect(excluded).toBe("header\n\nfooter");
@@ -574,13 +574,13 @@ describe("skills", () => {
     expect(neither).toBe(" mid ");
   });
 
-  test("buildSkillContext: exposes staging sidecar file variables", async () => {
+  test("buildSkillContext: exposes upstream sidecar file variables", async () => {
     const { buildSkillContext } = await import("./skills.ts");
     const state = makeState();
     const coder = state.agents.find((a) => a.role === "coder")!;
     const ctx = buildSkillContext(state, coder);
-    expect(ctx["STAGING_PR_FILE"]).toContain(".peer-sync");
-    expect(ctx["STAGING_PR_FILE"]).toContain("staging-pr");
+    expect(ctx["UPSTREAM_PR_FILE"]).toContain(".peer-sync");
+    expect(ctx["UPSTREAM_PR_FILE"]).toContain("upstream-pr");
     expect(ctx["UPSTREAM_MERGED_MARKER_FILE"]).toContain("upstream-merged");
     expect(ctx["FORWARDED_MARKER_FILE"]).toContain("forwarded");
   });

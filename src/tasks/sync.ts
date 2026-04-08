@@ -75,8 +75,10 @@ export async function tasksSync(): Promise<void> {
   if (config.projects) {
     for (const project of config.projects) {
       if (!project.issues) continue;
-      const issues = await fetchGitHubIssues(project.repo);
-      const repoName = project.repo.split("/").pop()!;
+      // Issue sync uses upstream_repo when present (issues live on upstream, not the fork)
+      const issueRepo = project.upstream_repo || project.repo;
+      const issues = await fetchGitHubIssues(issueRepo);
+      const repoName = issueRepo.split("/").pop()!;
 
       for (const issue of issues) {
         const id = `gh-${repoName}-${issue.number}`;
@@ -85,7 +87,7 @@ export async function tasksSync(): Promise<void> {
         lines.push(`  - id: ${id}`);
         lines.push(`    title: "${escapedTitle}"`);
         lines.push(`    source: github`);
-        lines.push(`    repo: ${project.repo}`);
+        lines.push(`    repo: ${issueRepo}`);
         lines.push(`    url: ${issue.url}`);
         lines.push(`    labels: "${yamlEscape(labelsStr)}"`);
       }
@@ -475,10 +477,12 @@ export async function tasksUpdate(): Promise<void> {
   const config = loadConfigSync();
   const reposBySlug = new Map<string, string[]>();
   for (const project of (config.projects ?? [])) {
-    const slug = project.repo.split("/").pop() ?? "";
+    // Issue operations target upstream_repo when present (issues live upstream, not on fork)
+    const issueRepo = project.upstream_repo || project.repo;
+    const slug = issueRepo.split("/").pop() ?? "";
     if (!slug) continue;
     const existing = reposBySlug.get(slug) ?? [];
-    existing.push(project.repo);
+    existing.push(issueRepo);
     reposBySlug.set(slug, existing);
   }
 
