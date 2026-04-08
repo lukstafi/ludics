@@ -139,8 +139,11 @@ export interface OrchestrationState {
    */
   prCommentsQuietSince?: number;
   /** Epoch (seconds) when Codex review deferral was armed; set on initial pr-comments entry.
-   *  Cleared once all unique PRs have been resolved (review found or fallback posted). */
+   *  Cleared once all unique PRs have a submitted review (not just when fallback is posted). */
   prCodexReviewDeferredSince?: number;
+  /** True after the explicit `@codex review` fallback comment has been posted.
+   *  Prevents re-posting on subsequent poll cycles while still waiting for the review. */
+  prCodexReviewFallbackPosted?: boolean;
   /** Number of verification failures for pr-create. Reset on fresh phase entry. */
   prCreateVerifyAttempts?: number;
   /** Number of verification failures for final-merge. Reset on fresh phase entry. */
@@ -190,7 +193,7 @@ export const DEFAULT_TIMEOUTS: Record<string, number> = {
   "final-merge": 3600,
 };
 
-export const DEFAULT_PR_COMMENTS_TIMEOUT = 1200; // 20 min quiet before auto-merging
+export const DEFAULT_PR_COMMENTS_TIMEOUT = 1800; // 30 min quiet before auto-merging
 export const DEFAULT_PR_COMMENTS_CHECK_INTERVAL = 60; // poll GitHub every 60 s
 
 export const DEFAULT_POLL_INTERVAL = 10;

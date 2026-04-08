@@ -851,16 +851,19 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
     }
 
     if (urlsMissingReview.length === 0) {
-      // All PRs have auto-triggered reviews — clear early
+      // All PRs have submitted reviews — unblock shortcut transition
       state.prCodexReviewDeferredSince = undefined;
-    } else if (deadlineReached) {
-      // Post fallback only for PRs that still lack a submitted review
+      state.prCodexReviewFallbackPosted = undefined;
+    } else if (deadlineReached && !state.prCodexReviewFallbackPosted) {
+      // Post fallback only for PRs that still lack a submitted review.
+      // Keep prCodexReviewDeferredSince set — it blocks the shortcut transition
+      // until the review actually arrives (urlsMissingReview.length === 0 above).
       const projectEntry = findProjectConfig(state.projectDir);
       const customPrompt = projectEntry?.codex_review_prompt ?? undefined;
       for (const prUrl of urlsMissingReview) {
         postCodexReviewComment(prUrl, customPrompt);
       }
-      state.prCodexReviewDeferredSince = undefined;
+      state.prCodexReviewFallbackPosted = true;
     }
     // else: within window, some PRs still missing review — keep waiting
   }
@@ -1183,6 +1186,7 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
   if (next === "pr-comments") {
     state.prMergeableStates = {};
     state.prCommentsCoderDispatched = false;
+    state.prCodexReviewFallbackPosted = undefined;
   }
   if (state.phase === "review" && next === "update-docs" && !shouldRunUpdateDocs(state)) {
     state.lastLearningAt = state.lastLearningAt ?? 0;
@@ -1233,6 +1237,7 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
   // spurious fallback comments.
   if (state.phase === "pr-comments" && state.prCodexReviewDeferredSince) {
     state.prCodexReviewDeferredSince = undefined;
+    state.prCodexReviewFallbackPosted = undefined;
   }
   if (state.phase === "update-docs" && next === "pr-comments") {
     state.lastLearningAt = nowEpoch();

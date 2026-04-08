@@ -1620,7 +1620,7 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
     expect(postSpy).not.toHaveBeenCalled();
   });
 
-  test("posts fallback after deadline when no review exists", async () => {
+  test("posts fallback after deadline when no review exists, keeps deferral armed", async () => {
     reviewSpy.mockReturnValue(false);
     const state = makePrCommentsState({
       prCodexReviewDeferredSince: nowSec - 700, // 700s ago, past 600s deadline
@@ -1628,7 +1628,32 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
     await checkAndRedispatchPrComments(state, dummyTransport);
     expect(postSpy).toHaveBeenCalledTimes(1);
     expect(postSpy.mock.calls[0]![0]).toBe("https://github.com/test/repo/pull/42");
+    // Deferral stays armed — blocks shortcut until review actually arrives
+    expect(state.prCodexReviewDeferredSince).toBe(nowSec - 700);
+    expect(state.prCodexReviewFallbackPosted).toBe(true);
+  });
+
+  test("does not re-post fallback once already posted, keeps waiting for review", async () => {
+    reviewSpy.mockReturnValue(false);
+    const state = makePrCommentsState({
+      prCodexReviewDeferredSince: nowSec - 800,
+      prCodexReviewFallbackPosted: true,
+    });
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(postSpy).not.toHaveBeenCalled();
+    // Still armed — waiting for review
+    expect(state.prCodexReviewDeferredSince).toBe(nowSec - 800);
+  });
+
+  test("clears deferral after fallback posted and review arrives", async () => {
+    reviewSpy.mockReturnValue(true);
+    const state = makePrCommentsState({
+      prCodexReviewDeferredSince: nowSec - 800,
+      prCodexReviewFallbackPosted: true,
+    });
+    await checkAndRedispatchPrComments(state, dummyTransport);
     expect(state.prCodexReviewDeferredSince).toBeUndefined();
+    expect(state.prCodexReviewFallbackPosted).toBeUndefined();
   });
 
   test("keeps waiting within deferral window when no review yet", async () => {
@@ -1669,7 +1694,9 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
     await checkAndRedispatchPrComments(state, dummyTransport);
     expect(postSpy).toHaveBeenCalledTimes(1);
     expect(postSpy.mock.calls[0]![0]).toBe("https://github.com/test/repo/pull/43");
-    expect(state.prCodexReviewDeferredSince).toBeUndefined();
+    // Still armed — PR 43 review hasn't arrived yet
+    expect(state.prCodexReviewDeferredSince).toBe(nowSec - 700);
+    expect(state.prCodexReviewFallbackPosted).toBe(true);
   });
 
   test("does nothing when prCodexReviewDeferredSince is not set", async () => {
