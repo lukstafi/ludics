@@ -34,6 +34,11 @@ projects:
     test_command: ""          # Optional: command to run the project's test suite locally
                               # (e.g. "bun test", "dune runtest", "npm test").
                               # Auto-detected from project directory contents when unset.
+    requirements:              # Optional: hardware/OS requirements for slot assignment.
+      os: ""                   # Target machine OS: macos | linux | windows
+      gpu: ""                  # Target machine GPU: apple-silicon | nvidia | amd
+                               # Tasks in this project only auto-assign to matching machines.
+                               # Task frontmatter requirements override project-level values.
     # Optional per-project adapter args profile.
     # Later layers override earlier layers:
     # adapter default args -> project profile -> slot Adapter Args -> task frontmatter adapter_args

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements } from "./mag.ts";
 
 describe("normalizeLaunchAdapter", () => {
   test("t3code passes through unchanged", () => {
@@ -274,5 +274,37 @@ describe("orchPidForSlotMode", () => {
 
   test("missing state file returns undefined", () => {
     expect(orchPidForSlotMode(99, "tmux")).toBeUndefined();
+  });
+});
+
+describe("mergeRequirements", () => {
+  test("both undefined returns undefined", () => {
+    expect(mergeRequirements(undefined, undefined)).toBeUndefined();
+  });
+
+  test("task only returns task values", () => {
+    expect(mergeRequirements({ os: "linux" }, undefined)).toEqual({ os: "linux" });
+  });
+
+  test("project only returns project values", () => {
+    expect(mergeRequirements(undefined, { gpu: "nvidia" })).toEqual({ gpu: "nvidia" });
+  });
+
+  test("task overrides project for overlapping key", () => {
+    expect(mergeRequirements(
+      { gpu: "nvidia" },
+      { os: "linux", gpu: "apple-silicon" },
+    )).toEqual({ os: "linux", gpu: "nvidia" });
+  });
+
+  test("non-overlapping keys combine", () => {
+    expect(mergeRequirements(
+      { gpu: "nvidia" },
+      { os: "linux" },
+    )).toEqual({ os: "linux", gpu: "nvidia" });
+  });
+
+  test("both empty objects returns undefined", () => {
+    expect(mergeRequirements({}, {})).toBeUndefined();
   });
 });
