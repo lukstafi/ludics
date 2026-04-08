@@ -172,6 +172,10 @@ export async function runSessionSweep(options: SweepOptions): Promise<void> {
   let cleanupSuccess = 0;
   let cleanupFailed = 0;
 
+  // Safety invariant: only sessions registered by adapter logic appear in
+  // state.sessions. Manually-created t3code threads are never registered
+  // and thus never eligible for sweep cleanup. See also: knownSessionStillPresent()
+  // which verifies the registered session's specific threadId still exists.
   const detachedToCleanup: KnownSessionRecord[] = [];
   for (const [key, record] of Object.entries(state.sessions)) {
     if (attachedKeys.has(key)) {

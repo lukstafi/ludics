@@ -45,6 +45,7 @@ import {
 } from "../orchestration/state.ts";
 import { initPeerSync, removePeerSyncSession, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
 import { createWorktrees, cleanupWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
+import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/deferred-cleanup.ts";
 import { isoNow, ludicsSelfCommand, makeId, nowEpoch } from "../orchestration/util.ts";
 
 interface ParsedAgentToken {
@@ -1022,6 +1023,7 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
     ? readOrchestrationState(ctx.slot, ctx.harnessDir)
     : null;
 
+  // Stop agent sessions immediately (but defer thread deletion for post-mortem)
   const status = await serverStatus({ harnessDir: ctx.harnessDir });
   if (status.running && status.record) {
     await withClient(status.record, async (client) => {
@@ -1036,28 +1038,34 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
         } catch {
           // ignore
         }
-        if (!options?.preserveState) {
-          try {
-            await client.dispatchCommand({
-              type: "thread.delete",
-              commandId: makeId("cmd"),
-              threadId: thread.threadId,
-            });
-          } catch {
-            // ignore
-          }
-        }
       }
     });
   }
 
-  if (orchestrationState && !options?.preserveState) {
-    removePeerSyncSession(orchestrationState.projectDir, orchestrationState.taskId, ctx.slot);
-    cleanupWorktrees(orchestrationState.projectDir, orchestrationState.taskId, orchestrationState.agents, ctx.slot, orchestrationState.mode);
-    removeOrchestrationState(ctx.slot, ctx.harnessDir);
-  }
-
+  // Defer artifact cleanup for post-mortem window
   if (!options?.preserveState) {
+    const threadIds = slotState.threads.map((t) => t.threadId);
+    if (orchestrationState) {
+      recordDeferredCleanup(buildCleanupEntry(orchestrationState, ctx.slot, {
+        t3codeThreadIds: threadIds,
+      }));
+      removeOrchestrationState(ctx.slot, ctx.harnessDir);
+    } else if (threadIds.length > 0) {
+      // Non-orchestrated single-thread sessions: defer thread deletion only
+      recordDeferredCleanup({
+        timestamp: new Date().toISOString(),
+        projectDir: "",
+        taskId: "",
+        slot: ctx.slot,
+        agents: [],
+        mode: "pair",
+        branches: [],
+        worktreePaths: [],
+        tmuxSessionNames: [],
+        peerSyncLink: null,
+        t3codeThreadIds: threadIds,
+      });
+    }
     removeSlotState(ctx.slot, ctx.harnessDir);
   }
   return `t3code slot ${ctx.slot} stopped`;

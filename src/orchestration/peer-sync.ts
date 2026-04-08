@@ -102,16 +102,19 @@ export function initPeerSync(
   symlinkSync(peerSyncDir, sessionLink);
 }
 
-export function removePeerSyncSession(projectDir: string, taskId: string, slot?: number): void {
-  const sessionsDir = join(projectDir, ".agent-sessions");
-  // Remove slot-qualified link if slot provided, otherwise remove legacy unqualified link
-  const linkName = slot != null ? `${taskId}-s${slot}.session` : `${taskId}.session`;
-  const sessionLink = join(sessionsDir, linkName);
+/** Remove a peer-sync symlink by its concrete path. Idempotent. */
+export function removePeerSyncLink(linkPath: string): void {
   try {
-    if (existsSync(sessionLink)) unlinkSync(sessionLink);
+    if (existsSync(linkPath)) unlinkSync(linkPath);
   } catch {
     // ignore
   }
+}
+
+export function removePeerSyncSession(projectDir: string, taskId: string, slot?: number): void {
+  const sessionsDir = join(projectDir, ".agent-sessions");
+  const linkName = slot != null ? `${taskId}-s${slot}.session` : `${taskId}.session`;
+  removePeerSyncLink(join(sessionsDir, linkName));
 }
 
 export function writePeerSync(state: OrchestrationState, phaseToken?: string): void {

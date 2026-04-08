@@ -930,6 +930,12 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   }
   if (!ctx.taskId) throw new Error(`slot ${slotNum} has no Task — nothing to resume`);
 
+  // Cancel any pending deferred cleanup for this task+slot
+  try {
+    const { cancelDeferredCleanup } = await import("../orchestration/deferred-cleanup.ts");
+    cancelDeferredCleanup(ctx.taskId, slotNum);
+  } catch { /* non-critical */ }
+
   // --- t3code-specific: Require persisted slot state ---
   if (ctx.mode === "t3code") {
     const slotState = readSlotState(slotNum, ctx.harnessDir);

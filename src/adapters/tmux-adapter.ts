@@ -29,6 +29,7 @@ import {
 } from "../orchestration/state.ts";
 import { initPeerSync, removePeerSyncSession, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
 import { createWorktrees, cleanupWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
+import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/deferred-cleanup.ts";
 import { isoNow, makeId, nowEpoch } from "../orchestration/util.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { parseT3CodeAdapterArgs } from "./t3code.ts";
@@ -503,13 +504,13 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
   // Kill ttyd processes
   killTtydForSlot(ctx.slot);
 
-  // Kill tmux agent sessions
+  // Defer artifact cleanup for post-mortem window (tmux sessions, worktrees, branches, peer-sync)
   if (orchState) {
-    killTmuxSessionsForSlot(ctx.slot, orchState.agents.map((a) => a.name), orchState.taskId);
-
     if (!options?.preserveState) {
-      removePeerSyncSession(orchState.projectDir, orchState.taskId, ctx.slot);
-      cleanupWorktrees(orchState.projectDir, orchState.taskId, orchState.agents, ctx.slot, orchState.mode);
+      recordDeferredCleanup(buildCleanupEntry(orchState, ctx.slot, {
+        tmuxSessionNames: orchState.agents.map((a) =>
+          tmuxSessionName(ctx.slot, a.name, orchState.taskId)),
+      }));
       removeOrchestrationState(ctx.slot, ctx.harnessDir);
     }
   }

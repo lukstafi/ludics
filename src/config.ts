@@ -325,6 +325,14 @@ export function preemptAutonomy(): "auto" | "suggest" {
   return val === "auto" ? "auto" : "suggest";
 }
 
+export function cleanupDelayHours(): number {
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+  const val = mag?.cleanup_delay_hours;
+  if (typeof val === "number" && val > 0) return Math.min(val, 72);
+  return 25;
+}
+
 export function startSessionsAutonomy(): "auto" | "suggest" | "manual" {
   const config = loadConfigSync();
   const mag = config.mag as Record<string, unknown> | undefined;
