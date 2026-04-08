@@ -43,37 +43,31 @@ describe("hostname normalization", () => {
   });
 });
 
-describe("resolveControllerCandidates", () => {
-  it("returns empty array when cluster is disabled (no machines)", () => {
-    const { resolveControllerCandidates } = require("./cluster.ts");
+describe("resolveController", () => {
+  it("returns null when cluster is disabled (no machines)", () => {
+    const { resolveController } = require("./cluster.ts");
     // In test env without config, clusterMachines() returns []
     try {
-      const candidates = resolveControllerCandidates();
-      expect(candidates).toBeInstanceOf(Array);
-      // Without config, candidates is empty
+      const controller = resolveController();
+      // Without config, no leader machine exists
+      expect(controller).toBeNull();
     } catch {
       // Expected if config not available
     }
   });
 
-  it("prioritizes leaders over consoles", () => {
-    // Test the ordering logic directly
+  it("returns only the leader machine", () => {
+    // Test the selection logic directly
     const machines = [
       { name: "worker-1", host: "w1.ts.net", role: "worker" },
       { name: "console-1", host: "c1.ts.net", role: "console" },
       { name: "leader-1", host: "l1.ts.net", role: "leader" },
       { name: "console-2", host: "c2.ts.net", role: "console" },
     ];
-    const leaders = machines.filter((m) => m.role === "leader");
-    const consoles = machines.filter((m) => m.role === "console");
-    const candidates = [...leaders, ...consoles];
+    const leader = machines.find((m) => m.role === "leader") ?? null;
 
-    expect(candidates.length).toBe(3);
-    expect(candidates[0]!.name).toBe("leader-1");
-    expect(candidates[1]!.name).toBe("console-1");
-    expect(candidates[2]!.name).toBe("console-2");
-    // Workers are excluded
-    expect(candidates.find((c) => c.role === "worker")).toBeUndefined();
+    expect(leader).not.toBeNull();
+    expect(leader!.name).toBe("leader-1");
+    // Only one machine returned, not an array of candidates
   });
 });
-

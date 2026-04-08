@@ -1,14 +1,11 @@
 // Cluster — static controller role for multi-machine coordination
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
+import { join } from "path";
 import { harnessDir, loadConfigSync, stateRepoDir } from "./config.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { hostnameTailscale } from "./network.ts";
-import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
-// State imports removed — cluster tick no longer calls statePull/statePush.
-// Git sync happens only at health-check periodicity.
 
 const HEARTBEAT_TIMEOUT = parseInt(process.env.LUDICS_HEARTBEAT_TIMEOUT ?? "900", 10);
 
@@ -127,20 +124,12 @@ export function clusterCurrentMachineName(): string | null {
   return clusterCurrentMachine()?.name ?? null;
 }
 
-function clusterDir(): string {
-  return join(harnessDir(), "cluster");
-}
-
 export function heartbeatsDir(): string {
   // Runtime dir outside harness — never committed to git
   const hasher = new Bun.CryptoHasher("md5");
   hasher.update(stateRepoDir());
   const suffix = hasher.digest("hex").slice(0, 8);
   return join(process.env.HOME ?? "/tmp", `.ludics-heartbeats-${suffix}`);
-}
-
-function leaderFile(): string {
-  return join(clusterDir(), "leader.json");
 }
 
 // --- Heartbeat functions ---
@@ -178,16 +167,11 @@ export function heartbeatPublish(): boolean {
   console.error(`ludics: cluster: published heartbeat for ${nodeName}`);
 
   // POST heartbeat to controller via HTTP (workers only — controller's own heartbeat is already local).
-  // Uses resolveControllerCandidates() instead of currentLeader() to avoid stale leader.json.
   if (!clusterIsController()) {
-    const candidates = resolveControllerCandidates();
-    if (candidates.length > 0) {
-      // Fire-and-forget — try candidates in priority order until one accepts
+    const controller = resolveController();
+    if (controller) {
       import("./cluster-http.ts").then(async ({ clusterHttpPost }) => {
-        for (const candidate of candidates) {
-          const result = await clusterHttpPost(candidate, "/cluster/heartbeat", heartbeatData);
-          if (result.ok) break; // delivered to controller
-        }
+        await clusterHttpPost(controller, "/cluster/heartbeat", heartbeatData);
       }).catch(() => {});
     }
   }
@@ -221,124 +205,21 @@ function nodeHasMag(nodeName: string): boolean {
   }
 }
 
-// --- Controller election ---
+// --- Controller resolution ---
 
 /**
- * Role-aware controller selection:
- * 1. Online leader machine → controller
- * 2. Else online console machine → controller (failover)
- * 3. Else no controller
- *
-
+ * Resolve the controller machine from config.
+ * Returns the single machine with role "leader", or null if none configured.
  */
-function computeController(): string | null {
+export function resolveController(): ClusterMachine | null {
   const machines = clusterMachines();
-
-  if (machines.length > 0) {
-    // Prefer online leader
-    const leaders = machines.filter((m) => m.role === "leader");
-    for (const m of leaders) {
-      if (heartbeatIsFresh(m.name)) return m.name;
-    }
-    // Failover to online console
-    const consoles = machines.filter((m) => m.role === "console");
-    for (const m of consoles) {
-      if (heartbeatIsFresh(m.name)) return m.name;
-    }
-    return null;
-  }
-
-  return null;
-}
-
-function currentLeader(): string | null {
-  const file = leaderFile();
-  if (!existsSync(file)) return null;
-
-  try {
-    const data = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
-    return (data.node as string) ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function currentTerm(): number {
-  const file = leaderFile();
-  if (!existsSync(file)) return 0;
-
-  try {
-    const data = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
-    return Number(data.term ?? 0);
-  } catch {
-    return 0;
-  }
-}
-
-function updateLeader(newLeader: string): boolean {
-  const file = leaderFile();
-  mkdirSync(dirname(file), { recursive: true });
-
-  const current = currentLeader();
-  if (current === newLeader) return false; // no change
-
-  const term = currentTerm() + 1;
-  const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-
-  writeFileSync(
-    file,
-    JSON.stringify({ node: newLeader, elected: timestamp, term }) + "\n",
-  );
-
-  console.error(`ludics: cluster: controller changed to ${newLeader} (term ${term})`);
-  try {
-    journalAppend("cluster", `controller changed to ${newLeader} (term ${term})`);
-  } catch {
-    // journal may not be available
-  }
-  emitEvent({ event_type: "cluster_leader_change", source: "cluster", scope: "cluster", message: `controller changed to ${newLeader} (term ${term})` });
-
-  return true;
-}
-
-export function clusterElect(): string | null {
-  const controller = computeController();
-  if (controller) {
-    updateLeader(controller);
-    return controller;
-  }
-  console.error("ludics: cluster: no online nodes available for controller election");
-  return null;
-}
-
-/** Returns the machine name that should be controller right now (from local leader.json). */
-export function clusterCurrentController(): string | null {
-  return currentLeader();
-}
-
-/**
- * Resolve the controller machine for worker-side HTTP delivery.
- * Does NOT depend on leader.json (which may be stale on workers).
- * Returns machines in role priority: leader first, then consoles.
- * Caller should try them in order until one responds.
- */
-export function resolveControllerCandidates(): ClusterMachine[] {
-  const machines = clusterMachines();
-  const leaders = machines.filter((m) => m.role === "leader");
-  const consoles = machines.filter((m) => m.role === "console");
-  return [...leaders, ...consoles];
-}
-
-export function clusterIsLeader(): boolean {
-  const currentNode = clusterCurrentMachineName();
-  if (!currentNode) return false;
-  return currentNode === currentLeader();
+  return machines.find(m => m.role === "leader") ?? null;
 }
 
 /**
  * Determine this machine's cluster role:
  * - "standalone" — no cluster configured, everything runs locally
- * - "controller" — this machine is the active controller (leader or console in failover)
+ * - "controller" — this machine has role "leader" in config
  * - "worker" — this machine is a worker, defer controller duties
  */
 export function clusterRole(): "controller" | "worker" | "standalone" {
@@ -352,24 +233,7 @@ export function clusterRole(): "controller" | "worker" | "standalone" {
     return "worker";
   }
 
-  if (machine.role === "leader") return "controller";
-
-  if (machine.role === "console") {
-    // Failover: check if any leader is online
-    const leaders = clusterMachines().filter((m) => m.role === "leader");
-    const leaderOnline = leaders.some((m) => heartbeatIsFresh(m.name));
-    if (leaderOnline) return "worker";
-    // Among consoles, only the first online (by config order) becomes controller.
-    // This preserves seniority-based failover and prevents split-brain with
-    // multiple consoles (including legacy network.nodes converted to consoles).
-    // Treat the current machine as implicitly online — it's running this code.
-    const currentName = machine.name;
-    const consoles = clusterMachines().filter((m) => m.role === "console");
-    const firstOnlineConsole = consoles.find((m) => m.name === currentName || heartbeatIsFresh(m.name));
-    return firstOnlineConsole?.name === currentName ? "controller" : "worker";
-  }
-
-  return "worker";
+  return machine.role === "leader" ? "controller" : "worker";
 }
 
 export function clusterIsController(): boolean {
@@ -384,37 +248,7 @@ export function clusterShouldRunMag(): boolean {
 
 export async function clusterTick(): Promise<void> {
   console.error("ludics: cluster: running tick...");
-
-  // No statePull() here — heartbeats arrive via HTTP, signals arrive via HTTP,
-  // intents are delivered via HTTP. Git sync only happens at health-check periodicity.
-
-  const prevController = currentLeader();
-  const currentNodeName = clusterCurrentMachineName();
-
   heartbeatPublish();
-
-  const controller = clusterElect();
-  if (controller) {
-    console.error(`ludics: cluster: current controller is ${controller}`);
-  }
-
-  // Detect role transitions
-  if (currentNodeName && prevController !== controller) {
-    if (controller === currentNodeName && prevController !== currentNodeName) {
-      // This machine just became controller (failover)
-      console.error("ludics: cluster: THIS MACHINE IS NOW CONTROLLER (failover)");
-      emitEvent({ event_type: "cluster_failover", source: "cluster", scope: "cluster", message: `${currentNodeName} became controller (was: ${prevController ?? "none"})` });
-    } else if (prevController === currentNodeName && controller !== currentNodeName) {
-      // This machine yielded controller role (failback)
-      console.error("ludics: cluster: yielding controller role (failback)");
-      emitEvent({ event_type: "cluster_failback", source: "cluster", scope: "cluster", message: `${currentNodeName} yielded controller to ${controller ?? "none"}` });
-    }
-  }
-
-  // State is written to disk but NOT committed — periodic health-check
-  // handles git commits at lower frequency. All coordination (intents,
-  // heartbeats, signals) now uses HTTP, not git.
-
   console.error("ludics: cluster: tick complete");
 }
 
@@ -457,19 +291,12 @@ export function clusterStatus(): void {
   console.log(`Current node: ${currentNode}`);
 
   const role = clusterRole();
-  const controller = currentLeader() ?? "none";
-  const term = currentTerm();
-  console.log(`Current controller: ${controller} (term ${term})`);
+  const leaderMachine = resolveController();
+  const controllerName = leaderMachine?.name ?? "none";
 
   switch (role) {
     case "controller":
-      if (machine?.role === "leader") {
-        console.log("Role: controller (leader)");
-      } else if (machine?.role === "console") {
-        console.log("Role: controller (failover from console)");
-      } else {
-        console.log("Role: controller");
-      }
+      console.log("Role: controller (leader)");
       break;
     case "worker":
       console.log("Role: worker");
@@ -486,7 +313,7 @@ export function clusterStatus(): void {
     console.log("Cluster machines:");
     for (let i = 0; i < machines.length; i++) {
       const m = machines[i]!;
-      const nodeStatus = formatNodeStatus(m.name, controller);
+      const nodeStatus = formatNodeStatus(m.name, controllerName);
       const gpu = m.gpu ? ` gpu=${m.gpu}` : "";
       console.log(`  ${i + 1}. ${m.name} (${m.role}${gpu}) - ${nodeStatus}`);
     }
@@ -501,14 +328,9 @@ export function clusterStatus(): void {
   // Check for missing roles
   if (machines.length > 0) {
     const hasLeader = machines.some((m) => m.role === "leader");
-    const hasConsole = machines.some((m) => m.role === "console");
     if (!hasLeader) {
       console.log("");
       console.log("WARNING: no machine with role 'leader' configured");
-    }
-    if (!hasConsole) {
-      console.log("");
-      console.log("NOTE: no console machine configured — no failover possible if leader goes offline");
     }
   }
 
@@ -579,9 +401,6 @@ export async function runCluster(args: string[]): Promise<void> {
     case "tick":
       await clusterTick();
       break;
-    case "elect":
-      clusterElect();
-      break;
     case "heartbeat":
       heartbeatPublish();
       break;
@@ -591,11 +410,11 @@ export async function runCluster(args: string[]): Promise<void> {
       const targetMachine = clusterMachine(target);
       if (!targetMachine) throw new Error(`unknown machine: ${target}`);
       const { clusterHttpGet } = await import("./cluster-http.ts");
-      const result = await clusterHttpGet(targetMachine, "/api/cluster/leader");
+      const result = await clusterHttpGet(targetMachine, "/api/cluster/slots");
       console.log(`${target}: ${result.ok ? "reachable" : "unreachable"}`);
       break;
     }
     default:
-      throw new Error(`unknown cluster command: ${sub} (use: status, tick, elect, heartbeat, ping)`);
+      throw new Error(`unknown cluster command: ${sub} (use: status, tick, heartbeat, ping)`);
   }
 }

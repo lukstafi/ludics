@@ -219,23 +219,17 @@ function expireStaleIntents(): void {
 // --- Client helpers for worker → controller communication ---
 
 async function resolveAndPost(path: string, body: object): Promise<{ ok: boolean; status?: number; data?: unknown }> {
-  const { resolveControllerCandidates } = await import("./cluster.ts");
-  const candidates = resolveControllerCandidates();
-  for (const candidate of candidates) {
-    const result = await clusterHttpPost(candidate, path, body);
-    if (result.ok) return result;
-  }
-  return { ok: false };
+  const { resolveController } = await import("./cluster.ts");
+  const controller = resolveController();
+  if (!controller) return { ok: false };
+  return clusterHttpPost(controller, path, body);
 }
 
 async function resolveAndGet(path: string): Promise<{ ok: boolean; status?: number; data?: unknown }> {
-  const { resolveControllerCandidates } = await import("./cluster.ts");
-  const candidates = resolveControllerCandidates();
-  for (const candidate of candidates) {
-    const result = await clusterHttpGet(candidate, path);
-    if (result.ok) return result;
-  }
-  return { ok: false };
+  const { resolveController } = await import("./cluster.ts");
+  const controller = resolveController();
+  if (!controller) return { ok: false };
+  return clusterHttpGet(controller, path);
 }
 
 export async function clusterPostJournal(category: string, message: string): Promise<{ ok: boolean }> {
@@ -278,37 +272,34 @@ export async function clusterGetIntents(): Promise<{ ok: boolean; data?: Record<
 }
 
 export async function clusterDeleteIntent(slot: number): Promise<{ ok: boolean }> {
-  const { resolveControllerCandidates } = await import("./cluster.ts");
-  const candidates = resolveControllerCandidates();
-  for (const candidate of candidates) {
-    const secret = clusterSecret();
-    const url = `${machineBaseUrl(candidate)}/api/cluster/intent/${slot}`;
-    const headers: Record<string, string> = {};
-    if (secret) headers["Authorization"] = `Bearer ${secret}`;
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), HTTP_TIMEOUT_MS);
-      const resp = await fetch(url, { method: "DELETE", headers, signal: ctrl.signal });
-      clearTimeout(timer);
-      if (resp.ok) return { ok: true };
-    } catch { /* try next */ }
-  }
+  const { resolveController } = await import("./cluster.ts");
+  const controller = resolveController();
+  if (!controller) return { ok: false };
+  const secret = clusterSecret();
+  const url = `${machineBaseUrl(controller)}/api/cluster/intent/${slot}`;
+  const headers: Record<string, string> = {};
+  if (secret) headers["Authorization"] = `Bearer ${secret}`;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), HTTP_TIMEOUT_MS);
+    const resp = await fetch(url, { method: "DELETE", headers, signal: ctrl.signal });
+    clearTimeout(timer);
+    if (resp.ok) return { ok: true };
+  } catch { /* ignore */ }
   return { ok: false };
 }
 
 export async function clusterReportWorkerSignal(
   slot: number, taskId: string, status: string, message: string,
 ): Promise<void> {
-  const { resolveControllerCandidates, clusterCurrentMachineName } = await import("./cluster.ts");
-  const candidates = resolveControllerCandidates();
+  const { resolveController, clusterCurrentMachineName } = await import("./cluster.ts");
+  const controller = resolveController();
+  if (!controller) return;
   const machine = clusterCurrentMachineName() ?? "";
   const epoch = Math.floor(Date.now() / 1000);
-  for (const candidate of candidates) {
-    const result = await clusterHttpPost(candidate, "/cluster/signal", {
-      slot, taskId, status, message, machine, epoch,
-    });
-    if (result.ok) return;
-  }
+  await clusterHttpPost(controller, "/cluster/signal", {
+    slot, taskId, status, message, machine, epoch,
+  });
 }
 
 // --- Server handlers ---
@@ -350,8 +341,7 @@ export async function handleClusterRequest(req: Request, pathname: string): Prom
   if (req.method === "GET") {
     if (pathname === "/api/cluster/slots") return handleGetSlots();
     if (pathname === "/api/cluster/intents") return handleGetIntents(req);
-    if (pathname === "/api/cluster/leader") return handleGetLeader();
-    const taskMatch = pathname.match(/^\/api\/cluster\/task\/(.+)$/);
+const taskMatch = pathname.match(/^\/api\/cluster\/task\/(.+)$/);
     if (taskMatch) return handleGetTask(taskMatch[1]!);
     const orchMatch = pathname.match(/^\/api\/cluster\/orchestration-state\/(\d+)$/);
     if (orchMatch) return handleGetOrchestrationState(Number(orchMatch[1]));
@@ -532,14 +522,6 @@ function handleGetIntents(req: Request): Response {
   return jsonResponse(200, { intents: all });
 }
 
-function handleGetLeader(): Response {
-  try {
-    const { clusterCurrentController } = require("./cluster.ts");
-    return jsonResponse(200, { leader: clusterCurrentController() });
-  } catch {
-    return jsonResponse(200, { leader: null });
-  }
-}
 
 function handleGetTask(taskId: string): Response {
   const TASK_ID_RE = /^[a-z0-9_-]+$/i;
