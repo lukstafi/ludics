@@ -5,8 +5,9 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, slotsFilePath } from "./config.ts";
-import { parseSlotBlocks, getTask, getMachine } from "./slots/markdown.ts";
+import { harnessDir, loadConfigSync, slotsFilePath, slotsCount } from "./config.ts";
+import { readSlotJson, writeSlotJson, readAllSlotJson, slotDataToMarkdown } from "./slots/json.ts";
+import type { SlotData } from "./slots/types.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
 import type { ClusterMachine } from "./cluster.ts";
@@ -257,9 +258,14 @@ export async function clusterGetTask(taskId: string): Promise<{ ok: boolean; dat
   return { ok: result.ok, data: typeof result.data === "string" ? result.data : undefined };
 }
 
-export async function clusterGetSlots(): Promise<{ ok: boolean; data?: string }> {
-  const result = await resolveAndGet("/api/cluster/slots");
-  return { ok: result.ok, data: typeof result.data === "string" ? result.data : undefined };
+export async function clusterGetSlots(): Promise<{ ok: boolean; data?: Map<number, SlotData> }> {
+  const result = await resolveAndGet("/api/cluster/slots/json");
+  if (!result.ok || !result.data) return { ok: false };
+  const payload = result.data as { slots?: SlotData[] };
+  if (!payload.slots) return { ok: false };
+  const map = new Map<number, SlotData>();
+  for (const s of payload.slots) map.set(s.slot, s);
+  return { ok: true, data: map };
 }
 
 export async function clusterPostSlotUpdate(slot: number, sections: Record<string, string | undefined>): Promise<{ ok: boolean }> {
@@ -339,7 +345,8 @@ export async function handleClusterRequest(req: Request, pathname: string): Prom
 
   // GET endpoints
   if (req.method === "GET") {
-    if (pathname === "/api/cluster/slots") return handleGetSlots();
+    if (pathname === "/api/cluster/slots") return handleGetSlotsMarkdown();
+    if (pathname === "/api/cluster/slots/json") return handleGetSlotsJson();
     if (pathname === "/api/cluster/intents") return handleGetIntents(req);
 const taskMatch = pathname.match(/^\/api\/cluster\/task\/(.+)$/);
     if (taskMatch) return handleGetTask(taskMatch[1]!);
@@ -420,20 +427,13 @@ function handleSignal(body: Record<string, unknown>): Response {
   }
 
   // Validate against current slot state
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) {
-    return jsonResponse(409, { error: "slots file not found" });
-  }
-
-  const content = readFileSync(sFile, "utf-8");
-  const blocks = parseSlotBlocks(content);
-  const block = blocks.get(slot);
-  if (!block) {
+  const slotData = readSlotJson(slot);
+  if (slotData.process === "(empty)") {
     return jsonResponse(409, { error: `slot ${slot} not found` });
   }
 
-  const currentTaskId = getTask(block).trim();
-  const currentMachine = getMachine(block).trim();
+  const currentTaskId = slotData.task ?? "";
+  const currentMachine = slotData.machine ?? "";
 
   const validation = validateSignal(
     { taskId, machine, epoch },
@@ -486,10 +486,23 @@ function handleSignal(body: Record<string, unknown>): Response {
 
 // --- Phase 4 GET handlers ---
 
-function handleGetSlots(): Response {
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return jsonResponse(404, { error: "slots file not found" });
-  return new Response(readFileSync(sFile, "utf-8"), {
+function handleGetSlotsJson(): Response {
+  const count = slotsCount();
+  const slots = readAllSlotJson(count);
+  const arr: SlotData[] = [];
+  for (let i = 1; i <= count; i++) arr.push(slots.get(i)!);
+  return jsonResponse(200, { slots: arr });
+}
+
+function handleGetSlotsMarkdown(): Response {
+  const count = slotsCount();
+  const slots = readAllSlotJson(count);
+  const parts: string[] = ["# Slots\n\n"];
+  for (let i = 1; i <= count; i++) {
+    parts.push(slotDataToMarkdown(slots.get(i)!));
+    if (i < count) parts.push("\n---\n\n");
+  }
+  return new Response(parts.join(""), {
     headers: { "Content-Type": "text/markdown; charset=utf-8" },
   });
 }
@@ -615,35 +628,19 @@ function handlePostSlotUpdate(body: Record<string, unknown>): Response {
   const slot = Number(body.slot);
   if (!Number.isFinite(slot)) return jsonResponse(400, { error: "slot required" });
 
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return jsonResponse(404, { error: "slots file not found" });
-
-  const { setField, writeSlotFile } = require("./slots/markdown.ts");
-  const { slotsCount } = require("./config.ts");
-  const { replaceSections } = require("./state.ts");
-  const content = readFileSync(sFile, "utf-8");
-  const blocks = parseSlotBlocks(content);
-  const count = slotsCount();
-
-  let block: string | undefined = blocks.get(slot);
-  if (!block) return jsonResponse(404, { error: `slot ${slot} not found` });
+  const data = readSlotJson(slot);
 
   // Merge runtime fields + adapter args (for worker auto-fill)
-  if (body.sessionStarted !== undefined) block = setField(block, "Session Started", String(body.sessionStarted));
-  if (body.liveness !== undefined) block = setField(block, "Liveness", String(body.liveness));
-  if (body.adapterArgs !== undefined) block = setField(block, "Adapter Args", String(body.adapterArgs));
+  if (body.sessionStarted !== undefined) data.sessionStarted = String(body.sessionStarted);
+  if (body.liveness !== undefined) data.liveness = String(body.liveness);
+  if (body.adapterArgs !== undefined) data.adapterArgs = String(body.adapterArgs);
 
   // Merge sections (Terminals, Runtime, Git)
-  if (body.terminals !== undefined || body.runtime !== undefined || body.git !== undefined) {
-    const sections: Record<string, string> = {};
-    if (typeof body.terminals === "string") sections.terminals = body.terminals;
-    if (typeof body.runtime === "string") sections.runtime = body.runtime;
-    if (typeof body.git === "string") sections.git = body.git;
-    block = replaceSections(block, sections);
-  }
+  if (typeof body.terminals === "string") data.terminals = body.terminals;
+  if (typeof body.runtime === "string") data.runtime = body.runtime;
+  if (typeof body.git === "string") data.git = body.git;
 
-  blocks.set(slot, block as string);
-  writeSlotFile(sFile, blocks, count);
+  writeSlotJson(slot, data);
   return jsonResponse(200, { ok: true });
 }
 

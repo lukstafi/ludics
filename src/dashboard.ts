@@ -4,8 +4,9 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFi
 import { join, dirname } from "path";
 import YAML from "yaml";
 import { safeSyncOutput } from "./spawn.ts";
-import { globalAdapter, harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
-import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted, getMachine, getLiveness } from "./slots/markdown.ts";
+import { globalAdapter, harnessDir, loadConfigSync, slotsCount, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
+import { readAllSlotJson } from "./slots/json.ts";
+import type { SlotData } from "./slots/types.ts";
 import { isRemoteMachine } from "./remote.ts";
 import { clusterMachine } from "./cluster.ts";
 import { priorityValue } from "./tasks/markdown.ts";
@@ -60,14 +61,14 @@ interface SlotJson {
 export interface SlotLivenessContext {
   slotNum: number;
   mode: string | null;
-  slotBlock?: string;
+  slotData?: SlotData;
 }
 
 export function computeSlotLiveness(ctx: SlotLivenessContext): "alive" | "interrupted" | null {
-  const { slotNum, mode, slotBlock } = ctx;
-  // Check explicit Liveness field from slot block (set by markSlotSetupFailed)
-  if (slotBlock) {
-    const explicit = getLiveness(slotBlock).trim();
+  const { slotNum, mode, slotData } = ctx;
+  // Check explicit Liveness field from slot data (set by markSlotSetupFailed)
+  if (slotData) {
+    const explicit = (slotData.liveness ?? "").trim();
     if (explicit === "interrupted") return "interrupted";
   }
   if (!mode) return null;
@@ -198,11 +199,8 @@ function lookupSlotOrchestrationLinks(
 }
 
 function generateSlots(): SlotJson[] {
-  const slotsFile = slotsFilePath();
-  if (!existsSync(slotsFile)) return [];
-
-  const content = readFileSync(slotsFile, "utf-8");
-  const blocks = parseSlotBlocks(content);
+  const count = slotsCount();
+  const blocks = readAllSlotJson(count);
   const ttydBySession = discoverTtydUrls();
   const result: SlotJson[] = [];
 
@@ -210,17 +208,14 @@ function generateSlots(): SlotJson[] {
   const t3codeRecord = readServerRecord();
   const t3codeWebUrl = t3codeRecord ? t3codeRecord.webUrl : null;
 
-  for (const [num, block] of blocks) {
-    const process = getProcess(block).trim();
+  for (const [num, data] of blocks) {
+    const process = data.process;
     const empty = !process || process === "(empty)";
 
-    // Parse terminals from block
+    // Parse terminals from slot data
     const terminals: Record<string, string> = {};
-    let inTerminals = false;
-    for (const line of block.split("\n")) {
-      if (line === "**Terminals:**") { inTerminals = true; continue; }
-      if (line.match(/^\*\*[A-Za-z]+:\*\*/)) { inTerminals = false; continue; }
-      if (inTerminals) {
+    if (data.terminals) {
+      for (const line of data.terminals.split("\n")) {
         const m = line.match(/^- ([^:]+):\s*(.+)$/);
         if (m) {
           terminals[m[1]!.toLowerCase().replace(/ /g, "_")] = m[2]!;
@@ -242,9 +237,9 @@ function generateSlots(): SlotJson[] {
       }
     }
 
-    const taskId = empty ? null : getTask(block).trim() || null;
+    const taskId = empty ? null : (data.task ?? "") || null;
 
-    // Parse phase: prefer orchestration state JSON (authoritative), fall back to Runtime section in slots.md
+    // Parse phase: prefer orchestration state JSON (authoritative), fall back to Runtime section in slot data
     let phase: string | null = null;
     let round: number | null = null;
     if (!empty) {
@@ -255,10 +250,10 @@ function generateSlots(): SlotJson[] {
       }
     }
     if (!phase) {
-      const phaseMatch = block.match(/^- Phase:\s*(.+)$/m);
-      if (phaseMatch) phase = phaseMatch[1]!.trim();
+      const runtimeMatch = data.runtime?.match(/^- Phase:\s*(.+)$/m);
+      if (runtimeMatch) phase = runtimeMatch[1]!.trim();
     }
-    const taskMeta = taskId && taskId !== "null"
+    const taskMeta = taskId
       ? lookupTaskMetadata(taskId)
       : { content: null, githubUrl: null, effort: null, hasProposal: false };
     const taskContent = taskMeta.content;
@@ -267,7 +262,7 @@ function generateSlots(): SlotJson[] {
     const slotProposalLink = slotHasProposal && taskId ? `/proposal.html?task=${encodeURIComponent(taskId)}` : null;
     const githubUrl = taskMeta.githubUrl;
 
-    const machineName = getMachine(block).trim();
+    const machineName = data.machine ?? "";
 
     // Read orchestration state for PR URL and t3code thread links.
     // Only use the state if its feature matches the slot's current task
@@ -278,17 +273,17 @@ function generateSlots(): SlotJson[] {
     // Check for preemption stash
     const stash = readStash(num);
 
-    const rawSessionStarted = getSessionStarted(block).trim();
-    const sessionStarted = (rawSessionStarted && rawSessionStarted !== "null") ? rawSessionStarted : null;
+    const rawSessionStarted = data.sessionStarted ?? "";
+    const sessionStarted = rawSessionStarted ? rawSessionStarted : null;
 
     // Compute liveness — for local slots use PID check, for remote slots use heartbeat.
     let liveness: "alive" | "interrupted" | null = null;
     if (!empty) {
-      const explicitLiveness = getLiveness(block).trim();
+      const explicitLiveness = (data.liveness ?? "").trim();
       const shouldCheck = (phase && phase !== "done") || explicitLiveness === "interrupted";
       if (shouldCheck) {
-        if (!machineName || machineName === "null" || !isRemoteMachine(machineName)) {
-          liveness = computeSlotLiveness({ slotNum: num, mode: getMode(block).trim() || null, slotBlock: block });
+        if (!machineName || !isRemoteMachine(machineName)) {
+          liveness = computeSlotLiveness({ slotNum: num, mode: (data.mode ?? "") || null, slotData: data });
         } else {
           // Remote slot: use heartbeat freshness as liveness proxy
           liveness = heartbeatIsFresh(machineName) ? "alive" : "interrupted";
@@ -296,7 +291,7 @@ function generateSlots(): SlotJson[] {
       }
     }
 
-    const machine = (machineName && machineName !== "null") ? machineName : null;
+    const machine = machineName || null;
 
     // Pending controller action derived from intent files
     let pendingAction: "starting" | "stopping" | "resuming" | null = null;
@@ -314,8 +309,8 @@ function generateSlots(): SlotJson[] {
       process: empty ? null : process,
       task: taskId,
       taskContent,
-      mode: empty ? null : getMode(block).trim() || null,
-      started: empty ? null : getField(block, "Started").trim() || null,
+      mode: empty ? null : (data.mode ?? "") || null,
+      started: empty ? null : (data.started ?? "") || null,
       sessionStarted: empty ? null : sessionStarted,
       phase: empty ? null : phase,
       round: empty ? null : round,
@@ -473,16 +468,10 @@ function readDashboardTasks(): DashboardTask[] {
 
 function generateReady(tasks: DashboardTask[]): ReadyTask[] {
   // Exclude tasks already assigned to a slot (status may lag due to state-sync races)
-  const slotsFile = slotsFilePath();
   const slottedIds = new Set<string>();
-  if (existsSync(slotsFile)) {
-    const slotsContent = readFileSync(slotsFile, "utf-8");
-    const re = /^\*\*Task:\*\*\s*(.+)$/gm;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(slotsContent)) !== null) {
-      const id = m[1]!.trim();
-      if (id && id !== "(empty)" && id !== "null") slottedIds.add(id);
-    }
+  const slots = readAllSlotJson(slotsCount());
+  for (const [, data] of slots) {
+    if (data.task) slottedIds.add(data.task);
   }
 
   const ready: ReadyTask[] = tasks
@@ -846,21 +835,18 @@ function generateAdapter(): Record<string, unknown> {
 // --- Generate terminals.json ---
 
 function generateTerminals(): Record<string, unknown> {
-  const slotsFile = slotsFilePath();
   const activeSlots: number[] = [];
   const slotMachines: Map<number, string> = new Map();
 
-  if (existsSync(slotsFile)) {
-    const blocks = parseSlotBlocks(readFileSync(slotsFile, "utf-8"));
-    for (const [num, block] of blocks) {
-      const mode = getMode(block).trim();
-      const sessionStarted = getSessionStarted(block).trim();
-      if (mode === "tmux" && sessionStarted && sessionStarted !== "null") {
-        activeSlots.push(num);
-        const machine = getMachine(block).trim();
-        const host = (machine && clusterMachine(machine)?.host) || machine;
-        if (host) slotMachines.set(num, host);
-      }
+  const blocks = readAllSlotJson(slotsCount());
+  for (const [num, data] of blocks) {
+    const mode = data.mode ?? "";
+    const sessionStarted = data.sessionStarted ?? "";
+    if (mode === "tmux" && sessionStarted) {
+      activeSlots.push(num);
+      const machine = data.machine ?? "";
+      const host = (machine && clusterMachine(machine)?.host) || machine;
+      if (host) slotMachines.set(num, host);
     }
   }
 

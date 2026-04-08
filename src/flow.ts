@@ -3,7 +3,8 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import YAML from "yaml";
-import { harnessDir, slotsFilePath, effectivePriority, effectivePriorityValue, milestonesEnabledProjects, milestoneKey } from "./config.ts";
+import { harnessDir, slotsCount, effectivePriority, effectivePriorityValue, milestonesEnabledProjects, milestoneKey } from "./config.ts";
+import { readAllSlotJson } from "./slots/json.ts";
 import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
 
 interface TaskData {
@@ -116,15 +117,10 @@ function checkCycle(tasks: TaskData[]): boolean {
 }
 
 function readSlottedTaskIds(): Set<string> {
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return new Set();
-  const content = readFileSync(sFile, "utf-8");
+  const slots = readAllSlotJson(slotsCount());
   const ids = new Set<string>();
-  const re = /^\*\*Task:\*\*\s*(.+)$/gm;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(content)) !== null) {
-    const id = m[1]!.trim();
-    if (id && id !== "(empty)" && id !== "null") ids.add(id);
+  for (const [, data] of slots) {
+    if (data.task) ids.add(data.task);
   }
   return ids;
 }
@@ -344,22 +340,14 @@ export function flowImpact(taskId: string): void {
 }
 
 export function flowContext(): void {
-  const slotsFile = slotsFilePath();
-  if (!existsSync(slotsFile)) {
-    throw new Error(`slots file not found: ${slotsFile}`);
-  }
-
   const tasks = collectTasks();
-  const slotsContent = readFileSync(slotsFile, "utf-8");
+  const slots = readAllSlotJson(slotsCount());
 
   // Extract active task IDs from slots
   const activeTaskIds: string[] = [];
-  const taskRegex = /^\*\*Task:\*\*\s*(.+)$/gm;
-  let match: RegExpExecArray | null;
-  while ((match = taskRegex.exec(slotsContent)) !== null) {
-    const taskId = match[1]!.trim();
-    if (taskId && taskId !== "(empty)" && taskId !== "null") {
-      activeTaskIds.push(taskId);
+  for (const [, data] of slots) {
+    if (data.task) {
+      activeTaskIds.push(data.task);
     }
   }
 

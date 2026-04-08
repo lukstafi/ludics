@@ -280,7 +280,7 @@ function ensureHarness(root: string, repoDir: string, statePath: string): void {
   mkdirSync(harnessDir, { recursive: true });
 
   const templateDir = join(root, "templates", "harness");
-  const templateFiles = ["config.yaml", "slots.md", "CLAUDE.md"];
+  const templateFiles = ["config.yaml", "CLAUDE.md"];
 
   for (const file of templateFiles) {
     const dest = join(harnessDir, file);
@@ -295,6 +295,21 @@ function ensureHarness(root: string, repoDir: string, statePath: string): void {
         console.warn(`  warning: template not found: ${src}`);
       }
     }
+  }
+
+  // Create slots directory with empty slot files
+  const slotsDir = join(harnessDir, "slots");
+  if (!existsSync(slotsDir)) {
+    mkdirSync(slotsDir, { recursive: true });
+    const { writeSlotJson, emptySlotData } = require("./slots/json.ts");
+    const { slotsCount } = require("./config.ts");
+    const count = slotsCount();
+    for (let i = 1; i <= count; i++) {
+      writeSlotJson(i, emptySlotData(i), harnessDir);
+    }
+    console.log("  created slots/ directory");
+  } else {
+    console.log("  slots/ already exists");
   }
 
   // Create subdirectories

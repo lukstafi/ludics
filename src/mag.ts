@@ -2,9 +2,10 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsFilePath, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
-import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted, getLiveness, getMachine } from "./slots/markdown.ts";
+import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
+import type { SlotData } from "./slots/types.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterMachine } from "./cluster.ts";
@@ -647,12 +648,9 @@ function ensureTtyd(): void {
 // --- Queue pop for skills ---
 
 export function findSlotForTask(taskId: string): number | null {
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return null;
-
-  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
-  for (const [slotNum, block] of blocks) {
-    const currentTask = getTask(block).trim();
+  const slots = readAllSlotJson(slotsCount());
+  for (const [slotNum, data] of slots) {
+    const currentTask = data.task ?? "";
     if (currentTask === taskId) return slotNum;
   }
   return null;
@@ -883,9 +881,8 @@ interface SlotSelection {
 }
 
 function selectSlotForLaunch(taskId: string): SlotSelection {
-  const sFile = slotsFilePath();
-  const blocks = existsSync(sFile) ? parseSlotBlocks(readFileSync(sFile, "utf-8")) : new Map<number, string>();
   const count = slotsCount();
+  const slots = readAllSlotJson(count);
 
   let taskSlot: number | null = null;
   let existingPath = "";
@@ -895,25 +892,25 @@ function selectSlotForLaunch(taskId: string): SlotSelection {
   let emptySlot: number | null = null;
 
   for (let i = 1; i <= count; i++) {
-    const block = blocks.get(i);
-    const process = block ? getProcess(block).trim() : "(empty)";
+    const data = slots.get(i);
+    const process = data ? data.process : "(empty)";
 
     if ((!process || process === "(empty)") && emptySlot === null) {
       emptySlot = i;
     }
 
-    if (!block) continue;
-    if (getTask(block).trim() !== taskId) continue;
+    if (!data) continue;
+    if ((data.task ?? "") !== taskId) continue;
 
     taskSlot = i;
-    const slotMode = getMode(block).trim();
-    previousMode = slotMode && slotMode !== "null" ? slotMode : "";
-    const slotSession = getSession(block).trim();
-    previousSession = slotSession && slotSession !== "null" ? slotSession : "";
-    const slotAdapterArgs = getAdapterArgs(block).trim();
-    previousAdapterArgs = slotAdapterArgs && slotAdapterArgs !== "null" ? slotAdapterArgs : "";
-    const slotPath = getPath(block).trim();
-    if (slotPath && slotPath !== "null") existingPath = slotPath;
+    const slotMode = data.mode ?? "";
+    previousMode = slotMode || "";
+    const slotSession = data.session ?? "";
+    previousSession = slotSession || "";
+    const slotAdapterArgs = data.adapterArgs ?? "";
+    previousAdapterArgs = slotAdapterArgs || "";
+    const slotPath = data.path ?? "";
+    if (slotPath) existingPath = slotPath;
   }
 
   return { taskSlot, existingPath, previousMode, previousSession, previousAdapterArgs, emptySlot };
@@ -966,19 +963,13 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
 
   // Guard: if the task's slot already has an active session, skip re-start
   if (selection.taskSlot !== null) {
-    const sFile = slotsFilePath();
-    if (existsSync(sFile)) {
-      const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
-      const block = blocks.get(selection.taskSlot);
-      if (block) {
-        const sessionStarted = getSessionStarted(block).trim();
-        if (sessionStarted && sessionStarted !== "null") {
-          const msg = `Session already active for ${taskId} in slot ${selection.taskSlot} — ignoring duplicate launch`;
-          console.error(`ludics: ${msg}`);
-          notifyOutgoing(msg, 2, "ludics");
-          return;
-        }
-      }
+    const data = readSlotJson(selection.taskSlot);
+    const sessionStarted = data.sessionStarted ?? "";
+    if (sessionStarted) {
+      const msg = `Session already active for ${taskId} in slot ${selection.taskSlot} — ignoring duplicate launch`;
+      console.error(`ludics: ${msg}`);
+      notifyOutgoing(msg, 2, "ludics");
+      return;
     }
   }
 
@@ -1722,21 +1713,20 @@ function computeSessionProjectMatches(): string {
   if (repoTailMap.size === 0) return "(no projects configured)";
 
   // Read current slots: track which projects already have a slot and which slots are empty
-  const sFile = slotsFilePath();
-  const blocks = existsSync(sFile) ? parseSlotBlocks(readFileSync(sFile, "utf-8")) : new Map<number, string>();
   const count = slotsCount();
+  const slots = readAllSlotJson(count);
   const emptySlots: number[] = [];
   const projectsInSlots = new Map<string, number>(); // project name → slot number
 
   for (let i = 1; i <= count; i++) {
-    const block = blocks.get(i);
-    const process = block ? getProcess(block).trim() : "(empty)";
+    const data = slots.get(i);
+    const process = data ? data.process : "(empty)";
     if (!process || process === "(empty)") {
       emptySlots.push(i);
-    } else if (block) {
+    } else if (data) {
       // Infer project from task or path
-      const taskId = getTask(block).trim();
-      if (taskId && taskId !== "null") {
+      const taskId = data.task ?? "";
+      if (taskId) {
         const taskFile = join(harness, "tasks", `${taskId}.md`);
         if (existsSync(taskFile)) {
           const content = readFileSync(taskFile, "utf-8");
@@ -1745,8 +1735,8 @@ function computeSessionProjectMatches(): string {
         }
       }
       // Also check path for project match
-      const slotPath = getPath(block).trim();
-      if (slotPath && slotPath !== "null") {
+      const slotPath = data.path ?? "";
+      if (slotPath) {
         const pathMatch = matchCwdToProject(slotPath, repoTailMap);
         if (pathMatch && !projectsInSlots.has(pathMatch.projectName)) {
           projectsInSlots.set(pathMatch.projectName, i);
@@ -1763,9 +1753,9 @@ function computeSessionProjectMatches(): string {
     const taskFiles = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
     // Collect task IDs already in slots
     const tasksInSlots = new Set<string>();
-    for (const [, block] of blocks) {
-      const tid = getTask(block).trim();
-      if (tid && tid !== "null") tasksInSlots.add(tid);
+    for (const [, data] of slots) {
+      const tid = data.task ?? "";
+      if (tid) tasksInSlots.add(tid);
     }
 
     for (const f of taskFiles) {
@@ -1960,34 +1950,31 @@ function markAutoProposalQueued(taskId: string): void {
 async function maybeAutoStartSlots(): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
 
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return;
-
-  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  const slots = readAllSlotJson(slotsCount());
   const tasksDir = join(harnessDir(), "tasks");
   if (!existsSync(tasksDir)) return;
 
-  for (const [slotNum, block] of blocks) {
-    const process = getProcess(block).trim();
+  for (const [slotNum, data] of slots) {
+    const process = data.process;
     if (!process || process === "(empty)") continue;
 
-    const taskId = getTask(block).trim();
-    if (!taskId || taskId === "null") continue;
+    const taskId = data.task ?? "";
+    if (!taskId) continue;
 
     // Skip slots already marked as interrupted (setup failure) — needs manual resume
-    const slotLiveness = getLiveness(block).trim();
+    const slotLiveness = data.liveness ?? "";
     if (slotLiveness === "interrupted") continue;
 
     // Skip if the slot has an active session
     const orchState = readOrchestrationState(slotNum);
     if (orchState && orchState.phase !== "setup") continue;
-    const sessionStarted = getSessionStarted(block).trim();
-    if (sessionStarted && sessionStarted !== "null") continue;
+    const sessionStarted = data.sessionStarted ?? "";
+    if (sessionStarted) continue;
 
     // Skip remote slots that already have a fresh pending start intent —
     // prevents re-recording the intent every keepalive.
-    const slotMachine = getMachine(block).trim();
-    if (slotMachine && slotMachine !== "null" && isRemoteMachine(slotMachine)) {
+    const slotMachine = data.machine ?? "";
+    if (slotMachine && isRemoteMachine(slotMachine)) {
       try {
         const { getIntentForDashboard } = require("./cluster-http.ts");
         const existing = getIntentForDashboard(slotNum);
@@ -2023,27 +2010,24 @@ async function maybeAutoStartSlots(): Promise<void> {
 function maybeUnstickAssignedSlots(): void {
   if (startSessionsAutonomy() === "manual") return;
 
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return;
-
-  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  const slots = readAllSlotJson(slotsCount());
   const tasksDir = join(harnessDir(), "tasks");
   if (!existsSync(tasksDir)) return;
 
-  for (const [slotNum, block] of blocks) {
-    const process = getProcess(block).trim();
+  for (const [slotNum, data] of slots) {
+    const process = data.process;
     if (!process || process === "(empty)") continue;
 
-    const taskId = getTask(block).trim();
-    if (!taskId || taskId === "null") continue;
+    const taskId = data.task ?? "";
+    if (!taskId) continue;
 
     // Skip slots marked as interrupted — needs manual resume
-    const slotLiveness = getLiveness(block).trim();
+    const slotLiveness = data.liveness ?? "";
     if (slotLiveness === "interrupted") continue;
 
     // Skip if session is active
-    const sessionStarted = getSessionStarted(block).trim();
-    if (sessionStarted && sessionStarted !== "null") continue;
+    const sessionStarted = data.sessionStarted ?? "";
+    if (sessionStarted) continue;
 
     // Skip if there's an active orchestration
     const orchState = readOrchestrationState(slotNum);
@@ -2274,16 +2258,13 @@ function getSortedReadyCandidates(): ReadyCandidate[] {
   const cfg = loadConfigSync();
 
   // Determine which tasks are already in slots
-  const sFile = slotsFilePath();
+  const count = slotsCount();
+  const slots = readAllSlotJson(count);
   const tasksInSlots = new Set<string>();
-  if (existsSync(sFile)) {
-    const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
-    const count = slotsCount();
-    for (let i = 1; i <= count; i++) {
-      const block = blocks.get(i);
-      const taskId = block ? getTask(block).trim() : "";
-      if (taskId && taskId !== "null") tasksInSlots.add(taskId);
-    }
+  for (let i = 1; i <= count; i++) {
+    const data = slots.get(i);
+    const taskId = data ? (data.task ?? "") : "";
+    if (taskId) tasksInSlots.add(taskId);
   }
 
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
@@ -2381,16 +2362,13 @@ function maybeFillEmptySlots(): void {
   if (startSessionsAutonomy() === "manual") return;
   if (isQueueHeld()) return;
 
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return;
-
-  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
   const count = slotsCount();
+  const slots = readAllSlotJson(count);
   const emptySlots: number[] = [];
 
   for (let i = 1; i <= count; i++) {
-    const block = blocks.get(i);
-    const process = block ? getProcess(block).trim() : "(empty)";
+    const data = slots.get(i);
+    const process = data ? data.process : "(empty)";
     if (!process || process === "(empty)") {
       emptySlots.push(i);
     }
@@ -2433,8 +2411,8 @@ function maybeFillEmptySlots(): void {
       return;
     }
     // Guard: check task isn't already assigned to any active slot
-    for (const [, block] of blocks) {
-      if (block && getTask(block).trim() === task.id) {
+    for (const [, data] of slots) {
+      if (data && (data.task ?? "") === task.id) {
         console.error(`ludics: duo task ${task.id} already assigned — skipping`);
         return;
       }
@@ -2525,36 +2503,29 @@ export function orchPidForSlotMode(
   return undefined;
 }
 
-async function maybeResumeDeadOrchestrators(freshSlotsContent?: string | null): Promise<void> {
+async function maybeResumeDeadOrchestrators(freshSlots?: Map<number, SlotData> | null): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
 
-  // On worker: use in-memory slots content from HTTP fetch
-  let slotsContent: string | null = freshSlotsContent ?? null;
-  if (!slotsContent) {
-    const sFile = slotsFilePath();
-    if (!existsSync(sFile)) return;
-    slotsContent = readFileSync(sFile, "utf-8");
-  }
-
-  const blocks = parseSlotBlocks(slotsContent);
+  // On worker: use in-memory slots from HTTP fetch; otherwise read from JSON files
+  const slots: Map<number, SlotData> = freshSlots ?? readAllSlotJson(slotsCount());
   let resumed = 0;
 
-  for (const [slotNum, block] of blocks) {
+  for (const [slotNum, data] of slots) {
     if (resumed >= 1) break; // rate-limit: at most 1 per invocation
 
     // IMPORTANT: use `slotProcess` not `process` to avoid shadowing the global
-    const slotProcess = getProcess(block).trim();
+    const slotProcess = data.process;
     if (!slotProcess || slotProcess === "(empty)") continue;
 
-    const mode = getMode(block).trim();
+    const mode = data.mode ?? "";
     if (mode !== "t3code" && mode !== "tmux") continue;
 
     // Skip slots owned by a different machine — their PIDs are meaningless locally
-    const slotMachine = getMachine(block).trim();
-    if (slotMachine && slotMachine !== "null" && isRemoteMachine(slotMachine)) continue;
+    const slotMachine = data.machine ?? "";
+    if (slotMachine && isRemoteMachine(slotMachine)) continue;
 
-    const taskId = getTask(block).trim();
-    if (!taskId || taskId === "null") continue;
+    const taskId = data.task ?? "";
+    if (!taskId) continue;
 
     const orchState = readOrchestrationState(slotNum);
     if (!orchState) continue;
@@ -2613,19 +2584,16 @@ async function maybeResumeDeadOrchestrators(freshSlotsContent?: string | null): 
 function maybeClearDoneSlots(): void {
   if (startSessionsAutonomy() === "manual") return;
 
-  const sFile = slotsFilePath();
-  if (!existsSync(sFile)) return;
-
-  const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
+  const slots = readAllSlotJson(slotsCount());
   const tasksDir = join(harnessDir(), "tasks");
   if (!existsSync(tasksDir)) return;
 
-  for (const [slotNum, block] of blocks) {
-    const process = getProcess(block).trim();
+  for (const [slotNum, data] of slots) {
+    const process = data.process;
     if (!process || process === "(empty)") continue;
 
-    const taskId = getTask(block).trim();
-    if (!taskId || taskId === "null") continue;
+    const taskId = data.task ?? "";
+    if (!taskId) continue;
 
     const taskFile = join(tasksDir, `${taskId}.md`);
     if (!existsSync(taskFile)) continue;
@@ -2656,12 +2624,12 @@ async function workerKeepalive(): Promise<void> {
   console.error("ludics: worker keepalive");
 
   // Fetch fresh slots state from controller — in-memory only, never written to harness
-  let freshSlotsContent: string | null = null;
+  let freshSlots: Map<number, SlotData> | null = null;
   try {
     const { clusterGetSlots } = await import("./cluster-http.ts");
     const result = await clusterGetSlots();
-    if (result.ok && typeof result.data === "string") {
-      freshSlotsContent = result.data;
+    if (result.ok && result.data) {
+      freshSlots = result.data;
     }
   } catch { /* null → downstream functions skip worker-specific work */ }
 
@@ -2669,14 +2637,14 @@ async function workerKeepalive(): Promise<void> {
   publishTerminalState();
 
   // Poll controller for pending intents via HTTP (pure pull model)
-  await processSlotIntents(freshSlotsContent);
+  await processSlotIntents(freshSlots);
 
   // Resume dead orchestrator processes on this machine's slots
-  await maybeResumeDeadOrchestrators(freshSlotsContent);
+  await maybeResumeDeadOrchestrators(freshSlots);
 }
 
 /** Poll controller for pending intents and execute them (pure pull model). */
-async function processSlotIntents(freshSlotsContent: string | null): Promise<void> {
+async function processSlotIntents(freshSlots: Map<number, SlotData> | null): Promise<void> {
   const currentMachine = clusterCurrentMachineName();
   if (!currentMachine) return;
 
@@ -2684,7 +2652,7 @@ async function processSlotIntents(freshSlotsContent: string | null): Promise<voi
   try {
     const { clusterIsController } = require("./cluster.ts");
     if (!clusterIsController()) {
-      if (!freshSlotsContent) return; // no fresh state — skip
+      if (!freshSlots) return; // no fresh state — skip
       const { clusterGetIntents, clusterDeleteIntent } = await import("./cluster-http.ts");
       const { setWorkerSlotsOverride } = await import("./slots/index.ts");
       const result = await clusterGetIntents();
@@ -2701,7 +2669,7 @@ async function processSlotIntents(freshSlotsContent: string | null): Promise<voi
         let shouldAck = true;
         try {
           // Set fresh controller state so slot operations use it instead of stale local harness
-          setWorkerSlotsOverride(freshSlotsContent);
+          setWorkerSlotsOverride(freshSlots);
           try {
             switch (intent.action) {
               case "start": await slotStart(slotNum); break;

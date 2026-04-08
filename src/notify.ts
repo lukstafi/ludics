@@ -2,11 +2,11 @@
 
 import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync, readdirSync, unlinkSync } from "fs";
 import { basename, join, resolve } from "path";
-import { loadConfigSync, harnessDir, slotsFilePath } from "./config.ts";
+import { loadConfigSync, harnessDir, slotsCount } from "./config.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
-import { parseSlotBlocks, getTask, getPath } from "./slots/markdown.ts";
+import { readAllSlotJson } from "./slots/json.ts";
 import { getUrl } from "./network.ts";
 
 function notificationLogFile(): string {
@@ -192,12 +192,10 @@ function candidateProjectDirs(project: string): string[] {
 
 function taskSlotPath(taskId: string): string {
   try {
-    const sFile = slotsFilePath();
-    if (!existsSync(sFile)) return "";
-    const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
-    for (const [, block] of blocks) {
-      if (getTask(block).trim() !== taskId) continue;
-      const path = getPath(block).trim();
+    const slots = readAllSlotJson(slotsCount());
+    for (const [, data] of slots) {
+      if (data.task !== taskId) continue;
+      const path = data.path ?? "";
       if (path && path !== "null") return path;
     }
   } catch {
@@ -208,11 +206,9 @@ function taskSlotPath(taskId: string): string {
 
 function taskSlotNumber(taskId: string): number | null {
   try {
-    const sFile = slotsFilePath();
-    if (!existsSync(sFile)) return null;
-    const blocks = parseSlotBlocks(readFileSync(sFile, "utf-8"));
-    for (const [slotNum, block] of blocks) {
-      if (getTask(block).trim() === taskId) return slotNum;
+    const slots = readAllSlotJson(slotsCount());
+    for (const [slotNum, data] of slots) {
+      if (data.task === taskId) return slotNum;
     }
   } catch {
     // ignore slot lookup failures

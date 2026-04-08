@@ -1,7 +1,7 @@
 // Sessions module — pipeline orchestration and CLI handlers
 
 import { join } from "path";
-import { loadConfig, harnessDir, slotsFilePath } from "../config.ts";
+import { loadConfig, harnessDir } from "../config.ts";
 import { extractSlotPaths } from "../slots/paths.ts";
 import { discoverT3code } from "./discover-t3code.ts";
 import { discoverCodex } from "./discover-codex.ts";
@@ -35,8 +35,6 @@ async function discoverAll(staleThreshold: number): Promise<DiscoveredSession[]>
 async function runPipeline(): Promise<DiscoveryResult> {
   const config = await loadConfig();
   const harness = await harnessDir();
-  const slotsFile = slotsFilePath(harness);
-
   // Step 1: Discover from all sources
   const raw = await discoverAll(config.staleThresholdSeconds);
 
@@ -47,7 +45,7 @@ async function runPipeline(): Promise<DiscoveryResult> {
   const merged = deduplicateAndMerge(raw, orchestrations, config.staleThresholdSeconds);
 
   // Step 4: Classify against slot paths
-  const slotPaths = await extractSlotPaths(slotsFile);
+  const slotPaths = await extractSlotPaths(harness);
   const { classified, unclassified } = classifySessions(merged, slotPaths);
 
   // Step 5: Build result

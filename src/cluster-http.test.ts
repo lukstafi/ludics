@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { validateSignal, handleClusterRequest } from "./cluster-http.ts";
+import { writeSlotJson, emptySlotData } from "./slots/json.ts";
 import * as slots from "./slots/index.ts";
 import * as events from "./events.ts";
 
@@ -104,26 +105,15 @@ slots:
 
 function writeSlotsFile(harness: string, slotNum: number, taskId: string, machine: string): void {
   mkdirSync(harness, { recursive: true });
-  writeFileSync(join(harness, "slots.md"), `# Slots
-
-## Slot ${slotNum}
-
-**Process:** some-process
-**Task:** ${taskId}
-**Mode:** solo
-**Session:** null
-**Path:** /some/path
-**Started:** 2026-04-07T00:00Z
-**Adapter Args:** null
-**Session Started:** null
-**Machine:** ${machine}
-
-**Terminals:**
-
-**Runtime:**
-
-**Git:**
-`);
+  writeSlotJson(slotNum, {
+    ...emptySlotData(slotNum),
+    process: "some-process",
+    task: taskId,
+    mode: "solo",
+    path: "/some/path",
+    started: "2026-04-07T00:00Z",
+    machine,
+  }, harness);
 }
 
 function makeRequest(pathname: string, body: object): Request {

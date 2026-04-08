@@ -8,7 +8,8 @@ import { resolve, extname, join } from "path";
 import YAML from "yaml";
 import { safeSyncOutput } from "./spawn.ts";
 import { dashboardGenerate } from "./dashboard.ts";
-import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
+import { harnessDir, loadConfigSync } from "./config.ts";
+import { readSlotJson } from "./slots/json.ts";
 import { updateFrontmatterField, addFrontmatterField, removeFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
 import { findSlotForTask, setQueueHold } from "./mag.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
@@ -263,14 +264,9 @@ export function startDashboardServer(
           // Resolve task ID and new priority *before* clearing, but do NOT write yet.
           // Only write priority after the clear succeeds (atomicity).
           let pendingPriorityWrite: (() => void) | null = null;
-          const slotsFile = slotsFilePath();
-          if (existsSync(slotsFile)) {
-            const slotsContent = readFileSync(slotsFile, "utf-8");
-            const slotSection = slotsContent.match(
-              new RegExp(`## Slot ${slotNum}\\n([\\s\\S]*?)(?=## Slot |$)`),
-            );
-            const taskIdMatch = slotSection?.[1]?.match(/\*\*Task:\*\*\s*(.+)/);
-            const taskId = taskIdMatch ? taskIdMatch[1]!.trim() : null;
+          {
+            const slotData = readSlotJson(slotNum);
+            const taskId = slotData.task;
             if (taskId && taskId !== "null" && TASK_ID_RE.test(taskId)) {
               const taskResolved = resolveTaskFile(taskId);
               if (!("error" in taskResolved)) {

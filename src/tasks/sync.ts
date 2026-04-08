@@ -3,8 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
 import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCount, milestonesEnabledProjects } from "../config.ts";
-import { slotsFilePath } from "../config.ts";
-import { parseSlotBlocks, getProcess, getTask } from "../slots/markdown.ts";
+import { readAllSlotJson } from "../slots/json.ts";
 import { listStashes } from "../slots/preempt.ts";
 import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
@@ -866,15 +865,10 @@ function tasksQueuePreemptions(): void {
   if (!existsSync(tasksDir)) return;
 
   // Check if all slots are occupied (otherwise normal flow ready path suffices)
-  const slotsFile = slotsFilePath(harness);
-  if (!existsSync(slotsFile)) return;
-  const slotsContent = readFileSync(slotsFile, "utf-8");
-  const blocks = parseSlotBlocks(slotsContent);
-  const count = slotsCount();
+  const slots = readAllSlotJson(slotsCount(), harness);
   let hasEmpty = false;
-  for (let i = 1; i <= count; i++) {
-    const block = blocks.get(i);
-    const process = block ? getProcess(block).trim() : "(empty)";
+  for (const [, data] of slots) {
+    const process = data.process.trim();
     if (!process || process === "(empty)") { hasEmpty = true; break; }
   }
   if (hasEmpty) return; // empty slot available, no need to preempt
