@@ -341,7 +341,7 @@ function isMerged(state: OrchestrationState): boolean {
 /**
  * Check if PR forwarding to upstream has completed successfully.
  * Uses the ${agent}.forwarded marker (written only after upstream PR creation succeeds
- * and PR_FILE is overwritten), NOT the ${agent}.staging-pr file (written early for
+ * and PR_FILE is overwritten), NOT the ${agent}.upstream-pr file (written early for
  * URL preservation). This prevents a failed/timed-out forward from being misclassified.
  */
 function hasForwardedPr(state: OrchestrationState): boolean {
@@ -516,13 +516,13 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
         return null;
       }
 
-      // Staging forwarding is pair-mode only. Suppressed for hierarchical-duo slots
-      // (duoPeerSlot != null) because cross-slot merge doesn't compose with staging.
-      const isStaging = !!state.stagingRepo && state.duoPeerSlot == null;
-      const forwarded = isStaging && hasForwardedPr(state);
+      // Upstream forwarding is pair-mode only. Suppressed for hierarchical-duo slots
+      // (duoPeerSlot != null) because cross-slot merge doesn't compose with upstream forwarding.
+      const hasUpstream = !!state.upstreamRepo && state.duoPeerSlot == null;
+      const forwarded = hasUpstream && hasForwardedPr(state);
 
-      if (isStaging && !forwarded) {
-        // Monitoring staging PR — transition to forward-pr on quiet period
+      if (hasUpstream && !forwarded) {
+        // Monitoring working repo PR — transition to forward-pr on quiet period
         const quietPeriodStaging = state.config.prCommentsTimeout;
         if (
           hasAnyPr(state)
@@ -555,7 +555,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
         return "final-merge";
       }
 
-      // Non-staging: quiet period is the fallback advancement mechanism
+      // No upstream: quiet period is the fallback advancement mechanism
       const quietPeriod = state.config.prCommentsTimeout;
       if (
         hasAnyPr(state)

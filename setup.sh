@@ -184,7 +184,7 @@ HARNESS_DIR="${REPO_NAME:+$HOME/$REPO_NAME/$STATE_PATH}"
 # Uses a simple state machine to handle YAML list items
 in_projects=false
 current_repo=""
-current_staging_repo=""
+current_upstream_repo=""
 current_path=""
 
 clone_repo() {
@@ -204,15 +204,15 @@ clone_repo() {
 
 clone_if_missing() {
   local repo="$1"
-  local staging_repo="$2"
+  local upstream_repo="$2"
   local path="$3"
 
   if [[ -z "$repo" || "$repo" == *"your-username"* ]]; then
     return
   fi
 
-  # Working repo = staging_repo if set, otherwise repo
-  local working_repo="${staging_repo:-$repo}"
+  # repo is the working repo directly
+  local working_repo="$repo"
 
   # path points to the working repo checkout
   local local_dir=""
@@ -224,10 +224,10 @@ clone_if_missing() {
 
   clone_repo "$working_repo" "$local_dir"
 
-  # Also clone upstream alongside when staging is configured
-  if [[ -n "$staging_repo" && "$staging_repo" != "$repo" ]]; then
-    local upstream_dir="$HOME/${repo##*/}"
-    clone_repo "$repo" "$upstream_dir"
+  # Also clone upstream alongside when upstream_repo is configured
+  if [[ -n "$upstream_repo" && "$upstream_repo" != "$repo" ]]; then
+    local upstream_dir="$HOME/${upstream_repo##*/}"
+    clone_repo "$upstream_repo" "$upstream_dir"
   fi
 }
 
@@ -235,20 +235,20 @@ project_paths=()
 
 flush_project() {
   if [[ -n "$current_repo" ]]; then
-    clone_if_missing "$current_repo" "$current_staging_repo" "$current_path"
+    clone_if_missing "$current_repo" "$current_upstream_repo" "$current_path"
 
     # Accumulate resolved project path for Codex trust
     local resolved_path=""
     if [[ -n "$current_path" ]]; then
       resolved_path="${current_path/#\~/$HOME}"
     else
-      local working_repo="${current_staging_repo:-$current_repo}"
+      local working_repo="$current_repo"
       resolved_path="$HOME/${working_repo##*/}"
     fi
     project_paths+=("$resolved_path")
   fi
   current_repo=""
-  current_staging_repo=""
+  current_upstream_repo=""
   current_path=""
 }
 
@@ -275,10 +275,10 @@ while IFS= read -r line; do
     flush_project
   fi
 
-  # Extract staging_repo (must come before repo — "staging_repo:" contains "repo:")
-  if [[ "$line" =~ staging_repo:[[:space:]]*(.+) ]]; then
-    current_staging_repo="${BASH_REMATCH[1]}"
-    current_staging_repo=$(echo "$current_staging_repo" | tr -d '"' | tr -d "'" | xargs)
+  # Extract upstream_repo (must come before repo — "upstream_repo:" contains "repo:")
+  if [[ "$line" =~ upstream_repo:[[:space:]]*(.+) ]]; then
+    current_upstream_repo="${BASH_REMATCH[1]}"
+    current_upstream_repo=$(echo "$current_upstream_repo" | tr -d '"' | tr -d "'" | xargs)
   # Extract repo
   elif [[ "$line" =~ repo:[[:space:]]*(.+) ]]; then
     current_repo="${BASH_REMATCH[1]}"

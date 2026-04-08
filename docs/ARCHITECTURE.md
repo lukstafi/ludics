@@ -954,7 +954,7 @@ ludics/
 │   ├── merge-amend.md                # Merge amendments
 │   ├── suggest-refactor.md           # Post-merge refactoring suggestions
 │   ├── forward-pr.md                 # Forward PR for cross-slot merge
-│   ├── staging-final-merge.md        # Staging final merge
+│   ├── upstream-final-merge.md        # Upstream final merge
 │   ├── pr-conflict-resolve.md        # PR merge conflict resolution
 │   ├── final-merge.md                # Final merge
 │   ├── pair-coder-clarify.md         # Pair mode: coder clarify

@@ -156,18 +156,18 @@ export function resolveTemplatePath(
   phase: Phase,
   mode: "duo" | "pair",
   role?: "coder" | "reviewer",
-  staging?: boolean,
+  hasUpstream?: boolean,
 ): string {
   const root = templateRoot();
-  // Staging-aware resolution: check staging-specific templates first when staging is active.
-  // Priority: pair-<role>-staging-<phase>.md > staging-<phase>.md > pair-<role>-<phase>.md > <phase>.md
-  if (staging) {
+  // Upstream-aware resolution: check upstream-specific templates first when upstream is configured.
+  // Priority: pair-<role>-upstream-<phase>.md > upstream-<phase>.md > pair-<role>-<phase>.md > <phase>.md
+  if (hasUpstream) {
     if (mode === "pair" && role) {
-      const stagingRolePath = join(root, `pair-${role}-staging-${phase}.md`);
-      if (existsSync(stagingRolePath)) return stagingRolePath;
+      const upstreamRolePath = join(root, `pair-${role}-upstream-${phase}.md`);
+      if (existsSync(upstreamRolePath)) return upstreamRolePath;
     }
-    const stagingPath = join(root, `staging-${phase}.md`);
-    if (existsSync(stagingPath)) return stagingPath;
+    const upstreamPath = join(root, `upstream-${phase}.md`);
+    if (existsSync(upstreamPath)) return upstreamPath;
   }
   if (mode === "pair" && role) {
     const rolePath = join(root, `pair-${role}-${phase}.md`);
@@ -221,9 +221,9 @@ export function buildSkillContext(
     .map(([name, vote]) => `${name}: ${vote}`)
     .join("\n");
   const _projectEntry = findProjectConfig(state.projectDir);
-  // Staging is suppressed for hierarchical-duo slots (duoPeerSlot set) because the
-  // cross-slot winner-selection flow doesn't compose with staging→upstream forwarding.
-  const stagingRepo = state.duoPeerSlot == null ? (_projectEntry?.staging_repo ?? null) : null;
+  // Upstream forwarding is suppressed for hierarchical-duo slots (duoPeerSlot set) because the
+  // cross-slot winner-selection flow doesn't compose with upstream forwarding.
+  const upstreamRepo = state.duoPeerSlot == null ? (_projectEntry?.upstream_repo ?? null) : null;
 
   // Extract proposal path from task frontmatter for templates that need just a reference
   const _taskPath = state.taskId ? join(harnessDir(), "tasks", `${state.taskId}.md`) : null;
@@ -273,7 +273,7 @@ export function buildSkillContext(
     WORKFLOW_FEEDBACK_FILE: join(state.peerSyncDir, `workflow-feedback-${agent.name}.md`),
     MERGE_REVIEW_DECISION_FILE: join(state.peerSyncDir, "merge-review-approval.txt"),
     MERGED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.merged`),
-    STAGING_PR_FILE: join(state.peerSyncDir, `${agent.name}.staging-pr`),
+    UPSTREAM_PR_FILE: join(state.peerSyncDir, `${agent.name}.upstream-pr`),
     UPSTREAM_MERGED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.upstream-merged`),
     FORWARDED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.forwarded`),
     PEER_SYNC_DIR: state.peerSyncDir,
@@ -285,9 +285,9 @@ export function buildSkillContext(
             : (state.finalMergeVerifyAttempts ?? 0)) + 1
         } of 3.\n`
       : "",
-    STAGING_REPO: stagingRepo ?? "",
-    STAGING_REPO_NOTE: stagingRepo
-      ? `\n> **Staging fork**: This project uses a staging fork (\`${stagingRepo}\`). Create the PR against the staging fork, not the upstream repo.\n`
+    UPSTREAM_REPO: upstreamRepo ?? "",
+    UPSTREAM_REPO_NOTE: upstreamRepo
+      ? `\n> **Upstream forwarding**: This project forwards approved PRs to upstream (\`${upstreamRepo}\`). Create the PR against the working repo, not upstream.\n`
       : "",
   };
 
@@ -346,9 +346,9 @@ export async function composeSkillMessage(
   templateOverride?: string,
 ): Promise<string> {
   const context = buildSkillContext(state, agent);
-  const isStaging = !!state.stagingRepo && state.duoPeerSlot == null;
+  const hasUpstream = !!state.upstreamRepo && state.duoPeerSlot == null;
   const templatePath = templateOverride
-    ?? resolveTemplatePath(state.phase, state.mode, agent.role, isStaging);
+    ?? resolveTemplatePath(state.phase, state.mode, agent.role, hasUpstream);
   const template = readFileSync(templatePath, "utf-8");
   let message = substituteTemplate(template, context);
   if (state.config.useMagTailoring) {

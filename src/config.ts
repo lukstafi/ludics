@@ -15,8 +15,8 @@ export interface AdapterConfigEntry {
 export interface ProjectConfig {
   name: string;
   repo: string;
-  /** Optional staging fork used for PR creation. `repo` remains the upstream for issue syncing. */
-  staging_repo?: string;
+  /** Optional upstream repo for PR forwarding. `repo` is the working repo where agents create PRs. */
+  upstream_repo?: string;
   path?: string;
   issues?: boolean;
   priority?: boolean;
@@ -356,13 +356,12 @@ export function resolveProjectPath(projectName: string): string {
           : String(p.path);
         if (existsSync(resolved)) return resolved;
       }
-      // Fallback: working repo = staging_repo if set, otherwise repo
-      const workingRepo = String(p.staging_repo ?? "") || repo;
-      const workingTail = workingRepo.split("/").pop() ?? "";
+      // repo is the working repo directly; try upstream_repo tail as fallback
+      const upstreamRepo = String(p.upstream_repo ?? "");
+      const upstreamTail = upstreamRepo ? (upstreamRepo.split("/").pop() ?? "") : "";
       const home = process.env.HOME ?? "~";
-      // Try working repo tail first, then upstream repo tail
-      const tails = workingTail !== repoTail
-        ? [workingTail, repoTail]
+      const tails = upstreamTail && upstreamTail !== repoTail
+        ? [repoTail, upstreamTail]
         : [repoTail];
       for (const tail of tails) {
         for (const candidate of [
