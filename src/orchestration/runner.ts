@@ -514,6 +514,7 @@ async function enterPhase(state: OrchestrationState, transport: OrchestrationTra
   if (state.phase === "pr-comments") {
     state.prCommentsLastCheckAt = state.phaseStartedAt - 600;
     state.prCommentsQuietSince = undefined;
+    state.prCommentsCoderDispatched = false;
     if (!state.prMergeableStates) state.prMergeableStates = {};  // defensive only; real reset is in applyPhaseSideEffects
     // Clear stale lifecycle/fingerprint from the preceding phase so that
     // isAgentDone accepts the previous phase's done status.  Without this,
@@ -634,6 +635,7 @@ async function redispatchForPrComments(state: OrchestrationState, transport: Orc
     runtime.dispatchStatusFingerprint = dispatchFp;
     const skillMessage = await composeSkillMessage(state, agent);
     const commandId = await transport.sendTurn(state, agent, skillMessage);
+    if (agent.role === "coder") state.prCommentsCoderDispatched = true;
     // Reset lifecycle for the re-dispatched turn.
     runtime.turnLifecycle = {
       dispatchCommandId: commandId,
@@ -1177,6 +1179,7 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
   }
   if (next === "pr-comments") {
     state.prMergeableStates = {};
+    state.prCommentsCoderDispatched = false;
   }
   if (state.phase === "review" && next === "update-docs" && !shouldRunUpdateDocs(state)) {
     state.lastLearningAt = state.lastLearningAt ?? 0;

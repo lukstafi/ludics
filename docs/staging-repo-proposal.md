@@ -127,7 +127,7 @@ Add `staging_repo` to the project entry in the reference config so that the conf
 - **No conditional template syntax needed**: Using a computed `STAGING_REPO_NOTE` variable avoids adding template engine complexity. The note is simply empty for projects without a staging fork.
 - **Project lookup by path**: `resolveProjectPath` already handles `~/` expansion and fallback paths. Matching `state.projectDir` against resolved paths should work reliably.
 - **No changes to issue syncing**: `repo` continues to be the authority for `tasks sync` and GitHub issue operations.
-- **No changes to GitHub helpers**: `isPrMerged`, `fetchNewPrCommentCount`, `hasPrApprovalReaction` already parse the repo from the PR URL itself, so they naturally work with staging fork PRs.
+- **No changes to GitHub helpers**: `isPrMerged`, `fetchNewPrCommentCount` already parse the repo from the PR URL itself, so they naturally work with staging fork PRs.
 - **`gh pr create` default remote**: When the local checkout is cloned from `lukstafi/ocannl-staging`, `gh pr create` will default to that fork -- so the agent just needs to not override it with `--repo ahrefs/ocannl`. The template note makes this explicit.
 
 ## Scope
