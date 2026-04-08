@@ -2227,9 +2227,10 @@ export function queueHoldStatus(): void {
 /** Look up a ProjectConfig by task project name (matches name or repo tail). */
 function findProjectConfigByName(projectName: string, cfg: { projects?: { name: string; repo: string; requirements?: { os?: string; gpu?: string } }[] }): { requirements?: { os?: string; gpu?: string } } | null {
   if (!projectName) return null;
+  const key = projectName.toLowerCase();
   return (cfg.projects ?? []).find((p) => {
-    const repoTail = p.repo.split("/").pop() ?? "";
-    return p.name === projectName || repoTail === projectName;
+    const repoTail = (p.repo.split("/").pop() ?? "").toLowerCase();
+    return p.name.toLowerCase() === key || repoTail === key;
   }) ?? null;
 }
 
