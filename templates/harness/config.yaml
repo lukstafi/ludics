@@ -11,7 +11,7 @@ slots:
 projects:
   - name: ocannl
     repo: lukstafi/ocannl-staging      # working repo — where agents create PRs
-    upstream_repo: ahrefs/ocannl       # upstream — PRs are forwarded here after approval
+    upstream_repo: ahrefs/ocannl       # upstream — PRs forwarded here; issues synced from here
     issues: true
 
   - name: ppx-minidebug

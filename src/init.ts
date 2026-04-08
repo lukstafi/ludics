@@ -27,7 +27,11 @@ function validateProjectPaths(): void {
     const upstreamRepo = String(p.upstream_repo ?? "");
     if (!upstreamRepo || upstreamRepo === repo || !p.path) continue;
 
+    const repoTail = repo.split("/").pop() ?? "";
     const upstreamTail = upstreamRepo.split("/").pop() ?? "";
+    // When both repos share the same tail (e.g. lukstafi/ocannl vs ahrefs/ocannl),
+    // path-tail comparison cannot distinguish them — skip the heuristic.
+    if (repoTail === upstreamTail) continue;
     const pathStr = String(p.path);
     // Check if path ends with upstream repo tail — likely misconfigured
     const pathTail = pathStr.replace(/\/+$/, "").split("/").pop() ?? "";
