@@ -157,8 +157,8 @@ describe("buildCleanupEntry", () => {
       round: 1,
       mergeRound: 0,
       agents: [
-        { name: "coder", provider: "claude-code", model: "opus", branch: "ludics/test-task-s1/root", worktreePath: "/tmp/proj-test-task-1-s1" },
-        { name: "reviewer", provider: "codex", model: "o3", branch: "ludics/test-task-s1/root", worktreePath: "/tmp/proj-test-task-1-s1" },
+        { name: "coder", provider: "claude-code", model: "opus", branch: "ludics/test-task-1-s1/root", worktreePath: "/tmp/proj-test-task-1-s1" },
+        { name: "reviewer", provider: "codex", model: "o3", branch: "ludics/test-task-1-s1/root", worktreePath: "/tmp/proj-test-task-1-s1" },
       ] as AgentConfig[],
       agentStates: {},
       config: {} as OrchestrationState["config"],
@@ -181,6 +181,8 @@ describe("buildCleanupEntry", () => {
     expect(entry.slot).toBe(1);
     expect(entry.mode).toBe("pair");
     expect(entry.worktreePaths).toEqual(["/tmp/proj-test-task-1-s1"]);
+    // Root branch derived from naming convention; agent branches match root in pair mode
+    expect(entry.branches).toEqual(["ludics/test-task-1-s1/root"]);
     expect(entry.tmuxSessionNames).toEqual(["s1_coder_test-task-1"]);
     expect(entry.peerSyncLink).toBe("/tmp/test-project/.agent-sessions/test-task-1-s1.session");
     expect(entry.timestamp).toBeDefined();
@@ -189,10 +191,11 @@ describe("buildCleanupEntry", () => {
   test("duo mode includes root + agent worktrees and branches", () => {
     const orchState = makeOrchState({
       mode: "duo",
+      taskId: "duo-task",
       rootWorktree: "/tmp/proj-duo-s2",
       agents: [
-        { name: "coder", provider: "claude-code", model: "opus", branch: "ludics/duo-s2/coder", worktreePath: "/tmp/proj-duo-s2-coder" },
-        { name: "reviewer", provider: "codex", model: "o3", branch: "ludics/duo-s2/reviewer", worktreePath: "/tmp/proj-duo-s2-reviewer" },
+        { name: "coder", provider: "claude-code", model: "opus", branch: "ludics/duo-task-s2/coder", worktreePath: "/tmp/proj-duo-s2-coder" },
+        { name: "reviewer", provider: "codex", model: "o3", branch: "ludics/duo-task-s2/reviewer", worktreePath: "/tmp/proj-duo-s2-reviewer" },
       ] as AgentConfig[],
     });
     const entry = buildCleanupEntry(orchState, 2);
@@ -201,10 +204,11 @@ describe("buildCleanupEntry", () => {
       "/tmp/proj-duo-s2-coder",
       "/tmp/proj-duo-s2-reviewer",
     ]);
-    // Root branch captured via maybeGit (returns "" since worktree doesn't exist)
-    // Agent branches are distinct from root, so they're included
-    expect(entry.branches).toContain("ludics/duo-s2/coder");
-    expect(entry.branches).toContain("ludics/duo-s2/reviewer");
+    // Root branch derived from naming convention: ludics/<slug>-s<slot>/root
+    expect(entry.branches).toContain("ludics/duo-task-s2/root");
+    expect(entry.branches).toContain("ludics/duo-task-s2/coder");
+    expect(entry.branches).toContain("ludics/duo-task-s2/reviewer");
+    expect(entry.branches).toHaveLength(3);
   });
 
   test("pair mode deduplicates: agents sharing root worktree → single path", () => {

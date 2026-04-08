@@ -6,7 +6,8 @@ import { join } from "path";
 import { harnessDir, cleanupDelayHours } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import type { OrchestrationState } from "./state.ts";
-import { maybeGit, removeWorktreeByPath, deleteBranches } from "./worktrees.ts";
+import { removeWorktreeByPath, deleteBranches } from "./worktrees.ts";
+import { slugify } from "./util.ts";
 import { removePeerSyncLink } from "./peer-sync.ts";
 
 export interface CleanupEntry {
@@ -63,10 +64,14 @@ export function buildCleanupEntry(
     }
   }
 
-  // Concrete branch names — include root branch (read from worktree HEAD)
-  const branches: string[] = [];
-  const rootBranch = maybeGit(orchState.rootWorktree, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  if (rootBranch) branches.push(rootBranch);
+  // Concrete branch names — derive root branch from naming convention
+  // (same as createWorktrees: ludics/<slug>-s<slot>/root)
+  // Using the convention is safer than reading worktree HEAD, which could be
+  // on a non-ephemeral branch (e.g. main) if someone switched it manually.
+  const featureSlug = slugify(orchState.taskId);
+  const slotSuffix = `-s${slot}`;
+  const rootBranch = `ludics/${featureSlug}${slotSuffix}/root`;
+  const branches: string[] = [rootBranch];
   for (const agent of orchState.agents) {
     if (agent.branch && agent.branch !== rootBranch) {
       branches.push(agent.branch);
@@ -169,7 +174,10 @@ export async function processDeferredCleanups(thresholdHours?: number): Promise<
         const { T3CodeClient } = await import("../t3code/client.ts");
         const { makeId, isoNow } = await import("./util.ts");
         const status = await serverStatus({ harnessDir: harnessDir() });
-        if (status.running && status.record) {
+        if (!status.running || !status.record) {
+          console.error("ludics: deferred t3code cleanup: server not running, will retry");
+          failed = true;
+        } else {
           const client = new T3CodeClient({ url: status.record.wsUrl, token: status.record.authToken });
           try {
             for (const threadId of entry.t3codeThreadIds) {

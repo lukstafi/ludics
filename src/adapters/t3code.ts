@@ -1043,15 +1043,29 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
   }
 
   // Defer artifact cleanup for post-mortem window
-  if (orchestrationState && !options?.preserveState) {
-    const threadIds = slotState.threads.map((t) => t.threadId);
-    recordDeferredCleanup(buildCleanupEntry(orchestrationState, ctx.slot, {
-      t3codeThreadIds: threadIds,
-    }));
-    removeOrchestrationState(ctx.slot, ctx.harnessDir);
-  }
-
   if (!options?.preserveState) {
+    const threadIds = slotState.threads.map((t) => t.threadId);
+    if (orchestrationState) {
+      recordDeferredCleanup(buildCleanupEntry(orchestrationState, ctx.slot, {
+        t3codeThreadIds: threadIds,
+      }));
+      removeOrchestrationState(ctx.slot, ctx.harnessDir);
+    } else if (threadIds.length > 0) {
+      // Non-orchestrated single-thread sessions: defer thread deletion only
+      recordDeferredCleanup({
+        timestamp: new Date().toISOString(),
+        projectDir: "",
+        taskId: "",
+        slot: ctx.slot,
+        agents: [],
+        mode: "pair",
+        branches: [],
+        worktreePaths: [],
+        tmuxSessionNames: [],
+        peerSyncLink: null,
+        t3codeThreadIds: threadIds,
+      });
+    }
     removeSlotState(ctx.slot, ctx.harnessDir);
   }
   return `t3code slot ${ctx.slot} stopped`;
