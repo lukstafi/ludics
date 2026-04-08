@@ -44,6 +44,10 @@ export interface ProjectConfig {
   /** Command to run the project's test suite locally (e.g. "bun test", "dune runtest").
    *  Auto-detected from project directory contents when unset. */
   test_command?: string;
+  /** Hardware/OS requirements for slot assignment.
+   *  Tasks in this project only auto-assign to machines satisfying all specified requirements.
+   *  Task-level requirements override project-level values for the same key. */
+  requirements?: { os?: string; gpu?: string };
 }
 
 export type GlobalAdapterMode = "t3code" | "tmux";

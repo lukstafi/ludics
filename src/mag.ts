@@ -22,7 +22,7 @@ import {
   expirePendingRevises,
   expirePendingFollowupRevises,
 } from "./notify.ts";
-import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField } from "./tasks/markdown.ts";
+import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter } from "./tasks/markdown.ts";
 import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
@@ -993,9 +993,37 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
   const slotNum = selection.taskSlot ?? selection.emptySlot!;
   const path = selection.existingPath || resolveTaskProjectPath(taskId);
 
+  // Resolve merged requirements for machine selection
+  const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+  let launchMachine = "";
+  if (existsSync(taskFile)) {
+    const taskContent = readFileSync(taskFile, "utf-8");
+    try {
+      const taskFm = parseTaskFrontmatter(taskContent);
+      const cfgLaunch = loadConfigSync();
+      const projectName = taskFm.project ?? "";
+      const projectReqs = findProjectConfigByName(projectName, cfgLaunch)?.requirements;
+      const launchReqs = mergeRequirements(taskFm.requirements, projectReqs);
+      const machine = selectMachineForSlot({
+        project: projectName,
+        effort: taskFm.effort ?? "small",
+        requirements: launchReqs,
+      });
+      if (machine === null) {
+        const msg = `Cannot launch ${taskId}: no machine meets requirements`;
+        notifyOutgoing(msg, 3, "ludics");
+        console.error(`ludics: ${msg}`);
+        return;
+      }
+      launchMachine = machine;
+    } catch {
+      // Malformed task file — proceed without requirements (graceful degradation)
+    }
+  }
+
   try {
     // Notification button actions are always treated as fresh starts.
-    slotAssign(slotNum, taskId, adapter, "", path, launchArgs);
+    slotAssign(slotNum, taskId, adapter, "", path, launchArgs, launchMachine);
     await slotStart(slotNum);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -2196,6 +2224,30 @@ export function queueHoldStatus(): void {
 
 // --- Sorted ready queue (shared) ---
 
+/** Look up a ProjectConfig by task project name (matches name or repo tail). */
+function findProjectConfigByName(projectName: string, cfg: { projects?: { name: string; repo: string; requirements?: { os?: string; gpu?: string } }[] }): { requirements?: { os?: string; gpu?: string } } | null {
+  if (!projectName) return null;
+  return (cfg.projects ?? []).find((p) => {
+    const repoTail = p.repo.split("/").pop() ?? "";
+    return p.name === projectName || repoTail === projectName;
+  }) ?? null;
+}
+
+/** Merge task-level and project-level hardware requirements.
+ *  Task values take precedence over project values for the same key. */
+export function mergeRequirements(
+  task?: { os?: string; gpu?: string },
+  project?: { os?: string; gpu?: string },
+): { os?: string; gpu?: string } | undefined {
+  if (!task && !project) return undefined;
+  const merged = {
+    os: task?.os ?? project?.os,
+    gpu: task?.gpu ?? project?.gpu,
+  };
+  if (!merged.os && !merged.gpu) return undefined;
+  return merged;
+}
+
 interface ReadyCandidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string; elaborated: boolean; requirements?: { os?: string; gpu?: string } }
 
 /** Compute the sorted ready queue — single source of truth for task ordering.
@@ -2203,6 +2255,7 @@ interface ReadyCandidate { id: string; priority: string; project: string; milest
 function getSortedReadyCandidates(): ReadyCandidate[] {
   const tasksDir = join(harnessDir(), "tasks");
   if (!existsSync(tasksDir)) return [];
+  const cfg = loadConfigSync();
 
   // Determine which tasks are already in slots
   const sFile = slotsFilePath();
@@ -2257,7 +2310,9 @@ function getSortedReadyCandidates(): ReadyCandidate[] {
     const deadline = deadlineRaw && deadlineRaw !== "null" ? deadlineRaw : "";
     const effort = String(fm.effort ?? "small").trim();
     const elaborated = isElaborated(content);
-    const requirements = fm.requirements ? fm.requirements as { os?: string; gpu?: string } : undefined;
+    const taskReqs = fm.requirements ? fm.requirements as { os?: string; gpu?: string } : undefined;
+    const projectReqs = findProjectConfigByName(project, cfg)?.requirements;
+    const requirements = mergeRequirements(taskReqs, projectReqs);
 
     candidates.push({ id, priority, project, milestone, hasDeadline: !!deadline, deadline, effort, elaborated, requirements });
   }
