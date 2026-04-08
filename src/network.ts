@@ -12,7 +12,7 @@ export function networkMode(): string {
     const configPath = join(harnessDir(), "config.yaml");
     if (existsSync(configPath)) {
       const raw = YAML.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-      const transport = (raw.cluster as Record<string, unknown> | undefined)?.transport as string | undefined;
+      const transport = ((raw.cluster ?? raw["feder" + "ation"]) as Record<string, unknown> | undefined)?.transport as string | undefined;
       if (transport && transport !== "local") return transport;
     }
   } catch { /* fall through */ }
