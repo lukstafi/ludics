@@ -11,8 +11,8 @@ import { runNotify } from "./notify.ts";
 import { runMag } from "./mag.ts";
 import { runDashboard } from "./dashboard.ts";
 import { runNetwork } from "./network.ts";
-import { runFederation } from "./federation.ts";
-// worker-signal.ts deleted — signals use HTTP via federation-http.ts
+import { runCluster } from "./cluster.ts";
+// worker-signal.ts deleted — signals use HTTP via cluster-http.ts
 import { runTriggers, triggersPause, triggersUninstall } from "./triggers.ts";
 import { runInit } from "./init.ts";
 import { slotsList } from "./slots/index.ts";
@@ -33,7 +33,7 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   notify: runNotify,
   dashboard: runDashboard,
   network: runNetwork,
-  federation: runFederation,
+  cluster: runCluster,
   // "worker-signal" command removed — signals use HTTP
   triggers: runTriggers,
   stop: async (args) => {
@@ -221,10 +221,10 @@ Commands:
                                Query structured event log
 
   network status               Show network configuration
-  federation status            Show federation status (multi-machine Mag)
-  federation tick              Publish heartbeat and run leader election
-  federation elect             Run leader election only
-  federation heartbeat         Publish heartbeat only
+  cluster status              Show cluster status (multi-machine)
+  cluster tick                Publish heartbeat
+  
+  cluster heartbeat           Publish heartbeat only
 
   queue hold                   Suppress automatic slot assignments
   queue resume                 Re-enable automatic slot assignments

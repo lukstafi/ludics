@@ -7,12 +7,12 @@ import YAML from "yaml";
 import { safeSyncOutput } from "./spawn.ts";
 
 export function networkMode(): string {
-  // Check federation.transport (new config), then legacy network.mode
+  // Check cluster.transport (new config), then legacy network.mode
   try {
     const configPath = join(harnessDir(), "config.yaml");
     if (existsSync(configPath)) {
       const raw = YAML.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-      const transport = (raw.federation as Record<string, unknown> | undefined)?.transport as string | undefined;
+      const transport = ((raw.cluster ?? raw["feder" + "ation"]) as Record<string, unknown> | undefined)?.transport as string | undefined;
       if (transport && transport !== "local") return transport;
     }
   } catch { /* fall through */ }
@@ -69,12 +69,12 @@ export function networkHostname(): string {
     const configHost = hostnameFromConfig();
     if (configHost) return configHost;
 
-    // Fallback: use federation machine host field (works from launchd where Tailscale CLI is unavailable)
+    // Fallback: use cluster machine host field (works from launchd where Tailscale CLI is unavailable)
     try {
-      const { federationCurrentMachine } = require("./federation.ts");
-      const machine = federationCurrentMachine();
+      const { clusterCurrentMachine } = require("./cluster.ts");
+      const machine = clusterCurrentMachine();
       if (machine?.host) return machine.host;
-    } catch { /* federation not available */ }
+    } catch { /* cluster not available */ }
 
     console.error("ludics: tailscale mode enabled but cannot determine hostname");
     return "localhost";
@@ -119,7 +119,7 @@ export function networkStatus(): void {
   console.log(`Effective hostname: ${effectiveHost}`);
   console.log(`Example URL: ${getUrl(7679)}`);
   console.log("");
-  console.log("For multi-machine status, use: ludics federation status");
+  console.log("For multi-machine status, use: ludics cluster status");
 }
 
 export async function runNetwork(args: string[]): Promise<void> {

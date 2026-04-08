@@ -1,7 +1,7 @@
-// Federation HTTP transport — real-time cross-node coordination via HTTP
+// Cluster HTTP transport — real-time cross-node coordination via HTTP
 //
 // Server handlers are called by dashboard-server routing.
-// Client helper is used by slots, federation, and worker-signal modules.
+// Client helper is used by slots, cluster, and worker-signal modules.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
@@ -9,16 +9,16 @@ import { harnessDir, loadConfigSync, slotsFilePath } from "./config.ts";
 import { parseSlotBlocks, getTask, getMachine } from "./slots/markdown.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
-import type { FederationMachine } from "./federation.ts";
+import type { ClusterMachine } from "./cluster.ts";
 
 // --- Config helpers ---
 
-/** Read the shared secret from federation config. Empty string = no secret configured. */
-export function federationSecret(): string {
+/** Read the shared secret from cluster config. Empty string = no secret configured. */
+export function clusterSecret(): string {
   try {
     const config = loadConfigSync();
     const raw = config as unknown as Record<string, unknown>;
-    const fed = raw.federation as Record<string, unknown> | undefined;
+    const fed = raw.cluster as Record<string, unknown> | undefined;
     return String(fed?.secret ?? "");
   } catch {
     return "";
@@ -26,8 +26,8 @@ export function federationSecret(): string {
 }
 
 /** Resolve dashboard port for a machine, falling back to global dashboard.port then 7678. */
-export function machineDashboardPort(machine: FederationMachine): number {
-  const m = machine as FederationMachine & { dashboard_port?: number };
+export function machineDashboardPort(machine: ClusterMachine): number {
+  const m = machine as ClusterMachine & { dashboard_port?: number };
   if (m.dashboard_port && Number.isFinite(m.dashboard_port)) return m.dashboard_port;
   try {
     const config = loadConfigSync();
@@ -38,7 +38,7 @@ export function machineDashboardPort(machine: FederationMachine): number {
 }
 
 /** Build the base URL for a machine's dashboard server. */
-export function machineBaseUrl(machine: FederationMachine): string {
+export function machineBaseUrl(machine: ClusterMachine): string {
   const port = machineDashboardPort(machine);
   return `http://${machine.host}:${port}`;
 }
@@ -47,12 +47,12 @@ export function machineBaseUrl(machine: FederationMachine): string {
 
 const HTTP_TIMEOUT_MS = 10_000;
 
-export async function federationHttpPost(
-  machine: FederationMachine,
+export async function clusterHttpPost(
+  machine: ClusterMachine,
   path: string,
   body: object,
 ): Promise<{ ok: boolean; status?: number; data?: unknown }> {
-  const secret = federationSecret();
+  const secret = clusterSecret();
   const url = `${machineBaseUrl(machine)}${path}`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (secret) headers["Authorization"] = `Bearer ${secret}`;
@@ -72,7 +72,7 @@ export async function federationHttpPost(
     return { ok: resp.ok, status: resp.status, data };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`ludics: federation HTTP POST ${path} to ${machine.name} failed: ${msg}`);
+    console.error(`ludics: cluster HTTP POST ${path} to ${machine.name} failed: ${msg}`);
     return { ok: false };
   }
 }
@@ -80,9 +80,9 @@ export async function federationHttpPost(
 // --- Auth check ---
 
 function checkAuth(req: Request): Response | null {
-  const secret = federationSecret();
+  const secret = clusterSecret();
   if (!secret) {
-    return new Response(JSON.stringify({ error: "federation secret not configured" }), {
+    return new Response(JSON.stringify({ error: "cluster secret not configured" }), {
       status: 401, headers: { "Content-Type": "application/json" },
     });
   }
@@ -98,11 +98,11 @@ function checkAuth(req: Request): Response | null {
 
 // --- HTTP GET Client ---
 
-export async function federationHttpGet(
-  machine: FederationMachine,
+export async function clusterHttpGet(
+  machine: ClusterMachine,
   path: string,
 ): Promise<{ ok: boolean; status?: number; data?: unknown }> {
-  const secret = federationSecret();
+  const secret = clusterSecret();
   const url = `${machineBaseUrl(machine)}${path}`;
   const headers: Record<string, string> = {};
   if (secret) headers["Authorization"] = `Bearer ${secret}`;
@@ -122,7 +122,7 @@ export async function federationHttpGet(
     return { ok: resp.ok, status: resp.status, data };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`ludics: federation HTTP GET ${path} to ${machine.name} failed: ${msg}`);
+    console.error(`ludics: cluster HTTP GET ${path} to ${machine.name} failed: ${msg}`);
     return { ok: false };
   }
 }
@@ -219,96 +219,87 @@ function expireStaleIntents(): void {
 // --- Client helpers for worker → controller communication ---
 
 async function resolveAndPost(path: string, body: object): Promise<{ ok: boolean; status?: number; data?: unknown }> {
-  const { resolveControllerCandidates } = await import("./federation.ts");
-  const candidates = resolveControllerCandidates();
-  for (const candidate of candidates) {
-    const result = await federationHttpPost(candidate, path, body);
-    if (result.ok) return result;
-  }
-  return { ok: false };
+  const { resolveController } = await import("./cluster.ts");
+  const controller = resolveController();
+  if (!controller) return { ok: false };
+  return clusterHttpPost(controller, path, body);
 }
 
 async function resolveAndGet(path: string): Promise<{ ok: boolean; status?: number; data?: unknown }> {
-  const { resolveControllerCandidates } = await import("./federation.ts");
-  const candidates = resolveControllerCandidates();
-  for (const candidate of candidates) {
-    const result = await federationHttpGet(candidate, path);
-    if (result.ok) return result;
-  }
-  return { ok: false };
+  const { resolveController } = await import("./cluster.ts");
+  const controller = resolveController();
+  if (!controller) return { ok: false };
+  return clusterHttpGet(controller, path);
 }
 
-export async function federationPostJournal(category: string, message: string): Promise<{ ok: boolean }> {
-  return resolveAndPost("/api/federation/journal", { category, message });
+export async function clusterPostJournal(category: string, message: string): Promise<{ ok: boolean }> {
+  return resolveAndPost("/api/cluster/journal", { category, message });
 }
 
-export async function federationPostEvent(event: object): Promise<{ ok: boolean }> {
-  return resolveAndPost("/api/federation/event", event);
+export async function clusterPostEvent(event: object): Promise<{ ok: boolean }> {
+  return resolveAndPost("/api/cluster/event", event);
 }
 
-export async function federationPostOrchestrationState(slot: number, state: object): Promise<{ ok: boolean }> {
-  return resolveAndPost("/api/federation/orchestration-state", { slot, state });
+export async function clusterPostOrchestrationState(slot: number, state: object): Promise<{ ok: boolean }> {
+  return resolveAndPost("/api/cluster/orchestration-state", { slot, state });
 }
 
-export async function federationGetOrchestrationState(slot: number): Promise<{ ok: boolean; data?: unknown }> {
-  return resolveAndGet(`/api/federation/orchestration-state/${slot}`);
+export async function clusterGetOrchestrationState(slot: number): Promise<{ ok: boolean; data?: unknown }> {
+  return resolveAndGet(`/api/cluster/orchestration-state/${slot}`);
 }
 
-export async function federationPostTaskUpdate(taskId: string, field: string, value: string): Promise<{ ok: boolean }> {
-  return resolveAndPost("/api/federation/task-update", { taskId, field, value });
+export async function clusterPostTaskUpdate(taskId: string, field: string, value: string): Promise<{ ok: boolean }> {
+  return resolveAndPost("/api/cluster/task-update", { taskId, field, value });
 }
 
-export async function federationGetTask(taskId: string): Promise<{ ok: boolean; data?: string }> {
-  const result = await resolveAndGet(`/api/federation/task/${taskId}`);
+export async function clusterGetTask(taskId: string): Promise<{ ok: boolean; data?: string }> {
+  const result = await resolveAndGet(`/api/cluster/task/${taskId}`);
   return { ok: result.ok, data: typeof result.data === "string" ? result.data : undefined };
 }
 
-export async function federationGetSlots(): Promise<{ ok: boolean; data?: string }> {
-  const result = await resolveAndGet("/api/federation/slots");
+export async function clusterGetSlots(): Promise<{ ok: boolean; data?: string }> {
+  const result = await resolveAndGet("/api/cluster/slots");
   return { ok: result.ok, data: typeof result.data === "string" ? result.data : undefined };
 }
 
-export async function federationPostSlotUpdate(slot: number, sections: Record<string, string | undefined>): Promise<{ ok: boolean }> {
-  return resolveAndPost("/api/federation/slot-update", { slot, ...sections });
+export async function clusterPostSlotUpdate(slot: number, sections: Record<string, string | undefined>): Promise<{ ok: boolean }> {
+  return resolveAndPost("/api/cluster/slot-update", { slot, ...sections });
 }
 
-export async function federationGetIntents(): Promise<{ ok: boolean; data?: Record<number, PendingIntent> }> {
-  const result = await resolveAndGet("/api/federation/intents");
+export async function clusterGetIntents(): Promise<{ ok: boolean; data?: Record<number, PendingIntent> }> {
+  const result = await resolveAndGet("/api/cluster/intents");
   return { ok: result.ok, data: result.data as Record<number, PendingIntent> | undefined };
 }
 
-export async function federationDeleteIntent(slot: number): Promise<{ ok: boolean }> {
-  const { resolveControllerCandidates } = await import("./federation.ts");
-  const candidates = resolveControllerCandidates();
-  for (const candidate of candidates) {
-    const secret = federationSecret();
-    const url = `${machineBaseUrl(candidate)}/api/federation/intent/${slot}`;
-    const headers: Record<string, string> = {};
-    if (secret) headers["Authorization"] = `Bearer ${secret}`;
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), HTTP_TIMEOUT_MS);
-      const resp = await fetch(url, { method: "DELETE", headers, signal: ctrl.signal });
-      clearTimeout(timer);
-      if (resp.ok) return { ok: true };
-    } catch { /* try next */ }
-  }
+export async function clusterDeleteIntent(slot: number): Promise<{ ok: boolean }> {
+  const { resolveController } = await import("./cluster.ts");
+  const controller = resolveController();
+  if (!controller) return { ok: false };
+  const secret = clusterSecret();
+  const url = `${machineBaseUrl(controller)}/api/cluster/intent/${slot}`;
+  const headers: Record<string, string> = {};
+  if (secret) headers["Authorization"] = `Bearer ${secret}`;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), HTTP_TIMEOUT_MS);
+    const resp = await fetch(url, { method: "DELETE", headers, signal: ctrl.signal });
+    clearTimeout(timer);
+    if (resp.ok) return { ok: true };
+  } catch { /* ignore */ }
   return { ok: false };
 }
 
-export async function federationReportWorkerSignal(
+export async function clusterReportWorkerSignal(
   slot: number, taskId: string, status: string, message: string,
 ): Promise<void> {
-  const { resolveControllerCandidates, federationCurrentMachineName } = await import("./federation.ts");
-  const candidates = resolveControllerCandidates();
-  const machine = federationCurrentMachineName() ?? "";
+  const { resolveController, clusterCurrentMachineName } = await import("./cluster.ts");
+  const controller = resolveController();
+  if (!controller) return;
+  const machine = clusterCurrentMachineName() ?? "";
   const epoch = Math.floor(Date.now() / 1000);
-  for (const candidate of candidates) {
-    const result = await federationHttpPost(candidate, "/federation/signal", {
-      slot, taskId, status, message, machine, epoch,
-    });
-    if (result.ok) return;
-  }
+  await clusterHttpPost(controller, "/cluster/signal", {
+    slot, taskId, status, message, machine, epoch,
+  });
 }
 
 // --- Server handlers ---
@@ -341,25 +332,24 @@ export function validateSignal(
   return { valid: true };
 }
 
-/** Main federation request dispatcher — called from dashboard-server.ts. */
-export async function handleFederationRequest(req: Request, pathname: string): Promise<Response> {
+/** Main cluster request dispatcher — called from dashboard-server.ts. */
+export async function handleClusterRequest(req: Request, pathname: string): Promise<Response> {
   const authError = checkAuth(req);
   if (authError) return authError;
 
   // GET endpoints
   if (req.method === "GET") {
-    if (pathname === "/api/federation/slots") return handleGetSlots();
-    if (pathname === "/api/federation/intents") return handleGetIntents(req);
-    if (pathname === "/api/federation/leader") return handleGetLeader();
-    const taskMatch = pathname.match(/^\/api\/federation\/task\/(.+)$/);
+    if (pathname === "/api/cluster/slots") return handleGetSlots();
+    if (pathname === "/api/cluster/intents") return handleGetIntents(req);
+const taskMatch = pathname.match(/^\/api\/cluster\/task\/(.+)$/);
     if (taskMatch) return handleGetTask(taskMatch[1]!);
-    const orchMatch = pathname.match(/^\/api\/federation\/orchestration-state\/(\d+)$/);
+    const orchMatch = pathname.match(/^\/api\/cluster\/orchestration-state\/(\d+)$/);
     if (orchMatch) return handleGetOrchestrationState(Number(orchMatch[1]));
   }
 
   // DELETE endpoints
   if (req.method === "DELETE") {
-    const intentMatch = pathname.match(/^\/api\/federation\/intent\/(\d+)$/);
+    const intentMatch = pathname.match(/^\/api\/cluster\/intent\/(\d+)$/);
     if (intentMatch) {
       clearIntent(Number(intentMatch[1]));
       return jsonResponse(200, { ok: true });
@@ -379,13 +369,13 @@ export async function handleFederationRequest(req: Request, pathname: string): P
   }
 
   switch (pathname) {
-    case "/federation/heartbeat": return handleHeartbeat(body);
-    case "/federation/signal": return handleSignal(body);
-    case "/api/federation/journal": return handlePostJournal(body);
-    case "/api/federation/event": return handlePostEvent(body);
-    case "/api/federation/orchestration-state": return handlePostOrchestrationState(body);
-    case "/api/federation/task-update": return handlePostTaskUpdate(body);
-    case "/api/federation/slot-update": return handlePostSlotUpdate(body);
+    case "/cluster/heartbeat": return handleHeartbeat(body);
+    case "/cluster/signal": return handleSignal(body);
+    case "/api/cluster/journal": return handlePostJournal(body);
+    case "/api/cluster/event": return handlePostEvent(body);
+    case "/api/cluster/orchestration-state": return handlePostOrchestrationState(body);
+    case "/api/cluster/task-update": return handlePostTaskUpdate(body);
+    case "/api/cluster/slot-update": return handlePostSlotUpdate(body);
     default:
       return jsonResponse(404, { error: "not found" });
   }
@@ -411,7 +401,7 @@ function handleHeartbeat(body: Record<string, unknown>): Response {
   const heartbeatFile = join(heartbeatsDir, `${node}.json`);
   writeFileSync(heartbeatFile, JSON.stringify(body, null, 2) + "\n");
 
-  console.error(`ludics: federation HTTP: received heartbeat from ${node}`);
+  console.error(`ludics: cluster HTTP: received heartbeat from ${node}`);
   return jsonResponse(200, { ok: true, node });
 }
 
@@ -460,11 +450,11 @@ function handleSignal(body: Record<string, unknown>): Response {
   // Process inline
   switch (status) {
     case "done":
-      console.error(`ludics: federation HTTP: task ${taskId} completed on ${machine}`);
+      console.error(`ludics: cluster HTTP: task ${taskId} completed on ${machine}`);
       slotClear(slot, "done");
       emitEvent({
         event_type: "worker_signal_done",
-        source: "federation-http",
+        source: "cluster-http",
         scope: "slot",
         slot,
         task: taskId,
@@ -474,10 +464,10 @@ function handleSignal(body: Record<string, unknown>): Response {
       break;
 
     case "error":
-      console.error(`ludics: federation HTTP: task ${taskId} errored on ${machine}: ${message}`);
+      console.error(`ludics: cluster HTTP: task ${taskId} errored on ${machine}: ${message}`);
       emitEvent({
         event_type: "worker_signal_error",
-        source: "federation-http",
+        source: "cluster-http",
         scope: "slot",
         slot,
         task: taskId,
@@ -532,14 +522,6 @@ function handleGetIntents(req: Request): Response {
   return jsonResponse(200, { intents: all });
 }
 
-function handleGetLeader(): Response {
-  try {
-    const { federationCurrentController } = require("./federation.ts");
-    return jsonResponse(200, { leader: federationCurrentController() });
-  } catch {
-    return jsonResponse(200, { leader: null });
-  }
-}
 
 function handleGetTask(taskId: string): Response {
   const TASK_ID_RE = /^[a-z0-9_-]+$/i;

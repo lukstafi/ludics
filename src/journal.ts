@@ -22,10 +22,10 @@ export function journalAppend(category: string, message: string): void {
   // Worker → forward to controller via HTTP (no local harness write)
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { federationIsController, federationCurrentMachineName } = require("./federation.ts");
-    if (federationCurrentMachineName() && !federationIsController()) {
-      import("./federation-http.ts").then(({ federationPostJournal }) => {
-        federationPostJournal(category, message).catch(() => {});
+    const { clusterIsController, clusterCurrentMachineName } = require("./cluster.ts");
+    if (clusterCurrentMachineName() && !clusterIsController()) {
+      import("./cluster-http.ts").then(({ clusterPostJournal }) => {
+        clusterPostJournal(category, message).catch(() => {});
       }).catch(() => {});
       return;
     }

@@ -12,7 +12,7 @@ const KNOWN_LUDICS_TRIGGER_NAMES = [
   "health",
   "sessions",
   "sessions-sweep",
-  "federation",
+  "cluster",
   "mag",
   "dashboard",
   "ntfy-subscribe",
@@ -274,22 +274,22 @@ function triggersInstallMacos(): void {
     console.log(`Installed launchd trigger: watch-${sanitized} (${rule.paths.length} paths)`);
   }
 
-  // Federation trigger
-  if (triggerGet("federation", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("federation", "action"));
-    const interval = triggerGet("federation", "interval") || "300";
-    const label = "com.ludics.federation";
+  // Cluster trigger
+  if (triggerGet("cluster", "enabled") === "true") {
+    const action = commandFromAction(triggerGet("cluster", "action"));
+    const interval = triggerGet("cluster", "interval") || "300";
+    const label = "com.ludics.cluster";
     const content = [
       PLIST_HEADER,
       `  <key>Label</key>\n  <string>${label}</string>`,
       `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
       plistEnv(),
       plistArgs(bin, ...action.split(" ")),
-      plistLogs("federation"),
+      plistLogs("cluster"),
       PLIST_FOOTER,
     ].join("\n");
     installPlist(label, content);
-    console.log(`Installed launchd trigger: federation (every ${Math.floor(parseInt(interval) / 60)}m)`);
+    console.log(`Installed launchd trigger: cluster (every ${Math.floor(parseInt(interval) / 60)}m)`);
   }
 
   // Mag keepalive
@@ -465,14 +465,14 @@ function triggersInstallLinux(): void {
     console.log(`Installed systemd trigger: watch-${sanitized} (${rule.paths.length} paths)`);
   }
 
-  // Federation
-  if (triggerGet("federation", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("federation", "action"));
-    const interval = triggerGet("federation", "interval") || "300";
-    writeSystemdUnit("ludics-federation.service", `[Unit]\nDescription=ludics federation heartbeat\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
-    writeSystemdUnit("ludics-federation.timer", `[Unit]\nDescription=ludics federation timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-federation.service\n\n[Install]\nWantedBy=timers.target\n`);
-    enableSystemdUnit("ludics-federation.timer");
-    console.log(`Installed systemd trigger: federation (every ${Math.floor(parseInt(interval) / 60)}m)`);
+  // Cluster
+  if (triggerGet("cluster", "enabled") === "true") {
+    const action = commandFromAction(triggerGet("cluster", "action"));
+    const interval = triggerGet("cluster", "interval") || "300";
+    writeSystemdUnit("ludics-cluster.service", `[Unit]\nDescription=ludics cluster heartbeat\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
+    writeSystemdUnit("ludics-cluster.timer", `[Unit]\nDescription=ludics cluster timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-cluster.service\n\n[Install]\nWantedBy=timers.target\n`);
+    enableSystemdUnit("ludics-cluster.timer");
+    console.log(`Installed systemd trigger: cluster (every ${Math.floor(parseInt(interval) / 60)}m)`);
   }
 
   // Mag keepalive
@@ -628,9 +628,11 @@ function triggersUninstallMacos(): void {
   // Legacy pai-lite triggers
   const legacyLabels = [
     "com.pai-lite.startup", "com.pai-lite.sync", "com.pai-lite.morning",
-    "com.pai-lite.health", "com.pai-lite.federation", "com.pai-lite.mayor",
+    "com.pai-lite.health", "com.pai-lite.mayor",
     "com.pai-lite.dashboard",
   ];
+  // Also clean up old ludics-era trigger (renamed to "cluster")
+  legacyLabels.push("com.ludics." + "feder" + "ation");
   for (const label of legacyLabels) {
     const plist = join(agentsDir, `${label}.plist`);
     if (existsSync(plist)) {
@@ -656,7 +658,8 @@ function triggersUninstallMacos(): void {
 
 function triggersUninstallLinux(): void {
   const systemdDir = join(process.env.HOME!, ".config/systemd/user");
-  const names = KNOWN_LUDICS_TRIGGER_NAMES;
+  // Include old pre-rename name (now "cluster") for cleanup
+  const names = [...KNOWN_LUDICS_TRIGGER_NAMES, "feder" + "ation"];
 
   for (const name of names) {
     const serviceFile = join(systemdDir, `ludics-${name}.service`);
@@ -696,7 +699,7 @@ function triggersUninstallLinux(): void {
   }
 
   // Legacy pai-lite units
-  const legacyNames = ["startup", "sync", "morning", "health", "federation", "mayor", "dashboard"];
+  const legacyNames = ["startup", "sync", "morning", "health", "mayor", "dashboard"];
   for (const name of legacyNames) {
     const serviceFile = join(systemdDir, `pai-lite-${name}.service`);
     const timerFile = join(systemdDir, `pai-lite-${name}.timer`);

@@ -4,7 +4,7 @@ This is a **ludics harness**: the private state directory for personal AI coordi
 
 ## Quick Reference
 
-- `config.yaml` — projects, adapters (t3code + tmux), Mag settings, federation, triggers
+- `config.yaml` — projects, adapters (t3code + tmux), Mag settings, cluster, triggers
 - `slots.md` — current slot assignments (6 slots)
 - `tasks/` — task files (`task-NNN.md`), git-backed, source of truth
 - `journal/` — daily logs, `events.jsonl` (structured event log), `notifications.jsonl`
@@ -12,7 +12,7 @@ This is a **ludics harness**: the private state directory for personal AI coordi
 - `orchestration/` — per-slot orchestration state (`slot-{n}.json`)
 - `t3code/` — t3code server connection record and per-slot thread metadata
 - `retrospectives/` — post-completion retrospective data per task
-- `federation/` — leader election, heartbeats, slot intent files
+- `cluster/` — heartbeats, slot intent files
 - `briefing.md`, `agenda.md`, `sessions.md` — generated views
 
 ## For Mag Sessions

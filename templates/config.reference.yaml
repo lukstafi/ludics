@@ -236,28 +236,28 @@ triggers:
     #     - ~/private-state/harness/tasks
     #   action: mag health-check
 
-  # Federation heartbeat (multi-machine only)
-  federation:
+  # Cluster heartbeat (multi-machine only)
+  cluster:
     enabled: false
     interval: 300             # 5 minutes in seconds
-    action: federation tick
+    action: cluster tick
 
-# Federation — multi-machine coordination via Tailscale (or SSH)
+# Cluster — multi-machine coordination via Tailscale (or SSH)
 #
 # Roles:
 #   leader  — always-on machine that runs mag, dashboard, triggers, and worker slots.
 #             Exactly one machine should be leader. Implicitly also a worker.
 #   console — primary user surface. The user is considered active/available when this
 #             machine is online. Runs worker slots when available.
-#   worker  — runs worker slots only. Joins the federation when online.
+#   worker  — runs worker slots only. Joins the cluster when online.
 #
 # Slot distribution: slots are dynamically assigned to online machines by the leader.
 # Machines with `always_on: true` are preferred. GPU affinity can route specific
 # projects to machines with matching hardware.
-federation:
+cluster:
   transport: local            # local (single machine) | tailscale | ssh
   domain: ""                  # Tailscale MagicDNS domain (e.g. your-tailnet.ts.net)
-  secret: ""                  # Shared secret for HTTP federation endpoints (required for HTTP transport)
+  secret: ""                  # Shared secret for HTTP cluster endpoints (required for HTTP transport)
   machines: []
     # - name: desktop
     #   host: desktop.your-tailnet.ts.net

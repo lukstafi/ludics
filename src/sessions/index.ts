@@ -166,9 +166,9 @@ export async function runSessions(args: string[]): Promise<void> {
     }
 
     case "sweep": {
-      const { federationIsController } = await import("../federation.ts");
-      if (!federationIsController()) {
-        console.error("ludics: sessions sweep skipped — not the federation controller");
+      const { clusterIsController } = await import("../cluster.ts");
+      if (!clusterIsController()) {
+        console.error("ludics: sessions sweep skipped — not the cluster controller");
         break;
       }
       const dryRun = hasFlag(args, "--dry-run");

@@ -255,7 +255,7 @@ export function ensureCoordinationGitignore(): void {
 
   const entries = [
     "# Coordination artifacts — local-only, delivered via HTTP not git",
-    "harness/federation/slot-intents/",
+    "harness/cluster/slot-intents/",
     "harness/worker-signals/",
   ];
 

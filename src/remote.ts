@@ -1,6 +1,6 @@
 // Remote utilities — machine identity checks
 
-import { federationCurrentMachineName } from "./federation.ts";
+import { clusterCurrentMachineName } from "./cluster.ts";
 
 /**
  * Check if the given machine name refers to a remote machine (not this one).
@@ -10,7 +10,7 @@ import { federationCurrentMachineName } from "./federation.ts";
  */
 export function isRemoteMachine(machineName: string): boolean {
   if (!machineName || machineName === "null" || machineName === "local") return false;
-  const currentName = federationCurrentMachineName();
+  const currentName = clusterCurrentMachineName();
   if (!currentName) return true; // can't determine our identity — treat as remote (fail closed)
   return machineName !== currentName;
 }

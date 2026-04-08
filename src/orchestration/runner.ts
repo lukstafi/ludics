@@ -19,8 +19,8 @@ import { fetchNewPrCommentCount, getPrVerification, hasCodexSubmittedReview, isP
 import { updateFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
-// workerReportStatus replaced by federationReportWorkerSignal (lazy import)
-import { federationRole } from "../federation.ts";
+// workerReportStatus replaced by clusterReportWorkerSignal (lazy import)
+import { clusterRole } from "../cluster.ts";
 import { autoCommitWorktree, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 
@@ -1422,11 +1422,11 @@ export async function runOrchestration(
     let taskUpdated = false;
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { federationIsController, federationCurrentMachineName } = require("../federation.ts");
-      if (federationCurrentMachineName() && !federationIsController()) {
-        const { federationPostTaskUpdate } = await import("../federation-http.ts");
-        await federationPostTaskUpdate(state.taskId, "status", "done");
-        await federationPostTaskUpdate(state.taskId, "completed", isoNow());
+      const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts");
+      if (clusterCurrentMachineName() && !clusterIsController()) {
+        const { clusterPostTaskUpdate } = await import("../cluster-http.ts");
+        await clusterPostTaskUpdate(state.taskId, "status", "done");
+        await clusterPostTaskUpdate(state.taskId, "completed", isoNow());
         taskUpdated = true;
       }
     } catch { /* standalone mode */ }
@@ -1454,10 +1454,10 @@ export async function runOrchestration(
 
       // On worker machines, report status via HTTP to controller so it discovers
       // completion immediately instead of waiting for health-check sync.
-      if (federationRole() === "worker") {
+      if (clusterRole() === "worker") {
         try {
-          const { federationReportWorkerSignal } = await import("../federation-http.ts");
-          await federationReportWorkerSignal(state.slot, state.taskId, "done",
+          const { clusterReportWorkerSignal } = await import("../cluster-http.ts");
+          await clusterReportWorkerSignal(state.slot, state.taskId, "done",
             `orchestration completed for ${state.taskId}`);
         } catch (err) {
           console.error(`ludics: worker signal write failed: ${err instanceof Error ? err.message : String(err)}`);

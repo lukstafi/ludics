@@ -940,9 +940,9 @@ export async function runNotify(args: string[]): Promise<void> {
       break;
     }
     case "subscribe": {
-      const { federationIsController } = await import("./federation.ts");
-      if (!federationIsController()) {
-        console.error("ludics: notify subscribe skipped — not the federation controller");
+      const { clusterIsController } = await import("./cluster.ts");
+      if (!clusterIsController()) {
+        console.error("ludics: notify subscribe skipped — not the cluster controller");
         break;
       }
       await subscribeIncoming();

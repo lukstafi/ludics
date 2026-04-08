@@ -111,16 +111,16 @@ triggers:
         - ~/repos/ocannl/README.md
       action: tasks sync
 
-  # Federation heartbeat (for multi-machine Mag setup)
-  federation:
+  # Cluster heartbeat (for multi-machine Mag setup)
+  cluster:
     enabled: false
     interval: 300
-    action: federation tick
+    action: cluster tick
 
 # Network settings for dashboard/URL binding
 network:
   # Mode: localhost (default) | tailscale
-  # Overridden by federation.transport when federation is configured.
+  # Overridden by cluster.transport when cluster is configured.
   mode: localhost
 
   # Explicit hostname override (optional)

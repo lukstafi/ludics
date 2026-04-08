@@ -240,8 +240,8 @@ function workerCacheFilePath(slot: number): string {
 function isWorkerContext(): boolean {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { federationIsController, federationCurrentMachineName } = require("../federation.ts");
-    return !!(federationCurrentMachineName() && !federationIsController());
+    const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts");
+    return !!(clusterCurrentMachineName() && !clusterIsController());
   } catch {
     return false;
   }
@@ -281,8 +281,8 @@ export function persistState(
   if (isWorkerContext()) {
     mkdirSync(workerCacheDir(), { recursive: true });
     writeJsonFile(workerCacheFilePath(state.slot), state);
-    import("../federation-http.ts").then(({ federationPostOrchestrationState }) => {
-      federationPostOrchestrationState(state.slot, state).catch(() => {});
+    import("../cluster-http.ts").then(({ clusterPostOrchestrationState }) => {
+      clusterPostOrchestrationState(state.slot, state).catch(() => {});
     }).catch(() => {});
     return;
   }

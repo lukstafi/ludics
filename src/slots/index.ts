@@ -20,7 +20,7 @@ import { selectOrchestrationFlags } from "../adapters/t3code.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
-import { heartbeatIsFresh, federationMachine } from "../federation.ts";
+import { heartbeatIsFresh, clusterMachine } from "../cluster.ts";
 import { safeSyncOutput } from "../spawn.ts";
 
 // Worker-side override: when set, loadBlocks uses this content instead of reading
@@ -57,8 +57,8 @@ function loadBlocks(file: string): Map<number, string> {
 function isWorkerContext(): boolean {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { federationIsController, federationCurrentMachineName } = require("../federation.ts");
-    return !!(federationCurrentMachineName() && !federationIsController());
+    const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts");
+    return !!(clusterCurrentMachineName() && !clusterIsController());
   } catch {
     return false;
   }
@@ -76,8 +76,8 @@ function writeSlotFileOrHttp(
     // POST runtime sections to controller — don't write local harness
     const block = blocks.get(slotNum);
     if (!block) return;
-    import("../federation-http.ts").then(({ federationPostSlotUpdate }) => {
-      federationPostSlotUpdate(slotNum, {
+    import("../cluster-http.ts").then(({ clusterPostSlotUpdate }) => {
+      clusterPostSlotUpdate(slotNum, {
         sessionStarted: getSessionStarted(block) || undefined,
         liveness: getLiveness(block) || undefined,
       }).catch(() => {});
@@ -700,7 +700,7 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
  *   success/failure is observed asynchronously via slot intent events / journal.
  * - Callers wanting synchronous confirmation must poll intent state.
  *
- * @throws {Error} If the assigned remote machine is offline or has no federation config.
+ * @throws {Error} If the assigned remote machine is offline or has no cluster config.
  */
 export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
   const file = ensureSlotsFile();
@@ -719,11 +719,11 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
     if (!heartbeatIsFresh(ctx.machine)) {
       throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot start`);
     }
-    const targetMachine = federationMachine(ctx.machine);
+    const targetMachine = clusterMachine(ctx.machine);
     if (!targetMachine) {
-      throw new Error(`slot ${slotNum}: no federation config for machine ${ctx.machine}`);
+      throw new Error(`slot ${slotNum}: no cluster config for machine ${ctx.machine}`);
     }
-    const { recordIntent } = await import("../federation-http.ts");
+    const { recordIntent } = await import("../cluster-http.ts");
     const epoch = Math.floor(Date.now() / 1000);
     recordIntent(slotNum, { action: "start", epoch, machine: ctx.machine, taskId: ctx.taskId });
     console.error(`ludics: slot ${slotNum}: start intent recorded for ${ctx.machine}`);
@@ -747,8 +747,8 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
     let content: string | null = null;
     if (isWorkerContext()) {
       try {
-        const { federationGetTask } = await import("../federation-http.ts");
-        const result = await federationGetTask(taskId);
+        const { clusterGetTask } = await import("../cluster-http.ts");
+        const result = await clusterGetTask(taskId);
         if (result.ok && typeof result.data === "string") content = result.data;
       } catch { /* ignore */ }
     } else {
@@ -775,8 +775,8 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
       blocks.set(slotNum, block);
       if (isWorkerContext()) {
         // POST adapter args to controller — don't write local harness
-        import("../federation-http.ts").then(({ federationPostSlotUpdate }) => {
-          federationPostSlotUpdate(slotNum, { adapterArgs: autoArgs }).catch(() => {});
+        import("../cluster-http.ts").then(({ clusterPostSlotUpdate }) => {
+          clusterPostSlotUpdate(slotNum, { adapterArgs: autoArgs }).catch(() => {});
         }).catch(() => {});
       } else {
         writeSlotFile(file, blocks, count);
@@ -847,7 +847,7 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
       console.error(`ludics: slot ${slotNum}: force-clearing local state (skipping remote stop on ${ctx.machine})`);
     } else {
       // Record stop intent — worker polls and executes on next keepalive (pure pull model)
-      const { recordIntent } = await import("../federation-http.ts");
+      const { recordIntent } = await import("../cluster-http.ts");
       const epoch = Math.floor(Date.now() / 1000);
       recordIntent(slotNum, { action: "stop", epoch, machine: ctx.machine, taskId: ctx.taskId, preserveState });
       console.error(`ludics: slot ${slotNum}: stop intent recorded for ${ctx.machine}`);
@@ -889,7 +889,7 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
  *   success/failure is observed asynchronously via slot intent events / journal.
  * - Callers wanting synchronous confirmation must poll intent state.
  *
- * @throws {Error} If the assigned remote machine is offline or has no federation config.
+ * @throws {Error} If the assigned remote machine is offline or has no cluster config.
  */
 export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
   const file = ensureSlotsFile();
@@ -908,11 +908,11 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     if (!heartbeatIsFresh(ctx.machine)) {
       throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot resume`);
     }
-    const targetMachine = federationMachine(ctx.machine);
+    const targetMachine = clusterMachine(ctx.machine);
     if (!targetMachine) {
-      throw new Error(`slot ${slotNum}: no federation config for machine ${ctx.machine}`);
+      throw new Error(`slot ${slotNum}: no cluster config for machine ${ctx.machine}`);
     }
-    const { recordIntent } = await import("../federation-http.ts");
+    const { recordIntent } = await import("../cluster-http.ts");
     const epoch = Math.floor(Date.now() / 1000);
     recordIntent(slotNum, { action: "resume", epoch, machine: ctx.machine, taskId: ctx.taskId });
     console.error(`ludics: slot ${slotNum}: resume intent recorded for ${ctx.machine}`);
@@ -1242,8 +1242,8 @@ export async function slotsRefresh(): Promise<void> {
         if (isWorkerContext()) {
           // Route through controller — don't write local harness
           try {
-            const { federationPostTaskUpdate } = await import("../federation-http.ts");
-            await federationPostTaskUpdate(taskId, "modified", activity);
+            const { clusterPostTaskUpdate } = await import("../cluster-http.ts");
+            await clusterPostTaskUpdate(taskId, "modified", activity);
           } catch { /* ignore */ }
         } else {
           const tf = taskFilePath(taskId);
@@ -1257,13 +1257,13 @@ export async function slotsRefresh(): Promise<void> {
     if (isWorkerContext()) {
       // POST each updated slot's runtime state to controller
       try {
-        const { federationPostSlotUpdate } = await import("../federation-http.ts");
+        const { clusterPostSlotUpdate } = await import("../cluster-http.ts");
         const { extractSections } = await import("../state.ts");
         for (const slotNum of updatedSlots) {
           const block = blocks.get(slotNum);
           if (!block) continue;
           const sections = extractSections(block);
-          await federationPostSlotUpdate(slotNum, {
+          await clusterPostSlotUpdate(slotNum, {
             sessionStarted: getSessionStarted(block) || undefined,
             liveness: getLiveness(block) || undefined,
             terminals: sections.terminals || undefined,

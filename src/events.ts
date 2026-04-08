@@ -30,13 +30,13 @@ export function emitEvent(event: Omit<LudicsEvent, "ts" | "epoch">): void {
   try {
     // Worker → forward to controller via HTTP (no local harness write)
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { federationIsController, federationCurrentMachineName } = require("./federation.ts");
-    if (federationCurrentMachineName() && !federationIsController()) {
+    const { clusterIsController, clusterCurrentMachineName } = require("./cluster.ts");
+    if (clusterCurrentMachineName() && !clusterIsController()) {
       const now = new Date();
       const ts = now.toISOString().replace(/\.\d{3}Z$/, "Z");
       const epoch = Math.floor(now.getTime() / 1000);
-      import("./federation-http.ts").then(({ federationPostEvent }) => {
-        federationPostEvent({ ts, epoch, ...event }).catch(() => {});
+      import("./cluster-http.ts").then(({ clusterPostEvent }) => {
+        clusterPostEvent({ ts, epoch, ...event }).catch(() => {});
       }).catch(() => {});
       return;
     }

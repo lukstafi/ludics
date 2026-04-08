@@ -6,8 +6,8 @@ import { slotAssign, slotResume, slotStart, slotSetMode, slotStop, runSlot, mark
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
-import { getIntentForDashboard, clearIntent } from "../federation-http.ts";
-import { heartbeatsDir as getHeartbeatsDir } from "../federation.ts";
+import { getIntentForDashboard, clearIntent } from "../cluster-http.ts";
+import { heartbeatsDir as getHeartbeatsDir } from "../cluster.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -704,11 +704,11 @@ describe("slotStop — preserve-state flag", () => {
 });
 
 describe("remote slot dispatch via HTTP", () => {
-  // In test env without federation config, isRemoteMachine("worker-a") returns true
-  // because federationCurrentMachineName() returns null (fail-closed).
-  // federationMachine("worker-a") returns undefined (no config) → fail-fast.
+  // In test env without cluster config, isRemoteMachine("worker-a") returns true
+  // because clusterCurrentMachineName() returns null (fail-closed).
+  // clusterMachine("worker-a") returns undefined (no config) → fail-fast.
 
-  test("remote slotStart fails fast when no federation config for machine", async () => {
+  test("remote slotStart fails fast when no cluster config for machine", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
@@ -721,8 +721,8 @@ describe("remote slot dispatch via HTTP", () => {
 
     slotAssign(1, "task-remote-1", "tmux", "", "", "", "worker-a");
 
-    // Should throw — no federation config for "worker-a"
-    await expect(slotStart(1)).rejects.toThrow("no federation config for machine worker-a");
+    // Should throw — no cluster config for "worker-a"
+    await expect(slotStart(1)).rejects.toThrow("no cluster config for machine worker-a");
 
     // Session Started should NOT be stamped on controller side
     const slots = readFileSync(join(harness, "slots.md"), "utf-8");
@@ -803,7 +803,7 @@ describe("remote slot dispatch via HTTP", () => {
     await expect(slotResume(1)).rejects.toThrow("offline — cannot resume");
   });
 
-  test("remote slotResume fails fast when no federation config for machine", async () => {
+  test("remote slotResume fails fast when no cluster config for machine", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
@@ -816,7 +816,7 @@ describe("remote slot dispatch via HTTP", () => {
 
     slotAssign(1, "task-remote-4b", "tmux", "", "", "", "worker-a");
 
-    // Heartbeat is fresh but no federation config → should throw
-    await expect(slotResume(1)).rejects.toThrow("no federation config for machine worker-a");
+    // Heartbeat is fresh but no cluster config → should throw
+    await expect(slotResume(1)).rejects.toThrow("no cluster config for machine worker-a");
   });
 });
