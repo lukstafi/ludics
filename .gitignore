@@ -6,3 +6,4 @@ dist/
 *.tsbuildinfo
 .test-tmp-*
 src/**/.test-tmp-*
+src/**/__test-*

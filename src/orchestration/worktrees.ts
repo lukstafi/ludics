@@ -17,7 +17,7 @@ export function runGit(projectDir: string, args: string[]): string {
   return r.stdout;
 }
 
-function maybeGit(projectDir: string, args: string[]): string {
+export function maybeGit(projectDir: string, args: string[]): string {
   return safeSyncOutput(["git", ...args], { cwd: projectDir }).stdout;
 }
 
@@ -70,6 +70,23 @@ function worktreeExists(projectDir: string, path: string): boolean {
 function removeIfRegistered(projectDir: string, path: string): void {
   if (worktreeExists(projectDir, path)) {
     maybeGit(projectDir, ["worktree", "remove", "--force", path]);
+  }
+}
+
+/** Remove a single worktree by its concrete path. Idempotent — no-op if not registered. */
+export function removeWorktreeByPath(projectDir: string, path: string): void {
+  removeIfRegistered(projectDir, path);
+}
+
+/** Delete branches locally and remotely. Deduplicates, idempotent, best-effort for remote. */
+export function deleteBranches(projectDir: string, branches: string[]): void {
+  const unique = [...new Set(branches)];
+  for (const branch of unique) {
+    safeSyncOutput(["git", "branch", "-D", branch], { cwd: projectDir });
+    const result = safeSyncOutput(["git", "push", "origin", "--delete", branch], { cwd: projectDir });
+    if (!result.ok) {
+      console.error(`ludics: remote branch delete failed for ${branch}: ${result.stderr ?? "unknown"}`);
+    }
   }
 }
 

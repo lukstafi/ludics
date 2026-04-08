@@ -1453,6 +1453,14 @@ async function briefingPrecomputeContext(): Promise<void> {
   // Clean up t3code threads for completed tasks before building the context
   await cleanupDoneTaskThreads();
 
+  // Process deferred artifact cleanup (worktrees, branches, tmux sessions, peer-sync)
+  try {
+    const { processDeferredCleanups } = await import("./orchestration/deferred-cleanup.ts");
+    await processDeferredCleanups();
+  } catch (err) {
+    console.error("ludics: deferred cleanup failed:", err);
+  }
+
   const harness = harnessDir();
   const contextFile = join(harness, "mag", "briefing-context.md");
   mkdirSync(join(harness, "mag"), { recursive: true });
