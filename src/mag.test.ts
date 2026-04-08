@@ -71,6 +71,21 @@ describe("evaluateAutoStartDecisionPure", () => {
     expect(result.reason).toContain("open question");
   });
 
+  test("auto + high + 'unambiguous' in rationale → auto-start (negation prefix)", () => {
+    const result = evaluateAutoStartDecisionPure("high", "scope is unambiguous and well-defined", "auto", true);
+    expect(result.decision).toBe("auto-start");
+  });
+
+  test("auto + high + 'no open question' in rationale → auto-start (negation prefix)", () => {
+    const result = evaluateAutoStartDecisionPure("high", "No open questions, ready to proceed", "auto", true);
+    expect(result.decision).toBe("auto-start");
+  });
+
+  test("auto + high + 'not speculative' in rationale → auto-start (negation prefix)", () => {
+    const result = evaluateAutoStartDecisionPure("high", "this is not speculative, it is concrete", "auto", true);
+    expect(result.decision).toBe("auto-start");
+  });
+
   test("auto + high + clean rationale + no slot → defer-to-user", () => {
     const result = evaluateAutoStartDecisionPure("high", "clear bounded improvement", "auto", false);
     expect(result.decision).toBe("defer-to-user");

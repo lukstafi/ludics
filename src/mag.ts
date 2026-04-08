@@ -941,9 +941,16 @@ export function evaluateAutoStartDecisionPure(
     return { decision: "defer-to-user", reason: `worker confidence: ${workerConfidence ?? "missing"}` };
   }
   // Safety net: scan rationale for ambiguity signals contradicting "high"
-  const AMBIGUITY_SIGNALS = ["ambiguous", "unclear", "open question", "speculative", "uncertain scope"];
-  const lowerRationale = rationale.toLowerCase();
-  const ambiguityHit = AMBIGUITY_SIGNALS.find((s) => lowerRationale.includes(s));
+  // Patterns match the signal word/phrase only when NOT preceded by a negation prefix.
+  // Uses negative lookbehind to exclude e.g. "unambiguous", "no open question", "not unclear".
+  const AMBIGUITY_PATTERNS: [RegExp, string][] = [
+    [/(?<!\bun)ambiguous/i, "ambiguous"],
+    [/(?<!\bnot\s)(?<!\bno\s)unclear/i, "unclear"],
+    [/(?<!\bno\s)open question/i, "open question"],
+    [/(?<!\bnot\s)(?<!\bnon-)speculative/i, "speculative"],
+    [/(?<!\bno\s)(?<!\bnot\s)uncertain scope/i, "uncertain scope"],
+  ];
+  const ambiguityHit = AMBIGUITY_PATTERNS.find(([re]) => re.test(rationale))?.[1];
   if (ambiguityHit) {
     return { decision: "defer-to-user", reason: `rationale contains "${ambiguityHit}" despite high confidence` };
   }
