@@ -12,7 +12,7 @@ When a PR is created during `pr-create` phase, `validateAgentPrFiles()` (runner.
 
 ### pr-comments phase
 
-`enterPhase()` initializes `pr-comments` with a 10-minute lookback (`state.phaseStartedAt - 600`) so comments posted during preceding phases are detected. `checkAndRedispatchPrComments()` polls GitHub every `prCommentsCheckInterval` seconds for new issue comments, review comments, and reviews. When new comments are found, agents are re-dispatched to address them. The phase transitions to `final-merge` after a quiet period or when a Codex `+1` approval reaction is detected via `hasPrApprovalReaction()`.
+`enterPhase()` initializes `pr-comments` with a 10-minute lookback (`state.phaseStartedAt - 600`) so comments posted during preceding phases are detected. `checkAndRedispatchPrComments()` polls GitHub every `prCommentsCheckInterval` seconds for new issue comments, review comments, and reviews. When new comments are found, agents are re-dispatched to address them. The phase transitions to `final-merge` after a quiet period (or immediately when the coder has responded to PR comments and all agents are done).
 
 ### Transitions to pr-comments
 
@@ -27,7 +27,7 @@ Three paths lead to `pr-comments`:
 
 ### github.ts helpers
 
-All GitHub interactions use `Bun.spawnSync` with `gh` CLI commands. Existing helpers: `fetchNewPrCommentCount`, `isPrMerged`, `hasPrApprovalReaction`, `validateAndFixPrFile`. The new `postCodexReviewComment` follows the same pattern.
+All GitHub interactions use `Bun.spawnSync` with `gh` CLI commands. Existing helpers: `fetchNewPrCommentCount`, `isPrMerged`, `validateAndFixPrFile`. The new `postCodexReviewComment` follows the same pattern.
 
 ## Plan
 

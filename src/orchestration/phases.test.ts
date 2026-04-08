@@ -407,6 +407,81 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBe("final-merge");
   });
 
+  test("pr-comments transitions to final-merge immediately when coder has responded", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const state = makeState({
+      phase: "pr-comments",
+      prCommentsCoderDispatched: true,
+      prCommentsQuietSince: now - 10, // fresh poll found no new comments
+    });
+    state.agentStates.coder.status = "pr-comments-done";
+    state.agentStates.reviewer.status = "pr-comments-done";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
+    expect(evaluateTransition(state)).toBe("final-merge");
+  });
+
+  test("pr-comments shortcut blocked while Codex review deferral is active", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const state = makeState({
+      phase: "pr-comments",
+      phaseStartedAt: now - 90,
+      prCommentsCoderDispatched: true,
+      prCommentsQuietSince: now - 10,
+      prCodexReviewDeferredSince: now - 60,
+      config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
+    });
+    state.agentStates.coder.status = "pr-comments-done";
+    state.agentStates.reviewer.status = "pr-comments-done";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
+    // Codex review deferral still active — shortcut must not fire
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
+  test("pr-comments shortcut blocked before fresh comment poll", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const state = makeState({
+      phase: "pr-comments",
+      phaseStartedAt: now - 90,
+      prCommentsCoderDispatched: true,
+      // prCommentsQuietSince not set — no fresh poll since last redispatch
+      config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
+    });
+    state.agentStates.coder.status = "pr-comments-done";
+    state.agentStates.reviewer.status = "pr-comments-done";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
+  test("pr-comments does not shortcut when coder has not been dispatched", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const state = makeState({
+      phase: "pr-comments",
+      phaseStartedAt: now - 90,
+      config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
+    });
+    state.agentStates.coder.status = "pr-comments-done";
+    state.agentStates.reviewer.status = "pr-comments-done";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
+    // No prCommentsCoderDispatched — shortcut must not fire, quiet period not elapsed
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
+  test("pr-comments shortcut suppressed for staging non-forwarded PRs", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const state = makeState({
+      phase: "pr-comments",
+      phaseStartedAt: now - 90,
+      prCommentsCoderDispatched: true,
+      stagingRepo: "owner/staging-fork",
+      config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
+    });
+    state.agentStates.coder.status = "pr-comments-done";
+    state.agentStates.reviewer.status = "pr-comments-done";
+    state.agentStates.coder.prUrl = "https://github.com/owner/staging-fork/pull/1";
+    // Staging + not forwarded — must still require quiet period for forward-pr
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
   test("hierarchical duo with staging_repo ignores staging and transitions to final-merge", () => {
     const quietStart = Math.floor(Date.now() / 1000) - 2000;
     const state = makeState({

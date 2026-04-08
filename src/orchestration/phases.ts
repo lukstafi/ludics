@@ -541,7 +541,21 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
         return null;
       }
 
-      // Non-staging: quiet period is the sole advancement mechanism
+      // Shortcut: coder has responded to PR comments — skip quiet period wait.
+      // Gated on prCommentsQuietSince (a fresh poll found no new comments after
+      // the last redispatch) so late reviewer comments are not skipped.
+      // Also blocked while Codex review deferral is unresolved.
+      if (
+        state.prCommentsCoderDispatched
+        && hasAnyPr(state)
+        && allAgentsDone(state)
+        && state.prCommentsQuietSince
+        && !state.prCodexReviewDeferredSince
+      ) {
+        return "final-merge";
+      }
+
+      // Non-staging: quiet period is the fallback advancement mechanism
       const quietPeriod = state.config.prCommentsTimeout;
       if (
         hasAnyPr(state)

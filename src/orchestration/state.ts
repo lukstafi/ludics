@@ -153,6 +153,10 @@ export interface OrchestrationState {
    *  The runner reads this to select the correct transport, preventing split-brain
    *  when the global config differs from the slot's original backend.  */
   backend?: "t3code" | "tmux";
+  /** Set when the coder is re-dispatched in pr-comments phase (new comments to address).
+   *  Cleared on fresh pr-comments entry. Used to shortcut to final-merge once all agents
+   *  are done — avoids the full quiet-period wait after the coder has responded. */
+  prCommentsCoderDispatched?: boolean;
   /** Last non-unknown mergeable_state observed per agent PR during pr-comments.
    *  Persisted so crash/resume doesn't re-trigger the same conflict dispatch.
    *  Keyed by agent name. Reset on fresh transition into pr-comments via
