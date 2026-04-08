@@ -20,7 +20,7 @@ ludics is implemented in **100% TypeScript**, compiled to a standalone binary vi
 - Fast startup (Bun's compiled binary is instant)
 - Native async/await for shell process orchestration
 - Single binary deployment (no runtime dependency for users)
-- Module system for clean separation of concerns (~45 modules, ~35K lines)
+- Module system for clean separation of concerns (~87 modules, ~52K lines)
 
 ## Architectural Layers
 
@@ -77,7 +77,7 @@ ludics is implemented in **100% TypeScript**, compiled to a standalone binary vi
 │    • Pull from repos → aggregate issues                    │
 │    • Commit Mag's changes                                  │
 │    • Push to private repo                                  │
-│    • Robust recovery: stuck rebases, squash-before-rebase  │
+│    • Workers write via HTTP to controller (not git push)   │
 │                                                            │
 │  Events (JSONL):                                           │
 │    • Append-only structured event log                      │
@@ -89,10 +89,11 @@ ludics is implemented in **100% TypeScript**, compiled to a standalone binary vi
 │    • <user>-to-Mag: incoming messages (phone → Mag)        │
 │    • <user>-agents: Worker task events (operational)        │
 │                                                            │
-│  Federation (TypeScript):                                  │
-│    • Multi-machine Mag coordination                        │
-│    • Seniority-based leader election                       │
+│  Cluster (TypeScript):                                     │
+│    • Multi-machine coordination                            │
+│    • Static controller role (no election)                  │
 │    • Heartbeat publishing via git-backed state             │
+│    • HTTP transport for worker → controller writes         │
 └────────────┬───────────────────────────────────────────────┘
              │ manages
              ▼
@@ -136,7 +137,7 @@ The **Mag** is a persistent Claude Code instance running in a dedicated tmux ses
 - Dependency graph: `tsort` for topological order
 - Priority filtering: `jq` for sorting and selection
 
-**Skills system** (`skills/` directory, 22 Markdown files — 15 skills + 5 workers + orchestrator/worker conventions):
+**Skills system** (`skills/` directory, 23 Markdown files — 15 skills + 5 workers + orchestrator/worker conventions):
 
 | Skill | Purpose | Isolation |
 |-------|---------|-----------|
@@ -172,9 +173,13 @@ When a proposal is ready, ludics evaluates whether to automatically launch a cod
 
 Exposed via `ludics auto-start-evaluate <taskId> [high|low] [rationale...]`.
 
-**Deferred launch** (task status: `deferred`):
+**Deferred launch** (task `status: deferred`):
 
 When auto-start defers to the user, the task gets `status: deferred`. The dashboard shows a Deferred Launch tile with View/Approve/Abandon buttons. On approve: the status transitions to `ready`, and the keepalive picks it up for auto-start. On proposal revision, the status is set back to `deferred` to require re-approval.
+
+**Project health test monitoring** (`src/health.ts`, ~166 lines):
+
+Projects can have an optional `test_command` (auto-detected from build system files). Tests run during night window `[0, 6)` or every 24h. Results stored in `mag/test-health.json`. On test failure, a priority-A fix task is auto-filed with content-fingerprint dedup. CLI: `ludics health run-tests [--project=NAME] [--force]`.
 
 **How automation invokes Mag:**
 
@@ -693,19 +698,17 @@ The `incoming` topic enables the user to converse with Mag from any device — r
 
 Implementation (`src/notify.ts`): curl to `https://ntfy.sh/{topic}` with auth token. `ludics notify subscribe` long-polls the incoming topic. Notifications are logged to `journal/notifications.jsonl`.
 
-### Federation
+### Cluster (Multi-Machine Coordination)
 
-For multi-machine setups (e.g., laptop + always-on Mac Mini), ludics includes a federation system (`src/federation.ts`, ~590 lines):
+For multi-machine setups (e.g., laptop + always-on Mac Mini), ludics includes a cluster system (`src/cluster.ts`, ~420 lines + `src/cluster-http.ts`, ~657 lines):
 
-- **Seniority-based leader election**: First online node (by config order) becomes Mag leader
-- **Heartbeat mechanism**: Each node publishes `federation/heartbeats/{node}.json` with timestamp and Mag status
+- **Static controller role**: The controller is determined by `role: "leader"` in machine config — no dynamic election. Only the controller runs Mag.
+- **Heartbeat mechanism**: Each node publishes `cluster/heartbeats/{node}.json` with timestamp and Mag status
 - **Stale timeout**: 900 seconds (configurable via `LUDICS_HEARTBEAT_TIMEOUT`)
-- **Leader file**: `federation/leader.json` tracks current leader, election timestamp, term counter
-- **Coordination**: Only the leader node runs Mag
 - **Network support**: Tailscale hostname detection (`src/network.ts`)
-- **Slot intent files** (`src/slot-intents.ts`, ~50 lines): Replace SSH remote dispatch with state-repo intent files (`federation/slot-intents/slot-{N}.json`). The controller writes a `SlotIntent` (action, epoch, machine, preserveState), the worker reads and clears it. 10-minute TTL. One-shot command pattern for cross-machine slot operations.
-- **Worker keepalive** (`src/federation.ts`): Separate from the federation trigger, worker nodes run their own keepalive that detects dispatched-but-lost slots (proposal exists, no active session) and auto-starts them via intent consumption.
-- **Machine selection** (`selectMachineForSlot` in `src/federation.ts`): Tasks with `requirements` frontmatter (optional `os`, `gpu` fields) are matched against federation machine capabilities. Selection priority: (1) filter by requirements, (2) prefer `always_on` machines, (3) tiebreak by preferring non-current machine for load balance. Returns `null` (blocks assignment) if no federation machine matches requirements. Offline but matching machines are still selected — the slot is assigned but start is blocked until the machine comes online, with an "offline" badge on the dashboard.
+- **HTTP transport** (`src/cluster-http.ts`): Worker nodes write state changes to the controller via HTTP instead of git push. Endpoints: `/api/cluster/journal`, `/event`, `/orchestration-state`, `/task-update`, `/slot-update`, `/intent`. Intents are stored in-memory on the controller; workers poll via HTTP (pure-pull flow). Git commits happen only at natural checkpoints (health-check, shutdown).
+- **Worker keepalive** (`src/cluster.ts`): Separate from the cluster trigger, worker nodes run their own keepalive that detects dispatched-but-lost slots (proposal exists, no active session) and auto-starts them via intent consumption.
+- **Machine selection** (`selectMachineForSlot` in `src/cluster.ts`): Tasks with `requirements` frontmatter (optional `os`, `gpu` fields) are matched against cluster machine capabilities. Project-level `requirements` are also matched. Selection priority: (1) filter by requirements, (2) prefer `always_on` machines, (3) tiebreak by preferring non-current machine for load balance. Returns `null` (blocks assignment) if no cluster machine matches requirements. Offline but matching machines are still selected — the slot is assigned but start is blocked until the machine comes online, with an "offline" badge on the dashboard.
 
 ### Triggers
 
@@ -779,8 +782,7 @@ network:
   mode: tailscale
   hostname: machine.example.com
 
-federation:
-  transport: tailscale
+cluster:
   machines:
     - name: primary
       host: primary.tail123456.ts.net
@@ -835,7 +837,7 @@ ludics/
 ├── tsconfig.json                     # TypeScript config
 ├── bin/
 │   └── ludics                        # Compiled standalone binary (~60MB)
-├── src/                              # TypeScript source (~45 modules, ~35K lines)
+├── src/                              # TypeScript source (~87 modules, ~52K lines)
 │   ├── index.ts                      # CLI entry point & command dispatcher
 │   ├── config.ts                     # Two-tier config loading (YAML)
 │   ├── types.ts                      # Shared type definitions
@@ -843,8 +845,7 @@ ludics/
 │   ├── flow.ts                       # Flow engine (ready/blocked/critical/impact)
 │   ├── events.ts                     # Structured event log (JSONL)
 │   ├── mag.ts                        # Mag lifecycle & queue management (~3.5K lines)
-│   ├── slot-intents.ts               # Federation slot intent files (~50 lines)
-│   ├── worker-signal.ts              # Worker keepalive signal handling (~196 lines)
+│   ├── health.ts                     # Project test suite monitoring (~166 lines)
 │   ├── notify.ts                     # ntfy.sh integration
 │   ├── journal.ts                    # JSONL activity log
 │   ├── queue.ts                      # Async request queue for Mag
@@ -853,7 +854,12 @@ ludics/
 │   ├── dashboard-server.ts           # HTTP server for dashboard
 │   ├── retrospective.ts              # Retrospective collection at task completion (~555 lines)
 │   ├── network.ts                    # Hostname/URL helpers (Tailscale)
-│   ├── federation.ts                 # Multi-machine leader election (~590 lines)
+│   ├── cluster.ts                    # Multi-machine coordination (~420 lines)
+│   ├── cluster-http.ts               # HTTP transport for worker writes (~657 lines)
+│   ├── config-cli.ts                 # Config CLI commands
+│   ├── spawn.ts                      # safeSyncOutput helper for Bun.spawnSync
+│   ├── remote.ts                     # Remote/HTTP communication helpers
+│   ├── skill-queue-registry.ts       # Skill queue action registry
 │   ├── init.ts                       # Setup pipeline
 │   ├── quote.ts                      # Random quotes
 │   ├── orchestration/                # Multi-agent workflow engine (~9K lines)
@@ -913,7 +919,7 @@ ludics/
 │       ├── classify.ts               # Map sessions to slots
 │       ├── report.ts                 # Markdown/JSON report generation
 │       └── read-lines.ts             # Line reading utility
-├── skills/                           # Mag skills (22 files: 15 skills + 5 workers + conventions)
+├── skills/                           # Mag skills (23 files: 15 skills + 5 workers + conventions)
 │   ├── ludics-adopt-sessions.md      # Inline
 │   ├── ludics-briefing.md            # Inline (needs strategic context)
 │   ├── ludics-draft-proposal.md      # Orchestrator
@@ -936,7 +942,7 @@ ludics/
 │   ├── ludics-verify-completion-worker.md # Worker (context: fork)
 │   ├── orchestrator-conventions.md   # Shared orchestrator conventions
 │   └── worker-conventions.md         # Shared worker conventions
-├── skills/orchestration/             # Orchestration phase templates (24 files)
+├── skills/orchestration/             # Orchestration phase templates (25 files)
 │   ├── clarify.md                    # Clarify phase instructions
 │   ├── gather.md                     # Gather context phase
 │   ├── pushback.md                   # Reviewer pushback phase
@@ -1019,10 +1025,8 @@ your-private-repo/
     │       └── user-preferences.md
     ├── retrospectives/            # Post-completion retrospective data
     │   └── {taskId}.json         # Per-task retrospective JSON
-    ├── federation/                # Multi-machine coordination
-    │   ├── leader.json            # Current leader
-    │   ├── heartbeats/            # Per-node heartbeat files
-    │   └── slot-intents/          # Cross-machine slot intent files (slot-{N}.json)
+    ├── cluster/                   # Multi-machine coordination
+    │   └── heartbeats/            # Per-node heartbeat files
     └── dashboard/                 # Generated dashboard data
         └── data/
             └── slots.json
@@ -1173,11 +1177,13 @@ ludics journal                 # Show today's journal entries
 ludics journal recent [n]      # Show last n entries
 ludics journal list [days]     # List journal files from last n days
 
-# Federation (multi-machine)
-ludics federation status       # Show federation status
-ludics federation tick         # Publish heartbeat + run leader election
-ludics federation elect        # Run leader election only
-ludics federation heartbeat    # Publish heartbeat only
+# Cluster (multi-machine)
+ludics cluster status          # Show cluster status
+ludics cluster tick            # Publish heartbeat
+ludics cluster heartbeat       # Publish heartbeat only
+
+# Health monitoring
+ludics health run-tests [--project=NAME] [--force]  # Run project test suites
 
 # Network
 ludics network status          # Show network configuration
@@ -1205,7 +1211,7 @@ ludics quote                   # Print a random quote
 6. **Hardcoded constraints as forcing functions** — Fixed slots create pressure to parallelize
 7. **One lifelong Mag** — Builds memory, consistent decisions, sees cross-project connections
 8. **TypeScript + Bun** — Type-safe, fast startup, single binary, shell commands where needed
-9. **Federation for scale** — Seniority-based leader election for multi-machine Mag coordination
+9. **Cluster for scale** — Static controller role with HTTP transport for multi-machine coordination
 10. **Bidirectional messaging via ntfy** — outgoing alerts push to user's phone; incoming topic lets user converse with Mag from any device
 11. **Dual runtime paths** — t3code (Web GUI) and tmux both supported for agent sessions; tmux currently primary for stability, t3code is the target as it matures. ludics manages lifecycle and phases regardless of runtime.
 
@@ -1219,14 +1225,14 @@ ludics quote                   # Print a random quote
 | ntfy.sh unreachable | curl returns error | Log locally; retry on next trigger |
 | Claude API down | Task tool fails | Mag retries or skips, logs warning |
 | Task file corrupted | YAML parse fails | Skip file; notify user |
-| Federation: leader down | Heartbeat timeout (900s) | Next node by seniority becomes leader |
+| Cluster: controller down | Heartbeat timeout (900s) | Manual intervention — static controller role, no automatic failover |
 | t3code server crashes | Health check, PID inspection | `ludics t3code start` restarts; orchestration state persists |
 | t3code concurrent startup | File lock + grace period | `server.lock` serializes callers; 15s grace prevents SIGTERM of starting processes |
 | Orchestration runner crashes | PID check in readState | Restart via `slot resume`; state persists in `orchestration/slot-{n}.json`; phase token dedup prevents duplicate agent dispatches |
 | Phase timeout | Runner polling detects expiry | Automatic transition to next phase |
 | Agent hung (idle/stuck) | Pane static >90–180s | Escalating nudges: Enter → "Continue." → re-dispatch → force-settle |
 | PR merge conflict | Mergeable state transition | Coder redispatched with conflict-resolve template |
-| Cross-machine slot dispatch lost | Worker keepalive | Auto-start via intent file consumption |
+| Cross-machine slot dispatch lost | Worker keepalive | Auto-start via HTTP intent consumption |
 
 **Design for recovery:**
 - All state changes go through git → crash-safe, auditable

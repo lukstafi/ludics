@@ -1,5 +1,81 @@
 # Changelog
 
+## v0.7.0 — 2026-04-08
+
+Federation-to-cluster rename, HTTP transport for multi-machine worker writes, project health test monitoring, upstream_repo semantics, and orchestration workflow improvements.
+
+### Breaking changes
+
+- **Federation → Cluster rename** — With leader election removed in favor of a fixed controller machine (`role: "leader"` in config), the "federation" terminology no longer applies. Renamed to "cluster" throughout: config keys, CLI commands (`ludics cluster status/tick/heartbeat`), HTTP paths (`/cluster/*`), source files (`cluster.ts`, `cluster-http.ts`). Old `federation` config keys are read as legacy fallback in `networkMode()`.
+- **`staging_repo` → `upstream_repo`** — Semantic inversion: `repo` now means the working repo (fork agents work in), `upstream_repo` is the forwarding target. All identifiers renamed (`stagingRepo` → `upstreamRepo`, `isStaging` → `hasUpstream`, etc.). Template renamed: `staging-final-merge.md` → `upstream-final-merge.md`. No migration — drain slots before deploying.
+
+### New features
+
+- **Cluster HTTP transport** — Worker nodes now write state changes (journal, events, orchestration state, task updates, slot updates) via HTTP to the controller instead of git push. New endpoints in `cluster-http.ts` (~657 lines). Intent flow is pure-pull: controller stores intents in memory, workers poll via HTTP. `slot-intents.ts` deleted. `statePush` simplified — squash/rebase/conflict machinery removed. Commits reduced to natural checkpoints (health-check, shutdown, handoff).
+- **Static controller role** — Leader election removed. Controller is determined statically by `role: "leader"` in machine config. `leader.json`, `computeController()`, `updateLeader()` eliminated. `clusterTick()` simplified to heartbeat-only.
+- **Project health test suite monitoring** — Optional `test_command` per project (auto-detected from `dune-project`, `bun.lockb`, `package.json`, `Makefile`). New `src/health.ts` (~166 lines) runs tests during night window or every 24h. Results stored in `mag/test-health.json`. Auto-files priority-A fix tasks on failure with content-fingerprint dedup. CLI: `ludics health run-tests [--project=NAME] [--force]`.
+- **Deferred slot artifact cleanup** — Slot artifact cleanup (worktrees, peer-sync) deferred by 25–48h after task completion, providing a post-mortem inspection window.
+- **Project-level requirements matching** — Slot assignment now matches project-level `requirements` in addition to task-level requirements.
+- **Final-merge shortcut** — After coder addresses PR review comments, the orchestration can shortcut directly to final-merge when the comment poll is fresh and Codex review is resolved.
+- **Test baseline step** — Orchestration templates include a test baseline step to capture pre-work test failures before agents begin coding.
+- **Unified health-check schedule** — Health-check trigger unified to a wall-clock 6h cycle (at 02:20, 08:20, 14:20, 20:20 local time), combining briefing and health-check cadences.
+- **Pre-done acceptance criteria checklist** — Coder work template includes a checklist of acceptance criteria to verify before marking work as done.
+
+### Fixes
+
+- **Slotted tasks excluded from ready queue** — Tasks already assigned to a slot no longer appear in `flow ready`.
+- **Auto-start ambiguity filter** — Tightened to exclude negated signals (e.g. "not ambiguous" no longer triggers deferral).
+- **Artifact fallback scoped** — Artifact fallback logic now applies only to artifact-gated phases; nudge includes status-write command.
+- **Init validation** — Fixed init validation for same-tail repos; issue sync uses `upstream_repo`.
+- **Final-merge gating** — Final-merge shortcut gated on fresh comment poll and resolved Codex review.
+- **Settled agent done detection** — Treat settled agent as done when artifact exists after repeated nudges.
+- **Async slotStart race** — `await slotStart` in `maybeAutoStartSlots` to prevent "Session Started" race condition.
+- **JSON queue handling** — Replaced brittle JSON template strings with typed `JSON.stringify` in queue operations.
+- **Health check stdout** — Handle blank `test_command` and avoid stdout corruption in health check.
+- **Approve handler guard** — Approve handlers now only transition tasks with `deferred` status.
+- **Tmux capture extraction** — Made tmux capture entry extraction provider-specific.
+- **Stale lifecycle cleanup** — Clear stale lifecycle/fingerprint on `pr-comments` entry and `skipToPhase`.
+- **Worker-safe slots** — Added worker-safe annotations to slots module, preventing workers from writing to local harness.
+- **Guard/dedup hardening** — Hardened guard/dedup functions against JSON shape mismatches.
+- **prUrl validation** — Validate `prUrl` is an actual URL before skipping `pr-create` phase.
+- **ttyd auto-restart** — Auto-restart dead ttyd processes during orchestration polling.
+- **Large Codex prompts** — Scale paste delay and verify Enter for large Codex prompts.
+- **Worker intent persistence** — Persist intents to runtime files instead of process-local memory.
+- **Worker state isolation** — Worker `slotStart`/`slotsRefresh` no longer write to local harness.
+- **State push simplification** — Simplified `statePush` by removing squash/rebase/conflict machinery.
+- **Worker fresh state** — Worker intents use fresh controller state; slot runtime updates via HTTP.
+- **Freshness gate** — Added freshness gate to `isAgentDone` settled branch; fixed `skipToPhase` lifecycle cleanup.
+- **Case-insensitive project matching** — `findProjectConfigByName` now case-insensitive.
+
+### Refactoring
+
+- Renamed `federation` to `cluster` throughout codebase (files, symbols, config, HTTP paths, CLI).
+- Removed leader election logic; simplified to static controller role.
+- Extracted `safeSyncOutput` helper and migrated all `Bun.spawnSync` callers.
+- Extracted `validateSignal` pure function from federation HTTP handling.
+- Extracted config CLI to `config-cli.ts` with `findProjectConfig` helper.
+- Deleted dead code: `slot-intents.ts`, `worker-signal.ts`, squash-rebase machinery, excess `stateCommit()` calls.
+- Pure-pull intent flow replaces file-based cross-node intent files.
+- Replaced `deferred_launch`/`approved` fields with unified `status: deferred`.
+- Added `PROPOSAL_INSTRUCTION` to 4 additional orchestration templates.
+
+### Tests
+
+- Regression tests for `writeResult` and queued-preemption scan.
+- Rendering tests for 4 newly updated orchestration templates.
+- Federation HTTP test coverage with `validateSignal` extraction.
+- Freshness gate and `skipToPhase` lifecycle tests.
+- Replaced `mock.module` with `spyOn` in tests to prevent mock leakage.
+- Documented safe Bun `mock.module` pattern.
+
+### Removals
+
+- **`slot-intents.ts`** — Replaced by HTTP-based intent flow in `cluster-http.ts`.
+- **`worker-signal.ts`** — Worker signaling now via HTTP transport.
+- **Leader election** — `leader.json`, `computeController()`, `updateLeader()`, `clusterElect()` removed. Static `role: "leader"` config replaces dynamic election.
+- **`staging_repo` config key** — Renamed to `upstream_repo` with inverted semantics.
+- **State push complexity** — Squash-before-rebase strategy and conflict machinery removed from `statePush`.
+
 ## v0.6.0 — 2026-04-06
 
 Hardening release. Hierarchical duo mode with cross-slot merge coordination, federation intent files replacing SSH dispatch, deferred launch approval flow, hung agent detection, PR conflict auto-resolution, robust state sync, and CLI ergonomics.
