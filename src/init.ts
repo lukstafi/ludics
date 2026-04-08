@@ -8,6 +8,7 @@ import { ludicsRoot, pointerConfigPath, harnessDir, loadConfigSync } from "./con
 import { dashboardInstall, dashboardStop, dashboardServe } from "./dashboard.ts";
 import { triggersInstall } from "./triggers.ts";
 import { clusterTick } from "./cluster.ts";
+import { statePull } from "./state.ts";
 
 const POINTER_CONFIG_TEMPLATE = `# ludics pointer config — edit state_repo, then run: ludics init
 state_repo: your-username/your-private-repo
@@ -145,9 +146,10 @@ export async function runInit(args: string[]): Promise<void> {
   if (configOk) {
     console.log("\n--- Cluster ---");
     try {
+      statePull();
       await clusterTick();
     } catch (err) {
-      console.warn(`warning: cluster tick failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`warning: cluster init failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
