@@ -11,7 +11,7 @@ import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, slotsFilePath, loadConfigSync } from "./config.ts";
 import { updateFrontmatterField, addFrontmatterField, removeFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
 import { findSlotForTask, setQueueHold } from "./mag.ts";
-import { handleFederationRequest } from "./federation-http.ts";
+import { handleClusterRequest } from "./cluster-http.ts";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -152,9 +152,9 @@ export function startDashboardServer(
       // Default to index.html
       if (pathname === "/") pathname = "/index.html";
 
-      // Federation HTTP endpoints — cross-node coordination via HTTP
-      if (pathname.startsWith("/federation/") || pathname.startsWith("/api/federation/")) {
-        return handleFederationRequest(req, pathname);
+      // Cluster HTTP endpoints — cross-node coordination via HTTP
+      if (pathname.startsWith("/cluster/") || pathname.startsWith("/api/cluster/")) {
+        return handleClusterRequest(req, pathname);
       }
 
       // Regenerate data if stale on any request to /data/

@@ -1,17 +1,17 @@
-// Federation tests — config parsing, role determination, machine selection
+// Cluster tests — config parsing, role determination, machine selection
 
 import { describe, it, expect } from "bun:test";
 
 // We test the pure logic helpers by importing and exercising them directly.
 // Functions that require config/state are tested via mock setup.
 
-describe("FederationMachine parsing", () => {
-  it("handles empty federation config gracefully", () => {
-    // federationConfig() with no config should return defaults
-    const { federationConfig } = require("./federation.ts");
+describe("ClusterMachine parsing", () => {
+  it("handles empty cluster config gracefully", () => {
+    // clusterConfig() with no config should return defaults
+    const { clusterConfig } = require("./cluster.ts");
     // This may throw if no config file exists in test env — that's fine
     try {
-      const cfg = federationConfig();
+      const cfg = clusterConfig();
       expect(cfg.transport).toBeDefined();
       expect(cfg.machines).toBeInstanceOf(Array);
     } catch {
@@ -21,9 +21,9 @@ describe("FederationMachine parsing", () => {
 });
 
 describe("selectMachineForSlot", () => {
-  it("returns empty string when federation is disabled", () => {
-    const { selectMachineForSlot } = require("./federation.ts");
-    // When federation is not enabled, should return ""
+  it("returns empty string when cluster is disabled", () => {
+    const { selectMachineForSlot } = require("./cluster.ts");
+    // When cluster is not enabled, should return ""
     try {
       const result = selectMachineForSlot({ project: "test", effort: "medium" });
       expect(typeof result).toBe("string");
@@ -35,7 +35,7 @@ describe("selectMachineForSlot", () => {
 
 describe("hostname normalization", () => {
   it("strips trailing dots consistently", () => {
-    // Test the normalization logic used in federationCurrentMachine
+    // Test the normalization logic used in clusterCurrentMachine
     const normalize = (host: string) => host.replace(/\.$/, "").toLowerCase();
     expect(normalize("host.tailnet.ts.net.")).toBe("host.tailnet.ts.net");
     expect(normalize("host.tailnet.ts.net")).toBe("host.tailnet.ts.net");
@@ -44,9 +44,9 @@ describe("hostname normalization", () => {
 });
 
 describe("resolveControllerCandidates", () => {
-  it("returns empty array when federation is disabled (no machines)", () => {
-    const { resolveControllerCandidates } = require("./federation.ts");
-    // In test env without config, federationMachines() returns []
+  it("returns empty array when cluster is disabled (no machines)", () => {
+    const { resolveControllerCandidates } = require("./cluster.ts");
+    // In test env without config, clusterMachines() returns []
     try {
       const candidates = resolveControllerCandidates();
       expect(candidates).toBeInstanceOf(Array);

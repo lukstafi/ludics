@@ -1,4 +1,4 @@
-// Federation — role-aware controller election for multi-machine coordination
+// Cluster — static controller role for multi-machine coordination
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
@@ -7,14 +7,14 @@ import { safeSyncOutput } from "./spawn.ts";
 import { hostnameTailscale } from "./network.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
-// State imports removed — federation tick no longer calls statePull/statePush.
+// State imports removed — cluster tick no longer calls statePull/statePush.
 // Git sync happens only at health-check periodicity.
 
 const HEARTBEAT_TIMEOUT = parseInt(process.env.LUDICS_HEARTBEAT_TIMEOUT ?? "900", 10);
 
-// --- Federation machine config ---
+// --- Cluster machine config ---
 
-export interface FederationMachine {
+export interface ClusterMachine {
   name: string;
   host: string;
   os: string;
@@ -25,20 +25,20 @@ export interface FederationMachine {
   dashboard_port?: number;
 }
 
-interface FederationConfig {
+interface ClusterConfig {
   transport: string;
   domain: string;
-  machines: FederationMachine[];
+  machines: ClusterMachine[];
 }
 
-export function federationConfig(): FederationConfig {
+export function clusterConfig(): ClusterConfig {
   try {
     const config = loadConfigSync();
     const raw = config as unknown as Record<string, unknown>;
-    const fed = raw.federation as Record<string, unknown> | undefined;
+    const fed = raw.cluster as Record<string, unknown> | undefined;
 
     const rawMachines = (fed?.machines as Array<Record<string, unknown>> | undefined) ?? [];
-    let machines: FederationMachine[] = rawMachines
+    let machines: ClusterMachine[] = rawMachines
       .filter((m) => m && m.name && m.host)
       .map((m) => ({
         name: String(m.name),
@@ -70,23 +70,23 @@ export function federationConfig(): FederationConfig {
   }
 }
 
-export function federationEnabled(): boolean {
-  const cfg = federationConfig();
+export function clusterEnabled(): boolean {
+  const cfg = clusterConfig();
   return cfg.transport !== "local" && cfg.machines.length > 0;
 }
 
-export function federationMachines(): FederationMachine[] {
-  return federationConfig().machines;
+export function clusterMachines(): ClusterMachine[] {
+  return clusterConfig().machines;
 }
 
-export function federationMachine(name: string): FederationMachine | undefined {
-  return federationMachines().find((m) => m.name === name);
+export function clusterMachine(name: string): ClusterMachine | undefined {
+  return clusterMachines().find((m) => m.name === name);
 }
 
-export function federationCurrentMachine(): FederationMachine | undefined {
-  if (!federationEnabled()) return undefined;
+export function clusterCurrentMachine(): ClusterMachine | undefined {
+  if (!clusterEnabled()) return undefined;
 
-  const machines = federationMachines();
+  const machines = clusterMachines();
 
   // Collect candidate hostnames: Tailscale DNS, system hostname, OS hostname
   const candidates: string[] = [];
@@ -123,12 +123,12 @@ export function federationCurrentMachine(): FederationMachine | undefined {
   return undefined;
 }
 
-export function federationCurrentMachineName(): string | null {
-  return federationCurrentMachine()?.name ?? null;
+export function clusterCurrentMachineName(): string | null {
+  return clusterCurrentMachine()?.name ?? null;
 }
 
-function federationDir(): string {
-  return join(harnessDir(), "federation");
+function clusterDir(): string {
+  return join(harnessDir(), "cluster");
 }
 
 export function heartbeatsDir(): string {
@@ -140,17 +140,17 @@ export function heartbeatsDir(): string {
 }
 
 function leaderFile(): string {
-  return join(federationDir(), "leader.json");
+  return join(clusterDir(), "leader.json");
 }
 
 // --- Heartbeat functions ---
 
 export function heartbeatPublish(): boolean {
-  const machine = federationCurrentMachine();
+  const machine = clusterCurrentMachine();
   const nodeName = machine?.name ?? null;
 
   if (!nodeName) {
-    console.error("ludics: federation: cannot determine current node name");
+    console.error("ludics: cluster: cannot determine current node name");
     return false;
   }
 
@@ -169,23 +169,23 @@ export function heartbeatPublish(): boolean {
     timestamp,
     epoch,
     mag_running: magRunning,
-    controller_running: federationIsController(),
+    controller_running: clusterIsController(),
   };
 
   // Write local heartbeat file
   writeFileSync(join(dir, `${nodeName}.json`), JSON.stringify(heartbeatData) + "\n");
-  emitEvent({ event_type: "federation_heartbeat", source: "federation", scope: "federation", message: nodeName });
-  console.error(`ludics: federation: published heartbeat for ${nodeName}`);
+  emitEvent({ event_type: "cluster_heartbeat", source: "cluster", scope: "cluster", message: nodeName });
+  console.error(`ludics: cluster: published heartbeat for ${nodeName}`);
 
   // POST heartbeat to controller via HTTP (workers only — controller's own heartbeat is already local).
   // Uses resolveControllerCandidates() instead of currentLeader() to avoid stale leader.json.
-  if (!federationIsController()) {
+  if (!clusterIsController()) {
     const candidates = resolveControllerCandidates();
     if (candidates.length > 0) {
       // Fire-and-forget — try candidates in priority order until one accepts
-      import("./federation-http.ts").then(async ({ federationHttpPost }) => {
+      import("./cluster-http.ts").then(async ({ clusterHttpPost }) => {
         for (const candidate of candidates) {
-          const result = await federationHttpPost(candidate, "/federation/heartbeat", heartbeatData);
+          const result = await clusterHttpPost(candidate, "/cluster/heartbeat", heartbeatData);
           if (result.ok) break; // delivered to controller
         }
       }).catch(() => {});
@@ -229,10 +229,10 @@ function nodeHasMag(nodeName: string): boolean {
  * 2. Else online console machine → controller (failover)
  * 3. Else no controller
  *
- * Falls back to legacy seniority-based election when federation.machines is not configured.
+
  */
 function computeController(): string | null {
-  const machines = federationMachines();
+  const machines = clusterMachines();
 
   if (machines.length > 0) {
     // Prefer online leader
@@ -290,29 +290,29 @@ function updateLeader(newLeader: string): boolean {
     JSON.stringify({ node: newLeader, elected: timestamp, term }) + "\n",
   );
 
-  console.error(`ludics: federation: controller changed to ${newLeader} (term ${term})`);
+  console.error(`ludics: cluster: controller changed to ${newLeader} (term ${term})`);
   try {
-    journalAppend("federation", `controller changed to ${newLeader} (term ${term})`);
+    journalAppend("cluster", `controller changed to ${newLeader} (term ${term})`);
   } catch {
     // journal may not be available
   }
-  emitEvent({ event_type: "federation_leader_change", source: "federation", scope: "federation", message: `controller changed to ${newLeader} (term ${term})` });
+  emitEvent({ event_type: "cluster_leader_change", source: "cluster", scope: "cluster", message: `controller changed to ${newLeader} (term ${term})` });
 
   return true;
 }
 
-export function federationElect(): string | null {
+export function clusterElect(): string | null {
   const controller = computeController();
   if (controller) {
     updateLeader(controller);
     return controller;
   }
-  console.error("ludics: federation: no online nodes available for controller election");
+  console.error("ludics: cluster: no online nodes available for controller election");
   return null;
 }
 
 /** Returns the machine name that should be controller right now (from local leader.json). */
-export function federationCurrentController(): string | null {
+export function clusterCurrentController(): string | null {
   return currentLeader();
 }
 
@@ -322,33 +322,33 @@ export function federationCurrentController(): string | null {
  * Returns machines in role priority: leader first, then consoles.
  * Caller should try them in order until one responds.
  */
-export function resolveControllerCandidates(): FederationMachine[] {
-  const machines = federationMachines();
+export function resolveControllerCandidates(): ClusterMachine[] {
+  const machines = clusterMachines();
   const leaders = machines.filter((m) => m.role === "leader");
   const consoles = machines.filter((m) => m.role === "console");
   return [...leaders, ...consoles];
 }
 
-export function federationIsLeader(): boolean {
-  const currentNode = federationCurrentMachineName();
+export function clusterIsLeader(): boolean {
+  const currentNode = clusterCurrentMachineName();
   if (!currentNode) return false;
   return currentNode === currentLeader();
 }
 
 /**
- * Determine this machine's federation role:
- * - "standalone" — no federation configured, everything runs locally
+ * Determine this machine's cluster role:
+ * - "standalone" — no cluster configured, everything runs locally
  * - "controller" — this machine is the active controller (leader or console in failover)
  * - "worker" — this machine is a worker, defer controller duties
  */
-export function federationRole(): "controller" | "worker" | "standalone" {
-  if (!federationEnabled()) return "standalone";
+export function clusterRole(): "controller" | "worker" | "standalone" {
+  if (!clusterEnabled()) return "standalone";
 
-  const machine = federationCurrentMachine();
+  const machine = clusterCurrentMachine();
   if (!machine) {
-    // Federation is enabled but this host doesn't match any configured machine.
+    // Cluster is enabled but this host doesn't match any configured machine.
     // Safe default: treat as worker (don't run controller duties) to avoid split-brain.
-    console.error("ludics: federation: WARNING — this host not found in federation.machines; defaulting to worker role");
+    console.error("ludics: cluster: WARNING — this host not found in cluster.machines; defaulting to worker role");
     return "worker";
   }
 
@@ -356,7 +356,7 @@ export function federationRole(): "controller" | "worker" | "standalone" {
 
   if (machine.role === "console") {
     // Failover: check if any leader is online
-    const leaders = federationMachines().filter((m) => m.role === "leader");
+    const leaders = clusterMachines().filter((m) => m.role === "leader");
     const leaderOnline = leaders.some((m) => heartbeatIsFresh(m.name));
     if (leaderOnline) return "worker";
     // Among consoles, only the first online (by config order) becomes controller.
@@ -364,7 +364,7 @@ export function federationRole(): "controller" | "worker" | "standalone" {
     // multiple consoles (including legacy network.nodes converted to consoles).
     // Treat the current machine as implicitly online — it's running this code.
     const currentName = machine.name;
-    const consoles = federationMachines().filter((m) => m.role === "console");
+    const consoles = clusterMachines().filter((m) => m.role === "console");
     const firstOnlineConsole = consoles.find((m) => m.name === currentName || heartbeatIsFresh(m.name));
     return firstOnlineConsole?.name === currentName ? "controller" : "worker";
   }
@@ -372,42 +372,42 @@ export function federationRole(): "controller" | "worker" | "standalone" {
   return "worker";
 }
 
-export function federationIsController(): boolean {
-  return federationRole() !== "worker";
+export function clusterIsController(): boolean {
+  return clusterRole() !== "worker";
 }
 
-export function federationShouldRunMag(): boolean {
-  return federationIsController();
+export function clusterShouldRunMag(): boolean {
+  return clusterIsController();
 }
 
-// --- Federation tick ---
+// --- Cluster tick ---
 
-export async function federationTick(): Promise<void> {
-  console.error("ludics: federation: running tick...");
+export async function clusterTick(): Promise<void> {
+  console.error("ludics: cluster: running tick...");
 
   // No statePull() here — heartbeats arrive via HTTP, signals arrive via HTTP,
   // intents are delivered via HTTP. Git sync only happens at health-check periodicity.
 
   const prevController = currentLeader();
-  const currentNodeName = federationCurrentMachineName();
+  const currentNodeName = clusterCurrentMachineName();
 
   heartbeatPublish();
 
-  const controller = federationElect();
+  const controller = clusterElect();
   if (controller) {
-    console.error(`ludics: federation: current controller is ${controller}`);
+    console.error(`ludics: cluster: current controller is ${controller}`);
   }
 
   // Detect role transitions
   if (currentNodeName && prevController !== controller) {
     if (controller === currentNodeName && prevController !== currentNodeName) {
       // This machine just became controller (failover)
-      console.error("ludics: federation: THIS MACHINE IS NOW CONTROLLER (failover)");
-      emitEvent({ event_type: "federation_failover", source: "federation", scope: "federation", message: `${currentNodeName} became controller (was: ${prevController ?? "none"})` });
+      console.error("ludics: cluster: THIS MACHINE IS NOW CONTROLLER (failover)");
+      emitEvent({ event_type: "cluster_failover", source: "cluster", scope: "cluster", message: `${currentNodeName} became controller (was: ${prevController ?? "none"})` });
     } else if (prevController === currentNodeName && controller !== currentNodeName) {
       // This machine yielded controller role (failback)
-      console.error("ludics: federation: yielding controller role (failback)");
-      emitEvent({ event_type: "federation_failback", source: "federation", scope: "federation", message: `${currentNodeName} yielded controller to ${controller ?? "none"}` });
+      console.error("ludics: cluster: yielding controller role (failback)");
+      emitEvent({ event_type: "cluster_failback", source: "cluster", scope: "cluster", message: `${currentNodeName} yielded controller to ${controller ?? "none"}` });
     }
   }
 
@@ -415,7 +415,7 @@ export async function federationTick(): Promise<void> {
   // handles git commits at lower frequency. All coordination (intents,
   // heartbeats, signals) now uses HTTP, not git.
 
-  console.error("ludics: federation: tick complete");
+  console.error("ludics: cluster: tick complete");
 }
 
 // --- Status display ---
@@ -448,15 +448,15 @@ function formatNodeStatus(name: string, controller: string): string {
   return `${status}${heartbeatAge}${controllerMarker}`;
 }
 
-export function federationStatus(): void {
-  console.log("=== Federation Status ===");
+export function clusterStatus(): void {
+  console.log("=== Cluster Status ===");
   console.log("");
 
-  const machine = federationCurrentMachine();
+  const machine = clusterCurrentMachine();
   const currentNode = machine?.name ?? "unknown";
   console.log(`Current node: ${currentNode}`);
 
-  const role = federationRole();
+  const role = clusterRole();
   const controller = currentLeader() ?? "none";
   const term = currentTerm();
   console.log(`Current controller: ${controller} (term ${term})`);
@@ -475,15 +475,15 @@ export function federationStatus(): void {
       console.log("Role: worker");
       break;
     case "standalone":
-      console.log("Role: standalone (no federation)");
+      console.log("Role: standalone (no cluster)");
       break;
   }
 
-  // Show federation machines if configured
-  const machines = federationMachines();
+  // Show cluster machines if configured
+  const machines = clusterMachines();
   if (machines.length > 0) {
     console.log("");
-    console.log("Federation machines:");
+    console.log("Cluster machines:");
     for (let i = 0; i < machines.length; i++) {
       const m = machines[i]!;
       const nodeStatus = formatNodeStatus(m.name, controller);
@@ -494,8 +494,8 @@ export function federationStatus(): void {
 
   if (machines.length === 0) {
     console.log("");
-    console.log("No federation machines configured — Mag will run on any machine.");
-    console.log("Configure federation.machines in config.yaml for multi-machine coordination.");
+    console.log("No cluster machines configured — Mag will run on any machine.");
+    console.log("Configure cluster.machines in config.yaml for multi-machine coordination.");
   }
 
   // Check for missing roles
@@ -513,7 +513,7 @@ export function federationStatus(): void {
   }
 
   console.log("");
-  if (federationIsController()) {
+  if (clusterIsController()) {
     console.log("Mag permission: ALLOWED (this node is controller)");
   } else {
     console.log("Mag permission: BLOCKED (defer to controller)");
@@ -524,17 +524,17 @@ export function federationStatus(): void {
 
 /**
  * Select which machine should run a task.
- * Returns current machine name if no federation or no suitable remote workers.
+ * Returns current machine name if no cluster or no suitable remote workers.
  */
 export function selectMachineForSlot(
   _task: { project: string; effort: string; requirements?: { os?: string; gpu?: string } },
 ): string | null {
-  if (!federationEnabled()) return "";
+  if (!clusterEnabled()) return "";
 
-  const current = federationCurrentMachineName();
+  const current = clusterCurrentMachineName();
   if (!current) return "";
 
-  const machines = federationMachines();
+  const machines = clusterMachines();
 
   // Filter by task requirements first (all machines, not just online)
   let eligible = [...machines];
@@ -543,7 +543,7 @@ export function selectMachineForSlot(
     if (reqs.os) eligible = eligible.filter((m) => m.os === reqs.os);
     if (reqs.gpu) eligible = eligible.filter((m) => m.gpu === reqs.gpu);
     if (eligible.length === 0) {
-      console.error(`ludics: no federation machine meets requirements (os=${reqs.os ?? "any"}, gpu=${reqs.gpu ?? "any"}) — ${machines.length} machines checked`);
+      console.error(`ludics: no cluster machine meets requirements (os=${reqs.os ?? "any"}, gpu=${reqs.gpu ?? "any"}) — ${machines.length} machines checked`);
       return null;
     }
   }
@@ -568,34 +568,34 @@ export function selectMachineForSlot(
   return pool[0]?.name ?? current;
 }
 
-export async function runFederation(args: string[]): Promise<void> {
+export async function runCluster(args: string[]): Promise<void> {
   const sub = args[0] ?? "";
 
   switch (sub) {
     case "status":
     case "":
-      federationStatus();
+      clusterStatus();
       break;
     case "tick":
-      await federationTick();
+      await clusterTick();
       break;
     case "elect":
-      federationElect();
+      clusterElect();
       break;
     case "heartbeat":
       heartbeatPublish();
       break;
     case "ping": {
       const target = args[1];
-      if (!target) throw new Error("usage: ludics federation ping <machine-name>");
-      const targetMachine = federationMachine(target);
+      if (!target) throw new Error("usage: ludics cluster ping <machine-name>");
+      const targetMachine = clusterMachine(target);
       if (!targetMachine) throw new Error(`unknown machine: ${target}`);
-      const { federationHttpGet } = await import("./federation-http.ts");
-      const result = await federationHttpGet(targetMachine, "/api/federation/leader");
+      const { clusterHttpGet } = await import("./cluster-http.ts");
+      const result = await clusterHttpGet(targetMachine, "/api/cluster/leader");
       console.log(`${target}: ${result.ok ? "reachable" : "unreachable"}`);
       break;
     }
     default:
-      throw new Error(`unknown federation command: ${sub} (use: status, tick, elect, heartbeat, ping)`);
+      throw new Error(`unknown cluster command: ${sub} (use: status, tick, elect, heartbeat, ping)`);
   }
 }

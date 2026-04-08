@@ -7,7 +7,7 @@ import { safeSyncOutput } from "./spawn.ts";
 import { globalAdapter, harnessDir, loadConfigSync, slotsFilePath, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
 import { parseSlotBlocks, getField, getProcess, getTask, getMode, getSessionStarted, getMachine, getLiveness } from "./slots/markdown.ts";
 import { isRemoteMachine } from "./remote.ts";
-import { federationMachine } from "./federation.ts";
+import { clusterMachine } from "./cluster.ts";
 import { priorityValue } from "./tasks/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl } from "./network.ts";
@@ -15,8 +15,8 @@ import { inspectManagedServerProcess, processAlive, readServerRecord, readSlotSt
 import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
-import { federationIsController, heartbeatIsFresh, federationCurrentMachineName } from "./federation.ts";
-import { getIntentForDashboard } from "./federation-http.ts";
+import { clusterIsController, heartbeatIsFresh, clusterCurrentMachineName } from "./cluster.ts";
+import { getIntentForDashboard } from "./cluster-http.ts";
 
 function readSlotIntentForDashboard(slotNum: number): { action: string } | null {
   return getIntentForDashboard(slotNum);
@@ -177,7 +177,7 @@ function lookupSlotOrchestrationLinks(
   let t3codeThreadLinks: Record<string, string> | null = null;
   if (orchState.backend === "tmux") {
     // Generate ttyd URLs for each agent
-    const host = (machineName && federationMachine(machineName)?.host) || machineName;
+    const host = (machineName && clusterMachine(machineName)?.host) || machineName;
     if (host) {
       t3codeThreadLinks = {};
       for (const agent of orchState.agents) {
@@ -845,7 +845,7 @@ function generateTerminals(): Record<string, unknown> {
       if (mode === "tmux" && sessionStarted && sessionStarted !== "null") {
         activeSlots.push(num);
         const machine = getMachine(block).trim();
-        const host = (machine && federationMachine(machine)?.host) || machine;
+        const host = (machine && clusterMachine(machine)?.host) || machine;
         if (host) slotMachines.set(num, host);
       }
     }
@@ -992,7 +992,7 @@ export function dashboardGenerate(): void {
 
   console.error("ludics: generating dashboard data...");
 
-  const meta = { controllerMachine: federationCurrentMachineName() ?? null };
+  const meta = { controllerMachine: clusterCurrentMachineName() ?? null };
   writeFileSync(join(dataDir, "meta.json"), JSON.stringify(meta, null, 2));
   console.error("  meta.json");
 
@@ -1044,8 +1044,8 @@ export function dashboardGenerate(): void {
 // --- Serve ---
 
 export function dashboardServe(port: number = 7678): void {
-  if (!federationIsController()) {
-    console.error("ludics: dashboard serve skipped — not the federation controller");
+  if (!clusterIsController()) {
+    console.error("ludics: dashboard serve skipped — not the cluster controller");
     return;
   }
   const dashboardDir = join(harnessDir(), "dashboard");

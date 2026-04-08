@@ -7,10 +7,10 @@ import { listStashes } from "./slots/preempt.ts";
 import { parseSlotBlocks, getTask, getProcess, getMode, getPath, getSession, getAdapterArgs, getSessionStarted, getLiveness, getMachine } from "./slots/markdown.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
-import { federationShouldRunMag, federationIsController, selectMachineForSlot, federationCurrentMachineName, federationMachine } from "./federation.ts";
-// federation-http imports are lazy to avoid import cycles
+import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterMachine } from "./cluster.ts";
+// cluster-http imports are lazy to avoid import cycles
 import { isRemoteMachine } from "./remote.ts";
-// slot-intents.ts deleted — intents use in-memory store via federation-http.ts
+// slot-intents.ts deleted — intents use in-memory store via cluster-http.ts
 import { stateMarkDirty } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
@@ -1982,7 +1982,7 @@ async function maybeAutoStartSlots(): Promise<void> {
     const slotMachine = getMachine(block).trim();
     if (slotMachine && slotMachine !== "null" && isRemoteMachine(slotMachine)) {
       try {
-        const { getIntentForDashboard } = require("./federation-http.ts");
+        const { getIntentForDashboard } = require("./cluster-http.ts");
         const existing = getIntentForDashboard(slotNum);
         if (existing && existing.action === "start") continue;
       } catch { /* ignore */ }
@@ -2463,7 +2463,7 @@ function maybeFillEmptySlots(): void {
     // Resolve project path from config
     const projectPath = resolveProjectPath(task.project);
 
-    // Select machine for slot assignment (federation-aware)
+    // Select machine for slot assignment (cluster-aware)
     const machine = selectMachineForSlot({ project: task.project, effort: task.effort, requirements: task.requirements });
     if (machine === null) {
       console.error(`ludics: no machine meets requirements for ${task.id} — skipping`);
@@ -2651,8 +2651,8 @@ async function workerKeepalive(): Promise<void> {
   // Fetch fresh slots state from controller — in-memory only, never written to harness
   let freshSlotsContent: string | null = null;
   try {
-    const { federationGetSlots } = await import("./federation-http.ts");
-    const result = await federationGetSlots();
+    const { clusterGetSlots } = await import("./cluster-http.ts");
+    const result = await clusterGetSlots();
     if (result.ok && typeof result.data === "string") {
       freshSlotsContent = result.data;
     }
@@ -2670,17 +2670,17 @@ async function workerKeepalive(): Promise<void> {
 
 /** Poll controller for pending intents and execute them (pure pull model). */
 async function processSlotIntents(freshSlotsContent: string | null): Promise<void> {
-  const currentMachine = federationCurrentMachineName();
+  const currentMachine = clusterCurrentMachineName();
   if (!currentMachine) return;
 
   // On worker: poll controller for pending intents via HTTP
   try {
-    const { federationIsController } = require("./federation.ts");
-    if (!federationIsController()) {
+    const { clusterIsController } = require("./cluster.ts");
+    if (!clusterIsController()) {
       if (!freshSlotsContent) return; // no fresh state — skip
-      const { federationGetIntents, federationDeleteIntent } = await import("./federation-http.ts");
+      const { clusterGetIntents, clusterDeleteIntent } = await import("./cluster-http.ts");
       const { setWorkerSlotsOverride } = await import("./slots/index.ts");
-      const result = await federationGetIntents();
+      const result = await clusterGetIntents();
       if (!result.ok || !result.data) return;
       const intents = (result.data as { intents?: Record<string, unknown> })?.intents ?? result.data;
       for (const [slotStr, rawIntent] of Object.entries(intents as Record<string, unknown>)) {
@@ -2688,7 +2688,7 @@ async function processSlotIntents(freshSlotsContent: string | null): Promise<voi
         const intent = rawIntent as { action: string; machine: string; epoch: number; preserveState?: boolean };
         if (intent.machine !== currentMachine) continue;
         if ((Math.floor(Date.now() / 1000) - intent.epoch) > 900) {
-          await federationDeleteIntent(slotNum).catch(() => {});
+          await clusterDeleteIntent(slotNum).catch(() => {});
           continue;
         }
         let shouldAck = true;
@@ -2710,7 +2710,7 @@ async function processSlotIntents(freshSlotsContent: string | null): Promise<voi
           shouldAck = false;
         }
         if (shouldAck) {
-          await federationDeleteIntent(slotNum).catch(() => {});
+          await clusterDeleteIntent(slotNum).catch(() => {});
           break; // rate-limit
         }
       }
@@ -2725,17 +2725,17 @@ async function processSlotIntents(freshSlotsContent: string | null): Promise<voi
 
 export async function magStart(args: string[]): Promise<void> {
   let useTtyd = true;
-  let skipFederation = false;
+  let skipCluster = false;
 
   for (const arg of args) {
     if (arg === "--no-ttyd") useTtyd = false;
-    if (arg === "--skip-federation") skipFederation = true;
+    if (arg === "--skip-cluster") skipCluster = true;
   }
 
   if (!tmuxAvailable()) throw new Error("mag start: tmux is required but not installed");
 
-  // Check federation — on worker nodes, run machine-local automations only
-  if (!skipFederation && !federationShouldRunMag()) {
+  // Check cluster — on worker nodes, run machine-local automations only
+  if (!skipCluster && !clusterShouldRunMag()) {
     if (magIsRunning()) {
       console.error("ludics: mag session exists but this node is no longer controller — stopping mag");
       tmuxKillSession(MAG_SESSION_NAME);
@@ -2746,8 +2746,8 @@ export async function magStart(args: string[]): Promise<void> {
 
   // Session already exists - keepalive path
   if (magIsRunning()) {
-    // Re-check federation on keepalive — controller may have changed since session started
-    if (!skipFederation && !federationShouldRunMag()) {
+    // Re-check cluster on keepalive — controller may have changed since session started
+    if (!skipCluster && !clusterShouldRunMag()) {
       console.error("ludics: mag session exists but this node is no longer controller — stopping mag");
       tmuxKillSession(MAG_SESSION_NAME);
       await workerKeepalive();
@@ -3147,8 +3147,8 @@ export function magDoctor(): void {
 }
 
 export function magBriefing(wait: boolean = true, timeout: number = 300): void {
-  if (!federationIsController()) {
-    console.error("ludics: mag briefing skipped — not the federation controller");
+  if (!clusterIsController()) {
+    console.error("ludics: mag briefing skipped — not the cluster controller");
     return;
   }
   const requestId = queueRequest({ action: "briefing" });
@@ -3306,8 +3306,8 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "health-check":
-      if (!federationIsController()) {
-        console.error("ludics: mag health-check skipped — not the federation controller");
+      if (!clusterIsController()) {
+        console.error("ludics: mag health-check skipped — not the cluster controller");
         break;
       }
       queueRequest({ action: "health-check" });
@@ -3438,8 +3438,8 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "adopt-sessions": {
-      if (!federationIsController()) {
-        console.error("ludics: mag adopt-sessions skipped — not the federation controller");
+      if (!clusterIsController()) {
+        console.error("ludics: mag adopt-sessions skipped — not the cluster controller");
         break;
       }
       const force = args.includes("--force");
@@ -3511,8 +3511,8 @@ export async function runMag(args: string[]): Promise<void> {
       clearStartupWatchdogEpoch();
       // When paused, don't pop — items accumulate and are processed on unpause
       if (existsSync(join(harnessDir(), "mag", "paused"))) break;
-      // Only the federation controller pops the queue — workers must not run Mag skills
-      if (!federationIsController()) break;
+      // Only the cluster controller pops the queue — workers must not run Mag skills
+      if (!clusterIsController()) break;
       const skillCommand = await queuePopSkill();
       if (skillCommand) {
         console.log(JSON.stringify({ decision: "block", reason: skillCommand }));

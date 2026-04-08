@@ -1,10 +1,10 @@
-// Tests for federation-http.ts: validateSignal pure function and handleSignal dispatch
+// Tests for cluster-http.ts: validateSignal pure function and handleSignal dispatch
 
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { validateSignal, handleFederationRequest } from "./federation-http.ts";
+import { validateSignal, handleClusterRequest } from "./cluster-http.ts";
 import * as slots from "./slots/index.ts";
 import * as events from "./events.ts";
 
@@ -77,7 +77,7 @@ describe("validateSignal", () => {
 });
 
 // ---------------------------------------------------------------------------
-// handleSignal via handleFederationRequest — integration tests with mocks
+// handleSignal via handleClusterRequest — integration tests with mocks
 // ---------------------------------------------------------------------------
 
 const TEST_SECRET = "test-secret-xyz";
@@ -94,7 +94,7 @@ function writeConfig(homeDir: string): string {
   const configPath = join(configDir, "config.yaml");
   writeFileSync(configPath, `state_repo: owner/ludics-state
 state_path: harness
-federation:
+cluster:
   secret: ${TEST_SECRET}
 slots:
   count: 4
@@ -169,11 +169,11 @@ describe("handleSignal dispatch", () => {
     const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
     const emitEventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
 
-    const req = makeRequest("/federation/signal", {
+    const req = makeRequest("/cluster/signal", {
       slot: SLOT, taskId: TASK_ID, status: "done", message: "all good",
       machine: MACHINE, epoch: EPOCH,
     });
-    const resp = await handleFederationRequest(req, "/federation/signal");
+    const resp = await handleClusterRequest(req, "/cluster/signal");
 
     expect(resp.status).toBe(200);
     expect(slotClearSpy).toHaveBeenCalledWith(SLOT, "done");
@@ -186,11 +186,11 @@ describe("handleSignal dispatch", () => {
     const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
     const emitEventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
 
-    const req = makeRequest("/federation/signal", {
+    const req = makeRequest("/cluster/signal", {
       slot: SLOT, taskId: TASK_ID, status: "error", message: "something failed",
       machine: MACHINE, epoch: EPOCH,
     });
-    const resp = await handleFederationRequest(req, "/federation/signal");
+    const resp = await handleClusterRequest(req, "/cluster/signal");
 
     expect(resp.status).toBe(200);
     expect(slotClearSpy).not.toHaveBeenCalled();
@@ -206,11 +206,11 @@ describe("handleSignal dispatch", () => {
     const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
     const emitEventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
 
-    const req = makeRequest("/federation/signal", {
+    const req = makeRequest("/cluster/signal", {
       slot: SLOT, taskId: TASK_ID, status: "progress", message: "working…",
       machine: MACHINE, epoch: EPOCH,
     });
-    const resp = await handleFederationRequest(req, "/federation/signal");
+    const resp = await handleClusterRequest(req, "/cluster/signal");
 
     expect(resp.status).toBe(200);
     expect(slotClearSpy).not.toHaveBeenCalled();
@@ -222,12 +222,12 @@ describe("handleSignal dispatch", () => {
   test("missing machine field returns 400", async () => {
     writeSlotsFile(harnessDir, SLOT, TASK_ID, MACHINE);
 
-    const req = makeRequest("/federation/signal", {
+    const req = makeRequest("/cluster/signal", {
       slot: SLOT, taskId: TASK_ID, status: "done", message: "done",
       epoch: EPOCH,
       // machine is omitted
     });
-    const resp = await handleFederationRequest(req, "/federation/signal");
+    const resp = await handleClusterRequest(req, "/cluster/signal");
 
     expect(resp.status).toBe(400);
   });
@@ -236,11 +236,11 @@ describe("handleSignal dispatch", () => {
     writeSlotsFile(harnessDir, SLOT, TASK_ID, MACHINE);
     const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
 
-    const req = makeRequest("/federation/signal", {
+    const req = makeRequest("/cluster/signal", {
       slot: SLOT, taskId: "different-task", status: "done", message: "done",
       machine: MACHINE, epoch: EPOCH,
     });
-    const resp = await handleFederationRequest(req, "/federation/signal");
+    const resp = await handleClusterRequest(req, "/cluster/signal");
 
     expect(resp.status).toBe(409);
     expect(slotClearSpy).not.toHaveBeenCalled();
@@ -252,11 +252,11 @@ describe("handleSignal dispatch", () => {
     const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
 
     const staleEpoch = Math.floor(Date.now() / 1000) - 2000; // 2000s ago
-    const req = makeRequest("/federation/signal", {
+    const req = makeRequest("/cluster/signal", {
       slot: SLOT, taskId: TASK_ID, status: "done", message: "done",
       machine: MACHINE, epoch: staleEpoch,
     });
-    const resp = await handleFederationRequest(req, "/federation/signal");
+    const resp = await handleClusterRequest(req, "/cluster/signal");
 
     expect(resp.status).toBe(409);
     expect(slotClearSpy).not.toHaveBeenCalled();

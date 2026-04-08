@@ -7,7 +7,7 @@ import { safeSyncOutput } from "./spawn.ts";
 import { ludicsRoot, pointerConfigPath, harnessDir, loadConfigSync } from "./config.ts";
 import { dashboardInstall, dashboardStop, dashboardServe } from "./dashboard.ts";
 import { triggersInstall } from "./triggers.ts";
-import { federationTick } from "./federation.ts";
+import { clusterTick } from "./cluster.ts";
 
 const POINTER_CONFIG_TEMPLATE = `# ludics pointer config — edit state_repo, then run: ludics init
 state_repo: your-username/your-private-repo
@@ -141,13 +141,13 @@ export async function runInit(args: string[]): Promise<void> {
     }
   }
 
-  // 10. Federation tick
+  // 10. Cluster init
   if (configOk) {
-    console.log("\n--- Federation ---");
+    console.log("\n--- Cluster ---");
     try {
-      await federationTick();
+      await clusterTick();
     } catch (err) {
-      console.warn(`warning: federation tick failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`warning: cluster tick failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
