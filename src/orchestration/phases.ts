@@ -284,7 +284,9 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
         // and has been nudged multiple times without updating status, treat as
         // done.  The agent likely completed its work but skipped the status
         // write (e.g. didn't execute the printf command in the template).
-        if ((lc.nudgeAttempts ?? 0) >= 2 && hasRequiredArtifact(state, agent)) {
+        if ((lc.nudgeAttempts ?? 0) >= 2
+            && requiredArtifactPath(state, agent) !== null
+            && hasRequiredArtifact(state, agent)) {
           emitEvent({
             event_type: "orchestration_warning",
             source: "orchestration",

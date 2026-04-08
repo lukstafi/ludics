@@ -36,7 +36,7 @@ function gitOutput(cwd: string, args: string[]): string | null {
   return r.ok && r.stdout ? r.stdout : null;
 }
 
-function doneStatusForPhase(phase: Phase): string {
+export function doneStatusForPhase(phase: Phase): string {
   if (phase === "work") return "done";
   if (phase === "review") return "review-done";
   return `${phase}-done`;

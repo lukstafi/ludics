@@ -9,7 +9,7 @@ import {
 } from "./peer-sync.ts";
 import { determineWinner, hasConsensus, readMergeVotes } from "./merge.ts";
 import { shouldRunUpdateDocs } from "./learning.ts";
-import { composeSkillMessage } from "./skills.ts";
+import { composeSkillMessage, doneStatusForPhase } from "./skills.ts";
 import {
   persistState, readOrchestrationState,
   type AgentConfig, type OrchestrationState,
@@ -1130,7 +1130,10 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
         alc.nudgeAttempts = (alc.nudgeAttempts ?? 0) + 1;
         alc.stallDetectedAt = null;
 
-        await transport.sendTurn(state, agent, "Continue.");
+        const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+        const doneStatus = doneStatusForPhase(state.phase);
+        const nudgeMsg = `Continue. Once done, signal completion:\n\`\`\`sh\nprintf '%s|%s|${agent.name} ${state.phase} done\\n' '${doneStatus}' "$(date +%s)" > "${statusPath}"\n\`\`\``;
+        await transport.sendTurn(state, agent, nudgeMsg);
         alc.state = "running";
         alc.turnStartedAt = isoNow();
         alc.observedTurnId = makeId("tmux-turn");
@@ -1145,7 +1148,7 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
           phase: state.phase,
           attempt: alc.nudgeAttempts,
           stallType: "interrupted",
-          message: `${agent.name}: nudged with Continue (turn settled without done status)`,
+          message: `${agent.name}: nudged with status-write instruction (turn settled without done status)`,
         });
         persistState(state);
       }
