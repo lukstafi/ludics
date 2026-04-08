@@ -279,7 +279,24 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
 
     case "settled": {
       // Fingerprint freshness gate: reject stale status from before dispatch.
-      if (!isStatusFresh(state, agent, runtime)) return false;
+      if (!isStatusFresh(state, agent, runtime)) {
+        // Status file is stale, but if the agent produced the required artifact
+        // and has been nudged multiple times without updating status, treat as
+        // done.  The agent likely completed its work but skipped the status
+        // write (e.g. didn't execute the printf command in the template).
+        if ((lc.nudgeAttempts ?? 0) >= 2 && hasRequiredArtifact(state, agent)) {
+          emitEvent({
+            event_type: "orchestration_warning",
+            source: "orchestration",
+            scope: "slot",
+            slot: state.slot,
+            task: state.taskId,
+            message: `${agent.name}: status stale but artifact present after ${lc.nudgeAttempts} nudges — treating as done`,
+          });
+          return true;
+        }
+        return false;
+      }
 
       // Turn settled — check for a done status from peer-sync.
       if (validateDoneStatus(state, agent, runtime)) return true;
