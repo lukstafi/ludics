@@ -8,6 +8,7 @@ import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
 import { getIntentForDashboard, clearIntent } from "../cluster-http.ts";
 import { heartbeatsDir as getHeartbeatsDir } from "../cluster.ts";
+import { writeSlotJson, readSlotJson, emptySlotData } from "./json.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -79,14 +80,15 @@ describe("slotAssign", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "watch-streams-cleanup", "Watch streams cleanup");
 
     slotAssign(1, "watch-streams-cleanup", "manual");
 
-    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
-    expect(slots).toContain("## Slot 1");
-    expect(slots).toContain("**Process:** Watch streams cleanup");
-    expect(slots).toContain("**Task:** watch-streams-cleanup");
+    const data = readSlotJson(1, harness);
+    expect(data.process).toBe("Watch streams cleanup");
+    expect(data.task).toBe("watch-streams-cleanup");
 
     const task = readFileSync(join(tasksDir, "watch-streams-cleanup.md"), "utf-8");
     expect(task).toContain("status: in-progress");
@@ -97,13 +99,14 @@ describe("slotAssign", () => {
   test("keeps free-text descriptions as non-task assignments", () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
 
     slotAssign(2, "Investigate slot detection", "manual");
 
-    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
-    expect(slots).toContain("## Slot 2");
-    expect(slots).toContain("**Process:** Investigate slot detection");
-    expect(slots).toContain("**Task:** null");
+    const data = readSlotJson(2, harness);
+    expect(data.process).toBe("Investigate slot detection");
+    expect(data.task).toBeNull();
   });
 });
 
@@ -112,6 +115,8 @@ describe("slotResume guards", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-resume-1", "Resume test");
     slotAssign(1, "task-resume-1", "manual");
 
@@ -122,6 +127,8 @@ describe("slotResume guards", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-resume-2", "Resume test 2");
     slotAssign(1, "task-resume-2", "t3code");
 
@@ -132,6 +139,8 @@ describe("slotResume guards", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-resume-3", "Resume test 3");
     slotAssign(1, "task-resume-3", "t3code");
 
@@ -152,6 +161,8 @@ describe("slotStart guard", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-guard-1", "Guard test");
     slotAssign(1, "task-guard-1", "t3code", "", "", "--pair --coder claude-code");
 
@@ -182,19 +193,17 @@ describe("slotStart guard", () => {
 });
 
 describe("slot assign — direct orchestration flags", () => {
-  function slotsFile(): string {
-    return join(TMP, "ludics-state", "harness", "slots.md");
-  }
-
   function readAdapterArgs(): string {
-    const content = readFileSync(slotsFile(), "utf-8");
-    const m = content.match(/\*\*Adapter Args:\*\*\s*(.+)/);
-    return m ? m[1]!.trim() : "";
+    const harness = join(TMP, "ludics-state", "harness");
+    const data = readSlotJson(1, harness);
+    return data.adapterArgs ?? "";
   }
 
   test("builds adapter args from --pair --coder --reviewer --plan", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await runSlot(["1", "assign", "My task", "-a", "t3code", "--pair", "--coder", "claude-code", "--reviewer", "codex", "--plan"]);
     expect(readAdapterArgs()).toBe("--pair --coder claude-code --reviewer codex --plan");
   });
@@ -202,6 +211,8 @@ describe("slot assign — direct orchestration flags", () => {
   test("auto-prepends --pair when --coder/--reviewer given without it", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await runSlot(["1", "assign", "My task", "-a", "t3code", "--coder", "foo", "--reviewer", "bar"]);
     expect(readAdapterArgs()).toBe("--pair --coder foo --reviewer bar");
   });
@@ -209,6 +220,8 @@ describe("slot assign — direct orchestration flags", () => {
   test("auto-prepends --pair when --plan given without a mode flag", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await runSlot(["1", "assign", "My task", "-a", "t3code", "--plan"]);
     expect(readAdapterArgs()).toBe("--pair --plan");
   });
@@ -216,6 +229,8 @@ describe("slot assign — direct orchestration flags", () => {
   test("inserts --pair before first shorthand when -A fragment precedes it", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--gather", "--coder", "foo"]);
     expect(readAdapterArgs()).toBe("--gather --pair --coder foo");
   });
@@ -223,6 +238,8 @@ describe("slot assign — direct orchestration flags", () => {
   test("inserts --pair before --plan when -A fragment precedes it", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--gather", "--plan"]);
     expect(readAdapterArgs()).toBe("--gather --pair --plan");
   });
@@ -230,6 +247,8 @@ describe("slot assign — direct orchestration flags", () => {
   test("does not auto-prepend --pair when --pair is already present", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await runSlot(["1", "assign", "My task", "-a", "t3code", "--pair", "--plan"]);
     expect(readAdapterArgs()).toBe("--pair --plan");
   });
@@ -237,6 +256,8 @@ describe("slot assign — direct orchestration flags", () => {
   test("preserves -A fragment appended after direct flags", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await runSlot(["1", "assign", "My task", "-a", "t3code", "--pair", "--coder", "foo", "-A", "--gather"]);
     expect(readAdapterArgs()).toBe("--pair --coder foo --gather");
   });
@@ -244,24 +265,32 @@ describe("slot assign — direct orchestration flags", () => {
   test("errors when --coder value is missing", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await expect(runSlot(["1", "assign", "My task", "-a", "t3code", "--coder"])).rejects.toThrow("requires a provider value");
   });
 
   test("errors when --reviewer value is missing", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await expect(runSlot(["1", "assign", "My task", "-a", "t3code", "--reviewer"])).rejects.toThrow("requires a provider value");
   });
 
   test("errors when shorthand orch flag used with non-t3code adapter", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await expect(runSlot(["1", "assign", "My task", "-a", "manual", "--pair"])).rejects.toThrow('require adapter "t3code"');
   });
 
   test("does NOT error when only -A is used with non-t3code adapter", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await expect(runSlot(["1", "assign", "My task", "-a", "manual", "-A", "--pair --coder foo"])).resolves.toBeUndefined();
     expect(readAdapterArgs()).toBe("--pair --coder foo");
   });
@@ -269,6 +298,8 @@ describe("slot assign — direct orchestration flags", () => {
   test("--duo in -A triggers hierarchical duo expansion into two pair-mode slots", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--duo", "--plan"]);
     // --duo expands into two pair slots with swapped coder/reviewer and --duo-peer-slot
     const args = readAdapterArgs();
@@ -280,6 +311,8 @@ describe("slot assign — direct orchestration flags", () => {
   test("direct --duo shorthand triggers hierarchical duo expansion", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await runSlot(["1", "assign", "My task", "-a", "t3code", "--duo", "--plan"]);
     const args = readAdapterArgs();
     expect(args).toContain("--pair");
@@ -290,6 +323,8 @@ describe("slot assign — direct orchestration flags", () => {
   test("does not inject --pair when -A already contains --pair", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--pair --coder existing", "--plan"]);
     expect(readAdapterArgs()).toBe("--pair --coder existing --plan");
   });
@@ -297,27 +332,33 @@ describe("slot assign — direct orchestration flags", () => {
   test("errors when --coder value looks like a flag", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await expect(runSlot(["1", "assign", "My task", "-a", "t3code", "--coder", "--reviewer"])).rejects.toThrow("got a flag instead");
   });
 
   test("errors when --reviewer value looks like a flag", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     await expect(runSlot(["1", "assign", "My task", "-a", "t3code", "--reviewer", "--plan"])).rejects.toThrow("got a flag instead");
   });
 });
 
 describe("slotStart — t3code empty-args auto-fill", () => {
   function readAdapterArgsFromSlots(): string {
-    const content = readFileSync(join(TMP, "ludics-state", "harness", "slots.md"), "utf-8");
-    const m = content.match(/\*\*Adapter Args:\*\*\s*(.+)/);
-    return m ? m[1]!.trim() : "";
+    const harness = join(TMP, "ludics-state", "harness");
+    const data = readSlotJson(1, harness);
+    return data.adapterArgs ?? "";
   }
 
   test("auto-fills orchestration flags when t3code slot has empty adapterArgs", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-empty-args-1", "Empty args test");
     // slotAssign with no adapterArgs stores "null" which makeAdapterContext converts to ""
     slotAssign(1, "task-empty-args-1", "t3code");
@@ -334,6 +375,8 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-whitespace-args-1", "Whitespace args test");
     // Assign with whitespace adapterArgs — stored as-is since "   " is truthy
     slotAssign(1, "task-whitespace-args-1", "t3code", "", "", "   ");
@@ -350,6 +393,8 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     // Assign with no task — slotAssign requires a task, so use slotSetMode instead
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     slotAssign(1, "null", "t3code");
     await expect(slotStart(1)).rejects.toThrow("no task is assigned");
   });
@@ -360,6 +405,8 @@ describe("markSlotSetupFailed", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-setup-fail-1", "Setup fail test");
 
     slotAssign(1, "task-setup-fail-1", "tmux");
@@ -371,9 +418,9 @@ describe("markSlotSetupFailed", () => {
     markSlotSetupFailed(1, "tmux session creation failed");
 
     // Slot should NOT be empty — process should still be set
-    const slotsContent = readFileSync(join(harness, "slots.md"), "utf-8");
-    expect(slotsContent).toContain("**Process:** Setup fail test");
-    expect(slotsContent).toContain("**Liveness:** interrupted");
+    const data = readSlotJson(1, harness);
+    expect(data.process).toBe("Setup fail test");
+    expect(data.liveness).toBe("interrupted");
 
     // Task status should be reset to ready (not orphaned in-progress)
     const taskAfter = readFileSync(join(tasksDir, "task-setup-fail-1.md"), "utf-8");
@@ -396,11 +443,13 @@ slot: 1
 ---
 `);
 
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     slotAssign(1, "task-setup-fail-2", "tmux");
     markSlotSetupFailed(1, "worktree creation failed");
 
-    const slotsContent = readFileSync(join(harness, "slots.md"), "utf-8");
-    expect(slotsContent).toContain("**Liveness:** interrupted");
+    const data = readSlotJson(1, harness);
+    expect(data.liveness).toBe("interrupted");
   });
 });
 
@@ -419,6 +468,8 @@ describe("slotResume — interrupted fallback to fresh start", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-resume-fallback-1", "Resume fallback test");
 
     // Assign and mark as interrupted (simulating pre-persistState failure)
@@ -451,6 +502,8 @@ describe("slotResume — interrupted fallback to fresh start", () => {
     const orchDir = join(harness, "orchestration");
     mkdirSync(tasksDir, { recursive: true });
     mkdirSync(orchDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-resume-fallback-2", "Post-persistState failure");
 
     // Use tmux mode (fails fast in test, unlike t3code which hangs on ensureServer)
@@ -531,20 +584,18 @@ describe("slotSetMode — preserve state on mode toggle", () => {
     return orchState;
   }
 
-  function stampSessionStarted(harness: string): void {
-    const slotsFile = join(harness, "slots.md");
-    const content = readFileSync(slotsFile, "utf-8");
-    const updated = content.replace(
-      /\*\*Session Started:\*\* null/,
-      "**Session Started:** 2026-04-03T20:00Z",
-    );
-    writeFileSync(slotsFile, updated);
+  function stampSessionStarted(harness: string, slot: number = 1): void {
+    const data = readSlotJson(slot, harness);
+    data.sessionStarted = "2026-04-03T20:00Z";
+    writeSlotJson(slot, data, harness);
   }
 
   test("toggling active tmux slot to manual preserves orchestration state", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-toggle-1", "Toggle test");
     slotAssign(1, "task-toggle-1", "tmux");
 
@@ -554,11 +605,11 @@ describe("slotSetMode — preserve state on mode toggle", () => {
     await slotSetMode(1, "manual");
 
     // Mode should be updated
-    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
-    expect(slots).toContain("**Mode:** manual");
+    const data = readSlotJson(1, harness);
+    expect(data.mode).toBe("manual");
 
     // Session Started should be cleared
-    expect(slots).toContain("**Session Started:** null");
+    expect(data.sessionStarted).toBeNull();
 
     // Orchestration state should still exist (preserved)
     const orchState = readOrchestrationState(1, harness);
@@ -574,6 +625,8 @@ describe("slotSetMode — preserve state on mode toggle", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-toggle-2", "Toggle test t3code");
     slotAssign(1, "task-toggle-2", "t3code");
 
@@ -582,9 +635,9 @@ describe("slotSetMode — preserve state on mode toggle", () => {
 
     await slotSetMode(1, "manual");
 
-    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
-    expect(slots).toContain("**Mode:** manual");
-    expect(slots).toContain("**Session Started:** null");
+    const data = readSlotJson(1, harness);
+    expect(data.mode).toBe("manual");
+    expect(data.sessionStarted).toBeNull();
 
     const orchState = readOrchestrationState(1, harness);
     expect(orchState).not.toBeNull();
@@ -594,6 +647,8 @@ describe("slotSetMode — preserve state on mode toggle", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-toggle-3", "Toggle reject test");
     slotAssign(1, "task-toggle-3", "manual");
     stampSessionStarted(harness);
@@ -605,6 +660,8 @@ describe("slotSetMode — preserve state on mode toggle", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-toggle-4", "CLI toggle test");
     slotAssign(1, "task-toggle-4", "tmux");
 
@@ -613,8 +670,8 @@ describe("slotSetMode — preserve state on mode toggle", () => {
 
     await runSlot(["1", "mode", "manual"]);
 
-    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
-    expect(slots).toContain("**Mode:** manual");
+    const data = readSlotJson(1, harness);
+    expect(data.mode).toBe("manual");
   });
 });
 
@@ -623,6 +680,8 @@ describe("slotStop — preserve-state flag", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-preserve-1", "Preserve stop test");
     slotAssign(1, "task-preserve-1", "tmux");
 
@@ -650,18 +709,15 @@ describe("slotStop — preserve-state flag", () => {
     persistState(orchState, harness);
 
     // Stamp session started
-    const slotsFile = join(harness, "slots.md");
-    const content = readFileSync(slotsFile, "utf-8");
-    writeFileSync(slotsFile, content.replace(
-      /\*\*Session Started:\*\* null/,
-      "**Session Started:** 2026-04-03T20:00Z",
-    ));
+    const slotData = readSlotJson(1, harness);
+    slotData.sessionStarted = "2026-04-03T20:00Z";
+    writeSlotJson(1, slotData, harness);
 
     await slotStop(1, false, true);
 
     // Session Started should be cleared
-    const slots = readFileSync(slotsFile, "utf-8");
-    expect(slots).toContain("**Session Started:** null");
+    const data = readSlotJson(1, harness);
+    expect(data.sessionStarted).toBeNull();
 
     // Orchestration state should still exist
     expect(readOrchestrationState(1, harness)).not.toBeNull();
@@ -671,6 +727,8 @@ describe("slotStop — preserve-state flag", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-preserve-2", "CLI preserve test");
     slotAssign(1, "task-preserve-2", "tmux");
 
@@ -712,6 +770,8 @@ describe("remote slot dispatch via HTTP", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-1", "Remote start test");
 
     // Create a fresh heartbeat so heartbeatIsFresh("worker-a") returns true
@@ -725,14 +785,16 @@ describe("remote slot dispatch via HTTP", () => {
     await expect(slotStart(1)).rejects.toThrow("no cluster config for machine worker-a");
 
     // Session Started should NOT be stamped on controller side
-    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
-    expect(slots).toContain("**Session Started:** null");
+    const data = readSlotJson(1, harness);
+    expect(data.sessionStarted).toBeNull();
   });
 
   test("remote slotStart fails fast when machine is offline", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-1b", "Remote start offline test");
 
     slotAssign(1, "task-remote-1b", "tmux", "", "", "", "worker-a");
@@ -745,17 +807,16 @@ describe("remote slot dispatch via HTTP", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-2", "Remote stop test");
 
     slotAssign(1, "task-remote-2", "tmux", "", "", "", "worker-a");
 
     // Stamp Session Started to simulate an active session
-    const slotsFile = join(harness, "slots.md");
-    const content = readFileSync(slotsFile, "utf-8");
-    writeFileSync(slotsFile, content.replace(
-      /\*\*Session Started:\*\* null/,
-      "**Session Started:** 2026-04-04T20:00Z",
-    ));
+    const slotData = readSlotJson(1, harness);
+    slotData.sessionStarted = "2026-04-04T20:00Z";
+    writeSlotJson(1, slotData, harness);
 
     await slotStop(1, false, false);
 
@@ -766,8 +827,8 @@ describe("remote slot dispatch via HTTP", () => {
     expect(intent!.machine).toBe("worker-a");
 
     // Session Started should NOT be cleared (early return before cleanup)
-    const slots = readFileSync(slotsFile, "utf-8");
-    expect(slots).toContain("**Session Started:** 2026-04-04T20:00Z");
+    const data = readSlotJson(1, harness);
+    expect(data.sessionStarted).toBe("2026-04-04T20:00Z");
 
     clearIntent(1);
   });
@@ -776,6 +837,8 @@ describe("remote slot dispatch via HTTP", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-3", "Remote force stop test");
 
     slotAssign(1, "task-remote-3", "tmux", "", "", "", "worker-a");
@@ -787,14 +850,16 @@ describe("remote slot dispatch via HTTP", () => {
     expect(intent).toBeNull();
 
     // Session Started should be cleared (force path runs cleanup)
-    const slots = readFileSync(join(harness, "slots.md"), "utf-8");
-    expect(slots).toContain("**Session Started:** null");
+    const data = readSlotJson(1, harness);
+    expect(data.sessionStarted).toBeNull();
   });
 
   test("remote slotResume fails fast when machine is offline", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-4", "Remote resume test");
 
     slotAssign(1, "task-remote-4", "tmux", "", "", "", "worker-a");
@@ -807,6 +872,8 @@ describe("remote slot dispatch via HTTP", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-4b", "Remote resume config test");
 
     // Create a fresh heartbeat

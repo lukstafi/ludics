@@ -7,9 +7,9 @@
 
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { basename, join } from "path";
-import { slotsCount, slotsFilePath } from "../config.ts";
+import { slotsCount } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
-import { parseSlotBlocks, getMode, getTask, getPath, getSession } from "../slots/markdown.ts";
+import { readAllSlotJson } from "../slots/json.ts";
 import { resolveProjectDir } from "../adapters/base.ts";
 import { findSessionByPrefixOrTask } from "../adapters/peer-sync.ts";
 import { readSlotState, serverStatus } from "../t3code/server.ts";
@@ -56,23 +56,16 @@ function providerCleanupName(taskId: string, session: string): string | null {
 }
 
 function collectAttachedKeys(): Set<string> {
-  const slotsFile = slotsFilePath();
-  if (!existsSync(slotsFile)) return new Set();
-
-  const blocks = parseSlotBlocks(readFileSync(slotsFile, "utf-8"));
+  const slots = readAllSlotJson(slotsCount());
   const attached = new Set<string>();
-  const count = slotsCount();
 
-  for (let slot = 1; slot <= count; slot++) {
-    const block = blocks.get(slot);
-    if (!block) continue;
-
-    const modeRaw = getMode(block).trim();
+  for (const [slot, data] of slots) {
+    const modeRaw = (data.mode ?? "").trim();
     if (!SWEEP_TARGET_MODES.has(modeRaw as SweepMode)) continue;
     const mode = modeRaw as SweepMode;
-    const taskId = getTask(block).trim();
-    const slotSession = getSession(block).trim();
-    const slotPath = getPath(block).trim();
+    const taskId = (data.task ?? "").trim();
+    const slotSession = (data.session ?? "").trim();
+    const slotPath = (data.path ?? "").trim();
 
     // t3code mode: use slot state files for thread tracking
     if (mode === "t3code") {

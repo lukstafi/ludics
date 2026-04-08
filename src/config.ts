@@ -307,6 +307,11 @@ export function slotsFilePath(harness?: string): string {
   return join(h, "slots.md");
 }
 
+export function slotJsonDir(harness?: string): string {
+  const h = harness ?? harnessDir();
+  return join(h, "slots");
+}
+
 export function slotsCount(): number {
   const config = loadConfigSync();
   return config.slots?.count ?? 6;

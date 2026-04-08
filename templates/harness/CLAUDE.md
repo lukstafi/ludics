@@ -5,7 +5,7 @@ This is a **ludics harness**: the private state directory for personal AI coordi
 ## Quick Reference
 
 - `config.yaml` — projects, adapters (t3code + tmux), Mag settings, cluster, triggers
-- `slots.md` — current slot assignments (6 slots)
+- `slots/` — per-slot JSON state files (slots/slot-1.json ... slot-N.json)
 - `tasks/` — task files (`task-NNN.md`), git-backed, source of truth
 - `journal/` — daily logs, `events.jsonl` (structured event log), `notifications.jsonl`
 - `mag/` — Mag's context, memory, request queue/results, `queue-hold` sentinel
@@ -67,4 +67,4 @@ If you are an agent assigned to a slot working on a task:
 - The `.peer-sync/` directory contains orchestration coordination state — the orchestrator writes, you read (phase, round, peer status, plans, reviews)
 - Update the task's Notes section with progress as you work
 - Auto-commits use `[round N]` prefix format
-- Do not modify files outside your task scope (especially `slots.md` or other tasks)
+- Do not modify files outside your task scope (especially `slots/` or other tasks)

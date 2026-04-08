@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
-import { emptyBlock, writeSlotFile } from "../slots/markdown.ts";
+import { emptySlotData, writeSlotJson } from "../slots/json.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-sync");
 
@@ -111,9 +111,8 @@ describe("tasksQueuePreemptions", () => {
     writeTask(tasksDir, "task-beta-ready", "beta", "ready");
 
     const slots = new Map<number, string>();
-    slots.set(1, emptyBlock(1).replace("**Process:** (empty)", "**Process:** alpha active").replace("**Task:** null", "**Task:** task-alpha-active"));
-    slots.set(2, emptyBlock(2).replace("**Process:** (empty)", "**Process:** beta active").replace("**Task:** null", "**Task:** task-beta-active"));
-    writeSlotFile(join(harness, "slots.md"), slots, 2);
+    writeSlotJson(1, { ...emptySlotData(1), process: "alpha active", task: "task-alpha-active" }, harness);
+    writeSlotJson(2, { ...emptySlotData(2), process: "beta active", task: "task-beta-active" }, harness);
 
     tasksQueuePreemptions();
 
@@ -136,9 +135,8 @@ describe("tasksQueuePreemptions", () => {
     writeTask(tasksDir, "task-beta-ready", "beta", "ready");
 
     const slots = new Map<number, string>();
-    slots.set(1, emptyBlock(1).replace("**Process:** (empty)", "**Process:** alpha active").replace("**Task:** null", "**Task:** task-alpha-active"));
-    slots.set(2, emptyBlock(2).replace("**Process:** (empty)", "**Process:** beta active").replace("**Task:** null", "**Task:** task-beta-active"));
-    writeSlotFile(join(harness, "slots.md"), slots, 2);
+    writeSlotJson(1, { ...emptySlotData(1), process: "alpha active", task: "task-alpha-active" }, harness);
+    writeSlotJson(2, { ...emptySlotData(2), process: "beta active", task: "task-beta-active" }, harness);
 
     // Pre-seed queue with: malformed line, non-preempt action, and a valid preempt for alpha
     const queueFile = join(harness, "mag", "queue.jsonl");
@@ -170,9 +168,8 @@ describe("tasksQueuePreemptions", () => {
     writeTask(tasksDir, "task-beta-next", "beta", "ready");
 
     const slots = new Map<number, string>();
-    slots.set(1, emptyBlock(1).replace("**Process:** (empty)", "**Process:** alpha current").replace("**Task:** null", "**Task:** task-alpha-current"));
-    slots.set(2, emptyBlock(2).replace("**Process:** (empty)", "**Process:** something else").replace("**Task:** null", "**Task:** task-other"));
-    writeSlotFile(join(harness, "slots.md"), slots, 2);
+    writeSlotJson(1, { ...emptySlotData(1), process: "alpha current", task: "task-alpha-current" }, harness);
+    writeSlotJson(2, { ...emptySlotData(2), process: "something else", task: "task-other" }, harness);
 
     writeFileSync(join(preemptDir, "slot-1.json"), JSON.stringify({
       slotNum: 1,

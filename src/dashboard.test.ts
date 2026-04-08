@@ -127,16 +127,18 @@ describe("computeSlotLiveness", () => {
     expect(await getLiveness(1, "manual")).toBe(null);
   });
 
-  test("explicit Liveness field 'interrupted' in slot block returns 'interrupted'", async () => {
+  test("explicit Liveness field 'interrupted' in slot data returns 'interrupted'", async () => {
     const { computeSlotLiveness } = await import("./dashboard.ts");
-    const block = `## Slot 1\n\n**Process:** test\n**Liveness:** interrupted\n`;
-    expect(computeSlotLiveness({ slotNum: 1, mode: null, slotBlock: block })).toBe("interrupted");
+    const { emptySlotData } = await import("./slots/json.ts");
+    const slotData = { ...emptySlotData(1), process: "test", liveness: "interrupted" };
+    expect(computeSlotLiveness({ slotNum: 1, mode: null, slotData })).toBe("interrupted");
   });
 
-  test("explicit Liveness field 'null' in slot block falls through to PID check", async () => {
+  test("explicit Liveness field null in slot data falls through to PID check", async () => {
     const { computeSlotLiveness } = await import("./dashboard.ts");
-    const block = `## Slot 1\n\n**Process:** test\n**Liveness:** null\n`;
-    expect(computeSlotLiveness({ slotNum: 1, mode: null, slotBlock: block })).toBe(null);
+    const { emptySlotData } = await import("./slots/json.ts");
+    const slotData = { ...emptySlotData(1), process: "test", liveness: null };
+    expect(computeSlotLiveness({ slotNum: 1, mode: null, slotData })).toBe(null);
   });
 });
 

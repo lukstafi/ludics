@@ -1,17 +1,18 @@
-// Slot block types
+// Slot data types
 
-export interface SlotBlock {
+export interface SlotData {
   slot: number;
   process: string;
-  task: string;
-  mode: string;
-  session: string;
-  path: string;
-  started: string;
-  adapterArgs: string;
+  task: string | null;
+  mode: string | null;
+  session: string | null;
+  path: string | null;
+  started: string | null;
+  adapterArgs: string | null;
+  machine: string | null;
+  sessionStarted: string | null;
+  liveness: string | null;
   terminals: string;
-  machine: string;
   runtime: string;
   git: string;
-  raw: string; // full Markdown block
 }

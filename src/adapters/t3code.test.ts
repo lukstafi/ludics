@@ -5,6 +5,8 @@ import { join } from "path";
 import { canReuseSlotThread, orchestratedThreadTitle, parseT3CodeAdapterArgs, startOrchestrationProcess, stop } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 import { mergeAdapterState } from "../slots/markdown.ts";
+import { emptySlotData } from "../slots/json.ts";
+import type { SlotData } from "../slots/types.ts";
 import type { AdapterContext } from "./types.ts";
 
 function makeThread(overrides: Partial<T3CodeThreadRecord> = {}): T3CodeThreadRecord {
@@ -140,23 +142,15 @@ describe("startOrchestrationProcess export", () => {
 });
 
 describe("mergeAdapterState updates Session from adapter output", () => {
-  const slotBlock = [
-    "## Slot 2",
-    "",
-    "**Process:** my-task",
-    "**Task:** gh-ludics-46",
-    "**Mode:** t3code",
-    "**Session:** null",
-    "**Path:** /tmp/repo",
-    "**Started:** 2026-03-15T00:00:00Z",
-    "**Adapter Args:** null",
-    "",
-    "**Terminals:**",
-    "",
-    "**Runtime:**",
-    "",
-    "**Git:**",
-  ].join("\n");
+  const slotData: SlotData = {
+    ...emptySlotData(2),
+    process: "my-task",
+    task: "gh-ludics-46",
+    mode: "t3code",
+    session: null,
+    path: "/tmp/repo",
+    started: "2026-03-15T00:00:00Z",
+  };
 
   test("Session field is populated from adapter output", () => {
     const adapterOutput = [
@@ -173,9 +167,8 @@ describe("mergeAdapterState updates Session from adapter output", () => {
       "- Working directory: /tmp/repo",
     ].join("\n");
 
-    const result = mergeAdapterState(slotBlock, adapterOutput);
-    expect(result).toContain("**Session:** thread-slot-2-abc123");
-    expect(result).not.toContain("**Session:** null");
+    const result = mergeAdapterState(slotData, adapterOutput);
+    expect(result.session).toBe("thread-slot-2-abc123");
   });
 
   test("Session persists across multiple refreshes", () => {
@@ -191,18 +184,16 @@ describe("mergeAdapterState updates Session from adapter output", () => {
       "**Git:**",
     ].join("\n");
 
-    const afterFirst = mergeAdapterState(slotBlock, firstOutput);
-    expect(afterFirst).toContain("**Session:** thread-slot-2-abc123");
+    const afterFirst = mergeAdapterState(slotData, firstOutput);
+    expect(afterFirst.session).toBe("thread-slot-2-abc123");
 
     // Second refresh with same session ID
     const secondResult = mergeAdapterState(afterFirst, firstOutput);
-    expect(secondResult).toContain("**Session:** thread-slot-2-abc123");
-    expect(secondResult).not.toContain("**Session:** null");
+    expect(secondResult.session).toBe("thread-slot-2-abc123");
   });
 
   test("Session is not cleared when adapter output lacks Session line", () => {
-    // First, set session
-    const withSession = slotBlock.replace("**Session:** null", "**Session:** thread-existing");
+    const withSession: SlotData = { ...slotData, session: "thread-existing" };
 
     const adapterOutput = [
       "**Mode:** t3code",
@@ -216,7 +207,7 @@ describe("mergeAdapterState updates Session from adapter output", () => {
     ].join("\n");
 
     const result = mergeAdapterState(withSession, adapterOutput);
-    expect(result).toContain("**Session:** thread-existing");
+    expect(result.session).toBe("thread-existing");
   });
 });
 

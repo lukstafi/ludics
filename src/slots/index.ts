@@ -3,9 +3,9 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { globalAdapter, harnessDir, slotsFilePath, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
-import { parseSlotBlocks, getField, getTask, getMode, getSession, getProcess, getPath, getStarted, getAdapterArgs,
-         getSessionStarted, getMachine, getLiveness, setField,
-         emptyBlock, writeSlotFile, addNoteToBlock, mergeAdapterState } from "./markdown.ts";
+import { mergeAdapterState, addNoteToSlotData } from "./markdown.ts";
+import { readSlotJson, writeSlotJson, readAllSlotJson, emptySlotData, slotJsonDir, slotDataToMarkdown } from "./json.ts";
+import type { SlotData } from "./types.ts";
 import { stateMarkDirty } from "../state.ts";
 import { journalAppend } from "../journal.ts";
 import { emitEvent } from "../events.ts";
@@ -23,35 +23,62 @@ import { isRemoteMachine } from "../remote.ts";
 import { heartbeatIsFresh, clusterMachine } from "../cluster.ts";
 import { safeSyncOutput } from "../spawn.ts";
 
-// Worker-side override: when set, loadBlocks uses this content instead of reading
-// from the local harness file. Set by processSlotIntents before executing worker
-// intents so that slot operations use fresh controller-fetched state.
-let workerSlotsOverride: string | null = null;
+// Worker-side override: when set, readSlot/readAllSlots uses this data instead of
+// reading from the local harness files. Set by processSlotIntents before executing
+// worker intents so that slot operations use fresh controller-fetched state.
+let workerSlotsOverride: Map<number, SlotData> | null = null;
 
-/** Set the in-memory slots content override for worker intent execution.
+/** Set the in-memory slots data override for worker intent execution.
  *  Call with null to clear. */
-export function setWorkerSlotsOverride(content: string | null): void {
-  workerSlotsOverride = content;
+export function setWorkerSlotsOverride(data: Map<number, SlotData> | null): void {
+  workerSlotsOverride = data;
 }
 
-function ensureSlotsFile(): string {
-  const file = slotsFilePath();
-  if (!existsSync(file) && !workerSlotsOverride) {
+function ensureSlotsDir(): void {
+  const dir = slotJsonDir();
+  if (existsSync(dir)) {
+    // Backfill any missing slot files
     const count = slotsCount();
-    const blocks = new Map<number, string>();
-    writeSlotFile(file, blocks, count);
+    for (let i = 1; i <= count; i++) {
+      const file = join(dir, `slot-${i}.json`);
+      if (!existsSync(file)) {
+        writeSlotJson(i, emptySlotData(i));
+      }
+    }
+    return;
   }
-  return file;
+  // One-time migration: if slots.md exists but slots/ does not
+  const mdFile = slotsFilePath();
+  if (existsSync(mdFile)) {
+    const { migrateMarkdownToSlotData } = require("./migration.ts");
+    const count = slotsCount();
+    const migrated = migrateMarkdownToSlotData(mdFile, count) as Map<number, SlotData>;
+    for (const [slot, data] of migrated) {
+      writeSlotJson(slot, data);
+    }
+    // Backfill any slots not in the markdown file
+    for (let i = 1; i <= count; i++) {
+      if (!migrated.has(i)) writeSlotJson(i, emptySlotData(i));
+    }
+    return;
+  }
+  // Neither exists: create fresh
+  const count = slotsCount();
+  for (let i = 1; i <= count; i++) {
+    writeSlotJson(i, emptySlotData(i));
+  }
 }
 
-function loadBlocks(file: string): Map<number, string> {
-  // WORKER-SAFE: uses workerSlotsOverride when in worker context
-  // Use controller-fetched content when available (worker context)
+function readSlot(slotNum: number): SlotData {
   if (workerSlotsOverride) {
-    return parseSlotBlocks(workerSlotsOverride);
+    return workerSlotsOverride.get(slotNum) ?? readSlotJson(slotNum);
   }
-  const content = readFileSync(file, "utf-8");
-  return parseSlotBlocks(content);
+  return readSlotJson(slotNum);
+}
+
+function readAllSlots(): Map<number, SlotData> {
+  if (workerSlotsOverride) return workerSlotsOverride;
+  return readAllSlotJson(slotsCount());
 }
 
 function isWorkerContext(): boolean {
@@ -64,27 +91,18 @@ function isWorkerContext(): boolean {
   }
 }
 
-/** Write slot blocks to file, or POST runtime sections to controller on workers. */
-function writeSlotFileOrHttp(
-  file: string,
-  blocks: Map<number, string>,
-  count: number,
-  slotNum: number,
-): void {
-  // WORKER-SAFE: POSTs to controller when in worker context
+/** Write slot data locally, or POST runtime sections to controller on workers. */
+function writeSlotOrHttp(slotNum: number, data: SlotData): void {
   if (isWorkerContext()) {
-    // POST runtime sections to controller — don't write local harness
-    const block = blocks.get(slotNum);
-    if (!block) return;
     import("../cluster-http.ts").then(({ clusterPostSlotUpdate }) => {
       clusterPostSlotUpdate(slotNum, {
-        sessionStarted: getSessionStarted(block) || undefined,
-        liveness: getLiveness(block) || undefined,
+        sessionStarted: data.sessionStarted || undefined,
+        liveness: data.liveness || undefined,
       }).catch(() => {});
     }).catch(() => {});
     return;
   }
-  writeSlotFile(file, blocks, count);
+  writeSlotJson(slotNum, data);
 }
 
 function validateRange(slot: number, count: number): void {
@@ -161,30 +179,23 @@ function taskUpdateForSlotClear(taskId: string, finalStatus: string): void {
 // --- Slot CLI handlers ---
 
 export function slotsList(): void {
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  ensureSlotsDir();
+  const slots = readAllSlots();
   const count = slotsCount();
 
   for (let i = 1; i <= count; i++) {
-    const block = blocks.get(i);
-    const process = block ? getProcess(block) : "(empty)";
-    const machineName = block ? getMachine(block).trim() : "";
-    const machineStr = machineName && machineName !== "null" ? ` [${machineName}]` : "";
-    console.log(`Slot ${i}: ${process}${machineStr}`);
+    const data = slots.get(i) ?? emptySlotData(i);
+    const machineStr = data.machine ? ` [${data.machine}]` : "";
+    console.log(`Slot ${i}: ${data.process}${machineStr}`);
   }
 }
 
 export function slotShow(slotNum: number): void {
   const count = slotsCount();
   validateRange(slotNum, count);
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
-  const block = blocks.get(slotNum);
-  if (!block) {
-    console.log(emptyBlock(slotNum));
-  } else {
-    console.log(block.trimEnd());
-  }
+  ensureSlotsDir();
+  const data = readSlot(slotNum);
+  console.log(slotDataToMarkdown(data).trimEnd());
 }
 
 export function slotAssign(
@@ -197,8 +208,7 @@ export function slotAssign(
   machine: string = "",
 ): void {
   // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
 
@@ -211,7 +221,7 @@ export function slotAssign(
   adapterArgs = adapterArgs.trim();
 
   // Determine task ID vs description
-  let taskId: string;
+  let taskId: string | null;
   let processDesc: string;
   const tf = taskFilePath(taskOrDesc);
   if (existsSync(tf)) {
@@ -220,7 +230,7 @@ export function slotAssign(
     const titleMatch = content.match(/^title:\s*"?(.+?)"?\s*$/m);
     processDesc = titleMatch ? titleMatch[1]! : taskId;
   } else {
-    taskId = "null";
+    taskId = null;
     processDesc = taskOrDesc;
   }
 
@@ -233,7 +243,7 @@ export function slotAssign(
         session = String(slotNum);
         break;
       case "t3code":
-        session = "null";
+        session = "";
         break;
       default:
         session = String(slotNum);
@@ -241,45 +251,38 @@ export function slotAssign(
     }
   }
 
-  const block = `## Slot ${slotNum}
-
-**Process:** ${processDesc}
-**Task:** ${taskId}
-**Mode:** ${adapter}
-**Session:** ${session}
-**Path:** ${path || "null"}
-**Started:** ${started}
-**Adapter Args:** ${adapterArgs || "null"}
-**Machine:** ${machine || "null"}
-**Session Started:** null
-
-**Terminals:**
-
-**Runtime:**
-- Assigned via ludics
-
-**Git:**
-`;
+  const data: SlotData = {
+    slot: slotNum,
+    process: processDesc,
+    task: taskId,
+    mode: adapter,
+    session: session || null,
+    path: path || null,
+    started,
+    adapterArgs: adapterArgs || null,
+    machine: machine || null,
+    sessionStarted: null,
+    liveness: null,
+    terminals: "",
+    runtime: "- Assigned via ludics\n",
+    git: "",
+  };
 
   // Clear metadata on the previous task (if any) being replaced in this slot
-  const oldBlock = blocks.get(slotNum);
-  if (oldBlock) {
-    const oldTaskId = getTask(oldBlock).trim();
-    if (oldTaskId && oldTaskId !== "null" && oldTaskId !== taskId) {
-      const oldTaskFile = taskFilePath(oldTaskId);
-      if (existsSync(oldTaskFile)) {
-        updateFrontmatterField(oldTaskFile, "slot", "null");
-        const oldContent = readFileSync(oldTaskFile, "utf-8");
-        const oldStatus = oldContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
-        if (oldStatus === "in-progress" || oldStatus === "deferred") {
-          updateFrontmatterField(oldTaskFile, "status", "ready");
-        }
+  const oldData = readSlot(slotNum);
+  if (oldData.task && oldData.task !== taskId) {
+    const oldTaskFile = taskFilePath(oldData.task);
+    if (existsSync(oldTaskFile)) {
+      updateFrontmatterField(oldTaskFile, "slot", "null");
+      const oldContent = readFileSync(oldTaskFile, "utf-8");
+      const oldStatus = oldContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+      if (oldStatus === "in-progress" || oldStatus === "deferred") {
+        updateFrontmatterField(oldTaskFile, "status", "ready");
       }
     }
   }
 
-  blocks.set(slotNum, block);
-  writeSlotFile(file, blocks, count);
+  writeSlotJson(slotNum, data);
 
   // Remove stale orchestration state — may have been restored by git pull/stash-pop
   // after a previous slotClear deleted it
@@ -293,12 +296,12 @@ export function slotAssign(
   }
 
   // Update task file
-  if (taskId !== "null") {
+  if (taskId) {
     taskUpdateForSlotAssign(taskId, slotNum, adapter, started);
   }
 
-  journalAppend("slot", `Slot ${slotNum} assigned: ${processDesc} (task=${taskId}, adapter=${adapter})`);
-  emitEvent({ event_type: "slot_assign", source: "cli", scope: "slot", slot: slotNum, task: taskId !== "null" ? taskId : undefined, adapter, message: processDesc });
+  journalAppend("slot", `Slot ${slotNum} assigned: ${processDesc} (task=${taskId ?? "null"}, adapter=${adapter})`);
+  emitEvent({ event_type: "slot_assign", source: "cli", scope: "slot", slot: slotNum, task: taskId ?? undefined, adapter, message: processDesc });
   stateMarkDirty();
 }
 
@@ -317,20 +320,18 @@ function clearDuoPeerLink(slotNum: number): void {
 
 export function slotClear(slotNum: number, finalStatus: string = "ready"): void {
   // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
 
   // Hierarchical duo: clear duoPeerSlot on sibling so it becomes a regular pair slot
   clearDuoPeerLink(slotNum);
 
-  const block = blocks.get(slotNum) ?? "";
-  const taskId = block ? getTask(block) : "null";
+  const data = readSlot(slotNum);
+  const taskId = data.task;
 
   // Save t3code thread IDs to task file frontmatter before clearing the slot state
-  const mode = block ? getMode(block).trim() : "";
-  if (mode === "t3code" && taskId && taskId !== "null") {
+  if (data.mode === "t3code" && taskId) {
     try {
       const slotState = readSlotState(slotNum, harnessDir());
       if (slotState && slotState.threads.length > 0) {
@@ -342,8 +343,7 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
     }
   }
 
-  blocks.set(slotNum, emptyBlock(slotNum));
-  writeSlotFile(file, blocks, count);
+  writeSlotJson(slotNum, emptySlotData(slotNum));
 
   // Remove task-specific orchestration state
   const orchFile = join(harnessDir(), "orchestration", `slot-${slotNum}.json`);
@@ -363,7 +363,7 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
     try { unlinkSync(t3codeSlotFile); } catch { /* ignore */ }
   }
 
-  if (taskId && taskId !== "null") {
+  if (taskId) {
     taskUpdateForSlotClear(taskId, finalStatus);
     journalAppend("slot", `Slot ${slotNum} cleared: task=${taskId} status=${finalStatus}`);
     emitEvent({ event_type: "slot_clear", source: "cli", scope: "slot", slot: slotNum, task: taskId, status: finalStatus });
@@ -394,25 +394,22 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
  */
 export function markSlotSetupFailed(slotNum: number, error: string): void {
   // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
 
-  const block = blocks.get(slotNum);
-  if (!block) return;
+  const data = readSlot(slotNum);
+  if (data.process === "(empty)") return;
 
-  const taskId = getTask(block).trim();
+  const taskId = data.task;
 
   // Mark slot as interrupted
-  let updated = setField(block, "Liveness", "interrupted");
-  // Clear Session Started so maybeAutoStartSlots doesn't think it's active
-  updated = setField(updated, "Session Started", "null");
-  blocks.set(slotNum, updated);
-  writeSlotFile(file, blocks, count);
+  data.liveness = "interrupted";
+  data.sessionStarted = null;
+  writeSlotJson(slotNum, data);
 
   // Reset task status from in-progress back to ready so it's not orphaned
-  if (taskId && taskId !== "null") {
+  if (taskId) {
     const taskFile = taskFilePath(taskId);
     if (existsSync(taskFile)) {
       const content = readFileSync(taskFile, "utf-8");
@@ -429,7 +426,7 @@ export function markSlotSetupFailed(slotNum: number, error: string): void {
     source: "cli",
     scope: "slot",
     slot: slotNum,
-    task: taskId !== "null" ? taskId : undefined,
+    task: taskId ?? undefined,
     message: `setup failed: ${error}`,
   });
   stateMarkDirty();
@@ -503,13 +500,12 @@ export function slotPreempt(
   adapterArgs: string = "",
 ): void {
   // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
 
-  const block = blocks.get(slotNum) ?? "";
-  const currentProcess = block ? getProcess(block).trim() : "";
+  const data = readSlot(slotNum);
+  const currentProcess = data.process;
   const isEmpty = !currentProcess || currentProcess === "(empty)";
 
   // If slot is empty, just assign directly — no stash needed
@@ -524,24 +520,23 @@ export function slotPreempt(
   }
 
   // Save current slot state to stash
-  const currentTask = getTask(block).trim();
   const stash: PreemptStash = {
     slotNum,
-    previousTask: currentTask,
+    previousTask: data.task ?? "null",
     previousProcess: currentProcess,
-    previousMode: getMode(block).trim(),
-    previousSession: getSession(block).trim(),
-    previousPath: getPath(block).trim(),
-    previousStarted: getField(block, "Started").trim(),
-    previousAdapterArgs: getAdapterArgs(block).trim(),
+    previousMode: data.mode ?? "null",
+    previousSession: data.session ?? "null",
+    previousPath: data.path ?? "null",
+    previousStarted: data.started ?? "null",
+    previousAdapterArgs: data.adapterArgs ?? "null",
     preemptedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z"),
     preemptingTask: taskId,
   };
   writeStash(stash);
 
   // Set previous task status to "preempted"
-  if (currentTask && currentTask !== "null") {
-    taskUpdateFrontmatter(currentTask, "status", "preempted");
+  if (data.task) {
+    taskUpdateFrontmatter(data.task, "status", "preempted");
   }
 
   // Assign the new priority task
@@ -586,65 +581,50 @@ export function slotRestore(slotNum: number): void {
 }
 
 export function slotNote(slotNum: number, note: string): void {
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
 
-  const block = blocks.get(slotNum);
-  if (!block) {
+  const data = readSlot(slotNum);
+  if (data.process === "(empty)") {
     throw new Error(`slot ${slotNum} not found`);
   }
 
-  blocks.set(slotNum, addNoteToBlock(block, note));
-  writeSlotFile(file, blocks, count);
+  writeSlotJson(slotNum, addNoteToSlotData(data, note));
 }
 
 export async function slotSetMode(slotNum: number, mode: string): Promise<void> {
-  const file = ensureSlotsFile();
-  let blocks = loadBlocks(file);
+  ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
 
-  let block = blocks.get(slotNum);
-  if (!block) {
+  let data = readSlot(slotNum);
+  if (data.process === "(empty)") {
     throw new Error(`slot ${slotNum} not found`);
   }
 
-  const sessionStarted = getSessionStarted(block).trim();
-  const hasActiveSession = sessionStarted && sessionStarted !== "null";
+  const hasActiveSession = data.sessionStarted != null;
 
   if (hasActiveSession) {
-    const currentMode = getMode(block).trim();
-    const isAutomated = currentMode === "tmux" || currentMode === "t3code";
+    const isAutomated = data.mode === "tmux" || data.mode === "t3code";
     if (isAutomated && mode === "manual") {
       // Kill processes but preserve state for later resume
       await slotStop(slotNum, false, true);
-      // Re-read blocks since slotStop modified the file
-      blocks = loadBlocks(file);
-      block = blocks.get(slotNum)!;
+      // Re-read since slotStop modified the file
+      data = readSlot(slotNum);
     } else {
       throw new Error(
-        `slot ${slotNum} has an active session (started at ${sessionStarted}); stop or clear the slot before switching to ${mode}`,
+        `slot ${slotNum} has an active session (started at ${data.sessionStarted}); stop or clear the slot before switching to ${mode}`,
       );
     }
   }
 
-  // Update the Mode field in-place
-  const updated = block.split("\n").map(line => {
-    if (line.startsWith("**Mode:**")) {
-      return `**Mode:** ${mode}`;
-    }
-    return line;
-  }).join("\n");
-
-  blocks.set(slotNum, updated);
-  writeSlotFile(file, blocks, count);
+  data.mode = mode;
+  writeSlotJson(slotNum, data);
 
   // Keep task file adapter: field in sync
-  const taskId = getTask(updated).trim();
-  if (taskId && taskId !== "null") {
-    taskUpdateFrontmatter(taskId, "adapter", mode);
+  if (data.task) {
+    taskUpdateFrontmatter(data.task, "adapter", mode);
   }
 
   journalAppend("slot", `Slot ${slotNum} mode set to ${mode}`);
@@ -652,21 +632,12 @@ export async function slotSetMode(slotNum: number, mode: string): Promise<void> 
   stateMarkDirty();
 }
 
-function makeAdapterContext(slotNum: number, block: string): AdapterContext {
-  const mode = getMode(block).trim();
-  const session = getSession(block).trim();
-  const path = getPath(block).trim();
-  const started = getStarted(block).trim();
-  const taskIdRaw = getTask(block).trim();
-  const adapterArgs = getAdapterArgs(block).trim();
-  const process = getProcess(block).trim();
-  const machineName = getMachine(block).trim();
-
-  let resolvedPath = path === "null" ? "" : path;
+function makeAdapterContext(slotNum: number, data: SlotData): AdapterContext {
+  let resolvedPath = data.path ?? "";
 
   // If path is empty, try to resolve from the task's project config
-  if (!resolvedPath && taskIdRaw && taskIdRaw !== "null") {
-    const taskFile = join(harnessDir(), "tasks", `${taskIdRaw}.md`);
+  if (!resolvedPath && data.task) {
+    const taskFile = join(harnessDir(), "tasks", `${data.task}.md`);
     if (existsSync(taskFile)) {
       const content = readFileSync(taskFile, "utf-8");
       const projectMatch = content.match(/^project:\s*(.+)$/m);
@@ -678,14 +649,14 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
 
   return {
     slot: slotNum,
-    mode: mode === "null" ? "" : mode,
-    session: session === "null" ? "" : session,
+    mode: data.mode ?? "",
+    session: data.session ?? "",
     path: resolvedPath,
-    started: started === "null" ? "" : started,
-    taskId: taskIdRaw === "null" ? "" : taskIdRaw,
-    adapterArgs: adapterArgs === "null" ? "" : adapterArgs,
-    process: process === "(empty)" ? "" : process,
-    machine: machineName === "null" ? "" : machineName,
+    started: data.started ?? "",
+    taskId: data.task ?? "",
+    adapterArgs: data.adapterArgs ?? "",
+    process: data.process === "(empty)" ? "" : data.process,
+    machine: data.machine ?? "",
     harnessDir: harnessDir(),
     stateRepoDir: stateRepoDir(),
   };
@@ -703,15 +674,14 @@ function makeAdapterContext(slotNum: number, block: string): AdapterContext {
  * @throws {Error} If the assigned remote machine is offline or has no cluster config.
  */
 export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
 
-  let block = blocks.get(slotNum);
-  if (!block) throw new Error(`slot ${slotNum} not found`);
+  let data = readSlot(slotNum);
+  if (data.process === "(empty)") throw new Error(`slot ${slotNum} not found`);
 
-  const ctx = makeAdapterContext(slotNum, block);
+  const ctx = makeAdapterContext(slotNum, data);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
   // Remote dispatch: record intent in controller memory (pure pull model)
@@ -733,13 +703,11 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
   }
 
   // --- LOCAL EXECUTION ONLY (worker side or local slot) ---
-  // Code below this point runs only when this machine owns the slot.
-  // Remote-slot paths returned above after queuing an intent.
 
   if ((ctx.mode === "t3code" || ctx.mode === "tmux") && !ctx.adapterArgs.trim()) {
     // Auto-fill orchestration flags from task effort instead of throwing
     const taskId = ctx.taskId;
-    if (!taskId || taskId === "null") {
+    if (!taskId) {
       throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but no task is assigned`);
     }
 
@@ -759,8 +727,6 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
       throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but task file not found`);
     }
 
-    // Extract effort directly from YAML — parseTaskFrontmatter defaults missing effort
-    // to "medium", but auto-fill should use lightweight "small" when effort is absent.
     const effortMatch = content.match(/^effort:\s*(.+)/m);
     const effort = effortMatch ? effortMatch[1]!.trim() || "small" : "small";
     const { args: autoArgs } = selectOrchestrationFlags(effort);
@@ -768,19 +734,14 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
       throw new Error(`slot ${slotNum}: selectOrchestrationFlags returned empty args for effort="${effort}"`);
     }
 
-    // Write auto-filled flags back to the slot block
-    const updatedBlock = setField(block, "Adapter Args", autoArgs);
-    if (updatedBlock !== block) {
-      block = updatedBlock;
-      blocks.set(slotNum, block);
-      if (isWorkerContext()) {
-        // POST adapter args to controller — don't write local harness
-        import("../cluster-http.ts").then(({ clusterPostSlotUpdate }) => {
-          clusterPostSlotUpdate(slotNum, { adapterArgs: autoArgs }).catch(() => {});
-        }).catch(() => {});
-      } else {
-        writeSlotFile(file, blocks, count);
-      }
+    // Write auto-filled flags back to the slot
+    data.adapterArgs = autoArgs;
+    if (isWorkerContext()) {
+      import("../cluster-http.ts").then(({ clusterPostSlotUpdate }) => {
+        clusterPostSlotUpdate(slotNum, { adapterArgs: autoArgs }).catch(() => {});
+      }).catch(() => {});
+    } else {
+      writeSlotJson(slotNum, data);
     }
     ctx.adapterArgs = autoArgs;
 
@@ -803,12 +764,9 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
 
   // Clear any prior interrupted liveness and stamp active session marker
   const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
-  let updated = setField(block, "Session Started", sessionStartedAt);
-  updated = setField(updated, "Liveness", "null");
-  if (updated !== block) {
-    blocks.set(slotNum, updated);
-    writeSlotFileOrHttp(file, blocks, count, slotNum);
-  }
+  data.sessionStarted = sessionStartedAt;
+  data.liveness = null;
+  writeSlotOrHttp(slotNum, data);
 
   journalAppend("slot", `Slot ${slotNum} started (adapter=${ctx.mode})`);
   emitEvent({ event_type: "slot_start", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
@@ -816,37 +774,23 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
 
 /**
  * Stop the adapter session for a slot.
- *
- * Remote dispatch behavior:
- * - If the target machine is offline, throws an Error (caller must handle).
- * - Async intent path (worker target, non-force): returns normally after queuing
- *   a stop intent; success is observed later via slot intent events / journal.
- * - Force (`force=true`): skips remote contact entirely and clears controller-side
- *   state (Session Started, duo peer link) locally — a controller-side override
- *   for stuck remote slots.
- * - Callers wanting synchronous confirmation must poll intent state.
- *
- * @throws {Error} If slot not found or has no Mode.
  */
 export async function slotStop(slotNum: number, force: boolean = false, preserveState: boolean = false): Promise<void> {
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
 
-  const block = blocks.get(slotNum);
-  if (!block) throw new Error(`slot ${slotNum} not found`);
+  const data = readSlot(slotNum);
+  if (data.process === "(empty)") throw new Error(`slot ${slotNum} not found`);
 
-  const ctx = makeAdapterContext(slotNum, block);
+  const ctx = makeAdapterContext(slotNum, data);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode`);
 
   // Remote dispatch: if slot is owned by another machine, send via HTTP
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
     if (force) {
-      // --force: clear controller-side state without contacting the remote machine
       console.error(`ludics: slot ${slotNum}: force-clearing local state (skipping remote stop on ${ctx.machine})`);
     } else {
-      // Record stop intent — worker polls and executes on next keepalive (pure pull model)
       const { recordIntent } = await import("../cluster-http.ts");
       const epoch = Math.floor(Date.now() / 1000);
       recordIntent(slotNum, { action: "stop", epoch, machine: ctx.machine, taskId: ctx.taskId, preserveState });
@@ -859,20 +803,12 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
     await runAdapterAction("stop", ctx, { preserveState });
   }
 
-  // --- LOCAL EXECUTION ONLY (worker side or local slot) ---
-  // Code below this point runs only when this machine owns the slot.
-  // Remote-slot paths returned above after queuing an intent.
-
-  // Hierarchical duo: clear duoPeerSlot on sibling AFTER stop succeeds,
-  // so a failed stop doesn't prematurely detach the sibling.
+  // --- LOCAL EXECUTION ONLY ---
   clearDuoPeerLink(slotNum);
 
-  // Clear the session-active marker so the mode toggle becomes available again
-  const updated = setField(block, "Session Started", "null");
-  if (updated !== block) {
-    blocks.set(slotNum, updated);
-    writeSlotFileOrHttp(file, blocks, count, slotNum);
-  }
+  // Clear the session-active marker
+  data.sessionStarted = null;
+  writeSlotOrHttp(slotNum, data);
 
   journalAppend("slot", `Slot ${slotNum} stopped (adapter=${ctx.mode})`);
   emitEvent({ event_type: "slot_stop", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode });
@@ -880,27 +816,16 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
 
 /**
  * Resume a crashed orchestrated session from persisted state.
- * Unlike slotStart(), does not reinitialize threads/worktrees/orchestration.
- * Supports orchestrated t3code and tmux sessions.
- *
- * Remote dispatch behavior:
- * - If the target machine is offline, throws an Error (caller must handle).
- * - If the target machine is online, queues a resume intent and returns normally;
- *   success/failure is observed asynchronously via slot intent events / journal.
- * - Callers wanting synchronous confirmation must poll intent state.
- *
- * @throws {Error} If the assigned remote machine is offline or has no cluster config.
  */
 export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
 
-  const block = blocks.get(slotNum);
-  if (!block) throw new Error(`slot ${slotNum} not found`);
+  const data = readSlot(slotNum);
+  if (data.process === "(empty)") throw new Error(`slot ${slotNum} not found`);
 
-  const ctx = makeAdapterContext(slotNum, block);
+  const ctx = makeAdapterContext(slotNum, data);
   if (!ctx.mode) throw new Error(`slot ${slotNum} has no Mode — nothing to resume`);
 
   // Remote dispatch: if slot is owned by another machine, send via HTTP
@@ -921,10 +846,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     return;
   }
 
-  // --- LOCAL EXECUTION ONLY (worker side or local slot) ---
-  // Code below this point runs only when this machine owns the slot.
-  // Remote-slot paths returned above after queuing an intent.
-
+  // --- LOCAL EXECUTION ONLY ---
   if (ctx.mode !== "t3code" && ctx.mode !== "tmux") {
     throw new Error(`slot ${slotNum} has Mode=${ctx.mode} — resume only supports t3code and tmux`);
   }
@@ -940,11 +862,8 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   if (ctx.mode === "t3code") {
     const slotState = readSlotState(slotNum, ctx.harnessDir);
     if (!slotState || slotState.threads.length === 0) {
-      // If slot was interrupted before state was persisted, fall back to fresh start
-      const slotLiveness = getLiveness(block).trim();
-      if (slotLiveness === "interrupted") {
+      if (data.liveness === "interrupted") {
         console.error(`ludics: slot ${slotNum}: no recoverable t3code state — falling back to fresh start`);
-        // Clean up any stale orchestration state that slotStart's guard would reject
         try { removeOrchestrationState(slotNum, ctx.harnessDir); } catch { /* ignore */ }
         await slotStart(slotNum, { startTtyd: shouldStartTtyd });
         return;
@@ -958,9 +877,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   // Require persisted orchestration state (orchestrated sessions only)
   const orchState = readOrchestrationState(slotNum);
   if (!orchState) {
-    // If slot was interrupted before orchestration state was persisted, fall back to fresh start
-    const slotLiveness = getLiveness(block).trim();
-    if (slotLiveness === "interrupted") {
+    if (data.liveness === "interrupted") {
       console.error(`ludics: slot ${slotNum}: no recoverable orchestration state — falling back to fresh start`);
       await slotStart(slotNum, { startTtyd: shouldStartTtyd });
       return;
@@ -987,16 +904,12 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   // --- t3code-specific: validate server and threads ---
   if (ctx.mode === "t3code") {
     const slotState = readSlotState(slotNum, ctx.harnessDir)!;
-    // Ensure t3code server is running
     const { ensureServer } = await import("../t3code/server.ts");
     const record = await ensureServer({ harnessDir: ctx.harnessDir });
 
-    // Validate stored thread IDs still exist on the server
     const { T3CodeClient } = await import("../t3code/client.ts");
     const client = new T3CodeClient({ url: record.wsUrl, token: record.authToken });
     try {
-      // Undelete any soft-deleted threads we need (t3code auto-cleans old project
-      // threads when new ones are created, but resume reuses the old thread IDs)
       const storedThreadIds = slotState.threads.map((t) => t.threadId);
       try {
         const dbPath = join(ctx.harnessDir, "t3code", "userdata", "state.sqlite");
@@ -1014,7 +927,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
           db.close();
         }
       } catch {
-        // Non-critical — continue with resume, threads might still work
+        // Non-critical
       }
 
       const snapshot = await client.getSnapshot();
@@ -1037,7 +950,6 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     const { readTmuxSlotState, writeTmuxSlotState, tmuxSessionName, ttydPort, agentCliCommand, isAgentAlive, startTtyd } = await import("../adapters/tmux-adapter.ts");
     const tmuxState = readTmuxSlotState(slotNum, ctx.harnessDir);
 
-    // Kill stale orchestration runner from tmux state first
     if (tmuxState?.orchestration?.pid) {
       const pid = tmuxState.orchestration.pid;
       let alive = false;
@@ -1050,11 +962,9 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
       }
     }
 
-    // Recreate missing tmux sessions, ttyd, and agent CLIs for each agent
     const newTtydPids: Record<string, number> = { ...(tmuxState?.ttydPids ?? {}) };
     const taskId = orchState.taskId;
 
-    // Local helper: export env vars and launch agent CLI in an existing tmux session
     const bootCliInSession = (session: string, agent: { name: string; provider: string }) => {
       const envCmd = [
         `export LUDICS_SLOT=${slotNum}`,
@@ -1074,11 +984,9 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
           : i % 2 === 0 ? "coder" : "reviewer";
       const port = ttydPort(slotNum, role);
 
-      // Check if the tmux session exists
       const sessionExists = tmuxHasSession(sessionName);
 
       if (!sessionExists) {
-        // Recreate the tmux session in the agent's worktree
         const cwd = agent.worktreePath;
         tmuxNewSession(sessionName, cwd);
         safeSyncOutput(["tmux", "set-option", "-t", sessionName, "mouse", "off"]);
@@ -1087,13 +995,11 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
         bootCliInSession(sessionName, agent);
         console.error(`ludics: booted ${agent.provider} CLI in '${sessionName}'`);
       } else {
-        // Session exists — reset shell state in case it's stuck (e.g. bquote> mode)
         tmuxSendKeys(sessionName, "C-c");
         tmuxSendKeys(sessionName, "C-c");
         tmuxSendKeys(sessionName, "Enter");
         await Bun.sleep(200);
 
-        // Re-boot agent CLI if it died while the tmux session persisted
         if (!isAgentAlive(slotNum, agent.name, taskId)) {
           bootCliInSession(sessionName, agent);
           console.error(`ludics: re-booted ${agent.provider} CLI in existing session '${sessionName}'`);
@@ -1102,14 +1008,12 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
         }
       }
 
-      // Re-create ttyd if the port is not in use
       if (shouldStartTtyd) {
         let portInUse = false;
         try {
-          // Use absolute path — launchd has a minimal $PATH that may not include /usr/sbin
           const lsofBin = process.platform === "darwin" ? "/usr/sbin/lsof" : "lsof";
           portInUse = safeSyncOutput([lsofBin, "-i", `:${port}`]).ok;
-        } catch { /* lsof not available — assume port is free */ }
+        } catch { /* lsof not available */ }
         if (!portInUse) {
           newTtydPids[agent.name] = startTtyd(slotNum, agent.name, role, taskId);
           console.error(`ludics: re-started ttyd on port ${port} for ${agent.name}`);
@@ -1117,52 +1021,36 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
       }
     }
 
-    // Update tmux slot state with new ttyd PIDs (will be overwritten with runner PID below)
     if (tmuxState) {
       writeTmuxSlotState({ ...tmuxState, ttydPids: newTtydPids }, ctx.harnessDir);
     }
   }
 
-  // --- t3code-specific: terminate stale runner from t3code slot state ---
+  // --- t3code-specific: terminate stale runner ---
   if (ctx.mode === "t3code") {
     const slotState = readSlotState(slotNum, ctx.harnessDir)!;
     if (slotState.orchestration?.pid) {
       const pid = slotState.orchestration.pid;
       let alive = false;
-      try { process.kill(pid, 0); alive = true; } catch {
-        // PID already dead — expected for crash recovery
-      }
+      try { process.kill(pid, 0); alive = true; } catch { /* dead */ }
       if (alive) {
         console.error(`ludics: terminating stale orchestration runner (pid ${pid}) before resume`);
-        try { process.kill(pid, "SIGTERM"); } catch {
-          // ignore if kill fails
-        }
-        // Brief wait for graceful shutdown
+        try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
         await new Promise((resolve) => setTimeout(resolve, 500));
-        // Force kill if still alive
-        try {
-          process.kill(pid, 0); // check if still alive
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // already dead — good
-        }
+        try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); } catch { /* dead */ }
       }
     }
   }
 
-  // Reset turnLifecycle for all agents — stale lifecycle data from before the crash
-  // would block phase transitions (isAgentDone returns false for state "running"/"dispatched").
-  // With lifecycle null, the orchestrator trusts peer-sync status files as ground truth.
+  // Reset turnLifecycle for all agents
   for (const agentName of Object.keys(orchState.agentStates)) {
     orchState.agentStates[agentName]!.turnLifecycle = null;
   }
   orchState.phaseDispatched = false;
   persistState(orchState, ctx.harnessDir);
 
-  // Restart orchestration runner (reuses existing state)
   const newPid = await startOrchestrationProcess(slotNum, ctx.harnessDir, orchState.taskId);
 
-  // Update PID in slot state (only after successful spawn)
   if (ctx.mode === "t3code") {
     const slotState = readSlotState(slotNum, ctx.harnessDir)!;
     if (!slotState.orchestration) {
@@ -1170,10 +1058,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     }
     writeSlotState({
       ...slotState,
-      orchestration: {
-        ...slotState.orchestration,
-        pid: newPid,
-      },
+      orchestration: { ...slotState.orchestration, pid: newPid },
     }, ctx.harnessDir);
   } else if (ctx.mode === "tmux") {
     const { readTmuxSlotState, writeTmuxSlotState } = await import("../adapters/tmux-adapter.ts");
@@ -1181,22 +1066,16 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     if (tmuxState) {
       writeTmuxSlotState({
         ...tmuxState,
-        orchestration: {
-          ...tmuxState.orchestration!,
-          pid: newPid,
-        },
+        orchestration: { ...tmuxState.orchestration!, pid: newPid },
       }, ctx.harnessDir);
     }
   }
 
   // Clear interrupted liveness and stamp session-active marker
   const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
-  let updated = setField(block, "Session Started", sessionStartedAt);
-  updated = setField(updated, "Liveness", "null");
-  if (updated !== block) {
-    blocks.set(slotNum, updated);
-    writeSlotFileOrHttp(file, blocks, count, slotNum);
-  }
+  data.sessionStarted = sessionStartedAt;
+  data.liveness = null;
+  writeSlotOrHttp(slotNum, data);
 
   journalAppend("slot", `Slot ${slotNum} resumed (adapter=${ctx.mode}, phase=${orchState.phase}, task=${ctx.taskId})`);
   emitEvent({
@@ -1211,71 +1090,58 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
 }
 
 export async function slotsRefresh(): Promise<void> {
-  // WORKER-SAFE: reads via workerSlotsOverride when in worker context
-  const file = ensureSlotsFile();
-  const blocks = loadBlocks(file);
+  ensureSlotsDir();
   const count = slotsCount();
-  let anyUpdated = false;
   const updatedSlots: number[] = [];
 
   for (let i = 1; i <= count; i++) {
-    const block = blocks.get(i);
-    if (!block) continue;
+    let data = readSlot(i);
+    if (!data.mode) continue;
 
-    const mode = getMode(block).trim();
-    if (!mode || mode === "null") continue;
-
-    const ctx = makeAdapterContext(i, block);
+    const ctx = makeAdapterContext(i, data);
     const output = await readAdapterState(ctx);
     if (output) {
-      blocks.set(i, mergeAdapterState(block, output));
-      anyUpdated = true;
+      data = mergeAdapterState(data, output);
       updatedSlots.push(i);
-      console.error(`ludics: refreshed slot ${i} (${mode})`);
+      console.error(`ludics: refreshed slot ${i} (${data.mode})`);
     }
 
     // Update task modified timestamp from adapter activity
-    const taskId = getTask(block).trim();
-    if (taskId && taskId !== "null") {
+    if (data.task) {
       const activity = await readAdapterLastActivity(ctx);
       if (activity) {
         if (isWorkerContext()) {
-          // Route through controller — don't write local harness
           try {
             const { clusterPostTaskUpdate } = await import("../cluster-http.ts");
-            await clusterPostTaskUpdate(taskId, "modified", activity);
+            await clusterPostTaskUpdate(data.task, "modified", activity);
           } catch { /* ignore */ }
         } else {
-          const tf = taskFilePath(taskId);
+          const tf = taskFilePath(data.task);
           addFrontmatterField(tf, "modified", activity);
         }
       }
     }
+
+    if (output) {
+      if (isWorkerContext()) {
+        try {
+          const { clusterPostSlotUpdate } = await import("../cluster-http.ts");
+          await clusterPostSlotUpdate(i, {
+            sessionStarted: data.sessionStarted || undefined,
+            liveness: data.liveness || undefined,
+            terminals: data.terminals || undefined,
+            runtime: data.runtime || undefined,
+            git: data.git || undefined,
+          }).catch(() => {});
+        } catch { /* ignore */ }
+      } else {
+        writeSlotJson(i, data);
+      }
+    }
   }
 
-  if (anyUpdated) {
-    if (isWorkerContext()) {
-      // POST each updated slot's runtime state to controller
-      try {
-        const { clusterPostSlotUpdate } = await import("../cluster-http.ts");
-        const { extractSections } = await import("../state.ts");
-        for (const slotNum of updatedSlots) {
-          const block = blocks.get(slotNum);
-          if (!block) continue;
-          const sections = extractSections(block);
-          await clusterPostSlotUpdate(slotNum, {
-            sessionStarted: getSessionStarted(block) || undefined,
-            liveness: getLiveness(block) || undefined,
-            terminals: sections.terminals || undefined,
-            runtime: sections.runtime || undefined,
-            git: sections.git || undefined,
-          }).catch(() => {});
-        }
-      } catch { /* ignore */ }
-    } else {
-      writeSlotFile(file, blocks, count);
-      stateMarkDirty();
-    }
+  if (updatedSlots.length > 0 && !isWorkerContext()) {
+    stateMarkDirty();
   }
 }
 
@@ -1320,8 +1186,8 @@ export async function runSlot(args: string[]): Promise<void> {
       let path = "";
       const adapterArgFragments: string[] = [];
       let machine = "";
-      let hasDirectOrchFlags = false;    // true only if a direct shorthand flag was used (not -A)
-      let firstDirectOrchFlagIdx = -1;   // fragment index of the first direct --coder/--reviewer/--plan
+      let hasDirectOrchFlags = false;
+      let firstDirectOrchFlagIdx = -1;
       for (let i = 3; i < args.length; i++) {
         switch (args[i]) {
           case "-a": adapter = args[++i] ?? "manual"; break;
@@ -1332,17 +1198,15 @@ export async function runSlot(args: string[]): Promise<void> {
           case "--adapter-args": {
             const raw = args[++i];
             if (raw === undefined) throw new Error("--adapter-args requires a value");
-            adapterArgFragments.push(raw);   // raw payload — does NOT set hasDirectOrchFlags
+            adapterArgFragments.push(raw);
             break;
           }
           case "--pair":
             hasDirectOrchFlags = true;
-            // --pair itself is the mode flag; no need to record it as an auto-prepend target
             adapterArgFragments.push("--pair");
             break;
           case "--duo":
             hasDirectOrchFlags = true;
-            // Hierarchical duo: handled after arg parsing by isDuoAssign check
             adapterArgFragments.push("--duo");
             break;
           case "--coder": {
@@ -1369,18 +1233,12 @@ export async function runSlot(args: string[]): Promise<void> {
         }
       }
 
-      // Guard: shorthand orchestration flags require an orchestrated adapter.
-      // Raw -A/--adapter-args payloads are not subject to this check.
       if (hasDirectOrchFlags && adapter !== "t3code" && adapter !== "tmux") {
         throw new Error(
           `--pair/--coder/--reviewer/--plan flags require adapter "t3code" or "tmux" (got "${adapter}")`
         );
       }
 
-      // Guard: orchestrated adapter must match globalAdapter() to prevent split-brain.
-      // The runner selects its transport from the persisted backend field, which is set
-      // from the adapter used at slot creation. A mismatch would start a t3code adapter
-      // session but spawn a runner that then uses TmuxTransport (or vice versa).
       if (hasDirectOrchFlags || adapterArgFragments.some(f => /--(?:pair|duo)/.test(f))) {
         const expected = globalAdapter();
         if ((adapter === "t3code" || adapter === "tmux") && adapter !== expected) {
@@ -1391,7 +1249,6 @@ export async function runSlot(args: string[]): Promise<void> {
         }
       }
 
-      // Check for --duo flag (direct or in -A raw fragments) — triggers two-slot expansion.
       const hasDuoDirectFlag = adapterArgFragments.includes("--duo");
       const hasDuoInRawFragments = adapterArgFragments.some(
         f => /(?:^|\s)--duo(?:\s|$)/.test(f) && !/--duo-peer-slot/.test(f)
@@ -1399,21 +1256,18 @@ export async function runSlot(args: string[]): Promise<void> {
       const isDuoAssign = hasDuoDirectFlag || hasDuoInRawFragments;
 
       if (isDuoAssign) {
-        // Hierarchical duo: assign TWO pair-mode slots with swapped coder/reviewer.
-        // Find a second empty slot.
-        const allBlocks = loadBlocks(ensureSlotsFile());
+        ensureSlotsDir();
+        const allSlots = readAllSlots();
         const totalSlots = slotsCount();
         let secondSlot: number | null = null;
         for (let s = 1; s <= totalSlots; s++) {
           if (s === slotNum) continue;
-          const blk = allBlocks.get(s);
-          const proc = blk ? getProcess(blk).trim() : "(empty)";
-          if (!proc || proc === "(empty)") { secondSlot = s; break; }
+          const sd = allSlots.get(s);
+          if (!sd || sd.process === "(empty)") { secondSlot = s; break; }
         }
         if (secondSlot === null) {
           throw new Error(`duo mode requires two empty slots; only slot ${slotNum} is available`);
         }
-        // Strip --duo from fragments before expansion
         const cleanedFragments = adapterArgFragments
           .map(f => f.replace(/(?:^|\s)--duo(?:\s|$)/g, " ").trim())
           .filter(Boolean);
@@ -1423,9 +1277,6 @@ export async function runSlot(args: string[]): Promise<void> {
         slotAssign(secondSlot, taskOrDesc, adapter, "", path, expansion.slotB.args, machine);
         console.error(`ludics: duo assign → slots ${slotNum}+${secondSlot}`);
       } else {
-        // Auto-prepend --pair when any direct orchestration shorthand is present without an
-        // explicit mode flag. Splice at the position of the first such shorthand to preserve
-        // fragment ordering (raw -A fragments that precede it are left undisturbed).
         const hasModeDirectFlag = adapterArgFragments.includes("--pair");
         const hasModeInRawFragments = adapterArgFragments.some(
           f => /(?:^|\s)--(?:pair|duo)(?:\s|$)/.test(f)
