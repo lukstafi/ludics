@@ -15,7 +15,7 @@ import {
   type AgentConfig, type OrchestrationState,
 } from "./state.ts";
 import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
-import { fetchNewPrCommentCount, getPrVerification, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile } from "./github.ts";
+import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile } from "./github.ts";
 import { updateFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
@@ -845,7 +845,7 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
     // Partition: which PRs already have a review, which don't
     const urlsMissingReview: string[] = [];
     for (const prUrl of uniquePrUrls) {
-      if (!hasCodexSubmittedReview(prUrl)) {
+      if (!hasCodexSubmittedReview(prUrl) && !hasCodexPostedComment(prUrl, state.prCodexReviewDeferredSince!)) {
         urlsMissingReview.push(prUrl);
       }
     }

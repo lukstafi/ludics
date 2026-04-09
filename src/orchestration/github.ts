@@ -80,6 +80,22 @@ export function hasCodexSubmittedReview(prUrl: string): boolean {
 }
 
 /**
+ * Returns true if `chatgpt-codex-connector[bot]` has posted an issue comment
+ * on the PR since `sinceEpoch` (Unix seconds).  Used as a fallback to detect
+ * Codex responses that arrive as comments rather than formal PR reviews.
+ */
+export function hasCodexPostedComment(prUrl: string, sinceEpoch: number): boolean {
+  const parsed = parsePrUrl(prUrl);
+  if (!parsed) return false;
+  const { repo, prNumber } = parsed;
+  const since = new Date(sinceEpoch * 1000).toISOString();
+  return paginatedGhApiCount(
+    `repos/${repo}/issues/${prNumber}/comments`,
+    `[.[] | select(.created_at > "${since}" and .user.login == "chatgpt-codex-connector[bot]")] | length`,
+  ) > 0;
+}
+
+/**
  * If the pr file contains markdown/text rather than a GitHub PR URL, use the content as the
  * PR body to auto-create a PR via `gh pr create`, then rewrite the file with just the URL.
  * Returns the final PR URL (unchanged if already a URL), or null on failure.

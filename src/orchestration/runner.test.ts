@@ -1558,6 +1558,7 @@ describe("maybePostCodexReviewRequests", () => {
 
 describe("checkAndRedispatchPrComments deferred review fallback", () => {
   let reviewSpy: ReturnType<typeof spyOn>;
+  let commentSpy: ReturnType<typeof spyOn>;
   let postSpy: ReturnType<typeof spyOn>;
   let mergedSpy: ReturnType<typeof spyOn>;
   let commentCountSpy: ReturnType<typeof spyOn>;
@@ -1601,6 +1602,7 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
 
   beforeEach(() => {
     reviewSpy = spyOn(github, "hasCodexSubmittedReview").mockReturnValue(false);
+    commentSpy = spyOn(github, "hasCodexPostedComment").mockReturnValue(false);
     postSpy = spyOn(github, "postCodexReviewComment").mockReturnValue(true);
     mergedSpy = spyOn(github, "isPrMerged").mockReturnValue(false);
     commentCountSpy = spyOn(github, "fetchNewPrCommentCount").mockReturnValue(0);
@@ -1609,6 +1611,7 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
 
   afterEach(() => {
     reviewSpy.mockRestore();
+    commentSpy.mockRestore();
     postSpy.mockRestore();
     mergedSpy.mockRestore();
     commentCountSpy.mockRestore();
@@ -1709,6 +1712,28 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
     await checkAndRedispatchPrComments(state, dummyTransport);
     expect(reviewSpy).not.toHaveBeenCalled();
     expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("clears deferral when Codex posts issue comment (no formal review)", async () => {
+    reviewSpy.mockReturnValue(false);
+    commentSpy.mockReturnValue(true); // Codex responded with a comment
+    const state = makePrCommentsState({
+      prCodexReviewDeferredSince: nowSec - 60,
+    });
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(state.prCodexReviewDeferredSince).toBeUndefined();
+    expect(state.prCodexReviewFallbackPosted).toBeUndefined();
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("keeps deferral armed when no Codex review or comment", async () => {
+    reviewSpy.mockReturnValue(false);
+    commentSpy.mockReturnValue(false);
+    const state = makePrCommentsState({
+      prCodexReviewDeferredSince: nowSec - 60,
+    });
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(state.prCodexReviewDeferredSince).toBe(nowSec - 60);
   });
 });
 
