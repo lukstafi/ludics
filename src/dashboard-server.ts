@@ -10,8 +10,9 @@ import { safeSyncOutput } from "./spawn.ts";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, loadConfigSync } from "./config.ts";
 import { readSlotJson } from "./slots/json.ts";
-import { updateFrontmatterField, addFrontmatterField, removeFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
-import { findSlotForTask, setQueueHold } from "./mag.ts";
+import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
+import { tasksAbandon } from "./tasks/index.ts";
+import { setQueueHold } from "./mag.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
 
 const MIME_TYPES: Record<string, string> = {
@@ -376,7 +377,7 @@ export function startDashboardServer(
               status: 409, headers: { "Content-Type": "application/json" },
             });
           }
-          updateFrontmatterField(taskFile, "status", "abandoned");
+          tasksAbandon(taskParam, { source: "dashboard", scope: "task" });
           lastGenerated = 0;
           return new Response(JSON.stringify({ status: "abandoned" }), {
             headers: { "Content-Type": "application/json" },
@@ -423,22 +424,7 @@ export function startDashboardServer(
         try {
           const resolved = resolveTaskFile(taskParam);
           if ("error" in resolved) return resolved.error;
-          const taskFile = resolved.path;
-
-          // Check if task is assigned to a slot — if so, clear it synchronously
-          const slotNum = findSlotForTask(taskParam);
-          if (slotNum !== null) {
-            const proc = safeSyncOutput(
-              [process.execPath, "slot", String(slotNum), "clear", "abandoned"],
-              { cwd: process.env.HOME },
-            );
-            if (!proc.ok) {
-              return new Response(proc.stderr || "slot clear failed", { status: 500 });
-            }
-          } else {
-            updateFrontmatterField(taskFile, "status", "abandoned");
-            updateFrontmatterField(taskFile, "completed", new Date().toISOString().slice(0, 19) + "Z");
-          }
+          tasksAbandon(taskParam, { source: "dashboard", scope: "task" });
           lastGenerated = 0;
           return new Response(JSON.stringify({ status: "abandoned" }), {
             headers: { "Content-Type": "application/json" },

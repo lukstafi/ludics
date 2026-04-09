@@ -575,6 +575,47 @@ function tasksMigrateRefs(dryRun: boolean = false): void {
   console.log(`Updated ${changedFiles} file(s) with ${replacements} ID replacement(s)`);
 }
 
+export function tasksAbandon(
+  taskId: string,
+  opts: { source?: string; scope?: string } = {},
+): void {
+  const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+  if (!existsSync(taskFile)) {
+    throw new Error(`task not found: ${taskId}`);
+  }
+  const content = readFileSync(taskFile, "utf-8");
+  const fm = parseTaskFrontmatter(content);
+  const currentStatus = fm.status ?? "";
+  if (["done", "abandoned", "merged"].includes(currentStatus)) {
+    throw new Error(`task ${taskId} is already in terminal status: ${currentStatus}`);
+  }
+
+  // Dynamic imports to avoid circular deps (tasks → mag → tasks)
+  const { findSlotForTask } = require("../mag.ts");
+  const { slotClear } = require("../slots/index.ts");
+
+  const slotNum = findSlotForTask(taskId);
+  if (slotNum !== null) {
+    slotClear(slotNum, "abandoned");
+  } else {
+    updateFrontmatterField(taskFile, "status", "abandoned");
+    updateFrontmatterField(taskFile, "completed", new Date().toISOString().slice(0, 19) + "Z");
+  }
+  removeFrontmatterField(taskFile, "deferred_launch");
+  removeFrontmatterField(taskFile, "approved");
+
+  emitEvent({
+    event_type: "task_abandon",
+    source: opts.source ?? "cli",
+    scope: opts.scope ?? "task",
+    task: taskId,
+    status: "abandoned",
+    message: slotNum !== null
+      ? `abandoned from slot ${slotNum}`
+      : "abandoned (no slot)",
+  });
+}
+
 export async function runTasks(args: string[]): Promise<void> {
   const sub = args[0] ?? "";
 
@@ -673,6 +714,13 @@ export async function runTasks(args: string[]): Promise<void> {
       tasksMigrateRefs(dryRun);
       break;
     }
+    case "abandon": {
+      const id = args[1];
+      if (!id) throw new Error("task ID required");
+      tasksAbandon(id);
+      console.log(`ludics: abandoned task ${id}`);
+      break;
+    }
     case "migrate-deferred": {
       const dir = tasksDir();
       if (!existsSync(dir)) {
@@ -704,7 +752,7 @@ export async function runTasks(args: string[]): Promise<void> {
     }
     default:
       throw new Error(
-        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, check, merge, unmerge, duplicates, migrate-refs, migrate-deferred)`,
+        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, check, merge, unmerge, duplicates, abandon, migrate-refs, migrate-deferred)`,
       );
   }
 }
