@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
-import { planFilePath } from "./plan-files.ts";
+import { mergedPlanFilePath } from "./plan-files.ts";
 import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, pairReviewVerdict, phaseTimeoutExpired } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
@@ -1198,7 +1198,7 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
   // to the merged plan path so plan-review skill templates read it via the same path.
   if (state.phase === "plan" && next === "plan-review" && state.mode === "pair") {
     const plansDir = join(state.peerSyncDir, "plans");
-    const mergedPath = planFilePath(state.peerSyncDir, "merged", state.round, 0);
+    const mergedPath = mergedPlanFilePath(state.peerSyncDir, state.round, 0);
     const { files } = findPlanFiles(state.peerSyncDir, state.round, undefined);
     if (files.length > 0) {
       try {

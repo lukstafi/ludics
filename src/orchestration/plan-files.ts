@@ -6,35 +6,34 @@ export interface ParsedPlanFilename {
   type: PlanFileType;
   round: number;
   agentName?: string;
-  mergeRound?: number;
+  planMergeRound?: number;
 }
 
 const AGENT_NAME_RE = /^[\w-]+$/;
 const PLAN_RE = /^round-(\d+)-([\w-]+)\.md$/;
 const MERGED_RE = /^round-(\d+)-merged-(\d+)\.md$/;
 
-/** Build a plan filename from components. */
-export function planFilename(type: "plan", round: number, agentName: string): string;
-export function planFilename(type: "merged", round: number, mergeRound: number): string;
-export function planFilename(type: PlanFileType, round: number, third: string | number): string {
-  if (type === "merged") {
-    return `round-${round}-merged-${third}.md`;
-  }
-  const agentName = third as string;
+/** Build an individual plan filename. */
+export function planFilename(round: number, agentName: string): string {
   if (!AGENT_NAME_RE.test(agentName)) {
     throw new Error(`invalid agent name for plan filename: "${agentName}" (must match [\\w-]+)`);
   }
   return `round-${round}-${agentName}.md`;
 }
 
-/** Build a full plan file path under plans/. */
-export function planFilePath(peerSyncDir: string, type: "plan", round: number, agentName: string): string;
-export function planFilePath(peerSyncDir: string, type: "merged", round: number, mergeRound: number): string;
-export function planFilePath(peerSyncDir: string, type: PlanFileType, round: number, third: string | number): string {
-  const name = type === "merged"
-    ? planFilename("merged", round, third as number)
-    : planFilename("plan", round, third as string);
-  return join(peerSyncDir, "plans", name);
+/** Build a merged plan filename. */
+export function mergedPlanFilename(round: number, planMergeRound: number): string {
+  return `round-${round}-merged-${planMergeRound}.md`;
+}
+
+/** Build a full individual plan file path under plans/. */
+export function planFilePath(peerSyncDir: string, round: number, agentName: string): string {
+  return join(peerSyncDir, "plans", planFilename(round, agentName));
+}
+
+/** Build a full merged plan file path under plans/. */
+export function mergedPlanFilePath(peerSyncDir: string, round: number, planMergeRound: number): string {
+  return join(peerSyncDir, "plans", mergedPlanFilename(round, planMergeRound));
 }
 
 /** Parse a plan filename into components, or null if it doesn't match. */
@@ -42,8 +41,17 @@ export function parsePlanFilename(filename: string): ParsedPlanFilename | null {
   // Try merged first — "merged" is a valid agent name in the plan regex,
   // so we need to check the more specific pattern first.
   let m = filename.match(MERGED_RE);
-  if (m) return { type: "merged", round: parseInt(m[1]!, 10), mergeRound: parseInt(m[2]!, 10) };
+  if (m) {
+    const round = parseInt(m[1]!, 10);
+    const planMergeRound = parseInt(m[2]!, 10);
+    if (String(round) !== m[1] || String(planMergeRound) !== m[2]) return null;
+    return { type: "merged", round, planMergeRound };
+  }
   m = filename.match(PLAN_RE);
-  if (m) return { type: "plan", round: parseInt(m[1]!, 10), agentName: m[2]! };
+  if (m) {
+    const round = parseInt(m[1]!, 10);
+    if (String(round) !== m[1]) return null;
+    return { type: "plan", round, agentName: m[2]! };
+  }
   return null;
 }

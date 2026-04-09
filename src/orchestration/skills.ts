@@ -5,10 +5,11 @@ import { readFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import type { Phase } from "./phases.ts";
-import { planFilePath } from "./plan-files.ts";
+import { planFilePath, mergedPlanFilePath } from "./plan-files.ts";
 import { parseReviewFilename, reviewFilePath } from "./review-files.ts";
 import type { AgentConfig, OrchestrationState } from "./state.ts";
 import { readMergeVotes } from "./merge.ts";
+import { mergeVoteFilePath } from "./merge-vote-files.ts";
 import { readDuoPeerState } from "./cross-slot.ts";
 
 function readFileIfExists(path: string): string | null {
@@ -184,11 +185,11 @@ export function buildSkillContext(
   agent: AgentConfig,
 ): Record<string, string> {
   const peer = state.agents.find((candidate) => candidate.name !== agent.name) ?? null;
-  const planFile = planFilePath(state.peerSyncDir, "plan", state.round, agent.name);
+  const planFile = planFilePath(state.peerSyncDir, state.round, agent.name);
   const planMergeRound = state.planMergeRound ?? 0;
   // Key the merged plan file by planMergeRound so each retry iteration writes a fresh file,
   // preventing a stale merged plan from satisfying the artifact gate in later iterations.
-  const mergedPlanFile = planFilePath(state.peerSyncDir, "merged", state.round, planMergeRound);
+  const mergedPlanFile = mergedPlanFilePath(state.peerSyncDir, state.round, planMergeRound);
 
   // plan-review uses per-iteration review files to avoid stale verdicts from a prior loop.
   const reviewFile = state.phase === "plan-review"
@@ -199,7 +200,7 @@ export function buildSkillContext(
   const peerPlan = state.phase === "plan-review"
     ? readFileIfExists(mergedPlanFile)
     : peer
-      ? readFileIfExists(planFilePath(state.peerSyncDir, "plan", state.round, peer.name))
+      ? readFileIfExists(planFilePath(state.peerSyncDir, state.round, peer.name))
       : null;
 
   // In plan-merge (iteration > 0) the coder reads the reviewer's feedback from the previous round.
@@ -267,9 +268,7 @@ export function buildSkillContext(
     REVIEW_FILE: reviewFile,
     PR_FILE: join(state.peerSyncDir, `${agent.name}.pr`),
     INTERRUPT_FILE: join(state.peerSyncDir, `${agent.name}.interrupt`),
-    MERGE_VOTE_FILE: join(
-      state.peerSyncDir, "merge-votes", `round-${state.mergeRound}-${agent.name}.txt`,
-    ),
+    MERGE_VOTE_FILE: mergeVoteFilePath(state.peerSyncDir, state.mergeRound, agent.name),
     SUGGEST_REFACTOR_FILE: join(state.peerSyncDir, `suggest-refactor-${agent.name}.md`),
     WORKFLOW_FEEDBACK_FILE: join(state.peerSyncDir, `workflow-feedback-${agent.name}.md`),
     MERGE_REVIEW_DECISION_FILE: join(state.peerSyncDir, "merge-review-approval.txt"),
