@@ -41,8 +41,17 @@ export function parsePlanFilename(filename: string): ParsedPlanFilename | null {
   // Try merged first — "merged" is a valid agent name in the plan regex,
   // so we need to check the more specific pattern first.
   let m = filename.match(MERGED_RE);
-  if (m) return { type: "merged", round: parseInt(m[1]!, 10), planMergeRound: parseInt(m[2]!, 10) };
+  if (m) {
+    const round = parseInt(m[1]!, 10);
+    const planMergeRound = parseInt(m[2]!, 10);
+    if (String(round) !== m[1] || String(planMergeRound) !== m[2]) return null;
+    return { type: "merged", round, planMergeRound };
+  }
   m = filename.match(PLAN_RE);
-  if (m) return { type: "plan", round: parseInt(m[1]!, 10), agentName: m[2]! };
+  if (m) {
+    const round = parseInt(m[1]!, 10);
+    if (String(round) !== m[1]) return null;
+    return { type: "plan", round, agentName: m[2]! };
+  }
   return null;
 }

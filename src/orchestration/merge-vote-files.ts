@@ -20,5 +20,7 @@ export function mergeVoteFilePath(peerSyncDir: string, round: number, agentName:
 export function parseMergeVoteFilename(filename: string): { round: number; agentName: string } | null {
   const m = filename.match(MERGE_VOTE_RE);
   if (!m) return null;
-  return { round: parseInt(m[1]!, 10), agentName: m[2]! };
+  const round = parseInt(m[1]!, 10);
+  if (String(round) !== m[1]) return null; // reject non-canonical (e.g. zero-padded) rounds
+  return { round, agentName: m[2]! };
 }

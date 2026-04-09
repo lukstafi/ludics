@@ -54,6 +54,10 @@ describe("parseMergeVoteFilename", () => {
     expect(parseMergeVoteFilename("round-1-coder.md")).toBeNull();
   });
 
+  test("rejects zero-padded rounds", () => {
+    expect(parseMergeVoteFilename("round-01-coder.txt")).toBeNull();
+  });
+
   test("rejects agent names with dots or spaces", () => {
     expect(parseMergeVoteFilename("round-1-bad.agent.txt")).toBeNull();
     expect(parseMergeVoteFilename("round-1-bad agent.txt")).toBeNull();

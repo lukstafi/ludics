@@ -70,6 +70,12 @@ describe("parsePlanFilename", () => {
     expect(parsePlanFilename("")).toBeNull();
   });
 
+  test("rejects zero-padded rounds", () => {
+    expect(parsePlanFilename("round-01-coder.md")).toBeNull();
+    expect(parsePlanFilename("round-01-merged-0.md")).toBeNull();
+    expect(parsePlanFilename("round-1-merged-00.md")).toBeNull();
+  });
+
   test("rejects agent names with dots or spaces", () => {
     expect(parsePlanFilename("round-1-bad.agent.md")).toBeNull();
     expect(parsePlanFilename("round-1-bad agent.md")).toBeNull();

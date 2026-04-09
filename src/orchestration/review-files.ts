@@ -32,8 +32,16 @@ export function reviewFilePath(
 /** Parse a review filename into components, or null if it doesn't match. */
 export function parseReviewFilename(filename: string): ParsedReviewFilename | null {
   let m = filename.match(REVIEW_RE);
-  if (m) return { type: "review", round: parseInt(m[1]!, 10), agentName: m[2]! };
+  if (m) {
+    const round = parseInt(m[1]!, 10);
+    if (String(round) !== m[1]) return null;
+    return { type: "review", round, agentName: m[2]! };
+  }
   m = filename.match(PLAN_REVIEW_RE);
-  if (m) return { type: "plan-review", round: parseInt(m[1]!, 10), agentName: m[2]! };
+  if (m) {
+    const round = parseInt(m[1]!, 10);
+    if (String(round) !== m[1]) return null;
+    return { type: "plan-review", round, agentName: m[2]! };
+  }
   return null;
 }
