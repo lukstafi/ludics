@@ -169,6 +169,9 @@ export interface OrchestrationState {
   duoPeerSlot?: number | null;
   /** For hierarchical-duo: true when this slot has a PR and is waiting for the peer slot. */
   duoAwaitingPeer?: boolean;
+  /** Concrete branch names from createWorktrees(), keyed by agent name (plus "root").
+   *  Populated at init so downstream consumers (e.g. buildCleanupEntry) avoid re-deriving. */
+  branches?: Record<string, string>;
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {
