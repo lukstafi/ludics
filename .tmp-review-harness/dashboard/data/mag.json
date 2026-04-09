@@ -1,0 +1,7 @@
+{
+  "status": "unknown",
+  "lastActivity": null,
+  "pendingRequests": 0,
+  "terminal": "http://localhost:7679",
+  "queueHeld": false
+}

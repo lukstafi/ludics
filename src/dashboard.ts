@@ -1018,11 +1018,15 @@ export function generateHealthData(): Record<string, unknown> {
         stderr: "pipe",
         timeout: 10_000,
       });
+      const stdout = result.stdout.toString().trim();
       if (result.exitCode === 0) {
-        output = result.stdout.toString().trim();
+        output = stdout;
       } else {
+        // magDoctor() writes diagnostics to stdout before exit(1), so include
+        // stdout in the failure output so the user sees actionable details.
         const stderr = result.stderr.toString().trim();
-        output = "Doctor check failed" + (stderr ? `\n${stderr}` : "");
+        const details = [stdout, stderr].filter(Boolean).join("\n");
+        output = "Doctor check failed" + (details ? `\n${details}` : "");
       }
     } catch {
       output = "Doctor check failed";
