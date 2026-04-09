@@ -887,6 +887,7 @@ async function startOrchestratedThreads(
     peerSyncDir: setup.peerSyncDir,
     threadIds: Object.fromEntries(slotThreads.map((thread, index) => [agents[index]!.name, thread.threadId])),
     backend: "t3code",
+    branches: setup.branches,
     slotTitle: title,
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
     upstreamRepo: (() => {

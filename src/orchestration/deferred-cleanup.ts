@@ -74,17 +74,20 @@ export function buildCleanupEntry(
     }
   }
 
-  // Concrete branch names — derive root branch from naming convention
-  // (same as createWorktrees: ludics/<slug>-s<slot>/root)
-  // Using the convention is safer than reading worktree HEAD, which could be
-  // on a non-ephemeral branch (e.g. main) if someone switched it manually.
-  const featureSlug = slugify(orchState.taskId);
-  const slotSuffix = `-s${slot}`;
-  const rootBranch = `ludics/${featureSlug}${slotSuffix}/root`;
-  const branches: string[] = [rootBranch];
-  for (const agent of orchState.agents) {
-    if (agent.branch && agent.branch !== rootBranch) {
-      branches.push(agent.branch);
+  // Concrete branch names — prefer persisted branches from state (populated at init).
+  // Fall back to naming-convention derivation for backward compat with old state files.
+  let branches: string[];
+  if (orchState.branches) {
+    branches = [...new Set(Object.values(orchState.branches))];
+  } else {
+    const featureSlug = slugify(orchState.taskId);
+    const slotSuffix = `-s${slot}`;
+    const rootBranch = `ludics/${featureSlug}${slotSuffix}/root`;
+    branches = [rootBranch];
+    for (const agent of orchState.agents) {
+      if (agent.branch && agent.branch !== rootBranch) {
+        branches.push(agent.branch);
+      }
     }
   }
 

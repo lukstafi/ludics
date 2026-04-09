@@ -463,6 +463,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     peerSyncDir: setup.peerSyncDir,
     threadIds: {}, // tmux mode doesn't use t3code threads
     backend: "tmux",
+    branches: setup.branches,
     slotTitle: options.title ?? slotSessionName(ctx.slot, undefined, taskId),
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
     upstreamRepo: (() => {

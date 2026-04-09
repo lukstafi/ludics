@@ -78,10 +78,16 @@ export function removeWorktreeByPath(projectDir: string, path: string): void {
   removeIfRegistered(projectDir, path);
 }
 
-/** Delete branches locally and remotely. Deduplicates, idempotent, best-effort for remote. */
+/** Delete branches locally and remotely. Deduplicates, idempotent, best-effort for remote.
+ *  Safety: skips any branch that does not start with `ludics/` to prevent accidental
+ *  deletion of protected branches (main, master, etc.) due to state corruption. */
 export function deleteBranches(projectDir: string, branches: string[]): void {
   const unique = [...new Set(branches)];
   for (const branch of unique) {
+    if (!branch.startsWith("ludics/")) {
+      console.error(`ludics: refusing to delete branch "${branch}" — does not match ludics/ prefix`);
+      continue;
+    }
     safeSyncOutput(["git", "branch", "-D", branch], { cwd: projectDir });
     const result = safeSyncOutput(["git", "push", "origin", "--delete", branch], { cwd: projectDir });
     if (!result.ok) {
