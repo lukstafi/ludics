@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
-import { harnessDir, slotsCount } from "../config.ts";
+import { harnessDir } from "../config.ts";
 import { readOrchestrationState } from "../orchestration/state.ts";
 import type { AgentConfig } from "../orchestration/state.ts";
 import { T3CodeClient, waitForNewTurn } from "./client.ts";
@@ -272,14 +272,20 @@ const STALE_AGE_MS = 25 * 60 * 60 * 1_000; // 25 hours
 /** Collect all thread IDs currently referenced by slot state files. */
 function collectActiveThreadIds(harness: string): Set<string> {
   const active = new Set<string>();
-  const count = slotsCount();
-  for (let s = 1; s <= count; s++) {
-    const state = readSlotState(s, harness);
-    if (!state) continue;
-    for (const t of state.threads) {
-      active.add(t.threadId);
+  const t3dir = join(harness, "t3code");
+  if (!existsSync(t3dir)) return active;
+  try {
+    for (const file of readdirSync(t3dir)) {
+      const match = file.match(/^slot-(\d+)\.json$/);
+      if (!match) continue;
+      const slot = parseInt(match[1]!, 10);
+      const state = readSlotState(slot, harness);
+      if (!state) continue;
+      for (const t of state.threads) {
+        active.add(t.threadId);
+      }
     }
-  }
+  } catch { /* ignore */ }
   return active;
 }
 
@@ -297,7 +303,7 @@ function readTaskStatus(taskId: string, harness: string): string | null {
 }
 
 /** Try to extract a task ID from a thread title (e.g. "task-abc123 (coder)"). */
-function extractTaskId(title: string): string | null {
+export function extractTaskId(title: string): string | null {
   const match = title.match(/\b(task-[a-f0-9]+|gh-[a-z]+-\d+)\b/);
   return match ? match[1]! : null;
 }
@@ -366,8 +372,8 @@ export async function cleanupStaleItems(
         // If the task is assigned to a slot, don't delete
         if (activeTaskIds.has(taskId)) continue;
         const status = readTaskStatus(taskId, harness);
-        // If status is non-terminal (or unknown), don't delete
-        if (status && !TERMINAL_STATUSES.has(status)) continue;
+        // Only delete if status is confirmed terminal; unknown/missing → preserve
+        if (!status || !TERMINAL_STATUSES.has(status)) continue;
       }
 
       // Check 25h age threshold
