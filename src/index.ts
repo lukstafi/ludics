@@ -191,6 +191,7 @@ Commands:
                               Send a user message to a slot's agent thread
   t3code slot <N> response [--agent coder|reviewer]
                               Show last assistant response for a slot's agent
+  t3code cleanup [--dry-run]  Soft-delete stale threads/projects from previous sessions
 
   tmux status                 Show tmux session state, windows, and ttyd processes
   tmux list-panes             Show all panes with process state
