@@ -1,9 +1,11 @@
+import { existsSync, readdirSync, readFileSync } from "fs";
+import { join } from "path";
 import { harnessDir } from "../config.ts";
 import { readOrchestrationState } from "../orchestration/state.ts";
 import type { AgentConfig } from "../orchestration/state.ts";
 import { T3CodeClient, waitForNewTurn } from "./client.ts";
-import { doctorServer, ensureServer, readServerRecord, serverStatus, stopServer, t3codeServerPath } from "./server.ts";
-import type { T3ThreadMessage } from "./types.ts";
+import { doctorServer, ensureServer, readServerRecord, readSlotState, serverStatus, stopServer, t3codeServerPath } from "./server.ts";
+import type { T3Thread, T3Project, T3ThreadMessage } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -261,6 +263,191 @@ function stripFlags(
 }
 
 // ---------------------------------------------------------------------------
+// Cleanup stale threads and projects
+// ---------------------------------------------------------------------------
+
+const TERMINAL_STATUSES = new Set(["done", "abandoned", "merged"]);
+const STALE_AGE_MS = 25 * 60 * 60 * 1_000; // 25 hours
+
+/** Collect all thread IDs currently referenced by slot state files. */
+function collectActiveThreadIds(harness: string): Set<string> {
+  const active = new Set<string>();
+  const t3dir = join(harness, "t3code");
+  if (!existsSync(t3dir)) return active;
+  try {
+    for (const file of readdirSync(t3dir)) {
+      const match = file.match(/^slot-(\d+)\.json$/);
+      if (!match) continue;
+      const slot = parseInt(match[1]!, 10);
+      const state = readSlotState(slot, harness);
+      if (!state) continue;
+      for (const t of state.threads) {
+        active.add(t.threadId);
+      }
+    }
+  } catch { /* ignore */ }
+  return active;
+}
+
+/** Read task status from the task file in the harness tasks directory. */
+function readTaskStatus(taskId: string, harness: string): string | null {
+  const file = join(harness, "tasks", `${taskId}.md`);
+  if (!existsSync(file)) return null;
+  try {
+    const content = readFileSync(file, "utf-8");
+    const match = content.match(/^status:\s*(.+)$/m);
+    return match ? match[1]!.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Try to extract a task ID from a thread title (e.g. "s1_coder_task-40f283bd"). */
+export function extractTaskId(title: string): string | null {
+  // Match task-<alnum> or gh-<project>-<num>, preceded by underscore, boundary, or start
+  const match = title.match(/(?:^|[\b_])(task-[a-z0-9]+|gh-[a-z]+-\d+)\b/);
+  return match ? match[1]! : null;
+}
+
+/** Collect task IDs currently assigned to any slot. */
+function collectActiveTaskIds(harness: string): Set<string> {
+  const active = new Set<string>();
+  const slotsDir = join(harness, "slots");
+  if (!existsSync(slotsDir)) return active;
+  try {
+    for (const file of readdirSync(slotsDir)) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const content = JSON.parse(readFileSync(join(slotsDir, file), "utf-8"));
+        if (content.task) active.add(String(content.task));
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  return active;
+}
+
+interface CleanupResult {
+  threadsDeleted: string[];
+  threadsSkipped: string[];
+  projectsStale: string[];
+}
+
+/**
+ * Identify and soft-delete stale t3code threads and projects.
+ * Exported so slot clear can call it as best-effort.
+ */
+export async function cleanupStaleItems(
+  harness: string,
+  dryRun: boolean,
+): Promise<CleanupResult> {
+  const result: CleanupResult = { threadsDeleted: [], threadsSkipped: [], projectsStale: [] };
+
+  const record = readServerRecord(harness);
+  if (!record) {
+    console.log("t3code server is not running — skipping cleanup");
+    return result;
+  }
+
+  const client = new T3CodeClient({ url: record.wsUrl, token: record.authToken });
+  try {
+    const snapshot = await client.getSnapshot();
+    const activeThreadIds = collectActiveThreadIds(harness);
+    const activeTaskIds = collectActiveTaskIds(harness);
+    const now = Date.now();
+
+    // --- Thread cleanup ---
+    const remainingProjectThreads = new Map<string, number>(); // projectId → count of non-deleted threads
+    for (const thread of snapshot.threads) {
+      if (thread.deletedAt) continue;
+      const projId = thread.projectId;
+      remainingProjectThreads.set(projId, (remainingProjectThreads.get(projId) ?? 0) + 1);
+    }
+
+    for (const thread of snapshot.threads) {
+      if (thread.deletedAt) continue;
+      if (activeThreadIds.has(thread.id)) continue;
+
+      // Check if thread's task is still active (non-terminal)
+      const taskId = extractTaskId(thread.title);
+      if (taskId) {
+        // If the task is assigned to a slot, don't delete
+        if (activeTaskIds.has(taskId)) continue;
+        const status = readTaskStatus(taskId, harness);
+        // Only delete if status is confirmed terminal; unknown/missing → preserve
+        if (!status || !TERMINAL_STATUSES.has(status)) continue;
+      }
+
+      // Check 25h age threshold
+      const lastActivity = new Date(thread.updatedAt).getTime();
+      if (now - lastActivity < STALE_AGE_MS) {
+        result.threadsSkipped.push(thread.id);
+        continue;
+      }
+
+      // This thread is stale — delete it
+      if (dryRun) {
+        console.log(`[dry-run] would delete thread: ${thread.id} "${thread.title}"`);
+      } else {
+        // Stop session first if running
+        if (thread.session && thread.session.status !== "stopped") {
+          try {
+            await client.dispatchCommand({
+              type: "thread.session.stop",
+              commandId: `cleanup-stop-${crypto.randomUUID()}`,
+              threadId: thread.id,
+              createdAt: new Date().toISOString(),
+            });
+          } catch { /* ignore */ }
+        }
+        try {
+          await client.dispatchCommand({
+            type: "thread.delete",
+            commandId: `cleanup-del-${crypto.randomUUID()}`,
+            threadId: thread.id,
+          });
+          console.log(`deleted thread: ${thread.id} "${thread.title}"`);
+        } catch (err) {
+          console.error(`failed to delete thread ${thread.id}: ${err}`);
+          continue;
+        }
+      }
+      result.threadsDeleted.push(thread.id);
+      // Decrement project thread count
+      const projId = thread.projectId;
+      const count = remainingProjectThreads.get(projId) ?? 1;
+      remainingProjectThreads.set(projId, count - 1);
+    }
+
+    // --- Project cleanup ---
+    // No project.delete command in protocol — log stale projects only
+    for (const project of snapshot.projects) {
+      if (project.deletedAt) continue;
+
+      const workspaceGone = !existsSync(project.workspaceRoot);
+      const noThreads = (remainingProjectThreads.get(project.id) ?? 0) <= 0;
+
+      if (!workspaceGone && !noThreads) continue;
+
+      // Check 25h age threshold
+      const lastActivity = new Date(project.updatedAt).getTime();
+      if (now - lastActivity < STALE_AGE_MS) continue;
+
+      const reason = workspaceGone ? "workspace missing" : "no remaining threads";
+      if (dryRun) {
+        console.log(`[dry-run] stale project: ${project.id} "${project.title}" (${reason})`);
+      } else {
+        console.log(`stale project (cannot auto-delete — no protocol support): ${project.id} "${project.title}" (${reason})`);
+      }
+      result.projectsStale.push(project.id);
+    }
+
+    return result;
+  } finally {
+    client.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -402,9 +589,29 @@ export async function runT3Code(args: string[]): Promise<void> {
       }
     }
 
+    case "cleanup": {
+      const dryRun = hasFlag(args, "--dry-run");
+      const result = await cleanupStaleItems(harness, dryRun);
+      const total = result.threadsDeleted.length + result.projectsStale.length;
+      if (total === 0 && result.threadsSkipped.length === 0) {
+        console.log("nothing to clean up");
+      } else {
+        if (result.threadsSkipped.length > 0) {
+          console.log(`${result.threadsSkipped.length} thread(s) stale but within 25h post-mortem window`);
+        }
+        if (result.threadsDeleted.length > 0) {
+          console.log(`${dryRun ? "would delete" : "deleted"} ${result.threadsDeleted.length} thread(s)`);
+        }
+        if (result.projectsStale.length > 0) {
+          console.log(`${result.projectsStale.length} stale project(s) (no protocol support for deletion)`);
+        }
+      }
+      return;
+    }
+
     default:
       throw new Error(
-        `unknown t3code subcommand: ${sub} (use: status, start, stop, doctor, thread, slot)`,
+        `unknown t3code subcommand: ${sub} (use: status, start, stop, doctor, thread, slot, cleanup)`,
       );
   }
 }

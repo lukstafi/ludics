@@ -384,6 +384,14 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
     console.error(`ludics: auto-restoring preempted work to slot ${slotNum}`);
     slotRestore(slotNum);
   }
+
+  // Best-effort t3code cleanup after clearing a slot
+  try {
+    const { cleanupStaleItems } = require("../t3code/index.ts");
+    cleanupStaleItems(harnessDir(), false).catch(() => {});
+  } catch {
+    // t3code not available — skip
+  }
 }
 
 /**
