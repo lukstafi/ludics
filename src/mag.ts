@@ -675,7 +675,20 @@ function isTaskDeferred(taskId: string): boolean {
 
 function abandonTaskFromNotification(taskId: string): void {
   try {
+    const slotNum = findSlotForTask(taskId);
     tasksAbandon(taskId, { source: "notify", scope: "mag" });
+    // Preserve the notification-specific success event for existing event consumers
+    emitEvent({
+      event_type: "notify_abandon",
+      source: "notify",
+      scope: "mag",
+      ...(slotNum !== null ? { slot: slotNum } : {}),
+      task: taskId,
+      status: "abandoned",
+      message: slotNum !== null
+        ? "abandoned via notification button"
+        : "abandoned deferred task via notification (no slot)",
+    });
     console.error(`ludics: abandoned ${taskId} via notification button`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
