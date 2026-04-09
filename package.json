@@ -9,7 +9,7 @@
     "lint": "bun run --bun eslint \"src/**/*.ts\" --max-warnings=0",
     "lint:fix": "bun run --bun eslint \"src/**/*.ts\" --fix",
     "lint:cli-readme": "bun run scripts/lint-cli-readme.ts",
-    "lint:no-mock-module": "! grep -r 'mock\\.module(' src/ --include='*.test.ts' -l"
+    "lint:no-mock-module": "! grep -r 'mock\\.module(' src/ templates/ --include='*.test.ts' -l"
   },
   "devDependencies": {
     "@types/bun": "latest",

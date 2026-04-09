@@ -32,7 +32,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["src/**/*.test.ts"],
+    files: ["src/**/*.test.ts", "templates/**/*.test.ts"],
     rules: {
       "no-restricted-syntax": [
         "error",
