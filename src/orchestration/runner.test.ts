@@ -78,6 +78,75 @@ function makeState(
   };
 }
 
+/**
+ * Mark an agent as "done" for isAgentDone() by satisfying all three layers:
+ * status, turn lifecycle, and phase artifact.
+ */
+function markAgentDone(
+  state: OrchestrationState,
+  agentName: string,
+  opts: {
+    status?: string;
+    artifactContent?: string;
+    skipArtifact?: boolean;
+    skipLifecycle?: boolean;
+  } = {},
+): void {
+  const defaultStatus: Record<string, string> = {
+    plan: "plan-done",
+    "plan-merge": "plan-merge-done",
+    "plan-review": "plan-review-done",
+    review: "review-done",
+    "pr-create": "pr-create-done",
+  };
+  state.agentStates[agentName].status = opts.status ?? defaultStatus[state.phase] ?? "done";
+
+  if (!opts.skipLifecycle) {
+    state.agentStates[agentName].turnLifecycle = makeLifecycle({
+      state: "settled",
+      observedTurnId: "turn-auto",
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+    });
+  }
+
+  if (!opts.skipArtifact) {
+    const dir = state.peerSyncDir;
+    const round = state.round;
+    const pmr = state.planMergeRound ?? 0;
+    let artifactPath: string | null = null;
+    let defaultContent = "";
+
+    switch (state.phase) {
+      case "plan":
+        artifactPath = join(dir, "plans", `round-${round}-${agentName}.md`);
+        defaultContent = "# Plan\n";
+        break;
+      case "plan-merge":
+        artifactPath = join(dir, "plans", `round-${round}-merged-${pmr}.md`);
+        defaultContent = "# Merged Plan\n";
+        break;
+      case "plan-review":
+        artifactPath = join(dir, "reviews", `plan-merge-${pmr}-${agentName}.md`);
+        defaultContent = "APPROVE\n";
+        break;
+      case "review":
+        artifactPath = join(dir, "reviews", `round-${round}-${agentName}.md`);
+        defaultContent = "APPROVE\n";
+        break;
+      case "pr-create":
+        artifactPath = join(dir, `${agentName}.pr`);
+        defaultContent = "https://github.com/org/repo/pull/1\n";
+        break;
+    }
+
+    if (artifactPath) {
+      mkdirSync(join(artifactPath, ".."), { recursive: true });
+      writeFileSync(artifactPath, opts.artifactContent ?? defaultContent);
+    }
+  }
+}
+
 /** Create a fully-initialized peer-sync dir for orchOnStop tests. */
 function makePeerSyncDir(
   worktrees: Record<string, string>,
@@ -1016,13 +1085,7 @@ describe("AgentTurnLifecycle state machine via isAgentDone", () => {
 
   test("settled + done status → done (no artifact for work phase)", () => {
     const state = makeState({ phase: "work" });
-    state.agentStates.coder.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-123",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.coder.status = "done";
+    markAgentDone(state, "coder");
     expect(isAgentDone(state, state.agents[0]!)).toBe(true);
   });
 
@@ -1030,13 +1093,7 @@ describe("AgentTurnLifecycle state machine via isAgentDone", () => {
     const state = makeState({ phase: "work" });
     const staleFingerprint = "done|1234567890";
     state.agentStates.coder.dispatchStatusFingerprint = staleFingerprint;
-    state.agentStates.coder.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-123",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.coder.status = "done";
+    markAgentDone(state, "coder");
     // Make statusFileFingerprint return the same value as baseline → stale
     const fpSpy = spyOn(peerSync, "statusFileFingerprint").mockReturnValue(staleFingerprint);
     expect(isAgentDone(state, state.agents[0]!)).toBe(false);
@@ -1046,13 +1103,7 @@ describe("AgentTurnLifecycle state machine via isAgentDone", () => {
   test("settled + done status + fresh fingerprint → done", () => {
     const state = makeState({ phase: "work" });
     state.agentStates.coder.dispatchStatusFingerprint = "old|111";
-    state.agentStates.coder.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-123",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.coder.status = "done";
+    markAgentDone(state, "coder");
     // Make statusFileFingerprint return a different value → fresh
     const fpSpy = spyOn(peerSync, "statusFileFingerprint").mockReturnValue("new|222");
     expect(isAgentDone(state, state.agents[0]!)).toBe(true);
@@ -1096,26 +1147,13 @@ describe("phase-specific artifact validation", () => {
 
   test("plan phase: missing plan file → not done", () => {
     const state = makeState({ phase: "plan" }, tmpDir);
-    state.agentStates.coder.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-plan",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.coder.status = "plan-done";
+    markAgentDone(state, "coder", { skipArtifact: true });
     expect(isAgentDone(state, state.agents[0]!)).toBe(false);
   });
 
   test("plan phase: plan file exists → done", () => {
     const state = makeState({ phase: "plan" }, tmpDir);
-    state.agentStates.coder.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-plan",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.coder.status = "plan-done";
-    writeFileSync(join(tmpDir, "plans", "round-1-coder.md"), "# Plan\n");
+    markAgentDone(state, "coder");
     expect(isAgentDone(state, state.agents[0]!)).toBe(true);
   });
 
@@ -1123,15 +1161,9 @@ describe("phase-specific artifact validation", () => {
     // planMergeRound defaults to 0, so the required file is plan-merge-0-reviewer.md
     const state = makeState({ phase: "plan-review", planMergeRound: 0 }, tmpDir);
     const reviewer = state.agents[1]!;
-    state.agentStates.reviewer.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-plan-review",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.reviewer.status = "plan-review-done";
 
-    // Plan file exists but review file doesn't — should NOT be done.
+    // Set up lifecycle+status but skip artifact — plan file exists but review doesn't.
+    markAgentDone(state, "reviewer", { skipArtifact: true });
     writeFileSync(join(tmpDir, "plans", "round-1-reviewer.md"), "# Plan\n");
     expect(isAgentDone(state, reviewer)).toBe(false);
 
@@ -1143,77 +1175,38 @@ describe("phase-specific artifact validation", () => {
   test("review phase: missing review file → not done", () => {
     const state = makeState({ phase: "review" }, tmpDir);
     const reviewer = state.agents[1]!;
-    state.agentStates.reviewer.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-review",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.reviewer.status = "review-done";
+    markAgentDone(state, "reviewer", { skipArtifact: true });
     expect(isAgentDone(state, reviewer)).toBe(false);
   });
 
   test("review phase: review file exists → done", () => {
     const state = makeState({ phase: "review" }, tmpDir);
     const reviewer = state.agents[1]!;
-    state.agentStates.reviewer.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-review",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.reviewer.status = "review-done";
-    writeFileSync(join(tmpDir, "reviews", "round-1-reviewer.md"), "# Review\nAPPROVE\n");
+    markAgentDone(state, "reviewer");
     expect(isAgentDone(state, reviewer)).toBe(true);
   });
 
   test("pr-create phase: missing .pr file → not done", () => {
     const state = makeState({ phase: "pr-create" }, tmpDir);
-    state.agentStates.coder.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-pr",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.coder.status = "pr-create-done";
+    markAgentDone(state, "coder", { skipArtifact: true });
     expect(isAgentDone(state, state.agents[0]!)).toBe(false);
   });
 
   test("pr-create phase: .pr file with valid URL → done", () => {
     const state = makeState({ phase: "pr-create" }, tmpDir);
-    state.agentStates.coder.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-pr",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.coder.status = "pr-create-done";
-    writeFileSync(join(tmpDir, "coder.pr"), "https://github.com/org/repo/pull/1\n");
+    markAgentDone(state, "coder");
     expect(isAgentDone(state, state.agents[0]!)).toBe(true);
   });
 
   test("pr-create phase: .pr file with malformed body (not a URL) → not done", () => {
     const state = makeState({ phase: "pr-create" }, tmpDir);
-    state.agentStates.coder.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-pr",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.coder.status = "pr-create-done";
-    writeFileSync(join(tmpDir, "coder.pr"), "# My PR\n\nThis is a PR body, not a URL.\n");
+    markAgentDone(state, "coder", { artifactContent: "# My PR\n\nThis is a PR body, not a URL.\n" });
     expect(isAgentDone(state, state.agents[0]!)).toBe(false);
   });
 
   test("work phase: no artifact required → done with just done status", () => {
     const state = makeState({ phase: "work" }, tmpDir);
-    state.agentStates.coder.turnLifecycle = makeLifecycle({
-      state: "settled",
-      observedTurnId: "turn-work",
-      turnCompletedAt: new Date().toISOString(),
-      completionSource: "snapshot",
-    });
-    state.agentStates.coder.status = "done";
+    markAgentDone(state, "coder");
     expect(isAgentDone(state, state.agents[0]!)).toBe(true);
   });
 
