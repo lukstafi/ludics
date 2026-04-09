@@ -31,4 +31,18 @@ export default tseslint.config(
       "@typescript-eslint/await-thenable": "off",
     },
   },
+  {
+    files: ["src/**/*.test.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "CallExpression[callee.object.name='mock'][callee.property.name='module']",
+          message:
+            "Use spyOn() + mockRestore() instead of mock.module() — it leaks globally across all test files in the Bun test runner. See docs/testing-patterns.md.",
+        },
+      ],
+    },
+  },
 );

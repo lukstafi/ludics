@@ -15,6 +15,11 @@ import { defaultOrchestrationConfig, initAgentRuntimeState, persistState, type A
 import type { T3Snapshot, T3ThreadSession, T3LatestTurn } from "../t3code/types.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 
+// Testing pattern: always use spyOn(module, 'fn').mockImplementation(...)
+// and restore in afterEach(() => { spy.mockRestore(); }).
+// Never use Bun's global module mocking — it leaks across test files.
+// See docs/testing-patterns.md for the full guide.
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
