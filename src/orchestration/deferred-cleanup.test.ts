@@ -230,6 +230,32 @@ describe("buildCleanupEntry", () => {
     expect(entry.tmuxSessionNames).toEqual([]);
     expect(entry.t3codeThreadIds).toBeUndefined();
   });
+
+  test("uses persisted orchState.branches instead of deriving from convention", () => {
+    // Use branch names that intentionally differ from the naming convention
+    // to prove buildCleanupEntry reads them from state, not re-derives them.
+    const orchState = makeOrchState({
+      branches: {
+        root: "ludics/custom-root-branch",
+        coder: "ludics/custom-coder-branch",
+        reviewer: "ludics/custom-coder-branch", // duplicate to test dedup
+      },
+    });
+    const entry = buildCleanupEntry(orchState, 1);
+    // Should use the persisted values, deduplicated
+    expect(entry.branches).toContain("ludics/custom-root-branch");
+    expect(entry.branches).toContain("ludics/custom-coder-branch");
+    expect(entry.branches).toHaveLength(2);
+    // Should NOT contain the convention-derived name
+    expect(entry.branches).not.toContain("ludics/test-task-1-s1/root");
+  });
+
+  test("falls back to naming convention when orchState.branches is missing", () => {
+    const orchState = makeOrchState(); // no branches field
+    const entry = buildCleanupEntry(orchState, 1);
+    // Convention-derived root branch
+    expect(entry.branches).toContain("ludics/test-task-1-s1/root");
+  });
 });
 
 describe("config cleanupDelayHours", () => {

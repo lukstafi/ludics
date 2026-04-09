@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
-import { autoCommitWorktree, cleanupWorktrees, createWorktrees, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, symlinkPeerSync } from "./worktrees.ts";
+import { autoCommitWorktree, cleanupWorktrees, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, symlinkPeerSync } from "./worktrees.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
 
@@ -374,5 +374,54 @@ describe("cleanupWorktrees resilience", () => {
     expect(() =>
       cleanupWorktrees("/nonexistent/path/xxxxx", "task-1", [{ name: "a1" }, { name: "a2" }], 1),
     ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deleteBranches prefix guard
+// ---------------------------------------------------------------------------
+
+describe("deleteBranches prefix guard", () => {
+  test("deletes ludics/-prefixed branches and skips non-prefixed ones", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "delete-branches-guard");
+    initRepo(repo);
+
+    // Create a ludics-prefixed branch to be deleted
+    run(["git", "branch", "ludics/test-task-s1/root"], repo);
+    // Create a non-prefixed branch that must NOT be deleted
+    run(["git", "branch", "feature-safe"], repo);
+
+    // Capture stderr to verify warning
+    const origErr = console.error;
+    const warnings: string[] = [];
+    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+
+    try {
+      deleteBranches(repo, [
+        "ludics/test-task-s1/root",
+        "main",
+        "feature-safe",
+        "master",
+      ]);
+    } finally {
+      console.error = origErr;
+    }
+
+    // The ludics/ branch should have been deleted
+    const branchList = Bun.spawnSync(["git", "branch", "--list"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(branchList).not.toContain("ludics/test-task-s1/root");
+
+    // Protected / non-prefixed branches must still exist
+    expect(branchList).toContain("main");
+    expect(branchList).toContain("feature-safe");
+
+    // Warnings emitted for each skipped branch
+    expect(warnings.some((w) => w.includes("main") && w.includes("refusing"))).toBe(true);
+    expect(warnings.some((w) => w.includes("feature-safe") && w.includes("refusing"))).toBe(true);
+    expect(warnings.some((w) => w.includes("master") && w.includes("refusing"))).toBe(true);
   });
 });
