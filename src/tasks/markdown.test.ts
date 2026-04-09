@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField } from "./markdown.ts";
+import { addFrontmatterField, readFrontmatterField } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -92,5 +92,73 @@ describe("addFrontmatterField", () => {
     expect(fmMatch![1]).not.toContain("priority: B");
     // Body line preserved
     expect(result).toContain("priority: high");
+  });
+});
+
+describe("readFrontmatterField", () => {
+  test("reads basic scalar value", () => {
+    const content = "---\nproposal: docs/proposals/foo.md\n---\n\n# Title";
+    expect(readFrontmatterField(content, "proposal")).toBe("docs/proposals/foo.md");
+  });
+
+  test("reads double-quoted string", () => {
+    const content = '---\nproposal: "docs/proposals/foo.md"\n---\n';
+    expect(readFrontmatterField(content, "proposal")).toBe("docs/proposals/foo.md");
+  });
+
+  test("reads single-quoted string", () => {
+    const content = "---\nproposal: 'docs/proposals/foo.md'\n---\n";
+    expect(readFrontmatterField(content, "proposal")).toBe("docs/proposals/foo.md");
+  });
+
+  test("returns null for missing field", () => {
+    const content = "---\nid: task-1\nstatus: ready\n---\n";
+    expect(readFrontmatterField(content, "proposal")).toBeNull();
+  });
+
+  test("returns null when no frontmatter", () => {
+    const content = "# Just a markdown file\n\nNo frontmatter here.";
+    expect(readFrontmatterField(content, "proposal")).toBeNull();
+  });
+
+  test("returns null for null value", () => {
+    const content = "---\nproposal: null\n---\n";
+    expect(readFrontmatterField(content, "proposal")).toBeNull();
+  });
+
+  test("returns null for empty frontmatter", () => {
+    const content = "---\n\n---\n";
+    expect(readFrontmatterField(content, "proposal")).toBeNull();
+  });
+
+  test("coerces boolean to string", () => {
+    const content = "---\nuses_browser: true\n---\n";
+    expect(readFrontmatterField(content, "uses_browser")).toBe("true");
+  });
+
+  test("coerces number to string", () => {
+    const content = "---\nslot: 2\n---\n";
+    expect(readFrontmatterField(content, "slot")).toBe("2");
+  });
+
+  test("reads only from frontmatter, not body", () => {
+    const content = "---\nproject: real\n---\n\nproject: fake\n";
+    expect(readFrontmatterField(content, "project")).toBe("real");
+  });
+
+  test("stringifies array values", () => {
+    const content = "---\nblocks: [a, b]\n---\n";
+    expect(readFrontmatterField(content, "blocks")).toBe("a,b");
+  });
+
+  test("duplicate keys use last value (uniqueKeys: false)", () => {
+    const content = "---\nproject: first\nproject: second\n---\n";
+    expect(readFrontmatterField(content, "project")).toBe("second");
+  });
+
+  test("returns null without throwing on malformed YAML", () => {
+    const content = "---\n: : :\n  bad:\n    - [\n---\n";
+    expect(() => readFrontmatterField(content, "project")).not.toThrow();
+    expect(readFrontmatterField(content, "project")).toBeNull();
   });
 });

@@ -5,7 +5,7 @@ import { join } from "path";
 import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCount, milestonesEnabledProjects } from "../config.ts";
 import { readAllSlotJson } from "../slots/json.ts";
 import { listStashes } from "../slots/preempt.ts";
-import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray } from "./markdown.ts";
+import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray, readFrontmatterField } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
 import { queueRequest } from "../queue.ts";
@@ -253,8 +253,7 @@ function readTaskProjectName(tasksDir: string, taskId: string): string {
   const taskFile = join(tasksDir, `${taskId}.md`);
   if (!existsSync(taskFile)) return "";
   const taskContent = readFileSync(taskFile, "utf-8");
-  const projectMatch = taskContent.match(/^project:\s*(.+)$/m);
-  return projectMatch ? projectMatch[1]!.trim() : "";
+  return readFrontmatterField(taskContent, "project") ?? "";
 }
 
 function collectProjectsWithQueuedPreemption(tasksDir: string, queueContent: string, priProjects: string[]): Set<string> {
@@ -287,8 +286,7 @@ function collectProjectsWithQueuedPreemption(tasksDir: string, queueContent: str
     const content = readFileSync(join(tasksDir, file), "utf-8");
     const statusMatch = content.match(/^status:\s*(.+)$/m);
     if (!statusMatch || statusMatch[1]!.trim() !== "preempt-queued") continue;
-    const projectMatch = content.match(/^project:\s*(.+)$/m);
-    const project = projectMatch ? projectMatch[1]!.trim() : "";
+    const project = readFrontmatterField(content, "project") ?? "";
     if (project && priProjects.includes(project)) {
       projects.add(project);
     }
@@ -906,9 +904,8 @@ function tasksQueuePreemptions(): void {
     const statusMatch = content.match(/^status:\s*(.+)$/m);
     if (!statusMatch || statusMatch[1]!.trim() !== "ready") continue;
 
-    const projectMatch = content.match(/^project:\s*(.+)$/m);
-    if (!projectMatch) continue;
-    const project = projectMatch[1]!.trim();
+    const project = readFrontmatterField(content, "project") ?? "";
+    if (!project) continue;
 
     if (!priProjects.includes(project)) continue;
     if (projectsInFlight.has(project)) continue; // one preemption per project at a time

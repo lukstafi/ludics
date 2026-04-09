@@ -23,7 +23,7 @@ import {
   expirePendingRevises,
   expirePendingFollowupRevises,
 } from "./notify.ts";
-import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter } from "./tasks/markdown.ts";
+import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, readFrontmatterField } from "./tasks/markdown.ts";
 import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
@@ -813,24 +813,11 @@ function buildFollowupAdapterArgs(followupMsg: string): string {
   return "--followup";
 }
 
-function normalizeYamlScalar(value: string): string {
-  const trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"'))
-    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1).trim();
-  }
-  return trimmed;
-}
-
 function readTaskProject(taskId: string): string {
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
   if (!existsSync(taskFile)) return "";
   const content = readFileSync(taskFile, "utf-8");
-  const projectMatch = content.match(/^project:\s*(.+)$/m);
-  if (!projectMatch) return "";
-  return normalizeYamlScalar(projectMatch[1]!);
+  return readFrontmatterField(content, "project") ?? "";
 }
 
 function resolveTaskProjectPath(taskId: string): string {

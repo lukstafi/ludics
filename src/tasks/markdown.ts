@@ -82,6 +82,23 @@ export function parseTaskFrontmatter(content: string): Partial<TaskFrontmatter> 
   };
 }
 
+export function readFrontmatterField(content: string, field: string): string | null {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return null;
+
+  let data: unknown;
+  try {
+    data = YAML.parse(fmMatch[1]!, { uniqueKeys: false });
+  } catch {
+    return null;
+  }
+  if (typeof data !== "object" || data == null) return null;
+
+  const value = (data as Record<string, unknown>)[field];
+  if (value == null) return null;
+  return String(value);
+}
+
 export function updateFrontmatterField(filePath: string, field: string, value: string): void {
   if (!existsSync(filePath)) return;
   const content = readFileSync(filePath, "utf-8");
