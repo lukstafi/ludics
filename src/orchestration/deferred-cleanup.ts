@@ -41,11 +41,15 @@ export function loadDeferredCleanups(): CleanupEntry[] {
 }
 
 export function saveDeferredCleanups(entries: CleanupEntry[]): void {
-  const file = cleanupPendingPath();
-  mkdirSync(join(harnessDir(), "mag"), { recursive: true });
-  const tmp = file + ".tmp";
-  writeFileSync(tmp, JSON.stringify(entries, null, 2) + "\n");
-  renameSync(tmp, file);
+  try {
+    const file = cleanupPendingPath();
+    mkdirSync(join(harnessDir(), "mag"), { recursive: true });
+    const tmp = file + ".tmp";
+    writeFileSync(tmp, JSON.stringify(entries, null, 2) + "\n");
+    renameSync(tmp, file);
+  } catch (err) {
+    console.error(`ludics: failed to save deferred cleanups: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /** Build a cleanup entry from concrete OrchestrationState values. */
