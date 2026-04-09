@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPrCreateOutcome, verifyFinalMergeOutcome, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS } from "./runner.ts";
 import * as notify from "../notify.ts";
 import * as peerSync from "./peer-sync.ts";
 import * as events from "../events.ts";
@@ -2704,10 +2704,10 @@ describe("getFirstPrUrl", () => {
 });
 
 // ---------------------------------------------------------------------------
-// verifyPrCreateOutcome
+// verifyPhaseOutcome — PR_CREATE_GATE
 // ---------------------------------------------------------------------------
 
-describe("verifyPrCreateOutcome", () => {
+describe("verifyPhaseOutcome (PR_CREATE_GATE)", () => {
   let eventSpy: ReturnType<typeof spyOn>;
   let notifySpy: ReturnType<typeof spyOn>;
   let verificationSpy: ReturnType<typeof spyOn>;
@@ -2729,13 +2729,13 @@ describe("verifyPrCreateOutcome", () => {
 
   test("returns skip when phase is not pr-create", () => {
     const state = makeState({ phase: "work" });
-    expect(verifyPrCreateOutcome(state)).toBe("skip");
+    expect(verifyPhaseOutcome(state, PR_CREATE_GATE)).toBe("skip");
   });
 
   test("returns skip when agents are not done", () => {
     const state = makeState({ phase: "pr-create" });
     // Agents default to idle/not-done, so this should skip
-    expect(verifyPrCreateOutcome(state)).toBe("skip");
+    expect(verifyPhaseOutcome(state, PR_CREATE_GATE)).toBe("skip");
   });
 
   function makePrCreateDoneState(overrides: Partial<OrchestrationState> = {}) {
@@ -2755,7 +2755,7 @@ describe("verifyPrCreateOutcome", () => {
     const state = makePrCreateDoneState();
     verificationSpy.mockReturnValue({ exists: true, state: "open" });
 
-    expect(verifyPrCreateOutcome(state)).toBe("advance");
+    expect(verifyPhaseOutcome(state, PR_CREATE_GATE)).toBe("advance");
     expect(eventSpy.mock.calls.some((c: any[]) => c[0].event_type === "pr_verified")).toBe(true);
   });
 
@@ -2763,7 +2763,7 @@ describe("verifyPrCreateOutcome", () => {
     const state = makePrCreateDoneState({ prCreateVerifyAttempts: 0 });
     verificationSpy.mockReturnValue({ exists: false, reason: "not found" });
 
-    expect(verifyPrCreateOutcome(state)).toBe("redispatch");
+    expect(verifyPhaseOutcome(state, PR_CREATE_GATE)).toBe("redispatch");
     expect(state.prCreateVerifyAttempts).toBe(1);
   });
 
@@ -2771,16 +2771,16 @@ describe("verifyPrCreateOutcome", () => {
     const state = makePrCreateDoneState({ prCreateVerifyAttempts: MAX_VERIFY_ATTEMPTS - 1 });
     verificationSpy.mockReturnValue({ exists: false, reason: "not found" });
 
-    expect(verifyPrCreateOutcome(state)).toBe("hold");
+    expect(verifyPhaseOutcome(state, PR_CREATE_GATE)).toBe("hold");
     expect(state.prCreateVerifyAttempts).toBe(MAX_VERIFY_ATTEMPTS);
   });
 });
 
 // ---------------------------------------------------------------------------
-// verifyFinalMergeOutcome
+// verifyPhaseOutcome — FINAL_MERGE_GATE
 // ---------------------------------------------------------------------------
 
-describe("verifyFinalMergeOutcome", () => {
+describe("verifyPhaseOutcome (FINAL_MERGE_GATE)", () => {
   let eventSpy: ReturnType<typeof spyOn>;
   let notifySpy: ReturnType<typeof spyOn>;
   let verificationSpy: ReturnType<typeof spyOn>;
@@ -2799,12 +2799,12 @@ describe("verifyFinalMergeOutcome", () => {
 
   test("returns skip when phase is not final-merge", () => {
     const state = makeState({ phase: "work" });
-    expect(verifyFinalMergeOutcome(state)).toBe("skip");
+    expect(verifyPhaseOutcome(state, FINAL_MERGE_GATE)).toBe("skip");
   });
 
   test("returns skip when agents are not done", () => {
     const state = makeState({ phase: "final-merge" });
-    expect(verifyFinalMergeOutcome(state)).toBe("skip");
+    expect(verifyPhaseOutcome(state, FINAL_MERGE_GATE)).toBe("skip");
   });
 
   function makeFinalMergeDoneState(overrides: Partial<OrchestrationState> = {}) {
@@ -2820,7 +2820,7 @@ describe("verifyFinalMergeOutcome", () => {
     const state = makeFinalMergeDoneState();
     verificationSpy.mockReturnValue({ exists: true, merged: true, state: "closed" });
 
-    expect(verifyFinalMergeOutcome(state)).toBe("advance");
+    expect(verifyPhaseOutcome(state, FINAL_MERGE_GATE)).toBe("advance");
     expect(eventSpy.mock.calls.some((c: any[]) => c[0].event_type === "merge_verified")).toBe(true);
   });
 
@@ -2828,7 +2828,7 @@ describe("verifyFinalMergeOutcome", () => {
     const state = makeFinalMergeDoneState({ finalMergeVerifyAttempts: 0 });
     verificationSpy.mockReturnValue({ exists: true, merged: false, state: "open", mergeableState: "dirty" });
 
-    expect(verifyFinalMergeOutcome(state)).toBe("redispatch");
+    expect(verifyPhaseOutcome(state, FINAL_MERGE_GATE)).toBe("redispatch");
     expect(state.finalMergeVerifyAttempts).toBe(1);
     // Check the failure reason includes mergeableState detail
     expect(eventSpy.mock.calls[0][0].message).toContain("mergeable_state: dirty");
@@ -2838,7 +2838,7 @@ describe("verifyFinalMergeOutcome", () => {
     const state = makeFinalMergeDoneState({ finalMergeVerifyAttempts: MAX_VERIFY_ATTEMPTS - 1 });
     verificationSpy.mockReturnValue({ exists: false, reason: "404" });
 
-    expect(verifyFinalMergeOutcome(state)).toBe("hold");
+    expect(verifyPhaseOutcome(state, FINAL_MERGE_GATE)).toBe("hold");
     expect(state.finalMergeVerifyAttempts).toBe(MAX_VERIFY_ATTEMPTS);
   });
 });

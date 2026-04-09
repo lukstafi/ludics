@@ -498,7 +498,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "pr-create":
       // NOTE: Runner verifies PR exists on GitHub before agents reach done state here.
-      // See verifyPrCreateOutcome() in runner.ts.
+      // See verifyPhaseOutcome() in runner.ts.
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
       if (!hasAnyPr(state)) return null; // Block advancement without a PR URL (defense in depth)
       return "pr-comments";
@@ -601,7 +601,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "final-merge":
       // NOTE: Runner verifies PR is merged on GitHub before agents reach done state here.
-      // See verifyFinalMergeOutcome() in runner.ts.
+      // See verifyPhaseOutcome() in runner.ts.
       if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "suggest-refactor";
       return null;
 
