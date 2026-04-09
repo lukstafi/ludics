@@ -2096,68 +2096,6 @@ function maybeQueueProposals(): void {
   }
 }
 
-/** Nag user about tasks with unanswered questions (has_questions: true). */
-function maybeNagQuestions(): void {
-  const tasksDir = join(harnessDir(), "tasks");
-  if (!existsSync(tasksDir)) return;
-
-  // Debounce: nag at most once per hour per task
-  const NAG_INTERVAL_SECONDS = 3600;
-  const nagDir = join(magStateDir(), "question-nag-debounce");
-
-  const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
-
-  for (const f of files) {
-    const content = readFileSync(join(tasksDir, f), "utf-8");
-    if (!content.includes("\nhas_questions:")) continue;
-
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fmMatch) continue;
-
-    let fm: Record<string, unknown>;
-    try { fm = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>; } catch { continue; }
-
-    if (!fm.has_questions) continue;
-
-    const id = String(fm.id ?? "").trim();
-    const title = String(fm.title ?? "").trim();
-    const status = String(fm.status ?? "").trim();
-    if (status !== "ready" && status !== "in-progress" && status !== "deferred") continue;
-
-    // Check if task is assigned to a slot (increases urgency)
-    const slotNum = fm.slot ? Number(fm.slot) : null;
-    const isSlotted = slotNum !== null && slotNum > 0;
-    // Shorter interval when a slot is blocked
-    const interval = isSlotted ? Math.floor(NAG_INTERVAL_SECONDS / 2) : NAG_INTERVAL_SECONDS;
-
-    // Debounce check
-    const nagFile = join(nagDir, `${encodeURIComponent(id)}.epoch`);
-    if (existsSync(nagFile)) {
-      try {
-        const lastEpoch = parseInt(readFileSync(nagFile, "utf-8").trim(), 10);
-        if ((Math.floor(Date.now() / 1000) - lastEpoch) < interval) continue;
-      } catch { /* proceed */ }
-    }
-
-    // Extract questions section from task body
-    const questionsMatch = content.match(/## Questions\n\n([\s\S]*?)(?=\n##|\n---|\s*$)/);
-    const questions = questionsMatch?.[1]?.trim();
-    if (!questions || questions.toLowerCase() === "none.") continue;
-    const slotNote = isSlotted ? ` (slot ${slotNum} blocked)` : "";
-
-    // Send nag notification
-    {
-      const result = safeSyncOutput(
-        ["ludics", "notify", "outgoing", `Unanswered questions${slotNote} — ${id}: ${title}\n\n${questions}`],
-      );
-      if (result.ok) {
-        mkdirSync(nagDir, { recursive: true });
-        writeFileSync(nagFile, String(Math.floor(Date.now() / 1000)));
-        console.error(`ludics: nagged about unanswered questions for ${id}`);
-      }
-    }
-  }
-}
 
 // --- Queue hold state ---
 
@@ -2743,9 +2681,6 @@ export async function magStart(args: string[]): Promise<void> {
 
     // Auto-queue proposals for top ready queue tasks (not slot-dependent)
     maybeQueueProposals();
-
-    // Nag user about tasks with unanswered questions
-    maybeNagQuestions();
 
     // Auto-clear slots whose task reached done status
     maybeClearDoneSlots();
