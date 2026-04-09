@@ -96,7 +96,9 @@ export function readFrontmatterField(content: string, field: string): string | n
 
   const value = (data as Record<string, unknown>)[field];
   if (value == null) return null;
-  return String(value);
+  const str = String(value);
+  if (!str || str.toLowerCase() === "null") return null;
+  return str;
 }
 
 export function updateFrontmatterField(filePath: string, field: string, value: string): void {

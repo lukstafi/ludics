@@ -121,8 +121,13 @@ describe("readFrontmatterField", () => {
     expect(readFrontmatterField(content, "proposal")).toBeNull();
   });
 
-  test("returns null for null value", () => {
+  test("returns null for bare null value", () => {
     const content = "---\nproposal: null\n---\n";
+    expect(readFrontmatterField(content, "proposal")).toBeNull();
+  });
+
+  test("returns null for quoted 'null' string (backward compat)", () => {
+    const content = '---\nproposal: "null"\n---\n';
     expect(readFrontmatterField(content, "proposal")).toBeNull();
   });
 
