@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
+import { parseMergeVoteFilename } from "./merge-vote-files.ts";
 
 export function readMergeVotes(
   peerSyncDir: string,
@@ -9,8 +10,9 @@ export function readMergeVotes(
   if (!existsSync(dir)) return {};
   const out: Record<string, string> = {};
   for (const entry of readdirSync(dir)) {
-    if (!entry.startsWith(`round-${round}-`) || !entry.endsWith(".txt")) continue;
-    const agent = entry.replace(`round-${round}-`, "").replace(/\.txt$/, "");
+    const parsed = parseMergeVoteFilename(entry);
+    if (!parsed || parsed.round !== round) continue;
+    const agent = parsed.agentName;
     const value = readFileSync(join(dir, entry), "utf-8").trim();
     if (value) out[agent] = value;
   }

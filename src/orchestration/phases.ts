@@ -3,7 +3,7 @@ import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { isPrUrl } from "./github.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
-import { planFilePath, parsePlanFilename } from "./plan-files.ts";
+import { planFilePath, mergedPlanFilePath, parsePlanFilename } from "./plan-files.ts";
 import { reviewFilePath } from "./review-files.ts";
 import type { AgentConfig, AgentRuntimeState, OrchestrationState } from "./state.ts";
 import { readDuoPeerState, bothSlotsReadyForMerge, isMergeCoordinator } from "./cross-slot.ts";
@@ -76,11 +76,11 @@ function requiredArtifactPath(state: OrchestrationState, agent: AgentConfig): st
   const dir = state.peerSyncDir;
   switch (state.phase) {
     case "plan":
-      return planFilePath(dir, "plan", state.round, agent.name);
+      return planFilePath(dir, state.round, agent.name);
     case "plan-merge":
       // Only coder participates; writes a merged plan file keyed by planMergeRound so that
       // each retry iteration requires a fresh file and can't be satisfied by a stale one.
-      return planFilePath(dir, "merged", state.round, state.planMergeRound ?? 0);
+      return mergedPlanFilePath(dir, state.round, state.planMergeRound ?? 0);
     case "plan-review":
       // Uses planMergeRound to give each iteration its own review file so the
       // artifact gate isn't bypassed by a stale file from a previous iteration.
