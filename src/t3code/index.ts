@@ -302,9 +302,10 @@ function readTaskStatus(taskId: string, harness: string): string | null {
   }
 }
 
-/** Try to extract a task ID from a thread title (e.g. "task-abc123 (coder)"). */
+/** Try to extract a task ID from a thread title (e.g. "s1_coder_task-40f283bd"). */
 export function extractTaskId(title: string): string | null {
-  const match = title.match(/\b(task-[a-f0-9]+|gh-[a-z]+-\d+)\b/);
+  // Match task-<alnum> or gh-<project>-<num>, preceded by underscore, boundary, or start
+  const match = title.match(/(?:^|[\b_])(task-[a-z0-9]+|gh-[a-z]+-\d+)\b/);
   return match ? match[1]! : null;
 }
 

@@ -26,6 +26,14 @@ describe("extractTaskId", () => {
   test("extracts first match when multiple IDs present", () => {
     expect(extractTaskId("task-aaa111 blocks task-bbb222")).toBe("task-aaa111");
   });
+
+  test("extracts task ID from slotSessionName format (s1_coder_task-xxx)", () => {
+    expect(extractTaskId("s1_coder_task-40f283bd")).toBe("task-40f283bd");
+  });
+
+  test("extracts task ID from slotSessionName without role (s1_task-xxx)", () => {
+    expect(extractTaskId("s1_task-abc123")).toBe("task-abc123");
+  });
 });
 
 // ---------------------------------------------------------------------------
