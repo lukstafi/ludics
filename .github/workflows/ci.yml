@@ -27,3 +27,6 @@ jobs:
 
       - name: Lint CLI/README drift
         run: bun run lint:cli-readme
+
+      - name: Lint — no mock.module() in tests
+        run: bun run lint:no-mock-module
