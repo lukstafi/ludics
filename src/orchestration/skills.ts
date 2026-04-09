@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { assertRepoRelativeProposalPath, readFrontmatterField } from "../adapters/task-launch.ts";
+import { assertRepoRelativeProposalPath } from "../adapters/task-launch.ts";
+import { readFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import type { Phase } from "./phases.ts";

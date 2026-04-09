@@ -1,29 +1,6 @@
 import { existsSync, readFileSync } from "fs";
 import { join, normalize, resolve } from "path";
-
-function normalizeYamlScalar(value: string): string {
-  const trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"'))
-    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1).trim();
-  }
-  return trimmed;
-}
-
-export function readFrontmatterField(content: string, field: string): string | null {
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!fmMatch) return null;
-
-  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = fmMatch[1]!.match(new RegExp(`^${escapedField}:\\s*(.+)$`, "m"));
-  if (!match) return null;
-
-  const value = normalizeYamlScalar(match[1]!);
-  if (!value || value.toLowerCase() === "null") return null;
-  return value;
-}
+import { readFrontmatterField } from "../tasks/markdown.ts";
 
 /** Throws if `rawPath` is not repo-relative (absolute, home-relative, or escapes tree). */
 export function assertRepoRelativeProposalPath(rawPath: string): void {
