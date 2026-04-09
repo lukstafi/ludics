@@ -579,8 +579,31 @@ export function tasksAbandon(
   taskId: string,
   opts: { source?: string; scope?: string } = {},
 ): void {
+  // Dynamic imports to avoid circular deps (tasks → mag → tasks)
+  const { findSlotForTask } = require("../mag.ts");
+  const { slotClear } = require("../slots/index.ts");
+
+  // Check slot assignment first — clear it even if the task file is missing/stale,
+  // so capacity isn't blocked by out-of-sync state.
+  const slotNum = findSlotForTask(taskId);
+  if (slotNum !== null) {
+    slotClear(slotNum, "abandoned");
+  }
+
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
   if (!existsSync(taskFile)) {
+    if (slotNum !== null) {
+      // Slot was cleared above; emit event and return gracefully
+      emitEvent({
+        event_type: "task_abandon",
+        source: opts.source ?? "cli",
+        scope: opts.scope ?? "task",
+        task: taskId,
+        status: "abandoned",
+        message: `abandoned from slot ${slotNum} (task file missing)`,
+      });
+      return;
+    }
     throw new Error(`task not found: ${taskId}`);
   }
   const content = readFileSync(taskFile, "utf-8");
@@ -590,14 +613,7 @@ export function tasksAbandon(
     throw new Error(`task ${taskId} is already in terminal status: ${currentStatus}`);
   }
 
-  // Dynamic imports to avoid circular deps (tasks → mag → tasks)
-  const { findSlotForTask } = require("../mag.ts");
-  const { slotClear } = require("../slots/index.ts");
-
-  const slotNum = findSlotForTask(taskId);
-  if (slotNum !== null) {
-    slotClear(slotNum, "abandoned");
-  } else {
+  if (slotNum === null) {
     updateFrontmatterField(taskFile, "status", "abandoned");
     updateFrontmatterField(taskFile, "completed", new Date().toISOString().slice(0, 19) + "Z");
   }

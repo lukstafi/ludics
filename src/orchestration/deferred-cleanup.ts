@@ -47,8 +47,14 @@ export function saveDeferredCleanups(entries: CleanupEntry[]): void {
     const tmp = file + ".tmp";
     writeFileSync(tmp, JSON.stringify(entries, null, 2) + "\n");
     renameSync(tmp, file);
-  } catch (err) {
-    console.error(`ludics: failed to save deferred cleanups: ${err instanceof Error ? err.message : String(err)}`);
+  } catch (err: unknown) {
+    // Tolerate permission errors (e.g., harness dir not writable in test/CI environments)
+    // but re-throw other failures (ENOSPC, I/O errors) to avoid silently losing cleanup entries
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "EPERM") {
+      console.error(`ludics: failed to save deferred cleanups (EPERM): ${err.message}`);
+      return;
+    }
+    throw err;
   }
 }
 
