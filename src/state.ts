@@ -146,31 +146,40 @@ export function statePush(): void {
   const repoDir = stateRepoDir();
 
   // Controller-only push — simple pull-rebase then push.
-  // No multi-writer conflict resolution, squash, or stash needed.
+  // Abort on rebase conflicts rather than pushing divergent history.
+  const rebaseDir = join(repoDir, ".git", "rebase-merge");
+  const rebaseApply = join(repoDir, ".git", "rebase-apply");
+
+  // Clean up any stuck rebase from a previous run before starting
+  if (existsSync(rebaseDir) || existsSync(rebaseApply)) {
+    run(["git", "rebase", "--abort"], repoDir);
+    console.error("ludics: aborted stuck rebase before push");
+  }
+
   const pullResult = run(["git", "pull", "--rebase"], repoDir);
   if (!pullResult.success) {
-    // Abort any stuck rebase and retry
-    const rebaseDir = join(repoDir, ".git", "rebase-merge");
-    const rebaseApply = join(repoDir, ".git", "rebase-apply");
+    // Rebase conflicted — abort and skip the push to avoid divergent history
     if (existsSync(rebaseDir) || existsSync(rebaseApply)) {
       run(["git", "rebase", "--abort"], repoDir);
-      console.error("ludics: aborted stuck rebase, retrying pull");
-      const retry = run(["git", "pull", "--rebase"], repoDir);
-      if (!retry.success) {
-        console.error("ludics: pull failed after retry — pushing anyway");
-      }
-    } else {
-      console.error("ludics: pull failed — pushing anyway");
     }
+    console.error("ludics: pull --rebase failed — skipping push (will retry next checkpoint)");
+    return;
   }
 
   const pushResult = run(["git", "push"], repoDir);
   if (pushResult.success) {
     console.error("ludics: pushed to remote");
   } else {
-    // Retry once
+    // Retry once with a fresh pull-rebase
     console.error("ludics: push rejected, retrying...");
-    run(["git", "pull", "--rebase"], repoDir);
+    const pullRetry = run(["git", "pull", "--rebase"], repoDir);
+    if (!pullRetry.success) {
+      if (existsSync(rebaseDir) || existsSync(rebaseApply)) {
+        run(["git", "rebase", "--abort"], repoDir);
+      }
+      console.error("ludics: pull --rebase failed on retry — skipping push");
+      return;
+    }
     const retry = run(["git", "push"], repoDir);
     if (retry.success) {
       console.error("ludics: pushed to remote (retry)");
