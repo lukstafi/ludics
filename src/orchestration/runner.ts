@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } fr
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
-import { DONE_STATUSES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, pairReviewVerdict, phaseTimeoutExpired } from "./phases.ts";
+import { DONE_STATUSES, PHASE_CATEGORIES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, pairReviewVerdict, phaseTimeoutExpired } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
   statusFileFingerprint, touchStatusFile, writeInterrupt, writePeerSync,
@@ -15,7 +15,7 @@ import {
   type AgentConfig, type OrchestrationState,
 } from "./state.ts";
 import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
-import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile } from "./github.ts";
+import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile, type PrVerification } from "./github.ts";
 import { updateFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
@@ -48,69 +48,74 @@ const TTYD_HEALTH_CHECK_INTERVAL_S = 30;
 type VerificationDecision = "advance" | "redispatch" | "hold" | "skip";
 export const MAX_VERIFY_ATTEMPTS = 3;
 
-/**
- * After pr-create agents are done, verify the PR actually exists on GitHub.
- * Returns a decision: advance (PR verified), redispatch (retry), hold (max retries), skip (not applicable).
- */
-export function verifyPrCreateOutcome(state: OrchestrationState): VerificationDecision {
-  if (state.phase !== "pr-create") return "skip";
-  if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return "skip";
+import type { Phase } from "./phases.ts";
 
-  const prUrl = getFirstPrUrl(state);
-  if (!prUrl) {
-    return handleVerifyFailure(state, "prCreate", "No PR URL found in agent state or .pr artifact");
-  }
-
-  const v = getPrVerification(prUrl);
-  if (v.exists) {
-    emitEvent({
-      event_type: "pr_verified",
-      source: "orchestration", scope: "slot",
-      slot: state.slot, task: state.taskId,
-      action: "pr-create verification", status: "success",
-      message: `PR verified (${v.state}): ${prUrl}`,
-    });
-    state.phaseRetryContext = null;
-    return "advance";
-  }
-
-  return handleVerifyFailure(state, "prCreate", `${v.reason}: ${prUrl}`);
+interface VerificationGateConfig {
+  phase: Phase;
+  gate: "prCreate" | "finalMerge";
+  successEvent: string;
+  checkSuccess: (v: PrVerification) => boolean;
+  formatSuccess: (prUrl: string, v: PrVerification) => string;
+  formatFailure: (prUrl: string, v: PrVerification) => string;
 }
 
+const PR_CREATE_GATE: VerificationGateConfig = {
+  phase: "pr-create",
+  gate: "prCreate",
+  successEvent: "pr_verified",
+  checkSuccess: (v) => v.exists,
+  formatSuccess: (prUrl, v) => `PR verified (${v.state}): ${prUrl}`,
+  formatFailure: (prUrl, v) => `${v.reason}: ${prUrl}`,
+};
+
+const FINAL_MERGE_GATE: VerificationGateConfig = {
+  phase: "final-merge",
+  gate: "finalMerge",
+  successEvent: "merge_verified",
+  checkSuccess: (v) => v.exists && v.merged === true,
+  formatSuccess: (prUrl) => `PR merge verified: ${prUrl}`,
+  formatFailure: (prUrl, v) => {
+    let detail = v.reason;
+    if (v.exists && !v.merged) {
+      detail = `PR is ${v.state} but not merged`;
+      if (v.mergeableState && v.mergeableState !== "clean") {
+        detail += ` (mergeable_state: ${v.mergeableState})`;
+      }
+    }
+    return `${detail}: ${prUrl}`;
+  },
+};
+
 /**
- * After final-merge agents are done, verify the PR is actually merged on GitHub.
+ * Unified verification gate: after agents are done, verify the expected outcome
+ * on GitHub. Returns a decision: advance (verified), redispatch (retry),
+ * hold (max retries), skip (not applicable).
  */
-export function verifyFinalMergeOutcome(state: OrchestrationState): VerificationDecision {
-  if (state.phase !== "final-merge") return "skip";
+export { PR_CREATE_GATE, FINAL_MERGE_GATE };
+export function verifyPhaseOutcome(state: OrchestrationState, config: VerificationGateConfig): VerificationDecision {
+  if (state.phase !== config.phase) return "skip";
   if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return "skip";
 
   const prUrl = getFirstPrUrl(state);
   if (!prUrl) {
-    return handleVerifyFailure(state, "finalMerge", "No PR URL found");
+    const suffix = config.gate === "prCreate" ? " in agent state or .pr artifact" : "";
+    return handleVerifyFailure(state, config.gate, `No PR URL found${suffix}`);
   }
 
   const v = getPrVerification(prUrl);
-  if (v.exists && v.merged) {
+  if (config.checkSuccess(v)) {
     emitEvent({
-      event_type: "merge_verified",
+      event_type: config.successEvent,
       source: "orchestration", scope: "slot",
       slot: state.slot, task: state.taskId,
-      action: "final-merge verification", status: "success",
-      message: `PR merge verified: ${prUrl}`,
+      action: `${config.phase} verification`, status: "success",
+      message: config.formatSuccess(prUrl, v),
     });
     state.phaseRetryContext = null;
     return "advance";
   }
 
-  // Build detailed failure reason for the retry prompt
-  let detail = v.reason;
-  if (v.exists && !v.merged) {
-    detail = `PR is ${v.state} but not merged`;
-    if (v.mergeableState && v.mergeableState !== "clean") {
-      detail += ` (mergeable_state: ${v.mergeableState})`;
-    }
-  }
-  return handleVerifyFailure(state, "finalMerge", `${detail}: ${prUrl}`);
+  return handleVerifyFailure(state, config.gate, config.formatFailure(prUrl, v));
 }
 
 export function handleVerifyFailure(
@@ -931,15 +936,8 @@ export async function interruptAgent(
 }
 
 async function handleTimeout(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
-  if (
-    state.phase === "clarify"
-    || state.phase === "pushback"
-    || state.phase === "plan"
-    || state.phase === "plan-merge"
-    || state.phase === "plan-review"
-  ) {
-    return;
-  }
+  const category = PHASE_CATEGORIES[state.phase];
+  if (category === "pre-work" || category === "terminal") return;
 
   // Note: for forwarded pr-comments (upstream monitoring), timeout interrupts are NOT
   // suppressed. If redispatchForPrComments dispatched a turn that hangs, it should be
@@ -947,21 +945,11 @@ async function handleTimeout(state: OrchestrationState, transport: Orchestration
   // when new comments trigger a fresh dispatch, preventing the latch from blocking
   // subsequent turns.
 
-  if (
-    state.phase === "work"
-    || state.phase === "review"
-    || state.phase === "update-docs"
-    || state.phase === "pr-create"
-    || state.phase === "pr-comments"
-    || state.phase === "final-merge"
-    || state.phase === "forward-pr"
-  ) {
-    for (const agent of state.agents) {
-      if (!agentParticipatesInPhase(state, agent)) continue;
-      const runtime = state.agentStates[agent.name]!;
-      if (runtime.interrupted || runtime.status === "done" || runtime.status === "review-done") continue;
-      await interruptAgent(state, agent, transport);
-    }
+  for (const agent of state.agents) {
+    if (!agentParticipatesInPhase(state, agent)) continue;
+    const runtime = state.agentStates[agent.name]!;
+    if (runtime.interrupted || runtime.status === "done" || runtime.status === "review-done") continue;
+    await interruptAgent(state, agent, transport);
   }
 }
 
@@ -1326,8 +1314,8 @@ export async function runOrchestration(
     }
 
     // --- Verification gates: confirm actual outcome before allowing transition ---
-    const prCreateDecision = verifyPrCreateOutcome(state);
-    const finalMergeDecision = verifyFinalMergeOutcome(state);
+    const prCreateDecision = verifyPhaseOutcome(state, PR_CREATE_GATE);
+    const finalMergeDecision = verifyPhaseOutcome(state, FINAL_MERGE_GATE);
     const gateDecision = [prCreateDecision, finalMergeDecision].find(d => d !== "skip") ?? "skip";
 
     if (gateDecision === "redispatch" || gateDecision === "hold") {
