@@ -24,6 +24,9 @@ projects:
     path: ~/my-project    # Local checkout path (used for slot start, worktree creation)
     issues: true          # Include GitHub issues as tasks
     priority: false       # Priority project: preempt slots when tasks arrive
+    postponed: false      # When true, tasks from this project are excluded from the ready queue,
+                          # auto-assignment, and auto-start. For temporarily disabling processing
+                          # (e.g. required machine unavailable).
     milestones: false     # When true, task sorting uses milestone as primary key (lexicographic).
                           # For GitHub-backed tasks, milestone syncs from GitHub's milestone field.
                           # Tasks missing milestone field emit a warning during tasks sync.

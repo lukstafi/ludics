@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath, postponedProjectSet } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
@@ -1991,6 +1991,10 @@ async function maybeAutoStartSlots(): Promise<void> {
     // Skip deferred tasks
     if (isTaskDeferred(taskId)) continue;
 
+    // Skip tasks from postponed projects
+    const projectMatch = content.match(/^project:\s*(.+)$/m);
+    if (projectMatch && postponedProjectSet().has(projectMatch[1]!.trim().toLowerCase())) continue;
+
     // Task has a proposal but no session — auto-start
     try {
       await slotStart(slotNum);
@@ -2299,9 +2303,10 @@ function getSortedReadyCandidates(): ReadyCandidate[] {
     if (status !== "ready") continue;
     const blockedBy = deps.blocked_by;
     if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
+    const project = String(fm.project ?? "").trim();
+    if (postponedProjectSet().has(project.toLowerCase())) continue;
 
     const priority = String(fm.priority ?? "B").trim();
-    const project = String(fm.project ?? "").trim();
     const milestone = fm.milestone ? String(fm.milestone).trim() : undefined;
     const deadlineRaw = fm.deadline ? String(fm.deadline).trim() : "";
     const deadline = deadlineRaw && deadlineRaw !== "null" ? deadlineRaw : "";

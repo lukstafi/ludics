@@ -20,6 +20,10 @@ export interface ProjectConfig {
   path?: string;
   issues?: boolean;
   priority?: boolean;
+  /** When true, tasks from this project are excluded from the ready queue,
+   *  auto-assignment, and auto-start. For temporarily disabling processing
+   *  (e.g. required machine unavailable). */
+  postponed?: boolean;
   /**
    * When true, task sorting uses milestone as the primary key (lexicographic),
    * with virtual priority as the tiebreaker within the same milestone.
@@ -320,6 +324,17 @@ export function slotsCount(): number {
 export function priorityProjects(): string[] {
   const config = loadConfigSync();
   return (config.projects ?? []).filter((p) => p.priority).map((p) => p.name);
+}
+
+export function postponedProjects(): Set<string> {
+  const config = loadConfigSync();
+  return new Set((config.projects ?? []).filter((p) => p.postponed).map((p) => p.name.toLowerCase()));
+}
+
+let _postponedProjectsCache: Set<string> | null = null;
+export function postponedProjectSet(): Set<string> {
+  if (!_postponedProjectsCache) _postponedProjectsCache = postponedProjects();
+  return _postponedProjectsCache;
 }
 
 export function preemptAutonomy(): "auto" | "suggest" {
