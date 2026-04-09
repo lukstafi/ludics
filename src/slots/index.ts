@@ -799,6 +799,9 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
     if (force) {
       console.error(`ludics: slot ${slotNum}: force-clearing local state (skipping remote stop on ${ctx.machine})`);
     } else {
+      if (!heartbeatIsFresh(ctx.machine)) {
+        throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot stop`);
+      }
       const { recordIntent } = await import("../cluster-http.ts");
       const epoch = Math.floor(Date.now() / 1000);
       recordIntent(slotNum, { action: "stop", epoch, machine: ctx.machine, taskId: ctx.taskId, preserveState });

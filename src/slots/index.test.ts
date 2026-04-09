@@ -811,6 +811,11 @@ describe("remote slot dispatch via HTTP", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-2", "Remote stop test");
 
+    // Create a fresh heartbeat so heartbeatIsFresh("worker-a") returns true
+    const hbDir = getHeartbeatsDir();
+    mkdirSync(hbDir, { recursive: true });
+    writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
+
     slotAssign(1, "task-remote-2", "tmux", "", "", "", "worker-a");
 
     // Stamp Session Started to simulate an active session
@@ -852,6 +857,20 @@ describe("remote slot dispatch via HTTP", () => {
     // Session Started should be cleared (force path runs cleanup)
     const data = readSlotJson(1, harness);
     expect(data.sessionStarted).toBeNull();
+  });
+
+  test("remote slotStop (non-force) fails fast when machine is offline", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-remote-stop-offline", "Remote stop offline test");
+
+    slotAssign(1, "task-remote-stop-offline", "tmux", "", "", "", "worker-a");
+
+    // No heartbeat → machine offline
+    await expect(slotStop(1, false, false)).rejects.toThrow("offline — cannot stop");
   });
 
   test("remote slotResume fails fast when machine is offline", async () => {
