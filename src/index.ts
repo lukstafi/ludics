@@ -135,6 +135,7 @@ Commands:
   tasks duplicates             Find potential duplicate tasks
   tasks migrate-refs [--dry-run]
                                Migrate legacy task-<number> IDs to deterministic IDs and rewrite references
+  tasks abandon <id>           Abandon a task (clears slot if assigned, sets status/completed)
   tasks migrate-deferred       Migrate legacy deferred_launch/approved fields to status: deferred
 
   flow ready                   Priority-sorted ready tasks

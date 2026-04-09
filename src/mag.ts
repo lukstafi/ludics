@@ -17,6 +17,7 @@ import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { isElaborated } from "./tasks/elaboration.ts";
+import { tasksAbandon } from "./tasks/index.ts";
 import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
 import {
   notifyOutgoing,
@@ -673,23 +674,25 @@ function isTaskDeferred(taskId: string): boolean {
 }
 
 function abandonTaskFromNotification(taskId: string): void {
-  const slotNum = findSlotForTask(taskId);
-  if (slotNum === null) {
-    // Handle unslotted deferred tasks — abandon directly via frontmatter
-    const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
-    if (existsSync(taskFile)) {
-      updateFrontmatterField(taskFile, "status", "abandoned");
-      updateFrontmatterField(taskFile, "completed", new Date().toISOString().slice(0, 19) + "Z");
-      emitEvent({
-        event_type: "notify_abandon",
-        source: "notify",
-        scope: "mag",
-        task: taskId,
-        status: "abandoned",
-        message: "abandoned deferred task via notification (no slot)",
-      });
-      console.error(`ludics: abandoned deferred task ${taskId} via notification (no slot)`);
-    } else {
+  try {
+    const slotNum = findSlotForTask(taskId);
+    tasksAbandon(taskId, { source: "notify", scope: "mag" });
+    // Preserve the notification-specific success event for existing event consumers
+    emitEvent({
+      event_type: "notify_abandon",
+      source: "notify",
+      scope: "mag",
+      ...(slotNum !== null ? { slot: slotNum } : {}),
+      task: taskId,
+      status: "abandoned",
+      message: slotNum !== null
+        ? "abandoned via notification button"
+        : "abandoned deferred task via notification (no slot)",
+    });
+    console.error(`ludics: abandoned ${taskId} via notification button`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("task not found")) {
       console.error(`ludics: abandon request ignored: task ${taskId} not found`);
       emitEvent({
         event_type: "notify_abandon_ignored",
@@ -698,33 +701,17 @@ function abandonTaskFromNotification(taskId: string): void {
         task: taskId,
         message: "task not found",
       });
+    } else {
+      console.error(`ludics: failed to abandon ${taskId}: ${msg}`);
+      emitEvent({
+        event_type: "notify_abandon_error",
+        source: "notify",
+        scope: "mag",
+        task: taskId,
+        status: "error",
+        message: msg,
+      });
     }
-    return;
-  }
-
-  try {
-    slotClear(slotNum, "abandoned");
-    emitEvent({
-      event_type: "notify_abandon",
-      source: "notify",
-      scope: "mag",
-      slot: slotNum,
-      task: taskId,
-      status: "abandoned",
-      message: "abandoned via notification button",
-    });
-    console.error(`ludics: abandoned ${taskId} from slot ${slotNum} via notification button`);
-  } catch (err) {
-    console.error(`ludics: failed to abandon ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
-    emitEvent({
-      event_type: "notify_abandon_error",
-      source: "notify",
-      scope: "mag",
-      slot: slotNum,
-      task: taskId,
-      status: "error",
-      message: err instanceof Error ? err.message : String(err),
-    });
   }
 }
 
