@@ -1,0 +1,11 @@
+{
+  "healthReport": {
+    "exists": false,
+    "content": "",
+    "date": null
+  },
+  "doctor": {
+    "output": "Doctor check failed",
+    "timestamp": "2026-04-09T16:57:04.807Z"
+  }
+}

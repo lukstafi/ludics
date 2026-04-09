@@ -142,6 +142,65 @@ describe("computeSlotLiveness", () => {
   });
 });
 
+describe("generateHealthData", () => {
+  async function getHealthData() {
+    const { generateHealthData, _resetDoctorCache } = await import("./dashboard.ts");
+    _resetDoctorCache();
+    return generateHealthData();
+  }
+
+  test("missing health report returns exists=false", async () => {
+    const data = await getHealthData() as any;
+    expect(data.healthReport.exists).toBe(false);
+    expect(data.healthReport.content).toBe("");
+    expect(data.healthReport.date).toBeNull();
+  });
+
+  test("present health report returns exists=true with content and date", async () => {
+    const magDir = join(harnessDir(), "mag");
+    mkdirSync(magDir, { recursive: true });
+    const content = "# Health Check - 2026-04-09 12:00\n\nAll systems operational.\n";
+    writeFileSync(join(magDir, "health-report.md"), content);
+
+    const data = await getHealthData() as any;
+    expect(data.healthReport.exists).toBe(true);
+    expect(data.healthReport.content).toBe(content);
+    expect(data.healthReport.date).toBe("2026-04-09 12:00");
+  });
+
+  test("health report without date header returns date=null", async () => {
+    const magDir = join(harnessDir(), "mag");
+    mkdirSync(magDir, { recursive: true });
+    const content = "## Some other header\n\nNo date here.\n";
+    writeFileSync(join(magDir, "health-report.md"), content);
+
+    const data = await getHealthData() as any;
+    expect(data.healthReport.exists).toBe(true);
+    expect(data.healthReport.date).toBeNull();
+    expect(data.healthReport.content).toBe(content);
+  });
+
+  test("doctor output has output and timestamp fields", async () => {
+    const data = await getHealthData() as any;
+    expect(typeof data.doctor.output).toBe("string");
+    expect(typeof data.doctor.timestamp).toBe("string");
+    // timestamp should be a valid ISO date
+    expect(new Date(data.doctor.timestamp).toISOString()).toBe(data.doctor.timestamp);
+  });
+
+  test("doctor cache prevents re-spawn within TTL", async () => {
+    const { generateHealthData, _resetDoctorCache } = await import("./dashboard.ts");
+    _resetDoctorCache();
+
+    const first = generateHealthData() as any;
+    const second = generateHealthData() as any;
+
+    // Same cached result
+    expect(second.doctor.output).toBe(first.doctor.output);
+    expect(second.doctor.timestamp).toBe(first.doctor.timestamp);
+  });
+});
+
 // Note: /api/slot-resume follows the exact same pattern as /api/slot-start
 // (validate slot 1-6, spawnSync `ludics slot N resume`, return OK/error).
 // slotResume() itself is already tested in src/slots/index.test.ts.

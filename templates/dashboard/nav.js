@@ -8,6 +8,7 @@
         { href: 'ntfy.html', label: 'ntfy' },
         { href: 'tasks.html', label: 'Tasks' },
         { href: 'briefing.html', label: 'Briefing' },
+        { href: 'health.html', label: 'Health' },
     ];
     const current = window.location.pathname.split('/').pop() || 'index.html';
     const nav = document.querySelector('.nav-links');
