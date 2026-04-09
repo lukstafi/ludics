@@ -15,6 +15,7 @@ import { getUrl } from "./network.ts";
 import { inspectManagedServerProcess, processAlive, readServerRecord, readSlotState, t3codeStartingPath } from "./t3code/server.ts";
 import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
+import { ludicsSelfCommand } from "./orchestration/util.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
 import { clusterIsController, heartbeatIsFresh, clusterCurrentMachineName } from "./cluster.ts";
 import { getIntentForDashboard } from "./cluster-http.ts";
@@ -982,6 +983,63 @@ function generateBriefing(): Record<string, unknown> {
   return { date, content, exists: true };
 }
 
+// --- Generate health.json ---
+
+let doctorCache: { output: string; timestamp: string; cachedAt: number } | null = null;
+const DOCTOR_CACHE_TTL = 300_000; // 5 minutes
+
+/** Exported for testing; resets the doctor subprocess cache. */
+export function _resetDoctorCache(): void {
+  doctorCache = null;
+}
+
+export function generateHealthData(): Record<string, unknown> {
+  const reportFile = join(harnessDir(), "mag", "health-report.md");
+  let healthReport: Record<string, unknown>;
+  if (existsSync(reportFile)) {
+    const content = readFileSync(reportFile, "utf-8");
+    let date: string | null = null;
+    const dateMatch = content.match(/^# Health Check - (.+)$/m);
+    if (dateMatch) date = dateMatch[1]!;
+    healthReport = { exists: true, content, date };
+  } else {
+    healthReport = { exists: false, content: "", date: null };
+  }
+
+  const now = Date.now();
+  if (!doctorCache || now - doctorCache.cachedAt > DOCTOR_CACHE_TTL) {
+    let output: string;
+    try {
+      // Using Bun.spawnSync directly (not safeSyncOutput) because we need timeout
+      // support. safeSyncOutput does not accept a timeout parameter.
+      // ludicsSelfCommand handles script-mode vs compiled-binary invocation.
+      const result = Bun.spawnSync(ludicsSelfCommand(["doctor"]), {
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 10_000,
+      });
+      if (result.exitCode === 0) {
+        output = result.stdout.toString().trim();
+      } else {
+        const stderr = result.stderr.toString().trim();
+        output = "Doctor check failed" + (stderr ? `\n${stderr}` : "");
+      }
+    } catch {
+      output = "Doctor check failed";
+    }
+    doctorCache = {
+      output,
+      timestamp: new Date().toISOString(),
+      cachedAt: now,
+    };
+  }
+
+  return {
+    healthReport,
+    doctor: { output: doctorCache.output, timestamp: doctorCache.timestamp },
+  };
+}
+
 // --- Generate all ---
 
 export function dashboardGenerate(): void {
@@ -1021,6 +1079,9 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "briefing.json"), JSON.stringify(generateBriefing(), null, 2));
   console.error("  briefing.json");
+
+  writeFileSync(join(dataDir, "health.json"), JSON.stringify(generateHealthData(), null, 2));
+  console.error("  health.json");
 
   writeFileSync(join(dataDir, "t3code.json"), JSON.stringify(generateT3code(), null, 2));
   console.error("  t3code.json");
