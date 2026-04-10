@@ -7,6 +7,7 @@ import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, remo
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
+import { findSlotForTask, slotClear } from "../slots/index.ts";
 
 function tasksDir(): string {
   return join(harnessDir(), "tasks");
@@ -579,10 +580,6 @@ export function tasksAbandon(
   taskId: string,
   opts: { source?: string; scope?: string } = {},
 ): void {
-  // Dynamic imports to avoid circular deps (tasks → mag → tasks)
-  const { findSlotForTask } = require("../mag.ts");
-  const { slotClear } = require("../slots/index.ts");
-
   // Check slot assignment first — clear it even if the task file is missing/stale,
   // so capacity isn't blocked by out-of-sync state.
   const slotNum = findSlotForTask(taskId);

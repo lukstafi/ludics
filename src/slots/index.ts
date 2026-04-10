@@ -34,6 +34,15 @@ export function setWorkerSlotsOverride(data: Map<number, SlotData> | null): void
   workerSlotsOverride = data;
 }
 
+export function findSlotForTask(taskId: string): number | null {
+  const slots = readAllSlotJson(slotsCount());
+  for (const [slotNum, data] of slots) {
+    const currentTask = data.task ?? "";
+    if (currentTask === taskId) return slotNum;
+  }
+  return null;
+}
+
 function ensureSlotsDir(): void {
   const dir = slotJsonDir();
   if (existsSync(dir)) {
