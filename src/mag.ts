@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath, postponedProjectSet } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
@@ -2037,7 +2037,7 @@ function maybeUnstickAssignedSlots(): void {
 /** Queue draft-proposals for the top ready queue tasks that are
  *  elaborated, have no unanswered questions, and have no proposal yet.
  *  Uses the same sorted candidate list as maybeFillEmptySlots. */
-function maybeQueueProposals(): void {
+function maybeQueueProposals(config?: LudicsFullConfig): void {
   if (startSessionsAutonomy() === "manual") return;
   if (isQueueHeld()) return; // hold suppresses proposals too
 
@@ -2049,7 +2049,7 @@ function maybeQueueProposals(): void {
   }
 
   // Reuse the sorted ready queue from maybeFillEmptySlots logic
-  const sorted = getSortedReadyCandidates();
+  const sorted = getSortedReadyCandidates(config);
   if (sorted.length === 0) return;
 
   const tasksDir = join(harnessDir(), "tasks");
@@ -2131,15 +2131,6 @@ export function queueHoldStatus(): void {
 // --- Sorted ready queue (shared) ---
 
 /** Look up a ProjectConfig by task project name (matches name or repo tail). */
-function findProjectConfigByName(projectName: string, cfg: { projects?: { name: string; repo: string; requirements?: { os?: string; gpu?: string } }[] }): { requirements?: { os?: string; gpu?: string } } | null {
-  if (!projectName) return null;
-  const key = projectName.toLowerCase();
-  return (cfg.projects ?? []).find((p) => {
-    const repoTail = (p.repo.split("/").pop() ?? "").toLowerCase();
-    return p.name.toLowerCase() === key || repoTail === key;
-  }) ?? null;
-}
-
 /** Merge task-level and project-level hardware requirements.
  *  Task values take precedence over project values for the same key. */
 export function mergeRequirements(
@@ -2159,10 +2150,10 @@ interface ReadyCandidate { id: string; priority: string; project: string; milest
 
 /** Compute the sorted ready queue — single source of truth for task ordering.
  *  Used by maybeFillEmptySlots, maybeQueueProposals, and dashboard generation. */
-function getSortedReadyCandidates(): ReadyCandidate[] {
+function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandidate[] {
   const tasksDir = join(harnessDir(), "tasks");
   if (!existsSync(tasksDir)) return [];
-  const cfg = loadConfigSync();
+  const cfg = config ?? loadConfigSync();
 
   // Determine which tasks are already in slots
   const count = slotsCount();
@@ -2266,7 +2257,7 @@ function getSortedReadyCandidates(): ReadyCandidate[] {
 
 // --- Auto-fill empty slots ---
 
-function maybeFillEmptySlots(): void {
+function maybeFillEmptySlots(config?: LudicsFullConfig): void {
   if (startSessionsAutonomy() === "manual") return;
   if (isQueueHeld()) return;
 
@@ -2284,7 +2275,7 @@ function maybeFillEmptySlots(): void {
 
   if (emptySlots.length === 0) return;
 
-  const candidates = getSortedReadyCandidates();
+  const candidates = getSortedReadyCandidates(config);
   if (candidates.length > 0) {
     const top5 = candidates.slice(0, 5).map((c) => `${c.id}(p=${c.priority},ep=${effectivePriorityValue(c.priority, c.project)},elab=${c.elaborated})`);
     console.error(`ludics: auto-fill candidates (top 5): ${top5.join(", ")}`);
@@ -2657,8 +2648,11 @@ export async function magStart(args: string[]): Promise<void> {
     // Detect stuck slots (assigned but no proposal/session) and re-queue
     maybeUnstickAssignedSlots();
 
+    // Load config once for the keepalive cycle to avoid redundant file reads
+    const keepaliveCfg = loadConfigSync();
+
     // Auto-queue proposals for top ready queue tasks (not slot-dependent)
-    maybeQueueProposals();
+    maybeQueueProposals(keepaliveCfg);
 
     // Auto-clear slots whose task reached done status
     maybeClearDoneSlots();
@@ -2667,7 +2661,7 @@ export async function magStart(args: string[]): Promise<void> {
     await maybeResumeDeadOrchestrators();
 
     // Auto-fill empty slots with ready elaborated tasks
-    maybeFillEmptySlots();
+    maybeFillEmptySlots(keepaliveCfg);
 
     // If startup got stuck (e.g. Claude helper hung), recover automatically.
     maybeRecoverStuckStartup();
