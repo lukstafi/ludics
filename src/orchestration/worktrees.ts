@@ -119,6 +119,13 @@ function defaultMainBranch(projectDir: string): string {
   return local || "main";
 }
 
+/** Canonical orchestration branch name for a task/slot/suffix combination. */
+export function orchBranchName(taskId: string, slot: number | undefined, suffix: string): string {
+  const featureSlug = slugify(taskId);
+  const slotSuffix = slot ? `-s${slot}` : "";
+  return `ludics/${featureSlug}${slotSuffix}/${suffix}`;
+}
+
 export function createWorktrees(
   projectDir: string,
   taskId: string,
@@ -135,7 +142,7 @@ export function createWorktrees(
   const rootWorktree = join(parentDir, stem);
   const peerSyncDir = peerSyncPath(rootWorktree);
   const branches: Record<string, string> = {
-    root: `ludics/${featureSlug}${slotSuffix}/root`,
+    root: orchBranchName(taskId, slot, "root"),
   };
   addWorktree(projectDir, rootWorktree, branches.root, mainBranch);
 
@@ -150,7 +157,7 @@ export function createWorktrees(
     // Duo mode: each agent gets its own worktree and branch
     for (const agent of agents) {
       const path = join(parentDir, `${stem}-${slugify(agent.name)}`);
-      const branch = `ludics/${featureSlug}${slotSuffix}/${slugify(agent.name)}`;
+      const branch = orchBranchName(taskId, slot, slugify(agent.name));
       branches[agent.name] = branch;
       addWorktree(projectDir, path, branch, mainBranch);
       agentWorktrees[agent.name] = path;
@@ -218,10 +225,20 @@ export function cleanupWorktrees(
   const repoName = basename(resolve(projectDir));
   const stem = `${repoName}-${featureSlug}${slotSuffix}`;
   const rootWorktree = join(parentDir, stem);
+  const expectedPrefix = join(parentDir, `${repoName}-${featureSlug}`);
+  if (!rootWorktree.startsWith(expectedPrefix)) {
+    console.error(`ludics: refusing to remove worktree outside expected prefix: ${rootWorktree}`);
+    return;
+  }
   removeIfRegistered(projectDir, rootWorktree);
   if (mode === "duo") {
     for (const agent of agents) {
-      removeIfRegistered(projectDir, join(parentDir, `${stem}-${slugify(agent.name)}`));
+      const agentPath = join(parentDir, `${stem}-${slugify(agent.name)}`);
+      if (!agentPath.startsWith(expectedPrefix)) {
+        console.error(`ludics: refusing to remove worktree outside expected prefix: ${agentPath}`);
+        continue;
+      }
+      removeIfRegistered(projectDir, agentPath);
     }
   }
 }

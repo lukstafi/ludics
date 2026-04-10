@@ -6,8 +6,7 @@ import { join } from "path";
 import { harnessDir, cleanupDelayHours } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import type { OrchestrationState } from "./state.ts";
-import { removeWorktreeByPath, deleteBranches } from "./worktrees.ts";
-import { slugify } from "./util.ts";
+import { removeWorktreeByPath, deleteBranches, orchBranchName } from "./worktrees.ts";
 import { removePeerSyncLink } from "./peer-sync.ts";
 
 export interface CleanupEntry {
@@ -80,9 +79,7 @@ export function buildCleanupEntry(
   if (orchState.branches) {
     branches = [...new Set(Object.values(orchState.branches))];
   } else {
-    const featureSlug = slugify(orchState.taskId);
-    const slotSuffix = `-s${slot}`;
-    const rootBranch = `ludics/${featureSlug}${slotSuffix}/root`;
+    const rootBranch = orchBranchName(orchState.taskId, slot, "root");
     branches = [rootBranch];
     for (const agent of orchState.agents) {
       if (agent.branch && agent.branch !== rootBranch) {
