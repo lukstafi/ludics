@@ -284,6 +284,20 @@ export function findProjectConfig(
   }) ?? null;
 }
 
+/** Look up a project config entry by project name or repo-tail (case-insensitive). */
+export function findProjectConfigByName(
+  projectName: string,
+  config?: LudicsFullConfig,
+): ProjectConfig | null {
+  if (!projectName) return null;
+  const cfg = config ?? loadConfigSync();
+  const key = projectName.toLowerCase();
+  return (cfg.projects ?? []).find((p) => {
+    const repoTail = (p.repo.split("/").pop() ?? "").toLowerCase();
+    return p.name.toLowerCase() === key || repoTail === key;
+  }) ?? null;
+}
+
 export function harnessDir(): string {
   if (process.env.LUDICS_HARNESS_DIR) return process.env.LUDICS_HARNESS_DIR;
 
