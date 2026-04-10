@@ -49,16 +49,9 @@ export function clusterConfig(): ClusterConfig {
       }));
 
     const transport = String(fed?.transport ?? "local");
-    // Compat: derive transport from legacy network.mode if not set
-    let effectiveTransport = transport;
-    if (transport === "local" && machines.length > 0) {
-      const net = raw.network as Record<string, unknown> | undefined;
-      const legacyMode = net?.mode as string | undefined;
-      if (legacyMode && legacyMode !== "localhost") effectiveTransport = legacyMode;
-    }
 
     return {
-      transport: effectiveTransport,
+      transport,
       domain: String(fed?.domain ?? ""),
       machines,
     };
