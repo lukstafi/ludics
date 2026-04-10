@@ -1,4 +1,5 @@
 import { join } from "path";
+import { validateAgentName, parseCanonicalInt } from "./filename-utils";
 
 export type PlanFileType = "plan" | "merged";
 
@@ -9,15 +10,12 @@ export interface ParsedPlanFilename {
   planMergeRound?: number;
 }
 
-const AGENT_NAME_RE = /^[\w-]+$/;
 const PLAN_RE = /^round-(\d+)-([\w-]+)\.md$/;
 const MERGED_RE = /^round-(\d+)-merged-(\d+)\.md$/;
 
 /** Build an individual plan filename. */
 export function planFilename(round: number, agentName: string): string {
-  if (!AGENT_NAME_RE.test(agentName)) {
-    throw new Error(`invalid agent name for plan filename: "${agentName}" (must match [\\w-]+)`);
-  }
+  validateAgentName(agentName, "plan filename");
   return `round-${round}-${agentName}.md`;
 }
 
@@ -42,15 +40,15 @@ export function parsePlanFilename(filename: string): ParsedPlanFilename | null {
   // so we need to check the more specific pattern first.
   let m = filename.match(MERGED_RE);
   if (m) {
-    const round = parseInt(m[1]!, 10);
-    const planMergeRound = parseInt(m[2]!, 10);
-    if (String(round) !== m[1] || String(planMergeRound) !== m[2]) return null;
+    const round = parseCanonicalInt(m[1]!);
+    const planMergeRound = parseCanonicalInt(m[2]!);
+    if (round === null || planMergeRound === null) return null;
     return { type: "merged", round, planMergeRound };
   }
   m = filename.match(PLAN_RE);
   if (m) {
-    const round = parseInt(m[1]!, 10);
-    if (String(round) !== m[1]) return null;
+    const round = parseCanonicalInt(m[1]!);
+    if (round === null) return null;
     return { type: "plan", round, agentName: m[2]! };
   }
   return null;

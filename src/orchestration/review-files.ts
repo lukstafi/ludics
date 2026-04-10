@@ -1,4 +1,5 @@
 import { join } from "path";
+import { validateAgentName, parseCanonicalInt } from "./filename-utils";
 
 export type ReviewFileType = "review" | "plan-review";
 
@@ -8,15 +9,12 @@ export interface ParsedReviewFilename {
   agentName: string;
 }
 
-const AGENT_NAME_RE = /^[\w-]+$/;
 const REVIEW_RE = /^round-(\d+)-([\w-]+)\.md$/;
 const PLAN_REVIEW_RE = /^plan-merge-(\d+)-([\w-]+)\.md$/;
 
 /** Build a review filename from components. */
 export function reviewFilename(type: ReviewFileType, round: number, agentName: string): string {
-  if (!AGENT_NAME_RE.test(agentName)) {
-    throw new Error(`invalid agent name for review filename: "${agentName}" (must match [\\w-]+)`);
-  }
+  validateAgentName(agentName, "review filename");
   return type === "plan-review"
     ? `plan-merge-${round}-${agentName}.md`
     : `round-${round}-${agentName}.md`;
@@ -33,14 +31,14 @@ export function reviewFilePath(
 export function parseReviewFilename(filename: string): ParsedReviewFilename | null {
   let m = filename.match(REVIEW_RE);
   if (m) {
-    const round = parseInt(m[1]!, 10);
-    if (String(round) !== m[1]) return null;
+    const round = parseCanonicalInt(m[1]!);
+    if (round === null) return null;
     return { type: "review", round, agentName: m[2]! };
   }
   m = filename.match(PLAN_REVIEW_RE);
   if (m) {
-    const round = parseInt(m[1]!, 10);
-    if (String(round) !== m[1]) return null;
+    const round = parseCanonicalInt(m[1]!);
+    if (round === null) return null;
     return { type: "plan-review", round, agentName: m[2]! };
   }
   return null;
