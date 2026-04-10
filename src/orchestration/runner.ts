@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
@@ -1194,6 +1194,25 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
       } catch {
         // plans dir missing — plan-review will handle gracefully
       }
+    }
+  }
+  // When planning is skipped entirely (pre-work → work), create a stub merged plan
+  // so the reviewer template finds a baseline section and doesn't block on pre-existing failures.
+  // Only from pre-plan phases (setup/gather/clarify/pushback) — not from plan/plan-merge/plan-review,
+  // which indicate planning was attempted but failed, a different situation.
+  const PRE_PLAN_PHASES: readonly Phase[] = ["setup", "gather", "clarify", "pushback"];
+  if (next === "work" && PRE_PLAN_PHASES.includes(state.phase)) {
+    const mergedPath = mergedPlanFilePath(state.peerSyncDir, state.round, 0);
+    if (!existsSync(mergedPath)) {
+      mkdirSync(join(state.peerSyncDir, "plans"), { recursive: true });
+      writeFileSync(mergedPath, [
+        "# Stub Plan (planning phase skipped)",
+        "",
+        "## Pre-existing test failures (baseline)",
+        "",
+        "(not recorded -- planning was skipped)",
+        "",
+      ].join("\n"));
     }
   }
   // Track plan-merge iterations: increment planMergeRound each time we loop back.

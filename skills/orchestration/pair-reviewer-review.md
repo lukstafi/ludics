@@ -7,7 +7,7 @@ First line must be `APPROVE` or `REQUEST_CHANGES`, then action items, then non-b
 If the implementation changes data shapes, verify that all helpers consuming the changed data have been updated. For format-compat serializers, check that round-trip fidelity tests exist (serialize → deserialize → compare). Flag missing consumer updates or missing round-trip tests as blocking action items.
 Do NOT write to a different filename — the orchestrator checks this exact path.
 
-**Pre-existing failures**: Before marking any failing test as a blocking action item, check the merged plan's `## Pre-existing test failures (baseline)` section. Failures listed there are pre-existing and must not block acceptance unless the task's acceptance criteria explicitly require fixing them. Flag any *new* failures (not in the baseline) as blocking. If the merged plan has no baseline section (older plan format), treat all failures as potentially blocking.
+**Pre-existing failures**: Before marking any failing test as a blocking action item, check the merged plan's `## Pre-existing test failures (baseline)` section. Failures listed there are pre-existing and must not block acceptance unless the task's acceptance criteria explicitly require fixing them. Flag any *new* failures (not in the baseline) as blocking. If the merged plan has no baseline section (older plan format), treat all failures as potentially blocking. If the baseline section says planning was skipped, do not block on test failures unless they are clearly caused by the task's changes.
 
 ```sh
 printf '%s|%s|reviewer work review complete\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
