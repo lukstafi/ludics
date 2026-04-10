@@ -6,10 +6,10 @@
 import { existsSync, readFileSync, statSync } from "fs";
 import { resolve, extname, join } from "path";
 import YAML from "yaml";
-import { safeSyncOutput } from "./spawn.ts";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, loadConfigSync } from "./config.ts";
 import { readSlotJson } from "./slots/json.ts";
+import { slotClear, slotSetMode, slotStart, slotResume } from "./slots/index.ts";
 import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
 import { tasksAbandon } from "./tasks/index.ts";
 import { setQueueHold } from "./mag.ts";
@@ -147,7 +147,7 @@ export function startDashboardServer(
 
   const server = Bun.serve({
     port,
-    fetch(req) {
+    async fetch(req) {
       const url = new URL(req.url);
       let pathname = url.pathname;
 
@@ -172,17 +172,11 @@ export function startDashboardServer(
           return new Response("Bad Request: slot must be 1-6", { status: 400 });
         }
         try {
-          const proc = safeSyncOutput(
-            [process.execPath, "slot", slotParam, "clear", status],
-            { cwd: process.env.HOME },
-          );
-          if (!proc.ok) {
-            return new Response(proc.stderr || "slot clear failed", { status: 500 });
-          }
+          slotClear(parseInt(slotParam, 10), status);
           lastGenerated = 0; // force regeneration on next data request
           return new Response("OK", { status: 200 });
         } catch (e) {
-          return new Response(String(e), { status: 500 });
+          return new Response(e instanceof Error ? e.message : String(e), { status: 500 });
         }
       }
 
@@ -197,17 +191,11 @@ export function startDashboardServer(
           return new Response("Bad Request: mode must be manual, tmux, or t3code", { status: 400 });
         }
         try {
-          const proc = safeSyncOutput(
-            [process.execPath, "slot", slotParam, "mode", mode],
-            { cwd: process.env.HOME },
-          );
-          if (!proc.ok) {
-            return new Response(proc.stderr || "slot mode failed", { status: 500 });
-          }
+          await slotSetMode(parseInt(slotParam, 10), mode);
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
         } catch (e) {
-          return new Response(String(e), { status: 500 });
+          return new Response(e instanceof Error ? e.message : String(e), { status: 500 });
         }
       }
 
@@ -218,17 +206,11 @@ export function startDashboardServer(
           return new Response("Bad Request: slot must be 1-6", { status: 400 });
         }
         try {
-          const proc = safeSyncOutput(
-            [process.execPath, "slot", slotParam, "start"],
-            { cwd: process.env.HOME },
-          );
-          if (!proc.ok) {
-            return new Response(proc.stderr || "slot start failed", { status: 500 });
-          }
+          await slotStart(parseInt(slotParam, 10));
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
         } catch (e) {
-          return new Response(String(e), { status: 500 });
+          return new Response(e instanceof Error ? e.message : String(e), { status: 500 });
         }
       }
 
@@ -239,17 +221,11 @@ export function startDashboardServer(
           return new Response("Bad Request: slot must be 1-6", { status: 400 });
         }
         try {
-          const proc = safeSyncOutput(
-            [process.execPath, "slot", slotParam, "resume"],
-            { cwd: process.env.HOME },
-          );
-          if (!proc.ok) {
-            return new Response(proc.stderr || "slot resume failed", { status: 500 });
-          }
+          await slotResume(parseInt(slotParam, 10));
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
         } catch (e) {
-          return new Response(String(e), { status: 500 });
+          return new Response(e instanceof Error ? e.message : String(e), { status: 500 });
         }
       }
 
@@ -289,13 +265,7 @@ export function startDashboardServer(
           // in the ready queue at its old priority (race with auto-assign).
           pendingPriorityWrite?.();
 
-          const proc = safeSyncOutput(
-            [process.execPath, "slot", slotParam, "clear", "ready"],
-            { cwd: process.env.HOME },
-          );
-          if (!proc.ok) {
-            return new Response(proc.stderr || "slot clear failed", { status: 500 });
-          }
+          slotClear(slotNum, "ready");
 
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
