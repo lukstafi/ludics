@@ -11,6 +11,7 @@ Reviewer guidance from prior round:
 {{PEER_REVIEW}}
 
 Commit in small batches (4-6 files). Build, lint, and run targeted tests before signaling done.
+When changing data shapes or writing format-compat serializers, write a round-trip fidelity test (serialize → deserialize → compare key fields) for each affected serializer. This catches silent field omissions and header-line assumption mismatches early.
 Write any PR URL to `{{PR_FILE}}`. Stop if `{{INTERRUPT_FILE}}` appears.
 
 {{#IF PROPOSAL_PATH}}

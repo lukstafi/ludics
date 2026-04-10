@@ -3,6 +3,7 @@
 {{PROPOSAL_INSTRUCTION}}
 
 Review the merged plan for `{{TASK_ID}}`:
+If the plan involves data shape changes (field extraction, JSON migration, section restructuring), check that all downstream consumers of the changed data are identified and their required updates are noted. Request changes if consumers appear to be missing — grep for field names and section-header patterns to verify completeness.
 
 {{PEER_PLAN}}
 
