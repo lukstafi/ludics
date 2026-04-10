@@ -16,6 +16,7 @@ const KNOWN_LUDICS_TRIGGER_NAMES = [
   "mag",
   "dashboard",
   "ntfy-subscribe",
+  "t3code-cleanup",
 ];
 
 function binPath(): string {
@@ -249,6 +250,24 @@ function triggersInstallMacos(): void {
     console.log(`Installed launchd trigger: sessions-sweep (every ${Math.floor(parseInt(interval) / 3600)}h)`);
   }
 
+  // t3code stale thread cleanup trigger
+  if (triggerGet("t3code-cleanup", "enabled") === "true") {
+    const action = commandFromAction(triggerGet("t3code-cleanup", "action"));
+    const interval = triggerGet("t3code-cleanup", "interval") || "86400";
+    const label = "com.ludics.t3code-cleanup";
+    const content = [
+      PLIST_HEADER,
+      `  <key>Label</key>\n  <string>${label}</string>`,
+      `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
+      plistEnv(),
+      plistArgs(bin, ...action.split(" ")),
+      plistLogs("t3code-cleanup"),
+      PLIST_FOOTER,
+    ].join("\n");
+    installPlist(label, content);
+    console.log(`Installed launchd trigger: t3code-cleanup (every ${Math.floor(parseInt(interval) / 3600)}h)`);
+  }
+
   // Watch triggers
   for (const rule of triggerGetWatchRules()) {
     const sanitized = sanitizeAction(rule.action);
@@ -444,6 +463,16 @@ function triggersInstallLinux(): void {
     writeSystemdUnit("ludics-sessions-sweep.timer", `[Unit]\nDescription=ludics detached session sweeper timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-sessions-sweep.service\n\n[Install]\nWantedBy=timers.target\n`);
     enableSystemdUnit("ludics-sessions-sweep.timer");
     console.log(`Installed systemd trigger: sessions-sweep (every ${Math.floor(parseInt(interval) / 3600)}h)`);
+  }
+
+  // t3code stale thread cleanup
+  if (triggerGet("t3code-cleanup", "enabled") === "true") {
+    const action = commandFromAction(triggerGet("t3code-cleanup", "action"));
+    const interval = triggerGet("t3code-cleanup", "interval") || "86400";
+    writeSystemdUnit("ludics-t3code-cleanup.service", `[Unit]\nDescription=ludics t3code stale thread cleanup\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
+    writeSystemdUnit("ludics-t3code-cleanup.timer", `[Unit]\nDescription=ludics t3code cleanup timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-t3code-cleanup.service\n\n[Install]\nWantedBy=timers.target\n`);
+    enableSystemdUnit("ludics-t3code-cleanup.timer");
+    console.log(`Installed systemd trigger: t3code-cleanup (every ${Math.floor(parseInt(interval) / 3600)}h)`);
   }
 
   // Watch

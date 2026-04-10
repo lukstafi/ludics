@@ -222,6 +222,12 @@ triggers:
     interval: 86400           # 24 hours in seconds
     action: sessions sweep
 
+  # t3code stale thread cleanup (remove threads from crashed/force-killed slots)
+  t3code-cleanup:
+    enabled: false
+    interval: 86400           # 24 hours in seconds
+    action: t3code cleanup
+
   # Dashboard server (long-running, KeepAlive/Restart)
   dashboard:
     enabled: false
