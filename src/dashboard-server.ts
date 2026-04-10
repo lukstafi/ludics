@@ -171,6 +171,9 @@ export function startDashboardServer(
         if (!slotParam || !/^[1-6]$/.test(slotParam)) {
           return new Response("Bad Request: slot must be 1-6", { status: 400 });
         }
+        if (!["ready", "in-progress", "done", "abandoned"].includes(status)) {
+          return new Response("Bad Request: status must be ready, in-progress, done, or abandoned", { status: 400 });
+        }
         try {
           slotClear(parseInt(slotParam, 10), status);
           lastGenerated = 0; // force regeneration on next data request
