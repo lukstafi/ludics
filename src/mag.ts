@@ -25,7 +25,7 @@ import {
   expirePendingFollowupRevises,
 } from "./notify.ts";
 import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, readFrontmatterField } from "./tasks/markdown.ts";
-import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed } from "./slots/index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
 import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
@@ -647,15 +647,6 @@ function ensureTtyd(): void {
 }
 
 // --- Queue pop for skills ---
-
-export function findSlotForTask(taskId: string): number | null {
-  const slots = readAllSlotJson(slotsCount());
-  for (const [slotNum, data] of slots) {
-    const currentTask = data.task ?? "";
-    if (currentTask === taskId) return slotNum;
-  }
-  return null;
-}
 
 function isTaskDeferred(taskId: string): boolean {
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
