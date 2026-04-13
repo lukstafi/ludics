@@ -586,6 +586,7 @@ async function enterPhase(
   // On fresh entry: generate new token, persist it, write peer-sync.
   // On crash re-entry: reuse the persisted token so already-dispatched agents are deduped.
   let phaseToken: string;
+  const isCrashReentry = !!state.currentPhaseToken;
   if (state.currentPhaseToken) {
     // Re-entry after crash — reuse the token already persisted
     phaseToken = state.currentPhaseToken;
@@ -607,17 +608,6 @@ async function enterPhase(
 
   markActiveAgents(state);
 
-  // Reset .status files to known initial state before dispatch (AC1).
-  // Eliminates stale-status bugs where a previous phase's done-status persists.
-  // Applied to ALL phases including pr-comments — the pr-comments early-return
-  // path below immediately writes a done status so the phase can progress.
-  for (const agent of state.agents) {
-    if (!agentParticipatesInPhase(state, agent)) continue;
-    const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
-    const resetValue = `${state.phase}-pending|${Date.now()}|awaiting`;
-    writeFileSync(statusPath, resetValue);
-  }
-
   // Reset pr-comments tracking state on phase entry.
   // Don't dispatch agents yet — wait for actual comments/reviews to arrive.
   // checkAndRedispatchPrComments will handle the first dispatch when needed.
@@ -628,14 +618,14 @@ async function enterPhase(
     state.prCommentsQuietSince = undefined;
     state.prCommentsCoderDispatched = false;
     if (!state.prMergeableStates) state.prMergeableStates = {};  // defensive only; real reset is in applyPhaseSideEffects
-    // The status reset above wrote pr-comments-pending, but pr-comments doesn't
-    // dispatch agents — it needs them to appear "done" so checkAndRedispatchPrComments
-    // can poll GitHub and redispatch when comments arrive. Write a fresh done status
-    // and clear lifecycle/fingerprint so isAgentDone accepts it.
+    // pr-comments doesn't dispatch agents — it needs them to appear "done" so
+    // checkAndRedispatchPrComments can poll GitHub and redispatch when comments
+    // arrive. Write a fresh done status and clear lifecycle/fingerprint so
+    // isAgentDone accepts it.
     for (const agent of state.agents) {
       if (!agentParticipatesInPhase(state, agent)) continue;
       const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
-      writeFileSync(statusPath, `pr-comments-done|${Date.now()}|awaiting-comments`);
+      writeFileSync(statusPath, `pr-comments-done|${nowEpoch()}|awaiting-comments`);
       const rt = state.agentStates[agent.name];
       if (rt) {
         rt.status = "pr-comments-done";
@@ -691,9 +681,15 @@ async function enterPhase(
       }
     }
 
+    // Reset .status file to known initial state before dispatch (AC1).
+    // Placed AFTER the dedup checks above so that on crash re-entry we don't
+    // clobber a real <phase>-done written by an agent that completed while the
+    // orchestrator was down.
+    const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+    const resetValue = `${state.phase}-pending|${nowEpoch()}|awaiting`;
+    writeFileSync(statusPath, resetValue);
+
     // Capture fingerprint from the reset .status file written above.
-    // The reset write already establishes the baseline content; touchStatusFile
-    // is no longer needed here (kept in redispatch paths where it's still required).
     const dispatchFp = statusFileFingerprint(state.peerSyncDir, agent.name);
 
     const runtime = state.agentStates[agent.name]!;

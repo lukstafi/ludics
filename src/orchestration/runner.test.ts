@@ -3232,7 +3232,8 @@ describe("phase-entry status reset", () => {
         for (const agent of state.agents) {
           if (!agentParticipatesInPhase(state, agent)) continue;
           const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
-          const resetValue = `${state.phase}-pending|${Date.now()}|awaiting`;
+          const nowSec = Math.floor(Date.now() / 1000);
+          const resetValue = `${state.phase}-pending|${nowSec}|awaiting`;
           writeFileSync(statusPath, resetValue);
         }
       }
@@ -3262,13 +3263,15 @@ describe("phase-entry status reset", () => {
       for (const agent of state.agents) {
         if (!agentParticipatesInPhase(state, agent)) continue;
         const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
-        writeFileSync(statusPath, `${state.phase}-pending|${Date.now()}|awaiting`);
+        const nowSec = Math.floor(Date.now() / 1000);
+        writeFileSync(statusPath, `${state.phase}-pending|${nowSec}|awaiting`);
       }
       // 2. pr-comments early return writes done status so agents appear done
       for (const agent of state.agents) {
         if (!agentParticipatesInPhase(state, agent)) continue;
         const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
-        writeFileSync(statusPath, `pr-comments-done|${Date.now()}|awaiting-comments`);
+        const nowSec = Math.floor(Date.now() / 1000);
+        writeFileSync(statusPath, `pr-comments-done|${nowSec}|awaiting-comments`);
       }
 
       // Status should be pr-comments-done (not the stale pr-create-done)
@@ -3288,10 +3291,93 @@ describe("phase-entry status reset", () => {
       const preResetFp = statusFileFingerprint(dir, "coder");
 
       // Reset
-      writeFileSync(join(dir, "coder.status"), `work-pending|${Date.now()}|awaiting`);
+      const nowSec = Math.floor(Date.now() / 1000);
+      writeFileSync(join(dir, "coder.status"), `work-pending|${nowSec}|awaiting`);
       const postResetFp = statusFileFingerprint(dir, "coder");
 
       expect(postResetFp).not.toBe(preResetFp);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("crash recovery: does not clobber done status for already-dispatched agents", () => {
+    const dir = makeTmpDir();
+    try {
+      const phaseToken = "phase-crash-test";
+      const state = makeState({ phase: "work", round: 1 }, dir);
+      // Simulate: agent was dispatched for this phaseToken, then orchestrator crashed.
+      // While down, the agent wrote a done status.
+      state.agentStates.coder.turnLifecycle = makeLifecycle({
+        phaseToken,
+        state: "dispatched",
+      });
+      const doneStatus = "work-done|1713000099|coder work complete";
+      writeFileSync(join(dir, "coder.status"), doneStatus);
+
+      // Simulate the new dispatch loop logic: status reset happens AFTER dedup
+      // checks, so agents that pass the dedup check (already dispatched) are
+      // skipped entirely — their status files are never touched.
+      const { agentParticipatesInPhase } = require("./phases.ts");
+      for (const agent of state.agents) {
+        if (!agentParticipatesInPhase(state, agent)) continue;
+        // Dedup check: skip agents already dispatched for this phase token
+        const existing = state.agentStates[agent.name]?.turnLifecycle;
+        if (existing && existing.state === "dispatched" && existing.phaseToken === phaseToken) {
+          continue;
+        }
+        // Only reset status for agents that will actually be (re)dispatched
+        const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+        const nowSec = Math.floor(Date.now() / 1000);
+        writeFileSync(statusPath, `${state.phase}-pending|${nowSec}|awaiting`);
+      }
+
+      // Coder was already dispatched → done status must be preserved
+      const coderStatus = readFileSync(join(dir, "coder.status"), "utf-8");
+      expect(coderStatus).toBe(doneStatus);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("crash recovery: resets status for agents NOT yet dispatched under current token", () => {
+    const dir = makeTmpDir();
+    try {
+      const phaseToken = "phase-partial-crash";
+      // Use "plan" phase where both agents participate
+      const state = makeState({ phase: "plan", round: 1 }, dir);
+
+      // Coder was dispatched, reviewer was not (crash happened between dispatches)
+      state.agentStates.coder.turnLifecycle = makeLifecycle({
+        phaseToken,
+        state: "dispatched",
+      });
+      // Reviewer has no lifecycle for this token (wasn't dispatched yet)
+      state.agentStates.reviewer.turnLifecycle = null;
+
+      // Coder finished while orchestrator was down
+      const coderDone = "plan-done|1713000099|plan written";
+      writeFileSync(join(dir, "coder.status"), coderDone);
+      // Reviewer has stale status from previous phase
+      writeFileSync(join(dir, "reviewer.status"), "setup-done|1713000000|completed");
+
+      // Simulate the new dispatch loop logic: dedup check then reset
+      const { agentParticipatesInPhase } = require("./phases.ts");
+      for (const agent of state.agents) {
+        if (!agentParticipatesInPhase(state, agent)) continue;
+        const existing = state.agentStates[agent.name]?.turnLifecycle;
+        if (existing && existing.state === "dispatched" && existing.phaseToken === phaseToken) {
+          continue;
+        }
+        const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+        const nowSec = Math.floor(Date.now() / 1000);
+        writeFileSync(statusPath, `${state.phase}-pending|${nowSec}|awaiting`);
+      }
+
+      // Coder: dispatched → preserved
+      expect(readFileSync(join(dir, "coder.status"), "utf-8")).toBe(coderDone);
+      // Reviewer: not dispatched → reset
+      expect(readFileSync(join(dir, "reviewer.status"), "utf-8")).toMatch(/^plan-pending\|\d+\|awaiting$/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
