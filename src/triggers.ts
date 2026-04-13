@@ -141,23 +141,8 @@ function triggersInstallMacos(): void {
     console.log("Installed launchd trigger: startup");
   }
 
-  // Sync trigger
-  if (triggerGet("sync", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("sync", "action"));
-    const interval = triggerGet("sync", "interval") || "3600";
-    const label = "com.ludics.sync";
-    const content = [
-      PLIST_HEADER,
-      `  <key>Label</key>\n  <string>${label}</string>`,
-      `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
-      plistEnv(),
-      plistArgs(bin, ...action.split(" ")),
-      plistLogs("sync"),
-      PLIST_FOOTER,
-    ].join("\n");
-    installPlist(label, content);
-    console.log("Installed launchd trigger: sync");
-  }
+  // Interval-based triggers
+  installIntervalTrigger("sync", "sync trigger", 3600);
 
   // Morning briefing trigger
   if (triggerGet("morning", "enabled") === "true") {
@@ -214,59 +199,9 @@ function triggersInstallMacos(): void {
     console.log(`Installed launchd trigger: health (${desc})`);
   }
 
-  // Sessions adoption trigger
-  if (triggerGet("sessions", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("sessions", "action"));
-    const interval = triggerGet("sessions", "interval") || "300";
-    const label = "com.ludics.sessions";
-    const content = [
-      PLIST_HEADER,
-      `  <key>Label</key>\n  <string>${label}</string>`,
-      `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
-      plistEnv(),
-      plistArgs(bin, ...action.split(" ")),
-      plistLogs("sessions"),
-      PLIST_FOOTER,
-    ].join("\n");
-    installPlist(label, content);
-    console.log(`Installed launchd trigger: sessions (every ${Math.floor(parseInt(interval) / 60)}m)`);
-  }
-
-  // Sessions cleanup sweeper trigger
-  if (triggerGet("sessions-sweep", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("sessions-sweep", "action"));
-    const interval = triggerGet("sessions-sweep", "interval") || "86400";
-    const label = "com.ludics.sessions-sweep";
-    const content = [
-      PLIST_HEADER,
-      `  <key>Label</key>\n  <string>${label}</string>`,
-      `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
-      plistEnv(),
-      plistArgs(bin, ...action.split(" ")),
-      plistLogs("sessions-sweep"),
-      PLIST_FOOTER,
-    ].join("\n");
-    installPlist(label, content);
-    console.log(`Installed launchd trigger: sessions-sweep (every ${Math.floor(parseInt(interval) / 3600)}h)`);
-  }
-
-  // t3code stale thread cleanup trigger
-  if (triggerGet("t3code-cleanup", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("t3code-cleanup", "action"));
-    const interval = triggerGet("t3code-cleanup", "interval") || "86400";
-    const label = "com.ludics.t3code-cleanup";
-    const content = [
-      PLIST_HEADER,
-      `  <key>Label</key>\n  <string>${label}</string>`,
-      `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
-      plistEnv(),
-      plistArgs(bin, ...action.split(" ")),
-      plistLogs("t3code-cleanup"),
-      PLIST_FOOTER,
-    ].join("\n");
-    installPlist(label, content);
-    console.log(`Installed launchd trigger: t3code-cleanup (every ${Math.floor(parseInt(interval) / 3600)}h)`);
-  }
+  installIntervalTrigger("sessions", "session adoption", 300);
+  installIntervalTrigger("sessions-sweep", "detached session sweeper", 86400);
+  installIntervalTrigger("t3code-cleanup", "t3code stale thread cleanup", 86400);
 
   // Watch triggers
   for (const rule of triggerGetWatchRules()) {
@@ -293,23 +228,7 @@ function triggersInstallMacos(): void {
     console.log(`Installed launchd trigger: watch-${sanitized} (${rule.paths.length} paths)`);
   }
 
-  // Cluster trigger
-  if (triggerGet("cluster", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("cluster", "action"));
-    const interval = triggerGet("cluster", "interval") || "300";
-    const label = "com.ludics.cluster";
-    const content = [
-      PLIST_HEADER,
-      `  <key>Label</key>\n  <string>${label}</string>`,
-      `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
-      plistEnv(),
-      plistArgs(bin, ...action.split(" ")),
-      plistLogs("cluster"),
-      PLIST_FOOTER,
-    ].join("\n");
-    installPlist(label, content);
-    console.log(`Installed launchd trigger: cluster (every ${Math.floor(parseInt(interval) / 60)}m)`);
-  }
+  installIntervalTrigger("cluster", "cluster heartbeat", 300);
 
   // Mag keepalive
   const config = loadConfigSync();
@@ -387,6 +306,36 @@ function enableSystemdUnit(unitName: string): void {
   safeSyncOutput(["systemctl", "--user", "restart", unitName]);
 }
 
+function installIntervalTrigger(name: string, description: string, defaultInterval: number): void {
+  if (triggerGet(name, "enabled") !== "true") return;
+  const bin = binPath();
+  const action = commandFromAction(triggerGet(name, "action"));
+  const interval = triggerGet(name, "interval") || String(defaultInterval);
+
+  if (process.platform === "darwin") {
+    const label = `com.ludics.${name}`;
+    const content = [
+      PLIST_HEADER,
+      `  <key>Label</key>\n  <string>${label}</string>`,
+      `  <key>StartInterval</key>\n  <integer>${interval}</integer>`,
+      plistEnv(),
+      plistArgs(bin, ...action.split(" ")),
+      plistLogs(name),
+      PLIST_FOOTER,
+    ].join("\n");
+    installPlist(label, content);
+  } else {
+    writeSystemdUnit(`ludics-${name}.service`, `[Unit]\nDescription=ludics ${description}\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
+    writeSystemdUnit(`ludics-${name}.timer`, `[Unit]\nDescription=ludics ${description} timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-${name}.service\n\n[Install]\nWantedBy=timers.target\n`);
+    enableSystemdUnit(`ludics-${name}.timer`);
+  }
+
+  const secs = parseInt(interval);
+  const desc = secs >= 3600 ? `${Math.floor(secs / 3600)}h` : `${Math.floor(secs / 60)}m`;
+  const platform = process.platform === "darwin" ? "launchd" : "systemd";
+  console.log(`Installed ${platform} trigger: ${name} (every ${desc})`);
+}
+
 function triggersInstallLinux(): void {
   const bin = binPath();
 
@@ -398,15 +347,8 @@ function triggersInstallLinux(): void {
     console.log("Installed systemd trigger: startup");
   }
 
-  // Sync
-  if (triggerGet("sync", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("sync", "action"));
-    const interval = triggerGet("sync", "interval") || "3600";
-    writeSystemdUnit("ludics-sync.service", `[Unit]\nDescription=ludics sync trigger\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
-    writeSystemdUnit("ludics-sync.timer", `[Unit]\nDescription=ludics sync timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-sync.service\n\n[Install]\nWantedBy=timers.target\n`);
-    enableSystemdUnit("ludics-sync.timer");
-    console.log("Installed systemd trigger: sync");
-  }
+  // Interval-based triggers
+  installIntervalTrigger("sync", "sync trigger", 3600);
 
   // Morning
   if (triggerGet("morning", "enabled") === "true") {
@@ -445,35 +387,9 @@ function triggersInstallLinux(): void {
     console.log(`Installed systemd trigger: health (${desc})`);
   }
 
-  // Sessions adoption
-  if (triggerGet("sessions", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("sessions", "action"));
-    const interval = triggerGet("sessions", "interval") || "300";
-    writeSystemdUnit("ludics-sessions.service", `[Unit]\nDescription=ludics session adoption\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
-    writeSystemdUnit("ludics-sessions.timer", `[Unit]\nDescription=ludics session adoption timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-sessions.service\n\n[Install]\nWantedBy=timers.target\n`);
-    enableSystemdUnit("ludics-sessions.timer");
-    console.log(`Installed systemd trigger: sessions (every ${Math.floor(parseInt(interval) / 60)}m)`);
-  }
-
-  // Sessions cleanup sweeper
-  if (triggerGet("sessions-sweep", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("sessions-sweep", "action"));
-    const interval = triggerGet("sessions-sweep", "interval") || "86400";
-    writeSystemdUnit("ludics-sessions-sweep.service", `[Unit]\nDescription=ludics detached session sweeper\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
-    writeSystemdUnit("ludics-sessions-sweep.timer", `[Unit]\nDescription=ludics detached session sweeper timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-sessions-sweep.service\n\n[Install]\nWantedBy=timers.target\n`);
-    enableSystemdUnit("ludics-sessions-sweep.timer");
-    console.log(`Installed systemd trigger: sessions-sweep (every ${Math.floor(parseInt(interval) / 3600)}h)`);
-  }
-
-  // t3code stale thread cleanup
-  if (triggerGet("t3code-cleanup", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("t3code-cleanup", "action"));
-    const interval = triggerGet("t3code-cleanup", "interval") || "86400";
-    writeSystemdUnit("ludics-t3code-cleanup.service", `[Unit]\nDescription=ludics t3code stale thread cleanup\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
-    writeSystemdUnit("ludics-t3code-cleanup.timer", `[Unit]\nDescription=ludics t3code cleanup timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-t3code-cleanup.service\n\n[Install]\nWantedBy=timers.target\n`);
-    enableSystemdUnit("ludics-t3code-cleanup.timer");
-    console.log(`Installed systemd trigger: t3code-cleanup (every ${Math.floor(parseInt(interval) / 3600)}h)`);
-  }
+  installIntervalTrigger("sessions", "session adoption", 300);
+  installIntervalTrigger("sessions-sweep", "detached session sweeper", 86400);
+  installIntervalTrigger("t3code-cleanup", "t3code stale thread cleanup", 86400);
 
   // Watch
   for (const rule of triggerGetWatchRules()) {
@@ -494,15 +410,7 @@ function triggersInstallLinux(): void {
     console.log(`Installed systemd trigger: watch-${sanitized} (${rule.paths.length} paths)`);
   }
 
-  // Cluster
-  if (triggerGet("cluster", "enabled") === "true") {
-    const action = commandFromAction(triggerGet("cluster", "action"));
-    const interval = triggerGet("cluster", "interval") || "300";
-    writeSystemdUnit("ludics-cluster.service", `[Unit]\nDescription=ludics cluster heartbeat\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
-    writeSystemdUnit("ludics-cluster.timer", `[Unit]\nDescription=ludics cluster timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-cluster.service\n\n[Install]\nWantedBy=timers.target\n`);
-    enableSystemdUnit("ludics-cluster.timer");
-    console.log(`Installed systemd trigger: cluster (every ${Math.floor(parseInt(interval) / 60)}m)`);
-  }
+  installIntervalTrigger("cluster", "cluster heartbeat", 300);
 
   // Mag keepalive
   const config = loadConfigSync();
