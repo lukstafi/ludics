@@ -1,28 +1,16 @@
 // Network configuration — hostname detection and URL helpers
 
-import { loadConfigSync, harnessDir } from "./config.ts";
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-import YAML from "yaml";
+import { loadConfigSync } from "./config.ts";
 import { safeSyncOutput } from "./spawn.ts";
 
 export function networkMode(): string {
-  // Check cluster.transport (new config), then legacy network.mode
-  try {
-    const configPath = join(harnessDir(), "config.yaml");
-    if (existsSync(configPath)) {
-      const raw = YAML.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-      const transport = ((raw.cluster ?? raw["feder" + "ation"]) as Record<string, unknown> | undefined)?.transport as string | undefined;
-      if (transport && transport !== "local") return transport;
-    }
-  } catch { /* fall through */ }
   const config = loadConfigSync();
-  return config.network?.mode ?? "localhost";
+  return config.cluster?.transport ?? "localhost";
 }
 
 function hostnameFromConfig(): string {
   const config = loadConfigSync();
-  return (config.network as Record<string, unknown> | undefined)?.hostname as string ?? "";
+  return config.network?.hostname ?? "";
 }
 
 function findTailscaleCli(): string | null {
