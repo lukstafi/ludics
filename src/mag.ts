@@ -2007,6 +2007,9 @@ function maybeUnstickAssignedSlots(): void {
     if (!existsSync(taskFile)) continue;
     const content = readFileSync(taskFile, "utf-8");
 
+    // Task already completed or abandoned — nothing to unstick
+    if (/\nstatus:\s*(done|abandoned|merged)/.test(content)) continue;
+
     // Already has proposal — maybeAutoStartSlots handles this
     if (content.includes("\nproposal:")) continue;
 
