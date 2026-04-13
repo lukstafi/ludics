@@ -142,6 +142,40 @@ export function addFrontmatterField(filePath: string, field: string, value: stri
   updateFrontmatterField(filePath, field, value);
 }
 
+/** Append a line to a markdown section (## heading). Handles "None." replacement, dedup, and missing sections. */
+export function appendToSection(filePath: string, section: string, line: string): void {
+  if (!existsSync(filePath)) return;
+  let content = readFileSync(filePath, "utf-8");
+  const header = `## ${section}`;
+
+  // Dedupe: don't append if exact line already present
+  if (content.includes(line)) return;
+
+  if (content.includes(header)) {
+    // Replace "None." placeholder if present
+    const nonePattern = new RegExp(`(${header}\\s*\\n\\s*)None\\.`);
+    if (nonePattern.test(content)) {
+      content = content.replace(nonePattern, `$1${line}`);
+    } else {
+      // Append after existing section content, before next ## header or EOF
+      const headerIdx = content.indexOf(header);
+      const afterHeader = headerIdx + header.length;
+      const nextHeaderMatch = content.slice(afterHeader).match(/\n## /);
+      const insertIdx = nextHeaderMatch
+        ? afterHeader + nextHeaderMatch.index!
+        : content.length;
+      const before = content.slice(0, insertIdx).trimEnd();
+      const after = content.slice(insertIdx);
+      content = before + "\n" + line + "\n" + after;
+    }
+  } else {
+    // Create section at end of document
+    content = content.trimEnd() + `\n\n${header}\n\n${line}\n`;
+  }
+
+  writeFileSync(filePath, content);
+}
+
 export function removeFrontmatterField(filePath: string, field: string): void {
   if (!existsSync(filePath)) return;
   const content = readFileSync(filePath, "utf-8");

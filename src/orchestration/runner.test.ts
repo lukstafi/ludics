@@ -4,11 +4,13 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut } from "./runner.ts";
 import * as notify from "../notify.ts";
 import * as peerSync from "./peer-sync.ts";
 import * as events from "../events.ts";
 import * as github from "./github.ts";
+import * as config from "../config.ts";
+import * as stateMod from "./state.ts";
 import { orchOnStop } from "./index.ts";
 import { readStopHookRecord, writeStopHookRecord, writeAgentMarkerFiles, readAgentMarkerFile } from "./peer-sync.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, persistState, type AgentTurnLifecycle, type OrchestrationState } from "./state.ts";
@@ -2634,6 +2636,158 @@ describe("handleVerifyFailure", () => {
     expect(result).toBe("hold");
     expect(eventSpy).not.toHaveBeenCalled();
     expect(notifySpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleVerifyFailure — has_questions surfacing
+// ---------------------------------------------------------------------------
+
+describe("handleVerifyFailure — has_questions", () => {
+  let eventSpy: ReturnType<typeof spyOn>;
+  let notifySpy: ReturnType<typeof spyOn>;
+  let harnessSpy: ReturnType<typeof spyOn>;
+  let tmpHarness: string;
+
+  beforeEach(() => {
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    notifySpy = spyOn(notify, "notifyAgents").mockImplementation(() => {});
+    tmpHarness = makeTmpDir();
+    mkdirSync(join(tmpHarness, "tasks"), { recursive: true });
+    harnessSpy = spyOn(config, "harnessDir").mockReturnValue(tmpHarness);
+  });
+
+  afterEach(() => {
+    eventSpy.mockRestore();
+    notifySpy.mockRestore();
+    harnessSpy.mockRestore();
+  });
+
+  test("sets has_questions and appends to Questions section on max attempts", () => {
+    const taskFile = join(tmpHarness, "tasks", "feat.md");
+    writeFileSync(taskFile, "---\ntitle: test\nstatus: in-progress\n---\n\n## Questions\n\nNone.\n");
+
+    const state = makeState({
+      phase: "pr-create",
+      prCreateVerifyAttempts: MAX_VERIFY_ATTEMPTS - 1,
+    });
+    handleVerifyFailure(state, "prCreate", "still missing");
+
+    const content = readFileSync(taskFile, "utf-8");
+    expect(content).toContain("has_questions: true");
+    expect(content).toContain("Manual intervention required (slot 1)");
+    expect(content).not.toContain("None.");
+  });
+
+  test("does not duplicate question on repeated calls", () => {
+    const taskFile = join(tmpHarness, "tasks", "feat.md");
+    writeFileSync(taskFile, "---\ntitle: test\nstatus: in-progress\n---\n\n## Questions\n\nNone.\n");
+
+    const state = makeState({
+      phase: "pr-create",
+      prCreateVerifyAttempts: MAX_VERIFY_ATTEMPTS - 1,
+    });
+    handleVerifyFailure(state, "prCreate", "still missing");
+
+    // Second call (already at max — returns hold silently, but test idempotency of appendToSection)
+    const { appendToSection } = require("../tasks/markdown.ts");
+    appendToSection(taskFile, "Questions",
+      `- **Manual intervention required (slot 1)**: pr-create failed after ${MAX_VERIFY_ATTEMPTS} attempts`);
+
+    const content = readFileSync(taskFile, "utf-8");
+    const count = content.split("Manual intervention required").length - 1;
+    expect(count).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkZeroCommitsAutoBailOut
+// ---------------------------------------------------------------------------
+
+describe("checkZeroCommitsAutoBailOut", () => {
+  let eventSpy: ReturnType<typeof spyOn>;
+  let persistSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    persistSpy = spyOn(stateMod, "persistState").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    eventSpy.mockRestore();
+    persistSpy.mockRestore();
+  });
+
+  test("returns false when phase is not pr-create", () => {
+    const state = makeState({ phase: "work" });
+    expect(checkZeroCommitsAutoBailOut(state)).toBe(false);
+    expect(state.phase).toBe("work");
+  });
+
+  test("auto-bails when coder worktree has 0 commits ahead", () => {
+    // Create a real git repo where HEAD is on origin/HEAD (0 commits ahead)
+    const tmpDir = makeTmpDir();
+    const repoDir = join(tmpDir, "repo");
+    mkdirSync(repoDir, { recursive: true });
+    Bun.spawnSync(["git", "init", "--initial-branch", "main"], { cwd: repoDir });
+    Bun.spawnSync(["git", "config", "user.email", "test@test.com"], { cwd: repoDir });
+    Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "file.txt"), "hello");
+    Bun.spawnSync(["git", "add", "."], { cwd: repoDir });
+    Bun.spawnSync(["git", "commit", "-m", "init"], { cwd: repoDir });
+    // Create a fake origin/HEAD ref pointing to current HEAD
+    Bun.spawnSync(["git", "update-ref", "refs/remotes/origin/HEAD", "HEAD"], { cwd: repoDir });
+
+    const peerDir = makeTmpDir();
+    mkdirSync(join(peerDir, "plans"), { recursive: true });
+    mkdirSync(join(peerDir, "reviews"), { recursive: true });
+    const state = makeState({
+      phase: "pr-create",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: repoDir },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    }, peerDir);
+
+    const result = checkZeroCommitsAutoBailOut(state);
+    expect(result).toBe(true);
+    expect(state.phase).toBe("done");
+    expect(eventSpy).toHaveBeenCalledTimes(1);
+    expect(eventSpy.mock.calls[0][0].event_type).toBe("bail_out");
+  });
+
+  test("does not bail when coder worktree has commits ahead", () => {
+    const tmpDir = makeTmpDir();
+    const repoDir = join(tmpDir, "repo");
+    mkdirSync(repoDir, { recursive: true });
+    Bun.spawnSync(["git", "init", "--initial-branch", "main"], { cwd: repoDir });
+    Bun.spawnSync(["git", "config", "user.email", "test@test.com"], { cwd: repoDir });
+    Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "file.txt"), "hello");
+    Bun.spawnSync(["git", "add", "."], { cwd: repoDir });
+    Bun.spawnSync(["git", "commit", "-m", "init"], { cwd: repoDir });
+    // Set origin/HEAD to current commit
+    Bun.spawnSync(["git", "update-ref", "refs/remotes/origin/HEAD", "HEAD"], { cwd: repoDir });
+    // Add another commit (1 ahead)
+    writeFileSync(join(repoDir, "file2.txt"), "world");
+    Bun.spawnSync(["git", "add", "."], { cwd: repoDir });
+    Bun.spawnSync(["git", "commit", "-m", "extra"], { cwd: repoDir });
+
+    const peerDir = makeTmpDir();
+    mkdirSync(join(peerDir, "plans"), { recursive: true });
+    mkdirSync(join(peerDir, "reviews"), { recursive: true });
+    const state = makeState({
+      phase: "pr-create",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: repoDir },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    }, peerDir);
+
+    const result = checkZeroCommitsAutoBailOut(state);
+    expect(result).toBe(false);
+    expect(state.phase).toBe("pr-create");
+    expect(eventSpy).not.toHaveBeenCalled();
   });
 });
 

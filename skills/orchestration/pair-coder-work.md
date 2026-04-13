@@ -20,6 +20,15 @@ For each criterion, state explicitly (in your thinking) how the implementation s
 Only after confirming every criterion is met should you write the status file below.
 {{/IF}}
 
+If the task is already resolved on the base branch (fix already merged, 0 meaningful changes needed),
+do NOT make empty commits. Instead, signal bail-out:
+
+```sh
+printf 'bail-out|%s|<describe why task is obsolete>\n' "$(date +%s)" > "{{STATUS_FILE}}"
+```
+
+Only use bail-out when genuinely nothing needs to be done. If the task is partially done, complete it normally.
+
 ```sh
 printf '%s|%s|coder work complete\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
 ```
