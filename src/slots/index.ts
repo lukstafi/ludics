@@ -622,18 +622,8 @@ export function slotRestore(slotNum: number): void {
     : stash.previousAdapterArgs;
   const prevTask = stash.previousTask === "null" ? stash.previousProcess : stash.previousTask;
 
+  // slotAssign handles preempted→in-progress via taskUpdateForSlotAssign
   slotAssign(slotNum, prevTask, prevAdapter, prevSession, prevPath, prevAdapterArgs);
-
-  // Restore previous task status to "in-progress"
-  if (stash.previousTask && stash.previousTask !== "null") {
-    const taskFile = taskFilePath(stash.previousTask);
-    if (!transitionStatus(taskFile, ["preempted"], "in-progress")) {
-      const content = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
-      const statusMatch = content.match(/^status:\s*(.+)$/m);
-      const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
-      console.error(`ludics: skipping restore status update for ${stash.previousTask}: status is '${actual}', expected 'preempted'`);
-    }
-  }
 
   removeStash(slotNum);
 
