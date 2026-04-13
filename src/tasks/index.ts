@@ -75,7 +75,7 @@ export function tasksCreate(
   project: string = "personal",
   priority: string = "B",
   usesBrowser: boolean = false,
-): void {
+): { created: boolean; id: string; path: string } {
   const dir = tasksDir();
   mkdirSync(dir, { recursive: true });
 
@@ -84,9 +84,7 @@ export function tasksCreate(
   const file = join(dir, `${id}.md`);
 
   if (existsSync(file)) {
-    console.log(`Task already exists: ${file}`);
-    console.log(`ID: ${id}`);
-    return;
+    return { created: false, id, path: file };
   }
 
   const content = `---
@@ -128,8 +126,7 @@ Created manually via ludics.
 
   writeFileSync(file, content, { flag: "wx" });
   emitEvent({ event_type: "task_created", source: "cli", scope: "task", task: id, message: title });
-  console.log(`Created task: ${file}`);
-  console.log(`ID: ${id}`);
+  return { created: true, id, path: file };
 }
 
 function tasksFilesList(): void {
@@ -697,7 +694,13 @@ export async function runTasks(args: string[]): Promise<void> {
           priority = a;
         }
       }
-      tasksCreate(title, project, priority, usesBrowser);
+      const result = tasksCreate(title, project, priority, usesBrowser);
+      if (result.created) {
+        console.log(`Created task: ${result.path}`);
+      } else {
+        console.log(`Task already exists: ${result.path}`);
+      }
+      console.log(`ID: ${result.id}`);
       break;
     }
     case "files":
