@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ludics Mag</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .mag-layout {
+            flex: 1;
+            display: flex;
+            min-height: 0;
+        }
+
+        .terminal-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 0;
+            min-height: 0;
+        }
+
+        .terminal-iframe {
+            flex: 1;
+            width: 100%;
+            border: none;
+            min-height: 0;
+        }
+
+        .terminal-placeholder {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+            font-size: 1rem;
+        }
+
+        .queue-panel {
+            width: 350px;
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            background: var(--bg-secondary, #1a1a2e);
+        }
+
+        .queue-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            font-size: 0.85rem;
+        }
+
+        .queue-section-title {
+            font-weight: bold;
+            margin: 8px 0 4px;
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+
+        .queue-item {
+            padding: 6px 8px;
+            border-bottom: 1px solid var(--border);
+            word-break: break-word;
+        }
+
+        .queue-item .action {
+            font-weight: bold;
+        }
+
+        .queue-item .timestamp {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+        }
+
+        .queue-empty {
+            color: var(--text-secondary);
+            font-style: italic;
+            padding: 12px 0;
+        }
+
+        .queue-form {
+            padding: 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        .queue-form textarea {
+            width: 100%;
+            min-height: 60px;
+            resize: vertical;
+            margin-bottom: 8px;
+            box-sizing: border-box;
+        }
+
+        .queue-form button {
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="nav-links">
+            <h1>ludics</h1>
+            <a href="index.html">Dashboard</a>
+            <a href="mag.html" class="active">Mag</a>
+            <a href="#" id="t3code-link">t3code</a>
+            <a href="terminals.html">Terminals</a>
+            <a href="ntfy.html">ntfy</a>
+            <a href="tasks.html">Tasks</a>
+            <a href="briefing.html">Briefing</a>
+        </div>
+        <div class="status-bar">
+            <span id="last-update">Last update: --</span>
+            <span id="connection-status" class="connected">Connected</span>
+        </div>
+    </header>
+    <script src="nav.js"></script>
+
+    <main class="mag-layout">
+        <div class="terminal-container" id="terminal-container">
+            <div class="terminal-placeholder" id="terminal-placeholder">
+                Loading terminal...
+            </div>
+        </div>
+        <div class="queue-panel">
+            <div class="queue-list" id="queue-list">
+                <div class="queue-empty">Loading queue...</div>
+            </div>
+            <div class="queue-form">
+                <textarea id="queue-message" placeholder="Send a message to Mag..."></textarea>
+                <button id="queue-send" onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const CONFIG = {
+            dataPath: 'data/',
+            pollInterval: 5000
+        };
+
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchTerminalUrl();
+            fetchQueue();
+            setInterval(fetchQueue, CONFIG.pollInterval);
+        });
+
+        async function fetchTerminalUrl() {
+            try {
+                const response = await fetch(CONFIG.dataPath + 'mag.json');
+                if (!response.ok) throw new Error('Failed to fetch mag data');
+                const mag = await response.json();
+
+                const container = document.getElementById('terminal-container');
+                const placeholder = document.getElementById('terminal-placeholder');
+
+                if (mag.terminal) {
+                    placeholder.remove();
+                    const iframe = document.createElement('iframe');
+                    iframe.className = 'terminal-iframe';
+                    iframe.src = mag.terminal;
+                    iframe.allow = 'clipboard-read; clipboard-write';
+                    iframe.sandbox = 'allow-scripts allow-same-origin allow-popups allow-forms';
+                    container.appendChild(iframe);
+
+                    const el = document.getElementById('last-update');
+                    if (el) {
+                        el.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+                    }
+                    setConnectionStatus(true);
+                } else {
+                    placeholder.textContent = 'Mag terminal not available';
+                    setConnectionStatus(true);
+                }
+            } catch (error) {
+                console.warn('Failed to fetch terminal URL:', error);
+                const placeholder = document.getElementById('terminal-placeholder');
+                if (placeholder) {
+                    placeholder.textContent = 'Mag terminal not available';
+                }
+                setConnectionStatus(false);
+            }
+        }
+
+        async function fetchQueue() {
+            try {
+                const response = await fetch('/api/queue');
+                if (!response.ok) return;
+                const data = await response.json();
+                renderQueue(data.pending || [], data.results || []);
+            } catch {
+                // Silently skip — don't break the terminal
+            }
+        }
+
+        function renderQueue(pending, results) {
+            const list = document.getElementById('queue-list');
+            if (!list) return;
+
+            if (pending.length === 0 && results.length === 0) {
+                list.innerHTML = '<div class="queue-empty">No activity</div>';
+                return;
+            }
+
+            let html = '';
+
+            if (pending.length > 0) {
+                html += '<div class="queue-section-title">Pending</div>';
+                for (const item of pending) {
+                    if (item.raw) {
+                        html += `<div class="queue-item"><span class="action">[malformed]</span> ${escapeHtml(String(item.raw).slice(0, 80))}</div>`;
+                        continue;
+                    }
+                    const action = escapeHtml(String(item.action || 'unknown'));
+                    const task = item.task ? ` <span>${escapeHtml(String(item.task))}</span>` : '';
+                    const ts = item.timestamp ? `<div class="timestamp">${escapeHtml(String(item.timestamp))}</div>` : '';
+                    html += `<div class="queue-item"><span class="action">[${action}]</span>${task}${ts}</div>`;
+                }
+            }
+
+            if (results.length > 0) {
+                html += '<div class="queue-section-title">Recent</div>';
+                for (const item of results) {
+                    if (item.error) {
+                        html += `<div class="queue-item"><span class="action">[parse error]</span></div>`;
+                        continue;
+                    }
+                    const id = escapeHtml(String(item.id || 'unknown'));
+                    const status = escapeHtml(String(item.status || 'unknown'));
+                    const ts = item.timestamp ? `<div class="timestamp">${escapeHtml(String(item.timestamp))}</div>` : '';
+                    html += `<div class="queue-item"><span class="action">${id}</span> ${status}${ts}</div>`;
+                }
+            }
+
+            list.innerHTML = html;
+        }
+
+        async function sendMessage() {
+            const textarea = document.getElementById('queue-message');
+            const button = document.getElementById('queue-send');
+            const content = textarea.value.trim();
+            if (!content) return;
+
+            button.disabled = true;
+            try {
+                const response = await fetch('/api/queue', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+                if (response.ok) {
+                    textarea.value = '';
+                    fetchQueue();
+                }
+            } catch {
+                // Silently handle network errors
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function setConnectionStatus(connected) {
+            const el = document.getElementById('connection-status');
+            if (!el) return;
+            el.className = connected ? 'connected' : 'disconnected';
+            el.textContent = connected ? 'Connected' : 'Disconnected';
+        }
+
+    </script>
+</body>
+</html>

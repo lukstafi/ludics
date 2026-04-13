@@ -3,7 +3,7 @@
 // Serves static files from the dashboard directory and lazily regenerates
 // data/*.json files when they become stale (TTL-based).
 
-import { existsSync, readFileSync, statSync } from "fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { resolve, extname, join } from "path";
 import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
@@ -13,6 +13,7 @@ import { slotClear, slotSetMode, slotStart, slotResume } from "./slots/index.ts"
 import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
 import { tasksAbandon } from "./tasks/index.ts";
 import { setQueueHold } from "./mag.ts";
+import { queueList, queueRequest } from "./queue.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
 
 const MIME_TYPES: Record<string, string> = {
@@ -418,6 +419,58 @@ export function startDashboardServer(
           setQueueHold(held, "dashboard");
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: enqueue a message
+      if (pathname === "/api/queue" && req.method === "POST") {
+        let body: Record<string, unknown>;
+        try {
+          body = await req.json() as Record<string, unknown>;
+        } catch {
+          return new Response("Bad Request: invalid JSON", { status: 400 });
+        }
+        const content = body.content;
+        if (!content || typeof content !== "string" || !content.trim()) {
+          return new Response("Bad Request: non-empty content required", { status: 400 });
+        }
+        try {
+          const requestId = queueRequest({ action: "message", content: content.trim() });
+          lastGenerated = 0;
+          return new Response(JSON.stringify({ id: requestId }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: list queue items and recent results
+      if (pathname === "/api/queue") {
+        try {
+          const pending = queueList();
+          const rDir = join(harnessDir(), "mag", "results");
+          let results: Record<string, unknown>[] = [];
+          if (existsSync(rDir)) {
+            const files = readdirSync(rDir)
+              .filter((f: string) => f.endsWith(".json"))
+              .map((f: string) => join(rDir, f))
+              .sort((a: string, b: string) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+              .slice(0, 20);
+            results = files.map((f: string) => {
+              try {
+                const r = JSON.parse(readFileSync(f, "utf-8")) as Record<string, unknown>;
+                delete r.output; // strip large blobs — UI only needs id/status/timestamp
+                return r;
+              }
+              catch { return { file: f, error: "parse error" }; }
+            });
+          }
+          return new Response(JSON.stringify({ pending, results }), {
+            headers: { "Content-Type": "application/json" },
+          });
         } catch (e) {
           return new Response(String(e), { status: 500 });
         }

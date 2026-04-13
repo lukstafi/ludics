@@ -182,6 +182,35 @@ describe("writeResult", () => {
   });
 });
 
+describe("queueList", () => {
+  test("returns parsed pending items", async () => {
+    const { queueRequest, queueList } = await loadQueue();
+    queueRequest({ action: "briefing" });
+    queueRequest({ action: "elaborate", task: "task-abc" });
+    const items = queueList();
+    expect(items).toHaveLength(2);
+    expect(items[0]!.action).toBe("briefing");
+    expect(items[0]!.id).toBeDefined();
+    expect(items[0]!.timestamp).toBeDefined();
+    expect(items[1]!.action).toBe("elaborate");
+    expect(items[1]!.task).toBe("task-abc");
+  });
+
+  test("returns empty array for missing file", async () => {
+    const { queueList } = await loadQueue();
+    const items = queueList();
+    expect(items).toEqual([]);
+  });
+
+  test("tolerates malformed lines", async () => {
+    writeFileSync(join(tmpDir, "mag", "queue.jsonl"), "not json\n");
+    const { queueList } = await loadQueue();
+    const items = queueList();
+    expect(items).toHaveLength(1);
+    expect(items[0]!.raw).toBe("not json");
+  });
+});
+
 describe("queueRequest includes extra fields", () => {
   test("feedback-digest with repo field is parseable", async () => {
     const { queueRequest } = await loadQueue();
