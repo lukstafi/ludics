@@ -73,8 +73,15 @@ function removeIfRegistered(projectDir: string, path: string): void {
   }
 }
 
-/** Remove a single worktree by its concrete path. Idempotent — no-op if not registered. */
+/** Remove a single worktree by its concrete path. Idempotent — no-op if not registered.
+ *  Safety: validates that the path basename matches expected worktree naming (`{repoName}-`)
+ *  to prevent accidental removal of unrelated directories. */
 export function removeWorktreeByPath(projectDir: string, path: string): void {
+  const repoName = basename(resolve(projectDir));
+  if (!basename(path).startsWith(repoName + "-")) {
+    console.error(`ludics: refusing to remove worktree "${path}" — does not match expected naming`);
+    return;
+  }
   removeIfRegistered(projectDir, path);
 }
 
@@ -126,6 +133,13 @@ export function orchBranchName(taskId: string, slot: number | undefined, suffix:
   return `ludics/${featureSlug}${slotSuffix}/${suffix}`;
 }
 
+/** Canonical worktree directory stem: `{repoName}-{slug}{slotSuffix}`. */
+export function orchWorktreeStem(repoName: string, taskId: string, slot?: number): string {
+  const featureSlug = slugify(taskId);
+  const slotSuffix = slot ? `-s${slot}` : "";
+  return `${repoName}-${featureSlug}${slotSuffix}`;
+}
+
 export function createWorktrees(
   projectDir: string,
   taskId: string,
@@ -134,11 +148,9 @@ export function createWorktrees(
   slot?: number,
   mode: "duo" | "pair" = "duo",
 ): WorktreeSetup {
-  const featureSlug = slugify(taskId);
-  const slotSuffix = slot ? `-s${slot}` : "";
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));
-  const stem = `${repoName}-${featureSlug}${slotSuffix}`;
+  const stem = orchWorktreeStem(repoName, taskId, slot);
   const rootWorktree = join(parentDir, stem);
   const peerSyncDir = peerSyncPath(rootWorktree);
   const branches: Record<string, string> = {
@@ -220,10 +232,9 @@ export function cleanupWorktrees(
   mode: "duo" | "pair" = "duo",
 ): void {
   const featureSlug = slugify(taskId);
-  const slotSuffix = slot ? `-s${slot}` : "";
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));
-  const stem = `${repoName}-${featureSlug}${slotSuffix}`;
+  const stem = orchWorktreeStem(repoName, taskId, slot);
   const rootWorktree = join(parentDir, stem);
   const expectedPrefix = join(parentDir, `${repoName}-${featureSlug}`);
   if (!rootWorktree.startsWith(expectedPrefix)) {
