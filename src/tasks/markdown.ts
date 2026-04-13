@@ -107,6 +107,7 @@ export function updateFrontmatterField(filePath: string, field: string, value: s
   const lines = content.split("\n");
   let inFrontmatter = false;
   let done = false;
+  let closingDelimiterIdx = -1;
   const output: string[] = [];
 
   for (const line of lines) {
@@ -117,6 +118,7 @@ export function updateFrontmatterField(filePath: string, field: string, value: s
     }
     if (line === "---" && inFrontmatter) {
       inFrontmatter = false;
+      closingDelimiterIdx = output.length;
       output.push(line);
       continue;
     }
@@ -128,36 +130,16 @@ export function updateFrontmatterField(filePath: string, field: string, value: s
     output.push(line);
   }
 
+  if (!done && closingDelimiterIdx >= 0) {
+    // Upsert: insert before the frontmatter closing ---
+    output.splice(closingDelimiterIdx, 0, `${field}: ${value}`);
+  }
+
   writeFileSync(filePath, output.join("\n"));
 }
 
 export function addFrontmatterField(filePath: string, field: string, value: string): void {
-  if (!existsSync(filePath)) return;
-  const content = readFileSync(filePath, "utf-8");
-
-  // Scope the existence check to the frontmatter block only.
-  // A matching line in the markdown body must not be mistaken for a frontmatter field —
-  // that would cause updateFrontmatterField (which is frontmatter-scoped) to silently no-op.
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  const fmContent = fmMatch ? fmMatch[1]! : "";
-  if (fmContent.split("\n").some((line) => line.startsWith(`${field}:`))) {
-    updateFrontmatterField(filePath, field, value);
-    return;
-  }
-
-  // Insert before closing ---
-  const lines = content.split("\n");
-  let count = 0;
-  const output: string[] = [];
-  for (const line of lines) {
-    if (line === "---") count++;
-    if (count === 2 && line === "---") {
-      output.push(`${field}: ${value}`);
-    }
-    output.push(line);
-  }
-
-  writeFileSync(filePath, output.join("\n"));
+  updateFrontmatterField(filePath, field, value);
 }
 
 export function removeFrontmatterField(filePath: string, field: string): void {
