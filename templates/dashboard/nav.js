@@ -2,7 +2,7 @@
 (function () {
     const pages = [
         { href: 'index.html', label: 'Dashboard' },
-        { href: 'terminal.html', label: 'Mag' },
+        { href: 'mag.html', label: 'Mag' },
         { href: '#', label: 't3code', id: 't3code-link' },
         { href: 'terminals.html', label: 'Terminals' },
         { href: 'ntfy.html', label: 'ntfy' },

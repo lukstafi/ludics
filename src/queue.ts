@@ -105,6 +105,14 @@ export function queuePopAll(): string[] {
   return lines;
 }
 
+export function queueList(): Record<string, unknown>[] {
+  return readQueueLines()
+    .map(line => {
+      try { return JSON.parse(line) as Record<string, unknown>; }
+      catch { return { raw: line }; }
+    });
+}
+
 export function queuePending(): boolean {
   const file = queueFile();
   if (!existsSync(file)) return false;
