@@ -61,12 +61,15 @@ Read the request ID and write the result file:
 ```json
 {
   "id": "<request-id>",
+  "action": "<skill-action-name>",
   "status": "<outcome>",
   "timestamp": "<ISO-8601>",
   "output": "<human-readable summary>"
 }
 ```
 
+- `action` is the queue action name (e.g., `"elaborate"`, `"draft-proposal"`,
+  `"health-check"`, `"process-suggestions"`). Used by the dashboard queue panel.
 - Skill-specific fields (`proposal_path`, `verdict`, `followup_tasks`,
   `issues_created`, etc.) are documented in each skill
 

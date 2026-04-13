@@ -240,6 +240,9 @@
                         desc = `${action || 'suggestions'}: ${item.created} created, ${item.skipped} skipped${tasks}`;
                     } else if (item.critical != null) {
                         desc = `health: ${item.critical} critical, ${item.warnings || 0} warnings`;
+                    } else if (item.proposal_path) {
+                        const pName = String(item.proposal_path).split('/').pop() || item.proposal_path;
+                        desc = `draft-proposal ${taskId} → ${escapeHtml(pName)}`;
                     } else if (action && taskId) {
                         desc = `${action} ${taskId} — ${status}`;
                     } else if (action) {
