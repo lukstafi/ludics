@@ -1930,9 +1930,14 @@ async function maybeAutoStartSlots(): Promise<void> {
     const slotLiveness = data.liveness ?? "";
     if (slotLiveness === "interrupted") continue;
 
-    // Skip if the slot has an active session
+    // Skip if the slot has an active session for the CURRENT task
     const orchState = readOrchestrationState(slotNum);
-    if (orchState && orchState.phase !== "setup") continue;
+    if (orchState && orchState.taskId !== taskId) {
+      // Stale orch state from a different task — delete it (may have been restored by git sync)
+      const orchFile = join(harnessDir(), "orchestration", `slot-${slotNum}.json`);
+      try { unlinkSync(orchFile); } catch { /* ignore */ }
+      console.error(`ludics: deleted stale orchestration state for slot ${slotNum} (was ${orchState.taskId}, now ${taskId})`);
+    } else if (orchState && orchState.phase !== "setup") continue;
     const sessionStarted = data.sessionStarted ?? "";
     if (sessionStarted) continue;
 
