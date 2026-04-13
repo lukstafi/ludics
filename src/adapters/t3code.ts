@@ -18,7 +18,7 @@ import {
   serverStatus,
   writeSlotState,
 } from "../t3code/server.ts";
-import { findProjectConfig, globalAdapter, loadConfigSync } from "../config.ts";
+import { findProjectConfig, globalAdapter, loadConfigSync, type LudicsFullConfig } from "../config.ts";
 import {
   toWireProvider,
   threadModel,
@@ -632,10 +632,10 @@ async function startSingleThread(
 }
 
 /** Load orchestration-specific settings from config.yaml's mag.orchestration section. */
-function loadConfigOrchestration(): Record<string, unknown> | undefined {
+function loadConfigOrchestration(config?: LudicsFullConfig): Record<string, unknown> | undefined {
   try {
-    const config = loadConfigSync();
-    const mag = config.mag as Record<string, unknown> | undefined;
+    const cfg = config ?? loadConfigSync();
+    const mag = cfg.mag as Record<string, unknown> | undefined;
     return mag?.orchestration as Record<string, unknown> | undefined;
   } catch {
     return undefined;
@@ -662,8 +662,8 @@ const CLAUDE_OPUS_MODEL = "claude-opus-4-6";
  *
  * @returns An object with the recommended adapter name ("t3code") and args string.
  */
-export function selectOrchestrationFlags(effort: string): { adapter: string; args: string; isDuo: boolean } {
-  const orchCfg = loadConfigOrchestration();
+export function selectOrchestrationFlags(effort: string, config?: LudicsFullConfig): { adapter: string; args: string; isDuo: boolean } {
+  const orchCfg = loadConfigOrchestration(config);
   const mode = (orchCfg?.default_mode as string | undefined)?.trim() || "pair";
   const coder = (orchCfg?.default_coder as string | undefined)?.trim() || "claude-code";
   const reviewer = (orchCfg?.default_reviewer as string | undefined)?.trim() || "codex";
@@ -782,8 +782,9 @@ async function startOrchestratedThreads(
 
   if (existing?.orchestration?.pid) killPid(existing.orchestration.pid);
 
-  // Load config.yaml orchestration defaults and merge with adapter arg overrides.
-  const orchCfg = loadConfigOrchestration();
+  // Load config once and thread through all helpers.
+  const config = loadConfigSync();
+  const orchCfg = loadConfigOrchestration(config);
 
   // Merge phase_timeouts from config.yaml into orchestration config (adapter args have higher priority).
   const configPhaseTimeouts = orchCfg?.phase_timeouts as Record<string, number> | undefined;
@@ -890,10 +891,7 @@ async function startOrchestratedThreads(
     branches: setup.branches,
     slotTitle: title,
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
-    upstreamRepo: (() => {
-      const cfg = loadConfigSync();
-      return findProjectConfig(projectDir, cfg)?.upstream_repo || undefined;
-    })(),
+    upstreamRepo: findProjectConfig(projectDir, config)?.upstream_repo || undefined,
   };
   persistState(state, ctx.harnessDir);
 
