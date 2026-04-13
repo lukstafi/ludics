@@ -55,7 +55,7 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - If `Status: amend`: do a light-touch update only:
      - Compute what actually changed since the last briefing before writing:
        - Prefer git diff in state repo:
-         `git -C "$LUDICS_STATE_PATH" diff --name-only HEAD~1..HEAD -- tasks/ slots.md sessions.md mag/queue.jsonl journal/notifications.jsonl 2>/dev/null || true`
+         `git -C "$LUDICS_STATE_PATH" diff --name-only HEAD~1..HEAD -- tasks/ sessions.md mag/queue.jsonl journal/notifications.jsonl 2>/dev/null || true`
        - If git diff is unavailable/noisy, fall back to context deltas:
          compare `briefing-context.md` sections against existing `briefing.md`
      - Update only sections touched by those deltas
@@ -242,7 +242,7 @@ When the answers arrive, update relevant files or perform relevant actions so th
 ## Delegation Strategy
 
 - **Pre-computed data** in `briefing-context.md` (no CLI commands needed for data gathering)
-- **Git diff** (`tasks/`, `slots.md`, `sessions.md`, queue/notifications) for precise amend-mode change detection
+- **Git diff** (`tasks/`, `sessions.md`, queue/notifications) for precise amend-mode change detection
 - **Task tool** to invoke `/ludics-elaborate` for unprocessed tasks (parallel)
 - **CLI tools** for slot operations (`ludics slot N assign`, `ludics slot N clear`) and nudge notifications (`ludics notify proposal`)
 - **Direct analysis** for strategic reasoning, slot assignment trade-offs, suggestions

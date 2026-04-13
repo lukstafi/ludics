@@ -28,7 +28,7 @@ This skill is invoked when:
    - Flag if <= 7 days (warning) or <= 3 days (critical)
 
 2. **Check slot health**:
-   - Read `slots.md`
+   - Run `ludics slots status` to get current slot state
    - Identify slots that have been active > 24h without status update
    - Run `ludics sessions report` and check for orphaned/unclassified sessions
      (sessions with no slot match in `sessions.md`)
@@ -74,7 +74,7 @@ This skill is invoked when:
 
 5. **Detect deltas since previous health check**:
    - Prefer git diff in state repo for scope awareness:
-     `git -C "$LUDICS_STATE_PATH" diff --name-only HEAD~1..HEAD -- tasks/ slots.md sessions.md mag/queue.jsonl journal/notifications.jsonl 2>/dev/null || true`
+     `git -C "$LUDICS_STATE_PATH" diff --name-only HEAD~1..HEAD -- tasks/ sessions.md mag/queue.jsonl journal/notifications.jsonl 2>/dev/null || true`
    - Build stable issue keys for all findings (examples:
      `deadline:<task-id>`, `slot-stale:<slot>`, `queue-stuck:<request-id>`)
    - Read previous snapshot from `$LUDICS_STATE_PATH/mag/health-last.json` if it exists
@@ -85,7 +85,7 @@ This skill is invoked when:
    - Note: Elaboration queueing is handled automatically by `tasks_queue_elaborations()` in `tasks_sync()` -- no need to enqueue here
 
 7. **Queue completion verification for potentially done tasks**:
-   - Read `slots.md` to find slots with active in-progress tasks
+   - Run `ludics slots status` to find slots with active in-progress tasks
    - For each slotted in-progress task (where `completed` is null):
      a. Quick-check for completion signals (lightweight, no deep codebase inspection):
         - Has the adapter session ended (Runtime section empty, no matching session)?
