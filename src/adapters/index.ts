@@ -22,6 +22,8 @@ const adapters: Record<string, Adapter> = {
   "tmux": tmuxAdapter,
 };
 
+export const ADAPTER_NAMES = Object.keys(adapters);
+
 function getAdapter(mode: string): Adapter {
   const adapter = adapters[mode];
   if (!adapter) throw new Error(`adapter not found: ${mode}`);
