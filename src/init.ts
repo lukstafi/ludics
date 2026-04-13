@@ -54,6 +54,7 @@ export async function runInit(args: string[]): Promise<void> {
   const noHooks = args.includes("--no-hooks");
   const noDashboard = args.includes("--no-dashboard");
   const noTriggers = args.includes("--no-triggers");
+  const handoff = args.includes("--handoff");
 
   const root = ludicsRoot();
 
@@ -146,8 +147,10 @@ export async function runInit(args: string[]): Promise<void> {
   if (configOk) {
     console.log("\n--- Cluster ---");
     try {
-      // No statePull here: init is a local setup command, not a controller handoff.
-      // The controller's local state is authoritative; pulling would overwrite it.
+      if (handoff) {
+        console.log("Handoff mode: adopting remote state...");
+        statePull();
+      }
       await clusterTick();
     } catch (err) {
       console.warn(`warning: cluster init failed: ${err instanceof Error ? err.message : String(err)}`);
