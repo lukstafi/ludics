@@ -76,7 +76,7 @@ export interface LudicsFullConfig {
     token?: string;
   };
   dashboard?: { port?: number; ttl?: number };
-  network?: { mode?: string; hostname?: string; nodes?: unknown[] };
+  network?: { hostname?: string };
   cluster?: {
     transport?: string;
     domain?: string;
