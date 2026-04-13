@@ -143,6 +143,42 @@ describe("slotDataToMarkdown round-trip fidelity", () => {
     }
   });
 
+  test("round-trip preserves trailing spaces in section content", () => {
+    const original: SlotData = {
+      slot: 1,
+      process: "running",
+      task: null,
+      mode: null,
+      session: null,
+      path: null,
+      started: null,
+      adapterArgs: null,
+      machine: null,
+      sessionStarted: null,
+      liveness: null,
+      terminals: "tmux:0:bash  ",
+      runtime: "bun 1.2.0\t",
+      git: "main  ",
+    };
+
+    const tmp = mkdtempSync(join(tmpdir(), "ludics-rt-"));
+    try {
+      const md = slotDataToMarkdown(original);
+      const slotsFile = join(tmp, "slots.md");
+      writeFileSync(slotsFile, md);
+
+      const parsed = migrateMarkdownToSlotData(slotsFile, 1);
+      const result = parsed.get(1)!;
+
+      // Trailing spaces/tabs on content lines must survive round-trip
+      expect(result.terminals).toBe("tmux:0:bash  ");
+      expect(result.runtime).toBe("bun 1.2.0\t");
+      expect(result.git).toBe("main  ");
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
   test("every SlotData key is represented in the output", () => {
     const data: SlotData = {
       slot: 2,
