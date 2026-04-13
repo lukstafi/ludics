@@ -32,7 +32,7 @@ export type Phase =
   | "final-merge"
   | "done";
 
-export type PhaseCategory = "pre-work" | "main-loop" | "pr" | "merge" | "post-merge" | "terminal";
+export type PhaseCategory = "pre-plan" | "planning" | "main-loop" | "pr" | "merge" | "post-merge" | "terminal";
 
 export interface TransitionRule {
   from: Phase;
@@ -41,13 +41,13 @@ export interface TransitionRule {
 }
 
 export const PHASE_CATEGORIES: Record<Phase, PhaseCategory> = {
-  setup: "pre-work",
-  gather: "pre-work",
-  clarify: "pre-work",
-  pushback: "pre-work",
-  plan: "pre-work",
-  "plan-merge": "pre-work",
-  "plan-review": "pre-work",
+  setup: "pre-plan",
+  gather: "pre-plan",
+  clarify: "pre-plan",
+  pushback: "pre-plan",
+  plan: "planning",
+  "plan-merge": "planning",
+  "plan-review": "planning",
   work: "main-loop",
   review: "main-loop",
   "update-docs": "main-loop",

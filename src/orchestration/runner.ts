@@ -1063,7 +1063,7 @@ export async function interruptAgent(
 
 async function handleTimeout(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
   const category = PHASE_CATEGORIES[state.phase];
-  if (category === "pre-work" || category === "terminal") return;
+  if (category === "pre-plan" || category === "planning" || category === "terminal") return;
 
   // Note: for forwarded pr-comments (upstream monitoring), timeout interrupts are NOT
   // suppressed. If redispatchForPrComments dispatched a turn that hangs, it should be
@@ -1322,12 +1322,11 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
       }
     }
   }
-  // When planning is skipped entirely (pre-work → work), create a stub merged plan
+  // When planning is skipped entirely (pre-plan → work), create a stub merged plan
   // so the reviewer template finds a baseline section and doesn't block on pre-existing failures.
   // Only from pre-plan phases (setup/gather/clarify/pushback) — not from plan/plan-merge/plan-review,
   // which indicate planning was attempted but failed, a different situation.
-  const PRE_PLAN_PHASES: readonly Phase[] = ["setup", "gather", "clarify", "pushback"];
-  if (next === "work" && PRE_PLAN_PHASES.includes(state.phase)) {
+  if (next === "work" && PHASE_CATEGORIES[state.phase] === "pre-plan") {
     const mergedPath = mergedPlanFilePath(state.peerSyncDir, state.round, 0);
     if (!existsSync(mergedPath)) {
       mkdirSync(join(state.peerSyncDir, "plans"), { recursive: true });
