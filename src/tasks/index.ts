@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, renameSync } from "fs";
 import { extname, join } from "path";
 import { harnessDir } from "../config.ts";
-import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField } from "./markdown.ts";
+import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus } from "./markdown.ts";
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
@@ -264,9 +264,16 @@ function tasksMerge(targetId: string, sourceIds: string[]): void {
   }
 
   for (const srcId of sourceIds) {
-    updateFrontmatterField(join(dir, `${srcId}.md`), "status", "merged");
-    addFrontmatterField(join(dir, `${srcId}.md`), "merged_into", targetId);
-    updateFrontmatterField(join(dir, `${srcId}.md`), "slot", "null");
+    const srcFile = join(dir, `${srcId}.md`);
+    if (!transitionStatus(srcFile, ["ready", "blocked", "needs-confirmation", "deferred"], "merged")) {
+      const content = readFileSync(srcFile, "utf-8");
+      const statusMatch = content.match(/^status:\s*(.+)$/m);
+      const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+      console.error(`ludics: skipping merge for ${srcId}: status is '${actual}', expected one of [ready, blocked, needs-confirmation, deferred]`);
+      continue;
+    }
+    addFrontmatterField(srcFile, "merged_into", targetId);
+    updateFrontmatterField(srcFile, "slot", "null");
     console.log(`Merged: ${srcId} -> ${targetId}`);
   }
 
@@ -307,7 +314,13 @@ function tasksUnmerge(sourceId: string): void {
   const targetFile = join(dir, `${targetId}.md`);
 
   // Restore source task
-  updateFrontmatterField(srcFile, "status", "ready");
+  if (!transitionStatus(srcFile, ["merged"], "ready")) {
+    const currentContent = readFileSync(srcFile, "utf-8");
+    const statusMatch = currentContent.match(/^status:\s*(.+)$/m);
+    const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+    console.error(`ludics: skipping unmerge for ${sourceId}: status is '${actual}', expected 'merged'`);
+    return;
+  }
   removeFrontmatterField(srcFile, "merged_into");
 
   // Remove source from target's merged_from list

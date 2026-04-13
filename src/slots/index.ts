@@ -11,7 +11,7 @@ import { journalAppend } from "../journal.ts";
 import { emitEvent } from "../events.ts";
 import { runAdapterAction, readAdapterState, readAdapterLastActivity } from "../adapters/index.ts";
 import type { AdapterContext } from "../adapters/index.ts";
-import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter } from "../tasks/markdown.ts";
+import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter, transitionStatus } from "../tasks/markdown.ts";
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
@@ -168,7 +168,13 @@ function taskUpdateForSlotAssign(taskId: string, slot: number, adapter: string, 
     console.error(`ludics: task file not found: ${taskId} (skipping task update)`);
     return;
   }
-  taskUpdateFrontmatter(taskId, "status", "in-progress");
+  if (!transitionStatus(file, ["ready", "deferred", "blocked", "needs-confirmation"], "in-progress")) {
+    const content = readFileSync(file, "utf-8");
+    const statusMatch = content.match(/^status:\s*(.+)$/m);
+    const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+    console.error(`ludics: skipping slot assign for ${taskId}: status is '${actual}', expected one of [ready, deferred, blocked, needs-confirmation]`);
+    return;
+  }
   taskUpdateFrontmatter(taskId, "slot", String(slot));
   taskUpdateFrontmatter(taskId, "adapter", adapter);
   taskUpdateFrontmatter(taskId, "started", started);
@@ -180,7 +186,24 @@ function taskUpdateForSlotClear(taskId: string, finalStatus: string): void {
     console.error(`ludics: task file not found: ${taskId} (skipping task update)`);
     return;
   }
-  taskUpdateFrontmatter(taskId, "status", finalStatus);
+
+  let expectedFrom: string[];
+  if (finalStatus === "done") {
+    expectedFrom = ["in-progress", "preempted"];
+  } else if (finalStatus === "abandoned") {
+    expectedFrom = ["in-progress", "deferred", "preempted"];
+  } else {
+    // ready (reset)
+    expectedFrom = ["in-progress", "deferred"];
+  }
+
+  if (!transitionStatus(file, expectedFrom, finalStatus)) {
+    const content = readFileSync(file, "utf-8");
+    const statusMatch = content.match(/^status:\s*(.+)$/m);
+    const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+    console.error(`ludics: skipping slot clear for ${taskId}: status is '${actual}', expected one of [${expectedFrom.join(", ")}]`);
+    return;
+  }
   taskUpdateFrontmatter(taskId, "slot", "null");
 
   if (finalStatus === "done" || finalStatus === "abandoned") {
@@ -465,7 +488,13 @@ export function taskCompleteDirectly(taskId: string): void {
     console.error(`ludics: task file not found: ${taskId} (skipping task update)`);
     return;
   }
-  taskUpdateFrontmatter(taskId, "status", "done");
+  if (!transitionStatus(file, ["in-progress", "deferred"], "done")) {
+    const content = readFileSync(file, "utf-8");
+    const statusMatch = content.match(/^status:\s*(.+)$/m);
+    const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+    console.error(`ludics: skipping direct completion for ${taskId}: status is '${actual}', expected one of [in-progress, deferred]`);
+    return;
+  }
   taskUpdateFrontmatter(taskId, "slot", "null");
   const completed = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
   taskUpdateFrontmatter(taskId, "completed", completed);
@@ -557,7 +586,13 @@ export function slotPreempt(
 
   // Set previous task status to "preempted"
   if (data.task) {
-    taskUpdateFrontmatter(data.task, "status", "preempted");
+    const taskFile = taskFilePath(data.task);
+    if (!transitionStatus(taskFile, ["in-progress"], "preempted")) {
+      const content = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
+      const statusMatch = content.match(/^status:\s*(.+)$/m);
+      const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+      console.error(`ludics: skipping preempt status update for ${data.task}: status is '${actual}', expected 'in-progress'`);
+    }
   }
 
   // Assign the new priority task
@@ -591,7 +626,13 @@ export function slotRestore(slotNum: number): void {
 
   // Restore previous task status to "in-progress"
   if (stash.previousTask && stash.previousTask !== "null") {
-    taskUpdateFrontmatter(stash.previousTask, "status", "in-progress");
+    const taskFile = taskFilePath(stash.previousTask);
+    if (!transitionStatus(taskFile, ["preempted"], "in-progress")) {
+      const content = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
+      const statusMatch = content.match(/^status:\s*(.+)$/m);
+      const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+      console.error(`ludics: skipping restore status update for ${stash.previousTask}: status is '${actual}', expected 'preempted'`);
+    }
   }
 
   removeStash(slotNum);

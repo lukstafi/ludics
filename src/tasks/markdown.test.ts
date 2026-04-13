@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, appendToSection, readFrontmatterField, updateFrontmatterField } from "./markdown.ts";
+import { addFrontmatterField, appendToSection, readFrontmatterField, updateFrontmatterField, transitionStatus } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -300,5 +300,46 @@ describe("appendToSection", () => {
     appendToSection(f, "Notes", "- Appended note");
     const result = readFileSync(f, "utf-8");
     expect(result).toContain("Existing.\n- Appended note\n");
+  });
+});
+
+describe("transitionStatus", () => {
+  test("allowed transition succeeds and updates status", () => {
+    const f = tmpFile("transition-ok.md", "---\nid: task-1\nstatus: ready\n---\n\n# Title\n");
+    const result = transitionStatus(f, ["ready", "deferred"], "in-progress");
+    expect(result).toBe(true);
+    const content = readFileSync(f, "utf-8");
+    expect(content).toContain("status: in-progress");
+    expect(content).not.toContain("status: ready");
+  });
+
+  test("allowed transition with single string expectedFrom", () => {
+    const f = tmpFile("transition-single.md", "---\nid: task-1\nstatus: merged\n---\n\n# Title\n");
+    const result = transitionStatus(f, "merged", "ready");
+    expect(result).toBe(true);
+    const content = readFileSync(f, "utf-8");
+    expect(content).toContain("status: ready");
+  });
+
+  test("blocked transition returns false and leaves file unchanged", () => {
+    const f = tmpFile("transition-blocked.md", "---\nid: task-1\nstatus: abandoned\n---\n\n# Title\n");
+    const result = transitionStatus(f, ["ready", "deferred"], "in-progress");
+    expect(result).toBe(false);
+    const content = readFileSync(f, "utf-8");
+    expect(content).toContain("status: abandoned");
+    expect(content).not.toContain("status: in-progress");
+  });
+
+  test("file-not-found throws", () => {
+    expect(() => transitionStatus(join(TMP_DIR, "nonexistent.md"), "ready", "in-progress")).toThrow("task file not found");
+  });
+
+  test("slotClear done on abandoned task does not overwrite status", () => {
+    const f = tmpFile("transition-terminal.md", "---\nid: task-1\nstatus: abandoned\ncompleted: 2026-04-10T10:00Z\n---\n\n# Title\n");
+    const result = transitionStatus(f, ["in-progress", "preempted"], "done");
+    expect(result).toBe(false);
+    const content = readFileSync(f, "utf-8");
+    expect(content).toContain("status: abandoned");
+    expect(content).not.toContain("status: done");
   });
 });

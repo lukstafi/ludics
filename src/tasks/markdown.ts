@@ -145,6 +145,29 @@ export function addFrontmatterField(filePath: string, field: string, value: stri
   updateFrontmatterField(filePath, field, value);
 }
 
+/**
+ * Atomically transition a task's status field.
+ * Returns true if the transition succeeded, false if the current status
+ * did not match any of the expectedFrom values (transition skipped).
+ * Throws if the file does not exist.
+ */
+export function transitionStatus(
+  filePath: string,
+  expectedFrom: string | string[],
+  to: string,
+): boolean {
+  if (!existsSync(filePath)) throw new Error(`task file not found: ${filePath}`);
+  const content = readFileSync(filePath, "utf-8");
+  const statusMatch = content.match(/^status:\s*(.+)$/m);
+  const current = statusMatch ? statusMatch[1]!.trim() : "ready";
+  const allowed = Array.isArray(expectedFrom) ? expectedFrom : [expectedFrom];
+  if (!allowed.includes(current)) {
+    return false;
+  }
+  updateFrontmatterField(filePath, "status", to);
+  return true;
+}
+
 /** Append a line to a markdown section (## heading). Handles "None." replacement, dedup, and missing sections. */
 export function appendToSection(filePath: string, section: string, line: string): void {
   if (!existsSync(filePath)) return;
