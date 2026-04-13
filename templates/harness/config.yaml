@@ -122,13 +122,9 @@ triggers:
     interval: 300
     action: cluster tick
 
-# Network settings for dashboard/URL binding
+# Network settings for hostname override
 network:
-  # Mode: localhost (default) | tailscale
-  # Overridden by cluster.transport when cluster is configured.
-  mode: localhost
-
   # Explicit hostname override (optional)
-  # If not set and mode is tailscale, auto-detects from `tailscale status`
+  # If not set and cluster.transport is tailscale, auto-detects from `tailscale status`
   hostname: ""
 

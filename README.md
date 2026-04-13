@@ -404,7 +404,7 @@ ludics supports running across multiple machines. All state lives in a git repos
 ### How it works
 
 - **Git-backed state**: every machine clones the same harness repo. Pull to see the latest state, push to share yours.
-- **Tailscale networking**: optional MagicDNS-based hostname resolution for cross-machine URLs. Configure `network.mode: tailscale` in your harness config.
+- **Tailscale networking**: optional MagicDNS-based hostname resolution for cross-machine URLs. Configure `cluster.transport: tailscale` in your harness config.
 - **Seniority-based leader election**: nodes are listed in your config in priority order. The highest-priority node with a fresh heartbeat (< 15 min) becomes Mag leader. If the leader goes offline, the next node takes over automatically.
 - **Heartbeats**: each node publishes a heartbeat every 5 minutes to `federation/heartbeats/`. The federation trigger handles this.
 
