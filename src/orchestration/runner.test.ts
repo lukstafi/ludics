@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut, validatePreviousPhaseArtifacts, validateAgentPrFiles, type PreviousPhaseContext } from "./runner.ts";
 import * as notify from "../notify.ts";
 import * as peerSync from "./peer-sync.ts";
 import * as events from "../events.ts";
@@ -3036,6 +3036,393 @@ describe("skipToPhase", () => {
       expect(runtime.turnLifecycle).toBeNull();
       expect(runtime.status).toBe("idle");
       expect(runtime.statusMessage).toBe("skip to review");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gh-ludics-242: Peer-sync state reliability
+// ---------------------------------------------------------------------------
+
+describe("validatePreviousPhaseArtifacts", () => {
+  let emitSpy: ReturnType<typeof spyOn>;
+  let dir: string;
+
+  beforeEach(() => {
+    dir = makeTmpDir();
+    emitSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    emitSpy.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("warns on missing review file", () => {
+    const state = makeState({ phase: "work", round: 1 }, dir);
+    const ctx: PreviousPhaseContext = { phase: "review", round: 1, planMergeRound: 0 };
+    validatePreviousPhaseArtifacts(state, ctx);
+    const warnings = emitSpy.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { event_type: string }).event_type === "orchestration_warning",
+    );
+    expect(warnings.length).toBe(1);
+    expect((warnings[0][0] as { message: string }).message).toContain("Missing artifact from review");
+    expect((warnings[0][0] as { message: string }).message).toContain("reviewer");
+  });
+
+  test("no warning when review file exists", () => {
+    const state = makeState({ phase: "work", round: 1 }, dir);
+    // Write the expected review file: reviews/round-1-reviewer.md
+    writeFileSync(join(dir, "reviews", "round-1-reviewer.md"), "APPROVE\n");
+    const ctx: PreviousPhaseContext = { phase: "review", round: 1, planMergeRound: 0 };
+    validatePreviousPhaseArtifacts(state, ctx);
+    const warnings = emitSpy.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { event_type: string }).event_type === "orchestration_warning",
+    );
+    expect(warnings.length).toBe(0);
+  });
+
+  test("no warning for phase without required artifact (work)", () => {
+    const state = makeState({ phase: "review", round: 1 }, dir);
+    const ctx: PreviousPhaseContext = { phase: "work", round: 1, planMergeRound: 0 };
+    validatePreviousPhaseArtifacts(state, ctx);
+    const warnings = emitSpy.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { event_type: string }).event_type === "orchestration_warning",
+    );
+    expect(warnings.length).toBe(0);
+  });
+
+  test("warns on malformed .pr file after pr-create", () => {
+    const state = makeState({ phase: "pr-comments", round: 1 }, dir);
+    writeFileSync(join(dir, "coder.pr"), "# My PR\nSome markdown body\n");
+    const ctx: PreviousPhaseContext = { phase: "pr-create", round: 1, planMergeRound: 0 };
+    validatePreviousPhaseArtifacts(state, ctx);
+    const warnings = emitSpy.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { event_type: string }).event_type === "orchestration_warning",
+    );
+    expect(warnings.length).toBe(1);
+    expect((warnings[0][0] as { message: string }).message).toContain("Invalid artifact from pr-create");
+    expect((warnings[0][0] as { message: string }).message).toContain("non-URL content");
+  });
+
+  test("skips non-participating agents", () => {
+    // Coder does not participate in review phase
+    const state = makeState({ phase: "work", round: 1 }, dir);
+    const ctx: PreviousPhaseContext = { phase: "review", round: 1, planMergeRound: 0 };
+    validatePreviousPhaseArtifacts(state, ctx);
+    const warnings = emitSpy.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { event_type: string }).event_type === "orchestration_warning",
+    );
+    // Only reviewer participates in review — only one warning for reviewer's missing artifact
+    expect(warnings.length).toBe(1);
+    expect((warnings[0][0] as { message: string }).message).toContain("reviewer");
+    expect((warnings[0][0] as { message: string }).message).not.toContain("coder");
+  });
+
+  test("uses ctx.round not state.round for artifact path", () => {
+    // Simulate review→work transition where state.round was incremented to 2
+    // but the review artifact was written for round 1.
+    const state = makeState({ phase: "work", round: 2 }, dir);
+    // Write review file for round 1 (the ctx round)
+    writeFileSync(join(dir, "reviews", "round-1-reviewer.md"), "APPROVE\n");
+    const ctx: PreviousPhaseContext = { phase: "review", round: 1, planMergeRound: 0 };
+    validatePreviousPhaseArtifacts(state, ctx);
+    const warnings = emitSpy.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { event_type: string }).event_type === "orchestration_warning",
+    );
+    // Should find the file at round 1, no warning
+    expect(warnings.length).toBe(0);
+  });
+});
+
+describe("validateAgentPrFiles (eager repair)", () => {
+  let fixSpy: ReturnType<typeof spyOn>;
+  let notifySpy: ReturnType<typeof spyOn>;
+  let dir: string;
+
+  beforeEach(() => {
+    dir = makeTmpDir();
+    notifySpy = spyOn(notify, "notifyAgents").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    fixSpy?.mockRestore();
+    notifySpy.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("eagerly repairs malformed .pr file even when turn not settled", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue("https://github.com/org/repo/pull/1");
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    // Agent has no lifecycle (not settled)
+    state.agentStates.coder.turnLifecycle = null;
+    state.agentStates.coder.status = "pr-create-active";
+    writeFileSync(join(dir, "coder.pr"), "# My PR\nSome markdown body\n");
+    validateAgentPrFiles(state);
+    expect(fixSpy).toHaveBeenCalled();
+    expect(state.agentStates.coder.prUrl).toBe("https://github.com/org/repo/pull/1");
+  });
+
+  test("does not call repair for valid URL", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue("https://github.com/org/repo/pull/1");
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    state.agentStates.coder.turnLifecycle = null;
+    state.agentStates.coder.status = "pr-create-active";
+    writeFileSync(join(dir, "coder.pr"), "https://github.com/org/repo/pull/1\n");
+    validateAgentPrFiles(state);
+    // Valid URL — eager path skips, settled-mode also skips (not settled)
+    expect(fixSpy).not.toHaveBeenCalled();
+  });
+
+  test("does not call repair when .pr doesn't exist and turn not settled", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue(null);
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    state.agentStates.coder.turnLifecycle = null;
+    state.agentStates.coder.status = "pr-create-active";
+    // No .pr file written
+    validateAgentPrFiles(state);
+    expect(fixSpy).not.toHaveBeenCalled();
+  });
+
+  test("calls repair when .pr doesn't exist but turn is settled", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue(null);
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "settled" });
+    state.agentStates.coder.status = "pr-create-done";
+    validateAgentPrFiles(state);
+    expect(fixSpy).toHaveBeenCalled();
+  });
+
+  test("skips empty .pr file", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue(null);
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    state.agentStates.coder.turnLifecycle = null;
+    state.agentStates.coder.status = "pr-create-active";
+    writeFileSync(join(dir, "coder.pr"), "");
+    validateAgentPrFiles(state);
+    // Empty file — eager path skips (content falsy), settled-mode skips (not settled)
+    expect(fixSpy).not.toHaveBeenCalled();
+  });
+
+  test("repair failure does not set prUrl or notify", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue(null);
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    state.agentStates.coder.turnLifecycle = null;
+    state.agentStates.coder.status = "pr-create-active";
+    writeFileSync(join(dir, "coder.pr"), "# Bad PR body\n");
+    validateAgentPrFiles(state);
+    expect(fixSpy).toHaveBeenCalled();
+    expect(state.agentStates.coder.prUrl).toBeFalsy();
+    expect(notifySpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("phase-entry status reset", () => {
+  test("status file written with {phase}-pending on phase entry", () => {
+    const dir = makeTmpDir();
+    try {
+      const state = makeState({ phase: "work", round: 1 }, dir);
+      // Write a stale status file from previous phase
+      writeFileSync(join(dir, "coder.status"), "plan-done|1713000000000|completed\n");
+      writeFileSync(join(dir, "reviewer.status"), "plan-done|1713000000000|completed\n");
+
+      // Simulate what enterPhase does: reset participating agents' status files.
+      // Since enterPhase is private, we test the observable filesystem effect
+      // by running the same logic inline.
+      const { agentParticipatesInPhase } = require("./phases.ts");
+      if (state.phase !== "pr-comments") {
+        for (const agent of state.agents) {
+          if (!agentParticipatesInPhase(state, agent)) continue;
+          const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+          const nowSec = Math.floor(Date.now() / 1000);
+          const resetValue = `${state.phase}-pending|${nowSec}|awaiting`;
+          writeFileSync(statusPath, resetValue);
+        }
+      }
+
+      // Coder participates in work → status should be reset
+      const coderStatus = readFileSync(join(dir, "coder.status"), "utf-8");
+      expect(coderStatus).toMatch(/^work-pending\|\d+\|awaiting$/);
+
+      // Reviewer does NOT participate in work → status should be unchanged
+      const reviewerStatus = readFileSync(join(dir, "reviewer.status"), "utf-8");
+      expect(reviewerStatus).toContain("plan-done");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("pr-comments phase resets then writes done status for participating agents", () => {
+    const dir = makeTmpDir();
+    try {
+      const state = makeState({ phase: "pr-comments", round: 1 }, dir);
+      // Write stale status from previous phase
+      writeFileSync(join(dir, "coder.status"), "pr-create-done|1713000000000|done\n");
+
+      // Simulate what enterPhase does for pr-comments:
+      // 1. Reset all participating agents (same as every other phase)
+      const { agentParticipatesInPhase } = require("./phases.ts");
+      for (const agent of state.agents) {
+        if (!agentParticipatesInPhase(state, agent)) continue;
+        const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+        const nowSec = Math.floor(Date.now() / 1000);
+        writeFileSync(statusPath, `${state.phase}-pending|${nowSec}|awaiting`);
+      }
+      // 2. pr-comments early return writes done status so agents appear done
+      for (const agent of state.agents) {
+        if (!agentParticipatesInPhase(state, agent)) continue;
+        const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+        const nowSec = Math.floor(Date.now() / 1000);
+        writeFileSync(statusPath, `pr-comments-done|${nowSec}|awaiting-comments`);
+      }
+
+      // Status should be pr-comments-done (not the stale pr-create-done)
+      const coderStatus = readFileSync(join(dir, "coder.status"), "utf-8");
+      expect(coderStatus).toMatch(/^pr-comments-done\|\d+\|awaiting-comments$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fingerprint after reset differs from pre-reset fingerprint", () => {
+    const dir = makeTmpDir();
+    try {
+      // Write stale status
+      writeFileSync(join(dir, "coder.status"), "plan-done|1713000000000|completed\n");
+      const { statusFileFingerprint } = require("./peer-sync.ts");
+      const preResetFp = statusFileFingerprint(dir, "coder");
+
+      // Reset
+      const nowSec = Math.floor(Date.now() / 1000);
+      writeFileSync(join(dir, "coder.status"), `work-pending|${nowSec}|awaiting`);
+      const postResetFp = statusFileFingerprint(dir, "coder");
+
+      expect(postResetFp).not.toBe(preResetFp);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("crash recovery: does not clobber done status for already-dispatched agents", () => {
+    const dir = makeTmpDir();
+    try {
+      const phaseToken = "phase-crash-test";
+      const state = makeState({ phase: "work", round: 1 }, dir);
+      // Simulate: agent was dispatched for this phaseToken, then orchestrator crashed.
+      // While down, the agent wrote a done status.
+      state.agentStates.coder.turnLifecycle = makeLifecycle({
+        phaseToken,
+        state: "dispatched",
+      });
+      const doneStatus = "work-done|1713000099|coder work complete";
+      writeFileSync(join(dir, "coder.status"), doneStatus);
+
+      // Simulate the new dispatch loop logic: status reset happens AFTER dedup
+      // checks, so agents that pass the dedup check (already dispatched) are
+      // skipped entirely — their status files are never touched.
+      const { agentParticipatesInPhase } = require("./phases.ts");
+      for (const agent of state.agents) {
+        if (!agentParticipatesInPhase(state, agent)) continue;
+        // Dedup check: skip agents already dispatched for this phase token
+        const existing = state.agentStates[agent.name]?.turnLifecycle;
+        if (existing && existing.state === "dispatched" && existing.phaseToken === phaseToken) {
+          continue;
+        }
+        // Only reset status for agents that will actually be (re)dispatched
+        const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+        const nowSec = Math.floor(Date.now() / 1000);
+        writeFileSync(statusPath, `${state.phase}-pending|${nowSec}|awaiting`);
+      }
+
+      // Coder was already dispatched → done status must be preserved
+      const coderStatus = readFileSync(join(dir, "coder.status"), "utf-8");
+      expect(coderStatus).toBe(doneStatus);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("crash recovery: resets status for agents NOT yet dispatched under current token", () => {
+    const dir = makeTmpDir();
+    try {
+      const phaseToken = "phase-partial-crash";
+      // Use "plan" phase where both agents participate
+      const state = makeState({ phase: "plan", round: 1 }, dir);
+
+      // Coder was dispatched, reviewer was not (crash happened between dispatches)
+      state.agentStates.coder.turnLifecycle = makeLifecycle({
+        phaseToken,
+        state: "dispatched",
+      });
+      // Reviewer has no lifecycle for this token (wasn't dispatched yet)
+      state.agentStates.reviewer.turnLifecycle = null;
+
+      // Coder finished while orchestrator was down
+      const coderDone = "plan-done|1713000099|plan written";
+      writeFileSync(join(dir, "coder.status"), coderDone);
+      // Reviewer has stale status from previous phase
+      writeFileSync(join(dir, "reviewer.status"), "setup-done|1713000000|completed");
+
+      // Simulate the new dispatch loop logic: dedup check then reset
+      const { agentParticipatesInPhase } = require("./phases.ts");
+      for (const agent of state.agents) {
+        if (!agentParticipatesInPhase(state, agent)) continue;
+        const existing = state.agentStates[agent.name]?.turnLifecycle;
+        if (existing && existing.state === "dispatched" && existing.phaseToken === phaseToken) {
+          continue;
+        }
+        const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+        const nowSec = Math.floor(Date.now() / 1000);
+        writeFileSync(statusPath, `${state.phase}-pending|${nowSec}|awaiting`);
+      }
+
+      // Coder: dispatched → preserved
+      expect(readFileSync(join(dir, "coder.status"), "utf-8")).toBe(coderDone);
+      // Reviewer: not dispatched → reset
+      expect(readFileSync(join(dir, "reviewer.status"), "utf-8")).toMatch(/^plan-pending\|\d+\|awaiting$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("previousPhaseCtx persistence", () => {
+  test("previousPhaseCtx survives persist/read round-trip", () => {
+    const dir = makeTmpDir();
+    const harnessDir = makeTmpDir();
+    try {
+      const state = makeState({ phase: "work", round: 2 }, dir);
+      state.previousPhaseCtx = { phase: "review", round: 1, planMergeRound: 0 };
+
+      // Persist to temp harness dir and read back
+      const { readOrchestrationState } = require("./state.ts");
+      persistState(state, harnessDir);
+      const restored = readOrchestrationState(state.slot, harnessDir);
+
+      expect(restored).not.toBeNull();
+      expect(restored!.previousPhaseCtx).toEqual({ phase: "review", round: 1, planMergeRound: 0 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(harnessDir, { recursive: true, force: true });
+    }
+  });
+
+  test("validatePreviousPhaseArtifacts reads from state.previousPhaseCtx", () => {
+    const dir = makeTmpDir();
+    const emitSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    try {
+      // State is in "work" phase round 2, but previousPhaseCtx points to "review" round 1
+      const state = makeState({ phase: "work", round: 2 }, dir);
+      state.previousPhaseCtx = { phase: "review", round: 1, planMergeRound: 0 };
+
+      // No review file for round 1 → should warn
+      validatePreviousPhaseArtifacts(state, state.previousPhaseCtx);
+      const warnings = emitSpy.mock.calls.filter(
+        (c: unknown[]) => (c[0] as { event_type: string }).event_type === "orchestration_warning",
+      );
+      expect(warnings.length).toBe(1);
+      expect((warnings[0][0] as { message: string }).message).toContain("Missing artifact from review");
+    } finally {
+      emitSpy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

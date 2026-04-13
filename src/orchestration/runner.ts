@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFi
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
-import { DONE_STATUSES, PHASE_CATEGORIES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, pairReviewVerdict, phaseTimeoutExpired } from "./phases.ts";
+import { DONE_STATUSES, PHASE_CATEGORIES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, pairReviewVerdict, phaseTimeoutExpired, requiredArtifactPath } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
   statusFileFingerprint, touchStatusFile, writeInterrupt, writePeerSync,
@@ -49,6 +49,65 @@ type VerificationDecision = "advance" | "redispatch" | "hold" | "skip";
 export const MAX_VERIFY_ATTEMPTS = 3;
 
 import type { Phase } from "./phases.ts";
+
+/** Snapshot of pre-mutation phase context for artifact validation.
+ *  Captured before applyPhaseSideEffects() which mutates round/planMergeRound. */
+export interface PreviousPhaseContext {
+  phase: Phase;
+  round: number;
+  planMergeRound: number;
+}
+
+/**
+ * Log warnings for missing artifacts from the phase that just completed.
+ * Diagnostic only — does not block the transition.
+ *
+ * Uses PreviousPhaseContext (captured before applyPhaseSideEffects) to construct
+ * a state snapshot with the correct phase/round/planMergeRound for artifact lookup.
+ */
+export function validatePreviousPhaseArtifacts(
+  state: OrchestrationState,
+  ctx: PreviousPhaseContext,
+): void {
+  const prevState = {
+    ...state,
+    phase: ctx.phase,
+    round: ctx.round,
+    planMergeRound: ctx.planMergeRound,
+  } as OrchestrationState;
+  for (const agent of state.agents) {
+    if (!agentParticipatesInPhase(prevState, agent)) continue;
+    const artifactPath = requiredArtifactPath(prevState, agent);
+    if (!artifactPath) continue;
+    if (!existsSync(artifactPath)) {
+      emitEvent({
+        event_type: "orchestration_warning",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.taskId,
+        message: `Missing artifact from ${ctx.phase}: ${artifactPath.split("/").pop()} (${agent.name})`,
+      });
+      continue;
+    }
+    // For pr-create, also warn on malformed content (present but invalid).
+    if (ctx.phase === "pr-create") {
+      try {
+        const content = readFileSync(artifactPath, "utf-8").trim();
+        if (content && !isPrUrl(content)) {
+          emitEvent({
+            event_type: "orchestration_warning",
+            source: "orchestration",
+            scope: "slot",
+            slot: state.slot,
+            task: state.taskId,
+            message: `Invalid artifact from ${ctx.phase}: ${artifactPath.split("/").pop()} contains non-URL content (${agent.name})`,
+          });
+        }
+      } catch { /* read error — skip */ }
+    }
+  }
+}
 
 interface VerificationGateConfig {
   phase: Phase;
@@ -517,13 +576,17 @@ function markActiveAgents(state: OrchestrationState): void {
   }
 }
 
-async function enterPhase(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
+async function enterPhase(
+  state: OrchestrationState,
+  transport: OrchestrationTransport,
+): Promise<void> {
   if (state.phaseDispatched) return;
 
   // Generate or reuse the phase token for this phase.
   // On fresh entry: generate new token, persist it, write peer-sync.
   // On crash re-entry: reuse the persisted token so already-dispatched agents are deduped.
   let phaseToken: string;
+  const isCrashReentry = !!state.currentPhaseToken;
   if (state.currentPhaseToken) {
     // Re-entry after crash — reuse the token already persisted
     phaseToken = state.currentPhaseToken;
@@ -534,6 +597,15 @@ async function enterPhase(state: OrchestrationState, transport: OrchestrationTra
   }
 
   writePeerSync(state, phaseToken);
+
+  // Validate artifacts from the previous phase (AC2).
+  // Uses pre-mutation context persisted on state before applyPhaseSideEffects().
+  // Survives crash/resume because it's part of the persisted OrchestrationState.
+  if (state.previousPhaseCtx) {
+    validatePreviousPhaseArtifacts(state, state.previousPhaseCtx);
+    state.previousPhaseCtx = undefined; // consumed
+  }
+
   markActiveAgents(state);
 
   // Reset pr-comments tracking state on phase entry.
@@ -546,15 +618,19 @@ async function enterPhase(state: OrchestrationState, transport: OrchestrationTra
     state.prCommentsQuietSince = undefined;
     state.prCommentsCoderDispatched = false;
     if (!state.prMergeableStates) state.prMergeableStates = {};  // defensive only; real reset is in applyPhaseSideEffects
-    // Clear stale lifecycle/fingerprint from the preceding phase so that
-    // isAgentDone accepts the previous phase's done status.  Without this,
-    // isStatusFresh permanently rejects the status as stale (fingerprint
-    // unchanged since prior dispatch) and checkAndRedispatchPrComments
-    // never progresses past the allDone gate.
+    // pr-comments doesn't dispatch agents — it needs them to appear "done" so
+    // checkAndRedispatchPrComments can poll GitHub and redispatch when comments
+    // arrive. Write a fresh done status and clear lifecycle/fingerprint so
+    // isAgentDone accepts it.
     for (const agent of state.agents) {
       if (!agentParticipatesInPhase(state, agent)) continue;
+      const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+      writeFileSync(statusPath, `pr-comments-done|${nowEpoch()}|awaiting-comments`);
       const rt = state.agentStates[agent.name];
       if (rt) {
+        rt.status = "pr-comments-done";
+        rt.statusEpoch = nowEpoch();
+        rt.statusMessage = "awaiting-comments";
         rt.turnLifecycle = null;
         rt.dispatchStatusFingerprint = undefined;
       }
@@ -605,10 +681,15 @@ async function enterPhase(state: OrchestrationState, transport: OrchestrationTra
       }
     }
 
-    // Touch status file BEFORE dispatch to establish a fresh fingerprint baseline.
-    // Must happen before sendTurn() — a fast agent could update .status before we
-    // capture the fingerprint if we do it after dispatch.
-    touchStatusFile(state.peerSyncDir, agent.name);
+    // Reset .status file to known initial state before dispatch (AC1).
+    // Placed AFTER the dedup checks above so that on crash re-entry we don't
+    // clobber a real <phase>-done written by an agent that completed while the
+    // orchestrator was down.
+    const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
+    const resetValue = `${state.phase}-pending|${nowEpoch()}|awaiting`;
+    writeFileSync(statusPath, resetValue);
+
+    // Capture fingerprint from the reset .status file written above.
     const dispatchFp = statusFileFingerprint(state.peerSyncDir, agent.name);
 
     const runtime = state.agentStates[agent.name]!;
@@ -918,29 +999,49 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
  * After agents complete a phase that creates PRs, validate the pr files.
  * If a file contains markdown text instead of a URL, auto-create the PR and rewrite the file.
  *
- * NOTE: We gate on the turn lifecycle being settled (or a done status present)
- * rather than isAgentDone(), because isAgentDone() itself requires a valid PR URL
- * artifact — creating a deadlock when the agent writes markdown that
- * validateAndFixPrFile() is designed to repair.
+ * Eager repair (AC3): if a .pr file exists but fails isPrUrl(), attempt repair
+ * immediately on each poll cycle — don't wait for the turn to settle.
+ * Settled-mode repair: existing behavior for when .pr doesn't exist yet.
  */
-function validateAgentPrFiles(state: OrchestrationState): void {
+export function validateAgentPrFiles(state: OrchestrationState): void {
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
     const runtime = state.agentStates[agent.name];
     if (!runtime) continue;
-    // Allow fix to run once the turn has settled or agent reported done,
-    // even if artifact validation hasn't passed yet.
+    const prFile = join(state.peerSyncDir, `${agent.name}.pr`);
+
+    // Eager repair: if .pr file exists but isn't a valid URL, attempt fix immediately.
+    // Don't wait for the turn to settle — the file is already known-bad.
+    if (existsSync(prFile)) {
+      try {
+        const content = readFileSync(prFile, "utf-8").trim();
+        if (content && !isPrUrl(content)) {
+          const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch);
+          if (fixedUrl && !runtime.prUrl) {
+            runtime.prUrl = fixedUrl;
+            notifyAgents(
+              `Slot ${state.slot} [${state.taskId}]: PR created by ${agent.name}: ${fixedUrl}`,
+              3,
+              `Slot ${state.slot}: PR created`,
+            );
+          }
+          continue; // Attempted repair — skip settled-mode path for this agent
+        }
+      } catch {
+        // File read error — fall through to settled-mode check
+      }
+    }
+
+    // Settled-mode: existing behavior for when .pr doesn't exist yet or is valid.
     const lc = runtime.turnLifecycle;
     const turnSettled = lc && (lc.state === "settled" || lc.state === "error");
     const statusDone = DONE_STATUSES.has(runtime.status);
     if (!turnSettled && !statusDone && !runtime.interrupted) continue;
-    const prFile = join(state.peerSyncDir, `${agent.name}.pr`);
     const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch);
     if (fixedUrl && !runtime.prUrl) {
       runtime.prUrl = fixedUrl;
-      const prTaskLabel = state.taskId;
       notifyAgents(
-        `Slot ${state.slot} [${prTaskLabel}]: PR created by ${agent.name}: ${fixedUrl}`,
+        `Slot ${state.slot} [${state.taskId}]: PR created by ${agent.name}: ${fixedUrl}`,
         3,
         `Slot ${state.slot}: PR created`,
       );
@@ -1417,6 +1518,15 @@ export async function runOrchestration(
     if (pushBeforePhases.has(next)) {
       autoCommitAllAgents(state, state.agents, /* push */ true);
     }
+
+    // Capture previous phase context BEFORE applyPhaseSideEffects mutates
+    // state.round and state.planMergeRound. Persisted on state so crash recovery
+    // doesn't skip artifact validation. Consumed by enterPhase() on next iteration.
+    state.previousPhaseCtx = {
+      phase: state.phase,
+      round: state.round,
+      planMergeRound: state.planMergeRound ?? 0,
+    };
 
     // Capture verdict and round BEFORE applyPhaseSideEffects mutates state.round.
     const preTransitionRound = state.round;
