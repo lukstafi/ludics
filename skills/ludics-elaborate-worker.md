@@ -93,13 +93,19 @@ Explore the codebase to understand the current state:
 
 Write findings as a **Tentative Design** section, clearly marked:
 
+> **Convention**: Reference code by function, type, or symbol name — never by
+> raw line number. Line numbers drift as other PRs merge between elaboration
+> and implementation. For precise placement, quote a short distinctive snippet
+> or anchor to a nearby named boundary.
+
 ```markdown
 ## Tentative Design
 
 *Agent analysis — not validated by user.*
 
 ### Code Pointers
-- [relevant files and functions with line numbers]
+- [relevant files and functions by name — do NOT use line numbers, they drift before implementation]
+- When line-level precision is needed, quote a short distinctive code snippet or reference the nearest function/symbol boundary
 
 ### Observations
 - [what exists, patterns, potential approaches]
@@ -150,7 +156,7 @@ elaborated: <today's date>
 
 *Agent analysis — not validated by user.*
 
-[code pointers, observations, edge cases]
+[code pointers by function/type/symbol name (no line numbers), observations, edge cases]
 
 ## Questions
 
