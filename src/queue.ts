@@ -188,14 +188,14 @@ export function queueShow(): void {
   }
 }
 
-export function writeResult(requestId: string, status: string, outputFile?: string): void {
+export function writeResult(requestId: string, status: string, outputFile?: string, extra?: Record<string, unknown>): void {
   const dir = resultsDir();
   mkdirSync(dir, { recursive: true });
   const resultFile = join(dir, `${requestId}.json`);
 
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
-  const result: Record<string, unknown> = { id: requestId, status, timestamp };
+  const result: Record<string, unknown> = { id: requestId, status, timestamp, ...extra };
   if (outputFile && existsSync(outputFile)) {
     result.output = readFileSync(outputFile, "utf-8");
   }
