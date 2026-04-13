@@ -263,6 +263,7 @@ function tasksMerge(targetId: string, sourceIds: string[]): void {
     if (srcId === targetId) throw new Error(`cannot merge a task into itself: ${srcId}`);
   }
 
+  const mergedIds: string[] = [];
   for (const srcId of sourceIds) {
     const srcFile = join(dir, `${srcId}.md`);
     if (!transitionStatus(srcFile, ["ready", "blocked", "needs-confirmation", "deferred"], "merged")) {
@@ -274,26 +275,32 @@ function tasksMerge(targetId: string, sourceIds: string[]): void {
     }
     addFrontmatterField(srcFile, "merged_into", targetId);
     updateFrontmatterField(srcFile, "slot", "null");
+    mergedIds.push(srcId);
     console.log(`Merged: ${srcId} -> ${targetId}`);
   }
 
-  // Add merged_from to target
-  const mergedList = `[${sourceIds.join(",")}]`;
+  if (mergedIds.length === 0) {
+    console.log("\nNo tasks were eligible for merging");
+    return;
+  }
+
+  // Add merged_from to target (only successfully merged sources)
+  const mergedList = `[${mergedIds.join(",")}]`;
   const targetContent = readFileSync(targetFile, "utf-8");
   if (targetContent.includes("\nmerged_from:")) {
     // Append to existing
     const existingMatch = targetContent.match(/^merged_from:\s*(.+)$/m);
     if (existingMatch) {
       const existing = existingMatch[1]!.replace(/^\[/, "").replace(/\]$/, "");
-      const combined = existing ? `[${existing}, ${sourceIds.join(",")}]` : mergedList;
+      const combined = existing ? `[${existing}, ${mergedIds.join(",")}]` : mergedList;
       updateFrontmatterField(targetFile, "merged_from", combined);
     }
   } else {
     addFrontmatterField(targetFile, "merged_from", mergedList);
   }
 
-  emitEvent({ event_type: "task_merged", source: "cli", scope: "task", task: targetId, message: `merged ${sourceIds.join(", ")} into ${targetId}` });
-  console.log(`\nMerged ${sourceIds.length} task(s) into ${targetId}`);
+  emitEvent({ event_type: "task_merged", source: "cli", scope: "task", task: targetId, message: `merged ${mergedIds.join(", ")} into ${targetId}` });
+  console.log(`\nMerged ${mergedIds.length} task(s) into ${targetId}`);
 }
 
 function tasksUnmerge(sourceId: string): void {

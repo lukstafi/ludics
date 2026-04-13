@@ -168,11 +168,11 @@ function taskUpdateForSlotAssign(taskId: string, slot: number, adapter: string, 
     console.error(`ludics: task file not found: ${taskId} (skipping task update)`);
     return;
   }
-  if (!transitionStatus(file, ["ready", "deferred", "blocked", "needs-confirmation"], "in-progress")) {
+  if (!transitionStatus(file, ["ready", "deferred", "blocked", "needs-confirmation", "preempted"], "in-progress")) {
     const content = readFileSync(file, "utf-8");
     const statusMatch = content.match(/^status:\s*(.+)$/m);
     const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
-    console.error(`ludics: skipping slot assign for ${taskId}: status is '${actual}', expected one of [ready, deferred, blocked, needs-confirmation]`);
+    console.error(`ludics: skipping slot assign for ${taskId}: status is '${actual}', expected one of [ready, deferred, blocked, needs-confirmation, preempted]`);
     return;
   }
   taskUpdateFrontmatter(taskId, "slot", String(slot));
