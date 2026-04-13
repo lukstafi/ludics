@@ -72,7 +72,9 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    verifiable. Do NOT invent requirements beyond what the user stated or implied.
 
    ## Context
-   How things work now. Key files and code pointers (saves agent grep time).
+   How things work now. Key files and code pointers by function/type/symbol
+   name — not line numbers, which drift as other PRs merge before implementation.
+   When line-level precision is needed, quote a short distinctive code snippet.
 
    ## Approach (optional)
    Include ONLY when:

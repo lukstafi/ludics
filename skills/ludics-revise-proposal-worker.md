@@ -87,7 +87,7 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    - **Add** a `## Notes` section (or append to existing one) with observations
      discovered during revision — things the coding agent should know
    - **Correct** factual errors (wrong file paths, outdated API references,
-     incorrect assumptions about current state)
+     stale line-number references, incorrect assumptions about current state)
    - **Update** acceptance criteria if they were unclear or incomplete
    - **Preserve** existing structure — don't reorganize or rewrite sections
      that are correct
