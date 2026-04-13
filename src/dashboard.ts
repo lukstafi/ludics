@@ -1008,28 +1008,13 @@ export function generateHealthData(): Record<string, unknown> {
 
   const now = Date.now();
   if (!doctorCache || now - doctorCache.cachedAt > DOCTOR_CACHE_TTL) {
+    const result = safeSyncOutput(ludicsSelfCommand(["doctor"]), { timeout: 10_000 });
     let output: string;
-    try {
-      // Using Bun.spawnSync directly (not safeSyncOutput) because we need timeout
-      // support. safeSyncOutput does not accept a timeout parameter.
-      // ludicsSelfCommand handles script-mode vs compiled-binary invocation.
-      const result = Bun.spawnSync(ludicsSelfCommand(["doctor"]), {
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: 10_000,
-      });
-      const stdout = result.stdout.toString().trim();
-      if (result.exitCode === 0) {
-        output = stdout;
-      } else {
-        // magDoctor() writes diagnostics to stdout before exit(1), so include
-        // stdout in the failure output so the user sees actionable details.
-        const stderr = result.stderr.toString().trim();
-        const details = [stdout, stderr].filter(Boolean).join("\n");
-        output = "Doctor check failed" + (details ? `\n${details}` : "");
-      }
-    } catch {
-      output = "Doctor check failed";
+    if (result.ok) {
+      output = result.stdout;
+    } else {
+      const details = [result.stdout, result.stderr].filter(Boolean).join("\n");
+      output = "Doctor check failed" + (details ? `\n${details}` : "");
     }
     doctorCache = {
       output,

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath } from "./config.ts";
 import { tasksCreate } from "./tasks/index.ts";
+import { safeSyncOutput } from "./spawn.ts";
 
 // --- Types ---
 
@@ -104,22 +105,15 @@ export function checkProjectTestHealth(
   }
 
   const start = Date.now();
-  const proc = Bun.spawnSync(["sh", "-c", testCmd], {
-    cwd: projectPath,
-    timeout: 300_000,
-    stderr: "pipe",
-    stdout: "pipe",
-  });
+  const proc = safeSyncOutput(["sh", "-c", testCmd], { cwd: projectPath, timeout: 300_000, trim: false });
   const duration = Date.now() - start;
-  const passed = proc.exitCode === 0;
+  const passed = proc.ok;
 
   let failures: string | undefined;
   if (!passed) {
-    const stderr = proc.stderr.toString();
-    const stdout = proc.stdout.toString();
-    const source = stderr.trim().length >= 20 ? stderr : (stdout || stderr);
+    const source = proc.stderr.trim().length >= 20 ? proc.stderr : (proc.stdout || proc.stderr);
     failures = source.slice(-500);
-    if (proc.exitCode === null) {
+    if (proc.timedOut) {
       failures = `timeout after 300s\n${failures}`;
     }
   }
