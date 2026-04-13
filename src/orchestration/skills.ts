@@ -55,10 +55,6 @@ function ghIssueBody(repo: string, issue: string): string | null {
  *  Requires repo-relative input; throws on absolute/home-relative/traversal paths. */
 function resolveProposalAbsPath(projectDir: string, rawPath: string): string {
   assertRepoRelativeProposalPath(rawPath);
-  if (rawPath.startsWith("~/")) {
-    return join(process.env.HOME ?? "~", rawPath.slice(2));
-  }
-  if (rawPath.startsWith("/")) return rawPath;
   return join(projectDir, rawPath);
 }
 
@@ -89,6 +85,20 @@ function taskSpecBriefText(state: OrchestrationState): string {
     ? `\nProposal file: \`${proposalRef}\` — re-read if you need to verify scope or acceptance criteria.`
     : "";
   return `**Task** ${taskId}: ${title}${proposalLine}\n(Full task spec was provided in round 1 — refer to earlier context.)`;
+}
+
+/** Append GitHub issue body to content if a `url:` frontmatter field points to a GH issue. */
+function appendGhIssueBody(content: string): string {
+  const urlMatch = content.match(
+    /^url:\s*"?https:\/\/github\.com\/([^/\s"]+\/[^/\s"]+)\/issues\/(\d+)"?/m,
+  );
+  if (urlMatch) {
+    const issueBody = ghIssueBody(urlMatch[1]!, urlMatch[2]!);
+    if (issueBody) {
+      return `${content}\n\n---\n## GitHub Issue Body\n\n${issueBody}`;
+    }
+  }
+  return content;
 }
 
 function taskSpecText(state: OrchestrationState): string {
@@ -123,31 +133,13 @@ function taskSpecText(state: OrchestrationState): string {
         const contentWithPointer =
           `${content}\n\n---\n${summaryLine}Read the full proposal at \`${proposalValue}\` in the project repo.\n`;
 
-        const urlMatch = contentWithPointer.match(
-          /^url:\s*"?https:\/\/github\.com\/([^/\s"]+\/[^/\s"]+)\/issues\/(\d+)"?/m,
-        );
-        if (urlMatch) {
-          const issueBody = ghIssueBody(urlMatch[1]!, urlMatch[2]!);
-          if (issueBody) {
-            return `${contentWithPointer}\n\n---\n## GitHub Issue Body\n\n${issueBody}`;
-          }
-        }
-        return contentWithPointer;
+        return appendGhIssueBody(contentWithPointer);
       }
     }
   }
 
   // Legacy (proposal: inline) or no proposal: return full content as-is.
-  const urlMatch = content.match(
-    /^url:\s*"?https:\/\/github\.com\/([^/\s"]+\/[^/\s"]+)\/issues\/(\d+)"?/m,
-  );
-  if (urlMatch) {
-    const issueBody = ghIssueBody(urlMatch[1]!, urlMatch[2]!);
-    if (issueBody) {
-      return `${content}\n\n---\n## GitHub Issue Body\n\n${issueBody}`;
-    }
-  }
-  return content;
+  return appendGhIssueBody(content);
 }
 
 function templateRoot(): string {
