@@ -146,7 +146,8 @@ export async function runInit(args: string[]): Promise<void> {
   if (configOk) {
     console.log("\n--- Cluster ---");
     try {
-      statePull();
+      // No statePull here: init is a local setup command, not a controller handoff.
+      // The controller's local state is authoritative; pulling would overwrite it.
       await clusterTick();
     } catch (err) {
       console.warn(`warning: cluster init failed: ${err instanceof Error ? err.message : String(err)}`);
