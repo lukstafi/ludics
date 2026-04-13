@@ -460,7 +460,11 @@ export function startDashboardServer(
               .sort((a: string, b: string) => statSync(b).mtimeMs - statSync(a).mtimeMs)
               .slice(0, 20);
             results = files.map((f: string) => {
-              try { return JSON.parse(readFileSync(f, "utf-8")) as Record<string, unknown>; }
+              try {
+                const r = JSON.parse(readFileSync(f, "utf-8")) as Record<string, unknown>;
+                delete r.output; // strip large blobs — UI only needs id/status/timestamp
+                return r;
+              }
               catch { return { file: f, error: "parse error" }; }
             });
           }

@@ -108,8 +108,13 @@ export function queuePopAll(): string[] {
 export function queueList(): Record<string, unknown>[] {
   return readQueueLines()
     .map(line => {
-      try { return JSON.parse(line) as Record<string, unknown>; }
-      catch { return { raw: line }; }
+      try {
+        const parsed: unknown = JSON.parse(line);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return { raw: line };
+        }
+        return parsed as Record<string, unknown>;
+      } catch { return { raw: line }; }
     });
 }
 
