@@ -322,6 +322,34 @@ describe("slot assign — direct orchestration flags", () => {
     expect(args).toContain("--plan");
   });
 
+  test("--duo with --coder value does not leak value as stray positional", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    const savedHarness = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = harness;
+    try {
+      await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--duo --coder claude-code:opus --plan"]);
+      const args = readAdapterArgs();
+      expect(args).toContain("--pair");
+      expect(args).toContain("--duo-peer-slot=");
+      expect(args).toContain("--plan");
+      expect(args).toContain("--coder");
+      // Verify claude-code:opus only appears immediately after --coder or --reviewer, not as a stray token
+      const tokens = args.split(/\s+/);
+      for (let i = 0; i < tokens.length; i++) {
+        if (tokens[i] === "claude-code:opus") {
+          const prev = tokens[i - 1];
+          expect(prev === "--coder" || prev === "--reviewer").toBe(true);
+        }
+      }
+    } finally {
+      if (savedHarness === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = savedHarness;
+    }
+  });
+
   test("does not inject --pair when -A already contains --pair", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });
