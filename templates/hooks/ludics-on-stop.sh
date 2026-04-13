@@ -99,17 +99,17 @@ fi
 
 # Orchestration stop-hook routing.  Only exec into orch on-stop when the shell
 # successfully resolved a peer-sync dir (via env var or marker file).
-# If peer_sync_dir is empty, fall through to mag queue-pop — do NOT check the
+# If peer_sync_dir is empty, fall through to mag on-stop — do NOT check the
 # raw LUDICS_PEER_SYNC_DIR env var here, because it may be stale (no phase file),
 # and exec-ing would prevent the Mag fallback from running.
 if [[ -n "$peer_sync_dir" ]]; then
   exec "$ludics_bin" orch on-stop "$cwd" "$peer_sync_dir" "$hook_event_name"
 fi
 
-# Codex only needs orchestration routing — no Mag queue-pop support.
+# Codex only needs orchestration routing — no Mag settled signal.
 if [[ "$invocation_mode" == "codex" ]]; then
   exit 0
 fi
 
-# Mag session — queue-pop behavior (Claude Code only)
-exec "$ludics_bin" mag queue-pop "$cwd" "$hook_event_name"
+# Mag session — mark settled (Claude Code only)
+exec "$ludics_bin" mag on-stop "$cwd" "$hook_event_name"

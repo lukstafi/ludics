@@ -28,7 +28,7 @@ import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, pa
 import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
-import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
+import { readTmuxSlotState, tmuxPaneOutputHash } from "./adapters/tmux-adapter.ts";
 import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
 import { selectOrchestrationFlags } from "./adapters/t3code.ts";
 import YAML from "yaml";
@@ -105,51 +105,11 @@ function triggerSkill(session: string, cmd: string): boolean {
   return tmuxSendKeys(session, "Enter");
 }
 
-const DEFAULT_NUDGE_THROTTLE_SECONDS = 60;
-const DEFAULT_NUDGE_BACKOFF_SECONDS = 600;
+const DEFAULT_STALL_THRESHOLD_MS = 120_000; // 2 minutes
+const DEFAULT_STALL_NUDGE_COOLDOWN_MS = 120_000; // 2 minutes between stall nudges
 const DEFAULT_STARTUP_WATCHDOG_SECONDS = 60;
 const DEFAULT_STARTUP_HELPER_STUCK_SECONDS = 45;
 const STARTUP_ALERT_TITLE = "Mag alert";
-
-function nudgeThrottleSeconds(): number {
-  const envVal = process.env.LUDICS_NUDGE_THROTTLE_SECONDS;
-  if (envVal) {
-    const parsed = parseInt(envVal, 10);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  }
-
-  const config = loadConfigSync();
-  const mag = config.mag as Record<string, unknown> | undefined;
-
-  const configuredThrottle = Number(mag?.nudge_throttle_seconds);
-  if (Number.isFinite(configuredThrottle) && configuredThrottle > 0) {
-    return Math.floor(configuredThrottle);
-  }
-
-  return DEFAULT_NUDGE_THROTTLE_SECONDS;
-}
-
-function nudgeBackoffSeconds(): number {
-  const envVal = process.env.LUDICS_NUDGE_BACKOFF_SECONDS;
-  if (envVal) {
-    const parsed = parseInt(envVal, 10);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  }
-
-  const config = loadConfigSync();
-  const mag = config.mag as Record<string, unknown> | undefined;
-
-  const configuredBackoff = Number(mag?.nudge_backoff_seconds);
-  if (Number.isFinite(configuredBackoff) && configuredBackoff > 0) {
-    return Math.floor(configuredBackoff);
-  }
-
-  return DEFAULT_NUDGE_BACKOFF_SECONDS;
-}
-
-function nudgeTimestampFile(): string {
-  return join(magStateDir(), "last-nudge.epoch");
-}
 
 function stopHookTimestampFile(): string {
   return join(magStateDir(), "last-stop-hook.epoch");
@@ -169,23 +129,182 @@ function readEpochFile(file: string): number | null {
   }
 }
 
-function nudgeThrottled(): boolean {
-  const lastNudgeEpoch = readEpochFile(nudgeTimestampFile());
-  if (lastNudgeEpoch === null) return false;
+// --- Settled state helpers ---
 
-  const nowEpoch = Math.floor(Date.now() / 1000);
-  const elapsed = nowEpoch - lastNudgeEpoch;
-  if (elapsed < nudgeThrottleSeconds()) return true;
-
-  // Back off repeated Continue nudges until a stop hook has fired after the last nudge.
-  if (elapsed >= nudgeBackoffSeconds()) return false;
-  const lastStopHookEpoch = readEpochFile(stopHookTimestampFile());
-  return lastStopHookEpoch === null || lastStopHookEpoch <= lastNudgeEpoch;
+function settledSentinelFile(): string {
+  return join(magStateDir(), "settled");
 }
 
-function writeNudgeTimestamp(): void {
+function markMagSettled(): void {
   mkdirSync(magStateDir(), { recursive: true });
-  writeFileSync(nudgeTimestampFile(), String(Math.floor(Date.now() / 1000)));
+  writeFileSync(settledSentinelFile(), String(Math.floor(Date.now() / 1000)));
+}
+
+function clearMagSettled(): void {
+  try { unlinkSync(settledSentinelFile()); } catch {}
+}
+
+function isMagSettled(): boolean {
+  return existsSync(settledSentinelFile());
+}
+
+/**
+ * If pane output has advanced since the settled sentinel was written,
+ * Mag has resumed running (e.g. a manual turn) — clear the stale sentinel.
+ */
+function clearStaleSettled(): void {
+  if (!isMagSettled()) return;
+  const currentHash = tmuxPaneOutputHash(MAG_SESSION_NAME);
+  if (currentHash === null) return;
+  const previousHash = readPaneHash();
+  if (previousHash !== null && currentHash !== previousHash) {
+    // Pane output changed since last observation — Mag is active, sentinel is stale
+    clearMagSettled();
+    writePaneHash(currentHash);
+    writePaneChangeEpoch();
+  } else if (previousHash === null) {
+    // First observation — record baseline but don't clear settled
+    writePaneHash(currentHash);
+    writePaneChangeEpoch();
+  }
+}
+
+// --- Stall detection helpers (file-persisted, keepalive is per-tick) ---
+
+function stallThresholdMs(): number {
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+  const configured = Number(mag?.stall_threshold_seconds);
+  if (Number.isFinite(configured) && configured > 0) return configured * 1000;
+  return DEFAULT_STALL_THRESHOLD_MS;
+}
+
+function stallNudgeCooldownMs(): number {
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+  const configured = Number(mag?.stall_nudge_cooldown_seconds);
+  if (Number.isFinite(configured) && configured > 0) return configured * 1000;
+  return DEFAULT_STALL_NUDGE_COOLDOWN_MS;
+}
+
+function paneHashFile(): string {
+  return join(magStateDir(), "last-pane.hash");
+}
+
+function paneChangeEpochFile(): string {
+  return join(magStateDir(), "last-pane-change.epoch");
+}
+
+function stallNudgeEpochFile(): string {
+  return join(magStateDir(), "last-stall-nudge.epoch");
+}
+
+function readPaneHash(): string | null {
+  try { return readFileSync(paneHashFile(), "utf-8").trim() || null; } catch { return null; }
+}
+
+function writePaneHash(hash: string): void {
+  writeFileSync(paneHashFile(), hash);
+}
+
+function readPaneChangeEpoch(): number {
+  const epoch = readEpochFile(paneChangeEpochFile());
+  return epoch ? epoch * 1000 : Date.now();
+}
+
+function writePaneChangeEpoch(): void {
+  writeFileSync(paneChangeEpochFile(), String(Math.floor(Date.now() / 1000)));
+}
+
+function stallNudgeCoolingDown(): boolean {
+  const lastNudge = readEpochFile(stallNudgeEpochFile());
+  if (lastNudge === null) return false;
+  return (Date.now() - lastNudge * 1000) < stallNudgeCooldownMs();
+}
+
+function writeStallNudgeEpoch(): void {
+  writeFileSync(stallNudgeEpochFile(), String(Math.floor(Date.now() / 1000)));
+}
+
+function clearStallState(): void {
+  try { unlinkSync(paneHashFile()); } catch {}
+  try { unlinkSync(paneChangeEpochFile()); } catch {}
+  try { unlinkSync(stallNudgeEpochFile()); } catch {}
+}
+
+// --- Queue feed and stall nudge helpers ---
+
+/**
+ * When Mag is settled and queue has Mag-turn work, pop one item and deliver.
+ * Returns true if a command was dispatched.
+ */
+async function maybeFeedMagQueue(): Promise<boolean> {
+  if (!isMagSettled()) return false;
+  if (!queuePending()) return false;
+
+  // Drain programmatic entries first (they don't need a Mag turn)
+  await drainProgrammaticQueueHead();
+  if (!queuePending()) return false;
+
+  // Atomic claim: rename sentinel to in-progress marker so only one keepalive
+  // invocation can win the race. If rename fails, another tick already claimed it.
+  const claimPath = settledSentinelFile() + ".claiming";
+  try {
+    renameSync(settledSentinelFile(), claimPath);
+  } catch {
+    return false; // another tick already claimed
+  }
+  // Remove the claim marker now that we own the transition
+  try { unlinkSync(claimPath); } catch {}
+
+  const command = await queuePopSkill();
+  if (!command) return false;
+
+  const sent = triggerSkill(MAG_SESSION_NAME, command);
+  if (sent) {
+    emitEvent({ event_type: "mag_queue_feed", source: "keepalive", scope: "mag", message: `delivered: ${command}` });
+  } else {
+    console.error("ludics: failed to deliver queued request to Mag session");
+    emitEvent({ event_type: "mag_queue_feed_failed", source: "keepalive", scope: "mag", status: "failed", message: "tmux send-keys failed" });
+    // At-most-once delivery: popped item is lost if triggerSkill fails.
+    // Matches current queue-pop behavior. Requeue mechanism out of scope.
+  }
+  return sent;
+}
+
+/**
+ * When Mag is NOT settled and queue has Mag-turn work, check for terminal stall
+ * and nudge only if pane output hasn't advanced for the configured threshold.
+ */
+function maybeNudgeStalledMag(): void {
+  if (isMagSettled()) return;
+  if (!queuePending()) return;
+
+  const currentHash = tmuxPaneOutputHash(MAG_SESSION_NAME);
+  if (currentHash === null) return; // tmux capture failed — don't treat as stall
+
+  const previousHash = readPaneHash();
+  if (currentHash !== previousHash) {
+    // Pane output advanced — update state, no nudge
+    writePaneHash(currentHash);
+    writePaneChangeEpoch();
+    return;
+  }
+
+  // Pane unchanged — check if stall threshold exceeded
+  const lastChangeMs = readPaneChangeEpoch();
+  const stallMs = Date.now() - lastChangeMs;
+  if (stallMs < stallThresholdMs()) return;
+
+  // Cooldown: don't spam nudges while Mag remains stalled
+  if (stallNudgeCoolingDown()) return;
+
+  const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const nudged = triggerSkill(MAG_SESSION_NAME, `Continue previous work if any. (ludics, ${now})`);
+  if (nudged) {
+    writeStallNudgeEpoch();
+    emitEvent({ event_type: "mag_nudge", source: "keepalive", scope: "mag", message: "nudged Mag (stall detected)" });
+  }
 }
 
 function writeStopHookTimestamp(): void {
@@ -2674,20 +2793,17 @@ export async function magStart(args: string[]): Promise<void> {
     // If startup got stuck (e.g. Claude helper hung), recover automatically.
     maybeRecoverStuckStartup();
 
-    // Execute programmatic head requests immediately; only nudge when the next
-    // queued request requires a Mag turn (skill/direct message).
-    const queueNeedsMagTurn = queuePending() ? await drainProgrammaticQueueHead() : false;
-    if (queueNeedsMagTurn && !nudgeThrottled()) {
-      const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-      const nudged = triggerSkill(MAG_SESSION_NAME, `Continue previous work if any. Queue requests arrive as skill commands on stop hook. (ludics, ${now})`);
-      if (nudged) {
-        writeNudgeTimestamp();
-        emitEvent({ event_type: "mag_nudge", source: "keepalive", scope: "mag", message: "nudged Mag with Continue" });
-      } else {
-        console.error("ludics: failed to nudge Mag via tmux send-keys");
-        emitEvent({ event_type: "mag_nudge_failed", source: "keepalive", scope: "mag", status: "failed", message: "tmux send-keys failed" });
-      }
-    }
+    // Drain programmatic queue items first (no Mag turn needed)
+    if (queuePending()) await drainProgrammaticQueueHead();
+
+    // If Mag resumed running (e.g. manual turn) since settling, clear stale sentinel
+    clearStaleSettled();
+
+    // Settled-aware queue feed: deliver one Mag-turn item if settled
+    const fed = await maybeFeedMagQueue();
+
+    // Stall detection: nudge only if Mag is running, not settled, and pane is stagnant
+    if (!fed) maybeNudgeStalledMag();
 
     // State is written to disk but NOT committed here — periodic health-check
     // handles git commits at lower frequency to avoid commit spam (task-4179d454).
@@ -2748,17 +2864,13 @@ export async function magStart(args: string[]): Promise<void> {
   // Ensure t3code server on fresh start
   await ensureT3codeIfEnabled("fresh start");
 
-  // Drain programmatic requests first, then deliver one skill/direct request.
-  await drainProgrammaticQueueHead();
-  const skillCmd = await queuePopSkill();
-  if (skillCmd) {
-    safeSyncOutput(["sleep", "5"]);
-    console.error(`ludics: Mag fresh start, sending queued request: ${skillCmd}`);
-    const sent = triggerSkill(MAG_SESSION_NAME, skillCmd);
-    if (!sent) {
-      console.error("ludics: failed to send queued request to Mag session");
-      emitEvent({ event_type: "mag_nudge_failed", source: "cli", scope: "mag", status: "failed", message: "failed sending startup queued request" });
-    }
+  // Treat fresh start as implicitly settled — deliver one queued request
+  markMagSettled();
+  clearStallState();
+  safeSyncOutput(["sleep", "5"]);
+  const fed = await maybeFeedMagQueue();
+  if (fed) {
+    console.error("ludics: Mag fresh start, delivered queued request via queue feed");
   }
 }
 
@@ -3385,26 +3497,40 @@ export async function runMag(args: string[]): Promise<void> {
       magCompleted(proposalName);
       break;
     }
+    case "on-stop": {
+      // Called by the stop hook to mark Mag as settled (queue delivery is handled by keepalive)
+      const cwd = args[1] ?? "";
+      const hookEventName = args[2] ?? "";
+      if (hookEventName && hookEventName !== "Stop") break;
+      if (cwd) {
+        const harness = harnessDir();
+        if (!cwd.startsWith(harness)) break;
+      }
+      writeStopHookTimestamp();
+      clearStartupWatchdogEpoch();
+      if (existsSync(join(harnessDir(), "mag", "paused"))) break;
+      if (!clusterIsController()) break;
+      markMagSettled();
+      clearStallState();
+      break;
+    }
+    // DEPRECATED: kept for backward compatibility with older hook scripts.
+    // New hook scripts use "on-stop" instead.
     case "queue-pop": {
-      // Called by the stop hook to check if there's a queued skill to run
       const cwd = args[1] ?? "";
       const hookEventName = args[2] ?? "";
       if (hookEventName && hookEventName !== "Stop") {
-        // Defensive: ignore SubagentStop (and any non-Stop event) if passed by hook script.
         break;
       }
       if (cwd) {
         const harness = harnessDir();
         if (!cwd.startsWith(harness)) {
-          // Not Mag session — silently exit
           break;
         }
       }
       writeStopHookTimestamp();
       clearStartupWatchdogEpoch();
-      // When paused, don't pop — items accumulate and are processed on unpause
       if (existsSync(join(harnessDir(), "mag", "paused"))) break;
-      // Only the cluster controller pops the queue — workers must not run Mag skills
       if (!clusterIsController()) break;
       const skillCommand = await queuePopSkill();
       if (skillCommand) {
@@ -3413,6 +3539,6 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     default:
-      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, process-suggestions, completed, message, queue, queue pop one, queue pop all, queue-pop, context, feedback-digest)`);
+      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, process-suggestions, completed, message, queue, queue pop one, queue pop all, queue-pop, on-stop, context, feedback-digest)`);
   }
 }

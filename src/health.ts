@@ -129,7 +129,7 @@ export function checkProjectTestHealth(
 
   if (!passed) {
     // Redirect stdout to stderr during task creation to avoid corrupting
-    // the queue-pop protocol (stdout is used for hook decision payloads).
+    // stop-hook stdout (used by orchestration on-stop and legacy mag queue-pop).
     const origWrite = process.stdout.write;
     process.stdout.write = process.stderr.write.bind(process.stderr);
     try {
