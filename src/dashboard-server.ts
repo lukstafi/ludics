@@ -9,7 +9,7 @@ import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, loadConfigSync } from "./config.ts";
 import { readSlotJson } from "./slots/json.ts";
-import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES } from "./slots/index.ts";
+import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES, CLEAR_STATUS_READY, CLEAR_STATUS_DONE } from "./slots/index.ts";
 import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon } from "./tasks/index.ts";
@@ -169,7 +169,7 @@ export function startDashboardServer(
       // API: clear a slot as done
       if (pathname === "/api/slot-clear") {
         const slotParam = url.searchParams.get("slot");
-        const status = url.searchParams.get("status") ?? "done";
+        const status = url.searchParams.get("status") ?? CLEAR_STATUS_DONE;
         if (!slotParam || !/^[1-6]$/.test(slotParam)) {
           return new Response("Bad Request: slot must be 1-6", { status: 400 });
         }
@@ -269,7 +269,7 @@ export function startDashboardServer(
           // in the ready queue at its old priority (race with auto-assign).
           pendingPriorityWrite?.();
 
-          slotClear(slotNum, "ready");
+          slotClear(slotNum, CLEAR_STATUS_READY);
 
           lastGenerated = 0;
           return new Response("OK", { status: 200 });

@@ -24,6 +24,8 @@ import { heartbeatIsFresh, clusterMachine } from "../cluster.ts";
 import { safeSyncOutput } from "../spawn.ts";
 
 export const VALID_CLEAR_STATUSES = ["ready", "in-progress", "done", "abandoned"] as const;
+export const CLEAR_STATUS_READY = "ready" as const;
+export const CLEAR_STATUS_DONE = "done" as const;
 
 // Worker-side override: when set, readSlot/readAllSlots uses this data instead of
 // reading from the local harness files. Set by processSlotIntents before executing
