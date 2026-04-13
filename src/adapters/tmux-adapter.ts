@@ -320,7 +320,7 @@ export function tmuxPaneOutputHash(target: string, lines: number = 50): string |
 /** Get the CLI launch command for an agent provider */
 export function agentCliCommand(provider: string): string {
   if (provider === "claude-code") return "claude --dangerously-skip-permissions";
-  return "codex --full-auto -c check_for_update_on_startup=false";
+  return "codex --yolo -c check_for_update_on_startup=false";
 }
 
 /**
