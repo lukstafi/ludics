@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed } from "./index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed } from "./index.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
@@ -906,5 +906,59 @@ describe("remote slot dispatch via HTTP", () => {
 
     // Heartbeat is fresh but no cluster config → should throw
     await expect(slotResume(1)).rejects.toThrow("no cluster config for machine worker-a");
+  });
+});
+
+describe("slotClear transitionStatus guard", () => {
+  test("slotClear('done') on an already-abandoned task does not overwrite status or completed", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+
+    // Write a task that is already abandoned with a known completed timestamp
+    const taskId = "task-abandoned-guard";
+    const originalCompleted = "2026-04-01T12:00Z";
+    writeFileSync(join(tasksDir, `${taskId}.md`), `---
+id: ${taskId}
+title: "Abandoned guard test"
+project: demo
+status: abandoned
+priority: B
+deadline: null
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: null
+effort: medium
+context: demo
+uses_browser: false
+slot: 1
+adapter: manual
+created: 2026-03-07
+started: 2026-03-07T10:00Z
+completed: ${originalCompleted}
+modified: null
+source: local
+---
+`);
+
+    // Set up slot 1 to point at this task (simulating a stale slot reference)
+    const slotData = emptySlotData(1);
+    slotData.process = "Abandoned guard test";
+    slotData.task = taskId;
+    slotData.mode = "manual";
+    writeSlotJson(1, slotData, harness);
+
+    // Attempt to clear the slot as "done" — should be blocked by transitionStatus
+    slotClear(1, "done");
+
+    // Verify: status must still be "abandoned", completed must be the original timestamp
+    const content = readFileSync(join(tasksDir, `${taskId}.md`), "utf-8");
+    expect(content).toContain("status: abandoned");
+    expect(content).not.toContain("status: done");
+    expect(content).toContain(`completed: ${originalCompleted}`);
   });
 });
