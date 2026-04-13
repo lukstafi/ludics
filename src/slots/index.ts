@@ -690,6 +690,32 @@ function makeAdapterContext(slotNum: number, data: SlotData): AdapterContext {
  *
  * @throws {Error} If the assigned remote machine is offline or has no cluster config.
  */
+
+/** Shared remote-dispatch logic for slotStart, slotStop (non-force), and slotResume.
+ *  Validates heartbeat + cluster config, records an intent, logs, and emits an event.
+ *  Callers should `return` after awaiting this function. */
+async function ensureRemoteMachineReachable(
+  slotNum: number,
+  machine: string,
+  action: "start" | "stop" | "resume",
+  adapter: string,
+  intentPayload: Record<string, unknown>,
+): Promise<void> {
+  if (!heartbeatIsFresh(machine)) {
+    throw new Error(`slot ${slotNum}: assigned machine ${machine} is offline — cannot ${action}`);
+  }
+  const targetMachine = clusterMachine(machine);
+  if (!targetMachine) {
+    throw new Error(`slot ${slotNum}: no cluster config for machine ${machine}`);
+  }
+  const { recordIntent } = await import("../cluster-http.ts");
+  const epoch = Math.floor(Date.now() / 1000);
+  recordIntent(slotNum, { action, epoch, machine, ...intentPayload });
+  console.error(`ludics: slot ${slotNum}: ${action} intent recorded for ${machine}`);
+  journalAppend("slot", `Slot ${slotNum} ${action} intent recorded for ${machine}`);
+  emitEvent({ event_type: `slot_${action}_queued`, source: "cli", scope: "slot", slot: slotNum, adapter, machine, message: `${action} intent recorded for ${machine}` });
+}
+
 export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
   ensureSlotsDir();
   const count = slotsCount();
@@ -703,19 +729,7 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
 
   // Remote dispatch: record intent in controller memory (pure pull model)
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
-    if (!heartbeatIsFresh(ctx.machine)) {
-      throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot start`);
-    }
-    const targetMachine = clusterMachine(ctx.machine);
-    if (!targetMachine) {
-      throw new Error(`slot ${slotNum}: no cluster config for machine ${ctx.machine}`);
-    }
-    const { recordIntent } = await import("../cluster-http.ts");
-    const epoch = Math.floor(Date.now() / 1000);
-    recordIntent(slotNum, { action: "start", epoch, machine: ctx.machine, taskId: ctx.taskId });
-    console.error(`ludics: slot ${slotNum}: start intent recorded for ${ctx.machine}`);
-    journalAppend("slot", `Slot ${slotNum} start intent recorded for ${ctx.machine}`);
-    emitEvent({ event_type: "slot_start_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `start intent recorded for ${ctx.machine}` });
+    await ensureRemoteMachineReachable(slotNum, ctx.machine, "start", ctx.mode, { taskId: ctx.taskId });
     return;
   }
 
@@ -808,15 +822,7 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
     if (force) {
       console.error(`ludics: slot ${slotNum}: force-clearing local state (skipping remote stop on ${ctx.machine})`);
     } else {
-      if (!heartbeatIsFresh(ctx.machine)) {
-        throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot stop`);
-      }
-      const { recordIntent } = await import("../cluster-http.ts");
-      const epoch = Math.floor(Date.now() / 1000);
-      recordIntent(slotNum, { action: "stop", epoch, machine: ctx.machine, taskId: ctx.taskId, preserveState });
-      console.error(`ludics: slot ${slotNum}: stop intent recorded for ${ctx.machine}`);
-      journalAppend("slot", `Slot ${slotNum} stop intent recorded for ${ctx.machine}`);
-      emitEvent({ event_type: "slot_stop_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `stop intent recorded for ${ctx.machine}` });
+      await ensureRemoteMachineReachable(slotNum, ctx.machine, "stop", ctx.mode, { taskId: ctx.taskId, preserveState });
       return;
     }
   } else {
@@ -850,19 +856,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
 
   // Remote dispatch: if slot is owned by another machine, send via HTTP
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
-    if (!heartbeatIsFresh(ctx.machine)) {
-      throw new Error(`slot ${slotNum}: assigned machine ${ctx.machine} is offline — cannot resume`);
-    }
-    const targetMachine = clusterMachine(ctx.machine);
-    if (!targetMachine) {
-      throw new Error(`slot ${slotNum}: no cluster config for machine ${ctx.machine}`);
-    }
-    const { recordIntent } = await import("../cluster-http.ts");
-    const epoch = Math.floor(Date.now() / 1000);
-    recordIntent(slotNum, { action: "resume", epoch, machine: ctx.machine, taskId: ctx.taskId });
-    console.error(`ludics: slot ${slotNum}: resume intent recorded for ${ctx.machine}`);
-    journalAppend("slot", `Slot ${slotNum} resume intent recorded for ${ctx.machine}`);
-    emitEvent({ event_type: "slot_resume_queued", source: "cli", scope: "slot", slot: slotNum, adapter: ctx.mode, machine: ctx.machine, message: `resume intent recorded for ${ctx.machine}` });
+    await ensureRemoteMachineReachable(slotNum, ctx.machine, "resume", ctx.mode, { taskId: ctx.taskId });
     return;
   }
 
