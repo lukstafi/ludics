@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, readFrontmatterField, updateFrontmatterField } from "./markdown.ts";
+import { addFrontmatterField, appendToSection, readFrontmatterField, updateFrontmatterField } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -261,5 +261,44 @@ describe("readFrontmatterField", () => {
     const content = "---\n: : :\n  bad:\n    - [\n---\n";
     expect(() => readFrontmatterField(content, "project")).not.toThrow();
     expect(readFrontmatterField(content, "project")).toBeNull();
+  });
+});
+
+describe("appendToSection", () => {
+  test("appends to existing section with content", () => {
+    const f = tmpFile("append-existing.md", "---\ntitle: test\n---\n\n## Questions\n\n- Existing item\n");
+    appendToSection(f, "Questions", "- New item");
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("- Existing item\n- New item\n");
+  });
+
+  test("replaces None. placeholder", () => {
+    const f = tmpFile("append-none.md", "---\ntitle: test\n---\n\n## Questions\n\nNone.\n");
+    appendToSection(f, "Questions", "- Intervention required");
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("- Intervention required");
+    expect(result).not.toContain("None.");
+  });
+
+  test("creates missing section at end of file", () => {
+    const f = tmpFile("append-missing.md", "---\ntitle: test\n---\n\n## Notes\n\nSome notes.\n");
+    appendToSection(f, "Questions", "- New question");
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("## Questions\n\n- New question\n");
+  });
+
+  test("does not duplicate identical line", () => {
+    const f = tmpFile("append-dedup.md", "---\ntitle: test\n---\n\n## Questions\n\n- Already here\n");
+    appendToSection(f, "Questions", "- Already here");
+    const result = readFileSync(f, "utf-8");
+    const count = result.split("- Already here").length - 1;
+    expect(count).toBe(1);
+  });
+
+  test("works with different section names", () => {
+    const f = tmpFile("append-other.md", "---\ntitle: test\n---\n\n## Notes\n\nExisting.\n");
+    appendToSection(f, "Notes", "- Appended note");
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("Existing.\n- Appended note\n");
   });
 });

@@ -3,7 +3,7 @@ import * as peerSyncMod from "./peer-sync.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { evaluateTransition, findPlanFiles, isAgentDone, phaseTimeoutExpired } from "./phases.ts";
+import { evaluateTransition, findPlanFiles, isAgentDone, isPairBailedOut, phaseTimeoutExpired } from "./phases.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "./state.ts";
 
@@ -742,5 +742,85 @@ describe("isAgentDone — stale status detection (gh-ludics-122)", () => {
 
     expect(isAgentDone(state, state.agents[1])).toBe(false);
     expect(evaluateTransition(state)).toBeNull();
+  });
+});
+
+describe("isPairBailedOut", () => {
+  test("returns true when coder=bail-out and reviewer=bail-out-confirmed", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "bail-out-confirmed";
+    expect(isPairBailedOut(state)).toBe(true);
+  });
+
+  test("returns false when only coder has bail-out", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "review-done";
+    expect(isPairBailedOut(state)).toBe(false);
+  });
+
+  test("returns false when only reviewer has bail-out-confirmed", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "done";
+    state.agentStates.reviewer.status = "bail-out-confirmed";
+    expect(isPairBailedOut(state)).toBe(false);
+  });
+
+  test("returns false when no coder or reviewer role", () => {
+    const state = makeState({
+      agents: [
+        { name: "a1", provider: "claude-code", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+        { name: "a2", provider: "claude-code", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    });
+    expect(isPairBailedOut(state)).toBe(false);
+  });
+});
+
+describe("evaluateTransition — bail-out", () => {
+  test("work phase transitions to done when both agents bail out", () => {
+    const state = makeState({ phase: "work" });
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "bail-out-confirmed";
+    expect(evaluateTransition(state)).toBe("done");
+  });
+
+  test("review phase transitions to done when both agents bail out", () => {
+    const state = makeState({ phase: "review" });
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "bail-out-confirmed";
+    expect(evaluateTransition(state)).toBe("done");
+  });
+
+  test("update-docs phase transitions to done when both agents bail out", () => {
+    const state = makeState({ phase: "update-docs" });
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "bail-out-confirmed";
+    expect(evaluateTransition(state)).toBe("done");
+  });
+
+  test("work phase transitions to review when bail-out is one-sided", () => {
+    const state = makeState({ phase: "work" });
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "done";
+    expect(evaluateTransition(state)).toBe("review");
+  });
+
+  test("bail-out statuses bypass artifact validation (reviewer without review file)", () => {
+    const state = makeState({ phase: "review" });
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "bail-out-confirmed";
+    // Reviewer has bail-out-confirmed but no review file exists — should still be done
+    expect(isAgentDone(state, state.agents[1])).toBe(true);
+  });
+
+  test("lone bail-out-confirmed without coder bail-out does NOT bypass artifact validation", () => {
+    const state = makeState({ phase: "review" });
+    state.agentStates.coder.status = "done";
+    state.agentStates.reviewer.status = "bail-out-confirmed";
+    // Reviewer has bail-out-confirmed but coder is NOT bail-out — pair contract not met.
+    // Without a review file, artifact validation should block.
+    expect(isAgentDone(state, state.agents[1])).toBe(false);
   });
 });

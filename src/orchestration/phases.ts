@@ -143,6 +143,8 @@ export const DONE_STATUSES = new Set([
   "final-merge-done",
   "turn-complete",
   "completed",
+  "bail-out",
+  "bail-out-confirmed",
 ]);
 
 export function phaseTimeoutExpired(state: OrchestrationState): boolean {
@@ -191,6 +193,10 @@ export function agentParticipatesInPhase(
 /** Check done-status + required artifact. Shared by both lifecycle branches of isAgentDone. */
 function validateDoneStatus(state: OrchestrationState, agent: AgentConfig, runtime: AgentRuntimeState): boolean {
   if (!DONE_STATUSES.has(runtime.status)) return false;
+  // Bail-out statuses bypass artifact validation only when the full pair bail-out
+  // contract is satisfied (coder=bail-out + reviewer=bail-out-confirmed). A lone
+  // bail-out-confirmed without the coder side must not skip artifact checks.
+  if ((runtime.status === "bail-out" || runtime.status === "bail-out-confirmed") && isPairBailedOut(state)) return true;
   if (!hasRequiredArtifact(state, agent)) {
     emitEvent({
       event_type: "orchestration_warning",
@@ -327,6 +333,16 @@ export function allAgentsDone(state: OrchestrationState): boolean {
   const participants = state.agents.filter((agent) => agentParticipatesInPhase(state, agent));
   if (participants.length === 0) return true;
   return participants.every((agent) => isAgentDone(state, agent));
+}
+
+/** True when both agents have signaled bail-out: coder wrote "bail-out", reviewer confirmed with "bail-out-confirmed". */
+export function isPairBailedOut(state: OrchestrationState): boolean {
+  const coder = state.agents.find(a => a.role === "coder");
+  const reviewer = state.agents.find(a => a.role === "reviewer");
+  if (!coder || !reviewer) return false;
+  const cs = state.agentStates[coder.name]?.status ?? "";
+  const rs = state.agentStates[reviewer.name]?.status ?? "";
+  return cs === "bail-out" && rs === "bail-out-confirmed";
 }
 
 function hasAnyPr(state: OrchestrationState): boolean {
@@ -480,11 +496,15 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
     }
 
     case "work":
-      if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "review";
+      if (allAgentsDone(state) || phaseTimeoutExpired(state)) {
+        if (isPairBailedOut(state)) return "done";
+        return "review";
+      }
       return null;
 
     case "review":
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      if (isPairBailedOut(state)) return "done";
       {
         const reviewVerdict = pairReviewVerdict(state);
         if (reviewVerdict === "request_changes") return "work";
@@ -493,6 +513,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "update-docs":
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      if (isPairBailedOut(state)) return "done";
       if (hasAnyPr(state)) return "pr-comments";
       return "pr-create";
 

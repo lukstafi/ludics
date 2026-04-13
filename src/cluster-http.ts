@@ -253,6 +253,10 @@ export async function clusterPostTaskUpdate(taskId: string, field: string, value
   return resolveAndPost("/api/cluster/task-update", { taskId, field, value });
 }
 
+export async function clusterPostTaskSectionAppend(taskId: string, section: string, line: string): Promise<{ ok: boolean }> {
+  return resolveAndPost("/api/cluster/task-section-append", { taskId, section, line });
+}
+
 export async function clusterGetTask(taskId: string): Promise<{ ok: boolean; data?: string }> {
   const result = await resolveAndGet(`/api/cluster/task/${taskId}`);
   return { ok: result.ok, data: typeof result.data === "string" ? result.data : undefined };
@@ -382,6 +386,7 @@ const taskMatch = pathname.match(/^\/api\/cluster\/task\/(.+)$/);
     case "/api/cluster/event": return handlePostEvent(body);
     case "/api/cluster/orchestration-state": return handlePostOrchestrationState(body);
     case "/api/cluster/task-update": return handlePostTaskUpdate(body);
+    case "/api/cluster/task-section-append": return handlePostTaskSectionAppend(body);
     case "/api/cluster/slot-update": return handlePostSlotUpdate(body);
     default:
       return jsonResponse(404, { error: "not found" });
@@ -618,6 +623,24 @@ function handlePostTaskUpdate(body: Record<string, unknown>): Response {
   try {
     const { updateFrontmatterField } = require("./tasks/markdown.ts");
     updateFrontmatterField(file, field, value);
+  } catch (err) {
+    return jsonResponse(500, { error: String(err) });
+  }
+  return jsonResponse(200, { ok: true });
+}
+
+function handlePostTaskSectionAppend(body: Record<string, unknown>): Response {
+  const taskId = String(body.taskId ?? "");
+  const section = String(body.section ?? "");
+  const line = String(body.line ?? "");
+  if (!taskId || !section || !line) return jsonResponse(400, { error: "taskId, section, and line required" });
+  const TASK_ID_RE = /^[a-z0-9_-]+$/i;
+  if (!TASK_ID_RE.test(taskId)) return jsonResponse(400, { error: "invalid task id" });
+  const file = join(harnessDir(), "tasks", `${taskId}.md`);
+  if (!existsSync(file)) return jsonResponse(404, { error: "task not found" });
+  try {
+    const { appendToSection } = require("./tasks/markdown.ts");
+    appendToSection(file, section, line);
   } catch (err) {
     return jsonResponse(500, { error: String(err) });
   }

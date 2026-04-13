@@ -16,7 +16,7 @@ import {
 } from "./state.ts";
 import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
 import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile, type PrVerification } from "./github.ts";
-import { updateFrontmatterField } from "../tasks/markdown.ts";
+import { updateFrontmatterField, addFrontmatterField, appendToSection } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../config.ts";
 import { notifyAgents } from "../notify.ts";
 // workerReportStatus replaced by clusterReportWorkerSignal (lazy import)
@@ -156,6 +156,10 @@ export function handleVerifyFailure(
       3,
       `Slot ${state.slot}: manual intervention`,
     );
+    // Surface in dashboard via has_questions tile.
+    // Use cluster forwarding when running as a worker so the controller's task file is updated.
+    const questionLine = `- **Manual intervention required (slot ${state.slot})**: ${phaseLabel} failed after ${MAX_VERIFY_ATTEMPTS} attempts`;
+    surfaceManualIntervention(state.taskId, questionLine);
     return "hold";
   }
 
@@ -163,6 +167,27 @@ export function handleVerifyFailure(
   state.phaseRetryContext = reason;
   preparePhaseRedispatch(state);
   return "redispatch";
+}
+
+/** Set has_questions on the task and append the reason to ## Questions, cluster-safe. */
+export function surfaceManualIntervention(taskId: string, questionLine: string): void {
+  // Always write locally first so the data is persisted even if cluster forwarding fails.
+  const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+  if (existsSync(taskFile)) {
+    addFrontmatterField(taskFile, "has_questions", "true");
+    appendToSection(taskFile, "Questions", questionLine);
+  }
+  // On worker machines, also forward to the controller so the dashboard sees it.
+  try {
+    const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts");
+    if (clusterCurrentMachineName() && !clusterIsController()) {
+      // Fire-and-forget: handleVerifyFailure is synchronous, so we cannot await.
+      import("../cluster-http.ts").then(({ clusterPostTaskUpdate, clusterPostTaskSectionAppend }) => {
+        clusterPostTaskUpdate(taskId, "has_questions", "true").catch(() => {});
+        clusterPostTaskSectionAppend(taskId, "Questions", questionLine).catch(() => {});
+      }).catch(() => {});
+    }
+  } catch { /* standalone mode */ }
 }
 
 /** Get the first available PR URL from agent runtime state, falling back to peer-sync artifact. */
@@ -1306,6 +1331,33 @@ function readFileIfExists(path: string): string | null {
   return value || null;
 }
 
+/**
+ * 0-commits-ahead auto-bail-out: if pr-create phase and the coder worktree has no commits
+ * ahead of the base branch, skip PR creation and transition directly to done.
+ * Returns true if bail-out was triggered (caller should break the loop).
+ */
+export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean {
+  if (state.phase !== "pr-create") return false;
+  const coder = state.agents.find(a => a.role === "coder");
+  if (!coder) return false;
+  const revList = Bun.spawnSync(
+    ["git", "rev-list", "--count", "origin/HEAD..HEAD"],
+    { cwd: coder.worktreePath },
+  );
+  const count = parseInt(String(revList.stdout).trim(), 10);
+  if (revList.exitCode !== 0 || count !== 0) return false;
+  emitEvent({
+    event_type: "bail_out",
+    source: "orchestration", scope: "slot",
+    slot: state.slot, task: state.taskId,
+    action: "pr-create auto-bail-out", status: "skipped",
+    message: "0 commits ahead of base branch — no PR possible, task obsolete",
+  });
+  state.phase = "done";
+  persistState(state);
+  return true;
+}
+
 export async function runOrchestration(
   state: OrchestrationState,
   transport?: OrchestrationTransport,
@@ -1331,6 +1383,8 @@ export async function runOrchestration(
       const { captureTmuxAgentOutputs } = await import("./tmux-capture.ts");
       captureTmuxAgentOutputs(state);
     }
+
+    if (checkZeroCommitsAutoBailOut(state)) break;
 
     // --- Verification gates: confirm actual outcome before allowing transition ---
     const prCreateDecision = verifyPhaseOutcome(state, PR_CREATE_GATE);
