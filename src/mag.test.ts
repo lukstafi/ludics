@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements } from "./mag.ts";
@@ -321,5 +321,58 @@ describe("mergeRequirements", () => {
 
   test("both empty objects returns undefined", () => {
     expect(mergeRequirements({}, {})).toBeUndefined();
+  });
+});
+
+describe("settled sentinel atomic claim", () => {
+  let tmpDir: string;
+  let sentinelPath: string;
+  let claimPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "mag-settled-"));
+    sentinelPath = join(tmpDir, "settled");
+    claimPath = sentinelPath + ".claiming";
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function atomicClaim(): boolean {
+    try {
+      renameSync(sentinelPath, claimPath);
+    } catch {
+      return false;
+    }
+    try { unlinkSync(claimPath); } catch {}
+    return true;
+  }
+
+  test("single claim succeeds when sentinel exists", () => {
+    writeFileSync(sentinelPath, "1234");
+    expect(atomicClaim()).toBe(true);
+    expect(existsSync(sentinelPath)).toBe(false);
+    expect(existsSync(claimPath)).toBe(false);
+  });
+
+  test("claim fails when sentinel does not exist", () => {
+    expect(atomicClaim()).toBe(false);
+  });
+
+  test("only one of two concurrent claims succeeds", () => {
+    writeFileSync(sentinelPath, "1234");
+    const results = [atomicClaim(), atomicClaim()];
+    const successes = results.filter(Boolean).length;
+    expect(successes).toBe(1);
+    expect(existsSync(sentinelPath)).toBe(false);
+    expect(existsSync(claimPath)).toBe(false);
+  });
+
+  test("repeated claims after sentinel consumed all fail", () => {
+    writeFileSync(sentinelPath, "1234");
+    expect(atomicClaim()).toBe(true);
+    expect(atomicClaim()).toBe(false);
+    expect(atomicClaim()).toBe(false);
   });
 });
