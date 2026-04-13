@@ -8,7 +8,7 @@ import { listStashes } from "../slots/preempt.ts";
 import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray, readFrontmatterField } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
-import { queueRequest } from "../queue.ts";
+import { queueRequest, parseQueueLines } from "../queue.ts";
 import { safeSyncOutput } from "../spawn.ts";
 
 function yamlEscape(value: string): string {
@@ -266,18 +266,12 @@ function collectProjectsWithQueuedPreemption(tasksDir: string, queueContent: str
     }
   }
 
-  for (const line of queueContent.split("\n")) {
-    if (!line) continue;
-    try {
-      const req = JSON.parse(line) as Record<string, unknown>;
-      if (req.action !== "preempt") continue;
-      const qTask = String(req.task ?? "");
-      const project = readTaskProjectName(tasksDir, qTask);
-      if (project && priProjects.includes(project)) {
-        projects.add(project);
-      }
-    } catch {
-      // skip malformed queue lines
+  for (const req of parseQueueLines(queueContent)) {
+    if (req.action !== "preempt") continue;
+    const qTask = String(req.task ?? "");
+    const project = readTaskProjectName(tasksDir, qTask);
+    if (project && priProjects.includes(project)) {
+      projects.add(project);
     }
   }
 
@@ -798,14 +792,10 @@ function tasksQueueElaborations(): void {
   const queueFile = join(harness, "mag", "queue.jsonl");
   const alreadyQueuedElaborateTasks = new Set<string>();
   if (existsSync(queueFile)) {
-    for (const line of readFileSync(queueFile, "utf-8").split("\n")) {
-      if (!line) continue;
-      try {
-        const req = JSON.parse(line) as Record<string, unknown>;
-        if (req.action === "elaborate" && typeof req.task === "string") {
-          alreadyQueuedElaborateTasks.add(req.task);
-        }
-      } catch { /* skip malformed lines */ }
+    for (const req of parseQueueLines(readFileSync(queueFile, "utf-8"))) {
+      if (req.action === "elaborate" && typeof req.task === "string") {
+        alreadyQueuedElaborateTasks.add(req.task);
+      }
     }
   }
 
@@ -876,14 +866,10 @@ function tasksQueuePreemptions(): void {
   const alreadyQueuedPreemptTasks = new Set<string>();
   if (existsSync(queueFile)) {
     alreadyQueued = readFileSync(queueFile, "utf-8");
-    for (const line of alreadyQueued.split("\n")) {
-      if (!line) continue;
-      try {
-        const req = JSON.parse(line) as Record<string, unknown>;
-        if (req.action === "preempt" && typeof req.task === "string") {
-          alreadyQueuedPreemptTasks.add(req.task);
-        }
-      } catch { /* skip malformed lines */ }
+    for (const req of parseQueueLines(alreadyQueued)) {
+      if (req.action === "preempt" && typeof req.task === "string") {
+        alreadyQueuedPreemptTasks.add(req.task);
+      }
     }
   }
 
