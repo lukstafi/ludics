@@ -172,6 +172,10 @@ export interface OrchestrationState {
   /** Concrete branch names from createWorktrees(), keyed by agent name (plus "root").
    *  Populated at init so downstream consumers (e.g. buildCleanupEntry) avoid re-deriving. */
   branches?: Record<string, string>;
+  /** Previous phase context for artifact validation — persisted so crash recovery
+   *  doesn't skip validation. Captured before applyPhaseSideEffects() mutates round/planMergeRound.
+   *  Consumed and cleared by enterPhase() on the next iteration. */
+  previousPhaseCtx?: { phase: Phase; round: number; planMergeRound: number };
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {

@@ -72,7 +72,7 @@ const SETTLED_GRACE_PERIOD_S = 30;
  * the phase has no required file artifact.  When a non-null path is returned,
  * `isAgentDone()` will NOT treat the agent as done until the file exists.
  */
-function requiredArtifactPath(state: OrchestrationState, agent: AgentConfig): string | null {
+export function requiredArtifactPath(state: OrchestrationState, agent: AgentConfig): string | null {
   const dir = state.peerSyncDir;
   switch (state.phase) {
     case "plan":
