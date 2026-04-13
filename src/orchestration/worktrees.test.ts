@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
-import { join } from "path";
-import { autoCommitWorktree, cleanupWorktrees, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, symlinkPeerSync } from "./worktrees.ts";
+import { dirname, join } from "path";
+import { autoCommitWorktree, cleanupWorktrees, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, orchBranchName, orchWorktreeStem, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
 
@@ -374,6 +374,153 @@ describe("cleanupWorktrees resilience", () => {
     expect(() =>
       cleanupWorktrees("/nonexistent/path/xxxxx", "task-1", [{ name: "a1" }, { name: "a2" }], 1),
     ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// orchBranchName
+// ---------------------------------------------------------------------------
+
+describe("orchBranchName", () => {
+  test("standard case with slot", () => {
+    expect(orchBranchName("task-abc", 2, "root")).toBe("ludics/task-abc-s2/root");
+  });
+
+  test("no slot", () => {
+    expect(orchBranchName("task-abc", undefined, "coder")).toBe("ludics/task-abc/coder");
+  });
+
+  test("GitHub issue ID", () => {
+    expect(orchBranchName("gh-ludics-42", 1, "reviewer")).toBe("ludics/gh-ludics-42-s1/reviewer");
+  });
+
+  test("special characters in taskId are slugified", () => {
+    expect(orchBranchName("My Task!@#$", undefined, "root")).toBe("ludics/my-task/root");
+  });
+
+  test("long task ID preserves content", () => {
+    const longId = "task-" + "a".repeat(100);
+    const result = orchBranchName(longId, 3, "coder");
+    expect(result).toStartWith("ludics/task-");
+    expect(result).toEndWith("-s3/coder");
+  });
+
+  test("suffix is used verbatim", () => {
+    expect(orchBranchName("t1", 1, "my-agent")).toBe("ludics/t1-s1/my-agent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// orchWorktreeStem
+// ---------------------------------------------------------------------------
+
+describe("orchWorktreeStem", () => {
+  test("standard case with slot", () => {
+    expect(orchWorktreeStem("myrepo", "task-abc", 2)).toBe("myrepo-task-abc-s2");
+  });
+
+  test("without slot", () => {
+    expect(orchWorktreeStem("myrepo", "task-abc")).toBe("myrepo-task-abc");
+  });
+
+  test("slot explicitly undefined", () => {
+    expect(orchWorktreeStem("myrepo", "task-abc", undefined)).toBe("myrepo-task-abc");
+  });
+
+  test("special characters in taskId", () => {
+    expect(orchWorktreeStem("repo", "My Task!@#$", 1)).toBe("repo-my-task-s1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// removeWorktreeByPath prefix guard
+// ---------------------------------------------------------------------------
+
+describe("removeWorktreeByPath prefix guard", () => {
+  test("refuses to remove path that does not match repo naming", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "remove-guard");
+    initRepo(repo);
+
+    const warnings: string[] = [];
+    const origErr = console.error;
+    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      removeWorktreeByPath(repo, "/some/random/path");
+    } finally {
+      console.error = origErr;
+    }
+
+    expect(warnings.some((w) => w.includes("refusing") && w.includes("random"))).toBe(true);
+  });
+
+  test("refuses repo-prefixed non-task paths like backup or scratch", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "remove-guard-generic");
+    initRepo(repo);
+
+    const warnings: string[] = [];
+    const origErr = console.error;
+    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      // These share the repo prefix but are not orchestration worktrees
+      removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-backup"));
+      removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-scratch"));
+      removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-OLD"));
+    } finally {
+      console.error = origErr;
+    }
+
+    expect(warnings).toHaveLength(3);
+    expect(warnings.every((w) => w.includes("refusing"))).toBe(true);
+  });
+
+  test("allows removal of path matching orchestration naming", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "remove-guard-ok");
+    initRepo(repo);
+
+    // Create a worktree with proper task-style naming
+    const setup = createWorktrees(repo, "task-abc123", [{ name: "a1" }], "main", 1);
+
+    // Should not warn — path matches orchestration naming
+    const warnings: string[] = [];
+    const origErr = console.error;
+    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      removeWorktreeByPath(repo, setup.rootWorktree);
+    } finally {
+      console.error = origErr;
+    }
+
+    expect(warnings.filter((w) => w.includes("refusing"))).toHaveLength(0);
+
+    // Clean up remaining worktrees
+    cleanupWorktrees(repo, "task-abc123", [{ name: "a1" }], 1);
+  });
+
+  test("allows single-token slug with slot suffix (e.g. feat-s1)", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "remove-guard-single-slug");
+    initRepo(repo);
+
+    // Create a worktree with single-token taskId + slot
+    const setup = createWorktrees(repo, "feat", [{ name: "a1" }], "main", 1);
+
+    const warnings: string[] = [];
+    const origErr = console.error;
+    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      removeWorktreeByPath(repo, setup.rootWorktree);
+    } finally {
+      console.error = origErr;
+    }
+
+    expect(warnings.filter((w) => w.includes("refusing"))).toHaveLength(0);
+
+    cleanupWorktrees(repo, "feat", [{ name: "a1" }], 1);
   });
 });
 

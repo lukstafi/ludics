@@ -73,8 +73,38 @@ function removeIfRegistered(projectDir: string, path: string): void {
   }
 }
 
-/** Remove a single worktree by its concrete path. Idempotent — no-op if not registered. */
+/** Overall slug shape: lowercase alphanumeric segments separated by hyphens. */
+const SLUG_SHAPE_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** Multi-segment slug — at least two hyphen-separated segments (e.g. `task-abc`). */
+const MULTI_SEGMENT_SLUG_RE = /^[a-z0-9]+-[a-z0-9]+/;
+/** Slot marker anywhere in the suffix (e.g. `-s3`). */
+const SLOT_MARKER_RE = /-s\d+(?:-|$)/;
+
+/**
+ * Validate that `suffix` (the part after `{repoName}-`) matches the
+ * orchestration worktree naming shape: `{taskSlug}(-s{N})?(-{agentSlug})?`.
+ *
+ * Accepts multi-segment task slugs (`task-abc`, `task-abc-s2-agent`) and
+ * single-segment slugs only when a slot marker is present (`feat-s1`).
+ * Rejects generic names like `backup` or `scratch` that lack both traits.
+ */
+function isOrchWorktreeSuffix(suffix: string): boolean {
+  if (!SLUG_SHAPE_RE.test(suffix)) return false;
+  return MULTI_SEGMENT_SLUG_RE.test(suffix) || SLOT_MARKER_RE.test(suffix);
+}
+
+/** Remove a single worktree by its concrete path. Idempotent — no-op if not registered.
+ *  Safety: validates that the path basename matches the orchestration worktree naming
+ *  pattern (`{repoName}-{taskSlug}(-s{N})?(-{agentSlug})?`) to prevent accidental
+ *  removal of unrelated directories. */
 export function removeWorktreeByPath(projectDir: string, path: string): void {
+  const repoName = basename(resolve(projectDir));
+  const base = basename(path);
+  const prefix = repoName + "-";
+  if (!base.startsWith(prefix) || !isOrchWorktreeSuffix(base.slice(prefix.length))) {
+    console.error(`ludics: refusing to remove worktree "${path}" — does not match orchestration naming`);
+    return;
+  }
   removeIfRegistered(projectDir, path);
 }
 
@@ -126,6 +156,13 @@ export function orchBranchName(taskId: string, slot: number | undefined, suffix:
   return `ludics/${featureSlug}${slotSuffix}/${suffix}`;
 }
 
+/** Canonical worktree directory stem: `{repoName}-{slug}{slotSuffix}`. */
+export function orchWorktreeStem(repoName: string, taskId: string, slot?: number): string {
+  const featureSlug = slugify(taskId);
+  const slotSuffix = slot ? `-s${slot}` : "";
+  return `${repoName}-${featureSlug}${slotSuffix}`;
+}
+
 export function createWorktrees(
   projectDir: string,
   taskId: string,
@@ -134,11 +171,9 @@ export function createWorktrees(
   slot?: number,
   mode: "duo" | "pair" = "duo",
 ): WorktreeSetup {
-  const featureSlug = slugify(taskId);
-  const slotSuffix = slot ? `-s${slot}` : "";
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));
-  const stem = `${repoName}-${featureSlug}${slotSuffix}`;
+  const stem = orchWorktreeStem(repoName, taskId, slot);
   const rootWorktree = join(parentDir, stem);
   const peerSyncDir = peerSyncPath(rootWorktree);
   const branches: Record<string, string> = {
@@ -220,10 +255,9 @@ export function cleanupWorktrees(
   mode: "duo" | "pair" = "duo",
 ): void {
   const featureSlug = slugify(taskId);
-  const slotSuffix = slot ? `-s${slot}` : "";
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));
-  const stem = `${repoName}-${featureSlug}${slotSuffix}`;
+  const stem = orchWorktreeStem(repoName, taskId, slot);
   const rootWorktree = join(parentDir, stem);
   const expectedPrefix = join(parentDir, `${repoName}-${featureSlug}`);
   if (!rootWorktree.startsWith(expectedPrefix)) {
