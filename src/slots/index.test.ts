@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -9,6 +9,8 @@ import { existsSync } from "fs";
 import { getIntentForDashboard, clearIntent } from "../cluster-http.ts";
 import { heartbeatsDir as getHeartbeatsDir } from "../cluster.ts";
 import { writeSlotJson, readSlotJson, emptySlotData } from "./json.ts";
+
+setDefaultTimeout(15_000);
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;

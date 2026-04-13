@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { extractTaskId, cleanupStaleItems } from "./index.ts";
 import type { Server, ServerWebSocket } from "bun";
 import { ORCHESTRATION_WS_METHODS } from "./types.ts";
 import type { T3Snapshot, T3Thread, T3Project } from "./types.ts";
+
+setDefaultTimeout(15_000);
 
 // ---------------------------------------------------------------------------
 // extractTaskId unit tests

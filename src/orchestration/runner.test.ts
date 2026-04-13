@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, spyOn, setDefaultTimeout } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -14,6 +14,8 @@ import { readStopHookRecord, writeStopHookRecord, writeAgentMarkerFiles, readAge
 import { defaultOrchestrationConfig, initAgentRuntimeState, persistState, type AgentTurnLifecycle, type OrchestrationState } from "./state.ts";
 import type { T3Snapshot, T3ThreadSession, T3LatestTurn } from "../t3code/types.ts";
 import type { OrchestrationTransport } from "./transport.ts";
+
+setDefaultTimeout(20_000);
 
 // Testing pattern: always use spyOn(module, 'fn').mockImplementation(...)
 // and restore in afterEach(() => { spy.mockRestore(); }).

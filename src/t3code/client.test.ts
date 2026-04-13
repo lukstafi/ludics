@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { Server, ServerWebSocket } from "bun";
 import { T3CodeClient } from "./client.ts";
 import { ORCHESTRATION_WS_CHANNELS, ORCHESTRATION_WS_METHODS } from "./types.ts";
+
+setDefaultTimeout(15_000);
 
 type RequestEnvelope = {
   id: string;

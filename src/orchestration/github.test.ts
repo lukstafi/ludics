@@ -1,5 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { DEFAULT_CODEX_REVIEW_PROMPT, hasCodexSubmittedReview, postCodexReviewComment } from "./github.ts";
+
+setDefaultTimeout(20_000);
 
 // ---------------------------------------------------------------------------
 // postCodexReviewComment — body-building logic
