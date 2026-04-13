@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut, validatePreviousPhaseArtifacts, validateAgentPrFiles, type PreviousPhaseContext } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut, validatePreviousPhaseArtifacts, validateAgentPrFiles, resetPrCommentsState, type PreviousPhaseContext } from "./runner.ts";
 import * as notify from "../notify.ts";
 import * as peerSync from "./peer-sync.ts";
 import * as events from "../events.ts";
@@ -2561,6 +2561,45 @@ describe("checkAndRedispatchPrComments conflict detection", () => {
     });
     applyPhaseSideEffects(state, "pr-comments");
     expect(state.prMergeableStates).toEqual({});
+  });
+
+  test("applyPhaseSideEffects resets all pr-comments fields via resetPrCommentsState", () => {
+    const state = makeConflictState({
+      phase: "pr-create",
+      prCommentsLastCheckAt: 999,
+      prCommentsQuietSince: 888,
+      prCommentsCoderDispatched: true,
+      prMergeableStates: { coder: "dirty" },
+      prCodexReviewFallbackPosted: true,
+    });
+    applyPhaseSideEffects(state, "pr-comments");
+    expect(state.prCommentsLastCheckAt).toBe(state.phaseStartedAt - 600);
+    expect(state.prCommentsQuietSince).toBeUndefined();
+    expect(state.prCommentsCoderDispatched).toBe(false);
+    expect(state.prMergeableStates).toEqual({});
+    expect(state.prCodexReviewFallbackPosted).toBeUndefined();
+  });
+});
+
+describe("resetPrCommentsState", () => {
+  test("resets all pr-comments phase-entry fields", () => {
+    const state = makeState({
+      phase: "pr-comments",
+      prCommentsLastCheckAt: 999,
+      prCommentsQuietSince: 888,
+      prCommentsCoderDispatched: true,
+      prMergeableStates: { coder: "dirty" },
+      prCodexReviewFallbackPosted: true,
+      prCodexReviewDeferredSince: 777,
+    });
+    resetPrCommentsState(state);
+    expect(state.prCommentsLastCheckAt).toBe(state.phaseStartedAt - 600);
+    expect(state.prCommentsQuietSince).toBeUndefined();
+    expect(state.prCommentsCoderDispatched).toBe(false);
+    expect(state.prMergeableStates).toEqual({});
+    expect(state.prCodexReviewFallbackPosted).toBeUndefined();
+    // prCodexReviewDeferredSince has independent lifecycle — must NOT be touched
+    expect(state.prCodexReviewDeferredSince).toBe(777);
   });
 });
 

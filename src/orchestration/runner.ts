@@ -582,7 +582,7 @@ function markActiveAgents(state: OrchestrationState): void {
 // so that adding a new field only requires a change in one place.
 // Does NOT reset prCodexReviewDeferredSince — it has an independent lifecycle.
 // ---------------------------------------------------------------------------
-function resetPrCommentsState(state: OrchestrationState): void {
+export function resetPrCommentsState(state: OrchestrationState): void {
   state.prCommentsLastCheckAt = state.phaseStartedAt - 600;
   state.prCommentsQuietSince = undefined;
   state.prCommentsCoderDispatched = false;
