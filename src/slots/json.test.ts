@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { slotDataToMarkdown } from "./json.ts";
+import { migrateMarkdownToSlotData } from "./migration.ts";
 import type { SlotData } from "./types.ts";
 
 describe("slotDataToMarkdown round-trip fidelity", () => {
@@ -71,6 +75,72 @@ describe("slotDataToMarkdown round-trip fidelity", () => {
     expect(md).toContain("**Machine:** null");
     expect(md).toContain("**Session Started:** null");
     expect(md).toContain("**Liveness:** null");
+  });
+
+  test("serialize -> deserialize round-trip preserves all fields (populated)", () => {
+    const original: SlotData = {
+      slot: 1,
+      process: "running",
+      task: "task-abc123",
+      mode: "coder",
+      session: "sess-42",
+      path: "/home/user/project",
+      started: "2026-04-10T12:00:00Z",
+      adapterArgs: "--fast --verbose",
+      machine: "dev-box-1",
+      sessionStarted: "2026-04-10T11:55:00Z",
+      liveness: "alive",
+      terminals: "tmux:0:bash\ntmux:1:vim",
+      runtime: "bun 1.2.0\nnode 22.0.0",
+      git: "main +3 -1\nmodified: src/index.ts",
+    };
+
+    const tmp = mkdtempSync(join(tmpdir(), "ludics-rt-"));
+    try {
+      const md = slotDataToMarkdown(original);
+      const slotsFile = join(tmp, "slots.md");
+      writeFileSync(slotsFile, md);
+
+      const parsed = migrateMarkdownToSlotData(slotsFile, 1);
+      const result = parsed.get(1)!;
+
+      expect(result).toEqual(original);
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
+  test("serialize -> deserialize round-trip preserves null/empty fields", () => {
+    const original: SlotData = {
+      slot: 1,
+      process: "idle",
+      task: null,
+      mode: null,
+      session: null,
+      path: null,
+      started: null,
+      adapterArgs: null,
+      machine: null,
+      sessionStarted: null,
+      liveness: null,
+      terminals: "",
+      runtime: "",
+      git: "",
+    };
+
+    const tmp = mkdtempSync(join(tmpdir(), "ludics-rt-"));
+    try {
+      const md = slotDataToMarkdown(original);
+      const slotsFile = join(tmp, "slots.md");
+      writeFileSync(slotsFile, md);
+
+      const parsed = migrateMarkdownToSlotData(slotsFile, 1);
+      const result = parsed.get(1)!;
+
+      expect(result).toEqual(original);
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
   });
 
   test("every SlotData key is represented in the output", () => {

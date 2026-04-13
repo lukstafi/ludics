@@ -57,7 +57,7 @@ function extractSection(block: string, sectionName: string): string {
       content += line + "\n";
     }
   }
-  return content;
+  return content.trimEnd();
 }
 
 function nullIfEmpty(val: string): string | null {
