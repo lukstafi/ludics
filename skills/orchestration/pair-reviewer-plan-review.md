@@ -2,6 +2,19 @@
 
 {{PROPOSAL_INSTRUCTION}}
 
+## Verify Code-Proposal Alignment
+
+Check the merged plan against the proposal and actual codebase:
+
+- [ ] Does the plan's technical approach match proposal assumptions?
+- [ ] Are all proposed code changes feasible in the current codebase?
+- [ ] If the plan-merge phase found gaps, are they documented with ASSUMPTION GAP markers?
+
+If alignment gaps are found, use REQUEST_CHANGES with explicit remediation — for example:
+- "Proposal needs revision to account for X"
+- "Plan should add an intermediate refactoring step before Y"
+- "Accept gap as known risk with rationale: Z"
+
 Review the merged plan for `{{TASK_ID}}`:
 If the plan involves data shape changes (field extraction, JSON migration, section restructuring), check that all downstream consumers of the changed data are identified and their required updates are noted. Request changes if consumers appear to be missing — grep for field names and section-header patterns to verify completeness.
 
