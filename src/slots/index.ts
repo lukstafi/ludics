@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
-import { globalAdapter, harnessDir, slotsFilePath, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
+import { globalAdapter, harnessDir, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
 import { mergeAdapterState, addNoteToSlotData } from "./markdown.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, emptySlotData, slotJsonDir, slotDataToMarkdown } from "./json.ts";
 import type { SlotData } from "./types.ts";
@@ -61,7 +61,7 @@ function ensureSlotsDir(): void {
     return;
   }
   // One-time migration: if slots.md exists but slots/ does not
-  const mdFile = slotsFilePath();
+  const mdFile = join(harnessDir(), "slots.md");
   if (existsSync(mdFile)) {
     const { migrateMarkdownToSlotData } = require("./migration.ts");
     const count = slotsCount();

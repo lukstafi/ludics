@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, slotsFilePath, slotsCount } from "./config.ts";
+import { harnessDir, loadConfigSync, slotsCount } from "./config.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, slotDataToMarkdown } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
 import { slotClear } from "./slots/index.ts";

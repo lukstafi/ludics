@@ -320,10 +320,6 @@ export function stateRepoDir(): string {
   return join(process.env.HOME!, repoName);
 }
 
-export function slotsFilePath(harness?: string): string {
-  const h = harness ?? harnessDir();
-  return join(h, "slots.md");
-}
 
 export function slotJsonDir(harness?: string): string {
   const h = harness ?? harnessDir();
