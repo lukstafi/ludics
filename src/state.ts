@@ -106,11 +106,13 @@ export function stateCheckpoint(
   }
 }
 
+/** Pull remote state, overwriting local. Used during controller handoff
+ *  (becoming controller) to adopt the previous controller's state.
+ *  NOT used during normal operation — the controller's local state is authoritative. */
 export function statePull(opts?: { autoCommit?: boolean }): boolean {
   const repoDir = stateRepoDir();
-  const autoCommit = opts?.autoCommit ?? true;
 
-  // Abort any stuck rebase before pulling
+  // Abort any stuck rebase from previous logic
   const rebaseDir = join(repoDir, ".git", "rebase-merge");
   const rebaseApply = join(repoDir, ".git", "rebase-apply");
   if (existsSync(rebaseDir) || existsSync(rebaseApply)) {
@@ -118,74 +120,39 @@ export function statePull(opts?: { autoCommit?: boolean }): boolean {
     console.error("ludics: aborted stuck rebase before pull");
   }
 
-  // Commit uncommitted changes before pulling (controller-only writes, simple commit)
-  if (autoCommit) {
-    if (!safeSyncOutput(["git", "diff", "--quiet", "HEAD"], { cwd: repoDir }).ok) {
-      run(["git", "add", "-A"], repoDir);
-      run(["git", "commit", "-m", "auto-commit before pull"], repoDir);
-    }
+  // Fetch and reset to remote — remote is authoritative during handoff
+  const fetchResult = run(["git", "fetch", "origin"], repoDir);
+  if (!fetchResult.success) {
+    console.error("ludics: fetch failed during pull");
+    return false;
   }
 
-  const pullResult = run(["git", "pull", "--rebase"], repoDir);
-  if (pullResult.success) {
-    console.error("ludics: pulled latest from remote");
-    return true;
-  }
-
-  // Abort any rebase conflict and keep local state
-  if (existsSync(rebaseDir) || existsSync(rebaseApply)) {
-    run(["git", "rebase", "--abort"], repoDir);
-    console.error("ludics: pull rebase conflicted — aborted, keeping local state");
-  } else {
-    console.error("ludics: pull failed (may need manual intervention)");
-  }
-  return false;
+  run(["git", "reset", "--hard", "origin/main"], repoDir);
+  console.error("ludics: pulled latest from remote (hard reset)");
+  return true;
 }
 
 export function statePush(): void {
   const repoDir = stateRepoDir();
 
-  // Controller-only push — simple pull-rebase then push.
-  // Abort on rebase conflicts rather than pushing divergent history.
+  // Controller owns the state repo — force-push to overwrite remote.
+  // No pull/rebase: the controller's local state is always authoritative.
+  // Remote divergence can only come from a previous controller's writes
+  // (stale) or manual edits (should not happen).
   const rebaseDir = join(repoDir, ".git", "rebase-merge");
   const rebaseApply = join(repoDir, ".git", "rebase-apply");
 
-  // Clean up any stuck rebase from a previous run before starting
+  // Clean up any stuck rebase from previous (now-removed) pull-rebase logic
   if (existsSync(rebaseDir) || existsSync(rebaseApply)) {
     run(["git", "rebase", "--abort"], repoDir);
     console.error("ludics: aborted stuck rebase before push");
   }
 
-  const pullResult = run(["git", "pull", "--rebase"], repoDir);
-  if (!pullResult.success) {
-    // Rebase conflicted — abort and skip the push to avoid divergent history
-    if (existsSync(rebaseDir) || existsSync(rebaseApply)) {
-      run(["git", "rebase", "--abort"], repoDir);
-    }
-    console.error("ludics: pull --rebase failed — skipping push (will retry next checkpoint)");
-    return;
-  }
-
-  const pushResult = run(["git", "push"], repoDir);
+  const pushResult = run(["git", "push", "--force"], repoDir);
   if (pushResult.success) {
     console.error("ludics: pushed to remote");
   } else {
-    // Retry once with a fresh pull-rebase
-    console.error("ludics: push rejected, retrying...");
-    const pullRetry = run(["git", "pull", "--rebase"], repoDir);
-    if (!pullRetry.success) {
-      if (existsSync(rebaseDir) || existsSync(rebaseApply)) {
-        run(["git", "rebase", "--abort"], repoDir);
-      }
-      console.error("ludics: pull --rebase failed on retry — skipping push");
-      return;
-    }
-    const retry = run(["git", "push"], repoDir);
-    if (retry.success) {
-      console.error("ludics: pushed to remote (retry)");
-    } else {
-      console.error("ludics: push failed after retry (will retry next checkpoint)");
-    }
+    console.error("ludics: push --force failed (will retry next checkpoint)");
   }
 }
 
@@ -286,8 +253,9 @@ export function stateSync(message: string): void {
   statePush();
 }
 
+/** Full sync: commit local state and force-push to remote.
+ *  Does NOT pull — the controller's local state is authoritative. */
 export function stateFullSync(): void {
-  statePull();
   stateCommitImmediate("sync");
   statePush();
 }
