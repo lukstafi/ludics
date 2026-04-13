@@ -499,6 +499,29 @@ describe("removeWorktreeByPath prefix guard", () => {
     // Clean up remaining worktrees
     cleanupWorktrees(repo, "task-abc123", [{ name: "a1" }], 1);
   });
+
+  test("allows single-token slug with slot suffix (e.g. feat-s1)", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "remove-guard-single-slug");
+    initRepo(repo);
+
+    // Create a worktree with single-token taskId + slot
+    const setup = createWorktrees(repo, "feat", [{ name: "a1" }], "main", 1);
+
+    const warnings: string[] = [];
+    const origErr = console.error;
+    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      removeWorktreeByPath(repo, setup.rootWorktree);
+    } finally {
+      console.error = origErr;
+    }
+
+    expect(warnings.filter((w) => w.includes("refusing"))).toHaveLength(0);
+
+    cleanupWorktrees(repo, "feat", [{ name: "a1" }], 1);
+  });
 });
 
 // ---------------------------------------------------------------------------

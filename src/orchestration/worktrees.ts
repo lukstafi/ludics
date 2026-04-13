@@ -73,13 +73,25 @@ function removeIfRegistered(projectDir: string, path: string): void {
   }
 }
 
+/** Overall slug shape: lowercase alphanumeric segments separated by hyphens. */
+const SLUG_SHAPE_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** Multi-segment slug — at least two hyphen-separated segments (e.g. `task-abc`). */
+const MULTI_SEGMENT_SLUG_RE = /^[a-z0-9]+-[a-z0-9]+/;
+/** Slot marker anywhere in the suffix (e.g. `-s3`). */
+const SLOT_MARKER_RE = /-s\d+(?:-|$)/;
+
 /**
- * Matches the suffix after `{repoName}-` in orchestration worktree basenames.
- * Shape: `{taskSlug}(-s{N})?(-{agentSlug})?`
- * Task slugs always contain at least one hyphen (`task-xxxx`, `gh-repo-42`),
- * which distinguishes them from generic names like `backup` or `scratch`.
+ * Validate that `suffix` (the part after `{repoName}-`) matches the
+ * orchestration worktree naming shape: `{taskSlug}(-s{N})?(-{agentSlug})?`.
+ *
+ * Accepts multi-segment task slugs (`task-abc`, `task-abc-s2-agent`) and
+ * single-segment slugs only when a slot marker is present (`feat-s1`).
+ * Rejects generic names like `backup` or `scratch` that lack both traits.
  */
-const ORCH_WORKTREE_SUFFIX_RE = /^[a-z0-9]+-[a-z0-9]+(-[a-z0-9]+)*(-s\d+)?(-[a-z0-9]+(-[a-z0-9]+)*)?$/;
+function isOrchWorktreeSuffix(suffix: string): boolean {
+  if (!SLUG_SHAPE_RE.test(suffix)) return false;
+  return MULTI_SEGMENT_SLUG_RE.test(suffix) || SLOT_MARKER_RE.test(suffix);
+}
 
 /** Remove a single worktree by its concrete path. Idempotent — no-op if not registered.
  *  Safety: validates that the path basename matches the orchestration worktree naming
@@ -89,7 +101,7 @@ export function removeWorktreeByPath(projectDir: string, path: string): void {
   const repoName = basename(resolve(projectDir));
   const base = basename(path);
   const prefix = repoName + "-";
-  if (!base.startsWith(prefix) || !ORCH_WORKTREE_SUFFIX_RE.test(base.slice(prefix.length))) {
+  if (!base.startsWith(prefix) || !isOrchWorktreeSuffix(base.slice(prefix.length))) {
     console.error(`ludics: refusing to remove worktree "${path}" — does not match orchestration naming`);
     return;
   }
