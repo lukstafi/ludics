@@ -1287,7 +1287,7 @@ function maybeOverrideTransition(state: OrchestrationState, next: OrchestrationS
   if (state.phase === "review" && next === "update-docs" && !shouldRunUpdateDocs(state)) {
     return state.agents.some((agent) => !!state.agentStates[agent.name]?.prUrl)
       ? "pr-comments"
-      : "work";
+      : "pr-create";
   }
   if (state.phase === "merge-vote" && next === "merge-execute") {
     const votes = readMergeVotes(state.peerSyncDir, state.mergeRound);
@@ -1364,6 +1364,12 @@ export async function runOrchestration(
       autoCommitAllAgents(state, state.agents, /* push */ true);
     }
 
+    // Capture verdict and round BEFORE applyPhaseSideEffects mutates state.round.
+    const preTransitionRound = state.round;
+    const preTransitionVerdict = (state.phase === "review" || state.phase === "plan-review") && state.mode === "pair"
+      ? pairReviewVerdict(state)
+      : null;
+
     applyPhaseSideEffects(state, next);
 
     // Reset all agent statuses and lifecycles on every phase transition.
@@ -1386,28 +1392,24 @@ export async function runOrchestration(
       task: state.taskId,
       action: `${state.phase} → ${next}`,
       status: next,
-      message: `round ${state.round}`,
+      message: `round ${preTransitionRound}`,
     });
 
     {
       const taskLabel = state.taskId;
       const slotLabel = `Slot ${state.slot} [${taskLabel}]`;
       if (state.phase === "review" && state.mode === "pair") {
-        // Use the parsed verdict from the review file. Falls back to "timeout" when
-        // no verdict file exists (review phase expired without an explicit verdict).
-        const parsed = pairReviewVerdict(state);
-        const verdictLabel = parsed === "approve" ? "APPROVE"
-          : parsed === "request_changes" ? "REQUEST_CHANGES"
+        const verdictLabel = preTransitionVerdict === "approve" ? "APPROVE"
+          : preTransitionVerdict === "request_changes" ? "REQUEST_CHANGES"
           : "timeout";
         notifyAgents(
-          `${slotLabel}: review verdict: ${verdictLabel} → ${next} (round ${state.round})`,
+          `${slotLabel}: review verdict: ${verdictLabel} → ${next} (round ${preTransitionRound})`,
           3,
           `${slotLabel}: review verdict`,
         );
       } else if (state.phase === "plan-review" && state.mode === "pair") {
-        const parsed = pairReviewVerdict(state);
-        const verdictLabel = parsed === "approve" ? "APPROVE"
-          : parsed === "request_changes" ? "REQUEST_CHANGES"
+        const verdictLabel = preTransitionVerdict === "approve" ? "APPROVE"
+          : preTransitionVerdict === "request_changes" ? "REQUEST_CHANGES"
           : "timeout";
         notifyAgents(
           `${slotLabel}: plan-review verdict: ${verdictLabel} → ${next} (plan-merge round ${state.planMergeRound ?? 0})`,
@@ -1416,7 +1418,7 @@ export async function runOrchestration(
         );
       } else {
         notifyAgents(
-          `${slotLabel}: ${state.phase} → ${next} (round ${state.round})`,
+          `${slotLabel}: ${state.phase} → ${next} (round ${preTransitionRound})`,
           1,
           `${slotLabel}: phase`,
         );
