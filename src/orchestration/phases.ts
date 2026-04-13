@@ -193,8 +193,10 @@ export function agentParticipatesInPhase(
 /** Check done-status + required artifact. Shared by both lifecycle branches of isAgentDone. */
 function validateDoneStatus(state: OrchestrationState, agent: AgentConfig, runtime: AgentRuntimeState): boolean {
   if (!DONE_STATUSES.has(runtime.status)) return false;
-  // Bail-out statuses bypass artifact validation — no review file or PR file expected.
-  if (runtime.status === "bail-out" || runtime.status === "bail-out-confirmed") return true;
+  // Bail-out statuses bypass artifact validation only when the full pair bail-out
+  // contract is satisfied (coder=bail-out + reviewer=bail-out-confirmed). A lone
+  // bail-out-confirmed without the coder side must not skip artifact checks.
+  if ((runtime.status === "bail-out" || runtime.status === "bail-out-confirmed") && isPairBailedOut(state)) return true;
   if (!hasRequiredArtifact(state, agent)) {
     emitEvent({
       event_type: "orchestration_warning",

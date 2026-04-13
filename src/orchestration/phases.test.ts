@@ -814,4 +814,13 @@ describe("evaluateTransition — bail-out", () => {
     // Reviewer has bail-out-confirmed but no review file exists — should still be done
     expect(isAgentDone(state, state.agents[1])).toBe(true);
   });
+
+  test("lone bail-out-confirmed without coder bail-out does NOT bypass artifact validation", () => {
+    const state = makeState({ phase: "review" });
+    state.agentStates.coder.status = "done";
+    state.agentStates.reviewer.status = "bail-out-confirmed";
+    // Reviewer has bail-out-confirmed but coder is NOT bail-out — pair contract not met.
+    // Without a review file, artifact validation should block.
+    expect(isAgentDone(state, state.agents[1])).toBe(false);
+  });
 });

@@ -171,7 +171,13 @@ export function handleVerifyFailure(
 
 /** Set has_questions on the task and append the reason to ## Questions, cluster-safe. */
 export function surfaceManualIntervention(taskId: string, questionLine: string): void {
-  let taskUpdated = false;
+  // Always write locally first so the data is persisted even if cluster forwarding fails.
+  const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+  if (existsSync(taskFile)) {
+    addFrontmatterField(taskFile, "has_questions", "true");
+    appendToSection(taskFile, "Questions", questionLine);
+  }
+  // On worker machines, also forward to the controller so the dashboard sees it.
   try {
     const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts");
     if (clusterCurrentMachineName() && !clusterIsController()) {
@@ -180,16 +186,8 @@ export function surfaceManualIntervention(taskId: string, questionLine: string):
         clusterPostTaskUpdate(taskId, "has_questions", "true").catch(() => {});
         clusterPostTaskSectionAppend(taskId, "Questions", questionLine).catch(() => {});
       }).catch(() => {});
-      taskUpdated = true;
     }
   } catch { /* standalone mode */ }
-  if (!taskUpdated) {
-    const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
-    if (existsSync(taskFile)) {
-      addFrontmatterField(taskFile, "has_questions", "true");
-      appendToSection(taskFile, "Questions", questionLine);
-    }
-  }
 }
 
 /** Get the first available PR URL from agent runtime state, falling back to peer-sync artifact. */
