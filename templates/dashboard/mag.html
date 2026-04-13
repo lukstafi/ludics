@@ -229,11 +229,24 @@
                     }
                     const status = escapeHtml(String(item.status || 'unknown'));
                     const taskId = item.task_id ? escapeHtml(String(item.task_id)) : '';
-                    const label = taskId || escapeHtml(String(item.id || 'unknown').replace(/^req-\d+-\d+$/, '').slice(0, 30));
-                    const summary = item.summary ? `<div>${escapeHtml(String(item.summary).slice(0, 120))}</div>` : '';
-                    const extra = item.created != null ? ` (${item.created} created)` : '';
+                    // Build a human-readable description from available fields
+                    let desc = '';
+                    if (item.output) {
+                        desc = String(item.output).slice(0, 140);
+                    } else if (item.created != null && item.skipped != null) {
+                        // process-suggestions result
+                        const tasks = Array.isArray(item.tasks) && item.tasks.length > 0
+                            ? ': ' + item.tasks.join(', ') : '';
+                        desc = `suggestions: ${item.created} created, ${item.skipped} skipped${tasks}`;
+                    } else if (item.critical != null) {
+                        // health-check result
+                        desc = `health: ${item.critical} critical, ${item.warnings || 0} warnings`;
+                    } else if (taskId) {
+                        desc = `${taskId} — ${status}`;
+                    }
+                    if (!desc) desc = status;
                     const ts = item.timestamp ? `<div class="timestamp">${escapeHtml(String(item.timestamp))}</div>` : '';
-                    html += `<div class="queue-item"><span class="action">${label || status}</span>${taskId ? ' ' + status : ''}${escapeHtml(extra)}${summary}${ts}</div>`;
+                    html += `<div class="queue-item">${escapeHtml(desc)}${ts}</div>`;
                 }
             }
 
