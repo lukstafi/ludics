@@ -68,6 +68,29 @@ describe("updateFrontmatterField upsert", () => {
     expect(readFrontmatterField(content, "status")).toBe("ready");
   });
 
+  test("inserts into frontmatter, not at body horizontal rule", () => {
+    const f = tmpFile("hrule.md", [
+      "---",
+      "id: task-1",
+      "status: ready",
+      "---",
+      "",
+      "# Title",
+      "",
+      "---",
+      "",
+      "Some body after horizontal rule",
+    ].join("\n"));
+
+    updateFrontmatterField(f, "completed", "2026-04-13");
+    const result = readFileSync(f, "utf-8");
+    const fmMatch = result.match(/^---\n([\s\S]*?)\n---/);
+    expect(fmMatch).not.toBeNull();
+    expect(fmMatch![1]).toContain("completed: 2026-04-13");
+    // Body horizontal rule and text preserved
+    expect(result).toContain("Some body after horizontal rule");
+  });
+
   test("does not insert into body when field missing from frontmatter", () => {
     const f = tmpFile("body.md", [
       "---",

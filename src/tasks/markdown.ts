@@ -107,6 +107,7 @@ export function updateFrontmatterField(filePath: string, field: string, value: s
   const lines = content.split("\n");
   let inFrontmatter = false;
   let done = false;
+  let closingDelimiterIdx = -1;
   const output: string[] = [];
 
   for (const line of lines) {
@@ -117,6 +118,7 @@ export function updateFrontmatterField(filePath: string, field: string, value: s
     }
     if (line === "---" && inFrontmatter) {
       inFrontmatter = false;
+      closingDelimiterIdx = output.length;
       output.push(line);
       continue;
     }
@@ -128,14 +130,9 @@ export function updateFrontmatterField(filePath: string, field: string, value: s
     output.push(line);
   }
 
-  if (!done) {
-    // Upsert: insert before closing --- (last occurrence)
-    for (let i = output.length - 1; i >= 0; i--) {
-      if (output[i] === "---") {
-        output.splice(i, 0, `${field}: ${value}`);
-        break;
-      }
-    }
+  if (!done && closingDelimiterIdx >= 0) {
+    // Upsert: insert before the frontmatter closing ---
+    output.splice(closingDelimiterIdx, 0, `${field}: ${value}`);
   }
 
   writeFileSync(filePath, output.join("\n"));
