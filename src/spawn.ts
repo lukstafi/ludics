@@ -34,7 +34,7 @@ export function safeSyncOutput(
         exitCode: -1,
         timedOut: true,
         stdout: trim ? out.trim() : out,
-        stderr: "process timed out",
+        stderr: trim ? err.trim() : err,
       };
     }
     return {
