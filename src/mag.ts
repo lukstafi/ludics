@@ -2427,7 +2427,7 @@ function maybeFillEmptySlots(config?: LudicsFullConfig): void {
   const task = candidates[0]!;
 
   // Auto-select orchestration flags based on task effort
-  const { adapter: autoAdapter, args: autoArgs, isDuo } = selectOrchestrationFlags(task.effort);
+  const { adapter: autoAdapter, args: autoArgs, isDuo } = selectOrchestrationFlags(task.effort, config);
 
   // Hierarchical duo: need 2 empty slots; assign both with swapped coder/reviewer
   if (isDuo) {

@@ -7,7 +7,7 @@ import { getMainRepoFromWorktree, latestMtime, resolveProjectDir, slotSessionNam
 import { safeSyncOutput } from "../spawn.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { Adapter, AdapterContext } from "./types.ts";
-import { findProjectConfig, loadConfigSync } from "../config.ts";
+import { findProjectConfig, loadConfigSync, type LudicsFullConfig } from "../config.ts";
 import { setsidWrap } from "../orchestration/util.ts";
 import {
   tmuxHasSession,
@@ -141,10 +141,10 @@ function killPid(pid?: number): void {
   }
 }
 
-function loadConfigOrchestration(): Record<string, unknown> | undefined {
+function loadConfigOrchestration(config?: LudicsFullConfig): Record<string, unknown> | undefined {
   try {
-    const config = loadConfigSync();
-    const mag = config.mag as Record<string, unknown> | undefined;
+    const cfg = config ?? loadConfigSync();
+    const mag = cfg.mag as Record<string, unknown> | undefined;
     return mag?.orchestration as Record<string, unknown> | undefined;
   } catch {
     return undefined;
@@ -391,8 +391,9 @@ async function start(ctx: AdapterContext): Promise<string> {
 
   if (existing?.orchestration?.pid) killPid(existing.orchestration.pid);
 
-  // Load config.yaml orchestration defaults and merge with adapter arg overrides.
-  const orchCfg = loadConfigOrchestration();
+  // Load config once and thread through all helpers.
+  const config = loadConfigSync();
+  const orchCfg = loadConfigOrchestration(config);
   const configPhaseTimeouts = orchCfg?.phase_timeouts as Record<string, number> | undefined;
   if (configPhaseTimeouts && typeof configPhaseTimeouts === "object") {
     orchestration.config.timeouts = { ...configPhaseTimeouts, ...(orchestration.config.timeouts ?? {}) };
@@ -466,10 +467,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     branches: setup.branches,
     slotTitle: options.title ?? slotSessionName(ctx.slot, undefined, taskId),
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
-    upstreamRepo: (() => {
-      const cfg = loadConfigSync();
-      return findProjectConfig(projectDir, cfg)?.upstream_repo || undefined;
-    })(),
+    upstreamRepo: findProjectConfig(projectDir, config)?.upstream_repo || undefined,
   };
   persistState(state, ctx.harnessDir);
 
