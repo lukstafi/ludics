@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { autoCommitWorktree, cleanupWorktrees, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, orchBranchName, orchWorktreeStem, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
@@ -454,16 +454,37 @@ describe("removeWorktreeByPath prefix guard", () => {
     expect(warnings.some((w) => w.includes("refusing") && w.includes("random"))).toBe(true);
   });
 
-  test("allows removal of path matching repo naming", () => {
+  test("refuses repo-prefixed non-task paths like backup or scratch", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "remove-guard-generic");
+    initRepo(repo);
+
+    const warnings: string[] = [];
+    const origErr = console.error;
+    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      // These share the repo prefix but are not orchestration worktrees
+      removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-backup"));
+      removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-scratch"));
+      removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-OLD"));
+    } finally {
+      console.error = origErr;
+    }
+
+    expect(warnings).toHaveLength(3);
+    expect(warnings.every((w) => w.includes("refusing"))).toBe(true);
+  });
+
+  test("allows removal of path matching orchestration naming", () => {
     if (!Bun.which("git")) return;
     mkdirSync(TMP, { recursive: true });
     const repo = join(TMP, "remove-guard-ok");
     initRepo(repo);
 
-    // Create a worktree with proper naming
-    const setup = createWorktrees(repo, "feat", [{ name: "a1" }], "main", 1);
+    // Create a worktree with proper task-style naming
+    const setup = createWorktrees(repo, "task-abc123", [{ name: "a1" }], "main", 1);
 
-    // Should not warn — path matches naming
+    // Should not warn — path matches orchestration naming
     const warnings: string[] = [];
     const origErr = console.error;
     console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
@@ -476,7 +497,7 @@ describe("removeWorktreeByPath prefix guard", () => {
     expect(warnings.filter((w) => w.includes("refusing"))).toHaveLength(0);
 
     // Clean up remaining worktrees
-    cleanupWorktrees(repo, "feat", [{ name: "a1" }], 1);
+    cleanupWorktrees(repo, "task-abc123", [{ name: "a1" }], 1);
   });
 });
 

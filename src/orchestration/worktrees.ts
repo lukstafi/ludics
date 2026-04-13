@@ -73,13 +73,24 @@ function removeIfRegistered(projectDir: string, path: string): void {
   }
 }
 
+/**
+ * Matches the suffix after `{repoName}-` in orchestration worktree basenames.
+ * Shape: `{taskSlug}(-s{N})?(-{agentSlug})?`
+ * Task slugs always contain at least one hyphen (`task-xxxx`, `gh-repo-42`),
+ * which distinguishes them from generic names like `backup` or `scratch`.
+ */
+const ORCH_WORKTREE_SUFFIX_RE = /^[a-z0-9]+-[a-z0-9]+(-[a-z0-9]+)*(-s\d+)?(-[a-z0-9]+(-[a-z0-9]+)*)?$/;
+
 /** Remove a single worktree by its concrete path. Idempotent — no-op if not registered.
- *  Safety: validates that the path basename matches expected worktree naming (`{repoName}-`)
- *  to prevent accidental removal of unrelated directories. */
+ *  Safety: validates that the path basename matches the orchestration worktree naming
+ *  pattern (`{repoName}-{taskSlug}(-s{N})?(-{agentSlug})?`) to prevent accidental
+ *  removal of unrelated directories. */
 export function removeWorktreeByPath(projectDir: string, path: string): void {
   const repoName = basename(resolve(projectDir));
-  if (!basename(path).startsWith(repoName + "-")) {
-    console.error(`ludics: refusing to remove worktree "${path}" — does not match expected naming`);
+  const base = basename(path);
+  const prefix = repoName + "-";
+  if (!base.startsWith(prefix) || !ORCH_WORKTREE_SUFFIX_RE.test(base.slice(prefix.length))) {
+    console.error(`ludics: refusing to remove worktree "${path}" — does not match orchestration naming`);
     return;
   }
   removeIfRegistered(projectDir, path);
