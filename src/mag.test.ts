@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements } from "./mag.ts";
@@ -374,5 +374,70 @@ describe("settled sentinel atomic claim", () => {
     expect(atomicClaim()).toBe(true);
     expect(atomicClaim()).toBe(false);
     expect(atomicClaim()).toBe(false);
+  });
+});
+
+describe("stale settled sentinel detection", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "mag-stale-settled-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function clearStaleSettled(currentHash: string | null): boolean {
+    const sentinelPath = join(tmpDir, "settled");
+    const hashPath = join(tmpDir, "last-pane.hash");
+    if (!existsSync(sentinelPath)) return false;
+    if (currentHash === null) return false;
+    let previousHash: string | null = null;
+    try { previousHash = readFileSync(hashPath, "utf-8").trim() || null; } catch {}
+    if (previousHash !== null && currentHash !== previousHash) {
+      try { unlinkSync(sentinelPath); } catch {}
+      writeFileSync(hashPath, currentHash);
+      return true; // sentinel was stale
+    } else if (previousHash === null) {
+      writeFileSync(hashPath, currentHash);
+    }
+    return false;
+  }
+
+  test("clears settled when pane hash has changed", () => {
+    writeFileSync(join(tmpDir, "settled"), "1234");
+    writeFileSync(join(tmpDir, "last-pane.hash"), "oldhash");
+    const cleared = clearStaleSettled("newhash");
+    expect(cleared).toBe(true);
+    expect(existsSync(join(tmpDir, "settled"))).toBe(false);
+  });
+
+  test("keeps settled when pane hash unchanged", () => {
+    writeFileSync(join(tmpDir, "settled"), "1234");
+    writeFileSync(join(tmpDir, "last-pane.hash"), "samehash");
+    const cleared = clearStaleSettled("samehash");
+    expect(cleared).toBe(false);
+    expect(existsSync(join(tmpDir, "settled"))).toBe(true);
+  });
+
+  test("keeps settled on first observation (no prior hash)", () => {
+    writeFileSync(join(tmpDir, "settled"), "1234");
+    const cleared = clearStaleSettled("firsthash");
+    expect(cleared).toBe(false);
+    expect(existsSync(join(tmpDir, "settled"))).toBe(true);
+    expect(readFileSync(join(tmpDir, "last-pane.hash"), "utf-8")).toBe("firsthash");
+  });
+
+  test("no-op when settled does not exist", () => {
+    const cleared = clearStaleSettled("anyhash");
+    expect(cleared).toBe(false);
+  });
+
+  test("no-op when pane hash is null (tmux capture failed)", () => {
+    writeFileSync(join(tmpDir, "settled"), "1234");
+    const cleared = clearStaleSettled(null);
+    expect(cleared).toBe(false);
+    expect(existsSync(join(tmpDir, "settled"))).toBe(true);
   });
 });

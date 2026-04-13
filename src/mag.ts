@@ -148,6 +148,27 @@ function isMagSettled(): boolean {
   return existsSync(settledSentinelFile());
 }
 
+/**
+ * If pane output has advanced since the settled sentinel was written,
+ * Mag has resumed running (e.g. a manual turn) — clear the stale sentinel.
+ */
+function clearStaleSettled(): void {
+  if (!isMagSettled()) return;
+  const currentHash = tmuxPaneOutputHash(MAG_SESSION_NAME);
+  if (currentHash === null) return;
+  const previousHash = readPaneHash();
+  if (previousHash !== null && currentHash !== previousHash) {
+    // Pane output changed since last observation — Mag is active, sentinel is stale
+    clearMagSettled();
+    writePaneHash(currentHash);
+    writePaneChangeEpoch();
+  } else if (previousHash === null) {
+    // First observation — record baseline but don't clear settled
+    writePaneHash(currentHash);
+    writePaneChangeEpoch();
+  }
+}
+
 // --- Stall detection helpers (file-persisted, keepalive is per-tick) ---
 
 function stallThresholdMs(): number {
@@ -2774,6 +2795,9 @@ export async function magStart(args: string[]): Promise<void> {
 
     // Drain programmatic queue items first (no Mag turn needed)
     if (queuePending()) await drainProgrammaticQueueHead();
+
+    // If Mag resumed running (e.g. manual turn) since settling, clear stale sentinel
+    clearStaleSettled();
 
     // Settled-aware queue feed: deliver one Mag-turn item if settled
     const fed = await maybeFeedMagQueue();
