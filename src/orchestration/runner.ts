@@ -576,6 +576,20 @@ function markActiveAgents(state: OrchestrationState): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Reset all pr-comments tracking fields to their canonical initial values.
+// Called on phase entry (enterPhase) and phase transition (applyPhaseSideEffects)
+// so that adding a new field only requires a change in one place.
+// Does NOT reset prCodexReviewDeferredSince — it has an independent lifecycle.
+// ---------------------------------------------------------------------------
+function resetPrCommentsState(state: OrchestrationState): void {
+  state.prCommentsLastCheckAt = state.phaseStartedAt - 600;
+  state.prCommentsQuietSince = undefined;
+  state.prCommentsCoderDispatched = false;
+  state.prMergeableStates = {};
+  state.prCodexReviewFallbackPosted = undefined;
+}
+
 async function enterPhase(
   state: OrchestrationState,
   transport: OrchestrationTransport,
@@ -611,13 +625,8 @@ async function enterPhase(
   // Reset pr-comments tracking state on phase entry.
   // Don't dispatch agents yet — wait for actual comments/reviews to arrive.
   // checkAndRedispatchPrComments will handle the first dispatch when needed.
-  // Look back 10 minutes to catch comments posted during preceding phases
-  // (e.g., Codex review posted during update-docs or pr-create).
   if (state.phase === "pr-comments") {
-    state.prCommentsLastCheckAt = state.phaseStartedAt - 600;
-    state.prCommentsQuietSince = undefined;
-    state.prCommentsCoderDispatched = false;
-    if (!state.prMergeableStates) state.prMergeableStates = {};  // defensive only; real reset is in applyPhaseSideEffects
+    resetPrCommentsState(state);
     // pr-comments doesn't dispatch agents — it needs them to appear "done" so
     // checkAndRedispatchPrComments can poll GitHub and redispatch when comments
     // arrive. Write a fresh done status and clear lifecycle/fingerprint so
@@ -1298,9 +1307,7 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
     state.phaseRetryContext = null;
   }
   if (next === "pr-comments") {
-    state.prMergeableStates = {};
-    state.prCommentsCoderDispatched = false;
-    state.prCodexReviewFallbackPosted = undefined;
+    resetPrCommentsState(state);
   }
   if (state.phase === "review" && next === "update-docs" && !shouldRunUpdateDocs(state)) {
     state.lastLearningAt = state.lastLearningAt ?? 0;
