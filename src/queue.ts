@@ -25,6 +25,16 @@ function parseJsonRecord(text: string): Record<string, unknown> | null {
   }
 }
 
+export function parseQueueLines(content: string): Record<string, unknown>[] {
+  const result: Record<string, unknown>[] = [];
+  for (const line of content.split("\n")) {
+    if (!line) continue;
+    const parsed = parseJsonRecord(line);
+    if (parsed) result.push(parsed);
+  }
+  return result;
+}
+
 function nextRequestId(): string {
   // Keep the historical req-<epoch>-<number> shape while ensuring uniqueness
   // within a process even when many requests are queued in the same second.
@@ -132,16 +142,7 @@ export function queueHasPendingAction(action: string): boolean {
   const content = readFileSync(file, "utf-8").trim();
   if (!content) return false;
 
-  for (const line of content.split("\n")) {
-    try {
-      const request = JSON.parse(line) as Record<string, unknown>;
-      if (request.action === action) return true;
-    } catch {
-      continue;
-    }
-  }
-
-  return false;
+  return parseQueueLines(content).some(req => req.action === action);
 }
 
 export function queueHasPendingFeedbackDigest(repo: string): boolean {
@@ -151,18 +152,9 @@ export function queueHasPendingFeedbackDigest(repo: string): boolean {
   const content = readFileSync(file, "utf-8").trim();
   if (!content) return false;
 
-  for (const line of content.split("\n")) {
-    try {
-      const request = JSON.parse(line) as Record<string, unknown>;
-      if (request.action === "feedback-digest" && String(request.repo ?? "") === repo) {
-        return true;
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return false;
+  return parseQueueLines(content).some(
+    req => req.action === "feedback-digest" && String(req.repo ?? "") === repo
+  );
 }
 
 export function queueShow(): void {
