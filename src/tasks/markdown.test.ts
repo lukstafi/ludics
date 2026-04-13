@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, readFrontmatterField } from "./markdown.ts";
+import { addFrontmatterField, readFrontmatterField, updateFrontmatterField } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -14,6 +14,79 @@ function tmpFile(name: string, content: string): string {
 
 afterEach(() => {
   rmSync(TMP_DIR, { recursive: true, force: true });
+});
+
+describe("updateFrontmatterField upsert", () => {
+  test("updates existing field", () => {
+    const f = tmpFile("update.md", [
+      "---",
+      "id: task-1",
+      "status: ready",
+      "---",
+      "",
+      "# Title",
+    ].join("\n"));
+
+    updateFrontmatterField(f, "status", "completed");
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("status: completed");
+    expect(result).not.toContain("status: ready");
+  });
+
+  test("inserts missing field before closing ---", () => {
+    const f = tmpFile("insert.md", [
+      "---",
+      "id: task-1",
+      "status: ready",
+      "---",
+      "",
+      "# Title",
+    ].join("\n"));
+
+    updateFrontmatterField(f, "completed", "2026-04-13");
+    const result = readFileSync(f, "utf-8");
+    const fmMatch = result.match(/^---\n([\s\S]*?)\n---/);
+    expect(fmMatch).not.toBeNull();
+    expect(fmMatch![1]).toContain("completed: 2026-04-13");
+  });
+
+  test("round-trip: inserted field is readable by readFrontmatterField", () => {
+    const f = tmpFile("roundtrip.md", [
+      "---",
+      "id: task-1",
+      "status: ready",
+      "---",
+      "",
+      "# Title",
+    ].join("\n"));
+
+    updateFrontmatterField(f, "completed", "2026-04-13T18:00Z");
+    const content = readFileSync(f, "utf-8");
+    expect(readFrontmatterField(content, "completed")).toBe("2026-04-13T18:00Z");
+    // Existing fields preserved
+    expect(readFrontmatterField(content, "id")).toBe("task-1");
+    expect(readFrontmatterField(content, "status")).toBe("ready");
+  });
+
+  test("does not insert into body when field missing from frontmatter", () => {
+    const f = tmpFile("body.md", [
+      "---",
+      "id: task-1",
+      "---",
+      "",
+      "# Title",
+      "",
+      "Some body text",
+    ].join("\n"));
+
+    updateFrontmatterField(f, "completed", "2026-04-13");
+    const result = readFileSync(f, "utf-8");
+    // Field should be in frontmatter, not after body
+    const fmMatch = result.match(/^---\n([\s\S]*?)\n---/);
+    expect(fmMatch![1]).toContain("completed: 2026-04-13");
+    // Body preserved
+    expect(result).toContain("Some body text");
+  });
 });
 
 describe("addFrontmatterField", () => {
