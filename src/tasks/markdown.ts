@@ -8,6 +8,9 @@ import type { TaskFrontmatter } from "./types.ts";
 /** Regex for valid task IDs — used across all task-related endpoints. */
 export const TASK_ID_RE = /^[A-Za-z0-9._-]+$/;
 
+export const PRIORITY_INCREASE: Record<string, string> = { C: "B", B: "A", A: "S" };
+export const PRIORITY_DECREASE: Record<string, string> = { S: "A", A: "B", B: "C" };
+
 /** Numeric sort key for priority levels. S < A < B < C < anything else. */
 export function priorityValue(p: string): number {
   switch (p) {

@@ -9,8 +9,9 @@ import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, loadConfigSync } from "./config.ts";
 import { readSlotJson } from "./slots/json.ts";
-import { slotClear, slotSetMode, slotStart, slotResume } from "./slots/index.ts";
-import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE } from "./tasks/markdown.ts";
+import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES } from "./slots/index.ts";
+import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
+import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon } from "./tasks/index.ts";
 import { setQueueHold } from "./mag.ts";
 import { queueList, queueRequest } from "./queue.ts";
@@ -172,8 +173,8 @@ export function startDashboardServer(
         if (!slotParam || !/^[1-6]$/.test(slotParam)) {
           return new Response("Bad Request: slot must be 1-6", { status: 400 });
         }
-        if (!["ready", "in-progress", "done", "abandoned"].includes(status)) {
-          return new Response("Bad Request: status must be ready, in-progress, done, or abandoned", { status: 400 });
+        if (!(VALID_CLEAR_STATUSES as readonly string[]).includes(status)) {
+          return new Response(`Bad Request: status must be ${VALID_CLEAR_STATUSES.join(", ")}`, { status: 400 });
         }
         try {
           slotClear(parseInt(slotParam, 10), status);
@@ -191,8 +192,8 @@ export function startDashboardServer(
         if (!slotParam || !/^[1-6]$/.test(slotParam)) {
           return new Response("Bad Request: slot must be 1-6", { status: 400 });
         }
-        if (!mode || !["manual", "tmux", "t3code"].includes(mode)) {
-          return new Response("Bad Request: mode must be manual, tmux, or t3code", { status: 400 });
+        if (!mode || !ADAPTER_NAMES.includes(mode)) {
+          return new Response(`Bad Request: mode must be one of ${ADAPTER_NAMES.join(", ")}`, { status: 400 });
         }
         try {
           await slotSetMode(parseInt(slotParam, 10), mode);
@@ -252,7 +253,6 @@ export function startDashboardServer(
               const taskResolved = resolveTaskFile(taskId);
               if (!("error" in taskResolved)) {
                 const taskFile = taskResolved.path;
-                const PRIORITY_DECREASE: Record<string, string> = { S: "A", A: "B", B: "C" };
                 const content = readFileSync(taskFile, "utf-8");
                 const priorityMatch = content.match(/^priority:\s*(.+)$/m);
                 const currentPriority = priorityMatch ? priorityMatch[1]!.trim() : "B";
@@ -288,7 +288,6 @@ export function startDashboardServer(
           const resolved = resolveTaskFile(taskParam);
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
-          const PRIORITY_INCREASE: Record<string, string> = { C: "B", B: "A", A: "S" };
           const content = readFileSync(taskFile, "utf-8");
           const priorityMatch = content.match(/^priority:\s*(.+)$/m);
           const currentPriority = priorityMatch ? priorityMatch[1]!.trim() : "B";
