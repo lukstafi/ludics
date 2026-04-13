@@ -214,8 +214,9 @@
                     }
                     const action = escapeHtml(String(item.action || 'unknown'));
                     const task = item.task ? ` <span>${escapeHtml(String(item.task))}</span>` : '';
+                    const content = item.content ? `<div>${escapeHtml(String(item.content).slice(0, 120))}</div>` : '';
                     const ts = item.timestamp ? `<div class="timestamp">${escapeHtml(String(item.timestamp))}</div>` : '';
-                    html += `<div class="queue-item"><span class="action">[${action}]</span>${task}${ts}</div>`;
+                    html += `<div class="queue-item"><span class="action">[${action}]</span>${task}${content}${ts}</div>`;
                 }
             }
 
@@ -226,10 +227,13 @@
                         html += `<div class="queue-item"><span class="action">[parse error]</span></div>`;
                         continue;
                     }
-                    const id = escapeHtml(String(item.id || 'unknown'));
                     const status = escapeHtml(String(item.status || 'unknown'));
+                    const taskId = item.task_id ? escapeHtml(String(item.task_id)) : '';
+                    const label = taskId || escapeHtml(String(item.id || 'unknown').replace(/^req-\d+-\d+$/, '').slice(0, 30));
+                    const summary = item.summary ? `<div>${escapeHtml(String(item.summary).slice(0, 120))}</div>` : '';
+                    const extra = item.created != null ? ` (${item.created} created)` : '';
                     const ts = item.timestamp ? `<div class="timestamp">${escapeHtml(String(item.timestamp))}</div>` : '';
-                    html += `<div class="queue-item"><span class="action">${id}</span> ${status}${ts}</div>`;
+                    html += `<div class="queue-item"><span class="action">${label || status}</span>${taskId ? ' ' + status : ''}${escapeHtml(extra)}${summary}${ts}</div>`;
                 }
             }
 
