@@ -3,8 +3,10 @@ import * as peerSyncMod from "./peer-sync.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { evaluateTransition, findPlanFiles, isAgentDone, isPairBailedOut, phaseTimeoutExpired } from "./phases.ts";
+import { evaluateTransition, findPlanFiles, isAgentDone, isPairBailedOut, PHASE_CATEGORIES, phaseTimeoutExpired } from "./phases.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
+import { mergedPlanFilePath } from "./plan-files.ts";
+import { applyPhaseSideEffects } from "./runner.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "./state.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
@@ -822,5 +824,61 @@ describe("evaluateTransition — bail-out", () => {
     // Reviewer has bail-out-confirmed but coder is NOT bail-out — pair contract not met.
     // Without a review file, artifact validation should block.
     expect(isAgentDone(state, state.agents[1])).toBe(false);
+  });
+});
+
+describe("PHASE_CATEGORIES split — pre-plan vs planning", () => {
+  test("pre-plan phases map to 'pre-plan'", () => {
+    for (const phase of ["setup", "gather", "clarify", "pushback"] as const) {
+      expect(PHASE_CATEGORIES[phase]).toBe("pre-plan");
+    }
+  });
+
+  test("planning phases map to 'planning'", () => {
+    for (const phase of ["plan", "plan-merge", "plan-review"] as const) {
+      expect(PHASE_CATEGORIES[phase]).toBe("planning");
+    }
+  });
+});
+
+describe("applyPhaseSideEffects — stub plan creation (gh-ludics-254)", () => {
+  test("creates stub merged plan when pre-plan phase → work (planning skipped)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh254-stub-"));
+    const state = makeState({
+      phase: "setup",
+      round: 1,
+      peerSyncDir: tmpDir,
+    });
+    applyPhaseSideEffects(state, "work");
+    const stubPath = mergedPlanFilePath(tmpDir, 1, 0);
+    expect(existsSync(stubPath)).toBe(true);
+    expect(readFileSync(stubPath, "utf-8")).toContain("planning phase skipped");
+  });
+
+  test("does NOT overwrite existing merged plan when pre-plan → work", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh254-nooverwrite-"));
+    mkdirSync(join(tmpDir, "plans"), { recursive: true });
+    const stubPath = mergedPlanFilePath(tmpDir, 1, 0);
+    const existingContent = "# Real Merged Plan\nKeep this content.\n";
+    writeFileSync(stubPath, existingContent);
+    const state = makeState({
+      phase: "clarify",
+      round: 1,
+      peerSyncDir: tmpDir,
+    });
+    applyPhaseSideEffects(state, "work");
+    expect(readFileSync(stubPath, "utf-8")).toBe(existingContent);
+  });
+
+  test("does NOT create stub when planning phase → work (planning attempted)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh254-noplanning-"));
+    const state = makeState({
+      phase: "plan-review",
+      round: 1,
+      peerSyncDir: tmpDir,
+    });
+    applyPhaseSideEffects(state, "work");
+    const stubPath = mergedPlanFilePath(tmpDir, 1, 0);
+    expect(existsSync(stubPath)).toBe(false);
   });
 });
