@@ -6,6 +6,7 @@ export interface SyncResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  timedOut: boolean;
 }
 
 /** Run a command synchronously. Never throws.
@@ -14,7 +15,7 @@ export interface SyncResult {
  */
 export function safeSyncOutput(
   cmd: string[],
-  opts?: { cwd?: string; env?: Record<string, string>; trim?: boolean },
+  opts?: { cwd?: string; env?: Record<string, string>; trim?: boolean; timeout?: number },
 ): SyncResult {
   try {
     const result = Bun.spawnSync(cmd, {
@@ -22,15 +23,26 @@ export function safeSyncOutput(
       stdout: "pipe",
       stderr: "pipe",
       env: opts?.env ?? (process.env as Record<string, string>),
+      timeout: opts?.timeout,
     });
     const trim = opts?.trim !== false;
     const out = result.stdout.toString();
     const err = result.stderr.toString();
+    if (result.exitCode === null) {
+      return {
+        ok: false,
+        exitCode: -1,
+        timedOut: true,
+        stdout: trim ? out.trim() : out,
+        stderr: trim ? err.trim() : err,
+      };
+    }
     return {
       ok: result.exitCode === 0,
       exitCode: result.exitCode,
       stdout: trim ? out.trim() : out,
       stderr: trim ? err.trim() : err,
+      timedOut: false,
     };
   } catch (err) {
     return {
@@ -38,6 +50,7 @@ export function safeSyncOutput(
       exitCode: -1,
       stdout: "",
       stderr: err instanceof Error ? err.message : String(err),
+      timedOut: false,
     };
   }
 }

@@ -24,4 +24,16 @@ describe("safeSyncOutput", () => {
     expect(r.ok).toBe(true);
     expect(r.stdout).toBe("hello\n");
   });
+
+  test("returns timedOut:true when process exceeds timeout", () => {
+    const r = safeSyncOutput(["sleep", "10"], { timeout: 200 });
+    expect(r.ok).toBe(false);
+    expect(r.timedOut).toBe(true);
+    expect(r.exitCode).toBe(-1);
+  });
+
+  test("returns timedOut:false on normal success", () => {
+    const r = safeSyncOutput(["echo", "hi"]);
+    expect(r.timedOut).toBe(false);
+  });
 });
