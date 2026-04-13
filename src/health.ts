@@ -122,15 +122,7 @@ export function checkProjectTestHealth(
   saveTestHealthState(state);
 
   if (!passed) {
-    // Redirect stdout to stderr during task creation to avoid corrupting
-    // stop-hook stdout (used by orchestration on-stop and legacy mag queue-pop).
-    const origWrite = process.stdout.write;
-    process.stdout.write = process.stderr.write.bind(process.stderr);
-    try {
-      tasksCreate(`Fix broken test suite: ${project.name}`, project.name, "A");
-    } finally {
-      process.stdout.write = origWrite;
-    }
+    tasksCreate(`Fix broken test suite: ${project.name}`, project.name, "A");
   }
 
   return { skipped: false, passed, duration, failures };
