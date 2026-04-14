@@ -16,26 +16,26 @@
         }
         .terminal-cell {
             flex: 1; display: flex; flex-direction: column;
-            border: 1px solid #333; border-radius: 4px; overflow: hidden;
+            border: 1px solid var(--border); border-radius: var(--radius-sm, 4px); overflow: hidden;
         }
         .terminal-label {
-            background: #1a1a2e; color: #8be9fd;
-            padding: 4px 8px; font-size: 12px; font-family: monospace;
+            background: var(--bg-secondary); color: var(--accent);
+            padding: 4px 8px; font-size: 12px; font-family: var(--font-brand, monospace);
         }
         .terminal-frame {
             flex: 1; border: none; width: 100%; min-height: 45vh;
-            background: #0d1117;
+            background: var(--bg-primary);
         }
         .terminal-cell.inactive .terminal-label { opacity: 0.4; }
         .terminal-cell.inactive .terminal-frame { display: none; }
         .terminal-cell.inactive::after {
             content: 'No session'; display: flex; align-items: center;
-            justify-content: center; flex: 1; color: #555; font-family: monospace;
+            justify-content: center; flex: 1; color: var(--text-muted, #555); font-family: var(--font-mono, monospace);
         }
         .terminal-grid.error::after {
             content: attr(data-error); display: flex; align-items: center;
-            justify-content: center; padding: 2rem; color: #f55;
-            font-family: monospace; font-size: 14px; white-space: pre-line;
+            justify-content: center; padding: 2rem; color: var(--error, #f55);
+            font-family: var(--font-mono, monospace); font-size: 14px; white-space: pre-line;
         }
     </style>
 </head>

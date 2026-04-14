@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ludics New Task</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <div class="nav-links">
+            <h1>ludics</h1>
+            <a href="index.html">Dashboard</a>
+            <a href="mag.html">Mag</a>
+            <a href="#" id="t3code-link">t3code</a>
+            <a href="terminals.html">Terminals</a>
+            <a href="ntfy.html">ntfy</a>
+            <a href="tasks.html">Tasks</a>
+            <a href="task-creator.html" class="active">New Task</a>
+            <a href="briefing.html">Briefing</a>
+        </div>
+        <div class="status-bar">
+            <span id="last-update"></span>
+            <span id="connection-status" class="connected">Connected</span>
+        </div>
+    </header>
+    <script src="nav.js"></script>
+
+    <main class="task-creator-layout">
+        <!-- Form Panel -->
+        <div class="task-form-panel">
+            <h2>Create Task</h2>
+
+            <div class="form-group">
+                <label for="task-title">Title</label>
+                <input type="text" id="task-title" placeholder="What needs to be done?" autocomplete="off">
+            </div>
+
+            <div class="form-group">
+                <label for="task-project">Project</label>
+                <select id="task-project">
+                    <option value="personal">personal</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Priority</label>
+                <div class="segmented-control">
+                    <input type="radio" name="priority" id="pri-c" value="C">
+                    <label for="pri-c">C</label>
+                    <input type="radio" name="priority" id="pri-b" value="B" checked>
+                    <label for="pri-b">B</label>
+                    <input type="radio" name="priority" id="pri-a" value="A">
+                    <label for="pri-a">A</label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Effort</label>
+                <div class="segmented-control">
+                    <input type="radio" name="effort" id="eff-small" value="small">
+                    <label for="eff-small">Small</label>
+                    <input type="radio" name="effort" id="eff-medium" value="medium" checked>
+                    <label for="eff-medium">Medium</label>
+                    <input type="radio" name="effort" id="eff-large" value="large">
+                    <label for="eff-large">Large</label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="task-browser">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-label">Uses browser</span>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="task-body">Description (markdown)</label>
+                <textarea id="task-body" placeholder="## Context&#10;&#10;Describe the task...&#10;&#10;## Acceptance Criteria&#10;&#10;- [ ] ..."></textarea>
+            </div>
+
+            <div id="form-feedback"></div>
+
+            <button class="submit-btn" id="submit-btn" onclick="createTask()">Create Task</button>
+        </div>
+
+        <!-- Preview Panel -->
+        <div class="task-preview-panel">
+            <h2>Preview</h2>
+            <div class="preview-content" id="preview-content">
+                <div class="preview-placeholder">Start typing to see a preview...</div>
+            </div>
+        </div>
+    </main>
+
+    <script src="markdown.js"></script>
+    <script>
+        // ── Load Projects ────────────────────────────────────
+        (function loadProjects() {
+            fetch('/api/projects')
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (data) {
+                    if (!data || !data.projects) return;
+                    var select = document.getElementById('task-project');
+                    if (!select) return;
+                    // Build option list: keep 'personal' as fallback, add config projects
+                    var seen = new Set();
+                    select.innerHTML = '';
+                    for (var i = 0; i < data.projects.length; i++) {
+                        var name = data.projects[i];
+                        if (seen.has(name)) continue;
+                        seen.add(name);
+                        var opt = document.createElement('option');
+                        opt.value = name;
+                        opt.textContent = name;
+                        select.appendChild(opt);
+                    }
+                    if (!seen.has('personal')) {
+                        var personalOpt = document.createElement('option');
+                        personalOpt.value = 'personal';
+                        personalOpt.textContent = 'personal';
+                        select.appendChild(personalOpt);
+                    }
+                })
+                .catch(function () { /* keep default */ });
+        })();
+
+        // ── Live Preview ─────────────────────────────────────
+        var previewTimer = null;
+        function updatePreview() {
+            var title = document.getElementById('task-title').value.trim();
+            var project = document.getElementById('task-project').value;
+            var priority = document.querySelector('input[name="priority"]:checked').value;
+            var effort = document.querySelector('input[name="effort"]:checked').value;
+            var usesBrowser = document.getElementById('task-browser').checked;
+            var body = document.getElementById('task-body').value;
+            var container = document.getElementById('preview-content');
+
+            if (!title && !body) {
+                container.innerHTML = '<div class="preview-placeholder">Start typing to see a preview...</div>';
+                return;
+            }
+
+            // Build frontmatter preview
+            var fm = '---\n';
+            fm += 'title: "' + (title || '(untitled)') + '"\n';
+            fm += 'project: ' + project + '\n';
+            fm += 'status: ready\n';
+            fm += 'priority: ' + priority + '\n';
+            fm += 'effort: ' + effort + '\n';
+            if (usesBrowser) fm += 'uses_browser: true\n';
+            fm += '---';
+
+            // Build body preview
+            var mdBody = '';
+            if (body) {
+                mdBody = body;
+            } else {
+                mdBody = '## Context\n\nCreated via dashboard.\n\n## Acceptance Criteria\n\n- [ ] TBD';
+            }
+
+            var fullMd = '# ' + (title || '(untitled)') + '\n\n' + mdBody;
+
+            container.innerHTML =
+                '<div class="preview-frontmatter">' + escapeHtml(fm) + '</div>' +
+                markdownToHtml(fullMd);
+        }
+
+        // Debounced preview update
+        function schedulePreview() {
+            clearTimeout(previewTimer);
+            previewTimer = setTimeout(updatePreview, 150);
+        }
+
+        document.getElementById('task-title').addEventListener('input', schedulePreview);
+        document.getElementById('task-body').addEventListener('input', schedulePreview);
+        document.getElementById('task-project').addEventListener('change', schedulePreview);
+        document.querySelectorAll('input[name="priority"]').forEach(function (r) {
+            r.addEventListener('change', schedulePreview);
+        });
+        document.querySelectorAll('input[name="effort"]').forEach(function (r) {
+            r.addEventListener('change', schedulePreview);
+        });
+        document.getElementById('task-browser').addEventListener('change', schedulePreview);
+
+        // ── Create Task ──────────────────────────────────────
+        async function createTask() {
+            var title = document.getElementById('task-title').value.trim();
+            if (!title) {
+                showFeedback('Title is required', 'error');
+                document.getElementById('task-title').focus();
+                return;
+            }
+
+            var project = document.getElementById('task-project').value;
+            var priority = document.querySelector('input[name="priority"]:checked').value;
+            var effort = document.querySelector('input[name="effort"]:checked').value;
+            var usesBrowser = document.getElementById('task-browser').checked;
+            var body = document.getElementById('task-body').value.trim();
+
+            var btn = document.getElementById('submit-btn');
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+
+            try {
+                var response = await fetch('/api/task-create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: title, project: project, priority: priority, effort: effort, usesBrowser: usesBrowser, body: body })
+                });
+
+                if (!response.ok) {
+                    var errText = await response.text();
+                    showFeedback('Failed: ' + errText, 'error');
+                    return;
+                }
+
+                var result = await response.json();
+                if (result.created) {
+                    showFeedback('Task created: ' + result.id, 'success');
+                    // Reset form
+                    document.getElementById('task-title').value = '';
+                    document.getElementById('task-body').value = '';
+                    document.getElementById('pri-b').checked = true;
+                    document.getElementById('eff-medium').checked = true;
+                    document.getElementById('task-browser').checked = false;
+                    updatePreview();
+                } else {
+                    showFeedback('Task already exists: ' + result.id, 'error');
+                }
+            } catch (err) {
+                showFeedback('Network error: ' + err.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Create Task';
+            }
+        }
+
+        function showFeedback(message, type) {
+            var el = document.getElementById('form-feedback');
+            el.className = 'form-feedback ' + type;
+            el.textContent = message;
+            // Auto-clear after 6 seconds
+            setTimeout(function () {
+                if (el.textContent === message) {
+                    el.className = '';
+                    el.textContent = '';
+                }
+            }, 6000);
+        }
+
+        // Submit on Ctrl/Cmd+Enter from textarea
+        document.getElementById('task-body').addEventListener('keydown', function (e) {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                createTask();
+            }
+        });
+
+        // Submit on Enter from title field
+        document.getElementById('task-title').addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                createTask();
+            }
+        });
+    </script>
+</body>
+</html>

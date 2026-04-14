@@ -3,7 +3,7 @@
 // Serves static files from the dashboard directory and lazily regenerates
 // data/*.json files when they become stale (TTL-based).
 
-import { existsSync, readFileSync, statSync } from "fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
 import { resolve, extname, join } from "path";
 import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
@@ -12,7 +12,7 @@ import { readSlotJson } from "./slots/json.ts";
 import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES, CLEAR_STATUS_READY, CLEAR_STATUS_DONE } from "./slots/index.ts";
 import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
-import { tasksAbandon } from "./tasks/index.ts";
+import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
 import { setQueueHold } from "./mag.ts";
 import { queueList, queueRequest, recentResults } from "./queue.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
@@ -456,6 +456,65 @@ export function startDashboardServer(
             return d;
           });
           return new Response(JSON.stringify({ pending, results }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: list available projects from config
+      if (pathname === "/api/projects") {
+        try {
+          const config = loadConfigSync();
+          const projects = (config.projects ?? []).map((p: { name?: string }) => String(p.name ?? "")).filter(Boolean);
+          return new Response(JSON.stringify({ projects }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: create a new task
+      if (pathname === "/api/task-create" && req.method === "POST") {
+        let body: Record<string, unknown>;
+        try {
+          body = await req.json() as Record<string, unknown>;
+        } catch {
+          return new Response("Bad Request: invalid JSON", { status: 400 });
+        }
+        const title = typeof body.title === "string" ? body.title.trim() : "";
+        if (!title) {
+          return new Response("Bad Request: title is required", { status: 400 });
+        }
+        const project = typeof body.project === "string" ? body.project.trim() || "personal" : "personal";
+        const priority = typeof body.priority === "string" && /^[A-CS]$/.test(body.priority) ? body.priority : "B";
+        const effort = typeof body.effort === "string" && ["small", "medium", "large"].includes(body.effort) ? body.effort : "medium";
+        const usesBrowser = body.usesBrowser === true;
+        const taskBody = typeof body.body === "string" ? body.body.trim() : "";
+
+        try {
+          const result = tasksCreate(title, project, priority, usesBrowser);
+
+          // Set effort if non-default
+          if (result.created && effort !== "medium") {
+            updateFrontmatterField(result.path, "effort", effort);
+          }
+
+          // Replace default body content if custom body provided
+          if (result.created && taskBody) {
+            const fileContent = readFileSync(result.path, "utf-8");
+            const fmEnd = fileContent.indexOf("\n---\n");
+            if (fmEnd !== -1) {
+              const frontmatter = fileContent.slice(0, fmEnd + 5); // include trailing \n---\n
+              const newContent = frontmatter + "\n# " + title + "\n\n" + taskBody + "\n";
+              writeFileSync(result.path, newContent);
+            }
+          }
+
+          lastGenerated = 0;
+          return new Response(JSON.stringify({ created: result.created, id: result.id }), {
             headers: { "Content-Type": "application/json" },
           });
         } catch (e) {
