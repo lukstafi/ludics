@@ -2131,8 +2131,10 @@ function maybeUnstickAssignedSlots(): void {
     if (!existsSync(taskFile)) continue;
     const content = readFileSync(taskFile, "utf-8");
 
-    // Task already completed or abandoned — nothing to unstick
-    if (/\nstatus:\s*(done|abandoned|merged)/.test(content)) continue;
+    // Task already completed, abandoned, or in-progress — nothing to unstick.
+    // in-progress means the slot was already started; re-queuing draft-proposal
+    // is pointless because the orchestrator will skip it anyway.
+    if (/\nstatus:\s*(done|abandoned|merged|in-progress)/.test(content)) continue;
 
     // Already has proposal — maybeAutoStartSlots handles this
     if (content.includes("\nproposal:")) continue;
