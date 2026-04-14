@@ -31,6 +31,7 @@ Merge the two independent plans for `{{TASK_ID}}` into one at `{{MERGED_PLAN_FIL
 
 {{PEER_REVIEW}}
 
+**Formatting**: Use numbered lists for structured data in your plan. Do not use wide markdown tables — they get truncated when passed between agents.
 Pick the strongest approach from each, incorporate feedback, stay concrete.
 
 ```sh
