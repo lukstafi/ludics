@@ -750,9 +750,13 @@ function generateMag(): Record<string, unknown> {
 
   // Check for last activity
   let lastActivity: string | null = null;
-  const recentRes = recentResults(1);
-  if (recentRes.length > 0 && recentRes[0]!.data.timestamp) {
-    lastActivity = String(recentRes[0]!.data.timestamp);
+  try {
+    const recentRes = recentResults(1);
+    if (recentRes.length > 0 && recentRes[0]!.data.timestamp) {
+      lastActivity = String(recentRes[0]!.data.timestamp);
+    }
+  } catch {
+    // ignore — malformed result files should not break dashboard
   }
 
   // Check queue hold state
