@@ -3127,24 +3127,31 @@ export function magDoctor(): void {
   }
 
   console.log("");
-  console.log("Stop hook locations to check:");
-  console.log("  - ~/.claude/hooks/ludics-on-stop.sh");
-  console.log("  - ~/.config/claude-code/hooks/ludics-on-stop.sh");
-
-  const hookLocations = [
-    join(process.env.HOME!, ".claude/hooks/ludics-on-stop.sh"),
-    join(process.env.HOME!, ".config/claude-code/hooks/ludics-on-stop.sh"),
-  ];
-  let hookFound = false;
-  for (const loc of hookLocations) {
-    if (existsSync(loc)) {
-      console.log(`  Found: ${loc}`);
-      hookFound = true;
-      break;
-    }
+  console.log("Stop hook:");
+  const hookScript = join(process.env.HOME!, ".local", "bin", "ludics-on-stop");
+  if (existsSync(hookScript)) {
+    console.log(`  Script: ${hookScript} ✓`);
+  } else {
+    console.log(`  Script: ${hookScript} — NOT FOUND`);
+    console.log("  Install with: ludics init --hooks");
+    allOk = false;
   }
-  if (!hookFound) {
-    console.log("  Not found - install with: ludics init --hooks");
+
+  const settingsPath = join(process.env.HOME!, ".claude", "settings.json");
+  let hookConfigured = false;
+  if (existsSync(settingsPath)) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && (parsed as Record<string, unknown>).hooks) {
+        hookConfigured = true;
+      }
+    } catch { /* ignore parse errors */ }
+  }
+  if (hookConfigured) {
+    console.log(`  Settings: ~/.claude/settings.json hooks ✓`);
+  } else {
+    console.log(`  Settings: ~/.claude/settings.json hooks — NOT CONFIGURED`);
+    console.log("  Install with: ludics init --hooks");
     allOk = false;
   }
 
