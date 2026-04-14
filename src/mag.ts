@@ -238,7 +238,7 @@ function clearStallState(): void {
  * When Mag is settled and queue has Mag-turn work, pop one item and deliver.
  * Returns true if a command was dispatched.
  */
-async function maybeFeedMagQueue(): Promise<boolean> {
+export async function maybeFeedMagQueue(): Promise<boolean> {
   if (!isMagSettled()) return false;
   if (!queuePending()) return false;
 
@@ -3522,7 +3522,7 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     case "on-stop": {
-      // Called by the stop hook to mark Mag as settled (queue delivery is handled by keepalive)
+      // Called by the stop hook to mark Mag as settled and attempt immediate queue delivery
       const cwd = args[1] ?? "";
       const hookEventName = args[2] ?? "";
       if (hookEventName && hookEventName !== "Stop") break;
@@ -3536,6 +3536,8 @@ export async function runMag(args: string[]): Promise<void> {
       if (!clusterIsController()) break;
       markMagSettled();
       clearStallState();
+      // Attempt immediate queue delivery (keepalive is fallback for items queued while idle)
+      await maybeFeedMagQueue();
       break;
     }
     // DEPRECATED: kept for backward compatibility with older hook scripts.

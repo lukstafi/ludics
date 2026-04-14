@@ -13,7 +13,7 @@ import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES, CL
 import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
-import { setQueueHold } from "./mag.ts";
+import { setQueueHold, maybeFeedMagQueue } from "./mag.ts";
 import { queueList, queueRequest, recentResults } from "./queue.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
 
@@ -438,6 +438,8 @@ export function startDashboardServer(
         try {
           const requestId = queueRequest({ action: "message", content: content.trim() });
           lastGenerated = 0;
+          // Attempt immediate delivery if Mag is settled
+          maybeFeedMagQueue().catch(() => {});
           return new Response(JSON.stringify({ id: requestId }), {
             headers: { "Content-Type": "application/json" },
           });
