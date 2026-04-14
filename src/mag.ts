@@ -6,7 +6,7 @@ import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRep
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
-import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest } from "./queue.ts";
+import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, recentResults } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterMachine } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
@@ -3040,18 +3040,12 @@ export function magLogs(lines: number = 100): void {
 
   if (!magIsRunning()) {
     console.error(`ludics: Mag session '${MAG_SESSION_NAME}' is not running`);
-    const resultsDir = join(harnessDir(), "mag", "results");
-    if (existsSync(resultsDir)) {
+    const recent = recentResults(5);
+    if (recent.length > 0) {
       console.log("Recent results:");
-      const files = readdirSync(resultsDir)
-        .filter((f: string) => f.endsWith(".json"))
-        .map((f: string) => join(resultsDir, f))
-        .sort()
-        .reverse()
-        .slice(0, 5);
-      for (const f of files) {
+      for (const r of recent) {
         console.log("---");
-        console.log(readFileSync(f, "utf-8").trim());
+        console.log(JSON.stringify(r.data, null, 2));
       }
     }
     return;
