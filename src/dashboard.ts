@@ -12,6 +12,7 @@ import { clusterMachine } from "./cluster.ts";
 import { priorityValue } from "./tasks/markdown.ts";
 import { readStash } from "./slots/preempt.ts";
 import { getUrl } from "./network.ts";
+import { recentResults } from "./queue.ts";
 import { inspectManagedServerProcess, processAlive, readServerRecord, readSlotState, t3codeStartingPath } from "./t3code/server.ts";
 import { readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
@@ -749,22 +750,9 @@ function generateMag(): Record<string, unknown> {
 
   // Check for last activity
   let lastActivity: string | null = null;
-  const resultsDir = join(harness, "mag", "results");
-  if (existsSync(resultsDir)) {
-    const files = readdirSync(resultsDir)
-      .filter((f: string) => f.endsWith(".json"))
-      .map((f: string) => join(resultsDir, f));
-
-    if (files.length > 0) {
-      // Sort by mtime descending
-      files.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-      try {
-        const data = JSON.parse(readFileSync(files[0]!, "utf-8")) as Record<string, unknown>;
-        if (data.timestamp) lastActivity = String(data.timestamp);
-      } catch {
-        // ignore
-      }
-    }
+  const recentRes = recentResults(1);
+  if (recentRes.length > 0 && recentRes[0]!.data.timestamp) {
+    lastActivity = String(recentRes[0]!.data.timestamp);
   }
 
   // Check queue hold state

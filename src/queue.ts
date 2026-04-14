@@ -1,6 +1,6 @@
 // Mag queue functions — queue-based communication with Claude Code Mag session
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, readdirSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
@@ -190,6 +190,26 @@ export function queueShow(): void {
       console.log(`  (unparseable): ${line.slice(0, 80)}`);
     }
   }
+}
+
+export function recentResults(limit: number = 20): { file: string; data: Record<string, unknown>; mtimeMs: number }[] {
+  const dir = resultsDir();
+  if (!existsSync(dir)) return [];
+  const files = readdirSync(dir)
+    .filter((f: string) => f.endsWith(".json"))
+    .map((f: string) => {
+      const full = join(dir, f);
+      return { file: full, mtimeMs: statSync(full).mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, limit);
+  return files.map(({ file, mtimeMs }) => {
+    try {
+      return { file, data: JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>, mtimeMs };
+    } catch {
+      return { file, data: { error: "parse error" } as Record<string, unknown>, mtimeMs };
+    }
+  });
 }
 
 export function writeResult(requestId: string, status: string, outputFile?: string, extra?: Record<string, unknown>): void {

@@ -3,7 +3,7 @@
 // Serves static files from the dashboard directory and lazily regenerates
 // data/*.json files when they become stale (TTL-based).
 
-import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import { resolve, extname, join } from "path";
 import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
@@ -14,7 +14,7 @@ import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE, PRIORITY_INCRE
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon } from "./tasks/index.ts";
 import { setQueueHold } from "./mag.ts";
-import { queueList, queueRequest } from "./queue.ts";
+import { queueList, queueRequest, recentResults } from "./queue.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
 
 const MIME_TYPES: Record<string, string> = {
@@ -450,23 +450,11 @@ export function startDashboardServer(
       if (pathname === "/api/queue") {
         try {
           const pending = queueList();
-          const rDir = join(harnessDir(), "mag", "results");
-          let results: Record<string, unknown>[] = [];
-          if (existsSync(rDir)) {
-            const files = readdirSync(rDir)
-              .filter((f: string) => f.endsWith(".json"))
-              .map((f: string) => join(rDir, f))
-              .sort((a: string, b: string) => statSync(b).mtimeMs - statSync(a).mtimeMs)
-              .slice(0, 20);
-            results = files.map((f: string) => {
-              try {
-                const r = JSON.parse(readFileSync(f, "utf-8")) as Record<string, unknown>;
-                delete r.output; // strip large blobs — UI only needs id/status/timestamp
-                return r;
-              }
-              catch { return { file: f, error: "parse error" }; }
-            });
-          }
+          const results = recentResults(20).map(r => {
+            const d = { ...r.data };
+            delete d.output; // strip large blobs — UI only needs id/status/timestamp
+            return d;
+          });
           return new Response(JSON.stringify({ pending, results }), {
             headers: { "Content-Type": "application/json" },
           });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, utimesSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -208,6 +208,93 @@ describe("queueList", () => {
     const items = queueList();
     expect(items).toHaveLength(1);
     expect(items[0]!.raw).toBe("not json");
+  });
+});
+
+describe("recentResults", () => {
+  test("returns empty array when results dir does not exist", async () => {
+    const { recentResults } = await loadQueue();
+    expect(recentResults()).toEqual([]);
+  });
+
+  test("returns parsed results sorted by mtime descending", async () => {
+    const resultsDir = join(tmpDir, "mag", "results");
+    mkdirSync(resultsDir, { recursive: true });
+
+    // Write three result files with controlled mtimes
+    const now = new Date();
+    writeFileSync(join(resultsDir, "req-old.json"), JSON.stringify({ id: "old", status: "ok", timestamp: "2026-01-01T00:00:00Z" }));
+    utimesSync(join(resultsDir, "req-old.json"), now, new Date(now.getTime() - 3000));
+
+    writeFileSync(join(resultsDir, "req-mid.json"), JSON.stringify({ id: "mid", status: "ok", timestamp: "2026-01-02T00:00:00Z" }));
+    utimesSync(join(resultsDir, "req-mid.json"), now, new Date(now.getTime() - 1000));
+
+    writeFileSync(join(resultsDir, "req-new.json"), JSON.stringify({ id: "new", status: "ok", timestamp: "2026-01-03T00:00:00Z" }));
+    utimesSync(join(resultsDir, "req-new.json"), now, new Date(now.getTime()));
+
+    const { recentResults } = await loadQueue();
+    const results = recentResults();
+    expect(results).toHaveLength(3);
+    expect(results[0]!.data.id).toBe("new");
+    expect(results[1]!.data.id).toBe("mid");
+    expect(results[2]!.data.id).toBe("old");
+  });
+
+  test("respects limit parameter", async () => {
+    const resultsDir = join(tmpDir, "mag", "results");
+    mkdirSync(resultsDir, { recursive: true });
+
+    for (let i = 0; i < 5; i++) {
+      writeFileSync(join(resultsDir, `req-${i}.json`), JSON.stringify({ id: `r${i}`, status: "ok" }));
+    }
+
+    const { recentResults } = await loadQueue();
+    expect(recentResults(2)).toHaveLength(2);
+  });
+
+  test("handles malformed JSON gracefully", async () => {
+    const resultsDir = join(tmpDir, "mag", "results");
+    mkdirSync(resultsDir, { recursive: true });
+
+    writeFileSync(join(resultsDir, "req-bad.json"), "not valid json{{{");
+
+    const { recentResults } = await loadQueue();
+    const results = recentResults();
+    expect(results).toHaveLength(1);
+    expect(results[0]!.data.error).toBe("parse error");
+  });
+
+  test("ignores non-json files", async () => {
+    const resultsDir = join(tmpDir, "mag", "results");
+    mkdirSync(resultsDir, { recursive: true });
+
+    writeFileSync(join(resultsDir, "req-1.json"), JSON.stringify({ id: "r1", status: "ok" }));
+    writeFileSync(join(resultsDir, "readme.txt"), "not a result");
+
+    const { recentResults } = await loadQueue();
+    expect(recentResults()).toHaveLength(1);
+  });
+
+  test("round-trip: writeResult then recentResults preserves key fields", async () => {
+    const { writeResult, recentResults } = await loadQueue();
+
+    writeResult("req-rt-1", "ok", undefined, { action: "briefing" });
+    writeResult("req-rt-2", "error", undefined, { action: "elaborate", task: "task-abc" });
+
+    const results = recentResults();
+    expect(results.length).toBeGreaterThanOrEqual(2);
+    const ids = results.map(r => r.data.id);
+    expect(ids).toContain("req-rt-1");
+    expect(ids).toContain("req-rt-2");
+
+    const r1 = results.find(r => r.data.id === "req-rt-1")!;
+    expect(r1.data.status).toBe("ok");
+    expect(r1.data.action).toBe("briefing");
+    expect(r1.data.timestamp).toBeDefined();
+
+    const r2 = results.find(r => r.data.id === "req-rt-2")!;
+    expect(r2.data.status).toBe("error");
+    expect(r2.data.task).toBe("task-abc");
   });
 });
 
