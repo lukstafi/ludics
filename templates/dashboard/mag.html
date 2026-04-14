@@ -175,7 +175,13 @@
             const textarea = document.getElementById('queue-message');
             const button = document.getElementById('queue-send');
             const content = textarea.value.trim();
-            if (!content) return;
+            if (!content) {
+                // Empty send — trigger queue delivery without queuing
+                button.disabled = true;
+                try { await fetch('/api/queue-deliver', { method: 'POST' }); } catch {}
+                button.disabled = false;
+                return;
+            }
 
             button.disabled = true;
             try {

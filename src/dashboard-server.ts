@@ -423,6 +423,18 @@ export function startDashboardServer(
         }
       }
 
+      // API: trigger queue delivery without queuing a message
+      if (pathname === "/api/queue-deliver" && req.method === "POST") {
+        try {
+          const delivered = await maybeFeedMagQueue();
+          return new Response(JSON.stringify({ delivered }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(e instanceof Error ? e.message : String(e), { status: 500 });
+        }
+      }
+
       // API: enqueue a message
       if (pathname === "/api/queue" && req.method === "POST") {
         let body: Record<string, unknown>;
