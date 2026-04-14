@@ -16,15 +16,29 @@ const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
 let TMP = "";
 
-function writeConfig(homeDir: string): string {
+function writeConfig(homeDir: string, { cluster }: { cluster?: boolean } = {}): string {
   const configDir = join(homeDir, ".config", "ludics");
   mkdirSync(configDir, { recursive: true });
   const configPath = join(configDir, "config.yaml");
-  writeFileSync(configPath, `state_repo: owner/ludics-state
+  let yaml = `state_repo: owner/ludics-state
 state_path: harness
 slots:
   count: 2
-`);
+`;
+  if (cluster) {
+    yaml += `cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: worker-a
+      host: worker-a.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`;
+  }
+  writeFileSync(configPath, yaml);
   return configPath;
 }
 
@@ -834,6 +848,9 @@ describe("remote slot dispatch via HTTP", () => {
   });
 
   test("remote slotStop (non-force) writes a stop intent and returns early", async () => {
+    // Need cluster config so clusterMachine("worker-a") resolves
+    process.env.LUDICS_CONFIG = writeConfig(TMP, { cluster: true });
+
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
@@ -901,6 +918,25 @@ describe("remote slot dispatch via HTTP", () => {
 
     // No heartbeat → machine offline
     await expect(slotStop(1, false, false)).rejects.toThrow("offline — cannot stop");
+  });
+
+  test("remote slotStop (non-force) fails fast when no cluster config for machine", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-remote-stop-noconfig", "Remote stop no cluster config test");
+
+    // Create a fresh heartbeat so heartbeatIsFresh("worker-a") returns true
+    const hbDir = getHeartbeatsDir();
+    mkdirSync(hbDir, { recursive: true });
+    writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
+
+    slotAssign(1, "task-remote-stop-noconfig", "tmux", "", "", "", "worker-a");
+
+    // Heartbeat is fresh but no cluster config → should throw
+    await expect(slotStop(1, false, false)).rejects.toThrow("no cluster config for machine worker-a");
   });
 
   test("remote slotResume fails fast when machine is offline", async () => {
