@@ -1,8 +1,9 @@
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { createServer } from "node:net";
-import { dirname, join, resolve } from "path";
+import { join, resolve } from "path";
 import { Database } from "bun:sqlite";
 import { setsidWrap } from "../orchestration/util.ts";
+import { writeJsonFile } from "../json.ts";
 
 /**
  * Migrate legacy `<t3codeDir>/state/` → `<t3codeDir>/userdata/`.
@@ -391,12 +392,7 @@ function readJsonFile<T>(path: string): T | null {
   }
 }
 
-function writeJsonFile(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
-  renameSync(tmp, path);
-}
+// writeJsonFile imported from ../json.ts
 
 export function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;

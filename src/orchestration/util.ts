@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
-import { dirname } from "path";
+import { existsSync } from "fs";
+
+export { readJsonFile, writeJsonFile } from "../json.ts";
 
 const SCRIPT_EXT_RE = /\.(?:[cm]?[jt]sx?)$/i;
 
@@ -22,22 +23,6 @@ export function slugify(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     || "task";
-}
-
-export function readJsonFile<T>(path: string): T | null {
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, "utf-8")) as T;
-  } catch {
-    return null;
-  }
-}
-
-export function writeJsonFile(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
-  renameSync(tmp, path);
 }
 
 export function ludicsSelfCommand(args: string[]): string[] {
