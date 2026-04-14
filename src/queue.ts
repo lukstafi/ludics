@@ -145,6 +145,18 @@ export function queueHasPendingAction(action: string): boolean {
   return parseQueueLines(content).some(req => req.action === action);
 }
 
+export function queueHasPendingActionForTask(action: string, taskId: string): boolean {
+  const file = queueFile();
+  if (!existsSync(file)) return false;
+
+  const content = readFileSync(file, "utf-8").trim();
+  if (!content) return false;
+
+  return parseQueueLines(content).some(
+    req => req.action === action && String(req.task ?? "") === taskId
+  );
+}
+
 export function queueHasPendingFeedbackDigest(repo: string): boolean {
   const file = queueFile();
   if (!existsSync(file)) return false;

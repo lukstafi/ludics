@@ -6,7 +6,7 @@ import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRep
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
-import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingFeedbackDigest } from "./queue.ts";
+import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterMachine } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
@@ -2131,10 +2131,8 @@ function maybeUnstickAssignedSlots(): void {
     if (!existsSync(taskFile)) continue;
     const content = readFileSync(taskFile, "utf-8");
 
-    // Task already completed, abandoned, or in-progress — nothing to unstick.
-    // in-progress means the slot was already started; re-queuing draft-proposal
-    // is pointless because the orchestrator will skip it anyway.
-    if (/\nstatus:\s*(done|abandoned|merged|in-progress)/.test(content)) continue;
+    // Task already completed or abandoned — nothing to unstick
+    if (/\nstatus:\s*(done|abandoned|merged)/.test(content)) continue;
 
     // Already has proposal — maybeAutoStartSlots handles this
     if (content.includes("\nproposal:")) continue;
@@ -2144,7 +2142,7 @@ function maybeUnstickAssignedSlots(): void {
 
     // Not elaborated — needs elaboration first
     if (!isElaborated(content)) {
-      if (!autoProposalDebounced(taskId)) {
+      if (!autoProposalDebounced(taskId) && !queueHasPendingActionForTask("elaborate", taskId)) {
         queueRequest({ action: "elaborate", task: taskId });
         markAutoProposalQueued(taskId);
         emitEvent({ event_type: "slot_unstick", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `queued elaboration for stuck slot ${slotNum}` });
@@ -2154,7 +2152,9 @@ function maybeUnstickAssignedSlots(): void {
     }
 
     // Elaborated, no questions, no proposal — re-queue draft-proposal
-    if (!autoProposalDebounced(taskId)) {
+    // Skip if already queued for this specific task (prevents spam when
+    // the orchestrator skips in-progress tasks without writing a proposal)
+    if (!autoProposalDebounced(taskId) && !queueHasPendingActionForTask("draft-proposal", taskId)) {
       queueRequest({ action: "draft-proposal", task: taskId });
       markAutoProposalQueued(taskId);
       emitEvent({ event_type: "slot_unstick", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `re-queued draft-proposal for stuck slot ${slotNum}` });
@@ -2426,6 +2426,34 @@ function maybeFillEmptySlots(config?: LudicsFullConfig): void {
     candidates.splice(0, elaboratedIdx); // remove unelabroated ones from front
   }
 
+  // Similarly, if the top candidate has no proposal, queue draft-proposal
+  // and skip to the first candidate that does have one.
+  // This prevents assigning tasks that can't be auto-started yet.
+  {
+    const topTask = candidates[0]!;
+    const topTaskFile = join(harnessDir(), "tasks", `${topTask.id}.md`);
+    const topContent = existsSync(topTaskFile) ? readFileSync(topTaskFile, "utf-8") : "";
+    if (!topContent.includes("\nproposal:")) {
+      // Don't assign — queue proposal generation instead
+      if (!autoProposalDebounced(topTask.id) && !queueHasPendingActionForTask("draft-proposal", topTask.id)) {
+        if (topContent.includes("\nhas_questions:")) {
+          // Can't generate proposal yet — skip this candidate entirely
+        } else {
+          queueRequest({ action: "draft-proposal", task: topTask.id });
+          markAutoProposalQueued(topTask.id);
+          console.error(`ludics: top candidate ${topTask.id} needs proposal — queued draft-proposal`);
+        }
+      }
+      // Skip to the first candidate with a proposal for slot assignment
+      const proposalIdx = candidates.findIndex((c) => {
+        const f = join(harnessDir(), "tasks", `${c.id}.md`);
+        return existsSync(f) && readFileSync(f, "utf-8").includes("\nproposal:");
+      });
+      if (proposalIdx < 0) return; // no candidates with proposals
+      candidates.splice(0, proposalIdx);
+    }
+  }
+
   const task = candidates[0]!;
 
   // Auto-select orchestration flags based on task effort
@@ -2500,15 +2528,8 @@ function maybeFillEmptySlots(config?: LudicsFullConfig): void {
     console.error(`ludics: auto-assigned ${task.id} to slot ${slot} with effort=${task.effort} (${autoAdapter} ${autoArgs})${machine ? ` on ${machine}` : ""}`);
   }
 
-  // Queue draft-proposal only if the task doesn't already have a proposal
-  const taskFile = join(harnessDir(), "tasks", `${task.id}.md`);
-  const taskContent = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
-  if (!taskContent.includes("\nproposal:")) {
-    queueRequest({ action: "draft-proposal", task: task.id });
-    markAutoProposalQueued(task.id);
-    emitEvent({ event_type: "mag_auto_proposal", source: "keepalive", scope: "mag", task: task.id, message: `auto-queued draft-proposal for ${task.id}` });
-    console.error(`ludics: auto-queued draft-proposal for ${task.id}`);
-  }
+  // No need to queue draft-proposal here — we only assign tasks that
+  // already have proposals (checked above).
 }
 
 // --- Auto-resume dead orchestrator processes ---
