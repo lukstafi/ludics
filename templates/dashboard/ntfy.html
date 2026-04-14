@@ -4,32 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ludics Notifications</title>
+    <script>document.documentElement.dataset.theme=localStorage.getItem('ludics-theme')||'night'</script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
-    <style>
-        .ntfy-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            padding: 0;
-            min-height: 0;
-        }
-
-        .ntfy-iframe {
-            flex: 1;
-            width: 100%;
-            border: none;
-            min-height: 0;
-        }
-
-        .ntfy-placeholder {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-secondary);
-            font-size: 1rem;
-        }
-    </style>
 </head>
 <body>
     <header>

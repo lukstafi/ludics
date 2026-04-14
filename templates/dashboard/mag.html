@@ -4,99 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ludics Mag</title>
+    <script>document.documentElement.dataset.theme=localStorage.getItem('ludics-theme')||'night'</script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
-    <style>
-        .mag-layout {
-            flex: 1;
-            display: flex;
-            min-height: 0;
-        }
-
-        .terminal-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            padding: 0;
-            min-height: 0;
-        }
-
-        .terminal-iframe {
-            flex: 1;
-            width: 100%;
-            border: none;
-            min-height: 0;
-        }
-
-        .terminal-placeholder {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-secondary);
-            font-size: 1rem;
-        }
-
-        .queue-panel {
-            width: 350px;
-            border-left: 1px solid var(--border);
-            display: flex;
-            flex-direction: column;
-            background: var(--bg-secondary, #1a1a2e);
-        }
-
-        .queue-list {
-            flex: 1;
-            overflow-y: auto;
-            padding: 12px;
-            font-size: 0.85rem;
-        }
-
-        .queue-section-title {
-            font-weight: bold;
-            margin: 8px 0 4px;
-            color: var(--text-secondary);
-            font-size: 0.75rem;
-            text-transform: uppercase;
-        }
-
-        .queue-item {
-            padding: 6px 8px;
-            border-bottom: 1px solid var(--border);
-            word-break: break-word;
-        }
-
-        .queue-item .action {
-            font-weight: bold;
-        }
-
-        .queue-item .timestamp {
-            color: var(--text-secondary);
-            font-size: 0.75rem;
-        }
-
-        .queue-empty {
-            color: var(--text-secondary);
-            font-style: italic;
-            padding: 12px 0;
-        }
-
-        .queue-form {
-            padding: 12px;
-            border-top: 1px solid var(--border);
-        }
-
-        .queue-form textarea {
-            width: 100%;
-            min-height: 60px;
-            resize: vertical;
-            margin-bottom: 8px;
-            box-sizing: border-box;
-        }
-
-        .queue-form button {
-            width: 100%;
-        }
-    </style>
 </head>
 <body>
     <header>
@@ -118,16 +30,16 @@
     <script src="nav.js"></script>
 
     <main class="mag-layout">
-        <div class="terminal-container" id="terminal-container">
-            <div class="terminal-placeholder" id="terminal-placeholder">
+        <div class="mag-terminal-container" id="terminal-container">
+            <div class="mag-terminal-placeholder" id="terminal-placeholder">
                 Loading terminal...
             </div>
         </div>
-        <div class="queue-panel">
-            <div class="queue-list" id="queue-list">
-                <div class="queue-empty">Loading queue...</div>
+        <div class="mag-queue-panel">
+            <div class="mag-queue-list" id="queue-list">
+                <div class="mag-mag-queue-empty">Loading queue...</div>
             </div>
-            <div class="queue-form">
+            <div class="mag-queue-form">
                 <textarea id="queue-message" placeholder="Send a message to Mag..."></textarea>
                 <button id="queue-send" onclick="sendMessage()">Send</button>
             </div>
@@ -158,7 +70,7 @@
                 if (mag.terminal) {
                     placeholder.remove();
                     const iframe = document.createElement('iframe');
-                    iframe.className = 'terminal-iframe';
+                    iframe.className = 'mag-terminal-iframe';
                     iframe.src = mag.terminal;
                     iframe.allow = 'clipboard-read; clipboard-write';
                     iframe.sandbox = 'allow-scripts allow-same-origin allow-popups allow-forms';
@@ -199,32 +111,32 @@
             if (!list) return;
 
             if (pending.length === 0 && results.length === 0) {
-                list.innerHTML = '<div class="queue-empty">No activity</div>';
+                list.innerHTML = '<div class="mag-queue-empty">No activity</div>';
                 return;
             }
 
             let html = '';
 
             if (pending.length > 0) {
-                html += '<div class="queue-section-title">Pending</div>';
+                html += '<div class="mag-queue-section-title">Pending</div>';
                 for (const item of pending) {
                     if (item.raw) {
-                        html += `<div class="queue-item"><span class="action">[malformed]</span> ${escapeHtml(String(item.raw).slice(0, 80))}</div>`;
+                        html += `<div class="mag-queue-item"><span class="action">[malformed]</span> ${escapeHtml(String(item.raw).slice(0, 80))}</div>`;
                         continue;
                     }
                     const action = escapeHtml(String(item.action || 'unknown'));
                     const task = item.task ? ` <span>${escapeHtml(String(item.task))}</span>` : '';
                     const content = item.content ? `<div>${escapeHtml(String(item.content).slice(0, 120))}</div>` : '';
                     const ts = item.timestamp ? `<div class="timestamp">${escapeHtml(String(item.timestamp))}</div>` : '';
-                    html += `<div class="queue-item"><span class="action">[${action}]</span>${task}${content}${ts}</div>`;
+                    html += `<div class="mag-queue-item"><span class="action">[${action}]</span>${task}${content}${ts}</div>`;
                 }
             }
 
             if (results.length > 0) {
-                html += '<div class="queue-section-title">Recent</div>';
+                html += '<div class="mag-queue-section-title">Recent</div>';
                 for (const item of results) {
                     if (item.error) {
-                        html += `<div class="queue-item"><span class="action">[parse error]</span></div>`;
+                        html += `<div class="mag-queue-item"><span class="action">[parse error]</span></div>`;
                         continue;
                     }
                     const status = escapeHtml(String(item.status || 'unknown'));
@@ -252,7 +164,7 @@
                     }
                     if (!desc) desc = status;
                     const ts = item.timestamp ? `<div class="timestamp">${escapeHtml(String(item.timestamp))}</div>` : '';
-                    html += `<div class="queue-item">${escapeHtml(desc)}${ts}</div>`;
+                    html += `<div class="mag-queue-item">${escapeHtml(desc)}${ts}</div>`;
                 }
             }
 

@@ -144,8 +144,8 @@ function renderSlots(slots) {
             if (slot.phase === 'done') {
                 statusDiv.className = 'slot-status done';
                 statusText.innerHTML = 'Done <span class="slot-action-btns">'
-                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done">✓</button>'
-                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon">✕</button>'
+                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done" aria-label="Mark done">✓</button>'
+                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon" aria-label="Abandon">✕</button>'
                     + '</span>';
             } else if (slot.preempted) {
                 statusDiv.className = 'slot-status preempted';
@@ -157,24 +157,24 @@ function renderSlots(slots) {
                 statusDiv.className = 'slot-status assigned';
                 statusText.innerHTML = 'Assigned <button class="start-slot-btn" onclick="startSlot(' + i + ')" title="Start session">start</button>'
                     + ' <span class="slot-action-btns">'
-                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done">✓</button>'
-                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon">✕</button>'
-                    + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)">↓</button>'
+                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done" aria-label="Mark done">✓</button>'
+                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon" aria-label="Abandon">✕</button>'
+                    + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)" aria-label="Postpone">↓</button>'
                     + '</span>';
             } else if (slot.liveness === 'interrupted') {
                 statusDiv.className = 'slot-status interrupted';
                 statusText.innerHTML = 'Interrupted <button class="start-slot-btn" onclick="resumeSlot(' + i + ')" title="Resume session">resume</button>'
                     + ' <span class="slot-action-btns">'
-                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done">✓</button>'
-                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon">✕</button>'
-                    + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)">↓</button>'
+                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done" aria-label="Mark done">✓</button>'
+                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon" aria-label="Abandon">✕</button>'
+                    + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)" aria-label="Postpone">↓</button>'
                     + '</span>';
             } else {
                 statusDiv.className = 'slot-status active';
                 statusText.innerHTML = 'Active <span class="slot-action-btns">'
-                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done">✓</button>'
-                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon">✕</button>'
-                    + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)">↓</button>'
+                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done" aria-label="Mark done">✓</button>'
+                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon" aria-label="Abandon">✕</button>'
+                    + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)" aria-label="Postpone">↓</button>'
                     + '</span>';
             }
 
