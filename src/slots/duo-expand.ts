@@ -15,7 +15,7 @@ export interface DuoExpansion {
  * (--coder <val>, --reviewer <val>, --agent <val>) from baseArgs.
  * Returns only the non-mode/non-role fragments (e.g. --plan, --gather, --effort).
  */
-function stripModeAndRoleFlags(baseArgs: string): string {
+export function stripModeAndRoleFlags(baseArgs: string): string {
   const tokens = baseArgs.split(/\s+/).filter(Boolean);
   const result: string[] = [];
   // Flags that are standalone (no value)
