@@ -1,25 +1,15 @@
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import * as events from "../events.ts";
+import * as slots from "../slots/index.ts";
+import { tasksAbandon } from "./index.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-abandon");
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
-
-// --- Mocks ---
-
-const mockFindSlotForTask = mock(() => null as number | null);
-const mockSlotClear = mock(() => {});
-
-mock.module("../slots/index.ts", () => ({
-  findSlotForTask: mockFindSlotForTask,
-  slotClear: mockSlotClear,
-}));
-
-// Import after mocks are installed
-const { tasksAbandon } = await import("./index.ts");
+const ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
 
 function writeConfig(homeDir: string): string {
   const configDir = join(homeDir, ".config", "ludics");
@@ -56,17 +46,18 @@ function writeTaskFile(
 }
 
 let eventSpy: ReturnType<typeof spyOn>;
+let findSlotSpy: ReturnType<typeof spyOn>;
+let slotClearSpy: ReturnType<typeof spyOn>;
 
 beforeEach(() => {
   rmSync(TMP, { recursive: true, force: true });
   mkdirSync(TMP, { recursive: true });
   process.env.HOME = TMP;
   process.env.LUDICS_CONFIG = writeConfig(TMP);
+  process.env.LUDICS_HARNESS_DIR = join(TMP, "ludics-state", "harness");
 
-  mockFindSlotForTask.mockReset();
-  mockSlotClear.mockReset();
-  mockFindSlotForTask.mockReturnValue(null);
-
+  findSlotSpy = spyOn(slots, "findSlotForTask").mockReturnValue(null);
+  slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
   eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
 });
 
@@ -81,6 +72,13 @@ afterEach(() => {
   } else {
     process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
   }
+  if (ORIGINAL_HARNESS === undefined) {
+    delete process.env.LUDICS_HARNESS_DIR;
+  } else {
+    process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS;
+  }
+  findSlotSpy.mockRestore();
+  slotClearSpy.mockRestore();
   eventSpy.mockRestore();
   rmSync(TMP, { recursive: true, force: true });
 });
@@ -92,14 +90,14 @@ describe("tasksAbandon", () => {
     mkdirSync(tasksDir, { recursive: true });
 
     writeTaskFile(tasksDir, "task-aaa", { status: "ready" });
-    mockFindSlotForTask.mockReturnValue(null);
+    findSlotSpy.mockReturnValue(null);
 
     tasksAbandon("task-aaa");
 
     const content = readFileSync(join(tasksDir, "task-aaa.md"), "utf-8");
     expect(content).toContain("status: abandoned");
     expect(content).toMatch(/completed: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/);
-    expect(mockSlotClear).not.toHaveBeenCalled();
+    expect(slotClearSpy).not.toHaveBeenCalled();
     expect(eventSpy).toHaveBeenCalledTimes(1);
     const event = eventSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(event.event_type).toBe("task_abandon");
@@ -116,11 +114,11 @@ describe("tasksAbandon", () => {
       deferred_launch: true,
       approved: true,
     });
-    mockFindSlotForTask.mockReturnValue(2);
+    findSlotSpy.mockReturnValue(2);
 
     tasksAbandon("task-bbb");
 
-    expect(mockSlotClear).toHaveBeenCalledWith(2, "abandoned");
+    expect(slotClearSpy).toHaveBeenCalledWith(2, "abandoned");
     const content = readFileSync(join(tasksDir, "task-bbb.md"), "utf-8");
     expect(content).not.toContain("deferred_launch");
     expect(content).not.toContain("approved");
@@ -144,7 +142,7 @@ describe("tasksAbandon", () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(join(harness, "tasks"), { recursive: true });
 
-    mockFindSlotForTask.mockReturnValue(null);
+    findSlotSpy.mockReturnValue(null);
 
     expect(() => tasksAbandon("task-nonexistent")).toThrow("task not found");
   });
@@ -159,7 +157,7 @@ describe("tasksAbandon", () => {
       deferred_launch: true,
       approved: true,
     });
-    mockFindSlotForTask.mockReturnValue(null);
+    findSlotSpy.mockReturnValue(null);
 
     tasksAbandon("task-ccc");
 
