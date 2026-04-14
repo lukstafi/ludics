@@ -38,6 +38,25 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // Fetch all dashboard data
+//
+// CONVENTION: fetch-render split for cross-dependent panels
+//
+// All fetch functions run concurrently in Promise.all. Most fetch functions
+// render their panels inline — this is safe when the panel has no
+// cross-dependencies on data from other concurrent fetches (e.g.,
+// fetchReadyQueue, fetchNotifications, fetchT3codeLink, and the
+// fetchAndRenderTaskList helpers used by the task-list panels).
+//
+// When a panel DOES depend on another fetch's result, the fetch function must
+// return data only, and rendering must happen after Promise.all resolves.
+// Current example: fetchSlots returns slot data; renderSlots is called
+// post-Promise.all because it reads window.__globalAdapter, which is
+// populated by the concurrently-running fetchAdapter.
+//
+// Highest risk for future split: fetchMagStatus mutates shared queueHeld
+// state and calls updateQueueHoldUI() inline. If any future panel reads
+// queueHeld during the same refresh cycle, fetchMagStatus will need the
+// same fetch/render separation applied to fetchSlots.
 async function fetchAllData() {
     try {
         const [, slots] = await Promise.all([
