@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, appendToSection, readFrontmatterField, updateFrontmatterField, transitionStatus } from "./markdown.ts";
+import { addFrontmatterField, appendToSection, frontmatterBounds, readFrontmatterField, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -341,5 +341,93 @@ describe("transitionStatus", () => {
     const content = readFileSync(f, "utf-8");
     expect(content).toContain("status: abandoned");
     expect(content).not.toContain("status: done");
+  });
+});
+
+describe("frontmatterBounds", () => {
+  test("returns bounds for valid frontmatter", () => {
+    const lines = ["---", "id: task-1", "status: ready", "---", "", "# Title"];
+    expect(frontmatterBounds(lines)).toEqual({ openLine: 0, closeLine: 3 });
+  });
+
+  test("returns null when first line is not ---", () => {
+    const lines = ["# Title", "---", "id: task-1", "---"];
+    expect(frontmatterBounds(lines)).toBeNull();
+  });
+
+  test("returns null for empty array", () => {
+    expect(frontmatterBounds([])).toBeNull();
+  });
+
+  test("returns null when no closing delimiter", () => {
+    const lines = ["---", "id: task-1", "status: ready"];
+    expect(frontmatterBounds(lines)).toBeNull();
+  });
+
+  test("ignores body --- lines", () => {
+    const lines = ["---", "id: task-1", "---", "", "---", "body"];
+    const bounds = frontmatterBounds(lines);
+    expect(bounds).toEqual({ openLine: 0, closeLine: 2 });
+  });
+});
+
+describe("removeFrontmatterField", () => {
+  test("removes a simple field", () => {
+    const f = tmpFile("remove-simple.md", "---\nid: task-1\nslot: 3\nstatus: ready\n---\n\n# Title\n");
+    removeFrontmatterField(f, "slot");
+    const result = readFileSync(f, "utf-8");
+    expect(result).not.toContain("slot:");
+    expect(result).toContain("id: task-1");
+    expect(result).toContain("status: ready");
+  });
+
+  test("removes field with indented continuation lines", () => {
+    const f = tmpFile("remove-block.md", "---\nid: task-1\ndependencies:\n  blocks: []\n  blocked_by: []\nstatus: ready\n---\n\n# Title\n");
+    removeFrontmatterField(f, "dependencies");
+    const result = readFileSync(f, "utf-8");
+    expect(result).not.toContain("dependencies:");
+    expect(result).not.toContain("blocks:");
+    expect(result).toContain("status: ready");
+  });
+
+  test("no-op on file without frontmatter", () => {
+    const f = tmpFile("remove-nofm.md", "# Just a title\n\nSome body.\n");
+    removeFrontmatterField(f, "id");
+    const result = readFileSync(f, "utf-8");
+    expect(result).toBe("# Just a title\n\nSome body.\n");
+  });
+
+  test("does not remove body lines matching field name", () => {
+    const f = tmpFile("remove-body.md", "---\nid: task-1\n---\n\nslot: 5\n");
+    removeFrontmatterField(f, "slot");
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("slot: 5");
+  });
+});
+
+describe("updateDependencyArray", () => {
+  test("updates existing subfield", () => {
+    const f = tmpFile("dep-update.md", "---\nid: task-1\ndependencies:\n  blocks: []\n  blocked_by: [a]\n---\n\n# Title\n");
+    updateDependencyArray(f, "blocked_by", ["a", "b"]);
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("blocked_by: [a, b]");
+  });
+
+  test("inserts missing subfield", () => {
+    const f = tmpFile("dep-insert.md", "---\nid: task-1\ndependencies:\n  blocks: []\n---\n\n# Title\n");
+    updateDependencyArray(f, "relates_to", ["x"]);
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("relates_to: [x]");
+    const fmMatch = result.match(/^---\n([\s\S]*?)\n---/);
+    expect(fmMatch![1]).toContain("relates_to: [x]");
+  });
+
+  test("does not touch body content", () => {
+    const f = tmpFile("dep-body.md", "---\nid: task-1\ndependencies:\n  blocks: []\n---\n\ndependencies: none\n");
+    updateDependencyArray(f, "blocks", ["z"]);
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("dependencies: none");
+    const fmMatch = result.match(/^---\n([\s\S]*?)\n---/);
+    expect(fmMatch![1]).toContain("blocks: [z]");
   });
 });

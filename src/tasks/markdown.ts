@@ -104,38 +104,38 @@ export function readFrontmatterField(content: string, field: string): string | n
   return str;
 }
 
+/** Return line indices of the opening and closing `---` delimiters.
+ *  Returns null if no valid frontmatter block is found. */
+export function frontmatterBounds(lines: string[]): { openLine: number; closeLine: number } | null {
+  if (lines.length < 2 || lines[0] !== "---") return null;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === "---") return { openLine: 0, closeLine: i };
+  }
+  return null;
+}
+
 export function updateFrontmatterField(filePath: string, field: string, value: string): void {
   if (!existsSync(filePath)) return;
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n");
-  let inFrontmatter = false;
+  const bounds = frontmatterBounds(lines);
+  if (!bounds) return;
+
   let done = false;
-  let closingDelimiterIdx = -1;
   const output: string[] = [];
 
-  for (const line of lines) {
-    if (line === "---" && !inFrontmatter) {
-      inFrontmatter = true;
-      output.push(line);
-      continue;
-    }
-    if (line === "---" && inFrontmatter) {
-      inFrontmatter = false;
-      closingDelimiterIdx = output.length;
-      output.push(line);
-      continue;
-    }
-    if (inFrontmatter && !done && line.startsWith(`${field}:`)) {
+  for (let i = 0; i < lines.length; i++) {
+    if (i > bounds.openLine && i < bounds.closeLine && !done && lines[i]!.startsWith(`${field}:`)) {
       output.push(`${field}: ${value}`);
       done = true;
       continue;
     }
-    output.push(line);
+    output.push(lines[i]!);
   }
 
-  if (!done && closingDelimiterIdx >= 0) {
+  if (!done) {
     // Upsert: insert before the frontmatter closing ---
-    output.splice(closingDelimiterIdx, 0, `${field}: ${value}`);
+    output.splice(bounds.closeLine, 0, `${field}: ${value}`);
   }
 
   writeFileSync(filePath, output.join("\n"));
@@ -206,29 +206,20 @@ export function removeFrontmatterField(filePath: string, field: string): void {
   if (!existsSync(filePath)) return;
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n");
-  let inFrontmatter = false;
+  const bounds = frontmatterBounds(lines);
+  if (!bounds) { writeFileSync(filePath, content); return; }
+
   const output: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (line === "---" && !inFrontmatter) {
-      inFrontmatter = true;
-      output.push(line);
-      continue;
-    }
-    if (line === "---" && inFrontmatter) {
-      inFrontmatter = false;
-      output.push(line);
-      continue;
-    }
-    if (inFrontmatter && line.startsWith(`${field}:`)) {
+    if (i > bounds.openLine && i < bounds.closeLine && lines[i]!.startsWith(`${field}:`)) {
       // Skip this line and any indented continuation lines (block YAML values)
-      while (i + 1 < lines.length && lines[i + 1] !== "---" && /^\s+/.test(lines[i + 1]!)) {
+      while (i + 1 < bounds.closeLine && /^\s+/.test(lines[i + 1]!)) {
         i++;
       }
       continue;
     }
-    output.push(line);
+    output.push(lines[i]!);
   }
 
   writeFileSync(filePath, output.join("\n"));
@@ -242,7 +233,9 @@ export function updateDependencyArray(filePath: string, subfield: string, values
   if (!existsSync(filePath)) return;
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n");
-  let inFrontmatter = false;
+  const bounds = frontmatterBounds(lines);
+  if (!bounds) return;
+
   let inDeps = false;
   let found = false;
   let lastDepsLineIdx = -1;
@@ -251,21 +244,15 @@ export function updateDependencyArray(filePath: string, subfield: string, values
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    if (line === "---" && !inFrontmatter) {
-      inFrontmatter = true;
-      output.push(line);
-      continue;
-    }
-    if (line === "---" && inFrontmatter) {
+    if (i === bounds.closeLine) {
       // If we never found the subfield, insert it before closing ---
       if (!found && lastDepsLineIdx >= 0) {
         output.splice(lastDepsLineIdx + 1, 0, formatted);
       }
-      inFrontmatter = false;
       output.push(line);
       continue;
     }
-    if (inFrontmatter) {
+    if (i > bounds.openLine && i < bounds.closeLine) {
       if (line.startsWith("dependencies:")) {
         inDeps = true;
         lastDepsLineIdx = output.length;
