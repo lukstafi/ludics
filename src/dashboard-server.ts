@@ -451,7 +451,7 @@ export function startDashboardServer(
           const requestId = queueRequest({ action: "message", content: content.trim() });
           lastGenerated = 0;
           // Attempt immediate delivery if Mag is settled
-          maybeFeedMagQueue().catch(() => {});
+          maybeFeedMagQueue().catch((e) => { console.error("ludics: dashboard queue-deliver:", e); });
           return new Response(JSON.stringify({ id: requestId }), {
             headers: { "Content-Type": "application/json" },
           });
