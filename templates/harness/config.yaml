@@ -31,7 +31,6 @@ adapters:
 # Mag: Autonomous coordinator (Claude Opus 4.5 in Claude Code)
 mag:
   enabled: true
-  backend: tmux-ttyd
   session: ludics-mag
   ttyd_port: 7679
 
@@ -41,11 +40,6 @@ mag:
     suggest_priorities: suggest
     assign_to_slots: manual
     start_sessions: manual
-
-  schedule:
-    briefing: "08:00"
-    health_check: "every 4h"
-    analyze_repos: "on_change"
 
 # Three-tier notification system
 notifications:
