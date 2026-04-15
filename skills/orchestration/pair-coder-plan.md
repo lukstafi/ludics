@@ -16,6 +16,7 @@ Write an implementation plan for `{{TASK_ID}}` to `{{PLAN_FILE}}` from `{{WORKTR
 **Formatting**: Use numbered lists for structured data in your plan. Do not use wide markdown tables — they get truncated when passed between agents.
 Be concrete: files to change, expected behavior, edge cases, validation steps.
 When the task changes data shapes (field extraction, JSON migration, section restructuring), explicitly list every downstream consumer of the affected data in the plan. For each consumer, note whether it needs updating and why. Grep for field names, section headers, and type references to ensure no consumer is missed.
+**Exhaustive occurrence search**: For every symbol, pattern, or function you plan to modify or replace, run a project-wide grep/ripgrep search and list all occurrences in the plan with a disposition (modify / skip with reason / N/A). Search not just for canonical function names but also for inline reimplementations — regex patterns, copy-pasted logic, and string literals that duplicate the same behavior.
 Do not implement yet -- the reviewer is planning in parallel; plans will be merged next.
 
 ```sh
