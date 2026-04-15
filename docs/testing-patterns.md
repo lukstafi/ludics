@@ -72,3 +72,30 @@ Both styles are acceptable. The key invariant is: **every spy must be restored b
 
 - `src/orchestration/runner.test.ts` — suite-level `beforeEach`/`afterEach` pattern
 - `src/orchestration/transport-tmux.test.ts` — per-test inline spy pattern
+
+## Network-Binding Tests
+
+Tests that bind real network sockets (e.g., `Bun.serve()`) must use the shared
+probe-and-skip guard from `src/test-utils.ts` instead of open-coding a probe:
+
+```typescript
+import { canBindSocket } from "../test-utils.ts";
+
+// Option A: guard a whole describe block
+describe.if(canBindSocket)("my network tests", () => {
+  // tests that need to bind sockets
+});
+
+// Option B: guard individual tests
+const skipUnless = canBindSocket ? test : test.skip;
+skipUnless("binds a server", () => { ... });
+```
+
+**Why**: Some environments (sandboxed CI, certain reviewer machines) fail loopback
+socket allocation even on `port: 0`. When this happens, tests should skip cleanly
+instead of failing with `EADDRINUSE`. Prefer defensive portability over arguing
+from local pass results.
+
+Test servers should bind to `hostname: "127.0.0.1"` to avoid IPv6-related
+failures. Production servers that need to accept remote connections (e.g., the
+dashboard server serving cluster traffic) should not restrict to loopback.
