@@ -6,7 +6,10 @@ import { dirname } from "path";
 export function readJsonFile<T>(path: string): T | null {
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf-8")) as T;
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return null;
+    return parsed as T;
   } catch {
     return null;
   }

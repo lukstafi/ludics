@@ -718,7 +718,10 @@ function generateNotifications(): unknown[] {
   const result: unknown[] = [];
   for (const line of recent) {
     try {
-      result.push(JSON.parse(line));
+      const parsed: unknown = JSON.parse(line);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        result.push(parsed);
+      }
     } catch {
       // skip
     }
@@ -794,11 +797,14 @@ function generateT3code(): Record<string, unknown> {
   const startingPath = t3codeStartingPath();
   if (existsSync(startingPath)) {
     try {
-      const marker = JSON.parse(readFileSync(startingPath, "utf-8")) as { since?: string };
-      if (marker.since) {
-        const age = Date.now() - new Date(marker.since).getTime();
-        if (age < 120_000) {
-          return { available: false, starting: true, webUrl };
+      const parsed: unknown = JSON.parse(readFileSync(startingPath, "utf-8"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const marker = parsed as { since?: string };
+        if (marker.since) {
+          const age = Date.now() - new Date(marker.since).getTime();
+          if (age < 120_000) {
+            return { available: false, starting: true, webUrl };
+          }
         }
       }
     } catch { /* malformed marker — ignore */ }
@@ -915,7 +921,9 @@ function generateRecentlyCompleted(tasks: DashboardTask[]): RecentlyCompletedTas
       if (content) {
         for (const line of content.split("\n")) {
           try {
-            const event = JSON.parse(line) as Record<string, unknown>;
+            const parsed: unknown = JSON.parse(line);
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+            const event = parsed as Record<string, unknown>;
             if (event.event_type === "pr_merged" && event.task) {
               mergedTasks.add(String(event.task));
             }
@@ -930,7 +938,9 @@ function generateRecentlyCompleted(tasks: DashboardTask[]): RecentlyCompletedTas
   for (const t of capped) {
     const retroFile = join(retroDir, `${t.id}.json`);
     try {
-      const data = JSON.parse(readFileSync(retroFile, "utf-8")) as Record<string, unknown>;
+      const parsed: unknown = JSON.parse(readFileSync(retroFile, "utf-8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      const data = parsed as Record<string, unknown>;
       if (data.prUrl && typeof data.prUrl === "string") {
         prUrls.set(t.id, data.prUrl);
       }

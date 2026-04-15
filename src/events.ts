@@ -103,7 +103,15 @@ function eventsQuery(opts: EventsQueryOptions): void {
   const results: Record<string, unknown>[] = [];
   for (const line of lines) {
     try {
-      const event = JSON.parse(line) as LudicsEvent;
+      const parsed: unknown = JSON.parse(line);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      const rec = parsed as Record<string, unknown>;
+      if (typeof rec.ts !== "string") continue;
+      if (typeof rec.epoch !== "number") continue;
+      if (typeof rec.event_type !== "string") continue;
+      if (typeof rec.source !== "string") continue;
+      if (typeof rec.scope !== "string") continue;
+      const event = parsed as LudicsEvent;
       if (opts.type && event.event_type !== opts.type) continue;
       if (opts.task && event.task !== opts.task) continue;
       if (opts.scope && event.scope !== opts.scope) continue;
