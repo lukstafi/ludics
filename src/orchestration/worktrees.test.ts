@@ -223,11 +223,13 @@ describe("autoCommitWorktree", () => {
     if (!Bun.which("git")) return;
     const repo = join(TMP, "auto-commit-build-review");
     initRepo(repo);
-    // Build-review artifacts that should be excluded via pathspec
+    // Build-review artifacts at root and nested — both should be excluded
     mkdirSync(join(repo, "_build_review"), { recursive: true });
     writeFileSync(join(repo, "_build_review", "artifact.o"), "obj\n");
     mkdirSync(join(repo, "_build_review_round3"), { recursive: true });
     writeFileSync(join(repo, "_build_review_round3", "artifact.o"), "obj\n");
+    mkdirSync(join(repo, "sub", "_build_review_round3"), { recursive: true });
+    writeFileSync(join(repo, "sub", "_build_review_round3", "nested.o"), "obj\n");
     // Real code change that should be committed
     mkdirSync(join(repo, "src"), { recursive: true });
     writeFileSync(join(repo, "src", "lib.ml"), "let () = ()\n");

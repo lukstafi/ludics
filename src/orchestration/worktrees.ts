@@ -283,8 +283,10 @@ export function cleanupWorktrees(
 // ---------------------------------------------------------------------------
 
 /** Pathspec exclusions derived from {@link GIT_EXCLUDE_ENTRIES} for autoCommitWorktree. */
-const ORCHESTRATION_EXCLUDES = GIT_EXCLUDE_ENTRIES.map((e) =>
-  /[*?[]/.test(e) ? `:(exclude)${e}` : `:!${e}`,
+const ORCHESTRATION_EXCLUDES = GIT_EXCLUDE_ENTRIES.flatMap((e) =>
+  /[*?[]/.test(e)
+    ? [`:(exclude)${e}`, `:(exclude)**/${e}`]
+    : [`:!${e}`],
 );
 
 export interface AutoCommitResult {
