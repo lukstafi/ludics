@@ -81,7 +81,9 @@ Parse the JSON for `status`, `proposal_path`, `ambiguities`, `start_confidence`,
 - **status: completed** — write `proposal: <proposal_path>` to the task file
   frontmatter (the orchestrator does this, not the worker, to avoid git sync
   races from the worker's isolated context). If the worker's response includes
-  `"skip_plan": true`, also write `skip_plan: true` to the task frontmatter.
+  `"skip_plan": true`, write `skip_plan: true` to the task frontmatter;
+  otherwise, remove any existing `skip_plan` field from frontmatter to prevent
+  stale values from a previous proposal run.
   This causes medium-effort tasks to skip the plan phase during orchestration.
   Then proceed to auto-start evaluation (next section)
 - **status: stale** — write result JSON with `"status": "stale"`, stop
