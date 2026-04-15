@@ -5,6 +5,7 @@ import { extractTaskId, cleanupStaleItems } from "./index.ts";
 import type { Server, ServerWebSocket } from "bun";
 import { ORCHESTRATION_WS_METHODS } from "./types.ts";
 import type { T3Snapshot, T3Thread, T3Project } from "./types.ts";
+import { canBindSocket } from "../test-utils.ts";
 
 setDefaultTimeout(15_000);
 
@@ -37,23 +38,6 @@ describe("extractTaskId", () => {
     expect(extractTaskId("s1_task-abc123")).toBe("task-abc123");
   });
 });
-
-// ---------------------------------------------------------------------------
-// cleanupStaleItems integration tests
-// ---------------------------------------------------------------------------
-
-// Probe whether we can bind a loopback socket — skip integration tests if not.
-let canBind = true;
-try {
-  const probe = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch() { return new Response("ok"); },
-  });
-  probe.stop(true);
-} catch {
-  canBind = false;
-}
 
 const TMP = join(import.meta.dir, "../../.test-tmp-cleanup-" + process.pid);
 
@@ -188,7 +172,7 @@ afterEach(() => {
 });
 
 describe("cleanupStaleItems", () => {
-  const skipUnless = canBind ? test : test.skip;
+  const skipUnless = canBindSocket ? test : test.skip;
 
   skipUnless("deletes threads with terminal task status beyond 25h", async () => {
     const oldDate = "2026-01-01T00:00:00Z"; // well beyond 25h

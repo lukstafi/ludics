@@ -2,6 +2,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import type { Server, ServerWebSocket } from "bun";
 import { T3CodeClient } from "./client.ts";
 import { ORCHESTRATION_WS_CHANNELS, ORCHESTRATION_WS_METHODS } from "./types.ts";
+import { canBindSocket } from "../test-utils.ts";
 
 setDefaultTimeout(15_000);
 
@@ -12,19 +13,6 @@ type RequestEnvelope = {
     [key: string]: unknown;
   };
 };
-
-// Probe whether we can bind a loopback socket — skip all tests if not.
-let canBind = true;
-try {
-  const probe = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch() { return new Response("ok"); },
-  });
-  probe.stop(true);
-} catch {
-  canBind = false;
-}
 
 const servers: Server<undefined>[] = [];
 
@@ -59,7 +47,7 @@ function startServer(handler: {
   return server;
 }
 
-describe.if(canBind)("T3CodeClient", () => {
+describe.if(canBindSocket)("T3CodeClient", () => {
   test("requests orchestration snapshots", async () => {
     let seenTag = "";
     const server = startServer({
