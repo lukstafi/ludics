@@ -9,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="content.css">
 </head>
 <body>
     <header>
@@ -29,12 +30,12 @@
     </header>
     <script src="nav.js"></script>
 
-    <main class="briefing-container">
-        <div class="briefing-header">
+    <main class="content-container">
+        <div class="content-header">
             <span class="proposal-task-id" id="proposal-task-id"></span>
         </div>
-        <div class="briefing-content" id="proposal-content">
-            <div class="briefing-placeholder">
+        <div class="rendered-content" id="proposal-content">
+            <div class="content-placeholder">
                 <span class="icon">&#x1F4C4;</span>
                 <span class="text">Loading proposal...</span>
             </div>
@@ -67,7 +68,7 @@
 
             if (!taskId) {
                 container.innerHTML = `
-                    <div class="briefing-placeholder">
+                    <div class="content-placeholder">
                         <span class="icon">&#x1F4C4;</span>
                         <span class="text">No task specified</span>
                         <span class="hint">Use ?task=TASK-ID in the URL</span>
@@ -80,7 +81,7 @@
                 const response = await fetch(`/proposal-files/${encodeURIComponent(taskId)}.md`);
                 if (response.status === 404) {
                     container.innerHTML = `
-                        <div class="briefing-placeholder">
+                        <div class="content-placeholder">
                             <span class="icon">&#x1F4C4;</span>
                             <span class="text">Proposal not found</span>
                             <span class="hint">No proposal file available for task ${escapeHtml(taskId)}</span>
@@ -98,7 +99,7 @@
             } catch (error) {
                 console.warn('Failed to fetch proposal:', error);
                 container.innerHTML = `
-                    <div class="briefing-placeholder">
+                    <div class="content-placeholder">
                         <span class="icon">&#x26A0;</span>
                         <span class="text">Failed to load proposal</span>
                         <span class="hint">${escapeHtml(String(error))}</span>

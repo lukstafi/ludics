@@ -9,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="content.css">
 </head>
 <body>
     <header>
@@ -30,10 +31,10 @@
     </header>
     <script src="nav.js"></script>
 
-    <main class="health-container">
+    <main class="content-container">
         <h2 class="health-section-title">Health Report</h2>
-        <div class="health-content" id="health-report">
-            <div class="health-placeholder">
+        <div class="rendered-content" id="health-report">
+            <div class="content-placeholder">
                 <span class="icon">&#x1FA7A;</span>
                 <span class="text">Loading health report...</span>
             </div>
@@ -89,7 +90,7 @@
 
             if (!report || !report.exists) {
                 container.innerHTML = `
-                    <div class="health-placeholder">
+                    <div class="content-placeholder">
                         <span class="icon">&#x1FA7A;</span>
                         <span class="text">No health report available yet</span>
                         <span class="hint">Health reports are generated every 4 hours</span>

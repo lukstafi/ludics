@@ -9,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="content.css">
 </head>
 <body>
     <header>
@@ -29,12 +30,12 @@
     </header>
     <script src="nav.js"></script>
 
-    <main class="briefing-container">
-        <div class="briefing-header">
+    <main class="content-container">
+        <div class="content-header">
             <span class="retro-task-id" id="retro-task-id"></span>
         </div>
-        <div class="briefing-content" id="retro-content">
-            <div class="briefing-placeholder">
+        <div class="rendered-content" id="retro-content">
+            <div class="content-placeholder">
                 <span class="icon">&#x1F4CB;</span>
                 <span class="text">Loading retrospective...</span>
             </div>
@@ -63,7 +64,7 @@
             if (!container) return;
 
             if (!taskId) {
-                container.innerHTML = `<div class="briefing-placeholder">
+                container.innerHTML = `<div class="content-placeholder">
                     <span class="icon">&#x1F4CB;</span>
                     <span class="text">No task specified</span>
                     <span class="hint">Use ?task=TASK-ID in the URL</span>
@@ -74,7 +75,7 @@
             try {
                 const response = await fetch(`/retrospective-files/${encodeURIComponent(taskId)}.json`);
                 if (response.status === 404) {
-                    container.innerHTML = `<div class="briefing-placeholder">
+                    container.innerHTML = `<div class="content-placeholder">
                         <span class="icon">&#x1F4CB;</span>
                         <span class="text">Retrospective not available for this task</span>
                         <span class="hint"><a href="index.html">Back to dashboard</a></span>
@@ -90,7 +91,7 @@
                 setConnectionStatus(true);
             } catch (error) {
                 console.warn('Failed to fetch retrospective:', error);
-                container.innerHTML = `<div class="briefing-placeholder">
+                container.innerHTML = `<div class="content-placeholder">
                     <span class="icon">&#x26A0;</span>
                     <span class="text">Failed to load retrospective</span>
                     <span class="hint">${escapeHtml(String(error))}</span>
