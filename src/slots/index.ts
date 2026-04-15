@@ -11,7 +11,7 @@ import { journalAppend } from "../journal.ts";
 import { emitEvent } from "../events.ts";
 import { runAdapterAction, readAdapterState, readAdapterLastActivity } from "../adapters/index.ts";
 import type { AdapterContext } from "../adapters/index.ts";
-import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter, transitionStatus } from "../tasks/markdown.ts";
+import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter, transitionStatus, readFrontmatterField } from "../tasks/markdown.ts";
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
@@ -692,9 +692,9 @@ function makeAdapterContext(slotNum: number, data: SlotData): AdapterContext {
     const taskFile = join(harnessDir(), "tasks", `${data.task}.md`);
     if (existsSync(taskFile)) {
       const content = readFileSync(taskFile, "utf-8");
-      const projectMatch = content.match(/^project:\s*(.+)$/m);
-      if (projectMatch) {
-        resolvedPath = resolveProjectPath(projectMatch[1]!.trim());
+      const project = readFrontmatterField(content, "project");
+      if (project) {
+        resolvedPath = resolveProjectPath(project);
       }
     }
   }
