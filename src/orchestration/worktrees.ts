@@ -29,6 +29,7 @@ export const GIT_EXCLUDE_ENTRIES = [
   ".agents",
   ".agent-sessions",
   "node_modules",
+  "_build_review*",
 ];
 
 /**
@@ -282,7 +283,11 @@ export function cleanupWorktrees(
 // ---------------------------------------------------------------------------
 
 /** Pathspec exclusions derived from {@link GIT_EXCLUDE_ENTRIES} for autoCommitWorktree. */
-const ORCHESTRATION_EXCLUDES = GIT_EXCLUDE_ENTRIES.map((e) => `:!${e}`);
+const ORCHESTRATION_EXCLUDES = GIT_EXCLUDE_ENTRIES.flatMap((e) =>
+  /[*?[]/.test(e)
+    ? [`:(exclude)${e}`, `:(exclude)**/${e}`]
+    : [`:!${e}`],
+);
 
 export interface AutoCommitResult {
   /** Whether the worktree had eligible uncommitted changes. */

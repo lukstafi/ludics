@@ -218,6 +218,33 @@ describe("autoCommitWorktree", () => {
     expect(result.dirty).toBe(false);
     expect(result.committed).toBe(false);
   });
+
+  test("excludes _build_review* dirs while committing real changes", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "auto-commit-build-review");
+    initRepo(repo);
+    // Build-review artifacts at root and nested — both should be excluded
+    mkdirSync(join(repo, "_build_review"), { recursive: true });
+    writeFileSync(join(repo, "_build_review", "artifact.o"), "obj\n");
+    mkdirSync(join(repo, "_build_review_round3"), { recursive: true });
+    writeFileSync(join(repo, "_build_review_round3", "artifact.o"), "obj\n");
+    mkdirSync(join(repo, "sub", "_build_review_round3"), { recursive: true });
+    writeFileSync(join(repo, "sub", "_build_review_round3", "nested.o"), "obj\n");
+    // Real code change that should be committed
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src", "lib.ml"), "let () = ()\n");
+
+    const result = autoCommitWorktree(repo, "real changes only");
+    expect(result.dirty).toBe(true);
+    expect(result.committed).toBe(true);
+
+    const showStat = Bun.spawnSync(["git", "show", "--stat", "--format=", "HEAD"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(showStat).toContain("src/lib.ml");
+    expect(showStat).not.toContain("_build_review");
+  });
 });
 
 // ---------------------------------------------------------------------------
