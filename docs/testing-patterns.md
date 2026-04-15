@@ -96,5 +96,6 @@ socket allocation even on `port: 0`. When this happens, tests should skip cleanl
 instead of failing with `EADDRINUSE`. Prefer defensive portability over arguing
 from local pass results.
 
-Production code that binds sockets should use explicit `hostname: "127.0.0.1"`
-rather than binding all interfaces to avoid IPv6-related failures.
+Test servers should bind to `hostname: "127.0.0.1"` to avoid IPv6-related
+failures. Production servers that need to accept remote connections (e.g., the
+dashboard server serving cluster traffic) should not restrict to loopback.
