@@ -98,6 +98,11 @@ function writeQueueLines(lines: string[]): void {
   renameSync(tmp, file);
 }
 
+export function queueReinsertHead(line: string): void {
+  const lines = readQueueLines();
+  writeQueueLines([line, ...lines]);
+}
+
 export function queuePopOne(): string | null {
   const lines = readQueueLines();
   if (lines.length === 0) return null;
