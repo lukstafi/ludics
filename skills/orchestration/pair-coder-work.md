@@ -12,6 +12,7 @@ Reviewer guidance from prior round:
 
 Commit in small batches (4-6 files). **For each behavior change, include a regression test in the same batch.** Build, lint, and run targeted tests before signaling done.
 **Before modifying any symbol**: Re-run a project-wide grep for that symbol (and its inline reimplementations — regex patterns, copy-pasted logic) to catch occurrences the plan may have missed. Handle any newly discovered occurrences immediately rather than deferring to a future round.
+When changing config types (`src/config.ts` interfaces) or CLI commands (`src/index.ts` USAGE), update `templates/config.reference.yaml` and/or the README CLI Reference section to match. CI lints (`lint:config-reference`, `lint:cli-readme`) will catch drift.
 When changing data shapes or writing format-compat serializers, write a round-trip fidelity test (serialize → deserialize → compare key fields) for each affected serializer. This catches silent field omissions and header-line assumption mismatches early.
 Write any PR URL to `{{PR_FILE}}`. Stop if `{{INTERRUPT_FILE}}` appears.
 

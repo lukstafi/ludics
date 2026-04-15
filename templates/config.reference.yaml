@@ -42,10 +42,9 @@ projects:
       gpu: ""                  # Target machine GPU: apple-silicon | nvidia | amd
                                # Tasks in this project only auto-assign to matching machines.
                                # Task frontmatter requirements override project-level values.
-    # Optional per-project adapter args profile.
-    # Later layers override earlier layers:
-    # adapter default args -> project profile -> slot Adapter Args -> task frontmatter adapter_args
-    # adapter_profiles:
+    # Per-project adapter args profile (optional).
+    # Later layers override earlier: adapter default → project profile → slot args → task frontmatter
+    adapter_profiles: {}
     #   agent-claude:
     #     args: ["--timeout", "5400"]
 
@@ -80,19 +79,19 @@ adapters:
 # Provides strategic thinking while automation handles reliable execution
 mag:
   enabled: false
-  backend: tmux-ttyd        # tmux-ttyd (with web terminal) or tmux (no web terminal)
   session: ludics-mag         # tmux session name
   ttyd_port: 7679            # Web terminal port (tmux-ttyd backend only)
   keepalive_interval: 60      # Keepalive trigger interval in seconds (default: 60)
   ensure_t3code: true         # Auto-start shared t3code server on keepalive (default: true)
-  nudge_throttle_seconds: 60  # Minimum seconds between automatic "Continue." nudges (default: 60)
-  nudge_backoff_seconds: 600  # If no stop hook fired since last nudge, suppress repeat nudges for this long (default: 600)
   stall_threshold_seconds: 120    # How long pane output must be unchanged before a stall nudge (default: 120)
   stall_nudge_cooldown_seconds: 120  # Minimum gap between stall nudges (default: 120)
   max_requeue_retries: 3          # Max times a failed queue delivery is retried before dropping (default: 3)
   test_health_night_hours: [0, 6]  # Local-time hour window [start, end) during which test suites
                                    # are eligible to run. Uses local time to match launchd semantics.
                                    # Tests also run if last run was 24+ hours ago (stale fallback).
+  startup_watchdog_seconds: 60    # Seconds to wait for Mag startup before declaring failure (default: 60)
+  startup_helper_stuck_seconds: 45  # Seconds before a startup helper is considered stuck (default: 45)
+  cleanup_delay_hours: 25         # Hours to wait before cleaning up completed task worktrees (default: 25, max: 72)
 
   # Orchestration settings (overridable per-task via adapter -A args)
   orchestration:
@@ -123,11 +122,6 @@ mag:
       suggest-refactor: 1200
       final-merge: 3600
 
-  # Focus project: tasks from this project receive a virtual one-level priority boost
-  # during auto-fill and flow ready sorting (A→S, B→A, C→B relative to other projects).
-  # Set to null or omit to disable the boost (backward compatible).
-  focus_project: null   # e.g. "ludics"
-
   # Autonomy levels: auto | suggest | manual
   autonomy_level:
     elaborate_tasks: auto       # Auto writes detailed specs
@@ -140,12 +134,6 @@ mag:
     #   suggest — defers to user with proposal notification + launch buttons
     #   auto    — auto-starts high-confidence proposals; defers low-confidence to user with launch buttons
     start_sessions: manual
-
-  # Schedule for automated invocations
-  schedule:
-    briefing: "08:20"           # Morning briefing time (HH:MM)
-    health_check: "6h cycle"    # Wall-clock health checks at 14:20, 20:20, 02:20
-    analyze_repos: "on_change"  # Triggered by WatchPaths
 
 # Dashboard settings
 dashboard:
