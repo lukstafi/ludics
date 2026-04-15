@@ -98,6 +98,15 @@ function writeQueueLines(lines: string[]): void {
   renameSync(tmp, file);
 }
 
+// Note: same read-modify-write pattern as queuePopOne/queuePopAll.
+// Concurrent appendFileSync (from queueRequest) between read and rename
+// could theoretically be lost, but the window is tiny and a proper fix
+// requires a queue-wide lock (out of scope for this change).
+export function queueReinsertHead(line: string): void {
+  const lines = readQueueLines();
+  writeQueueLines([line, ...lines]);
+}
+
 export function queuePopOne(): string | null {
   const lines = readQueueLines();
   if (lines.length === 0) return null;

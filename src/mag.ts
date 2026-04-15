@@ -6,7 +6,7 @@ import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRep
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
-import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, recentResults } from "./queue.ts";
+import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, recentResults } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterMachine } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
@@ -107,6 +107,7 @@ function triggerSkill(session: string, cmd: string): boolean {
 
 const DEFAULT_STALL_THRESHOLD_MS = 120_000; // 2 minutes
 const DEFAULT_STALL_NUDGE_COOLDOWN_MS = 120_000; // 2 minutes between stall nudges
+const DEFAULT_MAX_REQUEUE_RETRIES = 3;
 const DEFAULT_STARTUP_WATCHDOG_SECONDS = 60;
 const DEFAULT_STARTUP_HELPER_STUCK_SECONDS = 45;
 const STARTUP_ALERT_TITLE = "Mag alert";
@@ -257,17 +258,43 @@ export async function maybeFeedMagQueue(): Promise<boolean> {
   // Remove the claim marker now that we own the transition
   try { unlinkSync(claimPath); } catch {}
 
-  const command = await queuePopSkill();
-  if (!command) return false;
+  const popped = await queuePopSkill();
+  if (!popped) return false;
 
-  const sent = triggerSkill(MAG_SESSION_NAME, command);
+  const sent = triggerSkill(MAG_SESSION_NAME, popped.command);
   if (sent) {
-    emitEvent({ event_type: "mag_queue_feed", source: "keepalive", scope: "mag", message: `delivered: ${command}` });
+    emitEvent({ event_type: "mag_queue_feed", source: "keepalive", scope: "mag", message: `delivered: ${popped.command}` });
   } else {
-    console.error("ludics: failed to deliver queued request to Mag session");
-    emitEvent({ event_type: "mag_queue_feed_failed", source: "keepalive", scope: "mag", status: "failed", message: "tmux send-keys failed" });
-    // At-most-once delivery: popped item is lost if triggerSkill fails.
-    // Matches current queue-pop behavior. Requeue mechanism out of scope.
+    // Requeue the failed item for retry on next keepalive cycle.
+    let retryCount = 0;
+    try {
+      const parsed: unknown = JSON.parse(popped.line);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        retryCount = Number((parsed as Record<string, unknown>)._retry_count) || 0;
+      }
+    } catch { /* use 0 */ }
+
+    const config = loadConfigSync();
+    const magCfg = config.mag as Record<string, unknown> | undefined;
+    const configuredRetries = Number(magCfg?.max_requeue_retries);
+    const maxRetries = (Number.isFinite(configuredRetries) && configuredRetries > 0)
+      ? configuredRetries : DEFAULT_MAX_REQUEUE_RETRIES;
+    if (retryCount >= maxRetries) {
+      console.error(`ludics: queue item dropped after ${maxRetries} failed retries`);
+      emitEvent({ event_type: "mag_queue_dropped", source: "keepalive", scope: "mag", status: "dropped", message: `dropped after ${maxRetries} retries: ${popped.command}` });
+    } else {
+      // Increment retry count and reinsert at front of queue
+      let updated: Record<string, unknown>;
+      try {
+        updated = JSON.parse(popped.line) as Record<string, unknown>;
+      } catch {
+        updated = { raw: popped.line };
+      }
+      updated._retry_count = retryCount + 1;
+      queueReinsertHead(JSON.stringify(updated));
+      console.error(`ludics: requeued failed delivery (retry ${retryCount + 1}/${maxRetries})`);
+      emitEvent({ event_type: "mag_queue_requeued", source: "keepalive", scope: "mag", message: `retry ${retryCount + 1}/${maxRetries}: ${popped.command}` });
+    }
   }
   return sent;
 }
@@ -1197,7 +1224,7 @@ function dequeueQueueHead(expectedLine?: string): QueueDequeueResult {
   }
 }
 
-async function queuePopSkill(): Promise<string | null> {
+async function queuePopSkill(): Promise<{ command: string; line: string } | null> {
   const queueFile = join(harnessDir(), "mag", "queue.jsonl");
   if (!existsSync(queueFile)) return null;
 
@@ -1217,7 +1244,9 @@ async function queuePopSkill(): Promise<string | null> {
     writeFileSync(requestIdFile, requestId);
   }
 
-  return await resolveQueueRequestCommand(request, true);
+  const command = await resolveQueueRequestCommand(request, true);
+  if (!command) return null;
+  return { command, line: popped.line };
 }
 
 /** Resolve a queue request to a skill command or execute it programmatically.
@@ -3155,6 +3184,33 @@ export function magDoctor(): void {
     allOk = false;
   }
 
+  // --- Stall config validation ---
+  console.log("Stall detection config:");
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+
+  for (const [key, defaultSec] of [
+    ["stall_threshold_seconds", DEFAULT_STALL_THRESHOLD_MS / 1000],
+    ["stall_nudge_cooldown_seconds", DEFAULT_STALL_NUDGE_COOLDOWN_MS / 1000],
+  ] as const) {
+    const raw = mag?.[key];
+    if (raw !== undefined) {
+      const num = Number(raw);
+      if (!Number.isFinite(num) || num <= 0) {
+        console.log(`  ${key}: ${JSON.stringify(raw)} — WARNING: not a positive number, using default ${defaultSec}s`);
+        allOk = false;
+      } else if (num < 30) {
+        console.log(`  ${key}: ${num}s — WARNING: unusually low (< 30s)`);
+      } else if (num > 600) {
+        console.log(`  ${key}: ${num}s — WARNING: unusually high (> 600s)`);
+      } else {
+        console.log(`  ${key}: ${num}s`);
+      }
+    } else {
+      console.log(`  ${key}: not set (default ${defaultSec}s)`);
+    }
+  }
+
   console.log("");
   if (allOk) {
     console.log("All checks passed");
@@ -3558,9 +3614,9 @@ export async function runMag(args: string[]): Promise<void> {
       clearStartupWatchdogEpoch();
       if (existsSync(join(harnessDir(), "mag", "paused"))) break;
       if (!clusterIsController()) break;
-      const skillCommand = await queuePopSkill();
-      if (skillCommand) {
-        console.log(JSON.stringify({ decision: "block", reason: skillCommand }));
+      const popped = await queuePopSkill();
+      if (popped) {
+        console.log(JSON.stringify({ decision: "block", reason: popped.command }));
       }
       break;
     }
