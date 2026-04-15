@@ -293,6 +293,11 @@ export function buildSkillContext(
     }
   }
 
+  // Conditional --repo flag for gh pr create: avoids --repo "" when PROJECT_REPO is unavailable.
+  result.PR_CREATE_REPO_FLAG = result.PROJECT_REPO
+    ? `--repo "${result.PROJECT_REPO}"`
+    : "";
+
   // Cross-slot context for hierarchical-duo merge phases
   if (state.duoPeerSlot != null) {
     const peerState = readDuoPeerState(state);
