@@ -52,6 +52,7 @@ export function parseTaskFrontmatter(content: string): Partial<TaskFrontmatter> 
       subtask_of: deps.subtask_of ? String(deps.subtask_of) : null,
     },
     effort: String(data.effort ?? "medium"),
+    skip_plan: asBoolean(data.skip_plan),
     requirements: data.requirements ? data.requirements as { os?: string; gpu?: string } : undefined,
     context: String(data.context ?? ""),
     uses_browser: asBoolean(data.uses_browser),

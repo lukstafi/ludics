@@ -16,7 +16,7 @@ import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState } from "../t3code/server.ts";
-import { selectOrchestrationFlags } from "../adapters/t3code.ts";
+import { selectOrchestrationFlagsForTask } from "../adapters/t3code.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
@@ -795,9 +795,9 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
 
     const effortMatch = content.match(/^effort:\s*(.+)/m);
     const effort = effortMatch ? effortMatch[1]!.trim() || "small" : "small";
-    const { args: autoArgs } = selectOrchestrationFlags(effort);
+    const { args: autoArgs } = selectOrchestrationFlagsForTask(content, effort);
     if (!autoArgs.trim()) {
-      throw new Error(`slot ${slotNum}: selectOrchestrationFlags returned empty args for effort="${effort}"`);
+      throw new Error(`slot ${slotNum}: selectOrchestrationFlagsForTask returned empty args for effort="${effort}"`);
     }
 
     // Write auto-filled flags back to the slot

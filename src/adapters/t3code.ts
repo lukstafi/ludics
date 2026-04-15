@@ -1,4 +1,5 @@
 import { existsSync, openSync, readFileSync } from "fs";
+import { readFrontmatterField } from "../tasks/markdown.ts";
 import { basename, join, resolve } from "path";
 import {
   getGitBranch,
@@ -662,7 +663,11 @@ const CLAUDE_OPUS_MODEL = "claude-opus-4-6";
  *
  * @returns An object with the recommended adapter name ("t3code") and args string.
  */
-export function selectOrchestrationFlags(effort: string, config?: LudicsFullConfig): { adapter: string; args: string; isDuo: boolean } {
+export function selectOrchestrationFlags(
+  effort: string,
+  config?: LudicsFullConfig,
+  options?: { skipPlan?: boolean },
+): { adapter: string; args: string; isDuo: boolean } {
   const orchCfg = loadConfigOrchestration(config);
   const mode = (orchCfg?.default_mode as string | undefined)?.trim() || "pair";
   const coder = (orchCfg?.default_coder as string | undefined)?.trim() || "claude-code";
@@ -685,7 +690,7 @@ export function selectOrchestrationFlags(effort: string, config?: LudicsFullConf
 
   if (norm === "large") {
     phaseFlags.push("--plan", "--gather");
-  } else if (norm === "medium") {
+  } else if (norm === "medium" && !options?.skipPlan) {
     phaseFlags.push("--plan");
   }
   // small / unknown: no pre-work phases
@@ -702,6 +707,20 @@ export function selectOrchestrationFlags(effort: string, config?: LudicsFullConf
   const args = [...modeArgs, ...phaseFlags].join(" ");
   // Use the global adapter setting so orchestration flags work with either backend
   return { adapter: globalAdapter(), args, isDuo };
+}
+
+/**
+ * Convenience wrapper: reads skip_plan from task file content and
+ * delegates to selectOrchestrationFlags(). Used by both slotStart()
+ * auto-fill and maybeFillEmptySlots() keepalive assignment.
+ */
+export function selectOrchestrationFlagsForTask(
+  taskContent: string,
+  effort: string,
+  config?: LudicsFullConfig,
+): { adapter: string; args: string; isDuo: boolean } {
+  const skipPlan = readFrontmatterField(taskContent, "skip_plan") === "true";
+  return selectOrchestrationFlags(effort, config, { skipPlan });
 }
 
 /** Resolve the final model for an agent, applying config and adapter arg overrides. */

@@ -80,8 +80,12 @@ Parse the JSON for `status`, `proposal_path`, `ambiguities`, `start_confidence`,
 
 - **status: completed** — write `proposal: <proposal_path>` to the task file
   frontmatter (the orchestrator does this, not the worker, to avoid git sync
-  races from the worker's isolated context). Then proceed to auto-start
-  evaluation (next section)
+  races from the worker's isolated context). If the worker's response includes
+  `"skip_plan": true`, write `skip_plan: true` to the task frontmatter;
+  otherwise, remove any existing `skip_plan` field from frontmatter to prevent
+  stale values from a previous proposal run.
+  This causes medium-effort tasks to skip the plan phase during orchestration.
+  Then proceed to auto-start evaluation (next section)
 - **status: stale** — write result JSON with `"status": "stale"`, stop
 - **status: split-needed** — queue the split skill and stop:
   ```bash
@@ -118,6 +122,13 @@ The decision respects the `start_sessions` autonomy level:
 - **Vague acceptance criteria do NOT block auto-start** — improvements can be refined
   in follow-up work.
 - Tasks with no assigned slot always defer to the user.
+
+Note: The `skip_plan` frontmatter field (if set by the worker) influences
+orchestration flags at slot start time — medium-effort tasks with
+`skip_plan: true` skip the plan phase entirely, going from setup to work.
+This field is consumed by `selectOrchestrationFlagsForTask()` in both the
+keepalive auto-assignment path (mag.ts) and the manual slot start path
+(slots/index.ts), not by auto-start-evaluate itself.
 
 ## Skill-Specific: Auto-start Slot
 

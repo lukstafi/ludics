@@ -122,6 +122,11 @@ as the last code block in your response:
 6. `start_rationale` — string, conditional. Present only when `status = "completed"`.
 7. `title` — string, required.
 8. `summary` — string, required.
+9. `skip_plan` — boolean, optional. Present only when `status = "completed"`.
+   Set to `true` when the proposal is exhaustive and unambiguous — covers all
+   acceptance criteria, specifies exact files/functions, and leaves no design
+   choices for the coder. When true, the orchestrator writes `skip_plan: true`
+   to task frontmatter so the plan phase is skipped.
 
 ```json
 {
@@ -132,7 +137,8 @@ as the last code block in your response:
   "start_confidence": "high | low",
   "start_rationale": "<one sentence explaining confidence level>",
   "title": "<task title>",
-  "summary": "<one-line summary of what was proposed>"
+  "summary": "<one-line summary of what was proposed>",
+  "skip_plan": false
 }
 ```
 
@@ -146,6 +152,15 @@ as the last code block in your response:
 - Vague acceptance criteria alone do NOT warrant `low` — improvements can be
   refined in follow-up work
 - This is advisory only; the orchestrator makes the final decision
+
+**SKIP_PLAN guidance:**
+- `true`: proposal maps 1:1 to implementation — it IS the plan. Typically: <=5
+  files, straightforward changes with exact code pointers, no creative design
+  choices, no architecture decisions
+- `false` (default): task benefits from independent planning by coder/reviewer
+- `skip_plan` and `start_confidence` are independent signals: a proposal can
+  have high confidence but complex implementation (skip_plan=false), or trivial
+  implementation with uncertain scope (skip_plan=true, start_confidence=low)
 
 ## Error Handling
 
