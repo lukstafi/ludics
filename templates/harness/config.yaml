@@ -122,9 +122,3 @@ triggers:
     interval: 300
     action: cluster tick
 
-# Network settings for hostname override
-network:
-  # Explicit hostname override (optional)
-  # If not set and cluster.transport is tailscale, auto-detects from `tailscale status`
-  hostname: ""
-

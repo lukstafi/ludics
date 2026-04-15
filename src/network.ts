@@ -8,11 +8,6 @@ export function networkMode(): string {
   return config.cluster?.transport ?? "localhost";
 }
 
-function hostnameFromConfig(): string {
-  const config = loadConfigSync();
-  return config.network?.hostname ?? "";
-}
-
 function findTailscaleCli(): string | null {
   const which = safeSyncOutput(["which", "tailscale"]);
   if (which.ok) return which.stdout;
@@ -54,9 +49,6 @@ export function networkHostname(): string {
     const tsHost = hostnameTailscale();
     if (tsHost) return tsHost;
 
-    const configHost = hostnameFromConfig();
-    if (configHost) return configHost;
-
     // Fallback: use cluster machine host field (works from launchd where Tailscale CLI is unavailable)
     try {
       const { clusterCurrentMachine } = require("./cluster.ts");
@@ -94,11 +86,6 @@ export function networkStatus(): void {
       }
     } else {
       console.log("Tailscale CLI: not installed");
-    }
-
-    const configHost = hostnameFromConfig();
-    if (configHost) {
-      console.log(`Config hostname: ${configHost}`);
     }
   }
 
