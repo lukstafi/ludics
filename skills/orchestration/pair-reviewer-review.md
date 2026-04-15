@@ -2,6 +2,8 @@
 
 Review the coder's implementation for `{{TASK_ID}}`. {{PROPOSAL_INSTRUCTION}}
 
+If the PR touches config types or CLI commands, verify that `templates/config.reference.yaml` and README CLI Reference are updated accordingly.
+
 **IMPORTANT**: Write your review to exactly this file path: `{{REVIEW_FILE}}`
 First line must be `APPROVE` or `REQUEST_CHANGES`, then action items, then non-blocking observations.
 If the implementation changes data shapes, verify that all helpers consuming the changed data have been updated. For format-compat serializers, check that round-trip fidelity tests exist (serialize → deserialize → compare). Flag missing consumer updates or missing round-trip tests as blocking action items.

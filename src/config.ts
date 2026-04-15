@@ -74,6 +74,10 @@ export interface LudicsFullConfig {
     priorities?: Record<string, number>;
     /** Bearer token for ntfy.sh authentication */
     token?: string;
+    public_filter?: {
+      auto_publish?: string[];
+      never_publish?: string[];
+    };
   };
   dashboard?: { port?: number; ttl?: number };
   cluster?: {
