@@ -46,6 +46,18 @@ afterEach(() => {
   rmSync(TMP, { recursive: true, force: true });
 });
 
+function writeConfigWithMag(homeDir: string, magSection: string): string {
+  const configDir = join(homeDir, ".config", "ludics");
+  mkdirSync(configDir, { recursive: true });
+  const configPath = join(configDir, "config.yaml");
+  writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+${magSection}`);
+  return configPath;
+}
+
 describe("queueReinsertHead", () => {
   test("prepends line to empty queue", async () => {
     const { queueReinsertHead } = await import("./queue.ts");
@@ -83,5 +95,78 @@ describe("queueReinsertHead", () => {
     expect(parsed.task).toBe(original.task);
     expect(parsed.timestamp).toBe(original.timestamp);
     expect(parsed._retry_count).toBe(original._retry_count);
+  });
+});
+
+describe("requeue retry-count simulation", () => {
+  test("retry count increments on each reinsert and item is droppable after max", async () => {
+    const { queueReinsertHead } = await import("./queue.ts");
+    const DEFAULT_MAX = 3;
+
+    // Simulate the requeue logic from maybeFeedMagQueue
+    const original = { id: "req-99", action: "briefing", timestamp: "2026-04-15T00:00:00Z" };
+    let line = JSON.stringify(original);
+
+    for (let attempt = 0; attempt < DEFAULT_MAX; attempt++) {
+      // Parse, increment retry count, reinsert
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      const retryCount = Number(parsed._retry_count) || 0;
+      expect(retryCount).toBe(attempt);
+
+      parsed._retry_count = retryCount + 1;
+      const updatedLine = JSON.stringify(parsed);
+
+      // Clear queue and reinsert
+      writeFileSync(queueFile(), "");
+      queueReinsertHead(updatedLine);
+
+      // Read it back
+      const content = readFileSync(queueFile(), "utf-8").trim();
+      const readBack = JSON.parse(content);
+      expect(readBack._retry_count).toBe(attempt + 1);
+      expect(readBack.id).toBe("req-99");
+      line = content;
+    }
+
+    // After max retries, should be dropped (retry count >= max)
+    const final = JSON.parse(line) as Record<string, unknown>;
+    expect(Number(final._retry_count)).toBe(DEFAULT_MAX);
+    expect(Number(final._retry_count) >= DEFAULT_MAX).toBe(true);
+  });
+});
+
+describe("configurable max_requeue_retries", () => {
+  test("config value is read when set to a positive number", async () => {
+    process.env.LUDICS_CONFIG = writeConfigWithMag(TMP, `mag:
+  max_requeue_retries: 5
+`);
+    const { loadConfigSync } = await import("./config.ts");
+    const config = loadConfigSync();
+    const mag = config.mag as Record<string, unknown> | undefined;
+    const configured = Number(mag?.max_requeue_retries);
+    expect(configured).toBe(5);
+    expect(Number.isFinite(configured) && configured > 0).toBe(true);
+  });
+
+  test("falls back to default when not configured", async () => {
+    // Default config has no mag section
+    const { loadConfigSync } = await import("./config.ts");
+    const config = loadConfigSync();
+    const mag = config.mag as Record<string, unknown> | undefined;
+    const configured = Number(mag?.max_requeue_retries);
+    const maxRetries = (Number.isFinite(configured) && configured > 0) ? configured : 3;
+    expect(maxRetries).toBe(3);
+  });
+
+  test("falls back to default when value is invalid", async () => {
+    process.env.LUDICS_CONFIG = writeConfigWithMag(TMP, `mag:
+  max_requeue_retries: -1
+`);
+    const { loadConfigSync } = await import("./config.ts");
+    const config = loadConfigSync();
+    const mag = config.mag as Record<string, unknown> | undefined;
+    const configured = Number(mag?.max_requeue_retries);
+    const maxRetries = (Number.isFinite(configured) && configured > 0) ? configured : 3;
+    expect(maxRetries).toBe(3);
   });
 });

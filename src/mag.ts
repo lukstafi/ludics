@@ -274,7 +274,11 @@ export async function maybeFeedMagQueue(): Promise<boolean> {
       }
     } catch { /* use 0 */ }
 
-    const maxRetries = DEFAULT_MAX_REQUEUE_RETRIES;
+    const config = loadConfigSync();
+    const magCfg = config.mag as Record<string, unknown> | undefined;
+    const configuredRetries = Number(magCfg?.max_requeue_retries);
+    const maxRetries = (Number.isFinite(configuredRetries) && configuredRetries > 0)
+      ? configuredRetries : DEFAULT_MAX_REQUEUE_RETRIES;
     if (retryCount >= maxRetries) {
       console.error(`ludics: queue item dropped after ${maxRetries} failed retries`);
       emitEvent({ event_type: "mag_queue_dropped", source: "keepalive", scope: "mag", status: "dropped", message: `dropped after ${maxRetries} retries: ${popped.command}` });
@@ -3610,9 +3614,9 @@ export async function runMag(args: string[]): Promise<void> {
       clearStartupWatchdogEpoch();
       if (existsSync(join(harnessDir(), "mag", "paused"))) break;
       if (!clusterIsController()) break;
-      const skillCommand = await queuePopSkill();
-      if (skillCommand) {
-        console.log(JSON.stringify({ decision: "block", reason: skillCommand }));
+      const popped = await queuePopSkill();
+      if (popped) {
+        console.log(JSON.stringify({ decision: "block", reason: popped.command }));
       }
       break;
     }
