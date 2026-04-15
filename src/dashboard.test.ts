@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -198,6 +198,134 @@ describe("generateHealthData", () => {
     // Same cached result
     expect(second.doctor.output).toBe(first.doctor.output);
     expect(second.doctor.timestamp).toBe(first.doctor.timestamp);
+  });
+});
+
+describe("generateNotifications shape guard", () => {
+  test("non-object JSONL lines are excluded from notifications output", async () => {
+    const journalDir = join(harnessDir(), "journal");
+    mkdirSync(journalDir, { recursive: true });
+    writeFileSync(
+      join(journalDir, "notifications.jsonl"),
+      [
+        '"just a string"',
+        "[1,2,3]",
+        "null",
+        "42",
+        '{"message":"valid notification","ts":"2026-04-10T00:00:00Z"}',
+        "{bad json",
+      ].join("\n") + "\n",
+    );
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "notifications.json");
+    const notifications = JSON.parse(readFileSync(outFile, "utf-8")) as unknown[];
+    // Only the single valid object should appear
+    expect(notifications.length).toBe(1);
+    expect((notifications[0] as Record<string, unknown>).message).toBe("valid notification");
+  });
+});
+
+describe("generateRecentlyCompleted shape guards", () => {
+  function writeCompletedTask(id: string, title: string): void {
+    const tasksDir = join(harnessDir(), "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(
+      join(tasksDir, `${id}.md`),
+      `---\nid: ${id}\ntitle: "${title}"\nstatus: done\npriority: C\ncompleted: "2026-04-10T00:00:00Z"\nstarted: "2026-04-09T00:00:00Z"\ncreated: "2026-04-09"\neffort: small\ncontext: ludics\n---\n\n# ${title}\n`,
+    );
+  }
+
+  test("non-object event lines do not create false pr_merged state", async () => {
+    writeCompletedTask("task-test-1", "Test task");
+    // generateRecentlyCompleted requires a retrospective file to include the task
+    const retroDir = join(harnessDir(), "retrospectives");
+    mkdirSync(retroDir, { recursive: true });
+    writeFileSync(join(retroDir, "task-test-1.json"), '{"summary":"test"}');
+
+    const journalDir = join(harnessDir(), "journal");
+    mkdirSync(journalDir, { recursive: true });
+    // Write events JSONL with non-object lines plus a real pr_merged event
+    writeFileSync(
+      join(journalDir, "events.jsonl"),
+      [
+        '"not an object"',
+        "[1,2]",
+        "null",
+        // Only this valid line should be picked up
+        JSON.stringify({ event_type: "pr_merged", task: "task-test-1", ts: "2026-04-10T00:00:00Z", epoch: 1775952000 }),
+      ].join("\n") + "\n",
+    );
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "recently-completed.json");
+    const recent = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const task = recent.find((t) => t.id === "task-test-1");
+    expect(task).toBeDefined();
+    expect(task!.prStatus).toBe("merged");
+  });
+
+  test("non-object retrospective JSON is silently ignored", async () => {
+    writeCompletedTask("task-retro-1", "Retro test");
+    const retroDir = join(harnessDir(), "retrospectives");
+    mkdirSync(retroDir, { recursive: true });
+    // The retrospective file must exist for the task to appear in recently-completed,
+    // but we write non-object content to test the prUrl extraction guard
+    writeFileSync(join(retroDir, "task-retro-1.json"), '"just a string"');
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "recently-completed.json");
+    const recent = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const task = recent.find((t) => t.id === "task-retro-1");
+    expect(task).toBeDefined();
+    // No PR URL should be set from the malformed retrospective
+    expect(task!.prUrl).toBeNull();
+  });
+});
+
+describe("generateT3code shape guard", () => {
+  test("non-object starting marker does not produce false starting:true", async () => {
+    const t3Dir = join(harnessDir(), "t3code");
+    mkdirSync(t3Dir, { recursive: true });
+    // Write a non-object starting marker
+    writeFileSync(join(t3Dir, "starting.json"), '"hello"');
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "t3code.json");
+    const t3code = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>;
+    expect(t3code.starting).toBe(false);
   });
 });
 

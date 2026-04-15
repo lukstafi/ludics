@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { commandLineMatchesServerRecord } from "./server.ts";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { commandLineMatchesServerRecord, readServerRecord } from "./server.ts";
 import type { T3CodeServerRecord } from "./types.ts";
 
 function makeRecord(overrides: Partial<T3CodeServerRecord> = {}): T3CodeServerRecord {
@@ -100,5 +103,27 @@ describe("commandLineMatchesServerRecord", () => {
       ),
     ).toBe(false);
     expect(commandLineMatchesServerRecord("python worker.py", record)).toBe(false);
+  });
+});
+
+describe("readServerRecord", () => {
+  test("returns null when server.json contains a non-object value", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "ludics-t3code-test-"));
+    const t3Dir = join(tmpDir, "t3code");
+    mkdirSync(t3Dir, { recursive: true });
+
+    // JSON string
+    writeFileSync(join(t3Dir, "server.json"), '"hello"');
+    expect(readServerRecord(tmpDir)).toBeNull();
+
+    // JSON array
+    writeFileSync(join(t3Dir, "server.json"), "[1,2,3]");
+    expect(readServerRecord(tmpDir)).toBeNull();
+
+    // JSON null
+    writeFileSync(join(t3Dir, "server.json"), "null");
+    expect(readServerRecord(tmpDir)).toBeNull();
+
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 });

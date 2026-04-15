@@ -3,7 +3,7 @@ import { createServer } from "node:net";
 import { join, resolve } from "path";
 import { Database } from "bun:sqlite";
 import { setsidWrap } from "../orchestration/util.ts";
-import { writeJsonFile } from "../json.ts";
+import { readJsonFile, writeJsonFile } from "../json.ts";
 
 /**
  * Migrate legacy `<t3codeDir>/state/` → `<t3codeDir>/userdata/`.
@@ -383,16 +383,6 @@ export async function stopServer(options: EnsureServerOptions = {}): Promise<boo
   return stopped;
 }
 
-function readJsonFile<T>(path: string): T | null {
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, "utf-8")) as T;
-  } catch {
-    return null;
-  }
-}
-
-// writeJsonFile imported from ../json.ts
 
 export function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
