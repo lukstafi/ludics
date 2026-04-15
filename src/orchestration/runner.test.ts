@@ -10,6 +10,7 @@ import * as peerSync from "./peer-sync.ts";
 import * as events from "../events.ts";
 import * as github from "./github.ts";
 import * as config from "../config.ts";
+import * as spawn from "../spawn.ts";
 import * as stateMod from "./state.ts";
 import { orchOnStop } from "./index.ts";
 import { readStopHookRecord, writeStopHookRecord, writeAgentMarkerFiles, readAgentMarkerFile } from "./peer-sync.ts";
@@ -3176,15 +3177,18 @@ describe("validatePreviousPhaseArtifacts", () => {
 describe("validateAgentPrFiles (eager repair)", () => {
   let fixSpy: ReturnType<typeof spyOn>;
   let notifySpy: ReturnType<typeof spyOn>;
+  let configSpy: ReturnType<typeof spyOn>;
   let dir: string;
 
   beforeEach(() => {
     dir = makeTmpDir();
     notifySpy = spyOn(notify, "notifyAgents").mockImplementation(() => {});
+    configSpy = spyOn(config, "findProjectConfig").mockReturnValue({ repo: "org/test-repo", name: "test" } as any);
   });
   afterEach(() => {
     fixSpy?.mockRestore();
     notifySpy.mockRestore();
+    configSpy.mockRestore();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -3197,6 +3201,9 @@ describe("validateAgentPrFiles (eager repair)", () => {
     writeFileSync(join(dir, "coder.pr"), "# My PR\nSome markdown body\n");
     validateAgentPrFiles(state);
     expect(fixSpy).toHaveBeenCalled();
+    expect(fixSpy).toHaveBeenCalledWith(
+      expect.any(String), expect.any(String), expect.any(String), "org/test-repo"
+    );
     expect(state.agentStates.coder.prUrl).toBe("https://github.com/org/repo/pull/1");
   });
 
@@ -3228,6 +3235,9 @@ describe("validateAgentPrFiles (eager repair)", () => {
     state.agentStates.coder.status = "pr-create-done";
     validateAgentPrFiles(state);
     expect(fixSpy).toHaveBeenCalled();
+    expect(fixSpy).toHaveBeenCalledWith(
+      expect.any(String), expect.any(String), expect.any(String), "org/test-repo"
+    );
   });
 
   test("skips empty .pr file", () => {
@@ -3249,8 +3259,56 @@ describe("validateAgentPrFiles (eager repair)", () => {
     writeFileSync(join(dir, "coder.pr"), "# Bad PR body\n");
     validateAgentPrFiles(state);
     expect(fixSpy).toHaveBeenCalled();
+    expect(fixSpy).toHaveBeenCalledWith(
+      expect.any(String), expect.any(String), expect.any(String), "org/test-repo"
+    );
     expect(state.agentStates.coder.prUrl).toBeFalsy();
     expect(notifySpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("validateAndFixPrFile --repo argument", () => {
+  let spawnSpy: ReturnType<typeof spyOn>;
+  let dir: string;
+
+  beforeEach(() => { dir = makeTmpDir(); });
+  afterEach(() => {
+    spawnSpy?.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("passes --repo when repo argument provided", () => {
+    spawnSpy = spyOn(spawn, "safeSyncOutput").mockReturnValue({
+      ok: true, stdout: "https://github.com/org/repo/pull/42", stderr: "",
+    } as any);
+    const prFile = join(dir, "test.pr");
+    writeFileSync(prFile, "# My PR\nSome description\n");
+
+    const result = github.validateAndFixPrFile(prFile, "/tmp/wt", "my-branch", "org/repo");
+
+    const ghCall = spawnSpy.mock.calls.find(
+      (call: any) => Array.isArray(call[0]) && call[0][0] === "gh"
+    );
+    expect(ghCall).toBeDefined();
+    expect(ghCall![0]).toContain("--repo");
+    expect(ghCall![0]).toContain("org/repo");
+    expect(result).toBe("https://github.com/org/repo/pull/42");
+  });
+
+  test("omits --repo when repo argument not provided", () => {
+    spawnSpy = spyOn(spawn, "safeSyncOutput").mockReturnValue({
+      ok: true, stdout: "https://github.com/org/repo/pull/42", stderr: "",
+    } as any);
+    const prFile = join(dir, "test.pr");
+    writeFileSync(prFile, "# My PR\nSome description\n");
+
+    github.validateAndFixPrFile(prFile, "/tmp/wt", "my-branch");
+
+    const ghCall = spawnSpy.mock.calls.find(
+      (call: any) => Array.isArray(call[0]) && call[0][0] === "gh"
+    );
+    expect(ghCall).toBeDefined();
+    expect(ghCall![0]).not.toContain("--repo");
   });
 });
 
