@@ -1843,8 +1843,8 @@ function computeSessionProjectMatches(): string {
         const taskFile = join(harness, "tasks", `${taskId}.md`);
         if (existsSync(taskFile)) {
           const content = readFileSync(taskFile, "utf-8");
-          const pm = content.match(/^project:\s*(.+)$/m);
-          if (pm) projectsInSlots.set(pm[1]!.trim(), i);
+          const pm = readFrontmatterField(content, "project");
+          if (pm) projectsInSlots.set(pm, i);
         }
       }
       // Also check path for project match
@@ -1892,15 +1892,12 @@ function computeSessionProjectMatches(): string {
         } catch { /* skip parse errors */ }
       }
 
-      const projectMatch = content.match(/^project:\s*(.+)$/m);
-      const project = projectMatch ? projectMatch[1]!.trim() : "";
+      const project = readFrontmatterField(content, "project") ?? "";
       if (!project) continue;
 
-      const titleMatch = content.match(/^title:\s*"?(.+?)"?\s*$/m);
-      const title = titleMatch ? titleMatch[1]! : id;
+      const title = readFrontmatterField(content, "title") ?? id;
 
-      const priorityMatch = content.match(/^priority:\s*(.+)$/m);
-      const priority = priorityMatch ? priorityMatch[1]!.trim() : "B";
+      const priority = readFrontmatterField(content, "priority") ?? "B";
 
       const elaborated = isElaborated(content);
 
@@ -2110,8 +2107,8 @@ async function maybeAutoStartSlots(): Promise<void> {
     if (isTaskDeferred(taskId)) continue;
 
     // Skip tasks from postponed projects
-    const projectMatch = content.match(/^project:\s*(.+)$/m);
-    if (projectMatch && postponedProjectSet().has(projectMatch[1]!.trim().toLowerCase())) continue;
+    const projectName = readFrontmatterField(content, "project");
+    if (projectName && postponedProjectSet().has(projectName.toLowerCase())) continue;
 
     // Task has a proposal but no session — auto-start
     try {
