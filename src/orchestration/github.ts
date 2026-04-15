@@ -104,6 +104,7 @@ export function validateAndFixPrFile(
   prFile: string,
   worktreePath: string,
   branch: string,
+  repo?: string,
 ): string | null {
   if (!existsSync(prFile)) return null;
   const content = readFileSync(prFile, "utf-8").trim();
@@ -119,10 +120,9 @@ export function validateAndFixPrFile(
   const titleMatch = content.match(/^#\s+(.+)$/m);
   const title = titleMatch ? titleMatch[1]!.trim() : `feat: ${branch}`;
 
-  const result = safeSyncOutput(
-    ["gh", "pr", "create", "--title", title, "--body", content, "--head", branch],
-    { cwd: worktreePath },
-  );
+  const args = ["gh", "pr", "create", "--title", title, "--body", content, "--head", branch];
+  if (repo) args.splice(2, 0, "--repo", repo);
+  const result = safeSyncOutput(args, { cwd: worktreePath });
   if (!result.ok) return null;
   const url = result.stdout;
   if (!isPrUrl(url)) return null;

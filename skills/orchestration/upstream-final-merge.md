@@ -12,6 +12,7 @@ UPSTREAM_PR_URL=$(cat "{{PR_FILE}}" 2>/dev/null)
 2. Set up upstream remote and detect default branch:
 ```sh
 git remote add upstream https://github.com/{{UPSTREAM_REPO}}.git 2>/dev/null || true
+git config --unset remote.upstream.gh-resolved 2>/dev/null || true
 git fetch upstream
 UPSTREAM_DEFAULT=$(git remote show upstream | sed -n 's/.*HEAD branch: //p')
 ```

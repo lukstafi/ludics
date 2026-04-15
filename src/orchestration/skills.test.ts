@@ -207,6 +207,69 @@ describe("skills", () => {
     expect(rendered).not.toContain("UPSTREAM_PR_FILE");
   });
 
+  test("pr-create template includes --repo with PROJECT_REPO", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pr-create.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      PROJECT_REPO: "owner/my-staging",
+      PR_CREATE_REPO_FLAG: '--repo "owner/my-staging"',
+    });
+    expect(rendered).toContain('gh pr create --repo "owner/my-staging"');
+  });
+
+  test("pr-create template omits --repo when PROJECT_REPO unavailable", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pr-create.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      PR_CREATE_REPO_FLAG: "",
+    });
+    expect(rendered).toContain("gh pr create  --title");
+    expect(rendered).not.toContain("--repo");
+  });
+
+  test("pair-coder-pr-create template includes --repo with PROJECT_REPO", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-pr-create.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      PROJECT_REPO: "owner/my-staging",
+      PR_CREATE_REPO_FLAG: '--repo "owner/my-staging"',
+    });
+    expect(rendered).toContain('gh pr create --repo "owner/my-staging"');
+  });
+
+  test("forward-pr template clears gh-resolved after adding upstream remote", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/forward-pr.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      UPSTREAM_REPO: "upstream/repo",
+      PROJECT_REPO: "owner/staging",
+    });
+    expect(rendered).toContain("git config --unset remote.upstream.gh-resolved");
+    const remoteAddIdx = rendered.indexOf("git remote add upstream");
+    const unsetIdx = rendered.indexOf("git config --unset remote.upstream.gh-resolved");
+    expect(remoteAddIdx).toBeGreaterThanOrEqual(0);
+    expect(unsetIdx).toBeGreaterThan(remoteAddIdx);
+  });
+
+  test("upstream-final-merge template clears gh-resolved after adding upstream remote", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/upstream-final-merge.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      UPSTREAM_REPO: "upstream/repo",
+      PROJECT_REPO: "owner/staging",
+    });
+    expect(rendered).toContain("git config --unset remote.upstream.gh-resolved");
+    const remoteAddIdx = rendered.indexOf("git remote add upstream");
+    const unsetIdx = rendered.indexOf("git config --unset remote.upstream.gh-resolved");
+    expect(remoteAddIdx).toBeGreaterThanOrEqual(0);
+    expect(unsetIdx).toBeGreaterThan(remoteAddIdx);
+  });
+
   test("buildSkillContext: hierarchical duo suppresses UPSTREAM_REPO when duoPeerSlot is set", async () => {
     const tmpCfg = "/tmp/ludics-skills-duo-upstream-test.yaml";
     writeFileSync(tmpCfg, [
@@ -516,6 +579,8 @@ describe("skills", () => {
       expect(ctx["PROJECT_REPO"]).toBe("owner/my-proj-staging");
       expect(ctx["PROJECT_UPSTREAM_REPO"]).toBe("upstream/my-proj");
       expect(ctx["PROJECT_PROPOSALS_PATH"]).toBe("docs/proposals");
+      // PR_CREATE_REPO_FLAG is computed from PROJECT_REPO
+      expect(ctx["PR_CREATE_REPO_FLAG"]).toBe('--repo "owner/my-proj-staging"');
       // Non-string fields should NOT be injected (e.g., boolean issues)
       expect(ctx["PROJECT_ISSUES"]).toBeUndefined();
     } finally {

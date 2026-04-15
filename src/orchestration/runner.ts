@@ -1013,6 +1013,7 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
  * Settled-mode repair: existing behavior for when .pr doesn't exist yet.
  */
 export function validateAgentPrFiles(state: OrchestrationState): void {
+  const projectRepo = findProjectConfig(state.projectDir)?.repo;
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
     const runtime = state.agentStates[agent.name];
@@ -1025,7 +1026,7 @@ export function validateAgentPrFiles(state: OrchestrationState): void {
       try {
         const content = readFileSync(prFile, "utf-8").trim();
         if (content && !isPrUrl(content)) {
-          const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch);
+          const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch, projectRepo);
           if (fixedUrl && !runtime.prUrl) {
             runtime.prUrl = fixedUrl;
             notifyAgents(
@@ -1046,7 +1047,7 @@ export function validateAgentPrFiles(state: OrchestrationState): void {
     const turnSettled = lc && (lc.state === "settled" || lc.state === "error");
     const statusDone = DONE_STATUSES.has(runtime.status);
     if (!turnSettled && !statusDone && !runtime.interrupted) continue;
-    const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch);
+    const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch, projectRepo);
     if (fixedUrl && !runtime.prUrl) {
       runtime.prUrl = fixedUrl;
       notifyAgents(
