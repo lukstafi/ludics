@@ -14,6 +14,7 @@ setDefaultTimeout(15_000);
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+const ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
 let TMP = "";
 
 function writeConfig(homeDir: string, { cluster }: { cluster?: boolean } = {}): string {
@@ -73,6 +74,7 @@ beforeEach(() => {
   TMP = mkdtempSync(join(tmpdir(), "ludics-slots-index-"));
   process.env.HOME = TMP;
   process.env.LUDICS_CONFIG = writeConfig(TMP);
+  process.env.LUDICS_HARNESS_DIR = join(TMP, "ludics-state", "harness");
 });
 
 afterEach(() => {
@@ -86,6 +88,12 @@ afterEach(() => {
     delete process.env.LUDICS_CONFIG;
   } else {
     process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+  }
+
+  if (ORIGINAL_HARNESS === undefined) {
+    delete process.env.LUDICS_HARNESS_DIR;
+  } else {
+    process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS;
   }
 
   rmSync(TMP, { recursive: true, force: true });
@@ -341,26 +349,19 @@ describe("slot assign — direct orchestration flags", () => {
     mkdirSync(harness, { recursive: true });
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
-    const savedHarness = process.env.LUDICS_HARNESS_DIR;
-    process.env.LUDICS_HARNESS_DIR = harness;
-    try {
-      await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--duo --coder claude-code:opus --plan"]);
-      const args = readAdapterArgs();
-      expect(args).toContain("--pair");
-      expect(args).toContain("--duo-peer-slot=");
-      expect(args).toContain("--plan");
-      expect(args).toContain("--coder");
-      // Verify claude-code:opus only appears immediately after --coder or --reviewer, not as a stray token
-      const tokens = args.split(/\s+/);
-      for (let i = 0; i < tokens.length; i++) {
-        if (tokens[i] === "claude-code:opus") {
-          const prev = tokens[i - 1];
-          expect(prev === "--coder" || prev === "--reviewer").toBe(true);
-        }
+    await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--duo --coder claude-code:opus --plan"]);
+    const args = readAdapterArgs();
+    expect(args).toContain("--pair");
+    expect(args).toContain("--duo-peer-slot=");
+    expect(args).toContain("--plan");
+    expect(args).toContain("--coder");
+    // Verify claude-code:opus only appears immediately after --coder or --reviewer, not as a stray token
+    const tokens = args.split(/\s+/);
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i] === "claude-code:opus") {
+        const prev = tokens[i - 1];
+        expect(prev === "--coder" || prev === "--reviewer").toBe(true);
       }
-    } finally {
-      if (savedHarness === undefined) delete process.env.LUDICS_HARNESS_DIR;
-      else process.env.LUDICS_HARNESS_DIR = savedHarness;
     }
   });
 
