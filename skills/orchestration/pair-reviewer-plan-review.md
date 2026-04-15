@@ -17,6 +17,7 @@ If alignment gaps are found, use REQUEST_CHANGES with explicit remediation — f
 
 Review the merged plan for `{{TASK_ID}}`:
 If the plan involves data shape changes (field extraction, JSON migration, section restructuring), check that all downstream consumers of the changed data are identified and their required updates are noted. Request changes if consumers appear to be missing — grep for field names and section-header patterns to verify completeness.
+**Occurrence completeness**: Verify that the plan lists all project-wide occurrences of every symbol or pattern being modified — including inline reimplementations (regex patterns, copy-pasted logic), not just canonical function references. If occurrences are missing, `REQUEST_CHANGES` with the specific grep commands you ran and their results showing the missed occurrences.
 
 When reviewing the plan, verify regression test coverage:
 - Does each behavior change (serialization, rendering, validation, CLI output) have a corresponding regression test identified?
