@@ -9,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="content.css">
 </head>
 <body>
     <header>
@@ -29,9 +30,9 @@
     </header>
     <script src="nav.js"></script>
 
-    <main class="briefing-container">
-        <div class="briefing-content" id="briefing-content">
-            <div class="briefing-placeholder">
+    <main class="content-container">
+        <div class="rendered-content" id="briefing-content">
+            <div class="content-placeholder">
                 <span class="icon">&#x1F4CB;</span>
                 <span class="text">Loading briefing...</span>
             </div>
@@ -80,7 +81,7 @@
 
             if (!briefing.exists) {
                 container.innerHTML = `
-                    <div class="briefing-placeholder">
+                    <div class="content-placeholder">
                         <span class="icon">&#x1F4CB;</span>
                         <span class="text">No briefing available</span>
                         <span class="hint">Run: ludics mag briefing</span>
