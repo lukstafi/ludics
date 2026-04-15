@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, appendToSection, frontmatterBounds, readFrontmatterField, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus } from "./markdown.ts";
+import { addFrontmatterField, appendToSection, frontmatterBounds, readFrontmatterField, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -429,5 +429,25 @@ describe("updateDependencyArray", () => {
     expect(result).toContain("dependencies: none");
     const fmMatch = result.match(/^---\n([\s\S]*?)\n---/);
     expect(fmMatch![1]).toContain("blocks: [z]");
+  });
+});
+
+describe("parseTaskFrontmatter skip_plan", () => {
+  test("parses skip_plan: true as boolean true", () => {
+    const content = "---\nid: task-1\ntitle: Test\neffort: medium\nskip_plan: true\n---\n";
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.skip_plan).toBe(true);
+  });
+
+  test("absent skip_plan defaults to false", () => {
+    const content = "---\nid: task-1\ntitle: Test\neffort: medium\n---\n";
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.skip_plan).toBe(false);
+  });
+
+  test("parses skip_plan string 'true' as boolean true", () => {
+    const content = '---\nid: task-1\ntitle: Test\nskip_plan: "true"\n---\n';
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.skip_plan).toBe(true);
   });
 });

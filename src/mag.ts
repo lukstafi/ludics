@@ -30,7 +30,7 @@ import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
 import { readTmuxSlotState, tmuxPaneOutputHash } from "./adapters/tmux-adapter.ts";
 import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
-import { selectOrchestrationFlags } from "./adapters/t3code.ts";
+import { selectOrchestrationFlagsForTask } from "./adapters/t3code.ts";
 import YAML from "yaml";
 import {
   tmuxAvailable,
@@ -2482,8 +2482,12 @@ function maybeFillEmptySlots(config?: LudicsFullConfig): void {
 
   const task = candidates[0]!;
 
-  // Auto-select orchestration flags based on task effort
-  const { adapter: autoAdapter, args: autoArgs, isDuo } = selectOrchestrationFlags(task.effort, config);
+  // Read task file content for skip_plan detection
+  const taskFile = join(harnessDir(), "tasks", `${task.id}.md`);
+  const taskContent = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
+
+  // Auto-select orchestration flags based on task effort and skip_plan
+  const { adapter: autoAdapter, args: autoArgs, isDuo } = selectOrchestrationFlagsForTask(taskContent, task.effort, config);
 
   // Hierarchical duo: need 2 empty slots; assign both with swapped coder/reviewer
   if (isDuo) {

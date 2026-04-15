@@ -443,6 +443,63 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     slotAssign(1, "null", "t3code");
     await expect(slotStart(1)).rejects.toThrow("no task is assigned");
   });
+
+  test("auto-fills medium task without skip_plan — includes --plan", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-medium-plan-1", "Medium plan test");
+    slotAssign(1, "task-medium-plan-1", "t3code");
+    try { await slotStart(1); } catch { /* adapter startup fails in test env */ }
+    const args = readAdapterArgsFromSlots();
+    expect(args).toContain("--plan");
+    expect(args).toContain("--pair");
+  }, 15_000);
+
+  test("auto-fills medium task with skip_plan: true — omits --plan", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    // Write task with skip_plan: true
+    writeFileSync(join(tasksDir, "task-skip-plan-1.md"), [
+      "---",
+      "id: task-skip-plan-1",
+      'title: "Skip plan test"',
+      "project: demo",
+      "status: ready",
+      "priority: B",
+      "deadline: null",
+      "dependencies:",
+      "  blocks: []",
+      "  blocked_by: []",
+      "  relates_to: []",
+      "  subtask_of: null",
+      "effort: medium",
+      "skip_plan: true",
+      "context: demo",
+      "uses_browser: false",
+      "slot: null",
+      "adapter: null",
+      "created: 2026-03-07",
+      "started: null",
+      "completed: null",
+      "modified: null",
+      "source: local",
+      "---",
+      "",
+    ].join("\n"));
+    slotAssign(1, "task-skip-plan-1", "t3code");
+    try { await slotStart(1); } catch { /* adapter startup fails in test env */ }
+    const args = readAdapterArgsFromSlots();
+    expect(args).not.toContain("--plan");
+    expect(args).toContain("--pair");
+    expect(args).toContain("--coder");
+    expect(args).toContain("--reviewer");
+  }, 15_000);
 });
 
 describe("markSlotSetupFailed", () => {

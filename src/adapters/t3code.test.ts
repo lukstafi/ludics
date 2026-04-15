@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { canReuseSlotThread, orchestratedThreadTitle, parseT3CodeAdapterArgs, startOrchestrationProcess, stop } from "./t3code.ts";
+import { canReuseSlotThread, orchestratedThreadTitle, parseT3CodeAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 import { mergeAdapterState } from "../slots/markdown.ts";
 import { emptySlotData } from "../slots/json.ts";
@@ -305,5 +305,50 @@ describe("t3code adapter stop — preserveState", () => {
 
     expect(result).toContain("stopped");
     expect(existsSync(join(harness, "t3code", "slot-1.json"))).toBe(false);
+  });
+});
+
+describe("selectOrchestrationFlags — skip_plan", () => {
+  test("medium effort without skipPlan includes --plan", () => {
+    const { args } = selectOrchestrationFlags("medium");
+    expect(args).toContain("--plan");
+  });
+
+  test("medium effort with skipPlan: true omits --plan", () => {
+    const { args } = selectOrchestrationFlags("medium", undefined, { skipPlan: true });
+    expect(args).not.toContain("--plan");
+  });
+
+  test("large effort with skipPlan: true still includes --plan --gather", () => {
+    const { args } = selectOrchestrationFlags("large", undefined, { skipPlan: true });
+    expect(args).toContain("--plan");
+    expect(args).toContain("--gather");
+  });
+
+  test("small effort with skipPlan: true has no phase flags", () => {
+    const { args } = selectOrchestrationFlags("small", undefined, { skipPlan: true });
+    expect(args).not.toContain("--plan");
+    expect(args).not.toContain("--gather");
+  });
+});
+
+describe("selectOrchestrationFlagsForTask — skip_plan from frontmatter", () => {
+  test("medium task with skip_plan: true omits --plan", () => {
+    const content = "---\nid: test\ntitle: test\neffort: medium\nskip_plan: true\n---\n";
+    const { args } = selectOrchestrationFlagsForTask(content, "medium");
+    expect(args).not.toContain("--plan");
+  });
+
+  test("medium task without skip_plan includes --plan", () => {
+    const content = "---\nid: test\ntitle: test\neffort: medium\n---\n";
+    const { args } = selectOrchestrationFlagsForTask(content, "medium");
+    expect(args).toContain("--plan");
+  });
+
+  test("large task with skip_plan: true still includes --plan --gather", () => {
+    const content = "---\nid: test\ntitle: test\neffort: large\nskip_plan: true\n---\n";
+    const { args } = selectOrchestrationFlagsForTask(content, "large");
+    expect(args).toContain("--plan");
+    expect(args).toContain("--gather");
   });
 });
