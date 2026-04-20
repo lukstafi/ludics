@@ -3,12 +3,15 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname } from "path";
 
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
 export function readJsonFile<T>(path: string): T | null {
   if (!existsSync(path)) return null;
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return null;
+    if (!isPlainObject(parsed)) return null;
     return parsed as T;
   } catch {
     return null;

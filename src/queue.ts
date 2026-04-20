@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, ren
 import { join, dirname } from "path";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
+import { isPlainObject } from "./json.ts";
 
 function queueFile(): string {
   return join(harnessDir(), "mag", "queue.jsonl");
@@ -18,8 +19,8 @@ let requestCounter = 0;
 function parseJsonRecord(text: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
+    if (!isPlainObject(parsed)) return null;
+    return parsed;
   } catch {
     return null;
   }
@@ -129,7 +130,7 @@ export function queueList(): Record<string, unknown>[] {
     .map(line => {
       try {
         const parsed: unknown = JSON.parse(line);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        if (!isPlainObject(parsed)) {
           return { raw: line };
         }
         return parsed as Record<string, unknown>;
