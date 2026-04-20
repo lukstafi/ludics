@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, utimesSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, utimesSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -273,6 +273,40 @@ describe("recentResults", () => {
 
     const { recentResults } = await loadQueue();
     expect(recentResults()).toHaveLength(1);
+  });
+
+  test("survives statSync race when file is deleted between readdir and stat", async () => {
+    const resultsDir = join(tmpDir, "mag", "results");
+    mkdirSync(resultsDir, { recursive: true });
+
+    writeFileSync(join(resultsDir, "req-keep.json"), JSON.stringify({ id: "keep", status: "ok" }));
+    // Dangling symlink: readdirSync lists it, but statSync throws ENOENT
+    symlinkSync("/nonexistent-target", join(resultsDir, "req-gone.json"));
+
+    const { recentResults } = await loadQueue();
+    const results = recentResults();
+    expect(results).toHaveLength(1);
+    expect(results[0]!.data.id).toBe("keep");
+  });
+
+  test("returns error entry for non-object JSON (null, number, array)", async () => {
+    const resultsDir = join(tmpDir, "mag", "results");
+    mkdirSync(resultsDir, { recursive: true });
+
+    writeFileSync(join(resultsDir, "req-null.json"), "null");
+    writeFileSync(join(resultsDir, "req-num.json"), "42");
+    writeFileSync(join(resultsDir, "req-arr.json"), "[1,2]");
+
+    const { recentResults } = await loadQueue();
+    const results = recentResults();
+    expect(results).toHaveLength(3);
+    for (const r of results) {
+      expect(r.data.error).toBe("non-object result");
+    }
+    const byFile = Object.fromEntries(results.map(r => [r.file.split("/").pop(), r.data]));
+    expect(byFile["req-null.json"]!.raw).toBe("object");  // typeof null === "object"
+    expect(byFile["req-num.json"]!.raw).toBe("number");
+    expect(byFile["req-arr.json"]!.raw).toBe("object");    // typeof [] === "object"
   });
 
   test("round-trip: writeResult then recentResults preserves key fields", async () => {

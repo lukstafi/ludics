@@ -208,13 +208,22 @@ export function recentResults(limit: number = 20): { file: string; data: Record<
     .filter((f: string) => f.endsWith(".json"))
     .map((f: string) => {
       const full = join(dir, f);
-      return { file: full, mtimeMs: statSync(full).mtimeMs };
+      try {
+        return { file: full, mtimeMs: statSync(full).mtimeMs };
+      } catch {
+        return null;
+      }
     })
+    .filter((x): x is { file: string; mtimeMs: number } => x !== null)
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
     .slice(0, limit);
   return files.map(({ file, mtimeMs }) => {
     try {
-      return { file, data: JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>, mtimeMs };
+      const parsed = JSON.parse(readFileSync(file, "utf-8"));
+      const data = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : ({ error: "non-object result", raw: typeof parsed } as Record<string, unknown>);
+      return { file, data, mtimeMs };
     } catch {
       return { file, data: { error: "parse error" } as Record<string, unknown>, mtimeMs };
     }
