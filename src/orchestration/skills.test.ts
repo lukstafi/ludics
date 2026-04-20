@@ -64,7 +64,6 @@ function baseCtx(): Record<string, string> {
     PEER_SYNC_DIR: "/tmp/peer-sync",
     DONE_STATUS: "review-done",
     UPSTREAM_REPO: "",
-    UPSTREAM_REPO_NOTE: "",
     UPSTREAM_PR_FILE: "/tmp/upstream-pr",
     UPSTREAM_MERGED_MARKER_FILE: "/tmp/upstream-merged",
     FORWARDED_MARKER_FILE: "/tmp/forwarded",
@@ -158,30 +157,17 @@ describe("skills", () => {
     expect(ctx["MERGED_PLAN_FILE"]).toContain("round-2-merged-2.md");
   });
 
-  test("substituteTemplate: UPSTREAM_REPO and UPSTREAM_REPO_NOTE are empty when not set", () => {
-    const text = substituteTemplate("{{UPSTREAM_REPO}}|{{UPSTREAM_REPO_NOTE}}", baseCtx());
-    expect(text).toBe("|");
+  test("substituteTemplate: UPSTREAM_REPO is empty when not set", () => {
+    const text = substituteTemplate("{{UPSTREAM_REPO}}", baseCtx());
+    expect(text).toBe("");
   });
 
-  test("substituteTemplate: UPSTREAM_REPO and UPSTREAM_REPO_NOTE render when set", () => {
-    const upstreamRepo = "owner/upstream-repo";
-    const text = substituteTemplate("{{UPSTREAM_REPO}}|{{UPSTREAM_REPO_NOTE}}", {
-      ...baseCtx(),
-      UPSTREAM_REPO: upstreamRepo,
-      UPSTREAM_REPO_NOTE: `\n> **Upstream forwarding**: This project forwards approved PRs to upstream (\`${upstreamRepo}\`). Create the PR against the working repo, not upstream.\n`,
-    });
-    expect(text).toContain("owner/upstream-repo");
-    expect(text).toContain("Upstream forwarding");
-  });
-
-  test("pr-create template renders upstream note when UPSTREAM_REPO is set", () => {
+  test("pr-create template renders upstream note via inline conditional when UPSTREAM_REPO is set", () => {
     const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-pr-create.md");
     const template = readFileSync(templatePath, "utf-8");
-    const upstreamRepo = "owner/upstream-repo";
     const rendered = substituteTemplate(template, {
       ...baseCtx(),
-      UPSTREAM_REPO: upstreamRepo,
-      UPSTREAM_REPO_NOTE: `\n> **Upstream forwarding**: This project forwards approved PRs to upstream (\`${upstreamRepo}\`). Create the PR against the working repo, not upstream.\n`,
+      UPSTREAM_REPO: "owner/upstream-repo",
     });
     expect(rendered).toContain("owner/upstream-repo");
     expect(rendered).toContain("Upstream forwarding");
@@ -207,13 +193,12 @@ describe("skills", () => {
     expect(rendered).not.toContain("UPSTREAM_PR_FILE");
   });
 
-  test("pr-create template includes --repo with PROJECT_REPO", () => {
+  test("pr-create template includes --repo via inline conditional with PROJECT_REPO", () => {
     const templatePath = join(import.meta.dir, "../../skills/orchestration/pr-create.md");
     const template = readFileSync(templatePath, "utf-8");
     const rendered = substituteTemplate(template, {
       ...baseCtx(),
       PROJECT_REPO: "owner/my-staging",
-      PR_CREATE_REPO_FLAG: '--repo "owner/my-staging"',
     });
     expect(rendered).toContain('gh pr create --repo "owner/my-staging"');
   });
@@ -221,21 +206,17 @@ describe("skills", () => {
   test("pr-create template omits --repo when PROJECT_REPO unavailable", () => {
     const templatePath = join(import.meta.dir, "../../skills/orchestration/pr-create.md");
     const template = readFileSync(templatePath, "utf-8");
-    const rendered = substituteTemplate(template, {
-      ...baseCtx(),
-      PR_CREATE_REPO_FLAG: "",
-    });
-    expect(rendered).toContain("gh pr create  --title");
+    const rendered = substituteTemplate(template, baseCtx());
+    expect(rendered).toContain("gh pr create --title");
     expect(rendered).not.toContain("--repo");
   });
 
-  test("pair-coder-pr-create template includes --repo with PROJECT_REPO", () => {
+  test("pair-coder-pr-create template includes --repo via inline conditional with PROJECT_REPO", () => {
     const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-pr-create.md");
     const template = readFileSync(templatePath, "utf-8");
     const rendered = substituteTemplate(template, {
       ...baseCtx(),
       PROJECT_REPO: "owner/my-staging",
-      PR_CREATE_REPO_FLAG: '--repo "owner/my-staging"',
     });
     expect(rendered).toContain('gh pr create --repo "owner/my-staging"');
   });
@@ -296,7 +277,6 @@ describe("skills", () => {
       const ctx = buildSkillContext(state, state.agents[0]!);
       // Hierarchical duo (duoPeerSlot set) must suppress upstream variables
       expect(ctx["UPSTREAM_REPO"]).toBe("");
-      expect(ctx["UPSTREAM_REPO_NOTE"]).toBe("");
     } finally {
       if (origConfig !== undefined) process.env.LUDICS_CONFIG = origConfig;
       else delete process.env.LUDICS_CONFIG;
@@ -579,8 +559,8 @@ describe("skills", () => {
       expect(ctx["PROJECT_REPO"]).toBe("owner/my-proj-staging");
       expect(ctx["PROJECT_UPSTREAM_REPO"]).toBe("upstream/my-proj");
       expect(ctx["PROJECT_PROPOSALS_PATH"]).toBe("docs/proposals");
-      // PR_CREATE_REPO_FLAG is computed from PROJECT_REPO
-      expect(ctx["PR_CREATE_REPO_FLAG"]).toBe('--repo "owner/my-proj-staging"');
+      // PR_CREATE_REPO_FLAG removed — inline {{#IF PROJECT_REPO}} in templates now
+      expect(ctx["PR_CREATE_REPO_FLAG"]).toBeUndefined();
       // Non-string fields should NOT be injected (e.g., boolean issues)
       expect(ctx["PROJECT_ISSUES"]).toBeUndefined();
     } finally {
@@ -637,6 +617,65 @@ describe("skills", () => {
     expect(onlyA).toBe("blockA mid ");
     const neither = substituteTemplate(template, { ...baseCtx(), A: "", B: "" });
     expect(neither).toBe(" mid ");
+  });
+
+  test("substituteTemplate: {{#UNLESS VAR}} includes block when var is missing", () => {
+    const text = substituteTemplate("before{{#UNLESS UPSTREAM_REPO}} default content{{/UNLESS}} after", baseCtx());
+    expect(text).toBe("before default content after");
+  });
+
+  test("substituteTemplate: {{#UNLESS VAR}} includes block when var is empty string", () => {
+    const text = substituteTemplate("before{{#UNLESS UPSTREAM_REPO}} default content{{/UNLESS}} after", {
+      ...baseCtx(),
+      UPSTREAM_REPO: "",
+    });
+    expect(text).toBe("before default content after");
+  });
+
+  test("substituteTemplate: {{#UNLESS VAR}} removes block when var is non-empty", () => {
+    const text = substituteTemplate("before{{#UNLESS UPSTREAM_REPO}} default content{{/UNLESS}} after", {
+      ...baseCtx(),
+      UPSTREAM_REPO: "owner/repo",
+    });
+    expect(text).toBe("before after");
+  });
+
+  test("substituteTemplate: nested {{VAR}} inside #UNLESS block gets substituted", () => {
+    const ctx = baseCtx();
+    const text = substituteTemplate("{{#UNLESS UPSTREAM_REPO}}default: {{WORKTREE_PATH}}{{/UNLESS}}", ctx);
+    expect(text).toBe(`default: ${ctx.WORKTREE_PATH}`);
+  });
+
+  test("substituteTemplate: multi-line #UNLESS block", () => {
+    const template = "header\n{{#UNLESS UPSTREAM_REPO}}\nLine 1\nLine 2\n{{/UNLESS}}\nfooter";
+    const included = substituteTemplate(template, baseCtx());
+    expect(included).toBe("header\n\nLine 1\nLine 2\n\nfooter");
+    const excluded = substituteTemplate(template, { ...baseCtx(), UPSTREAM_REPO: "x" });
+    expect(excluded).toBe("header\n\nfooter");
+  });
+
+  test("substituteTemplate: mixed #IF and #UNLESS in same template", () => {
+    const template = "{{#IF A}}ifA{{/IF}} mid {{#UNLESS B}}unlessB{{/UNLESS}}";
+    const both = substituteTemplate(template, { ...baseCtx(), A: "1", B: "" });
+    expect(both).toBe("ifA mid unlessB");
+    const neither = substituteTemplate(template, { ...baseCtx(), A: "", B: "1" });
+    expect(neither).toBe(" mid ");
+    const ifOnly = substituteTemplate(template, { ...baseCtx(), A: "1", B: "1" });
+    expect(ifOnly).toBe("ifA mid ");
+    const unlessOnly = substituteTemplate(template, { ...baseCtx(), A: "", B: "" });
+    expect(unlessOnly).toBe(" mid unlessB");
+  });
+
+  test("substituteTemplate: #IF nested inside #UNLESS", () => {
+    const template = "{{#UNLESS A}}outer{{#IF B}} inner{{/IF}}{{/UNLESS}}";
+    const result = substituteTemplate(template, { ...baseCtx(), A: "", B: "yes" });
+    expect(result).toBe("outer inner");
+  });
+
+  test("substituteTemplate: #UNLESS nested inside #IF", () => {
+    const template = "{{#IF A}}outer{{#UNLESS B}} inner{{/UNLESS}}{{/IF}}";
+    const result = substituteTemplate(template, { ...baseCtx(), A: "yes", B: "" });
+    expect(result).toBe("outer inner");
   });
 
   test("buildSkillContext: exposes upstream sidecar file variables", async () => {

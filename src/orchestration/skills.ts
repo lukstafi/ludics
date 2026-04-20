@@ -278,9 +278,6 @@ export function buildSkillContext(
         } of 3.\n`
       : "",
     UPSTREAM_REPO: upstreamRepo ?? "",
-    UPSTREAM_REPO_NOTE: upstreamRepo
-      ? `\n> **Upstream forwarding**: This project forwards approved PRs to upstream (\`${upstreamRepo}\`). Create the PR against the working repo, not upstream.\n`
-      : "",
   };
 
   // Auto-inject project config string fields as PROJECT_<FIELD> variables.
@@ -292,11 +289,6 @@ export function buildSkillContext(
       }
     }
   }
-
-  // Conditional --repo flag for gh pr create: avoids --repo "" when PROJECT_REPO is unavailable.
-  result.PR_CREATE_REPO_FLAG = result.PROJECT_REPO
-    ? `--repo "${result.PROJECT_REPO}"`
-    : "";
 
   // Cross-slot context for hierarchical-duo merge phases
   if (state.duoPeerSlot != null) {
@@ -319,6 +311,13 @@ export function substituteTemplate(template: string, values: Record<string, stri
   while (leafIf.test(result)) {
     result = result.replace(leafIf, (_match, key: string, body: string) => {
       return (values[key] ?? "") !== "" ? body : "";
+    });
+  }
+  // Phase 1b: process conditional blocks {{#UNLESS VAR}}...{{/UNLESS}}
+  const leafUnless = /\{\{#UNLESS\s+([A-Z0-9_]+)\}\}((?:(?!\{\{#UNLESS\s)[\s\S])*?)\{\{\/UNLESS\}\}/g;
+  while (leafUnless.test(result)) {
+    result = result.replace(leafUnless, (_match, key: string, body: string) => {
+      return (values[key] ?? "") === "" ? body : "";
     });
   }
   // Phase 2: substitute variables
