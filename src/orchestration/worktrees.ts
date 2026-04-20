@@ -282,6 +282,15 @@ export function cleanupWorktrees(
 // Auto-commit helpers
 // ---------------------------------------------------------------------------
 
+/** Pathspecs for unstaging orchestration-internal paths after `git add -A`.
+ *  `.git/info/exclude` prevents untracked files from being staged, but if any
+ *  orchestration path is already tracked, `git add -A` would still stage it.
+ *  These pathspecs are passed to `git reset HEAD --` to defensively unstage them.
+ *  Glob entries are expanded to match both top-level and nested occurrences. */
+const ORCHESTRATION_RESET_PATHS = GIT_EXCLUDE_ENTRIES.flatMap((e) =>
+  /[*?[]/.test(e) ? [e, `**/${e}`] : [e],
+);
+
 export interface AutoCommitResult {
   /** Whether the worktree had eligible uncommitted changes. */
   dirty: boolean;
@@ -296,7 +305,9 @@ export interface AutoCommitResult {
 /**
  * Auto-commit any uncommitted changes in the given directory.
  * Relies on {@link ensureGitExcludes} having been called to set up
- * `.git/info/exclude` with orchestration-internal paths.
+ * `.git/info/exclude` with orchestration-internal paths (handles untracked files).
+ * Additionally unstages any already-tracked orchestration paths via
+ * {@link ORCHESTRATION_RESET_PATHS} to prevent them from being committed.
  * Returns a structured result. Safe to call on clean worktrees (no-op).
  */
 export function autoCommitWorktree(
@@ -316,6 +327,11 @@ export function autoCommitWorktree(
 
   try {
     runGit(worktreePath, ["add", "-A"]);
+    // Defensive: unstage orchestration-internal paths in case any are tracked.
+    maybeGit(worktreePath, ["reset", "HEAD", "--", ...ORCHESTRATION_RESET_PATHS]);
+    // Re-check: if only orchestration files changed, nothing remains staged.
+    const staged = maybeGit(worktreePath, ["diff", "--cached", "--name-only"]);
+    if (!staged) return { dirty: false, committed: false };
     runGit(worktreePath, ["commit", "-m", commitMessage]);
     const sha = maybeGit(worktreePath, ["rev-parse", "--short", "HEAD"]);
     return { dirty: true, committed: true, commitSha: sha || undefined };

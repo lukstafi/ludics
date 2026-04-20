@@ -223,6 +223,26 @@ describe("autoCommitWorktree", () => {
     expect(result.committed).toBe(false);
   });
 
+  test("excludes already-tracked orchestration files from commits", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "auto-commit-tracked-orch");
+    initRepo(repo);
+    // Simulate orchestration files that were tracked before ensureGitExcludes
+    mkdirSync(join(repo, ".agents"), { recursive: true });
+    writeFileSync(join(repo, ".agents", "marker"), "1\n");
+    run(["git", "add", "-A"], repo);
+    run(["git", "commit", "-m", "track agents"], repo);
+    // Now set up excludes (like createWorktrees would)
+    ensureGitExcludes(repo);
+    // Modify the tracked orchestration file
+    writeFileSync(join(repo, ".agents", "marker"), "2\n");
+
+    const result = autoCommitWorktree(repo, "should not commit");
+    expect(result.dirty).toBe(false);
+    expect(result.committed).toBe(false);
+    expect(gitLogCount(repo)).toBe(2); // init + track agents, no new commit
+  });
+
   test("excludes _build_review* dirs while committing real changes", () => {
     if (!Bun.which("git")) return;
     const repo = join(TMP, "auto-commit-build-review");
