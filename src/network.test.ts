@@ -2,10 +2,11 @@
 
 import { describe, it, expect, spyOn } from "bun:test";
 import * as network from "./network.ts";
+import * as config from "./config.ts";
 
 describe("networkHostname", () => {
   it("returns localhost when mode is localhost", () => {
-    const spy = spyOn(network, "networkMode").mockReturnValue("localhost");
+    const spy = spyOn(config, "loadConfigSync").mockReturnValue({} as any);
     try {
       expect(network.networkHostname()).toBe("localhost");
     } finally {
@@ -23,12 +24,12 @@ describe("networkHostname", () => {
   });
 
   it("uses tailscale hostname when available", () => {
-    const modeSpy = spyOn(network, "networkMode").mockReturnValue("tailscale");
+    const configSpy = spyOn(config, "loadConfigSync").mockReturnValue({ cluster: { transport: "tailscale" } } as any);
     const tsSpy = spyOn(network, "hostnameTailscale").mockReturnValue("myhost.tailnet.ts.net");
     try {
       expect(network.networkHostname()).toBe("myhost.tailnet.ts.net");
     } finally {
-      modeSpy.mockRestore();
+      configSpy.mockRestore();
       tsSpy.mockRestore();
     }
   });
@@ -36,8 +37,9 @@ describe("networkHostname", () => {
 
 describe("networkStatus", () => {
   it("does not print a Config hostname line", () => {
-    const modeSpy = spyOn(network, "networkMode").mockReturnValue("tailscale");
+    const configSpy = spyOn(config, "loadConfigSync").mockReturnValue({ cluster: { transport: "tailscale" } } as any);
     const tsSpy = spyOn(network, "hostnameTailscale").mockReturnValue("host.ts.net");
+    const findSpy = spyOn(network, "findTailscaleCli").mockReturnValue("/usr/bin/tailscale");
     const lines: string[] = [];
     const logSpy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
       lines.push(args.map(String).join(" "));
@@ -47,8 +49,9 @@ describe("networkStatus", () => {
       const configLine = lines.find((l) => l.includes("Config hostname"));
       expect(configLine).toBeUndefined();
     } finally {
-      modeSpy.mockRestore();
+      configSpy.mockRestore();
       tsSpy.mockRestore();
+      findSpy.mockRestore();
       logSpy.mockRestore();
     }
   });
