@@ -5,6 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { harnessDir } from "../config.ts";
+import { isPlainObject } from "../json.ts";
 import { isGitWorktree, getMainRepoFromWorktree } from "../adapters/base.ts";
 
 export type SweepMode = "agent-claude" | "agent-codex" | "t3code";
@@ -80,7 +81,7 @@ export function loadSessionSweepState(): SessionSweepState {
 
   try {
     const parsedUnknown = JSON.parse(readFileSync(file, "utf-8")) as unknown;
-    if (!parsedUnknown || typeof parsedUnknown !== "object" || Array.isArray(parsedUnknown)) {
+    if (!isPlainObject(parsedUnknown)) {
       return { version: 1, sessions: {} };
     }
     const parsed = parsedUnknown as Record<string, unknown>;
@@ -91,7 +92,7 @@ export function loadSessionSweepState(): SessionSweepState {
 
     const sessions: Record<string, KnownSessionRecord> = {};
     for (const [, record] of Object.entries(parsedSessions)) {
-      if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+      if (!isPlainObject(record)) continue;
       const recordData = record as Record<string, unknown>;
       const mode = String(recordData.mode);
       if (!SWEEP_TARGET_MODES.has(mode as SweepMode)) continue;

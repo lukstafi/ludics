@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "fs";
 import { join } from "path";
 import { harnessDir } from "./config.ts";
+import { isPlainObject } from "./json.ts";
 
 export interface LudicsEvent {
   ts: string;
@@ -104,7 +105,7 @@ function eventsQuery(opts: EventsQueryOptions): void {
   for (const line of lines) {
     try {
       const parsed: unknown = JSON.parse(line);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      if (!isPlainObject(parsed)) continue;
       const rec = parsed as Record<string, unknown>;
       if (typeof rec.ts !== "string") continue;
       if (typeof rec.epoch !== "number") continue;

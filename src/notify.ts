@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync, readdirSync, unlinkSync } from "fs";
 import { basename, join, resolve } from "path";
 import { loadConfigSync, harnessDir, slotsCount } from "./config.ts";
+import { isPlainObject } from "./json.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
@@ -351,7 +352,7 @@ function loadSessionConclusionState(): Record<string, string> {
   if (!existsSync(file)) return {};
   try {
     const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    if (!isPlainObject(parsed)) return {};
     const obj = parsed as Record<string, unknown>;
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(obj)) {

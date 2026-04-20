@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync, statSync } from "fs";
 import { join, dirname } from "path";
 import YAML from "yaml";
+import { isPlainObject } from "./json.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { globalAdapter, harnessDir, loadConfigSync, slotsCount, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
 import { readAllSlotJson } from "./slots/json.ts";
@@ -924,7 +925,7 @@ function generateRecentlyCompleted(tasks: DashboardTask[]): RecentlyCompletedTas
         for (const line of content.split("\n")) {
           try {
             const parsed: unknown = JSON.parse(line);
-            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+            if (!isPlainObject(parsed)) continue;
             const event = parsed as Record<string, unknown>;
             if (event.event_type === "pr_merged" && event.task) {
               mergedTasks.add(String(event.task));
@@ -941,7 +942,7 @@ function generateRecentlyCompleted(tasks: DashboardTask[]): RecentlyCompletedTas
     const retroFile = join(retroDir, `${t.id}.json`);
     try {
       const parsed: unknown = JSON.parse(readFileSync(retroFile, "utf-8"));
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      if (!isPlainObject(parsed)) continue;
       const data = parsed as Record<string, unknown>;
       if (data.prUrl && typeof data.prUrl === "string") {
         prUrls.set(t.id, data.prUrl);

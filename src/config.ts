@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, statSync } from "fs";
 import { basename, join } from "path";
 import YAML from "yaml";
+import { isPlainObject } from "./json.ts";
 
 const DEFAULT_STALE_THRESHOLD = 86400; // 24 hours
 
@@ -121,7 +122,7 @@ export function pointerConfigPath(): string {
 function parseYamlFile(path: string): Record<string, unknown> {
   const text = readFileSync(path, "utf-8");
   const parsed: unknown = YAML.parse(text);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  if (!isPlainObject(parsed)) return {};
   return parsed as Record<string, unknown>;
 }
 

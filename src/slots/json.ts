@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from "fs";
 import { join } from "path";
 import { harnessDir } from "../config.ts";
+import { isPlainObject } from "../json.ts";
 import type { SlotData } from "./types.ts";
 
 export function slotJsonDir(harness?: string): string {
@@ -39,8 +40,13 @@ export function readSlotJson(slot: number, harness?: string): SlotData {
   if (!existsSync(file)) return emptySlotData(slot);
   const raw = readFileSync(file, "utf-8");
   try {
-    return JSON.parse(raw) as SlotData;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isPlainObject(parsed)) {
+      throw new Error(`corrupt slot JSON: ${file}: parsed value is not an object`);
+    }
+    return parsed as unknown as SlotData;
   } catch (err) {
+    if (err instanceof Error && err.message.startsWith("corrupt slot JSON:")) throw err;
     throw new Error(`corrupt slot JSON: ${file}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

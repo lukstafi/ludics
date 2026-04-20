@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
+import { isPlainObject } from "./json.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
@@ -397,9 +398,9 @@ function loadStartupAlertState(): Record<string, number> {
   if (!existsSync(file)) return {};
   try {
     const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    if (!isPlainObject(parsed)) return {};
     const out: Record<string, number> = {};
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(parsed)) {
       if (typeof v === "number" && Number.isFinite(v) && v > 0) out[k] = Math.floor(v);
     }
     return out;
@@ -583,10 +584,10 @@ function readFeedbackDigestQueueState(): Record<string, number> {
 
   try {
     const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    if (!isPlainObject(parsed)) return {};
 
     const state: Record<string, number> = {};
-    for (const [repo, epoch] of Object.entries(parsed as Record<string, unknown>)) {
+    for (const [repo, epoch] of Object.entries(parsed)) {
       if (typeof epoch === "number" && Number.isFinite(epoch)) {
         state[repo] = epoch;
       }
