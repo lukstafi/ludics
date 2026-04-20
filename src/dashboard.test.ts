@@ -329,6 +329,39 @@ describe("generateT3code shape guard", () => {
   });
 });
 
+describe("deferred-launch sorting", () => {
+  function writeDeferredTask(id: string, title: string, created: string | null): void {
+    const tasksDir = join(harnessDir(), "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    const createdLine = created ? `created: "${created}"` : "created: null";
+    writeFileSync(
+      join(tasksDir, `${id}.md`),
+      `---\nid: ${id}\ntitle: "${title}"\nstatus: deferred\npriority: B\n${createdLine}\ncontext: ludics\nproposal: docs/proposals/${id}.md\n---\n\n# ${title}\n`,
+    );
+  }
+
+  test("tasks sorted by created date descending, null last", async () => {
+    writeDeferredTask("task-oldest", "Oldest", "2026-01-01");
+    writeDeferredTask("task-newest", "Newest", "2026-04-15");
+    writeDeferredTask("task-middle", "Middle", "2026-03-10");
+    writeDeferredTask("task-no-date", "No date", null);
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "deferred-launch.json");
+    const items = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const ids = items.map((item) => item.id);
+    expect(ids).toEqual(["task-newest", "task-middle", "task-oldest", "task-no-date"]);
+  });
+});
+
 // Note: /api/slot-resume follows the exact same pattern as /api/slot-start
 // (validate slot 1-6, spawnSync `ludics slot N resume`, return OK/error).
 // slotResume() itself is already tested in src/slots/index.test.ts.
