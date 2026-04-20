@@ -3,12 +3,7 @@
 import { loadConfigSync } from "./config.ts";
 import { safeSyncOutput } from "./spawn.ts";
 
-export function networkMode(): string {
-  const config = loadConfigSync();
-  return config.cluster?.transport ?? "localhost";
-}
-
-function findTailscaleCli(): string | null {
+export function findTailscaleCli(): string | null {
   const which = safeSyncOutput(["which", "tailscale"]);
   if (which.ok) return which.stdout;
   // macOS: Tailscale app bundle CLI
@@ -41,7 +36,7 @@ export function hostnameTailscale(): string | null {
 }
 
 export function networkHostname(): string {
-  const mode = networkMode();
+  const mode = loadConfigSync().cluster?.transport ?? "localhost";
 
   if (mode === "localhost") return "localhost";
 
@@ -69,13 +64,13 @@ export function getUrl(port: number | string, protocol: string = "http"): string
 
 
 export function networkStatus(): void {
-  const mode = networkMode();
+  const mode = loadConfigSync().cluster?.transport ?? "localhost";
   console.log("=== Network Status ===");
   console.log("");
   console.log(`Mode: ${mode}`);
 
   if (mode === "tailscale") {
-    const hasTailscale = safeSyncOutput(["which", "tailscale"]).ok;
+    const hasTailscale = findTailscaleCli() !== null;
     if (hasTailscale) {
       console.log("Tailscale CLI: available");
       const tsHost = hostnameTailscale();
