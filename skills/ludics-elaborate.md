@@ -29,54 +29,52 @@ This skill is invoked:
 ## Common Steps
 
 Follow [orchestrator-conventions.md](orchestrator-conventions.md):
-- **A** (Task Resolution): read task file, extract title/project/slot
-- **B** (Project Path): resolve project checkout path from config
-- **C** (Context Brief): compose 3-10 line brief from conversation history
-- **D** (Worker Delegation): invoke worker in forked context
-- **E** (Result JSON): write result with request ID
-- **F** (Error Handling): standard error patterns
+- **A** (Task Resolution): read task file, extract title/project/slot.
+- **B** (Project Path): resolve the project checkout from config.
+- **C** (Context Brief): compose a 3-10 line brief from conversation history.
+- **D** (Worker Delegation): invoke the worker in forked context.
+- **E** (Result JSON): write the result with the request ID.
+- **F** (Error Handling): standard patterns.
 
 Worker: `/ludics-elaborate-worker <task_id> <project_path> <context_brief>`
 
-## Skill-Specific: Status Routing
+## Status routing
 
-Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
-Parse the JSON for `status`, `questions`, and `summary`.
+Extract the final ` ```json ` block from the worker's response. Fields:
 
-### Expected Worker Fields
+| Field | Used for | Missing-field fallback |
+|---|---|---|
+| `status` | primary routing | error (malformed response) |
+| `questions` | questions notification | treat as `"none"`, skip |
+| `summary` | result context | empty string |
+| `merge_target` | result JSON | only when `status = "merged"` |
+| `elaborated_date` | already-elaborated path | only when `status = "already-elaborated"` |
+| `title` | notification title | fall back to task_id |
+| `task_id` | — | not consumed |
 
-1. `status` — primary routing. Absent: error (malformed response).
-2. `questions` — questions notification. Absent: treat as `"none"`, skip notification.
-3. `summary` — result context. Absent: use empty string.
-4. `merge_target` — result JSON (merged path). Only expected when `status = "merged"`.
-5. `elaborated_date` — already-elaborated path. Only expected when `status = "already-elaborated"`.
-6. `title` — notification title. Absent: fall back to task_id.
-7. `task_id` — not consumed by orchestrator.
+Routing by status:
+- **completed** — proceed to notifications.
+- **merged** — write result JSON noting the merge and stop.
+- **already-elaborated** — ask whether re-elaboration is wanted, or skip.
+- **error** — write result JSON with `"status": "error"` and stop.
 
-- **status: completed** — proceed to notifications
-- **status: merged** — write result JSON noting the merge, stop
-- **status: already-elaborated** — ask if re-elaboration is wanted, or skip
-- **status: error** — write result JSON with `"status": "error"`, stop
+## Questions notification
 
-## Skill-Specific: Questions Notification
+If `questions` is non-empty (and not `"none"`):
 
-If `questions` is not `"none"` and is non-empty:
+1. Add `has_questions: true` to the task frontmatter — this blocks proposal
+   generation until the user answers and removes the field.
+2. Send the questions as a numbered list:
 
-1. **Add `has_questions: true`** to the task file frontmatter (this blocks proposal generation
-   until the user answers the questions and removes the field).
+   ```bash
+   ludics notify outgoing "<formatted questions>"
+   ```
 
-2. Send as notification text:
-   - Format each element as a numbered list (e.g., `1. <q1>\n2. <q2>`)
+   Use title: `"Elaboration questions — <task_id>: <title>"`.
 
-```bash
-ludics notify outgoing "<formatted questions>"
-```
+When `questions` is `"none"` or empty, don't add `has_questions`.
 
-Use title: "Elaboration questions — <task_id>: <title>"
-
-If `questions` is `"none"` or an empty array/string, do NOT add `has_questions` to frontmatter.
-
-## Skill-Specific Result Fields
+## Result fields
 
 ```json
 {
@@ -84,9 +82,10 @@ If `questions` is `"none"` or an empty array/string, do NOT add `has_questions` 
 }
 ```
 
-## Delegation Strategy
+## Delegation strategy
 
-- **Worker** (`/ludics-elaborate-worker`): Duplicate checking, context gathering,
-  codebase exploration, spec writing, task file update — runs in isolated context
-- **Orchestrator** (this skill): Task file read, decision routing, notifications,
-  result JSON — runs inline in Mag's context
+- Worker (`/ludics-elaborate-worker`) runs in isolated context: duplicate
+  checking, context gathering, codebase exploration, spec writing, task file
+  update.
+- Orchestrator (this skill) runs inline in Mag: task read, decision routing,
+  notifications, result JSON.

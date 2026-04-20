@@ -6,9 +6,9 @@ Write an implementation plan for `{{TASK_ID}}` to `{{PLAN_FILE}}` from `{{WORKTR
 
 {{TASK_SPEC}}
 
-**Formatting**: Use numbered lists for structured data in your plan. Do not use wide markdown tables — they get truncated when passed between agents.
-Be concrete: files to change, expected behavior, edge cases, validation steps.
-Do not implement yet -- the coder is planning in parallel; plans will be merged next.
+Use numbered lists for structured data; avoid wide tables (they get truncated between agents). Be concrete about files, expected behavior, edge cases, and validation steps.
+
+Don't implement yet — the coder is planning in parallel and the two plans get merged next.
 
 ```sh
 printf '%s|%s|reviewer plan written\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"

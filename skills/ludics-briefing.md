@@ -51,21 +51,21 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
 
 1. **Read context**: Read `$LUDICS_STATE_PATH/mag/briefing-context.md`
 
-2. **Check same-day status**: Look at the `## Same-Day Status` section.
-   - If `Status: amend`: do a light-touch update only:
-     - Compute what actually changed since the last briefing before writing:
-       - Prefer git diff in state repo:
+2. **Check same-day status** via the `## Same-Day Status` section.
+   - `Status: amend` — light-touch update only:
+     - Figure out what actually changed since the last briefing:
+       - Prefer git diff in the state repo:
          `git -C "$LUDICS_STATE_PATH" diff --name-only HEAD~1..HEAD -- tasks/ sessions.md mag/queue.jsonl journal/notifications.jsonl 2>/dev/null || true`
-       - If git diff is unavailable/noisy, fall back to context deltas:
-         compare `briefing-context.md` sections against existing `briefing.md`
-     - Update only sections touched by those deltas
-     - Update affected sections of `$LUDICS_STATE_PATH/briefing.md` only
-     - Run a lightweight slot reassignment (only newly-empty slots
-       or newly-ready high-priority tasks)
-     - Do not re-elaborate tasks or redo the full analysis
-     - Still run step 7 (Nudge stalled slotted tasks)
-     - Then skip to step 9 (Write result)
-   - If `Status: new`: proceed with the full process below
+       - If git diff is unavailable or noisy, fall back to context deltas —
+         compare `briefing-context.md` sections against the existing
+         `briefing.md`.
+     - Update only the sections touched by those deltas in
+       `$LUDICS_STATE_PATH/briefing.md`.
+     - Do a lightweight slot reassignment (newly-empty slots or newly-ready
+       high-priority tasks only).
+     - Don't re-elaborate tasks or redo the full analysis.
+     - Still run step 7 (nudge stalled slotted tasks), then skip to step 9.
+   - `Status: new` — proceed with the full process below.
 
 3. **Elaborate unprocessed tasks**:
    - Check the `## Tasks Needing Elaboration` section
@@ -218,15 +218,15 @@ Current context focus: [einsum/ocannl] - switching to [other] would incur contex
 
 ### Questions Guidelines
 
-End every briefing with 1-5 questions. Questions should surface information
-that you **cannot resolve yourself** by reading code, task files, or other
-available resources. If you can answer a question by researching, do the
-research instead of asking.
+End every briefing with 1-5 questions that surface information you can't
+resolve yourself — not things you could answer by reading code, task files,
+or other available resources.
 
-**Avoid asking for confirmation to proceed.** Starting jobs that look like a good
-idea is the right default — worst case the user discards the results.
+Avoid asking for confirmation to proceed. Starting jobs that look like a
+good idea is the right default; worst case, the user discards the results.
 
-When the answers arrive, update relevant files or perform relevant actions so the answers become discoverable.
+When answers arrive, update the relevant files or take the relevant actions
+so the answers become discoverable.
 
 ### Result JSON
 
@@ -241,15 +241,19 @@ When the answers arrive, update relevant files or perform relevant actions so th
 
 ## Delegation Strategy
 
-- **Pre-computed data** in `briefing-context.md` (no CLI commands needed for data gathering)
-- **Git diff** (`tasks/`, `sessions.md`, queue/notifications) for precise amend-mode change detection
-- **Task tool** to invoke `/ludics-elaborate` for unprocessed tasks (parallel)
-- **CLI tools** for slot operations (`ludics slot N assign`, `ludics slot N clear`) and nudge notifications (`ludics notify proposal`)
-- **Direct analysis** for strategic reasoning, slot assignment trade-offs, suggestions
+- Pre-computed data lives in `briefing-context.md` — no CLI commands needed
+  for data gathering.
+- Git diff (`tasks/`, `sessions.md`, queue/notifications) for precise
+  amend-mode change detection.
+- Task tool to invoke `/ludics-elaborate` for unprocessed tasks (parallel).
+- CLI tools for slot operations (`ludics slot N assign`, `ludics slot N
+  clear`) and nudge notifications (`ludics notify proposal`).
+- Direct analysis for strategic reasoning, slot-assignment trade-offs,
+  suggestions.
 
 ## Error Handling
 
 If state files are missing or malformed:
-- Write partial briefing with warnings
-- Include "run ludics tasks sync" suggestion
-- Still write result JSON with status "partial"
+- Write a partial briefing with warnings.
+- Suggest `ludics tasks sync` in the briefing.
+- Still write the result JSON with `"status": "partial"`.

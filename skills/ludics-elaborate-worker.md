@@ -93,9 +93,9 @@ Explore the codebase to understand the current state:
 
 Write findings as a **Tentative Design** section, clearly marked:
 
-> **Convention**: Reference code by function, type, or symbol name — never by
-> raw line number. Line numbers drift as other PRs merge between elaboration
-> and implementation. For precise placement, quote a short distinctive snippet
+> Reference code by function, type, or symbol name, not raw line number —
+> line numbers drift as other PRs merge between elaboration and
+> implementation. For precise placement, quote a short distinctive snippet
 > or anchor to a nearby named boundary.
 
 ```markdown
@@ -116,13 +116,13 @@ Write findings as a **Tentative Design** section, clearly marked:
 
 ### 5. Surface ambiguities and questions
 
-Identify **genuine ambiguities** where:
-- The source intent is unclear and multiple reasonable interpretations exist
-- A design choice matters AND is debatable (not obvious from context)
-- Missing information would significantly change the implementation approach
-- The approach is a creative choice (flag for possible duo-mode experiment)
+Genuine ambiguities look like:
+- Source intent is unclear and multiple reasonable interpretations exist.
+- A design choice matters and is debatable (not obvious from context).
+- Missing information would meaningfully change the implementation approach.
+- The approach is a creative choice (flag for possible duo-mode experiment).
 
-Write a **Questions** section in the task file:
+Write a **Questions** section:
 
 ```markdown
 ## Questions
@@ -131,10 +131,10 @@ Write a **Questions** section in the task file:
 2. [Design option where choice matters: "Option A does X, Option B does Y — which?"]
 ```
 
-Do NOT ask questions that:
-- Can be answered by reading the codebase
-- Are implementation details (agent should decide these)
-- Ask permission to proceed (just note the trade-off)
+Skip questions that:
+- Can be answered by reading the codebase.
+- Are implementation details the agent should decide.
+- Ask permission to proceed — just note the trade-off instead.
 
 If there are no genuine questions, write `## Questions\n\nNone.`
 

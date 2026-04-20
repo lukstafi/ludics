@@ -6,18 +6,20 @@ Write an implementation plan for `{{TASK_ID}}` to `{{PLAN_FILE}}` from `{{WORKTR
 
 {{TASK_SPEC}}
 
-**Baseline**: Run `bun test` now (before any code changes) and record every failing test name (exact name as reported by `bun test`) in the plan under a section titled `## Pre-existing test failures (baseline)`. If all tests pass, write `none`. Do not use vague summaries like "slot tests failing" — list each failing test individually. These failures will be treated as non-blocking by the reviewer unless the task's acceptance criteria explicitly require fixing them.
+Before any code changes, run `bun test` and record the exact failing test names (as reported by `bun test`) under a `## Pre-existing test failures (baseline)` section in the plan. Use `none` when all tests pass. List each failing test individually rather than summarizing — the reviewer treats these as non-blocking unless the acceptance criteria call for fixing them.
 
-**Regression tests**: As you identify behavior changes in the plan (serialization formats, template variables, validation rules, CLI output, etc.), note what regression tests should accompany each change. These tests must be included in the **first implementation round** alongside the code changes — do not defer them to a later round. Examples:
-- Changed serialization → round-trip test (serialize → deserialize → verify)
-- New/changed template rendering → test that exercises the new variable/output
-- Modified validation → test covering new rules and edge cases
+As you plan, call out the regression tests each behavior change needs (serialization formats, template variables, validation rules, CLI output, etc.) and land them in the **first implementation round**, not deferred. A few common patterns:
+- Changed serialization → round-trip test (serialize → deserialize → verify).
+- New/changed template rendering → a test that exercises the new variable/output.
+- Modified validation → tests covering the new rules and edge cases.
 
-**Formatting**: Use numbered lists for structured data in your plan. Do not use wide markdown tables — they get truncated when passed between agents.
-Be concrete: files to change, expected behavior, edge cases, validation steps.
-When the task changes data shapes (field extraction, JSON migration, section restructuring), explicitly list every downstream consumer of the affected data in the plan. For each consumer, note whether it needs updating and why. Grep for field names, section headers, and type references to ensure no consumer is missed.
-**Exhaustive occurrence search**: For every symbol, pattern, or function you plan to modify or replace, run a project-wide grep/ripgrep search and list all occurrences in the plan with a disposition (modify / skip with reason / N/A). Search not just for canonical function names but also for inline reimplementations — regex patterns, copy-pasted logic, and string literals that duplicate the same behavior.
-Do not implement yet -- the reviewer is planning in parallel; plans will be merged next.
+Use numbered lists for structured data; avoid wide markdown tables (they get truncated between agents). Be concrete about files, expected behavior, edge cases, and validation steps.
+
+When the task changes data shapes (field extraction, JSON migration, section restructuring), list every downstream consumer in the plan with a note on whether it needs updating. Grep field names, section headers, and type references to avoid missing one.
+
+For every symbol, pattern, or function you plan to touch, run a project-wide grep/ripgrep and list occurrences in the plan with a disposition (modify / skip with reason / N/A). Search for inline reimplementations too — regex patterns, copy-pasted logic, and string literals that duplicate the same behavior.
+
+Don't implement yet — the reviewer is planning in parallel and the two plans get merged next.
 
 ```sh
 printf '%s|%s|coder plan written\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"

@@ -117,4 +117,4 @@ mag/
 
 ## Delegation Strategy
 
-- **Opus only**: Requires understanding context and making judgment calls about categorization
+- Opus only — this needs context and a judgment call about categorization.

@@ -33,8 +33,7 @@ UPSTREAM_DEFAULT=$(git remote show upstream | sed -n 's/.*HEAD branch: //p')
 git rebase upstream/$UPSTREAM_DEFAULT
 ```
 If conflicts occur, resolve them file by file, then `git rebase --continue`.
-If truly unresolvable, write a failure status and stop — do NOT write done status,
-do NOT modify `{{PR_FILE}}`, do NOT create `{{FORWARDED_MARKER_FILE}}`.
+If they're genuinely unresolvable, write a failure status and stop — don't write a done status, don't modify `{{PR_FILE}}`, and don't create `{{FORWARDED_MARKER_FILE}}`.
 
 4. Force-push rebased branch to working repo:
 ```sh
@@ -77,8 +76,7 @@ gh pr comment "$WORKING_PR_NUM" --repo "{{PROJECT_REPO}}" \
   --body "Forwarded to upstream: $UPSTREAM_PR_URL"
 ```
 
-**Important**: Do NOT create `{{MERGED_MARKER_FILE}}`. The working repo PR stays open
-until the upstream PR is merged and the fork is synced.
+Don't create `{{MERGED_MARKER_FILE}}` here — the working repo PR stays open until the upstream PR is merged and the fork is synced.
 
 ```sh
 printf '%s|%s|forwarded to upstream\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"

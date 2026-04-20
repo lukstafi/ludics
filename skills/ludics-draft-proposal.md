@@ -29,152 +29,139 @@ This skill is invoked when:
 ## Common Steps
 
 Follow [orchestrator-conventions.md](orchestrator-conventions.md):
-- **A** (Task Resolution): read task file, extract title/project/slot
-- **B** (Project Path): resolve project checkout path from config.
-  **Additionally**: resolve the proposals path (see below).
-- **C** (Context Brief): compose 3-10 line brief from conversation history
-- **D** (Worker Delegation): invoke worker in forked context
-- **E** (Result JSON): write result with request ID
-- **F** (Error Handling): standard error patterns
+- **A** (Task Resolution): read task file, extract title/project/slot.
+- **B** (Project Path): resolve the project checkout from config, and the
+  proposals path (see below).
+- **C** (Context Brief): compose a 3-10 line brief from conversation history.
+- **D** (Worker Delegation): invoke the worker in forked context.
+- **E** (Result JSON): write the result with the request ID.
+- **F** (Error Handling): standard patterns.
 
 ### Proposals Path Resolution (extends Section B)
 
-After resolving the project path, check the project's `proposals_path` field
-in the same config entry. Then compute the absolute proposals directory:
+After resolving the project path, check the project's `proposals_path` in
+the same config entry and compute the absolute proposals directory:
 
-- If `proposals_path` is set: `<project_path>/<proposals_path>`
-- Otherwise probe in order:
-  1. `<project_path>/docs/` exists -> use `<project_path>/docs/proposals/`
-  2. `<project_path>/doc/` exists -> use `<project_path>/doc/proposals/`
-  3. `<project_path>/.docs/` exists -> use `<project_path>/.docs/proposals/`
-  4. Fallback: `<project_path>/docs/proposals/`
+- If `proposals_path` is set: `<project_path>/<proposals_path>`.
+- Otherwise probe, in order:
+  1. `<project_path>/docs/` → `<project_path>/docs/proposals/`
+  2. `<project_path>/doc/` → `<project_path>/doc/proposals/`
+  3. `<project_path>/.docs/` → `<project_path>/.docs/proposals/`
+  4. Fallback: `<project_path>/docs/proposals/`.
 
-The worker will create the directory; this step only resolves the path.
+The worker creates the directory; this step just resolves the path.
 
 Worker: `/ludics-draft-proposal-worker <task_id> <project_path> <proposals_path> <context_brief>`
 
-## Skill-Specific: Precondition Check
+## Precondition check
 
-Before delegating to the worker, check the task file for `has_questions: true`.
-If set, the task has unanswered questions from elaboration — skip the proposal:
-- Write result JSON with `"status": "blocked"` and message `"unanswered questions"`
-- Do NOT delegate to the worker
-- The Mag nag system will remind the user to answer the questions
+If the task frontmatter has `has_questions: true`, there are unanswered
+questions from elaboration — skip the proposal:
+- Write result JSON with `"status": "blocked"` and `"unanswered questions"`.
+- Don't delegate to the worker; Mag's nag loop reminds the user to answer.
 
-## Skill-Specific: Status Routing
+## Status routing
 
-Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
-Parse the JSON for `status`, `proposal_path`, `ambiguities`, `start_confidence`,
-`start_rationale`, `title`, and `summary`.
+Extract the final ` ```json ` block from the worker's response. Fields:
 
-### Expected Worker Fields
+| Field | Used for | Missing-field fallback |
+|---|---|---|
+| `status` | primary routing | error (malformed response) |
+| `proposal_path` | notification, result JSON | expected absent for stale/split-needed/error |
+| `ambiguities` | questions notification | treat as `"none"`, skip |
+| `start_confidence` | auto-start eval | default `"low"` (defer to user) |
+| `start_rationale` | auto-start eval | empty string |
+| `title` | notification title | fall back to task_id |
+| `summary` | notification body, result JSON | empty string |
+| `task_id` | — | not consumed |
 
-1. `status` — primary routing. Absent: error (malformed response).
-2. `proposal_path` — notification, result JSON. Expected absent for stale/split-needed/error.
-3. `ambiguities` — questions notification. Absent: treat as `"none"`, skip.
-4. `start_confidence` — auto-start evaluation. Absent: default to `"low"` (defer to user).
-5. `start_rationale` — auto-start evaluation. Absent: default to empty string.
-6. `title` — notification title. Absent: fall back to task_id.
-7. `summary` — notification body, result JSON. Absent: use empty string.
-8. `task_id` — not consumed by orchestrator.
-
-- **status: completed** — write `proposal: <proposal_path>` to the task file
-  frontmatter (the orchestrator does this, not the worker, to avoid git sync
-  races from the worker's isolated context). If the worker's response includes
-  `"skip_plan": true`, write `skip_plan: true` to the task frontmatter;
-  otherwise, remove any existing `skip_plan` field from frontmatter to prevent
-  stale values from a previous proposal run.
-  This causes medium-effort tasks to skip the plan phase during orchestration.
-  Then proceed to auto-start evaluation (next section)
-- **status: stale** — write result JSON with `"status": "stale"`, stop
-- **status: split-needed** — queue the split skill and stop:
+Routing by status:
+- **completed** — write `proposal: <proposal_path>` into the task frontmatter
+  (the orchestrator does this so the worker's isolated context doesn't race
+  with git sync). If the worker returned `"skip_plan": true`, write
+  `skip_plan: true` as well; otherwise remove any stale `skip_plan` from a
+  prior run. `skip_plan: true` causes medium-effort tasks to skip the plan
+  phase in orchestration. Then go to auto-start evaluation.
+- **stale** — write result JSON with `"status": "stale"` and stop.
+- **split-needed** — queue the split skill and stop:
   ```bash
   ludics mag split-task <task_id>
   ```
-  Write result JSON with `"status": "split-needed"`, stop.
-- **status: error** — write result JSON with `"status": "error"`, stop
-- **status: already-exists** — check if re-generation is wanted, or skip
+  Write result JSON with `"status": "split-needed"`.
+- **error** — write result JSON with `"status": "error"` and stop.
+- **already-exists** — check whether re-generation is wanted, or skip.
 
-## Skill-Specific: Auto-start Evaluation
+## Auto-start evaluation
 
-After status: `"completed"`, evaluate whether to auto-start the slot or defer
-to the user:
+After `status: "completed"`, decide whether to auto-start the slot or defer:
 
 ```bash
 ludics mag auto-start-evaluate <task_id> <start_confidence> "<start_rationale>"
 ```
 
-Parse the JSON output for the `decision` field:
-- `"auto-start"` — proceed to auto-start (next section)
-- `"defer-to-user"` — proceed to notification with launch buttons
+Parse the JSON for `decision`:
+- `"auto-start"` — go to auto-start below.
+- `"defer-to-user"` — go to the launch-button notification.
 
-The decision respects the `start_sessions` autonomy level:
-- `manual` or `suggest` — always defers to the user
-- `auto` — auto-starts when worker reports `high` confidence and a slot is assigned;
-  defers otherwise
+The decision follows the `start_sessions` autonomy level:
+- `manual` or `suggest` — always defers.
+- `auto` — auto-starts when the worker reports `high` confidence and a slot is
+  assigned; defers otherwise.
 
-**Decision criteria details:**
-- **Confidence is the primary signal** — the worker's `start_confidence` drives the
-  decision. The worker has full codebase context and is the authority on scope clarity.
-- **Rationale is a safety net** — the rationale text is scanned for ambiguity keywords
-  ("ambiguous", "unclear", "speculative", "open question", "uncertain scope") that
-  contradict a `high` confidence signal. If found, the decision overrides to `defer-to-user`.
-- **Vague acceptance criteria do NOT block auto-start** — improvements can be refined
-  in follow-up work.
-- Tasks with no assigned slot always defer to the user.
+How the decision is made:
+- Confidence is the main signal — the worker has the codebase context, so its
+  `start_confidence` leads.
+- Rationale is a safety net — we scan for ambiguity keywords ("ambiguous",
+  "unclear", "speculative", "open question", "uncertain scope") that contradict
+  a `high` signal. Any hit flips the decision to `defer-to-user`.
+- Vague acceptance criteria alone don't block auto-start; follow-up work can
+  refine them.
+- A task with no assigned slot always defers.
 
-Note: The `skip_plan` frontmatter field (if set by the worker) influences
-orchestration flags at slot start time — medium-effort tasks with
-`skip_plan: true` skip the plan phase entirely, going from setup to work.
-This field is consumed by `selectOrchestrationFlagsForTask()` in both the
-keepalive auto-assignment path (mag.ts) and the manual slot start path
-(slots/index.ts), not by auto-start-evaluate itself.
+The `skip_plan` frontmatter field (if the worker sets it) is consumed later by
+`selectOrchestrationFlagsForTask()` — at slot start time, medium-effort tasks
+with `skip_plan: true` skip the plan phase. It isn't used by
+`auto-start-evaluate`.
 
-## Skill-Specific: Auto-start Slot
+## Auto-start slot
 
-If decision = "auto-start", start the assigned slot directly:
+For `decision = "auto-start"`, start the slot directly and send a lighter
+notification (priority 2):
 
 ```bash
 ludics slot <N> start
-```
-
-Send a lighter notification (priority 2):
-
-```bash
 ludics notify outgoing "Started slot <N> for <task_id>: <title>"
 ```
 
-Skip the launch-button notification — proceed to questions and result JSON.
+Skip the launch-button notification; move on to questions and result JSON.
 
-## Skill-Specific: Proposal Notification (defer-to-user)
+## Proposal notification (defer-to-user)
 
-If decision = "defer-to-user", use the worker's `proposal_path` as the source
-of truth for the proposal location:
+For `decision = "defer-to-user"`, use the worker's `proposal_path`:
 
 ```bash
 ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<proposal_path>"
 ```
 
-## Skill-Specific: Questions Notification
+## Questions notification
 
-If `ambiguities` is not `"none"` and is non-empty, send as notification text:
-- Format each element as a numbered list
+If `ambiguities` is non-empty (and not `"none"`), send them as a numbered
+list:
 
 ```bash
 ludics notify outgoing "<formatted ambiguities>"
 ```
 
-Use title: "Proposal questions — <task_id>: <title>"
+Use title: `"Proposal questions — <task_id>: <title>"`. Skip when
+`ambiguities` is `"none"` or empty.
 
-Skip if `ambiguities` is `"none"` or an empty array/string.
-
-## Skill-Specific: Best-effort Desktop
+## Best-effort desktop
 
 ```bash
 code "<project_path>/<proposal_path>" 2>/dev/null || true
 ```
 
-## Skill-Specific Result Fields
+## Result fields
 
 ```json
 {
@@ -183,11 +170,11 @@ code "<project_path>/<proposal_path>" 2>/dev/null || true
 }
 ```
 
-Output format: `"Proposal written for <task_id>: <title>"`
+Output: `"Proposal written for <task_id>: <title>"`.
 
-## Delegation Strategy
+## Delegation strategy
 
-- **Worker** (`/ludics-draft-proposal-worker`): All codebase exploration,
-  proposal writing, git commit+push, task frontmatter update — runs in isolated context
-- **Orchestrator** (this skill): Task file read, decision routing, notifications,
-  result JSON — runs inline in Mag's context
+- Worker (`/ludics-draft-proposal-worker`) runs in isolated context: codebase
+  exploration, proposal writing, git commit+push, task frontmatter update.
+- Orchestrator (this skill) runs inline in Mag: task read, decision routing,
+  notifications, result JSON.

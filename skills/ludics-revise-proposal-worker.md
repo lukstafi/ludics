@@ -82,44 +82,35 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
 4. **Edit task file**:
 
-   **File-based mode**: apply additive edits as described — add Notes section, correct
-   factual errors, update acceptance criteria. Preserve all existing structure:
-   - **Add** a `## Notes` section (or append to existing one) with observations
-     discovered during revision — things the coding agent should know
-   - **Correct** factual errors (wrong file paths, outdated API references,
-     stale line-number references, incorrect assumptions about current state)
-   - **Update** acceptance criteria if they were unclear or incomplete
-   - **Preserve** existing structure — don't reorganize or rewrite sections
-     that are correct
-   - **Don't remove** content unless it's demonstrably wrong
+   In file-based mode, make additive edits — add a `## Notes` section (or
+   append to an existing one) with observations from revision; correct factual
+   errors (wrong paths, outdated API references, stale line numbers,
+   incorrect assumptions about current state); update acceptance criteria
+   when they were unclear or incomplete. Preserve existing structure and
+   avoid removing content unless it's demonstrably wrong.
 
-   **Inline mode**: skip step 4. All task file editing — both proposal revision and
-   notes/criteria updates — is handled in a single combined pass in step 5 to avoid
-   conflicting with the destructive rewrite of the same file.
+   In inline mode, skip step 4 — both proposal revision and notes/criteria
+   updates happen in a single combined pass in step 5 to avoid conflicting
+   with the destructive rewrite of the same file.
 
 5. **Edit proposal content**:
 
-   **File-based mode**: revise the proposal file at `$proposal_abs` destructively —
-   rewrite the approach if off-track, cut premature details, shorten over-specified
-   sections, tighten scope. Maintain the Motivation / Current State / Proposed Change /
-   Scope structure:
-   - **Rewrite** the approach if it's off-track or based on incorrect assumptions
-   - **Cut** premature implementation details — sections that micro-manage the
-     "how" rather than specifying the "what" and "why"
-   - **Shorten** sections that over-specify. The proposal will often get shorter
-     and sharper on each revision
-   - **Tighten** scope if it's too broad or includes nice-to-haves
-   - **Update** "Current State" if the codebase has changed
-   - **Incorporate** user feedback from the context brief
-   - **Maintain** the same section structure (Motivation, Current State,
-     Proposed Change, Scope) unless a section is genuinely empty
+   In file-based mode, rewrite the proposal file at `$proposal_abs` destructively:
+   - Rewrite the approach if it's off-track or built on incorrect assumptions.
+   - Cut premature implementation details — sections that micro-manage the
+     how rather than spec the what and why.
+   - Shorten over-specified sections; proposals usually get sharper on each
+     revision.
+   - Tighten scope if it's too broad or includes nice-to-haves.
+   - Update "Current State" if the codebase has shifted.
+   - Fold in user feedback from the context brief.
+   - Keep the Motivation / Current State / Proposed Change / Scope structure
+     unless a section is genuinely empty.
 
-   **Inline mode**: perform a single combined edit of the task file. In one pass:
-   - Revise the proposal sections (Motivation, Current State, Proposed Change, Scope)
-     destructively — the same rules as file-based revision apply here.
-   - Make any notes or acceptance-criteria corrections that would normally go in step 4.
-   - Preserve the frontmatter block unchanged.
-   There is no additive-only constraint here; step 4 is skipped in this mode.
+   In inline mode, do one combined edit of the task file: revise the proposal
+   sections destructively (same rules as file-based), and fold in any notes
+   or acceptance-criteria corrections that would normally go in step 4.
+   Leave the frontmatter block alone. Step 4 doesn't apply here.
 
 6. **Commit and push**:
 
@@ -148,9 +139,8 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    ```
 
 7. **Assess changes**:
-   If after re-examination the proposal is already solid and no meaningful
-   changes were needed, report `status: "no-changes"` instead of making
-   trivial edits.
+   If after re-examination the proposal is already solid, report
+   `status: "no-changes"` rather than making trivial edits.
 
 ## Final Response
 
@@ -181,8 +171,8 @@ as the last code block in your response:
 
 ## Error Handling
 
-- Task not found: Report `status: "error"` with explanation
-- Proposal file not found: Report `status: "error"` — orchestrator should not
-  have invoked revision without a proposal
-- Project path not found: Report `status: "error"`
-- Git push fails: Log warning, continue — edits are still written locally
+- Task not found: report `status: "error"` with an explanation.
+- Proposal file not found: report `status: "error"` — the orchestrator
+  shouldn't invoke revision without a proposal.
+- Project path not found: report `status: "error"`.
+- Git push fails: log a warning and carry on — the edits are on disk.

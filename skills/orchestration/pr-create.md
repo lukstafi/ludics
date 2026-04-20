@@ -1,6 +1,6 @@
 # Create PR
 {{VERIFICATION_CONTEXT}}{{UPSTREAM_REPO_NOTE}}
-Push and create a PR from `{{WORKTREE_PATH}}`. Write **only the bare PR URL** to `{{PR_FILE}}`.
+Push and create a PR from `{{WORKTREE_PATH}}`. Write just the bare PR URL to `{{PR_FILE}}`.
 
 ```sh
 git push -u origin HEAD

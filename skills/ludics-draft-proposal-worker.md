@@ -38,13 +38,13 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    `personal` project, use `$LUDICS_STATE_PATH/..` (the state repository root).
 
 3. **Check preconditions**:
-   - Verify `has_questions` is NOT set in frontmatter. If it is, the task
-     has unanswered questions — report `status: "error"` with message
-     "task has unanswered questions" and stop.
-   - If the task is clearly stale (work already done or goal no longer applies),
-     report `status: "stale"` in your final response and stop.
-   - If the task covers multiple independent concerns (different modules,
-     separable features, could be merged to main independently), report
+   - If `has_questions` is set in frontmatter, the task has unanswered
+     questions from elaboration — report `status: "error"` with "task has
+     unanswered questions" and stop.
+   - If the task is clearly stale (work already done, or the goal no longer
+     applies), report `status: "stale"` and stop.
+   - If the task covers several independent concerns (different modules or
+     separable features that could merge to main independently), report
      `status: "split-needed"` and stop.
 
 4. **Explore project codebase**:
@@ -91,8 +91,8 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    What's in/out of scope. Dependencies on other tasks.
    ```
 
-   **Key:** No implementation plan, no effort estimates, no micro-managed steps.
-   Goal/What focus. Coding agents handle the How via their plan phase.
+   Stay on goal/what, not how — no implementation plan, no effort estimates,
+   no micro-managed steps. Coding agents handle the how during their plan phase.
 
 8. **Commit and push**:
    Strip the `<project_path>/` prefix from `<proposals_path>` to get the repo-relative path:
@@ -142,29 +142,30 @@ as the last code block in your response:
 }
 ```
 
-**START_CONFIDENCE guidance:**
-- `high`: task is a clear, bounded improvement with specific scope — derived from
-  a concrete user request, a well-defined GitHub issue, or a clearly actionable
-  elaboration
-- `low`: task is exploratory/speculative ("consider", "study", "look into"), has
-  unresolved ambiguities that affect scope, or the elaboration is suspiciously
-  overconfident for a vague task statement
-- Vague acceptance criteria alone do NOT warrant `low` — improvements can be
-  refined in follow-up work
-- This is advisory only; the orchestrator makes the final decision
+Picking `start_confidence`:
+- `high` — a clear, bounded improvement with specific scope, derived from a
+  concrete user request, a well-defined GitHub issue, or a clearly actionable
+  elaboration.
+- `low` — exploratory or speculative ("consider", "study", "look into"), with
+  unresolved ambiguities that change the scope, or an elaboration that sounds
+  suspiciously confident for a vague task.
+- Vague acceptance criteria alone don't warrant `low` — follow-up work can
+  refine them.
+- This is advisory; the orchestrator makes the final decision.
 
-**SKIP_PLAN guidance:**
-- `true`: proposal maps 1:1 to implementation — it IS the plan. Typically: <=5
-  files, straightforward changes with exact code pointers, no creative design
-  choices, no architecture decisions
-- `false` (default): task benefits from independent planning by coder/reviewer
-- `skip_plan` and `start_confidence` are independent signals: a proposal can
-  have high confidence but complex implementation (skip_plan=false), or trivial
-  implementation with uncertain scope (skip_plan=true, start_confidence=low)
+Picking `skip_plan`:
+- `true` — the proposal maps 1:1 to implementation and *is* the plan. Typically
+  ≤5 files, straightforward changes with exact code pointers, no creative
+  design, no architectural decisions.
+- `false` (default) — the task benefits from independent planning by coder
+  and reviewer.
+- `skip_plan` and `start_confidence` are independent: a proposal can be high
+  confidence but complex to implement (`skip_plan=false`), or trivial to
+  implement with uncertain scope (`skip_plan=true, start_confidence=low`).
 
 ## Error Handling
 
-- Task not found: Report `status: "error"` with explanation
-- Project path not found: Report `status: "error"`
-- Already has proposal: Report `status: "already-exists"` with the existing path
-- Git push fails: Log warning, continue — the proposal is still written locally
+- Task not found: report `status: "error"` with an explanation.
+- Project path not found: report `status: "error"`.
+- Already has a proposal: report `status: "already-exists"` with the existing path.
+- Git push fails: log a warning and carry on — the proposal is still on disk.

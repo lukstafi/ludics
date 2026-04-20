@@ -8,7 +8,7 @@ Task spec:
 
 {{TASK_SPEC}}
 
-**Baseline cross-check**: Run `bun test` and record every failing test name (exact names) in your findings. Compare against the coder's baseline from the merged plan and explicitly note any discrepancies — do not silently override the coder's baseline. Discrepancies are typically caused by different merge bases or environment-sensitive tests.
+Run `bun test` and record every failing test name (exact names) in your findings. Cross-check against the coder's baseline in the merged plan and call out any discrepancies rather than silently overriding the baseline — mismatches usually come from different merge bases or environment-sensitive tests.
 
 Write your findings to `{{PLAN_FILE}}`, then mark completion:
 

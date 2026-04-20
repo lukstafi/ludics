@@ -76,5 +76,5 @@ This skill is invoked when:
 
 ## Delegation Strategy
 
-- **CLI tools** for flow analysis
-- **Opus** for reasoning about suggestions
+- CLI tools for flow analysis.
+- Opus for reasoning about suggestions.

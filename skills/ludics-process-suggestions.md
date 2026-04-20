@@ -87,17 +87,14 @@ Manual: `ludics mag process-suggestions <task-id>`
    For each existing follow-up, read its title. Skip any new suggestion that
    substantially overlaps with an existing follow-up title or theme.
 
-8. For each distinct suggestion, classify:
-   - **Substantive** -- create a task
-   - **Nitpicky** -- skip with logged reasoning
+8. Classify each distinct suggestion as substantive (create a task) or
+   nitpicky (skip with logged reasoning).
 
-   **Group small related suggestions into a single task.** When multiple
-   substantive suggestions touch neighboring code (same file, same function,
-   or tightly coupled modules), combine them into one follow-up task rather
-   than creating separate tasks for each. The task title should reflect the
-   combined scope, and the context should list all constituent suggestions.
-   This avoids task sprawl from retrospectives — a single coherent cleanup
-   task is better than three tiny ones.
+   When several substantive suggestions touch neighboring code (same file,
+   same function, or tightly-coupled modules), combine them into one
+   follow-up task. The title reflects the combined scope and the context
+   lists the constituent suggestions. A single coherent cleanup beats three
+   tiny tasks.
 
 9. For substantive suggestions (or groups of related suggestions):
    a. Run: `ludics tasks create "<title>" <project> C`
@@ -156,33 +153,33 @@ Manual: `ludics mag process-suggestions <task-id>`
 
 ## Judgment Criteria
 
-**Create task (substantive)**:
-- Architectural refactoring that affects multiple modules
-- Missing error handling or edge cases
-- Performance improvements with measurable impact
-- API design improvements that affect downstream consumers
-- Missing test coverage for important code paths
-- Security or correctness concerns
-- Workflow improvements that reduce friction across multiple tasks
-- Items from `REQUEST_CHANGES` reviews: these are high-signal because the
-  reviewer explicitly flagged the issue and the coder did not address it
-  before task completion. Lean toward "substantive" classification unless the
-  issue is purely stylistic (variable naming, formatting).
+Substantive (create a task):
+- Architectural refactoring across multiple modules.
+- Missing error handling or edge cases.
+- Performance improvements with measurable impact.
+- API design improvements that affect downstream consumers.
+- Missing test coverage for important code paths.
+- Security or correctness concerns.
+- Workflow improvements that reduce friction across multiple tasks.
+- Items from `REQUEST_CHANGES` reviews — these are high-signal because the
+  reviewer flagged the issue and the coder didn't address it before task
+  completion. Lean toward substantive unless the issue is purely stylistic
+  (variable naming, formatting).
 
-**Skip (nitpicky)**:
-- Variable/function renaming for style preference
-- Comment rewording or documentation formatting
-- Import reordering or minor code organization
-- Minor formatting changes (whitespace, bracket style)
-- Suggestions already covered by existing tasks (check relates_to overlap)
-- Cosmetic UI tweaks with no functional impact
+Nitpicky (skip):
+- Variable/function renaming for style preference.
+- Comment rewording or documentation formatting.
+- Import reordering or minor code organization.
+- Minor formatting changes (whitespace, bracket style).
+- Suggestions already covered by existing tasks (check `relates_to` overlap).
+- Cosmetic UI tweaks with no functional impact.
 
 ## Error Handling
 
-- Missing retrospective file: write `{"status": "error", "message": "retrospective not found"}`
-- Empty suggestions: write `{"status": "empty"}`
-- Partial failure during batch creation: report partial success in result JSON
-  with the tasks created so far and error details
+- Missing retrospective file: write `{"status": "error", "message": "retrospective not found"}`.
+- Empty suggestions: write `{"status": "empty"}`.
+- Partial failure during batch creation: report partial success in result
+  JSON with the tasks created so far and error details.
 
 ## Output
 

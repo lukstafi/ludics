@@ -12,7 +12,7 @@ Your PR in `{{PR_FILE}}` has merge conflicts with the base branch. From `{{WORKT
    BASE=$(gh pr view --json baseRefName -q .baseRefName)
    git rebase "origin/$BASE"
    ```
-   Resolve each conflict carefully — keep your changes where they are correct, accept upstream where appropriate.
+   Resolve each conflict — keep your changes where they're correct, take upstream where that makes more sense.
 
 3. Force-push with lease:
    ```sh
@@ -26,7 +26,7 @@ Your PR in `{{PR_FILE}}` has merge conflicts with the base branch. From `{{WORKT
 
 If new conflicts appear after rebasing (e.g., from concurrent upstream merges), repeat the rebase cycle until the PR is clean.
 
-Also address any pending reviewer comments while you're at it — check:
+While you're here, check for pending reviewer comments:
 ```sh
 gh pr view --json reviews,comments --jq '.reviews,.comments'
 gh api --paginate repos/{owner}/{repo}/pulls/{number}/comments --jq '.[] | {path, line, body}'

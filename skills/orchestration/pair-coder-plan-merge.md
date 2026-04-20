@@ -2,24 +2,23 @@
 
 {{PROPOSAL_INSTRUCTION}}
 
-## Code-Proposal Alignment Checklist
+## Code-Proposal Alignment Check
 
-Before merging the plans, verify that the proposal's code assumptions match the actual codebase in this worktree. Use grep, search, or type-check to confirm each item:
+Before merging, spot-check the proposal's code assumptions against the actual codebase in this worktree (grep, search, or type-check). In particular:
 
-- [ ] APIs/functions mentioned in the proposal exist in the codebase
-- [ ] Function/module signatures match proposal expectations
-- [ ] Data structures (types, interfaces) exist as assumed
-- [ ] File paths referenced in the proposal point to actual files
-- [ ] Dependencies mentioned in the proposal are available
-- [ ] If the proposal assumes code added by prior phases, confirm it is present
+- APIs/functions mentioned in the proposal exist.
+- Function/module signatures match what the proposal expects.
+- Data structures (types, interfaces) exist as assumed.
+- File paths in the proposal point to real files.
+- Dependencies mentioned are available.
+- Code the proposal assumes from prior phases is present.
 
-If any assumption is violated, document the gap in the merged plan:
-"⚠️ ASSUMPTION GAP: proposal assumes X but codebase has Y. Recommend [specific remediation]."
+If something is off, note it in the merged plan as
+`⚠️ ASSUMPTION GAP: proposal assumes X but codebase has Y. Recommend <remediation>.`
 
-Minor gaps (e.g., a renamed method with identical behavior): document clearly but proceed with the merge.
-Substantial gaps (e.g., an entire API or module is missing, would cause implementation rework): reassign to reviewer with REQUEST_CHANGES.
+Minor gaps (e.g., a renamed method with identical behavior) — document and proceed. Substantial gaps (a missing API or module that would cause rework) — reassign to the reviewer with REQUEST_CHANGES.
 
-Merge the two independent plans for `{{TASK_ID}}` into one at `{{MERGED_PLAN_FILE}}`.
+Now merge the two independent plans for `{{TASK_ID}}` into one at `{{MERGED_PLAN_FILE}}`.
 
 **Your plan**: `{{PLAN_FILE}}`
 
@@ -31,8 +30,7 @@ Merge the two independent plans for `{{TASK_ID}}` into one at `{{MERGED_PLAN_FIL
 
 {{PEER_REVIEW}}
 
-**Formatting**: Use numbered lists for structured data in your plan. Do not use wide markdown tables — they get truncated when passed between agents.
-Pick the strongest approach from each, incorporate feedback, stay concrete.
+Use numbered lists for structured data; avoid wide tables (they get truncated between agents). Pick the strongest approach from each plan, fold in feedback, keep it concrete.
 
 ```sh
 printf '%s|%s|merged plan written\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"

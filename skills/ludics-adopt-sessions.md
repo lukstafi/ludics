@@ -36,34 +36,36 @@ This skill is invoked when:
 
 3. **For each matched, non-stale session** (from `## Session-Project Matches`):
 
-   **Adapter selection:**
-   Use the `**Recommended adapter:**` field from the context. The pre-computation
-   checks for orchestration metadata (`.peer-sync/`) and agent session metadata
-   (`.agent-sessions/`) to determine which adapter is safe to use:
-   - If orchestration is detected → the orchestration type (agent-duo, agent-pair-*, etc.)
-   - If `.agent-sessions/` exists → `agent-claude` or `agent-codex` (matching the agent type)
-   - Otherwise → `manual` (safe default — tracks the slot without requiring
-     orchestration infrastructure that doesn't exist)
+   Adapter selection — use the `**Recommended adapter:**` from the context.
+   Pre-computation picks a safe adapter based on what metadata exists in the
+   worktree:
+   - Orchestration detected (`.peer-sync/`) → the orchestration type
+     (agent-duo, agent-pair-*, etc.).
+   - `.agent-sessions/` present → `agent-claude` or `agent-codex` (matching
+     the agent type).
+   - Neither → `manual` (safe default — tracks the slot without requiring
+     orchestration infrastructure that isn't there).
 
-   **Session identifier for `-s` flag:**
-   Use the tmux session name (from `**tmux session:**` in context) when available.
-   Otherwise use the first session ID from `**Session IDs:**`.
+   Session identifier for the `-s` flag — use the tmux session name (from
+   `**tmux session:**` in context) when available, otherwise the first
+   session ID from `**Session IDs:**`.
 
    ### Case A: Project already has a slot
-   The session belongs to a project that already occupies a slot. This is **not** a
-   no-op — associate the session with that slot to ensure tracking is accurate:
+   The session belongs to a project that's already in a slot — this isn't a
+   no-op; associate the session with that slot so tracking stays accurate:
 
-   - If the session cwd matches the slot's path: update the slot's session reference
-     if it's missing or different:
+   - If the session cwd matches the slot's path, update the slot's session
+     reference when it's missing or different:
      ```bash
      ludics slot N assign <current-task-or-desc> -a <current-adapter> -s <session-id> -p <session-cwd>
      ```
-     (Re-assign preserves the existing task/adapter while updating the session field.)
+     Re-assigning preserves the existing task and adapter while updating the
+     session field.
 
-   - If the session cwd **differs** from the slot's path (e.g., a worktree for a
-     different branch/feature), this is likely parallel work. Consider assigning a
-     second slot if one is empty and the session's work appears distinct (different
-     git branch, different orchestration feature). Use your judgment.
+   - If the session cwd differs from the slot's path (e.g., a worktree for a
+     different branch or feature), it's likely parallel work. If an empty
+     slot exists and the work looks distinct (different git branch, different
+     orchestration feature), consider assigning a second slot — use judgment.
 
    - Note the association in the report either way.
 
@@ -95,12 +97,13 @@ This skill is invoked when:
      ```
 
    ### Case D: No empty slots
-   Note the orphaned session in the report. Use your judgment on whether preemption
-   is warranted — consider factors like:
-   - Priority of the orphaned session's ready tasks vs. the lowest-priority slot
-   - Whether any occupied slot has stale or inactive work
-   - Whether the orphaned session appears to be doing important active work
-     (recent activity, meaningful git branch/summary)
+   Note the orphaned session in the report. Preemption is a judgment call —
+   consider:
+   - Priority of the orphaned session's ready tasks vs. the lowest-priority
+     occupied slot.
+   - Whether any occupied slot has stale or inactive work.
+   - Whether the orphaned session looks like important active work (recent
+     activity, meaningful git branch or summary).
 
    If preemption seems justified:
    ```bash
@@ -158,10 +161,11 @@ Skipped: 1 stale, 1 unmatched (scratch), 1 project already in slot 3
 
 ## Delegation Strategy
 
-- **Pre-computed data** in `adopt-sessions-context.md` — no discovery or heavy computation
-- **CLI tools** for slot operations (`ludics slot N assign`, `ludics slot N preempt`)
-- **Direct judgment** for prioritization, preemption trade-offs, and ambiguous cases
-- Execute commands directly, do not use sub-agents
+- Pre-computed data lives in `adopt-sessions-context.md` — no discovery or
+  heavy computation here.
+- CLI tools for slot operations (`ludics slot N assign`, `ludics slot N preempt`).
+- Direct judgment for prioritization, preemption trade-offs, and ambiguous cases.
+- Execute commands directly; don't spawn sub-agents.
 
 ## Error Handling
 

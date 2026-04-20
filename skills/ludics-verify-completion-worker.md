@@ -57,15 +57,17 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
      ```
      Then grep those files for `TODO`, `FIXME`, `HACK`, `XXX`
 
-4. **Make completion judgment**:
+4. **Make a completion judgment**:
 
-   - **complete**: All acceptance criteria appear met, no critical loose ends
-   - **complete-with-followups**: Core criteria met, but deferred items, TODO
-     comments, or minor unchecked criteria represent follow-up work. List each
-     distinct loose end with a suggested follow-up task title and priority.
-   - **uncertain**: Some criteria appear met but others are unclear or cannot
-     be verified from the codebase alone. List specific questions.
-   - **incomplete**: Significant acceptance criteria are clearly unmet.
+   - **complete** — all acceptance criteria appear met with no critical
+     loose ends.
+   - **complete-with-followups** — core criteria met, but deferred items,
+     TODO comments, or minor unchecked criteria are worth capturing as
+     follow-up work. List each distinct loose end with a suggested title
+     and priority.
+   - **uncertain** — some criteria appear met but others are unclear or
+     can't be verified from the codebase alone. List specific questions.
+   - **incomplete** — significant acceptance criteria are clearly unmet.
      List what's missing.
 
 ## Final Response
@@ -99,7 +101,8 @@ as the last code block in your response:
 
 ## Error Handling
 
-- Task not found: Report `status: "error"`
-- Project path not found: Attempt verification from task file and git history only,
-  note limitation in evidence
-- No acceptance criteria: Report `verdict: "uncertain"` — cannot verify without criteria
+- Task not found: report `status: "error"`.
+- Project path not found: verify from the task file and git history alone,
+  and note the limitation in evidence.
+- No acceptance criteria: report `verdict: "uncertain"` — no way to verify
+  without them.

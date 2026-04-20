@@ -49,4 +49,4 @@ touch "{{MERGED_MARKER_FILE}}"
 printf '%s|%s|upstream merge cleanup complete\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
 ```
 
-Do not write the merged marker until all cleanup steps succeed.
+Write the merged marker only once every cleanup step has succeeded.

@@ -142,7 +142,9 @@ result to `$LUDICS_RESULTS_DIR/$REQ_ID.json`:
 
 ## Error Handling
 
-- Corrections file missing or empty: Report `CORRECTIONS_PROCESSED: 0`, continue with journal
-- Journal directory missing: Report `JOURNAL_ENTRIES_PROCESSED: 0`, continue with corrections
-- `gh` not authenticated: Skip issue filing, note in response
-- On error: Write result JSON with `"status": "error"`
+- Corrections file missing or empty: report `CORRECTIONS_PROCESSED: 0` and
+  carry on with the journal.
+- Journal directory missing: report `JOURNAL_ENTRIES_PROCESSED: 0` and carry
+  on with corrections.
+- `gh` not authenticated: skip issue filing and note it in the response.
+- On error: write result JSON with `"status": "error"`.

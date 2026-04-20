@@ -32,78 +32,74 @@ This skill is invoked when:
 ## Common Steps
 
 Follow [orchestrator-conventions.md](orchestrator-conventions.md):
-- **A** (Task Resolution): read task file, extract title/project/slot.
-  **Additionally**: verify `proposal:` field exists in frontmatter; if missing,
-  write error result "no proposal to revise" and stop.
-  `proposal: inline` is a valid legacy value and proceeds normally; the worker
-  treats the task body as the proposal source and revises it in-place.
-- **B** (Project Path): resolve project checkout path from config
-- **C** (Context Brief): compose 3-10 line brief from conversation history.
-  **Additionally**: parse user feedback from `$ARGUMENTS` (everything after
-  the task ID) and include it verbatim — this is the primary input for revision.
-  If no feedback was provided, say so — the worker will use its own judgment
-  from re-reading the codebase.
-- **D** (Worker Delegation): invoke worker in forked context
-- **E** (Result JSON): write result with request ID
-- **F** (Error Handling): standard error patterns + "no proposal field" error
+- **A** (Task Resolution): read task file, extract title/project/slot. Also
+  check that the frontmatter has a `proposal:` field — if not, write an error
+  result `"no proposal to revise"` and stop. `proposal: inline` is a valid
+  legacy value; the worker revises the task body in-place.
+- **B** (Project Path): resolve the project checkout from config.
+- **C** (Context Brief): compose a 3-10 line brief from conversation history.
+  Also parse user feedback from `$ARGUMENTS` (everything after the task ID)
+  and include it verbatim — that's the primary input for revision. If no
+  feedback was given, say so; the worker will use its own judgment.
+- **D** (Worker Delegation): invoke the worker in forked context.
+- **E** (Result JSON): write the result with the request ID.
+- **F** (Error Handling): standard patterns, plus the "no proposal field" error.
 
 Worker: `/ludics-revise-proposal-worker <task_id> <project_path> <context_brief>`
 
-## Skill-Specific: Status Routing
+## Status routing
 
-Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
-Parse the JSON for `status`, `proposal_path`, `proposal_mode`, `changes_summary`,
-`title`, and `summary`.
+Extract the final ` ```json ` block from the worker. Fields:
 
-### Expected Worker Fields
+| Field | Used for | Missing-field fallback |
+|---|---|---|
+| `status` | primary routing | error (malformed response) |
+| `proposal_path` | re-notification, result JSON | expected absent when `proposal_mode = "inline"` |
+| `proposal_mode` | mode branching | error when `status = "revised"` (do not default to `"file"`) |
+| `changes_summary` | result JSON | empty string |
+| `title` | notification title | fall back to task_id |
+| `summary` | notification body | empty string |
+| `task_id` | — | not consumed |
 
-1. `status` — primary routing. Absent: error (malformed response).
-2. `proposal_path` — re-notification, result JSON. Expected absent when `proposal_mode = "inline"`.
-3. `proposal_mode` — mode branching. Absent when `status = "revised"`: error (malformed response). Do NOT default to `"file"`.
-4. `changes_summary` — result JSON. Absent: use empty string.
-5. `title` — notification title. Absent: fall back to task_id.
-6. `summary` — notification body. Absent: use empty string.
-7. `task_id` — not consumed by orchestrator.
+Routing by status:
+- **revised** — re-notify (see below).
+- **no-changes** — write result JSON with `"status": "no-changes"` and stop.
+- **error** — write result JSON with `"status": "error"` and stop.
 
-- **status: revised** — proceed to re-notification
-- **status: no-changes** — write result JSON with `"status": "no-changes"`, stop
-- **status: error** — write result JSON with `"status": "error"`, stop
+The `proposal_mode` shapes the steps below:
+- `"file"` — worker revised a separate proposal file; `proposal_path` is present.
+- `"inline"` — worker revised the task body in-place; `proposal_path` is absent.
 
-Note `proposal_mode` for the steps below:
-- `"proposal_mode": "file"` — worker revised a separate proposal file; `proposal_path` is present.
-- `"proposal_mode": "inline"` — worker revised the task body in-place; `proposal_path` is absent.
+## Re-send proposal notification
 
-## Skill-Specific: Re-send Proposal Notification
-
-**File-based mode** (`proposal_mode: "file"`):
+File-based:
 ```bash
 ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<proposal_path>"
 ```
 
-**Inline mode** (`proposal_mode: "inline"`): the proposal content lives in the task file itself.
-Use the task file as the attachment:
+Inline (the proposal content lives in the task file):
 ```bash
 ludics notify proposal "<task_id>" "<title>" "<summary>" "$LUDICS_STATE_PATH/tasks/<task_id>.md"
 ```
 
-This re-sends the proposal with launch/revise/abandon buttons, completing the
-iteration loop.
+Either way, this re-sends the proposal with launch/revise/abandon buttons and
+closes the iteration loop.
 
-## Skill-Specific: Best-effort Desktop
+## Best-effort desktop
 
-**File-based mode**:
+File-based:
 ```bash
 code "<project_path>/<proposal_path>" 2>/dev/null || true
 ```
 
-**Inline mode**:
+Inline:
 ```bash
 code "$LUDICS_STATE_PATH/tasks/<task_id>.md" 2>/dev/null || true
 ```
 
-## Skill-Specific Result Fields
+## Result fields
 
-**File-based mode**:
+File-based:
 ```json
 {
   "task_id": "<task_id>",
@@ -113,7 +109,7 @@ code "$LUDICS_STATE_PATH/tasks/<task_id>.md" 2>/dev/null || true
 }
 ```
 
-**Inline mode**:
+Inline:
 ```json
 {
   "task_id": "<task_id>",
@@ -123,10 +119,10 @@ code "$LUDICS_STATE_PATH/tasks/<task_id>.md" 2>/dev/null || true
 }
 ```
 
-## Delegation Strategy
+## Delegation strategy
 
-- **Worker** (`/ludics-revise-proposal-worker`): Codebase re-exploration,
-  task file additive edits, proposal file destructive edits, git commit+push —
-  runs in isolated context
-- **Orchestrator** (this skill): Task file read, feedback collection, decision
-  routing, re-notification, result JSON — runs inline in Mag's context
+- Worker (`/ludics-revise-proposal-worker`) runs in isolated context:
+  codebase re-exploration, additive task file edits, destructive proposal
+  edits, git commit+push.
+- Orchestrator (this skill) runs inline in Mag: task read, feedback
+  collection, decision routing, re-notification, result JSON.

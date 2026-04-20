@@ -33,14 +33,14 @@ This skill is invoked when:
    Understand the full scope: title, project, priority, elaboration, code pointers.
 
 2. **Identify independent concerns**:
-   - Each concern should be completable by a single agent session
-   - Concerns are independent if they touch different files/modules or can be
-     merged to main separately
-   - Examples of splits:
-     - "Refactor auth + add logging" → two tasks
-     - "Implement API endpoint + write docs + add tests" → likely one task
-       (tests and docs are part of implementing the endpoint)
-   - When in doubt, keep together — splitting too aggressively creates overhead
+   - Each concern should be finishable in a single agent session.
+   - Concerns are independent when they touch different files/modules or can
+     merge to main separately.
+   - Examples:
+     - "Refactor auth + add logging" → two tasks.
+     - "Implement API endpoint + write docs + add tests" → likely one task;
+       tests and docs are part of implementing the endpoint.
+   - When in doubt, keep them together — over-splitting creates overhead.
 
 3. **Create subtask files**:
    For each concern:
@@ -55,14 +55,14 @@ This skill is invoked when:
    - Add `leaf: false` to frontmatter (signals this is a container, not actionable)
    - Update status if needed — the parent is done when all children are done
 
-5. **Reassign slot** (if parent was in a slot):
-   - Run `ludics slots` to check if `<task_id>` is assigned to a slot
-   - If yes, reassign that slot to the most actionable subtask (highest priority,
-     or the one closest to the parent's original scope):
+5. **Reassign slot** (if the parent was in a slot):
+   - Run `ludics slots` to see whether `<task_id>` is slotted.
+   - If so, reassign that slot to the most actionable subtask (highest
+     priority, or closest to the parent's original scope):
      ```bash
      ludics slot <N> assign <first-child-task-id> -a <same-adapter> -p <same-path>
      ```
-   - This ensures the slot isn't left holding a non-leaf parent task
+     This avoids leaving a non-leaf parent task in the slot.
 
 6. **Queue elaboration** for each child:
    ```bash
@@ -83,11 +83,12 @@ This skill is invoked when:
 
 ## Delegation Strategy
 
-- **CLI tools**: Task creation, file updates
-- **Opus**: Judgment on how to decompose the task
+- CLI tools for task creation and file updates.
+- Opus for judgment on how to decompose the task.
 
 ## Error Handling
 
-- Task not found: Write result with status "error"
-- Task already has children (`leaf: false`): Warn and skip
-- Single concern detected: Skip split, report back (let proposal skill proceed)
+- Task not found: write a result with `"status": "error"`.
+- Task already has children (`leaf: false`): warn and skip.
+- Single concern detected: skip the split and report back so the proposal
+  skill can proceed.

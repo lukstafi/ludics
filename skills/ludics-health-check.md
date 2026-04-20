@@ -58,19 +58,19 @@ This skill is invoked when:
    - Flag if requests have been pending > 1h
 
 4. **Check test suite health**:
-   - Read `$LUDICS_STATE_PATH/mag/test-health.json` for the latest test run results
-     (tests were executed programmatically before this skill was invoked).
-   - For each project with an entry in the state file:
-     - If `passed: true`: note as "tests passing" in the Info section.
-     - If `passed: false`: report as Warning: "⚠ <project> tests FAILED — fix task auto-filed".
-       Include the `failures` field content (truncated) in the report.
-   - Projects with no entry in the state file should be silently omitted — do not
-     report "no test data" as a finding. Only mention a missing project if it has
-     `test_command` configured explicitly, as low-priority Info "awaiting first test run".
-   - Issue key format: `test-health:<project-name>` (for delta tracking against
-     health-last.json — unchanged failures are "ongoing", not "new").
-   - Do NOT run tests yourself; the programmatic pre-hook has already executed them
-     with rate-limiting before this skill was invoked.
+   - Read `$LUDICS_STATE_PATH/mag/test-health.json` for the latest test run
+     results (the pre-hook ran the tests before this skill was invoked).
+   - For each project with an entry:
+     - `passed: true` — note as "tests passing" in the Info section.
+     - `passed: false` — Warning: `⚠ <project> tests FAILED — fix task
+       auto-filed`, with a truncated `failures` excerpt.
+   - Projects without an entry are silently omitted. If a project has
+     `test_command` configured explicitly but no entry, mention it as
+     low-priority Info "awaiting first test run".
+   - Issue key format: `test-health:<project-name>` (for delta tracking
+     against `health-last.json` — unchanged failures count as "ongoing",
+     not "new").
+   - Don't run tests yourself — the programmatic pre-hook already did.
 
 5. **Detect deltas since previous health check**:
    - Prefer git diff in state repo for scope awareness:
@@ -175,5 +175,5 @@ This skill is invoked when:
 
 ## Delegation Strategy
 
-- **CLI tools**: Date calculations, file parsing
-- **Opus**: Judgment on severity, recommendations
+- CLI tools for date calculations and file parsing.
+- Opus for judgment on severity and recommendations.

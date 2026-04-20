@@ -29,34 +29,33 @@ project generated it (feedback is about the Ludics workflow, not project code).
 ## Common Steps
 
 Follow [orchestrator-conventions.md](orchestrator-conventions.md):
-- **D** (Worker Delegation): invoke worker in forked context
-- **E** (Result JSON): write result with request ID
-- **F** (Error Handling): standard error patterns
+- **D** (Worker Delegation): invoke the worker in forked context.
+- **E** (Result JSON): write the result with the request ID.
+- **F** (Error Handling): standard patterns.
 
-Sections A, B, C do not apply — this skill has no task_id or repo argument.
+Sections A, B, C don't apply — this skill has no task_id or repo argument.
 
 Worker: `/ludics-feedback-digest-worker`
 
-## Skill-Specific: Status Routing
+## Status routing
 
-Extract the JSON block from the worker's response (the last fenced ` ```json ` block).
-Parse the JSON for `status`, `issues_created`, `issues_updated`, `issues_skipped`,
-`files_processed`, and `summary`.
+Extract the final ` ```json ` block from the worker. Fields:
 
-### Expected Worker Fields
+| Field | Used for | Missing-field fallback |
+|---|---|---|
+| `status` | primary routing | error (malformed response) |
+| `issues_created` | result JSON | 0 |
+| `issues_updated` | result JSON | 0 |
+| `issues_skipped` | result JSON | 0 |
+| `files_processed` | result JSON | 0 |
+| `summary` | result output | empty string |
 
-1. `status` — primary routing. Absent: error (malformed response).
-2. `issues_created` — result JSON. Absent: default to 0.
-3. `issues_updated` — result JSON. Absent: default to 0.
-4. `issues_skipped` — result JSON. Absent: default to 0.
-5. `files_processed` — result JSON. Absent: default to 0.
-6. `summary` — result output. Absent: use empty string.
+Routing by status:
+- **completed** — write the result JSON.
+- **empty** — write the result JSON noting there was nothing to process.
+- **error** — write the result JSON with `"status": "error"`.
 
-- **status: completed** — write result JSON
-- **status: empty** — write result JSON indicating nothing to process
-- **status: error** — write result JSON with `"status": "error"`
-
-## Skill-Specific Result Fields
+## Result fields
 
 ```json
 {
@@ -67,14 +66,10 @@ Parse the JSON for `status`, `issues_created`, `issues_updated`, `issues_skipped
 }
 ```
 
-Output format: `"Created N issues, updated N, skipped N (N files processed)"`
+Output: `"Created N issues, updated N, skipped N (N files processed)"`.
 
-## Error Handling
+## Delegation strategy
 
-Per [orchestrator-conventions.md](orchestrator-conventions.md) Section F.
-
-## Delegation Strategy
-
-- **Worker** (`/ludics-feedback-digest-worker`): All feedback reading, theme
-  extraction, issue dedup/filing, file cleanup — runs in isolated context
-- **Orchestrator** (this skill): Result JSON — runs inline in Mag's context
+- Worker (`/ludics-feedback-digest-worker`) runs in isolated context: feedback
+  reading, theme extraction, issue dedup/filing, file cleanup.
+- Orchestrator (this skill) runs inline in Mag: result JSON.
