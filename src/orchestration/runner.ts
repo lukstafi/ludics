@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFi
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
-import { DONE_STATUSES, PHASE_CATEGORIES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, pairReviewVerdict, phaseTimeoutExpired, requiredArtifactPath } from "./phases.ts";
+import { DONE_STATUSES, PHASE_CATEGORIES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, isPairBailedOut, pairReviewVerdict, phaseTimeoutExpired, requiredArtifactPath } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
   statusFileFingerprint, touchStatusFile, writeInterrupt, writePeerSync,
@@ -21,7 +21,7 @@ import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../con
 import { notifyAgents } from "../notify.ts";
 // workerReportStatus replaced by clusterReportWorkerSignal (lazy import)
 import { clusterRole } from "../cluster.ts";
-import { autoCommitWorktree, pushBranch } from "./worktrees.ts";
+import { autoCommitWorktree, defaultMainBranch, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 
 // --- Hung agent detection constants ---
@@ -1440,6 +1440,37 @@ function readFileIfExists(path: string): string | null {
 }
 
 /**
+ * Check whether a worktree has zero meaningful changes:
+ * no uncommitted diffs AND zero commits ahead of the base branch.
+ * Resolves base branch from projectDir (has correct remote refs)
+ * to avoid the stale origin/HEAD problem in worktrees.
+ */
+export function isWorktreeNoOp(worktreePath: string, projectDir: string): boolean {
+  try {
+    // Step 1: Check for uncommitted diffs (staged + unstaged).
+    // Orchestration paths (.peer-sync/ etc.) are in .git/info/exclude,
+    // so git status --porcelain won't include them.
+    const statusResult = Bun.spawnSync(
+      ["git", "status", "--porcelain"],
+      { cwd: worktreePath },
+    );
+    if (statusResult.exitCode !== 0) return false;
+    if (String(statusResult.stdout).trim().length > 0) return false;
+
+    // Step 2: Resolve base branch from projectDir (shared remote refs).
+    const baseBranch = defaultMainBranch(projectDir);
+    const revList = Bun.spawnSync(
+      ["git", "rev-list", "--count", `origin/${baseBranch}..HEAD`],
+      { cwd: worktreePath },
+    );
+    if (revList.exitCode !== 0) return false;
+    return parseInt(String(revList.stdout).trim(), 10) === 0;
+  } catch {
+    return false; // Fail closed on any error (e.g., nonexistent path)
+  }
+}
+
+/**
  * 0-commits-ahead auto-bail-out: if pr-create phase and the coder worktree has no commits
  * ahead of the base branch, skip PR creation and transition directly to done.
  * Returns true if bail-out was triggered (caller should break the loop).
@@ -1448,19 +1479,40 @@ export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean 
   if (state.phase !== "pr-create") return false;
   const coder = state.agents.find(a => a.role === "coder");
   if (!coder) return false;
-  const revList = Bun.spawnSync(
-    ["git", "rev-list", "--count", "origin/HEAD..HEAD"],
-    { cwd: coder.worktreePath },
-  );
-  const count = parseInt(String(revList.stdout).trim(), 10);
-  if (revList.exitCode !== 0 || count !== 0) return false;
-  emitEvent({
-    event_type: "bail_out",
-    source: "orchestration", scope: "slot",
-    slot: state.slot, task: state.taskId,
-    action: "pr-create auto-bail-out", status: "skipped",
-    message: "0 commits ahead of base branch — no PR possible, task obsolete",
-  });
+
+  // Fast path: bail-out already confirmed by reviewer from an earlier phase.
+  if (isPairBailedOut(state)) {
+    state.phase = "done";
+    persistState(state);
+    return true;
+  }
+
+  // Robust no-op detection (replaces fragile origin/HEAD..HEAD).
+  if (!isWorktreeNoOp(coder.worktreePath, state.projectDir)) return false;
+
+  const runtime = state.agentStates[coder.name];
+
+  // Idempotency: only emit event and write status on first detection.
+  if (runtime && runtime.status !== "bail-out") {
+    runtime.status = "bail-out";
+    runtime.statusEpoch = nowEpoch();
+    runtime.statusMessage = "no-op: zero commits ahead of base, no uncommitted diffs";
+    writeFileSync(
+      join(state.peerSyncDir, `${coder.name}.status`),
+      `bail-out|${runtime.statusEpoch}|${runtime.statusMessage}\n`,
+    );
+    emitEvent({
+      event_type: "bail_out",
+      source: "orchestration", scope: "slot",
+      slot: state.slot, task: state.taskId,
+      action: "pr-create auto-bail-out", status: "skipped",
+      message: "0 commits ahead of base branch — no PR possible, skipping to done",
+    });
+  }
+
+  // Safety-net: go directly to done. Reviewer cannot participate in pr-create
+  // (agentParticipatesInPhase returns false for reviewer), so waiting for
+  // bail-out-confirmed would deadlock.
   state.phase = "done";
   persistState(state);
   return true;
@@ -1485,6 +1537,32 @@ export async function runOrchestration(
     // Push=false here; push happens before PR-related phases below.
     const participating = state.agents.filter(a => agentParticipatesInPhase(state, a));
     autoCommitAllAgents(state, participating, /* push */ false);
+
+    // Early no-op detection: if coder's work phase produced nothing, trigger bail-out
+    // so the reviewer can confirm during the upcoming review phase (satisfies AC2).
+    if (state.phase === "work") {
+      const coder = state.agents.find(a => a.role === "coder");
+      if (coder && isWorktreeNoOp(coder.worktreePath, state.projectDir)) {
+        const runtime = state.agentStates[coder.name];
+        if (runtime && runtime.status !== "bail-out") {
+          runtime.status = "bail-out";
+          runtime.statusEpoch = nowEpoch();
+          runtime.statusMessage = "no-op: zero commits ahead of base, no uncommitted diffs";
+          writeFileSync(
+            join(state.peerSyncDir, `${coder.name}.status`),
+            `bail-out|${runtime.statusEpoch}|${runtime.statusMessage}\n`,
+          );
+          emitEvent({
+            event_type: "bail_out",
+            source: "orchestration", scope: "slot",
+            slot: state.slot, task: state.taskId,
+            action: "work-phase no-op detection", status: "bail-out",
+            message: "Coder worktree has 0 commits ahead and no uncommitted diffs — triggering bail-out protocol",
+          });
+          persistState(state);
+        }
+      }
+    }
 
     // Capture tmux pane output for retrospective (only runs when backend === "tmux")
     if (state.backend === "tmux") {
