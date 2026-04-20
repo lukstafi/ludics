@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, utimesSync, unlinkSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, utimesSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -280,9 +280,8 @@ describe("recentResults", () => {
     mkdirSync(resultsDir, { recursive: true });
 
     writeFileSync(join(resultsDir, "req-keep.json"), JSON.stringify({ id: "keep", status: "ok" }));
-    writeFileSync(join(resultsDir, "req-gone.json"), JSON.stringify({ id: "gone", status: "ok" }));
-    // Delete one file before calling recentResults — simulates race
-    unlinkSync(join(resultsDir, "req-gone.json"));
+    // Dangling symlink: readdirSync lists it, but statSync throws ENOENT
+    symlinkSync("/nonexistent-target", join(resultsDir, "req-gone.json"));
 
     const { recentResults } = await loadQueue();
     const results = recentResults();
