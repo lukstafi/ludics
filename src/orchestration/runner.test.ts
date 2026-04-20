@@ -4,7 +4,8 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut, validatePreviousPhaseArtifacts, validateAgentPrFiles, resetPrCommentsState, type PreviousPhaseContext } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut, isWorktreeNoOp, validatePreviousPhaseArtifacts, validateAgentPrFiles, resetPrCommentsState, type PreviousPhaseContext } from "./runner.ts";
+import { evaluateTransition } from "./phases.ts";
 import * as notify from "../notify.ts";
 import * as peerSync from "./peer-sync.ts";
 import * as events from "../events.ts";
@@ -31,6 +32,22 @@ setDefaultTimeout(20_000);
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "ludics-runner-test-"));
+}
+
+/** Create a minimal git repo with one commit and an origin/main ref. */
+function makeGitRepo(): string {
+  const tmpDir = makeTmpDir();
+  const repoDir = join(tmpDir, "repo");
+  mkdirSync(repoDir, { recursive: true });
+  Bun.spawnSync(["git", "init", "--initial-branch", "main"], { cwd: repoDir });
+  Bun.spawnSync(["git", "config", "user.email", "test@test.com"], { cwd: repoDir });
+  Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: repoDir });
+  writeFileSync(join(repoDir, "file.txt"), "hello");
+  Bun.spawnSync(["git", "add", "."], { cwd: repoDir });
+  Bun.spawnSync(["git", "commit", "-m", "init"], { cwd: repoDir });
+  // Create origin/main ref pointing to current HEAD
+  Bun.spawnSync(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: repoDir });
+  return repoDir;
 }
 
 function makeLifecycle(overrides: Partial<AgentTurnLifecycle> = {}): AgentTurnLifecycle {
@@ -2765,24 +2782,14 @@ describe("checkZeroCommitsAutoBailOut", () => {
   });
 
   test("auto-bails when coder worktree has 0 commits ahead", () => {
-    // Create a real git repo where HEAD is on origin/HEAD (0 commits ahead)
-    const tmpDir = makeTmpDir();
-    const repoDir = join(tmpDir, "repo");
-    mkdirSync(repoDir, { recursive: true });
-    Bun.spawnSync(["git", "init", "--initial-branch", "main"], { cwd: repoDir });
-    Bun.spawnSync(["git", "config", "user.email", "test@test.com"], { cwd: repoDir });
-    Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: repoDir });
-    writeFileSync(join(repoDir, "file.txt"), "hello");
-    Bun.spawnSync(["git", "add", "."], { cwd: repoDir });
-    Bun.spawnSync(["git", "commit", "-m", "init"], { cwd: repoDir });
-    // Create a fake origin/HEAD ref pointing to current HEAD
-    Bun.spawnSync(["git", "update-ref", "refs/remotes/origin/HEAD", "HEAD"], { cwd: repoDir });
+    const repoDir = makeGitRepo();
 
     const peerDir = makeTmpDir();
     mkdirSync(join(peerDir, "plans"), { recursive: true });
     mkdirSync(join(peerDir, "reviews"), { recursive: true });
     const state = makeState({
       phase: "pr-create",
+      projectDir: repoDir,
       agents: [
         { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: repoDir },
         { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
@@ -2792,22 +2799,13 @@ describe("checkZeroCommitsAutoBailOut", () => {
     const result = checkZeroCommitsAutoBailOut(state);
     expect(result).toBe(true);
     expect(state.phase).toBe("done");
+    expect(state.agentStates.coder!.status).toBe("bail-out");
     expect(eventSpy).toHaveBeenCalledTimes(1);
     expect(eventSpy.mock.calls[0][0].event_type).toBe("bail_out");
   });
 
   test("does not bail when coder worktree has commits ahead", () => {
-    const tmpDir = makeTmpDir();
-    const repoDir = join(tmpDir, "repo");
-    mkdirSync(repoDir, { recursive: true });
-    Bun.spawnSync(["git", "init", "--initial-branch", "main"], { cwd: repoDir });
-    Bun.spawnSync(["git", "config", "user.email", "test@test.com"], { cwd: repoDir });
-    Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: repoDir });
-    writeFileSync(join(repoDir, "file.txt"), "hello");
-    Bun.spawnSync(["git", "add", "."], { cwd: repoDir });
-    Bun.spawnSync(["git", "commit", "-m", "init"], { cwd: repoDir });
-    // Set origin/HEAD to current commit
-    Bun.spawnSync(["git", "update-ref", "refs/remotes/origin/HEAD", "HEAD"], { cwd: repoDir });
+    const repoDir = makeGitRepo();
     // Add another commit (1 ahead)
     writeFileSync(join(repoDir, "file2.txt"), "world");
     Bun.spawnSync(["git", "add", "."], { cwd: repoDir });
@@ -2818,6 +2816,7 @@ describe("checkZeroCommitsAutoBailOut", () => {
     mkdirSync(join(peerDir, "reviews"), { recursive: true });
     const state = makeState({
       phase: "pr-create",
+      projectDir: repoDir,
       agents: [
         { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: repoDir },
         { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
@@ -2828,6 +2827,212 @@ describe("checkZeroCommitsAutoBailOut", () => {
     expect(result).toBe(false);
     expect(state.phase).toBe("pr-create");
     expect(eventSpy).not.toHaveBeenCalled();
+  });
+
+  test("fast-paths to done when isPairBailedOut already true", () => {
+    const state = makeState({ phase: "pr-create" });
+    state.agentStates.coder!.status = "bail-out";
+    state.agentStates.reviewer!.status = "bail-out-confirmed";
+    const result = checkZeroCommitsAutoBailOut(state);
+    expect(result).toBe(true);
+    expect(state.phase).toBe("done");
+    // No event emitted — fast path doesn't re-emit
+    expect(eventSpy).not.toHaveBeenCalled();
+  });
+
+  test("idempotent: event emitted only once on repeated calls", () => {
+    const repoDir = makeGitRepo();
+
+    const peerDir = makeTmpDir();
+    mkdirSync(join(peerDir, "plans"), { recursive: true });
+    mkdirSync(join(peerDir, "reviews"), { recursive: true });
+    const state = makeState({
+      phase: "pr-create",
+      projectDir: repoDir,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: repoDir },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    }, peerDir);
+
+    checkZeroCommitsAutoBailOut(state);
+    expect(eventSpy).toHaveBeenCalledTimes(1);
+
+    // Reset phase to pr-create for second call
+    state.phase = "pr-create" as any;
+    eventSpy.mockClear();
+    checkZeroCommitsAutoBailOut(state);
+    // Coder already has bail-out status — no new event
+    expect(eventSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isWorktreeNoOp
+// ---------------------------------------------------------------------------
+
+describe("isWorktreeNoOp", () => {
+  test("returns true when zero commits ahead and clean worktree", () => {
+    const repoDir = makeGitRepo();
+    expect(isWorktreeNoOp(repoDir, repoDir)).toBe(true);
+  });
+
+  test("returns false when commits ahead", () => {
+    const repoDir = makeGitRepo();
+    writeFileSync(join(repoDir, "file2.txt"), "world");
+    Bun.spawnSync(["git", "add", "."], { cwd: repoDir });
+    Bun.spawnSync(["git", "commit", "-m", "extra"], { cwd: repoDir });
+    expect(isWorktreeNoOp(repoDir, repoDir)).toBe(false);
+  });
+
+  test("returns false with uncommitted diffs but zero commits", () => {
+    const repoDir = makeGitRepo();
+    writeFileSync(join(repoDir, "dirty.txt"), "uncommitted");
+    expect(isWorktreeNoOp(repoDir, repoDir)).toBe(false);
+  });
+
+  test("returns false with staged-but-uncommitted changes", () => {
+    const repoDir = makeGitRepo();
+    writeFileSync(join(repoDir, "staged.txt"), "staged");
+    Bun.spawnSync(["git", "add", "staged.txt"], { cwd: repoDir });
+    expect(isWorktreeNoOp(repoDir, repoDir)).toBe(false);
+  });
+
+  test("returns true when origin/HEAD missing but origin/main exists", () => {
+    const repoDir = makeGitRepo();
+    // Verify origin/HEAD is NOT set (makeGitRepo only sets origin/main)
+    const headCheck = Bun.spawnSync(
+      ["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+      { cwd: repoDir },
+    );
+    expect(headCheck.exitCode).not.toBe(0); // origin/HEAD should not exist
+    expect(isWorktreeNoOp(repoDir, repoDir)).toBe(true);
+  });
+
+  test("returns false on git error (nonexistent path)", () => {
+    expect(isWorktreeNoOp("/nonexistent/path", "/nonexistent/path")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Early work-phase no-op detection regression (AC2 flow)
+// ---------------------------------------------------------------------------
+
+describe("early work-phase no-op detection", () => {
+  let eventSpy: ReturnType<typeof spyOn>;
+  let persistSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    persistSpy = spyOn(stateMod, "persistState").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    eventSpy.mockRestore();
+    persistSpy.mockRestore();
+  });
+
+  test("work-phase no-op detection sets coder to bail-out", () => {
+    const repoDir = makeGitRepo();
+    const peerDir = makeTmpDir();
+    mkdirSync(join(peerDir, "plans"), { recursive: true });
+    mkdirSync(join(peerDir, "reviews"), { recursive: true });
+    const state = makeState({
+      phase: "work",
+      projectDir: repoDir,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: repoDir },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    }, peerDir);
+
+    // Simulate the early detection logic from runOrchestration
+    const coder = state.agents.find(a => a.role === "coder")!;
+    if (isWorktreeNoOp(coder.worktreePath, state.projectDir)) {
+      const runtime = state.agentStates[coder.name]!;
+      runtime.status = "bail-out";
+      runtime.statusMessage = "no-op: zero commits ahead of base, no uncommitted diffs";
+    }
+
+    expect(state.agentStates.coder!.status).toBe("bail-out");
+  });
+
+  test("work-phase bail-out transitions to review, not directly to done", () => {
+    const repoDir = makeGitRepo();
+    const peerDir = makeTmpDir();
+    mkdirSync(join(peerDir, "plans"), { recursive: true });
+    mkdirSync(join(peerDir, "reviews"), { recursive: true });
+    const state = makeState({
+      phase: "work",
+      projectDir: repoDir,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: repoDir },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    }, peerDir);
+    state.agentStates.coder!.status = "bail-out";
+
+    // evaluateTransition for work: isPairBailedOut = false → review
+    expect(evaluateTransition(state)).toBe("review");
+  });
+
+  test("review-phase bail-out-confirmed transitions to done", () => {
+    const state = makeState({ phase: "review" });
+    state.agentStates.coder!.status = "bail-out";
+    state.agentStates.reviewer!.status = "bail-out-confirmed";
+
+    expect(evaluateTransition(state)).toBe("done");
+  });
+
+  test("early detection path never touches verification retry budget", () => {
+    const repoDir = makeGitRepo();
+    const peerDir = makeTmpDir();
+    mkdirSync(join(peerDir, "plans"), { recursive: true });
+    mkdirSync(join(peerDir, "reviews"), { recursive: true });
+    const state = makeState({
+      phase: "work",
+      projectDir: repoDir,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: repoDir },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    }, peerDir);
+
+    // Simulate full AC2 flow: early detection → review → done
+    state.agentStates.coder!.status = "bail-out";
+    expect(evaluateTransition(state)).toBe("review"); // work → review
+
+    state.phase = "review";
+    state.agentStates.reviewer!.status = "bail-out-confirmed";
+    expect(evaluateTransition(state)).toBe("done"); // review → done
+
+    // Verification retry budget was never consumed
+    expect(state.prCreateVerifyAttempts).toBeUndefined();
+  });
+
+  test("work-phase no-op detection does NOT fire when coder has commits", () => {
+    const repoDir = makeGitRepo();
+    // Add a commit to put the worktree ahead
+    writeFileSync(join(repoDir, "feature.txt"), "new feature");
+    Bun.spawnSync(["git", "add", "."], { cwd: repoDir });
+    Bun.spawnSync(["git", "commit", "-m", "feature"], { cwd: repoDir });
+
+    const peerDir = makeTmpDir();
+    mkdirSync(join(peerDir, "plans"), { recursive: true });
+    mkdirSync(join(peerDir, "reviews"), { recursive: true });
+    const state = makeState({
+      phase: "work",
+      projectDir: repoDir,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: repoDir },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "opus-4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    }, peerDir);
+
+    const coder = state.agents.find(a => a.role === "coder")!;
+    // isWorktreeNoOp should return false — no bail-out
+    expect(isWorktreeNoOp(coder.worktreePath, state.projectDir)).toBe(false);
+    expect(state.agentStates.coder!.status).not.toBe("bail-out");
   });
 });
 

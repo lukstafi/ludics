@@ -825,6 +825,27 @@ describe("evaluateTransition — bail-out", () => {
     // Without a review file, artifact validation should block.
     expect(isAgentDone(state, state.agents[1])).toBe(false);
   });
+
+  test("pr-create phase transitions to done when both agents bail out", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ludics-phases-test-"));
+    mkdirSync(join(dir, "plans"), { recursive: true });
+    mkdirSync(join(dir, "reviews"), { recursive: true });
+    const state = makeState({ phase: "pr-create", peerSyncDir: dir });
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "bail-out-confirmed";
+    expect(evaluateTransition(state)).toBe("done");
+  });
+
+  test("pr-create still blocks when bail-out is one-sided", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ludics-phases-test-"));
+    mkdirSync(join(dir, "plans"), { recursive: true });
+    mkdirSync(join(dir, "reviews"), { recursive: true });
+    const state = makeState({ phase: "pr-create", peerSyncDir: dir });
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "done";
+    // No PR URL, no full bail-out → blocks
+    expect(evaluateTransition(state)).toBe(null);
+  });
 });
 
 describe("PHASE_CATEGORIES split — pre-plan vs planning", () => {

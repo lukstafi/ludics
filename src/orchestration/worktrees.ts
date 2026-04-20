@@ -143,7 +143,7 @@ function addWorktree(projectDir: string, path: string, branch: string, base: str
   }
 }
 
-function defaultMainBranch(projectDir: string): string {
+export function defaultMainBranch(projectDir: string): string {
   const remoteHead = maybeGit(projectDir, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
   if (remoteHead.startsWith("origin/")) return remoteHead.slice("origin/".length);
   const local = maybeGit(projectDir, ["branch", "--show-current"]);

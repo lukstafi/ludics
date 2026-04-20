@@ -521,6 +521,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
       // NOTE: Runner verifies PR exists on GitHub before agents reach done state here.
       // See verifyPhaseOutcome() in runner.ts.
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      if (isPairBailedOut(state)) return "done";
       if (!hasAnyPr(state)) return null; // Block advancement without a PR URL (defense in depth)
       return "pr-comments";
 
