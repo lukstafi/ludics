@@ -799,10 +799,10 @@ function isTaskDeferred(taskId: string): boolean {
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
   if (!existsSync(taskFile)) return false;
   const content = readFileSync(taskFile, "utf-8");
-  const statusMatch = content.match(/^status:\s*(.+)$/m);
-  if (statusMatch && statusMatch[1]!.trim() === "deferred") return true;
+  const status = readFrontmatterField(content, "status");
+  if (status === "deferred") return true;
   // Legacy shim: treat deferred_launch: true as deferred, opportunistically migrate in-place
-  if (/^deferred_launch:\s*true/m.test(content)) {
+  if (readFrontmatterField(content, "deferred_launch") === "true") {
     updateFrontmatterField(taskFile, "status", "deferred");
     removeFrontmatterField(taskFile, "deferred_launch");
     removeFrontmatterField(taskFile, "approved");
@@ -1299,7 +1299,7 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
           const tf = join(harnessDir(), "tasks", `${tid}.md`);
           if (existsSync(tf)) {
             const tfContent = readFileSync(tf, "utf-8");
-            const tfStatus = tfContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+            const tfStatus = readFrontmatterField(tfContent, "status");
             if (tfStatus === "deferred") {
               updateFrontmatterField(tf, "status", "ready");
               console.error(`ludics: approved deferred task ${tid} for auto-start`);
@@ -1458,12 +1458,11 @@ async function cleanupDoneTaskThreads(): Promise<void> {
     const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
     for (const f of files) {
       const content = readFileSync(join(tasksDir, f), "utf-8");
-      const statusMatch = content.match(/^status:\s*(.+)$/m);
-      const status = statusMatch ? statusMatch[1]!.trim() : "";
+      const status = readFrontmatterField(content, "status") ?? "";
       if (status !== "done" && status !== "abandoned") continue;
-      const threadsMatch = content.match(/^t3code_threads:\s*\[(.+)\]$/m);
-      if (!threadsMatch) continue;
-      const ids = threadsMatch[1]!.split(",").map((s) => s.trim()).filter(Boolean);
+      const threadsStr = readFrontmatterField(content, "t3code_threads");
+      if (!threadsStr) continue;
+      const ids = threadsStr.split(",").map((s) => s.trim()).filter(Boolean);
       threadIdsToDelete.push(...ids);
     }
   } catch {
@@ -1477,8 +1476,7 @@ async function cleanupDoneTaskThreads(): Promise<void> {
       const taskFiles = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
       for (const f of taskFiles) {
         const content = readFileSync(join(tasksDir, f), "utf-8");
-        const statusMatch = content.match(/^status:\s*(.+)$/m);
-        const taskStatus = statusMatch ? statusMatch[1]!.trim() : "";
+        const taskStatus = readFrontmatterField(content, "status") ?? "";
         if (taskStatus !== "done" && taskStatus !== "abandoned") continue;
 
         const taskId = f.replace(/\.md$/, "");
@@ -1874,13 +1872,12 @@ function computeSessionProjectMatches(): string {
 
     for (const f of taskFiles) {
       const content = readFileSync(join(tasksDir, f), "utf-8");
-      const idMatch = content.match(/^id:\s*(.+)$/m);
-      if (!idMatch) continue;
-      const id = idMatch[1]!.trim();
+      const id = readFrontmatterField(content, "id");
+      if (!id) continue;
       if (tasksInSlots.has(id)) continue;
 
-      const statusMatch = content.match(/^status:\s*(.+)$/m);
-      if (!statusMatch || statusMatch[1]!.trim() !== "ready") continue;
+      const status = readFrontmatterField(content, "status");
+      if (status !== "ready") continue;
 
       // Check blocked_by
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
@@ -2159,7 +2156,8 @@ function maybeUnstickAssignedSlots(): void {
     const content = readFileSync(taskFile, "utf-8");
 
     // Task already completed or abandoned — nothing to unstick
-    if (/\nstatus:\s*(done|abandoned|merged)/.test(content)) continue;
+    const unstickStatus = readFrontmatterField(content, "status");
+    if (unstickStatus === "done" || unstickStatus === "abandoned" || unstickStatus === "merged") continue;
 
     // Already has proposal — maybeAutoStartSlots handles this
     if (content.includes("\nproposal:")) continue;
@@ -2679,8 +2677,7 @@ function maybeClearDoneSlots(): void {
     if (!existsSync(taskFile)) continue;
 
     const content = readFileSync(taskFile, "utf-8");
-    const statusMatch = content.match(/^status:\s*(.+)$/m);
-    const taskStatus = statusMatch ? statusMatch[1]!.trim() : "";
+    const taskStatus = readFrontmatterField(content, "status") ?? "";
 
     if (taskStatus === "done") {
       console.error(`ludics: auto-clearing slot ${slotNum} (task ${taskId} is ${taskStatus})`);
@@ -3456,7 +3453,7 @@ export async function runMag(args: string[]): Promise<void> {
         } else {
           // Only clear deferred — do not downgrade other statuses
           const evalContent = readFileSync(evalTaskFile, "utf-8");
-          const evalStatus = evalContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+          const evalStatus = readFrontmatterField(evalContent, "status");
           if (evalStatus === "deferred") {
             updateFrontmatterField(evalTaskFile, "status", "ready");
           }
@@ -3482,7 +3479,7 @@ export async function runMag(args: string[]): Promise<void> {
         const reviseTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
         if (existsSync(reviseTaskFile)) {
           const revContent = readFileSync(reviseTaskFile, "utf-8");
-          const revStatus = revContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+          const revStatus = readFrontmatterField(revContent, "status");
           if (revStatus === "ready" || revStatus === "in-progress") {
             const revSlot = findSlotForTask(taskId);
             if (revSlot !== null) {

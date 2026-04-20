@@ -9,6 +9,7 @@ import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
 import { readAllSlotJson } from "./slots/json.ts";
 import { getUrl } from "./network.ts";
+import { readFrontmatterField } from "./tasks/markdown.ts";
 
 function notificationLogFile(): string {
   return join(harnessDir(), "journal", "notifications.jsonl");
@@ -154,8 +155,7 @@ function taskProject(taskId: string): string {
     const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
     if (!existsSync(taskFile)) return "";
     const content = readFileSync(taskFile, "utf-8");
-    const match = content.match(/^project:\s*(.+)$/m);
-    return match ? match[1]!.trim() : "";
+    return readFrontmatterField(content, "project") ?? "";
   } catch {
     return "";
   }
