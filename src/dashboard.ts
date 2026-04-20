@@ -377,6 +377,7 @@ interface DashboardTask {
 interface FilteredTaskTileConfig {
   filter: (task: DashboardTask) => boolean;
   extraFields: (task: DashboardTask) => Record<string, unknown>;
+  sort?: (a: DashboardTask, b: DashboardTask) => number;
 }
 
 interface TasksTreeNode {
@@ -527,15 +528,15 @@ function generateReady(tasks: DashboardTask[]): ReadyTask[] {
 }
 
 function generateFilteredTaskList(tasks: DashboardTask[], config: FilteredTaskTileConfig): Record<string, unknown>[] {
-  return tasks
-    .filter(config.filter)
-    .map((task) => ({
-      id: task.id,
-      title: task.title,
-      project: task.project,
-      priority: task.priority,
-      ...config.extraFields(task),
-    }));
+  const filtered = tasks.filter(config.filter);
+  if (config.sort) filtered.sort(config.sort);
+  return filtered.map((task) => ({
+    id: task.id,
+    title: task.title,
+    project: task.project,
+    priority: task.priority,
+    ...config.extraFields(task),
+  }));
 }
 
 const needsConfirmationConfig: FilteredTaskTileConfig = {
@@ -554,6 +555,7 @@ const deferredLaunchConfig: FilteredTaskTileConfig = {
     hasProposal: task.hasProposal,
     proposalPath: task.proposalPath,
   }),
+  sort: (a, b) => (b.created ?? "").localeCompare(a.created ?? ""),
 };
 
 function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
