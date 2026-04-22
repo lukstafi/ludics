@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFi
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
-import { DONE_STATUSES, PHASE_CATEGORIES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, isPairBailedOut, pairReviewVerdict, phaseTimeoutExpired, requiredArtifactPath } from "./phases.ts";
+import { DONE_STATUSES, PHASE_CATEGORIES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, isBailedOut, pairReviewVerdict, phaseTimeoutExpired, requiredArtifactPath } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
   statusFileFingerprint, touchStatusFile, writeInterrupt, writePeerSync,
@@ -1442,8 +1442,9 @@ export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean 
   const coder = state.agents.find(a => a.role === "coder");
   if (!coder) return false;
 
-  // Fast path: bail-out already confirmed by reviewer from an earlier phase.
-  if (isPairBailedOut(state)) {
+  // Fast path: bail-out already confirmed — pair contract (coder+reviewer) or
+  // solo contract (lone coder). Skip PR creation and transition directly to done.
+  if (isBailedOut(state)) {
     state.phase = "done";
     persistState(state);
     return true;

@@ -3,7 +3,7 @@ import * as peerSyncMod from "./peer-sync.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { evaluateTransition, findPlanFiles, isAgentDone, isPairBailedOut, PHASE_CATEGORIES, phaseTimeoutExpired } from "./phases.ts";
+import { agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, isBailedOut, isPairBailedOut, isSoloBailedOut, PHASE_CATEGORIES, phaseTimeoutExpired } from "./phases.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
 import { applyPhaseSideEffects } from "./runner.ts";
@@ -827,5 +827,211 @@ describe("applyPhaseSideEffects — stub plan creation (gh-ludics-254)", () => {
     applyPhaseSideEffects(state, "work");
     const stubPath = mergedPlanFilePath(tmpDir, 1, 0);
     expect(existsSync(stubPath)).toBe(false);
+  });
+});
+
+function makeSoloState(overrides: Partial<OrchestrationState> = {}): OrchestrationState {
+  return {
+    slot: 1,
+    taskId: "feat",
+    mode: "solo",
+    phase: "setup",
+    round: 1,
+    mergeRound: 0,
+    agents: [
+      { name: "coder", provider: "claude-code", role: "coder", model: "claude-sonnet-4-6", branch: "a", worktreePath: "/tmp/a" },
+    ],
+    agentStates: initAgentRuntimeState(["coder"]),
+    config: defaultOrchestrationConfig(),
+    phaseStartedAt: 0,
+    startedAt: "2026-04-22T00:00:00Z",
+    projectDir: "/tmp/project",
+    rootWorktree: "/tmp/project-feat",
+    peerSyncDir: "/tmp/project-feat/.peer-sync",
+    threadIds: { coder: "t1" },
+    ...overrides,
+  };
+}
+
+describe("solo mode — evaluateTransition", () => {
+  test("setup → work (unconditional; skips gather/clarify/plan)", () => {
+    const state = makeSoloState({
+      config: defaultOrchestrationConfig({ enableClarify: true, enablePushback: true, enablePlan: true, enableGather: true }),
+    });
+    expect(evaluateTransition(state)).toBe("work");
+  });
+
+  test("work → update-docs when coder done and no PR exists", () => {
+    const state = makeSoloState({ phase: "work" });
+    state.agentStates.coder.status = "done";
+    expect(evaluateTransition(state)).toBe("update-docs");
+  });
+
+  test("work → pr-comments when PR already exists", () => {
+    const state = makeSoloState({ phase: "work" });
+    state.agentStates.coder.status = "done";
+    state.agentStates.coder.prUrl = "https://github.com/o/r/pull/1";
+    expect(evaluateTransition(state)).toBe("pr-comments");
+  });
+
+  test("work stalls (null) when coder is not done", () => {
+    const state = makeSoloState({ phase: "work", phaseStartedAt: Math.floor(Date.now() / 1000) });
+    state.agentStates.coder.status = "idle";
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
+  test("update-docs → pr-create when no PR exists", () => {
+    const state = makeSoloState({ phase: "update-docs" });
+    state.agentStates.coder.status = "update-docs-done";
+    expect(evaluateTransition(state)).toBe("pr-create");
+  });
+
+  test("update-docs → pr-comments when PR already exists", () => {
+    const state = makeSoloState({ phase: "update-docs" });
+    state.agentStates.coder.status = "update-docs-done";
+    state.agentStates.coder.prUrl = "https://github.com/o/r/pull/2";
+    expect(evaluateTransition(state)).toBe("pr-comments");
+  });
+
+  test("pr-create → pr-comments when PR URL present", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ludics-solo-prcreate-"));
+    mkdirSync(join(dir, "plans"), { recursive: true });
+    mkdirSync(join(dir, "reviews"), { recursive: true });
+    const state = makeSoloState({ phase: "pr-create", peerSyncDir: dir });
+    state.agentStates.coder.status = "pr-created";
+    state.agentStates.coder.prUrl = "https://github.com/o/r/pull/3";
+    // Also write the required .pr artifact for isAgentDone
+    writeFileSync(join(dir, "coder.pr"), "https://github.com/o/r/pull/3\n");
+    expect(evaluateTransition(state)).toBe("pr-comments");
+  });
+
+  test("pr-create blocks (null) without PR URL (defense-in-depth)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ludics-solo-prcreate-block-"));
+    const state = makeSoloState({
+      phase: "pr-create",
+      peerSyncDir: dir,
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+    });
+    state.agentStates.coder.status = "pr-created";
+    // no prUrl set, no artifact → isAgentDone returns false → allAgentsDone false
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
+  test("pr-comments → final-merge via coder-dispatched shortcut", () => {
+    const state = makeSoloState({ phase: "pr-comments" });
+    state.agentStates.coder.status = "done";
+    state.agentStates.coder.prUrl = "https://github.com/o/r/pull/4";
+    state.prCommentsCoderDispatched = true;
+    state.prCommentsQuietSince = Math.floor(Date.now() / 1000) - 5;
+    expect(evaluateTransition(state)).toBe("final-merge");
+  });
+
+  test("pr-comments stalls (null) without a PR URL", () => {
+    const state = makeSoloState({
+      phase: "pr-comments",
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+    });
+    state.agentStates.coder.status = "done";
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
+  test("final-merge → done when coder done (skips suggest-refactor)", () => {
+    const state = makeSoloState({ phase: "final-merge" });
+    state.agentStates.coder.status = "merged";
+    expect(evaluateTransition(state)).toBe("done");
+  });
+
+  test("solo bail-out short-circuits every non-terminal phase to done", () => {
+    const phases: Array<OrchestrationState["phase"]> = [
+      "work", "update-docs", "pr-create", "pr-comments", "final-merge",
+    ];
+    for (const phase of phases) {
+      const state = makeSoloState({ phase });
+      state.agentStates.coder.status = "bail-out";
+      expect(evaluateTransition(state)).toBe("done");
+    }
+  });
+
+  test("done is terminal (returns done)", () => {
+    const state = makeSoloState({ phase: "done" });
+    expect(evaluateTransition(state)).toBe("done");
+  });
+});
+
+describe("solo mode — agentParticipatesInPhase", () => {
+  const activePhases: Array<OrchestrationState["phase"]> = [
+    "work", "update-docs", "pr-create", "pr-comments", "final-merge",
+  ];
+  const neverPhases: Array<OrchestrationState["phase"]> = ["setup", "done"];
+
+  test("coder participates in every solo active phase", () => {
+    const state = makeSoloState();
+    for (const phase of activePhases) {
+      state.phase = phase;
+      expect(agentParticipatesInPhase(state, state.agents[0])).toBe(true);
+    }
+  });
+
+  test("coder never participates in setup or done", () => {
+    const state = makeSoloState();
+    for (const phase of neverPhases) {
+      state.phase = phase;
+      expect(agentParticipatesInPhase(state, state.agents[0])).toBe(false);
+    }
+  });
+
+  test("hypothetical reviewer never participates in solo mode", () => {
+    const reviewer = {
+      name: "reviewer", provider: "codex" as const, role: "reviewer" as const,
+      model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b",
+    };
+    // Solo normally has one agent, but this test exercises the defensive check
+    // that even if a reviewer is somehow present, they don't participate.
+    const state = makeSoloState({ agents: [...makeSoloState().agents, reviewer] });
+    for (const phase of activePhases) {
+      state.phase = phase;
+      expect(agentParticipatesInPhase(state, reviewer)).toBe(false);
+    }
+  });
+});
+
+describe("isSoloBailedOut / isBailedOut", () => {
+  test("isSoloBailedOut: true when solo coder status is bail-out", () => {
+    const state = makeSoloState();
+    state.agentStates.coder.status = "bail-out";
+    expect(isSoloBailedOut(state)).toBe(true);
+  });
+
+  test("isSoloBailedOut: false when mode is pair (delegation only via isBailedOut)", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "bail-out";
+    expect(isSoloBailedOut(state)).toBe(false);
+  });
+
+  test("isSoloBailedOut: false when coder status is not bail-out", () => {
+    const state = makeSoloState();
+    state.agentStates.coder.status = "done";
+    expect(isSoloBailedOut(state)).toBe(false);
+  });
+
+  test("isBailedOut: true for solo coder bail-out", () => {
+    const state = makeSoloState();
+    state.agentStates.coder.status = "bail-out";
+    expect(isBailedOut(state)).toBe(true);
+  });
+
+  test("isBailedOut: true for pair handshake (delegates to isPairBailedOut)", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "bail-out-confirmed";
+    expect(isBailedOut(state)).toBe(true);
+    expect(isPairBailedOut(state)).toBe(true);
+  });
+
+  test("isBailedOut: false for lone coder bail-out in pair mode", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "bail-out";
+    state.agentStates.reviewer.status = "done";
+    expect(isBailedOut(state)).toBe(false);
   });
 });
