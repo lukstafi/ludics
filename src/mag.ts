@@ -108,6 +108,7 @@ function triggerSkill(session: string, cmd: string): boolean {
 
 const DEFAULT_STALL_THRESHOLD_MS = 120_000; // 2 minutes
 const DEFAULT_STALL_NUDGE_COOLDOWN_MS = 120_000; // 2 minutes between stall nudges
+const DEFAULT_READY_THRESHOLD_MS = 5_000; // pane must be stable this long to count as ready
 const DEFAULT_MAX_REQUEUE_RETRIES = 3;
 const DEFAULT_STARTUP_WATCHDOG_SECONDS = 60;
 const DEFAULT_STARTUP_HELPER_STUCK_SECONDS = 45;
@@ -151,17 +152,31 @@ function isMagSettled(): boolean {
 }
 
 /**
- * Check whether the Mag tmux pane shows Claude Code's idle input prompt.
- * During splash/init, Claude drains stdin but discards it — sending skill
- * commands then makes them vanish without a trace (no shell error, no
- * slash-command invocation visible in the pane). Gate delivery on this
- * check so the request stays in the queue until the pane is actually
- * consuming input.
+ * Check whether the Mag pane has been quiet long enough to be considered
+ * ready for a new skill. Uses the last-message hash (footer excluded), so
+ * Claude Code's cosmetic footer updates don't reset the clock. Returns
+ * true iff the hash has been stable for >= DEFAULT_READY_THRESHOLD_MS.
+ *
+ * Shares state with the stall-detection path (last-pane.hash and
+ * last-pane-change.epoch): both track the same "how long has the last
+ * message been static" signal, just with different thresholds. Calling
+ * isMagReady() also updates that state — safe to call from either the
+ * keepalive tick or from magStart's cold-boot poll before keepalive is
+ * running.
  */
 function isMagReady(): boolean {
-  const capture = tmuxCapture(MAG_SESSION_NAME, 30);
-  if (!capture) return false;
-  return /\n❯ *\n/.test(capture) && /bypass permissions/.test(capture);
+  const currentHash = captureLastMessageHash(MAG_SESSION_NAME);
+  if (currentHash === null) return false;
+
+  const previousHash = readPaneHash();
+  if (previousHash !== currentHash) {
+    writePaneHash(currentHash);
+    writePaneChangeEpoch();
+    return false;
+  }
+
+  const lastChangeMs = readPaneChangeEpoch();
+  return (Date.now() - lastChangeMs) >= DEFAULT_READY_THRESHOLD_MS;
 }
 
 /**
@@ -2911,6 +2926,10 @@ export async function magStart(args: string[]): Promise<void> {
   // Skip entirely when Claude isn't installed — isMagReady() could never
   // become true, and there's no point feeding the queue into a bare shell.
   if (hasClaude) {
+    // Clear stale stall state from any previous session before the poll —
+    // isMagReady() now tracks last-pane.hash and last-pane-change.epoch
+    // itself, so the loop builds up fresh state.
+    clearStallState();
     const readyDeadlineMs = Date.now() + 60_000;
     let becameReady = false;
     while (Date.now() < readyDeadlineMs) {
@@ -2922,7 +2941,6 @@ export async function magStart(args: string[]): Promise<void> {
     }
     if (becameReady) {
       markMagSettled();
-      clearStallState();
       const fed = await maybeFeedMagQueue();
       if (fed) {
         console.error("ludics: Mag fresh start, delivered queued request via queue feed");
