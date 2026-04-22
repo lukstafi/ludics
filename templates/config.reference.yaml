@@ -100,8 +100,17 @@ mag:
     default_reviewer: codex      # Default reviewer provider for auto-selected sessions: codex | claude-code
     coder_model: ""              # Model ID for the coder agent (e.g. claude-opus-4-6); empty = provider default
     reviewer_model: ""           # Model ID for the reviewer agent; empty = provider default
-    coder_effort: "high"         # Effort level for the coder: low | medium | high | max; default: high
-    reviewer_effort: "high"      # Effort level for the reviewer: low | medium | high | max; default: high
+    coder_effort: "high"         # Effort level for the coder: low | medium | high | xhigh | max; default: high
+    reviewer_effort: "high"      # Effort level for the reviewer: low | medium | high | xhigh | max; default: high
+    # Unified ladder — same rung means same relative budget across providers.
+    # Per-provider CLI/wire mapping:
+    #   unified  | claude-code --effort | codex model_reasoning_effort
+    #   ---------|----------------------|-----------------------------
+    #   low      | low                  | minimal
+    #   medium   | medium               | low
+    #   high     | high                 | medium
+    #   xhigh    | xhigh                | high
+    #   max      | max                  | xhigh
     # Legacy aliases (still accepted): coder_thinking_effort, reviewer_thinking_effort
     phase_timeouts:              # Per-phase timeout overrides in seconds (unset phases use built-in defaults)
       work: 7200

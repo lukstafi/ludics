@@ -1014,14 +1014,14 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     const newTtydPids: Record<string, number> = { ...(tmuxState?.ttydPids ?? {}) };
     const taskId = orchState.taskId;
 
-    const bootCliInSession = (session: string, agent: { name: string; provider: string }) => {
+    const bootCliInSession = (session: string, agent: { name: string; provider: string; thinkingEffort?: string }) => {
       const envCmd = [
         `export LUDICS_SLOT=${slotNum}`,
         `LUDICS_AGENT=${agent.name}`,
         `LUDICS_PEER_SYNC_DIR="${orchState.peerSyncDir}"`,
       ].join(" ");
       tmuxSendCommand(session, envCmd);
-      tmuxSendCommand(session, agentCliCommand(agent.provider));
+      tmuxSendCommand(session, agentCliCommand(agent));
     };
 
     for (let i = 0; i < orchState.agents.length; i++) {

@@ -28,6 +28,7 @@ import {
   type OrchestrationState,
 } from "../orchestration/state.ts";
 import { initPeerSync, removePeerSyncSession, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
+import { claudeEffort, codexEffort, normaliseEffortLevel } from "../orchestration/effort.ts";
 import { createWorktrees, cleanupWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
 import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/deferred-cleanup.ts";
 import { isoNow, makeId, nowEpoch } from "../orchestration/util.ts";
@@ -271,7 +272,7 @@ function killTmuxSessionsForSlot(slot: number, agentNames: string[], taskId?: st
  */
 function bootAgentCli(
   slot: number,
-  agent: { name: string; provider: string },
+  agent: { name: string; provider: string; thinkingEffort?: string },
   peerSyncDir: string,
   _phaseToken: string,
   taskId?: string,
@@ -288,7 +289,7 @@ function bootAgentCli(
   tmuxSendCommand(target, envCmd);
 
   // Boot the CLI (runs persistently in the pane)
-  tmuxSendCommand(target, agentCliCommand(agent.provider));
+  tmuxSendCommand(target, agentCliCommand(agent));
 }
 
 // ---------------------------------------------------------------------------
@@ -376,10 +377,23 @@ export function captureLastMessageHash(target: string, lines: number = 50): stri
   return hasher.digest("hex");
 }
 
-/** Get the CLI launch command for an agent provider */
-export function agentCliCommand(provider: string): string {
-  if (provider === "claude-code") return "claude --dangerously-skip-permissions";
-  return "codex --yolo -c check_for_update_on_startup=false";
+/**
+ * Get the CLI launch command for an agent. If the agent has a thinkingEffort
+ * set, it is translated through the unified ladder and passed as the
+ * provider-specific flag (claude: --effort; codex: -c model_reasoning_effort).
+ */
+export function agentCliCommand(agent: { provider: string; thinkingEffort?: string }): string {
+  const effortRaw = agent.thinkingEffort?.trim();
+  if (agent.provider === "claude-code") {
+    const base = "claude --dangerously-skip-permissions";
+    if (!effortRaw) return base;
+    const level = normaliseEffortLevel(effortRaw);
+    return `${base} --effort ${claudeEffort(level)}`;
+  }
+  const base = "codex --yolo -c check_for_update_on_startup=false";
+  if (!effortRaw) return base;
+  const level = normaliseEffortLevel(effortRaw);
+  return `${base} -c model_reasoning_effort="${codexEffort(level)}"`;
 }
 
 /**

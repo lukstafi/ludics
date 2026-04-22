@@ -11,6 +11,7 @@ import { readStopHookRecord } from "./peer-sync.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 import type { AgentConfig, AgentTurnLifecycle, OrchestrationState } from "./state.ts";
 import { isoNow, makeId } from "./util.ts";
+import { claudeEffort, codexEffort, normaliseEffortLevel } from "./effort.ts";
 
 async function withClient<T>(
   record: T3CodeServerRecord,
@@ -41,23 +42,8 @@ function threadSnapshot(snapshot: T3Snapshot | null, threadId: string) {
 }
 
 /**
- * Normalise a raw effort value to a named level string.
- * Legacy numeric token-budget values are mapped to the closest named level.
- */
-function normaliseEffortLevel(raw: string): string {
-  const lower = raw.toLowerCase().trim();
-  if (lower === "low" || lower === "medium" || lower === "high" || lower === "max") return lower;
-  const n = parseInt(raw, 10);
-  if (!isNaN(n)) {
-    if (n <= 1024) return "low";
-    if (n <= 8192) return "medium";
-    return "high";
-  }
-  return "high";
-}
-
-/**
  * Build modelSelection options with effort/reasoning settings.
+ * Uses the shared unified effort ladder (see ./effort.ts).
  */
 function buildModelSelection(
   agent: AgentConfig,
@@ -68,10 +54,9 @@ function buildModelSelection(
 
   const level = normaliseEffortLevel(effort);
   if (wireProvider === "claudeAgent") {
-    return { provider: wireProvider, model: agent.model, options: { effort: level } };
+    return { provider: wireProvider, model: agent.model, options: { effort: claudeEffort(level) } };
   }
-  const codexLevel = level === "max" ? "high" : level;
-  return { provider: wireProvider, model: agent.model, options: { reasoningEffort: codexLevel } };
+  return { provider: wireProvider, model: agent.model, options: { reasoningEffort: codexEffort(level) } };
 }
 
 /**
