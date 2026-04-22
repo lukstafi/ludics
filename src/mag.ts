@@ -151,6 +151,20 @@ function isMagSettled(): boolean {
 }
 
 /**
+ * Check whether the Mag tmux pane shows Claude Code's idle input prompt.
+ * During splash/init, Claude drains stdin but discards it — sending skill
+ * commands then makes them vanish without a trace (no shell error, no
+ * slash-command invocation visible in the pane). Gate delivery on this
+ * check so the request stays in the queue until the pane is actually
+ * consuming input.
+ */
+function isMagReady(): boolean {
+  const capture = tmuxCapture(MAG_SESSION_NAME, 30);
+  if (!capture) return false;
+  return /\n❯ *\n/.test(capture) && /bypass permissions/.test(capture);
+}
+
+/**
  * If pane output has advanced since the settled sentinel was written,
  * Mag has resumed running (e.g. a manual turn) — clear the stale sentinel.
  */
@@ -242,6 +256,7 @@ function clearStallState(): void {
  */
 export async function maybeFeedMagQueue(): Promise<boolean> {
   if (!isMagSettled()) return false;
+  if (!isMagReady()) return false;
   if (!queuePending()) return false;
 
   // Drain programmatic entries first (they don't need a Mag turn)
@@ -2915,13 +2930,33 @@ export async function magStart(args: string[]): Promise<void> {
   // Ensure t3code server on fresh start
   await ensureT3codeIfEnabled("fresh start");
 
-  // Treat fresh start as implicitly settled — deliver one queued request
-  markMagSettled();
-  clearStallState();
-  safeSyncOutput(["sleep", "5"]);
-  const fed = await maybeFeedMagQueue();
-  if (fed) {
-    console.error("ludics: Mag fresh start, delivered queued request via queue feed");
+  // Poll the pane for Claude Code's idle prompt before marking settled.
+  // Optimistically marking settled here (the former behavior) races with
+  // Claude's splash/init on cold boots: keepalive feeds the queue into a
+  // pane that is not yet consuming input, so the skill text vanishes.
+  const readyDeadlineMs = Date.now() + 60_000;
+  let becameReady = false;
+  while (Date.now() < readyDeadlineMs) {
+    if (isMagReady()) {
+      becameReady = true;
+      break;
+    }
+    safeSyncOutput(["sleep", "1"]);
+  }
+  if (becameReady) {
+    markMagSettled();
+    clearStallState();
+    const fed = await maybeFeedMagQueue();
+    if (fed) {
+      console.error("ludics: Mag fresh start, delivered queued request via queue feed");
+    }
+  } else {
+    emitEvent({
+      event_type: "mag_startup_not_ready",
+      source: "cli",
+      scope: "mag",
+      message: "readiness timeout at 60s — stall detection will handle",
+    });
   }
 }
 
