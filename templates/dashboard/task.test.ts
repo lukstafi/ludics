@@ -185,16 +185,26 @@ describe("dashboard.js task links", () => {
   const templatePath = join(import.meta.dir, "dashboard.js");
   const template = readFileSync(templatePath, "utf-8");
 
-  test("needs-confirmation link points to task.html", () => {
-    expect(template).toContain('needs-confirm-link" href="task.html?task=${escapeHtml(task.id)}"');
+  test("needs-confirmation link points to task.html with URL-encoded id", () => {
+    expect(template).toContain('needs-confirm-link" href="task.html?task=${encodeURIComponent(task.id)}"');
   });
 
-  test("unanswered-questions link points to task.html", () => {
-    expect(template).toContain('unanswered-q-link" href="task.html?task=${escapeHtml(task.id)}"');
+  test("unanswered-questions link points to task.html with URL-encoded id", () => {
+    expect(template).toContain('unanswered-q-link" href="task.html?task=${encodeURIComponent(task.id)}"');
   });
 
   test("deferred-launch fallback points to task.html (not raw markdown)", () => {
     expect(template).toContain("`task.html?task=${encodeURIComponent(task.id)}`");
+  });
+
+  test("task-link query params use encodeURIComponent, never escapeHtml", () => {
+    // Regression guard: escapeHtml(id) protects against attribute injection
+    // but does NOT percent-encode URL-delimiter characters like `&`, `#`,
+    // `?`, or `+`. A task id containing any of those would break query-param
+    // parsing on task.html. Only encodeURIComponent is safe here. (Both
+    // approaches are safe for attribute-escaping because encodeURIComponent
+    // also percent-encodes `"`, `'`, `<`, `>`, and `&`.)
+    expect(template).not.toMatch(/task\.html\?task=\$\{escapeHtml\(task\.id\)\}/);
   });
 
   test("no raw task-files/ links remain in client-side rendering", () => {
