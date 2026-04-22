@@ -366,6 +366,73 @@ describe("deferred-launch sorting", () => {
   });
 });
 
+describe("tasks-tree link renders task.html", () => {
+  function writeTask(id: string, title: string, overrides: string = ""): void {
+    const tasksDir = join(harnessDir(), "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(
+      join(tasksDir, `${id}.md`),
+      `---\nid: ${id}\ntitle: "${title}"\nstatus: in-progress\npriority: B\ncreated: "2026-04-10"\ncontext: ludics\n${overrides}---\n\n# ${title}\n`,
+    );
+  }
+
+  function collectTaskNodes(nodes: unknown[]): Record<string, unknown>[] {
+    const out: Record<string, unknown>[] = [];
+    const walk = (arr: unknown[]): void => {
+      for (const n of arr) {
+        if (!n || typeof n !== "object") continue;
+        const node = n as Record<string, unknown>;
+        if (node.kind === "task") out.push(node);
+        if (Array.isArray(node.children)) walk(node.children as unknown[]);
+      }
+    };
+    walk(nodes);
+    return out;
+  }
+
+  test("task tree link points to /task.html?task=ID, not raw markdown", async () => {
+    writeTask("task-abc123", "Example task");
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "tasks-tree.json");
+    const tree = JSON.parse(readFileSync(outFile, "utf-8")) as unknown[];
+    const tasks = collectTaskNodes(tree);
+    const task = tasks.find((t) => t.id === "task-abc123");
+    expect(task).toBeDefined();
+    expect(task!.link).toBe("/task.html?task=task-abc123");
+    // Regression guard: must not link to raw markdown endpoint.
+    expect(String(task!.link)).not.toContain("/task-files/");
+  });
+
+  test("task IDs are URL-encoded in the generated link", async () => {
+    writeTask("task-with space", "Needs encoding");
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "tasks-tree.json");
+    const tree = JSON.parse(readFileSync(outFile, "utf-8")) as unknown[];
+    const tasks = collectTaskNodes(tree);
+    const task = tasks.find((t) => t.id === "task-with space");
+    expect(task).toBeDefined();
+    expect(task!.link).toBe("/task.html?task=task-with%20space");
+  });
+});
+
 // Note: /api/slot-resume follows the exact same pattern as /api/slot-start
 // (validate slot 1-6, spawnSync `ludics slot N resume`, return OK/error).
 // slotResume() itself is already tested in src/slots/index.test.ts.

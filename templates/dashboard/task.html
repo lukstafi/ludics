@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ludics Task</title>
+    <script>document.documentElement.dataset.theme=localStorage.getItem('ludics-theme')||'night'</script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="content.css">
+</head>
+<body>
+    <header>
+        <div class="nav-links">
+            <h1>ludics</h1>
+            <a href="index.html">Dashboard</a>
+            <a href="mag.html">Mag</a>
+            <a href="#" id="t3code-link">t3code</a>
+            <a href="terminals.html">Terminals</a>
+            <a href="ntfy.html">ntfy</a>
+            <a href="tasks.html">Tasks</a>
+            <a href="briefing.html">Briefing</a>
+        </div>
+        <div class="status-bar">
+            <span id="last-update">Last update: --</span>
+            <span id="connection-status" class="connected">Connected</span>
+        </div>
+    </header>
+    <script src="nav.js"></script>
+
+    <main class="content-container">
+        <div class="content-header">
+            <span class="proposal-task-id" id="task-task-id"></span>
+            <span class="task-header-badges" id="task-header-badges"></span>
+        </div>
+        <div class="retro-links" id="task-links" hidden></div>
+        <div class="rendered-content" id="task-content">
+            <div class="content-placeholder">
+                <span class="icon">&#x1F4C4;</span>
+                <span class="text">Loading task...</span>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <p>ludics v0.1 | <a href="https://github.com/lukstafi/ludics">GitHub</a></p>
+    </footer>
+
+    <script src="markdown.js"></script>
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const taskId = params.get('task') || '';
+
+        if (taskId) {
+            document.title = `ludics Task: ${taskId}`;
+            const taskIdEl = document.getElementById('task-task-id');
+            if (taskIdEl) taskIdEl.textContent = taskId;
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchTask();
+        });
+
+        // Strip leading YAML frontmatter (between two --- fences) and return
+        // { frontmatter: string, body: string }. If there is no frontmatter, the
+        // frontmatter is empty and body is the original input.
+        function splitFrontmatter(text) {
+            const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n)*/);
+            if (!match) return { frontmatter: '', body: text };
+            return { frontmatter: match[1], body: text.slice(match[0].length) };
+        }
+
+        // Parse a minimal YAML frontmatter, extracting only top-level scalar
+        // keys (string/number/null). Nested blocks are skipped. This is
+        // sufficient for the fields we display: status, priority, project,
+        // proposal. Quoted values have their surrounding quotes stripped.
+        function parseFrontmatter(yaml) {
+            const result = {};
+            if (!yaml) return result;
+            const lines = yaml.split(/\r?\n/);
+            for (const line of lines) {
+                // Skip comments and empty lines
+                if (!line || /^\s*#/.test(line)) continue;
+                // Skip indented lines (nested values)
+                if (/^\s/.test(line)) continue;
+                const m = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+                if (!m) continue;
+                const key = m[1];
+                let value = m[2].trim();
+                // Strip inline comments
+                if (!/^["']/.test(value)) {
+                    const hashIdx = value.indexOf(' #');
+                    if (hashIdx >= 0) value = value.slice(0, hashIdx).trim();
+                }
+                // Empty value means the key opens a block; skip it.
+                if (value === '') continue;
+                // Normalize null
+                if (value === 'null' || value === '~') { result[key] = null; continue; }
+                // Strip matching quotes
+                if ((value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+                    (value.startsWith("'") && value.endsWith("'") && value.length >= 2)) {
+                    value = value.slice(1, -1);
+                }
+                result[key] = value;
+            }
+            return result;
+        }
+
+        function renderBadges(meta) {
+            const container = document.getElementById('task-header-badges');
+            if (!container) return;
+            const parts = [];
+            if (meta.status) parts.push(`<span class="task-badge">${escapeHtml(String(meta.status))}</span>`);
+            if (meta.priority) parts.push(`<span class="task-badge">P${escapeHtml(String(meta.priority))}</span>`);
+            if (meta.project) parts.push(`<span class="task-badge">${escapeHtml(String(meta.project))}</span>`);
+            container.innerHTML = parts.join(' ');
+        }
+
+        function renderLinks(meta) {
+            const container = document.getElementById('task-links');
+            if (!container) return;
+            const links = [];
+            if (meta.proposal) {
+                links.push(`<a href="proposal.html?task=${encodeURIComponent(taskId)}">View Proposal</a>`);
+            }
+            if (links.length === 0) {
+                container.hidden = true;
+                container.innerHTML = '';
+                return;
+            }
+            container.hidden = false;
+            container.innerHTML = links.join('');
+        }
+
+        async function fetchTask() {
+            const container = document.getElementById('task-content');
+            if (!container) return;
+
+            if (!taskId) {
+                container.innerHTML = `
+                    <div class="content-placeholder">
+                        <span class="icon">&#x1F4C4;</span>
+                        <span class="text">No task specified</span>
+                        <span class="hint">Use ?task=TASK-ID in the URL</span>
+                    </div>
+                `;
+                return;
+            }
+
+            try {
+                const response = await fetch(`/task-files/${encodeURIComponent(taskId)}.md`);
+                if (response.status === 404) {
+                    container.innerHTML = `
+                        <div class="content-placeholder">
+                            <span class="icon">&#x1F4C4;</span>
+                            <span class="text">Task file not found</span>
+                            <span class="hint">No task file available for ${escapeHtml(taskId)}</span>
+                        </div>
+                    `;
+                    setConnectionStatus(true);
+                    updateTimestamp();
+                    return;
+                }
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const text = await response.text();
+                const { frontmatter, body } = splitFrontmatter(text);
+                const meta = parseFrontmatter(frontmatter);
+                renderBadges(meta);
+                renderLinks(meta);
+                container.innerHTML = markdownToHtml(body);
+                updateTimestamp();
+                setConnectionStatus(true);
+            } catch (error) {
+                console.warn('Failed to fetch task:', error);
+                container.innerHTML = `
+                    <div class="content-placeholder">
+                        <span class="icon">&#x26A0;</span>
+                        <span class="text">Failed to load task</span>
+                        <span class="hint">${escapeHtml(String(error))}</span>
+                    </div>
+                `;
+                setConnectionStatus(false);
+            }
+        }
+
+        function updateTimestamp() {
+            const el = document.getElementById('last-update');
+            if (el) {
+                el.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+            }
+        }
+
+        function setConnectionStatus(connected) {
+            const el = document.getElementById('connection-status');
+            if (el) {
+                el.className = connected ? 'connected' : 'disconnected';
+                el.textContent = connected ? 'Connected' : 'Disconnected';
+            }
+        }
+    </script>
+</body>
+</html>
