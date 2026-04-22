@@ -645,7 +645,7 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
     const hasActiveProposal = task.hasProposal && !task.isCompleted;
     const subtreeHasActiveProposal = hasActiveProposal || descendantHasActiveProposal;
     const highlighted = !task.isCompleted && subtreeHasActiveProposal;
-    const taskFileLink = `/task-files/${encodeURIComponent(task.id)}.md`;
+    const taskFileLink = `/task.html?task=${encodeURIComponent(task.id)}`;
     const proposalLink = task.proposalPath ? `/proposal.html?task=${encodeURIComponent(task.id)}` : null;
     const retroLink = task.hasRetrospective ? `retrospective.html?task=${encodeURIComponent(task.id)}` : null;
 
