@@ -29,7 +29,7 @@ import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, pa
 import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
-import { readTmuxSlotState, tmuxPaneOutputHash } from "./adapters/tmux-adapter.ts";
+import { captureLastMessage, readTmuxSlotState, tmuxPaneOutputHash } from "./adapters/tmux-adapter.ts";
 import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
 import { selectOrchestrationFlagsForTask } from "./adapters/t3code.ts";
 import YAML from "yaml";
@@ -724,33 +724,7 @@ function adoptSessionsFingerprintData(
 }
 
 function publishTerminalState(): void {
-  const raw = tmuxCapture(MAG_SESSION_NAME, 50);
-  if (!raw) return;
-
-  const lines = raw.split("\n");
-
-  // Find last ⏺ line (Claude Code output marker)
-  let startIdx = 0;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i]!.includes("⏺")) {
-      startIdx = i;
-      break;
-    }
-  }
-
-  // Find last prompt line and cut there (drop status tagline below it)
-  let endIdx = lines.length;
-  for (let i = lines.length - 1; i >= startIdx; i--) {
-    if (lines[i]!.includes("❯")) {
-      endIdx = i; // exclude the prompt line itself
-      break;
-    }
-  }
-
-  const cleaned = lines.slice(startIdx, endIdx)
-    .filter((l) => !l.match(/^[─]{4,}/));  // drop line separators
-
-  const snippet = cleaned.join("\n").trim();
+  const snippet = captureLastMessage(MAG_SESSION_NAME, 50);
   if (!snippet) return;
 
   // Dedup: hash and compare to previous
