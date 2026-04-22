@@ -290,7 +290,7 @@ Phases in brackets are optional, gated by configuration flags (`enableClarify`, 
 interface OrchestrationState {
   slot: number;
   feature: string;
-  mode: "duo" | "pair";           // duo = same roles, pair = coder + reviewer
+  mode: "duo" | "pair" | "solo";  // duo = two paired slots, pair = coder + reviewer, solo = coder only
   phase: PhaseId;
   round: number;
   agents: AgentConfig[];          // name, provider, role, model, branch, worktreePath
@@ -328,7 +328,7 @@ The `.peer-sync/` directory in the root worktree serves as the coordination chan
 ```
 .peer-sync/
 ├── feature           # Feature/task name
-├── mode              # duo or pair
+├── mode              # duo, pair, or solo
 ├── phase             # Current phase ID
 ├── phase-token       # Unique token per phase entry
 ├── round             # Current round number
@@ -375,7 +375,7 @@ Phase-specific templates exist for each role (`pair-coder-*.md`, `pair-reviewer-
 
 **Hierarchical duo mode** (`src/slots/duo-expand.ts`, `src/orchestration/cross-slot.ts`):
 
-The `--duo` flag now expands into two paired slots via `expandDuoSlots()`. Each slot runs a full pair-mode orchestration with swapped roles. State fields:
+The `--duo` flag now expands into two paired slots via `expandDuoSlots()`. Each slot runs a full pair-mode orchestration with swapped roles. Solo mode (`--solo`) runs a single coder with no reviewer; it uses the pair-style root worktree but skips the review loop (see §Solo mode below). State fields:
 
 - `duoPeerSlot` — partner slot number for cross-slot coordination
 - `duoAwaitingPeer` — sync flag for merge coordination
@@ -434,14 +434,15 @@ ludics ──WebSocket──> t3code server ──spawns──> AI agents (Claud
 The t3code adapter supports two modes:
 
 1. **Single-thread mode** (`slot start -a t3code`): Creates one t3code thread for manual coding
-2. **Orchestrated mode** (`slot start -a t3code --duo/--pair`): Creates multiple threads + spawns orchestration subprocess
+2. **Orchestrated mode** (`slot start -a t3code --duo/--pair/--solo`): Creates one or more threads + spawns orchestration subprocess
 
 Orchestrated mode argument parsing:
 ```
---duo                     # Two agents, same roles
---pair                    # Coder + reviewer roles
+--duo                     # Two paired slots (expanded via expandDuoSlots)
+--pair                    # Coder + reviewer roles in a single slot
+--solo                    # Single coder, no reviewer (for tiny-effort tasks)
 --coder <provider>        # e.g., claude-code, codex
---reviewer <provider>
+--reviewer <provider>     # not used with --solo
 --feature <name>          # Feature branch name
 --enable-clarify          # Enable clarify phase
 --enable-plan             # Enable plan phase
@@ -961,6 +962,7 @@ ludics/
 │   ├── suggest-refactor.md           # Post-merge refactoring suggestions
 │   ├── pr-conflict-resolve.md        # PR merge conflict resolution
 │   ├── final-merge.md                # Final merge
+│   ├── solo-work.md                  # Solo mode: coder work (no reviewer guidance)
 │   ├── pair-coder-clarify.md         # Pair mode: coder clarify
 │   ├── pair-coder-plan.md            # Pair mode: coder plan
 │   ├── pair-coder-plan-merge.md      # Pair mode: coder merges independent plans
@@ -973,6 +975,10 @@ ludics/
 │   ├── pair-reviewer-plan-review.md  # Pair mode: reviewer votes on merged plan
 │   ├── pair-reviewer-pushback.md     # Pair mode: reviewer pushback
 │   └── pair-reviewer-review.md       # Pair mode: reviewer review
+│   # Solo mode resolves templates via:
+│   #   solo-<phase>.md > pair-coder-<phase>.md > <phase>.md
+│   # Only solo-work.md has reviewer-specific differences; other solo phases
+│   # reuse the pair-coder or mode-agnostic templates.
 ├── templates/
 │   ├── config.reference.yaml         # Example config
 │   ├── slots.example.md

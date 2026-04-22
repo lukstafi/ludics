@@ -7,7 +7,7 @@ import { agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDon
 import { statusFileFingerprint } from "./peer-sync.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
 import { applyPhaseSideEffects } from "./runner.ts";
-import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "./state.ts";
+import { defaultOrchestrationConfig, initAgentRuntimeState, migrateState, type OrchestrationState } from "./state.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -1033,5 +1033,53 @@ describe("isSoloBailedOut / isBailedOut", () => {
     state.agentStates.coder.status = "bail-out";
     state.agentStates.reviewer.status = "done";
     expect(isBailedOut(state)).toBe(false);
+  });
+});
+
+describe("migrateState — solo invariants", () => {
+  test("returns valid solo state unchanged without warning", () => {
+    const state = makeSoloState();
+    const warnings: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((msg: string) => { warnings.push(msg); });
+    try {
+      const result = migrateState(state, 1);
+      expect(result).toBe(state);
+      expect(warnings.filter((w) => w.includes("solo"))).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("warns but returns state unchanged when solo state has duoPeerSlot set", () => {
+    const state = makeSoloState({ duoPeerSlot: 2 });
+    const warnings: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((msg: string) => { warnings.push(msg); });
+    try {
+      const result = migrateState(state, 3);
+      expect(result).toBe(state);
+      expect(result.duoPeerSlot).toBe(2); // state unchanged
+      expect(warnings.some((w) => w.includes("solo") && w.includes("duoPeerSlot"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("warns but returns state unchanged when solo state has wrong agent count", () => {
+    const state = makeSoloState({
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "claude-sonnet-4-6", branch: "a", worktreePath: "/tmp/a" },
+        { name: "reviewer", provider: "codex", role: "reviewer", model: "gpt-5.4", branch: "b", worktreePath: "/tmp/b" },
+      ],
+    });
+    const warnings: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((msg: string) => { warnings.push(msg); });
+    try {
+      const result = migrateState(state, 4);
+      expect(result).toBe(state);
+      expect(result.agents).toHaveLength(2); // state unchanged
+      expect(warnings.some((w) => w.includes("solo") && w.includes("2 agents"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -504,7 +504,7 @@ export function startDashboardServer(
         }
         const project = typeof body.project === "string" ? body.project.trim() || "personal" : "personal";
         const priority = typeof body.priority === "string" && /^[A-CS]$/.test(body.priority) ? body.priority : "B";
-        const effort = typeof body.effort === "string" && ["small", "medium", "large"].includes(body.effort) ? body.effort : "medium";
+        const effort = typeof body.effort === "string" && ["tiny", "small", "medium", "large"].includes(body.effort) ? body.effort : "medium";
         const usesBrowser = body.usesBrowser === true;
         const taskBody = typeof body.body === "string" ? body.body.trim() : "";
 

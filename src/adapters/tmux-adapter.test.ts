@@ -190,3 +190,29 @@ describe("tmux adapter stop — preserveState", () => {
     expect(existsSync(join(harness, "orchestration", "tmux-slot-1.json"))).toBe(false);
   });
 });
+
+describe("tmux adapter — missing orchestration error mentions --solo", () => {
+  test("error text lists --solo reassignment as first option", async () => {
+    const { start } = await import("./tmux-adapter.ts");
+    const ctx: AdapterContext = {
+      slot: 7,
+      harnessDir: "/tmp/no-op-harness",
+      adapterArgs: "", // no orchestration flags
+      taskId: "task-x",
+      slotId: "s7",
+      path: "/tmp/project",
+      projectDir: "/tmp/project",
+      session: "",
+    };
+    let thrown: Error | null = null;
+    try {
+      await start(ctx);
+    } catch (e) {
+      thrown = e as Error;
+    }
+    expect(thrown).not.toBeNull();
+    expect(thrown!.message).toContain("tmux adapter requires orchestration flags");
+    expect(thrown!.message).toContain("--solo --coder");
+    expect(thrown!.message).toContain("--pair --coder");
+  });
+});

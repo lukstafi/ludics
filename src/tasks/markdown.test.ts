@@ -451,3 +451,27 @@ describe("parseTaskFrontmatter skip_plan", () => {
     expect(fm.skip_plan).toBe(true);
   });
 });
+
+describe("parseTaskFrontmatter effort: tiny", () => {
+  test("parses effort: tiny as the string 'tiny'", () => {
+    const content = "---\nid: task-1\ntitle: Test\neffort: tiny\n---\n";
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.effort).toBe("tiny");
+  });
+
+  test("round-trips effort: tiny via readFrontmatterField", () => {
+    const content = "---\nid: task-1\ntitle: Test\neffort: tiny\n---\n\nbody\n";
+    expect(readFrontmatterField(content, "effort")).toBe("tiny");
+  });
+
+  test("updateFrontmatterField preserves effort: tiny on write", () => {
+    const tmpFile = `/tmp/ludics-tiny-roundtrip-${Date.now()}.md`;
+    const content = "---\nid: task-1\ntitle: Test\neffort: tiny\n---\n\nbody\n";
+    require("fs").writeFileSync(tmpFile, content);
+    // Update an unrelated field; verify effort stays "tiny"
+    updateFrontmatterField(tmpFile, "priority", "A");
+    const after = require("fs").readFileSync(tmpFile, "utf-8");
+    expect(readFrontmatterField(after, "effort")).toBe("tiny");
+    require("fs").unlinkSync(tmpFile);
+  });
+});

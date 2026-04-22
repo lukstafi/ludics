@@ -254,7 +254,7 @@ function isWorkerContext(): boolean {
   }
 }
 
-function migrateState(state: OrchestrationState, slot: number): OrchestrationState {
+export function migrateState(state: OrchestrationState, slot: number): OrchestrationState {
   if (!state.taskId && (state as unknown as Record<string, unknown>).feature) {
     state.taskId = String((state as unknown as Record<string, unknown>).feature);
   }

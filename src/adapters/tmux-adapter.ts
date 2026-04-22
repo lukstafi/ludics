@@ -449,6 +449,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     throw new Error(
       `slot ${ctx.slot}: tmux adapter requires orchestration flags.\n` +
       `  Reassign with one of:\n` +
+      `    ludics slot ${ctx.slot} assign <task> -a tmux --solo --coder <provider>\n` +
       `    ludics slot ${ctx.slot} assign <task> -a tmux --pair --coder <provider> --reviewer <provider>\n` +
       `    ludics slot ${ctx.slot} assign <task> -a tmux -A "<flags>"`
     );
