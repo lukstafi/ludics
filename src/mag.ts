@@ -266,28 +266,35 @@ function clearStallState(): void {
 // --- Queue feed and stall nudge helpers ---
 
 /**
- * When Mag is settled and queue has Mag-turn work, pop one item and deliver.
- * Returns true if a command was dispatched.
+ * When Mag is ready for input and queue has Mag-turn work, pop one item
+ * and deliver. "Ready" means either the settled sentinel is set (stop
+ * hook fired at end of last turn) or isMagReady() reports the pane has
+ * been quiet long enough (a fallback that doesn't require the stop hook
+ * to have fired, e.g. for queue requests arriving during idle periods
+ * where clearStaleSettled has cleared the sentinel). Returns true if a
+ * command was dispatched.
  */
 export async function maybeFeedMagQueue(): Promise<boolean> {
-  if (!isMagSettled()) return false;
-  if (!isMagReady()) return false;
+  if (!isMagSettled() && !isMagReady()) return false;
   if (!queuePending()) return false;
 
   // Drain programmatic entries first (they don't need a Mag turn)
   await drainProgrammaticQueueHead();
   if (!queuePending()) return false;
 
-  // Atomic claim: rename sentinel to in-progress marker so only one keepalive
-  // invocation can win the race. If rename fails, another tick already claimed it.
-  const claimPath = settledSentinelFile() + ".claiming";
-  try {
-    renameSync(settledSentinelFile(), claimPath);
-  } catch {
-    return false; // another tick already claimed
+  // Atomic claim: if settled, consume the sentinel so concurrent ticks
+  // see !settled. In the ready-only path there's no sentinel to consume;
+  // we rely on queuePopSkill's atomic dequeue below (and on the harness'
+  // single-writer invariant under federation v2).
+  if (isMagSettled()) {
+    const claimPath = settledSentinelFile() + ".claiming";
+    try {
+      renameSync(settledSentinelFile(), claimPath);
+    } catch {
+      return false; // another tick already claimed
+    }
+    try { unlinkSync(claimPath); } catch {}
   }
-  // Remove the claim marker now that we own the transition
-  try { unlinkSync(claimPath); } catch {}
 
   const popped = await queuePopSkill();
   if (!popped) return false;
