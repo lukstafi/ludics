@@ -2934,29 +2934,33 @@ export async function magStart(args: string[]): Promise<void> {
   // Optimistically marking settled here (the former behavior) races with
   // Claude's splash/init on cold boots: keepalive feeds the queue into a
   // pane that is not yet consuming input, so the skill text vanishes.
-  const readyDeadlineMs = Date.now() + 60_000;
-  let becameReady = false;
-  while (Date.now() < readyDeadlineMs) {
-    if (isMagReady()) {
-      becameReady = true;
-      break;
+  // Skip entirely when Claude isn't installed — isMagReady() could never
+  // become true, and there's no point feeding the queue into a bare shell.
+  if (hasClaude) {
+    const readyDeadlineMs = Date.now() + 60_000;
+    let becameReady = false;
+    while (Date.now() < readyDeadlineMs) {
+      if (isMagReady()) {
+        becameReady = true;
+        break;
+      }
+      safeSyncOutput(["sleep", "1"]);
     }
-    safeSyncOutput(["sleep", "1"]);
-  }
-  if (becameReady) {
-    markMagSettled();
-    clearStallState();
-    const fed = await maybeFeedMagQueue();
-    if (fed) {
-      console.error("ludics: Mag fresh start, delivered queued request via queue feed");
+    if (becameReady) {
+      markMagSettled();
+      clearStallState();
+      const fed = await maybeFeedMagQueue();
+      if (fed) {
+        console.error("ludics: Mag fresh start, delivered queued request via queue feed");
+      }
+    } else {
+      emitEvent({
+        event_type: "mag_startup_not_ready",
+        source: "cli",
+        scope: "mag",
+        message: "readiness timeout at 60s — stall detection will handle",
+      });
     }
-  } else {
-    emitEvent({
-      event_type: "mag_startup_not_ready",
-      source: "cli",
-      scope: "mag",
-      message: "readiness timeout at 60s — stall detection will handle",
-    });
   }
 }
 
