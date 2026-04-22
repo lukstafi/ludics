@@ -64,11 +64,16 @@ function sentinelFresh(file: string, now: Date, windowSec: number): boolean {
 function touchSentinel(file: string, now: Date): void {
   try {
     mkdirSync(join(file, ".."), { recursive: true });
-  } catch {}
+  } catch {
+    // Parent dir may already exist; that's fine.
+  }
   try {
     writeFileSync(file, String(Math.floor(now.getTime() / 1000)));
     utimesSync(file, now, now);
-  } catch {}
+  } catch {
+    // Sentinel writes are best-effort; a stale sentinel just means the next
+    // tick may run again. Not worth aborting the tick.
+  }
 }
 
 function hasRemote(cwd: string, name: string, runGit: RunGit): boolean {
@@ -184,7 +189,7 @@ export function maybeFastForwardStagingFromUpstream(
         // measure progress via `HEAD@{1}..HEAD` would require reflog; for the
         // sake of simplicity and test-friendliness, infer from the "Already up
         // to date." vs advancing output of the merge subprocess.
-        const up2date = /up[\- ]to[\- ]date/i.test(merge.stdout);
+        const up2date = /up[- ]to[- ]date/i.test(merge.stdout);
         const outcome: FastForwardOutcome = up2date ? "already-up-to-date" : "fast-forwarded";
         out.push({ project, outcome, advancedBy });
         touchSentinel(sentinel, opts.now);

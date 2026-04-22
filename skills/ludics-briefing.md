@@ -37,6 +37,8 @@ The context file contains these sections:
 - **Same-Day Status**: `new` (full briefing) or `amend` (light-touch update)
 - **Recent Incoming**: Recent incoming notifications (from notifications.jsonl)
 - **Slots State**: Current slot assignments after adapter refresh
+- **Preempted Slots**: Slots that had work interrupted and stashed
+- **Upstream vs Staging Lag**: *(optional — only for projects with `upstream_repo`)* Per-project commits AHEAD of upstream (primary signal — merges on staging not yet forwarded upstream) and commits behind upstream (secondary), plus last-merge commit lines on each side. Surface this verbatim in the briefing under a dedicated heading when present.
 - **Sessions Report**: All discovered agent sessions with classification
 - **Session-Project Matches**: Pre-computed matching of unclassified sessions to projects, with ready tasks per project and slot availability
 - **Active Unconcluded Agent-Duo Slots**: Case-A slots precomputed from `sessions.json` + task completion state
@@ -210,6 +212,11 @@ Current context focus: [einsum/ocannl] - switching to [other] would incur contex
 
 ## Notes
 - [Any other strategic observations]
+
+## Upstream vs Staging Lag
+[Copy this section verbatim from `briefing-context.md` when present. Omit this
+heading entirely when the context file does not include it — that means no
+project in the config has `upstream_repo` set.]
 
 ## Questions
 1. [Question about a real ambiguity that blocks autonomous decision-making]

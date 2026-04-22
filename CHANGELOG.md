@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+Simplified upstream workflow: for projects declaring `upstream_repo`, orchestration now completes at staging-main PR merge, identical to the non-upstream flow.
+
+### Breaking changes
+
+- **`forward-pr` phase removed.** Orchestration no longer creates a staging-to-upstream PR or re-monitors an upstream PR. `Phase`, `PHASE_CATEGORIES`, `DONE_STATUSES`, `agentParticipatesInPhase`, `DEFAULT_TIMEOUTS`, and the runner `pushBeforePhases` set all lose their `forward-pr` entries. Templates `skills/orchestration/forward-pr.md` and `skills/orchestration/upstream-final-merge.md` are deleted. Cutover is **new-only** — no migration path for in-flight PRs; mid-flow upstream PRs are reconciled manually by the user.
+- **`upstream_pr_merged` event and `<agent>.upstream-merged` marker removed.** External merge detection during `pr-comments` always writes `<agent>.merged` and emits `pr_merged`, regardless of `upstream_repo`.
+- **`OrchestrationState.upstreamRepo` removed** along with the `UPSTREAM_PR_FILE`, `UPSTREAM_MERGED_MARKER_FILE`, and `FORWARDED_MARKER_FILE` skill-context keys. Templates still consuming `UPSTREAM_REPO` (`pr-create.md`, `pair-coder-pr-create.md`) now source it from project config inside `buildSkillContext()`.
+
+### New features
+
+- **Upstream vs Staging Lag briefing section** — For each project with `upstream_repo`, the precomputed briefing context gains a section between `## Preempted Slots` and `## Sessions Report` reporting commits AHEAD of upstream (primary signal — merges on staging not yet forwarded) and commits behind (secondary), plus last-merge commit lines on each side. Default branch is detected dynamically (handles `master` as well as `main`). Section is omitted when no project has `upstream_repo`. New module `src/briefing-lag.ts`.
+- **Once-daily staging fast-forward** — Keepalive tick attempts a fast-forward-only merge from `upstream/<default>` into `origin/<default>` on each upstream-aware project's canonical checkout. Throttled per-project via `mag/last-fast-forward-<project>.epoch` sentinels to once every 24 hours. Controller-gated; never pushes, never touches slot worktrees, aborts on dirty tree. Configurable via `mag.enable_staging_fast_forward` (default: true). New module `src/staging-ff.ts`. Emits `staging_fast_forwarded` and `staging_fast_forward_diverged` events.
+
+### Preserved
+
+- `upstream_repo` config field is retained (issue sync continues to use it, and it now drives the lag section and fast-forward job).
+- `resolveTemplatePath(..., hasUpstream)` signature is retained as a generic template-override extension point; the upstream lookup mechanism still works for future use even though no in-tree overrides remain.
+
 ## v0.7.0 — 2026-04-08
 
 Federation-to-cluster rename, HTTP transport for multi-machine worker writes, project health test monitoring, upstream_repo semantics, and orchestration workflow improvements.

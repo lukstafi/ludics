@@ -20,7 +20,10 @@ slots:
 projects:
   - name: my-project
     repo: your-username/my-project
-    upstream_repo: ""      # Optional: upstream repo for PR forwarding. `repo` is the working repo where agents create PRs.
+    upstream_repo: ""      # Optional: upstream repo for issue sync and staging-vs-upstream lag reporting.
+                          # PR creation targets the working (staging) repo; forwarding to upstream is a manual user step.
+                          # Also triggers a once-daily fast-forward-only pull from upstream/<default> into origin/<default>
+                          # on the canonical checkout (see mag.enable_staging_fast_forward below).
     path: ~/my-project    # Local checkout path (used for slot start, worktree creation)
     issues: true          # Include GitHub issues as tasks
     priority: false       # Priority project: preempt slots when tasks arrive
@@ -83,6 +86,9 @@ mag:
   ttyd_port: 7679            # Web terminal port (tmux-ttyd backend only)
   keepalive_interval: 60      # Keepalive trigger interval in seconds (default: 60)
   ensure_t3code: true         # Auto-start shared t3code server on keepalive (default: true)
+  enable_staging_fast_forward: true  # Once-daily fast-forward of each upstream-aware project's staging default branch
+                                     # from upstream/<default> (default: true). Fast-forward-only, never pushes, never
+                                     # touches slot worktrees, aborts on dirty tree or divergence. Disable with `false`.
   stall_threshold_seconds: 120    # How long pane output must be unchanged before a stall nudge (default: 120)
   stall_nudge_cooldown_seconds: 120  # Minimum gap between stall nudges (default: 120)
   max_requeue_retries: 3          # Max times a failed queue delivery is retried before dropping (default: 3)
