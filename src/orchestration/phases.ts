@@ -28,7 +28,6 @@ export type Phase =
   | "merge-review"
   | "merge-amend"
   | "suggest-refactor"
-  | "forward-pr"
   | "final-merge"
   | "done";
 
@@ -59,7 +58,6 @@ export const PHASE_CATEGORIES: Record<Phase, PhaseCategory> = {
   "merge-review": "merge",
   "merge-amend": "merge",
   "suggest-refactor": "post-merge",
-  "forward-pr": "pr",
   "final-merge": "post-merge",
   done: "terminal",
 };
@@ -139,7 +137,6 @@ export const DONE_STATUSES = new Set([
   "merge-review-done",
   "merge-amend-done",
   "suggest-refactor-done",
-  "forward-pr-done",
   "final-merge-done",
   "turn-complete",
   "completed",
@@ -169,7 +166,6 @@ export function agentParticipatesInPhase(
       return agent.role === "coder";
     case "work":
     case "pr-create":
-    case "forward-pr":
     case "final-merge":
       return agent.role === "coder";
     case "update-docs":
@@ -356,25 +352,6 @@ function isMerged(state: OrchestrationState): boolean {
   return state.agents.some((agent) => state.agentStates[agent.name]?.status === "merged");
 }
 
-/**
- * Check if PR forwarding to upstream has completed successfully.
- * Uses the ${agent}.forwarded marker (written only after upstream PR creation succeeds
- * and PR_FILE is overwritten), NOT the ${agent}.upstream-pr file (written early for
- * URL preservation). This prevents a failed/timed-out forward from being misclassified.
- */
-function hasForwardedPr(state: OrchestrationState): boolean {
-  return state.agents.some((agent) =>
-    existsSync(join(state.peerSyncDir, `${agent.name}.forwarded`))
-  );
-}
-
-/** Check if upstream PR has been detected as merged. */
-function hasUpstreamMergedMarker(state: OrchestrationState): boolean {
-  return state.agents.some((agent) =>
-    existsSync(join(state.peerSyncDir, `${agent.name}.upstream-merged`))
-  );
-}
-
 /** Read the latest reviewer verdict (APPROVE or REQUEST_CHANGES) from the review file. */
 export function pairReviewVerdict(state: OrchestrationState): "approve" | "request_changes" | null {
   const reviewer = state.agents.find((a) => a.role === "reviewer");
@@ -540,31 +517,6 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
         return null;
       }
 
-      // Upstream forwarding is pair-mode only. Suppressed for hierarchical-duo slots
-      // (duoPeerSlot != null) because cross-slot merge doesn't compose with upstream forwarding.
-      const hasUpstream = !!state.upstreamRepo && state.duoPeerSlot == null;
-      const forwarded = hasUpstream && hasForwardedPr(state);
-
-      if (hasUpstream && !forwarded) {
-        // Monitoring working repo PR — transition to forward-pr on quiet period
-        const quietPeriodStaging = state.config.prCommentsTimeout;
-        if (
-          hasAnyPr(state)
-          && state.prCommentsQuietSince
-          && nowEpoch() - state.prCommentsQuietSince >= quietPeriodStaging
-        ) {
-          return "forward-pr";
-        }
-        if (phaseTimeoutExpired(state) && hasAnyPr(state)) return "forward-pr";
-        return null;
-      }
-
-      if (forwarded) {
-        // Monitoring upstream PR — ONLY transition on actual upstream merge.
-        if (hasUpstreamMergedMarker(state)) return "final-merge";
-        return null;
-      }
-
       // Shortcut: coder has responded to PR comments — skip quiet period wait.
       // Gated on prCommentsQuietSince (a fresh poll found no new comments after
       // the last redispatch) so late reviewer comments are not skipped.
@@ -579,7 +531,8 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
         return "final-merge";
       }
 
-      // No upstream: quiet period is the fallback advancement mechanism
+      // Quiet period is the fallback advancement mechanism — applies uniformly
+      // regardless of whether the project has `upstream_repo` configured.
       const quietPeriod = state.config.prCommentsTimeout;
       if (
         hasAnyPr(state)
@@ -616,10 +569,6 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
       // final-merge now precedes suggest-refactor in the automated path; always finish here.
       return "done";
-
-    case "forward-pr":
-      if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "pr-comments";
-      return null;
 
     case "final-merge":
       // NOTE: Runner verifies PR is merged on GitHub before agents reach done state here.

@@ -64,9 +64,6 @@ function baseCtx(): Record<string, string> {
     PEER_SYNC_DIR: "/tmp/peer-sync",
     DONE_STATUS: "review-done",
     UPSTREAM_REPO: "",
-    UPSTREAM_PR_FILE: "/tmp/upstream-pr",
-    UPSTREAM_MERGED_MARKER_FILE: "/tmp/upstream-merged",
-    FORWARDED_MARKER_FILE: "/tmp/forwarded",
   };
 }
 
@@ -76,9 +73,20 @@ describe("skills", () => {
     expect(path.endsWith("pair-reviewer-review.md")).toBe(true);
   });
 
-  test("resolveTemplatePath: hasUpstream flag selects upstream-final-merge.md", () => {
-    const path = resolveTemplatePath("final-merge", "pair", "coder", true);
-    expect(path.endsWith("upstream-final-merge.md")).toBe(true);
+  test("resolveTemplatePath: hasUpstream flag honors synthetic upstream override template", () => {
+    // Regression for AC 3 / 5: the hasUpstream parameter on resolveTemplatePath is a
+    // retained extension point. After this task there are no in-tree upstream-*.md
+    // overrides, but the mechanism must still work when one is synthesized on disk.
+    const root = join(import.meta.dir, "../../skills/orchestration");
+    const synthetic = join(root, "upstream-update-docs.md");
+    try {
+      writeFileSync(synthetic, "synthetic upstream update-docs\n");
+      expect(resolveTemplatePath("update-docs", "pair", "coder", true)).toBe(synthetic);
+      // Without the flag, selection falls through to pair-<role>-<phase>.md or <phase>.md
+      expect(resolveTemplatePath("update-docs", "pair", "coder", false)).not.toBe(synthetic);
+    } finally {
+      try { unlinkSync(synthetic); } catch {}
+    }
   });
 
   test("resolveTemplatePath: no upstream uses plain final-merge.md", () => {
@@ -176,21 +184,15 @@ describe("skills", () => {
     expect(renderedNull).not.toContain("Upstream forwarding");
   });
 
-  test("upstream-final-merge template does NOT contain gh pr merge (non-upstream merge command)", () => {
-    const templatePath = join(import.meta.dir, "../../skills/orchestration/upstream-final-merge.md");
-    const template = readFileSync(templatePath, "utf-8");
-    const rendered = substituteTemplate(template, baseCtx());
-    expect(rendered).not.toContain("gh pr merge");
-    expect(rendered).toContain("upstream merge cleanup");
-  });
-
-  test("non-upstream final-merge template does NOT contain upstream merge cleanup", () => {
+  test("final-merge template merges the working (staging) PR directly", () => {
+    // Post-task (simplified upstream workflow): final-merge is the unified terminal
+    // merge command for upstream and non-upstream projects alike.
     const templatePath = join(import.meta.dir, "../../skills/orchestration/final-merge.md");
     const template = readFileSync(templatePath, "utf-8");
     const rendered = substituteTemplate(template, baseCtx());
     expect(rendered).toContain("gh pr merge");
-    expect(rendered).not.toContain("upstream merge cleanup");
     expect(rendered).not.toContain("UPSTREAM_PR_FILE");
+    expect(rendered).not.toContain("UPSTREAM_MERGED_MARKER_FILE");
   });
 
   test("pr-create template includes --repo via inline conditional with PROJECT_REPO", () => {
@@ -219,36 +221,6 @@ describe("skills", () => {
       PROJECT_REPO: "owner/my-staging",
     });
     expect(rendered).toContain('gh pr create --repo "owner/my-staging"');
-  });
-
-  test("forward-pr template clears gh-resolved after adding upstream remote", () => {
-    const templatePath = join(import.meta.dir, "../../skills/orchestration/forward-pr.md");
-    const template = readFileSync(templatePath, "utf-8");
-    const rendered = substituteTemplate(template, {
-      ...baseCtx(),
-      UPSTREAM_REPO: "upstream/repo",
-      PROJECT_REPO: "owner/staging",
-    });
-    expect(rendered).toContain("git config --unset remote.upstream.gh-resolved");
-    const remoteAddIdx = rendered.indexOf("git remote add upstream");
-    const unsetIdx = rendered.indexOf("git config --unset remote.upstream.gh-resolved");
-    expect(remoteAddIdx).toBeGreaterThanOrEqual(0);
-    expect(unsetIdx).toBeGreaterThan(remoteAddIdx);
-  });
-
-  test("upstream-final-merge template clears gh-resolved after adding upstream remote", () => {
-    const templatePath = join(import.meta.dir, "../../skills/orchestration/upstream-final-merge.md");
-    const template = readFileSync(templatePath, "utf-8");
-    const rendered = substituteTemplate(template, {
-      ...baseCtx(),
-      UPSTREAM_REPO: "upstream/repo",
-      PROJECT_REPO: "owner/staging",
-    });
-    expect(rendered).toContain("git config --unset remote.upstream.gh-resolved");
-    const remoteAddIdx = rendered.indexOf("git remote add upstream");
-    const unsetIdx = rendered.indexOf("git config --unset remote.upstream.gh-resolved");
-    expect(remoteAddIdx).toBeGreaterThanOrEqual(0);
-    expect(unsetIdx).toBeGreaterThan(remoteAddIdx);
   });
 
   test("buildSkillContext: hierarchical duo suppresses UPSTREAM_REPO when duoPeerSlot is set", async () => {
@@ -678,15 +650,45 @@ describe("skills", () => {
     expect(result).toBe("outer inner");
   });
 
-  test("buildSkillContext: exposes upstream sidecar file variables", async () => {
+  test("buildSkillContext: does not expose deprecated upstream sidecar file variables", async () => {
+    // Negative regression: the forwarding-specific marker variables were removed
+    // alongside the forward-pr / upstream-final-merge templates.
     const { buildSkillContext } = await import("./skills.ts");
     const state = makeState();
     const coder = state.agents.find((a) => a.role === "coder")!;
     const ctx = buildSkillContext(state, coder);
-    expect(ctx["UPSTREAM_PR_FILE"]).toContain(".peer-sync");
-    expect(ctx["UPSTREAM_PR_FILE"]).toContain("upstream-pr");
-    expect(ctx["UPSTREAM_MERGED_MARKER_FILE"]).toContain("upstream-merged");
-    expect(ctx["FORWARDED_MARKER_FILE"]).toContain("forwarded");
+    expect(ctx["UPSTREAM_PR_FILE"]).toBeUndefined();
+    expect(ctx["UPSTREAM_MERGED_MARKER_FILE"]).toBeUndefined();
+    expect(ctx["FORWARDED_MARKER_FILE"]).toBeUndefined();
+  });
+
+  test("buildSkillContext: UPSTREAM_REPO is empty when project config has no upstream_repo", async () => {
+    const tmpCfg = "/tmp/ludics-skills-no-upstream-test.yaml";
+    writeFileSync(tmpCfg, [
+      "state_repo: test/testrepo",
+      "state_path: harness",
+      "projects:",
+      "  - name: no-up-proj",
+      "    repo: owner/no-up-proj",
+      "    path: /tmp/no-up-proj-checkout",
+    ].join("\n"));
+    const origConfig = process.env.LUDICS_CONFIG;
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_CONFIG = tmpCfg;
+    process.env.LUDICS_HARNESS_DIR = "/tmp/ludics-test-harness";
+    try {
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), projectDir: "/tmp/no-up-proj-checkout" };
+      const coder = state.agents.find((a) => a.role === "coder")!;
+      const ctx = buildSkillContext(state, coder);
+      expect(ctx["UPSTREAM_REPO"]).toBe("");
+    } finally {
+      if (origConfig !== undefined) process.env.LUDICS_CONFIG = origConfig;
+      else delete process.env.LUDICS_CONFIG;
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      try { unlinkSync(tmpCfg); } catch {}
+    }
   });
 
   test("composeSkillMessage uses templateOverride when provided", async () => {

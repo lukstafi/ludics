@@ -7,7 +7,7 @@ import { getMainRepoFromWorktree, latestMtime, resolveProjectDir, slotSessionNam
 import { safeSyncOutput } from "../spawn.ts";
 import { MarkdownBuilder } from "./markdown.ts";
 import type { Adapter, AdapterContext } from "./types.ts";
-import { findProjectConfig, loadConfigSync, type LudicsFullConfig } from "../config.ts";
+import { loadConfigSync, type LudicsFullConfig } from "../config.ts";
 import { setsidWrap } from "../orchestration/util.ts";
 import {
   tmuxHasSession,
@@ -540,7 +540,6 @@ async function start(ctx: AdapterContext): Promise<string> {
     branches: setup.branches,
     slotTitle: options.title ?? slotSessionName(ctx.slot, undefined, taskId),
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
-    upstreamRepo: findProjectConfig(projectDir, config)?.upstream_repo || undefined,
   };
   persistState(state, ctx.harnessDir);
 
