@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rename
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
 import { formatUpstreamLagSection, defaultRunGit, type RunGit } from "./briefing-lag.ts";
+import { maybeFastForwardStagingFromUpstream } from "./staging-ff.ts";
 import { isPlainObject } from "./json.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
@@ -1555,6 +1556,44 @@ async function cleanupDoneTaskThreads(): Promise<void> {
  * implementation.  Pass a short `context` string (e.g. "keepalive") that
  * appears in log messages to aid debugging.
  */
+/**
+ * Wrapper around maybeFastForwardStagingFromUpstream that wires up config,
+ * sentinel directory, and event emission. Guarded by clusterIsController so
+ * only one machine runs git operations. Sentinel files throttle to once per
+ * 24 hours per project. See src/staging-ff.ts for the core logic.
+ */
+function runStagingFastForwardTick(): void {
+  try {
+    if (!clusterIsController()) return;
+    const cfg = loadConfigSync();
+    if ((cfg.mag as { enable_staging_fast_forward?: boolean } | undefined)?.enable_staging_fast_forward === false) return;
+    const projects = cfg.projects ?? [];
+    if (projects.every((p) => !p.upstream_repo)) return;
+    const sentinelDir = join(harnessDir(), "mag");
+    mkdirSync(sentinelDir, { recursive: true });
+    const results = maybeFastForwardStagingFromUpstream(projects, {
+      now: new Date(),
+      runGit: defaultRunGit,
+      sentinelDir,
+      emitEvent: (ev) => {
+        emitEvent({
+          event_type: ev.type,
+          source: "mag",
+          scope: "project",
+          message: ev.message,
+        });
+      },
+    });
+    for (const r of results) {
+      if (r.outcome === "fast-forwarded" || r.outcome === "diverged" || r.outcome === "error") {
+        console.error(`ludics: staging-ff ${r.project}: ${r.outcome}${r.detail ? ` — ${r.detail}` : ""}`);
+      }
+    }
+  } catch (err) {
+    console.error(`ludics: staging-ff tick failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function ensureT3codeIfEnabled(context: string): Promise<void> {
   const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
   if (magConfig?.ensure_t3code === false) return;
@@ -2860,6 +2899,10 @@ export async function magStart(args: string[]): Promise<void> {
 
     // Auto-resume dead orchestrator processes
     await maybeResumeDeadOrchestrators();
+
+    // Once-daily staging fast-forward from upstream for projects with `upstream_repo`.
+    // Never pushes, never touches slot worktrees, aborts on dirty worktree or divergence.
+    runStagingFastForwardTick();
 
     // Auto-fill empty slots with ready elaborated tasks
     maybeFillEmptySlots(keepaliveCfg);
