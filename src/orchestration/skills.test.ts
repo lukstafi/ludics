@@ -134,6 +134,33 @@ describe("skills", () => {
     expect(path.endsWith("pair-coder-work.md")).toBe(true);
   });
 
+  test("resolveTemplatePath: solo IGNORES hasUpstream (never picks upstream-*.md)", () => {
+    // Solo's phase graph never visits forward-pr and never writes upstream-pr /
+    // forwarded markers, so upstream-final-merge.md (which assumes those
+    // artifacts) would run the wrong workflow. Solo must fall through to the
+    // non-upstream tier regardless of hasUpstream.
+    const path = resolveTemplatePath("final-merge", "solo", "coder", true);
+    expect(path.endsWith("final-merge.md")).toBe(true);
+    expect(path).not.toContain("upstream");
+  });
+
+  test("resolveTemplatePath: solo with hasUpstream still prefers solo-<phase> for work", () => {
+    const path = resolveTemplatePath("work", "solo", "coder", true);
+    expect(path.endsWith("solo-work.md")).toBe(true);
+  });
+
+  test("resolveTemplatePath: pair + hasUpstream for final-merge falls through to generic (post-d1932b8f)", () => {
+    // After task-d1932b8f removed upstream-final-merge.md, pair mode with
+    // hasUpstream=true should fall through the generic `final-merge.md`.
+    // Companion to the solo test above: both modes now resolve to the same
+    // generic template for final-merge, but solo reaches it by skipping the
+    // upstream tier entirely while pair reaches it by having no upstream
+    // template on disk.
+    const path = resolveTemplatePath("final-merge", "pair", "coder", true);
+    expect(path.endsWith("final-merge.md")).toBe(true);
+    expect(path).not.toContain("upstream");
+  });
+
   test("substitutes placeholders", () => {
     const text = substituteTemplate("hello {{AGENT_NAME}} {{DONE_STATUS}}", baseCtx());
     expect(text).toContain("agent1");

@@ -977,6 +977,7 @@ ludics/
 │   └── pair-reviewer-review.md       # Pair mode: reviewer review
 │   # Solo mode resolves templates via:
 │   #   solo-<phase>.md > pair-coder-<phase>.md > <phase>.md
+│   # Solo ignores hasUpstream — its phase graph never forwards PRs upstream.
 │   # Only solo-work.md has reviewer-specific differences; other solo phases
 │   # reuse the pair-coder or mode-agnostic templates.
 ├── templates/

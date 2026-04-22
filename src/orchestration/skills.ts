@@ -154,16 +154,14 @@ export function resolveTemplatePath(
 ): string {
   const root = templateRoot();
   // Solo resolution: solo-<phase>.md > pair-coder-<phase>.md > <phase>.md
-  // (with upstream variants stacked ahead of each tier).
+  //
+  // Solo intentionally ignores `hasUpstream`. The upstream-* templates assume
+  // the forward-pr workflow (writing `*.upstream-pr`, `*.forwarded` markers,
+  // `*.upstream-merged` etc.) which solo's phase graph never enters —
+  // evaluateTransitionSolo does not visit `forward-pr` and does not consult
+  // state.upstreamRepo. Picking upstream-final-merge.md here would run the
+  // wrong workflow and stall the solo slot.
   if (mode === "solo") {
-    if (hasUpstream) {
-      const soloUp = join(root, `solo-upstream-${phase}.md`);
-      if (existsSync(soloUp)) return soloUp;
-      const pairCoderUp = join(root, `pair-coder-upstream-${phase}.md`);
-      if (existsSync(pairCoderUp)) return pairCoderUp;
-      const upstreamPath = join(root, `upstream-${phase}.md`);
-      if (existsSync(upstreamPath)) return upstreamPath;
-    }
     const soloPath = join(root, `solo-${phase}.md`);
     if (existsSync(soloPath)) return soloPath;
     const pairCoderPath = join(root, `pair-coder-${phase}.md`);
