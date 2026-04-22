@@ -389,6 +389,41 @@ describe("parseT3CodeAdapterArgs — --solo", () => {
     ).toThrow(/--solo is incompatible with --duo-peer-slot/);
   });
 
+  test("--solo combined with --reviewer-model throws (reviewer-only override)", () => {
+    expect(() =>
+      parseT3CodeAdapterArgs("--solo --coder claude-code --reviewer-model gpt-5.4")
+    ).toThrow(/--solo is incompatible with --reviewer-model/);
+  });
+
+  test("--solo combined with --reviewer-effort throws", () => {
+    expect(() =>
+      parseT3CodeAdapterArgs("--solo --coder claude-code --reviewer-effort low")
+    ).toThrow(/--solo is incompatible with --reviewer-effort/);
+  });
+
+  test("--solo combined with --reviewer-thinking-effort throws", () => {
+    expect(() =>
+      parseT3CodeAdapterArgs("--solo --coder claude-code --reviewer-thinking-effort low")
+    ).toThrow(/--solo is incompatible with --reviewer-thinking-effort/);
+  });
+
+  test("--solo accepts shared --effort flag (coder half applied)", () => {
+    // --effort is a shared flag that sets both coder and reviewer effort.
+    // In solo the reviewer half is discarded; this is not a reviewer-only flag
+    // so it must not be rejected.
+    const parsed = parseT3CodeAdapterArgs("--solo --coder claude-code --effort high");
+    expect(parsed.orchestration!.mode).toBe("solo");
+    expect(parsed.orchestration!.coderThinkingEffort).toBe("high");
+    expect(parsed.orchestration!.reviewerThinkingEffort).toBeUndefined();
+  });
+
+  test("--solo accepts --coder-model and --coder-effort", () => {
+    const parsed = parseT3CodeAdapterArgs("--solo --coder claude-code --coder-model claude-opus-4-6 --coder-effort high");
+    expect(parsed.orchestration!.mode).toBe("solo");
+    expect(parsed.orchestration!.coderModelOverride).toBe("claude-opus-4-6");
+    expect(parsed.orchestration!.coderThinkingEffort).toBe("high");
+  });
+
   test("--solo supports --plan / --clarify config flags (orthogonal to mode)", () => {
     // Even though auto-select for tiny omits pre-work phases, explicit --solo --plan
     // is valid: config flags are orthogonal to mode.

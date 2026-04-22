@@ -224,6 +224,10 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   let coderThinkingEffort: string | undefined;
   let reviewerThinkingEffort: string | undefined;
   let duoPeerSlot: number | undefined;
+  // Track the first reviewer-only override flag seen (excluding the shared
+  // --effort / --thinking-effort flags). Used to reject reviewer-specific
+  // overrides in --solo mode, where no reviewer agent exists.
+  let reviewerOnlyFlag: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -286,6 +290,7 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
       case "--reviewer-model":
         if (!next) throw new Error("t3code adapter args: --reviewer-model requires a model ID");
         reviewerModelOverride = next;
+        if (!reviewerOnlyFlag) reviewerOnlyFlag = arg;
         i++;
         break;
       case "--coder-effort":
@@ -298,6 +303,7 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
       case "--reviewer-thinking-effort":
         if (!next) throw new Error(`t3code adapter args: ${arg} requires low|medium|high|max`);
         reviewerThinkingEffort = next;
+        if (!reviewerOnlyFlag) reviewerOnlyFlag = arg;
         i++;
         break;
       case "--effort":
@@ -391,6 +397,9 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
     }
     if (duoPeerSlot != null) {
       throw new Error("t3code adapter args: --solo is incompatible with --duo-peer-slot");
+    }
+    if (reviewerOnlyFlag) {
+      throw new Error(`t3code adapter args: --solo is incompatible with ${reviewerOnlyFlag} (no reviewer exists in solo mode)`);
     }
     const coderParsed = parseProviderToken(coderToken, "coder", parsed.model);
     parsed.orchestration = {
