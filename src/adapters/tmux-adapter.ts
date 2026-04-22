@@ -325,8 +325,11 @@ export function tmuxPaneOutputHash(target: string, lines: number = 50): string |
  * line, new-task hint) — those update for cosmetic reasons even when Claude
  * is idle, which is noise for stall/readiness detection.
  *
- * Returns the cleaned snippet, or null if the capture failed or the snippet
- * is empty.
+ * Requires the "❯" prompt marker to be present. Returns null if the capture
+ * failed, no "❯" is found (splash/init, bare shell, crashed Claude), or the
+ * extracted snippet is empty. Callers downstream (e.g. isMagReady) treat a
+ * null result as "pane is not in a known-ready state", which prevents silent
+ * queue delivery into a non-Claude pane.
  */
 export function captureLastMessage(target: string, lines: number = 50): string | null {
   const raw = tmuxCapture(target, lines);
@@ -342,13 +345,14 @@ export function captureLastMessage(target: string, lines: number = 50): string |
     }
   }
 
-  let endIdx = allLines.length;
+  let endIdx = -1;
   for (let i = allLines.length - 1; i >= startIdx; i--) {
     if (allLines[i]!.includes("❯")) {
       endIdx = i;
       break;
     }
   }
+  if (endIdx === -1) return null;
 
   const snippet = allLines
     .slice(startIdx, endIdx)
