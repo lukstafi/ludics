@@ -6,18 +6,15 @@ Write an implementation plan for `{{TASK_ID}}` to `{{PLAN_FILE}}` from `{{WORKTR
 
 {{TASK_SPEC}}
 
-Before any code changes, run `bun test` and record the exact failing test names (as reported by `bun test`) under a `## Pre-existing test failures (baseline)` section in the plan. Use `none` when all tests pass. List each failing test individually rather than summarizing — the reviewer treats these as non-blocking unless the acceptance criteria call for fixing them.
+Before any code changes, run `bun test` and record the exact failing test names under a `## Pre-existing test failures (baseline)` section in the plan (use `none` when clean). The reviewer treats this list as the non-blocking backdrop for the review — see [pre-existing failures baseline](../../docs/orchestration-patterns.md#pre-existing-failures-baseline) for how the list is used and what to write when planning was skipped.
 
-As you plan, call out the regression tests each behavior change needs (serialization formats, template variables, validation rules, CLI output, etc.) and land them in the **first implementation round**, not deferred. A few common patterns:
-- Changed serialization → round-trip test (serialize → deserialize → verify).
-- New/changed template rendering → a test that exercises the new variable/output.
-- Modified validation → tests covering the new rules and edge cases.
+As you plan, name the regression tests each behaviour change needs (serialization, template rendering, validation, CLI output) and land them in the **first implementation round** — deferred tests drift to abandonment. See [regression test per behaviour change](../../docs/orchestration-patterns.md#regression-test-per-behaviour-change) for the common triggers.
 
-Use numbered lists for structured data; avoid wide markdown tables (they get truncated between agents). Be concrete about files, expected behavior, edge cases, and validation steps.
+Use numbered lists for structured data; avoid wide markdown tables — they get truncated between agents and right-hand columns silently vanish. Be concrete about files, expected behavior, edge cases, and validation steps.
 
-When the task changes data shapes (field extraction, JSON migration, section restructuring), list every downstream consumer in the plan with a note on whether it needs updating. Grep field names, section headers, and type references to avoid missing one.
+When the task changes data shapes (field extraction, JSON migration, section restructuring), list every downstream consumer in the plan with a note on whether it needs updating — shape changes break consumers in ways TypeScript doesn't catch. See [data-shape consumer sweep](../../docs/orchestration-patterns.md#data-shape-consumer-sweep) for what counts as a consumer.
 
-For every symbol, pattern, or function you plan to touch, run a project-wide grep/ripgrep and list occurrences in the plan with a disposition (modify / skip with reason / N/A). Search for inline reimplementations too — regex patterns, copy-pasted logic, and string literals that duplicate the same behavior.
+For every symbol, pattern, or function you plan to touch, run a project-wide grep/ripgrep and list occurrences with a disposition (modify / skip with reason / N/A). Canonical-name search alone misses inline reimplementations — regex patterns, copy-pasted logic, string literals that duplicate the same behavior — and the bug looks like a partial fix the next round. See [exhaustive occurrence search](../../docs/orchestration-patterns.md#exhaustive-occurrence-search) for the disposition-list shape.
 
 Don't implement yet — the reviewer is planning in parallel and the two plans get merged next.
 
