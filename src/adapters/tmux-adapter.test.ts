@@ -196,13 +196,14 @@ describe("tmux adapter — missing orchestration error mentions --solo", () => {
     const { start } = await import("./tmux-adapter.ts");
     const ctx: AdapterContext = {
       slot: 7,
-      harnessDir: "/tmp/no-op-harness",
-      adapterArgs: "", // no orchestration flags
-      taskId: "task-x",
-      slotId: "s7",
-      path: "/tmp/project",
-      projectDir: "/tmp/project",
+      mode: "tmux",
       session: "",
+      path: "/tmp/project",
+      taskId: "task-x",
+      adapterArgs: "", // no orchestration flags
+      process: "(empty)",
+      harnessDir: "/tmp/no-op-harness",
+      stateRepoDir: "/tmp/state",
     };
     let thrown: Error | null = null;
     try {
