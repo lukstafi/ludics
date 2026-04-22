@@ -862,4 +862,55 @@ describe("skills", () => {
     expect(result).toContain("git rebase \"origin/$BASE\"");
     expect(result).toContain("Force-push with lease");
   });
+
+  test("orchestration templates link only to existing anchors in docs/orchestration-patterns.md", () => {
+    const patternsPath = join(import.meta.dir, "../../docs/orchestration-patterns.md");
+    const patternsDoc = readFileSync(patternsPath, "utf-8");
+
+    // Extract all H2/H3 heading slugs (GitHub's default: lowercase, hyphen-separated, strip punctuation).
+    // Lines inside fenced code blocks are NOT headings — the patterns doc contains
+    // worked examples whose code fences contain literal `##` lines that would
+    // otherwise register as phantom anchors and mask broken links.
+    const headingSlugs = new Set<string>();
+    let inFence = false;
+    for (const line of patternsDoc.split("\n")) {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      const match = /^#{2,3}\s+(.+?)\s*$/.exec(line);
+      if (!match) continue;
+      const slug = match[1]
+        .toLowerCase()
+        .replace(/[^\w\s-]/g, "")
+        .trim()
+        .replace(/\s+/g, "-");
+      headingSlugs.add(slug);
+    }
+
+    const templates = [
+      "pair-coder-plan.md",
+      "pair-coder-work.md",
+      "pair-reviewer-plan-review.md",
+      "pair-reviewer-review.md",
+    ];
+    // Capture anchor fragments up to whitespace or any markdown-link terminator
+    // (`)`, `]`, `>`, `"`, `'`). A narrower character class would silently skip
+    // malformed anchors (uppercase, %-encoded, punctuation) instead of flagging
+    // them — that's exactly the drift this test is meant to catch.
+    const linkRe = /docs\/orchestration-patterns\.md#([^\s)\]>'"]+)/g;
+    const unresolved: { template: string; slug: string }[] = [];
+    for (const tpl of templates) {
+      const tplPath = join(import.meta.dir, "../../skills/orchestration", tpl);
+      const tplContent = readFileSync(tplPath, "utf-8");
+      for (const match of tplContent.matchAll(linkRe)) {
+        const slug = match[1];
+        if (!headingSlugs.has(slug)) {
+          unresolved.push({ template: tpl, slug });
+        }
+      }
+    }
+    expect(unresolved).toEqual([]);
+  });
 });

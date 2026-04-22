@@ -22,7 +22,7 @@ No GitHub issue; triggered by user meta-observation during gh-ludics-328 triage.
 6. Lighter templates (`pair-coder-pr-create.md`, `pair-coder-update-docs.md`, `pr-create.md`, `pr-comments.md`, `final-merge.md`, `pair-reviewer-plan.md`) scanned for the same pattern; any prescriptive-without-rationale lines there are either converted in place or referenced in Notes as deferred. Existing patterns like `pair-reviewer-gather.md`'s baseline cross-check ("mismatches usually come from different merge bases") and `pair-coder-plan-merge.md`'s gh-ludics-220 alignment checklist are *not* restructured — they are the stylistic target.
 7. Cross-references from templates to the patterns doc use a consistent short form: `` see [<pattern name>](../../docs/orchestration-patterns.md#<slug>) ``. All section anchors are slug-based (`#ci-drift-files`, `#multi-pattern-symbol-extraction`, etc.) so links survive future doc reorganisation as long as headings don't rename.
 8. Snapshot tests in `src/orchestration/skills.test.ts` updated to match the new rendered content for the four heavy templates.
-9. `bun test` passes (modulo pre-existing failures); `bun run build` succeeds; `bun run lint` succeeds.
+9. `bun test` passes (modulo pre-existing failures on the base branch); `bun run build` succeeds; `bun run lint` does not regress from the base branch (a full-repo lint-green is out of scope — the base branch has many pre-existing errors in files unrelated to this refactor; verify via `git stash && bun run lint` against the merge base and confirm the set of errors didn't grow).
 10. A non-AI contributor can read each refactored template and explain, for every instruction, *why* it exists. This is the real acceptance criterion; (2) is its quantitative floor.
 
 ## Context
@@ -189,6 +189,14 @@ The template carries the *principle* ("for symbols you plan to touch, run a proj
 - No blocking predecessors.
 
 **Tests / verification story:**
-- Mechanical: `bun test` (with updated snapshots), `bun run build`, `bun run lint` all pass.
+- Mechanical: `bun test` (with updated snapshots), `bun run build` pass. `bun run lint` already fails on the base branch with many pre-existing errors in unrelated files (`src/adapters/*.ts`, `src/cluster-http.ts`, `src/mag.ts`, `src/state.test.ts`, etc.) — AC 9 requires "no regression from base", not "full-repo green". Getting the whole repo lint-clean is a separate tech-debt task.
 - Semantic: the "non-AI contributor can read and understand why" criterion (AC 10). Verify by reading each refactored template end-to-end.
 - Long-tail: whether the refactor actually reduced rote-compliance failure modes is observable only over several rounds of subsequent task runs via retrospective data. Not a merge gate.
+
+## Notes (implementation)
+
+Recorded for AC 5/6 traceability. These are "what the scan found" artefacts, not design decisions.
+
+- **Worker-template scan (AC 5)**: `skills/ludics-draft-proposal-worker.md` and `skills/ludics-elaborate-worker.md` both already carry rationale in-place (`ludics-draft-proposal-worker.md` step 7 Context-section guidance: "Key files and code pointers by function/type/symbol name — not line numbers, which drift..."; `ludics-elaborate-worker.md` § 4 has an explicit blockquote warning that line numbers drift between elaboration and implementation). No prescriptive-without-rationale lines found. Left untouched.
+- **Lighter-template scan (AC 6)**: `pair-coder-pr-create.md`, `pair-coder-update-docs.md`, `pr-create.md`, `pr-comments.md`, `final-merge.md`, `pair-reviewer-plan.md` are all purely mechanical (variable substitution + shell). `pair-reviewer-plan.md` carries the wide-tables-get-truncated rule with its rationale already present. No prescriptive-without-rationale lines found. Left untouched.
+- **Lint baseline (AC 9)**: `bun run lint` fails on the base branch (verified pre-refactor via `git stash && bun run lint` against `9b770bf`). The refactor itself adds zero new lint errors (verified via `bun run --bun eslint src/orchestration/skills.test.ts` — the only file in this PR that could grow the error set; the additions deliberately use `import.meta.dir` + existing top-of-file imports to avoid the `no-require-imports` / `no-unsafe-*` patterns). Whole-repo lint cleanup is tech debt out of scope for this task.
