@@ -51,11 +51,51 @@ describe("briefing-lag", () => {
     expect(branches.upstream).toBe("main");
   });
 
-  test("detectDefaultBranches: returns null when remote HEAD is unset", () => {
+  test("detectDefaultBranches: returns null when neither symbolic-ref nor main/master ref exists", () => {
     const rg = fakeGit([]);
     const branches = detectDefaultBranches("/tmp/any", rg);
     expect(branches.origin).toBeNull();
     expect(branches.upstream).toBeNull();
+  });
+
+  test("detectDefaultBranches: falls back to main/master ref for manually-added remote without symbolic HEAD", () => {
+    // Regression (PR #331 comment): git does NOT create `refs/remotes/<remote>/HEAD`
+    // for remotes added via `git remote add upstream … && git fetch upstream` unless
+    // the user explicitly runs `git remote set-head upstream -a`. Without this
+    // fallback the lag section reports "could not detect default branch" and the
+    // fast-forward job skips silently, which is the common-case failure mode the
+    // review flagged.
+    const rg = fakeGit([
+      // origin has a symbolic ref (typical for cloned repos)
+      { match: ["symbolic-ref", "refs/remotes/origin/HEAD"], stdout: "refs/remotes/origin/master\n" },
+      // upstream was added manually — no symbolic ref, but refs/remotes/upstream/main exists
+      { match: ["symbolic-ref", "refs/remotes/upstream/HEAD"], stdout: "", exitCode: 128 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/main"], stdout: "abcdef1234\n" },
+    ]);
+    const branches = detectDefaultBranches("/tmp/any", rg);
+    expect(branches.origin).toBe("master");
+    expect(branches.upstream).toBe("main");
+  });
+
+  test("detectDefaultBranches: fallback picks master when main is absent", () => {
+    const rg = fakeGit([
+      { match: ["symbolic-ref", "refs/remotes/upstream/HEAD"], stdout: "", exitCode: 128 },
+      // main probe fails, master probe succeeds
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/main"], stdout: "", exitCode: 128 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/master"], stdout: "deadbeef\n" },
+    ]);
+    const branches = detectDefaultBranches("/tmp/any", rg);
+    expect(branches.upstream).toBe("master");
+  });
+
+  test("detectDefaultBranches: fallback prefers main over master when both exist", () => {
+    const rg = fakeGit([
+      { match: ["symbolic-ref", "refs/remotes/upstream/HEAD"], stdout: "", exitCode: 128 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/main"], stdout: "feedface\n" },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/master"], stdout: "deadbeef\n" },
+    ]);
+    const branches = detectDefaultBranches("/tmp/any", rg);
+    expect(branches.upstream).toBe("main");
   });
 
   test("formatUpstreamLagSection: empty projects list returns empty string", () => {

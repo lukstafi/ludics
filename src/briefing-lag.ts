@@ -40,19 +40,45 @@ function expandHome(path: string): string {
 }
 
 /**
- * Detect the default branch name for each of origin and upstream via
- * `git symbolic-ref refs/remotes/<remote>/HEAD`. Returns null when the
- * remote is absent or the symbolic ref is not set.
+ * Detect the default branch name for each of origin and upstream.
+ *
+ * Primary path: `git symbolic-ref refs/remotes/<remote>/HEAD`. This ref exists
+ * when the repo was cloned (git creates it automatically) or when the user has
+ * explicitly run `git remote set-head <remote> -a`.
+ *
+ * Fallback: for manually-added remotes (`git remote add upstream … && git
+ * fetch upstream`), git does NOT create `refs/remotes/upstream/HEAD`, so the
+ * primary path returns null. Probe the two overwhelmingly common default
+ * branches — `main` then `master` — via `git rev-parse --verify`. This is
+ * local-only (no network round-trip) and covers the realistic cases without
+ * asking users to know about `git remote set-head`.
+ *
+ * If neither the symbolic ref nor a `main`/`master` ref is present, return
+ * null; the caller surfaces a "could not detect default branch" note so the
+ * user can either set the symbolic ref or rename the branch.
  */
 export function detectDefaultBranches(cwd: string, runGit: RunGit): DetectedBranches {
   const read = (remote: string): string | null => {
-    const r = runGit(["symbolic-ref", `refs/remotes/${remote}/HEAD`], cwd);
-    if (r.exitCode !== 0) return null;
-    const line = r.stdout.trim();
-    // line looks like "refs/remotes/<remote>/<branch>"
-    const prefix = `refs/remotes/${remote}/`;
-    if (!line.startsWith(prefix)) return null;
-    return line.slice(prefix.length) || null;
+    // Primary: symbolic-ref (present on clones and after `git remote set-head -a`)
+    const primary = runGit(["symbolic-ref", `refs/remotes/${remote}/HEAD`], cwd);
+    if (primary.exitCode === 0) {
+      const line = primary.stdout.trim();
+      const prefix = `refs/remotes/${remote}/`;
+      if (line.startsWith(prefix)) {
+        const name = line.slice(prefix.length);
+        if (name) return name;
+      }
+    }
+    // Fallback: probe main then master locally. Ordering matters — newer
+    // projects default to `main`; legacy projects use `master`.
+    for (const candidate of ["main", "master"]) {
+      const verify = runGit(
+        ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${candidate}`],
+        cwd,
+      );
+      if (verify.exitCode === 0 && verify.stdout.trim() !== "") return candidate;
+    }
+    return null;
   };
   return { origin: read("origin"), upstream: read("upstream") };
 }
