@@ -2599,6 +2599,125 @@ describe("checkAndRedispatchPrComments conflict detection", () => {
   });
 });
 
+describe("checkAndRedispatchPrComments merge detection", () => {
+  // Regression for the simplified upstream workflow (task-d1932b8f): when
+  // isPrMerged returns true during pr-comments, the runner must take the
+  // uniform merged path — write `<agent>.merged`, set status to "merged",
+  // emit `pr_merged`, and notify. The former upstream-aware three-way split
+  // (upstream-merged marker / upstream_pr_merged event / forwarding warning)
+  // must be gone. We exercise this with an upstream-configured fixture so
+  // the test specifically guards the behavior this task simplified.
+  let mergedSpy: ReturnType<typeof spyOn>;
+  let commentCountSpy: ReturnType<typeof spyOn>;
+  let reviewSpy: ReturnType<typeof spyOn>;
+  let eventSpy: ReturnType<typeof spyOn>;
+  let notifySpy: ReturnType<typeof spyOn>;
+  let emittedEvents: Array<{ event_type?: string; message?: string }>;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const dummyTransport: OrchestrationTransport = {
+    sendTurn: async () => "cmd-merge",
+    sendEnter: async () => {},
+    refreshAgentTransportState: async () => {},
+    interruptAgent: async () => {},
+  };
+
+  function makeMergeState(peerSyncDir: string, overrides: Partial<OrchestrationState> = {}): OrchestrationState {
+    return makeState({
+      phase: "pr-comments",
+      phaseStartedAt: nowSec - 120,
+      prCommentsLastCheckAt: nowSec - 120,
+      projectDir: "/tmp/upstream-configured-project",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+        { name: "reviewer", provider: "codex", role: "reviewer", model: "o3-pro", branch: "b", worktreePath: "/tmp/b" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done", statusEpoch: nowSec, statusMessage: "",
+          prUrl: "https://github.com/lukstafi/ocannl-staging/pull/451", interrupted: false,
+          turnLifecycle: null,
+        },
+        reviewer: {
+          status: "idle", statusEpoch: nowSec, statusMessage: "",
+          prUrl: null, interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+      ...overrides,
+    }, peerSyncDir);
+  }
+
+  beforeEach(() => {
+    mergedSpy = spyOn(github, "isPrMerged").mockReturnValue(true);
+    commentCountSpy = spyOn(github, "fetchNewPrCommentCount").mockReturnValue(0);
+    reviewSpy = spyOn(github, "hasCodexSubmittedReview").mockReturnValue(true);
+    emittedEvents = [];
+    eventSpy = spyOn(events, "emitEvent").mockImplementation((ev: unknown) => {
+      emittedEvents.push(ev as { event_type?: string; message?: string });
+    });
+    // notifyAgents is invoked on the uniform merged path; stub to avoid noise.
+    notifySpy = spyOn(notify, "notifyAgents").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    mergedSpy.mockRestore();
+    commentCountSpy.mockRestore();
+    reviewSpy.mockRestore();
+    eventSpy.mockRestore();
+    notifySpy.mockRestore();
+  });
+
+  test("merged PR on upstream-configured project: writes .merged, sets status, emits pr_merged — no upstream-specific artifacts", async () => {
+    const dir = makeTmpDir();
+    const state = makeMergeState(dir);
+    await checkAndRedispatchPrComments(state, dummyTransport);
+
+    // 1. `<coder>.merged` marker is written (uniform path).
+    const mergedMarker = join(dir, "coder.merged");
+    expect(existsSync(mergedMarker)).toBe(true);
+    expect(readFileSync(mergedMarker, "utf-8")).toBe("merged\n");
+
+    // 2. Agent status flips to "merged".
+    expect(state.agentStates.coder!.status).toBe("merged");
+    expect(state.agentStates.coder!.statusMessage).toBe("PR merged externally");
+
+    // 3. `pr_merged` event is emitted exactly once; NO `upstream_pr_merged`
+    //    event and NO "orchestration_warning" about forwarding.
+    const merged = emittedEvents.filter((e) => e.event_type === "pr_merged");
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.message).toContain("https://github.com/lukstafi/ocannl-staging/pull/451");
+    expect(emittedEvents.some((e) => e.event_type === "upstream_pr_merged")).toBe(false);
+    expect(emittedEvents.some((e) =>
+      e.event_type === "orchestration_warning"
+      && typeof e.message === "string"
+      && e.message.includes("before forwarding")
+    )).toBe(false);
+
+    // 4. No `<coder>.upstream-merged` or `<coder>.forwarded` sidecar markers
+    //    are written by the runner.
+    expect(existsSync(join(dir, "coder.upstream-merged"))).toBe(false);
+    expect(existsSync(join(dir, "coder.forwarded"))).toBe(false);
+
+    // 5. notifyAgents was called (uniform path includes notification).
+    expect(notifySpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("merged PR is idempotent: second invocation does not re-emit or rewrite the marker", async () => {
+    const dir = makeTmpDir();
+    const state = makeMergeState(dir);
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    const firstEventCount = emittedEvents.filter((e) => e.event_type === "pr_merged").length;
+    expect(firstEventCount).toBe(1);
+
+    // Reset polling eligibility so the loop re-evaluates. The marker file
+    // already exists; the runner must not emit pr_merged a second time.
+    state.prCommentsLastCheckAt = nowSec - 120;
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(emittedEvents.filter((e) => e.event_type === "pr_merged")).toHaveLength(1);
+  });
+});
+
 describe("resetPrCommentsState", () => {
   test("resets all pr-comments phase-entry fields", () => {
     const state = makeState({

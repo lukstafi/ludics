@@ -265,9 +265,6 @@ export function buildSkillContext(
     WORKFLOW_FEEDBACK_FILE: join(state.peerSyncDir, `workflow-feedback-${agent.name}.md`),
     MERGE_REVIEW_DECISION_FILE: join(state.peerSyncDir, "merge-review-approval.txt"),
     MERGED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.merged`),
-    UPSTREAM_PR_FILE: join(state.peerSyncDir, `${agent.name}.upstream-pr`),
-    UPSTREAM_MERGED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.upstream-merged`),
-    FORWARDED_MARKER_FILE: join(state.peerSyncDir, `${agent.name}.forwarded`),
     PEER_SYNC_DIR: state.peerSyncDir,
     DONE_STATUS: doneStatusForPhase(state.phase),
     VERIFICATION_CONTEXT: state.phaseRetryContext
@@ -342,7 +339,10 @@ export async function composeSkillMessage(
   templateOverride?: string,
 ): Promise<string> {
   const context = buildSkillContext(state, agent);
-  const hasUpstream = !!state.upstreamRepo && state.duoPeerSlot == null;
+  // `UPSTREAM_REPO` in the context is the config-sourced truth (already duo-suppressed
+  // in buildSkillContext). Reading from context avoids a second findProjectConfig call
+  // and keeps the hasUpstream flag in lockstep with what templates actually see.
+  const hasUpstream = !!context.UPSTREAM_REPO;
   const templatePath = templateOverride
     ?? resolveTemplatePath(state.phase, state.mode, agent.role, hasUpstream);
   const template = readFileSync(templatePath, "utf-8");

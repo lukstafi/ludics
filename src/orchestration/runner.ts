@@ -853,64 +853,26 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
     const markerFile = join(state.peerSyncDir, `${agent.name}.merged`);
 
     if (!existsSync(markerFile) && isPrMerged(prUrl)) {
-      const hasUpstream = !!state.upstreamRepo && state.duoPeerSlot == null;
-      const forwarded = state.agents.some((a) =>
-        existsSync(join(state.peerSyncDir, `${a.name}.forwarded`))
+      // Uniform post-merge handling: the working-repo (staging) PR merge IS the
+      // completion signal. Upstream-specific marker/event paths were removed — the
+      // upstream repo is now only used for issue tracking and briefing lag reporting.
+      writeFileSync(markerFile, "merged\n");
+      state.agentStates[agent.name]!.status = "merged";
+      state.agentStates[agent.name]!.statusMessage = "PR merged externally";
+      emitEvent({
+        event_type: "pr_merged",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.taskId,
+        message: `PR merged: ${prUrl}`,
+      });
+      const mergedTaskLabel = state.taskId;
+      notifyAgents(
+        `Slot ${state.slot} [${mergedTaskLabel}]: PR merged: ${prUrl}`,
+        3,
+        `Slot ${state.slot}: PR merged`,
       );
-
-      if (hasUpstream && forwarded) {
-        // Upstream PR merged — write upstream-merged marker (NOT .merged)
-        const upstreamMarkerFile = join(state.peerSyncDir, `${agent.name}.upstream-merged`);
-        if (!existsSync(upstreamMarkerFile)) {
-          writeFileSync(upstreamMarkerFile, "upstream-merged\n");
-          emitEvent({
-            event_type: "upstream_pr_merged",
-            source: "orchestration",
-            scope: "slot",
-            slot: state.slot,
-            task: state.taskId,
-            message: `Upstream PR merged: ${prUrl}`,
-          });
-          const mergedTaskLabel = state.taskId;
-          notifyAgents(
-            `Slot ${state.slot} [${mergedTaskLabel}]: upstream PR merged: ${prUrl}`,
-            3,
-            `Slot ${state.slot}: upstream PR merged`,
-          );
-        }
-      } else if (hasUpstream && !forwarded) {
-        // Working repo PR merged before forwarding — do NOT write .merged marker.
-        // Writing .merged would cause isMerged() → suggest-refactor, skipping the
-        // entire upstream forwarding flow. The workflow should still proceed
-        // to forward-pr to create the upstream PR. Emit a warning.
-        emitEvent({
-          event_type: "orchestration_warning",
-          source: "orchestration",
-          scope: "slot",
-          slot: state.slot,
-          task: state.taskId,
-          message: `Working repo PR merged before forwarding: ${prUrl} — will still forward to upstream`,
-        });
-      } else {
-        // No upstream: existing behavior
-        writeFileSync(markerFile, "merged\n");
-        state.agentStates[agent.name]!.status = "merged";
-        state.agentStates[agent.name]!.statusMessage = "PR merged externally";
-        emitEvent({
-          event_type: "pr_merged",
-          source: "orchestration",
-          scope: "slot",
-          slot: state.slot,
-          task: state.taskId,
-          message: `PR merged: ${prUrl}`,
-        });
-        const mergedTaskLabel = state.taskId;
-        notifyAgents(
-          `Slot ${state.slot} [${mergedTaskLabel}]: PR merged: ${prUrl}`,
-          3,
-          `Slot ${state.slot}: PR merged`,
-        );
-      }
     }
   }
 
@@ -1597,7 +1559,7 @@ export async function runOrchestration(
     // Iterate ALL agents: non-participating agents may have leftover uncommitted
     // work from a previous phase that needs to be pushed before PR creation.
     const pushBeforePhases = new Set([
-      "pr-create", "forward-pr", "final-merge",
+      "pr-create", "final-merge",
       "merge-execute", "merge-review",
     ]);
     if (pushBeforePhases.has(next)) {

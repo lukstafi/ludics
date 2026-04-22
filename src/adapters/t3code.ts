@@ -19,7 +19,7 @@ import {
   serverStatus,
   writeSlotState,
 } from "../t3code/server.ts";
-import { findProjectConfig, globalAdapter, loadConfigSync, type LudicsFullConfig } from "../config.ts";
+import { globalAdapter, loadConfigSync, type LudicsFullConfig } from "../config.ts";
 import {
   toWireProvider,
   threadModel,
@@ -910,7 +910,6 @@ async function startOrchestratedThreads(
     branches: setup.branches,
     slotTitle: title,
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
-    upstreamRepo: findProjectConfig(projectDir, config)?.upstream_repo || undefined,
   };
   persistState(state, ctx.harnessDir);
 

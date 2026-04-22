@@ -125,8 +125,6 @@ export interface OrchestrationState {
   /** @deprecated Alias for taskId — kept for backward compat with persisted state */
   feature?: string;
   slotTitle?: string;
-  /** Upstream repo slug for PR forwarding (e.g. "ahrefs/ocannl"). Set from project config at init. */
-  upstreamRepo?: string;
   lastLearningAt?: number;
   lastLearningRound?: number;
   confirmedPhase?: Phase | null;
@@ -196,7 +194,6 @@ export const DEFAULT_TIMEOUTS: Record<string, number> = {
   "merge-review": 1200,
   "merge-amend": 1200,
   "suggest-refactor": 1200,
-  "forward-pr": 3600,
   "final-merge": 3600,
 };
 

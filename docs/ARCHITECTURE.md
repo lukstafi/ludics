@@ -269,18 +269,18 @@ allowed-tools: Read, Bash, Glob, Grep, Write
 
 The orchestration engine (`src/orchestration/`, ~9K lines) runs multi-agent coding workflows within slots. It implements the phase state machine, skill dispatch, peer coordination, and merge logic that were previously handled by agent-duo's Bash scripts.
 
-**Phases** (21 total, defined in `src/orchestration/phases.ts`):
+**Phases** (20 total, defined in `src/orchestration/phases.ts`):
 
 ```
 setup → [gather] → [clarify] → [pushback] → [plan] → [plan-merge] → [plan-review]
       → work → review → [update-docs]
       → [pr-create] → [pr-comments]
       → [merge-vote] → [merge-debate] → [merge-execute] → [merge-review] → [merge-amend]
-      → [suggest-refactor] → [forward-pr] → [final-merge]
+      → [suggest-refactor] → [final-merge]
       → done
 ```
 
-The `forward-pr` phase handles staging final-merge operations for cross-slot merge coordination in hierarchical duo mode.
+For projects declaring `upstream_repo`, the post-`pr-comments` flow is identical to the non-upstream case: staging-PR merge is the completion signal, followed by `suggest-refactor` and retrospective. Upstream is used for GitHub issue tracking; forwarding staging → upstream is manual. Staging drift is surfaced passively in the briefing (see `Upstream vs Staging Lag`) and reduced autonomously via a once-daily fast-forward from `upstream/<default>` in the keepalive tick (see `src/staging-ff.ts`).
 
 Phases in brackets are optional, gated by configuration flags (`enableClarify`, `enablePushback`, `enablePlan`, `enableGather`, `autoFinish`) and runtime conditions (PR existence, merge consensus).
 
@@ -959,8 +959,6 @@ ludics/
 │   ├── merge-review.md               # Post-merge review
 │   ├── merge-amend.md                # Merge amendments
 │   ├── suggest-refactor.md           # Post-merge refactoring suggestions
-│   ├── forward-pr.md                 # Forward PR for cross-slot merge
-│   ├── upstream-final-merge.md        # Upstream final merge
 │   ├── pr-conflict-resolve.md        # PR merge conflict resolution
 │   ├── final-merge.md                # Final merge
 │   ├── pair-coder-clarify.md         # Pair mode: coder clarify
