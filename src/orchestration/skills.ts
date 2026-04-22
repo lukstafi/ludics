@@ -153,6 +153,25 @@ export function resolveTemplatePath(
   hasUpstream?: boolean,
 ): string {
   const root = templateRoot();
+  // Solo resolution: solo-<phase>.md > pair-coder-<phase>.md > <phase>.md
+  // (with upstream variants stacked ahead of each tier).
+  if (mode === "solo") {
+    if (hasUpstream) {
+      const soloUp = join(root, `solo-upstream-${phase}.md`);
+      if (existsSync(soloUp)) return soloUp;
+      const pairCoderUp = join(root, `pair-coder-upstream-${phase}.md`);
+      if (existsSync(pairCoderUp)) return pairCoderUp;
+      const upstreamPath = join(root, `upstream-${phase}.md`);
+      if (existsSync(upstreamPath)) return upstreamPath;
+    }
+    const soloPath = join(root, `solo-${phase}.md`);
+    if (existsSync(soloPath)) return soloPath;
+    const pairCoderPath = join(root, `pair-coder-${phase}.md`);
+    if (existsSync(pairCoderPath)) return pairCoderPath;
+    const genericPath = join(root, `${phase}.md`);
+    if (existsSync(genericPath)) return genericPath;
+    throw new Error(`missing orchestration template for solo:${phase}`);
+  }
   // Upstream-aware resolution: check upstream-specific templates first when upstream is configured.
   // Priority: pair-<role>-upstream-<phase>.md > upstream-<phase>.md > pair-<role>-<phase>.md > <phase>.md
   if (hasUpstream) {

@@ -183,8 +183,9 @@ export function createWorktrees(
   addWorktree(projectDir, rootWorktree, branches.root, mainBranch);
 
   const agentWorktrees: Record<string, string> = {};
-  if (mode === "pair") {
-    // Pair mode: both agents share the root worktree and branch
+  if (mode === "pair" || mode === "solo") {
+    // Pair / solo: all agents share the root worktree and branch.
+    // Solo has a single agent; pair has coder + reviewer sharing one worktree.
     for (const agent of agents) {
       branches[agent.name] = branches.root;
       agentWorktrees[agent.name] = rootWorktree;

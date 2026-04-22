@@ -1272,7 +1272,13 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
   if (next === "pr-comments") {
     resetPrCommentsState(state);
   }
-  if (state.phase === "review" && next === "update-docs" && !shouldRunUpdateDocs(state)) {
+  // Learning-gate bookkeeping: solo skips the review phase, so the gate fires on
+  // work → update-docs instead of review → update-docs.
+  if (
+    next === "update-docs"
+    && (state.phase === "review" || (state.mode === "solo" && state.phase === "work"))
+    && !shouldRunUpdateDocs(state)
+  ) {
     state.lastLearningAt = state.lastLearningAt ?? 0;
   }
   if ((state.phase === "update-docs" || state.phase === "review") && next === "work") {
@@ -1379,7 +1385,12 @@ export function maybePostCodexReviewRequests(
 }
 
 function maybeOverrideTransition(state: OrchestrationState, next: OrchestrationState["phase"] | null) {
-  if (state.phase === "review" && next === "update-docs" && !shouldRunUpdateDocs(state)) {
+  // Solo skips review: the work→update-docs override mirrors pair's review→update-docs.
+  if (
+    next === "update-docs"
+    && (state.phase === "review" || (state.mode === "solo" && state.phase === "work"))
+    && !shouldRunUpdateDocs(state)
+  ) {
     return state.agents.some((agent) => !!state.agentStates[agent.name]?.prUrl)
       ? "pr-comments"
       : "pr-create";
