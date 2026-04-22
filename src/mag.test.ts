@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext } from "./mag.ts";
+import type { RunGit } from "./briefing-lag.ts";
 
 describe("normalizeLaunchAdapter", () => {
   test("t3code passes through unchanged", () => {
@@ -374,6 +375,149 @@ describe("settled sentinel atomic claim", () => {
     expect(atomicClaim()).toBe(true);
     expect(atomicClaim()).toBe(false);
     expect(atomicClaim()).toBe(false);
+  });
+});
+
+describe("briefingPrecomputeContext — Upstream vs Staging Lag section", () => {
+  let tmpHome: string;
+  let tmpConfig: string;
+  let tmpHarness: string;
+  const savedEnv: Record<string, string | undefined> = {};
+
+  function snapshotEnv(keys: string[]) {
+    for (const k of keys) savedEnv[k] = process.env[k];
+  }
+  function restoreEnv() {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), "mag-briefing-home-"));
+    tmpHarness = mkdtempSync(join(tmpdir(), "mag-briefing-harness-"));
+    tmpConfig = join(tmpHome, "config.yaml");
+    snapshotEnv(["LUDICS_CONFIG", "LUDICS_HARNESS_DIR"]);
+    process.env.LUDICS_CONFIG = tmpConfig;
+    process.env.LUDICS_HARNESS_DIR = tmpHarness;
+  });
+
+  afterEach(() => {
+    restoreEnv();
+    rmSync(tmpHome, { recursive: true, force: true });
+    rmSync(tmpHarness, { recursive: true, force: true });
+  });
+
+  function writeConfig(yaml: string) {
+    writeFileSync(tmpConfig, yaml);
+  }
+
+  function contextFile(): string {
+    return join(tmpHarness, "mag", "briefing-context.md");
+  }
+
+  // Fake runGit used for the presence test: matches the synthetic ocannl-ish fixture.
+  const fakeRunGit: RunGit = (args) => {
+    if (args[0] === "remote") return { stdout: "origin\nupstream\n", exitCode: 0 };
+    if (args[0] === "symbolic-ref" && args[1] === "refs/remotes/origin/HEAD") {
+      return { stdout: "refs/remotes/origin/master\n", exitCode: 0 };
+    }
+    if (args[0] === "symbolic-ref" && args[1] === "refs/remotes/upstream/HEAD") {
+      return { stdout: "refs/remotes/upstream/master\n", exitCode: 0 };
+    }
+    if (args[0] === "rev-list") {
+      return { stdout: "5\t2\n", exitCode: 0 };
+    }
+    if (args[0] === "log") {
+      if (args[args.length - 1].startsWith("origin/")) {
+        return { stdout: "aaa1111 2026-04-20 staging tip\n", exitCode: 0 };
+      }
+      return { stdout: "bbb2222 2026-04-01 upstream tip\n", exitCode: 0 };
+    }
+    return { stdout: "", exitCode: 0 };
+  };
+
+  test("section appears between Preempted Slots and Sessions Report when projects have upstream_repo", async () => {
+    // Checkout directory must exist so the lag helper proceeds past the path check.
+    const checkout = join(tmpHome, "my-proj");
+    mkdirSync(checkout, { recursive: true });
+    writeConfig([
+      "state_repo: test/testrepo",
+      "state_path: harness",
+      "mag:",
+      "  ensure_t3code: false",
+      "projects:",
+      "  - name: my-proj",
+      "    repo: owner/my-proj-staging",
+      "    upstream_repo: upstream/my-proj",
+      `    path: ${checkout}`,
+    ].join("\n"));
+
+    await briefingPrecomputeContext({ runGit: fakeRunGit });
+
+    const content = readFileSync(contextFile(), "utf-8");
+    const preIdx = content.indexOf("## Preempted Slots");
+    const lagIdx = content.indexOf("## Upstream vs Staging Lag");
+    const sessIdx = content.indexOf("## Sessions Report");
+    expect(preIdx).toBeGreaterThan(0);
+    expect(lagIdx).toBeGreaterThan(preIdx);
+    expect(sessIdx).toBeGreaterThan(lagIdx);
+    // Exactly one occurrence of the header
+    expect(content.split("## Upstream vs Staging Lag").length).toBe(2);
+    expect(content).toContain("### my-proj (upstream: upstream/my-proj)");
+    expect(content).toContain("**staging is 2 commits AHEAD of upstream**");
+  });
+
+  test("section is omitted entirely when no project has upstream_repo", async () => {
+    writeConfig([
+      "state_repo: test/testrepo",
+      "state_path: harness",
+      "mag:",
+      "  ensure_t3code: false",
+      "projects:",
+      "  - name: plain-proj",
+      "    repo: owner/plain-proj",
+    ].join("\n"));
+
+    await briefingPrecomputeContext({ runGit: fakeRunGit });
+
+    const content = readFileSync(contextFile(), "utf-8");
+    expect(content.indexOf("## Upstream vs Staging Lag")).toBe(-1);
+    // Preempted Slots block should flow directly into Sessions Report (no header in between).
+    const preIdx = content.indexOf("## Preempted Slots");
+    const sessIdx = content.indexOf("## Sessions Report");
+    expect(preIdx).toBeGreaterThan(0);
+    expect(sessIdx).toBeGreaterThan(preIdx);
+    const between = content.slice(preIdx, sessIdx);
+    expect(between).not.toContain("##  "); // no spurious section header between the two
+  });
+
+  test("missing upstream remote emits per-project note, not a failure", async () => {
+    const checkout = join(tmpHome, "my-proj2");
+    mkdirSync(checkout, { recursive: true });
+    writeConfig([
+      "state_repo: test/testrepo",
+      "state_path: harness",
+      "mag:",
+      "  ensure_t3code: false",
+      "projects:",
+      "  - name: my-proj2",
+      "    repo: owner/my-proj2",
+      "    upstream_repo: upstream/my-proj2",
+      `    path: ${checkout}`,
+    ].join("\n"));
+
+    const noUpstream: RunGit = (args) => {
+      if (args[0] === "remote") return { stdout: "origin\n", exitCode: 0 };
+      return { stdout: "", exitCode: 128 };
+    };
+    await briefingPrecomputeContext({ runGit: noUpstream });
+
+    const content = readFileSync(contextFile(), "utf-8");
+    expect(content).toContain("## Upstream vs Staging Lag");
+    expect(content).toContain("### my-proj2");
+    expect(content).toContain("upstream remote not configured");
   });
 });
 

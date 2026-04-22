@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
+import { formatUpstreamLagSection, defaultRunGit, type RunGit } from "./briefing-lag.ts";
 import { isPlainObject } from "./json.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
@@ -1567,7 +1568,7 @@ async function ensureT3codeIfEnabled(context: string): Promise<void> {
   }
 }
 
-async function briefingPrecomputeContext(): Promise<void> {
+export async function briefingPrecomputeContext(opts?: { runGit?: RunGit }): Promise<void> {
   // Ensure t3code server is running before briefing (it dies on overnight shutdown)
   await ensureT3codeIfEnabled("briefing");
 
@@ -1638,6 +1639,17 @@ async function briefingPrecomputeContext(): Promise<void> {
     ).join("\n");
   }
 
+  // Upstream vs staging lag — rendered per-project for projects with upstream_repo.
+  // Empty string when no qualifying projects; in that case the section is omitted.
+  const configForLag = loadConfigSync();
+  const upstreamLag = formatUpstreamLagSection(configForLag.projects ?? [], {
+    now: new Date(),
+    runGit: opts?.runGit ?? defaultRunGit,
+  });
+  const upstreamLagSection = upstreamLag
+    ? `## Upstream vs Staging Lag\n\n${upstreamLag.trimEnd()}\n\n`
+    : "";
+
   const contextContent = `# Briefing Context
 
 Generated: ${timestamp}
@@ -1655,7 +1667,7 @@ ${slotsOutput}
 
 ${preemptedOutput}
 
-## Sessions Report
+${upstreamLagSection}## Sessions Report
 
 ${sessionsContent}
 
