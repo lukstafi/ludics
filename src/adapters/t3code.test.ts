@@ -352,3 +352,81 @@ describe("selectOrchestrationFlagsForTask — skip_plan from frontmatter", () =>
     expect(args).toContain("--gather");
   });
 });
+
+describe("parseT3CodeAdapterArgs — --solo", () => {
+  test("parses --solo with --coder into a single-agent orchestration", () => {
+    // Token format: name:provider:model
+    const parsed = parseT3CodeAdapterArgs("--solo --coder coder:claude-code:claude-sonnet-4-6");
+    expect(parsed.orchestration).not.toBeNull();
+    expect(parsed.orchestration!.mode).toBe("solo");
+    expect(parsed.orchestration!.agents).toHaveLength(1);
+    expect(parsed.orchestration!.agents[0]!.role).toBe("coder");
+    expect(parsed.orchestration!.agents[0]!.provider).toBe("claude-code");
+    expect(parsed.orchestration!.agents[0]!.model).toBe("claude-sonnet-4-6");
+    expect(parsed.orchestration!.agents[0]!.name).toBe("coder");
+  });
+
+  test("parses --solo --coder <provider> (bare provider) with default model", () => {
+    const parsed = parseT3CodeAdapterArgs("--solo --coder claude-code");
+    expect(parsed.orchestration!.mode).toBe("solo");
+    expect(parsed.orchestration!.agents).toHaveLength(1);
+    expect(parsed.orchestration!.agents[0]!.provider).toBe("claude-code");
+  });
+
+  test("--solo without --coder throws", () => {
+    expect(() => parseT3CodeAdapterArgs("--solo")).toThrow(/--solo requires --coder/);
+  });
+
+  test("--solo combined with --reviewer throws", () => {
+    expect(() =>
+      parseT3CodeAdapterArgs("--solo --coder claude-code --reviewer codex")
+    ).toThrow(/--solo is incompatible with --reviewer/);
+  });
+
+  test("--solo combined with --duo-peer-slot throws", () => {
+    expect(() =>
+      parseT3CodeAdapterArgs("--solo --coder claude-code --duo-peer-slot=2")
+    ).toThrow(/--solo is incompatible with --duo-peer-slot/);
+  });
+
+  test("--solo supports --plan / --clarify config flags (orthogonal to mode)", () => {
+    // Even though auto-select for tiny omits pre-work phases, explicit --solo --plan
+    // is valid: config flags are orthogonal to mode.
+    const parsed = parseT3CodeAdapterArgs("--solo --coder claude-code --plan");
+    expect(parsed.orchestration!.config.enablePlan).toBe(true);
+  });
+});
+
+describe("selectOrchestrationFlags — tiny effort", () => {
+  test("tiny effort emits --solo with Sonnet for claude-code default", () => {
+    const { adapter, args, isDuo } = selectOrchestrationFlags("tiny");
+    expect(args).toContain("--solo");
+    expect(args).toContain("--coder claude-code");
+    expect(args).toContain(":claude-sonnet-4-6");
+    expect(args).not.toContain("--pair");
+    expect(args).not.toContain("--reviewer");
+    expect(args).not.toContain("--plan");
+    expect(args).not.toContain("--gather");
+    expect(isDuo).toBe(false);
+    expect(adapter).toMatch(/t3code|tmux/);
+  });
+
+  test("tiny effort ignores orchCfg.default_mode (forces solo)", () => {
+    const fakeConfig = {
+      mag: { orchestration: { default_mode: "pair", default_coder: "claude-code", default_reviewer: "codex" } },
+    } as unknown as Parameters<typeof selectOrchestrationFlags>[1];
+    const { args, isDuo } = selectOrchestrationFlags("tiny", fakeConfig);
+    expect(args).toContain("--solo");
+    expect(args).not.toContain("--pair");
+    expect(isDuo).toBe(false);
+  });
+
+  test("tiny effort with codex coder emits no model suffix", () => {
+    const fakeConfig = {
+      mag: { orchestration: { default_coder: "codex", default_reviewer: "codex" } },
+    } as unknown as Parameters<typeof selectOrchestrationFlags>[1];
+    const { args } = selectOrchestrationFlags("tiny", fakeConfig);
+    expect(args).toContain("--solo --coder codex");
+    expect(args).not.toContain(":claude-sonnet");
+  });
+});

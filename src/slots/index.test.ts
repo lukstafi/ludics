@@ -389,6 +389,40 @@ describe("slot assign — direct orchestration flags", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     await expect(runSlot(["1", "assign", "My task", "-a", "t3code", "--reviewer", "--plan"])).rejects.toThrow("got a flag instead");
   });
+
+  test("--solo shorthand preserved; no --pair auto-injection", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    await runSlot(["1", "assign", "My task", "-a", "t3code", "--solo", "--coder", "claude-code"]);
+    const args = readAdapterArgs();
+    expect(args).toBe("--solo --coder claude-code");
+    expect(args).not.toContain("--pair");
+  });
+
+  test("--solo via -A fragment preserved; no --pair auto-injection", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    await runSlot(["1", "assign", "My task", "-a", "t3code", "-A", "--solo --coder claude-code"]);
+    const args = readAdapterArgs();
+    expect(args).toContain("--solo");
+    expect(args).not.toContain("--pair");
+  });
+
+  test("--solo does not route through duo expansion (single-slot assign only)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    await runSlot(["1", "assign", "My task", "-a", "t3code", "--solo", "--coder", "claude-code"]);
+    // Slot 1 assigned; slot 2 must remain empty (no duo expansion)
+    const slot2 = readSlotJson(2, harness);
+    expect(slot2.process).toBe("(empty)");
+    expect(slot2.adapterArgs ?? "").toBe("");
+  });
 });
 
 describe("slotStart — t3code empty-args auto-fill", () => {
