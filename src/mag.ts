@@ -29,7 +29,7 @@ import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, pa
 import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
-import { readTmuxSlotState, tmuxPaneOutputHash } from "./adapters/tmux-adapter.ts";
+import { captureLastMessage, captureLastMessageHash, readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
 import { selectOrchestrationFlagsForTask } from "./adapters/t3code.ts";
 import YAML from "yaml";
@@ -108,6 +108,7 @@ function triggerSkill(session: string, cmd: string): boolean {
 
 const DEFAULT_STALL_THRESHOLD_MS = 120_000; // 2 minutes
 const DEFAULT_STALL_NUDGE_COOLDOWN_MS = 120_000; // 2 minutes between stall nudges
+const DEFAULT_READY_THRESHOLD_MS = 5_000; // pane must be stable this long to count as ready
 const DEFAULT_MAX_REQUEUE_RETRIES = 3;
 const DEFAULT_STARTUP_WATCHDOG_SECONDS = 60;
 const DEFAULT_STARTUP_HELPER_STUCK_SECONDS = 45;
@@ -151,12 +152,40 @@ function isMagSettled(): boolean {
 }
 
 /**
+ * Check whether the Mag pane has been quiet long enough to be considered
+ * ready for a new skill. Uses the last-message hash (footer excluded), so
+ * Claude Code's cosmetic footer updates don't reset the clock. Returns
+ * true iff the hash has been stable for >= DEFAULT_READY_THRESHOLD_MS.
+ *
+ * Shares state with the stall-detection path (last-pane.hash and
+ * last-pane-change.epoch): both track the same "how long has the last
+ * message been static" signal, just with different thresholds. Calling
+ * isMagReady() also updates that state — safe to call from either the
+ * keepalive tick or from magStart's cold-boot poll before keepalive is
+ * running.
+ */
+function isMagReady(): boolean {
+  const currentHash = captureLastMessageHash(MAG_SESSION_NAME);
+  if (currentHash === null) return false;
+
+  const previousHash = readPaneHash();
+  if (previousHash !== currentHash) {
+    writePaneHash(currentHash);
+    writePaneChangeEpoch();
+    return false;
+  }
+
+  const lastChangeMs = readPaneChangeEpoch();
+  return (Date.now() - lastChangeMs) >= DEFAULT_READY_THRESHOLD_MS;
+}
+
+/**
  * If pane output has advanced since the settled sentinel was written,
  * Mag has resumed running (e.g. a manual turn) — clear the stale sentinel.
  */
 function clearStaleSettled(): void {
   if (!isMagSettled()) return;
-  const currentHash = tmuxPaneOutputHash(MAG_SESSION_NAME);
+  const currentHash = captureLastMessageHash(MAG_SESSION_NAME);
   if (currentHash === null) return;
   const previousHash = readPaneHash();
   if (previousHash !== null && currentHash !== previousHash) {
@@ -237,27 +266,35 @@ function clearStallState(): void {
 // --- Queue feed and stall nudge helpers ---
 
 /**
- * When Mag is settled and queue has Mag-turn work, pop one item and deliver.
- * Returns true if a command was dispatched.
+ * When Mag is ready for input and queue has Mag-turn work, pop one item
+ * and deliver. "Ready" means either the settled sentinel is set (stop
+ * hook fired at end of last turn) or isMagReady() reports the pane has
+ * been quiet long enough (a fallback that doesn't require the stop hook
+ * to have fired, e.g. for queue requests arriving during idle periods
+ * where clearStaleSettled has cleared the sentinel). Returns true if a
+ * command was dispatched.
  */
 export async function maybeFeedMagQueue(): Promise<boolean> {
-  if (!isMagSettled()) return false;
+  if (!isMagSettled() && !isMagReady()) return false;
   if (!queuePending()) return false;
 
   // Drain programmatic entries first (they don't need a Mag turn)
   await drainProgrammaticQueueHead();
   if (!queuePending()) return false;
 
-  // Atomic claim: rename sentinel to in-progress marker so only one keepalive
-  // invocation can win the race. If rename fails, another tick already claimed it.
-  const claimPath = settledSentinelFile() + ".claiming";
-  try {
-    renameSync(settledSentinelFile(), claimPath);
-  } catch {
-    return false; // another tick already claimed
+  // Atomic claim: if settled, consume the sentinel so concurrent ticks
+  // see !settled. In the ready-only path there's no sentinel to consume;
+  // we rely on queuePopSkill's atomic dequeue below (and on the harness'
+  // single-writer invariant under federation v2).
+  if (isMagSettled()) {
+    const claimPath = settledSentinelFile() + ".claiming";
+    try {
+      renameSync(settledSentinelFile(), claimPath);
+    } catch {
+      return false; // another tick already claimed
+    }
+    try { unlinkSync(claimPath); } catch {}
   }
-  // Remove the claim marker now that we own the transition
-  try { unlinkSync(claimPath); } catch {}
 
   const popped = await queuePopSkill();
   if (!popped) return false;
@@ -308,7 +345,7 @@ function maybeNudgeStalledMag(): void {
   if (isMagSettled()) return;
   if (!queuePending()) return;
 
-  const currentHash = tmuxPaneOutputHash(MAG_SESSION_NAME);
+  const currentHash = captureLastMessageHash(MAG_SESSION_NAME);
   if (currentHash === null) return; // tmux capture failed — don't treat as stall
 
   const previousHash = readPaneHash();
@@ -709,33 +746,7 @@ function adoptSessionsFingerprintData(
 }
 
 function publishTerminalState(): void {
-  const raw = tmuxCapture(MAG_SESSION_NAME, 50);
-  if (!raw) return;
-
-  const lines = raw.split("\n");
-
-  // Find last ⏺ line (Claude Code output marker)
-  let startIdx = 0;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i]!.includes("⏺")) {
-      startIdx = i;
-      break;
-    }
-  }
-
-  // Find last prompt line and cut there (drop status tagline below it)
-  let endIdx = lines.length;
-  for (let i = lines.length - 1; i >= startIdx; i--) {
-    if (lines[i]!.includes("❯")) {
-      endIdx = i; // exclude the prompt line itself
-      break;
-    }
-  }
-
-  const cleaned = lines.slice(startIdx, endIdx)
-    .filter((l) => !l.match(/^[─]{4,}/));  // drop line separators
-
-  const snippet = cleaned.join("\n").trim();
+  const snippet = captureLastMessage(MAG_SESSION_NAME, 50);
   if (!snippet) return;
 
   // Dedup: hash and compare to previous
@@ -2915,13 +2926,40 @@ export async function magStart(args: string[]): Promise<void> {
   // Ensure t3code server on fresh start
   await ensureT3codeIfEnabled("fresh start");
 
-  // Treat fresh start as implicitly settled — deliver one queued request
-  markMagSettled();
-  clearStallState();
-  safeSyncOutput(["sleep", "5"]);
-  const fed = await maybeFeedMagQueue();
-  if (fed) {
-    console.error("ludics: Mag fresh start, delivered queued request via queue feed");
+  // Poll the pane for Claude Code's idle prompt before marking settled.
+  // Optimistically marking settled here (the former behavior) races with
+  // Claude's splash/init on cold boots: keepalive feeds the queue into a
+  // pane that is not yet consuming input, so the skill text vanishes.
+  // Skip entirely when Claude isn't installed — isMagReady() could never
+  // become true, and there's no point feeding the queue into a bare shell.
+  if (hasClaude) {
+    // Clear stale stall state from any previous session before the poll —
+    // isMagReady() now tracks last-pane.hash and last-pane-change.epoch
+    // itself, so the loop builds up fresh state.
+    clearStallState();
+    const readyDeadlineMs = Date.now() + 60_000;
+    let becameReady = false;
+    while (Date.now() < readyDeadlineMs) {
+      if (isMagReady()) {
+        becameReady = true;
+        break;
+      }
+      safeSyncOutput(["sleep", "1"]);
+    }
+    if (becameReady) {
+      markMagSettled();
+      const fed = await maybeFeedMagQueue();
+      if (fed) {
+        console.error("ludics: Mag fresh start, delivered queued request via queue feed");
+      }
+    } else {
+      emitEvent({
+        event_type: "mag_startup_not_ready",
+        source: "cli",
+        scope: "mag",
+        message: "readiness timeout at 60s — stall detection will handle",
+      });
+    }
   }
 }
 

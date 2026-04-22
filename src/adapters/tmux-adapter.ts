@@ -317,6 +317,65 @@ export function tmuxPaneOutputHash(target: string, lines: number = 50): string |
   return hasher.digest("hex");
 }
 
+/**
+ * Extract the "last message" region of a Claude Code pane: everything from
+ * the last "⏺" (assistant message marker) up to the last "❯" (input prompt)
+ * line, excluding the prompt itself and any "─────" separators. Deliberately
+ * excludes the footer below the prompt (token counts, bypass-permissions
+ * line, new-task hint) — those update for cosmetic reasons even when Claude
+ * is idle, which is noise for stall/readiness detection.
+ *
+ * Requires the "❯" prompt marker to be present. Returns null if the capture
+ * failed, no "❯" is found (splash/init, bare shell, crashed Claude), or the
+ * extracted snippet is empty. Callers downstream (e.g. isMagReady) treat a
+ * null result as "pane is not in a known-ready state", which prevents silent
+ * queue delivery into a non-Claude pane.
+ */
+export function captureLastMessage(target: string, lines: number = 50): string | null {
+  const raw = tmuxCapture(target, lines);
+  if (!raw) return null;
+
+  const allLines = raw.split("\n");
+
+  let startIdx = 0;
+  for (let i = allLines.length - 1; i >= 0; i--) {
+    if (allLines[i]!.includes("⏺")) {
+      startIdx = i;
+      break;
+    }
+  }
+
+  let endIdx = -1;
+  for (let i = allLines.length - 1; i >= startIdx; i--) {
+    if (allLines[i]!.includes("❯")) {
+      endIdx = i;
+      break;
+    }
+  }
+  if (endIdx === -1) return null;
+
+  const snippet = allLines
+    .slice(startIdx, endIdx)
+    .filter((l) => !l.match(/^[─]{4,}/))
+    .join("\n")
+    .trim();
+
+  return snippet || null;
+}
+
+/**
+ * Hash of the "last message" region — stable across cosmetic footer updates.
+ * Preferred signal for Mag stall/readiness detection. Returns null if
+ * capture fails or the extracted snippet is empty.
+ */
+export function captureLastMessageHash(target: string, lines: number = 50): string | null {
+  const snippet = captureLastMessage(target, lines);
+  if (!snippet) return null;
+  const hasher = new Bun.CryptoHasher("md5");
+  hasher.update(snippet);
+  return hasher.digest("hex");
+}
+
 /** Get the CLI launch command for an agent provider */
 export function agentCliCommand(provider: string): string {
   if (provider === "claude-code") return "claude --dangerously-skip-permissions";
