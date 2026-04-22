@@ -13,7 +13,7 @@ export interface TaskFrontmatter {
     relates_to: string[];
     subtask_of: string | null;
   };
-  effort: string; // small, medium, large
+  effort: string; // tiny, small, medium, large
   skip_plan?: boolean;
   requirements?: { os?: string; gpu?: string };
   context: string;

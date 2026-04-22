@@ -41,7 +41,7 @@ The context file contains these sections:
 - **Upstream vs Staging Lag**: *(optional — only for projects with `upstream_repo`)* Per-project commits AHEAD of upstream (primary signal — merges on staging not yet forwarded upstream) and commits behind upstream (secondary), plus last-merge commit lines on each side. Surface this verbatim in the briefing under a dedicated heading when present.
 - **Sessions Report**: All discovered agent sessions with classification
 - **Session-Project Matches**: Pre-computed matching of unclassified sessions to projects, with ready tasks per project and slot availability
-- **Active Unconcluded Agent-Duo Slots**: Case-A slots precomputed from `sessions.json` + task completion state
+- **Active Unconcluded Slots**: Case-A slots precomputed from `sessions.json` + task completion state (covers pair, duo, and solo modes)
 - **Flow: Ready Queue**: Priority-sorted ready tasks
 - **Flow: Critical Items**: Deadlines, high-priority ready
 - **Tasks Needing Elaboration**: Task IDs that lack elaboration
@@ -130,7 +130,7 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - **manual**: include observations only
 
 7. **Nudge stalled slotted tasks**:
-   - Read the `## Active Unconcluded Agent-Duo Slots` section first.
+   - Read the `## Active Unconcluded Slots` section first.
      - Treat listed slots as **Case A** (active, unconcluded): do **not** re-send
        launch buttons for those slots.
    - For each slot that has a task assigned with a proposal (`proposal:` field in

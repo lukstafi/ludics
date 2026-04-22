@@ -154,6 +154,9 @@ export function agentParticipatesInPhase(
   agent: AgentConfig,
 ): boolean {
   if (state.phase === "setup" || state.phase === "done") return false;
+  // Solo mode: only the coder participates, in every non-setup/done phase.
+  // No reviewer agent exists; reviewer-keyed role checks must return false.
+  if (state.mode === "solo") return agent.role === "coder";
   // Strict role separation for all slots (pair and hierarchical-duo)
   switch (state.phase) {
     case "gather":
@@ -189,10 +192,11 @@ export function agentParticipatesInPhase(
 /** Check done-status + required artifact. Shared by both lifecycle branches of isAgentDone. */
 function validateDoneStatus(state: OrchestrationState, agent: AgentConfig, runtime: AgentRuntimeState): boolean {
   if (!DONE_STATUSES.has(runtime.status)) return false;
-  // Bail-out statuses bypass artifact validation only when the full pair bail-out
-  // contract is satisfied (coder=bail-out + reviewer=bail-out-confirmed). A lone
+  // Bail-out statuses bypass artifact validation when the bail-out contract is
+  // satisfied for the current mode: pair requires coder=bail-out +
+  // reviewer=bail-out-confirmed; solo requires a lone coder=bail-out. A lone
   // bail-out-confirmed without the coder side must not skip artifact checks.
-  if ((runtime.status === "bail-out" || runtime.status === "bail-out-confirmed") && isPairBailedOut(state)) return true;
+  if ((runtime.status === "bail-out" || runtime.status === "bail-out-confirmed") && isBailedOut(state)) return true;
   if (!hasRequiredArtifact(state, agent)) {
     emitEvent({
       event_type: "orchestration_warning",
@@ -341,6 +345,21 @@ export function isPairBailedOut(state: OrchestrationState): boolean {
   return cs === "bail-out" && rs === "bail-out-confirmed";
 }
 
+/** True when a solo-mode slot's coder has signaled bail-out. Solo has no reviewer,
+ * so a lone "bail-out" is the terminal signal (no bail-out-confirmed partner). */
+export function isSoloBailedOut(state: OrchestrationState): boolean {
+  if (state.mode !== "solo") return false;
+  const coder = state.agents.find(a => a.role === "coder");
+  if (!coder) return false;
+  return (state.agentStates[coder.name]?.status ?? "") === "bail-out";
+}
+
+/** Unified bail-out check covering both pair and solo contracts. Pair requires the
+ * full two-agent handshake; solo treats a lone coder "bail-out" as terminal. */
+export function isBailedOut(state: OrchestrationState): boolean {
+  return isPairBailedOut(state) || isSoloBailedOut(state);
+}
+
 function hasAnyPr(state: OrchestrationState): boolean {
   return state.agents.some((agent) => {
     const url = state.agentStates[agent.name]?.prUrl;
@@ -417,7 +436,86 @@ export function findPlanFiles(
   return { files, coderPlanExists };
 }
 
+/**
+ * Shared readiness check for `pr-comments → final-merge` in the non-upstream,
+ * non-duo-peer path. Extracted so the pair/duo main switch and the solo
+ * dispatcher cannot drift apart.
+ */
+export function prCommentsReadyForFinalMerge(state: OrchestrationState): boolean {
+  if (!hasAnyPr(state)) return false;
+
+  // Shortcut: coder has responded to PR comments — skip quiet period wait.
+  if (
+    state.prCommentsCoderDispatched
+    && allAgentsDone(state)
+    && state.prCommentsQuietSince
+    && !state.prCodexReviewDeferredSince
+  ) {
+    return true;
+  }
+
+  // Quiet-period advancement.
+  const quietPeriod = state.config.prCommentsTimeout;
+  if (
+    state.prCommentsQuietSince
+    && nowEpoch() - state.prCommentsQuietSince >= quietPeriod
+  ) {
+    return true;
+  }
+
+  return phaseTimeoutExpired(state);
+}
+
+/**
+ * Solo-mode transition dispatcher. Traverses a strict subset of `Phase`:
+ * setup → work → [update-docs?] → pr-create → pr-comments → final-merge → done.
+ * No reviewer participates; bail-out is the lone coder status signal.
+ * Phases outside this subset are unreachable in solo mode.
+ */
+function evaluateTransitionSolo(state: OrchestrationState): Phase | null {
+  // Bail-out short-circuits to done from any non-terminal solo phase.
+  if (isBailedOut(state) && state.phase !== "done") return "done";
+
+  switch (state.phase) {
+    case "setup":
+      return "work";
+
+    case "work":
+      if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      if (hasAnyPr(state)) return "pr-comments";
+      return "update-docs";
+
+    case "update-docs":
+      if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      if (hasAnyPr(state)) return "pr-comments";
+      return "pr-create";
+
+    case "pr-create":
+      if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      if (!hasAnyPr(state)) return null; // defense-in-depth: need a PR URL
+      return "pr-comments";
+
+    case "pr-comments":
+      // Solo skips suggest-refactor; a pre-merged agent goes straight to done.
+      if (isMerged(state)) return "done";
+      if (prCommentsReadyForFinalMerge(state)) return "final-merge";
+      return null;
+
+    case "final-merge":
+      if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "done";
+      return null;
+
+    case "done":
+      return "done";
+
+    default:
+      // Defensive: solo should never visit review/plan/merge/gather/etc.
+      return null;
+  }
+}
+
 export function evaluateTransition(state: OrchestrationState): Phase | null {
+  if (state.mode === "solo") return evaluateTransitionSolo(state);
   switch (state.phase) {
     case "setup":
       return nextAfterPrework(state);
@@ -474,14 +572,14 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "work":
       if (allAgentsDone(state) || phaseTimeoutExpired(state)) {
-        if (isPairBailedOut(state)) return "done";
+        if (isBailedOut(state)) return "done";
         return "review";
       }
       return null;
 
     case "review":
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
-      if (isPairBailedOut(state)) return "done";
+      if (isBailedOut(state)) return "done";
       {
         const reviewVerdict = pairReviewVerdict(state);
         if (reviewVerdict === "request_changes") return "work";
@@ -490,7 +588,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "update-docs":
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
-      if (isPairBailedOut(state)) return "done";
+      if (isBailedOut(state)) return "done";
       if (hasAnyPr(state)) return "pr-comments";
       return "pr-create";
 
@@ -498,7 +596,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
       // NOTE: Runner verifies PR exists on GitHub before agents reach done state here.
       // See verifyPhaseOutcome() in runner.ts.
       if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
-      if (isPairBailedOut(state)) return "done";
+      if (isBailedOut(state)) return "done";
       if (!hasAnyPr(state)) return null; // Block advancement without a PR URL (defense in depth)
       return "pr-comments";
 

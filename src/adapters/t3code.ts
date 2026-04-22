@@ -59,7 +59,7 @@ interface ParsedAgentToken {
 }
 
 interface ParsedOrchestrationArgs {
-  mode: "pair";
+  mode: "duo" | "pair" | "solo";
   config: Partial<OrchestrationConfig>;
   agents: ParsedAgentToken[];
   /** Explicit coder model override from --coder-model flag. */
@@ -224,6 +224,10 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   let coderThinkingEffort: string | undefined;
   let reviewerThinkingEffort: string | undefined;
   let duoPeerSlot: number | undefined;
+  // Track the first reviewer-only override flag seen (excluding the shared
+  // --effort / --thinking-effort flags). Used to reject reviewer-specific
+  // overrides in --solo mode, where no reviewer agent exists.
+  let reviewerOnlyFlag: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -262,6 +266,9 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
       case "--pair":
         mode = "pair";
         break;
+      case "--solo":
+        mode = "solo";
+        break;
       case "--agent":
         // Legacy duo --agent flag is no longer supported; use --coder/--reviewer instead.
         throw new Error("t3code adapter args: --agent is no longer supported (duo mode now uses --coder/--reviewer). Use --coder and --reviewer instead.");
@@ -283,6 +290,7 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
       case "--reviewer-model":
         if (!next) throw new Error("t3code adapter args: --reviewer-model requires a model ID");
         reviewerModelOverride = next;
+        if (!reviewerOnlyFlag) reviewerOnlyFlag = arg;
         i++;
         break;
       case "--coder-effort":
@@ -295,6 +303,7 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
       case "--reviewer-thinking-effort":
         if (!next) throw new Error(`t3code adapter args: ${arg} requires low|medium|high|max`);
         reviewerThinkingEffort = next;
+        if (!reviewerOnlyFlag) reviewerOnlyFlag = arg;
         i++;
         break;
       case "--effort":
@@ -378,6 +387,35 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   }
 
   if (!mode) return parsed;
+
+  if (mode === "solo") {
+    if (!coderToken) {
+      throw new Error("t3code adapter args: --solo requires --coder provider[:model[:name]]");
+    }
+    if (reviewerToken) {
+      throw new Error("t3code adapter args: --solo is incompatible with --reviewer");
+    }
+    if (duoPeerSlot != null) {
+      throw new Error("t3code adapter args: --solo is incompatible with --duo-peer-slot");
+    }
+    if (reviewerOnlyFlag) {
+      throw new Error(`t3code adapter args: --solo is incompatible with ${reviewerOnlyFlag} (no reviewer exists in solo mode)`);
+    }
+    const coderParsed = parseProviderToken(coderToken, "coder", parsed.model);
+    parsed.orchestration = {
+      mode: "solo",
+      config: orchestrationConfig,
+      agents: [
+        { ...coderParsed, role: "coder", modelExplicit: coderParsed.modelExplicit },
+      ],
+      coderModelOverride,
+      reviewerModelOverride: undefined,
+      coderThinkingEffort,
+      reviewerThinkingEffort: undefined,
+      duoPeerSlot: undefined,
+    };
+    return parsed;
+  }
 
   // For pair mode: modelExplicit is only true when the user explicitly provided the token
   // (i.e. --coder/--reviewer flag was given) AND that token included an explicit model.
@@ -649,12 +687,16 @@ const CLAUDE_OPUS_MODEL = "claude-opus-4-6";
  * Auto-select orchestration flags for the t3code adapter based on task effort.
  *
  * Effort-based selection (when coder is claude-code):
+ * - tiny:   solo mode, no pre-work phases, Claude coder model = Sonnet (no reviewer)
  * - small:  pair mode, no pre-work phases, Claude coder model = Sonnet
  * - medium: pair mode, enable plan phase, Claude coder model = Opus
  * - large:  pair mode, enable plan + gather phases, Claude coder model = Opus
  *
  * For non-Claude coder providers (e.g. codex), no model suffix is emitted so the
  * provider's own default applies (and coder_model config fallback remains active).
+ *
+ * `tiny` effort implies `--solo` unconditionally, bypassing `orchCfg.default_mode`
+ * (resolved during task-da8b6dff elaboration).
  *
  * Config keys (mag.orchestration): default_mode, default_coder, default_reviewer
  * These can be overridden by explicit -A adapter args at assign time.
@@ -675,6 +717,15 @@ export function selectOrchestrationFlags(
   const isDuo = mode === "duo";
 
   const norm = (effort ?? "").toLowerCase().trim();
+
+  // `tiny` effort implies solo mode unconditionally (ignores orchCfg.default_mode).
+  // Single coder, no pre-work phases, Sonnet for claude-code providers.
+  if (norm === "tiny") {
+    const modelSuffix = coder === "claude-code" ? `:${DEFAULT_CLAUDE_MODEL}` : "";
+    const args = `--solo --coder ${coder}${modelSuffix}`;
+    return { adapter: globalAdapter(), args, isDuo: false };
+  }
+
   const phaseFlags: string[] = [];
 
   // Only apply effort-based model selection for Claude providers; other providers
@@ -1068,7 +1119,9 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
       }));
       removeOrchestrationState(ctx.slot, ctx.harnessDir);
     } else if (threadIds.length > 0) {
-      // Non-orchestrated single-thread sessions: defer thread deletion only
+      // Non-orchestrated single-thread sessions: defer thread deletion only.
+      // `mode` is a placeholder here (no orchestration state exists); value is never
+      // consulted for mode dispatch because the cleanup entry has no agents.
       recordDeferredCleanup({
         timestamp: new Date().toISOString(),
         projectDir: "",

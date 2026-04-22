@@ -148,11 +148,28 @@ function templateRoot(): string {
 
 export function resolveTemplatePath(
   phase: Phase,
-  mode: "duo" | "pair",
+  mode: "duo" | "pair" | "solo",
   role?: "coder" | "reviewer",
   hasUpstream?: boolean,
 ): string {
   const root = templateRoot();
+  // Solo resolution: solo-<phase>.md > pair-coder-<phase>.md > <phase>.md
+  //
+  // Solo intentionally ignores `hasUpstream`. The upstream-* templates assume
+  // the forward-pr workflow (writing `*.upstream-pr`, `*.forwarded` markers,
+  // `*.upstream-merged` etc.) which solo's phase graph never enters —
+  // evaluateTransitionSolo does not visit `forward-pr` and does not consult
+  // state.upstreamRepo. Picking upstream-final-merge.md here would run the
+  // wrong workflow and stall the solo slot.
+  if (mode === "solo") {
+    const soloPath = join(root, `solo-${phase}.md`);
+    if (existsSync(soloPath)) return soloPath;
+    const pairCoderPath = join(root, `pair-coder-${phase}.md`);
+    if (existsSync(pairCoderPath)) return pairCoderPath;
+    const genericPath = join(root, `${phase}.md`);
+    if (existsSync(genericPath)) return genericPath;
+    throw new Error(`missing orchestration template for solo:${phase}`);
+  }
   // Upstream-aware resolution: check upstream-specific templates first when upstream is configured.
   // Priority: pair-<role>-upstream-<phase>.md > upstream-<phase>.md > pair-<role>-<phase>.md > <phase>.md
   if (hasUpstream) {

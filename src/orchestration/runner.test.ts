@@ -2959,6 +2959,25 @@ describe("checkZeroCommitsAutoBailOut", () => {
     expect(eventSpy).not.toHaveBeenCalled();
   });
 
+  test("fast-paths to done for solo bail-out (single coder, no reviewer)", () => {
+    // Solo mode: lone coder "bail-out" must trigger the same fast-path to done
+    // that pair's coder+reviewer handshake triggers. Regression for task-da8b6dff.
+    const state = makeState({
+      phase: "pr-create",
+      mode: "solo",
+      duoPeerSlot: null,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "claude-sonnet-4-6", branch: "a", worktreePath: "/tmp/a" },
+      ],
+    });
+    state.agentStates = { coder: { ...state.agentStates.coder!, status: "bail-out" } };
+    const result = checkZeroCommitsAutoBailOut(state);
+    expect(result).toBe(true);
+    expect(state.phase).toBe("done");
+    // No event emitted — fast path doesn't re-emit
+    expect(eventSpy).not.toHaveBeenCalled();
+  });
+
   test("idempotent: event emitted only once on repeated calls", () => {
     const repoDir = makeGitRepo();
 

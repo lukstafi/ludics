@@ -170,7 +170,7 @@ export function createWorktrees(
   agents: Array<{ name: string }>,
   mainBranch: string = defaultMainBranch(projectDir),
   slot?: number,
-  mode: "duo" | "pair" = "duo",
+  mode: "duo" | "pair" | "solo" = "duo",
 ): WorktreeSetup {
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));
@@ -183,8 +183,9 @@ export function createWorktrees(
   addWorktree(projectDir, rootWorktree, branches.root, mainBranch);
 
   const agentWorktrees: Record<string, string> = {};
-  if (mode === "pair") {
-    // Pair mode: both agents share the root worktree and branch
+  if (mode === "pair" || mode === "solo") {
+    // Pair / solo: all agents share the root worktree and branch.
+    // Solo has a single agent; pair has coder + reviewer sharing one worktree.
     for (const agent of agents) {
       branches[agent.name] = branches.root;
       agentWorktrees[agent.name] = rootWorktree;
@@ -253,7 +254,7 @@ export function cleanupWorktrees(
   taskId: string,
   agents: Array<{ name: string }>,
   slot?: number,
-  mode: "duo" | "pair" = "duo",
+  mode: "duo" | "pair" | "solo" = "duo",
 ): void {
   const featureSlug = slugify(taskId);
   const parentDir = dirname(resolve(projectDir));

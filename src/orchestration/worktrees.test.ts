@@ -46,6 +46,36 @@ describe("worktrees", () => {
 
     cleanupWorktrees(repo, "feat", [{ name: "agent1" }, { name: "agent2" }], 3);
   });
+
+  test("solo mode: single agent shares the root worktree (no sibling created)", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "repo-solo");
+    mkdirSync(repo, { recursive: true });
+    run(["git", "init", "-b", "main"], repo);
+    run(["git", "config", "user.email", "test@example.com"], repo);
+    run(["git", "config", "user.name", "Test User"], repo);
+    writeFileSync(join(repo, "README.md"), "hello\n");
+    run(["git", "add", "README.md"], repo);
+    run(["git", "commit", "-m", "init"], repo);
+
+    const setup = createWorktrees(repo, "solo-feat", [{ name: "coder" }], "main", 5, "solo");
+    expect(existsSync(setup.rootWorktree)).toBe(true);
+    // Coder's worktree is the root worktree (pair-style layout reused for solo)
+    expect(setup.agentWorktrees.coder).toBe(setup.rootWorktree);
+    // No per-agent sibling worktree: the duo-style path "<stem>-coder" must NOT exist.
+    const siblingPath = `${setup.rootWorktree}-coder`;
+    expect(existsSync(siblingPath)).toBe(false);
+    // Coder's branch equals the root branch
+    expect(setup.branches.coder).toBe(setup.branches.root);
+
+    // symlinkPeerSync deduplicates; only one .peer-sync symlink should exist (root)
+    mkdirSync(setup.peerSyncDir, { recursive: true });
+    symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);
+    expect(existsSync(join(setup.rootWorktree, ".peer-sync"))).toBe(true);
+
+    cleanupWorktrees(repo, "solo-feat", [{ name: "coder" }], 5, "solo");
+  });
 });
 
 // ---------------------------------------------------------------------------
