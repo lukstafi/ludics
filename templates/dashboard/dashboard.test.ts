@@ -82,7 +82,12 @@ describe("style.css contains pending-action-badge class", () => {
   });
 
   test("pending-action-badge uses amber/yellow color", () => {
-    // The badge should use amber-ish color (245, 158, 11) per proposal
-    expect(style).toContain("rgba(245, 158, 11");
+    // The badge should be styled with the warning palette (amber/yellow).
+    // Style consolidation moved the rule to CSS variables (--warning / --warning-dim),
+    // so verify the rule references those rather than a specific RGB literal.
+    const ruleMatch = style.match(/\.slot-details \.pending-action-badge\s*\{[^}]*\}/);
+    expect(ruleMatch).not.toBeNull();
+    const rule = ruleMatch![0];
+    expect(rule).toContain("var(--warning");
   });
 });

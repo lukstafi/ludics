@@ -238,9 +238,13 @@ describe("generateRecentlyCompleted shape guards", () => {
   function writeCompletedTask(id: string, title: string): void {
     const tasksDir = join(harnessDir(), "tasks");
     mkdirSync(tasksDir, { recursive: true });
+    // Use a recent date so the task falls within the dashboard's 7-day window
+    const completedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const startedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const createdDate = startedAt.slice(0, 10);
     writeFileSync(
       join(tasksDir, `${id}.md`),
-      `---\nid: ${id}\ntitle: "${title}"\nstatus: done\npriority: C\ncompleted: "2026-04-10T00:00:00Z"\nstarted: "2026-04-09T00:00:00Z"\ncreated: "2026-04-09"\neffort: small\ncontext: ludics\n---\n\n# ${title}\n`,
+      `---\nid: ${id}\ntitle: "${title}"\nstatus: done\npriority: C\ncompleted: "${completedAt}"\nstarted: "${startedAt}"\ncreated: "${createdDate}"\neffort: small\ncontext: ludics\n---\n\n# ${title}\n`,
     );
   }
 
