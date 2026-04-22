@@ -120,6 +120,68 @@ describe("maybeFastForwardStagingFromUpstream", () => {
     expect(checkouts[checkouts.length - 1]![1]).toBe("some-topic");
   });
 
+  test("detached HEAD: still checks out the default branch before merging and restores the detached SHA", () => {
+    const dir = tmp("ff-checkout-");
+    const sentinelDir = tmp("ff-sentinel-");
+    mkdirSync(dir, { recursive: true });
+    const events: Array<{ type: string }> = [];
+    // Fake runGit that differentiates rev-parse by second arg, simulating a
+    // detached-HEAD state on a specific commit SHA.
+    const calls: string[][] = [];
+    const DETACHED_SHA = "abcdef1234567890abcdef1234567890abcdef12";
+    const run: RunGit = (args) => {
+      calls.push(args.slice());
+      const key = args[0] ?? "";
+      if (key === "remote") return { stdout: "origin\nupstream\n", exitCode: 0 };
+      if (key === "symbolic-ref" && args[1]?.endsWith("/origin/HEAD")) {
+        return { stdout: "refs/remotes/origin/master\n", exitCode: 0 };
+      }
+      if (key === "symbolic-ref" && args[1]?.endsWith("/upstream/HEAD")) {
+        return { stdout: "refs/remotes/upstream/master\n", exitCode: 0 };
+      }
+      if (key === "fetch") return { stdout: "", exitCode: 0 };
+      if (key === "status") return { stdout: "", exitCode: 0 };
+      if (key === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+        // Detached HEAD signal: git prints "HEAD"
+        return { stdout: "HEAD\n", exitCode: 0 };
+      }
+      if (key === "rev-parse" && args[1] === "HEAD") {
+        return { stdout: `${DETACHED_SHA}\n`, exitCode: 0 };
+      }
+      if (key === "checkout") return { stdout: "", exitCode: 0 };
+      if (key === "merge") return { stdout: "Updating aaa..bbb\nFast-forward\n", exitCode: 0 };
+      if (key === "rev-list") return { stdout: "5\n", exitCode: 0 };
+      return { stdout: "", exitCode: 0 };
+    };
+
+    const res = maybeFastForwardStagingFromUpstream(
+      [project("ocannl", dir)],
+      {
+        now: new Date(),
+        runGit: run,
+        sentinelDir,
+        emitEvent: (ev) => events.push({ type: ev.type }),
+      },
+    );
+
+    expect(res[0]!.outcome).toBe("fast-forwarded");
+    // 1. The helper MUST have checked out the default branch before merging.
+    const checkouts = calls.filter((c) => c[0] === "checkout");
+    const mergeCallIdx = calls.findIndex((c) => c[0] === "merge");
+    const checkoutBeforeMerge = calls
+      .slice(0, mergeCallIdx)
+      .filter((c) => c[0] === "checkout");
+    expect(checkoutBeforeMerge.length).toBeGreaterThanOrEqual(1);
+    expect(checkoutBeforeMerge[0]![1]).toBe("master");
+    // 2. After the merge, the helper MUST restore the detached SHA via
+    //    `git checkout --detach <sha>` — preserves the user's position.
+    expect(checkouts[checkouts.length - 1]).toEqual(["checkout", "--detach", DETACHED_SHA]);
+    // 3. Never pushes.
+    expect(calls.some((c) => c[0] === "push")).toBe(false);
+    // 4. Event was emitted for successful fast-forward.
+    expect(events).toContainEqual({ type: "staging_fast_forwarded" });
+  });
+
   test("already up-to-date is distinguished from fast-forwarded and does not emit", () => {
     const dir = tmp("ff-checkout-");
     const sentinelDir = tmp("ff-sentinel-");

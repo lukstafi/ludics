@@ -16,7 +16,9 @@ export interface AdapterConfigEntry {
 export interface ProjectConfig {
   name: string;
   repo: string;
-  /** Optional upstream repo for PR forwarding. `repo` is the working repo where agents create PRs. */
+  /** Optional upstream repo used for GitHub issue sync, briefing staging-vs-upstream
+   *  lag reporting, and the once-daily keepalive fast-forward job. PR creation targets
+   *  `repo` (the working/staging fork); forwarding staging commits upstream is manual. */
   upstream_repo?: string;
   path?: string;
   issues?: boolean;

@@ -162,8 +162,21 @@ export function maybeFastForwardStagingFromUpstream(
       continue;
     }
 
+    // Always target `branches.origin` for the merge, even on detached HEAD.
+    // currentBranch() returns null for detached HEAD — we must still check out
+    // the default branch, otherwise `git merge --ff-only upstream/<default>`
+    // would advance the detached commit while leaving `origin/<default>`
+    // unchanged, violating the acceptance criterion that the staging default
+    // branch be the thing moved forward.
     const priorBranch = currentBranch(path, opts.runGit);
-    const needCheckout = priorBranch !== null && priorBranch !== branches.origin;
+    // Capture prior HEAD SHA so we can restore a detached-HEAD checkout
+    // exactly. On a regular branch, this is only a fallback; the named branch
+    // is preferable for the restore.
+    const priorHeadSha = priorBranch === null ? (() => {
+      const r = opts.runGit(["rev-parse", "HEAD"], path);
+      return r.exitCode === 0 ? r.stdout.trim() : null;
+    })() : null;
+    const needCheckout = priorBranch !== branches.origin;
     if (needCheckout) {
       const co = opts.runGit(["checkout", branches.origin], path);
       if (co.exitCode !== 0) {
@@ -210,8 +223,13 @@ export function maybeFastForwardStagingFromUpstream(
         touchSentinel(sentinel, opts.now);
       }
     } finally {
-      if (needCheckout && priorBranch) {
-        opts.runGit(["checkout", priorBranch], path);
+      if (needCheckout) {
+        if (priorBranch) {
+          opts.runGit(["checkout", priorBranch], path);
+        } else if (priorHeadSha) {
+          // Restore detached-HEAD state at the exact prior commit.
+          opts.runGit(["checkout", "--detach", priorHeadSha], path);
+        }
       }
     }
   }
