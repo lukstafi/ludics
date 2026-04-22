@@ -148,7 +148,7 @@ function templateRoot(): string {
 
 export function resolveTemplatePath(
   phase: Phase,
-  mode: "duo" | "pair",
+  mode: "duo" | "pair" | "solo",
   role?: "coder" | "reviewer",
   hasUpstream?: boolean,
 ): string {

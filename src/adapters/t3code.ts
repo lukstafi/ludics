@@ -59,7 +59,7 @@ interface ParsedAgentToken {
 }
 
 interface ParsedOrchestrationArgs {
-  mode: "pair";
+  mode: "duo" | "pair" | "solo";
   config: Partial<OrchestrationConfig>;
   agents: ParsedAgentToken[];
   /** Explicit coder model override from --coder-model flag. */
@@ -1068,7 +1068,9 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
       }));
       removeOrchestrationState(ctx.slot, ctx.harnessDir);
     } else if (threadIds.length > 0) {
-      // Non-orchestrated single-thread sessions: defer thread deletion only
+      // Non-orchestrated single-thread sessions: defer thread deletion only.
+      // `mode` is a placeholder here (no orchestration state exists); value is never
+      // consulted for mode dispatch because the cleanup entry has no agents.
       recordDeferredCleanup({
         timestamp: new Date().toISOString(),
         projectDir: "",

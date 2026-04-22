@@ -50,7 +50,7 @@ interface TmuxSlotState {
   ttydPids: Record<string, number>; // agent name → ttyd PID
   orchestration?: {
     stateFile: string;
-    mode: "duo" | "pair";
+    mode: "duo" | "pair" | "solo";
     pid?: number;
   };
 }

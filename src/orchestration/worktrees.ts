@@ -170,7 +170,7 @@ export function createWorktrees(
   agents: Array<{ name: string }>,
   mainBranch: string = defaultMainBranch(projectDir),
   slot?: number,
-  mode: "duo" | "pair" = "duo",
+  mode: "duo" | "pair" | "solo" = "duo",
 ): WorktreeSetup {
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));
@@ -253,7 +253,7 @@ export function cleanupWorktrees(
   taskId: string,
   agents: Array<{ name: string }>,
   slot?: number,
-  mode: "duo" | "pair" = "duo",
+  mode: "duo" | "pair" | "solo" = "duo",
 ): void {
   const featureSlug = slugify(taskId);
   const parentDir = dirname(resolve(projectDir));

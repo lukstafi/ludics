@@ -7,7 +7,7 @@ import type { Phase } from "./phases.ts";
 
 export interface OrchestrationRef {
   stateFile: string;
-  mode: "duo" | "pair";
+  mode: "duo" | "pair" | "solo";
   pid?: number;
 }
 
@@ -106,7 +106,7 @@ export interface OrchestrationConfig {
 export interface OrchestrationState {
   slot: number;
   taskId: string;
-  mode: "duo" | "pair";
+  mode: "duo" | "pair" | "solo";
   phase: Phase;
   round: number;
   mergeRound: number;
@@ -260,6 +260,14 @@ function migrateState(state: OrchestrationState, slot: number): OrchestrationSta
   }
   if (state.mode === "duo" && state.duoPeerSlot == null) {
     console.error(`ludics: slot ${slot} has legacy mode="duo" without duoPeerSlot — should be cleared and re-assigned`);
+  }
+  if (state.mode === "solo") {
+    if (state.duoPeerSlot != null) {
+      console.error(`ludics: slot ${slot} has mode="solo" with duoPeerSlot=${state.duoPeerSlot} — invariant violation (solo must be single-slot)`);
+    }
+    if (state.agents && state.agents.length !== 1) {
+      console.error(`ludics: slot ${slot} has mode="solo" with ${state.agents.length} agents — invariant violation (solo must have exactly one agent)`);
+    }
   }
   return state;
 }

@@ -55,7 +55,7 @@ function writeFile(path: string, value: string): void {
 export function initPeerSync(
   peerSyncDir: string,
   taskId: string,
-  mode: "duo" | "pair",
+  mode: "duo" | "pair" | "solo",
   projectDir: string,
   agents: OrchestrationState["agents"],
   worktrees: Record<string, string>,
