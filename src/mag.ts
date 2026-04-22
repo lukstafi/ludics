@@ -29,7 +29,7 @@ import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, pa
 import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
-import { captureLastMessage, readTmuxSlotState, tmuxPaneOutputHash } from "./adapters/tmux-adapter.ts";
+import { captureLastMessage, captureLastMessageHash, readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
 import { selectOrchestrationFlagsForTask } from "./adapters/t3code.ts";
 import YAML from "yaml";
@@ -170,7 +170,7 @@ function isMagReady(): boolean {
  */
 function clearStaleSettled(): void {
   if (!isMagSettled()) return;
-  const currentHash = tmuxPaneOutputHash(MAG_SESSION_NAME);
+  const currentHash = captureLastMessageHash(MAG_SESSION_NAME);
   if (currentHash === null) return;
   const previousHash = readPaneHash();
   if (previousHash !== null && currentHash !== previousHash) {
@@ -323,7 +323,7 @@ function maybeNudgeStalledMag(): void {
   if (isMagSettled()) return;
   if (!queuePending()) return;
 
-  const currentHash = tmuxPaneOutputHash(MAG_SESSION_NAME);
+  const currentHash = captureLastMessageHash(MAG_SESSION_NAME);
   if (currentHash === null) return; // tmux capture failed — don't treat as stall
 
   const previousHash = readPaneHash();
