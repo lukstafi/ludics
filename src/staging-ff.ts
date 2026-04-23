@@ -9,7 +9,12 @@
 
 import { existsSync, statSync, mkdirSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
-import { detectDefaultBranches, type RunGit } from "./briefing-lag.ts";
+import {
+  detectDefaultBranches,
+  expandHome,
+  hasRemote,
+  type RunGit,
+} from "./git-runner.ts";
 import type { ProjectConfig } from "./config.ts";
 
 export type FastForwardOutcome =
@@ -41,11 +46,6 @@ export interface FastForwardOptions {
   emitEvent?: (ev: { type: string; project: string; message: string }) => void;
 }
 
-function expandHome(path: string): string {
-  if (path.startsWith("~/")) return join(process.env.HOME ?? "~", path.slice(2));
-  return path;
-}
-
 function sentinelFile(dir: string, project: string): string {
   return join(dir, `last-fast-forward-${project}.epoch`);
 }
@@ -74,12 +74,6 @@ function touchSentinel(file: string, now: Date): void {
     // Sentinel writes are best-effort; a stale sentinel just means the next
     // tick may run again. Not worth aborting the tick.
   }
-}
-
-function hasRemote(cwd: string, name: string, runGit: RunGit): boolean {
-  const r = runGit(["remote"], cwd);
-  if (r.exitCode !== 0) return false;
-  return r.stdout.split(/\r?\n/).map((s) => s.trim()).includes(name);
 }
 
 function worktreeClean(cwd: string, runGit: RunGit): boolean {

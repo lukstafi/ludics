@@ -3,7 +3,8 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
-import { formatUpstreamLagSection, defaultRunGit, type RunGit } from "./briefing-lag.ts";
+import { formatUpstreamLagSection } from "./briefing-lag.ts";
+import { defaultRunGit, type RunGit } from "./git-runner.ts";
 import { maybeFastForwardStagingFromUpstream } from "./staging-ff.ts";
 import { atomicWriteFileSync, isPlainObject } from "./json.ts";
 import { listStashes } from "./slots/preempt.ts";

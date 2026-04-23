@@ -13,80 +13,19 @@
 import { existsSync, statSync } from "fs";
 import { join } from "path";
 import type { ProjectConfig } from "./config.ts";
+import { detectDefaultBranches, defaultRunGit, expandHome, hasRemote, type RunGit } from "./git-runner.ts";
 
-export interface RunGitResult {
-  stdout: string;
-  exitCode: number;
-}
-
-/** A minimal git runner: takes argv and a cwd, returns stdout + exit code. */
-export type RunGit = (args: string[], cwd: string) => RunGitResult;
+// Re-exports so existing importers of briefing-lag's public surface keep
+// working.
+export { detectDefaultBranches, defaultRunGit };
+export type { RunGit };
+export type { RunGitResult } from "./git-runner.ts";
 
 export interface FormatLagOptions {
   now: Date;
   runGit: RunGit;
   /** If set, treat `.git/FETCH_HEAD` mtime older than this many seconds as stale. Default 6h. */
   fetchStaleSeconds?: number;
-}
-
-interface DetectedBranches {
-  origin: string | null;
-  upstream: string | null;
-}
-
-function expandHome(path: string): string {
-  if (path.startsWith("~/")) return join(process.env.HOME ?? "~", path.slice(2));
-  return path;
-}
-
-/**
- * Detect the default branch name for each of origin and upstream.
- *
- * Primary path: `git symbolic-ref refs/remotes/<remote>/HEAD`. This ref exists
- * when the repo was cloned (git creates it automatically) or when the user has
- * explicitly run `git remote set-head <remote> -a`.
- *
- * Fallback: for manually-added remotes (`git remote add upstream … && git
- * fetch upstream`), git does NOT create `refs/remotes/upstream/HEAD`, so the
- * primary path returns null. Probe the two overwhelmingly common default
- * branches — `main` then `master` — via `git rev-parse --verify`. This is
- * local-only (no network round-trip) and covers the realistic cases without
- * asking users to know about `git remote set-head`.
- *
- * If neither the symbolic ref nor a `main`/`master` ref is present, return
- * null; the caller surfaces a "could not detect default branch" note so the
- * user can either set the symbolic ref or rename the branch.
- */
-export function detectDefaultBranches(cwd: string, runGit: RunGit): DetectedBranches {
-  const read = (remote: string): string | null => {
-    // Primary: symbolic-ref (present on clones and after `git remote set-head -a`)
-    const primary = runGit(["symbolic-ref", `refs/remotes/${remote}/HEAD`], cwd);
-    if (primary.exitCode === 0) {
-      const line = primary.stdout.trim();
-      const prefix = `refs/remotes/${remote}/`;
-      if (line.startsWith(prefix)) {
-        const name = line.slice(prefix.length);
-        if (name) return name;
-      }
-    }
-    // Fallback: probe main then master locally. Ordering matters — newer
-    // projects default to `main`; legacy projects use `master`.
-    for (const candidate of ["main", "master"]) {
-      const verify = runGit(
-        ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${candidate}`],
-        cwd,
-      );
-      if (verify.exitCode === 0 && verify.stdout.trim() !== "") return candidate;
-    }
-    return null;
-  };
-  return { origin: read("origin"), upstream: read("upstream") };
-}
-
-function hasRemote(cwd: string, name: string, runGit: RunGit): boolean {
-  const r = runGit(["remote"], cwd);
-  if (r.exitCode !== 0) return false;
-  return r.stdout.split(/\r?\n/).map((s) => s.trim()).includes(name);
 }
 
 /**
@@ -188,11 +127,3 @@ export function formatUpstreamLagSection(
   return blocks.join("\n");
 }
 
-/** Production git runner — wraps Bun.spawnSync. */
-export const defaultRunGit: RunGit = (args, cwd) => {
-  const res = Bun.spawnSync({ cmd: ["git", "-C", cwd, ...args] });
-  return {
-    stdout: res.stdout ? new TextDecoder().decode(res.stdout) : "",
-    exitCode: res.exitCode ?? -1,
-  };
-};
