@@ -177,7 +177,7 @@ export function startDashboardServer(
           return new Response(`Bad Request: status must be ${VALID_CLEAR_STATUSES.join(", ")}`, { status: 400 });
         }
         try {
-          slotClear(parseInt(slotParam, 10), status);
+          await slotClear(parseInt(slotParam, 10), status);
           lastGenerated = 0; // force regeneration on next data request
           return new Response("OK", { status: 200 });
         } catch (e) {
@@ -269,7 +269,7 @@ export function startDashboardServer(
           // in the ready queue at its old priority (race with auto-assign).
           pendingPriorityWrite?.();
 
-          slotClear(slotNum, CLEAR_STATUS_READY);
+          await slotClear(slotNum, CLEAR_STATUS_READY);
 
           lastGenerated = 0;
           return new Response("OK", { status: 200 });
@@ -350,7 +350,7 @@ export function startDashboardServer(
               status: 409, headers: { "Content-Type": "application/json" },
             });
           }
-          tasksAbandon(taskParam, { source: "dashboard", scope: "task" });
+          await tasksAbandon(taskParam, { source: "dashboard", scope: "task" });
           lastGenerated = 0;
           return new Response(JSON.stringify({ status: "abandoned" }), {
             headers: { "Content-Type": "application/json" },
@@ -397,7 +397,7 @@ export function startDashboardServer(
         try {
           const resolved = resolveTaskFile(taskParam);
           if ("error" in resolved) return resolved.error;
-          tasksAbandon(taskParam, { source: "dashboard", scope: "task" });
+          await tasksAbandon(taskParam, { source: "dashboard", scope: "task" });
           lastGenerated = 0;
           return new Response(JSON.stringify({ status: "abandoned" }), {
             headers: { "Content-Type": "application/json" },

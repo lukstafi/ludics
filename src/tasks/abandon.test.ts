@@ -57,7 +57,7 @@ beforeEach(() => {
   process.env.LUDICS_HARNESS_DIR = join(TMP, "ludics-state", "harness");
 
   findSlotSpy = spyOn(slots, "findSlotForTask").mockReturnValue(null);
-  slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
+  slotClearSpy = spyOn(slots, "slotClear").mockImplementation(async () => {});
   eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
 });
 
@@ -84,7 +84,7 @@ afterEach(() => {
 });
 
 describe("tasksAbandon", () => {
-  test("abandon unslotted task — sets status to abandoned, sets completed, emits event", () => {
+  test("abandon unslotted task — sets status to abandoned, sets completed, emits event", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
@@ -92,7 +92,7 @@ describe("tasksAbandon", () => {
     writeTaskFile(tasksDir, "task-aaa", { status: "ready" });
     findSlotSpy.mockReturnValue(null);
 
-    tasksAbandon("task-aaa");
+    await tasksAbandon("task-aaa");
 
     const content = readFileSync(join(tasksDir, "task-aaa.md"), "utf-8");
     expect(content).toContain("status: abandoned");
@@ -104,7 +104,7 @@ describe("tasksAbandon", () => {
     expect(event.status).toBe("abandoned");
   });
 
-  test("abandon slotted task — calls slotClear, removes deferral flags, emits event", () => {
+  test("abandon slotted task — calls slotClear, removes deferral flags, emits event", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
@@ -116,7 +116,7 @@ describe("tasksAbandon", () => {
     });
     findSlotSpy.mockReturnValue(2);
 
-    tasksAbandon("task-bbb");
+    await tasksAbandon("task-bbb");
 
     expect(slotClearSpy).toHaveBeenCalledWith(2, "abandoned");
     const content = readFileSync(join(tasksDir, "task-bbb.md"), "utf-8");
@@ -125,7 +125,7 @@ describe("tasksAbandon", () => {
     expect(eventSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("abandon task in terminal status — throws error", () => {
+  test("abandon task in terminal status — throws error", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
@@ -134,20 +134,20 @@ describe("tasksAbandon", () => {
       writeTaskFile(tasksDir, "task-term", { status });
       eventSpy.mockClear();
 
-      expect(() => tasksAbandon("task-term")).toThrow("terminal status");
+      await expect(tasksAbandon("task-term")).rejects.toThrow("terminal status");
     }
   });
 
-  test("abandon missing task — throws error", () => {
+  test("abandon missing task — throws error", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(join(harness, "tasks"), { recursive: true });
 
     findSlotSpy.mockReturnValue(null);
 
-    expect(() => tasksAbandon("task-nonexistent")).toThrow("task not found");
+    await expect(tasksAbandon("task-nonexistent")).rejects.toThrow("task not found");
   });
 
-  test("frontmatter cleanup — deferred_launch and approved fields removed after abandon", () => {
+  test("frontmatter cleanup — deferred_launch and approved fields removed after abandon", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
@@ -159,7 +159,7 @@ describe("tasksAbandon", () => {
     });
     findSlotSpy.mockReturnValue(null);
 
-    tasksAbandon("task-ccc");
+    await tasksAbandon("task-ccc");
 
     const content = readFileSync(join(tasksDir, "task-ccc.md"), "utf-8");
     expect(content).toContain("status: abandoned");

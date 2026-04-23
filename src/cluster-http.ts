@@ -381,7 +381,7 @@ const taskMatch = pathname.match(/^\/api\/cluster\/task\/(.+)$/);
 
   switch (pathname) {
     case "/cluster/heartbeat": return handleHeartbeat(body);
-    case "/cluster/signal": return handleSignal(body);
+    case "/cluster/signal": return await handleSignal(body);
     case "/api/cluster/journal": return handlePostJournal(body);
     case "/api/cluster/event": return handlePostEvent(body);
     case "/api/cluster/orchestration-state": return handlePostOrchestrationState(body);
@@ -419,7 +419,7 @@ function handleHeartbeat(body: Record<string, unknown>): Response {
 
 // --- Signal handler (runs on controller) ---
 
-function handleSignal(body: Record<string, unknown>): Response {
+async function handleSignal(body: Record<string, unknown>): Promise<Response> {
   const taskId = String(body.taskId ?? "");
   const status = String(body.status ?? "");
   const message = String(body.message ?? "");
@@ -456,7 +456,7 @@ function handleSignal(body: Record<string, unknown>): Response {
   switch (status) {
     case "done":
       console.error(`ludics: cluster HTTP: task ${taskId} completed on ${machine}`);
-      slotClear(slot, "done");
+      await slotClear(slot, "done");
       emitEvent({
         event_type: "worker_signal_done",
         source: "cluster-http",
