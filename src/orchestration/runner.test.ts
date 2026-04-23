@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { isAgentDone, pairReviewVerdict } from "./phases.ts";
 import { updateTurnLifecycle, T3CodeTransport } from "./transport-t3code.ts";
-import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut, isWorktreeNoOp, validatePreviousPhaseArtifacts, validateAgentPrFiles, resetPrCommentsState, type PreviousPhaseContext } from "./runner.ts";
+import { refreshAgentStatuses, maybePostCodexReviewRequests, checkAndRedispatchPrComments, autoCommitAgent, autoCommitAllAgents, detectAndNudgeHungAgents, interruptAgent, applyPhaseSideEffects, verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, preparePhaseRedispatch, skipToPhase, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut, isWorktreeNoOp, validatePreviousPhaseArtifacts, validateAgentPrFiles, resetPrCommentsState, runOrchestration, type PreviousPhaseContext } from "./runner.ts";
 import { evaluateTransition } from "./phases.ts";
 import * as notify from "../notify.ts";
 import * as peerSync from "./peer-sync.ts";
@@ -3863,6 +3863,95 @@ describe("previousPhaseCtx persistence", () => {
     } finally {
       emitSpy.mockRestore();
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runOrchestration self-guard (task-72a318c3)", () => {
+  let origHarnessDir: string | undefined;
+  let harness: string;
+  let peerSyncDir: string;
+
+  beforeEach(() => {
+    const tmpDir = makeTmpDir();
+    harness = join(tmpDir, "harness");
+    peerSyncDir = join(tmpDir, "peer-sync");
+    mkdirSync(join(harness, "orchestration"), { recursive: true });
+    mkdirSync(join(harness, "t3code"), { recursive: true });
+    mkdirSync(join(peerSyncDir, "plans"), { recursive: true });
+    mkdirSync(join(peerSyncDir, "reviews"), { recursive: true });
+    origHarnessDir = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = harness;
+  });
+
+  afterEach(() => {
+    if (origHarnessDir !== undefined) process.env.LUDICS_HARNESS_DIR = origHarnessDir;
+    else delete process.env.LUDICS_HARNESS_DIR;
+  });
+
+  function stubTransport(): OrchestrationTransport {
+    // Minimal transport that would satisfy runOrchestration if called — but the
+    // self-guard fires before enterPhase, so these methods should not be hit.
+    return {
+      sendPrompt: async () => {},
+      pollOnce: async () => ({ turns: [], snapshot: null as unknown as T3Snapshot }),
+      cleanup: async () => {},
+    } as unknown as OrchestrationTransport;
+  }
+
+  test("exits early when tmux sibling state is missing", async () => {
+    const state = makeState({ slot: 3, backend: "tmux", phase: "work" }, peerSyncDir);
+    // No tmux-slot-3.json written — guard should fire immediately.
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runOrchestration(state, stubTransport());
+      const msgs = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(msgs.some((m: string) => m.includes("sibling state missing or PID mismatch"))).toBe(true);
+      expect(msgs.some((m: string) => m.includes("slot 3"))).toBe(true);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("exits early when tmux sibling state has a mismatched PID", async () => {
+    const state = makeState({ slot: 4, backend: "tmux", phase: "work" }, peerSyncDir);
+    const wrongPid = process.pid + 1;
+    writeFileSync(
+      join(harness, "orchestration", "tmux-slot-4.json"),
+      JSON.stringify({
+        orchestration: { pid: wrongPid, stateFile: "x", mode: "pair" },
+        sessionNames: { coder: "s", reviewer: "r" },
+        ttydPids: {},
+      }),
+    );
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runOrchestration(state, stubTransport());
+      const msgs = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(msgs.some((m: string) => m.includes("sibling state missing or PID mismatch"))).toBe(true);
+      expect(msgs.some((m: string) => m.includes(String(process.pid)))).toBe(true);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("exits early when t3code sibling state has a mismatched PID", async () => {
+    const state = makeState({ slot: 5, backend: "t3code", phase: "work" }, peerSyncDir);
+    const wrongPid = process.pid + 1;
+    writeFileSync(
+      join(harness, "t3code", "slot-5.json"),
+      JSON.stringify({
+        orchestration: { pid: wrongPid, stateFile: "x", mode: "pair" },
+        threads: [],
+      }),
+    );
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runOrchestration(state, stubTransport());
+      const msgs = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(msgs.some((m: string) => m.includes("sibling state missing or PID mismatch"))).toBe(true);
+    } finally {
+      errSpy.mockRestore();
     }
   });
 });

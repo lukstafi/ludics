@@ -23,6 +23,8 @@ import { notifyAgents } from "../notify.ts";
 import { clusterRole } from "../cluster.ts";
 import { autoCommitWorktree, defaultMainBranch, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
+import { readTmuxSlotState } from "../adapters/tmux-adapter.ts";
+import { readSlotState } from "../t3code/server.ts";
 
 // --- Hung agent detection constants ---
 // A "hung agent" appears to be working (lifecycle running/dispatched) but the
@@ -1502,6 +1504,22 @@ export async function runOrchestration(
   persistState(state);
 
   while (state.phase !== "done") {
+    // Self-guard: belt-and-braces defense against ownership-bookkeeping loss.
+    // If slotClear/slotAssign already reaped our sibling state (or another code
+    // path deleted it without signaling us), exit cleanly instead of continuing
+    // to corrupt orchestration/slot-<N>.json on the next persistState tick.
+    {
+      const sibling = state.backend === "t3code"
+        ? readSlotState(state.slot, harnessDir())
+        : readTmuxSlotState(state.slot, harnessDir());
+      if (!sibling || sibling.orchestration?.pid !== process.pid) {
+        console.error(
+          `ludics: runner slot ${state.slot}: sibling state missing or PID mismatch (expected ${process.pid}) — exiting`,
+        );
+        return;
+      }
+    }
+
     await enterPhase(state, transport);
     persistState(state);
 
