@@ -47,6 +47,10 @@ revise-proposal includes user feedback verbatim) are noted in each skill.
 - Only the worker's structured response returns to the orchestrator.
 - Each orchestrator parses the worker JSON for `status` plus skill-specific
   fields. The per-skill field set is documented in "Expected Worker Fields".
+- The canonical cross-skill reference for field types and
+  `required` / `conditional` / `optional` annotations is the "Field Contract
+  Reference" table in `worker-conventions.md`. Per-skill routing tables here
+  remain the source for `Used for` and `Missing-field fallback` behaviour.
 
 ## Section E — Result JSON
 
