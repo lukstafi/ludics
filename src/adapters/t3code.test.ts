@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { canReuseSlotThread, orchestratedThreadTitle, parseT3CodeAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask } from "./t3code.ts";
+import { canReuseSlotThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 import { mergeAdapterState } from "../slots/markdown.ts";
 import { emptySlotData } from "../slots/json.ts";
@@ -74,16 +74,16 @@ describe("canReuseSlotThread", () => {
   });
 });
 
-describe("parseT3CodeAdapterArgs", () => {
+describe("parseOrchestrationAdapterArgs", () => {
   test("parses classic single-thread options", () => {
-    const parsed = parseT3CodeAdapterArgs("--model gpt-5.5 --title test --runtime-mode full-access");
+    const parsed = parseOrchestrationAdapterArgs("--model gpt-5.5 --title test --runtime-mode full-access");
     expect(parsed.model).toBe("gpt-5.5");
     expect(parsed.title).toBe("test");
     expect(parsed.orchestration).toBeNull();
   });
 
   test("--duo is treated as --pair (hierarchical duo expansion happens at slot level)", () => {
-    const parsed = parseT3CodeAdapterArgs("--duo --clarify --plan");
+    const parsed = parseOrchestrationAdapterArgs("--duo --clarify --plan");
     expect(parsed.orchestration?.mode).toBe("pair");
     expect(parsed.orchestration?.config.enableClarify).toBe(true);
     expect(parsed.orchestration?.config.enablePlan).toBe(true);
@@ -94,7 +94,7 @@ describe("parseT3CodeAdapterArgs", () => {
   });
 
   test("parses pair role overrides", () => {
-    const parsed = parseT3CodeAdapterArgs("--pair --coder codex:gpt-5.6 --reviewer reviewer:claude-code:gpt-5.7");
+    const parsed = parseOrchestrationAdapterArgs("--pair --coder codex:gpt-5.6 --reviewer reviewer:claude-code:gpt-5.7");
     expect(parsed.orchestration?.mode).toBe("pair");
     expect(parsed.orchestration?.agents[0]?.role).toBe("coder");
     expect(parsed.orchestration?.agents[0]?.provider).toBe("codex");
@@ -385,10 +385,10 @@ describe("selectOrchestrationFlagsForTask — skip_plan from frontmatter", () =>
   });
 });
 
-describe("parseT3CodeAdapterArgs — --solo", () => {
+describe("parseOrchestrationAdapterArgs — --solo", () => {
   test("parses --solo with --coder into a single-agent orchestration", () => {
     // Token format: name:provider:model
-    const parsed = parseT3CodeAdapterArgs("--solo --coder coder:claude-code:claude-sonnet-4-6");
+    const parsed = parseOrchestrationAdapterArgs("--solo --coder coder:claude-code:claude-sonnet-4-6");
     expect(parsed.orchestration).not.toBeNull();
     expect(parsed.orchestration!.mode).toBe("solo");
     expect(parsed.orchestration!.agents).toHaveLength(1);
@@ -399,43 +399,43 @@ describe("parseT3CodeAdapterArgs — --solo", () => {
   });
 
   test("parses --solo --coder <provider> (bare provider) with default model", () => {
-    const parsed = parseT3CodeAdapterArgs("--solo --coder claude-code");
+    const parsed = parseOrchestrationAdapterArgs("--solo --coder claude-code");
     expect(parsed.orchestration!.mode).toBe("solo");
     expect(parsed.orchestration!.agents).toHaveLength(1);
     expect(parsed.orchestration!.agents[0]!.provider).toBe("claude-code");
   });
 
   test("--solo without --coder throws", () => {
-    expect(() => parseT3CodeAdapterArgs("--solo")).toThrow(/--solo requires --coder/);
+    expect(() => parseOrchestrationAdapterArgs("--solo")).toThrow(/--solo requires --coder/);
   });
 
   test("--solo combined with --reviewer throws", () => {
     expect(() =>
-      parseT3CodeAdapterArgs("--solo --coder claude-code --reviewer codex")
+      parseOrchestrationAdapterArgs("--solo --coder claude-code --reviewer codex")
     ).toThrow(/--solo is incompatible with --reviewer/);
   });
 
   test("--solo combined with --duo-peer-slot throws", () => {
     expect(() =>
-      parseT3CodeAdapterArgs("--solo --coder claude-code --duo-peer-slot=2")
+      parseOrchestrationAdapterArgs("--solo --coder claude-code --duo-peer-slot=2")
     ).toThrow(/--solo is incompatible with --duo-peer-slot/);
   });
 
   test("--solo combined with --reviewer-model throws (reviewer-only override)", () => {
     expect(() =>
-      parseT3CodeAdapterArgs("--solo --coder claude-code --reviewer-model gpt-5.4")
+      parseOrchestrationAdapterArgs("--solo --coder claude-code --reviewer-model gpt-5.4")
     ).toThrow(/--solo is incompatible with --reviewer-model/);
   });
 
   test("--solo combined with --reviewer-effort throws", () => {
     expect(() =>
-      parseT3CodeAdapterArgs("--solo --coder claude-code --reviewer-effort low")
+      parseOrchestrationAdapterArgs("--solo --coder claude-code --reviewer-effort low")
     ).toThrow(/--solo is incompatible with --reviewer-effort/);
   });
 
   test("--solo combined with --reviewer-thinking-effort throws", () => {
     expect(() =>
-      parseT3CodeAdapterArgs("--solo --coder claude-code --reviewer-thinking-effort low")
+      parseOrchestrationAdapterArgs("--solo --coder claude-code --reviewer-thinking-effort low")
     ).toThrow(/--solo is incompatible with --reviewer-thinking-effort/);
   });
 
@@ -443,14 +443,14 @@ describe("parseT3CodeAdapterArgs — --solo", () => {
     // --effort is a shared flag that sets both coder and reviewer effort.
     // In solo the reviewer half is discarded; this is not a reviewer-only flag
     // so it must not be rejected.
-    const parsed = parseT3CodeAdapterArgs("--solo --coder claude-code --effort high");
+    const parsed = parseOrchestrationAdapterArgs("--solo --coder claude-code --effort high");
     expect(parsed.orchestration!.mode).toBe("solo");
     expect(parsed.orchestration!.coderThinkingEffort).toBe("high");
     expect(parsed.orchestration!.reviewerThinkingEffort).toBeUndefined();
   });
 
   test("--solo accepts --coder-model and --coder-effort", () => {
-    const parsed = parseT3CodeAdapterArgs("--solo --coder claude-code --coder-model claude-opus-4-6 --coder-effort high");
+    const parsed = parseOrchestrationAdapterArgs("--solo --coder claude-code --coder-model claude-opus-4-6 --coder-effort high");
     expect(parsed.orchestration!.mode).toBe("solo");
     expect(parsed.orchestration!.coderModelOverride).toBe("claude-opus-4-6");
     expect(parsed.orchestration!.coderThinkingEffort).toBe("high");
@@ -459,7 +459,7 @@ describe("parseT3CodeAdapterArgs — --solo", () => {
   test("--solo supports --plan / --clarify config flags (orthogonal to mode)", () => {
     // Even though auto-select for tiny omits pre-work phases, explicit --solo --plan
     // is valid: config flags are orthogonal to mode.
-    const parsed = parseT3CodeAdapterArgs("--solo --coder claude-code --plan");
+    const parsed = parseOrchestrationAdapterArgs("--solo --coder claude-code --plan");
     expect(parsed.orchestration!.config.enablePlan).toBe(true);
   });
 });

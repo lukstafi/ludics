@@ -34,7 +34,7 @@ import { createWorktrees, cleanupWorktrees, symlinkPeerSync } from "../orchestra
 import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/deferred-cleanup.ts";
 import { isoNow, makeId, nowEpoch } from "../orchestration/util.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
-import { parseT3CodeAdapterArgs } from "./t3code.ts";
+import { parseOrchestrationAdapterArgs } from "./t3code.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -117,7 +117,7 @@ function agentPortRole(agent: { role?: string; name: string }, index: number): "
 }
 
 // ---------------------------------------------------------------------------
-// Workspace & feature helpers (shared with t3code adapter)
+// Workspace & feature helpers (shared across orchestration adapters)
 // ---------------------------------------------------------------------------
 
 function normalizeWorkspacePath(ctx: AdapterContext): string {
@@ -154,8 +154,8 @@ function loadConfigOrchestration(config?: LudicsFullConfig): Record<string, unkn
 }
 
 // ---------------------------------------------------------------------------
-// Agent model / effort resolution (duplicated from t3code adapter — these are
-// orchestration-generic but not yet extracted to a shared module)
+// Agent model / effort resolution (shared across orchestration adapters —
+// these are orchestration-generic but not yet extracted to a shared module)
 // ---------------------------------------------------------------------------
 
 interface ParsedAgentToken {
@@ -444,7 +444,7 @@ export async function sendPromptToAgent(
 
 async function start(ctx: AdapterContext): Promise<string> {
   const workspaceRoot = normalizeWorkspacePath(ctx);
-  const options = parseT3CodeAdapterArgs(ctx.adapterArgs);
+  const options = parseOrchestrationAdapterArgs(ctx.adapterArgs);
 
   if (!options.orchestration) {
     throw new Error(

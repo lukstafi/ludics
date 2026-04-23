@@ -335,7 +335,7 @@ See also [regression-test-per-behaviour-change](#regression-test-per-behaviour-c
 
 **Why.** Shared flags (`--effort`) and role-specific flags (`--reviewer-effort`) often assign the same underlying variable. Variable-state inference after parsing ("was `reviewerEffort` set?") silently drops role-specific flags whose value happened to equal a default or was overwritten by a subsequent shared flag. Rejection must be keyed on *which flag was provided*, with an error message naming the offending flag so the caller knows which invocation-site to fix.
 
-**Worked pattern.** `parseT3CodeAdapterArgs` in `src/adapters/t3code.ts` uses `reviewerOnlyFlag: string | null`, set to the flag name the first time a reviewer-only flag is parsed. At the mode-gate, a non-null `reviewerOnlyFlag` in solo mode produces an error like `--reviewer-effort is not accepted in solo mode`. The error text carries the flag string, not a derived concept like "reviewer override".
+**Worked pattern.** `parseOrchestrationAdapterArgs` in `src/adapters/t3code.ts` uses `reviewerOnlyFlag: string | null`, set to the flag name the first time a reviewer-only flag is parsed. At the mode-gate, a non-null `reviewerOnlyFlag` in solo mode produces an error like `--reviewer-effort is not accepted in solo mode`. The error text carries the flag string, not a derived concept like "reviewer override".
 
 See also [caller-audit-on-signature-change](#caller-audit-on-signature-change).
 
@@ -378,7 +378,7 @@ See also [regression-test-per-behaviour-change](#regression-test-per-behaviour-c
 
 ### Re-run reviewer repro
 
-**Principle.** When the reviewer files a contract bug at a specific invocation (`parseT3CodeAdapterArgs(<exact args>)`, `curl <exact URL>`, `bun run <exact script>`), the round-N+1 fix re-runs *that exact invocation* in addition to any new unit test.
+**Principle.** When the reviewer files a contract bug at a specific invocation (`parseOrchestrationAdapterArgs(<exact args>)`, `curl <exact URL>`, `bun run <exact script>`), the round-N+1 fix re-runs *that exact invocation* in addition to any new unit test.
 
 **Why.** A new unit test encodes the author's interpretation of the bug. The reviewer's repro is the contract the author might have misread. Running both closes the interpretation gap: if the unit test passes but the reviewer's repro still fails, the fix targeted the wrong thing.
 
