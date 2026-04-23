@@ -278,7 +278,7 @@ export function startDashboardServer(
         }
       }
 
-      // API: promote task priority one level (C→B→A→S)
+      // API: promote task priority one level (D→C→B→A→S)
       if (pathname === "/api/task-promote") {
         const taskParam = url.searchParams.get("task");
         if (!taskParam || !TASK_ID_RE.test(taskParam)) {
@@ -503,7 +503,7 @@ export function startDashboardServer(
           return new Response("Bad Request: title is required", { status: 400 });
         }
         const project = typeof body.project === "string" ? body.project.trim() || "personal" : "personal";
-        const priority = typeof body.priority === "string" && /^[A-CS]$/.test(body.priority) ? body.priority : "B";
+        const priority = typeof body.priority === "string" && /^[A-DS]$/.test(body.priority) ? body.priority : "C";
         const effort = typeof body.effort === "string" && ["tiny", "small", "medium", "large"].includes(body.effort) ? body.effort : "medium";
         const usesBrowser = body.usesBrowser === true;
         const taskBody = typeof body.body === "string" ? body.body.trim() : "";

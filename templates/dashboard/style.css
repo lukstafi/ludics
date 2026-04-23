@@ -32,6 +32,7 @@
     --priority-a: #e85d4a;
     --priority-b: #f5a623;
     --priority-c: #6b6560;
+    --priority-d: #c4bfbb;
 
     --empty: #6b6560;
     --interrupted: #f87171;
@@ -81,6 +82,7 @@
     --priority-a: #c9362c;
     --priority-b: #ca8a04;
     --priority-c: #a8a29e;
+    --priority-d: #d6d3d1;
 
     --empty: #a8a29e;
     --interrupted: #ef4444;
@@ -119,6 +121,7 @@
     --priority-a: #ff4040;
     --priority-b: #ffaa00;
     --priority-c: #606060;
+    --priority-d: #909090;
 
     --empty: #606060;
     --interrupted: #ff5555;
@@ -1026,6 +1029,11 @@ main {
 .priority-S {
     background-color: var(--priority-s);
     color: white;
+}
+
+.priority-D {
+    background-color: var(--priority-d);
+    color: #000;
 }
 
 /* Ready queue clickable items */
@@ -2383,6 +2391,7 @@ textarea:focus-visible {
         --priority-a: #c9362c;
         --priority-b: #ca8a04;
         --priority-c: #a8a29e;
+        --priority-d: #d6d3d1;
         --empty: #a8a29e;
         --interrupted: #ef4444;
         --border: #d6d3d1;

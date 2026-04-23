@@ -27,7 +27,7 @@ import {
   expirePendingRevises,
   expirePendingFollowupRevises,
 } from "./notify.ts";
-import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, readFrontmatterField } from "./tasks/markdown.ts";
+import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, readFrontmatterField, priorityValue } from "./tasks/markdown.ts";
 import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
@@ -1992,8 +1992,7 @@ function computeSessionProjectMatches(): string {
   for (const [, tasks] of tasksByProject) {
     tasks.sort((a, b) => {
       if (a.elaborated !== b.elaborated) return a.elaborated ? -1 : 1;
-      const pv = (p: string) => p === "A" ? 1 : p === "B" ? 2 : p === "C" ? 3 : 9;
-      return pv(a.priority) - pv(b.priority);
+      return priorityValue(a.priority) - priorityValue(b.priority);
     });
   }
 

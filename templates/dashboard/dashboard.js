@@ -528,7 +528,7 @@ async function slotActionPostpone(slotNum) {
     }
 }
 
-// Promote a ready queue task's priority one level (C→B→A→S)
+// Promote a ready queue task's priority one level (D→C→B→A→S)
 async function promoteTask(taskId) {
     const li = event.currentTarget;
     if (li.classList.contains('promoting')) return;

@@ -5,7 +5,7 @@ export interface TaskFrontmatter {
   title: string;
   project: string;
   status: string; // ready, in-progress, deferred, preempted, done, abandoned, merged, needs-confirmation
-  priority: string; // A, B, C
+  priority: string; // S, A, B, C, D (D reached only via demote/postpone)
   deadline: string | null;
   dependencies: {
     blocks: string[];
