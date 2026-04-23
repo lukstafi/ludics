@@ -15,6 +15,7 @@ detailed elaboration into the task file.
 
 Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
+<!-- section:arguments -->
 ## Arguments
 
 `$ARGUMENTS` format: `<task_id> <project_path> [<context_brief>]`
@@ -23,8 +24,10 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 - `<project_path>`: Absolute path to the project's local checkout
 - `<context_brief>`: Optional free-form context from the orchestrator (see worker-conventions.md § Broader Context)
 
+<!-- section:process -->
 ## Process
 
+<!-- section:check-duplicates -->
 ### 0. Check for duplicates
 
 - Parse `$ARGUMENTS` to extract the task ID (first word) and project path (second word).
@@ -40,6 +43,7 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
   - Run `ludics tasks merge <target> <this_task_id>` to merge
   - Report `status: "merged"` and stop
 
+<!-- section:milestone-blocking -->
 ### 0b. Milestone-aware blocking (watch tasks)
 
 For tasks with `source: watch` (README-derived), determine which **milestone
@@ -64,12 +68,14 @@ Steps:
 
 This prevents premature scheduling of tasks whose prerequisites aren't done.
 
+<!-- section:read-task -->
 ### 1. Read task file (if not already read)
 
 ```bash
 cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
 ```
 
+<!-- section:gather-context -->
 ### 2. Gather context
 
 - Read related task files (dependencies listed in frontmatter)
@@ -77,6 +83,7 @@ cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
 - Read project-specific memory: `$LUDICS_STATE_PATH/mag/memory/projects/<project>.md`
 - Identify and read relevant code files in the project repository
 
+<!-- section:cross-task-awareness -->
 ### 3. Cross-task awareness
 
 - Check for related tasks (same project, similar scope, overlapping files)
@@ -84,6 +91,7 @@ cat "$LUDICS_STATE_PATH/tasks/<task_id>.md"
 - Note if this task would conflict with or be subsumed by other work
 - Note any project-wide patterns or conventions relevant to this task
 
+<!-- section:explore-codebase -->
 ### 4. Explore codebase for context
 
 Explore the codebase to understand the current state:
@@ -114,6 +122,7 @@ Write findings as a **Tentative Design** section, clearly marked:
 - [potential issues to consider]
 ```
 
+<!-- section:surface-ambiguities -->
 ### 5. Surface ambiguities and questions
 
 Genuine ambiguities look like:
@@ -138,6 +147,7 @@ Skip questions that:
 
 If there are no genuine questions, write `## Questions\n\nNone.`
 
+<!-- section:update-task -->
 ### 6. Update task file
 
 The elaboration does NOT write acceptance criteria — those belong in the
@@ -163,11 +173,13 @@ elaborated: <today's date>
 [numbered questions about genuine ambiguities, or "None."]
 ```
 
+<!-- section:final-response -->
 ## Final Response
 
 Use the structured response format from worker-conventions.md. Emit a fenced JSON block
 as the last code block in your response:
 
+<!-- section:response-contract -->
 ### Response Contract
 
 1. `status` — string, required. Values: `"completed"`, `"merged"`, `"already-elaborated"`, `"error"`.
@@ -190,6 +202,7 @@ as the last code block in your response:
 }
 ```
 
+<!-- section:error-handling -->
 ## Error Handling
 
 - Task not found: Report `status: "error"`
