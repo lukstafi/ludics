@@ -595,6 +595,35 @@ describe("isAgentDone — stale status detection (gh-ludics-122)", () => {
     expect(evaluateTransition(state)).toBe("work");
   });
 
+  // Regression for issue #346: APPROVE on line 1 + prose body that mentions
+  // the literal token REQUEST_CHANGES must parse as approve, not as a rejection.
+  // Mirrors the slot 6 / gh-ludics-310 incident where a review of a template
+  // change discussed "REQUEST_CHANGES consequences" in prose and looped the
+  // orchestrator back to work for 5 rounds.
+  test("regression: APPROVE line 1 + REQUEST_CHANGES in prose → review transitions to update-docs (gh-ludics-346)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "gh346-"));
+    mkdirSync(join(tmpDir, "reviews"), { recursive: true });
+    const state = makePairState(tmpDir, { phaseStartedAt: Math.floor(Date.now() / 1000) - 10 });
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "idle|0|\n");
+    const baseline = statusFileFingerprint(tmpDir, "reviewer");
+
+    writeFileSync(join(tmpDir, "reviewer.status"), "review-done|0|done\n");
+    writeFileSync(
+      join(tmpDir, "reviews", "round-1-reviewer.md"),
+      "APPROVE\n\n"
+        + "All four templates now enforce the structural `## Regression Tests` "
+        + "requirement with the intended per-file accounting and "
+        + "REQUEST_CHANGES consequences.\n",
+    );
+
+    state.agentStates.reviewer.status = "review-done";
+    state.agentStates.reviewer.turnLifecycle = null;
+    state.agentStates.reviewer.dispatchStatusFingerprint = baseline;
+
+    expect(evaluateTransition(state)).toBe("update-docs");
+  });
+
   test("null lifecycle + no baseline (legacy) → trusts done status + artifact", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "gh122-"));
     mkdirSync(join(tmpDir, "reviews"), { recursive: true });
