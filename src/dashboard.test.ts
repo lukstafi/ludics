@@ -494,6 +494,93 @@ describe("taskLink / proposalLink round-trip", () => {
   });
 });
 
+describe("slots.json field shape", () => {
+  test("slot JSON exposes terminalLinks but not terminals or t3codeThreadLinks", async () => {
+    const { emptySlotData, writeSlotJson } = await import("./slots/json.ts");
+    // Non-empty slot: dashboard should still omit the legacy fields.
+    const data = {
+      ...emptySlotData(1),
+      process: "test",
+      task: "task-1",
+      terminals: "- coder: ttyd pid 1234 (alive)\n- reviewer: ttyd pid 5678 (alive)\n",
+    };
+    writeSlotJson(1, data);
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "slots.json");
+    const slots = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const slot = slots.find((s) => s.number === 1);
+    expect(slot).toBeDefined();
+    expect(slot!).toHaveProperty("terminalLinks");
+    expect(slot!).not.toHaveProperty("terminals");
+    expect(slot!).not.toHaveProperty("t3codeThreadLinks");
+  });
+
+  test("terminalLinks falls back to URL entries from slot-record Terminals when orchestration is absent", async () => {
+    const { emptySlotData, writeSlotJson } = await import("./slots/json.ts");
+    // Simulates an agent-session (agent-claude/agent-codex) slot that writes
+    // `Web: <url>` into Terminals but has no orchestration state file.
+    const data = {
+      ...emptySlotData(1),
+      process: "claude",
+      task: "task-a",
+      terminals: "- coder: tmux session 'ludics-slot-1'\n- Web: http://mac.local:7682\n",
+    };
+    writeSlotJson(1, data);
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "slots.json");
+    const slots = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const slot = slots.find((s) => s.number === 1);
+    const links = slot!.terminalLinks as Record<string, string> | null;
+    expect(links).toEqual({ Web: "http://mac.local:7682" });
+    // Status strings (no URL) must not leak through — regression guard
+    // against re-introducing the gray shadow-label path.
+    expect(links).not.toHaveProperty("coder");
+  });
+
+  test("terminalLinks stays null when slot record has only status strings", async () => {
+    const { emptySlotData, writeSlotJson } = await import("./slots/json.ts");
+    const data = {
+      ...emptySlotData(1),
+      process: "test",
+      task: "task-b",
+      terminals: "- coder: ttyd pid 9999 (alive)\n",
+    };
+    writeSlotJson(1, data);
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "slots.json");
+    const slots = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const slot = slots.find((s) => s.number === 1);
+    expect(slot!.terminalLinks).toBeNull();
+  });
+});
+
 // Note: /api/slot-resume follows the exact same pattern as /api/slot-start
 // (validate slot 1-6, spawnSync `ludics slot N resume`, return OK/error).
 // slotResume() itself is already tested in src/slots/index.test.ts.

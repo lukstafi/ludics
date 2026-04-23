@@ -56,14 +56,13 @@ interface SlotJson {
   sessionStarted: string | null;
   phase: string | null;
   round: number | null;
-  terminals: Record<string, string> | null;
   preempted: boolean;
   preemptedTask: string | null;
   hasProposal: boolean;
   proposalLink: string | null;
   prUrl: string | null;
   githubUrl: string | null;
-  t3codeThreadLinks: Record<string, string> | null;
+  terminalLinks: Record<string, string> | null;
   effort: string | null;
   liveness: "alive" | "interrupted" | null;
   machine: string | null;
@@ -143,41 +142,17 @@ function lookupTaskMetadata(taskId: string): TaskMetadata {
   }
 }
 
-// Discover running ttyd processes and map tmux session names to their URLs
-function discoverTtydUrls(): Map<string, string> {
-  const result = new Map<string, string>();
-  {
-    const proc = safeSyncOutput(["pgrep", "-fa", "ttyd"]);
-    if (!proc.ok) return result;
-    const lines = proc.stdout.split("\n");
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      // Match port: -p PORT or --port PORT or --port=PORT
-      const portMatch = line.match(/(?:-p\s+|--port[= ])(\d+)/);
-      // Match tmux session: tmux ... -t SESSION (covers attach, new-session, etc.)
-      const sessionMatch = line.match(/tmux\s+\S.*?-t\s+(\S+)/);
-      if (portMatch && sessionMatch) {
-        const port = portMatch[1]!;
-        const session = sessionMatch[1]!.replace(/^['"]|['"]$/g, "");
-        const url = getUrl(port);
-        if (url) result.set(session, url);
-      }
-    }
-  }
-  return result;
-}
-
 function lookupSlotOrchestrationLinks(
   slotNum: number,
   t3codeWebUrl: string | null,
   currentTaskId: string | null,
   machineName: string | null,
-): { prUrl: string | null; t3codeThreadLinks: Record<string, string> | null } {
+): { prUrl: string | null; terminalLinks: Record<string, string> | null } {
   const orchState = readOrchestrationState(slotNum);
-  if (!orchState) return { prUrl: null, t3codeThreadLinks: null };
+  if (!orchState) return { prUrl: null, terminalLinks: null };
   // Skip stale orchestration state from a previous task
   if (currentTaskId && orchState.taskId && orchState.taskId !== currentTaskId) {
-    return { prUrl: null, t3codeThreadLinks: null };
+    return { prUrl: null, terminalLinks: null };
   }
 
   // Extract first non-null PR URL from agent states
@@ -190,33 +165,32 @@ function lookupSlotOrchestrationLinks(
   }
 
   // Build agent links — t3code threads or tmux ttyd URLs
-  let t3codeThreadLinks: Record<string, string> | null = null;
+  let terminalLinks: Record<string, string> | null = null;
   if (orchState.backend === "tmux") {
     // Generate ttyd URLs for each agent
     const host = (machineName && clusterMachine(machineName)?.host) || machineName;
     if (host) {
-      t3codeThreadLinks = {};
+      terminalLinks = {};
       for (const agent of orchState.agents) {
         const roleIndex = agent.role === "reviewer" ? 1 : 0;
         const port = 7681 + (orchState.slot - 1) * 2 + roleIndex;
-        t3codeThreadLinks[agent.name] = `http://${host}:${port}`;
+        terminalLinks[agent.name] = `http://${host}:${port}`;
       }
     }
   } else if (t3codeWebUrl && orchState.threadIds && Object.keys(orchState.threadIds).length > 0) {
-    t3codeThreadLinks = {};
+    terminalLinks = {};
     for (const [agentName, threadId] of Object.entries(orchState.threadIds)) {
-      t3codeThreadLinks[agentName] = `${t3codeWebUrl}/${encodeURIComponent(threadId)}`;
+      terminalLinks[agentName] = `${t3codeWebUrl}/${encodeURIComponent(threadId)}`;
     }
-    if (Object.keys(t3codeThreadLinks).length === 0) t3codeThreadLinks = null;
+    if (Object.keys(terminalLinks).length === 0) terminalLinks = null;
   }
 
-  return { prUrl, t3codeThreadLinks };
+  return { prUrl, terminalLinks };
 }
 
 function generateSlots(): SlotJson[] {
   const count = slotsCount();
   const blocks = readAllSlotJson(count);
-  const ttydBySession = discoverTtydUrls();
   const result: SlotJson[] = [];
 
   // Resolve t3code web URL once for all slots
@@ -226,31 +200,6 @@ function generateSlots(): SlotJson[] {
   for (const [num, data] of blocks) {
     const process = data.process;
     const empty = !process || process === "(empty)";
-
-    // Parse terminals from slot data
-    const terminals: Record<string, string> = {};
-    if (data.terminals) {
-      for (const line of data.terminals.split("\n")) {
-        const m = line.match(/^- ([^:]+):\s*(.+)$/);
-        if (m) {
-          terminals[m[1]!.toLowerCase().replace(/ /g, "_")] = m[2]!;
-        }
-      }
-    }
-
-    // Enrich terminals: cross-reference tmux session references with discovered ttyd processes
-    for (const key of Object.keys(terminals)) {
-      const value = terminals[key]!;
-      if (!value.startsWith("http://") && !value.startsWith("https://")) {
-        // Non-URL entry — extract tmux session name and look up a ttyd URL
-        const tmuxMatch = value.match(/tmux\s+session\s+'?([^']+)'?/i)
-          || value.match(/^([^\s]+)$/); // bare session name
-        const sessionName = tmuxMatch?.[1]?.trim();
-        if (sessionName && ttydBySession.has(sessionName)) {
-          terminals[key] = ttydBySession.get(sessionName)!;
-        }
-      }
-    }
 
     const taskId = empty ? null : (data.task ?? "") || null;
 
@@ -279,11 +228,30 @@ function generateSlots(): SlotJson[] {
 
     const machineName = data.machine ?? "";
 
-    // Read orchestration state for PR URL and t3code thread links.
+    // Read orchestration state for PR URL and terminal links.
     // Only use the state if its feature matches the slot's current task
     // to avoid showing stale links from a previous task.
-    const orchLinks = empty ? { prUrl: null, t3codeThreadLinks: null }
+    const orchLinks = empty ? { prUrl: null, terminalLinks: null }
       : lookupSlotOrchestrationLinks(num, t3codeWebUrl, taskId, machineName || null);
+
+    // Fallback for adapters that don't maintain orchestration state
+    // (e.g. agent-claude/agent-codex solo sessions): parse URL-valued
+    // entries from the slot record's Terminals markdown. Status strings
+    // like "ttyd pid N (alive)" are filtered out — the URL guard keeps
+    // the shadow-label path dead.
+    let terminalLinks = orchLinks.terminalLinks;
+    if (!empty && terminalLinks == null && data.terminals) {
+      const fallback: Record<string, string> = {};
+      for (const line of data.terminals.split("\n")) {
+        const m = line.match(/^- ([^:]+):\s*(.+)$/);
+        if (!m) continue;
+        const value = m[2]!.trim();
+        if (value.startsWith("http://") || value.startsWith("https://")) {
+          fallback[m[1]!.trim()] = value;
+        }
+      }
+      if (Object.keys(fallback).length > 0) terminalLinks = fallback;
+    }
 
     // Check for preemption stash
     const stash = readStash(num);
@@ -329,14 +297,13 @@ function generateSlots(): SlotJson[] {
       sessionStarted: empty ? null : sessionStarted,
       phase: empty ? null : phase,
       round: empty ? null : round,
-      terminals: empty ? null : Object.keys(terminals).length > 0 ? terminals : null,
       preempted: stash !== null,
       preemptedTask: stash?.previousTask ?? null,
       hasProposal: slotHasProposal,
       proposalLink: slotProposalLink,
       prUrl: empty ? null : orchLinks.prUrl,
       githubUrl: empty ? null : githubUrl,
-      t3codeThreadLinks: empty ? null : orchLinks.t3codeThreadLinks,
+      terminalLinks: empty ? null : terminalLinks,
       effort: taskEffort,
       liveness,
       machine,
