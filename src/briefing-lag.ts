@@ -19,7 +19,7 @@ import { detectDefaultBranches, defaultRunGit, expandHome, hasRemote, type RunGi
 // working.
 export { detectDefaultBranches, defaultRunGit };
 export type { RunGit };
-export type { RunGitResult } from "./git-runner.ts";
+export type { DetectedBranches, RunGitResult } from "./git-runner.ts";
 
 export interface FormatLagOptions {
   now: Date;
