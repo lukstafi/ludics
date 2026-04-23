@@ -11,9 +11,11 @@ import { defaultOrchestrationConfig, initAgentRuntimeState, migrateState, type O
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+const ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
 let TEST_TMP = "";
 
-// Isolate tests from real harness state (evaluateTransition reads peer slot state via harnessDir)
+// Isolate HOME, LUDICS_CONFIG, and LUDICS_HARNESS_DIR under TEST_TMP so evaluateTransition / emitEvent
+// never read or write real harness state.
 beforeEach(() => {
   TEST_TMP = mkdtempSync(join(tmpdir(), "ludics-phases-test-"));
   process.env.HOME = TEST_TMP;
@@ -21,6 +23,8 @@ beforeEach(() => {
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, "config.yaml"), `state_repo: test/ludics-state\nstate_path: harness\n`);
   process.env.LUDICS_CONFIG = join(configDir, "config.yaml");
+  process.env.LUDICS_HARNESS_DIR = join(TEST_TMP, "harness");
+  mkdirSync(join(TEST_TMP, "harness"), { recursive: true });
 });
 
 afterEach(() => {
@@ -29,6 +33,11 @@ afterEach(() => {
     delete process.env.LUDICS_CONFIG;
   } else {
     process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+  }
+  if (ORIGINAL_HARNESS === undefined) {
+    delete process.env.LUDICS_HARNESS_DIR;
+  } else {
+    process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS;
   }
 });
 
@@ -1081,5 +1090,15 @@ describe("migrateState — solo invariants", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("harness isolation regression", () => {
+  test("LUDICS_HARNESS_DIR is set to the explicit path under TEST_TMP", () => {
+    const harness = process.env.LUDICS_HARNESS_DIR;
+    expect(harness).toBeDefined();
+    expect(harness!.startsWith(TEST_TMP)).toBe(true);
+    expect(harness).toBe(join(TEST_TMP, "harness"));
+    expect(existsSync(harness!)).toBe(true);
   });
 });

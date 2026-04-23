@@ -1,5 +1,9 @@
 // Shared test utilities for the ludics test suite.
 
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+
 /**
  * Whether this environment can bind a loopback socket.
  * Use with `describe.if(canBindSocket)(...)` to skip network tests
@@ -15,4 +19,24 @@ try {
   probe.stop(true);
 } catch {
   canBindSocket = false;
+}
+
+/** Isolate LUDICS_HARNESS_DIR to a fresh tmpdir per test; returns a getter for the current path. */
+export function withTestHarness(
+  before: (fn: () => void) => void,
+  after: (fn: () => void) => void,
+): () => string {
+  let saved: string | undefined;
+  let dir = "";
+  before(() => {
+    saved = process.env.LUDICS_HARNESS_DIR;
+    dir = mkdtempSync(join(tmpdir(), "ludics-test-harness-"));
+    process.env.LUDICS_HARNESS_DIR = dir;
+  });
+  after(() => {
+    if (saved === undefined) delete process.env.LUDICS_HARNESS_DIR;
+    else process.env.LUDICS_HARNESS_DIR = saved;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return () => dir;
 }
