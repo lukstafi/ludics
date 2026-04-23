@@ -166,7 +166,7 @@ function parseArgs(raw: string): string[] {
   }
 
   if (escaping) current += "\\";
-  if (inSingle || inDouble) throw new Error("unterminated quote in t3code adapter args");
+  if (inSingle || inDouble) throw new Error("unterminated quote in orchestration adapter args");
   pushCurrent();
   return args;
 }
@@ -179,13 +179,13 @@ function parseProviderToken(raw: string, defaultName: string, defaultModel: stri
 } {
   const parts = raw.split(":").map((part) => part.trim()).filter(Boolean);
   if (parts.length === 0) {
-    throw new Error("t3code adapter args: empty provider token");
+    throw new Error("orchestration adapter args: empty provider token");
   }
 
   if (parts.length === 1) {
     const provider = parts[0];
     if (provider !== "codex" && provider !== "claude-code") {
-      throw new Error(`t3code adapter args: unsupported provider ${provider}`);
+      throw new Error(`orchestration adapter args: unsupported provider ${provider}`);
     }
     const model = provider === "claude-code" ? DEFAULT_CLAUDE_MODEL : defaultModel;
     return { name: defaultName, provider, model, modelExplicit: false };
@@ -194,19 +194,19 @@ function parseProviderToken(raw: string, defaultName: string, defaultModel: stri
   if (parts.length === 2) {
     const [provider, model] = parts;
     if (provider !== "codex" && provider !== "claude-code") {
-      throw new Error(`t3code adapter args: unsupported provider ${provider}`);
+      throw new Error(`orchestration adapter args: unsupported provider ${provider}`);
     }
     return { name: defaultName, provider, model, modelExplicit: true };
   }
 
   const [name, provider, model] = parts;
   if (provider !== "codex" && provider !== "claude-code") {
-    throw new Error(`t3code adapter args: unsupported provider ${provider}`);
+    throw new Error(`orchestration adapter args: unsupported provider ${provider}`);
   }
   return { name, provider, model: model ?? defaultModel, modelExplicit: !!model };
 }
 
-export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
+export function parseOrchestrationAdapterArgs(raw: string): ParsedAdapterArgs {
   const args = parseArgs(raw);
   const parsed: ParsedAdapterArgs = {
     model: DEFAULT_MODEL,
@@ -247,25 +247,25 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
     const next = args[i + 1];
     switch (arg) {
       case "--model":
-        if (!next) throw new Error("t3code adapter args: --model requires a value");
+        if (!next) throw new Error("orchestration adapter args: --model requires a value");
         parsed.model = next;
         i++;
         break;
       case "--title":
-        if (!next) throw new Error("t3code adapter args: --title requires a value");
+        if (!next) throw new Error("orchestration adapter args: --title requires a value");
         parsed.title = next;
         i++;
         break;
       case "--runtime-mode":
         if (next !== "approval-required" && next !== "full-access") {
-          throw new Error("t3code adapter args: --runtime-mode must be approval-required or full-access");
+          throw new Error("orchestration adapter args: --runtime-mode must be approval-required or full-access");
         }
         parsed.runtimeMode = next;
         i++;
         break;
       case "--interaction-mode":
         if (next !== "default" && next !== "plan") {
-          throw new Error("t3code adapter args: --interaction-mode must be default or plan");
+          throw new Error("orchestration adapter args: --interaction-mode must be default or plan");
         }
         parsed.interactionMode = next;
         i++;
@@ -284,44 +284,44 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         break;
       case "--agent":
         // Legacy duo --agent flag is no longer supported; use --coder/--reviewer instead.
-        throw new Error("t3code adapter args: --agent is no longer supported (duo mode now uses --coder/--reviewer). Use --coder and --reviewer instead.");
+        throw new Error("orchestration adapter args: --agent is no longer supported (duo mode now uses --coder/--reviewer). Use --coder and --reviewer instead.");
       case "--coder":
-        if (!next) throw new Error("t3code adapter args: --coder requires provider[:model[:name]]");
+        if (!next) throw new Error("orchestration adapter args: --coder requires provider[:model[:name]]");
         coderToken = next;
         i++;
         break;
       case "--reviewer":
-        if (!next) throw new Error("t3code adapter args: --reviewer requires provider[:model[:name]]");
+        if (!next) throw new Error("orchestration adapter args: --reviewer requires provider[:model[:name]]");
         reviewerToken = next;
         i++;
         break;
       case "--coder-model":
-        if (!next) throw new Error("t3code adapter args: --coder-model requires a model ID");
+        if (!next) throw new Error("orchestration adapter args: --coder-model requires a model ID");
         coderModelOverride = next;
         i++;
         break;
       case "--reviewer-model":
-        if (!next) throw new Error("t3code adapter args: --reviewer-model requires a model ID");
+        if (!next) throw new Error("orchestration adapter args: --reviewer-model requires a model ID");
         reviewerModelOverride = next;
         if (!reviewerOnlyFlag) reviewerOnlyFlag = arg;
         i++;
         break;
       case "--coder-effort":
       case "--coder-thinking-effort":
-        if (!next) throw new Error(`t3code adapter args: ${arg} requires low|medium|high|max`);
+        if (!next) throw new Error(`orchestration adapter args: ${arg} requires low|medium|high|max`);
         coderThinkingEffort = next;
         i++;
         break;
       case "--reviewer-effort":
       case "--reviewer-thinking-effort":
-        if (!next) throw new Error(`t3code adapter args: ${arg} requires low|medium|high|max`);
+        if (!next) throw new Error(`orchestration adapter args: ${arg} requires low|medium|high|max`);
         reviewerThinkingEffort = next;
         if (!reviewerOnlyFlag) reviewerOnlyFlag = arg;
         i++;
         break;
       case "--effort":
       case "--thinking-effort":
-        if (!next) throw new Error(`t3code adapter args: ${arg} requires low|medium|high|max`);
+        if (!next) throw new Error(`orchestration adapter args: ${arg} requires low|medium|high|max`);
         coderThinkingEffort = next;
         reviewerThinkingEffort = next;
         i++;
@@ -345,43 +345,43 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         orchestrationConfig.useMagTailoring = true;
         break;
       case "--poll-interval":
-        if (!next) throw new Error("t3code adapter args: --poll-interval requires seconds");
+        if (!next) throw new Error("orchestration adapter args: --poll-interval requires seconds");
         orchestrationConfig.pollInterval = parseInt(next, 10);
         i++;
         break;
       case "--learning-interval":
-        if (!next) throw new Error("t3code adapter args: --learning-interval requires seconds");
+        if (!next) throw new Error("orchestration adapter args: --learning-interval requires seconds");
         orchestrationConfig.learningInterval = parseInt(next, 10);
         i++;
         break;
       case "--learning-gap":
-        if (!next) throw new Error("t3code adapter args: --learning-gap requires rounds");
+        if (!next) throw new Error("orchestration adapter args: --learning-gap requires rounds");
         orchestrationConfig.learningProductiveRoundsGap = parseInt(next, 10);
         i++;
         break;
       case "--work-timeout": {
-        if (!next) throw new Error("t3code adapter args: --work-timeout requires seconds");
+        if (!next) throw new Error("orchestration adapter args: --work-timeout requires seconds");
         const workSecs = parseInt(next, 10);
-        if (isNaN(workSecs)) throw new Error(`t3code adapter args: --work-timeout requires a valid number, got "${next}"`);
+        if (isNaN(workSecs)) throw new Error(`orchestration adapter args: --work-timeout requires a valid number, got "${next}"`);
         orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, work: workSecs };
         i++;
         break;
       }
       case "--review-timeout": {
-        if (!next) throw new Error("t3code adapter args: --review-timeout requires seconds");
+        if (!next) throw new Error("orchestration adapter args: --review-timeout requires seconds");
         const reviewSecs = parseInt(next, 10);
-        if (isNaN(reviewSecs)) throw new Error(`t3code adapter args: --review-timeout requires a valid number, got "${next}"`);
+        if (isNaN(reviewSecs)) throw new Error(`orchestration adapter args: --review-timeout requires a valid number, got "${next}"`);
         orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, review: reviewSecs };
         i++;
         break;
       }
       case "--phase-timeout": {
-        if (!next) throw new Error("t3code adapter args: --phase-timeout requires phase:seconds");
+        if (!next) throw new Error("orchestration adapter args: --phase-timeout requires phase:seconds");
         const sep = next.indexOf(":");
-        if (sep < 1) throw new Error("t3code adapter args: --phase-timeout format is phase:seconds");
+        if (sep < 1) throw new Error("orchestration adapter args: --phase-timeout format is phase:seconds");
         const phase = next.slice(0, sep);
         const secs = parseInt(next.slice(sep + 1), 10);
-        if (isNaN(secs)) throw new Error(`t3code adapter args: --phase-timeout invalid seconds in "${next}"`);
+        if (isNaN(secs)) throw new Error(`orchestration adapter args: --phase-timeout invalid seconds in "${next}"`);
         orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, [phase]: secs };
         i++;
         break;
@@ -391,11 +391,11 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
         if (arg.startsWith("--duo-peer-slot=")) {
           const val = arg.slice("--duo-peer-slot=".length);
           const n = parseInt(val, 10);
-          if (isNaN(n) || n < 1) throw new Error(`t3code adapter args: --duo-peer-slot requires a positive integer, got "${val}"`);
+          if (isNaN(n) || n < 1) throw new Error(`orchestration adapter args: --duo-peer-slot requires a positive integer, got "${val}"`);
           duoPeerSlot = n;
           break;
         }
-        throw new Error(`t3code adapter args: unsupported flag ${arg}`);
+        throw new Error(`orchestration adapter args: unsupported flag ${arg}`);
     }
   }
 
@@ -403,16 +403,16 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
 
   if (mode === "solo") {
     if (!coderToken) {
-      throw new Error("t3code adapter args: --solo requires --coder provider[:model[:name]]");
+      throw new Error("orchestration adapter args: --solo requires --coder provider[:model[:name]]");
     }
     if (reviewerToken) {
-      throw new Error("t3code adapter args: --solo is incompatible with --reviewer");
+      throw new Error("orchestration adapter args: --solo is incompatible with --reviewer");
     }
     if (duoPeerSlot != null) {
-      throw new Error("t3code adapter args: --solo is incompatible with --duo-peer-slot");
+      throw new Error("orchestration adapter args: --solo is incompatible with --duo-peer-slot");
     }
     if (reviewerOnlyFlag) {
-      throw new Error(`t3code adapter args: --solo is incompatible with ${reviewerOnlyFlag} (no reviewer exists in solo mode)`);
+      throw new Error(`orchestration adapter args: --solo is incompatible with ${reviewerOnlyFlag} (no reviewer exists in solo mode)`);
     }
     const coderParsed = parseProviderToken(coderToken, "coder", parsed.model);
     parsed.orchestration = {
@@ -1000,7 +1000,7 @@ async function startOrchestratedThreads(
 async function start(ctx: AdapterContext): Promise<string> {
   const record = await ensureServer({ harnessDir: ctx.harnessDir });
   const workspaceRoot = normalizeWorkspacePath(ctx);
-  const options = parseT3CodeAdapterArgs(ctx.adapterArgs);
+  const options = parseOrchestrationAdapterArgs(ctx.adapterArgs);
 
   if (!options.orchestration) {
     return await startSingleThread(ctx, record, options, workspaceRoot);
