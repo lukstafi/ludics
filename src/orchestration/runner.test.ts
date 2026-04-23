@@ -3869,6 +3869,7 @@ describe("previousPhaseCtx persistence", () => {
 
 describe("runOrchestration self-guard (task-72a318c3)", () => {
   let origHarnessDir: string | undefined;
+  let origStartupGrace: string | undefined;
   let harness: string;
   let peerSyncDir: string;
 
@@ -3882,11 +3883,18 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
     mkdirSync(join(peerSyncDir, "reviews"), { recursive: true });
     origHarnessDir = process.env.LUDICS_HARNESS_DIR;
     process.env.LUDICS_HARNESS_DIR = harness;
+    // Disable startup grace for these unit tests — the grace window exists for
+    // the production startup race between spawn and writeTmuxSlotState, not for
+    // the reap-mid-run scenario these tests cover.
+    origStartupGrace = process.env.LUDICS_RUNNER_STARTUP_GRACE_MS;
+    process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = "0";
   });
 
   afterEach(() => {
     if (origHarnessDir !== undefined) process.env.LUDICS_HARNESS_DIR = origHarnessDir;
     else delete process.env.LUDICS_HARNESS_DIR;
+    if (origStartupGrace !== undefined) process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = origStartupGrace;
+    else delete process.env.LUDICS_RUNNER_STARTUP_GRACE_MS;
   });
 
   function stubTransport(): OrchestrationTransport {
@@ -3899,16 +3907,79 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
     } as unknown as OrchestrationTransport;
   }
 
-  test("exits early when tmux sibling state is missing", async () => {
+  test("exits after grace window when tmux sibling state is missing", async () => {
     const state = makeState({ slot: 3, backend: "tmux", phase: "work" }, peerSyncDir);
-    // No tmux-slot-3.json written — guard should fire immediately.
+    // No tmux-slot-3.json written + grace=0 → guard should fire immediately.
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
     try {
       await runOrchestration(state, stubTransport());
       const msgs = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
-      expect(msgs.some((m: string) => m.includes("sibling state missing or PID mismatch"))).toBe(true);
+      expect(msgs.some((m: string) => m.includes("sibling state missing"))).toBe(true);
       expect(msgs.some((m: string) => m.includes("slot 3"))).toBe(true);
     } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("waits for the startup grace window before exiting on missing sibling state", async () => {
+    // With grace=600ms and the file never appearing, the runner must wait
+    // roughly 600ms before logging "exiting" — not fire immediately.
+    // This is the fix for the P1 startup-race (PR #357 review): the adapter
+    // writes tmux-slot-<N>.json AFTER startOrchestrationProcess returns, so
+    // the child must tolerate a brief absence.
+    process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = "600";
+    const state = makeState({ slot: 7, backend: "tmux", phase: "work" }, peerSyncDir);
+
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    const before = Date.now();
+    try {
+      await runOrchestration(state, stubTransport());
+      const elapsed = Date.now() - before;
+      // Must have waited at least most of the grace window.
+      expect(elapsed).toBeGreaterThan(400);
+      const msgs = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(msgs.some((m: string) => m.includes("sibling state missing after"))).toBe(true);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("resumes normally when sibling state appears during the startup grace window", async () => {
+    // Grace=600ms; write the file after 150ms with our own PID. The guard
+    // must accept the file on a subsequent re-check and proceed past it.
+    // We prove "proceeded past" by observing that the "sibling state missing"
+    // log never fired. (Full loop execution after the guard is covered by
+    // other tests; here we only care the guard doesn't kill a healthy runner.)
+    process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = "600";
+    const state = makeState({ slot: 9, backend: "tmux", phase: "work" }, peerSyncDir);
+
+    const writeAfter = setTimeout(() => {
+      writeFileSync(
+        join(harness, "orchestration", "tmux-slot-9.json"),
+        JSON.stringify({
+          orchestration: { pid: process.pid, stateFile: "x", mode: "pair" },
+          sessionNames: { coder: "s", reviewer: "r" },
+          ttydPids: {},
+        }),
+      );
+    }, 150);
+
+    // Once past the guard, runOrchestration calls enterPhase and beyond. That
+    // touches a lot of state — simplest way to end the test deterministically
+    // is to let runOrchestration throw or hang briefly, then cancel.
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    const runPromise = runOrchestration(state, stubTransport()).catch(() => {});
+    // Race against a 1.5s timeout — if the guard kills the runner, runPromise
+    // resolves within ~600ms with the "exiting" log. If it proceeds, it will
+    // hang or throw somewhere in enterPhase.
+    await Promise.race([runPromise, new Promise((r) => setTimeout(r, 1500))]);
+
+    try {
+      const msgs = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(msgs.some((m: string) => m.includes("slot 9") && m.includes("sibling state missing"))).toBe(false);
+      expect(msgs.some((m: string) => m.includes("slot 9") && m.includes("PID mismatch"))).toBe(false);
+    } finally {
+      clearTimeout(writeAfter);
       errSpy.mockRestore();
     }
   });
@@ -3928,8 +3999,34 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
     try {
       await runOrchestration(state, stubTransport());
       const msgs = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
-      expect(msgs.some((m: string) => m.includes("sibling state missing or PID mismatch"))).toBe(true);
+      expect(msgs.some((m: string) => m.includes("PID mismatch"))).toBe(true);
       expect(msgs.some((m: string) => m.includes(String(process.pid)))).toBe(true);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("PID mismatch exits immediately even during the startup grace window", async () => {
+    // Grace only covers missing-file races; a PID mismatch is a real conflict
+    // (parent always writes our own pid) and must exit without waiting.
+    process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = "60000";
+    const state = makeState({ slot: 8, backend: "tmux", phase: "work" }, peerSyncDir);
+    writeFileSync(
+      join(harness, "orchestration", "tmux-slot-8.json"),
+      JSON.stringify({
+        orchestration: { pid: process.pid + 1, stateFile: "x", mode: "pair" },
+        sessionNames: { coder: "s", reviewer: "r" },
+        ttydPids: {},
+      }),
+    );
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    const before = Date.now();
+    try {
+      await runOrchestration(state, stubTransport());
+      const elapsed = Date.now() - before;
+      expect(elapsed).toBeLessThan(1000); // definitely did not wait 60s
+      const msgs = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(msgs.some((m: string) => m.includes("PID mismatch"))).toBe(true);
     } finally {
       errSpy.mockRestore();
     }
@@ -3949,7 +4046,7 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
     try {
       await runOrchestration(state, stubTransport());
       const msgs = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
-      expect(msgs.some((m: string) => m.includes("sibling state missing or PID mismatch"))).toBe(true);
+      expect(msgs.some((m: string) => m.includes("PID mismatch"))).toBe(true);
     } finally {
       errSpy.mockRestore();
     }

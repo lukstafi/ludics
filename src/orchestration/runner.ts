@@ -1503,6 +1503,15 @@ export async function runOrchestration(
   }
   persistState(state);
 
+  // Startup grace for the sibling-state self-guard. The adapter writes
+  // tmux-slot-<N>.json / t3code/slot-<N>.json only AFTER
+  // startOrchestrationProcess returns (~500ms wait), so the child runner can
+  // reach its first guard check before the parent has finished bookkeeping.
+  // Only the "file missing" branch gets a grace; a PID mismatch is always a
+  // real conflict (the parent always writes our own pid) and exits immediately.
+  const runnerStartMs = Date.now();
+  const startupGraceMs = Number(process.env.LUDICS_RUNNER_STARTUP_GRACE_MS ?? "5000");
+
   while (state.phase !== "done") {
     // Self-guard: belt-and-braces defense against ownership-bookkeeping loss.
     // If slotClear/slotAssign already reaped our sibling state (or another code
@@ -1512,9 +1521,20 @@ export async function runOrchestration(
       const sibling = state.backend === "t3code"
         ? readSlotState(state.slot, harnessDir())
         : readTmuxSlotState(state.slot, harnessDir());
-      if (!sibling || sibling.orchestration?.pid !== process.pid) {
+      if (!sibling) {
+        if (Date.now() - runnerStartMs < startupGraceMs) {
+          // Parent adapter hasn't written sibling state yet — re-check.
+          await sleep(200);
+          continue;
+        }
         console.error(
-          `ludics: runner slot ${state.slot}: sibling state missing or PID mismatch (expected ${process.pid}) — exiting`,
+          `ludics: runner slot ${state.slot}: sibling state missing after ${startupGraceMs}ms grace — exiting`,
+        );
+        return;
+      }
+      if (sibling.orchestration?.pid !== process.pid) {
+        console.error(
+          `ludics: runner slot ${state.slot}: sibling PID mismatch (expected ${process.pid}, got ${sibling.orchestration?.pid}) — exiting`,
         );
         return;
       }
