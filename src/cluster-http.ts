@@ -3,7 +3,8 @@
 // Server handlers are called by dashboard-server routing.
 // Client helper is used by slots, cluster, and worker-signal modules.
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, mkdirSync } from "fs";
+import { atomicWriteFileSync, writeJsonFile } from "./json.ts";
 import { join } from "path";
 import { harnessDir, loadConfigSync, slotsCount } from "./config.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, slotDataToMarkdown } from "./slots/json.ts";
@@ -155,7 +156,7 @@ function intentFilePath(slot: number): string {
 export function recordIntent(slot: number, intent: PendingIntent): void {
   const dir = intentsDir();
   mkdirSync(dir, { recursive: true });
-  writeFileSync(intentFilePath(slot), JSON.stringify(intent) + "\n");
+  atomicWriteFileSync(intentFilePath(slot), JSON.stringify(intent) + "\n");
 }
 
 export function clearIntent(slot: number): void {
@@ -411,7 +412,7 @@ function handleHeartbeat(body: Record<string, unknown>): Response {
   const heartbeatsDir = join(process.env.HOME ?? "/tmp", `.ludics-heartbeats-${suffix}`);
   mkdirSync(heartbeatsDir, { recursive: true });
   const heartbeatFile = join(heartbeatsDir, `${node}.json`);
-  writeFileSync(heartbeatFile, JSON.stringify(body, null, 2) + "\n");
+  writeJsonFile(heartbeatFile, body);
 
   console.error(`ludics: cluster HTTP: received heartbeat from ${node}`);
   return jsonResponse(200, { ok: true, node });
@@ -604,7 +605,7 @@ function handlePostOrchestrationState(body: Record<string, unknown>): Response {
   try {
     const dir = join(harnessDir(), "orchestration");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `slot-${slot}.json`), JSON.stringify(state, null, 2) + "\n");
+    writeJsonFile(join(dir, `slot-${slot}.json`), state);
   } catch (err) {
     return jsonResponse(500, { error: String(err) });
   }

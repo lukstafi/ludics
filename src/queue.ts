@@ -1,10 +1,10 @@
 // Mag queue functions — queue-based communication with Claude Code Mag session
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, readdirSync, statSync, unlinkSync, rmdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, readdirSync, statSync, unlinkSync, rmdirSync } from "fs";
 import { join, dirname } from "path";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
-import { isPlainObject } from "./json.ts";
+import { atomicWriteFileSync, isPlainObject } from "./json.ts";
 
 function queueFile(): string {
   return join(harnessDir(), "mag", "queue.jsonl");
@@ -166,9 +166,7 @@ function readQueueLines(): string[] {
 
 function writeQueueLines(lines: string[]): void {
   const file = queueFile();
-  const tmp = file + ".tmp";
-  writeFileSync(tmp, lines.length > 0 ? lines.join("\n") + "\n" : "");
-  renameSync(tmp, file);
+  atomicWriteFileSync(file, lines.length > 0 ? lines.join("\n") + "\n" : "");
 }
 
 export function queueReinsertHead(line: string): void {
@@ -341,6 +339,6 @@ export function writeResult(requestId: string, status: string, outputFile?: stri
   if (outputFile && existsSync(outputFile)) {
     result.output = readFileSync(outputFile, "utf-8");
   }
-  writeFileSync(resultFile, JSON.stringify(result) + "\n");
+  atomicWriteFileSync(resultFile, JSON.stringify(result) + "\n");
   emitEvent({ event_type: "queue_result", source: "mag", scope: "queue", status, message: requestId });
 }

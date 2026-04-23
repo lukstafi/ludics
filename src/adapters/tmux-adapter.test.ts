@@ -217,3 +217,39 @@ describe("tmux adapter — missing orchestration error mentions --solo", () => {
     expect(thrown!.message).toContain("--pair --coder");
   });
 });
+
+describe("writeTmuxSlotState atomic write", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "ludics-tmux-slot-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("writes state readable by readTmuxSlotState and leaves no .tmp", async () => {
+    const { writeTmuxSlotState, readTmuxSlotState } = await import("./tmux-adapter.ts");
+    const state = {
+      slot: 4,
+      adapter: "tmux",
+      task: "task-xyz",
+      started: "2026-04-24T00:00:00Z",
+      mode: "solo",
+      coder: { provider: "claude-code", model: "claude-opus-4-6" },
+    } as unknown as Parameters<typeof writeTmuxSlotState>[0];
+    writeTmuxSlotState(state, tmpDir);
+    const round = readTmuxSlotState(4, tmpDir);
+    expect(round).toEqual(state);
+    const path = join(tmpDir, "orchestration", "tmux-slot-4.json");
+    expect(existsSync(path + ".tmp")).toBe(false);
+  });
+
+  test("auto-creates the orchestration directory", async () => {
+    const { writeTmuxSlotState } = await import("./tmux-adapter.ts");
+    const state = { slot: 9, adapter: "tmux" } as unknown as Parameters<typeof writeTmuxSlotState>[0];
+    writeTmuxSlotState(state, tmpDir);
+    expect(existsSync(join(tmpDir, "orchestration", "tmux-slot-9.json"))).toBe(true);
+  });
+});

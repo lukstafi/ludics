@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync, readdirSync, unlinkSync } from "fs";
 import { basename, join, resolve } from "path";
 import { loadConfigSync, harnessDir, slotsCount } from "./config.ts";
-import { isPlainObject } from "./json.ts";
+import { atomicWriteFileSync, isPlainObject, writeJsonFile } from "./json.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
@@ -343,12 +343,14 @@ function notifyPublishFile(
   };
 }
 
-function sessionConclusionStateFile(): string {
+/** @internal exported for tests only */
+export function sessionConclusionStateFile(): string {
   // Keep legacy file name for backward compatibility.
   return join(harnessDir(), "mag", "followup-notified.json");
 }
 
-function loadSessionConclusionState(): Record<string, string> {
+/** @internal exported for tests only */
+export function loadSessionConclusionState(): Record<string, string> {
   const file = sessionConclusionStateFile();
   if (!existsSync(file)) return {};
   try {
@@ -365,10 +367,11 @@ function loadSessionConclusionState(): Record<string, string> {
   }
 }
 
-function saveSessionConclusionState(state: Record<string, string>): void {
+/** @internal exported for tests only */
+export function saveSessionConclusionState(state: Record<string, string>): void {
   const file = sessionConclusionStateFile();
   mkdirSync(join(harnessDir(), "mag"), { recursive: true });
-  writeFileSync(file, JSON.stringify(state, null, 2) + "\n");
+  writeJsonFile(file, state);
 }
 
 function sessionConclusionKey(input: SessionConclusionNotificationInput): string {
@@ -629,11 +632,13 @@ export function notifyRecent(count: number = 10): void {
 
 // --- Incoming subscriber ---
 
-function subscriberStateFile(): string {
+/** @internal exported for tests only */
+export function subscriberStateFile(): string {
   return join(harnessDir(), "mag", "ntfy-subscriber.state");
 }
 
-function loadSubscriberState(): { last_id?: string; last_time?: string } {
+/** @internal exported for tests only */
+export function loadSubscriberState(): { last_id?: string; last_time?: string } {
   const file = subscriberStateFile();
   if (!existsSync(file)) return {};
   try {
@@ -650,11 +655,12 @@ function loadSubscriberState(): { last_id?: string; last_time?: string } {
   }
 }
 
-function saveSubscriberState(lastId: string): void {
+/** @internal exported for tests only */
+export function saveSubscriberState(lastId: string): void {
   const file = subscriberStateFile();
   mkdirSync(join(harnessDir(), "mag"), { recursive: true });
   const state = { last_id: lastId, last_time: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") };
-  writeFileSync(file, JSON.stringify(state) + "\n");
+  atomicWriteFileSync(file, JSON.stringify(state) + "\n");
 }
 
 // --- Pending-revise mode ---
@@ -665,7 +671,8 @@ function pendingReviseFile(taskId: string): string {
   return join(harnessDir(), "mag", `pending-revise-${taskId}`);
 }
 
-function pendingFollowupReviseFile(taskId: string, adapter: string): string {
+/** @internal exported for tests only */
+export function pendingFollowupReviseFile(taskId: string, adapter: string): string {
   return join(harnessDir(), "mag", `pending-followup-revise-${taskId}-${adapter}`);
 }
 
@@ -676,7 +683,8 @@ function setPendingRevise(taskId: string): void {
   console.log(`ludics: armed revise mode for ${taskId} — waiting for feedback message`);
 }
 
-function setPendingFollowupRevise(taskId: string, adapter: string): void {
+/** @internal exported for tests only */
+export function setPendingFollowupRevise(taskId: string, adapter: string): void {
   const file = pendingFollowupReviseFile(taskId, adapter);
   mkdirSync(join(harnessDir(), "mag"), { recursive: true });
   const payload = {
@@ -684,7 +692,7 @@ function setPendingFollowupRevise(taskId: string, adapter: string): void {
     adapter,
     created: Math.floor(Date.now() / 1000),
   };
-  writeFileSync(file, JSON.stringify(payload) + "\n");
+  atomicWriteFileSync(file, JSON.stringify(payload) + "\n");
   console.log(`ludics: armed followup revise mode for ${taskId} (${adapter}) — waiting for feedback message`);
 }
 

@@ -5,7 +5,7 @@ import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
 import { formatUpstreamLagSection, defaultRunGit, type RunGit } from "./briefing-lag.ts";
 import { maybeFastForwardStagingFromUpstream } from "./staging-ff.ts";
-import { isPlainObject } from "./json.ts";
+import { atomicWriteFileSync, isPlainObject } from "./json.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
@@ -2922,7 +2922,7 @@ export async function magStart(args: string[]): Promise<void> {
 
   // Write state file
   const started = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  writeFileSync(magStateFile(), `session=${MAG_SESSION_NAME}\nstarted=${started}\nworking_dir=${workingDir}\nstatus=starting\n`);
+  atomicWriteFileSync(magStateFile(), `session=${MAG_SESSION_NAME}\nstarted=${started}\nworking_dir=${workingDir}\nstatus=starting\n`);
 
   // Create tmux session
   console.error(`ludics: Creating Mag tmux session '${MAG_SESSION_NAME}' in ${workingDir}`);
@@ -3029,7 +3029,7 @@ export function magStop(): void {
   if (existsSync(stateFile)) {
     const stopped = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
     const content = readFileSync(stateFile, "utf-8");
-    writeFileSync(stateFile, content + `stopped=${stopped}\n`);
+    atomicWriteFileSync(stateFile, content + `stopped=${stopped}\n`);
   }
 
   try { stateMarkDirty(); } catch { /* ignore */ }
