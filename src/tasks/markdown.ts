@@ -91,20 +91,35 @@ export function parseTaskFrontmatter(content: string): Partial<TaskFrontmatter> 
 export function readFrontmatterField(content: string, field: string): string | null {
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
   if (!fmMatch) return null;
+  const fmBlock = fmMatch[1]!;
 
   let data: unknown;
   try {
-    data = YAML.parse(fmMatch[1]!, { uniqueKeys: false });
+    data = YAML.parse(fmBlock, { uniqueKeys: false });
   } catch {
-    return null;
+    // YAML parse failed — fall back to a frontmatter-scoped line regex so an
+    // explicit `field: value` line is still readable when some other field is
+    // malformed. Body-safe because the regex only sees the extracted block.
+    return readFrontmatterFieldLineFallback(fmBlock, field);
   }
-  if (typeof data !== "object" || data == null) return null;
+  if (typeof data !== "object" || data == null) {
+    return readFrontmatterFieldLineFallback(fmBlock, field);
+  }
 
   const value = (data as Record<string, unknown>)[field];
   if (value == null) return null;
   const str = String(value);
   if (!str || str.toLowerCase() === "null") return null;
   return str;
+}
+
+function readFrontmatterFieldLineFallback(fmBlock: string, field: string): string | null {
+  const rx = new RegExp(`^${field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*(.+)$`, "m");
+  const m = fmBlock.match(rx);
+  if (!m) return null;
+  const raw = m[1]!.trim().replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
+  if (!raw || raw.toLowerCase() === "null") return null;
+  return raw;
 }
 
 /** Return line indices of the opening and closing `---` delimiters.

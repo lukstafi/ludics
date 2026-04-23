@@ -293,6 +293,39 @@ describe("readFrontmatterField", () => {
     expect(() => readFrontmatterField(content, "project")).not.toThrow();
     expect(readFrontmatterField(content, "project")).toBeNull();
   });
+
+  test("malformed YAML: explicit status line still readable via frontmatter-scoped fallback (codex P2)", () => {
+    // Regression guard: if some other field breaks YAML parse, transitionStatus
+    // would otherwise fall back to "ready" and let guarded transitions through.
+    // Fallback is still scoped to the frontmatter block — body lines are ignored.
+    const content = [
+      "---",
+      "id: task-1",
+      "status: done",
+      "dependencies: [unclosed",
+      "---",
+      "",
+      "# Title",
+      "",
+      "status: wrong",
+    ].join("\n");
+
+    expect(readFrontmatterField(content, "status")).toBe("done");
+    expect(readFrontmatterField(content, "id")).toBe("task-1");
+  });
+
+  test("malformed YAML fallback strips surrounding quotes and treats literal null as missing", () => {
+    const content = [
+      "---",
+      'title: "quoted"',
+      "status: null",
+      "dependencies: [unclosed",
+      "---",
+    ].join("\n");
+
+    expect(readFrontmatterField(content, "title")).toBe("quoted");
+    expect(readFrontmatterField(content, "status")).toBeNull();
+  });
 });
 
 describe("appendToSection", () => {
