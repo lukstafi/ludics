@@ -491,16 +491,75 @@ appendFileSync(eventsFile, \`child-done \${Date.now()}\\n\`);
     expect(existsSync(lockDir)).toBe(false);
   });
 
-  test("breaks lock dir with missing owner file (half-initialized)", async () => {
+  test("breaks ownerless lock dir aged past stale threshold", async () => {
     const { withQueueLock } = await loadQueue();
     const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
     mkdirSync(lockDir);
-    // No owner file written — treat as stale to avoid deadlock.
+    // No owner file (crash between mkdir and writeFileSync). Backdate the
+    // directory mtime past the 30s threshold so breakStaleLock treats it
+    // as orphaned rather than as a freshly contended lock.
+    const aged = new Date(Date.now() - 60_000);
+    utimesSync(lockDir, aged, aged);
 
     const result = withQueueLock(() => "done");
     expect(result).toBe("done");
     expect(existsSync(lockDir)).toBe(false);
   });
+
+  test("does NOT break freshly-created ownerless lock (grace window preserves mutual exclusion)", async () => {
+    // Simulates: process A mkdir'd the lock dir but was preempted before
+    // writing the owner file. A contender must NOT break this lock; doing
+    // so lets both A and the contender enter the critical section.
+    const { withQueueLock } = await loadQueue();
+    const queueModulePath = new URL("./queue.ts", import.meta.url).pathname;
+    const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
+    const eventsFile = join(tmpDir, "grace-events.log");
+    writeFileSync(eventsFile, "");
+
+    // Plant a fresh ownerless lock (mtime = now).
+    mkdirSync(lockDir);
+
+    const childFile = join(tmpDir, "child-grace.ts");
+    writeFileSync(childFile, `import { appendFileSync } from "fs";
+const eventsFile = process.argv[2];
+appendFileSync(eventsFile, \`child-start \${Date.now()}\\n\`);
+const { withQueueLock } = await import(${JSON.stringify(queueModulePath)});
+try {
+  withQueueLock(() => {
+    appendFileSync(eventsFile, \`child-acquired \${Date.now()}\\n\`);
+  });
+} catch (e) {
+  appendFileSync(eventsFile, \`child-error \${(e instanceof Error ? e.message : String(e))}\\n\`);
+}
+`);
+
+    const child = Bun.spawn({
+      cmd: [process.execPath, "run", childFile, eventsFile],
+      env: { ...process.env, LUDICS_HARNESS_DIR: tmpDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    // Wait 1.2s — well past several retry cycles (100ms each). A correct
+    // implementation still hasn't broken our fresh ownerless lock.
+    Bun.sleepSync(1200);
+    const midEvents = readFileSync(eventsFile, "utf-8");
+    expect(midEvents).toContain("child-start");
+    expect(midEvents).not.toContain("child-acquired");
+    expect(existsSync(lockDir)).toBe(true);  // still held
+
+    // Now simulate the grace window elapsing: backdate the lock dir mtime.
+    const aged = new Date(Date.now() - 60_000);
+    utimesSync(lockDir, aged, aged);
+
+    // Child should now break the stale lock and acquire within the remaining retry budget.
+    await child.exited;
+    expect(child.exitCode).toBe(0);
+    const finalEvents = readFileSync(eventsFile, "utf-8");
+    expect(finalEvents).toContain("child-acquired");
+    expect(finalEvents).not.toContain("child-error");
+    expect(existsSync(lockDir)).toBe(false);
+  }, 15_000);
 });
 
 describe("queueRequest holds the queue lock", () => {

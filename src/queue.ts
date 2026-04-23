@@ -17,16 +17,35 @@ const LOCK_STALE_MS = 30_000;
 function breakStaleLock(lockDir: string, ownerFile: string): boolean {
   let pid = 0;
   let ts = 0;
+  let ownerMissing = false;
   try {
     const owner = readFileSync(ownerFile, "utf-8");
     const [pidStr, tsStr] = owner.split("\n");
     pid = Number(pidStr);
     ts = Number(tsStr);
   } catch {
-    // Owner file missing or unreadable — lock dir exists without valid metadata.
-    // Treat as stale to avoid deadlock from a half-initialized lock.
+    ownerMissing = true;
+  }
+
+  if (ownerMissing) {
+    // A rightful holder may have just mkdir'd the lock dir and been preempted
+    // before writing the owner file. Breaking the lock here would violate
+    // mutual exclusion (both holder and breaker would proceed). Fall back to
+    // the lock directory's own mtime: only break once the dir itself is older
+    // than the stale threshold, so a concurrent holder has had ample time to
+    // either finish writing the owner file or crash.
+    let dirMtimeMs = 0;
+    try {
+      dirMtimeMs = statSync(lockDir).mtimeMs;
+    } catch {
+      // Dir vanished between our EEXIST and the stat — nothing to break.
+      // Signal "retry" so the outer loop attempts mkdirSync again.
+      return true;
+    }
+    if (Date.now() - dirMtimeMs <= LOCK_STALE_MS) return false;
     try { rmdirSync(lockDir); return true; } catch { return false; }
   }
+
   const ageStale = Number.isFinite(ts) && ts > 0 && (Date.now() - ts > LOCK_STALE_MS);
   let pidDead = false;
   if (Number.isFinite(pid) && pid > 0) {
