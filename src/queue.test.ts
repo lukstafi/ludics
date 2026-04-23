@@ -186,6 +186,24 @@ describe("writeResult", () => {
     expect(parsed.status).toBe("error");
     expect(parsed.output).toBeUndefined();
   });
+
+  test("leaves no .tmp sibling after writing the result", async () => {
+    const { writeResult } = await loadQueue();
+    const resultsDir = join(tmpDir, "mag", "results");
+    writeResult("req-test-tmp", "ok");
+    expect(existsSync(join(resultsDir, "req-test-tmp.json"))).toBe(true);
+    expect(existsSync(join(resultsDir, "req-test-tmp.json.tmp"))).toBe(false);
+  });
+});
+
+describe("queuePopOne leaves no .tmp sibling after atomic write", () => {
+  test("after popping, queue.jsonl has no .tmp neighbour", async () => {
+    const { queuePopOne } = await loadQueue();
+    const file = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(file, '{"id":"a"}\n{"id":"b"}\n');
+    expect(queuePopOne()).toBe('{"id":"a"}');
+    expect(existsSync(file + ".tmp")).toBe(false);
+  });
 });
 
 describe("queueList", () => {

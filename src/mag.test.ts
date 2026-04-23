@@ -673,3 +673,23 @@ describe("stale settled sentinel detection", () => {
     expect(existsSync(join(tmpDir, "settled"))).toBe(false);
   });
 });
+
+// Note: dequeueQueueHead was removed during rebase onto main — its CAS-preserving
+// role is now fulfilled by src/queue.ts:queuePopExpected, which has its own
+// coverage in src/queue.test.ts ("queuePopExpected" describe) including mismatch-
+// without-mutation, malformed-JSON head, and empty-queue cases.
+
+describe("magStateFile atomic write", () => {
+  test("writes session state via atomic tmp+rename (no .tmp leftover)", async () => {
+    // Exercise atomicWriteFileSync via json module directly since magStart
+    // requires tmux; verify the helper the production path now calls.
+    const { atomicWriteFileSync } = await import("./json.ts");
+    const dir = mkdtempSync(join(tmpdir(), "mag-state-test-"));
+    const file = join(dir, "state");
+    const body = `session=test\nstarted=2026-04-24T00:00:00Z\nworking_dir=${dir}\nstatus=starting\n`;
+    atomicWriteFileSync(file, body);
+    expect(readFileSync(file, "utf-8")).toBe(body);
+    expect(existsSync(file + ".tmp")).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
