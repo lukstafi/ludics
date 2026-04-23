@@ -206,6 +206,53 @@ describe("public_filter fixture", () => {
 });
 
 // ---------------------------------------------------------------------------
+// harness subset check — templates/harness/config.yaml ⊆ config.reference.yaml
+// ---------------------------------------------------------------------------
+
+describe("harness config subset of reference", () => {
+  const FREEFORM_CHILDREN = new Set([
+    "triggers",
+    "notifications.topics",
+    "notifications.priorities",
+  ]);
+  const WILDCARD_MAP_PATHS = new Set(["adapters"]);
+  const root = join(import.meta.dir, "..");
+
+  test("every harness key is present in config.reference.yaml", async () => {
+    const YAML = (await import("yaml")).default;
+    const harness = YAML.parse(
+      readFileSync(join(root, "templates", "harness", "config.yaml"), "utf-8"),
+    );
+    const reference = YAML.parse(
+      readFileSync(join(root, "templates", "config.reference.yaml"), "utf-8"),
+    );
+    const harnessPaths = flattenYamlPaths(
+      harness, "", FREEFORM_CHILDREN, WILDCARD_MAP_PATHS,
+    );
+    const refPaths = flattenYamlPaths(
+      reference, "", FREEFORM_CHILDREN, WILDCARD_MAP_PATHS,
+    );
+    const extras = [...harnessPaths].filter((p) => !refPaths.has(p)).sort();
+    expect(extras).toEqual([]);
+  });
+
+  test("subset check flags a fabricated extra harness key", () => {
+    const harnessObj = {
+      state_repo: "x",
+      adapters: { "agent-claude": { enabled: true, bogus_extra: 1 } },
+    };
+    const refObj = {
+      state_repo: "x",
+      adapters: { "agent-claude": { enabled: true } },
+    };
+    const hp = flattenYamlPaths(harnessObj, "", FREEFORM_CHILDREN, WILDCARD_MAP_PATHS);
+    const rp = flattenYamlPaths(refObj, "", FREEFORM_CHILDREN, WILDCARD_MAP_PATHS);
+    const extras = [...hp].filter((p) => !rp.has(p)).sort();
+    expect(extras).toEqual(["adapters.*.bogus_extra"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration test — run the full lint script
 // ---------------------------------------------------------------------------
 
@@ -221,5 +268,38 @@ describe("integration", () => {
       console.error(result.stderr.toString());
     }
     expect(result.exitCode).toBe(0);
+  });
+
+  test("lint-config-reference exits 1 when harness has an extra key", async () => {
+    const { mkdtempSync, writeFileSync, cpSync, rmSync } = await import("fs");
+    const { tmpdir } = await import("os");
+
+    const tmp = mkdtempSync(join(tmpdir(), "ludics-lint-harness-"));
+    try {
+      // Mirror the real repo layout: scripts/, src/, templates/.
+      const repoRoot = join(import.meta.dir, "..");
+      cpSync(join(repoRoot, "scripts"), join(tmp, "scripts"), { recursive: true });
+      cpSync(join(repoRoot, "src"), join(tmp, "src"), { recursive: true });
+      cpSync(join(repoRoot, "templates"), join(tmp, "templates"), { recursive: true });
+
+      // Inject an extra key into the harness config that's not in the reference.
+      const harnessFile = join(tmp, "templates", "harness", "config.yaml");
+      const original = readFileSync(harnessFile, "utf-8");
+      writeFileSync(harnessFile, original + "\nbogus_harness_only_key: true\n");
+
+      const result = spawnSync({
+        cmd: ["bun", "run", join(tmp, "scripts", "lint-config-reference.ts")],
+        cwd: tmp,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      expect(result.exitCode).toBe(1);
+      const stderr = result.stderr.toString();
+      expect(stderr).toContain("templates/harness/config.yaml has keys not in");
+      expect(stderr).toContain("bogus_harness_only_key");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
