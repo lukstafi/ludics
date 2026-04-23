@@ -1,8 +1,9 @@
 // tmux+ttyd adapter — implements the Adapter interface for tmux orchestration mode.
 // The existing src/adapters/tmux.ts holds shared tmux helpers; this file is the adapter entry point.
 
-import { existsSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { basename, join, resolve } from "path";
+import { atomicWriteFileSync } from "../json.ts";
 import { getMainRepoFromWorktree, latestMtime, resolveProjectDir, slotSessionName } from "./base.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import { MarkdownBuilder } from "./markdown.ts";
@@ -63,7 +64,7 @@ function readTmuxSlotState(slot: number, harnessDir: string): TmuxSlotState | nu
   const path = tmuxSlotPath(slot, harnessDir);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(require("fs").readFileSync(path, "utf-8")) as TmuxSlotState;
+    return JSON.parse(readFileSync(path, "utf-8")) as TmuxSlotState;
   } catch {
     return null;
   }
@@ -73,9 +74,9 @@ function writeTmuxSlotState(state: TmuxSlotState, harnessDir: string): void {
   const path = tmuxSlotPath(state.slot, harnessDir);
   const dir = join(harnessDir, "orchestration");
   if (!existsSync(dir)) {
-    require("fs").mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true });
   }
-  require("fs").writeFileSync(path, JSON.stringify(state, null, 2));
+  atomicWriteFileSync(path, JSON.stringify(state, null, 2));
 }
 
 function removeTmuxSlotState(slot: number, harnessDir: string): void {

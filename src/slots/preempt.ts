@@ -1,6 +1,7 @@
 // Preemption stash — save/restore slot state when preempting for priority tasks
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, readdirSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, unlinkSync, readdirSync } from "fs";
+import { writeJsonFile } from "../json.ts";
 import { join } from "path";
 import { harnessDir } from "../config.ts";
 
@@ -42,7 +43,7 @@ export function readStash(slotNum: number): PreemptStash | null {
 export function writeStash(stash: PreemptStash): void {
   const dir = stashDir();
   mkdirSync(dir, { recursive: true });
-  writeFileSync(stashFile(stash.slotNum), JSON.stringify(stash, null, 2) + "\n");
+  writeJsonFile(stashFile(stash.slotNum), stash);
 }
 
 export function removeStash(slotNum: number): void {
