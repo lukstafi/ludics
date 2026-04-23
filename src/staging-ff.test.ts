@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, utimesSync } from "f
 import { join } from "path";
 import { tmpdir } from "os";
 import {
-  maybeFastForwardStagingFromUpstream,
+  syncStagingMainWithUpstream,
   type FastForwardProjectResult,
 } from "./staging-ff.ts";
 import type { RunGit } from "./briefing-lag.ts";
@@ -50,11 +50,11 @@ function project(name: string, path: string, upstream = "upstream/bar"): Project
   return { name, repo: "o/foo", upstream_repo: upstream, path } as ProjectConfig;
 }
 
-describe("maybeFastForwardStagingFromUpstream", () => {
+describe("syncStagingMainWithUpstream", () => {
   test("skips projects without upstream_repo", () => {
     const sentinelDir = tmp("ff-sentinel-");
     const { run, calls } = recordingGit({});
-    const res = maybeFastForwardStagingFromUpstream(
+    const res = syncStagingMainWithUpstream(
       [{ name: "plain", repo: "o/r" } as ProjectConfig],
       { now: new Date(), runGit: run, sentinelDir },
     );
@@ -72,7 +72,7 @@ describe("maybeFastForwardStagingFromUpstream", () => {
     const recent = new Date(Date.now() - 10 * 60 * 1000);
     utimesSync(sentinel, recent, recent);
     const { run, calls } = recordingGit({});
-    const res = maybeFastForwardStagingFromUpstream(
+    const res = syncStagingMainWithUpstream(
       [project("ocannl", dir)],
       { now: new Date(), runGit: run, sentinelDir },
     );
@@ -95,7 +95,7 @@ describe("maybeFastForwardStagingFromUpstream", () => {
       "rev-list": { stdout: "0\n" },
     };
     const { run, calls } = recordingGit(handlers, defaultSymbolicRef);
-    const res = maybeFastForwardStagingFromUpstream(
+    const res = syncStagingMainWithUpstream(
       [project("ocannl", dir, "upstream/bar")],
       {
         now: new Date(),
@@ -154,7 +154,7 @@ describe("maybeFastForwardStagingFromUpstream", () => {
       return { stdout: "", exitCode: 0 };
     };
 
-    const res = maybeFastForwardStagingFromUpstream(
+    const res = syncStagingMainWithUpstream(
       [project("ocannl", dir)],
       {
         now: new Date(),
@@ -195,7 +195,7 @@ describe("maybeFastForwardStagingFromUpstream", () => {
       merge: { stdout: "Already up to date.\n" },
       "rev-list": { stdout: "0\n" },
     }, defaultSymbolicRef);
-    const res = maybeFastForwardStagingFromUpstream(
+    const res = syncStagingMainWithUpstream(
       [project("ocannl", dir)],
       { now: new Date(), runGit: run, sentinelDir, emitEvent: (ev) => events.push({ type: ev.type }) },
     );
@@ -215,7 +215,7 @@ describe("maybeFastForwardStagingFromUpstream", () => {
       fetch: { stdout: "" },
       merge: { stdout: "fatal: Not possible to fast-forward, aborting.\n", exitCode: 128 },
     }, defaultSymbolicRef);
-    const res = maybeFastForwardStagingFromUpstream(
+    const res = syncStagingMainWithUpstream(
       [project("ocannl", dir)],
       { now: new Date(), runGit: run, sentinelDir, emitEvent: (ev) => events.push({ type: ev.type }) },
     );
@@ -236,7 +236,7 @@ describe("maybeFastForwardStagingFromUpstream", () => {
       fetch: { stdout: "" },
       status: { stdout: " M path/to/file\n" }, // dirty
     }, defaultSymbolicRef);
-    const res = maybeFastForwardStagingFromUpstream(
+    const res = syncStagingMainWithUpstream(
       [project("ocannl", dir)],
       { now: new Date(), runGit: run, sentinelDir },
     );
@@ -250,7 +250,7 @@ describe("maybeFastForwardStagingFromUpstream", () => {
     const sentinelDir = tmp("ff-sentinel-");
     mkdirSync(dir, { recursive: true });
     const { run, calls } = recordingGit({ remote: { stdout: "origin\n" } });
-    const res = maybeFastForwardStagingFromUpstream(
+    const res = syncStagingMainWithUpstream(
       [project("ocannl", dir)],
       { now: new Date(), runGit: run, sentinelDir },
     );
@@ -262,11 +262,53 @@ describe("maybeFastForwardStagingFromUpstream", () => {
   test("non-existent checkout path is reported, not thrown", () => {
     const sentinelDir = tmp("ff-sentinel-");
     const { run } = recordingGit({});
-    const res = maybeFastForwardStagingFromUpstream(
+    const res = syncStagingMainWithUpstream(
       [project("ghost", "/does/not/exist/xyz-ludics-test")],
       { now: new Date(), runGit: run, sentinelDir },
     );
     expect(res[0]!.outcome).toBe("skipped-no-path");
+  });
+
+  test("default-branch detection uses ls-remote --symref after fetch (authoritative tier)", () => {
+    // Regression for task-b0d4f45b item 3: when symbolic-ref is absent (common
+    // for manually-added remotes), the fast-forward path must consult
+    // `ls-remote --symref` so non-main/master defaults (e.g. `develop`) are
+    // detected correctly. The briefing path still stays local-only.
+    const dir = tmp("ff-checkout-");
+    const sentinelDir = tmp("ff-sentinel-");
+    mkdirSync(dir, { recursive: true });
+    const calls: string[][] = [];
+    const run: RunGit = (args) => {
+      calls.push(args.slice());
+      const key = args[0] ?? "";
+      if (key === "remote") return { stdout: "origin\nupstream\n", exitCode: 0 };
+      if (key === "fetch") return { stdout: "", exitCode: 0 };
+      if (key === "status") return { stdout: "", exitCode: 0 };
+      if (key === "symbolic-ref") return { stdout: "", exitCode: 128 };
+      if (key === "ls-remote" && args[2] === "upstream") {
+        return { stdout: "ref: refs/heads/develop\tHEAD\n0123abc\tHEAD\n", exitCode: 0 };
+      }
+      if (key === "ls-remote" && args[2] === "origin") {
+        return { stdout: "ref: refs/heads/develop\tHEAD\n0123abc\tHEAD\n", exitCode: 0 };
+      }
+      if (key === "rev-parse" && args[1] === "--abbrev-ref") {
+        return { stdout: "develop\n", exitCode: 0 };
+      }
+      if (key === "merge") return { stdout: "Already up to date.\n", exitCode: 0 };
+      if (key === "rev-list") return { stdout: "0\n", exitCode: 0 };
+      return { stdout: "", exitCode: 0 };
+    };
+    const res = syncStagingMainWithUpstream(
+      [project("ocannl", dir)],
+      { now: new Date(), runGit: run, sentinelDir },
+    );
+    expect(res[0]!.outcome).toBe("already-up-to-date");
+    // ls-remote --symref was consulted (proof of authoritative path engaging).
+    expect(calls.some((c) => c[0] === "ls-remote" && c[1] === "--symref")).toBe(true);
+    // Merge target used the `develop` branch name from ls-remote output.
+    const merge = calls.find((c) => c[0] === "merge");
+    expect(merge).toBeDefined();
+    expect(merge!.includes("upstream/develop")).toBe(true);
   });
 
   test("fetch failure: records error, touches sentinel, does not attempt merge", () => {
@@ -277,7 +319,7 @@ describe("maybeFastForwardStagingFromUpstream", () => {
       remote: { stdout: "origin\nupstream\n" },
       fetch: { stdout: "fatal: unable to reach upstream\n", exitCode: 128 },
     });
-    const res: FastForwardProjectResult[] = maybeFastForwardStagingFromUpstream(
+    const res: FastForwardProjectResult[] = syncStagingMainWithUpstream(
       [project("ocannl", dir)],
       { now: new Date(), runGit: run, sentinelDir },
     );

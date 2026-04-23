@@ -3,8 +3,10 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
-import { formatUpstreamLagSection, defaultRunGit, type RunGit } from "./briefing-lag.ts";
-import { maybeFastForwardStagingFromUpstream } from "./staging-ff.ts";
+import { formatUpstreamLagSection } from "./briefing-lag.ts";
+import { defaultRunGit, type RunGit } from "./git-runner.ts";
+import { clearSentinel, readSentinelEpoch, sentinelExists, sentinelFresh, touchSentinel } from "./sentinel.ts";
+import { syncStagingMainWithUpstream } from "./staging-ff.ts";
 import { atomicWriteFileSync, isPlainObject } from "./json.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
@@ -124,16 +126,6 @@ function startupWatchdogEpochFile(): string {
   return join(magStateDir(), "startup-watchdog.epoch");
 }
 
-function readEpochFile(file: string): number | null {
-  if (!existsSync(file)) return null;
-  try {
-    const epoch = parseInt(readFileSync(file, "utf-8").trim(), 10);
-    return Number.isFinite(epoch) && epoch > 0 ? epoch : null;
-  } catch {
-    return null;
-  }
-}
-
 // --- Settled state helpers ---
 
 function settledSentinelFile(): string {
@@ -141,16 +133,15 @@ function settledSentinelFile(): string {
 }
 
 function markMagSettled(): void {
-  mkdirSync(magStateDir(), { recursive: true });
-  writeFileSync(settledSentinelFile(), String(Math.floor(Date.now() / 1000)));
+  touchSentinel(settledSentinelFile());
 }
 
 function clearMagSettled(): void {
-  try { unlinkSync(settledSentinelFile()); } catch {}
+  clearSentinel(settledSentinelFile());
 }
 
 function isMagSettled(): boolean {
-  return existsSync(settledSentinelFile());
+  return sentinelExists(settledSentinelFile());
 }
 
 /**
@@ -194,7 +185,7 @@ function isMagReady(): boolean {
 function clearStaleSettled(): void {
   if (!isMagSettled()) return;
 
-  const settledEpoch = readEpochFile(settledSentinelFile());
+  const settledEpoch = readSentinelEpoch(settledSentinelFile());
   if (settledEpoch !== null) {
     const ageMs = Date.now() - settledEpoch * 1000;
     if (ageMs < keepaliveIntervalMs() * 1.5) return;
@@ -262,28 +253,28 @@ function writePaneHash(hash: string): void {
 }
 
 function readPaneChangeEpoch(): number {
-  const epoch = readEpochFile(paneChangeEpochFile());
+  const epoch = readSentinelEpoch(paneChangeEpochFile());
   return epoch ? epoch * 1000 : Date.now();
 }
 
 function writePaneChangeEpoch(): void {
-  writeFileSync(paneChangeEpochFile(), String(Math.floor(Date.now() / 1000)));
+  touchSentinel(paneChangeEpochFile());
 }
 
 function stallNudgeCoolingDown(): boolean {
-  const lastNudge = readEpochFile(stallNudgeEpochFile());
+  const lastNudge = readSentinelEpoch(stallNudgeEpochFile());
   if (lastNudge === null) return false;
   return (Date.now() - lastNudge * 1000) < stallNudgeCooldownMs();
 }
 
 function writeStallNudgeEpoch(): void {
-  writeFileSync(stallNudgeEpochFile(), String(Math.floor(Date.now() / 1000)));
+  touchSentinel(stallNudgeEpochFile());
 }
 
 function clearStallState(): void {
   try { unlinkSync(paneHashFile()); } catch {}
-  try { unlinkSync(paneChangeEpochFile()); } catch {}
-  try { unlinkSync(stallNudgeEpochFile()); } catch {}
+  clearSentinel(paneChangeEpochFile());
+  clearSentinel(stallNudgeEpochFile());
 }
 
 // --- Queue feed and stall nudge helpers ---
@@ -396,8 +387,7 @@ function maybeNudgeStalledMag(): void {
 }
 
 function writeStopHookTimestamp(): void {
-  mkdirSync(magStateDir(), { recursive: true });
-  writeFileSync(stopHookTimestampFile(), String(Math.floor(Date.now() / 1000)));
+  touchSentinel(stopHookTimestampFile());
 }
 
 function startupWatchdogSeconds(): number {
@@ -435,18 +425,11 @@ function startupHelperStuckSeconds(): number {
 }
 
 function writeStartupWatchdogEpoch(): void {
-  mkdirSync(magStateDir(), { recursive: true });
-  writeFileSync(startupWatchdogEpochFile(), String(Math.floor(Date.now() / 1000)));
+  touchSentinel(startupWatchdogEpochFile());
 }
 
 function clearStartupWatchdogEpoch(): void {
-  const file = startupWatchdogEpochFile();
-  if (!existsSync(file)) return;
-  try {
-    unlinkSync(file);
-  } catch {
-    // Best-effort
-  }
+  clearSentinel(startupWatchdogEpochFile());
 }
 
 function startupAlertStateFile(): string {
@@ -599,10 +582,10 @@ function restartClaudeInMag(reason: string): boolean {
 }
 
 function maybeRecoverStuckStartup(): void {
-  const startupEpoch = readEpochFile(startupWatchdogEpochFile());
+  const startupEpoch = readSentinelEpoch(startupWatchdogEpochFile());
   if (!startupEpoch) return;
 
-  const lastStopHook = readEpochFile(stopHookTimestampFile());
+  const lastStopHook = readSentinelEpoch(stopHookTimestampFile());
   if (lastStopHook && lastStopHook >= startupEpoch) {
     clearStartupAlertsForEpoch(startupEpoch);
     clearStartupWatchdogEpoch();
@@ -1543,7 +1526,7 @@ async function cleanupDoneTaskThreads(): Promise<void> {
  * appears in log messages to aid debugging.
  */
 /**
- * Wrapper around maybeFastForwardStagingFromUpstream that wires up config,
+ * Wrapper around syncStagingMainWithUpstream that wires up config,
  * sentinel directory, and event emission. Guarded by clusterIsController so
  * only one machine runs git operations. Sentinel files throttle to once per
  * 24 hours per project. See src/staging-ff.ts for the core logic.
@@ -1557,7 +1540,7 @@ function runStagingFastForwardTick(): void {
     if (projects.every((p) => !p.upstream_repo)) return;
     const sentinelDir = join(harnessDir(), "mag");
     mkdirSync(sentinelDir, { recursive: true });
-    const results = maybeFastForwardStagingFromUpstream(projects, {
+    const results = syncStagingMainWithUpstream(projects, {
       now: new Date(),
       runGit: defaultRunGit,
       sentinelDir,
@@ -2085,20 +2068,11 @@ function autoProposalDebounceFile(taskId: string): string {
 }
 
 function autoProposalDebounced(taskId: string): boolean {
-  const file = autoProposalDebounceFile(taskId);
-  if (!existsSync(file)) return false;
-  try {
-    const lastEpoch = parseInt(readFileSync(file, "utf-8").trim(), 10);
-    return (Math.floor(Date.now() / 1000) - lastEpoch) < AUTO_PROPOSAL_DEBOUNCE_SECONDS;
-  } catch {
-    return false;
-  }
+  return sentinelFresh(autoProposalDebounceFile(taskId), new Date(), AUTO_PROPOSAL_DEBOUNCE_SECONDS);
 }
 
 function markAutoProposalQueued(taskId: string): void {
-  const file = autoProposalDebounceFile(taskId);
-  mkdirSync(join(magStateDir(), "auto-proposal-debounce"), { recursive: true });
-  writeFileSync(file, String(Math.floor(Date.now() / 1000)));
+  touchSentinel(autoProposalDebounceFile(taskId));
 }
 
 /** Auto-start slots that have proposals but no active session. */
