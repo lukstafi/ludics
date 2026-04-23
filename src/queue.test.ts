@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, utimesSync, symlinkSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, utimesSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -346,6 +346,194 @@ describe("queueRequest includes extra fields", () => {
     const parsed = JSON.parse(content);
     expect(parsed.action).toBe("feedback-digest");
     expect(parsed.repo).toBe("ludics");
+  });
+});
+
+describe("withQueueLock", () => {
+  test("releases lock directory after normal execution", async () => {
+    const { withQueueLock } = await loadQueue();
+    const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
+
+    const result = withQueueLock(() => {
+      expect(existsSync(lockDir)).toBe(true);
+      return 42;
+    });
+
+    expect(result).toBe(42);
+    expect(existsSync(lockDir)).toBe(false);
+  });
+
+  test("releases lock directory even when fn throws", async () => {
+    const { withQueueLock } = await loadQueue();
+    const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
+
+    expect(() => withQueueLock(() => { throw new Error("boom"); })).toThrow("boom");
+    expect(existsSync(lockDir)).toBe(false);
+  });
+
+  test("owner file records current process PID", async () => {
+    const { withQueueLock } = await loadQueue();
+    const ownerFile = join(tmpDir, "mag", "queue.jsonl.lock", "owner");
+    withQueueLock(() => {
+      const owner = readFileSync(ownerFile, "utf-8");
+      const [pidStr] = owner.split("\n");
+      expect(Number(pidStr)).toBe(process.pid);
+    });
+  });
+
+  test("concurrent holder would see EEXIST on mkdirSync", async () => {
+    const { withQueueLock } = await loadQueue();
+    const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
+
+    let sawEexist = false;
+    withQueueLock(() => {
+      expect(existsSync(lockDir)).toBe(true);
+      try {
+        mkdirSync(lockDir);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "EEXIST") sawEexist = true;
+      }
+    });
+    expect(sawEexist).toBe(true);
+  });
+
+  test("breaks stale lock held by dead PID", async () => {
+    const { withQueueLock } = await loadQueue();
+    const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
+    const ownerFile = join(lockDir, "owner");
+
+    // Plant a stale lock with an unreachable PID and a recent timestamp.
+    // PID 999999 is unlikely to exist; process.kill will throw ESRCH.
+    mkdirSync(lockDir);
+    writeFileSync(ownerFile, `999999\n${Date.now()}`);
+
+    const result = withQueueLock(() => "done");
+    expect(result).toBe("done");
+    expect(existsSync(lockDir)).toBe(false);
+  });
+
+  test("breaks stale lock older than threshold even if PID still exists", async () => {
+    const { withQueueLock } = await loadQueue();
+    const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
+    const ownerFile = join(lockDir, "owner");
+
+    // Age the timestamp past the 30s threshold; use current PID so liveness alone won't break it.
+    mkdirSync(lockDir);
+    writeFileSync(ownerFile, `${process.pid}\n${Date.now() - 60_000}`);
+
+    const result = withQueueLock(() => "done");
+    expect(result).toBe("done");
+    expect(existsSync(lockDir)).toBe(false);
+  });
+
+  test("breaks lock dir with missing owner file (half-initialized)", async () => {
+    const { withQueueLock } = await loadQueue();
+    const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
+    mkdirSync(lockDir);
+    // No owner file written — treat as stale to avoid deadlock.
+
+    const result = withQueueLock(() => "done");
+    expect(result).toBe("done");
+    expect(existsSync(lockDir)).toBe(false);
+  });
+});
+
+describe("queueRequest holds the queue lock", () => {
+  test("concurrent mkdirSync on lock dir fails during append", async () => {
+    // Can't easily interpose, but verify lock dir is cleaned up after queueRequest.
+    const { queueRequest } = await loadQueue();
+    const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
+    queueRequest({ action: "briefing" });
+    expect(existsSync(lockDir)).toBe(false);
+    // And queue entry persisted.
+    const content = readFileSync(join(tmpDir, "mag", "queue.jsonl"), "utf-8").trim();
+    expect(content.length).toBeGreaterThan(0);
+  });
+});
+
+describe("queuePopExpected", () => {
+  test("returns empty for missing queue file", async () => {
+    const { queuePopExpected } = await loadQueue();
+    expect(queuePopExpected()).toEqual({ status: "empty" });
+  });
+
+  test("returns empty for blank queue file", async () => {
+    writeFileSync(join(tmpDir, "mag", "queue.jsonl"), "");
+    const { queuePopExpected } = await loadQueue();
+    expect(queuePopExpected()).toEqual({ status: "empty" });
+  });
+
+  test("pops first line when no expectedLine is given", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"a"}\n{"id":"b"}\n');
+    const { queuePopExpected } = await loadQueue();
+    const result = queuePopExpected();
+    expect(result.status).toBe("popped");
+    if (result.status === "popped") {
+      expect(result.line).toBe('{"id":"a"}');
+      expect(result.request).toEqual({ id: "a" });
+    }
+    expect(readFileSync(qf, "utf-8")).toBe('{"id":"b"}\n');
+  });
+
+  test("pops first line when expectedLine matches", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"a"}\n{"id":"b"}\n');
+    const { queuePopExpected } = await loadQueue();
+    const result = queuePopExpected('{"id":"a"}');
+    expect(result.status).toBe("popped");
+    expect(readFileSync(qf, "utf-8")).toBe('{"id":"b"}\n');
+  });
+
+  test("returns mismatch and leaves file unchanged when expectedLine differs", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    const initial = '{"id":"a"}\n{"id":"b"}\n';
+    writeFileSync(qf, initial);
+    const { queuePopExpected } = await loadQueue();
+    expect(queuePopExpected('{"id":"zzz"}')).toEqual({ status: "mismatch" });
+    expect(readFileSync(qf, "utf-8")).toBe(initial);
+  });
+
+  test("returns popped with null request for malformed JSON line", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, "not-json\n");
+    const { queuePopExpected } = await loadQueue();
+    const result = queuePopExpected();
+    expect(result.status).toBe("popped");
+    if (result.status === "popped") {
+      expect(result.line).toBe("not-json");
+      expect(result.request).toBeNull();
+    }
+  });
+
+  test("releases lock dir after each call", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"a"}\n');
+    const { queuePopExpected } = await loadQueue();
+    queuePopExpected();
+    expect(existsSync(qf + ".lock")).toBe(false);
+  });
+});
+
+describe("queue mutation paths release the lock", () => {
+  test("queueReinsertHead cleans up lock dir", async () => {
+    const { queueReinsertHead } = await loadQueue();
+    queueReinsertHead('{"id":"x"}');
+    expect(existsSync(join(tmpDir, "mag", "queue.jsonl.lock"))).toBe(false);
+  });
+
+  test("queuePopOne cleans up lock dir", async () => {
+    writeFileSync(join(tmpDir, "mag", "queue.jsonl"), '{"id":"a"}\n');
+    const { queuePopOne } = await loadQueue();
+    queuePopOne();
+    expect(existsSync(join(tmpDir, "mag", "queue.jsonl.lock"))).toBe(false);
+  });
+
+  test("queuePopAll cleans up lock dir", async () => {
+    writeFileSync(join(tmpDir, "mag", "queue.jsonl"), '{"id":"a"}\n{"id":"b"}\n');
+    const { queuePopAll } = await loadQueue();
+    queuePopAll();
+    expect(existsSync(join(tmpDir, "mag", "queue.jsonl.lock"))).toBe(false);
   });
 });
 

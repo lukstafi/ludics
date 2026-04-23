@@ -9,7 +9,7 @@ import { isPlainObject } from "./json.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
-import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, recentResults } from "./queue.ts";
+import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, recentResults } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterMachine } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
@@ -1227,43 +1227,8 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
   console.error(`ludics: launched t3code for ${taskId} in slot ${slotNum} (${actionLabel})`);
 }
 
-type QueueDequeueResult =
-  | { status: "empty" }
-  | { status: "mismatch" }
-  | { status: "popped"; line: string; request: Record<string, unknown> | null };
-
-function queueFilePath(): string {
-  return join(harnessDir(), "mag", "queue.jsonl");
-}
-
-function dequeueQueueHead(expectedLine?: string): QueueDequeueResult {
-  const queueFile = queueFilePath();
-  if (!existsSync(queueFile)) return { status: "empty" };
-
-  const content = readFileSync(queueFile, "utf-8").trim();
-  if (!content) return { status: "empty" };
-
-  const lines = content.split("\n");
-  const first = lines[0]!;
-
-  if (expectedLine !== undefined && first !== expectedLine) {
-    return { status: "mismatch" };
-  }
-
-  writeFileSync(queueFile, lines.slice(1).join("\n") + (lines.length > 1 ? "\n" : ""));
-
-  try {
-    return { status: "popped", line: first, request: JSON.parse(first) as Record<string, unknown> };
-  } catch {
-    return { status: "popped", line: first, request: null };
-  }
-}
-
 async function queuePopSkill(): Promise<{ command: string; line: string } | null> {
-  const queueFile = join(harnessDir(), "mag", "queue.jsonl");
-  if (!existsSync(queueFile)) return null;
-
-  const popped = dequeueQueueHead();
+  const popped = queuePopExpected();
   if (popped.status !== "popped") return null;
 
   if (!popped.request) {
@@ -1443,7 +1408,7 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
 }
 
 async function drainProgrammaticQueueHead(): Promise<boolean> {
-  const queueFile = queueFilePath();
+  const queueFile = join(harnessDir(), "mag", "queue.jsonl");
 
   while (true) {
     if (!existsSync(queueFile)) return false;
@@ -1456,7 +1421,7 @@ async function drainProgrammaticQueueHead(): Promise<boolean> {
     try {
       request = JSON.parse(first) as Record<string, unknown>;
     } catch {
-      const dropped = dequeueQueueHead(first);
+      const dropped = queuePopExpected(first);
       if (dropped.status === "mismatch") continue;
       if (dropped.status === "popped") {
         console.error("ludics: mag queue-pop: invalid request in queue");
@@ -1467,7 +1432,7 @@ async function drainProgrammaticQueueHead(): Promise<boolean> {
     const command = await resolveQueueRequestCommand(request, false);
     if (command) return true;
 
-    const popped = dequeueQueueHead(first);
+    const popped = queuePopExpected(first);
     if (popped.status === "mismatch") continue;
     if (popped.status !== "popped" || !popped.request) continue;
     await resolveQueueRequestCommand(popped.request, true);
