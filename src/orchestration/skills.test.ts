@@ -939,6 +939,7 @@ describe("skills", () => {
     expect(withProposal).toContain("scope-expansion:");
     expect(withProposal).toContain("/tmp/salvage-task-xyz.patch");
     expect(withProposal).toContain("relates_to: [task-xyz]");
+    expect(withProposal).toContain("under `dependencies:`");
     expect(withProposal).toContain("scope-declaration-and-salvage");
 
     const withoutProposal = substituteTemplate(template, {

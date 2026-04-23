@@ -30,7 +30,7 @@ Write any PR URL to `{{PR_FILE}}`. Stop if `{{INTERRUPT_FILE}}` appears.
 **Salvage on rejection**: If the reviewer rejects a declared scope expansion, capture the diff before reverting so nothing useful is lost:
 
 1. `git diff -- <rejected-paths> > /tmp/salvage-{{TASK_ID}}.patch` — snapshot the rejected changes.
-2. `ludics tasks create "<short description of the deferred work>" <project> C` — create the follow-up task. Then edit the new task file's frontmatter to set `status: needs-confirmation` and `relates_to: [{{TASK_ID}}]`, and paste the captured patch + one-line justification into the task body. (Mirrors `ludics-process-suggestions` — the `ludics tasks create` CLI does not accept `--relates-to`, so the frontmatter edit is required.)
+2. `ludics tasks create "<short description of the deferred work>" <project> C` — create the follow-up task. Then edit the new task file's frontmatter to set `status: needs-confirmation` and, under the existing `dependencies:` block, replace `relates_to: []` with `relates_to: [{{TASK_ID}}]` (the field lives under `dependencies:`; a top-level `relates_to` is ignored by parsers). Paste the captured patch + one-line justification into the task body. (Mirrors `ludics-process-suggestions` — the `ludics tasks create` CLI does not accept `--relates-to`, so the frontmatter edit is required.)
 3. `git checkout -- <rejected-paths>` — revert the files in this worktree, then continue with the in-scope work. The new task flows through the existing needs-confirmation surface (dashboard + briefing).
 {{/IF}}
 
