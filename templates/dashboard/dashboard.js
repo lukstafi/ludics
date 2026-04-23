@@ -227,22 +227,11 @@ function renderSlots(slots) {
             if (slot.proposalLink) {
                 links += `<a href="${slot.proposalLink}" class="link-proposal">proposal</a>`;
             }
-            // t3code thread links — only render valid HTTP/HTTPS URLs
-            if (slot.t3codeThreadLinks) {
-                for (const [name, url] of Object.entries(slot.t3codeThreadLinks)) {
+            // Terminal links — authoritative per-role URLs from orchestration state
+            if (slot.terminalLinks) {
+                for (const [name, url] of Object.entries(slot.terminalLinks)) {
                     if (url.startsWith('http://') || url.startsWith('https://')) {
                         links += `<a href="${escapeHtml(url)}" target="_blank" class="link-t3code">${escapeHtml(name)}</a>`;
-                    }
-                }
-            }
-            // Terminal links — only render valid HTTP/HTTPS URLs as clickable links
-            if (slot.terminals) {
-                for (const [name, url] of Object.entries(slot.terminals)) {
-                    const label = escapeHtml(name.replace(/_/g, ' '));
-                    if (url.startsWith('http://') || url.startsWith('https://')) {
-                        links += `<a href="${escapeHtml(url)}" target="_blank">${label}</a>`;
-                    } else {
-                        links += `<span class="terminal-label">${label}</span>`;
                     }
                 }
             }

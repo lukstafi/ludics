@@ -494,6 +494,37 @@ describe("taskLink / proposalLink round-trip", () => {
   });
 });
 
+describe("slots.json field shape", () => {
+  test("slot JSON exposes terminalLinks but not terminals or t3codeThreadLinks", async () => {
+    const { emptySlotData, writeSlotJson } = await import("./slots/json.ts");
+    // Non-empty slot: dashboard should still omit the legacy fields.
+    const data = {
+      ...emptySlotData(1),
+      process: "test",
+      task: "task-1",
+      terminals: "- coder: ttyd pid 1234 (alive)\n- reviewer: ttyd pid 5678 (alive)\n",
+    };
+    writeSlotJson(1, data);
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "slots.json");
+    const slots = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const slot = slots.find((s) => s.number === 1);
+    expect(slot).toBeDefined();
+    expect(slot!).toHaveProperty("terminalLinks");
+    expect(slot!).not.toHaveProperty("terminals");
+    expect(slot!).not.toHaveProperty("t3codeThreadLinks");
+  });
+});
+
 // Note: /api/slot-resume follows the exact same pattern as /api/slot-start
 // (validate slot 1-6, spawnSync `ludics slot N resume`, return OK/error).
 // slotResume() itself is already tested in src/slots/index.test.ts.
