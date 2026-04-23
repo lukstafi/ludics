@@ -184,9 +184,22 @@ function isMagReady(): boolean {
 /**
  * If pane output has advanced since the settled sentinel was written,
  * Mag has resumed running (e.g. a manual turn) — clear the stale sentinel.
+ *
+ * Grace window: a freshly written sentinel is protected for
+ * `keepalive_interval * 1.5` seconds. The stop hook's own response text keeps
+ * rendering into the pane after markMagSettled(), so without this guard the
+ * next keepalive tick would see a hash change and clear the sentinel before
+ * maybeFeedMagQueue could claim it for instant delivery (gh-ludics-308).
  */
 function clearStaleSettled(): void {
   if (!isMagSettled()) return;
+
+  const settledEpoch = readEpochFile(settledSentinelFile());
+  if (settledEpoch !== null) {
+    const ageMs = Date.now() - settledEpoch * 1000;
+    if (ageMs < keepaliveIntervalMs() * 1.5) return;
+  }
+
   const currentHash = captureLastMessageHash(MAG_SESSION_NAME);
   if (currentHash === null) return;
   const previousHash = readPaneHash();
@@ -210,6 +223,14 @@ function stallThresholdMs(): number {
   const configured = Number(mag?.stall_threshold_seconds);
   if (Number.isFinite(configured) && configured > 0) return configured * 1000;
   return DEFAULT_STALL_THRESHOLD_MS;
+}
+
+function keepaliveIntervalMs(): number {
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+  const configured = Number(mag?.keepalive_interval);
+  if (Number.isFinite(configured) && configured > 0) return configured * 1000;
+  return 60_000; // matches templates/launchd and templates/systemd via triggers.ts
 }
 
 function stallNudgeCooldownMs(): number {
