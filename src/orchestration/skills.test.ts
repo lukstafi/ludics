@@ -1295,6 +1295,45 @@ describe("skills", () => {
     expect(unresolved).toEqual([]);
   });
 
+  describe("regression-test section contract (gh-ludics-310)", () => {
+    const tplDir = join(import.meta.dir, "../../skills/orchestration");
+    const read = (name: string) => readFileSync(join(tplDir, name), "utf-8");
+
+    test("pair-coder-plan.md requires a structural `## Regression Tests` section", () => {
+      const content = read("pair-coder-plan.md");
+      expect(content).toContain("## Regression Tests");
+      expect(content).toMatch(/No regression test needed/);
+      expect(content).toMatch(/REQUEST_CHANGES if it is missing/);
+      expect(content).not.toMatch(
+        /As you plan, call out the regression tests each behavior change needs/,
+      );
+    });
+
+    test("pair-coder-plan-merge.md requires preservation of the `## Regression Tests` section with per-file accounting", () => {
+      const content = read("pair-coder-plan-merge.md");
+      expect(content).toContain("## Regression Tests");
+      expect(content).toMatch(/Preserve the per-file accounting: do not deduplicate/);
+      expect(content).not.toMatch(
+        /As you plan, call out the regression tests each behavior change needs/,
+      );
+    });
+
+    test("pair-reviewer-plan-review.md checks for the structural section and preserves REQUEST_CHANGES", () => {
+      const content = read("pair-reviewer-plan-review.md");
+      expect(content).toMatch(
+        /Does the merged plan contain a top-level `?## Regression Tests`? section\?/,
+      );
+      expect(content).toContain("REQUEST_CHANGES");
+    });
+
+    test("pair-reviewer-plan.md carries the same `## Regression Tests` contract as the coder plan", () => {
+      const content = read("pair-reviewer-plan.md");
+      expect(content).toContain("## Regression Tests");
+      expect(content).toMatch(/No regression test needed/);
+      expect(content).toMatch(/plan-review step will REQUEST_CHANGES/);
+    });
+  });
+
   test("TASK_AC: extracts body of ## Acceptance Criteria with multiple bullets", async () => {
     const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
     const { join: j } = await import("path");
