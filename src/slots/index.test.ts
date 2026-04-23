@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed } from "./index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext } from "./index.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
@@ -441,14 +441,23 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     writeTask(tasksDir, "task-empty-args-1", "Empty args test");
     // slotAssign with no adapterArgs stores "null" which makeAdapterContext converts to ""
     slotAssign(1, "task-empty-args-1", "t3code");
-    // slotStart auto-fills flags then proceeds to adapter start (which fails in test env)
-    try { await slotStart(1); } catch { /* adapter startup fails in test env */ }
-    // Verify auto-filled flags were written back to slot block
+    const data = readSlotJson(1, harness);
+    const ctx = makeAdapterContext(1, data);
+
+    // (a) computes correct args
+    const result = await autoFillAdapterArgs(ctx, data);
+    expect(result).not.toBeNull();
+    expect(result!.args).toContain("--pair");
+    expect(result!.args).toContain("--coder");
+    expect(result!.args).toContain("--reviewer");
+
+    // (b) persists them — writeback via writeSlotJson round-trip
+    writeSlotJson(1, result!.updatedData, harness);
     const args = readAdapterArgsFromSlots();
     expect(args).toContain("--pair");
     expect(args).toContain("--coder");
     expect(args).toContain("--reviewer");
-  }, 15_000);
+  });
 
   test("auto-fills orchestration flags when adapterArgs is whitespace-only", async () => {
     const harness = join(TMP, "ludics-state", "harness");
@@ -459,14 +468,23 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     writeTask(tasksDir, "task-whitespace-args-1", "Whitespace args test");
     // Assign with whitespace adapterArgs — stored as-is since "   " is truthy
     slotAssign(1, "task-whitespace-args-1", "t3code", "", "", "   ");
-    // slotStart auto-fills flags then proceeds to adapter start (which fails in test env)
-    try { await slotStart(1); } catch { /* adapter startup fails in test env */ }
-    // Verify auto-filled flags were written back to slot block
+    const data = readSlotJson(1, harness);
+    const ctx = makeAdapterContext(1, data);
+
+    // (a) computes correct args
+    const result = await autoFillAdapterArgs(ctx, data);
+    expect(result).not.toBeNull();
+    expect(result!.args).toContain("--pair");
+    expect(result!.args).toContain("--coder");
+    expect(result!.args).toContain("--reviewer");
+
+    // (b) persists them
+    writeSlotJson(1, result!.updatedData, harness);
     const args = readAdapterArgsFromSlots();
     expect(args).toContain("--pair");
     expect(args).toContain("--coder");
     expect(args).toContain("--reviewer");
-  }, 15_000);
+  });
 
   test("throws when no task is assigned and adapterArgs is empty", async () => {
     // Assign with no task — slotAssign requires a task, so use slotSetMode instead
@@ -486,11 +504,21 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-medium-plan-1", "Medium plan test");
     slotAssign(1, "task-medium-plan-1", "t3code");
-    try { await slotStart(1); } catch { /* adapter startup fails in test env */ }
+    const data = readSlotJson(1, harness);
+    const ctx = makeAdapterContext(1, data);
+
+    // (a) computes correct args
+    const result = await autoFillAdapterArgs(ctx, data);
+    expect(result).not.toBeNull();
+    expect(result!.args).toContain("--plan");
+    expect(result!.args).toContain("--pair");
+
+    // (b) persists them
+    writeSlotJson(1, result!.updatedData, harness);
     const args = readAdapterArgsFromSlots();
     expect(args).toContain("--plan");
     expect(args).toContain("--pair");
-  }, 15_000);
+  });
 
   test("auto-fills medium task with skip_plan: true — omits --plan", async () => {
     const harness = join(TMP, "ludics-state", "harness");
@@ -527,13 +555,25 @@ describe("slotStart — t3code empty-args auto-fill", () => {
       "",
     ].join("\n"));
     slotAssign(1, "task-skip-plan-1", "t3code");
-    try { await slotStart(1); } catch { /* adapter startup fails in test env */ }
+    const data = readSlotJson(1, harness);
+    const ctx = makeAdapterContext(1, data);
+
+    // (a) computes correct args
+    const result = await autoFillAdapterArgs(ctx, data);
+    expect(result).not.toBeNull();
+    expect(result!.args).not.toContain("--plan");
+    expect(result!.args).toContain("--pair");
+    expect(result!.args).toContain("--coder");
+    expect(result!.args).toContain("--reviewer");
+
+    // (b) persists them
+    writeSlotJson(1, result!.updatedData, harness);
     const args = readAdapterArgsFromSlots();
     expect(args).not.toContain("--plan");
     expect(args).toContain("--pair");
     expect(args).toContain("--coder");
     expect(args).toContain("--reviewer");
-  }, 15_000);
+  });
 });
 
 describe("markSlotSetupFailed", () => {

@@ -709,7 +709,7 @@ export async function slotSetMode(slotNum: number, mode: string): Promise<void> 
   stateMarkDirty();
 }
 
-function makeAdapterContext(slotNum: number, data: SlotData): AdapterContext {
+export function makeAdapterContext(slotNum: number, data: SlotData): AdapterContext {
   let resolvedPath = data.path ?? "";
 
   // If path is empty, try to resolve from the task's project config
@@ -776,6 +776,56 @@ async function ensureRemoteMachineReachable(
   emitEvent({ event_type: `slot_${action}_queued`, source: "cli", scope: "slot", slot: slotNum, adapter, machine, message: `${action} intent recorded for ${machine}` });
 }
 
+/**
+ * Pure helper extracted from `slotStart`: computes the orchestration flags to
+ * auto-fill for an orchestrated slot whose `adapterArgs` is empty/whitespace,
+ * and returns the updated `SlotData` so the caller can persist it.
+ *
+ * Returns `null` when auto-fill does not apply (mode other than t3code/tmux,
+ * or `ctx.adapterArgs` already non-empty). Throws the same three errors as
+ * the original inline block. Does *not* call `runAdapterAction`, `t3code.start`,
+ * or `ensureServer`, and does not persist or journal — that is the caller's job.
+ */
+export async function autoFillAdapterArgs(
+  ctx: AdapterContext,
+  data: SlotData,
+): Promise<{ args: string; effort: string; updatedData: SlotData } | null> {
+  if (!(ctx.mode === "t3code" || ctx.mode === "tmux") || ctx.adapterArgs.trim()) {
+    return null;
+  }
+
+  const taskId = ctx.taskId;
+  if (!taskId) {
+    throw new Error(`slot ${ctx.slot}: ${ctx.mode} adapter requires orchestration flags but no task is assigned`);
+  }
+
+  // Read task content — on worker, fetch via HTTP; on controller, read locally
+  let content: string | null = null;
+  if (isWorkerContext()) {
+    try {
+      const { clusterGetTask } = await import("../cluster-http.ts");
+      const result = await clusterGetTask(taskId);
+      if (result.ok && typeof result.data === "string") content = result.data;
+    } catch { /* ignore */ }
+  } else {
+    const tf = taskFilePath(taskId);
+    if (existsSync(tf)) content = readFileSync(tf, "utf-8");
+  }
+  if (!content) {
+    throw new Error(`slot ${ctx.slot}: ${ctx.mode} adapter requires orchestration flags but task file not found`);
+  }
+
+  const effortMatch = content.match(/^effort:\s*(.+)/m);
+  const effort = effortMatch ? effortMatch[1]!.trim() || "small" : "small";
+  const { args: autoArgs } = selectOrchestrationFlagsForTask(content, effort);
+  if (!autoArgs.trim()) {
+    throw new Error(`slot ${ctx.slot}: selectOrchestrationFlagsForTask returned empty args for effort="${effort}"`);
+  }
+
+  const updatedData: SlotData = { ...data, adapterArgs: autoArgs };
+  return { args: autoArgs, effort, updatedData };
+}
+
 export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
   ensureSlotsDir();
   const count = slotsCount();
@@ -795,49 +845,19 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
 
   // --- LOCAL EXECUTION ONLY (worker side or local slot) ---
 
-  if ((ctx.mode === "t3code" || ctx.mode === "tmux") && !ctx.adapterArgs.trim()) {
-    // Auto-fill orchestration flags from task effort instead of throwing
-    const taskId = ctx.taskId;
-    if (!taskId) {
-      throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but no task is assigned`);
-    }
-
-    // Read task content — on worker, fetch via HTTP; on controller, read locally
-    let content: string | null = null;
-    if (isWorkerContext()) {
-      try {
-        const { clusterGetTask } = await import("../cluster-http.ts");
-        const result = await clusterGetTask(taskId);
-        if (result.ok && typeof result.data === "string") content = result.data;
-      } catch { /* ignore */ }
-    } else {
-      const tf = taskFilePath(taskId);
-      if (existsSync(tf)) content = readFileSync(tf, "utf-8");
-    }
-    if (!content) {
-      throw new Error(`slot ${slotNum}: ${ctx.mode} adapter requires orchestration flags but task file not found`);
-    }
-
-    const effortMatch = content.match(/^effort:\s*(.+)/m);
-    const effort = effortMatch ? effortMatch[1]!.trim() || "small" : "small";
-    const { args: autoArgs } = selectOrchestrationFlagsForTask(content, effort);
-    if (!autoArgs.trim()) {
-      throw new Error(`slot ${slotNum}: selectOrchestrationFlagsForTask returned empty args for effort="${effort}"`);
-    }
-
-    // Write auto-filled flags back to the slot
-    data.adapterArgs = autoArgs;
+  const autoFill = await autoFillAdapterArgs(ctx, data);
+  if (autoFill) {
+    data = autoFill.updatedData;
+    ctx.adapterArgs = autoFill.args;
     if (isWorkerContext()) {
       import("../cluster-http.ts").then(({ clusterPostSlotUpdate }) => {
-        clusterPostSlotUpdate(slotNum, { adapterArgs: autoArgs }).catch(() => {});
+        clusterPostSlotUpdate(slotNum, { adapterArgs: autoFill.args }).catch(() => {});
       }).catch(() => {});
     } else {
       writeSlotJson(slotNum, data);
     }
-    ctx.adapterArgs = autoArgs;
-
-    console.error(`ludics: slot ${slotNum}: auto-filled adapter args from task effort="${effort}": ${autoArgs}`);
-    journalAppend("slot", `Slot ${slotNum} auto-filled adapter args: ${autoArgs} (effort=${effort})`);
+    console.error(`ludics: slot ${slotNum}: auto-filled adapter args from task effort="${autoFill.effort}": ${autoFill.args}`);
+    journalAppend("slot", `Slot ${slotNum} auto-filled adapter args: ${autoFill.args} (effort=${autoFill.effort})`);
   }
 
   // Guard: check for recoverable orchestration state matching current task
