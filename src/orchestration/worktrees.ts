@@ -39,6 +39,10 @@ export const GIT_EXCLUDE_ENTRIES = [
  * file that git actually reads (not the per-worktree git dir).
  * Idempotent: only appends entries that are not already present.
  * Throws on failure — this is required setup, not best-effort.
+ *
+ * This is the sole source of truth for orchestration-worktree exclusions;
+ * do not combine it with `:(exclude)` pathspecs on `git add`. See
+ * `docs/testing-patterns.md` § "Orchestration Worktree Exclusions".
  */
 export function ensureGitExcludes(repoPath: string): void {
   const commonDir = runGit(repoPath, ["rev-parse", "--git-common-dir"]);
@@ -310,6 +314,11 @@ export interface AutoCommitResult {
  * Additionally unstages any already-tracked orchestration paths via
  * {@link ORCHESTRATION_RESET_PATHS} to prevent them from being committed.
  * Returns a structured result. Safe to call on clean worktrees (no-op).
+ *
+ * Do NOT add `:(exclude)` pathspecs to the `git add -A` call below — doing
+ * so while the same pattern is in `.git/info/exclude` causes git to exit 1
+ * when the excluded directory exists, which `runGit` then throws. See
+ * `docs/testing-patterns.md` § "Orchestration Worktree Exclusions".
  */
 export function autoCommitWorktree(
   worktreePath: string,

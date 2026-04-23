@@ -170,3 +170,43 @@ delete-or-assign pattern shown above.
 
 - `src/queue.test.ts` — manual save/restore via a small `restoreHarnessDir` helper.
 - `src/test-utils.test.ts` — contract tests for `withTestHarness()`.
+
+## Orchestration Worktree Exclusions
+
+Orchestration worktrees use `ensureGitExcludes()` (in
+`src/orchestration/worktrees.ts`), which appends
+[`GIT_EXCLUDE_ENTRIES`](../src/orchestration/worktrees.ts) to
+`.git/info/exclude`, as the **sole** source of truth for paths that must
+never be committed from a worktree (`.peer-sync`,
+`.ludics-orchestration.json`, `.claude`, `.agents`, `.agent-sessions`,
+`node_modules`, `_build_review*`). Tests that exercise the auto-commit
+path must mirror this: call `ensureGitExcludes(repo)` directly, rather
+than passing pathspec excludes to `git add`.
+
+**Rule**: do not combine `.git/info/exclude` entries with
+`:(exclude)pattern` pathspecs on the same `git add` invocation. When the
+excluded directory physically exists, git exits 1 even though the partial
+add succeeds, which surfaces as a `runGit` throw inside
+`autoCommitWorktree()`. Pick one mechanism — for orchestration, that is
+always `ensureGitExcludes()`.
+
+**Fallback**: if a one-off command elsewhere in the codebase genuinely
+needs a pathspec exclude (no current call site does — see audit below),
+use the long form `:(exclude)pattern`. Never use the short form
+`:!pattern`: git's pathspec-magic parser fails when `pattern` contains
+`*` with `fatal: Unimplemented pathspec magic '_' in ':!_build_review*'`.
+
+Note that `ORCHESTRATION_RESET_PATHS`, passed to `git reset HEAD --`
+inside `autoCommitWorktree()`, is a pathspec *inclusion* for unstaging —
+not a pathspec exclude on `git add`. It does not trigger this failure
+mode and is unrelated to the rule above.
+
+**Precedent**: PR [#320](https://github.com/lukstafi/ludics/pull/320)
+removed the `ORCHESTRATION_EXCLUDES` constant that was being passed as
+`:(exclude)…` pathspecs inside `autoCommitWorktree()`, making
+`ensureGitExcludes()` the sole exclusion source; five tests were updated
+to call `ensureGitExcludes(repo)` explicitly rather than rely on the
+removed pathspec behavior. Background: issue
+[#329](https://github.com/lukstafi/ludics/issues/329). A repo-wide grep
+for `:(exclude)` and `:!` pathspec magic across `src/`, `tests/`,
+`scripts/`, `bin/` returns zero matches.
