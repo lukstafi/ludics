@@ -97,10 +97,29 @@ export function ensureGitExcludes(repoPath: string): void {
 
 /** Untrack the narrow {@link UNTRACK_PATHS} subset from the index, if any of them
  *  are tracked, and commit the staged deletion(s) with a dedicated chore message.
- *  No-op otherwise. Never throws — a failed chore commit logs a warning. */
+ *  No-op otherwise. Never throws — a failed chore commit logs a warning.
+ *
+ *  Safety: if there are pre-existing staged changes (e.g. from an adapter or
+ *  a concurrent agent staging state before setup), skip the untrack step
+ *  entirely — otherwise `git commit` would sweep those unrelated changes into
+ *  the synthetic chore commit. The exclude-file write in {@link ensureGitExcludes}
+ *  has already completed by the time we're called, so skipping here only
+ *  leaves already-tracked orchestration paths in the index, which the
+ *  defensive reset in {@link autoCommitWorktree} still handles at commit time.
+ */
 function untrackOrchestrationInternal(repoPath: string): void {
   const ls = safeSyncOutput(["git", "ls-files", "--", ...UNTRACK_PATHS], { cwd: repoPath });
   if (!ls.ok || !ls.stdout) return;
+
+  // Refuse to run if there are pre-existing staged changes — otherwise our
+  // chore commit would silently include them.
+  const preStaged = maybeGit(repoPath, ["diff", "--cached", "--name-only"]);
+  if (preStaged) {
+    console.error(
+      `ludics: skipping untrack of orchestration-internal files in ${repoPath}: pre-existing staged changes detected`,
+    );
+    return;
+  }
 
   for (const path of UNTRACK_PATHS) {
     maybeGit(repoPath, ["rm", "--cached", "-r", "--ignore-unmatch", "--", path]);

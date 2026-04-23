@@ -465,6 +465,51 @@ describe("ensureGitExcludes", () => {
     expect(gitLogCount(repo)).toBe(countBefore);
   });
 
+  test("skips untrack when pre-existing staged changes would be swept into the chore commit", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "exclude-untrack-skip-prestaged");
+    initRepo(repo);
+    // Track a .peer-sync file (would normally be untracked by ensureGitExcludes)
+    mkdirSync(join(repo, ".peer-sync"), { recursive: true });
+    writeFileSync(join(repo, ".peer-sync", "x"), "peer\n");
+    run(["git", "add", "-A"], repo);
+    run(["git", "commit", "-m", "track peer-sync"], repo);
+    // Pre-stage an unrelated change that must not be swept into the chore commit
+    writeFileSync(join(repo, "README.md"), "modified\n");
+    run(["git", "add", "README.md"], repo);
+    const countBefore = gitLogCount(repo);
+
+    // Silence the expected warning so test output stays clean
+    const origErr = console.error;
+    const warnings: string[] = [];
+    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      ensureGitExcludes(repo);
+    } finally {
+      console.error = origErr;
+    }
+
+    // Warning emitted about the skip
+    expect(warnings.some((w) => w.includes("skipping untrack") && w.includes("pre-existing staged"))).toBe(true);
+
+    // No chore commit created
+    expect(gitLogCount(repo)).toBe(countBefore);
+
+    // .peer-sync/x is still tracked (untrack skipped)
+    const lsFiles = Bun.spawnSync(["git", "ls-files"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(lsFiles).toContain(".peer-sync/x");
+
+    // User's pre-staged README change is still staged and intact
+    const stagedDiff = Bun.spawnSync(["git", "diff", "--cached", "--name-only"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(stagedDiff.trim()).toBe("README.md");
+  });
+
   test("round-commit flow: after ensureGitExcludes untracks .peer-sync, autoCommitWorktree commits real changes only", () => {
     if (!Bun.which("git")) return;
     const repo = join(TMP, "exclude-untrack-round-flow");
