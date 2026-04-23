@@ -13,6 +13,7 @@ import {
   detectDefaultBranches,
   expandHome,
   hasRemote,
+  withCheckout,
   type RunGit,
 } from "./git-runner.ts";
 import type { ProjectConfig } from "./config.ts";
@@ -80,13 +81,6 @@ function worktreeClean(cwd: string, runGit: RunGit): boolean {
   const r = runGit(["status", "--porcelain"], cwd);
   if (r.exitCode !== 0) return false;
   return r.stdout.trim() === "";
-}
-
-function currentBranch(cwd: string, runGit: RunGit): string | null {
-  const r = runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
-  if (r.exitCode !== 0) return null;
-  const name = r.stdout.trim();
-  return name && name !== "HEAD" ? name : null;
 }
 
 function commitCount(cwd: string, range: string, runGit: RunGit): number | null {
@@ -157,74 +151,50 @@ export function maybeFastForwardStagingFromUpstream(
     }
 
     // Always target `branches.origin` for the merge, even on detached HEAD.
-    // currentBranch() returns null for detached HEAD — we must still check out
-    // the default branch, otherwise `git merge --ff-only upstream/<default>`
-    // would advance the detached commit while leaving `origin/<default>`
-    // unchanged, violating the acceptance criterion that the staging default
-    // branch be the thing moved forward.
-    const priorBranch = currentBranch(path, opts.runGit);
-    // Capture prior HEAD SHA so we can restore a detached-HEAD checkout
-    // exactly. On a regular branch, this is only a fallback; the named branch
-    // is preferable for the restore.
-    const priorHeadSha = priorBranch === null ? (() => {
-      const r = opts.runGit(["rev-parse", "HEAD"], path);
-      return r.exitCode === 0 ? r.stdout.trim() : null;
-    })() : null;
-    const needCheckout = priorBranch !== branches.origin;
-    if (needCheckout) {
-      const co = opts.runGit(["checkout", branches.origin], path);
-      if (co.exitCode !== 0) {
-        out.push({ project, outcome: "error", detail: `checkout failed: ${co.stdout.trim().slice(0, 200)}` });
-        touchSentinel(sentinel, opts.now);
-        continue;
-      }
-    }
-
+    // withCheckout() handles the prior-branch / detached-HEAD-SHA capture and
+    // restore; it throws on checkout failure, which we classify as `error`.
     try {
-      const merge = opts.runGit(
-        ["merge", "--ff-only", `upstream/${branches.upstream}`],
-        path,
-      );
-      if (merge.exitCode === 0) {
-        // Count commits the branch advanced by (may be 0 if already up-to-date).
-        const advancedBy = commitCount(
+      withCheckout(path, branches.origin, opts.runGit, () => {
+        const merge = opts.runGit(
+          ["merge", "--ff-only", `upstream/${branches.upstream}`],
           path,
-          `origin/${branches.origin}..upstream/${branches.upstream}`,
-          opts.runGit,
-        ) ?? 0;
-        // `origin/<default>..upstream/<default>` after FF is always 0. Instead
-        // measure progress via `HEAD@{1}..HEAD` would require reflog; for the
-        // sake of simplicity and test-friendliness, infer from the "Already up
-        // to date." vs advancing output of the merge subprocess.
-        const up2date = /up[- ]to[- ]date/i.test(merge.stdout);
-        const outcome: FastForwardOutcome = up2date ? "already-up-to-date" : "fast-forwarded";
-        out.push({ project, outcome, advancedBy });
-        touchSentinel(sentinel, opts.now);
-        if (outcome === "fast-forwarded") {
+        );
+        if (merge.exitCode === 0) {
+          // Count commits the branch advanced by (may be 0 if already up-to-date).
+          const advancedBy = commitCount(
+            path,
+            `origin/${branches.origin}..upstream/${branches.upstream}`,
+            opts.runGit,
+          ) ?? 0;
+          // `origin/<default>..upstream/<default>` after FF is always 0. Instead
+          // measure progress via `HEAD@{1}..HEAD` would require reflog; for the
+          // sake of simplicity and test-friendliness, infer from the "Already up
+          // to date." vs advancing output of the merge subprocess.
+          const up2date = /up[- ]to[- ]date/i.test(merge.stdout);
+          const outcome: FastForwardOutcome = up2date ? "already-up-to-date" : "fast-forwarded";
+          out.push({ project, outcome, advancedBy });
+          touchSentinel(sentinel, opts.now);
+          if (outcome === "fast-forwarded") {
+            opts.emitEvent?.({
+              type: "staging_fast_forwarded",
+              project,
+              message: `${project}: staging fast-forwarded from upstream/${branches.upstream}`,
+            });
+          }
+        } else {
+          out.push({ project, outcome: "diverged", detail: merge.stdout.trim().slice(0, 200) });
           opts.emitEvent?.({
-            type: "staging_fast_forwarded",
+            type: "staging_fast_forward_diverged",
             project,
-            message: `${project}: staging fast-forwarded from upstream/${branches.upstream}`,
+            message: `${project}: staging and upstream have diverged — manual reconciliation needed`,
           });
+          touchSentinel(sentinel, opts.now);
         }
-      } else {
-        out.push({ project, outcome: "diverged", detail: merge.stdout.trim().slice(0, 200) });
-        opts.emitEvent?.({
-          type: "staging_fast_forward_diverged",
-          project,
-          message: `${project}: staging and upstream have diverged — manual reconciliation needed`,
-        });
-        touchSentinel(sentinel, opts.now);
-      }
-    } finally {
-      if (needCheckout) {
-        if (priorBranch) {
-          opts.runGit(["checkout", priorBranch], path);
-        } else if (priorHeadSha) {
-          // Restore detached-HEAD state at the exact prior commit.
-          opts.runGit(["checkout", "--detach", priorHeadSha], path);
-        }
-      }
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      out.push({ project, outcome: "error", detail: detail.slice(0, 200) });
+      touchSentinel(sentinel, opts.now);
     }
   }
   return out;
