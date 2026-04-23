@@ -10,6 +10,15 @@ If the implementation changes data shapes, check that helpers consuming the chan
 
 Before treating a failing test as blocking, cross-check the merged plan's `## Pre-existing test failures (baseline)` section — the point is to separate pre-existing noise from regressions introduced this round. See [pre-existing failures baseline](../../docs/orchestration-patterns.md#pre-existing-failures-baseline) for how to handle the cases where the baseline is absent, incomplete, or notes planning was skipped.
 
+{{#IF PROPOSAL_PATH}}
+**Scope review (discretion)**: Cross-reference the coder's changes against the proposal's `## Scope` section at `{{PROPOSAL_PATH}}`. Scope expansions are not automatic blockers — decide per-expansion whether the change belongs in this PR or should be salvaged to a follow-up:
+
+- **Accept as-is** if the expansion is small, directly supports the goal, and doesn't materially broaden the PR's review surface.
+- **Reject and ask for salvage** if the expansion is valuable but belongs in its own task. In the review body, explicitly ask the coder to salvage the rejected diff into a needs-confirmation follow-up (capture patch → revert → new task with `relates_to`) before continuing. Do not just tell them to revert — that throws away useful work.
+
+Flag **undeclared** out-of-scope changes (no `scope-expansion:` trailer in any commit, no mention in the plan) as a discipline issue in the review body even when you accept the content. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
+{{/IF}}
+
 If the coder wrote a `bail-out` status and you agree the task is already resolved or obsolete (verify against the base branch), confirm the bail-out (see [bail-out contract](../../docs/orchestration-patterns.md#bail-out-contract)):
 
 ```sh
