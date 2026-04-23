@@ -532,10 +532,31 @@ describe("stale settled sentinel detection", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function clearStaleSettled(currentHash: string | null): boolean {
+  // Mirror of the production clearStaleSettled() in src/mag.ts, with "now" and
+  // grace window parameterized so tests can drive the timestamp guard
+  // deterministically. Default grace of 90s matches the production default
+  // (keepalive_interval=60s × 1.5).
+  function clearStaleSettled(
+    currentHash: string | null,
+    opts: { nowMs?: number; graceMs?: number } = {},
+  ): boolean {
+    const nowMs = opts.nowMs ?? Date.now();
+    const graceMs = opts.graceMs ?? 90_000;
+
     const sentinelPath = join(tmpDir, "settled");
     const hashPath = join(tmpDir, "last-pane.hash");
     if (!existsSync(sentinelPath)) return false;
+
+    // Timestamp guard (mirrors production)
+    try {
+      const content = readFileSync(sentinelPath, "utf-8").trim();
+      const epoch = parseInt(content, 10);
+      if (Number.isFinite(epoch) && epoch > 0) {
+        const ageMs = nowMs - epoch * 1000;
+        if (ageMs < graceMs) return false;
+      }
+    } catch { /* fall through */ }
+
     if (currentHash === null) return false;
     let previousHash: string | null = null;
     try { previousHash = readFileSync(hashPath, "utf-8").trim() || null; } catch {}
@@ -548,6 +569,10 @@ describe("stale settled sentinel detection", () => {
     }
     return false;
   }
+
+  // Existing tests seed sentinel content "1234" (epoch 1970-01-01) — that age
+  // is trivially past the 90s grace window under any realistic Date.now(), so
+  // the new guard does not short-circuit these cases.
 
   test("clears settled when pane hash has changed", () => {
     writeFileSync(join(tmpDir, "settled"), "1234");
@@ -583,5 +608,68 @@ describe("stale settled sentinel detection", () => {
     const cleared = clearStaleSettled(null);
     expect(cleared).toBe(false);
     expect(existsSync(join(tmpDir, "settled"))).toBe(true);
+  });
+
+  // gh-ludics-308: timestamp-guard regression tests
+
+  test("keeps settled when sentinel is young despite hash change", () => {
+    const now = Date.now();
+    writeFileSync(join(tmpDir, "settled"), String(Math.floor(now / 1000)));
+    writeFileSync(join(tmpDir, "last-pane.hash"), "oldhash");
+    const cleared = clearStaleSettled("newhash", { nowMs: now });
+    expect(cleared).toBe(false);
+    expect(existsSync(join(tmpDir, "settled"))).toBe(true);
+    // Prior hash is untouched — guard returns before any write
+    expect(readFileSync(join(tmpDir, "last-pane.hash"), "utf-8")).toBe("oldhash");
+  });
+
+  test("clears settled when sentinel is old and hash changed", () => {
+    const now = Date.now();
+    const oldEpoch = Math.floor((now - 5 * 60_000) / 1000); // 5 minutes ago
+    writeFileSync(join(tmpDir, "settled"), String(oldEpoch));
+    writeFileSync(join(tmpDir, "last-pane.hash"), "oldhash");
+    const cleared = clearStaleSettled("newhash", { nowMs: now });
+    expect(cleared).toBe(true);
+    expect(existsSync(join(tmpDir, "settled"))).toBe(false);
+    expect(readFileSync(join(tmpDir, "last-pane.hash"), "utf-8")).toBe("newhash");
+  });
+
+  test("keeps settled when sentinel is old but hash unchanged", () => {
+    const now = Date.now();
+    const oldEpoch = Math.floor((now - 5 * 60_000) / 1000);
+    writeFileSync(join(tmpDir, "settled"), String(oldEpoch));
+    writeFileSync(join(tmpDir, "last-pane.hash"), "samehash");
+    const cleared = clearStaleSettled("samehash", { nowMs: now });
+    expect(cleared).toBe(false);
+    expect(existsSync(join(tmpDir, "settled"))).toBe(true);
+  });
+
+  test("keeps settled on first observation regardless of sentinel age", () => {
+    const now = Date.now();
+    const oldEpoch = Math.floor((now - 5 * 60_000) / 1000);
+    writeFileSync(join(tmpDir, "settled"), String(oldEpoch));
+    // No prior hash written
+    const cleared = clearStaleSettled("firsthash", { nowMs: now });
+    expect(cleared).toBe(false);
+    expect(existsSync(join(tmpDir, "settled"))).toBe(true);
+    expect(readFileSync(join(tmpDir, "last-pane.hash"), "utf-8")).toBe("firsthash");
+  });
+
+  test("respects non-default keepalive interval (grace scales)", () => {
+    const now = Date.now();
+    // Sentinel written 100 seconds ago
+    const epoch = Math.floor((now - 100_000) / 1000);
+    writeFileSync(join(tmpDir, "settled"), String(epoch));
+    writeFileSync(join(tmpDir, "last-pane.hash"), "oldhash");
+
+    // keepalive_interval=120 → grace=180s → 100s is still within grace
+    const keptWithLargerGrace = clearStaleSettled("newhash", { nowMs: now, graceMs: 180_000 });
+    expect(keptWithLargerGrace).toBe(false);
+    expect(existsSync(join(tmpDir, "settled"))).toBe(true);
+
+    // keepalive_interval=40 → grace=60s → 100s is past grace, clears on hash change
+    const clearedWithSmallerGrace = clearStaleSettled("newhash", { nowMs: now, graceMs: 60_000 });
+    expect(clearedWithSmallerGrace).toBe(true);
+    expect(existsSync(join(tmpDir, "settled"))).toBe(false);
   });
 });
