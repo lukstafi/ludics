@@ -283,6 +283,52 @@ export function flattenYamlPaths(
   return paths;
 }
 
+/**
+ * Collect dotted key paths whose value in the YAML object is an array
+ * (including empty arrays). Uses the same `skipPaths` / `wildcardMapPaths`
+ * conventions as `flattenYamlPaths` so wildcards line up. Useful for the
+ * harness-subset check: the reference may declare an array with no items
+ * (e.g. `cluster.machines: []`), and a valid harness entry under it should
+ * not be reported as an extra key.
+ */
+export function collectArrayPaths(
+  obj: unknown,
+  prefix: string,
+  skipPaths: Set<string>,
+  wildcardMapPaths: Set<string>,
+): Set<string> {
+  const out = new Set<string>();
+  walk(obj, prefix);
+  return out;
+
+  function walk(node: unknown, path: string): void {
+    if (skipPaths.has(path)) return;
+    if (Array.isArray(node)) {
+      out.add(path);
+      if (node.length > 0 && typeof node[0] === "object" && node[0] !== null) {
+        walk(node[0], path ? `${path}.*` : "*");
+      }
+      return;
+    }
+    if (node && typeof node === "object") {
+      const rec = node as Record<string, unknown>;
+      if (wildcardMapPaths.has(path)) {
+        const merged: Record<string, unknown> = {};
+        for (const v of Object.values(rec)) {
+          if (v && typeof v === "object" && !Array.isArray(v)) {
+            Object.assign(merged, v as Record<string, unknown>);
+          }
+        }
+        walk(merged, path ? `${path}.*` : "*");
+      } else {
+        for (const [k, v] of Object.entries(rec)) {
+          walk(v, path ? `${path}.${k}` : k);
+        }
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Comparison
 // ---------------------------------------------------------------------------

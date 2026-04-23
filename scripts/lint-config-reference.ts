@@ -3,11 +3,15 @@
  * lint-config-reference.ts
  *
  * CI lint: bidirectional drift detection between config.reference.yaml
- * and the TypeScript interfaces in src/config.ts.
+ * and the TypeScript interfaces in src/config.ts, plus a subset check
+ * that templates/harness/config.yaml contains only keys present in the
+ * reference YAML.
  *
  * Exit code:
- *   0 — no drift (config reference is in sync with TypeScript interfaces)
- *   1 — drift detected (mismatches in either direction)
+ *   0 — no drift (config reference is in sync with TypeScript interfaces
+ *       and harness config is a subset of the reference)
+ *   1 — drift detected (mismatches in either direction, or harness has
+ *       keys not present in the reference)
  */
 
 import { readFileSync } from "fs";
@@ -17,6 +21,7 @@ import {
   extractInterfacePaths,
   extractMagPathsFromSource,
   flattenYamlPaths,
+  collectArrayPaths,
   comparePaths,
 } from "./lint-config-helpers.ts";
 
@@ -99,8 +104,60 @@ if (import.meta.main) {
     errors += missingFromTs.length;
   }
 
+  // 8. Direction 3: templates/harness/config.yaml must be a subset of
+  //    config.reference.yaml keys. The harness config is a sparse user-facing
+  //    example and only needs to contain keys that exist in the reference.
+  //
+  //    The harness file path is overridable via LUDICS_HARNESS_CONFIG_PATH so
+  //    tests can point at a fabricated fixture without duplicating the rest
+  //    of the repo (and its node_modules) into a tmp directory.
+  const harnessPath =
+    process.env.LUDICS_HARNESS_CONFIG_PATH ||
+    join(root, "templates", "harness", "config.yaml");
+  const harnessText = readFileSync(harnessPath, "utf-8");
+  const harnessObj = YAML.parse(harnessText);
+  const harnessPaths = flattenYamlPaths(
+    harnessObj, "", FREEFORM_CHILDREN, WILDCARD_MAP_PATHS,
+  );
+
+  // Reference arrays (including empty ones like `cluster.machines: []`) have
+  // no enumerable `.*` child paths, but a valid harness entry beneath them
+  // should still be accepted. Collect the array-valued paths in the reference
+  // and allow any harness path whose prefix extends one of them via `.*`.
+  const refArrayPaths = collectArrayPaths(
+    yamlObj, "", FREEFORM_CHILDREN, WILDCARD_MAP_PATHS,
+  );
+  const isUnderRefArray = (p: string): boolean => {
+    for (const arr of refArrayPaths) {
+      const wildcardPrefix = arr ? `${arr}.*` : "*";
+      if (p === wildcardPrefix || p.startsWith(`${wildcardPrefix}.`)) return true;
+    }
+    return false;
+  };
+
+  const harnessExtras: string[] = [];
+  for (const p of harnessPaths) {
+    if (yamlPaths.has(p)) continue;
+    if (isUnderRefArray(p)) continue;
+    harnessExtras.push(p);
+  }
+  harnessExtras.sort();
+
+  if (harnessExtras.length > 0) {
+    console.error(
+      "\n❌  templates/harness/config.yaml has keys not in config.reference.yaml:",
+    );
+    for (const p of harnessExtras) {
+      console.error(`     - ${p}`);
+    }
+    errors += harnessExtras.length;
+  }
+
   if (errors === 0) {
-    console.log("✅  Config reference is in sync with TypeScript interfaces.");
+    console.log(
+      "✅  Config reference is in sync with TypeScript interfaces, and " +
+        "harness config is a subset of the reference.",
+    );
   }
 
   process.exit(errors > 0 ? 1 : 0);
