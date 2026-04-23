@@ -73,6 +73,7 @@ Extract the final ` ```json ` block from the worker's response. Fields:
 | `start_rationale` | auto-start eval | empty string |
 | `title` | notification title | fall back to task_id |
 | `summary` | notification body, result JSON | empty string |
+| `skip_plan` | task frontmatter | default `false`, remove stale frontmatter value |
 | `task_id` | — | not consumed |
 
 Routing by status:

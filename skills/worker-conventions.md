@@ -60,6 +60,53 @@ When `status` is `"error"`, only `status` plus a narrative field are
 guaranteed; other fields may be absent. Orchestrators handle missing
 conditional fields gracefully.
 
+## Field Contract Reference
+
+Canonical cross-skill reference for field types and required/conditional/optional
+annotations across all worker/orchestrator pairs. Each worker skill keeps its
+own `### Response Contract` section with full prose and examples — this table
+summarises, it does not replace. Vocabulary matches "Field Annotations" above.
+
+| Skill pair | Field | Type | Annotation | Condition / Notes |
+|---|---|---|---|---|
+| elaborate | `status` | string | required | `completed` / `merged` / `already-elaborated` / `error` |
+| elaborate | `task_id` | string | required | echoes input |
+| elaborate | `title` | string | required | |
+| elaborate | `merge_target` | string | conditional | when `status = "merged"` |
+| elaborate | `elaborated_date` | string | conditional | when `status = "already-elaborated"` |
+| elaborate | `questions` | string[] | required | `"none"` when empty |
+| elaborate | `summary` | string | required | |
+| draft-proposal | `status` | string | required | `completed` / `stale` / `split-needed` / `already-exists` / `error` |
+| draft-proposal | `task_id` | string | required | |
+| draft-proposal | `proposal_path` | string | conditional | when `status ∈ {completed, already-exists}` |
+| draft-proposal | `ambiguities` | string[] | required | `"none"` when empty |
+| draft-proposal | `start_confidence` | string | conditional | when `status = "completed"`; `high` / `low` |
+| draft-proposal | `start_rationale` | string | conditional | when `status = "completed"` |
+| draft-proposal | `title` | string | required | |
+| draft-proposal | `summary` | string | required | |
+| draft-proposal | `skip_plan` | boolean | optional | when `status = "completed"`; written to frontmatter when `true` |
+| revise-proposal | `status` | string | required | `revised` / `no-changes` / `error` |
+| revise-proposal | `task_id` | string | required | |
+| revise-proposal | `proposal_path` | string | conditional | when `proposal_mode = "file"`; omitted for inline |
+| revise-proposal | `proposal_mode` | string | conditional | required when `status = "revised"`; orchestrator must not default to `"file"` |
+| revise-proposal | `changes_summary` | string | required | |
+| revise-proposal | `title` | string | required | |
+| revise-proposal | `summary` | string | required | |
+| verify-completion | `status` | string | required | always `"completed"` in non-error cases |
+| verify-completion | `task_id` | string | required | |
+| verify-completion | `title` | string | required | |
+| verify-completion | `slot` | number | required | error if verdict requires slot clearing |
+| verify-completion | `verdict` | string | required | `complete` / `complete-with-followups` / `uncertain` / `incomplete` |
+| verify-completion | `followups` | object[] | required | `{title, priority}`; `"none"` when empty |
+| verify-completion | `questions` | string[] | required | `"none"` when empty |
+| verify-completion | `evidence` | string | required | |
+| feedback-digest | `status` | string | required | `completed` / `empty` / `error` |
+| feedback-digest | `issues_created` | number | required | 0 when none; may be absent on `status = "error"` only |
+| feedback-digest | `issues_updated` | number | required | 0 when none; may be absent on `status = "error"` only |
+| feedback-digest | `issues_skipped` | number | required | 0 when none; may be absent on `status = "error"` only |
+| feedback-digest | `files_processed` | number | required | 0 when none; may be absent on `status = "error"` only |
+| feedback-digest | `summary` | string | required | |
+
 ## Error Handling
 
 - **Missing input** (task not found, path not found): set `"status": "error"`
