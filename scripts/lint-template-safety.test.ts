@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   ALWAYS_POPULATED,
+  findFencedLines,
   findFencedShellBlocks,
   findInlineShellSpans,
   looksLikeShell,
@@ -38,6 +39,36 @@ describe("findFencedShellBlocks", () => {
     const lines = ["```ts", "const x = 1;", "```"];
     const spans = findFencedShellBlocks(lines);
     expect(spans).toHaveLength(0);
+  });
+});
+
+describe("findFencedLines", () => {
+  test("marks shell fence body and marker lines", () => {
+    const lines = ["prose", "```sh", "echo hi", "```", "after"];
+    const fenced = findFencedLines(lines);
+    expect(fenced.has(1)).toBe(true);
+    expect(fenced.has(2)).toBe(true);
+    expect(fenced.has(3)).toBe(true);
+    expect(fenced.has(0)).toBe(false);
+    expect(fenced.has(4)).toBe(false);
+  });
+
+  test("marks non-shell fence body and marker lines", () => {
+    const lines = ["prose", "```ts", "const x = 1;", "```", "after"];
+    const fenced = findFencedLines(lines);
+    expect(fenced.has(1)).toBe(true);
+    expect(fenced.has(2)).toBe(true);
+    expect(fenced.has(3)).toBe(true);
+    expect(fenced.has(0)).toBe(false);
+    expect(fenced.has(4)).toBe(false);
+  });
+
+  test("marks indented fenced blocks", () => {
+    const lines = ["1. do:", "   ```sh", "   git x", "   ```", "done"];
+    const fenced = findFencedLines(lines);
+    expect(fenced.has(1)).toBe(true);
+    expect(fenced.has(2)).toBe(true);
+    expect(fenced.has(3)).toBe(true);
   });
 });
 
@@ -266,6 +297,44 @@ describe("lintTemplate — violations", () => {
     const vs = lintTemplate("t.md", md, undefined);
     expect(vs).toHaveLength(1);
     expect(vs[0]!.variable).toBe("UPSTREAM_REPO");
+  });
+
+  // Regression: reviewer flagged two cases where `findInlineShellSpans` ignored
+  // fenced-block state. Inside a non-shell fence (e.g., ```ts) inline backticks
+  // must NOT be treated as inline shell; and inside a shell fence the same
+  // variable must not be reported twice (once fenced + once inline).
+  test("inline backtick inside a non-shell fence (```ts) is not flagged", () => {
+    const md = [
+      "Example code:",
+      "```ts",
+      '// `gh pr view --repo "{{PROJECT_REPO}}"` — just illustrative',
+      "const x = 1;",
+      "```",
+    ].join("\n");
+    const vs = lintTemplate("t.md", md, undefined);
+    expect(vs).toEqual([]);
+  });
+
+  test("variable in a shell fence that also looks inline is reported once", () => {
+    const md = [
+      "```sh",
+      'gh pr view --repo "{{PROJECT_REPO}}"',
+      "```",
+    ].join("\n");
+    const vs = lintTemplate("t.md", md, undefined);
+    expect(vs).toHaveLength(1);
+    expect(vs[0]!.context).toBe("fenced");
+  });
+
+  test("variable inside ```yaml is not flagged by the inline scan", () => {
+    const md = [
+      "```yaml",
+      '# `gh pr view --repo "{{UPSTREAM_REPO}}"` — example command',
+      "key: value",
+      "```",
+    ].join("\n");
+    const vs = lintTemplate("t.md", md, undefined);
+    expect(vs).toEqual([]);
   });
 });
 

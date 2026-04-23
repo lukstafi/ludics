@@ -167,14 +167,47 @@ export function findFencedShellBlocks(lines: string[]): ShellSpan[] {
   return spans;
 }
 
-/** Find inline backtick spans that look like shell commands (start with a
- *  recognized command token). Triple-backtick fences are ignored here. */
-export function findInlineShellSpans(lines: string[]): ShellSpan[] {
-  const spans: ShellSpan[] = [];
+/** Build a set of 0-indexed line numbers that live inside ANY fenced code
+ *  block (shell or otherwise), including the fence marker lines themselves.
+ *  Inline-backtick scanning must skip these — a backtick span inside a
+ *  ```ts example is not an inline shell command, and a span inside a
+ *  ```sh block is already covered by the fenced-block scan, so re-counting
+ *  it as inline would double-report the same violation. */
+export function findFencedLines(lines: string[]): Set<number> {
+  const fenced = new Set<number>();
+  let openLine: number | null = null;
+  let openIndent = "";
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    // Skip fence lines — they are not prose and are handled separately.
-    if (/^\s*```/.test(line)) continue;
+    if (openLine == null) {
+      // Any opening fence: ```sh, ```ts, ```, etc.
+      const m = line.match(/^(\s*)```[A-Za-z0-9_-]*\s*$/);
+      if (m) {
+        openLine = i;
+        openIndent = m[1]!;
+        fenced.add(i); // fence marker line itself
+      }
+      continue;
+    }
+    fenced.add(i);
+    if (new RegExp(`^${openIndent}\`\`\`\\s*$`).test(line) || /^\s*```\s*$/.test(line)) {
+      openLine = null;
+    }
+  }
+  return fenced;
+}
+
+/** Find inline backtick spans that look like shell commands (start with a
+ *  recognized command token). Skips any line that is inside a fenced code
+ *  block — shell-language blocks are handled by `findFencedShellBlocks`
+ *  (no double-reporting), and non-shell blocks (e.g., ```ts) must not be
+ *  inline-scanned at all. */
+export function findInlineShellSpans(lines: string[], fencedLines?: Set<number>): ShellSpan[] {
+  const inFence = fencedLines ?? findFencedLines(lines);
+  const spans: ShellSpan[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (inFence.has(i)) continue;
+    const line = lines[i]!;
     // Scan for single-backtick spans. We accept only spans enclosed in `…`
     // that do NOT contain a backtick inside (i.e., a minimal match).
     const re = /`([^`\n]+)`/g;
@@ -249,7 +282,8 @@ export function lintTemplate(
 ): Violation[] {
   const lines = text.split(/\r?\n/);
   const fencedSpans = findFencedShellBlocks(lines);
-  const inlineSpans = findInlineShellSpans(lines);
+  const fencedLines = findFencedLines(lines);
+  const inlineSpans = findInlineShellSpans(lines, fencedLines);
   const ifRanges = parseIfRanges(text);
   const violations: Violation[] = [];
   const varRe = /\{\{([A-Z0-9_]+)\}\}/g;
