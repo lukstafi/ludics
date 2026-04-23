@@ -1446,6 +1446,39 @@ export function isWorktreeNoOp(worktreePath: string, projectDir: string): boolea
 }
 
 /**
+ * Trigger the coder bail-out protocol: mutate runtime status, write the
+ * `.status` file, emit a `bail_out` event, and persist state. Idempotent —
+ * if the coder runtime is already `"bail-out"`, skip the status-file write
+ * and event emission (but still persist).
+ */
+export function triggerCoderBailOut(
+  state: OrchestrationState,
+  coder: AgentConfig,
+  action: string,
+  message: string,
+  statusMessage: string = "no-op: zero commits ahead of base, no uncommitted diffs",
+  eventStatus: string = "bail-out",
+): void {
+  const runtime = state.agentStates[coder.name];
+  if (runtime && runtime.status !== "bail-out") {
+    runtime.status = "bail-out";
+    runtime.statusEpoch = nowEpoch();
+    runtime.statusMessage = statusMessage;
+    writeFileSync(
+      join(state.peerSyncDir, `${coder.name}.status`),
+      `bail-out|${runtime.statusEpoch}|${runtime.statusMessage}\n`,
+    );
+    emitEvent({
+      event_type: "bail_out",
+      source: "orchestration", scope: "slot",
+      slot: state.slot, task: state.taskId,
+      action, status: eventStatus, message,
+    });
+  }
+  persistState(state);
+}
+
+/**
  * 0-commits-ahead auto-bail-out: if pr-create phase and the coder worktree has no commits
  * ahead of the base branch, skip PR creation and transition directly to done.
  * Returns true if bail-out was triggered (caller should break the loop).
@@ -1466,25 +1499,13 @@ export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean 
   // Robust no-op detection (replaces fragile origin/HEAD..HEAD).
   if (!isWorktreeNoOp(coder.worktreePath, state.projectDir)) return false;
 
-  const runtime = state.agentStates[coder.name];
-
-  // Idempotency: only emit event and write status on first detection.
-  if (runtime && runtime.status !== "bail-out") {
-    runtime.status = "bail-out";
-    runtime.statusEpoch = nowEpoch();
-    runtime.statusMessage = "no-op: zero commits ahead of base, no uncommitted diffs";
-    writeFileSync(
-      join(state.peerSyncDir, `${coder.name}.status`),
-      `bail-out|${runtime.statusEpoch}|${runtime.statusMessage}\n`,
-    );
-    emitEvent({
-      event_type: "bail_out",
-      source: "orchestration", scope: "slot",
-      slot: state.slot, task: state.taskId,
-      action: "pr-create auto-bail-out", status: "skipped",
-      message: "0 commits ahead of base branch — no PR possible, skipping to done",
-    });
-  }
+  triggerCoderBailOut(
+    state, coder,
+    "pr-create auto-bail-out",
+    "0 commits ahead of base branch — no PR possible, skipping to done",
+    undefined,
+    "skipped",
+  );
 
   // Safety-net: go directly to done. Reviewer cannot participate in pr-create
   // (agentParticipatesInPhase returns false for reviewer), so waiting for
@@ -1555,24 +1576,11 @@ export async function runOrchestration(
     if (state.phase === "work") {
       const coder = state.agents.find(a => a.role === "coder");
       if (coder && isWorktreeNoOp(coder.worktreePath, state.projectDir)) {
-        const runtime = state.agentStates[coder.name];
-        if (runtime && runtime.status !== "bail-out") {
-          runtime.status = "bail-out";
-          runtime.statusEpoch = nowEpoch();
-          runtime.statusMessage = "no-op: zero commits ahead of base, no uncommitted diffs";
-          writeFileSync(
-            join(state.peerSyncDir, `${coder.name}.status`),
-            `bail-out|${runtime.statusEpoch}|${runtime.statusMessage}\n`,
-          );
-          emitEvent({
-            event_type: "bail_out",
-            source: "orchestration", scope: "slot",
-            slot: state.slot, task: state.taskId,
-            action: "work-phase no-op detection", status: "bail-out",
-            message: "Coder worktree has 0 commits ahead and no uncommitted diffs — triggering bail-out protocol",
-          });
-          persistState(state);
-        }
+        triggerCoderBailOut(
+          state, coder,
+          "work-phase no-op detection",
+          "Coder worktree has 0 commits ahead and no uncommitted diffs — triggering bail-out protocol",
+        );
       }
     }
 

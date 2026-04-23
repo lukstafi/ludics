@@ -812,6 +812,120 @@ describe("evaluateTransition — bail-out", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Hoisted pair-mode bail-out short-circuit (task-1e6b2aad).
+// Verifies allowlist semantics + readiness-guard preservation.
+// ---------------------------------------------------------------------------
+
+describe("evaluateTransition — hoisted pair-mode bail-out check", () => {
+  // Test 6: allowlisted phases with bail-out confirmed but agents NOT done → null.
+  // Reproduces the readiness-guard behaviour that each case branch used to carry
+  // inline. The participating agent for each phase differs (work/update-docs/
+  // pr-create → coder only; review → reviewer only), so pin a "running"
+  // lifecycle on the right role for each iteration.
+  test("readiness guard preserved: bail-out confirmed but participating agent still running → null", () => {
+    const runningLifecycle = () => ({
+      dispatchCommandId: "cmd-1",
+      dispatchedAt: new Date().toISOString(),
+      phaseToken: "tok",
+      observedTurnId: null,
+      state: "running" as const,
+      turnStartedAt: new Date().toISOString(),
+      turnCompletedAt: null,
+      completionSource: null,
+      statusFileFingerprint: null,
+      lastStopHookAt: null,
+    });
+
+    for (const phase of ["work", "review", "update-docs", "pr-create"] as const) {
+      const state = makeState({
+        phase,
+        // Fresh phaseStartedAt so phaseTimeoutExpired returns false.
+        phaseStartedAt: Math.floor(Date.now() / 1000),
+      });
+      state.agentStates.coder.status = "bail-out";
+      state.agentStates.reviewer.status = "bail-out-confirmed";
+      // Pin the participating agent's turn to "running" so allAgentsDone is false.
+      if (phase === "review") {
+        state.agentStates.reviewer.turnLifecycle = runningLifecycle();
+      } else {
+        state.agentStates.coder.turnLifecycle = runningLifecycle();
+      }
+      expect(isBailedOut(state)).toBe(true);
+      // Readiness guard blocks short-circuit; result is null (not "done").
+      expect(evaluateTransition(state)).toBeNull();
+    }
+  });
+
+  // Test 7: non-allowlisted phases must NOT short-circuit to "done" on bail-out.
+  test("non-allowlisted phases do not short-circuit on bail-out", () => {
+    // setup: nextAfterPrework returns "work" with default config (no pre-plan).
+    {
+      const state = makeState({ phase: "setup" });
+      state.agentStates.coder.status = "bail-out";
+      state.agentStates.reviewer.status = "bail-out-confirmed";
+      expect(evaluateTransition(state)).toBe("work");
+    }
+
+    // plan: with both done and no plan files → plan-merge path.
+    {
+      const dir = mkdtempSync(join(tmpdir(), "ludics-phases-test-"));
+      mkdirSync(join(dir, "plans"), { recursive: true });
+      mkdirSync(join(dir, "reviews"), { recursive: true });
+      const state = makeState({ phase: "plan", peerSyncDir: dir });
+      state.agentStates.coder.status = "bail-out";
+      state.agentStates.reviewer.status = "bail-out-confirmed";
+      const result = evaluateTransition(state);
+      // Whatever the normal plan → {plan-merge, plan-review} transition yields,
+      // it must NOT be "done".
+      expect(result).not.toBe("done");
+    }
+
+    // pr-comments: without quiet period / merged PR, normal logic returns null.
+    {
+      const state = makeState({ phase: "pr-comments" });
+      state.agentStates.coder.status = "bail-out";
+      state.agentStates.reviewer.status = "bail-out-confirmed";
+      expect(evaluateTransition(state)).not.toBe("done");
+    }
+
+    // final-merge: both done → "suggest-refactor", not "done".
+    {
+      const state = makeState({ phase: "final-merge" });
+      state.agentStates.coder.status = "bail-out";
+      state.agentStates.reviewer.status = "bail-out-confirmed";
+      expect(evaluateTransition(state)).toBe("suggest-refactor");
+    }
+
+    // suggest-refactor: normal logic returns "done" (terminal step), but the
+    // allowlist must not be responsible — confirm the transition is reached.
+    {
+      const state = makeState({ phase: "suggest-refactor" });
+      state.agentStates.coder.status = "bail-out";
+      state.agentStates.reviewer.status = "bail-out-confirmed";
+      expect(evaluateTransition(state)).toBe("done");
+    }
+  });
+
+  // Test 8: solo mode regression — evaluateTransitionSolo short-circuits
+  // unconditionally on bail-out (no allAgentsDone gate). Covered by the
+  // existing "solo bail-out short-circuits every non-terminal phase to done"
+  // test, but re-assert here that the pair-mode hoist does not disturb it by
+  // picking a phase outside the pair allowlist ("setup") in solo mode.
+  test("solo mode: bail-out on non-allowlisted phase still short-circuits", () => {
+    const state = makeState({
+      phase: "setup",
+      mode: "solo",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "claude-opus-4-6", branch: "a", worktreePath: "/tmp/a" },
+      ],
+      agentStates: initAgentRuntimeState(["coder"]),
+    });
+    state.agentStates.coder.status = "bail-out";
+    expect(evaluateTransition(state)).toBe("done");
+  });
+});
+
 describe("PHASE_CATEGORIES split — pre-plan vs planning", () => {
   test("pre-plan phases map to 'pre-plan'", () => {
     for (const phase of ["setup", "gather", "clarify", "pushback"] as const) {
