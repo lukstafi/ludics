@@ -687,10 +687,13 @@ const CLAUDE_OPUS_MODEL = "claude-opus-4-6";
  * Auto-select orchestration flags for the t3code adapter based on task effort.
  *
  * Effort-based selection (when coder is claude-code):
- * - tiny:   solo mode, no pre-work phases, Claude coder model = Sonnet (no reviewer)
- * - small:  pair mode, no pre-work phases, Claude coder model = Sonnet
- * - medium: pair mode, enable plan phase, Claude coder model = Opus
- * - large:  pair mode, enable plan + gather phases, Claude coder model = Opus
+ * - tiny:   solo mode, no pre-work phases, Claude coder model = Sonnet (no reviewer). skip_plan is ignored.
+ * - small:  pair mode, no pre-work phases, Claude coder model = Sonnet. skip_plan is ignored (already skipped).
+ * - medium: pair mode, --plan unless skip_plan: true in frontmatter, Claude coder model = Opus.
+ * - large:  pair mode, --plan --gather (skip_plan is ignored), Claude coder model = Opus.
+ *
+ * Small/tiny effort auto-skips the plan phase regardless of skip_plan; the flag
+ * is a manual override that only applies to medium effort.
  *
  * For non-Claude coder providers (e.g. codex), no model suffix is emitted so the
  * provider's own default applies (and coder_model config fallback remains active).
@@ -739,12 +742,15 @@ export function selectOrchestrationFlags(
     }
   }
 
+  // Small / tiny / unknown effort: never run pre-work phases.
+  // `skip_plan` is only consulted for medium effort (manual override for
+  // exhaustive proposals). Large always runs --plan --gather.
   if (norm === "large") {
     phaseFlags.push("--plan", "--gather");
-  } else if (norm === "medium" && !options?.skipPlan) {
-    phaseFlags.push("--plan");
+  } else if (norm === "medium") {
+    if (!options?.skipPlan) phaseFlags.push("--plan");
   }
-  // small / unknown: no pre-work phases
+  // else: small / tiny / unknown → no pre-work phases (no --plan, no --gather)
 
   // Hierarchical duo: both duo and pair produce pair-mode args.
   // For duo, the actual two-slot expansion with swapped roles is done by callers

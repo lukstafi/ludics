@@ -4,6 +4,10 @@
 
 Simplified upstream workflow: for projects declaring `upstream_repo`, orchestration now completes at staging-main PR merge, identical to the non-upstream flow.
 
+### Documentation / contracts
+
+- **Small-effort tasks are now explicitly documented to skip the plan phase.** `skip_plan` remains a manual override applying only to medium effort. No behavior change; the rule is now asserted by tests (`selectOrchestrationFlags` / `selectOrchestrationFlagsForTask`).
+
 ### Breaking changes
 
 - **`forward-pr` phase removed.** Orchestration no longer creates a staging-to-upstream PR or re-monitors an upstream PR. `Phase`, `PHASE_CATEGORIES`, `DONE_STATUSES`, `agentParticipatesInPhase`, `DEFAULT_TIMEOUTS`, and the runner `pushBeforePhases` set all lose their `forward-pr` entries. Templates `skills/orchestration/forward-pr.md` and `skills/orchestration/upstream-final-merge.md` are deleted. Cutover is **new-only** — no migration path for in-flight PRs; mid-flow upstream PRs are reconciled manually by the user.
