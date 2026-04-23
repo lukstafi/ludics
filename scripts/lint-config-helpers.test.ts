@@ -7,6 +7,7 @@ import {
   parseFieldDeclarations,
   extractInterfacePaths,
   flattenYamlPaths,
+  collectArrayPaths,
   comparePaths,
 } from "./lint-config-helpers.ts";
 
@@ -206,6 +207,40 @@ describe("public_filter fixture", () => {
 });
 
 // ---------------------------------------------------------------------------
+// collectArrayPaths
+// ---------------------------------------------------------------------------
+
+describe("collectArrayPaths", () => {
+  test("records array-valued paths including empty arrays", () => {
+    const obj = {
+      top: "x",
+      list_empty: [],
+      list_full: [{ a: 1 }],
+      nested: { inner: [] },
+    };
+    const arrs = collectArrayPaths(obj, "", new Set(), new Set());
+    expect(arrs.has("list_empty")).toBe(true);
+    expect(arrs.has("list_full")).toBe(true);
+    expect(arrs.has("nested.inner")).toBe(true);
+    expect(arrs.has("top")).toBe(false);
+  });
+
+  test("respects skipPaths and wildcard map paths", () => {
+    const obj = {
+      triggers: { custom: { list: [] } },
+      adapters: { "foo-bar": { extras: [] } },
+    };
+    const arrs = collectArrayPaths(
+      obj, "", new Set(["triggers"]), new Set(["adapters"]),
+    );
+    // triggers subtree is skipped entirely
+    expect([...arrs].filter((p) => p.startsWith("triggers"))).toEqual([]);
+    // adapters map keys are wildcard-normalized
+    expect(arrs.has("adapters.*.extras")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // harness subset check — templates/harness/config.yaml ⊆ config.reference.yaml
 // ---------------------------------------------------------------------------
 
@@ -250,6 +285,30 @@ describe("harness config subset of reference", () => {
     const extras = [...hp].filter((p) => !rp.has(p)).sort();
     expect(extras).toEqual(["adapters.*.bogus_extra"]);
   });
+
+  test("allows harness entries under an empty reference array", () => {
+    // Reference declares `cluster.machines: []` — no `.*` children are
+    // enumerated, but a valid harness entry underneath should be accepted.
+    const harnessObj = {
+      cluster: { machines: [{ name: "desktop", host: "desktop.local" }] },
+    };
+    const refObj = {
+      cluster: { machines: [] },
+    };
+    const hp = flattenYamlPaths(harnessObj, "", FREEFORM_CHILDREN, WILDCARD_MAP_PATHS);
+    const rp = flattenYamlPaths(refObj, "", FREEFORM_CHILDREN, WILDCARD_MAP_PATHS);
+    const refArrays = collectArrayPaths(refObj, "", FREEFORM_CHILDREN, WILDCARD_MAP_PATHS);
+
+    const isUnderRefArray = (p: string): boolean => {
+      for (const arr of refArrays) {
+        const wp = arr ? `${arr}.*` : "*";
+        if (p === wp || p.startsWith(`${wp}.`)) return true;
+      }
+      return false;
+    };
+    const extras = [...hp].filter((p) => !rp.has(p) && !isUnderRefArray(p));
+    expect(extras).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -271,25 +330,25 @@ describe("integration", () => {
   });
 
   test("lint-config-reference exits 1 when harness has an extra key", async () => {
-    const { mkdtempSync, writeFileSync, cpSync, rmSync } = await import("fs");
+    const { mkdtempSync, writeFileSync, rmSync } = await import("fs");
     const { tmpdir } = await import("os");
 
+    const repoRoot = join(import.meta.dir, "..");
     const tmp = mkdtempSync(join(tmpdir(), "ludics-lint-harness-"));
     try {
-      // Mirror the real repo layout: scripts/, src/, templates/.
-      const repoRoot = join(import.meta.dir, "..");
-      cpSync(join(repoRoot, "scripts"), join(tmp, "scripts"), { recursive: true });
-      cpSync(join(repoRoot, "src"), join(tmp, "src"), { recursive: true });
-      cpSync(join(repoRoot, "templates"), join(tmp, "templates"), { recursive: true });
+      // Start from the real harness and append an extra top-level key.
+      const harnessFixture = join(tmp, "harness-with-extra.yaml");
+      const original = readFileSync(
+        join(repoRoot, "templates", "harness", "config.yaml"), "utf-8",
+      );
+      writeFileSync(harnessFixture, original + "\nbogus_harness_only_key: true\n");
 
-      // Inject an extra key into the harness config that's not in the reference.
-      const harnessFile = join(tmp, "templates", "harness", "config.yaml");
-      const original = readFileSync(harnessFile, "utf-8");
-      writeFileSync(harnessFile, original + "\nbogus_harness_only_key: true\n");
-
+      // Run the real script in the real repo (deps resolve) but override
+      // the harness path via env var so it reads our fixture.
       const result = spawnSync({
-        cmd: ["bun", "run", join(tmp, "scripts", "lint-config-reference.ts")],
-        cwd: tmp,
+        cmd: ["bun", "run", join(repoRoot, "scripts", "lint-config-reference.ts")],
+        cwd: repoRoot,
+        env: { ...process.env, LUDICS_HARNESS_CONFIG_PATH: harnessFixture },
         stdout: "pipe",
         stderr: "pipe",
       });
