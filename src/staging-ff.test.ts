@@ -269,6 +269,48 @@ describe("maybeFastForwardStagingFromUpstream", () => {
     expect(res[0]!.outcome).toBe("skipped-no-path");
   });
 
+  test("default-branch detection uses ls-remote --symref after fetch (authoritative tier)", () => {
+    // Regression for task-b0d4f45b item 3: when symbolic-ref is absent (common
+    // for manually-added remotes), the fast-forward path must consult
+    // `ls-remote --symref` so non-main/master defaults (e.g. `develop`) are
+    // detected correctly. The briefing path still stays local-only.
+    const dir = tmp("ff-checkout-");
+    const sentinelDir = tmp("ff-sentinel-");
+    mkdirSync(dir, { recursive: true });
+    const calls: string[][] = [];
+    const run: RunGit = (args) => {
+      calls.push(args.slice());
+      const key = args[0] ?? "";
+      if (key === "remote") return { stdout: "origin\nupstream\n", exitCode: 0 };
+      if (key === "fetch") return { stdout: "", exitCode: 0 };
+      if (key === "status") return { stdout: "", exitCode: 0 };
+      if (key === "symbolic-ref") return { stdout: "", exitCode: 128 };
+      if (key === "ls-remote" && args[2] === "upstream") {
+        return { stdout: "ref: refs/heads/develop\tHEAD\n0123abc\tHEAD\n", exitCode: 0 };
+      }
+      if (key === "ls-remote" && args[2] === "origin") {
+        return { stdout: "ref: refs/heads/develop\tHEAD\n0123abc\tHEAD\n", exitCode: 0 };
+      }
+      if (key === "rev-parse" && args[1] === "--abbrev-ref") {
+        return { stdout: "develop\n", exitCode: 0 };
+      }
+      if (key === "merge") return { stdout: "Already up to date.\n", exitCode: 0 };
+      if (key === "rev-list") return { stdout: "0\n", exitCode: 0 };
+      return { stdout: "", exitCode: 0 };
+    };
+    const res = maybeFastForwardStagingFromUpstream(
+      [project("ocannl", dir)],
+      { now: new Date(), runGit: run, sentinelDir },
+    );
+    expect(res[0]!.outcome).toBe("already-up-to-date");
+    // ls-remote --symref was consulted (proof of authoritative path engaging).
+    expect(calls.some((c) => c[0] === "ls-remote" && c[1] === "--symref")).toBe(true);
+    // Merge target used the `develop` branch name from ls-remote output.
+    const merge = calls.find((c) => c[0] === "merge");
+    expect(merge).toBeDefined();
+    expect(merge!.includes("upstream/develop")).toBe(true);
+  });
+
   test("fetch failure: records error, touches sentinel, does not attempt merge", () => {
     const dir = tmp("ff-checkout-");
     const sentinelDir = tmp("ff-sentinel-");
