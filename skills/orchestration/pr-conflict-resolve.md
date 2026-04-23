@@ -2,6 +2,10 @@
 
 Your PR in `{{PR_FILE}}` has merge conflicts with the base branch. From `{{WORKTREE_PATH}}`:
 
+```sh
+PR_URL=$(cat "{{PR_FILE}}" 2>/dev/null)
+```
+
 1. Fetch latest changes:
    ```sh
    git fetch origin
@@ -9,7 +13,7 @@ Your PR in `{{PR_FILE}}` has merge conflicts with the base branch. From `{{WORKT
 
 2. Determine the PR's base branch and rebase onto it:
    ```sh
-   BASE=$(gh pr view --json baseRefName -q .baseRefName)
+   BASE=$(gh pr view "$PR_URL" {{#IF PROJECT_REPO}}--repo "{{PROJECT_REPO}}" {{/IF}}--json baseRefName -q .baseRefName)
    git rebase "origin/$BASE"
    ```
    Resolve each conflict — keep your changes where they're correct, take upstream where that makes more sense.
@@ -21,14 +25,14 @@ Your PR in `{{PR_FILE}}` has merge conflicts with the base branch. From `{{WORKT
 
 4. Verify the PR is now conflict-free:
    ```sh
-   gh pr view --json mergeable
+   gh pr view "$PR_URL" {{#IF PROJECT_REPO}}--repo "{{PROJECT_REPO}}" {{/IF}}--json mergeable
    ```
 
 If new conflicts appear after rebasing (e.g., from concurrent upstream merges), repeat the rebase cycle until the PR is clean.
 
 While you're here, check for pending reviewer comments:
 ```sh
-gh pr view --json reviews,comments --jq '.reviews,.comments'
+gh pr view "$PR_URL" {{#IF PROJECT_REPO}}--repo "{{PROJECT_REPO}}" {{/IF}}--json reviews,comments --jq '.reviews,.comments'
 gh api --paginate repos/{owner}/{repo}/pulls/{number}/comments --jq '.[] | {path, line, body}'
 ```
 

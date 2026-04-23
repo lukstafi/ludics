@@ -284,6 +284,65 @@ describe("skills", () => {
     expect(rendered).toContain('gh pr create --repo "owner/my-staging"');
   });
 
+  test("pr-comments template targets the PR URL and includes --repo with PROJECT_REPO", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pr-comments.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      PR_FILE: "/tmp/coder.pr",
+      PROJECT_REPO: "owner/my-staging",
+    });
+    expect(rendered).toContain('PR_URL=$(cat "/tmp/coder.pr"');
+    expect(rendered).toContain('gh pr view "$PR_URL" --repo "owner/my-staging" --json reviews,comments');
+    // Bare `gh pr view --json` (no URL arg) must be gone
+    expect(rendered).not.toMatch(/gh pr view --json/);
+  });
+
+  test("pr-comments template omits --repo when PROJECT_REPO is empty but still passes the PR URL", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pr-comments.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, { ...baseCtx(), PR_FILE: "/tmp/coder.pr" });
+    expect(rendered).toContain('gh pr view "$PR_URL" --json reviews,comments');
+    expect(rendered).not.toContain("--repo");
+  });
+
+  test("pr-conflict-resolve template targets the PR URL and includes --repo for all three gh pr view calls", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pr-conflict-resolve.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      PR_FILE: "/tmp/coder.pr",
+      PROJECT_REPO: "owner/my-staging",
+    });
+    expect(rendered).toContain('PR_URL=$(cat "/tmp/coder.pr"');
+    expect(rendered).toContain('gh pr view "$PR_URL" --repo "owner/my-staging" --json baseRefName');
+    expect(rendered).toContain('gh pr view "$PR_URL" --repo "owner/my-staging" --json mergeable');
+    expect(rendered).toContain('gh pr view "$PR_URL" --repo "owner/my-staging" --json reviews,comments');
+    // No bare `gh pr view --json` left in the template after rendering
+    expect(rendered).not.toMatch(/gh pr view --json/);
+  });
+
+  test("final-merge template targets the PR URL and includes --repo with PROJECT_REPO", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/final-merge.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      PR_FILE: "/tmp/coder.pr",
+      PROJECT_REPO: "owner/my-staging",
+    });
+    expect(rendered).toContain('PR_URL=$(cat "/tmp/coder.pr"');
+    expect(rendered).toContain('gh pr merge "$PR_URL" --repo "owner/my-staging" --merge --delete-branch');
+    expect(rendered).not.toMatch(/gh pr merge --merge/);
+  });
+
+  test("final-merge template omits --repo when PROJECT_REPO is empty but still passes the PR URL", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/final-merge.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, { ...baseCtx(), PR_FILE: "/tmp/coder.pr" });
+    expect(rendered).toContain('gh pr merge "$PR_URL" --merge --delete-branch');
+    expect(rendered).not.toContain("--repo");
+  });
+
   test("buildSkillContext: hierarchical duo suppresses UPSTREAM_REPO when duoPeerSlot is set", async () => {
     const tmpCfg = "/tmp/ludics-skills-duo-upstream-test.yaml";
     writeFileSync(tmpCfg, [
