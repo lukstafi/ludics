@@ -49,7 +49,7 @@ describe("my feature", () => {
 });
 ```
 
-This pattern is used throughout `src/orchestration/runner.test.ts`.
+This pattern is used throughout the `src/orchestration/runner.*.test.ts` cluster files.
 
 **Per-test inline spies** (one-off mocks scoped to a single test):
 
@@ -70,7 +70,7 @@ Both styles are acceptable. The key invariant is: **every spy must be restored b
 
 ### Reference examples
 
-- `src/orchestration/runner.test.ts` — suite-level `beforeEach`/`afterEach` pattern
+- `src/orchestration/runner.*.test.ts` (e.g. `runner.lifecycle.test.ts`) — suite-level `beforeEach`/`afterEach` pattern
 - `src/orchestration/transport-tmux.test.ts` — per-test inline spy pattern
 
 ## Network-Binding Tests
