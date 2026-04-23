@@ -31,5 +31,8 @@ jobs:
       - name: Lint config reference drift
         run: bun run lint:config-reference
 
+      - name: Lint template variable safety
+        run: bun run lint:template-safety
+
       - name: Lint — no mock.module() in tests
         run: bun run lint:no-mock-module
