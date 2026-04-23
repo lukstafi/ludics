@@ -398,6 +398,148 @@ describe("ensureGitExcludes", () => {
     cleanupWorktrees(repo, "excl", [{ name: "a1" }, { name: "a2" }], 7);
   });
 
+  test("idempotent no-op: unchanged HEAD when no UNTRACK_PATHS are tracked", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "exclude-untrack-noop");
+    initRepo(repo);
+    const headBefore = gitLog(repo, "%H").split("\n")[0];
+    const countBefore = gitLogCount(repo);
+
+    ensureGitExcludes(repo);
+    ensureGitExcludes(repo);
+
+    expect(gitLog(repo, "%H").split("\n")[0]).toBe(headBefore);
+    expect(gitLogCount(repo)).toBe(countBefore);
+  });
+
+  test("untracks previously-tracked .peer-sync with a chore commit on current branch", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "exclude-untrack-peer-sync");
+    initRepo(repo);
+    mkdirSync(join(repo, ".peer-sync"), { recursive: true });
+    writeFileSync(join(repo, ".peer-sync", "x"), "peer\n");
+    run(["git", "add", "-A"], repo);
+    run(["git", "commit", "-m", "track peer-sync"], repo);
+    const countBefore = gitLogCount(repo);
+
+    ensureGitExcludes(repo);
+
+    // File no longer in the index
+    const lsFiles = Bun.spawnSync(["git", "ls-files"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(lsFiles).not.toContain(".peer-sync/x");
+
+    // Working tree file still present
+    expect(existsSync(join(repo, ".peer-sync", "x"))).toBe(true);
+
+    // Exactly one new chore commit at HEAD
+    expect(gitLogCount(repo)).toBe(countBefore + 1);
+    expect(gitLog(repo, "%s").split("\n")[0]).toBe("chore: untrack orchestration-internal files");
+
+    // Second call is a no-op: no further commit
+    ensureGitExcludes(repo);
+    expect(gitLogCount(repo)).toBe(countBefore + 1);
+  });
+
+  test("does NOT untrack .claude/ — user-tracked orchestration paths are preserved", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "exclude-preserve-claude");
+    initRepo(repo);
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    writeFileSync(join(repo, ".claude", "settings.json"), '{"ok":true}\n');
+    run(["git", "add", "-A"], repo);
+    run(["git", "commit", "-m", "track claude"], repo);
+    const countBefore = gitLogCount(repo);
+
+    ensureGitExcludes(repo);
+
+    const lsFiles = Bun.spawnSync(["git", "ls-files"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(lsFiles).toContain(".claude/settings.json");
+
+    // No new chore commit
+    expect(gitLogCount(repo)).toBe(countBefore);
+  });
+
+  test("skips untrack when pre-existing staged changes would be swept into the chore commit", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "exclude-untrack-skip-prestaged");
+    initRepo(repo);
+    // Track a .peer-sync file (would normally be untracked by ensureGitExcludes)
+    mkdirSync(join(repo, ".peer-sync"), { recursive: true });
+    writeFileSync(join(repo, ".peer-sync", "x"), "peer\n");
+    run(["git", "add", "-A"], repo);
+    run(["git", "commit", "-m", "track peer-sync"], repo);
+    // Pre-stage an unrelated change that must not be swept into the chore commit
+    writeFileSync(join(repo, "README.md"), "modified\n");
+    run(["git", "add", "README.md"], repo);
+    const countBefore = gitLogCount(repo);
+
+    // Silence the expected warning so test output stays clean
+    const origErr = console.error;
+    const warnings: string[] = [];
+    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      ensureGitExcludes(repo);
+    } finally {
+      console.error = origErr;
+    }
+
+    // Warning emitted about the skip
+    expect(warnings.some((w) => w.includes("skipping untrack") && w.includes("pre-existing staged"))).toBe(true);
+
+    // No chore commit created
+    expect(gitLogCount(repo)).toBe(countBefore);
+
+    // .peer-sync/x is still tracked (untrack skipped)
+    const lsFiles = Bun.spawnSync(["git", "ls-files"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(lsFiles).toContain(".peer-sync/x");
+
+    // User's pre-staged README change is still staged and intact
+    const stagedDiff = Bun.spawnSync(["git", "diff", "--cached", "--name-only"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(stagedDiff.trim()).toBe("README.md");
+  });
+
+  test("round-commit flow: after ensureGitExcludes untracks .peer-sync, autoCommitWorktree commits real changes only", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "exclude-untrack-round-flow");
+    initRepo(repo);
+    mkdirSync(join(repo, ".peer-sync"), { recursive: true });
+    writeFileSync(join(repo, ".peer-sync", "coder.status"), "pending\n");
+    run(["git", "add", "-A"], repo);
+    run(["git", "commit", "-m", "track peer-sync"], repo);
+
+    ensureGitExcludes(repo);
+    // After the chore commit, `.peer-sync/coder.status` is untracked, and the
+    // working-tree copy remains (may even be modified by orchestration later).
+    writeFileSync(join(repo, ".peer-sync", "coder.status"), "done\n");
+
+    // Real source change should still commit
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src", "main.ts"), "export const y = 2;\n");
+
+    const result = autoCommitWorktree(repo, "round: real changes");
+    expect(result.dirty).toBe(true);
+    expect(result.committed).toBe(true);
+
+    const showStat = Bun.spawnSync(["git", "show", "--stat", "--format=", "HEAD"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(showStat).toContain("src/main.ts");
+    expect(showStat).not.toContain(".peer-sync");
+  });
+
   test("git add -A in a worktree ignores orchestration files", () => {
     if (!Bun.which("git")) return;
     mkdirSync(TMP, { recursive: true });

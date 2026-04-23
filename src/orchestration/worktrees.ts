@@ -32,15 +32,41 @@ export const GIT_EXCLUDE_ENTRIES = [
   "_build_review*",
 ];
 
+/** Subset of {@link GIT_EXCLUDE_ENTRIES} that is unambiguously orchestration-internal —
+ *  safe to proactively `git rm --cached` from the index so these paths do not enter
+ *  future commits on the current branch. Deliberately excludes paths that projects
+ *  may legitimately track themselves (`.claude`, `.agents`, `node_modules`,
+ *  `_build_review*`); those continue to rely on the defensive `git reset HEAD --`
+ *  step inside {@link autoCommitWorktree}. */
+const UNTRACK_PATHS = [
+  PEER_SYNC_DIRNAME,
+  ".ludics-orchestration.json",
+  ".agent-sessions",
+] as const;
+
 /**
  * Ensure that all {@link GIT_EXCLUDE_ENTRIES} are present in the local
- * `.git/info/exclude` for the given repo or worktree path.
+ * `.git/info/exclude` for the given repo or worktree path, and that the narrow
+ * {@link UNTRACK_PATHS} subset is not tracked in the index.
+ *
  * Uses `--git-common-dir` so that worktrees write to the shared exclude
  * file that git actually reads (not the per-worktree git dir).
- * Idempotent: only appends entries that are not already present.
- * Throws on failure — this is required setup, not best-effort.
  *
- * This is the sole source of truth for orchestration-worktree exclusions;
+ * For {@link UNTRACK_PATHS} (`.peer-sync`, `.ludics-orchestration.json`,
+ * `.agent-sessions`) that happen to be tracked, runs `git rm --cached -r` and
+ * records the staged deletion(s) in a dedicated `chore: untrack
+ * orchestration-internal files` commit on the current branch. The working-tree
+ * copies are left in place. Other `GIT_EXCLUDE_ENTRIES` (`.claude`, `.agents`,
+ * `node_modules`, `_build_review*`) are NOT untracked here — projects may
+ * legitimately commit them, and the defensive reset in {@link autoCommitWorktree}
+ * handles those cases.
+ *
+ * Idempotent: repeated calls produce neither duplicate exclude entries nor
+ * additional chore commits. Throws on unexpected git failure in the
+ * exclude-file setup — this is required setup, not best-effort. A failed chore
+ * commit logs a warning but does not throw.
+ *
+ * This is the primary source of truth for orchestration-worktree exclusions;
  * do not combine it with `:(exclude)` pathspecs on `git add`. See
  * `docs/testing-patterns.md` § "Orchestration Worktree Exclusions".
  */
@@ -61,10 +87,56 @@ export function ensureGitExcludes(repoPath: string): void {
 
   const existingLines = new Set(existing.split("\n"));
   const missing = GIT_EXCLUDE_ENTRIES.filter((e) => !existingLines.has(e));
-  if (missing.length === 0) return;
+  if (missing.length > 0) {
+    const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+    writeFileSync(excludePath, existing + prefix + missing.join("\n") + "\n");
+  }
 
-  const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-  writeFileSync(excludePath, existing + prefix + missing.join("\n") + "\n");
+  untrackOrchestrationInternal(repoPath);
+}
+
+/** Untrack the narrow {@link UNTRACK_PATHS} subset from the index, if any of them
+ *  are tracked, and commit the staged deletion(s) with a dedicated chore message.
+ *  No-op otherwise. Never throws — a failed chore commit logs a warning.
+ *
+ *  Safety: if there are pre-existing staged changes (e.g. from an adapter or
+ *  a concurrent agent staging state before setup), skip the untrack step
+ *  entirely — otherwise `git commit` would sweep those unrelated changes into
+ *  the synthetic chore commit. The exclude-file write in {@link ensureGitExcludes}
+ *  has already completed by the time we're called, so skipping here only
+ *  leaves already-tracked orchestration paths in the index, which the
+ *  defensive reset in {@link autoCommitWorktree} still handles at commit time.
+ */
+function untrackOrchestrationInternal(repoPath: string): void {
+  const ls = safeSyncOutput(["git", "ls-files", "--", ...UNTRACK_PATHS], { cwd: repoPath });
+  if (!ls.ok || !ls.stdout) return;
+
+  // Refuse to run if there are pre-existing staged changes — otherwise our
+  // chore commit would silently include them.
+  const preStaged = maybeGit(repoPath, ["diff", "--cached", "--name-only"]);
+  if (preStaged) {
+    console.error(
+      `ludics: skipping untrack of orchestration-internal files in ${repoPath}: pre-existing staged changes detected`,
+    );
+    return;
+  }
+
+  for (const path of UNTRACK_PATHS) {
+    maybeGit(repoPath, ["rm", "--cached", "-r", "--ignore-unmatch", "--", path]);
+  }
+
+  const staged = maybeGit(repoPath, ["diff", "--cached", "--name-only"]);
+  if (!staged) return;
+
+  const commit = safeSyncOutput(
+    ["git", "commit", "-m", "chore: untrack orchestration-internal files"],
+    { cwd: repoPath },
+  );
+  if (!commit.ok) {
+    console.error(
+      `ludics: untrack chore commit failed in ${repoPath}: ${commit.stderr || "unknown error"}`,
+    );
+  }
 }
 
 function worktreeExists(projectDir: string, path: string): boolean {
@@ -291,10 +363,14 @@ export function cleanupWorktrees(
  *  `.git/info/exclude` prevents untracked files from being staged, but if any
  *  orchestration path is already tracked, `git add -A` would still stage it.
  *  These pathspecs are passed to `git reset HEAD --` to defensively unstage them.
+ *  Narrowed to the entries NOT already handled by the proactive untrack step in
+ *  {@link ensureGitExcludes} — i.e. paths that projects may legitimately commit
+ *  (`.claude`, `.agents`, `node_modules`, `_build_review*`), so we must not
+ *  untrack them but still must keep them out of orchestration round commits.
  *  Glob entries are expanded to match both top-level and nested occurrences. */
-const ORCHESTRATION_RESET_PATHS = GIT_EXCLUDE_ENTRIES.flatMap((e) =>
-  /[*?[]/.test(e) ? [e, `**/${e}`] : [e],
-);
+const ORCHESTRATION_RESET_PATHS = GIT_EXCLUDE_ENTRIES
+  .filter((e) => !(UNTRACK_PATHS as readonly string[]).includes(e))
+  .flatMap((e) => (/[*?[]/.test(e) ? [e, `**/${e}`] : [e]));
 
 export interface AutoCommitResult {
   /** Whether the worktree had eligible uncommitted changes. */
