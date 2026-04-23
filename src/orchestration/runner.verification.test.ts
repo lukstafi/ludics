@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach, spyOn, setDefaultTimeout
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isAgentDone, evaluateTransition } from "./phases.ts";
-import { verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut, isWorktreeNoOp, validatePreviousPhaseArtifacts, validateAgentPrFiles, type PreviousPhaseContext } from "./runner.ts";
+import { verifyPhaseOutcome, PR_CREATE_GATE, FINAL_MERGE_GATE, handleVerifyFailure, getFirstPrUrl, MAX_VERIFY_ATTEMPTS, checkZeroCommitsAutoBailOut, isWorktreeNoOp, triggerCoderBailOut, validatePreviousPhaseArtifacts, validateAgentPrFiles, type PreviousPhaseContext } from "./runner.ts";
 import * as notify from "../notify.ts";
 import * as events from "../events.ts";
 import * as github from "./github.ts";
@@ -544,6 +544,163 @@ describe("early work-phase no-op detection", () => {
     // isWorktreeNoOp should return false — no bail-out
     expect(isWorktreeNoOp(coder.worktreePath, state.projectDir)).toBe(false);
     expect(state.agentStates.coder!.status).not.toBe("bail-out");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// triggerCoderBailOut
+// ---------------------------------------------------------------------------
+
+describe("triggerCoderBailOut", () => {
+  let eventSpy: ReturnType<typeof spyOn>;
+  let persistSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    persistSpy = spyOn(stateMod, "persistState").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    eventSpy.mockRestore();
+    persistSpy.mockRestore();
+  });
+
+  test("first call: mutates runtime, writes .status file, emits bail_out event, persists", () => {
+    const peerDir = makeTmpDir();
+    const state = makeState({ phase: "work" }, peerDir);
+    const coder = state.agents.find(a => a.role === "coder")!;
+
+    triggerCoderBailOut(
+      state, coder,
+      "work-phase no-op detection",
+      "Coder worktree has 0 commits ahead and no uncommitted diffs — triggering bail-out protocol",
+    );
+
+    const runtime = state.agentStates.coder!;
+    expect(runtime.status).toBe("bail-out");
+    expect(runtime.statusMessage).toBe("no-op: zero commits ahead of base, no uncommitted diffs");
+    expect(typeof runtime.statusEpoch).toBe("number");
+
+    const statusContents = readFileSync(join(peerDir, "coder.status"), "utf-8");
+    expect(statusContents).toBe(
+      `bail-out|${runtime.statusEpoch}|no-op: zero commits ahead of base, no uncommitted diffs\n`,
+    );
+
+    expect(eventSpy).toHaveBeenCalledTimes(1);
+    const event = eventSpy.mock.calls[0][0];
+    expect(event.event_type).toBe("bail_out");
+    expect(event.source).toBe("orchestration");
+    expect(event.scope).toBe("slot");
+    expect(event.slot).toBe(state.slot);
+    expect(event.task).toBe(state.taskId);
+    expect(event.action).toBe("work-phase no-op detection");
+    expect(event.status).toBe("bail-out");
+    expect(event.message).toBe(
+      "Coder worktree has 0 commits ahead and no uncommitted diffs — triggering bail-out protocol",
+    );
+
+    expect(persistSpy).toHaveBeenCalled();
+  });
+
+  test("second call with status already bail-out: no event emitted, no new .status write", () => {
+    const peerDir = makeTmpDir();
+    const state = makeState({ phase: "work" }, peerDir);
+    const coder = state.agents.find(a => a.role === "coder")!;
+
+    triggerCoderBailOut(state, coder, "action-a", "message-a");
+    expect(eventSpy).toHaveBeenCalledTimes(1);
+
+    const firstContents = readFileSync(join(peerDir, "coder.status"), "utf-8");
+    const firstEpoch = state.agentStates.coder!.statusEpoch;
+
+    eventSpy.mockClear();
+    // Second call — runtime.status is already "bail-out"
+    triggerCoderBailOut(state, coder, "action-b", "message-b");
+
+    expect(eventSpy).not.toHaveBeenCalled();
+    // .status file byte-identical (same epoch, same message)
+    expect(readFileSync(join(peerDir, "coder.status"), "utf-8")).toBe(firstContents);
+    expect(state.agentStates.coder!.statusEpoch).toBe(firstEpoch);
+  });
+
+  test("passes through custom (action, message) and eventStatus", () => {
+    const peerDir = makeTmpDir();
+    const state = makeState({ phase: "pr-create" }, peerDir);
+    const coder = state.agents.find(a => a.role === "coder")!;
+
+    triggerCoderBailOut(
+      state, coder,
+      "pr-create auto-bail-out",
+      "0 commits ahead of base branch — no PR possible, skipping to done",
+      undefined, // statusMessage default
+      "skipped",
+    );
+
+    expect(eventSpy).toHaveBeenCalledTimes(1);
+    const event = eventSpy.mock.calls[0][0];
+    expect(event.action).toBe("pr-create auto-bail-out");
+    expect(event.message).toBe("0 commits ahead of base branch — no PR possible, skipping to done");
+    expect(event.status).toBe("skipped");
+  });
+
+  test("byte-identical .status + event payload for both call sites", () => {
+    // Emulate the pre-refactor behaviour at each call site and verify the
+    // helper produces identical outputs. Covers both migration snapshots.
+
+    // Site 1: early work-phase detection.
+    const peerDir1 = makeTmpDir();
+    const state1 = makeState({ phase: "work" }, peerDir1);
+    const coder1 = state1.agents.find(a => a.role === "coder")!;
+    triggerCoderBailOut(
+      state1, coder1,
+      "work-phase no-op detection",
+      "Coder worktree has 0 commits ahead and no uncommitted diffs — triggering bail-out protocol",
+    );
+    const status1 = readFileSync(join(peerDir1, "coder.status"), "utf-8");
+    const event1 = eventSpy.mock.calls[0][0];
+
+    expect(status1).toBe(
+      `bail-out|${state1.agentStates.coder!.statusEpoch}|no-op: zero commits ahead of base, no uncommitted diffs\n`,
+    );
+    expect(event1).toMatchObject({
+      event_type: "bail_out",
+      source: "orchestration",
+      scope: "slot",
+      slot: state1.slot,
+      task: state1.taskId,
+      action: "work-phase no-op detection",
+      status: "bail-out",
+      message: "Coder worktree has 0 commits ahead and no uncommitted diffs — triggering bail-out protocol",
+    });
+
+    // Site 2: checkZeroCommitsAutoBailOut body.
+    eventSpy.mockClear();
+    const peerDir2 = makeTmpDir();
+    const state2 = makeState({ phase: "pr-create" }, peerDir2);
+    const coder2 = state2.agents.find(a => a.role === "coder")!;
+    triggerCoderBailOut(
+      state2, coder2,
+      "pr-create auto-bail-out",
+      "0 commits ahead of base branch — no PR possible, skipping to done",
+      undefined,
+      "skipped",
+    );
+    const status2 = readFileSync(join(peerDir2, "coder.status"), "utf-8");
+    const event2 = eventSpy.mock.calls[0][0];
+
+    expect(status2).toBe(
+      `bail-out|${state2.agentStates.coder!.statusEpoch}|no-op: zero commits ahead of base, no uncommitted diffs\n`,
+    );
+    expect(event2).toMatchObject({
+      event_type: "bail_out",
+      source: "orchestration",
+      scope: "slot",
+      slot: state2.slot,
+      task: state2.taskId,
+      action: "pr-create auto-bail-out",
+      status: "skipped",
+      message: "0 commits ahead of base branch — no PR possible, skipping to done",
+    });
   });
 });
 
