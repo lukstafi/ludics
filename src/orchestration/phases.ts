@@ -381,6 +381,27 @@ export function pairReviewVerdict(state: OrchestrationState): "approve" | "reque
     : reviewFilePath(state.peerSyncDir, "review", state.round, reviewer.name);
   if (!existsSync(reviewFile)) return null;
   const content = readFileSync(reviewFile, "utf-8").toUpperCase();
+
+  // Line-1-wins (issue #346): reviewer templates prescribe the verdict token
+  // on the first non-blank line. Trusting line 1 prevents prose further down
+  // that happens to mention REQUEST_CHANGES (quoted template text, filenames,
+  // consequence descriptions) from overriding an APPROVE verdict.
+  const headerOnlyLine = /^\s*(?:#{1,6}\s*VERDICT\s*:?\s*|\*\*\s*VERDICT\s*\*\*\s*:?\s*)$/;
+  for (const raw of content.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "") continue;
+    if (headerOnlyLine.test(line)) continue;
+    const stripped = line.replace(/^[`*\s]+/, "").replace(/[`*\s.:;,!?]+$/, "");
+    const tokenMatch = stripped.match(/^(APPROVE|REQUEST_CHANGES)\b/);
+    if (tokenMatch) {
+      return tokenMatch[1] === "APPROVE" ? "approve" : "request_changes";
+    }
+    break; // first verdict-bearing line reached; fall through to safety-net regex
+  }
+
+  // Fallback (silent safety net) for unusual layouts where the verdict token
+  // isn't on line 1. Vulnerable to prose contamination, so only consulted when
+  // line-1 detection above did not recognize a token.
   if (/\bAPPROVE\b/.test(content) && !/\bREQUEST_CHANGES\b/.test(content)) return "approve";
   if (/\bREQUEST_CHANGES\b/.test(content)) return "request_changes";
   return null;
