@@ -166,6 +166,32 @@ function taskSpecText(state: OrchestrationState): string {
   return appendGhIssueBody(content);
 }
 
+/** Extract the body under `## Acceptance Criteria` from tasks/{taskId}.md.
+ *  Returns "" when the task file, the section, or the non-placeholder body
+ *  is missing. Stops at the next `##` heading or EOF. */
+function extractAcceptanceCriteria(taskId: string | undefined): string {
+  if (!taskId) return "";
+  const path = join(harnessDir(), "tasks", `${taskId}.md`);
+  const content = readFileIfExists(path);
+  if (!content) return "";
+  const headingMatch = content.match(/^##\s+Acceptance Criteria\s*$/m);
+  if (!headingMatch || headingMatch.index == null) return "";
+  const afterHeading = content.slice(headingMatch.index + headingMatch[0].length);
+  const nextHeading = afterHeading.match(/\n##\s+/);
+  const section = nextHeading ? afterHeading.slice(0, nextHeading.index) : afterHeading;
+  const body = section.trim();
+  if (!body) return "";
+  // Filter the `- [ ] TBD` placeholder that the task template seeds; if
+  // nothing else remains, treat the section as empty so templates can gate
+  // cleanly with `{{#IF TASK_AC}}`.
+  const leftover = body
+    .split("\n")
+    .filter((line) => !/^-\s*\[ \]\s*TBD\s*$/i.test(line))
+    .join("\n")
+    .trim();
+  return leftover;
+}
+
 function templateRoot(): string {
   return join(ludicsRoot(), "skills", "orchestration");
 }
@@ -288,6 +314,7 @@ export function buildSkillContext(
     PROPOSAL_PATH: proposalPath,
     PROPOSAL_INSTRUCTION: proposalInstruction,
     PROPOSAL_FRESHNESS_WARNING: proposalFreshnessWarningText,
+    TASK_AC: extractAcceptanceCriteria(state.taskId),
     PEER_REVIEW: peerReview ?? "(no review yet)",
     PEER_STATUS: peer ? (state.agentStates[peer.name]?.status ?? "unknown") : "unknown",
     PEER_PLAN: peerPlan ?? "(no plan yet)",
