@@ -234,6 +234,25 @@ function generateSlots(): SlotJson[] {
     const orchLinks = empty ? { prUrl: null, terminalLinks: null }
       : lookupSlotOrchestrationLinks(num, t3codeWebUrl, taskId, machineName || null);
 
+    // Fallback for adapters that don't maintain orchestration state
+    // (e.g. agent-claude/agent-codex solo sessions): parse URL-valued
+    // entries from the slot record's Terminals markdown. Status strings
+    // like "ttyd pid N (alive)" are filtered out — the URL guard keeps
+    // the shadow-label path dead.
+    let terminalLinks = orchLinks.terminalLinks;
+    if (!empty && terminalLinks == null && data.terminals) {
+      const fallback: Record<string, string> = {};
+      for (const line of data.terminals.split("\n")) {
+        const m = line.match(/^- ([^:]+):\s*(.+)$/);
+        if (!m) continue;
+        const value = m[2]!.trim();
+        if (value.startsWith("http://") || value.startsWith("https://")) {
+          fallback[m[1]!.trim()] = value;
+        }
+      }
+      if (Object.keys(fallback).length > 0) terminalLinks = fallback;
+    }
+
     // Check for preemption stash
     const stash = readStash(num);
 
@@ -284,7 +303,7 @@ function generateSlots(): SlotJson[] {
       proposalLink: slotProposalLink,
       prUrl: empty ? null : orchLinks.prUrl,
       githubUrl: empty ? null : githubUrl,
-      terminalLinks: empty ? null : orchLinks.terminalLinks,
+      terminalLinks: empty ? null : terminalLinks,
       effort: taskEffort,
       liveness,
       machine,

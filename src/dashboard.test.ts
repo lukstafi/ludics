@@ -523,6 +523,62 @@ describe("slots.json field shape", () => {
     expect(slot!).not.toHaveProperty("terminals");
     expect(slot!).not.toHaveProperty("t3codeThreadLinks");
   });
+
+  test("terminalLinks falls back to URL entries from slot-record Terminals when orchestration is absent", async () => {
+    const { emptySlotData, writeSlotJson } = await import("./slots/json.ts");
+    // Simulates an agent-session (agent-claude/agent-codex) slot that writes
+    // `Web: <url>` into Terminals but has no orchestration state file.
+    const data = {
+      ...emptySlotData(1),
+      process: "claude",
+      task: "task-a",
+      terminals: "- coder: tmux session 'ludics-slot-1'\n- Web: http://mac.local:7682\n",
+    };
+    writeSlotJson(1, data);
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "slots.json");
+    const slots = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const slot = slots.find((s) => s.number === 1);
+    const links = slot!.terminalLinks as Record<string, string> | null;
+    expect(links).toEqual({ Web: "http://mac.local:7682" });
+    // Status strings (no URL) must not leak through — regression guard
+    // against re-introducing the gray shadow-label path.
+    expect(links).not.toHaveProperty("coder");
+  });
+
+  test("terminalLinks stays null when slot record has only status strings", async () => {
+    const { emptySlotData, writeSlotJson } = await import("./slots/json.ts");
+    const data = {
+      ...emptySlotData(1),
+      process: "test",
+      task: "task-b",
+      terminals: "- coder: ttyd pid 9999 (alive)\n",
+    };
+    writeSlotJson(1, data);
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "slots.json");
+    const slots = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const slot = slots.find((s) => s.number === 1);
+    expect(slot!.terminalLinks).toBeNull();
+  });
 });
 
 // Note: /api/slot-resume follows the exact same pattern as /api/slot-start
