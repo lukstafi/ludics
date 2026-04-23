@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync } from "fs";
 import { basename, join } from "path";
 import YAML from "yaml";
 import { isPlainObject } from "./json.ts";
+import { PRIORITY_INCREASE, priorityValue } from "./tasks/markdown.ts";
 
 const DEFAULT_STALE_THRESHOLD = 86400; // 24 hours
 
@@ -458,31 +459,21 @@ function priorityProjectSet(): Set<string> {
 /**
  * Returns the effective (virtual) priority for a task, applying a one-level
  * boost when the task's project has `priority: true` in config:
- *   A → S, B → A, C → B (non-priority tasks keep their actual priority).
+ *   A → S, B → A, C → B, D → C (non-priority tasks keep their actual priority).
+ * Delegates to the shared PRIORITY_INCREASE table so future ladder changes
+ * only need to touch markdown.ts.
  */
 export function effectivePriority(priority: string, project: string): string {
   if (!priorityProjectSet().has(project.toLowerCase())) return priority;
-  switch (priority) {
-    case "A": return "S";
-    case "B": return "A";
-    case "C": return "B";
-    default: return priority;
-  }
+  return PRIORITY_INCREASE[priority] ?? priority;
 }
 
 /**
- * Numeric sort key for virtual priority: S=0, A=1, B=2, C=3, other=9.
+ * Numeric sort key for virtual priority: S=0, A=1, B=2, C=3, D=4, other=9.
  * Applies priority-project boost automatically.
  */
 export function effectivePriorityValue(priority: string, project: string): number {
-  const ep = effectivePriority(priority, project);
-  switch (ep) {
-    case "S": return 0;
-    case "A": return 1;
-    case "B": return 2;
-    case "C": return 3;
-    default: return 9;
-  }
+  return priorityValue(effectivePriority(priority, project));
 }
 
 /**

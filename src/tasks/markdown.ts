@@ -8,16 +8,17 @@ import type { TaskFrontmatter } from "./types.ts";
 /** Regex for valid task IDs — used across all task-related endpoints. */
 export const TASK_ID_RE = /^[A-Za-z0-9._-]+$/;
 
-export const PRIORITY_INCREASE: Record<string, string> = { C: "B", B: "A", A: "S" };
-export const PRIORITY_DECREASE: Record<string, string> = { S: "A", A: "B", B: "C" };
+export const PRIORITY_INCREASE: Record<string, string> = { D: "C", C: "B", B: "A", A: "S" };
+export const PRIORITY_DECREASE: Record<string, string> = { S: "A", A: "B", B: "C", C: "D" };
 
-/** Numeric sort key for priority levels. S < A < B < C < anything else. */
+/** Numeric sort key for priority levels. S < A < B < C < D < anything else. */
 export function priorityValue(p: string): number {
   switch (p) {
     case "S": return 0;
     case "A": return 1;
     case "B": return 2;
     case "C": return 3;
+    case "D": return 4;
     default: return 9;
   }
 }
@@ -297,7 +298,8 @@ export function writeTaskFile(
     return false;
   }
 
-  // Infer priority from labels
+  // Infer priority from labels. Never produces D — D is reachable only via
+  // explicit demote/postpone on an existing C-priority task.
   let priority = "B";
   if (/urgent|critical|high|priority/i.test(labels)) {
     priority = "A";
