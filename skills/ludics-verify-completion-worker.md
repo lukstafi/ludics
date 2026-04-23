@@ -15,6 +15,7 @@ criteria have been met.
 
 Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
+<!-- section:arguments -->
 ## Arguments
 
 `$ARGUMENTS` format: `<task_id> <project_path> [<context_brief>]`
@@ -23,8 +24,10 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 - `<project_path>`: Absolute path to the project's local checkout
 - `<context_brief>`: Optional free-form context from the orchestrator (see worker-conventions.md § Broader Context)
 
+<!-- section:process -->
 ## Process
 
+<!-- section:read-task -->
 1. **Read task file**:
    Parse `$ARGUMENTS` to extract the task ID (first word) and project path (second word).
    Any remaining text after the second word is the context brief.
@@ -33,14 +36,16 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    ```
    Extract: title, project, acceptance criteria, proposal path, slot number.
 
+<!-- section:read-proposal -->
 2. **Read proposal** (if available):
    - If `proposal:` points to a file (not `inline`), resolve the path:
      - `~/...` → expand `$HOME/...`; `/...` → use as-is; otherwise join to `<project_path>`.
      Read from the resolved absolute path.
-   - If `proposal: inline`, re-use the task file content already read in step 1 as the
+   - If `proposal: inline`, re-use the task file content already read in the read-task section as the
      proposal source — the proposal body is embedded in the task file.
    - Extract the Proposed Change and Scope sections for verification targets
 
+<!-- section:inspect-codebase -->
 3. **Inspect codebase for completion evidence**:
    - Check git log for recent commits mentioning the task ID or proposal name:
      ```bash
@@ -57,6 +62,7 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
      ```
      Then grep those files for `TODO`, `FIXME`, `HACK`, `XXX`
 
+<!-- section:make-judgment -->
 4. **Make a completion judgment**:
 
    - **complete** — all acceptance criteria appear met with no critical
@@ -70,11 +76,13 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    - **incomplete** — significant acceptance criteria are clearly unmet.
      List what's missing.
 
+<!-- section:final-response -->
 ## Final Response
 
 Use the structured response format from worker-conventions.md. Emit a fenced JSON block
 as the last code block in your response:
 
+<!-- section:response-contract -->
 ### Response Contract
 
 1. `status` — string, required. Always `"completed"` in non-error cases.
@@ -99,6 +107,7 @@ as the last code block in your response:
 }
 ```
 
+<!-- section:error-handling -->
 ## Error Handling
 
 - Task not found: report `status: "error"`.

@@ -9,24 +9,29 @@ queue-action: health-check
 Detect approaching deadlines, check for semantically complete tasks, and flag
 other issues requiring attention.
 
+<!-- section:trigger -->
 ## Trigger
 
 This skill is invoked when:
 - The user runs `ludics mag health-check`
 - Periodic automation (every 4h via launchd)
 
+<!-- section:inputs -->
 ## Inputs
 
 - `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
 - **Request ID**: Read from file `$LUDICS_STATE_PATH/mag/current-request-id` — use as `LUDICS_REQUEST_ID` in result JSON
 
+<!-- section:process -->
 ## Process
 
+<!-- section:check-deadlines -->
 1. **Check approaching deadlines**:
    - Find tasks with `deadline` field
    - Calculate days remaining
    - Flag if <= 7 days (warning) or <= 3 days (critical)
 
+<!-- section:check-slots -->
 2. **Check slot health**:
    - Run `ludics slots status` to get current slot state
    - Identify slots that have been active > 24h without status update
@@ -53,10 +58,12 @@ This skill is invoked when:
      - Build stable issue key: `slot-stall:<slot>:<agent>`
      - Severity: warning if nudgeAttempts < 2, critical if >= 2
 
+<!-- section:check-queue -->
 3. **Check queue health**:
    - Read `mag/queue.jsonl`
    - Flag if requests have been pending > 1h
 
+<!-- section:check-tests -->
 4. **Check test suite health**:
    - Read `$LUDICS_STATE_PATH/mag/test-health.json` for the latest test run
      results (the pre-hook ran the tests before this skill was invoked).
@@ -72,6 +79,7 @@ This skill is invoked when:
      not "new").
    - Don't run tests yourself — the programmatic pre-hook already did.
 
+<!-- section:detect-deltas -->
 5. **Detect deltas since previous health check**:
    - Prefer git diff in state repo for scope awareness:
      `git -C "$LUDICS_STATE_PATH" diff --name-only HEAD~1..HEAD -- tasks/ sessions.md mag/queue.jsonl journal/notifications.jsonl 2>/dev/null || true`
@@ -80,10 +88,12 @@ This skill is invoked when:
    - Read previous snapshot from `$LUDICS_STATE_PATH/mag/health-last.json` if it exists
    - Mark each finding as `new`, `ongoing`, or `resolved`
 
+<!-- section:report-elaboration -->
 6. **Report task elaboration status**:
    - Run `ludics tasks needs-elaboration` to count unprocessed tasks
    - Note: Elaboration queueing is handled automatically by `tasks_queue_elaborations()` in `tasks_sync()` -- no need to enqueue here
 
+<!-- section:queue-verification -->
 7. **Queue completion verification for potentially done tasks**:
    - Run `ludics slots status` to find slots with active in-progress tasks
    - For each slotted in-progress task (where `completed` is null):
@@ -101,23 +111,28 @@ This skill is invoked when:
      c. Note queued verifications in the health report
      d. Build stable issue keys: `completion:<task-id>` for delta tracking
 
+<!-- section:generate-report -->
 8. **Generate report**:
    - Categorize issues by severity
    - Explicitly call out `new` and `resolved` findings since last check
    - Include actionable recommendations
 
+<!-- section:send-notifications -->
 9. **Send notifications** for critical issues:
    - Notify only on `new` critical issues or severity escalation (`warning` -> `critical`)
    ```bash
    ludics notify outgoing "Critical: task-042 deadline in 2 days" 5 "Health Check"
    ```
 
+<!-- section:persist-snapshot -->
 10. **Persist snapshot**:
    - Write current finding keys/severities/timestamp to
      `$LUDICS_STATE_PATH/mag/health-last.json`
 
+<!-- section:output-format -->
 ## Output Format
 
+<!-- section:health-report-output -->
 ### Health Report
 
 ```markdown
@@ -151,6 +166,7 @@ This skill is invoked when:
 2. Slot 3 may need attention - check tmux session
 ```
 
+<!-- section:result-json-output -->
 ### Result JSON
 
 ```json
@@ -164,6 +180,7 @@ This skill is invoked when:
 }
 ```
 
+<!-- section:notification-triggers -->
 ## Notification Triggers
 
 | Condition | Topic | Priority |
@@ -173,6 +190,7 @@ This skill is invoked when:
 | Queue stuck > 1h | agents | 4 (high) |
 | Completion verification queued | (none — notification handled by verify-completion skill) | — |
 
+<!-- section:delegation-strategy -->
 ## Delegation Strategy
 
 - CLI tools for date calculations and file parsing.

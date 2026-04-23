@@ -8,18 +8,21 @@ queue-action: briefing
 
 Generate a comprehensive strategic briefing for the user.
 
+<!-- section:trigger -->
 ## Trigger
 
 This skill is invoked by the ludics automation when:
 - The user runs `ludics briefing` or `ludics mag briefing`
 - A morning trigger fires (e.g., 08:00 via launchd)
 
+<!-- section:inputs -->
 ## Inputs
 
 - `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
 - `$LUDICS_RESULTS_DIR`: Directory for writing result JSON (environment variable)
 - **Request ID**: Read from file `$LUDICS_STATE_PATH/mag/current-request-id` — use as `LUDICS_REQUEST_ID` in result JSON
 
+<!-- section:pre-computed-context -->
 ## Pre-computed Context
 
 All data gathering (slots refresh, session discovery, flow computations, recent incoming,
@@ -49,10 +52,13 @@ The context file contains these sections:
 
 Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
 
+<!-- section:process -->
 ## Process
 
+<!-- section:read-context -->
 1. **Read context**: Read `$LUDICS_STATE_PATH/mag/briefing-context.md`
 
+<!-- section:check-same-day -->
 2. **Check same-day status** via the `## Same-Day Status` section.
    - `Status: amend` — light-touch update only:
      - Figure out what actually changed since the last briefing:
@@ -66,19 +72,22 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
      - Do a lightweight slot reassignment (newly-empty slots or newly-ready
        high-priority tasks only).
      - Don't re-elaborate tasks or redo the full analysis.
-     - Still run step 7 (nudge stalled slotted tasks), then skip to step 9.
+     - Still run the nudge-stalled section, then skip to the write-result section.
    - `Status: new` — proceed with the full process below.
 
+<!-- section:elaborate-tasks -->
 3. **Elaborate unprocessed tasks**:
    - Check the `## Tasks Needing Elaboration` section
    - For tasks that appear in the ready queue or are high-priority:
      - Use the Task tool to invoke `/ludics-elaborate <task-id>` (parallel)
 
+<!-- section:scan-needs-confirmation -->
 4. **Scan for needs-confirmation tasks**:
    - Check task files for `status: needs-confirmation`
    - For each, note the task ID, title, priority, and `relates_to` source task
    - These will be included in a dedicated "Needs Confirmation" section
 
+<!-- section:analyze-work -->
 5. **Analyze, merge, and split work**:
    - Identify high-priority ready tasks, approaching deadlines (7 days),
      slot utilization
@@ -94,6 +103,7 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
      - Sub-tasks: `ludics tasks create "<title>" <project> <priority>` or
        `/ludics-elaborate <task-id>` to break into children
 
+<!-- section:assign-slots -->
 6. **(Re)Assign slots**:
 
    Slot states: **Empty** (available), **Project-reserved** (path+mode, no task),
@@ -129,6 +139,7 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - **suggest**: include ready-to-run commands in the briefing
    - **manual**: include observations only
 
+<!-- section:nudge-stalled -->
 7. **Nudge stalled slotted tasks**:
    - Read the `## Active Unconcluded Slots` section first.
      - Treat listed slots as **Case A** (active, unconcluded): do **not** re-send
@@ -143,10 +154,11 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
        ```
      - Note the nudge in the briefing under Slot Assignments (e.g.,
        "Slot 3: re-sent launch buttons for task-101 (no active session)")
-   - Skip tasks whose slot was just assigned in step 6 (fresh assignments will
+   - Skip tasks whose slot was just assigned in the assign-slots section (fresh assignments will
      get their own proposal via the normal draft-proposal flow)
    - Skip if `start_sessions` autonomy is `manual`
 
+<!-- section:surface-ambiguities -->
 8. **Surface ambiguities**:
    - Review the full briefing for information gaps that would change your next
      autonomous actions (conflicting priorities, unclear task scope, suspiciously elaborated tasks,
@@ -154,11 +166,13 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
    - Formulate 1-5 specific questions (see Questions Guidelines in the output format)
    - If no genuine ambiguities exist, note "No blocking ambiguities."
 
+<!-- section:write-result -->
 9. **Write result**:
    - Write briefing to `$LUDICS_STATE_PATH/briefing.md`
    - Read request ID: `REQ_ID=$(cat "$LUDICS_STATE_PATH/mag/current-request-id")`
    - Write result JSON to `$LUDICS_RESULTS_DIR/$REQ_ID.json`
 
+<!-- section:send-questions -->
 10. **Send questions notification**:
    - Extract the `## Questions` section from the briefing you just wrote
    - If there are questions (not just "No blocking ambiguities"), send them:
@@ -168,11 +182,14 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
      Use the briefing date as the title, e.g., "Briefing questions — 2026-02-27"
    - Keep the message concise: just the numbered questions, no preamble
 
+<!-- section:commit-push -->
 11. **Commit and push state**:
     - Run `ludics sync` to commit and push to remote
 
+<!-- section:output-format -->
 ## Output Format
 
+<!-- section:briefing-md-output -->
 ### briefing.md
 
 ```markdown
@@ -223,6 +240,7 @@ project in the config has `upstream_repo` set.]
 2. [...]
 ```
 
+<!-- section:questions-guidelines -->
 ### Questions Guidelines
 
 End every briefing with 1-5 questions that surface information you can't
@@ -235,6 +253,7 @@ good idea is the right default; worst case, the user discards the results.
 When answers arrive, update the relevant files or take the relevant actions
 so the answers become discoverable.
 
+<!-- section:result-json-output -->
 ### Result JSON
 
 ```json
@@ -246,6 +265,7 @@ so the answers become discoverable.
 }
 ```
 
+<!-- section:delegation-strategy -->
 ## Delegation Strategy
 
 - Pre-computed data lives in `briefing-context.md` — no CLI commands needed
@@ -258,6 +278,7 @@ so the answers become discoverable.
 - Direct analysis for strategic reasoning, slot-assignment trade-offs,
   suggestions.
 
+<!-- section:error-handling -->
 ## Error Handling
 
 If state files are missing or malformed:

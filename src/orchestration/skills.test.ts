@@ -168,6 +168,38 @@ describe("skills", () => {
     expect(text).toContain("review-done");
   });
 
+  test("substituteTemplate: preserves <!-- section:... --> anchors and existing HTML comments", () => {
+    // Anchors inserted by gh-ludics-315 are invisible-in-rendering HTML comments.
+    // substituteTemplate() must pass them through verbatim so future sanitization
+    // refactors don't silently strip the anchors from rendered skill text.
+    const template = [
+      "<!-- section:top -->",
+      "## Process",
+      "",
+      "{{#IF AGENT_NAME}}",
+      "<!-- section:inside-if -->",
+      "step body referencing {{AGENT_NAME}}",
+      "{{/IF}}",
+      "",
+      "{{#IF MISSING_VAR}}",
+      "<!-- section:should-be-dropped -->",
+      "hidden body",
+      "{{/IF}}",
+      "",
+      "<!-- Entry: sync-learnings | 2026-04-24 -->",
+      "entry content",
+      "<!-- End entry -->",
+    ].join("\n");
+    const rendered = substituteTemplate(template, baseCtx());
+    expect(rendered).toContain("<!-- section:top -->");
+    expect(rendered).toContain("<!-- section:inside-if -->");
+    expect(rendered).toContain("step body referencing agent1");
+    expect(rendered).not.toContain("<!-- section:should-be-dropped -->");
+    expect(rendered).not.toContain("hidden body");
+    expect(rendered).toContain("<!-- Entry: sync-learnings | 2026-04-24 -->");
+    expect(rendered).toContain("<!-- End entry -->");
+  });
+
   test("composes a concrete reviewer message", async () => {
     const state = makeState();
     const reviewer = state.agents[1]!;

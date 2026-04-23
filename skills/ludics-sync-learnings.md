@@ -13,6 +13,7 @@ Read scattered learnings from corrections.md and journal files, group by theme,
 update structured memory files, archive processed entries, and file GitHub issues
 for harness improvement patterns.
 
+<!-- section:trigger -->
 ## Trigger
 
 This skill is invoked when:
@@ -20,19 +21,23 @@ This skill is invoked when:
 - Periodically (weekly) via automation
 - When corrections.md grows beyond a threshold
 
+<!-- section:inputs -->
 ## Inputs
 
 - `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
 - **Request ID**: Read from file `$LUDICS_STATE_PATH/mag/current-request-id`
 
+<!-- section:process -->
 ## Process
 
+<!-- section:read-corrections -->
 ### 1. Read recent corrections
 
 ```bash
 cat "$LUDICS_STATE_PATH/mag/memory/corrections.md"
 ```
 
+<!-- section:read-journal -->
 ### 2. Read journal friction points
 
 ```bash
@@ -41,23 +46,27 @@ grep -l "friction\|mistake\|learned" "$LUDICS_STATE_PATH/journal/"*.md
 
 Read the matching files for relevant entries.
 
+<!-- section:group-by-theme -->
 ### 3. Group by theme
 
 - Tool-related → `$LUDICS_STATE_PATH/mag/memory/tools.md`
 - Process-related → `$LUDICS_STATE_PATH/mag/memory/workflows.md`
 - Project-specific → `$LUDICS_STATE_PATH/mag/memory/projects/<project>.md`
 
+<!-- section:update-files -->
 ### 4. Update structured files
 
 - Merge similar learnings
 - Remove duplicates
 - Add cross-references
 
+<!-- section:archive-corrections -->
 ### 5. Archive processed corrections
 
 - Move processed entries to `$LUDICS_STATE_PATH/mag/memory/corrections-archive.md`
 - Keep corrections.md for recent items only
 
+<!-- section:file-issues -->
 ### 6. File GitHub issues for harness bugs/improvements
 
 When corrections reveal a pattern about the ludics harness itself:
@@ -91,6 +100,7 @@ When corrections reveal a pattern about the ludics harness itself:
   ```
 - Add comments to existing issues if new corrections add evidence
 
+<!-- section:stage-claude-md -->
 ### 7. Stage CLAUDE.md proposals (if broad patterns detected)
 
 - Append entries to `$LUDICS_STATE_PATH/AGENTS_STAGING.md`
@@ -112,6 +122,7 @@ When corrections reveal a pattern about the ludics harness itself:
   <!-- End entry -->
   ```
 
+<!-- section:write-result -->
 ### 8. Write result JSON
 
 Read the request ID from `$LUDICS_STATE_PATH/mag/current-request-id` and write
@@ -134,12 +145,14 @@ result to `$LUDICS_RESULTS_DIR/$REQ_ID.json`:
 }
 ```
 
+<!-- section:memory-file-structure -->
 ## Memory File Structure
 
 - **tools.md**: CLI tool knowledge organized by tool, with Usage and Gotchas subsections
 - **workflows.md**: Process patterns as numbered steps or checklists
 - **projects/[project].md**: Project-specific knowledge (build system, key modules, common issues)
 
+<!-- section:error-handling -->
 ## Error Handling
 
 - Corrections file missing or empty: report `CORRECTIONS_PROCESSED: 0` and

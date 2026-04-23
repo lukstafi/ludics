@@ -8,20 +8,24 @@ queue-action: adopt-sessions
 
 Match discovered agent sessions to projects and assign them to available slots.
 
+<!-- section:trigger -->
 ## Trigger
 
 This skill is invoked when:
 - Periodic trigger runs `ludics mag adopt-sessions` (every 5 min via launchd/systemd)
 - Health-check detects orphaned sessions and queues this action
 
+<!-- section:inputs -->
 ## Inputs
 
 - `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
 - **Pre-computed context**: `$LUDICS_STATE_PATH/mag/adopt-sessions-context.md`
 - **Request ID**: Read from `$LUDICS_STATE_PATH/mag/current-request-id`
 
+<!-- section:process -->
 ## Process
 
+<!-- section:read-context -->
 1. **Read context**:
    ```bash
    cat "$LUDICS_STATE_PATH/mag/adopt-sessions-context.md"
@@ -29,11 +33,13 @@ This skill is invoked when:
    If the context says "(stale or missing session data)" or "(no unclassified sessions)",
    write a no-op result and exit.
 
+<!-- section:read-slots -->
 2. **Read current slots** for confirmation:
    ```bash
    ludics slots
    ```
 
+<!-- section:adopt-matched -->
 3. **For each matched, non-stale session** (from `## Session-Project Matches`):
 
    Adapter selection — use the `**Recommended adapter:**` from the context.
@@ -110,10 +116,12 @@ This skill is invoked when:
    ludics slot N preempt <task-id> -a <adapter> -s <session-id> -p <session-cwd>
    ```
 
+<!-- section:handle-unmatched -->
 4. **Handle unmatched sessions**:
    Note them in the report. These may be scratch/experimental sessions or projects
    the user hasn't added to config yet. Do not attempt to assign them.
 
+<!-- section:autonomy-check -->
 5. **Autonomy check**:
    ```bash
    yq eval '.mag.autonomy_level.assign_to_slots' "$LUDICS_STATE_PATH/config.yaml"
@@ -122,12 +130,14 @@ This skill is invoked when:
    - **suggest**: Include ready-to-run commands in the report
    - **manual**: Include observations and recommendations only
 
+<!-- section:queue-draft-proposal -->
 6. **Queue draft-proposal** for each newly assigned task (so user gets launch buttons):
    ```bash
    ludics mag draft-proposal <task-id>
    ```
    Skip this for sessions assigned without a task (Case C).
 
+<!-- section:write-result -->
 7. **Write result JSON**:
    ```bash
    REQ_ID=$(cat "$LUDICS_STATE_PATH/mag/current-request-id" 2>/dev/null || echo "req-unknown")
@@ -144,11 +154,13 @@ This skill is invoked when:
    }
    ```
 
+<!-- section:commit-state -->
 8. **Commit state**:
    ```bash
    ludics sync
    ```
 
+<!-- section:output-format -->
 ## Output Format
 
 Brief report:
@@ -159,6 +171,7 @@ Adopted 2 sessions:
 Skipped: 1 stale, 1 unmatched (scratch), 1 project already in slot 3
 ```
 
+<!-- section:delegation-strategy -->
 ## Delegation Strategy
 
 - Pre-computed data lives in `adopt-sessions-context.md` — no discovery or
@@ -167,6 +180,7 @@ Skipped: 1 stale, 1 unmatched (scratch), 1 project already in slot 3
 - Direct judgment for prioritization, preemption trade-offs, and ambiguous cases.
 - Execute commands directly; don't spawn sub-agents.
 
+<!-- section:error-handling -->
 ## Error Handling
 
 - Context file missing: Write result with `"status": "error"`, message: "No context file"
