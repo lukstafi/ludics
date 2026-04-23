@@ -7,7 +7,7 @@
 // dirty. Throttled per-project via a sentinel file so each project runs at
 // most once every 24 hours.
 
-import { existsSync, statSync, mkdirSync, utimesSync, writeFileSync } from "fs";
+import { existsSync } from "fs";
 import { join } from "path";
 import {
   detectDefaultBranchesAuthoritative,
@@ -16,6 +16,7 @@ import {
   withCheckout,
   type RunGit,
 } from "./git-runner.ts";
+import { sentinelFresh, touchSentinel } from "./sentinel.ts";
 import type { ProjectConfig } from "./config.ts";
 
 export type FastForwardOutcome =
@@ -49,32 +50,6 @@ export interface FastForwardOptions {
 
 function sentinelFile(dir: string, project: string): string {
   return join(dir, `last-fast-forward-${project}.epoch`);
-}
-
-function sentinelFresh(file: string, now: Date, windowSec: number): boolean {
-  if (!existsSync(file)) return false;
-  try {
-    const mtime = statSync(file).mtimeMs;
-    const ageSec = (now.getTime() - mtime) / 1000;
-    return ageSec < windowSec;
-  } catch {
-    return false;
-  }
-}
-
-function touchSentinel(file: string, now: Date): void {
-  try {
-    mkdirSync(join(file, ".."), { recursive: true });
-  } catch {
-    // Parent dir may already exist; that's fine.
-  }
-  try {
-    writeFileSync(file, String(Math.floor(now.getTime() / 1000)));
-    utimesSync(file, now, now);
-  } catch {
-    // Sentinel writes are best-effort; a stale sentinel just means the next
-    // tick may run again. Not worth aborting the tick.
-  }
 }
 
 function worktreeClean(cwd: string, runGit: RunGit): boolean {
