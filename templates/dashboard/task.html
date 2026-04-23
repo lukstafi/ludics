@@ -49,6 +49,7 @@
     </footer>
 
     <script src="markdown.js"></script>
+    <script src="links.js"></script>
     <script>
         const params = new URLSearchParams(window.location.search);
         const taskId = params.get('task') || '';
@@ -123,7 +124,7 @@
             if (!container) return;
             const links = [];
             if (meta.proposal) {
-                links.push(`<a href="proposal.html?task=${encodeURIComponent(taskId)}">View Proposal</a>`);
+                links.push(`<a href="${proposalLink(taskId)}">View Proposal</a>`);
             }
             if (links.length === 0) {
                 container.hidden = true;

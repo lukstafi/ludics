@@ -598,7 +598,7 @@ function fetchNeedsConfirmation() {
             return `
             <li class="needs-confirm-item">
                 <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>
-                <a class="task-title needs-confirm-link" href="task.html?task=${encodeURIComponent(task.id)}" target="_blank">${escapeHtml(task.title || task.id)}</a>${source}
+                <a class="task-title needs-confirm-link" href="${taskLink(task.id)}" target="_blank">${escapeHtml(task.title || task.id)}</a>${source}
                 <span class="confirm-actions">
                     <button class="confirm-btn" onclick="confirmTask('${escapeHtml(task.id)}')" title="Confirm: move to ready">&#x2713;</button>
                     <button class="dismiss-btn" onclick="dismissTask('${escapeHtml(task.id)}')" title="Dismiss: abandon">&#x2715;</button>
@@ -619,7 +619,7 @@ function fetchUnansweredQuestions() {
             return `
             <li class="unanswered-q-item">
                 <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>
-                <a class="task-title unanswered-q-link" href="task.html?task=${encodeURIComponent(task.id)}" target="_blank">${escapeHtml(task.title || task.id)}</a>
+                <a class="task-title unanswered-q-link" href="${taskLink(task.id)}" target="_blank">${escapeHtml(task.title || task.id)}</a>
             </li>`;
         },
     });
@@ -634,8 +634,8 @@ function fetchDeferredLaunch() {
             const priority = task.priority || '-';
             const priorityClass = `priority-${priority}`;
             const viewLink = task.hasProposal
-                ? `proposal.html?task=${encodeURIComponent(task.id)}`
-                : `task.html?task=${encodeURIComponent(task.id)}`;
+                ? proposalLink(task.id)
+                : taskLink(task.id);
             return `
             <li class="deferred-launch-item">
                 <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>

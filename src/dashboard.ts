@@ -30,6 +30,18 @@ function dashboardDataDir(): string {
   return join(harnessDir(), "dashboard", "data");
 }
 
+// Centralized URL builders for the dashboard's task/proposal link patterns.
+// Every server- and client-side call site routes through these so the
+// encoding choice (encodeURIComponent) and path shape (absolute, leading `/`)
+// live in one place. Client-side mirrors live in templates/dashboard/links.js.
+export function taskLink(id: string): string {
+  return `/task.html?task=${encodeURIComponent(id)}`;
+}
+
+export function proposalLink(id: string): string {
+  return `/proposal.html?task=${encodeURIComponent(id)}`;
+}
+
 // --- Generate slots.json ---
 
 interface SlotJson {
@@ -262,7 +274,7 @@ function generateSlots(): SlotJson[] {
     const taskContent = taskMeta.content;
     const taskEffort = taskMeta.effort;
     const slotHasProposal = taskMeta.hasProposal;
-    const slotProposalLink = slotHasProposal && taskId ? `/proposal.html?task=${encodeURIComponent(taskId)}` : null;
+    const slotProposalLink = slotHasProposal && taskId ? proposalLink(taskId) : null;
     const githubUrl = taskMeta.githubUrl;
 
     const machineName = data.machine ?? "";
@@ -650,8 +662,8 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
     const hasActiveProposal = task.hasProposal && !task.isCompleted;
     const subtreeHasActiveProposal = hasActiveProposal || descendantHasActiveProposal;
     const highlighted = !task.isCompleted && subtreeHasActiveProposal;
-    const taskFileLink = `/task.html?task=${encodeURIComponent(task.id)}`;
-    const proposalLink = task.proposalPath ? `/proposal.html?task=${encodeURIComponent(task.id)}` : null;
+    const taskFileLink = taskLink(task.id);
+    const taskProposalLink = task.proposalPath ? proposalLink(task.id) : null;
     const retroLink = task.hasRetrospective ? `retrospective.html?task=${encodeURIComponent(task.id)}` : null;
 
     return {
@@ -660,7 +672,7 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
         id: task.id,
         title: task.title || task.id,
         link: taskFileLink,
-        proposalLink,
+        proposalLink: taskProposalLink,
         retroLink,
         priority: task.priority,
         status: task.status,
@@ -972,7 +984,7 @@ function generateRecentlyCompleted(tasks: DashboardTask[]): RecentlyCompletedTas
       prUrl,
       prStatus,
       retrospectiveLink: `/retrospective.html?task=${encodeURIComponent(t.id)}`,
-      proposalLink: t.hasProposal ? `/proposal.html?task=${encodeURIComponent(t.id)}` : null,
+      proposalLink: t.hasProposal ? proposalLink(t.id) : null,
     };
   });
 }

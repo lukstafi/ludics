@@ -10,6 +10,7 @@ import { emitEvent } from "./events.ts";
 import { readAllSlotJson } from "./slots/json.ts";
 import { getUrl } from "./network.ts";
 import { readFrontmatterField } from "./tasks/markdown.ts";
+import { proposalLink } from "./dashboard.ts";
 
 function notificationLogFile(): string {
   return join(harnessDir(), "journal", "notifications.jsonl");
@@ -505,7 +506,7 @@ export function notifyProposal(
   const config = loadConfigSync();
   const dashboardPort = config.dashboard?.port ?? 7678;
   const dashboardBaseUrl = getUrl(dashboardPort);
-  const proposalViewUrl = `${dashboardBaseUrl}/proposal.html?task=${encodeURIComponent(taskId)}`;
+  const proposalViewUrl = `${dashboardBaseUrl}${proposalLink(taskId)}`;
 
   const resolvedPath = resolveProposalFilePath(taskId, filePath);
   if (!resolvedPath) {

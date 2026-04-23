@@ -172,7 +172,7 @@ describe("task.html template", () => {
   });
 
   test("links back to the proposal renderer when frontmatter has a proposal field", () => {
-    expect(template).toContain("proposal.html?task=");
+    expect(template).toContain("proposalLink(taskId)");
     expect(template).toContain("meta.proposal");
   });
 
@@ -185,26 +185,33 @@ describe("dashboard.js task links", () => {
   const templatePath = join(import.meta.dir, "dashboard.js");
   const template = readFileSync(templatePath, "utf-8");
 
-  test("needs-confirmation link points to task.html with URL-encoded id", () => {
-    expect(template).toContain('needs-confirm-link" href="task.html?task=${encodeURIComponent(task.id)}"');
+  test("needs-confirmation link uses taskLink helper", () => {
+    expect(template).toContain('needs-confirm-link" href="${taskLink(task.id)}"');
   });
 
-  test("unanswered-questions link points to task.html with URL-encoded id", () => {
-    expect(template).toContain('unanswered-q-link" href="task.html?task=${encodeURIComponent(task.id)}"');
+  test("unanswered-questions link uses taskLink helper", () => {
+    expect(template).toContain('unanswered-q-link" href="${taskLink(task.id)}"');
   });
 
-  test("deferred-launch fallback points to task.html (not raw markdown)", () => {
-    expect(template).toContain("`task.html?task=${encodeURIComponent(task.id)}`");
+  test("deferred-launch fallback uses taskLink/proposalLink helpers", () => {
+    expect(template).toContain("proposalLink(task.id)");
+    expect(template).toContain("taskLink(task.id)");
   });
 
   test("task-link query params use encodeURIComponent, never escapeHtml", () => {
     // Regression guard: escapeHtml(id) protects against attribute injection
     // but does NOT percent-encode URL-delimiter characters like `&`, `#`,
     // `?`, or `+`. A task id containing any of those would break query-param
-    // parsing on task.html. Only encodeURIComponent is safe here. (Both
-    // approaches are safe for attribute-escaping because encodeURIComponent
-    // also percent-encodes `"`, `'`, `<`, `>`, and `&`.)
+    // parsing on task.html. Only encodeURIComponent is safe here (now routed
+    // through the taskLink/proposalLink helpers in links.js). Both approaches
+    // are safe for attribute-escaping because encodeURIComponent also
+    // percent-encodes `"`, `'`, `<`, `>`, and `&`.
     expect(template).not.toMatch(/task\.html\?task=\$\{escapeHtml\(task\.id\)\}/);
+    // Also guard that the inline `task.html?task=${...}` pattern has been
+    // fully replaced with the helper — a regression where a new call site
+    // spells the URL inline would slip past the helper's centralization.
+    expect(template).not.toMatch(/task\.html\?task=\$\{/);
+    expect(template).not.toMatch(/proposal\.html\?task=\$\{/);
   });
 
   test("no raw task-files/ links remain in client-side rendering", () => {
@@ -213,5 +220,48 @@ describe("dashboard.js task links", () => {
     // test flags it so the migration stays exhaustive.
     expect(template).not.toMatch(/href="task-files\//);
     expect(template).not.toMatch(/`task-files\//);
+  });
+});
+
+describe("links.js taskLink / proposalLink helpers", () => {
+  const linksPath = join(import.meta.dir, "links.js");
+  const linksSource = readFileSync(linksPath, "utf-8");
+
+  // links.js is a classic <script> file with no exports. Evaluate its source
+  // in a fresh Function scope and return the helpers out for direct testing.
+  // This is the same readFileSync + new Function pattern used by other
+  // template-asset tests.
+  const helpers = new Function(
+    `${linksSource}\nreturn { taskLink, proposalLink };`,
+  )() as { taskLink: (id: string) => string; proposalLink: (id: string) => string };
+
+  const ids = ["plain", "task&x", "task#x", "task?x", "task+x", "task with space", "tâsk-ünîcödé"];
+
+  for (const id of ids) {
+    test(`taskLink(${JSON.stringify(id)}) round-trips through URL`, () => {
+      const url = new URL(helpers.taskLink(id), "http://x/");
+      expect(url.pathname).toBe("/task.html");
+      expect(url.searchParams.get("task")).toBe(id);
+    });
+
+    test(`proposalLink(${JSON.stringify(id)}) round-trips through URL`, () => {
+      const url = new URL(helpers.proposalLink(id), "http://x/");
+      expect(url.pathname).toBe("/proposal.html");
+      expect(url.searchParams.get("task")).toBe(id);
+    });
+  }
+
+  test("both helpers return absolute paths with a leading slash", () => {
+    expect(helpers.taskLink("t").startsWith("/")).toBe(true);
+    expect(helpers.proposalLink("t").startsWith("/")).toBe(true);
+  });
+
+  test("index.html, task.html, and retrospective.html load links.js", () => {
+    const indexSrc = readFileSync(join(import.meta.dir, "index.html"), "utf-8");
+    const taskSrc = readFileSync(join(import.meta.dir, "task.html"), "utf-8");
+    const retroSrc = readFileSync(join(import.meta.dir, "retrospective.html"), "utf-8");
+    expect(indexSrc).toContain('<script src="links.js"></script>');
+    expect(taskSrc).toContain('<script src="links.js"></script>');
+    expect(retroSrc).toContain('<script src="links.js"></script>');
   });
 });
