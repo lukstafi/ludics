@@ -15,6 +15,7 @@ edits — additive notes on the task file, and destructive revision of the propo
 
 Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
+<!-- section:arguments -->
 ## Arguments
 
 `$ARGUMENTS` format: `<task_id> <project_path> [<context_brief>]`
@@ -24,8 +25,10 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 - `<context_brief>`: Optional free-form context from the orchestrator, often
   including user feedback (see worker-conventions.md § Broader Context)
 
+<!-- section:process -->
 ## Process
 
+<!-- section:read-task -->
 1. **Read task file**:
    Parse `$ARGUMENTS` to extract the task ID (first word) and project path
    (second word). Any remaining text after the second word is the context brief.
@@ -35,9 +38,10 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    Extract: title, project, proposal path, dependencies, acceptance criteria,
    elaboration content, any existing notes.
 
+<!-- section:detect-mode -->
 2. **Detect proposal mode and read existing proposal**:
 
-   Check the `proposal:` frontmatter value extracted in step 1.
+   Check the `proposal:` frontmatter value extracted in the read-task section.
 
    **File-based mode** (`proposal:` is any value other than `inline`):
 
@@ -74,12 +78,14 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    Use the task body as the proposal source. Skip the out-of-tree check — there is no
    separate file.
 
+<!-- section:explore-codebase -->
 3. **Explore relevant codebase**:
    - Re-read source files referenced in the proposal
    - Check if anything has changed since the proposal was written
    - Look for new context that affects the approach
    - Focus exploration on areas where the proposal may be wrong or outdated
 
+<!-- section:edit-task -->
 4. **Edit task file**:
 
    In file-based mode, make additive edits — add a `## Notes` section (or
@@ -89,10 +95,11 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    when they were unclear or incomplete. Preserve existing structure and
    avoid removing content unless it's demonstrably wrong.
 
-   In inline mode, skip step 4 — both proposal revision and notes/criteria
-   updates happen in a single combined pass in step 5 to avoid conflicting
+   In inline mode, skip the edit-task section — both proposal revision and notes/criteria
+   updates happen in a single combined pass in the edit-proposal section to avoid conflicting
    with the destructive rewrite of the same file.
 
+<!-- section:edit-proposal -->
 5. **Edit proposal content**:
 
    In file-based mode, rewrite the proposal file at `$proposal_abs` destructively:
@@ -109,19 +116,20 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
    In inline mode, do one combined edit of the task file: revise the proposal
    sections destructively (same rules as file-based), and fold in any notes
-   or acceptance-criteria corrections that would normally go in step 4.
-   Leave the frontmatter block alone. Step 4 doesn't apply here.
+   or acceptance-criteria corrections that would normally go in the edit-task section.
+   Leave the frontmatter block alone. The edit-task section doesn't apply here.
 
+<!-- section:commit-push -->
 6. **Commit and push**:
 
    **File-based mode**:
    ```bash
    cd <project_path>
-   git add "$proposal_rel"          # repo-relative path computed in step 2
+   git add "$proposal_rel"          # repo-relative path computed in the detect-mode section
    git commit -m "proposal: revise <title>"
    git push
    ```
-   Then commit any task file changes (notes, criteria) written in step 4:
+   Then commit any task file changes (notes, criteria) written in the edit-task section:
    ```bash
    cd "$LUDICS_STATE_PATH"
    git add tasks/<task_id>.md
@@ -138,15 +146,18 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    git push
    ```
 
+<!-- section:assess-changes -->
 7. **Assess changes**:
    If after re-examination the proposal is already solid, report
    `status: "no-changes"` rather than making trivial edits.
 
+<!-- section:final-response -->
 ## Final Response
 
 Use the structured response format from worker-conventions.md. Emit a fenced JSON block
 as the last code block in your response:
 
+<!-- section:response-contract -->
 ### Response Contract
 
 1. `status` — string, required. Values: `"revised"`, `"no-changes"`, `"error"`.
@@ -169,6 +180,7 @@ as the last code block in your response:
 }
 ```
 
+<!-- section:error-handling -->
 ## Error Handling
 
 - Task not found: report `status: "error"` with an explanation.

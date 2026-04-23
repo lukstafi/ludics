@@ -11,33 +11,40 @@ queue-required-args: [task]
 Process a completed task's retrospective to create follow-up tasks from
 substantive suggestions. Nitpicky suggestions are skipped with reasoning.
 
+<!-- section:trigger -->
 ## Trigger
 
 Auto-queued after retrospective collection for a completed task.
 Manual: `ludics mag process-suggestions <task-id>`
 
+<!-- section:arguments -->
 ## Arguments
 
 - `$ARGUMENTS`: `<task-id>` -- the completed task whose retrospective to process
 
+<!-- section:inputs -->
 ## Inputs
 
 - `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
 - **Request ID**: Read from file `$LUDICS_STATE_PATH/mag/current-request-id`
 
+<!-- section:process -->
 ## Process
 
+<!-- section:read-request-id -->
 1. Read the request ID:
    ```bash
    LUDICS_REQUEST_ID=$(cat "$LUDICS_STATE_PATH/mag/current-request-id" 2>/dev/null || echo "unknown")
    ```
 
+<!-- section:read-retrospective -->
 2. Read retrospective file:
    ```bash
    cat "$LUDICS_STATE_PATH/retrospectives/$ARGUMENTS.json"
    ```
    If file is missing, write an error result and stop.
 
+<!-- section:parse-retrospective -->
 3. Parse JSON and extract:
    - `suggestRefactorSummary` (string or null)
    - `workflowFeedback` (object keyed by agent name, values are strings)
@@ -50,16 +57,19 @@ Manual: `ludics mag process-suggestions <task-id>`
    a round 1 `request_changes`, meaning the issue was resolved and should
    NOT generate a follow-up task.
 
+<!-- section:short-circuit-empty -->
 4. If all three sources are empty/null — `suggestRefactorSummary` is null,
    `workflowFeedback` has no entries, AND no `request_changes` reviews remain
    after filtering — write an empty result and stop.
 
+<!-- section:read-source-task -->
 5. Read the source task file to recover project name:
    ```bash
    cat "$LUDICS_STATE_PATH/tasks/$ARGUMENTS.md"
    ```
    Extract the `project` field from frontmatter.
 
+<!-- section:normalize-dedupe -->
 6. **Normalize and dedupe**: Split unstructured text into individual suggestion
    items. The `suggestRefactorSummary` may be a single text blob -- split by
    logical suggestion boundaries (numbered items, bullet points, paragraph
@@ -79,6 +89,7 @@ Manual: `ludics mag process-suggestions <task-id>`
    with `suggestRefactorSummary` content since both can originate from the
    same reviewer agent -- dedupe these.
 
+<!-- section:idempotency-guard -->
 7. **Idempotency guard**: Before creating any tasks, scan existing task files
    for follow-ups already created from this source task:
    ```bash
@@ -87,6 +98,7 @@ Manual: `ludics mag process-suggestions <task-id>`
    For each existing follow-up, read its title. Skip any new suggestion that
    substantially overlaps with an existing follow-up title or theme.
 
+<!-- section:classify -->
 8. Classify each distinct suggestion as substantive (create a task) or
    nitpicky (skip with logged reasoning).
 
@@ -96,6 +108,7 @@ Manual: `ludics mag process-suggestions <task-id>`
    lists the constituent suggestions. A single coherent cleanup beats three
    tiny tasks.
 
+<!-- section:create-tasks -->
 9. For substantive suggestions (or groups of related suggestions):
    a. Run: `ludics tasks create "<title>" <project> C`
    b. Check stdout:
@@ -116,8 +129,9 @@ Manual: `ludics mag process-suggestions <task-id>`
         - **From other sources**: "Auto-generated from retrospective of
           `<source-task-id>`. Original suggestion: <brief summary>"
 
+<!-- section:pr-comment -->
 10. **PR comment confirmation**: If any tasks were created, read the `prUrl`
-    field from the retrospective JSON (parsed in step 3). If `prUrl` is
+    field from the retrospective JSON (parsed in the parse-retrospective section). If `prUrl` is
     non-null and non-empty, post a comment on the PR confirming the created
     follow-up tasks:
     ```bash
@@ -136,6 +150,7 @@ Manual: `ludics mag process-suggestions <task-id>`
     If `prUrl` is null or the `gh pr comment` command fails, log a warning
     but do not fail the overall skill — the tasks are already created.
 
+<!-- section:write-result -->
 11. Write result JSON:
     ```bash
     cat > "$LUDICS_RESULTS_DIR/$LUDICS_REQUEST_ID.json" << 'RESULT_EOF'
@@ -151,6 +166,7 @@ Manual: `ludics mag process-suggestions <task-id>`
     RESULT_EOF
     ```
 
+<!-- section:judgment-criteria -->
 ## Judgment Criteria
 
 Substantive (create a task):
@@ -174,6 +190,7 @@ Nitpicky (skip):
 - Suggestions already covered by existing tasks (check `relates_to` overlap).
 - Cosmetic UI tweaks with no functional impact.
 
+<!-- section:error-handling -->
 ## Error Handling
 
 - Missing retrospective file: write `{"status": "error", "message": "retrospective not found"}`.
@@ -181,6 +198,7 @@ Nitpicky (skip):
 - Partial failure during batch creation: report partial success in result
   JSON with the tasks created so far and error details.
 
+<!-- section:output -->
 ## Output
 
 Report a summary after processing:
