@@ -234,7 +234,7 @@ export function slotShow(slotNum: number): void {
   console.log(slotDataToMarkdown(data).trimEnd());
 }
 
-export function slotAssign(
+export async function slotAssign(
   slotNum: number,
   taskOrDesc: string,
   adapter: string = "manual",
@@ -242,7 +242,7 @@ export function slotAssign(
   path: string = "",
   adapterArgs: string = "",
   machine: string = "",
-): void {
+): Promise<void> {
   // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   ensureSlotsDir();
   const count = slotsCount();
@@ -318,6 +318,17 @@ export function slotAssign(
     }
   }
 
+  // Reap the prior assignment's runner/tmux/ttyd before overwriting slot state.
+  // Without this, the orphaned `orch run-internal <slot>` keeps rewriting
+  // orchestration/slot-<N>.json and confuses maybeAutoStartSlots.
+  if (oldData.process !== "(empty)" && oldData.task && oldData.task !== taskId) {
+    try {
+      await slotStop(slotNum, /* force */ true, /* preserveState */ false);
+    } catch (err) {
+      journalAppend("slot", `Slot ${slotNum} assign: slotStop of prior task failed: ${String(err)}`);
+    }
+  }
+
   writeSlotJson(slotNum, data);
 
   // Remove stale orchestration state — may have been restored by git pull/stash-pop
@@ -354,7 +365,7 @@ function clearDuoPeerLink(slotNum: number): void {
   }
 }
 
-export function slotClear(slotNum: number, finalStatus: string = "ready"): void {
+export async function slotClear(slotNum: number, finalStatus: string = "ready"): Promise<void> {
   // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   ensureSlotsDir();
   const count = slotsCount();
@@ -366,7 +377,8 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
   const data = readSlot(slotNum);
   const taskId = data.task;
 
-  // Save t3code thread IDs to task file frontmatter before clearing the slot state
+  // Save t3code thread IDs to task file frontmatter before clearing the slot state.
+  // MUST run before slotStop: slotStop(preserveState=false) removes the slot state file this reads.
   if (data.mode === "t3code" && taskId) {
     try {
       const slotState = readSlotState(slotNum, harnessDir());
@@ -376,6 +388,19 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
       }
     } catch {
       // non-critical: continue even if thread ID saving fails
+    }
+  }
+
+  // Reap the runner/tmux/ttyd before unlinking sibling state files.
+  // The adapter's stop() already does the right cleanup (TERM pid, kill ttyd,
+  // deferred cleanup for sessions, remove slot state). Without this, the
+  // `orch run-internal <slot>` process is orphaned and keeps rewriting
+  // orchestration/slot-<N>.json.
+  if (data.process !== "(empty)") {
+    try {
+      await slotStop(slotNum, /* force */ true, /* preserveState */ false);
+    } catch (err) {
+      journalAppend("slot", `Slot ${slotNum} clear: slotStop failed: ${String(err)}`);
     }
   }
 
@@ -418,7 +443,7 @@ export function slotClear(slotNum: number, finalStatus: string = "ready"): void 
   // Auto-restore preempted work when priority task completes
   if (finalStatus === "done" && hasStash(slotNum)) {
     console.error(`ludics: auto-restoring preempted work to slot ${slotNum}`);
-    slotRestore(slotNum);
+    await slotRestore(slotNum);
   }
 
   // Best-effort t3code cleanup after clearing a slot
@@ -541,14 +566,14 @@ function pruneBlockedBy(completedTaskId: string): void {
   }
 }
 
-export function slotPreempt(
+export async function slotPreempt(
   slotNum: number,
   taskId: string,
   adapter: string = "manual",
   session: string = "",
   path: string = "",
   adapterArgs: string = "",
-): void {
+): Promise<void> {
   // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   ensureSlotsDir();
   const count = slotsCount();
@@ -560,7 +585,7 @@ export function slotPreempt(
 
   // If slot is empty, just assign directly — no stash needed
   if (isEmpty) {
-    slotAssign(slotNum, taskId, adapter, session, path, adapterArgs);
+    await slotAssign(slotNum, taskId, adapter, session, path, adapterArgs);
     return;
   }
 
@@ -596,14 +621,14 @@ export function slotPreempt(
   }
 
   // Assign the new priority task
-  slotAssign(slotNum, taskId, adapter, session, path, adapterArgs);
+  await slotAssign(slotNum, taskId, adapter, session, path, adapterArgs);
 
   journalAppend("slot", `Slot ${slotNum} preempted: ${currentProcess} → ${taskId}`);
   emitEvent({ event_type: "slot_preempt", source: "cli", scope: "slot", slot: slotNum, task: taskId, message: `preempted ${currentProcess}` });
   stateMarkDirty();
 }
 
-export function slotRestore(slotNum: number): void {
+export async function slotRestore(slotNum: number): Promise<void> {
   // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   const count = slotsCount();
   validateRange(slotNum, count);
@@ -623,7 +648,7 @@ export function slotRestore(slotNum: number): void {
   const prevTask = stash.previousTask === "null" ? stash.previousProcess : stash.previousTask;
 
   // slotAssign handles preempted→in-progress via taskUpdateForSlotAssign
-  slotAssign(slotNum, prevTask, prevAdapter, prevSession, prevPath, prevAdapterArgs);
+  await slotAssign(slotNum, prevTask, prevAdapter, prevSession, prevPath, prevAdapterArgs);
 
   removeStash(slotNum);
 
@@ -1326,8 +1351,8 @@ export async function runSlot(args: string[]): Promise<void> {
           .filter(Boolean);
         const baseArgs = cleanedFragments.join(" ");
         const expansion = expandDuoSlots(slotNum, secondSlot, baseArgs);
-        slotAssign(slotNum, taskOrDesc, adapter, session, path, expansion.slotA.args, machine);
-        slotAssign(secondSlot, taskOrDesc, adapter, "", path, expansion.slotB.args, machine);
+        await slotAssign(slotNum, taskOrDesc, adapter, session, path, expansion.slotA.args, machine);
+        await slotAssign(secondSlot, taskOrDesc, adapter, "", path, expansion.slotB.args, machine);
         console.error(`ludics: duo assign → slots ${slotNum}+${secondSlot}`);
       } else {
         const hasModeDirectFlag = adapterArgFragments.includes("--pair") || adapterArgFragments.includes("--solo");
@@ -1339,7 +1364,7 @@ export async function runSlot(args: string[]): Promise<void> {
         }
 
         const adapterArgs = adapterArgFragments.join(" ");
-        slotAssign(slotNum, taskOrDesc, adapter, session, path, adapterArgs, machine);
+        await slotAssign(slotNum, taskOrDesc, adapter, session, path, adapterArgs, machine);
       }
       break;
     }
@@ -1349,7 +1374,7 @@ export async function runSlot(args: string[]): Promise<void> {
       if (!(VALID_CLEAR_STATUSES as readonly string[]).includes(finalStatus)) {
         throw new Error(`invalid clear status: ${finalStatus} (use: ${VALID_CLEAR_STATUSES.join(", ")})`);
       }
-      slotClear(slotNum, finalStatus);
+      await slotClear(slotNum, finalStatus);
       break;
     }
 
@@ -1400,12 +1425,12 @@ export async function runSlot(args: string[]): Promise<void> {
             break;
         }
       }
-      slotPreempt(slotNum, preemptTask, adapter, session, path, adapterArgs);
+      await slotPreempt(slotNum, preemptTask, adapter, session, path, adapterArgs);
       break;
     }
 
     case "restore":
-      slotRestore(slotNum);
+      await slotRestore(slotNum);
       break;
 
     default:

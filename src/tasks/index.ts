@@ -593,15 +593,15 @@ function tasksMigrateRefs(dryRun: boolean = false): void {
   console.log(`Updated ${changedFiles} file(s) with ${replacements} ID replacement(s)`);
 }
 
-export function tasksAbandon(
+export async function tasksAbandon(
   taskId: string,
   opts: { source?: string; scope?: string } = {},
-): void {
+): Promise<void> {
   // Check slot assignment first — clear it even if the task file is missing/stale,
   // so capacity isn't blocked by out-of-sync state.
   const slotNum = findSlotForTask(taskId);
   if (slotNum !== null) {
-    slotClear(slotNum, "abandoned");
+    await slotClear(slotNum, "abandoned");
   }
 
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
@@ -753,7 +753,7 @@ export async function runTasks(args: string[]): Promise<void> {
     case "abandon": {
       const id = args[1];
       if (!id) throw new Error("task ID required");
-      tasksAbandon(id);
+      await tasksAbandon(id);
       console.log(`ludics: abandoned task ${id}`);
       break;
     }

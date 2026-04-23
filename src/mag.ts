@@ -845,10 +845,10 @@ function isTaskDeferred(taskId: string): boolean {
   return false;
 }
 
-function abandonTaskFromNotification(taskId: string): void {
+async function abandonTaskFromNotification(taskId: string): Promise<void> {
   try {
     const slotNum = findSlotForTask(taskId);
-    tasksAbandon(taskId, { source: "notify", scope: "mag" });
+    await tasksAbandon(taskId, { source: "notify", scope: "mag" });
     // Preserve the notification-specific success event for existing event consumers
     emitEvent({
       event_type: "notify_abandon",
@@ -887,11 +887,11 @@ function abandonTaskFromNotification(taskId: string): void {
   }
 }
 
-function completeTaskFromNotification(taskId: string): void {
+async function completeTaskFromNotification(taskId: string): Promise<void> {
   const slotNum = findSlotForTask(taskId);
   try {
     if (slotNum !== null) {
-      slotClear(slotNum, "done");
+      await slotClear(slotNum, "done");
       emitEvent({
         event_type: "notify_done",
         source: "notify",
@@ -1167,7 +1167,7 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
 
   try {
     // Notification button actions are always treated as fresh starts.
-    slotAssign(slotNum, taskId, adapter, "", path, launchArgs, launchMachine);
+    await slotAssign(slotNum, taskId, adapter, "", path, launchArgs, launchMachine);
     await slotStart(slotNum);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -1179,7 +1179,7 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
         markSlotSetupFailed(slotNum, detail);
         rollbackStatus = "slot marked interrupted";
       } else {
-        slotAssign(
+        await slotAssign(
           slotNum,
           taskId,
           selection.previousMode || "manual",
@@ -1369,7 +1369,7 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       const abandonMatch = content.match(/^Abandon task ([\w.-]+)$/);
       if (abandonMatch) {
         if (executeProgrammatic) {
-          abandonTaskFromNotification(abandonMatch[1]!);
+          await abandonTaskFromNotification(abandonMatch[1]!);
         }
         return null;
       }
@@ -1397,7 +1397,7 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       const doneMatch = content.match(/^Done task ([\w.-]+)$/);
       if (doneMatch) {
         if (executeProgrammatic) {
-          completeTaskFromNotification(doneMatch[1]!);
+          await completeTaskFromNotification(doneMatch[1]!);
         }
         return null;
       }
@@ -1428,7 +1428,7 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
         return null;
       }
       if (executeProgrammatic) {
-        completeTaskFromNotification(task);
+        await completeTaskFromNotification(task);
       }
       return null;
     }
@@ -2493,7 +2493,7 @@ function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandidate[] {
 
 // --- Auto-fill empty slots ---
 
-function maybeFillEmptySlots(config?: LudicsFullConfig): void {
+async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
   if (isQueueHeld()) return;
 
@@ -2594,8 +2594,8 @@ function maybeFillEmptySlots(config?: LudicsFullConfig): void {
       return;
     }
 
-    slotAssign(slotA, task.id, autoAdapter, "", projectPath, expansion.slotA.args, machine);
-    slotAssign(slotB, task.id, autoAdapter, "", projectPath, expansion.slotB.args, machine);
+    await slotAssign(slotA, task.id, autoAdapter, "", projectPath, expansion.slotA.args, machine);
+    await slotAssign(slotB, task.id, autoAdapter, "", projectPath, expansion.slotB.args, machine);
     emitEvent({
       event_type: "slot_auto_fill_duo",
       source: "keepalive",
@@ -2623,7 +2623,7 @@ function maybeFillEmptySlots(config?: LudicsFullConfig): void {
     }
 
     // Assign task to the empty slot using the auto-selected adapter, path, and flags
-    slotAssign(slot, task.id, autoAdapter, "", projectPath, autoArgs, machine);
+    await slotAssign(slot, task.id, autoAdapter, "", projectPath, autoArgs, machine);
     emitEvent({
       event_type: "slot_auto_fill",
       source: "keepalive",
@@ -2741,7 +2741,7 @@ async function maybeResumeDeadOrchestrators(freshSlots?: Map<number, SlotData> |
 
 // --- Auto-clear slots whose task reached done status ---
 
-function maybeClearDoneSlots(): void {
+async function maybeClearDoneSlots(): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
 
   const slots = readAllSlotJson(slotsCount());
@@ -2772,7 +2772,7 @@ function maybeClearDoneSlots(): void {
         status: taskStatus,
         message: `auto-cleared slot ${slotNum}: task ${taskId} reached status=${taskStatus}`,
       });
-      slotClear(slotNum, taskStatus);
+      await slotClear(slotNum, taskStatus);
     }
   }
 }
@@ -2915,7 +2915,7 @@ export async function magStart(args: string[]): Promise<void> {
     maybeQueueProposals(keepaliveCfg);
 
     // Auto-clear slots whose task reached done status
-    maybeClearDoneSlots();
+    await maybeClearDoneSlots();
 
     // Auto-resume dead orchestrator processes
     await maybeResumeDeadOrchestrators();
@@ -2925,7 +2925,7 @@ export async function magStart(args: string[]): Promise<void> {
     runStagingFastForwardTick();
 
     // Auto-fill empty slots with ready elaborated tasks
-    maybeFillEmptySlots(keepaliveCfg);
+    await maybeFillEmptySlots(keepaliveCfg);
 
     // If startup got stuck (e.g. Claude helper hung), recover automatically.
     maybeRecoverStuckStartup();
@@ -3392,7 +3392,7 @@ async function magContext(): Promise<void> {
   await briefingPrecomputeContext();
 }
 
-function magCompleted(proposalName: string): void {
+async function magCompleted(proposalName: string): Promise<void> {
   const harness = harnessDir();
   const tasksPath = join(harness, "tasks");
   if (!existsSync(tasksPath)) {
@@ -3442,7 +3442,7 @@ function magCompleted(proposalName: string): void {
   }
 
   if (matchedSlot !== null) {
-    slotClear(matchedSlot, "done");
+    await slotClear(matchedSlot, "done");
     console.log(`Completed task ${matchedTaskId} (slot ${matchedSlot} cleared)`);
   } else {
     taskCompleteDirectly(matchedTaskId);
@@ -3559,7 +3559,7 @@ export async function runMag(args: string[]): Promise<void> {
           // If the task is already in a slot, clear the slot to free it for other work
           const evalSlot = findSlotForTask(taskId);
           if (evalSlot !== null) {
-            slotClear(evalSlot, "deferred");
+            await slotClear(evalSlot, "deferred");
           } else {
             updateFrontmatterField(evalTaskFile, "status", "deferred");
           }
@@ -3596,7 +3596,7 @@ export async function runMag(args: string[]): Promise<void> {
           if (revStatus === "ready" || revStatus === "in-progress") {
             const revSlot = findSlotForTask(taskId);
             if (revSlot !== null) {
-              slotClear(revSlot, "deferred");
+              await slotClear(revSlot, "deferred");
             } else {
               updateFrontmatterField(reviseTaskFile, "status", "deferred");
             }
@@ -3686,7 +3686,7 @@ export async function runMag(args: string[]): Promise<void> {
     case "completed": {
       const proposalName = args[1];
       if (!proposalName) throw new Error("proposal name required (without .md extension)");
-      magCompleted(proposalName);
+      await magCompleted(proposalName);
       break;
     }
     case "on-stop": {

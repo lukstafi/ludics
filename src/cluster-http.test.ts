@@ -156,7 +156,7 @@ describe("handleSignal dispatch", () => {
 
   test("done status calls slotClear with (slot, 'done') and returns 200", async () => {
     writeSlotsFile(harnessDir, SLOT, TASK_ID, MACHINE);
-    const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
+    const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(async () => {});
     const emitEventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
 
     const req = makeRequest("/cluster/signal", {
@@ -173,7 +173,7 @@ describe("handleSignal dispatch", () => {
 
   test("error status calls emitEvent with worker_signal_error and returns 200", async () => {
     writeSlotsFile(harnessDir, SLOT, TASK_ID, MACHINE);
-    const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
+    const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(async () => {});
     const emitEventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
 
     const req = makeRequest("/cluster/signal", {
@@ -193,7 +193,7 @@ describe("handleSignal dispatch", () => {
 
   test("progress status returns 200 without calling slotClear or emitEvent", async () => {
     writeSlotsFile(harnessDir, SLOT, TASK_ID, MACHINE);
-    const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
+    const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(async () => {});
     const emitEventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
 
     const req = makeRequest("/cluster/signal", {
@@ -224,7 +224,7 @@ describe("handleSignal dispatch", () => {
 
   test("taskId mismatch returns 409", async () => {
     writeSlotsFile(harnessDir, SLOT, TASK_ID, MACHINE);
-    const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
+    const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(async () => {});
 
     const req = makeRequest("/cluster/signal", {
       slot: SLOT, taskId: "different-task", status: "done", message: "done",
@@ -239,7 +239,7 @@ describe("handleSignal dispatch", () => {
 
   test("expired signal returns 409", async () => {
     writeSlotsFile(harnessDir, SLOT, TASK_ID, MACHINE);
-    const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(() => {});
+    const slotClearSpy = spyOn(slots, "slotClear").mockImplementation(async () => {});
 
     const staleEpoch = Math.floor(Date.now() / 1000) - 2000; // 2000s ago
     const req = makeRequest("/cluster/signal", {
