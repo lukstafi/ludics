@@ -138,15 +138,18 @@ See also [negative-case-regression-testing](#negative-case-regression-testing) f
 
 **Why.** If the base branch already fails the gate, an absolute AC is unfulfillable without out-of-scope work — forcing silent scope creep or a REQUEST_CHANGES loop the implementer can't resolve. Framing by diff-against-base keeps the AC decidable when the gate is noisy.
 
-**Recipe.** Snapshot the baseline, apply the change, compare *sets* (not counts):
+**Recipe.** Snapshot the baseline from the base branch, apply the change, compare *sets* (not counts):
 
 ```sh
-git stash                             # or: git checkout <base-ref>
+# Task changes are normally already committed, so move HEAD — don't stash.
+git checkout <base-ref>
 <gate> 2>&1 | sort -u > /tmp/before
-git stash pop                         # or: git checkout <task-branch>
+git checkout <task-branch>
 <gate> 2>&1 | sort -u > /tmp/after
 diff /tmp/before /tmp/after           # errors introduced vs. removed, not totals
 ```
+
+`git stash` only toggles *uncommitted* changes — it does not move `HEAD` to the base. If the task's changes are committed (the common case), both runs execute on the same tree and the diff is empty even when the branch regresses. Prefer `git checkout <base-ref>` (or a separate `git worktree add` on the base ref) over stashing.
 
 A matching error count with set drift is still a regression; only the diff tells you which.
 
