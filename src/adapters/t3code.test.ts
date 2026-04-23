@@ -330,6 +330,24 @@ describe("selectOrchestrationFlags — skip_plan", () => {
     expect(args).not.toContain("--plan");
     expect(args).not.toContain("--gather");
   });
+
+  test("small effort without skipPlan has no phase flags", () => {
+    const { args } = selectOrchestrationFlags("small");
+    expect(args).not.toContain("--plan");
+    expect(args).not.toContain("--gather");
+  });
+
+  test("large effort without skipPlan includes --plan --gather", () => {
+    const { args } = selectOrchestrationFlags("large");
+    expect(args).toContain("--plan");
+    expect(args).toContain("--gather");
+  });
+
+  test("unknown effort has no phase flags", () => {
+    const { args } = selectOrchestrationFlags("");
+    expect(args).not.toContain("--plan");
+    expect(args).not.toContain("--gather");
+  });
 });
 
 describe("selectOrchestrationFlagsForTask — skip_plan from frontmatter", () => {
@@ -350,6 +368,20 @@ describe("selectOrchestrationFlagsForTask — skip_plan from frontmatter", () =>
     const { args } = selectOrchestrationFlagsForTask(content, "large");
     expect(args).toContain("--plan");
     expect(args).toContain("--gather");
+  });
+
+  test("small task with skip_plan: true in frontmatter still omits --plan", () => {
+    const content = "---\nid: test\ntitle: test\neffort: small\nskip_plan: true\n---\n";
+    const { args } = selectOrchestrationFlagsForTask(content, "small");
+    expect(args).not.toContain("--plan");
+    expect(args).not.toContain("--gather");
+  });
+
+  test("small task without skip_plan omits --plan", () => {
+    const content = "---\nid: test\ntitle: test\neffort: small\n---\n";
+    const { args } = selectOrchestrationFlagsForTask(content, "small");
+    expect(args).not.toContain("--plan");
+    expect(args).not.toContain("--gather");
   });
 });
 
