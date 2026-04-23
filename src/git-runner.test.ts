@@ -220,6 +220,38 @@ describe("withCheckout", () => {
     expect(last).toEqual(["checkout", "topic"]);
   });
 
+  test("rejects async callbacks (Promise-returning) with a clear error and restores the branch", () => {
+    // Regression for PR #366 codex review: the finally-block runs as soon as
+    // the sync call returns, so an async fn's awaited git work would execute
+    // after checkout-back, on the wrong branch. Detect and throw.
+    const { run, calls } = recordingGit((args) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
+        return { stdout: "topic\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    expect(() =>
+      withCheckout("/x", "master", run, () => Promise.resolve(42) as unknown as number),
+    ).toThrow(/async callbacks are not supported/);
+    // Restore must still run — the branch should be returned to `topic`.
+    const last = calls[calls.length - 1]!;
+    expect(last).toEqual(["checkout", "topic"]);
+  });
+
+  test("rejects async callbacks even when already on target branch (no checkout, no restore)", () => {
+    const { run, calls } = recordingGit((args) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
+        return { stdout: "master\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    expect(() =>
+      withCheckout("/x", "master", run, () => Promise.resolve("ok") as unknown as string),
+    ).toThrow(/async callbacks are not supported/);
+    // No checkout was issued in this branch, which is correct (we never left).
+    expect(calls.some((c) => c[0] === "checkout")).toBe(false);
+  });
+
   test("checkout failure throws and does not invoke callback", () => {
     const { run, calls } = recordingGit((args) => {
       if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {

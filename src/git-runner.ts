@@ -115,6 +115,11 @@ export function detectDefaultBranchesAuthoritative(
   return { origin: read("origin"), upstream: read("upstream") };
 }
 
+function isThenable(x: unknown): x is PromiseLike<unknown> {
+  return x !== null && (typeof x === "object" || typeof x === "function")
+    && typeof (x as { then?: unknown }).then === "function";
+}
+
 /**
  * Run `fn` with `targetBranch` checked out, restoring the prior branch (or
  * detached-HEAD SHA) afterwards. If the current branch is already
@@ -127,6 +132,13 @@ export function detectDefaultBranchesAuthoritative(
  * will succeed. A `git merge --ff-only` satisfies this (never dirties the
  * tree); arbitrary callback behaviour does not. The restore is best-effort
  * — callers that need guaranteed restore must keep the tree clean.
+ *
+ * Synchronous only: `fn` must not return a Promise. The finally block runs
+ * as soon as `fn()` returns, so for an async callback the branch restore
+ * would fire before the awaited git work settled — the awaited commands
+ * would then execute on the wrong branch. If you need async, build a
+ * dedicated `withCheckoutAsync` that awaits before restoring. Violations
+ * throw at runtime (detected by inspecting the return value's `.then`).
  */
 export function withCheckout<T>(
   cwd: string,
@@ -142,14 +154,32 @@ export function withCheckout<T>(
     return r.exitCode === 0 ? r.stdout.trim() : null;
   })() : null;
 
-  if (priorBranch === targetBranch) return fn();
+  if (priorBranch === targetBranch) {
+    const result = fn();
+    if (isThenable(result)) {
+      throw new Error(
+        "withCheckout: async callbacks are not supported — the branch restore " +
+        "would fire before the Promise settled. Make `fn` synchronous or " +
+        "introduce a separate async helper that awaits before restoring.",
+      );
+    }
+    return result;
+  }
 
   const co = runGit(["checkout", targetBranch], cwd);
   if (co.exitCode !== 0) {
     throw new Error(`checkout ${targetBranch} failed: ${co.stdout.trim().slice(0, 200)}`);
   }
   try {
-    return fn();
+    const result = fn();
+    if (isThenable(result)) {
+      throw new Error(
+        "withCheckout: async callbacks are not supported — the branch restore " +
+        "would fire before the Promise settled. Make `fn` synchronous or " +
+        "introduce a separate async helper that awaits before restoring.",
+      );
+    }
+    return result;
   } finally {
     if (priorBranch) {
       runGit(["checkout", priorBranch], cwd);
