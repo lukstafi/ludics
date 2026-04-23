@@ -61,6 +61,8 @@ If a new pattern needs to be added, it should pass the same bar the templates ho
 
 **Boundary.** If the symbol is a primitive name collision (`type`, `handle`, `data`), the sweep is noisy and probably useless — swap the approach to "search for the specific call signature" or "search for the import path". The principle is exhaustiveness, not blind greps.
 
+See also [post-edit-occurrence-recheck](#post-edit-occurrence-recheck) for running the same sweep *after* the edit, and in both directions (forward and inverse).
+
 ### Data-shape consumer sweep
 
 **Principle.** When a task changes data shapes — field extraction, JSON migration, section restructuring, type-signature changes — list every downstream consumer in the plan with a note on whether it needs updating.
@@ -85,6 +87,8 @@ If a new pattern needs to be added, it should pass the same bar the templates ho
 4. New CLI output or changed log line → a test asserting the exact string (or a shape-stable regex).
 
 **When not to apply.** A pure refactor that doesn't change observable behaviour doesn't need a new regression test — the existing tests are the coverage. The judgment call is "did I change what a caller can observe?", not "did I change any code?"
+
+See also [negative-case-regression-testing](#negative-case-regression-testing) for the stress-test discipline that keeps a new regression test honest.
 
 ### Wide table avoidance
 
@@ -127,6 +131,46 @@ If a new pattern needs to be added, it should pass the same bar the templates ho
 **Decision rule.** Minor gaps (renamed method, identical behaviour) — document with `⚠️ ASSUMPTION GAP: ...` and proceed. Substantial gaps (missing API or module that would force rework) — reassign to the reviewer with REQUEST_CHANGES.
 
 **In-template home.** `skills/orchestration/pair-coder-plan-merge.md` carries the "Code-Proposal Alignment Check" section. That section is the stylistic target for this doc and for the refactored heavy templates.
+
+### No-regression AC framing
+
+**Principle.** When an acceptance criterion references a repo-wide gate (`bun run lint`, `bun test`), frame it as "no regression from the base branch" rather than "the gate succeeds". Include the measurement recipe.
+
+**Why.** If the base branch already fails the gate, an absolute AC is unfulfillable without out-of-scope work — forcing silent scope creep or a REQUEST_CHANGES loop the implementer can't resolve. Framing by diff-against-base keeps the AC decidable when the gate is noisy.
+
+**Recipe.** Snapshot the baseline, apply the change, compare *sets* (not counts):
+
+```sh
+git stash                             # or: git checkout <base-ref>
+<gate> 2>&1 | sort -u > /tmp/before
+git stash pop                         # or: git checkout <task-branch>
+<gate> 2>&1 | sort -u > /tmp/after
+diff /tmp/before /tmp/after           # errors introduced vs. removed, not totals
+```
+
+A matching error count with set drift is still a regression; only the diff tells you which.
+
+### Proposal as traceability home
+
+**Principle.** Traceability artefacts an AC mandates (scan logs, grep outputs, sweep summaries) belong in the proposal's Notes section or the PR body — not in the task file.
+
+**Why.** Coder agents in this harness write to the public project repo but not to the private harness repo that holds task files. An AC that says "record the sweep output in the task file" is unfulfillable from the coder's scope. Landing the artefact in the same PR — where the reviewer can inspect it — preserves the evidence trail while staying inside the coder's write scope.
+
+**What to commit as evidence.** The grep/scan output itself, not just the conclusion drawn from it. "I checked and it's fine" is not traceable; `rg -c '<pattern>' → 0 hits across src/` is.
+
+### Nullable-predicate truth tables
+
+**Principle.** When a branch conditions on a nullable value and the `null` case is deliberate (not "can't happen"), write the truth table as a comment next to the branch.
+
+**Why.** The dangerous case isn't the null one you remembered — it's the `null × other-condition` cell you didn't think about. Writing the table forces enumeration of all cells; reviewers can see which cells the code actually covers.
+
+**Example.** `currentBranch()` in `src/staging-ff.ts` returns `null` on detached HEAD. The fast-forward flow now enumerates the four cells of `(currentBranch ∈ {null, non-null}) × (target-branch match ∈ {true, false})` in a comment next to the branch, and captures a prior-HEAD-SHA so the detached case restores cleanly. The original code quietly assumed `currentBranch` was always a string; the truth table is what would have caught that.
+
+### Template inventory grep
+
+**Principle.** Before writing N new template variants for a new mode or role, grep the existing templates for role/mode tokens to see whether they are already role-agnostic. Reuse via the template fallback chain when they are.
+
+**Example.** Before adding solo-mode templates, task-da8b6dff ran `grep -c "reviewer\|peer" skills/orchestration/pair-coder-<phase>.md` and found that `pr-create`, `update-docs`, and several other phases had zero hits — they were role-agnostic already and fell through the fallback chain without needing a solo override. Expected outcome: 1 new override per mode, not N.
 
 ---
 
@@ -232,6 +276,83 @@ If the reviewer disagrees, they write `REQUEST_CHANGES` in the review file and e
 
 **When to bail vs finish normally.** Bail-out is for tasks where there is genuinely nothing to do — the fix landed elsewhere, the feature was superseded, the bug no longer reproduces. A partially-done task still finishes normally.
 
+### Injectable subprocess runners
+
+**Principle.** When code reaches for `Bun.spawnSync` / `child_process`, accept an injectable runner type — `type RunGit = (args: string[], cwd: string) => RunGitResult` — with a production shim (`defaultRunGit`) and a test-side fake.
+
+**Why.** Direct `spawnSync` calls force tests to either (a) build a real temp repo, which is slow and brittle, or (b) mock the global, which leaks across tests. An injected runner lets the test pass a `fakeGit(rules)` helper that dispatches on `args[0]` / `args[1]` and returns synthetic output — unit tests run in milliseconds against exact byte sequences.
+
+**Worked example.** `src/briefing-lag.ts` exports `RunGit` and `defaultRunGit`; consumers in `src/staging-ff.ts` thread the runner through `hasRemote`, `worktreeClean`, `currentBranch`, `commitCount`. `src/briefing-lag.test.ts` and `src/staging-ff.test.ts` use `fakeGit(rules)` to cover 19+ cases without touching a real repo.
+
+**When not to apply.** For one-shot scripts where the subprocess call runs once at startup and the output is logged rather than branched on, inlining `spawnSync` is fine — the injection only earns its keep when a test wants to vary subprocess output.
+
+### Collapsed-branch negative tests
+
+**Principle.** When collapsing an N-way split into unified handling, write N positive tests for the unified path AND one negative test asserting the removed branches' artifacts (events, writes, log lines, notifies) are absent.
+
+**Why.** The positive tests pass when the unified handling is correct; they don't catch a rogue `emit("old-event")` that survived the collapse. The negative test — asserting the old emit is *not* produced — closes the gap.
+
+**Recipe.** Before the change, `grep -n 'emit\|write\|notify' <files-being-simplified>` over every branch that will be removed. Each unique side-effect name becomes a negative assertion. Example: `src/staging-ff.test.ts` captures `emitEvent` calls and asserts the collapsed upstream-workflow branch produces none of the stale-event names that lived in the three pre-merge paths (commit `12e2fca`, PR #331).
+
+See also [regression-test-per-behaviour-change](#regression-test-per-behaviour-change).
+
+### rev-list direction comment
+
+**Principle.** Every `git rev-list --left-right --count A...B` call site carries a one-line comment documenting which side means what.
+
+**Why.** The `--left-right` output order follows the order of refs in the revision range, and that ref order is easy to flip-flop in a refactor. Without a comment next to the call, future readers have to re-derive the mapping from `git-rev-list`(1) every time.
+
+**Recipe.** `src/briefing-lag.ts::parseLeftRightCount` parses `upstream/<u>...origin/<o>`; the comment in `src/briefing-lag.test.ts` records `left=behind-upstream, right=ahead-of-upstream`. That pair of words is enough context to re-derive the interpretation at any call site.
+
+### Retained extension points need tests
+
+**Principle.** A parameter or flag kept "for future use" gets a synthetic-consumer test that proves the override mechanism still functions. The test is the format contract the extension point commits to.
+
+**Why.** "Kept for future use" parameters rot silently — the code path sits untested, the intended consumer never arrives, and the next refactor simplifies the branch away. A synthetic consumer exercised in tests keeps the path alive and documents what a real future consumer would look like.
+
+**Worked example.** `resolveTemplatePath(phase, mode, role, hasUpstream?)` in `src/orchestration/skills.ts` checks `pair-<role>-upstream-<phase>.md` then `upstream-<phase>.md` when `hasUpstream` is truthy. The test in `src/orchestration/skills.test.ts` writes a temp `upstream-update-docs.md` and asserts `hasUpstream=true` resolves to the override while `false` falls back.
+
+**When not to apply.** If the extension point's consumer shape isn't known yet (a plugin hook whose interface is speculative), a synthetic test may encode a wrong shape the real consumer later has to break. Label the extension as speculative and skip the test instead.
+
+See also [regression-test-per-behaviour-change](#regression-test-per-behaviour-change), [ac-self-check](#ac-self-check).
+
+### Top-level dispatch
+
+**Principle.** When adding a new mode or variant to a state machine, dispatch at the top — `if (state.mode === "solo") return evaluateTransitionSolo(state);` — rather than sprinkling `if (solo) …` into each case body.
+
+**Why.** Per-case short-circuits spray the new mode's logic across the existing switch, maximising merge conflicts with concurrent edits to the base cases and making the new mode hard to read in one place. A top-level dispatch has a small, mechanical blast radius: existing cases don't change, and the new mode lives in one function the reader can reach for by name.
+
+**Worked example.** `task-da8b6dff` added solo-mode transitions by introducing an `evaluateTransitionSolo` dispatch at the top of `evaluateTransition`. Pair and duo cases are untouched; merges against concurrent case edits were mechanical.
+
+**When not to apply.** If the new mode genuinely interacts with every existing case (shared setup, shared post-processing that legitimately differs per case), the per-case approach may be unavoidable. Top-level dispatch works best when the new mode is orthogonal to existing cases.
+
+### Flag-name-keyed rejection
+
+**Principle.** When a CLI parser rejects flags based on mode (e.g., reviewer-only flags in solo mode), track the offending flag *by name* — `offendingFlag: string | null`, set to the flag string on first encounter — not by inferring from whether a resulting variable was assigned.
+
+**Why.** Shared flags (`--effort`) and role-specific flags (`--reviewer-effort`) often assign the same underlying variable. Variable-state inference after parsing ("was `reviewerEffort` set?") silently drops role-specific flags whose value happened to equal a default or was overwritten by a subsequent shared flag. Rejection must be keyed on *which flag was provided*, with an error message naming the offending flag so the caller knows which invocation-site to fix.
+
+**Worked pattern.** `parseT3CodeAdapterArgs` in `src/adapters/t3code.ts` uses `reviewerOnlyFlag: string | null`, set to the flag name the first time a reviewer-only flag is parsed. At the mode-gate, a non-null `reviewerOnlyFlag` in solo mode produces an error like `--reviewer-effort is not accepted in solo mode`. The error text carries the flag string, not a derived concept like "reviewer override".
+
+See also [caller-audit-on-signature-change](#caller-audit-on-signature-change).
+
+### Negative-case regression testing
+
+**Principle.** After writing a regression test, run it once with the target behaviour deliberately broken to confirm the test *can* fail — then revert the break. A test that has never failed is unproven.
+
+**Why.** A regression test that passes on first run could be passing for the wrong reason: a typo in the assertion, a fixture that doesn't exercise the path, a regex that silently skips the broken input. The stress-test proves the test is sensitive to the behaviour it claims to cover.
+
+**Recipe.**
+
+1. Write the regression test; confirm it passes against current code.
+2. Break the behaviour under test (flip a boolean, null a value, delete an anchor, change a character class in the regex — whatever the test is checking).
+3. Re-run the test. It must fail.
+4. Revert the break; re-run; it passes again.
+
+**Example.** `task-21b4c850`'s doc-link slug-resolution test passed round 1 but had two real bugs (phantom `##` anchors counted inside fenced code blocks; `[a-z0-9-]+` silently skipping malformed anchors). Both would have been caught by deliberately adding a link to a non-existent anchor, watching the test fail, then reverting.
+
+See also [regression-test-per-behaviour-change](#regression-test-per-behaviour-change).
+
 ---
 
 ## Reviewing
@@ -251,3 +372,36 @@ If the reviewer disagrees, they write `REQUEST_CHANGES` in the review file and e
 5. Failures only in the coder's baseline — investigate whether the coder's worktree has stale state; if not, the reviewer's merge base may be ahead.
 
 **In-template home.** `skills/orchestration/pair-reviewer-gather.md` already carries the one-line principle ("mismatches usually come from different merge bases"). This entry exists as the decision-support expansion.
+
+### Re-run reviewer repro
+
+**Principle.** When the reviewer files a contract bug at a specific invocation (`parseT3CodeAdapterArgs(<exact args>)`, `curl <exact URL>`, `bun run <exact script>`), the round-N+1 fix re-runs *that exact invocation* in addition to any new unit test.
+
+**Why.** A new unit test encodes the author's interpretation of the bug. The reviewer's repro is the contract the author might have misread. Running both closes the interpretation gap: if the unit test passes but the reviewer's repro still fails, the fix targeted the wrong thing.
+
+**Procedure.** Paste the reviewer's repro command into the work log, re-run it after the fix, and record the output alongside the unit-test result. Both must be green before signaling done.
+
+### Cross-merge-round gap detection
+
+**Principle.** Expect merge review to surface real gaps across multiple iterations; don't try to preempt them all in one pass. Treat the reviewer's grep anchors as reusable audit tools for the next similar change.
+
+**Why.** Mode additions, schema migrations, and template-family expansions have surface area that isn't obvious from the primary diff. A reviewer running `rg -n '<well-chosen pattern>'` routinely finds a second call site, a doc enumeration, a fallback-order assumption — none of which a single coder-side pass reliably catches. Planning for N rounds rather than trying to ship N+0 rounds keeps the cycle honest.
+
+**Example.** `task-da8b6dff` went through four merge iterations (merged-0 → merged-3). Each surfaced a real gap: tmux-adapter help text, `docs/ARCHITECTURE.md` enumerations, template fallback order, a second call site to `runner.ts::isPairBailedOut`. The reviewer's `rg -n 'mode: "duo" \| "pair"' docs` became a reusable audit tool for subsequent mode work.
+
+### Post-edit occurrence recheck
+
+**Principle.** After migrating N occurrences of pattern A to pattern B, run *both* greps: (a) `grep A` to confirm only expected residue remains (server endpoints, test guards), and (b) inverse `grep B` to audit the new sites for consistency. State the expected match set for both directions in the plan.
+
+**Why.** The forward direction (residue check) catches sites the migration missed. The inverse direction (consistency check) catches sites where the migration landed but picked different escape/helper choices than its siblings — half-migrated patterns that compile, pass the local tests, but diverge stylistically or semantically from the rest of the new cohort.
+
+**Recipe.**
+
+1. Before the edit, enumerate `grep A` occurrences in the plan with dispositions (see [exhaustive-occurrence-search](#exhaustive-occurrence-search)).
+2. After the edit, re-run `grep A` — confirm each remaining hit is on the expected residue list.
+3. Also run `grep B` — inspect each hit for consistency (same escape helper? same encoding? same error handling?).
+4. Diverged hits in step 3 are either half-migrated or genuine variants — the plan's expected match set disambiguates which.
+
+**Example.** `task-c5937037`'s `task-files/` → `task.html?task=` migration touched three `dashboard.js` patterns and one `dashboard.ts` line. The inverse grep for `task.html?task=` caught an encoding inconsistency where one site used `encodeURIComponent` while the others used `escapeHtml` — the kind of half-migration the forward-direction grep doesn't see.
+
+See also [exhaustive-occurrence-search](#exhaustive-occurrence-search).
