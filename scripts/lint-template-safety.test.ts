@@ -6,6 +6,7 @@ import {
   ALWAYS_POPULATED,
   findFencedShellBlocks,
   findInlineShellSpans,
+  looksLikeShell,
   parseIfRanges,
   lintTemplate,
   runLint,
@@ -64,6 +65,68 @@ describe("findInlineShellSpans", () => {
     const lines = ["Inspect `$(date +%s)` output."];
     const spans = findInlineShellSpans(lines);
     expect(spans).toHaveLength(1);
+  });
+
+  test("recognizes shell-keyword prefixed commands (`if`, `for`, etc.)", () => {
+    const lines = [
+      'Run `if gh pr view --repo "{{PROJECT_REPO}}"; then :; fi` now.',
+    ];
+    const spans = findInlineShellSpans(lines);
+    expect(spans).toHaveLength(1);
+  });
+
+  test("recognizes env-var-assignment-prefixed commands", () => {
+    const lines = ['Run `PROJECT_REPO=foo gh pr view --repo "{{PROJECT_REPO}}"` now.'];
+    const spans = findInlineShellSpans(lines);
+    expect(spans).toHaveLength(1);
+  });
+
+  test("recognizes pipe-chained commands inside backticks", () => {
+    const lines = ['Inspect `gh pr view --json x | jq ".title"` output.'];
+    const spans = findInlineShellSpans(lines);
+    expect(spans).toHaveLength(1);
+  });
+});
+
+describe("looksLikeShell", () => {
+  test("accepts direct command prefix", () => {
+    expect(looksLikeShell("gh pr view --repo foo")).toBe(true);
+  });
+
+  test("accepts shell-keyword prefixes", () => {
+    expect(looksLikeShell("if gh pr view; then :; fi")).toBe(true);
+    expect(looksLikeShell("for f in *.md; do echo $f; done")).toBe(true);
+    expect(looksLikeShell("while read line; do :; done")).toBe(true);
+    expect(looksLikeShell("case $x in a) :;; esac")).toBe(true);
+  });
+
+  test("accepts single-assignment prefix before a command", () => {
+    expect(looksLikeShell("FOO=bar gh pr view --repo x")).toBe(true);
+  });
+
+  test("accepts multiple-assignment prefix before a command", () => {
+    expect(looksLikeShell('FOO=bar BAZ="qux" gh pr view')).toBe(true);
+  });
+
+  test("accepts subshell / parameter expansion anywhere", () => {
+    expect(looksLikeShell("echo $(date +%s)")).toBe(true);
+    expect(looksLikeShell("prefix ${HOME}/bin")).toBe(true);
+  });
+
+  test("accepts pipe / chain into recognized command", () => {
+    expect(looksLikeShell("some-tool | jq .x")).toBe(true);
+    expect(looksLikeShell("cmd && git status")).toBe(true);
+  });
+
+  test("rejects prose-style backtick contents", () => {
+    expect(looksLikeShell("src/foo.ts")).toBe(false);
+    expect(looksLikeShell("{{STATUS_FILE}}")).toBe(false);
+    expect(looksLikeShell("APPROVE")).toBe(false);
+    expect(looksLikeShell("handleFoo()")).toBe(false);
+  });
+
+  test("rejects assignment-without-command", () => {
+    expect(looksLikeShell("FOO=bar")).toBe(false);
   });
 });
 
@@ -181,6 +244,29 @@ describe("lintTemplate — violations", () => {
     expect(vs).toHaveLength(1);
     expect(vs[0]!.variable).toBe("PROJECT_REPO");
   });
+
+  test("inline `if gh ...; then :; fi` is flagged (reviewer regression)", () => {
+    const md = 'Run `if gh pr view --repo "{{PROJECT_REPO}}"; then :; fi` now.';
+    const vs = lintTemplate("t.md", md, undefined);
+    expect(vs).toHaveLength(1);
+    expect(vs[0]!.variable).toBe("PROJECT_REPO");
+    expect(vs[0]!.context).toBe("inline");
+  });
+
+  test("inline env-var-prefixed command is flagged (reviewer regression)", () => {
+    const md = 'Run `PROJECT_REPO=foo gh pr view --repo "{{PROJECT_REPO}}"` now.';
+    const vs = lintTemplate("t.md", md, undefined);
+    expect(vs).toHaveLength(1);
+    expect(vs[0]!.variable).toBe("PROJECT_REPO");
+    expect(vs[0]!.context).toBe("inline");
+  });
+
+  test("inline for-loop with unsafe variable is flagged", () => {
+    const md = 'Iterate `for x in "{{UPSTREAM_REPO}}"; do git clone "$x"; done` now.';
+    const vs = lintTemplate("t.md", md, undefined);
+    expect(vs).toHaveLength(1);
+    expect(vs[0]!.variable).toBe("UPSTREAM_REPO");
+  });
 });
 
 describe("ALWAYS_POPULATED set", () => {
@@ -253,19 +339,38 @@ describe("runLint — CLI integration", () => {
     expect(proc.exitCode).toBe(0);
   });
 
-  test("exits 1 against a crafted failing directory", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "lint-templates-fail-"));
-    const subdir = join(dir, "skills", "orchestration");
-    mkdirSync(subdir, { recursive: true });
-    writeFileSync(
-      join(subdir, "bad.md"),
-      ["```sh", 'gh pr view --repo "{{PROJECT_REPO}}"', "```"].join("\n"),
-    );
+  test("exits 0 via CLI against a crafted clean directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lint-templates-cli-ok-"));
     try {
-      // Use a helper entry that points at the crafted dir via runLint directly:
-      // spawning the CLI would scan the real repo, so assert via runLint instead.
-      const vs = runLint(subdir);
-      expect(vs.length).toBeGreaterThan(0);
+      writeFileSync(
+        join(dir, "a.md"),
+        ["```sh", 'printf "%s" "{{STATUS_FILE}}"', "```"].join("\n"),
+      );
+      const proc = Bun.spawnSync(
+        ["bun", "run", join(import.meta.dir, "lint-template-safety.ts"), dir],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      expect(proc.exitCode).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("exits 1 via CLI against a crafted failing directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lint-templates-cli-fail-"));
+    try {
+      writeFileSync(
+        join(dir, "bad.md"),
+        ["```sh", 'gh pr view --repo "{{PROJECT_REPO}}"', "```"].join("\n"),
+      );
+      const proc = Bun.spawnSync(
+        ["bun", "run", join(import.meta.dir, "lint-template-safety.ts"), dir],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      expect(proc.exitCode).toBe(1);
+      const stderr = new TextDecoder().decode(proc.stderr);
+      expect(stderr).toContain("PROJECT_REPO");
+      expect(stderr).toContain("bad.md");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

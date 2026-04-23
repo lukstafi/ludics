@@ -65,10 +65,53 @@ export const TEMPLATE_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> =
   // PROJECT_REPO / UPSTREAM_REPO as allowlisted variables.
 };
 
-/** Shell command keywords that indicate an inline-backtick span is a shell
- *  command rather than prose. A span must start with one of these tokens
- *  (after any leading whitespace) to be treated as a shell context. */
-const SHELL_COMMAND_PREFIX = /^(?:git|gh|printf|cat|rm|mkdir|cp|mv|cd|ls|ln|touch|test|chmod|chown|find|awk|sed|grep|npm|bun|node|python|echo|date|eval|source|export|unset|read|xargs|jq|curl|wget|sudo|kill|pkill|bash|sh|zsh|make|docker|ssh|scp|rsync|tar|gzip|gunzip|zip|unzip|diff|patch|pwd|true|false|:|\[|\[\[|\$\()\b/;
+/** Command/keyword tokens that start a shell command. */
+const SHELL_COMMANDS = [
+  "git", "gh", "printf", "cat", "rm", "mkdir", "cp", "mv", "cd", "ls", "ln",
+  "touch", "test", "chmod", "chown", "find", "awk", "sed", "grep", "egrep", "fgrep",
+  "npm", "bun", "node", "python", "python3", "echo", "date", "eval", "source",
+  "export", "unset", "read", "xargs", "jq", "yq", "curl", "wget", "sudo", "kill",
+  "pkill", "bash", "sh", "zsh", "make", "docker", "ssh", "scp", "rsync", "tar",
+  "gzip", "gunzip", "zip", "unzip", "diff", "patch", "pwd", "tee", "sort", "uniq",
+  "head", "tail", "wc", "tr", "cut", "true", "false",
+] as const;
+
+/** Shell control-flow / compound-command keywords that start shell syntax. */
+const SHELL_KEYWORDS = [
+  "if", "for", "while", "case", "until", "do", "done", "then", "else", "elif",
+  "fi", "esac", "select", "function", "time",
+] as const;
+
+const SHELL_COMMAND_ALT = [...SHELL_COMMANDS, ...SHELL_KEYWORDS].join("|");
+
+/** A span's leading content matches a known shell start token. */
+const SHELL_COMMAND_PREFIX = new RegExp(
+  `^(?:${SHELL_COMMAND_ALT}|:|\\[|\\[\\[|\\{|\\(|\\$\\()\\b`,
+);
+
+/** A shell-style leading env-var assignment: `NAME=value ` (one or more). */
+const ENV_ASSIGNMENT_PREFIX = /^(?:[A-Z_][A-Z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/;
+
+/** A pipe / logical chain / command separator followed by a command token —
+ *  strong evidence that the span is shell and not prose. */
+const SHELL_CHAIN = new RegExp(
+  `(?:\\s\\||&&|\\|\\||;\\s|\\s>\\s|\\s>>\\s|\\s<\\s)\\s*(?:${SHELL_COMMAND_ALT})\\b`,
+);
+
+/** Decide whether an inline backtick span is a shell command. Accepts:
+ *   - direct command prefix (`gh pr view ...`)
+ *   - shell keyword prefix (`if gh ...; then ...; fi`, `for f in ...; do ...`)
+ *   - leading env-var assignments (`FOO=bar gh ...`)
+ *   - command substitution / parameter expansion (`$(...)`, `${...}`)
+ *   - pipe / chain / redirection into a recognized command token
+ *  Keeps prose-style backticks (file paths, identifiers, quoted values) out. */
+export function looksLikeShell(body: string): boolean {
+  const stripped = body.replace(/^\s+/, "").replace(ENV_ASSIGNMENT_PREFIX, "");
+  if (SHELL_COMMAND_PREFIX.test(stripped)) return true;
+  if (/\$\(|\$\{/.test(body)) return true;
+  if (SHELL_CHAIN.test(body)) return true;
+  return false;
+}
 
 export interface Violation {
   readonly file: string;
@@ -138,10 +181,7 @@ export function findInlineShellSpans(lines: string[]): ShellSpan[] {
     let m: RegExpExecArray | null;
     while ((m = re.exec(line)) != null) {
       const body = m[1]!;
-      // Strip a leading template variable substitution so commands like
-      // `{{STATUS_FILE}}` (prose path) are not mistaken for shell.
-      const trimmed = body.replace(/^\s+/, "");
-      if (!SHELL_COMMAND_PREFIX.test(trimmed)) continue;
+      if (!looksLikeShell(body)) continue;
       const startCol = m.index + 1; // skip opening backtick
       const endCol = startCol + body.length;
       spans.push({
@@ -262,7 +302,10 @@ export function runLint(templateDir: string): Violation[] {
 
 if (import.meta.main) {
   const root = join(import.meta.dir, "..");
-  const templateDir = join(root, "skills", "orchestration");
+  // Optional first positional arg overrides the template directory, which
+  // lets tests exercise the real CLI exit-code paths against a temp directory.
+  const argDir = process.argv[2];
+  const templateDir = argDir ? argDir : join(root, "skills", "orchestration");
   const violations = runLint(templateDir);
   if (violations.length === 0) {
     console.log("✅  All orchestration templates use variables safely in shell contexts.");
