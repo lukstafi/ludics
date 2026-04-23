@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, mkdirSync } from "fs";
+import { atomicWriteFileSync } from "./json.ts";
 import { join } from "path";
 import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath } from "./config.ts";
 import { tasksCreate } from "./tasks/index.ts";
@@ -12,7 +13,7 @@ interface TestHealthEntry {
   failures?: string;
 }
 
-type TestHealthState = Record<string, TestHealthEntry>;
+export type TestHealthState = Record<string, TestHealthEntry>;
 
 interface TestHealthResult {
   skipped: boolean;
@@ -66,11 +67,13 @@ export function shouldRunTestHealth(
 
 // --- State persistence ---
 
-function testHealthStatePath(): string {
+/** @internal exported for tests only */
+export function testHealthStatePath(): string {
   return join(harnessDir(), "mag", "test-health.json");
 }
 
-function loadTestHealthState(): TestHealthState {
+/** @internal exported for tests only */
+export function loadTestHealthState(): TestHealthState {
   try {
     const parsed = JSON.parse(readFileSync(testHealthStatePath(), "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
@@ -80,10 +83,11 @@ function loadTestHealthState(): TestHealthState {
   }
 }
 
-function saveTestHealthState(state: TestHealthState): void {
+/** @internal exported for tests only */
+export function saveTestHealthState(state: TestHealthState): void {
   const dir = join(harnessDir(), "mag");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(testHealthStatePath(), JSON.stringify(state, null, 2));
+  atomicWriteFileSync(testHealthStatePath(), JSON.stringify(state, null, 2));
 }
 
 // --- Execution ---

@@ -144,3 +144,56 @@ describe("extractReviews", () => {
     expect(verdicts[1]!.reviewer).toBe("codex-reviews-claude");
   });
 });
+
+import { existsSync, readFileSync } from "fs";
+import type { RetrospectiveData } from "./retrospective.ts";
+
+describe("writeRetrospective atomic write", () => {
+  test("writes JSON file and leaves no .tmp sibling", async () => {
+    const { writeRetrospective } = await import("./retrospective.ts");
+    const harness = mkdtempSync(join(tmpdir(), "retro-harness-"));
+    const ORIGINAL = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = harness;
+    try {
+      const data: RetrospectiveData = {
+        taskId: "task-atomic-retro",
+        title: "Atomic retro test",
+        status: "done",
+        completedAt: "2026-04-24T00:00:00Z",
+        startedAt: "2026-04-23T00:00:00Z",
+        slot: 1,
+        mode: "pair",
+        proposalPath: null,
+        prUrl: null,
+        githubUrl: null,
+        phases: ["setup", "plan", "implement"],
+        rounds: 1,
+        mergeRound: 0,
+        planMergeRound: 0,
+        agents: ["coder", "reviewer"],
+        verdicts: [],
+        reviews: [],
+        threads: [],
+        turns: [],
+        missingThreads: [],
+        suggestRefactorSummary: null,
+        workflowFeedback: {},
+        workflowFeedbackSummary: null,
+        collectedAt: "2026-04-24T00:00:00Z",
+      };
+      writeRetrospective(data);
+      const file = join(harness, "retrospectives", `${data.taskId}.json`);
+      expect(existsSync(file)).toBe(true);
+      expect(existsSync(file + ".tmp")).toBe(false);
+      const parsed = JSON.parse(readFileSync(file, "utf-8"));
+      expect(parsed.taskId).toBe("task-atomic-retro");
+      expect(parsed.phases).toEqual(["setup", "plan", "implement"]);
+      // Byte-exactness: no added trailing newline
+      expect(readFileSync(file, "utf-8")).toBe(JSON.stringify(data, null, 2));
+    } finally {
+      if (ORIGINAL === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = ORIGINAL;
+      rmSync(harness, { recursive: true, force: true });
+    }
+  });
+});

@@ -1,7 +1,8 @@
 // Retrospective collection — extract last assistant message per turn from t3code
 // threads at task completion, write to retrospectives/<task-id>.json.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "fs";
+import { atomicWriteFileSync } from "./json.ts";
 import { basename, join } from "path";
 import YAML from "yaml";
 import { harnessDir } from "./config.ts";
@@ -433,10 +434,11 @@ function readTaskFrontmatter(taskId: string): TaskFrontmatter | null {
 
 // --- Write helper ---
 
-function writeRetrospective(data: RetrospectiveData): void {
+/** @internal exported for tests only */
+export function writeRetrospective(data: RetrospectiveData): void {
   const dir = join(harnessDir(), "retrospectives");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${data.taskId}.json`), JSON.stringify(data, null, 2));
+  atomicWriteFileSync(join(dir, `${data.taskId}.json`), JSON.stringify(data, null, 2));
 
   emitEvent({
     event_type: "retrospective_written",

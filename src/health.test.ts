@@ -172,3 +172,32 @@ describe("loadTestHealthState validation", () => {
     expect(parseTestHealthState("not json{{{")).toEqual({});
   });
 });
+
+import { existsSync, mkdtempSync, readFileSync } from "fs";
+
+describe("saveTestHealthState atomic write", () => {
+  test("round-trips via loadTestHealthState and leaves no .tmp sibling", async () => {
+    const mod = await import("./health.ts");
+    const dir = mkdtempSync(join(tmpdir(), "ludics-health-"));
+    const ORIGINAL = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = dir;
+    try {
+      const state = {
+        "ludics/ludics": {
+          lastRun: "2026-04-24T00:00:00Z",
+          passed: true,
+        },
+      };
+      mod.saveTestHealthState(state);
+      expect(mod.loadTestHealthState()).toEqual(state);
+      const path = mod.testHealthStatePath();
+      expect(existsSync(path + ".tmp")).toBe(false);
+      // Byte-exactness: no added trailing newline
+      expect(readFileSync(path, "utf-8")).toBe(JSON.stringify(state, null, 2));
+    } finally {
+      if (ORIGINAL === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = ORIGINAL;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
