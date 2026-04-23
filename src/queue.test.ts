@@ -381,7 +381,7 @@ describe("withQueueLock", () => {
     });
   });
 
-  test("concurrent holder would see EEXIST on mkdirSync", async () => {
+  test("in-process: nested mkdirSync on held lock dir fails with EEXIST", async () => {
     const { withQueueLock } = await loadQueue();
     const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
 
@@ -396,6 +396,71 @@ describe("withQueueLock", () => {
     });
     expect(sawEexist).toBe(true);
   });
+
+  test("serializes concurrent callers: child subprocess blocks until parent releases", async () => {
+    const { withQueueLock } = await loadQueue();
+    const queueModulePath = new URL("./queue.ts", import.meta.url).pathname;
+    const eventsFile = join(tmpDir, "lock-events.log");
+    writeFileSync(eventsFile, "");
+
+    // Child script: records timestamp on start, then tries to acquire the same lock.
+    // The child runs in a separate Bun process and shares LUDICS_HARNESS_DIR via env.
+    const childFile = join(tmpDir, "child-lock.ts");
+    writeFileSync(childFile, `import { appendFileSync } from "fs";
+const eventsFile = process.argv[2];
+appendFileSync(eventsFile, \`child-start \${Date.now()}\\n\`);
+const { withQueueLock } = await import(${JSON.stringify(queueModulePath)});
+withQueueLock(() => {
+  appendFileSync(eventsFile, \`child-acquired \${Date.now()}\\n\`);
+});
+appendFileSync(eventsFile, \`child-done \${Date.now()}\\n\`);
+`);
+
+    const holdMs = 500;
+    let lastHeldTs = 0;
+    let childProc: ReturnType<typeof Bun.spawn> | null = null;
+
+    withQueueLock(() => {
+      // Launch the child while we hold the lock. It must block on EEXIST until we release.
+      childProc = Bun.spawn({
+        cmd: [process.execPath, "run", childFile, eventsFile],
+        env: { ...process.env, LUDICS_HARNESS_DIR: tmpDir },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      // Hold long enough for the child to start, import, and attempt acquisition.
+      // Retry interval in queue.ts is 100ms, so several retries will happen.
+      Bun.sleepSync(holdMs);
+      lastHeldTs = Date.now();  // still inside critical section
+    });
+    // At this point the parent's finally block has released the lock.
+
+    await childProc!.exited;
+    expect(childProc!.exitCode).toBe(0);
+
+    const events = readFileSync(eventsFile, "utf-8").split("\n").filter(Boolean);
+    const firstTs = (tag: string): number | null => {
+      const line = events.find(l => l.startsWith(tag + " "));
+      return line ? Number(line.split(" ")[1]) : null;
+    };
+    const childStartTs = firstTs("child-start");
+    const childAcquiredTs = firstTs("child-acquired");
+    const childDoneTs = firstTs("child-done");
+
+    // Child actually ran and completed normally.
+    expect(childStartTs).not.toBeNull();
+    expect(childAcquiredTs).not.toBeNull();
+    expect(childDoneTs).not.toBeNull();
+
+    // Child started its attempt while parent still held the lock — proves contention occurred.
+    expect(childStartTs!).toBeLessThan(lastHeldTs);
+    // Serialization invariant: child could not have entered the critical section
+    // before the parent left it. `lastHeldTs` was captured while the parent still held.
+    expect(childAcquiredTs!).toBeGreaterThanOrEqual(lastHeldTs);
+
+    // Lock dir is clean at the end (both parent and child released).
+    expect(existsSync(join(tmpDir, "mag", "queue.jsonl.lock"))).toBe(false);
+  }, 15_000);
 
   test("breaks stale lock held by dead PID", async () => {
     const { withQueueLock } = await loadQueue();
