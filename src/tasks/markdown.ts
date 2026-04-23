@@ -161,8 +161,7 @@ export function transitionStatus(
 ): boolean {
   if (!existsSync(filePath)) throw new Error(`task file not found: ${filePath}`);
   const content = readFileSync(filePath, "utf-8");
-  const statusMatch = content.match(/^status:\s*(.+)$/m);
-  const current = statusMatch ? statusMatch[1]!.trim() : "ready";
+  const current = readFrontmatterField(content, "status") ?? "ready";
   const allowed = Array.isArray(expectedFrom) ? expectedFrom : [expectedFrom];
   if (!allowed.includes(current)) {
     return false;

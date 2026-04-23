@@ -10,7 +10,7 @@ import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, loadConfigSync } from "./config.ts";
 import { readSlotJson } from "./slots/json.ts";
 import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES, CLEAR_STATUS_READY, CLEAR_STATUS_DONE } from "./slots/index.ts";
-import { updateFrontmatterField, addFrontmatterField, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
+import { updateFrontmatterField, addFrontmatterField, readFrontmatterField, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
 import { setQueueHold, maybeFeedMagQueue } from "./mag.ts";
@@ -254,8 +254,7 @@ export function startDashboardServer(
               if (!("error" in taskResolved)) {
                 const taskFile = taskResolved.path;
                 const content = readFileSync(taskFile, "utf-8");
-                const priorityMatch = content.match(/^priority:\s*(.+)$/m);
-                const currentPriority = priorityMatch ? priorityMatch[1]!.trim() : "B";
+                const currentPriority = readFrontmatterField(content, "priority") ?? "B";
                 const newPriority = PRIORITY_DECREASE[currentPriority] ?? currentPriority;
                 if (newPriority !== currentPriority) {
                   // Capture the write as a closure; execute only after clear succeeds.
@@ -289,8 +288,7 @@ export function startDashboardServer(
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
           const content = readFileSync(taskFile, "utf-8");
-          const priorityMatch = content.match(/^priority:\s*(.+)$/m);
-          const currentPriority = priorityMatch ? priorityMatch[1]!.trim() : "B";
+          const currentPriority = readFrontmatterField(content, "priority") ?? "B";
           const newPriority = PRIORITY_INCREASE[currentPriority] ?? currentPriority;
           if (newPriority !== currentPriority) {
             addFrontmatterField(taskFile, "priority", newPriority);
@@ -315,8 +313,7 @@ export function startDashboardServer(
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
           const content = readFileSync(taskFile, "utf-8");
-          const statusMatch = content.match(/^status:\s*(.+)$/m);
-          const currentStatus = statusMatch ? statusMatch[1]!.trim() : "";
+          const currentStatus = readFrontmatterField(content, "status") ?? "";
           if (currentStatus !== "needs-confirmation") {
             return new Response(JSON.stringify({ error: "task is not needs-confirmation" }), {
               status: 409, headers: { "Content-Type": "application/json" },
@@ -343,8 +340,7 @@ export function startDashboardServer(
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
           const content = readFileSync(taskFile, "utf-8");
-          const statusMatch = content.match(/^status:\s*(.+)$/m);
-          const currentStatus = statusMatch ? statusMatch[1]!.trim() : "";
+          const currentStatus = readFrontmatterField(content, "status") ?? "";
           if (currentStatus !== "needs-confirmation") {
             return new Response(JSON.stringify({ error: "task is not needs-confirmation" }), {
               status: 409, headers: { "Content-Type": "application/json" },
@@ -371,7 +367,7 @@ export function startDashboardServer(
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
           const approveContent = readFileSync(taskFile, "utf-8");
-          const approveStatus = approveContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+          const approveStatus = readFrontmatterField(approveContent, "status");
           if (approveStatus !== "deferred") {
             return new Response(
               JSON.stringify({ error: `task is ${approveStatus}, not deferred` }),

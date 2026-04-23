@@ -247,6 +247,37 @@ describe("readFrontmatterField", () => {
     expect(readFrontmatterField(content, "project")).toBe("real");
   });
 
+  test("body code-block shadowing: frontmatter status wins over body-scoped status (task-485dcb6a)", () => {
+    // Regression guard for the body-scope vulnerability closed by the
+    // regex → readFrontmatterField migration (task-485dcb6a / task-808ee2c7).
+    // A naive /^status:\s*(.+)$/m would capture the code-block line "status: wrong".
+    const content = [
+      "---",
+      "id: task-1",
+      "status: ready",
+      "priority: B",
+      "---",
+      "",
+      "# Title",
+      "",
+      "Retrospective quote from a prior run:",
+      "",
+      "```",
+      "status: wrong",
+      "priority: X",
+      "```",
+      "",
+      "Inline prose also mentions status: wrong here.",
+    ].join("\n");
+
+    expect(readFrontmatterField(content, "status")).toBe("ready");
+    expect(readFrontmatterField(content, "priority")).toBe("B");
+    // Document the shadowing that the migration fixes: naive regex sees the code block.
+    expect(content.match(/^status:\s*(.+)$/m)?.[1]).toBe("ready");
+    const allStatusMatches = [...content.matchAll(/^status:\s*(.+)$/gm)].map((m) => m[1]);
+    expect(allStatusMatches).toContain("wrong");
+  });
+
   test("stringifies array values", () => {
     const content = "---\nblocks: [a, b]\n---\n";
     expect(readFrontmatterField(content, "blocks")).toBe("a,b");

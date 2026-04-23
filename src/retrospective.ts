@@ -408,12 +408,9 @@ function readTaskFrontmatter(taskId: string): TaskFrontmatter | null {
 
     const data = (YAML.parse(fmMatch[1]!, { uniqueKeys: false }) ?? {}) as Record<string, unknown>;
 
-    // Parse t3code_threads: [id1, id2]
-    let threads: string[] = [];
-    const threadsMatch = content.match(/^t3code_threads:\s*\[(.+)\]$/m);
-    if (threadsMatch) {
-      threads = threadsMatch[1]!.split(",").map((s) => s.trim()).filter(Boolean);
-    }
+    const threads: string[] = Array.isArray(data.t3code_threads)
+      ? (data.t3code_threads as unknown[]).map((v) => String(v).trim()).filter(Boolean)
+      : [];
 
     const isNonNull = (v: unknown): v is string =>
       typeof v === "string" && v.trim() !== "" && v.trim().toLowerCase() !== "null";
