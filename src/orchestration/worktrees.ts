@@ -311,12 +311,18 @@ export function createWorktrees(
  * single clear on the parent covers all worktrees.
  *
  * Best-effort: uses `safeSyncOutput`, which does not throw. If the config key
- * is absent, `git config --unset` exits non-zero and is silently ignored.
+ * is absent, `git config --unset-all` exits non-zero and is silently ignored.
+ *
+ * Uses `--unset-all` (not `--unset`) so that if the key has multiple values
+ * (from a prior `git config --add` or a hand-edited `.git/config`), every
+ * value is removed. `--unset` would fail with exit code 5 on multi-valued
+ * keys, and the failure would be silently swallowed by `safeSyncOutput`,
+ * leaving the poisoning marker in place — defeating the hardening.
  */
 export function clearGhResolvedMarkers(projectDir: string): void {
   for (const remote of ["origin", "upstream"]) {
     safeSyncOutput(
-      ["git", "config", "--unset", `remote.${remote}.gh-resolved`],
+      ["git", "config", "--unset-all", `remote.${remote}.gh-resolved`],
       { cwd: projectDir },
     );
   }

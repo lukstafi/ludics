@@ -107,6 +107,34 @@ describe("worktrees", () => {
     cleanupWorktrees(repo, "gh-resolved-feat", [{ name: "coder" }], 7, "solo");
   });
 
+  test("clearGhResolvedMarkers removes all values for a multi-valued gh-resolved key (P1 Codex review)", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "repo-gh-resolved-multi");
+    mkdirSync(repo, { recursive: true });
+    run(["git", "init", "-b", "main"], repo);
+    run(["git", "config", "user.email", "test@example.com"], repo);
+    run(["git", "config", "user.name", "Test User"], repo);
+
+    // Force a multi-valued key with --add (simulates a prior gh invocation adding
+    // a second value, or a hand-edited .git/config). `git config --unset` would
+    // fail with exit code 5 here; `--unset-all` must succeed.
+    run(["git", "config", "--add", "remote.origin.gh-resolved", "base"], repo);
+    run(["git", "config", "--add", "remote.origin.gh-resolved", "head"], repo);
+    run(["git", "config", "--add", "remote.upstream.gh-resolved", "base"], repo);
+    run(["git", "config", "--add", "remote.upstream.gh-resolved", "head"], repo);
+
+    // Sanity: before clearing, both keys have 2 values each.
+    const preOrigin = Bun.spawnSync(["git", "config", "--get-all", "remote.origin.gh-resolved"], { cwd: repo }).stdout.toString().trim().split("\n");
+    expect(preOrigin.length).toBe(2);
+
+    clearGhResolvedMarkers(repo);
+
+    // After clearing, both keys must be fully absent (exit 1, not exit 5).
+    expect(Bun.spawnSync(["git", "config", "--get-all", "remote.origin.gh-resolved"], { cwd: repo }).exitCode).not.toBe(0);
+    expect(Bun.spawnSync(["git", "config", "--get-all", "remote.upstream.gh-resolved"], { cwd: repo }).exitCode).not.toBe(0);
+  });
+
   test("clearGhResolvedMarkers is idempotent and safe when markers are absent", () => {
     if (!Bun.which("git")) return;
     mkdirSync(TMP, { recursive: true });
