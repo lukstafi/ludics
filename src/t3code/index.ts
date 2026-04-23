@@ -6,6 +6,7 @@ import type { AgentConfig } from "../orchestration/state.ts";
 import { T3CodeClient, waitForNewTurn } from "./client.ts";
 import { doctorServer, ensureServer, readServerRecord, readSlotState, serverStatus, stopServer, t3codeServerPath } from "./server.ts";
 import type { T3Thread, T3Project, T3ThreadMessage } from "./types.ts";
+import { readFrontmatterField } from "../tasks/markdown.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -295,8 +296,7 @@ function readTaskStatus(taskId: string, harness: string): string | null {
   if (!existsSync(file)) return null;
   try {
     const content = readFileSync(file, "utf-8");
-    const match = content.match(/^status:\s*(.+)$/m);
-    return match ? match[1]!.trim() : null;
+    return readFrontmatterField(content, "status");
   } catch {
     return null;
   }

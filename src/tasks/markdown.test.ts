@@ -247,6 +247,37 @@ describe("readFrontmatterField", () => {
     expect(readFrontmatterField(content, "project")).toBe("real");
   });
 
+  test("body code-block shadowing: frontmatter status wins over body-scoped status (task-485dcb6a)", () => {
+    // Regression guard for the body-scope vulnerability closed by the
+    // regex → readFrontmatterField migration (task-485dcb6a / task-808ee2c7).
+    // A naive /^status:\s*(.+)$/m would capture the code-block line "status: wrong".
+    const content = [
+      "---",
+      "id: task-1",
+      "status: ready",
+      "priority: B",
+      "---",
+      "",
+      "# Title",
+      "",
+      "Retrospective quote from a prior run:",
+      "",
+      "```",
+      "status: wrong",
+      "priority: X",
+      "```",
+      "",
+      "Inline prose also mentions status: wrong here.",
+    ].join("\n");
+
+    expect(readFrontmatterField(content, "status")).toBe("ready");
+    expect(readFrontmatterField(content, "priority")).toBe("B");
+    // Document the shadowing that the migration fixes: naive regex sees the code block.
+    expect(content.match(/^status:\s*(.+)$/m)?.[1]).toBe("ready");
+    const allStatusMatches = [...content.matchAll(/^status:\s*(.+)$/gm)].map((m) => m[1]);
+    expect(allStatusMatches).toContain("wrong");
+  });
+
   test("stringifies array values", () => {
     const content = "---\nblocks: [a, b]\n---\n";
     expect(readFrontmatterField(content, "blocks")).toBe("a,b");
@@ -261,6 +292,39 @@ describe("readFrontmatterField", () => {
     const content = "---\n: : :\n  bad:\n    - [\n---\n";
     expect(() => readFrontmatterField(content, "project")).not.toThrow();
     expect(readFrontmatterField(content, "project")).toBeNull();
+  });
+
+  test("malformed YAML: explicit status line still readable via frontmatter-scoped fallback (codex P2)", () => {
+    // Regression guard: if some other field breaks YAML parse, transitionStatus
+    // would otherwise fall back to "ready" and let guarded transitions through.
+    // Fallback is still scoped to the frontmatter block — body lines are ignored.
+    const content = [
+      "---",
+      "id: task-1",
+      "status: done",
+      "dependencies: [unclosed",
+      "---",
+      "",
+      "# Title",
+      "",
+      "status: wrong",
+    ].join("\n");
+
+    expect(readFrontmatterField(content, "status")).toBe("done");
+    expect(readFrontmatterField(content, "id")).toBe("task-1");
+  });
+
+  test("malformed YAML fallback strips surrounding quotes and treats literal null as missing", () => {
+    const content = [
+      "---",
+      'title: "quoted"',
+      "status: null",
+      "dependencies: [unclosed",
+      "---",
+    ].join("\n");
+
+    expect(readFrontmatterField(content, "title")).toBe("quoted");
+    expect(readFrontmatterField(content, "status")).toBeNull();
   });
 });
 

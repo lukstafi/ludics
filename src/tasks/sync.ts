@@ -278,8 +278,7 @@ function collectProjectsWithQueuedPreemption(tasksDir: string, queueContent: str
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
   for (const file of files) {
     const content = readFileSync(join(tasksDir, file), "utf-8");
-    const statusMatch = content.match(/^status:\s*(.+)$/m);
-    if (!statusMatch || statusMatch[1]!.trim() !== "preempt-queued") continue;
+    if (readFrontmatterField(content, "status") !== "preempt-queued") continue;
     const project = readFrontmatterField(content, "project") ?? "";
     if (project && priProjects.includes(project)) {
       projects.add(project);
@@ -807,8 +806,8 @@ function tasksQueueElaborations(): void {
     if (!existsSync(file)) continue;
 
     const content = readFileSync(file, "utf-8");
-    const statusMatch = content.match(/^status:\s*(.+)$/m);
-    if (statusMatch && statusMatch[1]!.trim() !== "ready") continue;
+    const status = readFrontmatterField(content, "status");
+    if (status !== null && status !== "ready") continue;
 
     if (isElaborated(content)) continue;
 
@@ -830,12 +829,10 @@ function tasksNeedsElaborationList(tasksDir: string): string[] {
 
   for (const f of files) {
     const content = readFileSync(join(tasksDir, f), "utf-8");
-    const idMatch = content.match(/^id:\s*(.+)$/m);
-    if (!idMatch) continue;
-    const id = idMatch[1]!.trim();
+    const id = readFrontmatterField(content, "id");
+    if (!id) continue;
 
-    const statusMatch = content.match(/^status:\s*(.+)$/m);
-    const status = statusMatch ? statusMatch[1]!.trim() : "";
+    const status = readFrontmatterField(content, "status") ?? "";
     if (["merged", "done", "abandoned", "needs-confirmation"].includes(status)) continue;
 
     if (!isElaborated(content)) result.push(id);
@@ -883,12 +880,10 @@ function tasksQueuePreemptions(): void {
 
   for (const f of files) {
     const content = readFileSync(join(tasksDir, f), "utf-8");
-    const idMatch = content.match(/^id:\s*(.+)$/m);
-    if (!idMatch) continue;
-    const id = idMatch[1]!.trim();
+    const id = readFrontmatterField(content, "id");
+    if (!id) continue;
 
-    const statusMatch = content.match(/^status:\s*(.+)$/m);
-    if (!statusMatch || statusMatch[1]!.trim() !== "ready") continue;
+    if (readFrontmatterField(content, "status") !== "ready") continue;
 
     const project = readFrontmatterField(content, "project") ?? "";
     if (!project) continue;

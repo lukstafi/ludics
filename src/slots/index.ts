@@ -170,8 +170,7 @@ function taskUpdateForSlotAssign(taskId: string, slot: number, adapter: string, 
   }
   if (!transitionStatus(file, ["ready", "deferred", "blocked", "needs-confirmation", "preempted"], "in-progress")) {
     const content = readFileSync(file, "utf-8");
-    const statusMatch = content.match(/^status:\s*(.+)$/m);
-    const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+    const actual = readFrontmatterField(content, "status") ?? "unknown";
     console.error(`ludics: skipping slot assign for ${taskId}: status is '${actual}', expected one of [ready, deferred, blocked, needs-confirmation, preempted]`);
     return;
   }
@@ -199,8 +198,7 @@ function taskUpdateForSlotClear(taskId: string, finalStatus: string): void {
 
   if (!transitionStatus(file, expectedFrom, finalStatus)) {
     const content = readFileSync(file, "utf-8");
-    const statusMatch = content.match(/^status:\s*(.+)$/m);
-    const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+    const actual = readFrontmatterField(content, "status") ?? "unknown";
     console.error(`ludics: skipping slot clear for ${taskId}: status is '${actual}', expected one of [${expectedFrom.join(", ")}]`);
     return;
   }
@@ -263,8 +261,7 @@ export async function slotAssign(
   if (existsSync(tf)) {
     taskId = taskOrDesc;
     const content = readFileSync(tf, "utf-8");
-    const titleMatch = content.match(/^title:\s*"?(.+?)"?\s*$/m);
-    processDesc = titleMatch ? titleMatch[1]! : taskId;
+    processDesc = readFrontmatterField(content, "title") ?? taskId;
   } else {
     taskId = null;
     processDesc = taskOrDesc;
@@ -311,7 +308,7 @@ export async function slotAssign(
     if (existsSync(oldTaskFile)) {
       updateFrontmatterField(oldTaskFile, "slot", "null");
       const oldContent = readFileSync(oldTaskFile, "utf-8");
-      const oldStatus = oldContent.match(/^status:\s*(.+)$/m)?.[1]?.trim();
+      const oldStatus = readFrontmatterField(oldContent, "status");
       if (oldStatus === "in-progress" || oldStatus === "deferred") {
         updateFrontmatterField(oldTaskFile, "status", "ready");
       }
@@ -482,8 +479,8 @@ export function markSlotSetupFailed(slotNum: number, error: string): void {
     const taskFile = taskFilePath(taskId);
     if (existsSync(taskFile)) {
       const content = readFileSync(taskFile, "utf-8");
-      const statusMatch = content.match(/^status:\s*(.+)$/m);
-      if (statusMatch && (statusMatch[1]!.trim() === "in-progress" || statusMatch[1]!.trim() === "deferred")) {
+      const status = readFrontmatterField(content, "status");
+      if (status === "in-progress" || status === "deferred") {
         taskUpdateFrontmatter(taskId, "status", "ready");
       }
     }
@@ -515,8 +512,7 @@ export function taskCompleteDirectly(taskId: string): void {
   }
   if (!transitionStatus(file, ["in-progress", "deferred"], "done")) {
     const content = readFileSync(file, "utf-8");
-    const statusMatch = content.match(/^status:\s*(.+)$/m);
-    const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+    const actual = readFrontmatterField(content, "status") ?? "unknown";
     console.error(`ludics: skipping direct completion for ${taskId}: status is '${actual}', expected one of [in-progress, deferred]`);
     return;
   }
@@ -614,8 +610,7 @@ export async function slotPreempt(
     const taskFile = taskFilePath(data.task);
     if (!transitionStatus(taskFile, ["in-progress"], "preempted")) {
       const content = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
-      const statusMatch = content.match(/^status:\s*(.+)$/m);
-      const actual = statusMatch ? statusMatch[1]!.trim() : "unknown";
+      const actual = readFrontmatterField(content, "status") ?? "unknown";
       console.error(`ludics: skipping preempt status update for ${data.task}: status is '${actual}', expected 'in-progress'`);
     }
   }
@@ -815,8 +810,7 @@ export async function autoFillAdapterArgs(
     throw new Error(`slot ${ctx.slot}: ${ctx.mode} adapter requires orchestration flags but task file not found`);
   }
 
-  const effortMatch = content.match(/^effort:\s*(.+)/m);
-  const effort = effortMatch ? effortMatch[1]!.trim() || "small" : "small";
+  const effort = readFrontmatterField(content, "effort") ?? "small";
   const { args: autoArgs } = selectOrchestrationFlagsForTask(content, effort);
   if (!autoArgs.trim()) {
     throw new Error(`slot ${ctx.slot}: selectOrchestrationFlagsForTask returned empty args for effort="${effort}"`);
