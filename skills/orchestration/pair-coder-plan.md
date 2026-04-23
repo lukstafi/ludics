@@ -16,6 +16,10 @@ When the task changes data shapes (field extraction, JSON migration, section res
 
 For every symbol, pattern, or function you plan to touch, run a project-wide grep/ripgrep and list occurrences with a disposition (modify / skip with reason / N/A). Canonical-name search alone misses inline reimplementations — regex patterns, copy-pasted logic, string literals that duplicate the same behavior — and the bug looks like a partial fix the next round. See [exhaustive occurrence search](../../docs/orchestration-patterns.md#exhaustive-occurrence-search) for the disposition-list shape.
 
+{{#IF PROPOSAL_PATH}}
+**Scope declaration**: Cross-reference your file list against the `## Scope` section of the proposal at `{{PROPOSAL_PATH}}`. If the plan includes any out-of-scope files, list them explicitly as scope expansions with a one-line justification each — the reviewer will decide per-expansion whether to accept or redirect to a follow-up task. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
+{{/IF}}
+
 Don't implement yet — the reviewer is planning in parallel and the two plans get merged next.
 
 ```sh

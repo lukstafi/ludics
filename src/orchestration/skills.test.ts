@@ -905,6 +905,95 @@ describe("skills", () => {
     expect(withoutProposal).not.toContain("Step 0");
   });
 
+  test("pair-coder-plan template renders scope-declaration block when PROPOSAL_PATH is set", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-plan.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+      PROPOSAL_INSTRUCTION: "(ignored)",
+    });
+    expect(withProposal).toContain("Scope declaration");
+    expect(withProposal).toContain("docs/proposals/my-feature.md");
+    expect(withProposal).toContain("scope-declaration-and-salvage");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+    });
+    expect(withoutProposal).not.toContain("Scope declaration");
+  });
+
+  test("pair-coder-work template renders scope-discipline + salvage block when PROPOSAL_PATH is set", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-work.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      TASK_ID: "task-xyz",
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+      PROPOSAL_INSTRUCTION: "(ignored)",
+    });
+    expect(withProposal).toContain("Scope discipline");
+    expect(withProposal).toContain("Salvage on rejection");
+    expect(withProposal).toContain("scope-expansion:");
+    expect(withProposal).toContain("/tmp/salvage-task-xyz.patch");
+    expect(withProposal).toContain("relates_to: [task-xyz]");
+    expect(withProposal).toContain("under `dependencies:`");
+    expect(withProposal).toContain("scope-declaration-and-salvage");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+    });
+    expect(withoutProposal).not.toContain("Scope discipline");
+    expect(withoutProposal).not.toContain("Salvage on rejection");
+  });
+
+  test("pair-reviewer-review template renders scope-review-discretion block when PROPOSAL_PATH is set", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-review.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+      PROPOSAL_INSTRUCTION: "(ignored)",
+    });
+    expect(withProposal).toContain("Scope review (discretion)");
+    expect(withProposal).toContain("docs/proposals/my-feature.md");
+    expect(withProposal).toContain("not automatic blockers");
+    expect(withProposal).toContain("Accept as-is");
+    expect(withProposal).toContain("Reject and ask for salvage");
+    expect(withProposal).toContain("scope-declaration-and-salvage");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+    });
+    expect(withoutProposal).not.toContain("Scope review (discretion)");
+  });
+
+  test("pair-reviewer-plan-review template renders scope-declarations bullet when PROPOSAL_PATH is set", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-plan-review.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+      PROPOSAL_INSTRUCTION: "(ignored)",
+    });
+    expect(withProposal).toContain("Scope declarations");
+    expect(withProposal).toContain("scope-expansion");
+    expect(withProposal).toContain("scope-declaration-and-salvage");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+    });
+    expect(withoutProposal).not.toContain("Scope declarations");
+  });
+
   test("substituteTemplate renders pr-conflict-resolve.md correctly", () => {
     const ctx = baseCtx();
     ctx["PR_FILE"] = "/tmp/peer-sync/coder.pr";

@@ -10,6 +10,10 @@ Check the merged plan against the proposal and the codebase:
 - Are the proposed code changes feasible as-is?
 - If plan-merge found gaps, are they documented with ASSUMPTION GAP markers?
 
+{{#IF PROPOSAL_PATH}}
+- **Scope declarations**: are all out-of-scope files in the merged plan accompanied by a one-line scope-expansion justification? Flag missing justifications. Scope itself is not a blocker; undeclared expansions are a discipline issue. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
+{{/IF}}
+
 If alignment gaps remain, use REQUEST_CHANGES with a concrete remediation — for example:
 - "Proposal needs revision to account for X."
 - "Plan should add an intermediate refactoring step before Y."

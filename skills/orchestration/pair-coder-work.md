@@ -21,6 +21,20 @@ For data-shape changes or format-compat serializers, add a round-trip fidelity t
 Write any PR URL to `{{PR_FILE}}`. Stop if `{{INTERRUPT_FILE}}` appears.
 
 {{#IF PROPOSAL_PATH}}
+**Scope discipline**: If you realize a change touches a file outside the proposal's `## Scope`, do not include it silently. Either:
+- **Declare it** — add a `scope-expansion: <one-line reason>` trailer to the commit message so the reviewer sees it and can decide per-expansion, or
+- **Defer it** — leave the file untouched and jot the idea in the task's `Notes` section (or open a follow-up task directly).
+
+"While I'm here" cleanups (dead code, reformatting, adjacent refactors) should normally be deferred to a separate parallel task rather than absorbed here. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
+
+**Salvage on rejection**: If the reviewer rejects a declared scope expansion, capture the diff before reverting so nothing useful is lost:
+
+1. `git diff -- <rejected-paths> > /tmp/salvage-{{TASK_ID}}.patch` — snapshot the rejected changes.
+2. `ludics tasks create "<short description of the deferred work>" <project> C` — create the follow-up task. Then edit the new task file's frontmatter to set `status: needs-confirmation` and, under the existing `dependencies:` block, replace `relates_to: []` with `relates_to: [{{TASK_ID}}]` (the field lives under `dependencies:`; a top-level `relates_to` is ignored by parsers). Paste the captured patch + one-line justification into the task body. (Mirrors `ludics-process-suggestions` — the `ludics tasks create` CLI does not accept `--relates-to`, so the frontmatter edit is required.)
+3. `git checkout -- <rejected-paths>` — revert the files in this worktree, then continue with the in-scope work. The new task flows through the existing needs-confirmation surface (dashboard + briefing).
+{{/IF}}
+
+{{#IF PROPOSAL_PATH}}
 Before signaling done, re-read `{{PROPOSAL_PATH}}` and walk through each acceptance criterion, stating explicitly (in your thinking) how the implementation satisfies it — AC drift is the long-tail failure mode. Write the status file only once every criterion is met. See [AC self-check](../../docs/orchestration-patterns.md#ac-self-check) for why the walk is visible rather than implicit.
 {{/IF}}
 
