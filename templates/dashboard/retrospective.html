@@ -47,6 +47,7 @@
     </footer>
 
     <script src="markdown.js"></script>
+    <script src="links.js"></script>
     <script>
         const params = new URLSearchParams(window.location.search);
         const taskId = params.get('task') || '';
@@ -112,7 +113,7 @@
 
             // Links bar
             const links = [];
-            if (data.proposalPath) links.push(`<a href="proposal.html?task=${encodeURIComponent(data.taskId)}">Proposal</a>`);
+            if (data.proposalPath) links.push(`<a href="${proposalLink(data.taskId)}">Proposal</a>`);
             if (data.prUrl) links.push(`<a href="${escapeHtml(data.prUrl)}" target="_blank">Pull Request</a>`);
             if (data.githubUrl) links.push(`<a href="${escapeHtml(data.githubUrl)}" target="_blank">GitHub Issue</a>`);
             if (links.length > 0) html += `<div class="retro-links">${links.join('')}</div>`;

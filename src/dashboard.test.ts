@@ -468,6 +468,32 @@ describe("tasks-tree link renders task.html", () => {
   });
 });
 
+describe("taskLink / proposalLink round-trip", () => {
+  const ids = ["plain", "task&x", "task#x", "task?x", "task+x", "task with space", "tâsk-ünîcödé"];
+
+  for (const id of ids) {
+    test(`taskLink(${JSON.stringify(id)}) round-trips through URL`, async () => {
+      const { taskLink } = await import("./dashboard.ts");
+      const url = new URL(taskLink(id), "http://x/");
+      expect(url.pathname).toBe("/task.html");
+      expect(url.searchParams.get("task")).toBe(id);
+    });
+
+    test(`proposalLink(${JSON.stringify(id)}) round-trips through URL`, async () => {
+      const { proposalLink } = await import("./dashboard.ts");
+      const url = new URL(proposalLink(id), "http://x/");
+      expect(url.pathname).toBe("/proposal.html");
+      expect(url.searchParams.get("task")).toBe(id);
+    });
+  }
+
+  test("both helpers return absolute paths with a leading slash", async () => {
+    const { taskLink, proposalLink } = await import("./dashboard.ts");
+    expect(taskLink("t").startsWith("/")).toBe(true);
+    expect(proposalLink("t").startsWith("/")).toBe(true);
+  });
+});
+
 // Note: /api/slot-resume follows the exact same pattern as /api/slot-start
 // (validate slot 1-6, spawnSync `ludics slot N resume`, return OK/error).
 // slotResume() itself is already tested in src/slots/index.test.ts.
