@@ -8,7 +8,17 @@ Write an implementation plan for `{{TASK_ID}}` to `{{PLAN_FILE}}` from `{{WORKTR
 
 Before any code changes, run `bun test` and record the exact failing test names under a `## Pre-existing test failures (baseline)` section in the plan (use `none` when clean). The reviewer treats this list as the non-blocking backdrop for the review — see [pre-existing failures baseline](../../docs/orchestration-patterns.md#pre-existing-failures-baseline) for how the list is used and what to write when planning was skipped.
 
-As you plan, name the regression tests each behaviour change needs (serialization, template rendering, validation, CLI output) and land them in the **first implementation round** — deferred tests drift to abandonment. See [regression test per behaviour change](../../docs/orchestration-patterns.md#regression-test-per-behaviour-change) for the common triggers.
+As you plan, include a dedicated `## Regression Tests` section in the plan output. For each file that this round modifies with a behaviour change, list the regression test and its target test file using the format:
+
+- `<file>` — <test description> (in `<test-file>`)
+
+For files you modify but that carry no behaviour change (pure refactor, doc-only edit, template reformatting with no rendered-output difference), list them with an explicit justification using the format:
+
+- `<file>` — No regression test needed — <reason>
+
+Land the tests in the **first implementation round** — deferred tests drift to abandonment. See [regression test per behaviour change](../../docs/orchestration-patterns.md#regression-test-per-behaviour-change) for the common triggers (serialization, template rendering, validation, CLI output).
+
+This section is REQUIRED. The reviewer will REQUEST_CHANGES if it is missing.
 
 Use numbered lists for structured data; avoid wide markdown tables — they get truncated between agents and right-hand columns silently vanish. Be concrete about files, expected behavior, edge cases, and validation steps.
 
