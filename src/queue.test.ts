@@ -4,6 +4,12 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 let tmpDir: string;
+const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
+
+function restoreHarnessDir(saved: string | undefined): void {
+  if (saved === undefined) delete process.env.LUDICS_HARNESS_DIR;
+  else process.env.LUDICS_HARNESS_DIR = saved;
+}
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "ludics-queue-test-"));
@@ -13,7 +19,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
-  delete process.env.LUDICS_HARNESS_DIR;
+  restoreHarnessDir(ORIGINAL_HARNESS_DIR);
 });
 
 // Re-import after env is set — queue.ts reads harnessDir() at call time
@@ -340,5 +346,32 @@ describe("queueRequest includes extra fields", () => {
     const parsed = JSON.parse(content);
     expect(parsed.action).toBe("feedback-digest");
     expect(parsed.repo).toBe("ludics");
+  });
+});
+
+describe("harness teardown restoration", () => {
+  test("restoreHarnessDir restores a captured sentinel value", () => {
+    const pre = process.env.LUDICS_HARNESS_DIR;
+    try {
+      process.env.LUDICS_HARNESS_DIR = "/tmp/mutated-value";
+      restoreHarnessDir("/sentinel-pre-queue");
+      expect(process.env.LUDICS_HARNESS_DIR).toBe("/sentinel-pre-queue");
+    } finally {
+      if (pre === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = pre;
+    }
+  });
+
+  test("restoreHarnessDir(undefined) deletes rather than setting literal 'undefined'", () => {
+    const pre = process.env.LUDICS_HARNESS_DIR;
+    try {
+      process.env.LUDICS_HARNESS_DIR = "/tmp/mutated-value";
+      restoreHarnessDir(undefined);
+      expect(process.env.LUDICS_HARNESS_DIR).toBeUndefined();
+      expect(process.env.LUDICS_HARNESS_DIR).not.toBe("undefined");
+    } finally {
+      if (pre === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = pre;
+    }
   });
 });

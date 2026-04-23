@@ -8,6 +8,7 @@ const TMP = join(import.meta.dir, ".test-tmp-sync");
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+const ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
 
 function writeConfig(homeDir: string): string {
   const configDir = join(homeDir, ".config", "ludics");
@@ -80,6 +81,7 @@ beforeEach(() => {
   mkdirSync(TMP, { recursive: true });
   process.env.HOME = TMP;
   process.env.LUDICS_CONFIG = writeConfig(TMP);
+  process.env.LUDICS_HARNESS_DIR = join(TMP, "ludics-state", "harness");
 });
 
 afterEach(() => {
@@ -93,6 +95,12 @@ afterEach(() => {
     delete process.env.LUDICS_CONFIG;
   } else {
     process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+  }
+
+  if (ORIGINAL_HARNESS === undefined) {
+    delete process.env.LUDICS_HARNESS_DIR;
+  } else {
+    process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS;
   }
 
   rmSync(TMP, { recursive: true, force: true });

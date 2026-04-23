@@ -99,3 +99,74 @@ from local pass results.
 Test servers should bind to `hostname: "127.0.0.1"` to avoid IPv6-related
 failures. Production servers that need to accept remote connections (e.g., the
 dashboard server serving cluster traffic) should not restrict to loopback.
+
+## Harness Isolation
+
+Tests that call `harnessDir()` from `src/config.ts` — directly, or transitively
+through helpers like `emitEvent`, `readSlotJson`, `queuePath`, etc. — must
+isolate `LUDICS_HARNESS_DIR` so they never read or write the real harness
+directory. A preload in `src/test-setup.ts` (configured via `bunfig.toml`) sets
+`LUDICS_HARNESS_DIR` to a shared tmpdir if unset, but individual test files
+should not silently depend on that preload: they must save, set, and restore
+the env var themselves so later files in the same Bun process are not affected.
+
+### The quick way: `withTestHarness()`
+
+```typescript
+import { beforeEach, afterEach, test, expect } from "bun:test";
+import { withTestHarness } from "./test-utils.ts";
+
+const getHarness = withTestHarness(beforeEach, afterEach);
+
+test("writes a slot file under an isolated harness", () => {
+  const harness = getHarness(); // fresh tmpdir, cleaned up after the test
+  // ... test body ...
+});
+```
+
+The helper saves the current `LUDICS_HARNESS_DIR`, swaps in a fresh tmpdir per
+`beforeEach`, and in `afterEach` restores the original value (deleting if it
+was unset) before removing the tmpdir.
+
+### Manual pattern (when you also need HOME / LUDICS_CONFIG)
+
+```typescript
+const ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
+const ORIGINAL_HOME = process.env.HOME;
+const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+let TMP = "";
+
+beforeEach(() => {
+  TMP = mkdtempSync(join(tmpdir(), "ludics-my-test-"));
+  process.env.HOME = TMP;
+  process.env.LUDICS_CONFIG = writeConfigUnder(TMP);
+  process.env.LUDICS_HARNESS_DIR = join(TMP, "harness");
+  mkdirSync(join(TMP, "harness"), { recursive: true });
+});
+
+afterEach(() => {
+  if (ORIGINAL_HOME === undefined) delete process.env.HOME;
+  else process.env.HOME = ORIGINAL_HOME;
+  if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG;
+  else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+  if (ORIGINAL_HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR;
+  else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS;
+  rmSync(TMP, { recursive: true, force: true });
+});
+```
+
+### Do not do this
+
+**Never** `delete process.env.LUDICS_HARNESS_DIR` unconditionally in
+`afterEach` — this destroys the preload safety net for every subsequent test
+file in the same Bun process. Always save the original value and restore it.
+
+**Never** use `process.env.X = original ?? undefined` to restore an env var —
+assigning `undefined` via `process.env` sets the variable to the literal string
+`"undefined"` (in Node.js; Bun's behaviour is similar). Use the conditional
+delete-or-assign pattern shown above.
+
+### Reference examples
+
+- `src/queue.test.ts` — manual save/restore via a small `restoreHarnessDir` helper.
+- `src/test-utils.test.ts` — contract tests for `withTestHarness()`.

@@ -8,6 +8,7 @@ import type { AdapterContext } from "./types.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+const ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
 let TMP = "";
 
 function writeConfig(homeDir: string): string {
@@ -26,6 +27,7 @@ beforeEach(() => {
   TMP = mkdtempSync(join(tmpdir(), "ludics-manual-adapter-"));
   process.env.HOME = TMP;
   process.env.LUDICS_CONFIG = writeConfig(TMP);
+  process.env.LUDICS_HARNESS_DIR = join(TMP, "ludics-state", "harness");
 });
 
 afterEach(() => {
@@ -33,6 +35,8 @@ afterEach(() => {
   else process.env.HOME = ORIGINAL_HOME;
   if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG;
   else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+  if (ORIGINAL_HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR;
+  else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS;
   rmSync(TMP, { recursive: true, force: true });
 });
 

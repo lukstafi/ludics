@@ -8,6 +8,15 @@ const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
 const ORIGINAL_HOME = process.env.HOME;
 let TMP = "";
 
+function restoreEnv(vars: { home: string | undefined; config: string | undefined; harness: string | undefined }): void {
+  if (vars.home === undefined) delete process.env.HOME;
+  else process.env.HOME = vars.home;
+  if (vars.config === undefined) delete process.env.LUDICS_CONFIG;
+  else process.env.LUDICS_CONFIG = vars.config;
+  if (vars.harness === undefined) delete process.env.LUDICS_HARNESS_DIR;
+  else process.env.LUDICS_HARNESS_DIR = vars.harness;
+}
+
 function harnessDir(): string {
   return join(TMP, "harness");
 }
@@ -46,9 +55,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.env.HOME = ORIGINAL_HOME ?? undefined;
-  process.env.LUDICS_CONFIG = ORIGINAL_CONFIG ?? undefined;
-  process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR ?? undefined;
+  restoreEnv({ home: ORIGINAL_HOME, config: ORIGINAL_CONFIG, harness: ORIGINAL_HARNESS_DIR });
   rmSync(TMP, { recursive: true, force: true });
 });
 
@@ -130,5 +137,44 @@ describe("eventsQuery validation", () => {
     writeEvents(["{bad json", JSON.stringify(makeEvent())]);
     const output = await captureOutput([]);
     expect(output.length).toBe(1);
+  });
+});
+
+describe("env teardown restoration", () => {
+  test("restoreEnv restores all three sentinel values", () => {
+    const preHome = process.env.HOME;
+    const preConfig = process.env.LUDICS_CONFIG;
+    const preHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      process.env.HOME = "/tmp/mutated-home";
+      process.env.LUDICS_CONFIG = "/tmp/mutated-config";
+      process.env.LUDICS_HARNESS_DIR = "/tmp/mutated-harness";
+      restoreEnv({ home: "/sentinel-home", config: "/sentinel-config", harness: "/sentinel-harness" });
+      expect(process.env.HOME).toBe("/sentinel-home");
+      expect(process.env.LUDICS_CONFIG).toBe("/sentinel-config");
+      expect(process.env.LUDICS_HARNESS_DIR).toBe("/sentinel-harness");
+    } finally {
+      restoreEnv({ home: preHome, config: preConfig, harness: preHarness });
+    }
+  });
+
+  test("restoreEnv(undefined) deletes rather than setting literal 'undefined'", () => {
+    const preHome = process.env.HOME;
+    const preConfig = process.env.LUDICS_CONFIG;
+    const preHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      process.env.HOME = "/tmp/mutated-home";
+      process.env.LUDICS_CONFIG = "/tmp/mutated-config";
+      process.env.LUDICS_HARNESS_DIR = "/tmp/mutated-harness";
+      restoreEnv({ home: undefined, config: undefined, harness: undefined });
+      expect(process.env.HOME).toBeUndefined();
+      expect(process.env.LUDICS_CONFIG).toBeUndefined();
+      expect(process.env.LUDICS_HARNESS_DIR).toBeUndefined();
+      expect(process.env.HOME).not.toBe("undefined");
+      expect(process.env.LUDICS_CONFIG).not.toBe("undefined");
+      expect(process.env.LUDICS_HARNESS_DIR).not.toBe("undefined");
+    } finally {
+      restoreEnv({ home: preHome, config: preConfig, harness: preHarness });
+    }
   });
 });
