@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { readJsonFile } from "./json.ts";
+import { atomicWriteFileSync, readJsonFile, writeJsonFile } from "./json.ts";
 
 describe("readJsonFile", () => {
   function withTmpFile(content: string): string {
@@ -51,5 +51,62 @@ describe("readJsonFile", () => {
     const file = withTmpFile("{bad json");
     expect(readJsonFile(file)).toBeNull();
     rmSync(file, { force: true });
+  });
+});
+
+describe("atomicWriteFileSync", () => {
+  test("writes content to the target path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "atomic-write-"));
+    const file = join(dir, "out.txt");
+    atomicWriteFileSync(file, "hello world\n");
+    expect(readFileSync(file, "utf-8")).toBe("hello world\n");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("leaves no .tmp sibling after a successful write", () => {
+    const dir = mkdtempSync(join(tmpdir(), "atomic-write-"));
+    const file = join(dir, "out.txt");
+    atomicWriteFileSync(file, "payload");
+    expect(existsSync(file)).toBe(true);
+    expect(existsSync(`${file}.tmp`)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("auto-creates a missing parent directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "atomic-write-"));
+    const file = join(dir, "nested", "deeper", "out.txt");
+    atomicWriteFileSync(file, "deep");
+    expect(readFileSync(file, "utf-8")).toBe("deep");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("overwrites an existing target", () => {
+    const dir = mkdtempSync(join(tmpdir(), "atomic-write-"));
+    const file = join(dir, "out.txt");
+    atomicWriteFileSync(file, "first");
+    atomicWriteFileSync(file, "second");
+    expect(readFileSync(file, "utf-8")).toBe("second");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("writeJsonFile", () => {
+  test("produces JSON.stringify(x, null, 2) + trailing newline", () => {
+    const dir = mkdtempSync(join(tmpdir(), "write-json-"));
+    const file = join(dir, "out.json");
+    const value = { a: 1, b: "two" };
+    writeJsonFile(file, value);
+    expect(readFileSync(file, "utf-8")).toBe(JSON.stringify(value, null, 2) + "\n");
+    expect(existsSync(`${file}.tmp`)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("round-trips through readJsonFile", () => {
+    const dir = mkdtempSync(join(tmpdir(), "write-json-"));
+    const file = join(dir, "out.json");
+    const value = { key: "value", num: 42 };
+    writeJsonFile(file, value);
+    expect(readJsonFile<typeof value>(file)).toEqual(value);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

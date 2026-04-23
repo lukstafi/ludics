@@ -18,12 +18,16 @@ export function readJsonFile<T>(path: string): T | null {
   }
 }
 
-export function writeJsonFile(path: string, value: unknown): void {
-  const data = JSON.stringify(value, null, 2) + "\n";
+/**
+ * Atomic write-to-temp + rename. Use for any state file where a crash
+ * mid-write must not leave a truncated or corrupt target. Retries once on
+ * ENOENT to cover concurrent directory-removal races (e.g., git checkout).
+ */
+export function atomicWriteFileSync(path: string, content: string): void {
   const tmp = `${path}.tmp`;
   for (let attempt = 0; attempt < 2; attempt++) {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(tmp, data);
+    writeFileSync(tmp, content);
     try {
       renameSync(tmp, path);
       return;
@@ -36,4 +40,8 @@ export function writeJsonFile(path: string, value: unknown): void {
       throw err;
     }
   }
+}
+
+export function writeJsonFile(path: string, value: unknown): void {
+  atomicWriteFileSync(path, JSON.stringify(value, null, 2) + "\n");
 }
