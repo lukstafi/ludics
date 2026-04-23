@@ -64,6 +64,7 @@ function baseCtx(): Record<string, string> {
     PEER_SYNC_DIR: "/tmp/peer-sync",
     DONE_STATUS: "review-done",
     UPSTREAM_REPO: "",
+    TASK_AC: "",
   };
 }
 
@@ -1292,5 +1293,236 @@ describe("skills", () => {
       }
     }
     expect(unresolved).toEqual([]);
+  });
+
+  test("TASK_AC: extracts body of ## Acceptance Criteria with multiple bullets", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-skills-task-ac-happy-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-ac1.md"), [
+        "---", "id: task-ac1", "---",
+        "",
+        "## Context",
+        "",
+        "Some context.",
+        "",
+        "## Acceptance Criteria",
+        "",
+        "- [ ] Do thing A",
+        "- [ ] Do thing B",
+        "- [ ] Do thing C",
+        "",
+        "## Notes",
+        "",
+        "Additional notes.",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-ac1", projectDir: j(tmpDir, "project") };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["TASK_AC"]).toContain("Do thing A");
+      expect(ctx["TASK_AC"]).toContain("Do thing B");
+      expect(ctx["TASK_AC"]).toContain("Do thing C");
+      expect(ctx["TASK_AC"]).not.toContain("Additional notes");
+      expect(ctx["TASK_AC"]).not.toContain("Some context");
+      expect(ctx["TASK_AC"]).not.toContain("## Acceptance Criteria");
+      expect(ctx["TASK_AC"]).not.toContain("## Notes");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("TASK_AC: empty when task file has no ## Acceptance Criteria section", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-skills-task-ac-missing-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-ac2.md"), [
+        "---", "id: task-ac2", "---",
+        "",
+        "## Context",
+        "",
+        "Only a context section here.",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-ac2", projectDir: j(tmpDir, "project") };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["TASK_AC"]).toBe("");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("TASK_AC: empty when section contains only `- [ ] TBD` placeholder", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-skills-task-ac-tbd-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-ac3.md"), [
+        "---", "id: task-ac3", "---",
+        "",
+        "## Acceptance Criteria",
+        "",
+        "- [ ] TBD",
+        "",
+        "## Notes",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-ac3", projectDir: j(tmpDir, "project") };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["TASK_AC"]).toBe("");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("TASK_AC: AC section followed by ## heading does not bleed into next section", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-skills-task-ac-trim-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-ac4.md"), [
+        "---", "id: task-ac4", "---",
+        "",
+        "## Acceptance Criteria",
+        "",
+        "- [ ] first criterion",
+        "- [ ] second criterion",
+        "",
+        "## Notes",
+        "",
+        "note text that must not bleed into TASK_AC.",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-ac4", projectDir: j(tmpDir, "project") };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["TASK_AC"]).toContain("first criterion");
+      expect(ctx["TASK_AC"]).toContain("second criterion");
+      expect(ctx["TASK_AC"]).not.toContain("note text that must not bleed");
+      expect(ctx["TASK_AC"]).not.toContain("## Notes");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("pair-coder-work: unconditional AC self-check + no-proposal fallback renders when PROPOSAL_PATH is empty", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-work.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+    });
+    expect(rendered).toContain("Acceptance Criteria self-check");
+    // No-proposal fallback must fire explicitly (proposal AC #1).
+    expect(rendered).toContain("Re-read the task spec above");
+    expect(rendered).toContain("no proposal file exists");
+    // Proposal re-read branch must NOT render in this state.
+    expect(rendered).not.toMatch(/Re-read `[^`]+` in the project repo/);
+  });
+
+  test("pair-coder-work: AC self-check references PROPOSAL_PATH when set and omits the no-proposal fallback", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-work.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+      PROPOSAL_INSTRUCTION: "(ignored)",
+    });
+    expect(rendered).toContain("Acceptance Criteria self-check");
+    expect(rendered).toContain("Re-read `docs/proposals/my-feature.md`");
+    // Fallback must NOT render when a proposal exists.
+    expect(rendered).not.toContain("Re-read the task spec above");
+    expect(rendered).not.toContain("no proposal file exists");
+  });
+
+  test("pair-coder-work: AC self-check references WORKFLOW_FEEDBACK_FILE and the visible-checklist heading", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-work.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      WORKFLOW_FEEDBACK_FILE: "/tmp/peer-sync/workflow-feedback-coder.md",
+    });
+    expect(rendered).toContain("/tmp/peer-sync/workflow-feedback-coder.md");
+    expect(rendered).toContain("## AC Verification");
+    expect(rendered).toContain("visible checklist");
+  });
+
+  test("pair-reviewer-review: AC verification section renders with and without PROPOSAL_PATH", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-review.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const withProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "docs/proposals/my-feature.md",
+      PROPOSAL_INSTRUCTION: "(ignored)",
+    });
+    expect(withProposal).toContain("Acceptance criteria verification");
+    expect(withProposal).toContain("blocking action item");
+    expect(withProposal).toContain("Re-read `docs/proposals/my-feature.md` for the authoritative acceptance criteria");
+
+    const withoutProposal = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+    });
+    expect(withoutProposal).toContain("Acceptance criteria verification");
+    expect(withoutProposal).toContain("blocking action item");
+    // The re-read bullet only appears when PROPOSAL_PATH is set.
+    expect(withoutProposal).not.toMatch(/Re-read `[^`]+` for the authoritative/);
+  });
+
+  test("pair-reviewer-review: AC verification section inlines TASK_AC content when non-empty", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-review.md");
+    const template = readFileSync(templatePath, "utf-8");
+    const rendered = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+      TASK_AC: "- [ ] criterion alpha\n- [ ] criterion beta",
+    });
+    expect(rendered).toContain("Task acceptance criteria from the task file");
+    expect(rendered).toContain("criterion alpha");
+    expect(rendered).toContain("criterion beta");
+
+    // Empty TASK_AC must collapse the inline block.
+    const empty = substituteTemplate(template, {
+      ...baseCtx(),
+      PROPOSAL_PATH: "",
+      PROPOSAL_INSTRUCTION: "",
+      TASK_AC: "",
+    });
+    expect(empty).not.toContain("Task acceptance criteria from the task file");
+  });
+
+  test("pair-coder-work: legacy invisible AC wording is gone from the raw template", () => {
+    const templatePath = join(import.meta.dir, "../../skills/orchestration/pair-coder-work.md");
+    const raw = readFileSync(templatePath, "utf-8");
+    // Negative regression for proposal AC #5: no duplicate / legacy AC path.
+    expect(raw).not.toContain("in your thinking");
+    expect(raw).not.toContain("stating explicitly");
   });
 });

@@ -34,9 +34,21 @@ Write any PR URL to `{{PR_FILE}}`. Stop if `{{INTERRUPT_FILE}}` appears.
 3. `git checkout -- <rejected-paths>` — revert the files in this worktree, then continue with the in-scope work. The new task flows through the existing needs-confirmation surface (dashboard + briefing).
 {{/IF}}
 
+**Acceptance Criteria self-check.** Before writing the done status, verify every acceptance criterion is satisfied. Produce a visible checklist — don't just think it through. AC drift is the long-tail failure mode of this workflow.
+
 {{#IF PROPOSAL_PATH}}
-Before signaling done, re-read `{{PROPOSAL_PATH}}` and walk through each acceptance criterion, stating explicitly (in your thinking) how the implementation satisfies it — AC drift is the long-tail failure mode. Write the status file only once every criterion is met. See [AC self-check](../../docs/orchestration-patterns.md#ac-self-check) for why the walk is visible rather than implicit.
+1. Re-read `{{PROPOSAL_PATH}}` in the project repo for the authoritative acceptance criteria.
 {{/IF}}
+{{#UNLESS PROPOSAL_PATH}}
+1. Re-read the task spec above (from context) for the acceptance criteria — no proposal file exists for this task.
+{{/UNLESS}}
+{{#IF TASK_AC}}
+Task acceptance criteria from the task file:
+
+{{TASK_AC}}
+{{/IF}}
+
+For each criterion, append a one-line confirmation to `{{WORKFLOW_FEEDBACK_FILE}}` under a `## AC Verification` heading (create the heading if absent), naming the evidence that satisfies it (file, test, commit). Only write the done status after every criterion has a confirmation line. See [AC self-check](../../docs/orchestration-patterns.md#ac-self-check).
 
 If the task is already resolved on the base branch (fix already merged, no meaningful changes needed), don't make empty commits — they waste a round and pollute git history. Signal bail-out instead (see [bail-out contract](../../docs/orchestration-patterns.md#bail-out-contract)):
 

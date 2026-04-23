@@ -10,6 +10,17 @@ If the implementation changes data shapes, check that helpers consuming the chan
 
 Before treating a failing test as blocking, cross-check the merged plan's `## Pre-existing test failures (baseline)` section — the point is to separate pre-existing noise from regressions introduced this round. See [pre-existing failures baseline](../../docs/orchestration-patterns.md#pre-existing-failures-baseline) for how to handle the cases where the baseline is absent, incomplete, or notes planning was skipped.
 
+**Acceptance criteria verification.** Walk through each acceptance criterion and verify the implementation satisfies it. Treat any unmet criterion as a blocking action item listed explicitly in the review. Cross-check against the coder's `## AC Verification` entries in `{{PEER_SYNC_DIR}}/workflow-feedback-{{PEER_NAME}}.md`; a missing or hand-wavy entry is itself a blocker.
+
+{{#IF PROPOSAL_PATH}}
+Re-read `{{PROPOSAL_PATH}}` for the authoritative acceptance criteria.
+{{/IF}}
+{{#IF TASK_AC}}
+Task acceptance criteria from the task file:
+
+{{TASK_AC}}
+{{/IF}}
+
 {{#IF PROPOSAL_PATH}}
 **Scope review (discretion)**: Cross-reference the coder's changes against the proposal's `## Scope` section at `{{PROPOSAL_PATH}}`. Scope expansions are not automatic blockers — decide per-expansion whether the change belongs in this PR or should be salvaged to a follow-up:
 
