@@ -1,6 +1,6 @@
 // Mag queue functions — queue-based communication with Claude Code Mag session
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, readdirSync, statSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, readdirSync, statSync, unlinkSync, rmdirSync } from "fs";
 import { join, dirname } from "path";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
@@ -8,6 +8,90 @@ import { isPlainObject } from "./json.ts";
 
 function queueFile(): string {
   return join(harnessDir(), "mag", "queue.jsonl");
+}
+
+const LOCK_MAX_ATTEMPTS = 50;
+const LOCK_RETRY_MS = 100;
+const LOCK_STALE_MS = 30_000;
+
+function breakStaleLock(lockDir: string, ownerFile: string): boolean {
+  let pid = 0;
+  let ts = 0;
+  let ownerMissing = false;
+  try {
+    const owner = readFileSync(ownerFile, "utf-8");
+    const [pidStr, tsStr] = owner.split("\n");
+    pid = Number(pidStr);
+    ts = Number(tsStr);
+  } catch {
+    ownerMissing = true;
+  }
+
+  if (ownerMissing) {
+    // A rightful holder may have just mkdir'd the lock dir and been preempted
+    // before writing the owner file. Breaking the lock here would violate
+    // mutual exclusion (both holder and breaker would proceed). Fall back to
+    // the lock directory's own mtime: only break once the dir itself is older
+    // than the stale threshold, so a concurrent holder has had ample time to
+    // either finish writing the owner file or crash.
+    let dirMtimeMs = 0;
+    try {
+      dirMtimeMs = statSync(lockDir).mtimeMs;
+    } catch {
+      // Dir vanished between our EEXIST and the stat — nothing to break.
+      // Signal "retry" so the outer loop attempts mkdirSync again.
+      return true;
+    }
+    if (Date.now() - dirMtimeMs <= LOCK_STALE_MS) return false;
+    try { rmdirSync(lockDir); return true; } catch { return false; }
+  }
+
+  const ageStale = Number.isFinite(ts) && ts > 0 && (Date.now() - ts > LOCK_STALE_MS);
+  let pidDead = false;
+  if (Number.isFinite(pid) && pid > 0) {
+    try { process.kill(pid, 0); } catch { pidDead = true; }
+  } else {
+    pidDead = true;
+  }
+  if (!ageStale && !pidDead) return false;
+  try { unlinkSync(ownerFile); } catch {}
+  try { rmdirSync(lockDir); } catch { return false; }
+  return true;
+}
+
+export function withQueueLock<T>(fn: () => T): T {
+  const file = queueFile();
+  mkdirSync(dirname(file), { recursive: true });
+  const lockDir = file + ".lock";
+  const ownerFile = join(lockDir, "owner");
+
+  let acquired = false;
+  for (let i = 0; i < LOCK_MAX_ATTEMPTS; i++) {
+    try {
+      mkdirSync(lockDir);
+      writeFileSync(ownerFile, `${process.pid}\n${Date.now()}`);
+      acquired = true;
+      break;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") throw e;
+      if (breakStaleLock(lockDir, ownerFile)) {
+        continue; // retry immediately after breaking stale lock
+      }
+      if (i === LOCK_MAX_ATTEMPTS - 1) break;
+      Bun.sleepSync(LOCK_RETRY_MS);
+    }
+  }
+  if (!acquired) {
+    throw new Error(`queue lock timeout after ${(LOCK_MAX_ATTEMPTS * LOCK_RETRY_MS) / 1000}s at ${lockDir}`);
+  }
+
+  try {
+    return fn();
+  } finally {
+    try { unlinkSync(ownerFile); } catch {}
+    try { rmdirSync(lockDir); } catch {}
+  }
 }
 
 function resultsDir(): string {
@@ -62,23 +146,11 @@ export function queueRequest(req: QueueAction): string {
   const requestId = nextRequestId();
 
   const record = { id: requestId, ...req, timestamp };
-  appendFileSync(file, JSON.stringify(record) + "\n");
+  withQueueLock(() => {
+    appendFileSync(file, JSON.stringify(record) + "\n");
+  });
   emitEvent({ event_type: "queue_request", source: "cli", scope: "queue", action: req.action, message: requestId });
   return requestId;
-}
-
-export function queuePop(): string | null {
-  const file = queueFile();
-  if (!existsSync(file)) return null;
-
-  const content = readFileSync(file, "utf-8").trim();
-  if (!content) return null;
-
-  const lines = content.split("\n");
-  const first = lines[0]!;
-  writeFileSync(file, lines.slice(1).join("\n") + (lines.length > 1 ? "\n" : ""));
-  emitEvent({ event_type: "queue_pop", source: "keepalive", scope: "queue", message: first.slice(0, 200) });
-  return first;
 }
 
 function readQueueLines(): string[] {
@@ -99,30 +171,57 @@ function writeQueueLines(lines: string[]): void {
   renameSync(tmp, file);
 }
 
-// Note: same read-modify-write pattern as queuePopOne/queuePopAll.
-// Concurrent appendFileSync (from queueRequest) between read and rename
-// could theoretically be lost, but the window is tiny and a proper fix
-// requires a queue-wide lock (out of scope for this change).
 export function queueReinsertHead(line: string): void {
-  const lines = readQueueLines();
-  writeQueueLines([line, ...lines]);
+  withQueueLock(() => {
+    const lines = readQueueLines();
+    writeQueueLines([line, ...lines]);
+  });
 }
 
 export function queuePopOne(): string | null {
-  const lines = readQueueLines();
-  if (lines.length === 0) return null;
-  const first = lines[0]!;
-  writeQueueLines(lines.slice(1));
-  emitEvent({ event_type: "queue_pop", source: "cli", scope: "queue", message: first.slice(0, 200) });
-  return first;
+  const result = withQueueLock(() => {
+    const lines = readQueueLines();
+    if (lines.length === 0) return null;
+    const first = lines[0]!;
+    writeQueueLines(lines.slice(1));
+    return first;
+  });
+  if (result !== null) {
+    emitEvent({ event_type: "queue_pop", source: "cli", scope: "queue", message: result.slice(0, 200) });
+  }
+  return result;
 }
 
 export function queuePopAll(): string[] {
-  const lines = readQueueLines();
-  if (lines.length === 0) return [];
-  writeQueueLines([]);
-  emitEvent({ event_type: "queue_pop", source: "cli", scope: "queue", message: `popped ${lines.length} items` });
+  const lines = withQueueLock(() => {
+    const all = readQueueLines();
+    if (all.length === 0) return [];
+    writeQueueLines([]);
+    return all;
+  });
+  if (lines.length > 0) {
+    emitEvent({ event_type: "queue_pop", source: "cli", scope: "queue", message: `popped ${lines.length} items` });
+  }
   return lines;
+}
+
+export type QueueDequeueResult =
+  | { status: "empty" }
+  | { status: "mismatch" }
+  | { status: "popped"; line: string; request: Record<string, unknown> | null };
+
+export function queuePopExpected(expectedLine?: string): QueueDequeueResult {
+  return withQueueLock(() => {
+    const lines = readQueueLines();
+    if (lines.length === 0) return { status: "empty" };
+    const first = lines[0]!;
+    if (expectedLine !== undefined && first !== expectedLine) {
+      return { status: "mismatch" };
+    }
+    writeQueueLines(lines.slice(1));
+    const request = parseJsonRecord(first);
+    return { status: "popped", line: first, request };
+  });
 }
 
 export function queueList(): Record<string, unknown>[] {
