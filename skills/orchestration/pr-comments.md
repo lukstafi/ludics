@@ -4,7 +4,8 @@ Address reviewer feedback on the PR in `{{PR_FILE}}` from `{{WORKTREE_PATH}}`.
 
 Fetch both top-level reviews and inline file comments:
 ```sh
-gh pr view --json reviews,comments --jq '.reviews,.comments'
+PR_URL=$(cat "{{PR_FILE}}" 2>/dev/null)
+gh pr view "$PR_URL" {{#IF PROJECT_REPO}}--repo "{{PROJECT_REPO}}" {{/IF}}--json reviews,comments --jq '.reviews,.comments'
 gh api --paginate repos/{owner}/{repo}/pulls/{number}/comments --jq '.[] | {path, line, body}'
 ```
 
