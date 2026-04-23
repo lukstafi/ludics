@@ -14,6 +14,7 @@ Your job: explore a project's codebase, assess the task, and write a proposal do
 
 Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
+<!-- section:arguments -->
 ## Arguments
 
 `$ARGUMENTS` format: `<task_id> <project_path> <proposals_path> [<context_brief>]`
@@ -23,8 +24,10 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 - `<proposals_path>`: Absolute path to the proposals directory (pre-resolved by orchestrator)
 - `<context_brief>`: Optional free-form context from the orchestrator (see worker-conventions.md § Broader Context)
 
+<!-- section:process -->
 ## Process
 
+<!-- section:read-task -->
 1. **Read task file**:
    Parse `$ARGUMENTS` to extract the task ID (first word), project path (second word), and
    proposals path (third word). Any remaining text after the third word is the context brief.
@@ -34,9 +37,11 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    Extract: title, project, dependencies, context, any linked GitHub issue,
    acceptance criteria, elaboration content.
 
+<!-- section:resolve-project-path -->
 2. **Resolve project path**: Use the project path from `$ARGUMENTS`. If the
    `personal` project, use `$LUDICS_STATE_PATH/..` (the state repository root).
 
+<!-- section:check-preconditions -->
 3. **Check preconditions**:
    - If `has_questions` is set in frontmatter, the task has unanswered
      questions from elaboration — report `status: "error"` with "task has
@@ -47,17 +52,20 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
      separable features that could merge to main independently), report
      `status: "split-needed"` and stop.
 
+<!-- section:explore-codebase -->
 4. **Explore project codebase**:
    - Read relevant source files mentioned in the task elaboration
    - Understand existing patterns, architecture, related code
    - Use code pointers from the Tentative Design section as starting points
 
+<!-- section:proposals-path -->
 6. **Use provided proposals path**:
    Create the directory if it doesn't exist:
    ```bash
    mkdir -p "<proposals_path>"
    ```
 
+<!-- section:write-proposal -->
 7. **Write proposal** to `<proposals_path>/<feature-name>.md`:
 
    ```markdown
@@ -94,6 +102,7 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    Stay on goal/what, not how — no implementation plan, no effort estimates,
    no micro-managed steps. Coding agents handle the how during their plan phase.
 
+<!-- section:commit-push -->
 8. **Commit and push**:
    Strip the `<project_path>/` prefix from `<proposals_path>` to get the repo-relative path:
    ```bash
@@ -103,15 +112,18 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    git push
    ```
 
+<!-- section:update-frontmatter -->
 9. **Update task frontmatter**: Set `proposal: <proposals_path_relative>/<feature-name>.md`
    (e.g., `proposal: docs/proposals/add-filter.md`) in the task file.
    Add the field before the closing `---` in the YAML frontmatter.
 
+<!-- section:final-response -->
 ## Final Response
 
 Use the structured response format from worker-conventions.md. Emit a fenced JSON block
 as the last code block in your response:
 
+<!-- section:response-contract -->
 ### Response Contract
 
 1. `status` — string, required. Values: `"completed"`, `"stale"`, `"split-needed"`, `"already-exists"`, `"error"`.
@@ -163,6 +175,7 @@ Picking `skip_plan`:
   confidence but complex to implement (`skip_plan=false`), or trivial to
   implement with uncertain scope (`skip_plan=true, start_confidence=low`).
 
+<!-- section:error-handling -->
 ## Error Handling
 
 - Task not found: report `status: "error"` with an explanation.

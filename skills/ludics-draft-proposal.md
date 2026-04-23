@@ -10,6 +10,7 @@ queue-args: [task]
 Thin orchestrator that reads the task, delegates codebase exploration to an
 isolated worker, then handles notifications and result reporting.
 
+<!-- section:trigger -->
 ## Trigger
 
 This skill is invoked when:
@@ -17,15 +18,18 @@ This skill is invoked when:
 - Auto-queued during keepalive for top ready queue tasks that are elaborated,
   have no unanswered questions (`has_questions` not set), and have no proposal yet
 
+<!-- section:arguments -->
 ## Arguments
 
 - `$ARGUMENTS`: `<task_id>` — Task identifier (e.g., `task-042`)
 
+<!-- section:inputs -->
 ## Inputs
 
 - `$LUDICS_STATE_PATH`: Path to the harness directory (environment variable)
 - **Request ID**: Read from file `$LUDICS_STATE_PATH/mag/current-request-id`
 
+<!-- section:common-steps -->
 ## Common Steps
 
 Follow [orchestrator-conventions.md](orchestrator-conventions.md):
@@ -37,6 +41,7 @@ Follow [orchestrator-conventions.md](orchestrator-conventions.md):
 - **E** (Result JSON): write the result with the request ID.
 - **F** (Error Handling): standard patterns.
 
+<!-- section:proposals-path-resolution -->
 ### Proposals Path Resolution (extends Section B)
 
 After resolving the project path, check the project's `proposals_path` in
@@ -53,6 +58,7 @@ The worker creates the directory; this step just resolves the path.
 
 Worker: `/ludics-draft-proposal-worker <task_id> <project_path> <proposals_path> <context_brief>`
 
+<!-- section:precondition-check -->
 ## Precondition check
 
 If the task frontmatter has `has_questions: true`, there are unanswered
@@ -60,6 +66,7 @@ questions from elaboration — skip the proposal:
 - Write result JSON with `"status": "blocked"` and `"unanswered questions"`.
 - Don't delegate to the worker; Mag's nag loop reminds the user to answer.
 
+<!-- section:status-routing -->
 ## Status routing
 
 Extract the final ` ```json ` block from the worker's response. Fields:
@@ -92,6 +99,7 @@ Routing by status:
 - **error** — write result JSON with `"status": "error"` and stop.
 - **already-exists** — check whether re-generation is wanted, or skip.
 
+<!-- section:auto-start-evaluation -->
 ## Auto-start evaluation
 
 After `status: "completed"`, decide whether to auto-start the slot or defer:
@@ -124,6 +132,7 @@ The `skip_plan` frontmatter field (if the worker sets it) is consumed later by
 with `skip_plan: true` skip the plan phase. It isn't used by
 `auto-start-evaluate`.
 
+<!-- section:auto-start-slot -->
 ## Auto-start slot
 
 For `decision = "auto-start"`, start the slot directly and send a lighter
@@ -136,6 +145,7 @@ ludics notify outgoing "Started slot <N> for <task_id>: <title>"
 
 Skip the launch-button notification; move on to questions and result JSON.
 
+<!-- section:proposal-notification -->
 ## Proposal notification (defer-to-user)
 
 For `decision = "defer-to-user"`, use the worker's `proposal_path`:
@@ -144,6 +154,7 @@ For `decision = "defer-to-user"`, use the worker's `proposal_path`:
 ludics notify proposal "<task_id>" "<title>" "<summary>" "<project_path>/<proposal_path>"
 ```
 
+<!-- section:questions-notification -->
 ## Questions notification
 
 If `ambiguities` is non-empty (and not `"none"`), send them as a numbered
@@ -156,12 +167,14 @@ ludics notify outgoing "<formatted ambiguities>"
 Use title: `"Proposal questions — <task_id>: <title>"`. Skip when
 `ambiguities` is `"none"` or empty.
 
+<!-- section:best-effort-desktop -->
 ## Best-effort desktop
 
 ```bash
 code "<project_path>/<proposal_path>" 2>/dev/null || true
 ```
 
+<!-- section:result-fields -->
 ## Result fields
 
 ```json
@@ -173,6 +186,7 @@ code "<project_path>/<proposal_path>" 2>/dev/null || true
 
 Output: `"Proposal written for <task_id>: <title>"`.
 
+<!-- section:delegation-strategy -->
 ## Delegation strategy
 
 - Worker (`/ludics-draft-proposal-worker`) runs in isolated context: codebase
