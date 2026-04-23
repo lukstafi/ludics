@@ -26,10 +26,13 @@ export function withTestHarness(
   before: (fn: () => void) => void,
   after: (fn: () => void) => void,
 ): () => string {
-  let saved: string | undefined;
+  // Capture the real original at registration time, not inside `before`. If a file
+  // registers the helper twice, capturing inside `before` would let the second
+  // registration save the first helper's temp path and leak a stale (deleted) dir
+  // into later tests.
+  const saved = process.env.LUDICS_HARNESS_DIR;
   let dir = "";
   before(() => {
-    saved = process.env.LUDICS_HARNESS_DIR;
     dir = mkdtempSync(join(tmpdir(), "ludics-test-harness-"));
     process.env.LUDICS_HARNESS_DIR = dir;
   });

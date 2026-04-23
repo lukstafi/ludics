@@ -90,4 +90,28 @@ describe("withTestHarness", () => {
       else process.env.LUDICS_HARNESS_DIR = pre;
     }
   });
+
+  test("double registration: each helper restores the real original, not a sibling's temp dir", () => {
+    const pre = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = "/real-original";
+    const hooksA = captureHooks();
+    const hooksB = captureHooks();
+    try {
+      // Both helpers register at the same "real original" — i.e. before any before() runs.
+      withTestHarness(hooksA.before, hooksA.after);
+      withTestHarness(hooksB.before, hooksB.after);
+
+      // Simulate per-test lifecycle with both helpers active.
+      hooksA.runBefore();
+      hooksB.runBefore();
+      expect(process.env.LUDICS_HARNESS_DIR).not.toBe("/real-original");
+      // Teardown in either order must land back on the real original, never a sibling's tmpdir.
+      hooksA.runAfter();
+      hooksB.runAfter();
+      expect(process.env.LUDICS_HARNESS_DIR).toBe("/real-original");
+    } finally {
+      if (pre === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = pre;
+    }
+  });
 });
