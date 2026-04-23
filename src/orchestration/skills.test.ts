@@ -490,6 +490,235 @@ describe("skills", () => {
     }
   });
 
+  // PROPOSAL_FRESHNESS_WARNING tests (gh-ludics-311)
+  // Uses real tmp git repos rather than mocking safeSyncOutput so the exact git
+  // commands and return-value shapes the production path relies on are exercised.
+
+  function runGit(cwd: string, args: string[]): void {
+    const r = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) {
+      throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.stderr.toString()}`);
+    }
+  }
+
+  function initGitRepoWithProposal(
+    projectDir: string,
+    proposalRelPath: string,
+    proposalBody: string,
+    extraCommits: number,
+  ): void {
+    // Bun's fs import is loaded at the top of the file via the test-local dynamic imports;
+    // do it here too so the helper is self-contained.
+    const { mkdirSync, writeFileSync } = require("fs");
+    const { dirname, join: j } = require("path");
+    mkdirSync(projectDir, { recursive: true });
+    runGit(projectDir, ["init", "-q"]);
+    runGit(projectDir, ["config", "user.email", "test@example.com"]);
+    runGit(projectDir, ["config", "user.name", "test"]);
+    runGit(projectDir, ["config", "commit.gpgsign", "false"]);
+    const proposalAbs = j(projectDir, proposalRelPath);
+    mkdirSync(dirname(proposalAbs), { recursive: true });
+    writeFileSync(proposalAbs, proposalBody);
+    runGit(projectDir, ["add", proposalRelPath]);
+    runGit(projectDir, ["commit", "-q", "-m", "init"]);
+    for (let i = 0; i < extraCommits; i++) {
+      runGit(projectDir, ["commit", "-q", "--allow-empty", "-m", `x${i}`]);
+    }
+  }
+
+  test("PROPOSAL_FRESHNESS_WARNING: empty when task has no proposal frontmatter", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-none-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-no-prop.md"), [
+        "---", "id: task-no-prop", "---", "", "body",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-no-prop", projectDir: j(tmpDir, "project"), round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["PROPOSAL_PATH"]).toBe("");
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
+      expect(ctx["PROPOSAL_INSTRUCTION"]).toBe("");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: empty for proposal: inline", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-inline-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-inline.md"), [
+        "---", "id: task-inline", "proposal: inline", "---", "", "## Motivation", "", "Inline body.",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-inline", projectDir: j(tmpDir, "project"), round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["PROPOSAL_PATH"]).toBe("");
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
+      expect(ctx["PROPOSAL_INSTRUCTION"]).toBe("");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: warns when proposal is 15 commits stale", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-stale-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-stale.md"), [
+        "---", "id: task-stale", "proposal: docs/proposals/stale.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      initGitRepoWithProposal(projectDir, "docs/proposals/stale.md", "# Stale proposal\n", 15);
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-stale", projectDir, round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toContain("Freshness warning");
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toContain("15 commits");
+      // Copy must stay branch-neutral — regression guard for iteration-0 "on main" bug.
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).not.toContain("main");
+      expect(ctx["PROPOSAL_INSTRUCTION"]).toContain("Read the proposal file");
+      expect(ctx["PROPOSAL_INSTRUCTION"]).toContain("Freshness warning");
+      expect(ctx["PROPOSAL_INSTRUCTION"]).toContain("15 commits");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: empty when proposal is 5 commits fresh", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-fresh-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-fresh.md"), [
+        "---", "id: task-fresh", "proposal: docs/proposals/fresh.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      initGitRepoWithProposal(projectDir, "docs/proposals/fresh.md", "# Fresh proposal\n", 5);
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-fresh", projectDir, round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
+      expect(ctx["PROPOSAL_INSTRUCTION"]).toBe(
+        "**Step 0**: Read the proposal file at `docs/proposals/fresh.md` in the project repo before starting. The proposal contains the authoritative acceptance criteria and full scope.",
+      );
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: boundary — exactly 10 commits does NOT trigger", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-boundary-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-boundary.md"), [
+        "---", "id: task-boundary", "proposal: docs/proposals/boundary.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      initGitRepoWithProposal(projectDir, "docs/proposals/boundary.md", "# Boundary proposal\n", 10);
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-boundary", projectDir, round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      // Threshold is strictly > 10, so 10 commits since proposal does NOT trigger.
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: empty (and does not throw) when projectDir is not a git repo", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-nogit-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      mkdir2(projectDir, { recursive: true }); // exists but no .git
+      write2(j(harnessTasks, "task-nogit.md"), [
+        "---", "id: task-nogit", "proposal: docs/proposals/nogit.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-nogit", projectDir, round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
+      expect(ctx["PROPOSAL_INSTRUCTION"]).toContain("Read the proposal file");
+      expect(ctx["PROPOSAL_INSTRUCTION"]).not.toContain("Freshness warning");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: invalid absolute proposal path — warning empty, no throw", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-badpath-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    const spy = spyOn(console, "error");
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-bad2.md"), [
+        "---", "id: task-bad2", "proposal: /etc/passwd", "---",
+        "", "## Acceptance Criteria", "- [ ] Legacy content here",
+      ].join("\n"));
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-bad2", projectDir: j(tmpDir, "project"), round: 1 };
+      expect(() => buildSkillContext(state, state.agents[0]!)).not.toThrow();
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
+    } finally {
+      spy.mockRestore();
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test("TASK_SPEC_BRIEF always returns brief form regardless of round", async () => {
     const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
     const { join: j } = await import("path");

@@ -38,6 +38,30 @@ function gitOutput(cwd: string, args: string[]): string | null {
   return r.ok && r.stdout ? r.stdout : null;
 }
 
+const PROPOSAL_FRESHNESS_THRESHOLD = 10;
+
+/** Count commits since the proposal file was last modified and return a warning
+ *  when the count exceeds PROPOSAL_FRESHNESS_THRESHOLD. Returns "" on any failure
+ *  (bad path, untracked file, non-git dir, parse failure) — must never block
+ *  orchestration. Warning copy stays branch-neutral because `hash..HEAD` counts
+ *  commits reachable from the current HEAD in `projectDir`, regardless of branch. */
+function proposalFreshnessWarning(projectDir: string, proposalPath: string): string {
+  if (!proposalPath || proposalPath === "inline") return "";
+  try {
+    assertRepoRelativeProposalPath(proposalPath);
+  } catch {
+    return "";
+  }
+  const hash = gitOutput(projectDir, ["log", "-1", "--format=%H", "--", proposalPath]);
+  if (!hash) return "";
+  const countStr = gitOutput(projectDir, ["rev-list", "--count", `${hash}..HEAD`]);
+  if (!countStr) return "";
+  const count = Number.parseInt(countStr, 10);
+  if (Number.isNaN(count)) return "";
+  if (count <= PROPOSAL_FRESHNESS_THRESHOLD) return "";
+  return `\n\n> **Freshness warning**: ${count} commits have landed in this repo since the proposal file was last updated. The codebase may have drifted — when applying the Code-Proposal Alignment Checklist, re-verify every file path, symbol, and behaviour claim against the current source rather than trusting the proposal text.`;
+}
+
 export function doneStatusForPhase(phase: Phase): string {
   if (phase === "work") return "done";
   if (phase === "review") return "review-done";
@@ -242,8 +266,11 @@ export function buildSkillContext(
   const _proposalPath = (_taskContent ? readFrontmatterField(_taskContent, "proposal") : null) ?? "";
   const proposalPath = _proposalPath && _proposalPath !== "inline" // deprecated sentinel — kept for backward compat
     ? _proposalPath : "";
+  const proposalFreshnessWarningText = proposalPath
+    ? proposalFreshnessWarning(state.projectDir, proposalPath)
+    : "";
   const proposalInstruction = proposalPath
-    ? `**Step 0**: Read the proposal file at \`${proposalPath}\` in the project repo before starting. The proposal contains the authoritative acceptance criteria and full scope.`
+    ? `**Step 0**: Read the proposal file at \`${proposalPath}\` in the project repo before starting. The proposal contains the authoritative acceptance criteria and full scope.${proposalFreshnessWarningText}`
     : "";
 
   const result: Record<string, string> = {
@@ -260,6 +287,7 @@ export function buildSkillContext(
     TASK_SPEC_BRIEF: taskSpecBriefText(state),
     PROPOSAL_PATH: proposalPath,
     PROPOSAL_INSTRUCTION: proposalInstruction,
+    PROPOSAL_FRESHNESS_WARNING: proposalFreshnessWarningText,
     PEER_REVIEW: peerReview ?? "(no review yet)",
     PEER_STATUS: peer ? (state.agentStates[peer.name]?.status ?? "unknown") : "unknown",
     PEER_PLAN: peerPlan ?? "(no plan yet)",
