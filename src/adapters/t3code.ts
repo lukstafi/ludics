@@ -224,9 +224,22 @@ export function parseT3CodeAdapterArgs(raw: string): ParsedAdapterArgs {
   let coderThinkingEffort: string | undefined;
   let reviewerThinkingEffort: string | undefined;
   let duoPeerSlot: number | undefined;
-  // Track the first reviewer-only override flag seen (excluding the shared
-  // --effort / --thinking-effort flags). Used to reject reviewer-specific
-  // overrides in --solo mode, where no reviewer agent exists.
+  // Anti-pattern being prevented: "recorded but discarded" — accepting
+  // --reviewer-* flags into a target variable that a later mode branch
+  // (here, --solo) silently overwrites or ignores, so the flag parses
+  // successfully but has no effect. The fix is to key rejection on the
+  // flag NAME recorded during parsing, not on whether the target variable
+  // is set afterwards: shared flags like --effort assign the same target
+  // as role-specific flags like --reviewer-effort, so post-parse variable
+  // state cannot distinguish the two cases.
+  //
+  // See docs/orchestration-patterns.md#flag-name-keyed-rejection for the
+  // full pattern entry and the reusable recipe for future adapter parsers
+  // that gain role-specific flags.
+  //
+  // reviewerOnlyFlag records the first --reviewer-* flag seen (excluding
+  // the shared --effort / --thinking-effort flags). Checked at the --solo
+  // mode gate below to throw with a specific error naming the offending flag.
   let reviewerOnlyFlag: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
