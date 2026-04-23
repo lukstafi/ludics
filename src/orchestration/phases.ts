@@ -550,15 +550,18 @@ const PAIR_BAIL_OUT_PHASES: ReadonlySet<Phase> = new Set<Phase>([
 export function evaluateTransition(state: OrchestrationState): Phase | null {
   if (state.mode === "solo") return evaluateTransitionSolo(state);
 
+  // Cache readiness once. `phaseTimeoutExpired` reads `nowEpoch()`, so
+  // evaluating it separately in the hoisted check and in each allowlisted
+  // case branch can flip within a single `evaluateTransition` call — the
+  // hoisted `"done"` path would be skipped while the branch still advanced,
+  // regressing the pre-refactor single-check behaviour.
+  const ready = allAgentsDone(state) || phaseTimeoutExpired(state);
+
   // Hoisted pair-mode bail-out short-circuit. Gated on the allowlist AND the
-  // usual readiness guard: the coder may still be running when the reviewer
+  // readiness guard: the coder may still be running when the reviewer
   // confirms, so we wait for allAgentsDone (or a phase timeout) before
   // advancing to done.
-  if (
-    PAIR_BAIL_OUT_PHASES.has(state.phase)
-    && (allAgentsDone(state) || phaseTimeoutExpired(state))
-    && isBailedOut(state)
-  ) {
+  if (PAIR_BAIL_OUT_PHASES.has(state.phase) && ready && isBailedOut(state)) {
     return "done";
   }
 
@@ -618,12 +621,13 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "work":
       // Bail-out short-circuit handled by hoisted check above.
-      if (allAgentsDone(state) || phaseTimeoutExpired(state)) return "review";
+      // Use cached `ready` so the hoist and this branch agree.
+      if (ready) return "review";
       return null;
 
     case "review":
       // Bail-out short-circuit handled by hoisted check above.
-      if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      if (!ready) return null;
       {
         const reviewVerdict = pairReviewVerdict(state);
         if (reviewVerdict === "request_changes") return "work";
@@ -632,7 +636,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
 
     case "update-docs":
       // Bail-out short-circuit handled by hoisted check above.
-      if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      if (!ready) return null;
       if (hasAnyPr(state)) return "pr-comments";
       return "pr-create";
 
@@ -640,7 +644,7 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
       // NOTE: Runner verifies PR exists on GitHub before agents reach done state here.
       // See verifyPhaseOutcome() in runner.ts.
       // Bail-out short-circuit handled by hoisted check above.
-      if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      if (!ready) return null;
       if (!hasAnyPr(state)) return null; // Block advancement without a PR URL (defense in depth)
       return "pr-comments";
 

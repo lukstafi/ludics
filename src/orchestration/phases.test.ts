@@ -907,6 +907,35 @@ describe("evaluateTransition — hoisted pair-mode bail-out check", () => {
     }
   });
 
+  // Regression: if `phaseTimeoutExpired` flips true between the hoisted
+  // readiness check and the case branch (both read nowEpoch()), the hoisted
+  // `"done"` path used to be skipped while the branch still advanced the
+  // phase. Fix caches readiness once; verify by constructing a state where
+  // the timeout is already expired and `isBailedOut` is true: the hoisted
+  // check must win (→ "done"), not the case branch (→ "review"/next).
+  test("bail-out + already-expired timeout: hoist wins over case branch", () => {
+    for (const [phase, caseBranchResult] of [
+      ["work", "review"],
+      ["update-docs", "pr-create"],
+    ] as const) {
+      const state = makeState({
+        phase,
+        // phaseStartedAt far in the past so phaseTimeoutExpired is true
+        // on every call — mirrors the "flipped true mid-call" scenario.
+        phaseStartedAt: Math.floor(Date.now() / 1000) - 1_000_000,
+      });
+      state.agentStates.coder.status = "bail-out";
+      state.agentStates.reviewer.status = "bail-out-confirmed";
+      expect(phaseTimeoutExpired(state)).toBe(true);
+      expect(isBailedOut(state)).toBe(true);
+      // Without the cached-readiness fix, a flip could yield `caseBranchResult`.
+      // With it, the hoisted check wins because readiness is evaluated once.
+      expect(evaluateTransition(state)).toBe("done");
+      // Sanity: confirm the case branch would otherwise advance past the hoist.
+      expect(caseBranchResult).not.toBe("done");
+    }
+  });
+
   // Test 8: solo mode regression — evaluateTransitionSolo short-circuits
   // unconditionally on bail-out (no allAgentsDone gate). Covered by the
   // existing "solo bail-out short-circuits every non-terminal phase to done"
