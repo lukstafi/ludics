@@ -70,7 +70,7 @@ function commitCount(cwd: string, range: string, runGit: RunGit): number | null 
  * Returns an outcome describing what happened; callers can treat everything
  * except `fast-forwarded` / `already-up-to-date` / `throttled` as diagnostic.
  */
-export function maybeFastForwardStagingFromUpstream(
+export function syncStagingMainWithUpstream(
   projects: ProjectConfig[],
   opts: FastForwardOptions,
 ): FastForwardProjectResult[] {

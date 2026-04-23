@@ -6,7 +6,7 @@ import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRep
 import { formatUpstreamLagSection } from "./briefing-lag.ts";
 import { defaultRunGit, type RunGit } from "./git-runner.ts";
 import { clearSentinel, readSentinelEpoch, sentinelExists, sentinelFresh, touchSentinel } from "./sentinel.ts";
-import { maybeFastForwardStagingFromUpstream } from "./staging-ff.ts";
+import { syncStagingMainWithUpstream } from "./staging-ff.ts";
 import { atomicWriteFileSync, isPlainObject } from "./json.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
@@ -1526,7 +1526,7 @@ async function cleanupDoneTaskThreads(): Promise<void> {
  * appears in log messages to aid debugging.
  */
 /**
- * Wrapper around maybeFastForwardStagingFromUpstream that wires up config,
+ * Wrapper around syncStagingMainWithUpstream that wires up config,
  * sentinel directory, and event emission. Guarded by clusterIsController so
  * only one machine runs git operations. Sentinel files throttle to once per
  * 24 hours per project. See src/staging-ff.ts for the core logic.
@@ -1540,7 +1540,7 @@ function runStagingFastForwardTick(): void {
     if (projects.every((p) => !p.upstream_repo)) return;
     const sentinelDir = join(harnessDir(), "mag");
     mkdirSync(sentinelDir, { recursive: true });
-    const results = maybeFastForwardStagingFromUpstream(projects, {
+    const results = syncStagingMainWithUpstream(projects, {
       now: new Date(),
       runGit: defaultRunGit,
       sentinelDir,
