@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { autoCommitWorktree, cleanupWorktrees, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, orchBranchName, orchWorktreeStem, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
+import { autoCommitWorktree, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, orchBranchName, orchWorktreeStem, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
 
@@ -75,6 +75,55 @@ describe("worktrees", () => {
     expect(existsSync(join(setup.rootWorktree, ".peer-sync"))).toBe(true);
 
     cleanupWorktrees(repo, "solo-feat", [{ name: "coder" }], 5, "solo");
+  });
+
+  test("createWorktrees clears gh-resolved markers on origin and upstream (defense-in-depth)", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "repo-gh-resolved");
+    mkdirSync(repo, { recursive: true });
+    run(["git", "init", "-b", "main"], repo);
+    run(["git", "config", "user.email", "test@example.com"], repo);
+    run(["git", "config", "user.name", "Test User"], repo);
+    writeFileSync(join(repo, "README.md"), "hello\n");
+    run(["git", "add", "README.md"], repo);
+    run(["git", "commit", "-m", "init"], repo);
+
+    // Simulate a poisoned state: both origin and upstream carry gh-resolved=base.
+    // (The remotes themselves don't need to exist; gh-resolved lives under
+    // `remote.<name>.gh-resolved` in .git/config regardless of remote presence.)
+    run(["git", "config", "remote.origin.gh-resolved", "base"], repo);
+    run(["git", "config", "remote.upstream.gh-resolved", "base"], repo);
+    expect(Bun.spawnSync(["git", "config", "--get", "remote.origin.gh-resolved"], { cwd: repo }).stdout.toString().trim()).toBe("base");
+    expect(Bun.spawnSync(["git", "config", "--get", "remote.upstream.gh-resolved"], { cwd: repo }).stdout.toString().trim()).toBe("base");
+
+    createWorktrees(repo, "gh-resolved-feat", [{ name: "coder" }], "main", 7, "solo");
+
+    // Both markers must be cleared from the parent repo's .git/config.
+    // (Worktrees share .git/config with the parent, so clearing once is sufficient.)
+    expect(Bun.spawnSync(["git", "config", "--get", "remote.origin.gh-resolved"], { cwd: repo }).exitCode).not.toBe(0);
+    expect(Bun.spawnSync(["git", "config", "--get", "remote.upstream.gh-resolved"], { cwd: repo }).exitCode).not.toBe(0);
+
+    cleanupWorktrees(repo, "gh-resolved-feat", [{ name: "coder" }], 7, "solo");
+  });
+
+  test("clearGhResolvedMarkers is idempotent and safe when markers are absent", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "repo-gh-resolved-idem");
+    mkdirSync(repo, { recursive: true });
+    run(["git", "init", "-b", "main"], repo);
+    run(["git", "config", "user.email", "test@example.com"], repo);
+    run(["git", "config", "user.name", "Test User"], repo);
+
+    // No gh-resolved set yet — must not throw.
+    clearGhResolvedMarkers(repo);
+
+    // Set only origin, then clear twice — second clear must also not throw.
+    run(["git", "config", "remote.origin.gh-resolved", "base"], repo);
+    clearGhResolvedMarkers(repo);
+    clearGhResolvedMarkers(repo);
+    expect(Bun.spawnSync(["git", "config", "--get", "remote.origin.gh-resolved"], { cwd: repo }).exitCode).not.toBe(0);
   });
 });
 

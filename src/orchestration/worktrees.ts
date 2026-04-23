@@ -298,7 +298,28 @@ export function createWorktrees(
     ensureGitExcludes(wt);
   }
 
+  clearGhResolvedMarkers(resolve(projectDir));
+
   return { rootWorktree, peerSyncDir, agentWorktrees, branches };
+}
+
+/**
+ * Defense-in-depth against `gh-resolved` poisoning: clear any
+ * `remote.<name>.gh-resolved` markers on `origin` and `upstream` so that
+ * `gh` CLI invocations inside worktrees can't be silently retargeted to the
+ * wrong repository. Worktrees share `.git/config` with the parent repo, so a
+ * single clear on the parent covers all worktrees.
+ *
+ * Best-effort: uses `safeSyncOutput`, which does not throw. If the config key
+ * is absent, `git config --unset` exits non-zero and is silently ignored.
+ */
+export function clearGhResolvedMarkers(projectDir: string): void {
+  for (const remote of ["origin", "upstream"]) {
+    safeSyncOutput(
+      ["git", "config", "--unset", `remote.${remote}.gh-resolved`],
+      { cwd: projectDir },
+    );
+  }
 }
 
 export function symlinkPeerSync(
