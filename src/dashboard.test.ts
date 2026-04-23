@@ -363,6 +363,41 @@ describe("deferred-launch sorting", () => {
     const items = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
     const ids = items.map((item) => item.id);
     expect(ids).toEqual(["task-newest", "task-middle", "task-oldest", "task-no-date"]);
+    expect(items.find((it) => it.id === "task-newest")).toHaveProperty("created", "2026-04-15");
+    expect(items.find((it) => it.id === "task-no-date")).toHaveProperty("created", null);
+  });
+});
+
+describe("needs-confirmation sorting", () => {
+  function writeNeedsConfirmationTask(id: string, title: string, created: string | null): void {
+    const tasksDir = join(harnessDir(), "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    const createdLine = created ? `created: "${created}"` : "created: null";
+    writeFileSync(
+      join(tasksDir, `${id}.md`),
+      `---\nid: ${id}\ntitle: "${title}"\nstatus: needs-confirmation\npriority: B\n${createdLine}\ncontext: ludics\n---\n\n# ${title}\n`,
+    );
+  }
+
+  test("tasks sorted by created date descending, null last", async () => {
+    writeNeedsConfirmationTask("task-nc-oldest", "Oldest", "2026-01-01");
+    writeNeedsConfirmationTask("task-nc-newest", "Newest", "2026-04-15");
+    writeNeedsConfirmationTask("task-nc-middle", "Middle", "2026-03-10");
+    writeNeedsConfirmationTask("task-nc-no-date", "No date", null);
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      dashboardGenerate();
+    } finally {
+      console.error = origErr;
+    }
+
+    const outFile = join(harnessDir(), "dashboard", "data", "needs-confirmation.json");
+    const items = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const ids = items.map((item) => item.id);
+    expect(ids).toEqual(["task-nc-newest", "task-nc-middle", "task-nc-oldest", "task-nc-no-date"]);
   });
 });
 

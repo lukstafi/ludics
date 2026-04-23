@@ -540,9 +540,13 @@ function generateFilteredTaskList(tasks: DashboardTask[], config: FilteredTaskTi
   }));
 }
 
+const byCreatedDescNullLast = (a: DashboardTask, b: DashboardTask): number =>
+  (b.created ?? "").localeCompare(a.created ?? "");
+
 const needsConfirmationConfig: FilteredTaskTileConfig = {
   filter: (task) => task.status === "needs-confirmation",
   extraFields: (task) => ({ created: task.created, relatesTo: task.dependencies.relates_to }),
+  sort: byCreatedDescNullLast,
 };
 
 const unansweredQuestionsConfig: FilteredTaskTileConfig = {
@@ -553,10 +557,11 @@ const unansweredQuestionsConfig: FilteredTaskTileConfig = {
 const deferredLaunchConfig: FilteredTaskTileConfig = {
   filter: (task) => task.status === "deferred",
   extraFields: (task) => ({
+    created: task.created,
     hasProposal: task.hasProposal,
     proposalPath: task.proposalPath,
   }),
-  sort: (a, b) => (b.created ?? "").localeCompare(a.created ?? ""),
+  sort: byCreatedDescNullLast,
 };
 
 function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
