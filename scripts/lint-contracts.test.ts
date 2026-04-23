@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { spawnSync } from "bun";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import {
   extractWorkerFields,
@@ -7,6 +9,7 @@ import {
   diffFields,
   lintPair,
   hasOrchestratorRoutingSection,
+  runCli,
 } from "./lint-contracts.ts";
 
 // ---------------------------------------------------------------------------
@@ -270,6 +273,216 @@ describe("hasOrchestratorRoutingSection", () => {
   test("false for inline skill without routing heading", () => {
     const md = "# Some inline skill\n\n## Process\n\nStuff.\n";
     expect(hasOrchestratorRoutingSection(md)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runCli — temp-fixture directory tests for the discovery + reporting layer
+// ---------------------------------------------------------------------------
+
+/** Build an isolated skills directory under tmpdir and return its path. */
+function makeFixture(files: Record<string, string>): {
+  dir: string;
+  cleanup: () => void;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "lint-contracts-"));
+  const skills = join(dir, "skills");
+  mkdirSync(skills, { recursive: true });
+  for (const [name, body] of Object.entries(files)) {
+    writeFileSync(join(skills, name), body);
+  }
+  return {
+    dir: skills,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+/** Drive runCli and collect its stderr/stdout lines in-process. */
+function driveRunCli(skillsDir: string): {
+  exitCode: number;
+  err: string[];
+  out: string[];
+  errorCount: number;
+  warningCount: number;
+} {
+  const err: string[] = [];
+  const out: string[] = [];
+  const result = runCli({
+    skillsDir,
+    writeErr: (m) => err.push(m),
+    writeOut: (m) => out.push(m),
+  });
+  return {
+    exitCode: result.exitCode,
+    err,
+    out,
+    errorCount: result.errorCount,
+    warningCount: result.warningCount,
+  };
+}
+
+const FIXTURE_WORKER_MD = [
+  "### Response Contract",
+  "",
+  "1. `status` — string, required.",
+  "2. `task_id` — string, required.",
+  "3. `summary` — string, required.",
+  "",
+].join("\n");
+
+const FIXTURE_ORCH_MD = [
+  "## Status routing",
+  "",
+  "| Field | Used for | Missing-field fallback |",
+  "|---|---|---|",
+  "| `status` | primary routing | error |",
+  "| `summary` | result context | empty string |",
+  "| `task_id` | — | not consumed |",
+  "",
+].join("\n");
+
+describe("runCli", () => {
+  test("clean paired fixture exits 0 with no warnings", () => {
+    const { dir, cleanup } = makeFixture({
+      "ludics-foo-worker.md": FIXTURE_WORKER_MD,
+      "ludics-foo.md": FIXTURE_ORCH_MD,
+    });
+    try {
+      const { exitCode, err, errorCount, warningCount } = driveRunCli(dir);
+      expect(exitCode).toBe(0);
+      expect(errorCount).toBe(0);
+      expect(warningCount).toBe(0);
+      expect(err).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("forward unpaired: worker with no orchestrator → warning, exit 0", () => {
+    const { dir, cleanup } = makeFixture({
+      "ludics-lonely-worker.md": FIXTURE_WORKER_MD,
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.exitCode).toBe(0);
+      expect(r.errorCount).toBe(0);
+      expect(r.warningCount).toBe(1);
+      expect(
+        r.err.some((line) =>
+          line.includes("worker-without-orchestrator") &&
+          line.includes("ludics-lonely-worker.md"),
+        ),
+      ).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("reverse unpaired: orchestrator-style file with no worker → warning, exit 0", () => {
+    const { dir, cleanup } = makeFixture({
+      "ludics-stranded.md": FIXTURE_ORCH_MD,
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.exitCode).toBe(0);
+      expect(r.errorCount).toBe(0);
+      expect(r.warningCount).toBe(1);
+      expect(
+        r.err.some((line) =>
+          line.includes("orchestrator-without-worker") &&
+          line.includes("ludics-stranded.md"),
+        ),
+      ).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("inline skill (no routing heading) is silently excluded from reverse sweep", () => {
+    const inlineMd = [
+      "# Inline skill",
+      "",
+      "## Process",
+      "",
+      "Do stuff. No routing heading here.",
+      "",
+    ].join("\n");
+    const { dir, cleanup } = makeFixture({
+      "ludics-inline.md": inlineMd,
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.exitCode).toBe(0);
+      expect(r.errorCount).toBe(0);
+      expect(r.warningCount).toBe(0);
+      expect(
+        r.err.some((line) => line.includes("ludics-inline.md")),
+      ).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("paired drift: extra worker field → exit 1 with worker-only-field error", () => {
+    const driftingWorker = [
+      "### Response Contract",
+      "",
+      "1. `status` — string, required.",
+      "2. `task_id` — string, required.",
+      "3. `summary` — string, required.",
+      "4. `rogue_field` — string, required.",
+      "",
+    ].join("\n");
+    const { dir, cleanup } = makeFixture({
+      "ludics-drifty-worker.md": driftingWorker,
+      "ludics-drifty.md": FIXTURE_ORCH_MD,
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.exitCode).toBe(1);
+      expect(r.errorCount).toBe(1);
+      expect(
+        r.err.some((line) =>
+          line.includes("worker-only-field") &&
+          line.includes("rogue_field") &&
+          line.includes("[ludics-drifty]"),
+        ),
+      ).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("mixed fixture: drift + unpaired + inline all reported correctly", () => {
+    const driftingWorker = [
+      "### Response Contract",
+      "",
+      "1. `status` — string, required.",
+      "2. `task_id` — string, required.",
+      "3. `summary` — string, required.",
+      "4. `extra_a` — string, required.",
+      "",
+    ].join("\n");
+    const inlineMd = "# Inline\n\n## Process\n\nnothing.\n";
+    const { dir, cleanup } = makeFixture({
+      "ludics-drifty-worker.md": driftingWorker,
+      "ludics-drifty.md": FIXTURE_ORCH_MD,
+      "ludics-lonely-worker.md": FIXTURE_WORKER_MD,
+      "ludics-stranded.md": FIXTURE_ORCH_MD,
+      "ludics-inline.md": inlineMd,
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.exitCode).toBe(1);
+      expect(r.errorCount).toBe(1);
+      // 2 file-level warnings: worker-without-orchestrator, orchestrator-without-worker.
+      expect(r.warningCount).toBe(2);
+      expect(r.err.some((l) => l.includes("worker-without-orchestrator"))).toBe(true);
+      expect(r.err.some((l) => l.includes("orchestrator-without-worker"))).toBe(true);
+      expect(r.err.some((l) => l.includes("ludics-inline.md"))).toBe(false);
+    } finally {
+      cleanup();
+    }
   });
 });
 

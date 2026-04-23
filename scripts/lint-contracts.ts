@@ -210,8 +210,42 @@ interface PairReport {
   issues: PairResult;
 }
 
-function runCli(): number {
-  const entries = readdirSync(skillsDir);
+export interface RunCliOptions {
+  /** Skills directory to scan. Defaults to `<repo-root>/skills`. */
+  skillsDir?: string;
+  /** Sink for warning/error lines (default: process.stderr.write). */
+  writeErr?: (msg: string) => void;
+  /** Sink for the success summary line (default: process.stdout.write). */
+  writeOut?: (msg: string) => void;
+}
+
+export interface RunCliResult {
+  exitCode: number;
+  errorCount: number;
+  warningCount: number;
+  fileWarnings: FileIssue[];
+  pairReports: PairReport[];
+}
+
+/**
+ * Scan a skills directory and report field-contract drift. Parameterised on
+ * the directory and output sinks so tests can drive it against temp fixtures
+ * and capture lines without spawning a subprocess.
+ */
+export function runCli(options: RunCliOptions = {}): RunCliResult {
+  const scanDir = options.skillsDir ?? skillsDir;
+  const writeErr =
+    options.writeErr ??
+    ((msg) => {
+      process.stderr.write(msg + "\n");
+    });
+  const writeOut =
+    options.writeOut ??
+    ((msg) => {
+      process.stdout.write(msg + "\n");
+    });
+
+  const entries = readdirSync(scanDir);
   const workerFiles = entries.filter((f) => /^ludics-.*-worker\.md$/.test(f));
 
   const fileWarnings: FileIssue[] = [];
@@ -221,8 +255,8 @@ function runCli(): number {
   const pairedOrchestrators = new Set<string>();
   for (const wFile of workerFiles) {
     const orchFile = wFile.replace(/-worker\.md$/, ".md");
-    const wPath = join(skillsDir, wFile);
-    const oPath = join(skillsDir, orchFile);
+    const wPath = join(scanDir, wFile);
+    const oPath = join(scanDir, orchFile);
 
     if (!existsSync(oPath)) {
       fileWarnings.push({
@@ -249,7 +283,7 @@ function runCli(): number {
       !pairedOrchestrators.has(f),
   );
   for (const oFile of reverseCandidates) {
-    const md = readFileSync(join(skillsDir, oFile), "utf-8");
+    const md = readFileSync(join(scanDir, oFile), "utf-8");
     if (!hasOrchestratorRoutingSection(md)) continue; // inline skill
     fileWarnings.push({
       category: "orchestrator-without-worker",
@@ -265,36 +299,33 @@ function runCli(): number {
     for (const err of issues.errors) {
       errorCount++;
       const fieldNote = err.field ? ` (field: ${err.field})` : "";
-      console.error(`❌  [${pair}] ${err.category}${fieldNote}`);
+      writeErr(`❌  [${pair}] ${err.category}${fieldNote}`);
     }
     for (const warn of issues.warnings) {
       warningCount++;
       const fieldNote = warn.field ? ` (field: ${warn.field})` : "";
-      console.error(`⚠️   [${pair}] ${warn.category}${fieldNote}`);
+      writeErr(`⚠️   [${pair}] ${warn.category}${fieldNote}`);
     }
   }
   for (const fw of fileWarnings) {
     warningCount++;
-    console.error(`⚠️   ${fw.category}: ${fw.path}`);
+    writeErr(`⚠️   ${fw.category}: ${fw.path}`);
   }
 
   if (errorCount === 0) {
     const suffix = warningCount > 0 ? ` (${warningCount} warning${warningCount === 1 ? "" : "s"})` : "";
-    console.log(`✅  Worker/orchestrator field contracts are in sync${suffix}.`);
-    return 0;
+    writeOut(`✅  Worker/orchestrator field contracts are in sync${suffix}.`);
+    return { exitCode: 0, errorCount, warningCount, fileWarnings, pairReports };
   }
-  console.error(`\n${errorCount} error${errorCount === 1 ? "" : "s"}, ${warningCount} warning${warningCount === 1 ? "" : "s"}.`);
-  return 1;
+  writeErr(`\n${errorCount} error${errorCount === 1 ? "" : "s"}, ${warningCount} warning${warningCount === 1 ? "" : "s"}.`);
+  return { exitCode: 1, errorCount, warningCount, fileWarnings, pairReports };
 }
 
 // Run as a CLI when invoked directly; stay silent when imported from tests.
 if (import.meta.main) {
-  process.exit(runCli());
+  process.exit(runCli().exitCode);
 }
 
-// Exported for integration tests that want to drive the CLI in-process if
-// needed, but the main recipe for tests is to import the pure helpers above.
-export { runCli };
 // Silence the unused-basename import when this module is used only as a
 // library in tests (tree-shaking does not run on bun runtime).
 void basename;
