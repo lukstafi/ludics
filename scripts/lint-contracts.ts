@@ -137,10 +137,13 @@ export interface PairResult {
  * a missing section from cascading into a `worker-only-field` error per
  * field.
  *
- * `task_id` is a special case (AC 9): a worker-only-field mismatch where
- * `field === "task_id"` is emitted as a warning rather than an error, because
- * orchestrator tables conventionally list it as "not consumed" and sometimes
- * omit it entirely.
+ * `task_id` is a special case (AC 9), but only in the worker-only direction:
+ * workers always declare `task_id`, while orchestrator tables conventionally
+ * list it as "not consumed" and sometimes omit it entirely — so a worker-only
+ * `task_id` mismatch is emitted as a warning rather than an error. The
+ * orchestrator-only direction (orchestrator expects `task_id` but the worker
+ * contract dropped it) stays an error: that would be a required-field
+ * regression on the worker side, exactly what this lint should catch.
  */
 export function lintPair(workerMd: string, orchMd: string): PairResult {
   const result: PairResult = { errors: [], warnings: [] };
@@ -168,8 +171,7 @@ export function lintPair(workerMd: string, orchMd: string): PairResult {
   }
   for (const field of orchOnly) {
     const issue: LintIssue = { category: "orchestrator-only-field", field };
-    if (field === "task_id") result.warnings.push(issue);
-    else result.errors.push(issue);
+    result.errors.push(issue);
   }
 
   return result;

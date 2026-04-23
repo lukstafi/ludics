@@ -242,7 +242,7 @@ describe("lintPair", () => {
     expect(warnings).toEqual([]);
   });
 
-  test("task_id-only drift is downgraded to a warning", () => {
+  test("worker-only `task_id` drift is downgraded to a warning (idiom tolerance)", () => {
     const orch = [
       "## Status routing",
       "",
@@ -255,6 +255,21 @@ describe("lintPair", () => {
     expect(errors).toEqual([]);
     expect(warnings).toEqual([
       { category: "worker-only-field", field: "task_id" },
+    ]);
+  });
+
+  test("orchestrator-only `task_id` drift is an error (worker dropped required field)", () => {
+    // Worker accidentally omits `task_id`; orchestrator still expects it.
+    const brokenWorker = [
+      "### Response Contract",
+      "",
+      "1. `status` — string, required.",
+      "2. `summary` — string, required.",
+    ].join("\n");
+    const { errors, warnings } = lintPair(brokenWorker, VALID_ORCH_MD);
+    expect(warnings).toEqual([]);
+    expect(errors).toEqual([
+      { category: "orchestrator-only-field", field: "task_id" },
     ]);
   });
 });
