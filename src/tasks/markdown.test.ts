@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, appendToSection, frontmatterBounds, readFrontmatterField, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter } from "./markdown.ts";
+import { addFrontmatterField, appendToSection, frontmatterBounds, readFrontmatterField, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter, writeTaskFile } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -473,5 +473,79 @@ describe("parseTaskFrontmatter effort: tiny", () => {
     const after = require("fs").readFileSync(tmpFile, "utf-8");
     expect(readFrontmatterField(after, "effort")).toBe("tiny");
     require("fs").unlinkSync(tmpFile);
+  });
+});
+
+describe("atomic write — no .tmp leftovers", () => {
+  const sample = `---
+id: task-sample
+title: "Sample"
+status: ready
+priority: B
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: null
+---
+
+# Sample
+
+## Context
+
+Body.
+
+## Notes
+
+None.
+`;
+
+  test("updateFrontmatterField leaves no .tmp sibling and is byte-identical to direct write", () => {
+    const p = tmpFile("up.md", sample);
+    updateFrontmatterField(p, "status", "in-progress");
+    expect(existsSync(p + ".tmp")).toBe(false);
+    const content = readFileSync(p, "utf-8");
+    expect(content).toContain("status: in-progress");
+  });
+
+  test("appendToSection leaves no .tmp sibling", () => {
+    const p = tmpFile("app.md", sample);
+    appendToSection(p, "Notes", "- new note");
+    expect(existsSync(p + ".tmp")).toBe(false);
+    expect(readFileSync(p, "utf-8")).toContain("- new note");
+  });
+
+  test("removeFrontmatterField leaves no .tmp sibling", () => {
+    const p = tmpFile("rm.md", sample);
+    updateFrontmatterField(p, "slot", "3");
+    removeFrontmatterField(p, "slot");
+    expect(existsSync(p + ".tmp")).toBe(false);
+    expect(readFileSync(p, "utf-8")).not.toContain("slot: 3");
+  });
+
+  test("updateDependencyArray leaves no .tmp sibling", () => {
+    const p = tmpFile("deps.md", sample);
+    updateDependencyArray(p, "blocks", ["task-other"]);
+    expect(existsSync(p + ".tmp")).toBe(false);
+    expect(readFileSync(p, "utf-8")).toContain("blocks: [task-other]");
+  });
+
+  test("writeTaskFile leaves no .tmp sibling", () => {
+    mkdirSync(TMP_DIR, { recursive: true });
+    const created = writeTaskFile(
+      TMP_DIR,
+      "task-newfile",
+      "New File Task",
+      "manual",
+      false,
+      "",
+      "",
+      "",
+      "2026-04-24",
+    );
+    expect(created).toBe(true);
+    const p = join(TMP_DIR, "task-newfile.md");
+    expect(existsSync(p)).toBe(true);
+    expect(existsSync(p + ".tmp")).toBe(false);
   });
 });

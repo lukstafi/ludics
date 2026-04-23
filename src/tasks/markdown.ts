@@ -1,8 +1,9 @@
 // Task frontmatter parsing and writing
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import YAML from "yaml";
+import { atomicWriteFileSync } from "../json.ts";
 import type { TaskFrontmatter } from "./types.ts";
 
 /** Regex for valid task IDs — used across all task-related endpoints. */
@@ -140,7 +141,7 @@ export function updateFrontmatterField(filePath: string, field: string, value: s
     output.splice(bounds.closeLine, 0, `${field}: ${value}`);
   }
 
-  writeFileSync(filePath, output.join("\n"));
+  atomicWriteFileSync(filePath, output.join("\n"));
 }
 
 export function addFrontmatterField(filePath: string, field: string, value: string): void {
@@ -201,7 +202,7 @@ export function appendToSection(filePath: string, section: string, line: string)
     content = content.trimEnd() + `\n\n${header}\n\n${line}\n`;
   }
 
-  writeFileSync(filePath, content);
+  atomicWriteFileSync(filePath, content);
 }
 
 export function removeFrontmatterField(filePath: string, field: string): void {
@@ -209,7 +210,7 @@ export function removeFrontmatterField(filePath: string, field: string): void {
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n");
   const bounds = frontmatterBounds(lines);
-  if (!bounds) { writeFileSync(filePath, content); return; }
+  if (!bounds) { atomicWriteFileSync(filePath, content); return; }
 
   const output: string[] = [];
 
@@ -224,7 +225,7 @@ export function removeFrontmatterField(filePath: string, field: string): void {
     output.push(lines[i]!);
   }
 
-  writeFileSync(filePath, output.join("\n"));
+  atomicWriteFileSync(filePath, output.join("\n"));
 }
 
 /**
@@ -275,7 +276,7 @@ export function updateDependencyArray(filePath: string, subfield: string, values
     output.push(line);
   }
 
-  writeFileSync(filePath, output.join("\n"));
+  atomicWriteFileSync(filePath, output.join("\n"));
 }
 
 export function writeTaskFile(
@@ -354,7 +355,7 @@ ${url ? `Source: ${url}\n` : ""}${labels ? `Labels: ${labels}\n` : ""}
 
 `;
 
-  writeFileSync(file, content);
+  atomicWriteFileSync(file, content);
   console.error(`ludics: created: ${id}`);
   return true;
 }
