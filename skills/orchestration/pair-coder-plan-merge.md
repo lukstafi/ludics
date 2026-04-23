@@ -32,6 +32,8 @@ Now merge the two independent plans for `{{TASK_ID}}` into one at `{{MERGED_PLAN
 
 Use numbered lists for structured data; avoid wide tables (they get truncated between agents). Pick the strongest approach from each plan, fold in feedback, keep it concrete.
 
+**Regression tests**: The merged plan MUST include a `## Regression Tests` section with one entry per file changed in this round. For every behaviour-affecting change, write a named regression test using the format `- <file> — <test description> (in <test-file>)`. For every modified file with no behaviour change, write an explicit `- <file> — No regression test needed — <reason>`. Preserve the per-file accounting: do not deduplicate by target test file, because multiple changed files may legitimately share a test target and each changed file still needs its own line. If neither input plan enumerated regression tests, do that enumeration now during the merge rather than carrying the omission forward.
+
 ```sh
 printf '%s|%s|merged plan written\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
 ```

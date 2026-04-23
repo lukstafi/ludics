@@ -25,7 +25,12 @@ For data-shape changes (field extraction, JSON migration, section restructuring)
 
 For every symbol or pattern the plan modifies, check that occurrences are enumerated project-wide — including inline reimplementations (regex patterns, copy-pasted logic, string literals), not just canonical function references. A single-site change that misses a doppelganger reads next round as a partial fix. If something's missing, REQUEST_CHANGES and include the grep commands you ran plus the occurrences the plan missed. See [exhaustive occurrence search](../../docs/orchestration-patterns.md#exhaustive-occurrence-search).
 
-On regression tests: each behaviour change (serialization, rendering, validation, CLI output) should have a named test planned for the first implementation round, not deferred — deferral drifts to abandonment. If behaviour changes lack test coverage, REQUEST_CHANGES with specifics on what needs tests. See [regression test per behaviour change](../../docs/orchestration-patterns.md#regression-test-per-behaviour-change).
+On regression tests, verify the merged plan structurally:
+
+- Does the merged plan contain a top-level `## Regression Tests` section?
+- Does that section list at least one named test (or an explicit "No regression test needed — <reason>" justification) for each behaviour-affecting file change enumerated elsewhere in the plan?
+
+If the section is missing, or if a behaviour-affecting change has no corresponding test entry and no explicit justification, REQUEST_CHANGES with specifics on what needs tests. Deferred tests drift to abandonment — require them in the first implementation round. See [regression test per behaviour change](../../docs/orchestration-patterns.md#regression-test-per-behaviour-change).
 
 {{PEER_PLAN}}
 
