@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import * as peerSyncMod from "./peer-sync.ts";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, isBailedOut, isPairBailedOut, isSoloBailedOut, PHASE_CATEGORIES, phaseTimeoutExpired } from "./phases.ts";
@@ -318,7 +317,6 @@ describe("evaluateTransition", () => {
     // Simulate the runner copy side-effect using findPlanFiles
     const { files } = findPlanFiles(tmpDir, 1, undefined);
     const mergedPath = join(tmpDir, "plans", "round-1-merged-0.md");
-    const { copyFileSync } = require("fs");
     copyFileSync(join(tmpDir, "plans", files[0]), mergedPath);
 
     expect(existsSync(mergedPath)).toBe(true);

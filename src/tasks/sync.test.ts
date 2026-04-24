@@ -118,7 +118,6 @@ describe("tasksQueuePreemptions", () => {
     writeTask(tasksDir, "task-alpha-ready", "alpha", "ready");
     writeTask(tasksDir, "task-beta-ready", "beta", "ready");
 
-    const slots = new Map<number, string>();
     writeSlotJson(1, { ...emptySlotData(1), process: "alpha active", task: "task-alpha-active" }, harness);
     writeSlotJson(2, { ...emptySlotData(2), process: "beta active", task: "task-beta-active" }, harness);
 
@@ -142,7 +141,6 @@ describe("tasksQueuePreemptions", () => {
     writeTask(tasksDir, "task-alpha-ready", "alpha", "ready");
     writeTask(tasksDir, "task-beta-ready", "beta", "ready");
 
-    const slots = new Map<number, string>();
     writeSlotJson(1, { ...emptySlotData(1), process: "alpha active", task: "task-alpha-active" }, harness);
     writeSlotJson(2, { ...emptySlotData(2), process: "beta active", task: "task-beta-active" }, harness);
 
@@ -175,7 +173,6 @@ describe("tasksQueuePreemptions", () => {
     writeTask(tasksDir, "task-alpha-next", "alpha", "ready");
     writeTask(tasksDir, "task-beta-next", "beta", "ready");
 
-    const slots = new Map<number, string>();
     writeSlotJson(1, { ...emptySlotData(1), process: "alpha current", task: "task-alpha-current" }, harness);
     writeSlotJson(2, { ...emptySlotData(2), process: "something else", task: "task-other" }, harness);
 

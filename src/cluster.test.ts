@@ -1,6 +1,7 @@
 // Cluster tests — config parsing, role determination, machine selection
 
 import { describe, it, expect } from "bun:test";
+import { clusterConfig, selectMachineForSlot, resolveController } from "./cluster.ts";
 
 // We test the pure logic helpers by importing and exercising them directly.
 // Functions that require config/state are tested via mock setup.
@@ -8,7 +9,6 @@ import { describe, it, expect } from "bun:test";
 describe("ClusterMachine parsing", () => {
   it("handles empty cluster config gracefully", () => {
     // clusterConfig() with no config should return defaults
-    const { clusterConfig } = require("./cluster.ts");
     // This may throw if no config file exists in test env — that's fine
     try {
       const cfg = clusterConfig();
@@ -22,7 +22,6 @@ describe("ClusterMachine parsing", () => {
 
 describe("selectMachineForSlot", () => {
   it("returns empty string when cluster is disabled", () => {
-    const { selectMachineForSlot } = require("./cluster.ts");
     // When cluster is not enabled, should return ""
     try {
       const result = selectMachineForSlot({ project: "test", effort: "medium" });
@@ -45,7 +44,6 @@ describe("hostname normalization", () => {
 
 describe("resolveController", () => {
   it("returns null when cluster is disabled (no machines)", () => {
-    const { resolveController } = require("./cluster.ts");
     // In test env without config, clusterMachines() returns []
     try {
       const controller = resolveController();

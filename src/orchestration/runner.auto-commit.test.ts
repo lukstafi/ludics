@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach, setDefaultTimeout } from "bun:test";
-import { rmSync, writeFileSync } from "fs";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { autoCommitAgent, autoCommitAllAgents } from "./runner.ts";
 import { makeState } from "./runner.test-helpers.ts";
@@ -7,7 +7,6 @@ import { makeState } from "./runner.test-helpers.ts";
 setDefaultTimeout(20_000);
 
 function initGitRepo(dir: string): void {
-  const { mkdirSync, writeFileSync } = require("fs");
   mkdirSync(dir, { recursive: true });
   Bun.spawnSync(["git", "init", "-b", "main"], { cwd: dir, stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> });
   Bun.spawnSync(["git", "config", "user.email", "test@example.com"], { cwd: dir, stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> });

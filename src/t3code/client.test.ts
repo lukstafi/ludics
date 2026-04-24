@@ -18,7 +18,7 @@ const servers: Server<undefined>[] = [];
 
 afterEach(() => {
   for (const server of servers.splice(0)) {
-    server.stop(true);
+    void server.stop(true);
   }
 });
 

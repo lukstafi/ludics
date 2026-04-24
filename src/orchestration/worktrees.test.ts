@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { autoCommitWorktree, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, orchBranchName, orchWorktreeStem, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";

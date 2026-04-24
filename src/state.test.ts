@@ -1,8 +1,9 @@
 // State checkpoint tests
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, writeFileSync, unlinkSync } from "fs";
+import { describe, it, expect, afterEach } from "bun:test";
+import { existsSync, unlinkSync } from "fs";
 import { join } from "path";
+import { stateMarkDirty, stateIsDirty, stateCommit } from "./state.ts";
 
 describe("dirty flag", () => {
   const flagPath = join(process.env.HOME ?? "/tmp", ".ludics-state-dirty");
@@ -18,8 +19,6 @@ describe("dirty flag", () => {
     // Clean up first
     if (existsSync(flagPath)) unlinkSync(flagPath);
 
-    const { stateMarkDirty, stateIsDirty } = require("./state.ts");
-
     try {
       expect(stateIsDirty()).toBe(false);
       stateMarkDirty();
@@ -31,8 +30,6 @@ describe("dirty flag", () => {
 
   it("stateCommit marks dirty instead of committing", () => {
     if (existsSync(flagPath)) unlinkSync(flagPath);
-
-    const { stateCommit, stateIsDirty } = require("./state.ts");
 
     try {
       stateCommit("test message");

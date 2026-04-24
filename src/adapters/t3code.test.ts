@@ -8,6 +8,7 @@ import { mergeAdapterState } from "../slots/markdown.ts";
 import { emptySlotData } from "../slots/json.ts";
 import type { SlotData } from "../slots/types.ts";
 import type { AdapterContext } from "./types.ts";
+import { persistState, defaultOrchestrationConfig, initAgentRuntimeState } from "../orchestration/state.ts";
 
 function makeThread(overrides: Partial<T3CodeThreadRecord> = {}): T3CodeThreadRecord {
   return {
@@ -255,7 +256,6 @@ describe("t3code adapter stop — preserveState", () => {
   }
 
   function writeOrchState(harness: string): void {
-    const { persistState, defaultOrchestrationConfig, initAgentRuntimeState } = require("../orchestration/state.ts");
     persistState({
       slot: 1,
       taskId: "test-task",

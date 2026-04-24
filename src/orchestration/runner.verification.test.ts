@@ -8,6 +8,7 @@ import * as events from "../events.ts";
 import * as github from "./github.ts";
 import * as spawn from "../spawn.ts";
 import * as config from "../config.ts";
+import { appendToSection } from "../tasks/markdown.ts";
 import * as stateMod from "./state.ts";
 import { type OrchestrationState } from "./state.ts";
 import {
@@ -239,7 +240,6 @@ describe("handleVerifyFailure — has_questions", () => {
     handleVerifyFailure(state, "prCreate", "still missing");
 
     // Second call (already at max — returns hold silently, but test idempotency of appendToSection)
-    const { appendToSection } = require("../tasks/markdown.ts");
     appendToSection(taskFile, "Questions",
       `- **Manual intervention required (slot 1)**: pr-create failed after ${MAX_VERIFY_ATTEMPTS} attempts`);
 

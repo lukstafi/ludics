@@ -3,7 +3,9 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { preparePhaseRedispatch, skipToPhase, validatePreviousPhaseArtifacts } from "./runner.ts";
 import * as events from "../events.ts";
-import { persistState, type OrchestrationState } from "./state.ts";
+import { agentParticipatesInPhase } from "./phases.ts";
+import { statusFileFingerprint } from "./peer-sync.ts";
+import { persistState, readOrchestrationState, type OrchestrationState } from "./state.ts";
 import {
   makeTmpDir,
   makeLifecycle,
@@ -105,7 +107,6 @@ describe("phase-entry status reset", () => {
       // Simulate what enterPhase does: reset participating agents' status files.
       // Since enterPhase is private, we test the observable filesystem effect
       // by running the same logic inline.
-      const { agentParticipatesInPhase } = require("./phases.ts");
       if (state.phase !== "pr-comments") {
         for (const agent of state.agents) {
           if (!agentParticipatesInPhase(state, agent)) continue;
@@ -137,7 +138,6 @@ describe("phase-entry status reset", () => {
 
       // Simulate what enterPhase does for pr-comments:
       // 1. Reset all participating agents (same as every other phase)
-      const { agentParticipatesInPhase } = require("./phases.ts");
       for (const agent of state.agents) {
         if (!agentParticipatesInPhase(state, agent)) continue;
         const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
@@ -165,7 +165,6 @@ describe("phase-entry status reset", () => {
     try {
       // Write stale status
       writeFileSync(join(dir, "coder.status"), "plan-done|1713000000000|completed\n");
-      const { statusFileFingerprint } = require("./peer-sync.ts");
       const preResetFp = statusFileFingerprint(dir, "coder");
 
       // Reset
@@ -196,7 +195,6 @@ describe("phase-entry status reset", () => {
       // Simulate the new dispatch loop logic: status reset happens AFTER dedup
       // checks, so agents that pass the dedup check (already dispatched) are
       // skipped entirely — their status files are never touched.
-      const { agentParticipatesInPhase } = require("./phases.ts");
       for (const agent of state.agents) {
         if (!agentParticipatesInPhase(state, agent)) continue;
         // Dedup check: skip agents already dispatched for this phase token
@@ -240,7 +238,6 @@ describe("phase-entry status reset", () => {
       writeFileSync(join(dir, "reviewer.status"), "setup-done|1713000000|completed");
 
       // Simulate the new dispatch loop logic: dedup check then reset
-      const { agentParticipatesInPhase } = require("./phases.ts");
       for (const agent of state.agents) {
         if (!agentParticipatesInPhase(state, agent)) continue;
         const existing = state.agentStates[agent.name]?.turnLifecycle;
@@ -271,7 +268,6 @@ describe("previousPhaseCtx persistence", () => {
       state.previousPhaseCtx = { phase: "review", round: 1, planMergeRound: 0 };
 
       // Persist to temp harness dir and read back
-      const { readOrchestrationState } = require("./state.ts");
       persistState(state, harnessDir);
       const restored = readOrchestrationState(state.slot, harnessDir);
 

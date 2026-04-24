@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { extractTaskId, cleanupStaleItems } from "./index.ts";
@@ -167,8 +167,8 @@ function setupHarness(
 }
 
 afterEach(() => {
-  for (const server of servers.splice(0)) server.stop(true);
-  try { rmSync(TMP, { recursive: true, force: true }); } catch {}
+  for (const server of servers.splice(0)) void server.stop(true);
+  try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 describe("cleanupStaleItems", () => {
@@ -250,7 +250,7 @@ describe("cleanupStaleItems", () => {
       threads: [makeThread({ id: "t-recent", title: "task-eee555 (coder)", updatedAt: recentDate })],
       updatedAt: recentDate,
     };
-    const { harness, commands } = setupHarness(snapshot, {
+    const { harness } = setupHarness(snapshot, {
       tasks: [{ id: "task-eee555", status: "done" }],
     });
 

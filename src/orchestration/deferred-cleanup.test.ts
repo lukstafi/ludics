@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { cleanupDelayHours } from "../config.ts";
 
@@ -27,7 +27,6 @@ import {
   loadDeferredCleanups,
   processDeferredCleanups,
   recordDeferredCleanup,
-  saveDeferredCleanups,
 } from "./deferred-cleanup.ts";
 import type { OrchestrationState, AgentConfig } from "./state.ts";
 
@@ -70,7 +69,6 @@ describe("loadDeferredCleanups", () => {
   });
 
   test("returns [] on corrupt JSON", () => {
-    const { writeFileSync } = require("fs");
     writeFileSync(cleanupPendingPath(), "not-json");
     expect(loadDeferredCleanups()).toEqual([]);
   });
