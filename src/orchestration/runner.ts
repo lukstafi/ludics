@@ -14,7 +14,7 @@ import {
   persistState, readOrchestrationState,
   type AgentConfig, type OrchestrationState,
 } from "./state.ts";
-import { isoNow, makeId, nowEpoch, sleep } from "./util.ts";
+import { isoNow, makeId, nowEpoch, sleepMs } from "./util.ts";
 import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile, type PrVerification } from "./github.ts";
 import { updateFrontmatterField, addFrontmatterField, appendToSection } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../config.ts";
@@ -1251,7 +1251,7 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
 
       // Sleep with early wakeup from transport events.
       await Promise.race([
-        sleep(interval),
+        sleepMs(interval),
         new Promise<void>((resolve) => { wakeResolve = resolve; }),
       ]);
       wakeResolve = null;
@@ -1545,7 +1545,7 @@ export async function runOrchestration(
       if (!sibling) {
         if (Date.now() - runnerStartMs < startupGraceMs) {
           // Parent adapter hasn't written sibling state yet — re-check.
-          await sleep(200);
+          await sleepMs(200);
           continue;
         }
         console.error(
@@ -1599,7 +1599,7 @@ export async function runOrchestration(
 
     if (gateDecision === "redispatch" || gateDecision === "hold") {
       persistState(state);
-      await sleep(state.config.pollInterval * 1000);
+      await sleepMs(state.config.pollInterval * 1000);
       continue; // re-enter loop: redispatch runs enterPhase, hold waits for timeout/human
     }
     // gateDecision === "advance" or "skip" → proceed to evaluateTransition normally
@@ -1609,7 +1609,7 @@ export async function runOrchestration(
 
     if (!next) {
       persistState(state);
-      await sleep(state.config.pollInterval * 1000);
+      await sleepMs(state.config.pollInterval * 1000);
       continue;
     }
 
