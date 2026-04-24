@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -85,5 +85,47 @@ describe("OrchestrationState.harnessDir", () => {
     const loaded = readOrchestrationState(3, REAL);
     expect(loaded).not.toBeNull();
     expect(loaded!.harnessDir).toBe("/already/set");
+  });
+
+  // task-f60547cd PR #399 P1: runner.ts now invokes
+  // `persistState(state, state.harnessDir ?? defaultHarnessDir())` at every
+  // in-body site (previously bare `persistState(state)`), so orchestration
+  // snapshots land in the caller-selected harness instead of the process
+  // global when runOrchestrationForSlot(slot, harnessDir) is invoked with
+  // a harness that differs from LUDICS_HARNESS_DIR. This test exercises
+  // the exact pattern runner.ts now uses.
+  test("persistState(state, state.harnessDir ?? defaultHarnessDir()) writes to state.harnessDir, not LUDICS_HARNESS_DIR", () => {
+    mkdirSync(join(REAL, "orchestration"), { recursive: true });
+    mkdirSync(join(DECOY, "orchestration"), { recursive: true });
+
+    const state = baseState(4, REAL); // state.harnessDir = REAL; env points at DECOY
+
+    // Exact pattern used throughout runner.ts (line 876, 1429, 1448, …, 1855, …).
+    persistState(state, state.harnessDir ?? DECOY);
+
+    // Snapshot lands in REAL harness only.
+    const realPath = join(REAL, "orchestration", "slot-4.json");
+    const decoyPath = join(DECOY, "orchestration", "slot-4.json");
+    expect(existsSync(realPath)).toBe(true);
+    expect(existsSync(decoyPath)).toBe(false);
+  });
+
+  test("persistState with a literal state (no harnessDir set) falls through to the global — runner seeds it at top of runOrchestration to avoid this", () => {
+    // Regression anchor: without the top-of-runOrchestration seed
+    // (runner.ts:1854 `state.harnessDir ??= defaultHarnessDir()`), a
+    // literal state with no harnessDir would coerce to the env-var global
+    // in this ??-fallback pattern. The seed is what guarantees the
+    // in-body persistState calls never silently default to the global
+    // once runOrchestration has been entered.
+    mkdirSync(join(DECOY, "orchestration"), { recursive: true });
+
+    const state = baseState(5); // no harnessDir
+    expect(state.harnessDir).toBeUndefined();
+
+    persistState(state, state.harnessDir ?? DECOY);
+
+    // Fallback writes to DECOY (defaultHarnessDir() target) — this is the
+    // behaviour the top-of-runOrchestration seed prevents for real runs.
+    expect(existsSync(join(DECOY, "orchestration", "slot-5.json"))).toBe(true);
   });
 });

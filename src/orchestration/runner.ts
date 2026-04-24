@@ -873,7 +873,7 @@ async function enterPhase(
     };
 
     // Persist after each agent dispatch — crash recovery will have lifecycle data
-    persistState(state);
+    persistState(state, state.harnessDir ?? defaultHarnessDir());
   }
 
   state.phaseDispatched = true;
@@ -1426,7 +1426,7 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
       // event + priority-5 notification, and flip slot liveness without any
       // intervening phase-advance work (nudge, auto-commit, verification gate).
       if (isEscalated(state)) {
-        persistState(state);
+        persistState(state, state.harnessDir ?? defaultHarnessDir());
         return;
       }
 
@@ -1445,12 +1445,12 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
       // so the quiet-period tracking and re-dispatch logic run on the tick when agents finish.
       if (state.phase === "pr-comments") {
         await checkAndRedispatchPrComments(state, transport);
-        persistState(state);
+        persistState(state, state.harnessDir ?? defaultHarnessDir());
         // Return to the main loop so evaluateTransition can check quiet-period expiry.
         if (evaluateTransition(state) !== null) return;
       }
 
-      persistState(state);
+      persistState(state, state.harnessDir ?? defaultHarnessDir());
 
       if (allAgentsDone(state)) return;
 
@@ -1501,7 +1501,7 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
           stallType: "interrupted",
           message: `${agent.name}: nudged with status-write instruction (turn settled without done status)`,
         });
-        persistState(state);
+        persistState(state, state.harnessDir ?? defaultHarnessDir());
       }
 
       if (nowEpoch() >= deadline) {
@@ -1735,7 +1735,7 @@ export function triggerCoderBailOut(
       action, status: eventStatus, message,
     });
   }
-  persistState(state);
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
 }
 
 /**
@@ -1759,7 +1759,7 @@ export function handleEscalation(state: OrchestrationState): void {
   const raisers = escalatingAgents(state);
   if (raisers.length === 0) return; // defensive: caller should have gated
 
-  persistState(state);
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
 
   const reasonFor = (name: string): { reason: string; warned: boolean } => {
     const raw = (state.agentStates[name]?.statusMessage ?? "").trim();
@@ -1808,7 +1808,7 @@ export function handleEscalation(state: OrchestrationState): void {
     console.error(`ludics: failed to set slot ${state.slot} liveness=escalated: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  persistState(state);
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
 }
 
 export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean {
@@ -1820,7 +1820,7 @@ export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean 
   // solo contract (lone coder). Skip PR creation and transition directly to done.
   if (isBailedOut(state)) {
     state.phase = "done";
-    persistState(state);
+    persistState(state, state.harnessDir ?? defaultHarnessDir());
     return true;
   }
 
@@ -1839,7 +1839,7 @@ export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean 
   // (agentParticipatesInPhase returns false for reviewer), so waiting for
   // bail-out-confirmed would deadlock.
   state.phase = "done";
-  persistState(state);
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
   return true;
 }
 
@@ -1852,7 +1852,7 @@ export async function runOrchestration(
   }
   // Ensure every downstream persistState preserves the caller-selected harness.
   state.harnessDir ??= defaultHarnessDir();
-  persistState(state);
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
 
   // Startup grace for the sibling-state self-guard. The adapter writes
   // tmux-slot-<N>.json / t3code/slot-<N>.json only AFTER
@@ -1893,7 +1893,7 @@ export async function runOrchestration(
     }
 
     await enterPhase(state, transport);
-    persistState(state);
+    persistState(state, state.harnessDir ?? defaultHarnessDir());
 
     await pollUntilDone(state, transport);
 
@@ -1940,7 +1940,7 @@ export async function runOrchestration(
     const gateDecision = [prCreateDecision, finalMergeDecision].find(d => d !== "skip") ?? "skip";
 
     if (gateDecision === "redispatch" || gateDecision === "hold") {
-      persistState(state);
+      persistState(state, state.harnessDir ?? defaultHarnessDir());
       await sleepMs(state.config.pollInterval * 1000);
       continue; // re-enter loop: redispatch runs enterPhase, hold waits for timeout/human
     }
@@ -1950,7 +1950,7 @@ export async function runOrchestration(
     const next = maybeOverrideTransition(state, evaluated);
 
     if (!next) {
-      persistState(state);
+      persistState(state, state.harnessDir ?? defaultHarnessDir());
       await sleepMs(state.config.pollInterval * 1000);
       continue;
     }
@@ -2041,7 +2041,7 @@ export async function runOrchestration(
     state.confirmedPhase = null;
     state.phaseDispatched = false;
     state.currentPhaseToken = undefined;
-    persistState(state);
+    persistState(state, state.harnessDir ?? defaultHarnessDir());
   }
 
   // Orchestration complete — mark the task as done so maybeClearDoneSlots()
