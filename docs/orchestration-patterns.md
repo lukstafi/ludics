@@ -255,13 +255,13 @@ test("TaskEntry round-trips through YAML", () => {
 
 **Example walk.** For each AC: `AC1: "round-trip test landed" — present in src/tasks/serialize.test.ts:roundTrip. ✓`. The check names the AC, names the evidence, marks it ✓ or ✗. Nothing fancier is required; the point is that the walk happened and left a trace.
 
-**Invariant vs capability.** Each verification line must name the *invariant* the cited test enforces — the property that would fail to hold if the AC were violated — not the *capability* the test's helper exposes or the code path the test happens to exercise. "Serialization coverage confirmed" is a capability claim; the invariant claim names the concrete property that falsifying breaks.
+**Invariant vs capability.** Each verification line must name the *invariant* the cited evidence enforces — the property that would fail to hold if the AC were violated — not the *capability* the referenced test or artifact merely exposes. "Serialization coverage confirmed" is a capability claim; the invariant claim names the concrete property that falsifying breaks.
 
 *Before* (capability phrasing): `AC1: "serialization handoff has coverage" — EEXIST check in tests/lock-handoff.test.ts. ✓`. The EEXIST check proves a directory exists; it does not prove the retry-and-acquire handoff ordering.
 
 *After* (invariant phrasing): `AC1: "parent releases before child acquires" — timestamps satisfy childAttemptTs < parentInsideCriticalSectionTs <= childAcquireTs, asserted in tests/lock-handoff.test.ts:handoffOrdering. ✓`. Falsifying the ordering breaks the assertion directly.
 
-The sharpening question is: *what assertion would fail if the AC were violated?* If you can't name one, the test is probably exercising the right code path without enforcing the invariant.
+The sharpening question is: *what would fail if the AC were violated?* For a test-backed AC, that's an assertion; for a doc or config AC with no mechanical test, it's a structural property — a resolvable anchor, a consumer that still reads the field, a referenced symbol that still exists. If you can't name the falsifier, the evidence is probably only traversing the code path, not enforcing the invariant.
 
 **Side-effect observability.** When an AC refers to a flag or option being passed or honored, the verification line must cite an observable downstream consequence (journal entry, remote-slot side effect, stderr output, exit code) — not the flag's presence in a call signature. A flag that never crosses an observable boundary is unobservable in-test even when the call signature looks correct. Example: `force: true` on `slotStop` is a remote-dispatch flag that is never read by the adapter; "adapter.stop received force:true" is unobservable, but "journal records the force-stop entry" or "remote slot's state file transitions to stopped" is. For flag-shaped ACs, document where the observable boundary is and cite the assertion that lives there.
 
