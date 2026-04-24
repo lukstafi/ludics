@@ -600,8 +600,10 @@ describe("skills", () => {
     proposalRelPath: string,
     proposalBody: string,
     extraCommits: number,
+    opts?: { seedOrigin?: boolean },
   ): void {
     const j = join;
+    const seedOrigin = opts?.seedOrigin !== false;
     mkdirSync(projectDir, { recursive: true });
     runGit(projectDir, ["init", "-q"]);
     runGit(projectDir, ["config", "user.email", "test@example.com"]);
@@ -614,6 +616,9 @@ describe("skills", () => {
     runGit(projectDir, ["commit", "-q", "-m", "init"]);
     for (let i = 0; i < extraCommits; i++) {
       runGit(projectDir, ["commit", "-q", "--allow-empty", "-m", `x${i}`]);
+    }
+    if (seedOrigin) {
+      runGit(projectDir, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
     }
   }
 
@@ -687,8 +692,6 @@ describe("skills", () => {
       const ctx = buildSkillContext(state, state.agents[0]!);
       expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toContain("Freshness warning");
       expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toContain("15 commits");
-      // Copy must stay branch-neutral — regression guard for iteration-0 "on main" bug.
-      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).not.toContain("main");
       expect(ctx["PROPOSAL_INSTRUCTION"]).toContain("Read the proposal file");
       expect(ctx["PROPOSAL_INSTRUCTION"]).toContain("Freshness warning");
       expect(ctx["PROPOSAL_INSTRUCTION"]).toContain("15 commits");
@@ -804,6 +807,121 @@ describe("skills", () => {
       expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
     } finally {
       spy.mockRestore();
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: feature-branch churn does not inflate count", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-feature-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-feature.md"), [
+        "---", "id: task-feature", "proposal: docs/proposals/feature.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      // M=12 main-side commits after the proposal, pinned as origin/main tip.
+      initGitRepoWithProposal(projectDir, "docs/proposals/feature.md", "# Feature proposal\n", 12);
+      // F=7 feature-branch commits after origin/main — these must NOT be counted.
+      runGit(projectDir, ["checkout", "-q", "-b", "feature"]);
+      for (let i = 0; i < 7; i++) {
+        runGit(projectDir, ["commit", "-q", "--allow-empty", "-m", `f${i}`]);
+      }
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-feature", projectDir, round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toContain("Freshness warning");
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toContain("12 commits");
+      // Regression guard: the old hash..HEAD command would have reported 19.
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).not.toContain("19 commits");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: empty when origin has no detectable default branch", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-noorigin-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-noorigin.md"), [
+        "---", "id: task-noorigin", "proposal: docs/proposals/noorigin.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      // 15 commits would have triggered the warning under origin/main semantics —
+      // but with seedOrigin=false no refs/remotes/origin/* refs exist, so
+      // detectDefaultBranches returns origin=null and the helper returns "".
+      initGitRepoWithProposal(
+        projectDir, "docs/proposals/noorigin.md", "# No-origin proposal\n", 15,
+        { seedOrigin: false },
+      );
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-noorigin", projectDir, round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: empty when proposal commit is not an ancestor of origin/main", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-unreach-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-unreach.md"), [
+        "---", "id: task-unreach", "proposal: docs/proposals/unreach.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      // Bootstrap repo with a non-proposal init commit so we have a base to
+      // branch from for both main and the side branch.
+      mkdirSync(projectDir, { recursive: true });
+      runGit(projectDir, ["init", "-q"]);
+      runGit(projectDir, ["config", "user.email", "test@example.com"]);
+      runGit(projectDir, ["config", "user.name", "test"]);
+      runGit(projectDir, ["config", "commit.gpgsign", "false"]);
+      runGit(projectDir, ["commit", "-q", "--allow-empty", "-m", "base"]);
+      // Advance main to 11 commits past the base; pin origin/main at the tip.
+      for (let i = 0; i < 11; i++) {
+        runGit(projectDir, ["commit", "-q", "--allow-empty", "-m", `m${i}`]);
+      }
+      runGit(projectDir, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+      // Create a side branch from the base commit and commit the proposal there.
+      // origin/main does not contain this commit, so merge-base --is-ancestor
+      // fails and the helper must return "".
+      runGit(projectDir, ["checkout", "-q", "-b", "side", "HEAD~11"]);
+      const proposalRel = "docs/proposals/unreach.md";
+      const proposalAbs = j(projectDir, proposalRel);
+      mkdirSync(dirname(proposalAbs), { recursive: true });
+      writeFileSync(proposalAbs, "# Unreachable proposal\n");
+      runGit(projectDir, ["add", proposalRel]);
+      runGit(projectDir, ["commit", "-q", "-m", "add proposal on side"]);
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-unreach", projectDir, round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
+    } finally {
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
       rmSync(tmpDir, { recursive: true, force: true });
