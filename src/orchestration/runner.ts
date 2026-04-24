@@ -15,14 +15,14 @@ import {
   type AgentConfig, type OrchestrationState,
 } from "./state.ts";
 import { isoNow, makeId, nowEpoch, sleepMs } from "./util.ts";
-import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile, type PrVerification } from "./github.ts";
+import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, postPrDriftComment, validateAndFixPrFile, type PrVerification } from "./github.ts";
 import { updateFrontmatterField, addFrontmatterField, appendToSection } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../config.ts";
 import { notifyAgents, notifyOutgoing } from "../notify.ts";
 import { readSlotJson, writeSlotJson } from "../slots/json.ts";
 // workerReportStatus replaced by clusterReportWorkerSignal (lazy import)
 import { clusterRole } from "../cluster.ts";
-import { autoCommitWorktree, defaultMainBranch, pushBranch } from "./worktrees.ts";
+import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 import { readTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { readSlotState } from "../t3code/server.ts";
@@ -879,6 +879,13 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
     }
   }
 
+  // --- PR body drift annotation ---
+  // Edge-triggered: on the first poll after the branch's commit count diverges
+  // from the baseline captured at pr-create, post a notice comment to the PR
+  // and advance the baseline. Fail-safe: missing baseline or git errors skip
+  // silently (no false positives).
+  checkAndAnnotatePrBodyDrift(state);
+
   // Only re-dispatch once all participating agents have finished their current turn.
   // Do NOT advance prCommentsLastCheckAt here — we have not polled GitHub yet, so
   // advancing the checkpoint would cause comments that arrive while agents are active
@@ -970,6 +977,53 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
 }
 
 /**
+ * Detect and annotate PR-body drift during `pr-comments`.
+ *
+ * For each agent with a PR and a captured baseline, compare the current
+ * `origin/<base>..HEAD` commit count against `prBodyBaselineCommits`. On
+ * mismatch, post a short notice comment via `postPrDriftComment` and advance
+ * both the baseline and the annotation-dedup marker, so a subsequent push
+ * that lands on a new count will re-fire and a same-count re-poll won't.
+ *
+ * Skip rules (fail-safe / no false positives):
+ *  - No baseline captured yet (pre-pr-create or git error at capture time).
+ *  - PR already merged (body is archival once merged).
+ *  - `countCommitsAhead` returns null (git error — cannot compare).
+ *  - Current count equals baseline (no drift).
+ *  - Current count matches `prBodyDriftAnnotatedAtCommits` (debounce).
+ */
+export function checkAndAnnotatePrBodyDrift(state: OrchestrationState): void {
+  const agentsWithPr = state.agents.filter((a) => !!state.agentStates[a.name]?.prUrl);
+  for (const agent of agentsWithPr) {
+    const runtime = state.agentStates[agent.name]!;
+    const prUrl = runtime.prUrl!;
+    const baseline = runtime.prBodyBaselineCommits;
+    if (baseline === undefined) continue;
+    if (isPrMerged(prUrl)) continue;
+    const current = countCommitsAhead(agent.worktreePath, state.projectDir);
+    if (current === null) continue;
+    if (current === baseline) continue;
+    if (runtime.prBodyDriftAnnotatedAtCommits === current) continue;
+
+    const baselineAt = runtime.prBodyBaselineAt ?? "";
+    const posted = postPrDriftComment(prUrl, baseline, current, baselineAt);
+    if (!posted) continue;
+
+    runtime.prBodyDriftAnnotatedAtCommits = current;
+    runtime.prBodyBaselineCommits = current;
+    runtime.prBodyBaselineAt = isoNow();
+    emitEvent({
+      event_type: "pr_body_drift_annotated",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      message: `PR body drift annotation posted on ${prUrl} (${baseline} -> ${current} commits)`,
+    });
+  }
+}
+
+/**
  * After agents complete a phase that creates PRs, validate the pr files.
  * If a file contains markdown text instead of a URL, auto-create the PR and rewrite the file.
  *
@@ -1000,6 +1054,7 @@ export function validateAgentPrFiles(state: OrchestrationState): void {
               `Slot ${state.slot}: PR created`,
             );
           }
+          capturePrBodyBaseline(state, agent, runtime);
           continue; // Attempted repair — skip settled-mode path for this agent
         }
       } catch {
@@ -1021,7 +1076,31 @@ export function validateAgentPrFiles(state: OrchestrationState): void {
         `Slot ${state.slot}: PR created`,
       );
     }
+    capturePrBodyBaseline(state, agent, runtime);
   }
+}
+
+/**
+ * One-shot baseline capture for the drift-annotation tick: on the first poll
+ * where `runtime.prUrl` is non-null, record the current commit count and
+ * timestamp. Subsequent calls are no-ops (baseline already set).
+ *
+ * Guarded so that merge-loop re-entry to pr-create preserves the original
+ * sync point rather than resetting it. A git failure leaves the baseline
+ * undefined, causing the drift check to be skipped fail-safe.
+ */
+function capturePrBodyBaseline(
+  state: OrchestrationState,
+  agent: AgentConfig,
+  runtime: OrchestrationState["agentStates"][string],
+): void {
+  if (!runtime.prUrl) return;
+  if (runtime.prBodyBaselineCommits !== undefined) return;
+  const n = countCommitsAhead(agent.worktreePath, state.projectDir);
+  if (n === null) return;
+  runtime.prBodyBaselineCommits = n;
+  runtime.prBodyBaselineAt = isoNow();
+  runtime.prBodyDriftAnnotatedAtCommits = null;
 }
 
 export async function interruptAgent(

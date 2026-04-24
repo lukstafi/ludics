@@ -2,11 +2,12 @@ import { describe, expect, test, beforeEach, afterEach, spyOn, setDefaultTimeout
 import { existsSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { pairReviewVerdict } from "./phases.ts";
-import { applyPhaseSideEffects, maybePostCodexReviewRequests, checkAndRedispatchPrComments, resetPrCommentsState } from "./runner.ts";
+import { applyPhaseSideEffects, checkAndAnnotatePrBodyDrift, maybePostCodexReviewRequests, checkAndRedispatchPrComments, resetPrCommentsState, validateAgentPrFiles } from "./runner.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 import * as notify from "../notify.ts";
 import * as events from "../events.ts";
 import * as github from "./github.ts";
+import * as worktrees from "./worktrees.ts";
 import { type OrchestrationState } from "./state.ts";
 import {
   makeTmpDir,
@@ -750,6 +751,421 @@ describe("resetPrCommentsState", () => {
     expect(state.prCodexReviewFallbackPosted).toBeUndefined();
     // prCodexReviewDeferredSince has independent lifecycle — must NOT be touched
     expect(state.prCodexReviewDeferredSince).toBe(777);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR body drift annotation (checkAndAnnotatePrBodyDrift + baseline capture)
+// ---------------------------------------------------------------------------
+
+describe("capturePrBodyBaseline (via validateAgentPrFiles)", () => {
+  let countSpy: ReturnType<typeof spyOn>;
+  let notifySpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    countSpy = spyOn(worktrees, "countCommitsAhead");
+    notifySpy = spyOn(notify, "notifyAgents").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    countSpy.mockRestore();
+    notifySpy.mockRestore();
+  });
+
+  test("captures baseline on first prUrl transition", () => {
+    countSpy.mockReturnValue(1);
+    const dir = makeTmpDir();
+    const state = makeState({
+      phase: "pr-create",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-create-done",
+          statusEpoch: 0,
+          statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42",
+          interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+    }, dir);
+    validateAgentPrFiles(state);
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(1);
+    expect(typeof state.agentStates.coder!.prBodyBaselineAt).toBe("string");
+    expect(state.agentStates.coder!.prBodyDriftAnnotatedAtCommits).toBeNull();
+  });
+
+  test("preserves existing baseline on re-entry to pr-create", () => {
+    countSpy.mockReturnValue(5);
+    const dir = makeTmpDir();
+    const state = makeState({
+      phase: "pr-create",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-create-done",
+          statusEpoch: 0,
+          statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42",
+          interrupted: false,
+          turnLifecycle: null,
+          prBodyBaselineCommits: 1,
+          prBodyBaselineAt: "2026-04-23T14:20:05Z",
+          prBodyDriftAnnotatedAtCommits: null,
+        },
+      },
+    }, dir);
+    validateAgentPrFiles(state);
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(1);
+    expect(state.agentStates.coder!.prBodyBaselineAt).toBe("2026-04-23T14:20:05Z");
+  });
+
+  test("skips capture when countCommitsAhead returns null (git error)", () => {
+    countSpy.mockReturnValue(null);
+    const dir = makeTmpDir();
+    const state = makeState({
+      phase: "pr-create",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-create-done",
+          statusEpoch: 0,
+          statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42",
+          interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+    }, dir);
+    validateAgentPrFiles(state);
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBeUndefined();
+    expect(state.agentStates.coder!.prBodyBaselineAt).toBeUndefined();
+  });
+
+  test("skips capture when prUrl is null", () => {
+    countSpy.mockReturnValue(3);
+    const dir = makeTmpDir();
+    const state = makeState({
+      phase: "pr-create",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-create-done",
+          statusEpoch: 0,
+          statusMessage: "",
+          prUrl: null,
+          interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+    }, dir);
+    validateAgentPrFiles(state);
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBeUndefined();
+  });
+});
+
+describe("checkAndAnnotatePrBodyDrift", () => {
+  let countSpy: ReturnType<typeof spyOn>;
+  let postSpy: ReturnType<typeof spyOn>;
+  let mergedSpy: ReturnType<typeof spyOn>;
+  let eventSpy: ReturnType<typeof spyOn>;
+  let emittedEvents: Array<{ event_type?: string; message?: string }>;
+
+  function makeDriftState(runtimeOverrides: {
+    prUrl?: string | null;
+    prBodyBaselineCommits?: number;
+    prBodyBaselineAt?: string;
+    prBodyDriftAnnotatedAtCommits?: number | null;
+  } = {}): OrchestrationState {
+    return makeState({
+      phase: "pr-comments",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done",
+          statusEpoch: 0,
+          statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42",
+          interrupted: false,
+          turnLifecycle: null,
+          prBodyBaselineCommits: 1,
+          prBodyBaselineAt: "2026-04-23T14:20:05Z",
+          prBodyDriftAnnotatedAtCommits: null,
+          ...runtimeOverrides,
+        },
+      },
+    });
+  }
+
+  beforeEach(() => {
+    countSpy = spyOn(worktrees, "countCommitsAhead");
+    postSpy = spyOn(github, "postPrDriftComment").mockReturnValue(true);
+    mergedSpy = spyOn(github, "isPrMerged").mockReturnValue(false);
+    emittedEvents = [];
+    eventSpy = spyOn(events, "emitEvent").mockImplementation((ev: unknown) => {
+      emittedEvents.push(ev as { event_type?: string; message?: string });
+    });
+  });
+
+  afterEach(() => {
+    countSpy.mockRestore();
+    postSpy.mockRestore();
+    mergedSpy.mockRestore();
+    eventSpy.mockRestore();
+  });
+
+  test("posts annotation on baseline → current drift and advances baseline", () => {
+    countSpy.mockReturnValue(2);
+    const state = makeDriftState();
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(postSpy.mock.calls[0]![0]).toBe("https://github.com/test/repo/pull/42");
+    expect(postSpy.mock.calls[0]![1]).toBe(1);
+    expect(postSpy.mock.calls[0]![2]).toBe(2);
+    expect(postSpy.mock.calls[0]![3]).toBe("2026-04-23T14:20:05Z");
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(2);
+    expect(state.agentStates.coder!.prBodyDriftAnnotatedAtCommits).toBe(2);
+    expect(state.agentStates.coder!.prBodyBaselineAt).not.toBe("2026-04-23T14:20:05Z");
+    expect(emittedEvents.some((e) => e.event_type === "pr_body_drift_annotated")).toBe(true);
+  });
+
+  test("debounce: second poll at same commit count does not re-post", () => {
+    countSpy.mockReturnValue(2);
+    const state = makeDriftState();
+    // first poll: posts annotation, advances baseline to 2, dedup marker = 2
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+
+    // second poll at same count: baseline now matches current (2 === 2),
+    // so the `current === baseline` gate fires — nothing to post.
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("third poll at a NEW distinct count re-posts", () => {
+    const state = makeDriftState();
+    countSpy.mockReturnValue(2);
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+
+    countSpy.mockReturnValue(3);
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).toHaveBeenCalledTimes(2);
+    expect(postSpy.mock.calls[1]![1]).toBe(2); // baseline after first advance
+    expect(postSpy.mock.calls[1]![2]).toBe(3); // current
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(3);
+    expect(state.agentStates.coder!.prBodyDriftAnnotatedAtCommits).toBe(3);
+  });
+
+  test("debounce via prBodyDriftAnnotatedAtCommits dedup when baseline unchanged", () => {
+    // Set up a state where the baseline was NOT advanced (e.g., posting failed
+    // on a prior tick, then retry at same count): the dedup marker still guards.
+    // Here we simulate: prBodyDriftAnnotatedAtCommits === current, so skip.
+    countSpy.mockReturnValue(2);
+    const state = makeDriftState({ prBodyDriftAnnotatedAtCommits: 2 });
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("skips when isPrMerged returns true", () => {
+    mergedSpy.mockReturnValue(true);
+    countSpy.mockReturnValue(99);
+    const state = makeDriftState();
+    checkAndAnnotatePrBodyDrift(state);
+    expect(countSpy).not.toHaveBeenCalled();
+    expect(postSpy).not.toHaveBeenCalled();
+    // baseline must NOT be advanced
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(1);
+  });
+
+  test("skips when baseline is undefined (never captured)", () => {
+    countSpy.mockReturnValue(5);
+    const state = makeDriftState({ prBodyBaselineCommits: undefined });
+    checkAndAnnotatePrBodyDrift(state);
+    expect(countSpy).not.toHaveBeenCalled();
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("skips when countCommitsAhead returns null (git error)", () => {
+    countSpy.mockReturnValue(null);
+    const state = makeDriftState();
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).not.toHaveBeenCalled();
+    // baseline must NOT be advanced — fail closed
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(1);
+  });
+
+  test("skips when current equals baseline (no drift)", () => {
+    countSpy.mockReturnValue(1); // same as baseline
+    const state = makeDriftState();
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("skips agents with no prUrl", () => {
+    countSpy.mockReturnValue(2);
+    const state = makeDriftState({ prUrl: null });
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  test("post-failure does not advance baseline or dedup (retry next poll)", () => {
+    postSpy.mockReturnValue(false);
+    countSpy.mockReturnValue(2);
+    const state = makeDriftState();
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(1); // unchanged
+    expect(state.agentStates.coder!.prBodyDriftAnnotatedAtCommits).toBeNull();
+  });
+});
+
+describe("checkAndRedispatchPrComments integration: drift annotation", () => {
+  let countSpy: ReturnType<typeof spyOn>;
+  let postDriftSpy: ReturnType<typeof spyOn>;
+  let mergedSpy: ReturnType<typeof spyOn>;
+  let commentCountSpy: ReturnType<typeof spyOn>;
+  let reviewSpy: ReturnType<typeof spyOn>;
+  let commentSpy: ReturnType<typeof spyOn>;
+  let eventSpy: ReturnType<typeof spyOn>;
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const dummyTransport: OrchestrationTransport = {
+    sendTurn: async () => "cmd-int",
+    sendEnter: async () => {},
+    refreshAgentTransportState: async () => {},
+    interruptAgent: async () => {},
+  };
+
+  beforeEach(() => {
+    countSpy = spyOn(worktrees, "countCommitsAhead").mockReturnValue(2);
+    postDriftSpy = spyOn(github, "postPrDriftComment").mockReturnValue(true);
+    mergedSpy = spyOn(github, "isPrMerged").mockReturnValue(false);
+    commentCountSpy = spyOn(github, "fetchNewPrCommentCount").mockReturnValue(0);
+    reviewSpy = spyOn(github, "hasCodexSubmittedReview").mockReturnValue(false);
+    commentSpy = spyOn(github, "hasCodexPostedComment").mockReturnValue(false);
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    countSpy.mockRestore();
+    postDriftSpy.mockRestore();
+    mergedSpy.mockRestore();
+    commentCountSpy.mockRestore();
+    reviewSpy.mockRestore();
+    commentSpy.mockRestore();
+    eventSpy.mockRestore();
+  });
+
+  test("drift check fires from checkAndRedispatchPrComments during pr-comments", async () => {
+    const state = makeState({
+      phase: "pr-comments",
+      phaseStartedAt: nowSec - 120,
+      prCommentsLastCheckAt: nowSec - 120, // force poll eligibility
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done",
+          statusEpoch: nowSec,
+          statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42",
+          interrupted: false,
+          turnLifecycle: null,
+          prBodyBaselineCommits: 1,
+          prBodyBaselineAt: "2026-04-23T14:20:05Z",
+          prBodyDriftAnnotatedAtCommits: null,
+        },
+      },
+    });
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(postDriftSpy).toHaveBeenCalledTimes(1);
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR body drift annotation round-trip persistence
+// ---------------------------------------------------------------------------
+
+describe("prBody* state fields round-trip through persistState", () => {
+  test("persisted state preserves prBody* fields via JSON round-trip", async () => {
+    const { persistState, readOrchestrationState } = await import("./state.ts");
+    const harnessDir = makeTmpDir();
+    const { mkdirSync } = await import("fs");
+    mkdirSync(join(harnessDir, "orchestration"), { recursive: true });
+
+    const state = makeState({
+      slot: 77,
+      phase: "pr-comments",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done",
+          statusEpoch: 0,
+          statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42",
+          interrupted: false,
+          turnLifecycle: null,
+          prBodyBaselineCommits: 3,
+          prBodyBaselineAt: "2026-04-24T08:00:00Z",
+          prBodyDriftAnnotatedAtCommits: 2,
+        },
+      },
+    });
+
+    persistState(state, harnessDir);
+    const restored = readOrchestrationState(77, harnessDir);
+    expect(restored).not.toBeNull();
+    expect(restored!.agentStates.coder!.prBodyBaselineCommits).toBe(3);
+    expect(restored!.agentStates.coder!.prBodyBaselineAt).toBe("2026-04-24T08:00:00Z");
+    expect(restored!.agentStates.coder!.prBodyDriftAnnotatedAtCommits).toBe(2);
+  });
+
+  test("legacy state without prBody* fields loads with all three undefined", async () => {
+    const { persistState, readOrchestrationState } = await import("./state.ts");
+    const harnessDir = makeTmpDir();
+    const { mkdirSync } = await import("fs");
+    mkdirSync(join(harnessDir, "orchestration"), { recursive: true });
+
+    const state = makeState({
+      slot: 78,
+      phase: "pr-comments",
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done",
+          statusEpoch: 0,
+          statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42",
+          interrupted: false,
+          turnLifecycle: null,
+          // no prBody* fields
+        },
+      },
+    });
+
+    persistState(state, harnessDir);
+    const restored = readOrchestrationState(78, harnessDir);
+    expect(restored).not.toBeNull();
+    expect(restored!.agentStates.coder!.prBodyBaselineCommits).toBeUndefined();
+    expect(restored!.agentStates.coder!.prBodyBaselineAt).toBeUndefined();
+    expect(restored!.agentStates.coder!.prBodyDriftAnnotatedAtCommits).toBeUndefined();
   });
 });
 

@@ -83,6 +83,18 @@ export interface AgentRuntimeState {
    *  slotResume() clearing turnLifecycle. Used by isAgentDone() to detect
    *  stale status files after crash/resume. */
   dispatchStatusFingerprint?: string | null;
+  /** Commit count ahead of the base branch at the moment the agent's PR body
+   *  was written (captured on `prUrl` transition from null to a URL).
+   *  Used by the drift-annotation tick during `pr-comments` to detect that
+   *  the branch has changed since the body was composed. */
+  prBodyBaselineCommits?: number;
+  /** ISO timestamp of the `prBodyBaselineCommits` capture. */
+  prBodyBaselineAt?: string;
+  /** Commit count at which the most recent drift annotation was posted.
+   *  Edge-triggered dedup: subsequent polls at the same count skip; a new
+   *  distinct count re-fires. `null` = no annotation posted yet at the
+   *  current baseline. */
+  prBodyDriftAnnotatedAtCommits?: number | null;
 }
 
 export interface OrchestrationConfig {
