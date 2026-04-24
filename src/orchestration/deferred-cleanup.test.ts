@@ -1,7 +1,8 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { cleanupDelayHours } from "../config.ts";
+import * as t3codeServer from "../t3code/server.ts";
 
 // Redirect harnessDir() to a temp directory via env var
 const tmpDir = join(import.meta.dir, ".test-tmp-deferred-cleanup");
@@ -320,17 +321,17 @@ describe("explicit harnessDir argument (isolation)", () => {
 
   // Reviewer AC7 blocking item: prove the t3codeThreadIds branch passes the
   // explicit harnessDir arg through to serverStatus({ harnessDir }).
-  // Stub the dynamically-imported ../t3code/server.ts so the test captures the
-  // argument and observes no connection-time I/O.
+  // Uses the spyOn() pattern (see docs/testing-patterns.md) so the
+  // replacement does not leak across test files in the Bun runner.
   test("processDeferredCleanups(_, ISO) passes ISO to serverStatus({ harnessDir }) in the t3codeThreadIds branch", async () => {
     const capturedHarnessDirs: string[] = [];
-    mock.module("../t3code/server.ts", () => ({
-      serverStatus: async (options: { harnessDir?: string } = {}) => {
+    const serverStatusSpy = spyOn(t3codeServer, "serverStatus").mockImplementation(
+      async (options: { harnessDir?: string } = {}) => {
         capturedHarnessDirs.push(options.harnessDir ?? "<default>");
         // Return "not running" to short-circuit before any T3CodeClient construction.
         return { running: false, record: null, snapshot: null, reason: "stubbed" };
       },
-    }));
+    );
 
     try {
       // Entry must be old enough to process AND carry t3codeThreadIds to enter the branch.
@@ -355,8 +356,7 @@ describe("explicit harnessDir argument (isolation)", () => {
       expect(remaining).toHaveLength(1);
       expect(remaining[0]!.t3codeThreadIds).toEqual(["thread-abc", "thread-def"]);
     } finally {
-      // Restore the real module so subsequent tests are unaffected.
-      mock.module("../t3code/server.ts", () => import("../t3code/server.ts"));
+      serverStatusSpy.mockRestore();
     }
   });
 });
