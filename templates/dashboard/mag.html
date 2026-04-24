@@ -128,7 +128,12 @@
                     const task = item.task ? ` <span>${escapeHtml(String(item.task))}</span>` : '';
                     const content = item.content ? `<div>${escapeHtml(String(item.content).slice(0, 120))}</div>` : '';
                     const ts = item.timestamp ? `<div class="timestamp">${escapeHtml(String(item.timestamp))}</div>` : '';
-                    html += `<div class="mag-queue-item"><span class="action">[${action}]</span>${task}${content}${ts}</div>`;
+                    const id = item.id ? escapeHtml(String(item.id)) : '';
+                    const actions = id ? `<div class="mag-queue-actions">` +
+                        `<button type="button" class="mag-queue-action promote" title="Move to top" data-queue-id="${id}" onclick="promoteQueueItem('${id}')">↑</button>` +
+                        `<button type="button" class="mag-queue-action edit-cancel" title="Edit / cancel" data-queue-id="${id}" onclick="editCancelQueueItem('${id}')">✎✖</button>` +
+                        `</div>` : '';
+                    html += `<div class="mag-queue-item"><span class="action">[${action}]</span>${task}${content}${ts}${actions}</div>`;
                 }
             }
 
@@ -169,6 +174,36 @@
             }
 
             list.innerHTML = html;
+        }
+
+        async function promoteQueueItem(id) {
+            try {
+                await fetch('/api/queue-promote?id=' + encodeURIComponent(id), { method: 'POST' });
+            } catch {
+                // Silently skip — next poll will reconverge
+            }
+            fetchQueue();
+        }
+
+        async function editCancelQueueItem(id) {
+            try {
+                const response = await fetch('/api/queue-cancel?id=' + encodeURIComponent(id), { method: 'POST' });
+                if (response.ok) {
+                    const body = await response.json();
+                    if (body.status === 'cancelled' && typeof body.content === 'string' && body.content.length > 0) {
+                        const ta = document.getElementById('queue-message');
+                        if (ta) {
+                            const existing = ta.value;
+                            const sep = existing && existing.trim() ? '\n\n' : '';
+                            ta.value = existing + sep + body.content;
+                            ta.focus();
+                        }
+                    }
+                }
+            } catch {
+                // Silently skip — next poll will reconverge
+            }
+            fetchQueue();
         }
 
         async function sendMessage() {
