@@ -18,6 +18,7 @@ import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState } from "../t3code/server.ts";
+import { readTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { selectOrchestrationFlagsForTask } from "../adapters/t3code.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
@@ -915,6 +916,34 @@ export async function slotStop(slotNum: number, force: boolean = false, preserve
 }
 
 /**
+ * Read the orchestrator PID for a slot from whichever adapter-side state file
+ * owns it (t3code or tmux) and return it only when the process is actually
+ * alive. Returns `null` when no PID is recorded, the PID is stale/dead, or the
+ * adapter state is missing.
+ *
+ * Used by slotResume's idempotence short-circuit (AC5): when the caller
+ * invokes resume on a slot whose orchestrator is already running, we skip the
+ * terminate-and-restart path instead of churning the runner.
+ */
+function readLiveOrchestratorPid(slotNum: number, mode: string, harness: string): number | null {
+  let pid: number | undefined;
+  if (mode === "t3code") {
+    pid = readSlotState(slotNum, harness)?.orchestration?.pid;
+  } else if (mode === "tmux") {
+    pid = readTmuxSlotState(slotNum, harness)?.orchestration?.pid;
+  } else {
+    return null;
+  }
+  if (pid === undefined || pid <= 0) return null;
+  try {
+    process.kill(pid, 0);
+    return pid;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resume a crashed orchestrated session from persisted state.
  */
 export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
@@ -994,6 +1023,22 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   if (orchState.phase === "done") {
     console.log(`Orchestration already completed for slot ${slotNum} (task ${ctx.taskId}).`);
     return;
+  }
+
+  // Idempotence (AC5): if the orchestrator is already live and no liveness
+  // marker needs clearing, a second `ludics slot N resume` is a no-op. Without
+  // this short-circuit we would kill the running runner and start a fresh one
+  // on every redundant invocation — which also races the self-guard and can
+  // leave the slot in a transiently inconsistent state. `liveness === null`
+  // gates the check: if the caller wants to clear "interrupted" or
+  // "escalated", they fall through to the normal terminate-and-restart path
+  // that flips the marker back to null at the end.
+  if (data.liveness === null) {
+    const livePid = readLiveOrchestratorPid(slotNum, ctx.mode, ctx.harnessDir);
+    if (livePid !== null) {
+      console.log(`Slot ${slotNum} orchestrator already running (pid ${livePid}); nothing to resume.`);
+      return;
+    }
   }
 
   // --- t3code-specific: validate server and threads ---
