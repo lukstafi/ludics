@@ -1,12 +1,17 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
   ALWAYS_POPULATED,
+  ENV_ASSIGNMENT_PREFIX,
+  SHELL_COMMANDS,
+  SHELL_KEYWORDS,
+  classifyLines,
   findFencedLines,
   findFencedShellBlocks,
   findInlineShellSpans,
+  listTemplates,
   looksLikeShell,
   parseIfRanges,
   lintTemplate,
@@ -116,6 +121,132 @@ describe("findInlineShellSpans", () => {
     const lines = ['Inspect `gh pr view --json x | jq ".title"` output.'];
     const spans = findInlineShellSpans(lines);
     expect(spans).toHaveLength(1);
+  });
+});
+
+describe("classifyLines — disjointness", () => {
+  // Hand-crafted mixed corpus: prose, ```sh, ```ts, indented ```bash inside a
+  // numbered list, and a few prose lines between blocks.
+  const corpus = [
+    "# Heading",
+    "",
+    "Some prose with a `gh pr view 1` backtick.",
+    "",
+    "```sh",
+    'echo "{{STATUS_FILE}}"',
+    "```",
+    "",
+    "Now a typescript block:",
+    "",
+    "```ts",
+    "// `gh pr view 2` is illustrative only",
+    "const x = 1;",
+    "```",
+    "",
+    "1. Indented bash example:",
+    "",
+    "   ```bash",
+    "   git status",
+    "   git log",
+    "   ```",
+    "",
+    "Trailing prose.",
+  ];
+
+  test("returns one classification per input line (length invariant)", () => {
+    const classes = classifyLines(corpus);
+    expect(classes).toHaveLength(corpus.length);
+  });
+
+  test("each element is well-formed (one of three kinds with expected fields)", () => {
+    for (const c of classifyLines(corpus)) {
+      if (c.kind === "prose") {
+        // No additional fields.
+      } else if (c.kind === "fence-marker") {
+        expect(c.blockKind === "shell" || c.blockKind === "other").toBe(true);
+      } else if (c.kind === "fence-body") {
+        expect(c.blockKind === "shell" || c.blockKind === "other").toBe(true);
+        expect(typeof c.indent).toBe("string");
+      } else {
+        // exhaustiveness — should be unreachable
+        throw new Error(`unexpected kind: ${JSON.stringify(c)}`);
+      }
+    }
+  });
+
+  test("disjointness: prose / fence-marker / fence-body never overlap on the same row", () => {
+    const classes = classifyLines(corpus);
+    let proseCount = 0;
+    let markerCount = 0;
+    let bodyCount = 0;
+    for (const c of classes) {
+      if (c.kind === "prose") proseCount++;
+      else if (c.kind === "fence-marker") markerCount++;
+      else if (c.kind === "fence-body") bodyCount++;
+    }
+    expect(proseCount + markerCount + bodyCount).toBe(corpus.length);
+  });
+
+  test("classifies ```sh body rows as fence-body shell", () => {
+    const classes = classifyLines(corpus);
+    // Line 5 is the body of the ```sh block (corpus[4] is the marker).
+    expect(classes[5]).toEqual({ kind: "fence-body", blockKind: "shell", indent: "" });
+  });
+
+  test("classifies ```ts body rows as fence-body other", () => {
+    const classes = classifyLines(corpus);
+    // Lines 11 and 12 are inside the ```ts block.
+    expect(classes[11]).toEqual({ kind: "fence-body", blockKind: "other", indent: "" });
+    expect(classes[12]).toEqual({ kind: "fence-body", blockKind: "other", indent: "" });
+  });
+
+  test("classifies indented ```bash body rows with the opening indent", () => {
+    const classes = classifyLines(corpus);
+    // corpus[17] is `   ```bash` (marker), bodies are 18 and 19.
+    expect(classes[18]).toEqual({ kind: "fence-body", blockKind: "shell", indent: "   " });
+    expect(classes[19]).toEqual({ kind: "fence-body", blockKind: "shell", indent: "   " });
+  });
+
+  test("disjointness invariant holds against a real orchestration template", () => {
+    // Pick a representative template; any one suffices since the invariant is
+    // structural. pair-coder-pr-create.md exists in skills/orchestration/.
+    const path = join(import.meta.dir, "..", "skills", "orchestration", "pair-coder-pr-create.md");
+    const text = readFileSync(path, "utf-8");
+    const lines = text.split(/\r?\n/);
+    const classes = classifyLines(lines);
+    expect(classes).toHaveLength(lines.length);
+    for (const c of classes) {
+      const ok =
+        c.kind === "prose" ||
+        c.kind === "fence-marker" ||
+        c.kind === "fence-body";
+      expect(ok).toBe(true);
+    }
+  });
+
+  test("ts-fence regression: inline-shell-shaped backtick inside ```ts is fence-body, not inline shell", () => {
+    // The round-2 Codex catch: a ```ts (non-shell) fence whose body contains a
+    // backtick span shaped like an inline shell command must classify as
+    // fence-body of blockKind: "other", and findInlineShellSpans must not
+    // emit a span pointing into that body.
+    const lines = [
+      "Example code:",
+      "",
+      "```ts",
+      '// `gh pr view 123` — illustrative only',
+      "const x: string = `hello`;",
+      "```",
+      "After the block.",
+    ];
+    const classes = classifyLines(lines);
+    // Body lines are 3 and 4.
+    expect(classes[3]).toEqual({ kind: "fence-body", blockKind: "other", indent: "" });
+    expect(classes[4]).toEqual({ kind: "fence-body", blockKind: "other", indent: "" });
+    // findInlineShellSpans must NOT emit a span pointing into the ```ts body.
+    const spans = findInlineShellSpans(lines);
+    for (const span of spans) {
+      expect(span.startLine === 3 || span.startLine === 4).toBe(false);
+    }
   });
 });
 
@@ -359,6 +490,118 @@ describe("ALWAYS_POPULATED set", () => {
   });
 });
 
+describe("ALWAYS_POPULATED_KEYS drift", () => {
+  // Bidirectional invariant against `buildSkillContext`'s `result` object literal
+  // in src/orchestration/skills.ts. Catches the classic drift case where someone
+  // adds a literally-non-empty assignment but forgets to register the key as
+  // always-populated, or removes a key from one side without the other.
+
+  /** Extract the `result: Record<string, string> = { ... };` block from skills.ts
+   *  by locating the opening `= {` and matching closing `};` via brace depth. */
+  function extractResultBlock(text: string): { keys: { name: string; rhs: string }[] } {
+    const startMarker = "const result: Record<string, string> = {";
+    const startIdx = text.indexOf(startMarker);
+    if (startIdx < 0) throw new Error("could not locate result literal in skills.ts");
+    const bodyStart = startIdx + startMarker.length;
+    let depth = 1;
+    let i = bodyStart;
+    while (i < text.length && depth > 0) {
+      const ch = text[i]!;
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      if (depth === 0) break;
+      i++;
+    }
+    if (depth !== 0) throw new Error("unbalanced braces in result literal");
+    const body = text.slice(bodyStart, i);
+    // Walk top-level entries (depth 0 within `body`) and collect "KEY: rhs,"
+    // pairs. We need to track nested braces/brackets/parens so that ternaries
+    // or template literals containing `,` don't fragment a single entry.
+    const keys: { name: string; rhs: string }[] = [];
+    let bd = 0; // brace depth
+    let pd = 0; // paren depth
+    let sd = 0; // square-bracket depth
+    let entryStart = 0;
+    let inString: '"' | "'" | "`" | null = null;
+    let escape = false;
+    const flush = (end: number) => {
+      const entry = body.slice(entryStart, end).trim();
+      entryStart = end + 1;
+      if (!entry) return;
+      const m = entry.match(/^([A-Z][A-Z0-9_]*)\s*:\s*([\s\S]*)$/);
+      if (!m) return; // skip comments / non-identifier lines
+      keys.push({ name: m[1]!, rhs: m[2]!.trim() });
+    };
+    for (let j = 0; j < body.length; j++) {
+      const ch = body[j]!;
+      if (escape) { escape = false; continue; }
+      if (inString) {
+        if (ch === "\\") { escape = true; continue; }
+        if (ch === inString) inString = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") { inString = ch; continue; }
+      if (ch === "{") bd++;
+      else if (ch === "}") bd--;
+      else if (ch === "(") pd++;
+      else if (ch === ")") pd--;
+      else if (ch === "[") sd++;
+      else if (ch === "]") sd--;
+      else if (ch === "," && bd === 0 && pd === 0 && sd === 0) {
+        flush(j);
+      }
+    }
+    flush(body.length);
+    return { keys };
+  }
+
+  /** A right-hand-side expression has an empty-default marker if it contains
+   *  one of the canonical idioms `?? ""`, `: ""`, or `|| ""` (single-quoted
+   *  variants accepted too) at any position outside string literals. */
+  function hasEmptyDefault(rhs: string): boolean {
+    return /(?:\?\?|:|\|\|)\s*""(?!")|(?:\?\?|:|\|\|)\s*''(?!')/.test(rhs);
+  }
+
+  const skillsPath = join(import.meta.dir, "..", "src", "orchestration", "skills.ts");
+  const skillsText = readFileSync(skillsPath, "utf-8");
+  const { keys } = extractResultBlock(skillsText);
+
+  test("every literally-non-empty assignment is in ALWAYS_POPULATED_KEYS", () => {
+    const missing: string[] = [];
+    for (const { name, rhs } of keys) {
+      if (hasEmptyDefault(rhs)) continue;
+      if (!ALWAYS_POPULATED.has(name)) {
+        missing.push(`${name}  (rhs: ${rhs.slice(0, 60)})`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  test("every key in ALWAYS_POPULATED_KEYS appears as a non-empty-default assignment", () => {
+    const byName = new Map(keys.map((k) => [k.name, k.rhs]));
+    const missing: string[] = [];
+    for (const key of ALWAYS_POPULATED) {
+      const rhs = byName.get(key);
+      if (rhs == null) {
+        missing.push(`${key} (no assignment found in result literal)`);
+        continue;
+      }
+      if (hasEmptyDefault(rhs)) {
+        missing.push(`${key} (rhs has empty-default marker: ${rhs.slice(0, 60)})`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  test("the set has the expected size for the current result literal", () => {
+    // Sanity check: 33 keys today. Update when buildSkillContext gains/loses an
+    // always-populated key — failure here is a prompt to also update the tests
+    // above with an explanatory comment in the same change.
+    const nonEmpty = keys.filter((k) => !hasEmptyDefault(k.rhs)).map((k) => k.name);
+    expect(new Set(nonEmpty)).toEqual(new Set(ALWAYS_POPULATED));
+  });
+});
+
 describe("runLint — directory sweep", () => {
   test("returns empty for a directory with clean templates", () => {
     const dir = mkdtempSync(join(tmpdir(), "lint-templates-clean-"));
@@ -440,6 +683,202 @@ describe("runLint — CLI integration", () => {
       const stderr = new TextDecoder().decode(proc.stderr);
       expect(stderr).toContain("PROJECT_REPO");
       expect(stderr).toContain("bad.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SHELL_COMMANDS drift", () => {
+  // Meta-test (NOT a runtime lint rule templates must pass): walks every
+  // fenced shell block in skills/orchestration/*.md, tokenizes the first
+  // command of each chain segment, and asserts the token is a known dispatch
+  // form, a {{VAR}}-as-command, or a member of SHELL_COMMANDS ∪ SHELL_KEYWORDS.
+  // An unknown token means a template has started using a new tool — bump the
+  // static lists deliberately rather than weaken this test.
+
+  /** Quote-aware shell-chain split: respects single-quoted, double-quoted, and
+   *  backtick strings so `printf '%s|%s' "$a" "$b"` stays one segment. */
+  function splitOnShellChain(line: string): string[] {
+    const parts: string[] = [];
+    let buf = "";
+    let i = 0;
+    let quote: '"' | "'" | "`" | null = null;
+    while (i < line.length) {
+      const ch = line[i]!;
+      if (quote) {
+        if (ch === "\\" && i + 1 < line.length) {
+          buf += ch + line[i + 1]!;
+          i += 2;
+          continue;
+        }
+        if (ch === quote) quote = null;
+        buf += ch;
+        i++;
+        continue;
+      }
+      if (ch === "\\" && i + 1 < line.length) {
+        buf += ch + line[i + 1]!;
+        i += 2;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") {
+        quote = ch;
+        buf += ch;
+        i++;
+        continue;
+      }
+      if (ch === ";") {
+        parts.push(buf);
+        buf = "";
+        i++;
+        continue;
+      }
+      if (ch === "|") {
+        // `||` and `|` both terminate a segment.
+        parts.push(buf);
+        buf = "";
+        i += line[i + 1] === "|" ? 2 : 1;
+        continue;
+      }
+      if (ch === "&" && line[i + 1] === "&") {
+        parts.push(buf);
+        buf = "";
+        i += 2;
+        continue;
+      }
+      buf += ch;
+      i++;
+    }
+    parts.push(buf);
+    return parts;
+  }
+
+  /** Strip leading env-var assignments, including those with `$(...)`,
+   *  `"..."`, `'...'` values that may contain whitespace. Returns null when
+   *  the entire line is a pure assignment statement (no command follows),
+   *  signalling "skip this line". Otherwise returns the remainder starting
+   *  at the first command token. Falls back to the simple
+   *  `ENV_ASSIGNMENT_PREFIX` regex when the leading text doesn't look like
+   *  an assignment, preserving the runtime lint's behavior. */
+  function stripLeadingEnvAssignments(line: string): string | null {
+    let i = 0;
+    while (true) {
+      // Skip leading whitespace at this iteration.
+      while (i < line.length && /\s/.test(line[i]!)) i++;
+      const m = line.slice(i).match(/^[A-Z_][A-Z0-9_]*=/);
+      if (!m) {
+        // No assignment here — return remainder (or empty if we consumed all).
+        return i >= line.length ? null : line.slice(i);
+      }
+      i += m[0].length;
+      if (i >= line.length) return null; // pure `NAME=` with no value
+      const ch = line[i]!;
+      if (ch === '"' || ch === "'") {
+        const quote = ch;
+        i++;
+        while (i < line.length && line[i] !== quote) {
+          if (line[i] === "\\" && i + 1 < line.length) i += 2;
+          else i++;
+        }
+        if (i < line.length) i++; // skip closing quote
+      } else if (ch === "$" && line[i + 1] === "(") {
+        i += 2;
+        let depth = 1;
+        while (i < line.length && depth > 0) {
+          const c = line[i]!;
+          if (c === "(") depth++;
+          else if (c === ")") depth--;
+          if (depth === 0) break;
+          i++;
+        }
+        if (i < line.length) i++; // skip closing )
+      } else {
+        // Bare value: consume until whitespace.
+        while (i < line.length && !/\s/.test(line[i]!)) i++;
+      }
+      if (i >= line.length) return null; // pure assignment, no command after
+      // Whitespace follows: there may be more assignments or a command. Loop.
+    }
+  }
+
+  /** Strip leading `{{#IF VAR}}` / `{{/IF}}` template tags (one or more,
+   *  separated by whitespace). A line like
+   *  `{{#IF FOO}}{{#IF BAR}}command ...` becomes `command ...`. */
+  function stripLeadingTemplateTags(line: string): string {
+    return line.replace(/^(?:\{\{#IF\s+[A-Z0-9_]+\}\}\s*|\{\{\/IF\}\}\s*)+/, "");
+  }
+
+  function isKnownDispatchForm(token: string): boolean {
+    return /^\$\(/.test(token) || /^\[/.test(token) || /^\{/.test(token) || /^\(/.test(token);
+  }
+
+  function isVariableAsCommand(token: string): boolean {
+    return /^\{\{[A-Z0-9_]+\}\}/.test(token);
+  }
+
+  const known: ReadonlySet<string> = new Set([...SHELL_COMMANDS, ...SHELL_KEYWORDS]);
+
+  function collectFailures(dir: string): string[] {
+    const failures: string[] = [];
+    for (const name of listTemplates(dir)) {
+      const text = readFileSync(join(dir, name), "utf-8");
+      const lines = text.split(/\r?\n/);
+      const spans = findFencedShellBlocks(lines);
+      for (const span of spans) {
+        for (let i = span.startLine; i <= span.endLine; i++) {
+          const raw = lines[i]!;
+          let line = raw.replace(/^\s+/, "");
+          line = stripLeadingTemplateTags(line);
+          if (!line) continue;
+          if (line.startsWith("#")) continue; // shell comment
+          if (/^\\\s*$/.test(line)) continue; // line continuation only
+          // First, try the smart env-var stripper (handles `$(...)` values).
+          const stripped = stripLeadingEnvAssignments(line);
+          if (stripped === null) continue; // pure assignment line, no command
+          const segments = splitOnShellChain(stripped);
+          for (const seg of segments) {
+            const trimmed = seg.replace(/^\s+/, "");
+            if (!trimmed) continue;
+            // Each subsequent segment may also start with env-var prefixes
+            // (rare, but possible); apply the runtime regex to be safe.
+            const segBody = trimmed.replace(ENV_ASSIGNMENT_PREFIX, "");
+            const token = segBody.split(/\s+/)[0] ?? "";
+            if (!token) continue;
+            if (isKnownDispatchForm(token)) continue;
+            if (isVariableAsCommand(token)) continue;
+            if (known.has(token)) continue;
+            failures.push(
+              `${name}:${i + 1}: unknown shell first-token \`${token}\`; add to SHELL_COMMANDS or document exemption`,
+            );
+          }
+        }
+      }
+    }
+    return failures;
+  }
+
+  test("every fenced shell block in skills/orchestration/* uses a known first-token", () => {
+    const dir = join(import.meta.dir, "..", "skills", "orchestration");
+    const failures = collectFailures(dir);
+    expect(failures).toEqual([]);
+  });
+
+  test("the meta-test catches a synthetic unknown token", () => {
+    // Sanity: the test isn't trivially passing because the directory walks
+    // are short-circuiting somewhere. Build a tiny temp dir with a template
+    // that uses `helmfoo` (definitely not in SHELL_COMMANDS) and assert the
+    // failure surfaces.
+    const dir = mkdtempSync(join(tmpdir(), "lint-shell-drift-synthetic-"));
+    try {
+      writeFileSync(
+        join(dir, "x.md"),
+        ["```sh", "helmfoo deploy --release {{TASK_ID}}", "```"].join("\n"),
+      );
+      const failures = collectFailures(dir);
+      expect(failures.length).toBeGreaterThan(0);
+      expect(failures[0]).toContain("helmfoo");
+      expect(failures[0]).toContain("x.md");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

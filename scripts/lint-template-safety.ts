@@ -18,42 +18,14 @@
 
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
+import { ALWAYS_POPULATED_KEYS } from "../src/orchestration/skills.ts";
 
-export const ALWAYS_POPULATED: ReadonlySet<string> = new Set([
-  "PHASE",
-  "ROUND",
-  "MODE",
-  "TASK_ID",
-  "AGENT_NAME",
-  "AGENT_PROVIDER",
-  "AGENT_ROLE",
-  "PEER_NAME",
-  "PEER_PROVIDER",
-  "TASK_SPEC",
-  "TASK_SPEC_BRIEF",
-  "PEER_REVIEW",
-  "PEER_STATUS",
-  "PEER_PLAN",
-  "GIT_DIFF_STAT",
-  "PREVIOUS_ROUND_SUMMARY",
-  "MERGE_VOTES",
-  "WORKTREE_PATH",
-  "PEER_WORKTREE_PATH",
-  "STATUS_FILE",
-  "PLAN_FILE",
-  "MERGED_PLAN_FILE",
-  "PLAN_MERGE_ROUND",
-  "REVIEW_FILE",
-  "PR_FILE",
-  "INTERRUPT_FILE",
-  "MERGE_VOTE_FILE",
-  "SUGGEST_REFACTOR_FILE",
-  "WORKFLOW_FEEDBACK_FILE",
-  "MERGE_REVIEW_DECISION_FILE",
-  "MERGED_MARKER_FILE",
-  "PEER_SYNC_DIR",
-  "DONE_STATUS",
-]);
+/** Re-exported for back-compat; canonical source is `ALWAYS_POPULATED_KEYS` in
+ *  `src/orchestration/skills.ts`, co-located with `buildSkillContext`'s
+ *  `result` literal so a maintainer adding a new always-populated assignment
+ *  touches one file. CI-drift-pair: see `scripts/lint-template-safety.test.ts`
+ *  ALWAYS_POPULATED_KEYS drift test. */
+export const ALWAYS_POPULATED: ReadonlySet<string> = ALWAYS_POPULATED_KEYS;
 
 /** Per-file allowlist for variables that the lint would otherwise flag but are
  *  guaranteed non-empty by the template's resolution context. Add an entry
@@ -66,7 +38,7 @@ export const TEMPLATE_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> =
 };
 
 /** Command/keyword tokens that start a shell command. */
-const SHELL_COMMANDS = [
+export const SHELL_COMMANDS = [
   "git", "gh", "printf", "cat", "rm", "mkdir", "cp", "mv", "cd", "ls", "ln",
   "touch", "test", "chmod", "chown", "find", "awk", "sed", "grep", "egrep", "fgrep",
   "npm", "bun", "node", "python", "python3", "echo", "date", "eval", "source",
@@ -77,7 +49,7 @@ const SHELL_COMMANDS = [
 ] as const;
 
 /** Shell control-flow / compound-command keywords that start shell syntax. */
-const SHELL_KEYWORDS = [
+export const SHELL_KEYWORDS = [
   "if", "for", "while", "case", "until", "do", "done", "then", "else", "elif",
   "fi", "esac", "select", "function", "time",
 ] as const;
@@ -90,7 +62,7 @@ const SHELL_COMMAND_PREFIX = new RegExp(
 );
 
 /** A shell-style leading env-var assignment: `NAME=value ` (one or more). */
-const ENV_ASSIGNMENT_PREFIX = /^(?:[A-Z_][A-Z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/;
+export const ENV_ASSIGNMENT_PREFIX = /^(?:[A-Z_][A-Z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/;
 
 /** A pipe / logical chain / command separator followed by a command token —
  *  strong evidence that the span is shell and not prose. */
@@ -133,35 +105,98 @@ interface ShellSpan {
   readonly kind: "fenced" | "inline";
 }
 
-/** Find fenced shell code blocks. Recognizes leading whitespace on the fence
- *  markers so indented code blocks inside numbered lists are detected too.
- *  Returns spans covering the block body (excluding the fence lines). */
-export function findFencedShellBlocks(lines: string[]): ShellSpan[] {
-  const spans: ShellSpan[] = [];
-  let openLine: number | null = null;
-  let openIndent = "";
+/** Single-pass row-bucketed classification of every line in `lines`. Each
+ *  index maps to exactly one of three disjoint kinds:
+ *    - `prose`        — outside any fenced block.
+ *    - `fence-marker` — the opening or closing ``` line of a block (shell or
+ *                       otherwise; `blockKind` reflects the language tag).
+ *    - `fence-body`   — a line strictly between an opening and closing fence
+ *                       marker; `blockKind` reflects the language tag and
+ *                       `indent` records the opening fence's leading whitespace.
+ *
+ *  The partition guarantee — `classifyLines(lines).length === lines.length`
+ *  with each element well-formed — replaces the previous two-pass scan
+ *  (`findFencedShellBlocks` + `findFencedLines` consulted ad-hoc by
+ *  `findInlineShellSpans`) where overlapping responsibility allowed a future
+ *  scanner to forget the skip-set and re-flag inline-shell-shaped backticks
+ *  inside ```ts fences. Downstream scanners now derive their slice from this
+ *  one source of truth. */
+export type LineClass =
+  | { kind: "prose" }
+  | { kind: "fence-marker"; blockKind: "shell" | "other" }
+  | { kind: "fence-body"; blockKind: "shell" | "other"; indent: string };
+
+const FENCE_OPEN_RE = /^(\s*)```([A-Za-z0-9_-]*)\s*$/;
+const SHELL_LANG_RE = /^(?:sh|bash|shell)$/;
+
+export function classifyLines(lines: string[]): LineClass[] {
+  const out: LineClass[] = [];
+  let openIndent: string | null = null;
+  let openBlockKind: "shell" | "other" | null = null;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    if (openLine == null) {
-      const m = line.match(/^(\s*)```(sh|bash|shell)\s*$/);
+    if (openIndent == null) {
+      const m = line.match(FENCE_OPEN_RE);
       if (m) {
-        openLine = i;
-        openIndent = m[1]!;
+        const indent = m[1]!;
+        const lang = m[2]!;
+        const blockKind: "shell" | "other" = SHELL_LANG_RE.test(lang) ? "shell" : "other";
+        openIndent = indent;
+        openBlockKind = blockKind;
+        out.push({ kind: "fence-marker", blockKind });
+        continue;
       }
+      out.push({ kind: "prose" });
       continue;
     }
     // Closing fence: ``` on its own line, matching indentation (or less).
-    if (new RegExp(`^${openIndent}\`\`\`\\s*$`).test(line) || /^\s*```\s*$/.test(line)) {
-      if (i > openLine + 1) {
+    // Mirrors the original two-pass scanners' close pattern so derived
+    // exports keep their existing behavior.
+    const exactIndentClose = new RegExp(`^${openIndent}\`\`\`\\s*$`);
+    if (exactIndentClose.test(line) || /^\s*```\s*$/.test(line)) {
+      out.push({ kind: "fence-marker", blockKind: openBlockKind! });
+      openIndent = null;
+      openBlockKind = null;
+      continue;
+    }
+    out.push({ kind: "fence-body", blockKind: openBlockKind!, indent: openIndent });
+  }
+  return out;
+}
+
+/** Find fenced shell code blocks. Recognizes leading whitespace on the fence
+ *  markers so indented code blocks inside numbered lists are detected too.
+ *  Returns spans covering the block body (excluding the fence lines).
+ *
+ *  Derived from `classifyLines`: collapses consecutive `fence-body` rows with
+ *  `blockKind === "shell"` into one span. An unterminated shell fence at EOF
+ *  is not emitted (matches the original two-pass behavior). */
+export function findFencedShellBlocks(lines: string[]): ShellSpan[] {
+  const classes = classifyLines(lines);
+  const spans: ShellSpan[] = [];
+  let runStart = -1;
+  for (let i = 0; i < classes.length; i++) {
+    const c = classes[i]!;
+    const isShellBody = c.kind === "fence-body" && c.blockKind === "shell";
+    if (isShellBody) {
+      if (runStart < 0) runStart = i;
+      continue;
+    }
+    if (runStart >= 0) {
+      // Run ended at the closing fence-marker (or first non-shell-body row).
+      // Only emit when the prior class is fence-marker — i.e., the fence was
+      // properly closed. EOF without closing leaves runStart open and is
+      // intentionally dropped to mirror the original behavior.
+      if (c.kind === "fence-marker") {
         spans.push({
-          startLine: openLine + 1,
+          startLine: runStart,
           endLine: i - 1,
           startCol: 0,
           endCol: lines[i - 1]!.length,
           kind: "fenced",
         });
       }
-      openLine = null;
+      runStart = -1;
     }
   }
   return spans;
@@ -172,27 +207,14 @@ export function findFencedShellBlocks(lines: string[]): ShellSpan[] {
  *  Inline-backtick scanning must skip these — a backtick span inside a
  *  ```ts example is not an inline shell command, and a span inside a
  *  ```sh block is already covered by the fenced-block scan, so re-counting
- *  it as inline would double-report the same violation. */
+ *  it as inline would double-report the same violation.
+ *
+ *  Derived from `classifyLines`: every non-`prose` row contributes its index. */
 export function findFencedLines(lines: string[]): Set<number> {
+  const classes = classifyLines(lines);
   const fenced = new Set<number>();
-  let openLine: number | null = null;
-  let openIndent = "";
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (openLine == null) {
-      // Any opening fence: ```sh, ```ts, ```, etc.
-      const m = line.match(/^(\s*)```[A-Za-z0-9_-]*\s*$/);
-      if (m) {
-        openLine = i;
-        openIndent = m[1]!;
-        fenced.add(i); // fence marker line itself
-      }
-      continue;
-    }
-    fenced.add(i);
-    if (new RegExp(`^${openIndent}\`\`\`\\s*$`).test(line) || /^\s*```\s*$/.test(line)) {
-      openLine = null;
-    }
+  for (let i = 0; i < classes.length; i++) {
+    if (classes[i]!.kind !== "prose") fenced.add(i);
   }
   return fenced;
 }
@@ -201,12 +223,22 @@ export function findFencedLines(lines: string[]): Set<number> {
  *  recognized command token). Skips any line that is inside a fenced code
  *  block — shell-language blocks are handled by `findFencedShellBlocks`
  *  (no double-reporting), and non-shell blocks (e.g., ```ts) must not be
- *  inline-scanned at all. */
+ *  inline-scanned at all.
+ *
+ *  Default skip is `classifyLines(lines)[i].kind !== "prose"` — the same
+ *  partition the other scanners derive from. The optional `fencedLines`
+ *  parameter is preserved for back-compat callers but is no longer the
+ *  load-bearing skip mechanism. */
 export function findInlineShellSpans(lines: string[], fencedLines?: Set<number>): ShellSpan[] {
-  const inFence = fencedLines ?? findFencedLines(lines);
+  const skip: (i: number) => boolean = fencedLines
+    ? (i: number) => fencedLines.has(i)
+    : (() => {
+        const classes = classifyLines(lines);
+        return (i: number) => classes[i]!.kind !== "prose";
+      })();
   const spans: ShellSpan[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if (inFence.has(i)) continue;
+    if (skip(i)) continue;
     const line = lines[i]!;
     // Scan for single-backtick spans. We accept only spans enclosed in `…`
     // that do NOT contain a backtick inside (i.e., a minimal match).
@@ -282,8 +314,9 @@ export function lintTemplate(
 ): Violation[] {
   const lines = text.split(/\r?\n/);
   const fencedSpans = findFencedShellBlocks(lines);
-  const fencedLines = findFencedLines(lines);
-  const inlineSpans = findInlineShellSpans(lines, fencedLines);
+  // No need to pre-compute findFencedLines: findInlineShellSpans now derives
+  // its skip set from classifyLines internally.
+  const inlineSpans = findInlineShellSpans(lines);
   const ifRanges = parseIfRanges(text);
   const violations: Violation[] = [];
   const varRe = /\{\{([A-Z0-9_]+)\}\}/g;
@@ -318,7 +351,7 @@ export function lintTemplate(
   return violations;
 }
 
-function listTemplates(dir: string): string[] {
+export function listTemplates(dir: string): string[] {
   return readdirSync(dir)
     .filter((name) => name.endsWith(".md"))
     .sort();
