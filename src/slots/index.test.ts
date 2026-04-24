@@ -1526,15 +1526,13 @@ describe("slotAssign reaps prior assignment on reassignment (task-72a318c3)", ()
     // Seed a stale state file with no prior assignment in slot JSON —
     // empty-slot assign should not hit adapter.stop, but the fallback
     // unlinks WILL remove the stale file (existing pre-fix behavior).
-    const stateFile = seedTmuxSlotState(harness, 1);
+    seedTmuxSlotState(harness, 1);
 
     await slotAssign(1, "task-fresh", "tmux");
     // fallback unlink runs on the stale file — that's the pre-existing
     // path. Test passes regardless of whether the file is removed; the
     // guarantee we care about is no exception from slotStop.
     expect(readSlotJson(1, harness).task).toBe("task-fresh");
-    // Silence unused-var lint on stateFile
-    void stateFile;
   });
 
   test("old task frontmatter reset still happens on reassignment (regression guard)", async () => {
