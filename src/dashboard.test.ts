@@ -604,3 +604,149 @@ describe("slots.json field shape", () => {
 // Note: /api/slot-resume follows the exact same pattern as /api/slot-start
 // (validate slot 1-6, spawnSync `ludics slot N resume`, return OK/error).
 // slotResume() itself is already tested in src/slots/index.test.ts.
+
+describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
+  async function startServer(): Promise<{ baseUrl: string; stop: () => void }> {
+    const { startDashboardServer } = await import("./dashboard-server.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(dashboardDir, { recursive: true });
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+    // Silence boot logging + lazy-regeneration complaints
+    const origErr = console.error;
+    console.error = () => {};
+    let server: ReturnType<typeof startDashboardServer>;
+    try {
+      server = startDashboardServer(0, dashboardDir, 3600);
+    } finally {
+      console.error = origErr;
+    }
+    return {
+      baseUrl: `http://localhost:${server.port}`,
+      stop: () => { void server.stop(true); },
+    };
+  }
+
+  test("POST /api/queue-promote moves target to head and returns 'promoted'", async () => {
+    const { queueRequest, queueList } = await import("./queue.ts");
+    const idA = queueRequest({ action: "briefing" });
+    const idB = queueRequest({ action: "briefing" });
+    const idC = queueRequest({ action: "briefing" });
+    expect(queueList().map(i => i.id)).toEqual([idA, idB, idC]);
+
+    const { baseUrl, stop } = await startServer();
+    try {
+      const resp = await fetch(`${baseUrl}/api/queue-promote?id=${encodeURIComponent(idC)}`, { method: "POST" });
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("content-type")).toContain("application/json");
+      const body = await resp.json() as { status: string };
+      expect(body.status).toBe("promoted");
+    } finally {
+      stop();
+    }
+    expect(queueList().map(i => i.id)).toEqual([idC, idA, idB]);
+  });
+
+  test("POST /api/queue-promote returns 'already-head' without mutating", async () => {
+    const { queueRequest, queueList } = await import("./queue.ts");
+    const idA = queueRequest({ action: "briefing" });
+    const idB = queueRequest({ action: "briefing" });
+
+    const { baseUrl, stop } = await startServer();
+    try {
+      const resp = await fetch(`${baseUrl}/api/queue-promote?id=${encodeURIComponent(idA)}`, { method: "POST" });
+      const body = await resp.json() as { status: string };
+      expect(body.status).toBe("already-head");
+    } finally {
+      stop();
+    }
+    expect(queueList().map(i => i.id)).toEqual([idA, idB]);
+  });
+
+  test("POST /api/queue-promote returns 'not-found' for unknown id", async () => {
+    const { queueRequest } = await import("./queue.ts");
+    queueRequest({ action: "briefing" });
+
+    const { baseUrl, stop } = await startServer();
+    try {
+      const resp = await fetch(`${baseUrl}/api/queue-promote?id=req-0-0`, { method: "POST" });
+      expect(resp.status).toBe(200);
+      const body = await resp.json() as { status: string };
+      expect(body.status).toBe("not-found");
+    } finally {
+      stop();
+    }
+  });
+
+  test("POST /api/queue-promote rejects malformed id with 400", async () => {
+    const { baseUrl, stop } = await startServer();
+    try {
+      const resp = await fetch(`${baseUrl}/api/queue-promote?id=not-a-queue-id`, { method: "POST" });
+      expect(resp.status).toBe(400);
+    } finally {
+      stop();
+    }
+  });
+
+  test("POST /api/queue-cancel removes item and returns content for message actions", async () => {
+    const { queueRequest, queueList } = await import("./queue.ts");
+    const idA = queueRequest({ action: "message", content: "please recycle me" });
+    const idB = queueRequest({ action: "briefing" });
+
+    const { baseUrl, stop } = await startServer();
+    try {
+      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
+      expect(resp.status).toBe(200);
+      const body = await resp.json() as { status: string; content: string | null; action: string; task?: string };
+      expect(body.status).toBe("cancelled");
+      expect(body.content).toBe("please recycle me");
+      expect(body.action).toBe("message");
+      expect(body.task).toBeUndefined();
+    } finally {
+      stop();
+    }
+    expect(queueList().map(i => i.id)).toEqual([idB]);
+  });
+
+  test("POST /api/queue-cancel returns null content for non-message actions and includes task field", async () => {
+    const { queueRequest } = await import("./queue.ts");
+    const idA = queueRequest({ action: "elaborate", task: "task-abc" });
+
+    const { baseUrl, stop } = await startServer();
+    try {
+      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
+      const body = await resp.json() as { status: string; content: string | null; action: string; task?: string };
+      expect(body.status).toBe("cancelled");
+      expect(body.content).toBeNull();
+      expect(body.action).toBe("elaborate");
+      expect(body.task).toBe("task-abc");
+    } finally {
+      stop();
+    }
+  });
+
+  test("POST /api/queue-cancel returns 'not-found' for unknown id without mutating queue", async () => {
+    const { queueRequest, queueList } = await import("./queue.ts");
+    const idA = queueRequest({ action: "briefing" });
+
+    const { baseUrl, stop } = await startServer();
+    try {
+      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=req-0-0`, { method: "POST" });
+      expect(resp.status).toBe(200);
+      const body = await resp.json() as { status: string };
+      expect(body.status).toBe("not-found");
+    } finally {
+      stop();
+    }
+    expect(queueList().map(i => i.id)).toEqual([idA]);
+  });
+
+  test("POST /api/queue-cancel rejects malformed id with 400", async () => {
+    const { baseUrl, stop } = await startServer();
+    try {
+      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=`, { method: "POST" });
+      expect(resp.status).toBe(400);
+    } finally {
+      stop();
+    }
+  });
+});

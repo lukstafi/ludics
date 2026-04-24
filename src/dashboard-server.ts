@@ -14,7 +14,7 @@ import { updateFrontmatterField, addFrontmatterField, readFrontmatterField, TASK
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
 import { setQueueHold, maybeFeedMagQueue } from "./mag.ts";
-import { queueList, queueRequest, recentResults } from "./queue.ts";
+import { queueList, queueRequest, recentResults, queuePromoteToTop, queueCancel } from "./queue.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
 
 const MIME_TYPES: Record<string, string> = {
@@ -28,11 +28,13 @@ const MIME_TYPES: Record<string, string> = {
   ".ico": "image/x-icon",
 };
 
+const QUEUE_ID_RE = /^req-\d+-\d+$/;
+
 export function startDashboardServer(
   port: number,
   dashboardDir: string,
   ttlSeconds: number,
-): void {
+): ReturnType<typeof Bun.serve> {
   // Normalize to absolute path with trailing separator for safe startsWith checks
   const resolvedRoot = resolve(dashboardDir) + "/";
   const tasksRoot = resolve(dashboardDir, "..", "tasks") + "/";
@@ -456,6 +458,51 @@ export function startDashboardServer(
         }
       }
 
+      // API: promote a pending queue item to the head
+      if (pathname === "/api/queue-promote" && req.method === "POST") {
+        const idParam = url.searchParams.get("id");
+        if (!idParam || !QUEUE_ID_RE.test(idParam)) {
+          return new Response("Bad Request: invalid queue id", { status: 400 });
+        }
+        try {
+          const status = queuePromoteToTop(idParam);
+          lastGenerated = 0;
+          return new Response(JSON.stringify({ status }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
+      // API: cancel (remove) a pending queue item; return its payload for composer hydration
+      if (pathname === "/api/queue-cancel" && req.method === "POST") {
+        const idParam = url.searchParams.get("id");
+        if (!idParam || !QUEUE_ID_RE.test(idParam)) {
+          return new Response("Bad Request: invalid queue id", { status: 400 });
+        }
+        try {
+          const result = queueCancel(idParam);
+          lastGenerated = 0;
+          if (result.status === "not-found") {
+            return new Response(JSON.stringify({ status: "not-found" }), {
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          const request = result.request;
+          const content = typeof request.content === "string" ? request.content : null;
+          const action = typeof request.action === "string" ? request.action : "unknown";
+          const task = typeof request.task === "string" ? request.task : undefined;
+          const body: Record<string, unknown> = { status: "cancelled", content, action };
+          if (task !== undefined) body.task = task;
+          return new Response(JSON.stringify(body), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(String(e), { status: 500 });
+        }
+      }
+
       // API: list queue items and recent results
       if (pathname === "/api/queue") {
         try {
@@ -614,4 +661,5 @@ export function startDashboardServer(
   console.error(`ludics: dashboard server listening on http://localhost:${server.port}`);
   console.error(`ludics: data regenerates lazily (TTL: ${ttlSeconds}s)`);
   console.error("ludics: press Ctrl+C to stop");
+  return server;
 }

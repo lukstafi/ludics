@@ -3420,11 +3420,35 @@ export async function runMag(args: string[]): Promise<void> {
         } else {
           throw new Error(`unknown queue pop mode: ${mode ?? "(missing)"} (use: one, all)`);
         }
+      } else if (sub2 === "promote") {
+        const id = args[2];
+        if (!id) throw new Error("id required (usage: mag queue promote <id>)");
+        if (args.length > 3) {
+          throw new Error(`unexpected trailing arguments: ${args.slice(3).join(" ")} (usage: mag queue promote <id>)`);
+        }
+        const { queuePromoteToTop } = await import("./queue.ts");
+        const result = queuePromoteToTop(id);
+        if (result === "not-found") process.exitCode = 1;
+        console.log(result);
+      } else if (sub2 === "cancel") {
+        const id = args[2];
+        if (!id) throw new Error("id required (usage: mag queue cancel <id>)");
+        if (args.length > 3) {
+          throw new Error(`unexpected trailing arguments: ${args.slice(3).join(" ")} (usage: mag queue cancel <id>)`);
+        }
+        const { queueCancel } = await import("./queue.ts");
+        const result = queueCancel(id);
+        if (result.status === "not-found") {
+          process.exitCode = 1;
+          console.log("not-found");
+        } else {
+          console.log(result.line);
+        }
       } else if (!sub2) {
         const { queueShow } = await import("./queue.ts");
         queueShow();
       } else {
-        throw new Error(`unknown queue subcommand: ${sub2} (use: pop one, pop all)`);
+        throw new Error(`unknown queue subcommand: ${sub2} (use: pop one, pop all, promote <id>, cancel <id>)`);
       }
       break;
     }

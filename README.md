@@ -343,6 +343,10 @@ ludics mag analyze <issue>   # Analyze GitHub issue
 ludics mag elaborate <id>    # Elaborate task into detailed spec
 ludics mag health-check      # Check for deadlines, issues
 ludics mag queue             # Show pending requests
+ludics mag queue pop one     # Atomic dequeue of one request
+ludics mag queue pop all     # Atomic dequeue of all requests
+ludics mag queue promote <id> # Move a pending request to the head of the queue
+ludics mag queue cancel <id>  # Remove a pending request (prints the JSON line)
 ```
 
 ### Using skills directly

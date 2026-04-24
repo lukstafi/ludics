@@ -2134,6 +2134,33 @@ footer a:hover {
 .mag-queue-item .action { font-weight: 600; }
 .mag-queue-item .timestamp { color: var(--text-muted); font-size: 0.72rem; }
 
+.mag-queue-actions {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+.mag-queue-action {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1;
+    padding: 2px 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.mag-queue-action:hover {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+}
+
+.mag-queue-action:disabled { opacity: 0.5; cursor: not-allowed; }
+
 .mag-queue-empty {
     color: var(--text-muted);
     font-style: italic;
