@@ -2,7 +2,7 @@
 // threads at task completion, write to retrospectives/<task-id>.json.
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "fs";
-import { atomicWriteFileSync } from "./json.ts";
+import { writeJsonFile } from "./json.ts";
 import { join } from "path";
 import YAML from "yaml";
 import { harnessDir } from "./config.ts";
@@ -410,7 +410,7 @@ function readTaskFrontmatter(taskId: string): TaskFrontmatter | null {
 export function writeRetrospective(data: RetrospectiveData): void {
   const dir = join(harnessDir(), "retrospectives");
   mkdirSync(dir, { recursive: true });
-  atomicWriteFileSync(join(dir, `${data.taskId}.json`), JSON.stringify(data, null, 2));
+  writeJsonFile(join(dir, `${data.taskId}.json`), data);
 
   emitEvent({
     event_type: "retrospective_written",

@@ -192,8 +192,8 @@ describe("saveTestHealthState atomic write", () => {
       expect(mod.loadTestHealthState()).toEqual(state);
       const path = mod.testHealthStatePath();
       expect(existsSync(path + ".tmp")).toBe(false);
-      // Byte-exactness: no added trailing newline
-      expect(readFileSync(path, "utf-8")).toBe(JSON.stringify(state, null, 2));
+      // Byte-exactness: pretty-printed with one trailing newline (writeJsonFile shape)
+      expect(readFileSync(path, "utf-8")).toBe(JSON.stringify(state, null, 2) + "\n");
     } finally {
       if (ORIGINAL === undefined) delete process.env.LUDICS_HARNESS_DIR;
       else process.env.LUDICS_HARNESS_DIR = ORIGINAL;

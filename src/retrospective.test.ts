@@ -188,8 +188,8 @@ describe("writeRetrospective atomic write", () => {
       const parsed = JSON.parse(readFileSync(file, "utf-8"));
       expect(parsed.taskId).toBe("task-atomic-retro");
       expect(parsed.phases).toEqual(["setup", "plan", "implement"]);
-      // Byte-exactness: no added trailing newline
-      expect(readFileSync(file, "utf-8")).toBe(JSON.stringify(data, null, 2));
+      // Byte-exactness: pretty-printed with one trailing newline (writeJsonFile shape)
+      expect(readFileSync(file, "utf-8")).toBe(JSON.stringify(data, null, 2) + "\n");
     } finally {
       if (ORIGINAL === undefined) delete process.env.LUDICS_HARNESS_DIR;
       else process.env.LUDICS_HARNESS_DIR = ORIGINAL;
