@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { resolve } from "path";
 import {
   detectDefaultBranches,
   detectDefaultBranchesAuthoritative,
@@ -24,13 +25,21 @@ function fakeGit(rules: Array<{ match: string[]; stdout: string; exitCode?: numb
 }
 
 describe("git-runner helpers", () => {
-  test("expandHome: expands ~/ prefix using $HOME", () => {
+  test("expandHome: expands ~/ prefix and normalizes via resolve semantics", () => {
     const origHome = process.env.HOME;
     process.env.HOME = "/home/alice";
     try {
+      // ~/ prefix expands to $HOME and normalizes the joined path.
       expect(expandHome("~/work/foo")).toBe("/home/alice/work/foo");
+      // Absolute paths pass through unchanged.
       expect(expandHome("/abs/path")).toBe("/abs/path");
-      expect(expandHome("relative")).toBe("relative");
+      // Relative inputs become absolute (anchored at cwd) — this is the
+      // behaviour the consolidation borrowed from the former expandHomePath.
+      expect(expandHome("relative")).toBe(resolve("relative"));
+      // Normalization: `..` segments are collapsed.
+      expect(expandHome("~/a/../b")).toBe("/home/alice/b");
+      // Normalization: trailing slashes are removed.
+      expect(expandHome("/abs/path/")).toBe("/abs/path");
     } finally {
       process.env.HOME = origHome;
     }
@@ -220,36 +229,22 @@ describe("withCheckout", () => {
     expect(last).toEqual(["checkout", "topic"]);
   });
 
-  test("rejects async callbacks (Promise-returning) with a clear error and restores the branch", () => {
-    // Regression for PR #366 codex review: the finally-block runs as soon as
-    // the sync call returns, so an async fn's awaited git work would execute
-    // after checkout-back, on the wrong branch. Detect and throw.
-    const { run, calls } = recordingGit((args) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
-        return { stdout: "topic\n", exitCode: 0 };
-      }
-      return { stdout: "", exitCode: 0 };
-    });
-    expect(() =>
-      withCheckout("/x", "master", run, () => Promise.resolve(42) as unknown as number),
-    ).toThrow(/async callbacks are not supported/);
-    // Restore must still run — the branch should be returned to `topic`.
-    const last = calls[calls.length - 1]!;
-    expect(last).toEqual(["checkout", "topic"]);
-  });
-
-  test("rejects async callbacks even when already on target branch (no checkout, no restore)", () => {
-    const { run, calls } = recordingGit((args) => {
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
-        return { stdout: "master\n", exitCode: 0 };
-      }
-      return { stdout: "", exitCode: 0 };
-    });
-    expect(() =>
-      withCheckout("/x", "master", run, () => Promise.resolve("ok") as unknown as string),
-    ).toThrow(/async callbacks are not supported/);
-    // No checkout was issued in this branch, which is correct (we never left).
-    expect(calls.some((c) => c[0] === "checkout")).toBe(false);
+  test("rejects async callbacks at compile time via the conditional-type constraint on fn", () => {
+    // The `fn` parameter is typed `() => T extends PromiseLike<unknown> ? never : T`,
+    // so any callback whose return type extends `PromiseLike` (including `async`
+    // functions and explicit `Promise<X>` returns) requires `() => never` and
+    // fails to typecheck. These `@ts-expect-error` lines assert that contract:
+    // if the constraint is ever weakened, tsc will flag the directive as unused
+    // and the test fails to compile.
+    const { run } = recordingGit(() => ({ stdout: "", exitCode: 0 }));
+    // @ts-expect-error async callback returns Promise — banned by conditional type
+    void withCheckout("/x", "master", run, async () => 42);
+    // @ts-expect-error explicit Promise.resolve return — banned by conditional type
+    void withCheckout("/x", "master", run, () => Promise.resolve("ok"));
+    // Sanity: the synchronous form still typechecks (no @ts-expect-error here
+    // would surface "Unused @ts-expect-error" if the line below were misclassified).
+    const r = withCheckout("/x", "master", run, () => 7);
+    expect(r).toBe(7);
   });
 
   test("checkout failure throws and does not invoke callback", () => {

@@ -5,9 +5,8 @@ import { tmpdir } from "os";
 import {
   formatUpstreamLagSection,
   parseLeftRightCount,
-  detectDefaultBranches,
-  type RunGit,
 } from "./briefing-lag.ts";
+import { detectDefaultBranches, type RunGit } from "./git-runner.ts";
 import type { ProjectConfig } from "./config.ts";
 
 function tmp(): string {

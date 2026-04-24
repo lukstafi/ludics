@@ -13,13 +13,7 @@
 import { existsSync, statSync } from "fs";
 import { join } from "path";
 import type { ProjectConfig } from "./config.ts";
-import { detectDefaultBranches, defaultRunGit, expandHome, hasRemote, type RunGit } from "./git-runner.ts";
-
-// Re-exports so existing importers of briefing-lag's public surface keep
-// working.
-export { detectDefaultBranches, defaultRunGit };
-export type { RunGit };
-export type { DetectedBranches, RunGitResult } from "./git-runner.ts";
+import { detectDefaultBranches, expandHome, hasRemote, type RunGit } from "./git-runner.ts";
 
 export interface FormatLagOptions {
   now: Date;

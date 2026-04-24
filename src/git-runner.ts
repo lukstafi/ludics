@@ -4,7 +4,7 @@
 // inject a fake; the production `defaultRunGit` routes through
 // `safeSyncOutput` per the spawn.ts policy.
 
-import { join } from "path";
+import { resolve } from "path";
 import { safeSyncOutput } from "./spawn.ts";
 
 export interface RunGitResult {
@@ -20,9 +20,19 @@ export interface DetectedBranches {
   upstream: string | null;
 }
 
-export function expandHome(path: string): string {
-  if (path.startsWith("~/")) return join(process.env.HOME ?? "~", path.slice(2));
-  return path;
+/**
+ * Resolve `~/`-prefixed and bare paths to absolute, normalized form.
+ *
+ * `~/foo` → `resolve($HOME, "foo")`; everything else → `resolve(raw)`.
+ * `resolve` collapses `..` segments and trailing slashes, and turns relative
+ * inputs into absolute paths anchored at the current working directory. This
+ * subsumes the `expandHomePath` helper that previously lived in
+ * `sessions/sweep-state.ts`, whose downstream consumers required absolute
+ * paths.
+ */
+export function expandHome(raw: string): string {
+  if (raw.startsWith("~/")) return resolve(process.env.HOME ?? "~", raw.slice(2));
+  return resolve(raw);
 }
 
 export function hasRemote(cwd: string, name: string, runGit: RunGit): boolean {
@@ -115,11 +125,6 @@ export function detectDefaultBranchesAuthoritative(
   return { origin: read("origin"), upstream: read("upstream") };
 }
 
-function isThenable(x: unknown): x is PromiseLike<unknown> {
-  return x !== null && (typeof x === "object" || typeof x === "function")
-    && typeof (x as { then?: unknown }).then === "function";
-}
-
 /**
  * Run `fn` with `targetBranch` checked out, restoring the prior branch (or
  * detached-HEAD SHA) afterwards. If the current branch is already
@@ -136,15 +141,17 @@ function isThenable(x: unknown): x is PromiseLike<unknown> {
  * Synchronous only: `fn` must not return a Promise. The finally block runs
  * as soon as `fn()` returns, so for an async callback the branch restore
  * would fire before the awaited git work settled — the awaited commands
- * would then execute on the wrong branch. If you need async, build a
- * dedicated `withCheckoutAsync` that awaits before restoring. Violations
- * throw at runtime (detected by inspecting the return value's `.then`).
+ * would then execute on the wrong branch. The conditional-type constraint
+ * on `fn` makes the misuse un-compilable: `T` must not extend `PromiseLike`,
+ * so an `async` callback or one returning a `Promise` fails to typecheck.
+ * If you need async, build a dedicated `withCheckoutAsync` that awaits
+ * before restoring.
  */
 export function withCheckout<T>(
   cwd: string,
   targetBranch: string,
   runGit: RunGit,
-  fn: () => T,
+  fn: () => T extends PromiseLike<unknown> ? never : T,
 ): T {
   const abbrev = runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
   const rawName = abbrev.exitCode === 0 ? abbrev.stdout.trim() : "";
@@ -155,15 +162,7 @@ export function withCheckout<T>(
   })() : null;
 
   if (priorBranch === targetBranch) {
-    const result = fn();
-    if (isThenable(result)) {
-      throw new Error(
-        "withCheckout: async callbacks are not supported — the branch restore " +
-        "would fire before the Promise settled. Make `fn` synchronous or " +
-        "introduce a separate async helper that awaits before restoring.",
-      );
-    }
-    return result;
+    return fn() as T;
   }
 
   const co = runGit(["checkout", targetBranch], cwd);
@@ -171,15 +170,7 @@ export function withCheckout<T>(
     throw new Error(`checkout ${targetBranch} failed: ${co.stdout.trim().slice(0, 200)}`);
   }
   try {
-    const result = fn();
-    if (isThenable(result)) {
-      throw new Error(
-        "withCheckout: async callbacks are not supported — the branch restore " +
-        "would fire before the Promise settled. Make `fn` synchronous or " +
-        "introduce a separate async helper that awaits before restoring.",
-      );
-    }
-    return result;
+    return fn() as T;
   } finally {
     if (priorBranch) {
       runGit(["checkout", priorBranch], cwd);
