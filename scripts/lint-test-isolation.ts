@@ -153,10 +153,15 @@ export function checkRule2(source: string, file: string): LintIssue[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Return the raw import-path strings used as the `from "..."` target of each
- * runtime import. Skips `import type` statements (erased at compile time) and
- * plain side-effect imports without a `from` are ignored too (they don't
- * typically name the target modules).
+ * Return the raw import-path strings for every runtime import in `source`:
+ * both the `import ... from "..."` forms and bare side-effect imports
+ * (`import "./foo.ts";`). Skips `import type` statements since they are
+ * erased at compile time and cannot trigger module-load side effects.
+ *
+ * Side-effect imports are load-bearing for rule 3: `import "./config.ts";`
+ * runs module-level code that touches `harnessDir()` even though it binds
+ * no names — ignoring that shape would let a test regress into the
+ * gh-ludics-306 class of bug without lint coverage.
  */
 export function parseImports(source: string): string[] {
   const out: string[] = [];
@@ -166,8 +171,14 @@ export function parseImports(source: string): string[] {
     const line = raw.trim();
     if (!line.startsWith("import")) continue;
     if (line.startsWith("import type")) continue;
-    const m = /from\s+["']([^"']+)["']/.exec(line);
-    if (m) out.push(m[1]!);
+    const fromMatch = /from\s+["']([^"']+)["']/.exec(line);
+    if (fromMatch) {
+      out.push(fromMatch[1]!);
+      continue;
+    }
+    // Side-effect import: `import "path";` (no `from`, no bindings).
+    const sideEffect = /^import\s+["']([^"']+)["']\s*;?\s*$/.exec(line);
+    if (sideEffect) out.push(sideEffect[1]!);
   }
   return out;
 }

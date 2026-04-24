@@ -166,7 +166,17 @@ describe("parseImports", () => {
       "import 'polyfill';",
       "const c = 1;",
     ].join("\n");
-    expect(parseImports(src)).toEqual(["./a.ts", "../b"]);
+    // Side-effect `import 'polyfill';` is also captured — load-bearing for rule 3.
+    expect(parseImports(src)).toEqual(["./a.ts", "../b", "polyfill"]);
+  });
+
+  test("captures side-effect imports (`import './foo.ts';`) for rule-3 coverage", () => {
+    const src = [
+      "import './config.ts';",
+      "import \"./events.ts\";",
+      "import type { X } from './types.ts';",
+    ].join("\n");
+    expect(parseImports(src)).toEqual(["./config.ts", "./events.ts"]);
   });
 });
 
@@ -494,6 +504,57 @@ describe("runCli", () => {
       // Error prefix vs warning prefix is distinguishable.
       expect(r.err.filter((l) => l.startsWith("❌")).length).toBe(2);
       expect(r.err.filter((l) => l.startsWith("⚠")).length).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rule-3 fires on a direct side-effect import of a target module", () => {
+    // Reviewer regression: `import "./config.ts";` (no `from`, no bindings)
+    // must still trigger rule 3 — the module-level code of config.ts runs on
+    // load and touches harnessDir().
+    const { dir, cleanup } = makeRepoFixture({
+      "src/side.test.ts": "import './config.ts';\n",
+      "src/config.ts": "export function harnessDir(){}",
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.exitCode).toBe(0);
+      expect(r.errorCount).toBe(0);
+      expect(r.warningCount).toBe(1);
+      expect(
+        r.err.some(
+          (l) =>
+            l.includes("src/side.test.ts") &&
+            l.includes("src/config.ts") &&
+            l.includes("rule-3"),
+        ),
+      ).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rule-3 fires on a one-level transitive side-effect import", () => {
+    // Test → helper (named import) → base.ts (side-effect import).
+    const { dir, cleanup } = makeRepoFixture({
+      "src/adapters/m.test.ts": "import { start } from './manual.ts';\n",
+      "src/adapters/manual.ts": "import './base.ts';\n",
+      "src/adapters/base.ts": "export function adapterStateDir(){}",
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.exitCode).toBe(0);
+      expect(r.errorCount).toBe(0);
+      expect(r.warningCount).toBe(1);
+      expect(
+        r.err.some(
+          (l) =>
+            l.includes("src/adapters/m.test.ts") &&
+            l.includes("src/adapters/base.ts") &&
+            l.includes("src/adapters/manual.ts"),
+        ),
+      ).toBe(true);
     } finally {
       cleanup();
     }
