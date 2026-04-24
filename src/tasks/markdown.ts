@@ -180,41 +180,6 @@ function parseTaskFrontmatterLineFallback(fmBlock: string): ParsedTaskFrontmatte
   return fm;
 }
 
-/**
- * @deprecated Use `parseTaskFrontmatter(content).<field>` instead. Kept as a
- * temporary shim during migration; removed once all call sites migrate.
- */
-export function readFrontmatterField(content: string, field: string): string | null {
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!fmMatch) return null;
-  const fmBlock = fmMatch[1]!;
-
-  let data: unknown;
-  try {
-    data = YAML.parse(fmBlock, { uniqueKeys: false });
-  } catch {
-    return readFrontmatterFieldLineFallback(fmBlock, field);
-  }
-  if (typeof data !== "object" || data == null) {
-    return readFrontmatterFieldLineFallback(fmBlock, field);
-  }
-
-  const value = (data as Record<string, unknown>)[field];
-  if (value == null) return null;
-  const str = String(value);
-  if (!str || str.toLowerCase() === "null") return null;
-  return str;
-}
-
-function readFrontmatterFieldLineFallback(fmBlock: string, field: string): string | null {
-  const rx = new RegExp(`^${field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*(.+)$`, "m");
-  const m = fmBlock.match(rx);
-  if (!m) return null;
-  const raw = m[1]!.trim().replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
-  if (!raw || raw.toLowerCase() === "null") return null;
-  return raw;
-}
-
 /** Return line indices of the opening and closing `---` delimiters.
  *  Returns null if no valid frontmatter block is found. */
 export function frontmatterBounds(lines: string[]): { openLine: number; closeLine: number } | null {
@@ -269,7 +234,7 @@ export function transitionStatus(
 ): boolean {
   if (!existsSync(filePath)) throw new Error(`task file not found: ${filePath}`);
   const content = readFileSync(filePath, "utf-8");
-  const current = readFrontmatterField(content, "status") ?? "ready";
+  const current = parseTaskFrontmatter(content).status ?? "ready";
   const allowed = Array.isArray(expectedFrom) ? expectedFrom : [expectedFrom];
   if (!allowed.includes(current)) {
     return false;
