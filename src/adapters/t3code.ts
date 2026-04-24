@@ -979,6 +979,7 @@ async function startOrchestratedThreads(
     branches: setup.branches,
     slotTitle: title,
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
+    harnessDir: ctx.harnessDir,
   };
   persistState(state, ctx.harnessDir);
 

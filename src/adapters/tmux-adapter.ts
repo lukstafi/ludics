@@ -534,6 +534,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     branches: setup.branches,
     slotTitle: options.title ?? slotSessionName(ctx.slot, undefined, taskId),
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
+    harnessDir: ctx.harnessDir,
   };
   persistState(state, ctx.harnessDir);
 
