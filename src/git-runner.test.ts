@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { resolve } from "path";
 import {
   detectDefaultBranches,
   detectDefaultBranchesAuthoritative,
@@ -24,13 +25,21 @@ function fakeGit(rules: Array<{ match: string[]; stdout: string; exitCode?: numb
 }
 
 describe("git-runner helpers", () => {
-  test("expandHome: expands ~/ prefix using $HOME", () => {
+  test("expandHome: expands ~/ prefix and normalizes via resolve semantics", () => {
     const origHome = process.env.HOME;
     process.env.HOME = "/home/alice";
     try {
+      // ~/ prefix expands to $HOME and normalizes the joined path.
       expect(expandHome("~/work/foo")).toBe("/home/alice/work/foo");
+      // Absolute paths pass through unchanged.
       expect(expandHome("/abs/path")).toBe("/abs/path");
-      expect(expandHome("relative")).toBe("relative");
+      // Relative inputs become absolute (anchored at cwd) — this is the
+      // behaviour the consolidation borrowed from the former expandHomePath.
+      expect(expandHome("relative")).toBe(resolve("relative"));
+      // Normalization: `..` segments are collapsed.
+      expect(expandHome("~/a/../b")).toBe("/home/alice/b");
+      // Normalization: trailing slashes are removed.
+      expect(expandHome("/abs/path/")).toBe("/abs/path");
     } finally {
       process.env.HOME = origHome;
     }

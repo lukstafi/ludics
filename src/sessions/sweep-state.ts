@@ -3,10 +3,11 @@
 // This module owns the allowlist ("known sessions") written by adapter logic.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
-import { join, resolve } from "path";
+import { join } from "path";
 import { harnessDir } from "../config.ts";
 import { isPlainObject } from "../json.ts";
 import { isGitWorktree, getMainRepoFromWorktree } from "../adapters/base.ts";
+import { expandHome } from "../git-runner.ts";
 
 export type SweepMode = "agent-claude" | "agent-codex" | "t3code";
 
@@ -45,13 +46,8 @@ function isoNow(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-function expandHomePath(raw: string): string {
-  if (raw.startsWith("~/")) return resolve(process.env.HOME ?? "~", raw.slice(2));
-  return resolve(raw);
-}
-
 export function normalizeProjectDirForSweep(raw: string): string {
-  const abs = expandHomePath(raw);
+  const abs = expandHome(raw);
   if (isGitWorktree(abs)) {
     const mainRepo = getMainRepoFromWorktree(abs);
     if (mainRepo) return mainRepo;

@@ -4,7 +4,7 @@
 // inject a fake; the production `defaultRunGit` routes through
 // `safeSyncOutput` per the spawn.ts policy.
 
-import { join } from "path";
+import { resolve } from "path";
 import { safeSyncOutput } from "./spawn.ts";
 
 export interface RunGitResult {
@@ -20,9 +20,19 @@ export interface DetectedBranches {
   upstream: string | null;
 }
 
-export function expandHome(path: string): string {
-  if (path.startsWith("~/")) return join(process.env.HOME ?? "~", path.slice(2));
-  return path;
+/**
+ * Resolve `~/`-prefixed and bare paths to absolute, normalized form.
+ *
+ * `~/foo` → `resolve($HOME, "foo")`; everything else → `resolve(raw)`.
+ * `resolve` collapses `..` segments and trailing slashes, and turns relative
+ * inputs into absolute paths anchored at the current working directory. This
+ * subsumes the `expandHomePath` helper that previously lived in
+ * `sessions/sweep-state.ts`, whose downstream consumers required absolute
+ * paths.
+ */
+export function expandHome(raw: string): string {
+  if (raw.startsWith("~/")) return resolve(process.env.HOME ?? "~", raw.slice(2));
+  return resolve(raw);
 }
 
 export function hasRemote(cwd: string, name: string, runGit: RunGit): boolean {
