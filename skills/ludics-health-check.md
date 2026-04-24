@@ -25,6 +25,27 @@ This skill is invoked when:
 <!-- section:process -->
 ## Process
 
+<!-- section:capture-events-baseline -->
+0. **Capture events baseline** (run before step 1):
+   - Record the current *gate-eligible* line count of `journal/events.jsonl`
+     so the next gate tick can compare against what this run actually saw.
+     Exclude `health_check_skipped` events (emitted by the gate itself) so
+     they cannot inflate the anchor:
+     ```bash
+     EVENTS_FILE="$LUDICS_STATE_PATH/journal/events.jsonl"
+     if [ -s "$EVENTS_FILE" ]; then
+       EVENTS_LINES=$(grep -vc '"event_type":"health_check_skipped"' "$EVENTS_FILE" 2>/dev/null || echo 0)
+     else
+       EVENTS_LINES=0
+     fi
+     EVENTS_LINES=${EVENTS_LINES// /}
+     ```
+   - Capture this at the *start* of the run, not the end — events this
+     check itself emits must not inflate the anchor.
+   - The value is persisted in step 10 as `eventsJsonlLines`. Keep the
+     `health_check_skipped` exclusion consistent with the gate in
+     `src/health-gate.ts` (`GATE_INTERNAL_EVENT_MARKERS`).
+
 <!-- section:check-deadlines -->
 1. **Check approaching deadlines**:
    - Find tasks with `deadline` field
@@ -128,6 +149,17 @@ This skill is invoked when:
 10. **Persist snapshot**:
    - Write current finding keys/severities/timestamp to
      `$LUDICS_STATE_PATH/mag/health-last.json`
+   - Also write `eventsJsonlLines` with the `$EVENTS_LINES` value captured
+     at step 0. This is the gate anchor the next tick reads — skipping it
+     or writing the end-of-run count would break activity-volume gating.
+     Example payload:
+     ```json
+     {
+       "timestamp": "2026-04-24T12:00:00Z",
+       "eventsJsonlLines": 12345,
+       "findings": [ ... ]
+     }
+     ```
 
 <!-- section:output-format -->
 ## Output Format
