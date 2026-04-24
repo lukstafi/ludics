@@ -164,6 +164,8 @@ Commands:
   mag queue                    Show pending queue requests
   mag queue pop one            Pop and print first queue item (JSONL)
   mag queue pop all            Pop and print all queue items (JSONL)
+  mag queue promote <id>       Move a pending queue item to the head
+  mag queue cancel <id>        Remove a pending queue item (prints the JSON line)
   mag context                  Pre-compute briefing context file
 
   notify outgoing <msg>        Send notification to user
