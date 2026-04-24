@@ -41,15 +41,37 @@ function orchStatus(slot: number): void {
 }
 
 /**
+ * Resolve the comparison base for `orch diff` inside a worktree. Cascade:
+ * `origin/<detected>` → `upstream/<detected>` → local `main` or `master`
+ * (whichever exists) → literal `"main"` as a last-resort fallback. The
+ * cascade never produces a standalone error; any remaining problem
+ * (e.g. a repo with none of these refs) surfaces as the downstream
+ * `git log` non-zero exit so the user sees git's own diagnostic.
+ * Addresses the `master`-based repo case: without this cascade, the
+ * literal `main` fallback would wedge on repos that use `master`.
+ */
+function resolveDiffBase(wt: string, runGit: RunGit): string {
+  const detected = detectDefaultBranches(wt, runGit);
+  if (detected.origin) return `origin/${detected.origin}`;
+  if (detected.upstream) return `upstream/${detected.upstream}`;
+  for (const candidate of ["main", "master"]) {
+    const verify = runGit(
+      ["rev-parse", "--verify", "--quiet", `refs/heads/${candidate}`],
+      wt,
+    );
+    if (verify.exitCode === 0 && verify.stdout.trim() !== "") return candidate;
+  }
+  return "main";
+}
+
+/**
  * `ludics orch diff <slot>` — per-worktree commit summary for reviewer
  * stale-branch diagnosis. For each agent, runs
- * `git log <base>..HEAD --stat` inside the agent's worktree where `<base>`
- * is the detected default branch (via `detectDefaultBranches`, preferring
- * `origin`) with `"main"` as a last-resort literal fallback — never a
- * standalone failure signal; any real problem surfaces as the git log
- * non-zero exit. Per-agent failures print under the agent's header and
- * do not abort sibling agents; the command exits non-zero overall if
- * any agent block failed.
+ * `git log <base>..HEAD --stat` inside the agent's worktree where
+ * `<base>` comes from `resolveDiffBase` (cascade: origin → upstream →
+ * local main/master → literal `"main"`). Per-agent failures print
+ * under the agent's header and do not abort sibling agents; the
+ * command exits non-zero overall if any agent block failed.
  */
 export function orchDiff(
   slot: number,
@@ -81,8 +103,7 @@ export function orchDiff(
       anyFailed = true;
       continue;
     }
-    const detected = detectDefaultBranches(wt, runGit);
-    const base = detected.origin ? `origin/${detected.origin}` : "main";
+    const base = resolveDiffBase(wt, runGit);
     const res = Bun.spawnSync(
       ["git", "-C", wt, "log", `${base}..HEAD`, "--stat"],
       { stdout: "pipe", stderr: "pipe" },

@@ -121,6 +121,38 @@ describe("orchDiff / runOrchestrationCli diff", () => {
     expect(out).toContain("(worktree missing on disk)");
   });
 
+  test("master-based repo without origin: resolves base via local refs/heads/master", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(tmpRoot, "wt-master");
+    // Master-based repo, no origin remote at all.
+    mkdirSync(repo, { recursive: true });
+    Bun.spawnSync(["git", "init", "--initial-branch", "master"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    Bun.spawnSync(["git", "config", "user.email", "test@test.com"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    writeFileSync(join(repo, "seed.txt"), "seed\n");
+    Bun.spawnSync(["git", "add", "seed.txt"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    Bun.spawnSync(["git", "commit", "-m", "seed"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    // Create a feature branch with one commit ahead of master.
+    Bun.spawnSync(["git", "checkout", "-b", "feat"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    writeFileSync(join(repo, "feature.txt"), "feature\n");
+    Bun.spawnSync(["git", "add", "feature.txt"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    Bun.spawnSync(["git", "commit", "-m", "add feature"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+
+    writeState(
+      makeState(11, [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "feat", worktreePath: repo },
+      ]),
+    );
+
+    orchDiff(11, undefined, capture);
+    const out = captured.join("\n");
+    // Resolution cascaded past origin/upstream (both absent) to local master.
+    expect(out).toContain("add feature");
+    expect(out).toContain("feature.txt");
+    // Must NOT have silently tried `main..HEAD` and failed.
+    expect(out).not.toContain("git log failed");
+  });
+
   test("empty-ahead: HEAD equals origin/main renders as no-commits-ahead without throwing", () => {
     if (!Bun.which("git")) return;
     const repo = join(tmpRoot, "wt-empty");
