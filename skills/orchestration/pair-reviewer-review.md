@@ -10,7 +10,7 @@ If the implementation changes data shapes, check that helpers consuming the chan
 
 Before treating a failing test as blocking, cross-check the merged plan's `## Pre-existing test failures (baseline)` section — the point is to separate pre-existing noise from regressions introduced this round. See [pre-existing failures baseline](../../docs/orchestration-patterns.md#pre-existing-failures-baseline) for how to handle the cases where the baseline is absent, incomplete, or notes planning was skipped.
 
-**Acceptance criteria verification.** Walk through each acceptance criterion and verify the implementation satisfies it. Treat any unmet criterion as a blocking action item listed explicitly in the review. Cross-check against the coder's `## AC Verification` entries in `{{PEER_SYNC_DIR}}/workflow-feedback-{{PEER_NAME}}.md`; a missing or hand-wavy entry is itself a blocker.
+**Acceptance criteria verification.** Walk through each acceptance criterion and verify the implementation satisfies it. Treat any unmet criterion as a blocking action item listed explicitly in the review. Cross-check against the coder's `## AC Verification` entries in `{{PEER_SYNC_DIR}}/workflow-feedback-{{PEER_NAME}}.md`; a missing or hand-wavy entry is itself a blocker. Flag AC lines whose cited evidence exercises the capability but does not enforce the stated invariant (e.g. a CLI-path AC cited by an in-process call, or a serialization-handoff AC cited by a mere existence check) as blocking — this applies to non-test evidence too (a doc AC is satisfied by the structural property named, not by the file's mere existence).
 
 {{#IF PROPOSAL_PATH}}
 Re-read `{{PROPOSAL_PATH}}` for the authoritative acceptance criteria.
