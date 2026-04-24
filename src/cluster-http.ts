@@ -4,7 +4,7 @@
 // Client helper is used by slots, cluster, and worker-signal modules.
 
 import { existsSync, readFileSync, mkdirSync, readdirSync, unlinkSync, appendFileSync } from "fs";
-import { atomicWriteFileSync, writeJsonFile } from "./json.ts";
+import { writeJsonFile, writeJsonFileCompact } from "./json.ts";
 import { join } from "path";
 import { harnessDir, loadConfigSync, slotsCount, stateRepoDir } from "./config.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, slotDataToMarkdown } from "./slots/json.ts";
@@ -157,7 +157,7 @@ function intentFilePath(slot: number): string {
 export function recordIntent(slot: number, intent: PendingIntent): void {
   const dir = intentsDir();
   mkdirSync(dir, { recursive: true });
-  atomicWriteFileSync(intentFilePath(slot), JSON.stringify(intent) + "\n");
+  writeJsonFileCompact(intentFilePath(slot), intent);
 }
 
 export function clearIntent(slot: number): void {

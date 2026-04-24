@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { atomicWriteFileSync, readJsonFile, writeJsonFile } from "./json.ts";
+import { atomicWriteFileSync, readJsonFile, writeJsonFile, writeJsonFileCompact } from "./json.ts";
 
 describe("readJsonFile", () => {
   function withTmpFile(content: string): string {
@@ -107,6 +107,36 @@ describe("writeJsonFile", () => {
     const value = { key: "value", num: 42 };
     writeJsonFile(file, value);
     expect(readJsonFile<typeof value>(file)).toEqual(value);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("writeJsonFileCompact", () => {
+  test("produces JSON.stringify(x) + trailing newline (no indentation)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "write-json-compact-"));
+    const file = join(dir, "out.json");
+    const value = { a: 1, b: "two" };
+    writeJsonFileCompact(file, value);
+    expect(readFileSync(file, "utf-8")).toBe(JSON.stringify(value) + "\n");
+    expect(existsSync(`${file}.tmp`)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("round-trips through readJsonFile", () => {
+    const dir = mkdtempSync(join(tmpdir(), "write-json-compact-"));
+    const file = join(dir, "out.json");
+    const value = { key: "value", num: 42 };
+    writeJsonFileCompact(file, value);
+    expect(readJsonFile<typeof value>(file)).toEqual(value);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("auto-creates a missing parent directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "write-json-compact-"));
+    const file = join(dir, "nested", "deeper", "out.json");
+    const value = { deep: true };
+    writeJsonFileCompact(file, value);
+    expect(readFileSync(file, "utf-8")).toBe(JSON.stringify(value) + "\n");
     rmSync(dir, { recursive: true, force: true });
   });
 });

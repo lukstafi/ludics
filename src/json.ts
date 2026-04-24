@@ -45,3 +45,7 @@ export function atomicWriteFileSync(path: string, content: string): void {
 export function writeJsonFile(path: string, value: unknown): void {
   atomicWriteFileSync(path, JSON.stringify(value, null, 2) + "\n");
 }
+
+export function writeJsonFileCompact(path: string, value: unknown): void {
+  atomicWriteFileSync(path, JSON.stringify(value) + "\n");
+}

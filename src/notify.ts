@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, statSync, readdirSync, unlinkSync } from "fs";
 import { basename, join, resolve } from "path";
 import { loadConfigSync, harnessDir, slotsCount } from "./config.ts";
-import { atomicWriteFileSync, isPlainObject, writeJsonFile } from "./json.ts";
+import { isPlainObject, writeJsonFile, writeJsonFileCompact } from "./json.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
@@ -659,7 +659,7 @@ export function saveSubscriberState(lastId: string): void {
   const file = subscriberStateFile();
   mkdirSync(join(harnessDir(), "mag"), { recursive: true });
   const state = { last_id: lastId, last_time: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") };
-  atomicWriteFileSync(file, JSON.stringify(state) + "\n");
+  writeJsonFileCompact(file, state);
 }
 
 // --- Pending-revise mode ---
@@ -691,7 +691,7 @@ export function setPendingFollowupRevise(taskId: string, adapter: string): void 
     adapter,
     created: Math.floor(Date.now() / 1000),
   };
-  atomicWriteFileSync(file, JSON.stringify(payload) + "\n");
+  writeJsonFileCompact(file, payload);
   console.log(`ludics: armed followup revise mode for ${taskId} (${adapter}) — waiting for feedback message`);
 }
 

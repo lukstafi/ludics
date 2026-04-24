@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rea
 import { join, dirname } from "path";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
-import { atomicWriteFileSync, isPlainObject } from "./json.ts";
+import { atomicWriteFileSync, isPlainObject, writeJsonFileCompact } from "./json.ts";
 
 function queueFile(): string {
   return join(harnessDir(), "mag", "queue.jsonl");
@@ -337,6 +337,6 @@ export function writeResult(requestId: string, status: string, outputFile?: stri
   if (outputFile && existsSync(outputFile)) {
     result.output = readFileSync(outputFile, "utf-8");
   }
-  atomicWriteFileSync(resultFile, JSON.stringify(result) + "\n");
+  writeJsonFileCompact(resultFile, result);
   emitEvent({ event_type: "queue_result", source: "mag", scope: "queue", status, message: requestId });
 }
