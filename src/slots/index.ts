@@ -946,11 +946,18 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     cancelDeferredCleanup(ctx.taskId, slotNum);
   } catch { /* non-critical */ }
 
+  // Recoverable-from-fresh-start fallback: triggered when the slot was flagged
+  // interrupted (setup failure) or escalated (agent hand-raise) AND persisted
+  // state has gone missing. Normal escalations leave state intact and flow
+  // through the regular resume path; the liveness marker gets cleared to null
+  // at the end of this function just like a normal interrupted-resume.
+  const needsFreshFallback = data.liveness === "interrupted" || data.liveness === "escalated";
+
   // --- t3code-specific: Require persisted slot state ---
   if (ctx.mode === "t3code") {
     const slotState = readSlotState(slotNum, ctx.harnessDir);
     if (!slotState || slotState.threads.length === 0) {
-      if (data.liveness === "interrupted") {
+      if (needsFreshFallback) {
         console.error(`ludics: slot ${slotNum}: no recoverable t3code state — falling back to fresh start`);
         try { removeOrchestrationState(slotNum, ctx.harnessDir); } catch { /* ignore */ }
         await slotStart(slotNum, { startTtyd: shouldStartTtyd });
@@ -965,7 +972,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   // Require persisted orchestration state (orchestrated sessions only)
   const orchState = readOrchestrationState(slotNum);
   if (!orchState) {
-    if (data.liveness === "interrupted") {
+    if (needsFreshFallback) {
       console.error(`ludics: slot ${slotNum}: no recoverable orchestration state — falling back to fresh start`);
       await slotStart(slotNum, { startTtyd: shouldStartTtyd });
       return;

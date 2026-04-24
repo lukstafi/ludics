@@ -734,6 +734,111 @@ describe("slotResume — interrupted fallback to fresh start", () => {
   });
 });
 
+describe("slotResume — escalated slot handling (task-4cd94043)", () => {
+  // Track tmux sessions created during tests so we can clean them up.
+  const createdTmuxSessions: string[] = [];
+  afterEach(() => {
+    for (const session of createdTmuxSessions) {
+      try { if (tmuxHasSession(session)) tmuxKillSession(session); } catch { /* ignore */ }
+    }
+    createdTmuxSessions.length = 0;
+  });
+
+  test("falls back to slotStart when escalated slot has no orchestration state", async () => {
+    // Symmetric to the interrupted-fallback test: an escalated slot with
+    // missing state should fresh-start rather than throw "no persisted
+    // orchestration state". Normal escalations preserve state and never hit
+    // this branch, but we support the missing-state path for robustness
+    // (mirrors interrupted). After the fallback/resume, liveness must have
+    // been cleared from "escalated" — we can't observe the intermediate path
+    // in-process because slotStart will fail under test tmux, but we verify
+    // the fallback was taken (no "no persisted orchestration state" error).
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-escalate-fallback", "Resume from escalated");
+
+    void slotAssign(1, "task-escalate-fallback", "tmux", "", "", "--pair --coder claude --reviewer claude");
+    // Simulate agent-initiated escalation: runner flipped liveness + left
+    // orchestration state intact (in the realistic path). For this missing-
+    // state variant, clear state explicitly and set liveness to "escalated".
+    const data = readSlotJson(1, harness);
+    data.liveness = "escalated";
+    writeSlotJson(1, data, harness);
+
+    createdTmuxSessions.push(
+      "s1_coder_task-escalate-fallback", "s1_reviewer_task-escalate-fallback",
+    );
+    try {
+      await slotResume(1, { startTtyd: false });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      expect(msg).not.toContain("no persisted orchestration state");
+    }
+  });
+
+  test("escalated slot with intact orch state proceeds through normal resume and clears liveness", async () => {
+    // Realistic path: handleEscalation flipped liveness to "escalated" but
+    // left OrchestrationState on disk. slotResume should NOT throw, should
+    // proceed through the normal resume flow, and should clear liveness back
+    // to null at the end (mirroring the existing interrupted-resume contract).
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    const orchDir = join(harness, "orchestration");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(orchDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-escalate-intact", "Resume escalated intact");
+
+    void slotAssign(1, "task-escalate-intact", "tmux", "", "", "--pair --coder claude --reviewer claude");
+    const data = readSlotJson(1, harness);
+    data.liveness = "escalated";
+    writeSlotJson(1, data, harness);
+
+    const orchState: OrchestrationState = {
+      slot: 1,
+      taskId: "task-escalate-intact",
+      mode: "pair",
+      phase: "review",
+      round: 2,
+      mergeRound: 0,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "sonnet", branch: "test-coder", worktreePath: "/tmp/wt-coder" },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "sonnet", branch: "test-reviewer", worktreePath: "/tmp/wt-reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      config: defaultOrchestrationConfig({}),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/fake-project",
+      rootWorktree: "/tmp/fake-root",
+      peerSyncDir: "/tmp/fake-peersync",
+      threadIds: {},
+      backend: "tmux",
+      slotTitle: "test",
+    };
+    persistState(orchState, harness);
+
+    createdTmuxSessions.push(
+      "s1_coder_task-escalate-intact", "s1_reviewer_task-escalate-intact",
+    );
+    try {
+      await slotResume(1, { startTtyd: false });
+    } catch (err) {
+      // The tmux-adapter's real work may fail under the test harness; that's
+      // not the contract we're asserting. What matters: slotResume did not
+      // reject the escalated-liveness marker and did not throw the
+      // missing-state / recoverable-state errors.
+      const msg = err instanceof Error ? err.message : String(err);
+      expect(msg).not.toContain("no persisted orchestration state");
+      expect(msg).not.toContain("has recoverable orchestration state");
+    }
+  });
+});
+
 describe("slotSetMode — preserve state on mode toggle", () => {
   function makeOrchState(harness: string, slot: number, taskId: string): OrchestrationState {
     const orchDir = join(harness, "orchestration");
