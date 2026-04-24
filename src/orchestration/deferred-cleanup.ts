@@ -3,7 +3,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
-import { harnessDir, cleanupDelayHours } from "../config.ts";
+import { harnessDir as defaultHarnessDir, cleanupDelayHours } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import type { OrchestrationState } from "./state.ts";
 import { removeWorktreeByPath, deleteBranches, orchBranchName } from "./worktrees.ts";
@@ -23,12 +23,12 @@ export interface CleanupEntry {
   t3codeThreadIds?: string[];
 }
 
-export function cleanupPendingPath(): string {
-  return join(harnessDir(), "mag", "cleanup-pending.json");
+export function cleanupPendingPath(harnessDir: string = defaultHarnessDir()): string {
+  return join(harnessDir, "mag", "cleanup-pending.json");
 }
 
-export function loadDeferredCleanups(): CleanupEntry[] {
-  const file = cleanupPendingPath();
+export function loadDeferredCleanups(harnessDir: string = defaultHarnessDir()): CleanupEntry[] {
+  const file = cleanupPendingPath(harnessDir);
   if (!existsSync(file)) return [];
   try {
     const raw: unknown = JSON.parse(readFileSync(file, "utf-8"));
@@ -39,10 +39,13 @@ export function loadDeferredCleanups(): CleanupEntry[] {
   }
 }
 
-export function saveDeferredCleanups(entries: CleanupEntry[]): void {
+export function saveDeferredCleanups(
+  entries: CleanupEntry[],
+  harnessDir: string = defaultHarnessDir(),
+): void {
   try {
-    const file = cleanupPendingPath();
-    mkdirSync(join(harnessDir(), "mag"), { recursive: true });
+    const file = cleanupPendingPath(harnessDir);
+    mkdirSync(join(harnessDir, "mag"), { recursive: true });
     const tmp = file + ".tmp";
     writeFileSync(tmp, JSON.stringify(entries, null, 2) + "\n");
     renameSync(tmp, file);
@@ -107,24 +110,34 @@ export function buildCleanupEntry(
 }
 
 /** Append a deferred cleanup entry to the manifest. */
-export function recordDeferredCleanup(entry: CleanupEntry): void {
-  const entries = loadDeferredCleanups();
+export function recordDeferredCleanup(
+  entry: CleanupEntry,
+  harnessDir: string = defaultHarnessDir(),
+): void {
+  const entries = loadDeferredCleanups(harnessDir);
   entries.push(entry);
-  saveDeferredCleanups(entries);
+  saveDeferredCleanups(entries, harnessDir);
 }
 
 /** Cancel pending cleanup entries matching taskId + slot (e.g., on resume). */
-export function cancelDeferredCleanup(taskId: string, slot: number): void {
-  const entries = loadDeferredCleanups();
+export function cancelDeferredCleanup(
+  taskId: string,
+  slot: number,
+  harnessDir: string = defaultHarnessDir(),
+): void {
+  const entries = loadDeferredCleanups(harnessDir);
   const filtered = entries.filter((e) => !(e.taskId === taskId && e.slot === slot));
   if (filtered.length !== entries.length) {
-    saveDeferredCleanups(filtered);
+    saveDeferredCleanups(filtered, harnessDir);
   }
 }
 
 /** Process deferred cleanup entries older than threshold. */
-export async function processDeferredCleanups(thresholdHours?: number): Promise<void> {
-  const entries = loadDeferredCleanups();
+export async function processDeferredCleanups(
+  thresholdHours?: number,
+  harnessDir: string = defaultHarnessDir(),
+): Promise<void> {
+  const entries = loadDeferredCleanups(harnessDir);
   if (entries.length === 0) return;
 
   const hours = thresholdHours ?? cleanupDelayHours();
@@ -183,7 +196,7 @@ export async function processDeferredCleanups(thresholdHours?: number): Promise<
         const { serverStatus } = await import("../t3code/server.ts");
         const { T3CodeClient } = await import("../t3code/client.ts");
         const { makeId, isoNow } = await import("./util.ts");
-        const status = await serverStatus({ harnessDir: harnessDir() });
+        const status = await serverStatus({ harnessDir });
         if (!status.running || !status.record) {
           console.error("ludics: deferred t3code cleanup: server not running, will retry");
           failed = true;
@@ -227,5 +240,5 @@ export async function processDeferredCleanups(thresholdHours?: number): Promise<
     }
   }
 
-  saveDeferredCleanups(remaining);
+  saveDeferredCleanups(remaining, harnessDir);
 }

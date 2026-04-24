@@ -576,7 +576,7 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
       recordDeferredCleanup(buildCleanupEntry(orchState, ctx.slot, {
         tmuxSessionNames: orchState.agents.map((a) =>
           tmuxSessionName(ctx.slot, a.name, orchState.taskId)),
-      }));
+      }), ctx.harnessDir);
       removeOrchestrationState(ctx.slot, ctx.harnessDir);
     }
   }

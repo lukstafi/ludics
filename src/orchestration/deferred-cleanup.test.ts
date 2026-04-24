@@ -261,3 +261,60 @@ describe("config cleanupDelayHours", () => {
     expect(cleanupDelayHours()).toBe(25);
   });
 });
+
+// task-f60547cd: explicit harnessDir argument must isolate cleanup manifests from
+// the process-global LUDICS_HARNESS_DIR. The env-var-based tests above only prove
+// backward compatibility via default-arg fallback; these tests prove the bypass
+// is actually closed for callers who pass an explicit harnessDir.
+describe("explicit harnessDir argument (isolation)", () => {
+  let ISO = "";
+  beforeEach(() => {
+    ISO = join(tmpDir, "iso");
+    mkdirSync(join(ISO, "mag"), { recursive: true });
+  });
+
+  test("recordDeferredCleanup writes manifest under explicit harnessDir, not the env-var decoy", () => {
+    const entry = makeEntry({ taskId: "task-iso" });
+    // tmpDir is the env-var harness (the decoy here). ISO is the explicit target.
+    recordDeferredCleanup(entry, ISO);
+
+    const isoFile = join(ISO, "mag", "cleanup-pending.json");
+    const envFile = join(tmpDir, "mag", "cleanup-pending.json");
+    expect(existsSync(isoFile)).toBe(true);
+    expect(existsSync(envFile)).toBe(false);
+
+    // cleanupPendingPath reports the correct path for the explicit arg.
+    expect(cleanupPendingPath(ISO)).toBe(isoFile);
+  });
+
+  test("loadDeferredCleanups(ISO) ignores manifests under the env-var harness", () => {
+    // Seed the env-var harness with an entry — loading with the explicit arg must not see it.
+    recordDeferredCleanup(makeEntry({ taskId: "env-task" })); // default arg → env-var harness
+    recordDeferredCleanup(makeEntry({ taskId: "iso-task" }), ISO); // explicit → ISO
+
+    const envEntries = loadDeferredCleanups(); // default arg → env-var harness
+    const isoEntries = loadDeferredCleanups(ISO);
+
+    expect(envEntries.map((e) => e.taskId)).toEqual(["env-task"]);
+    expect(isoEntries.map((e) => e.taskId)).toEqual(["iso-task"]);
+  });
+
+  test("cancelDeferredCleanup(taskId, slot, ISO) only affects the explicit-harness manifest", () => {
+    recordDeferredCleanup(makeEntry({ taskId: "shared", slot: 1 })); // env-var harness
+    recordDeferredCleanup(makeEntry({ taskId: "shared", slot: 1 }), ISO);
+    cancelDeferredCleanup("shared", 1, ISO);
+    expect(loadDeferredCleanups().map((e) => e.taskId)).toEqual(["shared"]); // env-var unchanged
+    expect(loadDeferredCleanups(ISO)).toEqual([]); // ISO cleared
+  });
+
+  test("processDeferredCleanups(_, ISO) reads and clears the explicit-harness manifest", async () => {
+    // Old-enough entry (30h ago) with no worktrees/branches so cleanup is a no-op.
+    const entry = makeEntry({
+      timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+      worktreePaths: [], branches: [], tmuxSessionNames: [], peerSyncLink: null,
+    });
+    recordDeferredCleanup(entry, ISO);
+    await processDeferredCleanups(25, ISO);
+    expect(loadDeferredCleanups(ISO)).toEqual([]);
+  });
+});
