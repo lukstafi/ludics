@@ -6,7 +6,7 @@ import {
   syncStagingMainWithUpstream,
   type FastForwardProjectResult,
 } from "./staging-ff.ts";
-import type { RunGit } from "./briefing-lag.ts";
+import type { RunGit } from "./git-runner.ts";
 import type { ProjectConfig } from "./config.ts";
 
 function tmp(prefix: string): string {

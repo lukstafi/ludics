@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, u
 import { tmpdir } from "os";
 import { join } from "path";
 import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext } from "./mag.ts";
-import type { RunGit } from "./briefing-lag.ts";
+import type { RunGit } from "./git-runner.ts";
 
 describe("normalizeLaunchAdapter", () => {
   test("t3code passes through unchanged", () => {
