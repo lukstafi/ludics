@@ -134,6 +134,25 @@ describe("computeSlotLiveness", () => {
     expect(computeSlotLiveness({ slotNum: 1, mode: null, slotData })).toBe("interrupted");
   });
 
+  test("explicit Liveness field 'escalated' in slot data returns 'escalated'", async () => {
+    const { computeSlotLiveness } = await import("./dashboard.ts");
+    const { emptySlotData } = await import("./slots/json.ts");
+    const slotData = { ...emptySlotData(1), process: "test", liveness: "escalated" };
+    expect(computeSlotLiveness({ slotNum: 1, mode: null, slotData })).toBe("escalated");
+  });
+
+  test("escalated wins over an alive PID — user-initiated halt is sticky", async () => {
+    const { computeSlotLiveness } = await import("./dashboard.ts");
+    const { emptySlotData } = await import("./slots/json.ts");
+    writeT3codeSlotState(1, {
+      slot: 1,
+      threads: [],
+      orchestration: { stateFile: "orch.json", mode: "pair", pid: process.pid },
+    });
+    const slotData = { ...emptySlotData(1), process: "test", liveness: "escalated" };
+    expect(computeSlotLiveness({ slotNum: 1, mode: "t3code", slotData })).toBe("escalated");
+  });
+
   test("explicit Liveness field null in slot data falls through to PID check", async () => {
     const { computeSlotLiveness } = await import("./dashboard.ts");
     const { emptySlotData } = await import("./slots/json.ts");

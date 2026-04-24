@@ -161,6 +161,14 @@ function renderSlots(slots) {
                     + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon" aria-label="Abandon">✕</button>'
                     + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)" aria-label="Postpone">↓</button>'
                     + '</span>';
+            } else if (slot.liveness === 'escalated') {
+                statusDiv.className = 'slot-status escalated';
+                statusText.innerHTML = 'Escalated <button class="start-slot-btn" onclick="resumeSlot(' + i + ')" title="Resume session">resume</button>'
+                    + ' <span class="slot-action-btns">'
+                    + '<button class="slot-action-btn slot-done-btn" onclick="slotActionDone(' + i + ')" title="Mark done" aria-label="Mark done">✓</button>'
+                    + '<button class="slot-action-btn slot-abandon-btn" onclick="slotActionAbandon(' + i + ')" title="Abandon" aria-label="Abandon">✕</button>'
+                    + '<button class="slot-action-btn slot-postpone-btn" onclick="slotActionPostpone(' + i + ')" title="Postpone (decrease priority)" aria-label="Postpone">↓</button>'
+                    + '</span>';
             } else if (slot.liveness === 'interrupted') {
                 statusDiv.className = 'slot-status interrupted';
                 statusText.innerHTML = 'Interrupted <button class="start-slot-btn" onclick="resumeSlot(' + i + ')" title="Resume session">resume</button>'

@@ -36,6 +36,7 @@
 
     --empty: #6b6560;
     --interrupted: #f87171;
+    --escalated: #fb923c;
 
     --border: #3a3835;
     --border-hover: #504d4a;
@@ -86,6 +87,7 @@
 
     --empty: #a8a29e;
     --interrupted: #ef4444;
+    --escalated: #ea580c;
 
     --border: #d6d3d1;
     --border-hover: #a8a29e;
@@ -125,6 +127,7 @@
 
     --empty: #606060;
     --interrupted: #ff5555;
+    --escalated: #ff8800;
 
     --border: #1e1e1e;
     --border-hover: #3a3a3a;
@@ -372,6 +375,11 @@ main {
     border-left-color: var(--interrupted);
 }
 
+.slot-tile:has(.slot-status.escalated) {
+    border-left-color: var(--escalated);
+    box-shadow: var(--shadow-md), 0 0 18px rgba(251, 146, 60, 0.35);
+}
+
 .slot-tile:has(.slot-status.assigned) {
     border-left-color: var(--warning);
 }
@@ -478,6 +486,30 @@ main {
 
 .slot-status.interrupted .start-slot-btn:hover {
     background: var(--interrupted);
+    color: var(--bg-primary);
+}
+
+.slot-status.escalated .status-indicator {
+    background-color: var(--escalated);
+    box-shadow: 0 0 8px var(--escalated);
+    animation: pulse-active 1.5s ease-in-out infinite;
+}
+
+.slot-status.escalated .status-text {
+    color: var(--escalated);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+}
+
+.slot-status.escalated .start-slot-btn {
+    border-color: var(--escalated);
+    color: var(--escalated);
+}
+
+.slot-status.escalated .start-slot-btn:hover {
+    background: var(--escalated);
     color: var(--bg-primary);
 }
 
@@ -2298,6 +2330,7 @@ textarea:focus-visible {
         --priority-d: #d6d3d1;
         --empty: #a8a29e;
         --interrupted: #ef4444;
+        --escalated: #ea580c;
         --border: #d6d3d1;
         --border-hover: #a8a29e;
         --border-active: var(--accent);
