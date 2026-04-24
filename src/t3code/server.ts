@@ -2,7 +2,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readF
 import { createServer } from "node:net";
 import { join, resolve } from "path";
 import { Database } from "bun:sqlite";
-import { setsidWrap } from "../orchestration/util.ts";
+import { setsidWrap, sleepMs } from "../orchestration/util.ts";
 import { readJsonFile, writeJsonFile } from "../json.ts";
 
 /**
@@ -228,7 +228,7 @@ export async function ensureServer(
       }
       break;
     }
-    await sleep(1_000);
+    await sleepMs(1_000);
     // Re-check: the other process may have finished starting.
     const recheck = await serverStatus({ harnessDir });
     if (recheck.running && recheck.record) {
@@ -252,7 +252,7 @@ export async function ensureServer(
         if (remainingGrace > 0) {
           const graceDeadline = Date.now() + remainingGrace;
           while (Date.now() < graceDeadline) {
-            await sleep(1_000);
+            await sleepMs(1_000);
             const graceCheck = await serverStatus({ harnessDir });
             if (graceCheck.running && graceCheck.record) return graceCheck.record;
           }
@@ -449,7 +449,7 @@ async function terminateProcess(pid: number): Promise<boolean> {
   const deadline = Date.now() + STOP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (!processAlive(pid)) return true;
-    await sleep(100);
+    await sleepMs(100);
   }
 
   if (processAlive(pid)) {
@@ -483,7 +483,7 @@ async function waitForReady(record: T3CodeServerRecord, timeoutMs: number): Prom
       return;
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
-      await sleep(200);
+      await sleepMs(200);
     } finally {
       client.close();
     }
@@ -948,10 +948,6 @@ function checkAndRecoverDb(dbPath: string): boolean {
 
   console.error("t3code: no usable backup — starting with corrupt DB (may fail)");
   return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isoNow(): string {

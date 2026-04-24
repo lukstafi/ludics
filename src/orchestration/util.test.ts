@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { setsidWrap } from "./util.ts";
+import { setsidWrap, sleepMs } from "./util.ts";
 
 describe("setsidWrap", () => {
   const cmd = ["ludics", "orch", "run-internal", "1"];
@@ -28,5 +28,20 @@ describe("setsidWrap", () => {
     expect(wrapped.length).toBeGreaterThan(cmd.length);
     // Original command args always appear at the tail
     expect(wrapped.slice(-cmd.length)).toEqual(cmd);
+  });
+});
+
+describe("sleepMs", () => {
+  test("resolves after at least the requested number of milliseconds", async () => {
+    const start = Date.now();
+    await sleepMs(25);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeGreaterThanOrEqual(20);
+  });
+
+  test("returns a Promise that resolves to undefined", async () => {
+    const result = sleepMs(1);
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).resolves.toBeUndefined();
   });
 });

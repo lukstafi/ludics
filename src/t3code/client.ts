@@ -9,16 +9,9 @@ import {
   type T3WsPush,
   type T3WsResponse,
 } from "./types.ts";
+import { sleepMs } from "../orchestration/util.ts";
 
 export { threadModel, projectModel } from "./types.ts";
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 type PushListener = (data: unknown) => void;
 
@@ -320,7 +313,7 @@ export async function waitForNewTurn(
   const deadline = Date.now() + options.maxWaitMs;
 
   while (Date.now() < deadline) {
-    await sleep(options.pollIntervalMs);
+    await sleepMs(options.pollIntervalMs);
     try {
       const snap = await getSnapshot();
       if (!snap) continue;
