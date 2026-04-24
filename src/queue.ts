@@ -230,7 +230,7 @@ export function queueList(): Record<string, unknown>[] {
         if (!isPlainObject(parsed)) {
           return { raw: line };
         }
-        return parsed as Record<string, unknown>;
+        return parsed;
       } catch { return { raw: line }; }
     });
 }

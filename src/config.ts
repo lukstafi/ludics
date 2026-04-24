@@ -126,7 +126,7 @@ function parseYamlFile(path: string): Record<string, unknown> {
   const text = readFileSync(path, "utf-8");
   const parsed: unknown = YAML.parse(text);
   if (!isPlainObject(parsed)) return {};
-  return parsed as Record<string, unknown>;
+  return parsed;
 }
 
 function resolveConfigPath(): string {

@@ -356,9 +356,8 @@ export function loadSessionConclusionState(): Record<string, string> {
   try {
     const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown;
     if (!isPlainObject(parsed)) return {};
-    const obj = parsed as Record<string, unknown>;
     const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(obj)) {
+    for (const [k, v] of Object.entries(parsed)) {
       if (typeof v === "string") out[k] = v;
     }
     return out;
