@@ -53,14 +53,31 @@ export function parseTaskFrontmatter(content: string): ParsedTaskFrontmatter {
   const hit = PARSE_CACHE.get(content);
   if (hit) return hit;
   const parsed = parseTaskFrontmatterUncached(content);
-  Object.freeze(parsed);
-  if (parsed.dependencies) Object.freeze(parsed.dependencies);
+  deepFreezeParsed(parsed);
   if (PARSE_CACHE.size >= PARSE_CACHE_MAX) {
     const firstKey = PARSE_CACHE.keys().next().value;
     if (firstKey !== undefined) PARSE_CACHE.delete(firstKey);
   }
   PARSE_CACHE.set(content, parsed);
   return parsed;
+}
+
+/**
+ * Freeze the parsed object and every nested container it owns so cached
+ * reads cannot be mutated through `.dependencies.blocks.push(...)` or
+ * similar nested paths. Shallow freeze alone leaves those arrays writable.
+ */
+function deepFreezeParsed(parsed: ParsedTaskFrontmatter): void {
+  if (parsed.dependencies) {
+    Object.freeze(parsed.dependencies.blocks);
+    Object.freeze(parsed.dependencies.blocked_by);
+    Object.freeze(parsed.dependencies.relates_to);
+    Object.freeze(parsed.dependencies);
+  }
+  if (parsed.merged_from) Object.freeze(parsed.merged_from);
+  if (parsed.t3code_threads) Object.freeze(parsed.t3code_threads);
+  if (parsed.requirements) Object.freeze(parsed.requirements);
+  Object.freeze(parsed);
 }
 
 function parseTaskFrontmatterUncached(content: string): ParsedTaskFrontmatter {

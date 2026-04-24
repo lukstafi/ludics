@@ -603,19 +603,76 @@ describe("parseTaskFrontmatter cache", () => {
     expect(again.title).toBe("First");
   });
 
-  test("LRU eviction kicks in past 512 entries (oldest evicted)", () => {
+  test("nested arrays in cached entry cannot be mutated (dependencies.blocks)", () => {
+    _resetParseTaskFrontmatterCache();
+    const content = [
+      "---",
+      "id: task-1",
+      "title: Test",
+      "dependencies:",
+      "  blocks: [a]",
+      "  blocked_by: []",
+      "  relates_to: []",
+      "  subtask_of: null",
+      "---",
+    ].join("\n");
+    const first = parseTaskFrontmatter(content);
+    expect(first.dependencies?.blocks).toEqual(["a"]);
+    // A mutation attempt must not silently succeed: either throw (strict mode
+    // frozen array) or leave the array unchanged (sloppy mode), but never land
+    // as a cached side effect on the next read.
+    try {
+      (first.dependencies!.blocks as string[]).push("b");
+    } catch { /* frozen-array throw is fine */ }
+    const second = parseTaskFrontmatter(content);
+    expect(second.dependencies?.blocks).toEqual(["a"]);
+    expect(second).toBe(first);
+  });
+
+  test("nested arrays in cached entry cannot be mutated (merged_from, t3code_threads)", () => {
+    _resetParseTaskFrontmatterCache();
+    const content = [
+      "---",
+      "id: task-1",
+      "title: Test",
+      "merged_from: [task-x]",
+      "t3code_threads: [thread-1]",
+      "---",
+    ].join("\n");
+    const first = parseTaskFrontmatter(content);
+    try { (first.merged_from as string[]).push("task-y"); } catch { /* frozen */ }
+    try { (first.t3code_threads as string[]).push("thread-2"); } catch { /* frozen */ }
+    const second = parseTaskFrontmatter(content);
+    expect(second.merged_from).toEqual(["task-x"]);
+    expect(second.t3code_threads).toEqual(["thread-1"]);
+  });
+
+  test("LRU eviction kicks in past 512 entries — 513th distinct insert evicts the oldest", () => {
     _resetParseTaskFrontmatterCache();
     const first = "---\nid: task-first\ntitle: First\n---\n";
-    parseTaskFrontmatter(first);
-    // Fill cache with 512 distinct entries → first entry should be evicted
-    for (let i = 0; i < 512; i++) {
+    const beforeEviction = parseTaskFrontmatter(first);
+
+    // Confirm a repeat read with the same content string is a cache hit while
+    // the entry is still live — same reference proves the cache is serving it.
+    expect(parseTaskFrontmatter(first)).toBe(beforeEviction);
+
+    // Fill the cache with 511 more distinct entries → cache is now exactly at
+    // PARSE_CACHE_MAX=512 (first + 511 pads). Re-reading `first` must still
+    // hit the cache and return the same reference.
+    for (let i = 0; i < 511; i++) {
       parseTaskFrontmatter(`---\nid: task-pad-${i}\ntitle: Pad ${i}\n---\n`);
     }
-    // Cache should be bounded at 512
-    expect(_parseTaskFrontmatterCacheSize()).toBeLessThanOrEqual(512);
-    // Re-reading `first` should produce a fresh parse (cache miss) — a new reference
-    const refreshed = parseTaskFrontmatter(first);
-    expect(refreshed.id).toBe("task-first");
+    expect(_parseTaskFrontmatterCacheSize()).toBe(512);
+    expect(parseTaskFrontmatter(first)).toBe(beforeEviction);
+
+    // The 513th distinct insert must evict the oldest entry (`first`). After
+    // that, re-reading `first` must be a cache miss and produce a fresh
+    // object with identity different from `beforeEviction`.
+    parseTaskFrontmatter(`---\nid: task-trigger\ntitle: Trigger\n---\n`);
+    expect(_parseTaskFrontmatterCacheSize()).toBe(512);
+    const afterEviction = parseTaskFrontmatter(first);
+    expect(afterEviction).not.toBe(beforeEviction);
+    expect(afterEviction.id).toBe("task-first");
   });
 });
 
