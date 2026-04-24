@@ -285,7 +285,7 @@ describe("recentResults", () => {
     const { recentResults } = await loadQueue();
     const results = recentResults();
     expect(results).toHaveLength(1);
-    expect(results[0]!.data.error).toBe("parse error");
+    expect(results[0]!.data.error).toBe("invalid result JSON");
   });
 
   test("ignores non-json files", async () => {
@@ -325,12 +325,25 @@ describe("recentResults", () => {
     const results = recentResults();
     expect(results).toHaveLength(3);
     for (const r of results) {
-      expect(r.data.error).toBe("non-object result");
+      expect(r.data.error).toBe("invalid result JSON");
     }
+  });
+
+  test("returns read-error sentinel when file vanishes between stat and read", async () => {
+    const resultsDir = join(tmpDir, "mag", "results");
+    mkdirSync(resultsDir, { recursive: true });
+
+    writeFileSync(join(resultsDir, "req-keep.json"), JSON.stringify({ id: "keep", status: "ok" }));
+    // A directory-as-file: statSync succeeds (it's a valid inode), readFileSync fails with EISDIR.
+    // This simulates the race where a file disappears or changes type between stat and read.
+    mkdirSync(join(resultsDir, "req-dir.json"), { recursive: true });
+
+    const { recentResults } = await loadQueue();
+    const results = recentResults();
+    expect(results).toHaveLength(2);
     const byFile = Object.fromEntries(results.map(r => [r.file.split("/").pop(), r.data]));
-    expect(byFile["req-null.json"]!.raw).toBe("object");  // typeof null === "object"
-    expect(byFile["req-num.json"]!.raw).toBe("number");
-    expect(byFile["req-arr.json"]!.raw).toBe("object");    // typeof [] === "object"
+    expect(byFile["req-keep.json"]!.id).toBe("keep");
+    expect(byFile["req-dir.json"]!.error).toBe("read error");
   });
 
   test("round-trip: writeResult then recentResults preserves key fields", async () => {
