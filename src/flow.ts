@@ -6,6 +6,7 @@ import YAML from "yaml";
 import { harnessDir, slotsCount, effectivePriority, effectivePriorityValue, milestonesEnabledProjects, postponedProjectSet } from "./config.ts";
 import { readAllSlotJson } from "./slots/json.ts";
 import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
+import { priorityValue } from "./tasks/markdown.ts";
 
 interface TaskData {
   id: string;
@@ -218,7 +219,7 @@ export function flowBlocked(): void {
 
   const blocked = tasks
     .filter((t) => t.dependencies.blocked_by && t.dependencies.blocked_by.length > 0)
-    .sort((a, b) => (a.priority ?? "Z").localeCompare(b.priority ?? "Z"));
+    .sort((a, b) => priorityValue(a.priority) - priorityValue(b.priority));
 
   if (blocked.length === 0) {
     console.log("No blocked tasks");
