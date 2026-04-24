@@ -2,7 +2,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readF
 import { createServer } from "node:net";
 import { join, resolve } from "path";
 import { Database } from "bun:sqlite";
-import { setsidWrap, sleepMs } from "../orchestration/util.ts";
+import { isoNow, setsidWrap, sleepMs } from "../orchestration/util.ts";
 import { readJsonFile, writeJsonFile } from "../json.ts";
 
 /**
@@ -948,8 +948,4 @@ function checkAndRecoverDb(dbPath: string): boolean {
 
   console.error("t3code: no usable backup — starting with corrupt DB (may fail)");
   return false;
-}
-
-function isoNow(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
