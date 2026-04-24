@@ -203,6 +203,52 @@ export function queuePopAll(): string[] {
   return lines;
 }
 
+export type QueuePromoteResult = "promoted" | "already-head" | "not-found";
+
+function findLineIndexById(lines: string[], id: string): number {
+  return lines.findIndex(line => {
+    const rec = parseJsonRecord(line);
+    return rec !== null && rec.id === id;
+  });
+}
+
+export function queuePromoteToTop(id: string): QueuePromoteResult {
+  const result = withQueueLock<QueuePromoteResult>(() => {
+    const lines = readQueueLines();
+    const idx = findLineIndexById(lines, id);
+    if (idx < 0) return "not-found";
+    if (idx === 0) return "already-head";
+    const [promoted] = lines.splice(idx, 1);
+    writeQueueLines([promoted!, ...lines]);
+    return "promoted";
+  });
+  if (result === "promoted") {
+    emitEvent({ event_type: "queue_mutate", source: "cli", scope: "queue", action: "promote", message: id });
+  }
+  return result;
+}
+
+export type QueueCancelResult =
+  | { status: "cancelled"; line: string; request: Record<string, unknown> }
+  | { status: "not-found" };
+
+export function queueCancel(id: string): QueueCancelResult {
+  const result = withQueueLock<QueueCancelResult>(() => {
+    const lines = readQueueLines();
+    const idx = findLineIndexById(lines, id);
+    if (idx < 0) return { status: "not-found" };
+    const [removed] = lines.splice(idx, 1);
+    const request = parseJsonRecord(removed!);
+    writeQueueLines(lines);
+    // parseJsonRecord returned non-null above (findLineIndexById matched on rec.id)
+    return { status: "cancelled", line: removed!, request: request! };
+  });
+  if (result.status === "cancelled") {
+    emitEvent({ event_type: "queue_mutate", source: "cli", scope: "queue", action: "cancel", message: id });
+  }
+  return result;
+}
+
 export type QueueDequeueResult =
   | { status: "empty" }
   | { status: "mismatch" }

@@ -1152,6 +1152,8 @@ ludics mag message "text"      # Send async message to Mag
 ludics mag queue               # Show pending queue requests
 ludics mag queue pop one       # Atomic dequeue of one request
 ludics mag queue pop all       # Atomic dequeue of all requests
+ludics mag queue promote <id>  # Move pending request to head of queue
+ludics mag queue cancel <id>   # Remove pending request (prints the JSON line)
 ludics mag context             # Pre-compute briefing context file
 ludics auto-start-evaluate <id> [confidence] [rationale...]  # Evaluate auto-start decision
 

@@ -606,6 +606,123 @@ describe("queueRequest holds the queue lock", () => {
   });
 });
 
+describe("queuePromoteToTop", () => {
+  test("returns not-found for empty queue", async () => {
+    const { queuePromoteToTop } = await loadQueue();
+    expect(queuePromoteToTop("req-1-1")).toBe("not-found");
+  });
+
+  test("returns not-found for unknown id", async () => {
+    const { queueRequest, queuePromoteToTop } = await loadQueue();
+    queueRequest({ action: "briefing" });
+    expect(queuePromoteToTop("req-never-1")).toBe("not-found");
+  });
+
+  test("returns already-head when target is already at index 0", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"req-1-1","action":"briefing"}\n{"id":"req-2-2","action":"briefing"}\n');
+    const { queuePromoteToTop } = await loadQueue();
+    expect(queuePromoteToTop("req-1-1")).toBe("already-head");
+    expect(readFileSync(qf, "utf-8")).toBe('{"id":"req-1-1","action":"briefing"}\n{"id":"req-2-2","action":"briefing"}\n');
+  });
+
+  test("promotes middle item to head, preserves relative order", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf,
+      '{"id":"req-a","action":"briefing"}\n' +
+      '{"id":"req-b","action":"briefing"}\n' +
+      '{"id":"req-c","action":"briefing"}\n',
+    );
+    const { queuePromoteToTop, queueList } = await loadQueue();
+    expect(queuePromoteToTop("req-b")).toBe("promoted");
+    const items = queueList();
+    expect(items.map(i => i.id)).toEqual(["req-b", "req-a", "req-c"]);
+  });
+
+  test("promotes tail item to head", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf,
+      '{"id":"req-a","action":"briefing"}\n' +
+      '{"id":"req-b","action":"briefing"}\n' +
+      '{"id":"req-c","action":"briefing"}\n',
+    );
+    const { queuePromoteToTop, queueList } = await loadQueue();
+    expect(queuePromoteToTop("req-c")).toBe("promoted");
+    const items = queueList();
+    expect(items.map(i => i.id)).toEqual(["req-c", "req-a", "req-b"]);
+  });
+
+  test("releases lock after mutation", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"req-a"}\n{"id":"req-b"}\n');
+    const { queuePromoteToTop } = await loadQueue();
+    queuePromoteToTop("req-b");
+    expect(existsSync(qf + ".lock")).toBe(false);
+  });
+});
+
+describe("queueCancel", () => {
+  test("returns not-found for empty queue", async () => {
+    const { queueCancel } = await loadQueue();
+    expect(queueCancel("req-1-1")).toEqual({ status: "not-found" });
+  });
+
+  test("returns not-found for unknown id", async () => {
+    const { queueRequest, queueCancel } = await loadQueue();
+    queueRequest({ action: "briefing" });
+    expect(queueCancel("req-never-1")).toEqual({ status: "not-found" });
+  });
+
+  test("removes targeted item and returns its parsed record + raw line", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf,
+      '{"id":"req-a","action":"message","content":"hello"}\n' +
+      '{"id":"req-b","action":"briefing"}\n',
+    );
+    const { queueCancel, queueList } = await loadQueue();
+    const res = queueCancel("req-a");
+    expect(res.status).toBe("cancelled");
+    if (res.status === "cancelled") {
+      expect(res.line).toBe('{"id":"req-a","action":"message","content":"hello"}');
+      expect(res.request).toEqual({ id: "req-a", action: "message", content: "hello" });
+    }
+    const items = queueList();
+    expect(items.map(i => i.id)).toEqual(["req-b"]);
+  });
+
+  test("removes last item leaving empty queue file", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"req-a","action":"briefing"}\n');
+    const { queueCancel } = await loadQueue();
+    expect(queueCancel("req-a").status).toBe("cancelled");
+    expect(readFileSync(qf, "utf-8")).toBe("");
+  });
+
+  test("releases lock after mutation", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf, '{"id":"req-a"}\n{"id":"req-b"}\n');
+    const { queueCancel } = await loadQueue();
+    queueCancel("req-a");
+    expect(existsSync(qf + ".lock")).toBe(false);
+  });
+
+  test("round-trip: cancelled line can be reinserted via queueReinsertHead", async () => {
+    const qf = join(tmpDir, "mag", "queue.jsonl");
+    writeFileSync(qf,
+      '{"id":"req-a","action":"message","content":"recycle me"}\n' +
+      '{"id":"req-b","action":"briefing"}\n',
+    );
+    const { queueCancel, queueReinsertHead, queueList } = await loadQueue();
+    const res = queueCancel("req-a");
+    expect(res.status).toBe("cancelled");
+    if (res.status !== "cancelled") throw new Error("expected cancelled");
+    queueReinsertHead(res.line);
+    const items = queueList();
+    expect(items.map(i => i.id)).toEqual(["req-a", "req-b"]);
+    expect(items[0]!.content).toBe("recycle me");
+  });
+});
+
 describe("queuePopExpected", () => {
   test("returns empty for missing queue file", async () => {
     const { queuePopExpected } = await loadQueue();
