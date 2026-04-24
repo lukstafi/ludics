@@ -317,13 +317,11 @@ export function recentResults(limit: number = 20): { file: string; data: Record<
     .slice(0, limit);
   return files.map(({ file, mtimeMs }) => {
     try {
-      const parsed: unknown = JSON.parse(readFileSync(file, "utf-8"));
-      const data = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : ({ error: "non-object result", raw: typeof parsed } as Record<string, unknown>);
+      const parsed = parseJsonRecord(readFileSync(file, "utf-8"));
+      const data = parsed ?? ({ error: "invalid result JSON" } as Record<string, unknown>);
       return { file, data, mtimeMs };
     } catch {
-      return { file, data: { error: "parse error" } as Record<string, unknown>, mtimeMs };
+      return { file, data: { error: "read error" } as Record<string, unknown>, mtimeMs };
     }
   });
 }
