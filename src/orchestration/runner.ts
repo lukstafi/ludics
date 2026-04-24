@@ -112,6 +112,136 @@ export function validatePreviousPhaseArtifacts(
   }
 }
 
+/**
+ * Item B: after `plan-merge` completes (i.e., on entry to `plan-review`), warn
+ * when the merged plan file lacks a `## Regression Tests` section. The reviewer
+ * template (`pair-reviewer-plan-review.md`) already REQUEST_CHANGES when the
+ * section is absent; this warning fires earlier, giving the coder a chance to
+ * add it before implementing.
+ *
+ * Advisory only — silent on any read/regex error. Opt-out via
+ * `LUDICS_WARN_MISSING_TESTS_SECTION=0` (or `false`, case-insensitive).
+ */
+export function warnMissingRegressionTestsSection(
+  state: OrchestrationState,
+  ctx: PreviousPhaseContext,
+): void {
+  if (ctx.phase !== "plan-merge") return;
+  const envVal = process.env.LUDICS_WARN_MISSING_TESTS_SECTION;
+  if (envVal === "0" || (envVal && envVal.toLowerCase() === "false")) return;
+  try {
+    const path = mergedPlanFilePath(state.peerSyncDir, ctx.round, ctx.planMergeRound);
+    if (!existsSync(path)) return;
+    const content = readFileSync(path, "utf-8");
+    if (/^## Regression Tests$/m.test(content)) return;
+    emitEvent({
+      event_type: "orchestration_warning",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      message: `Merged plan ${path.split("/").pop()} has no '## Regression Tests' section; reviewer backstop (pair-reviewer-plan-review.md) will catch this, but you may want to add one before implementing.`,
+    });
+  } catch { /* swallow — advisory only */ }
+}
+
+/**
+ * Item A: stale-base warning. Before the coder starts planning or working,
+ * refresh `origin/<main>` and count the commits landed on it since the
+ * worktree's merge-base. If the count meets the threshold (default 5, tunable
+ * via `LUDICS_WARN_BASE_STALENESS_THRESHOLD`; `<=0` disables), emit a nudge
+ * toward `git rebase`.
+ *
+ * Dedup memo (`state.staleBaseLastWarnedRound`/`...Count`) rewarns only when
+ * the count grows within the same round; reset on round change.
+ * Advisory only — any git failure silently skips.
+ */
+export function warnStaleBase(state: OrchestrationState): void {
+  const raw = process.env.LUDICS_WARN_BASE_STALENESS_THRESHOLD;
+  const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
+  const threshold = Number.isFinite(parsed) ? parsed : 5;
+  if (threshold <= 0) return;
+  try {
+    const coder = state.agents.find((a) => a.role === "coder");
+    if (!coder) return;
+    const worktree = coder.worktreePath;
+    if (!worktree || !existsSync(worktree)) return;
+    const baseBranch = defaultMainBranch(state.projectDir);
+    if (!baseBranch) return;
+
+    // Refresh origin/<main>. If fetch fails (offline, bad remote URL, no
+    // network, timeout, credential prompt) we must not fall through and
+    // measure against a stale cached `origin/<main>` — the whole point of the
+    // warning is that the local ref matches GitHub. Treat any non-zero exit
+    // (or timeout-induced kill) as "skip this check."
+    //
+    // `GIT_TERMINAL_PROMPT=0` disables interactive credential prompts that
+    // would otherwise hang phase entry on private-repo misconfigurations.
+    // `timeout` (ms) bounds the wall-clock cost: default 10s, overridable via
+    // LUDICS_WARN_FETCH_TIMEOUT_MS for exotic network setups.
+    const timeoutRaw = process.env.LUDICS_WARN_FETCH_TIMEOUT_MS;
+    const timeoutParsed = timeoutRaw !== undefined ? parseInt(timeoutRaw, 10) : NaN;
+    const fetchTimeoutMs = Number.isFinite(timeoutParsed) && timeoutParsed > 0
+      ? timeoutParsed
+      : 10_000;
+    const fetched = Bun.spawnSync(
+      ["git", "fetch", "origin", baseBranch],
+      {
+        cwd: worktree,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        timeout: fetchTimeoutMs,
+      },
+    );
+    if (fetched.exitCode !== 0) return;
+
+    const mb = Bun.spawnSync(
+      ["git", "merge-base", "HEAD", `origin/${baseBranch}`],
+      { cwd: worktree },
+    );
+    if (mb.exitCode !== 0) return;
+    const mergeBase = String(mb.stdout).trim();
+    if (!mergeBase) return;
+
+    const rev = Bun.spawnSync(
+      ["git", "rev-list", "--count", `${mergeBase}..origin/${baseBranch}`],
+      { cwd: worktree },
+    );
+    if (rev.exitCode !== 0) return;
+    const countParsed = parseInt(String(rev.stdout).trim(), 10);
+    if (!Number.isFinite(countParsed)) return;
+    const count = countParsed;
+
+    // Reset dedup memo on round change.
+    if (state.staleBaseLastWarnedRound !== state.round) {
+      state.staleBaseLastWarnedRound = state.round;
+      state.staleBaseLastWarnedCount = 0;
+    }
+    // Re-arm dedup when staleness decreases (coder rebased mid-round): a
+    // subsequent drift back above threshold should fire again, even if its
+    // count is below the previously-warned peak. Without this reset, the
+    // "newly needing rebase" warning would be suppressed in exactly the
+    // workflow (rebase then drift) it is meant to protect.
+    const lastCount = state.staleBaseLastWarnedCount ?? 0;
+    if (count < lastCount) {
+      state.staleBaseLastWarnedCount = 0;
+    }
+    const effectiveLastCount = state.staleBaseLastWarnedCount ?? 0;
+    if (count < threshold) return;
+    if (count <= effectiveLastCount) return;
+
+    state.staleBaseLastWarnedCount = count;
+    state.staleBaseLastWarnedRound = state.round;
+    emitEvent({
+      event_type: "orchestration_warning",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      message: `Base is ${count} commit(s) stale against origin/${baseBranch} in ${worktree}; consider 'git rebase origin/${baseBranch}' before continuing.`,
+    });
+  } catch { /* swallow — advisory only */ }
+}
+
 interface VerificationGateConfig {
   phase: Phase;
   gate: "prCreate" | "finalMerge";
@@ -620,7 +750,16 @@ async function enterPhase(
   // Survives crash/resume because it's part of the persisted OrchestrationState.
   if (state.previousPhaseCtx) {
     validatePreviousPhaseArtifacts(state, state.previousPhaseCtx);
+    // Item B: content-level check on the merged plan (gated on ctx.phase === "plan-merge").
+    warnMissingRegressionTestsSection(state, state.previousPhaseCtx);
     state.previousPhaseCtx = undefined; // consumed
+  }
+
+  // Item A: stale-base warning on entry to `plan` (primary hook) and `work`
+  // (covers plan-skip modes and staleness that lands mid-plan). Dedup is
+  // "newly needing rebase" per round — see warnStaleBase().
+  if (state.phase === "plan" || state.phase === "work") {
+    warnStaleBase(state);
   }
 
   markActiveAgents(state);

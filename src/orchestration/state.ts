@@ -190,6 +190,12 @@ export interface OrchestrationState {
    *  doesn't skip validation. Captured before applyPhaseSideEffects() mutates round/planMergeRound.
    *  Consumed and cleared by enterPhase() on the next iteration. */
   previousPhaseCtx?: { phase: Phase; round: number; planMergeRound: number };
+  /** Round number at which the stale-base warning last fired (Item A dedup memo).
+   *  When state.round changes, the remembered count resets. */
+  staleBaseLastWarnedRound?: number;
+  /** Commit count at which the stale-base warning last fired within
+   *  staleBaseLastWarnedRound. Re-fire only when a new count exceeds this. */
+  staleBaseLastWarnedCount?: number;
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {
