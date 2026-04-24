@@ -246,8 +246,8 @@ function workerCacheFilePath(slot: number): string {
 
 function isWorkerContext(): boolean {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- circular-dep chain: cluster → events → journal → state
+    const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts") as typeof import("../cluster.ts");
     return !!(clusterCurrentMachineName() && !clusterIsController());
   } catch {
     return false;

@@ -109,7 +109,7 @@ export function stateCheckpoint(
 /** Pull remote state, overwriting local. Used during controller handoff
  *  (becoming controller) to adopt the previous controller's state.
  *  NOT used during normal operation — the controller's local state is authoritative. */
-export function statePull(opts?: { autoCommit?: boolean }): boolean {
+export function statePull(): boolean {
   const repoDir = stateRepoDir();
 
   // Abort any stuck rebase from previous logic

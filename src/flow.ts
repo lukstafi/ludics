@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import YAML from "yaml";
-import { harnessDir, slotsCount, effectivePriority, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, postponedProjectSet } from "./config.ts";
+import { harnessDir, slotsCount, effectivePriority, effectivePriorityValue, milestonesEnabledProjects, postponedProjectSet } from "./config.ts";
 import { readAllSlotJson } from "./slots/json.ts";
 import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
 

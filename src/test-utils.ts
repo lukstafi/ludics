@@ -16,7 +16,7 @@ try {
     port: 0,
     fetch() { return new Response("ok"); },
   });
-  probe.stop(true);
+  void probe.stop(true);
 } catch {
   canBindSocket = false;
 }

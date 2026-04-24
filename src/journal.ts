@@ -21,8 +21,8 @@ function journalFile(): string {
 export function journalAppend(category: string, message: string): void {
   // Worker → forward to controller via HTTP (no local harness write)
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { clusterIsController, clusterCurrentMachineName } = require("./cluster.ts");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- circular-dep chain: cluster → events → journal
+    const { clusterIsController, clusterCurrentMachineName } = require("./cluster.ts") as typeof import("./cluster.ts");
     if (clusterCurrentMachineName() && !clusterIsController()) {
       import("./cluster-http.ts").then(({ clusterPostJournal }) => {
         clusterPostJournal(category, message).catch(() => {});

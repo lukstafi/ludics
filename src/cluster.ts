@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, stateRepoDir } from "./config.ts";
+import { loadConfigSync, stateRepoDir } from "./config.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { hostnameTailscale } from "./network.ts";
 import { emitEvent } from "./events.ts";
@@ -35,7 +35,7 @@ export function clusterConfig(): ClusterConfig {
     const fed = raw.cluster as Record<string, unknown> | undefined;
 
     const rawMachines = (fed?.machines as Array<Record<string, unknown>> | undefined) ?? [];
-    let machines: ClusterMachine[] = rawMachines
+    const machines: ClusterMachine[] = rawMachines
       .filter((m) => m && m.name && m.host)
       .map((m) => ({
         name: String(m.name),

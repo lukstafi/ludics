@@ -31,7 +31,7 @@ export function loadDeferredCleanups(): CleanupEntry[] {
   const file = cleanupPendingPath();
   if (!existsSync(file)) return [];
   try {
-    const raw = JSON.parse(readFileSync(file, "utf-8"));
+    const raw: unknown = JSON.parse(readFileSync(file, "utf-8"));
     if (!Array.isArray(raw)) return [];
     return raw as CleanupEntry[];
   } catch {

@@ -5,7 +5,7 @@
 // - Unknown sessions are never harvested.
 // - Cleanup runs after 3 consecutive detached sweeps.
 
-import { existsSync, readFileSync, readdirSync } from "fs";
+import { existsSync, readdirSync } from "fs";
 import { basename, join } from "path";
 import { slotsCount } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
