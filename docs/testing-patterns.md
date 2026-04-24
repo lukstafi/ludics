@@ -173,22 +173,45 @@ delete-or-assign pattern shown above.
 
 ## Orchestration Worktree Exclusions
 
-Orchestration worktrees use `ensureGitExcludes()` (in
-`src/orchestration/worktrees.ts`), which appends
-[`GIT_EXCLUDE_ENTRIES`](../src/orchestration/worktrees.ts) to
-`.git/info/exclude`, as the **sole** source of truth for paths that must
-never be committed from a worktree (`.peer-sync`,
-`.ludics-orchestration.json`, `.claude`, `.agents`, `.agent-sessions`,
-`node_modules`, `_build_review*`). Tests that exercise the auto-commit
-path must mirror this: call `ensureGitExcludes(repo)` directly, rather
-than passing pathspec excludes to `git add`.
+Orchestration worktrees use a **two-tier exclusion contract**, both
+halves centralized in
+[`src/orchestration/worktrees.ts`](../src/orchestration/worktrees.ts):
+
+- **Tier 1 — Proactive untrack** via `ensureGitExcludes()`. Appends
+  `GIT_EXCLUDE_ENTRIES` (`.peer-sync`, `.ludics-orchestration.json`,
+  `.claude`, `.agents`, `.agent-sessions`, `node_modules`,
+  `_build_review*`) to `.git/info/exclude` so untracked instances cannot
+  be staged. For the narrow `UNTRACK_PATHS` subset (`.peer-sync`,
+  `.ludics-orchestration.json`, `.agent-sessions`) it additionally runs
+  `git rm --cached -r` on anything already tracked and records the
+  staged deletions in a dedicated `chore: untrack
+  orchestration-internal files` commit.
+- **Tier 2 — Defensive reset** via `ORCHESTRATION_RESET_PATHS` inside
+  `autoCommitWorktree()`. For the remainder of `GIT_EXCLUDE_ENTRIES`
+  (`.claude`, `.agents`, `node_modules`, `_build_review*`), runs
+  `git reset HEAD --` after `git add -A` to unstage them at commit time
+  without untracking — so projects that legitimately commit
+  `.claude/settings.json` or `.agents/` keep those files tracked
+  between orchestration rounds.
+
+Tests that exercise the auto-commit path must mirror Tier 1: call
+`ensureGitExcludes(repo)` directly on the worktree, rather than passing
+pathspec excludes to `git add`.
+
+**`UNTRACK_PATHS` criterion** (durable guidance for future additions):
+a path belongs in `UNTRACK_PATHS` only if it is orchestrator-written
+and users never commit it. Paths that projects may legitimately track
+(`.claude`, `.agents`, `node_modules`, `_build_review*`) stay out of
+`UNTRACK_PATHS` and rely on Tier 2's defensive reset instead — moving
+them into Tier 1 would silently `git rm --cached` real project state.
 
 **Rule**: do not combine `.git/info/exclude` entries with
 `:(exclude)pattern` pathspecs on the same `git add` invocation. When the
 excluded directory physically exists, git exits 1 even though the partial
 add succeeds, which surfaces as a `runGit` throw inside
 `autoCommitWorktree()`. Pick one mechanism — for orchestration, that is
-always `ensureGitExcludes()`.
+`ensureGitExcludes()` plus the Tier 2 `git reset HEAD --` step, never
+`:(exclude)` pathspecs on `git add`.
 
 **Fallback**: if a one-off command elsewhere in the codebase genuinely
 needs a pathspec exclude (no current call site does — see audit below),
@@ -203,10 +226,15 @@ mode and is unrelated to the rule above.
 
 **Precedent**: PR [#320](https://github.com/lukstafi/ludics/pull/320)
 removed the `ORCHESTRATION_EXCLUDES` constant that was being passed as
-`:(exclude)…` pathspecs inside `autoCommitWorktree()`, making
-`ensureGitExcludes()` the sole exclusion source; five tests were updated
-to call `ensureGitExcludes(repo)` explicitly rather than rely on the
+`:(exclude)…` pathspecs inside `autoCommitWorktree()`, consolidating on
+`ensureGitExcludes()` / `.git/info/exclude`; five tests were updated to
+call `ensureGitExcludes(repo)` explicitly rather than rely on the
 removed pathspec behavior. Background: issue
 [#329](https://github.com/lukstafi/ludics/issues/329). A repo-wide grep
 for `:(exclude)` and `:!` pathspec magic across `src/`, `tests/`,
-`scripts/`, `bin/` returns zero matches.
+`scripts/`, `bin/` returns zero matches. Follow-up PR
+[#356](https://github.com/lukstafi/ludics/pull/356) (task-89b31783) then
+split that single-source rule into the current two-tier contract,
+adding the narrow proactive `git rm --cached` + chore commit for
+`UNTRACK_PATHS` while keeping the defensive reset in
+`autoCommitWorktree()` for entries projects may legitimately track.
