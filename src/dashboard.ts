@@ -910,9 +910,8 @@ function generateRecentlyCompleted(tasks: DashboardTask[]): RecentlyCompletedTas
           try {
             const parsed: unknown = JSON.parse(line);
             if (!isPlainObject(parsed)) continue;
-            const event = parsed as Record<string, unknown>;
-            if (event.event_type === "pr_merged" && event.task) {
-              mergedTasks.add(String(event.task));
+            if (parsed.event_type === "pr_merged" && parsed.task) {
+              mergedTasks.add(String(parsed.task));
             }
           } catch { /* skip */ }
         }
@@ -927,9 +926,8 @@ function generateRecentlyCompleted(tasks: DashboardTask[]): RecentlyCompletedTas
     try {
       const parsed: unknown = JSON.parse(readFileSync(retroFile, "utf-8"));
       if (!isPlainObject(parsed)) continue;
-      const data = parsed as Record<string, unknown>;
-      if (data.prUrl && typeof data.prUrl === "string") {
-        prUrls.set(t.id, data.prUrl);
+      if (parsed.prUrl && typeof parsed.prUrl === "string") {
+        prUrls.set(t.id, parsed.prUrl);
       }
     } catch { /* skip */ }
   }

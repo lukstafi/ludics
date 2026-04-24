@@ -80,11 +80,10 @@ export function loadSessionSweepState(): SessionSweepState {
   if (!existsSync(file)) return { version: 1, sessions: {} };
 
   try {
-    const parsedUnknown = JSON.parse(readFileSync(file, "utf-8")) as unknown;
-    if (!isPlainObject(parsedUnknown)) {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf-8"));
+    if (!isPlainObject(parsed)) {
       return { version: 1, sessions: {} };
     }
-    const parsed = parsedUnknown as Record<string, unknown>;
     if (parsed.version !== 1 || typeof parsed.sessions !== "object" || !parsed.sessions || Array.isArray(parsed.sessions)) {
       return { version: 1, sessions: {} };
     }
@@ -93,23 +92,22 @@ export function loadSessionSweepState(): SessionSweepState {
     const sessions: Record<string, KnownSessionRecord> = {};
     for (const [, record] of Object.entries(parsedSessions)) {
       if (!isPlainObject(record)) continue;
-      const recordData = record as Record<string, unknown>;
-      const mode = String(recordData.mode);
+      const mode = String(record.mode);
       if (!SWEEP_TARGET_MODES.has(mode as SweepMode)) continue;
-      const projectDirRaw = String(recordData.projectDir ?? "");
+      const projectDirRaw = String(record.projectDir ?? "");
       const projectDir = normalizeProjectDirForSweep(projectDirRaw);
-      const name = String(recordData.name ?? "");
-      const cleanupCommand = Array.isArray(recordData.cleanupCommand)
-        ? (recordData.cleanupCommand as unknown[]).filter((v) => typeof v === "string").map((v) => String(v))
+      const name = String(record.name ?? "");
+      const cleanupCommand = Array.isArray(record.cleanupCommand)
+        ? (record.cleanupCommand as unknown[]).filter((v) => typeof v === "string").map((v) => String(v))
         : [];
       if (!projectDir || !name || cleanupCommand.length < 2) continue;
 
-      const detachedStreakRaw = Number(recordData.detachedStreak ?? 0);
+      const detachedStreakRaw = Number(record.detachedStreak ?? 0);
       const detachedStreak = Number.isFinite(detachedStreakRaw) && detachedStreakRaw > 0
         ? Math.floor(detachedStreakRaw)
         : 0;
-      const firstSeenAt = String(recordData.firstSeenAt ?? "");
-      const lastSeenAt = String(recordData.lastSeenAt ?? "");
+      const firstSeenAt = String(record.firstSeenAt ?? "");
+      const lastSeenAt = String(record.lastSeenAt ?? "");
 
       const key = buildKnownSessionKey(mode as SweepMode, projectDir, name);
       sessions[key] = {
