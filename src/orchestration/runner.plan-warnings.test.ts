@@ -39,19 +39,34 @@ function lastWarning(spy: ReturnType<typeof spyOn>): { message: string } | undef
   return warns[warns.length - 1]?.[0] as { message: string } | undefined;
 }
 
-/** Add a commit on main in the given repo and refresh origin/main to it. */
+/** Seed a real file:// bare remote as `origin` and push `main`.
+ *  Required so `git fetch origin main` actually succeeds in tests —
+ *  the base-repo `makeGitRepo` only seeds `refs/remotes/origin/main`
+ *  via `update-ref` with no fetchable URL. */
+function addRealOrigin(repoDir: string): string {
+  const originBare = join(repoDir, "..", `origin-${Date.now()}-${Math.random().toString(36).slice(2)}.git`);
+  Bun.spawnSync(["git", "init", "--bare", "--initial-branch=main", originBare]);
+  // makeGitRepo doesn't actually configure an `origin` remote (only the ref),
+  // but defensively remove any prior config.
+  Bun.spawnSync(["git", "remote", "remove", "origin"], { cwd: repoDir });
+  Bun.spawnSync(["git", "remote", "add", "origin", originBare], { cwd: repoDir });
+  Bun.spawnSync(["git", "push", "-u", "origin", "main"], { cwd: repoDir });
+  return originBare;
+}
+
+/** Add commits on main in the given repo and push them to origin so
+ *  `refs/remotes/origin/main` advances. */
 function advanceOriginMain(repoDir: string, n: number = 1): void {
   for (let i = 0; i < n; i++) {
     writeFileSync(join(repoDir, `main-advance-${Date.now()}-${i}.txt`), `c${i}`);
     Bun.spawnSync(["git", "add", "."], { cwd: repoDir });
     Bun.spawnSync(["git", "commit", "-m", `advance-${i}`], { cwd: repoDir });
   }
-  Bun.spawnSync(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: repoDir });
+  Bun.spawnSync(["git", "push", "origin", "main"], { cwd: repoDir });
 }
 
-/** Fork a worktree off the current origin/main and leave HEAD behind. */
+/** Fork a worktree off the current HEAD of repoDir (i.e. current origin/main). */
 function forkWorktree(repoDir: string): string {
-  // Check out a detached branch at current HEAD so main can advance past us.
   const wtPath = join(repoDir, "..", `wt-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   Bun.spawnSync(["git", "worktree", "add", "-b", `branch-${Date.now()}`, wtPath, "HEAD"], {
     cwd: repoDir,
@@ -190,12 +205,13 @@ describe("warnStaleBase", () => {
     while (cleanup.length) rmSync(cleanup.pop()!, { recursive: true, force: true });
   });
 
-  function setupStaleRepo(advanceCount: number): { worktree: string; repoDir: string } {
+  function setupStaleRepo(advanceCount: number): { worktree: string; repoDir: string; originBare: string } {
     const repoDir = makeGitRepo();
     cleanup.push(join(repoDir, ".."));
+    const originBare = addRealOrigin(repoDir);
     const worktree = forkWorktree(repoDir);
     advanceOriginMain(repoDir, advanceCount);
-    return { worktree, repoDir };
+    return { worktree, repoDir, originBare };
   }
 
   function stateFor(worktree: string, repoDir: string, round: number = 1) {
@@ -265,6 +281,42 @@ describe("warnStaleBase", () => {
     state.agents[0]!.worktreePath = tmp;
     expect(() => warnStaleBase(state)).not.toThrow();
     expect(countWarnings(emitSpy)).toBe(0);
+  });
+
+  test("failed fetch does not fall through to stale cached origin/<main>", () => {
+    // Regression for AC1: the warning must not emit when `git fetch` fails.
+    // Reproduce the reviewer's scenario — `refs/remotes/origin/main` is
+    // seeded ahead of HEAD but `origin` points at an invalid URL, so fetch
+    // cannot refresh the ref and we must skip rather than measure against
+    // whatever stale value happens to be cached locally.
+    const { worktree, repoDir } = setupStaleRepo(5);
+    // Break the remote URL (shared config) so fetch fails. The existing
+    // cached refs/remotes/origin/main still points 5 commits ahead of HEAD.
+    Bun.spawnSync(
+      ["git", "remote", "set-url", "origin", "file:///dev/null/nonexistent-remote"],
+      { cwd: repoDir },
+    );
+    // Sanity: cached origin/main still shows staleness before fetch attempt.
+    const mb = Bun.spawnSync(
+      ["git", "merge-base", "HEAD", "origin/main"],
+      { cwd: worktree },
+    );
+    const revCount = Bun.spawnSync(
+      ["git", "rev-list", "--count", `${String(mb.stdout).trim()}..origin/main`],
+      { cwd: worktree },
+    );
+    expect(parseInt(String(revCount.stdout).trim(), 10)).toBe(5);
+    // Sanity: fetch now fails.
+    const fetchResult = Bun.spawnSync(["git", "fetch", "origin", "main"], { cwd: worktree });
+    expect(fetchResult.exitCode).not.toBe(0);
+
+    const state = stateFor(worktree, repoDir);
+    warnStaleBase(state);
+
+    // Must not emit (fetch failed) and must not update the dedup memo.
+    expect(countWarnings(emitSpy)).toBe(0);
+    expect(state.staleBaseLastWarnedCount).toBeUndefined();
+    expect(state.staleBaseLastWarnedRound).toBeUndefined();
   });
 
   test("missing worktree path silently skipped", () => {

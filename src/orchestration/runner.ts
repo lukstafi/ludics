@@ -169,8 +169,12 @@ export function warnStaleBase(state: OrchestrationState): void {
     const baseBranch = defaultMainBranch(state.projectDir);
     if (!baseBranch) return;
 
-    // Refresh origin/<main>. Silent on error (offline, no remote, etc.).
-    Bun.spawnSync(["git", "fetch", "origin", baseBranch], { cwd: worktree });
+    // Refresh origin/<main>. If fetch fails (offline, bad remote URL, no
+    // network) we must not fall through and measure against a stale cached
+    // `origin/<main>` — the whole point of the warning is that the local ref
+    // matches GitHub. Treat any non-zero exit as "skip this check."
+    const fetched = Bun.spawnSync(["git", "fetch", "origin", baseBranch], { cwd: worktree });
+    if (fetched.exitCode !== 0) return;
 
     const mb = Bun.spawnSync(
       ["git", "merge-base", "HEAD", `origin/${baseBranch}`],
