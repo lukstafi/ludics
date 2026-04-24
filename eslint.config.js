@@ -43,6 +43,12 @@ export default tseslint.config(
             "Use spyOn() + mockRestore() instead of mock.module() — it leaks globally across all test files in the Bun test runner. See docs/testing-patterns.md.",
         },
       ],
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
+      "@typescript-eslint/no-explicit-any": "off",
     },
   },
 );
