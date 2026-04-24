@@ -1,8 +1,8 @@
 // tmux+ttyd adapter — implements the Adapter interface for tmux orchestration mode.
 // The existing src/adapters/tmux.ts holds shared tmux helpers; this file is the adapter entry point.
 
-import { existsSync, mkdirSync, readFileSync } from "fs";
-import { basename, join, resolve } from "path";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "fs";
+import { join, resolve } from "path";
 import { atomicWriteFileSync } from "../json.ts";
 import { getMainRepoFromWorktree, latestMtime, resolveProjectDir, slotSessionName } from "./base.ts";
 import { safeSyncOutput } from "../spawn.ts";
@@ -28,11 +28,11 @@ import {
   type AgentConfig,
   type OrchestrationState,
 } from "../orchestration/state.ts";
-import { initPeerSync, removePeerSyncSession, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
+import { initPeerSync, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
 import { claudeEffort, codexEffort, normaliseEffortLevel } from "../orchestration/effort.ts";
-import { createWorktrees, cleanupWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
+import { createWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
 import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/deferred-cleanup.ts";
-import { isoNow, makeId, nowEpoch } from "../orchestration/util.ts";
+import { isoNow, nowEpoch } from "../orchestration/util.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { parseOrchestrationAdapterArgs } from "./t3code.ts";
 
@@ -82,7 +82,7 @@ function writeTmuxSlotState(state: TmuxSlotState, harnessDir: string): void {
 function removeTmuxSlotState(slot: number, harnessDir: string): void {
   const path = tmuxSlotPath(slot, harnessDir);
   if (existsSync(path)) {
-    try { require("fs").unlinkSync(path); } catch { /* ignore */ }
+    try { unlinkSync(path); } catch { /* ignore */ }
   }
 }
 
@@ -254,14 +254,6 @@ function killTtydForSlot(slot: number): void {
   }
 }
 
-function killTmuxSessionsForSlot(slot: number, agentNames: string[], taskId?: string): void {
-  for (const name of agentNames) {
-    const session = tmuxSessionName(slot, name, taskId);
-    if (tmuxHasSession(session)) {
-      tmuxKillSession(session);
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Boot persistent agent CLI in a tmux pane

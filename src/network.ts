@@ -46,7 +46,8 @@ export function networkHostname(): string {
 
     // Fallback: use cluster machine host field (works from launchd where Tailscale CLI is unavailable)
     try {
-      const { clusterCurrentMachine } = require("./cluster.ts");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- cluster.ts imports hostnameTailscale from network.ts
+      const { clusterCurrentMachine } = require("./cluster.ts") as typeof import("./cluster.ts");
       const machine = clusterCurrentMachine();
       if (machine?.host) return machine.host;
     } catch { /* cluster not available */ }
