@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { cleanupDelayHours } from "../config.ts";
@@ -316,5 +316,47 @@ describe("explicit harnessDir argument (isolation)", () => {
     recordDeferredCleanup(entry, ISO);
     await processDeferredCleanups(25, ISO);
     expect(loadDeferredCleanups(ISO)).toEqual([]);
+  });
+
+  // Reviewer AC7 blocking item: prove the t3codeThreadIds branch passes the
+  // explicit harnessDir arg through to serverStatus({ harnessDir }).
+  // Stub the dynamically-imported ../t3code/server.ts so the test captures the
+  // argument and observes no connection-time I/O.
+  test("processDeferredCleanups(_, ISO) passes ISO to serverStatus({ harnessDir }) in the t3codeThreadIds branch", async () => {
+    const capturedHarnessDirs: string[] = [];
+    mock.module("../t3code/server.ts", () => ({
+      serverStatus: async (options: { harnessDir?: string } = {}) => {
+        capturedHarnessDirs.push(options.harnessDir ?? "<default>");
+        // Return "not running" to short-circuit before any T3CodeClient construction.
+        return { running: false, record: null, snapshot: null, reason: "stubbed" };
+      },
+    }));
+
+    try {
+      // Entry must be old enough to process AND carry t3codeThreadIds to enter the branch.
+      // Empty worktreePaths/branches/sessions so the other cleanup steps are no-ops.
+      const entry = makeEntry({
+        timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+        worktreePaths: [], branches: [], tmuxSessionNames: [], peerSyncLink: null,
+        t3codeThreadIds: ["thread-abc", "thread-def"],
+      });
+      recordDeferredCleanup(entry, ISO);
+
+      await processDeferredCleanups(25, ISO);
+
+      // serverStatus was invoked exactly once, with ISO — not the env-var decoy (tmpDir).
+      expect(capturedHarnessDirs).toHaveLength(1);
+      expect(capturedHarnessDirs[0]).toBe(ISO);
+      expect(capturedHarnessDirs[0]).not.toBe(tmpDir);
+
+      // Because the stub returned {running: false}, the branch marks failed=true and the
+      // entry remains in the ISO manifest (proves the path-handling also threaded ISO).
+      const remaining = loadDeferredCleanups(ISO);
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]!.t3codeThreadIds).toEqual(["thread-abc", "thread-def"]);
+    } finally {
+      // Restore the real module so subsequent tests are unaffected.
+      mock.module("../t3code/server.ts", () => import("../t3code/server.ts"));
+    }
   });
 });
