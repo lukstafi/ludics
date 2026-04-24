@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, mkdirSync } from "fs";
-import { atomicWriteFileSync } from "./json.ts";
+import { writeJsonFile } from "./json.ts";
 import { join } from "path";
 import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath } from "./config.ts";
 import { tasksCreate } from "./tasks/index.ts";
@@ -87,7 +87,7 @@ export function loadTestHealthState(): TestHealthState {
 export function saveTestHealthState(state: TestHealthState): void {
   const dir = join(harnessDir(), "mag");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  atomicWriteFileSync(testHealthStatePath(), JSON.stringify(state, null, 2));
+  writeJsonFile(testHealthStatePath(), state);
 }
 
 // --- Execution ---

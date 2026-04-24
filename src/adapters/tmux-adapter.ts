@@ -3,7 +3,7 @@
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "fs";
 import { join, resolve } from "path";
-import { atomicWriteFileSync } from "../json.ts";
+import { writeJsonFile } from "../json.ts";
 import { getMainRepoFromWorktree, latestMtime, resolveProjectDir, slotSessionName } from "./base.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import { MarkdownBuilder } from "./markdown.ts";
@@ -76,7 +76,7 @@ function writeTmuxSlotState(state: TmuxSlotState, harnessDir: string): void {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  atomicWriteFileSync(path, JSON.stringify(state, null, 2));
+  writeJsonFile(path, state);
 }
 
 function removeTmuxSlotState(slot: number, harnessDir: string): void {
