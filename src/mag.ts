@@ -1252,6 +1252,20 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
     } else if (action === "adopt-sessions") {
       adoptSessionsPrecomputeContext();
     } else if (action === "health-check") {
+      const { shouldSkipHealthCheck } = await import("./health-gate.ts");
+      const gate = shouldSkipHealthCheck();
+      if (gate.skip) {
+        emitEvent({
+          event_type: "health_check_skipped",
+          source: "keepalive",
+          scope: "mag",
+          message: gate.reason,
+          currentLines: gate.currentLines,
+          priorLines: gate.priorLines,
+          delta: gate.currentLines - gate.priorLines,
+        });
+        return null;
+      }
       try {
         const { runAllTestHealth } = await import("./health.ts");
         runAllTestHealth();
