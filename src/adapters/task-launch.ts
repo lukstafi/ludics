@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "fs";
 import { join, normalize, resolve } from "path";
-import { readFrontmatterField } from "../tasks/markdown.ts";
+import { parseTaskFrontmatter } from "../tasks/markdown.ts";
 
 /** Throws if `rawPath` is not repo-relative (absolute, home-relative, or escapes tree). */
 export function assertRepoRelativeProposalPath(rawPath: string): void {
@@ -47,7 +47,7 @@ export function readProposalLaunchMetadata(
   if (!existsSync(taskFile)) return null;
 
   const taskContent = readFileSync(taskFile, "utf-8");
-  const proposalValue = readFrontmatterField(taskContent, "proposal");
+  const proposalValue = parseTaskFrontmatter(taskContent).proposal;
   if (!proposalValue) return null;
 
   // Deprecated sentinel — kept for backward compat; no file-based proposal to resolve.
