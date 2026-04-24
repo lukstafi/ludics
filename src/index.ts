@@ -206,6 +206,7 @@ Commands:
   orch interrupt <slot>       Interrupt active agents in the current phase
   orch skip <slot> <phase>    Force the orchestration to a different phase
   orch log <slot>             Show phase transition log for the slot
+  orch diff <slot>            Per-commit summary per worktree (stale-branch diagnosis)
 
   sessions [--json]            Discover and classify all agent sessions
   sessions report [--json]     Generate sessions report for Mag (Markdown + JSON)

@@ -325,6 +325,17 @@ ludics slot <n> resume         # Resume crashed orchestrated session from persis
 ludics slot <n> note "text"    # Add runtime note to slot n
 ```
 
+### Orchestration
+
+```bash
+ludics orch status <slot>         # Show orchestration state for a slot
+ludics orch confirm <slot>        # Confirm current orchestration phase
+ludics orch interrupt <slot>      # Interrupt active agents in the current phase
+ludics orch skip <slot> <phase>   # Force orchestration to a specific phase
+ludics orch log <slot>            # Show phase transition log for the slot
+ludics orch diff <slot>           # Per-commit summary per worktree (stale-branch diagnosis)
+```
+
 ### Notifications
 
 ```bash

@@ -1,6 +1,7 @@
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { harnessDir } from "../config.ts";
+import { defaultRunGit, detectDefaultBranches, type RunGit } from "../git-runner.ts";
 import type { Phase } from "./phases.ts";
 import { readAgentMarkerFile, readAgentStatus, readPhaseToken, resolvePeerSyncDir, writeStopHookRecord } from "./peer-sync.ts";
 import { confirmPhase, interruptCurrentPhase, runOrchestrationForSlot, skipToPhase } from "./runner.ts";
@@ -36,6 +37,94 @@ function orchStatus(slot: number): void {
   console.log("timeouts:");
   for (const [phase, secs] of Object.entries(state.config.timeouts)) {
     console.log(`  ${phase}: ${secs}s`);
+  }
+}
+
+/**
+ * Resolve the comparison base for `orch diff` inside a worktree. Cascade:
+ * `origin/<detected>` → `upstream/<detected>` → local `main` or `master`
+ * (whichever exists) → literal `"main"` as a last-resort fallback. The
+ * cascade never produces a standalone error; any remaining problem
+ * (e.g. a repo with none of these refs) surfaces as the downstream
+ * `git log` non-zero exit so the user sees git's own diagnostic.
+ * Addresses the `master`-based repo case: without this cascade, the
+ * literal `main` fallback would wedge on repos that use `master`.
+ */
+function resolveDiffBase(wt: string, runGit: RunGit): string {
+  const detected = detectDefaultBranches(wt, runGit);
+  if (detected.origin) return `origin/${detected.origin}`;
+  if (detected.upstream) return `upstream/${detected.upstream}`;
+  for (const candidate of ["main", "master"]) {
+    const verify = runGit(
+      ["rev-parse", "--verify", "--quiet", `refs/heads/${candidate}`],
+      wt,
+    );
+    if (verify.exitCode === 0 && verify.stdout.trim() !== "") return candidate;
+  }
+  return "main";
+}
+
+/**
+ * `ludics orch diff <slot>` — per-worktree commit summary for reviewer
+ * stale-branch diagnosis. For each agent, runs
+ * `git log <base>..HEAD --stat` inside the agent's worktree where
+ * `<base>` comes from `resolveDiffBase` (cascade: origin → upstream →
+ * local main/master → literal `"main"`). Per-agent failures print
+ * under the agent's header and do not abort sibling agents; the
+ * command exits non-zero overall if any agent block failed.
+ */
+export function orchDiff(
+  slot: number,
+  runGit: RunGit = defaultRunGit,
+  log: (msg: string) => void = (m) => console.log(m),
+): void {
+  const state = readOrchestrationState(slot);
+  if (!state) throw new Error(`orchestration state not found for slot ${slot}`);
+  let anyFailed = false;
+  let first = true;
+  for (const agent of state.agents) {
+    if (!first) log("");
+    first = false;
+    log(`=== agent: ${agent.name} (worktree: ${agent.worktreePath}) ===`);
+    const wt = agent.worktreePath;
+    if (!wt) {
+      log("(no worktree path configured)");
+      anyFailed = true;
+      continue;
+    }
+    if (!existsSync(wt)) {
+      log("(worktree missing on disk)");
+      anyFailed = true;
+      continue;
+    }
+    const inside = runGit(["rev-parse", "--is-inside-work-tree"], wt);
+    if (inside.exitCode !== 0 || inside.stdout.trim() !== "true") {
+      log("(not a git repository)");
+      anyFailed = true;
+      continue;
+    }
+    const base = resolveDiffBase(wt, runGit);
+    const res = Bun.spawnSync(
+      ["git", "-C", wt, "log", `${base}..HEAD`, "--stat"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    if (res.exitCode !== 0) {
+      const stderr = res.stderr.toString().trim();
+      log(`git log failed: ${stderr || "(no stderr)"}`);
+      anyFailed = true;
+      continue;
+    }
+    const stdout = res.stdout.toString();
+    if (stdout.trim() === "") {
+      log(`(no commits ahead of ${base})`);
+      continue;
+    }
+    // Print as-is; git log already terminates with a newline, so trim trailing
+    // blank to avoid a double-blank before the next agent header.
+    log(stdout.replace(/\n+$/, ""));
+  }
+  if (anyFailed) {
+    throw new Error("orch diff: one or more agents failed (see output above)");
   }
 }
 
@@ -80,6 +169,9 @@ export async function runOrchestrationCli(args: string[]): Promise<void> {
     }
     case "log":
       orchLog(requireSlot(args[1]));
+      return;
+    case "diff":
+      orchDiff(requireSlot(args[1]));
       return;
     case "run-internal": {
       console.error(`ludics: orchestration runner starting — slot ${args[1]}, pid ${process.pid}, ${new Date().toISOString()}`);
