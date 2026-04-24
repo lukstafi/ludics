@@ -197,7 +197,7 @@ describe("warnStaleBase", () => {
 
   beforeEach(() => {
     emitSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
-    env = envSandbox(["LUDICS_WARN_BASE_STALENESS_THRESHOLD"]);
+    env = envSandbox(["LUDICS_WARN_BASE_STALENESS_THRESHOLD", "LUDICS_WARN_FETCH_TIMEOUT_MS"]);
   });
   afterEach(() => {
     env.restore();
@@ -369,5 +369,56 @@ describe("warnStaleBase", () => {
     expect(countWarnings(emitSpy)).toBe(2);
     expect(state.staleBaseLastWarnedRound).toBe(2);
     expect(state.staleBaseLastWarnedCount).toBe(5);
+  });
+
+  test("dedup: re-arms after staleness decreases within same round (rebase → drift)", () => {
+    // Scenario: warning fires at 10 commits (lastCount=10); coder rebases
+    // mid-round so count drops to 0; origin/main advances again past the
+    // threshold. The warning MUST re-fire even though the new count (5) is
+    // below the previously-warned peak (10) — this is the workflow the
+    // advisory is meant to protect.
+    const { worktree, repoDir } = setupStaleRepo(10);
+    const state = stateFor(worktree, repoDir);
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1);
+    expect(state.staleBaseLastWarnedCount).toBe(10);
+
+    // Simulate `git rebase origin/main` in the worktree — fast-forwards to
+    // origin/main since the worktree branch has no commits of its own.
+    Bun.spawnSync(["git", "rebase", "origin/main"], { cwd: worktree });
+    // Sanity: worktree is now at origin/main (0 commits behind).
+    const mb = Bun.spawnSync(["git", "merge-base", "HEAD", "origin/main"], { cwd: worktree });
+    const behind = Bun.spawnSync(
+      ["git", "rev-list", "--count", `${String(mb.stdout).trim()}..origin/main`],
+      { cwd: worktree },
+    );
+    expect(parseInt(String(behind.stdout).trim(), 10)).toBe(0);
+
+    // Running warnStaleBase now should observe count=0 and re-arm the memo.
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1); // below threshold, no new warn
+    expect(state.staleBaseLastWarnedCount).toBe(0); // re-armed
+
+    // Origin drifts again past the threshold (5 commits).
+    advanceOriginMain(repoDir, 5);
+    warnStaleBase(state);
+    // Must re-fire — without the re-arm, the gate `count <= lastCount` with
+    // stale lastCount=10 would suppress the 5-commit warning.
+    expect(countWarnings(emitSpy)).toBe(2);
+    expect(state.staleBaseLastWarnedCount).toBe(5);
+  });
+
+  test("fetch timeout silently skipped (bounded phase-entry cost)", () => {
+    // Tiny timeout guarantees the fetch subprocess is killed before it can
+    // complete even against a local bare remote. Bun.spawnSync returns
+    // exitCode=null + SIGTERM in that case; the `!== 0` guard must treat
+    // that as "skip."
+    const { worktree, repoDir } = setupStaleRepo(5);
+    process.env.LUDICS_WARN_FETCH_TIMEOUT_MS = "1";
+    const state = stateFor(worktree, repoDir);
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(0);
+    expect(state.staleBaseLastWarnedCount).toBeUndefined();
+    expect(state.staleBaseLastWarnedRound).toBeUndefined();
   });
 });

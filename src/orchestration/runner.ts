@@ -170,10 +170,28 @@ export function warnStaleBase(state: OrchestrationState): void {
     if (!baseBranch) return;
 
     // Refresh origin/<main>. If fetch fails (offline, bad remote URL, no
-    // network) we must not fall through and measure against a stale cached
-    // `origin/<main>` — the whole point of the warning is that the local ref
-    // matches GitHub. Treat any non-zero exit as "skip this check."
-    const fetched = Bun.spawnSync(["git", "fetch", "origin", baseBranch], { cwd: worktree });
+    // network, timeout, credential prompt) we must not fall through and
+    // measure against a stale cached `origin/<main>` — the whole point of the
+    // warning is that the local ref matches GitHub. Treat any non-zero exit
+    // (or timeout-induced kill) as "skip this check."
+    //
+    // `GIT_TERMINAL_PROMPT=0` disables interactive credential prompts that
+    // would otherwise hang phase entry on private-repo misconfigurations.
+    // `timeout` (ms) bounds the wall-clock cost: default 10s, overridable via
+    // LUDICS_WARN_FETCH_TIMEOUT_MS for exotic network setups.
+    const timeoutRaw = process.env.LUDICS_WARN_FETCH_TIMEOUT_MS;
+    const timeoutParsed = timeoutRaw !== undefined ? parseInt(timeoutRaw, 10) : NaN;
+    const fetchTimeoutMs = Number.isFinite(timeoutParsed) && timeoutParsed > 0
+      ? timeoutParsed
+      : 10_000;
+    const fetched = Bun.spawnSync(
+      ["git", "fetch", "origin", baseBranch],
+      {
+        cwd: worktree,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        timeout: fetchTimeoutMs,
+      },
+    );
     if (fetched.exitCode !== 0) return;
 
     const mb = Bun.spawnSync(
@@ -198,9 +216,18 @@ export function warnStaleBase(state: OrchestrationState): void {
       state.staleBaseLastWarnedRound = state.round;
       state.staleBaseLastWarnedCount = 0;
     }
+    // Re-arm dedup when staleness decreases (coder rebased mid-round): a
+    // subsequent drift back above threshold should fire again, even if its
+    // count is below the previously-warned peak. Without this reset, the
+    // "newly needing rebase" warning would be suppressed in exactly the
+    // workflow (rebase then drift) it is meant to protect.
     const lastCount = state.staleBaseLastWarnedCount ?? 0;
+    if (count < lastCount) {
+      state.staleBaseLastWarnedCount = 0;
+    }
+    const effectiveLastCount = state.staleBaseLastWarnedCount ?? 0;
     if (count < threshold) return;
-    if (count <= lastCount) return;
+    if (count <= effectiveLastCount) return;
 
     state.staleBaseLastWarnedCount = count;
     state.staleBaseLastWarnedRound = state.round;
