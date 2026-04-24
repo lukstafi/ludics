@@ -18,42 +18,14 @@
 
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
+import { ALWAYS_POPULATED_KEYS } from "../src/orchestration/skills.ts";
 
-export const ALWAYS_POPULATED: ReadonlySet<string> = new Set([
-  "PHASE",
-  "ROUND",
-  "MODE",
-  "TASK_ID",
-  "AGENT_NAME",
-  "AGENT_PROVIDER",
-  "AGENT_ROLE",
-  "PEER_NAME",
-  "PEER_PROVIDER",
-  "TASK_SPEC",
-  "TASK_SPEC_BRIEF",
-  "PEER_REVIEW",
-  "PEER_STATUS",
-  "PEER_PLAN",
-  "GIT_DIFF_STAT",
-  "PREVIOUS_ROUND_SUMMARY",
-  "MERGE_VOTES",
-  "WORKTREE_PATH",
-  "PEER_WORKTREE_PATH",
-  "STATUS_FILE",
-  "PLAN_FILE",
-  "MERGED_PLAN_FILE",
-  "PLAN_MERGE_ROUND",
-  "REVIEW_FILE",
-  "PR_FILE",
-  "INTERRUPT_FILE",
-  "MERGE_VOTE_FILE",
-  "SUGGEST_REFACTOR_FILE",
-  "WORKFLOW_FEEDBACK_FILE",
-  "MERGE_REVIEW_DECISION_FILE",
-  "MERGED_MARKER_FILE",
-  "PEER_SYNC_DIR",
-  "DONE_STATUS",
-]);
+/** Re-exported for back-compat; canonical source is `ALWAYS_POPULATED_KEYS` in
+ *  `src/orchestration/skills.ts`, co-located with `buildSkillContext`'s
+ *  `result` literal so a maintainer adding a new always-populated assignment
+ *  touches one file. CI-drift-pair: see `scripts/lint-template-safety.test.ts`
+ *  ALWAYS_POPULATED_KEYS drift test. */
+export const ALWAYS_POPULATED: ReadonlySet<string> = ALWAYS_POPULATED_KEYS;
 
 /** Per-file allowlist for variables that the lint would otherwise flag but are
  *  guaranteed non-empty by the template's resolution context. Add an entry

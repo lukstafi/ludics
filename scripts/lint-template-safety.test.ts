@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -356,6 +356,118 @@ describe("ALWAYS_POPULATED set", () => {
     ]) {
       expect(ALWAYS_POPULATED.has(v)).toBe(false);
     }
+  });
+});
+
+describe("ALWAYS_POPULATED_KEYS drift", () => {
+  // Bidirectional invariant against `buildSkillContext`'s `result` object literal
+  // in src/orchestration/skills.ts. Catches the classic drift case where someone
+  // adds a literally-non-empty assignment but forgets to register the key as
+  // always-populated, or removes a key from one side without the other.
+
+  /** Extract the `result: Record<string, string> = { ... };` block from skills.ts
+   *  by locating the opening `= {` and matching closing `};` via brace depth. */
+  function extractResultBlock(text: string): { keys: { name: string; rhs: string }[] } {
+    const startMarker = "const result: Record<string, string> = {";
+    const startIdx = text.indexOf(startMarker);
+    if (startIdx < 0) throw new Error("could not locate result literal in skills.ts");
+    const bodyStart = startIdx + startMarker.length;
+    let depth = 1;
+    let i = bodyStart;
+    while (i < text.length && depth > 0) {
+      const ch = text[i]!;
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      if (depth === 0) break;
+      i++;
+    }
+    if (depth !== 0) throw new Error("unbalanced braces in result literal");
+    const body = text.slice(bodyStart, i);
+    // Walk top-level entries (depth 0 within `body`) and collect "KEY: rhs,"
+    // pairs. We need to track nested braces/brackets/parens so that ternaries
+    // or template literals containing `,` don't fragment a single entry.
+    const keys: { name: string; rhs: string }[] = [];
+    let bd = 0; // brace depth
+    let pd = 0; // paren depth
+    let sd = 0; // square-bracket depth
+    let entryStart = 0;
+    let inString: '"' | "'" | "`" | null = null;
+    let escape = false;
+    const flush = (end: number) => {
+      const entry = body.slice(entryStart, end).trim();
+      entryStart = end + 1;
+      if (!entry) return;
+      const m = entry.match(/^([A-Z][A-Z0-9_]*)\s*:\s*([\s\S]*)$/);
+      if (!m) return; // skip comments / non-identifier lines
+      keys.push({ name: m[1]!, rhs: m[2]!.trim() });
+    };
+    for (let j = 0; j < body.length; j++) {
+      const ch = body[j]!;
+      if (escape) { escape = false; continue; }
+      if (inString) {
+        if (ch === "\\") { escape = true; continue; }
+        if (ch === inString) inString = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") { inString = ch; continue; }
+      if (ch === "{") bd++;
+      else if (ch === "}") bd--;
+      else if (ch === "(") pd++;
+      else if (ch === ")") pd--;
+      else if (ch === "[") sd++;
+      else if (ch === "]") sd--;
+      else if (ch === "," && bd === 0 && pd === 0 && sd === 0) {
+        flush(j);
+      }
+    }
+    flush(body.length);
+    return { keys };
+  }
+
+  /** A right-hand-side expression has an empty-default marker if it contains
+   *  one of the canonical idioms `?? ""`, `: ""`, or `|| ""` (single-quoted
+   *  variants accepted too) at any position outside string literals. */
+  function hasEmptyDefault(rhs: string): boolean {
+    return /(?:\?\?|:|\|\|)\s*""(?!")|(?:\?\?|:|\|\|)\s*''(?!')/.test(rhs);
+  }
+
+  const skillsPath = join(import.meta.dir, "..", "src", "orchestration", "skills.ts");
+  const skillsText = readFileSync(skillsPath, "utf-8");
+  const { keys } = extractResultBlock(skillsText);
+
+  test("every literally-non-empty assignment is in ALWAYS_POPULATED_KEYS", () => {
+    const missing: string[] = [];
+    for (const { name, rhs } of keys) {
+      if (hasEmptyDefault(rhs)) continue;
+      if (!ALWAYS_POPULATED.has(name)) {
+        missing.push(`${name}  (rhs: ${rhs.slice(0, 60)})`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  test("every key in ALWAYS_POPULATED_KEYS appears as a non-empty-default assignment", () => {
+    const byName = new Map(keys.map((k) => [k.name, k.rhs]));
+    const missing: string[] = [];
+    for (const key of ALWAYS_POPULATED) {
+      const rhs = byName.get(key);
+      if (rhs == null) {
+        missing.push(`${key} (no assignment found in result literal)`);
+        continue;
+      }
+      if (hasEmptyDefault(rhs)) {
+        missing.push(`${key} (rhs has empty-default marker: ${rhs.slice(0, 60)})`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  test("the set has the expected size for the current result literal", () => {
+    // Sanity check: 33 keys today. Update when buildSkillContext gains/loses an
+    // always-populated key — failure here is a prompt to also update the tests
+    // above with an explanatory comment in the same change.
+    const nonEmpty = keys.filter((k) => !hasEmptyDefault(k.rhs)).map((k) => k.name);
+    expect(new Set(nonEmpty)).toEqual(new Set(ALWAYS_POPULATED));
   });
 });
 

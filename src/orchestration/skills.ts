@@ -250,6 +250,56 @@ export function resolveTemplatePath(
   throw new Error(`missing orchestration template for ${mode}:${role ?? "agent"}:${phase}`);
 }
 
+/**
+ * Keys in `buildSkillContext`'s `result` literal that are guaranteed
+ * non-empty at template-substitution time. Templates may use these
+ * variables freely inside shell contexts without `{{#IF VAR}}` guards.
+ *
+ * CI-drift-pair — see `scripts/lint-template-safety.test.ts`
+ * "ALWAYS_POPULATED_KEYS drift" describe block: a bidirectional invariant
+ * test parses the `result` object literal below and asserts every
+ * non-empty-default assignment is in this set, and every key in this set
+ * has such an assignment. Maintainers adding a new always-populated key
+ * touch only this file (this set + the `result` literal). Empty-default
+ * assignments must surface a `?? ""`, `: ""`, or `|| ""` marker on the
+ * assignment line so the drift test can classify them correctly.
+ */
+export const ALWAYS_POPULATED_KEYS: ReadonlySet<string> = new Set([
+  "PHASE",
+  "ROUND",
+  "MODE",
+  "TASK_ID",
+  "AGENT_NAME",
+  "AGENT_PROVIDER",
+  "AGENT_ROLE",
+  "PEER_NAME",
+  "PEER_PROVIDER",
+  "TASK_SPEC",
+  "TASK_SPEC_BRIEF",
+  "PEER_REVIEW",
+  "PEER_STATUS",
+  "PEER_PLAN",
+  "GIT_DIFF_STAT",
+  "PREVIOUS_ROUND_SUMMARY",
+  "MERGE_VOTES",
+  "WORKTREE_PATH",
+  "PEER_WORKTREE_PATH",
+  "STATUS_FILE",
+  "PLAN_FILE",
+  "MERGED_PLAN_FILE",
+  "PLAN_MERGE_ROUND",
+  "REVIEW_FILE",
+  "PR_FILE",
+  "INTERRUPT_FILE",
+  "MERGE_VOTE_FILE",
+  "SUGGEST_REFACTOR_FILE",
+  "WORKFLOW_FEEDBACK_FILE",
+  "MERGE_REVIEW_DECISION_FILE",
+  "MERGED_MARKER_FILE",
+  "PEER_SYNC_DIR",
+  "DONE_STATUS",
+]);
+
 export function buildSkillContext(
   state: OrchestrationState,
   agent: AgentConfig,
@@ -322,10 +372,10 @@ export function buildSkillContext(
     PEER_PROVIDER: peer?.provider ?? "none",
     TASK_SPEC: state.round <= 1 ? taskSpecText(state) : taskSpecBriefText(state),
     TASK_SPEC_BRIEF: taskSpecBriefText(state),
-    PROPOSAL_PATH: proposalPath,
-    PROPOSAL_INSTRUCTION: proposalInstruction,
-    PROPOSAL_FRESHNESS_WARNING: proposalFreshnessWarningText,
-    TASK_AC: extractAcceptanceCriteria(state.taskId),
+    PROPOSAL_PATH: proposalPath || "",
+    PROPOSAL_INSTRUCTION: proposalInstruction || "",
+    PROPOSAL_FRESHNESS_WARNING: proposalFreshnessWarningText || "",
+    TASK_AC: extractAcceptanceCriteria(state.taskId) || "",
     PEER_REVIEW: peerReview ?? "(no review yet)",
     PEER_STATUS: peer ? (state.agentStates[peer.name]?.status ?? "unknown") : "unknown",
     PEER_PLAN: peerPlan ?? "(no plan yet)",
