@@ -12,6 +12,7 @@
     "lint:config-reference": "bun run scripts/lint-config-reference.ts",
     "lint:contracts": "bun run scripts/lint-contracts.ts",
     "lint:template-safety": "bun run scripts/lint-template-safety.ts",
+    "lint:test-isolation": "bun run scripts/lint-test-isolation.ts",
     "lint:no-mock-module": "! grep -r 'mock\\.module(' src/ templates/ --include='*.test.ts' -l"
   },
   "devDependencies": {
