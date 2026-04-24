@@ -1801,4 +1801,98 @@ describe("skills", () => {
     expect(raw).toContain("git diff <commit>^..<commit> --stat");
     expect(raw).toContain("main-side drift");
   });
+
+  // task-f60547cd: state.harnessDir must be authoritative over the process-global
+  // harnessDir() when resolving task files and acceptance criteria.
+  test("buildSkillContext: reads task file from state.harnessDir even when LUDICS_HARNESS_DIR points elsewhere", async () => {
+    const { rmSync } = await import("fs");
+    const realTmp = mkdtempSync(join(tmpdir(), "ludics-skills-harnessdir-real-"));
+    const decoyTmp = mkdtempSync(join(tmpdir(), "ludics-skills-harnessdir-decoy-"));
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      mkdirSync(join(realTmp, "tasks"), { recursive: true });
+      mkdirSync(join(decoyTmp, "tasks"), { recursive: true });
+      // Real harness contains the authoritative task spec with distinctive AC text.
+      writeFileSync(
+        join(realTmp, "tasks", "task-hd1.md"),
+        [
+          "---", "id: task-hd1", "title: Real Title", "proposal: inline", "---",
+          "", "## Acceptance Criteria",
+          "- [ ] REAL_AC_MARKER do the real thing",
+        ].join("\n"),
+      );
+      // Decoy harness has a conflicting task with different AC text — a bypass
+      // would pick this up.
+      writeFileSync(
+        join(decoyTmp, "tasks", "task-hd1.md"),
+        [
+          "---", "id: task-hd1", "title: Decoy Title", "proposal: inline", "---",
+          "", "## Acceptance Criteria",
+          "- [ ] DECOY_AC_MARKER should never appear",
+        ].join("\n"),
+      );
+      process.env.LUDICS_HARNESS_DIR = decoyTmp;
+
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = {
+        ...makeState(),
+        taskId: "task-hd1",
+        slotTitle: "Real Title",
+        round: 1,
+        harnessDir: realTmp,
+      };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+
+      // TASK_SPEC and TASK_AC must reflect the real harness, not the decoy.
+      expect(ctx["TASK_SPEC"]).toContain("REAL_AC_MARKER");
+      expect(ctx["TASK_SPEC"]).not.toContain("DECOY_AC_MARKER");
+      expect(ctx["TASK_AC"]).toContain("REAL_AC_MARKER");
+      expect(ctx["TASK_AC"]).not.toContain("DECOY_AC_MARKER");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(realTmp, { recursive: true, force: true });
+      rmSync(decoyTmp, { recursive: true, force: true });
+    }
+  });
+
+  test("buildSkillContext: brief round (round > 1) also reads task file from state.harnessDir", async () => {
+    const { rmSync } = await import("fs");
+    const realTmp = mkdtempSync(join(tmpdir(), "ludics-skills-harnessdir-brief-"));
+    const decoyTmp = mkdtempSync(join(tmpdir(), "ludics-skills-harnessdir-brief-decoy-"));
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      mkdirSync(join(realTmp, "tasks"), { recursive: true });
+      mkdirSync(join(decoyTmp, "tasks"), { recursive: true });
+      writeFileSync(
+        join(realTmp, "tasks", "task-hd2.md"),
+        ["---", "id: task-hd2", "title: Real Brief", "proposal: docs/proposals/real-p.md", "---", ""].join("\n"),
+      );
+      writeFileSync(
+        join(decoyTmp, "tasks", "task-hd2.md"),
+        ["---", "id: task-hd2", "title: Decoy Brief", "proposal: docs/proposals/decoy-p.md", "---", ""].join("\n"),
+      );
+      process.env.LUDICS_HARNESS_DIR = decoyTmp;
+
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = {
+        ...makeState(),
+        taskId: "task-hd2",
+        slotTitle: "Real Brief",
+        round: 2,
+        harnessDir: realTmp,
+      };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+
+      // Brief form: proposal path comes from frontmatter; must be the real one, not the decoy one.
+      expect(ctx["PROPOSAL_PATH"]).toBe("docs/proposals/real-p.md");
+      expect(ctx["TASK_SPEC"]).toContain("docs/proposals/real-p.md");
+      expect(ctx["TASK_SPEC"]).not.toContain("docs/proposals/decoy-p.md");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(realTmp, { recursive: true, force: true });
+      rmSync(decoyTmp, { recursive: true, force: true });
+    }
+  });
 });
