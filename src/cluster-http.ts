@@ -8,7 +8,7 @@ import { writeJsonFile, writeJsonFileCompact } from "./json.ts";
 import { join } from "path";
 import { harnessDir, loadConfigSync, slotsCount, stateRepoDir } from "./config.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, slotDataToMarkdown } from "./slots/json.ts";
-import type { SlotData } from "./slots/types.ts";
+import { parseSlotLiveness, type SlotData } from "./slots/types.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
 import { journalAppend } from "./journal.ts";
@@ -650,7 +650,7 @@ function handlePostSlotUpdate(body: Record<string, unknown>): Response {
 
   // Merge runtime fields + adapter args (for worker auto-fill)
   if (body.sessionStarted !== undefined) data.sessionStarted = String(body.sessionStarted);
-  if (body.liveness !== undefined) data.liveness = String(body.liveness);
+  if (body.liveness !== undefined) data.liveness = parseSlotLiveness(body.liveness);
   if (body.adapterArgs !== undefined) data.adapterArgs = String(body.adapterArgs);
 
   // Merge sections (Terminals, Runtime, Git)
