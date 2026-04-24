@@ -5,6 +5,8 @@ import { join } from "path";
 import { globalAdapter, harnessDir, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
 import { mergeAdapterState, addNoteToSlotData } from "./markdown.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, emptySlotData, slotJsonDir, slotDataToMarkdown } from "./json.ts";
+import { migrateMarkdownToSlotData } from "./migration.ts";
+import { cleanupStaleItems } from "../t3code/index.ts";
 import type { SlotData } from "./types.ts";
 import { stateMarkDirty } from "../state.ts";
 import { journalAppend } from "../journal.ts";
@@ -63,9 +65,8 @@ function ensureSlotsDir(): void {
   // One-time migration: if slots.md exists but slots/ does not
   const mdFile = join(harnessDir(), "slots.md");
   if (existsSync(mdFile)) {
-    const { migrateMarkdownToSlotData } = require("./migration.ts");
     const count = slotsCount();
-    const migrated = migrateMarkdownToSlotData(mdFile, count) as Map<number, SlotData>;
+    const migrated = migrateMarkdownToSlotData(mdFile, count);
     for (const [slot, data] of migrated) {
       writeSlotJson(slot, data);
     }
@@ -96,8 +97,8 @@ function readAllSlots(): Map<number, SlotData> {
 
 function isWorkerContext(): boolean {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- circular-dep chain: cluster.ts imports emitEvent from events.ts
+    const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts") as typeof import("../cluster.ts");
     return !!(clusterCurrentMachineName() && !clusterIsController());
   } catch {
     return false;
@@ -445,8 +446,7 @@ export async function slotClear(slotNum: number, finalStatus: string = "ready"):
 
   // Best-effort t3code cleanup after clearing a slot
   try {
-    const { cleanupStaleItems } = require("../t3code/index.ts");
-    cleanupStaleItems(harnessDir(), false).catch(() => {});
+    void cleanupStaleItems(harnessDir(), false).catch(() => { /* ignore */ });
   } catch {
     // t3code not available — skip
   }

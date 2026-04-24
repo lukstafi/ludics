@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
@@ -240,7 +240,8 @@ export function surfaceManualIntervention(taskId: string, questionLine: string):
   }
   // On worker machines, also forward to the controller so the dashboard sees it.
   try {
-    const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- circular-dep chain: cluster.ts imports emitEvent from events.ts
+    const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts") as typeof import("../cluster.ts");
     if (clusterCurrentMachineName() && !clusterIsController()) {
       // Fire-and-forget: handleVerifyFailure is synchronous, so we cannot await.
       import("../cluster-http.ts").then(({ clusterPostTaskUpdate, clusterPostTaskSectionAppend }) => {
@@ -602,7 +603,6 @@ async function enterPhase(
   // On fresh entry: generate new token, persist it, write peer-sync.
   // On crash re-entry: reuse the persisted token so already-dispatched agents are deduped.
   let phaseToken: string;
-  const isCrashReentry = !!state.currentPhaseToken;
   if (state.currentPhaseToken) {
     // Re-entry after crash — reuse the token already persisted
     phaseToken = state.currentPhaseToken;
@@ -1707,8 +1707,8 @@ export async function runOrchestration(
   if (state.taskId) {
     let taskUpdated = false;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- circular-dep chain: cluster.ts imports emitEvent from events.ts
+      const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts") as typeof import("../cluster.ts");
       if (clusterCurrentMachineName() && !clusterIsController()) {
         const { clusterPostTaskUpdate } = await import("../cluster-http.ts");
         await clusterPostTaskUpdate(state.taskId, "status", "done");
