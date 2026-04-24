@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, renameSync } from "fs";
 import { extname, join } from "path";
 import { harnessDir } from "../config.ts";
-import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus, readFrontmatterField } from "./markdown.ts";
+import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus } from "./markdown.ts";
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
@@ -265,7 +265,7 @@ function tasksMerge(targetId: string, sourceIds: string[]): void {
     const srcFile = join(dir, `${srcId}.md`);
     if (!transitionStatus(srcFile, ["ready", "blocked", "needs-confirmation", "deferred"], "merged")) {
       const content = readFileSync(srcFile, "utf-8");
-      const actual = readFrontmatterField(content, "status") ?? "unknown";
+      const actual = parseTaskFrontmatter(content).status ?? "unknown";
       console.error(`ludics: skipping merge for ${srcId}: status is '${actual}', expected one of [ready, blocked, needs-confirmation, deferred]`);
       continue;
     }
@@ -319,7 +319,7 @@ function tasksUnmerge(sourceId: string): void {
   // Restore source task
   if (!transitionStatus(srcFile, ["merged"], "ready")) {
     const currentContent = readFileSync(srcFile, "utf-8");
-    const actual = readFrontmatterField(currentContent, "status") ?? "unknown";
+    const actual = parseTaskFrontmatter(currentContent).status ?? "unknown";
     console.error(`ludics: skipping unmerge for ${sourceId}: status is '${actual}', expected 'merged'`);
     return;
   }
