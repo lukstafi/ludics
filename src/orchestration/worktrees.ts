@@ -226,6 +226,26 @@ export function defaultMainBranch(projectDir: string): string {
   return local || "main";
 }
 
+/**
+ * Count commits on the worktree's HEAD ahead of `origin/<base>` where base is
+ * resolved from `projectDir` (shared remote refs). Returns `null` on any git
+ * error — callers should treat this as "cannot compare" and skip, not as zero.
+ */
+export function countCommitsAhead(worktreePath: string, projectDir: string): number | null {
+  try {
+    const base = defaultMainBranch(projectDir);
+    const r = Bun.spawnSync(
+      ["git", "rev-list", "--count", `origin/${base}..HEAD`],
+      { cwd: worktreePath },
+    );
+    if (r.exitCode !== 0) return null;
+    const n = parseInt(String(r.stdout).trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Canonical orchestration branch name for a task/slot/suffix combination. */
 export function orchBranchName(taskId: string, slot: number | undefined, suffix: string): string {
   const featureSlug = slugify(taskId);

@@ -187,3 +187,24 @@ export function postCodexReviewComment(
     : `@codex review ${DEFAULT_CODEX_REVIEW_PROMPT}`;
   return safeSyncOutput(["gh", "pr", "comment", prUrl, "--body", body]).ok;
 }
+
+/**
+ * Post a short notice on a PR that the branch has drifted since the body was
+ * last written. Best-effort: returns true on success, false on failure.
+ */
+export function postPrDriftComment(
+  prUrl: string,
+  baseline: number,
+  current: number,
+  baselineAt: string,
+): boolean {
+  const basePlural = baseline === 1 ? "commit" : "commits";
+  const curPlural = current === 1 ? "commit" : "commits";
+  const atClause = baselineAt ? ` at ${baselineAt}` : "";
+  const body =
+    `note: branch state has drifted since this body was written ` +
+    `(baseline: ${baseline} ${basePlural}${atClause}, ` +
+    `current: ${current} ${curPlural}). ` +
+    `consider \`gh pr edit ${prUrl}\` to refresh.`;
+  return safeSyncOutput(["gh", "pr", "comment", prUrl, "--body", body]).ok;
+}
