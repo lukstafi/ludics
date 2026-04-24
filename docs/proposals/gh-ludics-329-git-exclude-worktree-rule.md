@@ -1,5 +1,7 @@
 # Document the one-exclusion-source rule for orchestration worktrees
 
+> **Superseded by task-89b31783 / PR [#356](https://github.com/lukstafi/ludics/pull/356)** — the contract is now two-tier (narrow proactive untrack + defensive reset). See `docs/testing-patterns.md` § "Orchestration Worktree Exclusions".
+
 ## Goal
 
 Prevent future recurrence of the "duplicated exclusion mechanisms" pitfall
