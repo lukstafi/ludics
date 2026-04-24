@@ -124,17 +124,6 @@ function installPlist(label: string, content: string): void {
 function triggersInstallMacos(): void {
   const bin = binPath();
 
-  // Startup trigger
-  const startupAction = commandFromAction(triggerGet("startup", "action"));
-  installSimpleTrigger("startup", "startup trigger",
-    startupAction.split(" "),
-    triggerGet("startup", "enabled") === "true",
-    {
-      plistScheduling: `  <key>RunAtLoad</key>\n  <true/>`,
-      systemdServiceBody: `[Service]\nType=oneshot\nExecStart=${bin} ${startupAction}\n\n[Install]\nWantedBy=default.target\n`,
-    },
-    "startup");
-
   // Interval-based triggers
   installIntervalTrigger("sync", "sync trigger", 3600);
 
@@ -224,46 +213,7 @@ function triggersInstallMacos(): void {
 
   installIntervalTrigger("cluster", "cluster heartbeat", 300);
 
-  // Mag keepalive
-  const config = loadConfigSync();
-  const magEnabled = (config.mag as Record<string, unknown> | undefined)?.enabled;
-  const mag = config.mag as Record<string, unknown> | undefined;
-  const keepaliveInterval = String(mag?.keepalive_interval ?? "60");
-  const magSecs = parseInt(keepaliveInterval);
-  const intervalLabel = magSecs >= 60 ? `${Math.floor(magSecs / 60)}m${magSecs % 60 ? magSecs % 60 + "s" : ""}` : `${magSecs}s`;
-  installSimpleTrigger("mag", "Mag keepalive",
-    ["mag", "start"],
-    magEnabled === true || magEnabled === "true",
-    {
-      plistScheduling: `  <key>RunAtLoad</key>\n  <true/>\n  <key>StartInterval</key>\n  <integer>${keepaliveInterval}</integer>`,
-      systemdServiceBody: `[Service]\nType=oneshot\nExecStart=${bin} mag start\n`,
-      systemdActivationUnit: "timer",
-      systemdActivationBody: `[Unit]\nDescription=ludics Mag keepalive timer\n\n[Timer]\nOnBootSec=60\nOnUnitActiveSec=${keepaliveInterval}s\nUnit=ludics-mag.service\n\n[Install]\nWantedBy=timers.target\n`,
-    },
-    `mag (keepalive every ${intervalLabel})`);
-
-  // Dashboard trigger
-  let dashPort = triggerGet("dashboard", "port");
-  if (!dashPort) dashPort = String(config.dashboard?.port ?? 7678);
-  installSimpleTrigger("dashboard", "dashboard server",
-    ["dashboard", "serve", dashPort],
-    triggerGet("dashboard", "enabled") === "true",
-    {
-      plistScheduling: `  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>`,
-      systemdServiceBody: `[Service]\nType=simple\nExecStart=${bin} dashboard serve ${dashPort}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n`,
-    },
-    `dashboard (port ${dashPort}, KeepAlive)`);
-
-  // ntfy-subscribe (incoming messages)
-  const incomingTopic = config.notifications?.topics?.incoming;
-  installSimpleTrigger("ntfy-subscribe", "ntfy incoming message subscriber",
-    ["notify", "subscribe"],
-    !!incomingTopic,
-    {
-      plistScheduling: `  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>`,
-      systemdServiceBody: `[Service]\nType=simple\nExecStart=${bin} notify subscribe\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n`,
-    },
-    "ntfy-subscribe (KeepAlive)");
+  installSimpleTriggers();
 }
 
 // --- Linux systemd ---
@@ -364,7 +314,7 @@ function installIntervalTrigger(name: string, description: string, defaultInterv
   console.log(`Installed ${platform} trigger: ${name} (every ${desc})`);
 }
 
-function triggersInstallLinux(): void {
+function installSimpleTriggers(): void {
   const bin = binPath();
 
   // Startup
@@ -377,6 +327,51 @@ function triggersInstallLinux(): void {
       systemdServiceBody: `[Service]\nType=oneshot\nExecStart=${bin} ${startupAction}\n\n[Install]\nWantedBy=default.target\n`,
     },
     "startup");
+
+  // Mag keepalive
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+  const magEnabled = mag?.enabled;
+  const keepaliveInterval = String(mag?.keepalive_interval ?? "60");
+  const magSecs = parseInt(keepaliveInterval);
+  const intervalLabel = magSecs >= 60 ? `${Math.floor(magSecs / 60)}m${magSecs % 60 ? magSecs % 60 + "s" : ""}` : `${magSecs}s`;
+  installSimpleTrigger("mag", "Mag keepalive",
+    ["mag", "start"],
+    magEnabled === true || magEnabled === "true",
+    {
+      plistScheduling: `  <key>RunAtLoad</key>\n  <true/>\n  <key>StartInterval</key>\n  <integer>${keepaliveInterval}</integer>`,
+      systemdServiceBody: `[Service]\nType=oneshot\nExecStart=${bin} mag start\n`,
+      systemdActivationUnit: "timer",
+      systemdActivationBody: `[Unit]\nDescription=ludics Mag keepalive timer\n\n[Timer]\nOnBootSec=60\nOnUnitActiveSec=${keepaliveInterval}s\nUnit=ludics-mag.service\n\n[Install]\nWantedBy=timers.target\n`,
+    },
+    `mag (keepalive every ${intervalLabel})`);
+
+  // Dashboard
+  let dashPort = triggerGet("dashboard", "port");
+  if (!dashPort) dashPort = String(config.dashboard?.port ?? 7678);
+  installSimpleTrigger("dashboard", "dashboard server",
+    ["dashboard", "serve", dashPort],
+    triggerGet("dashboard", "enabled") === "true",
+    {
+      plistScheduling: `  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>`,
+      systemdServiceBody: `[Service]\nType=simple\nExecStart=${bin} dashboard serve ${dashPort}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n`,
+    },
+    `dashboard (port ${dashPort}, KeepAlive)`);
+
+  // ntfy-subscribe (incoming messages)
+  const incomingTopic = config.notifications?.topics?.incoming;
+  installSimpleTrigger("ntfy-subscribe", "ntfy incoming message subscriber",
+    ["notify", "subscribe"],
+    !!incomingTopic,
+    {
+      plistScheduling: `  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>`,
+      systemdServiceBody: `[Service]\nType=simple\nExecStart=${bin} notify subscribe\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n`,
+    },
+    "ntfy-subscribe (KeepAlive)");
+}
+
+function triggersInstallLinux(): void {
+  const bin = binPath();
 
   // Interval-based triggers
   installIntervalTrigger("sync", "sync trigger", 3600);
@@ -443,46 +438,7 @@ function triggersInstallLinux(): void {
 
   installIntervalTrigger("cluster", "cluster heartbeat", 300);
 
-  // Mag keepalive
-  const config = loadConfigSync();
-  const magEnabled = (config.mag as Record<string, unknown> | undefined)?.enabled;
-  const mag = config.mag as Record<string, unknown> | undefined;
-  const keepaliveInterval = String(mag?.keepalive_interval ?? "60");
-  const magSecs = parseInt(keepaliveInterval);
-  const intervalLabel = magSecs >= 60 ? `${Math.floor(magSecs / 60)}m${magSecs % 60 ? magSecs % 60 + "s" : ""}` : `${magSecs}s`;
-  installSimpleTrigger("mag", "Mag keepalive",
-    ["mag", "start"],
-    magEnabled === true || magEnabled === "true",
-    {
-      plistScheduling: `  <key>RunAtLoad</key>\n  <true/>\n  <key>StartInterval</key>\n  <integer>${keepaliveInterval}</integer>`,
-      systemdServiceBody: `[Service]\nType=oneshot\nExecStart=${bin} mag start\n`,
-      systemdActivationUnit: "timer",
-      systemdActivationBody: `[Unit]\nDescription=ludics Mag keepalive timer\n\n[Timer]\nOnBootSec=60\nOnUnitActiveSec=${keepaliveInterval}s\nUnit=ludics-mag.service\n\n[Install]\nWantedBy=timers.target\n`,
-    },
-    `mag (keepalive every ${intervalLabel})`);
-
-  // Dashboard
-  let dashPort = triggerGet("dashboard", "port");
-  if (!dashPort) dashPort = String(config.dashboard?.port ?? 7678);
-  installSimpleTrigger("dashboard", "dashboard server",
-    ["dashboard", "serve", dashPort],
-    triggerGet("dashboard", "enabled") === "true",
-    {
-      plistScheduling: `  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>`,
-      systemdServiceBody: `[Service]\nType=simple\nExecStart=${bin} dashboard serve ${dashPort}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n`,
-    },
-    `dashboard (port ${dashPort}, KeepAlive)`);
-
-  // ntfy-subscribe (incoming messages)
-  const incomingTopic = config.notifications?.topics?.incoming;
-  installSimpleTrigger("ntfy-subscribe", "ntfy incoming message subscriber",
-    ["notify", "subscribe"],
-    !!incomingTopic,
-    {
-      plistScheduling: `  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>`,
-      systemdServiceBody: `[Service]\nType=simple\nExecStart=${bin} notify subscribe\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n`,
-    },
-    "ntfy-subscribe (KeepAlive)");
+  installSimpleTriggers();
 }
 
 // --- Pause/Disable ---
