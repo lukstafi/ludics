@@ -4,6 +4,7 @@ import { assertRepoRelativeProposalPath } from "../adapters/task-launch.ts";
 import { readFrontmatterField } from "../tasks/markdown.ts";
 import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
+import { defaultRunGit, detectDefaultBranches } from "../git-runner.ts";
 import type { Phase } from "./phases.ts";
 import { planFilePath, mergedPlanFilePath } from "./plan-files.ts";
 import { parseReviewFilename, reviewFilePath } from "./review-files.ts";
@@ -40,11 +41,16 @@ function gitOutput(cwd: string, args: string[]): string | null {
 
 const PROPOSAL_FRESHNESS_THRESHOLD = 10;
 
-/** Count commits since the proposal file was last modified and return a warning
- *  when the count exceeds PROPOSAL_FRESHNESS_THRESHOLD. Returns "" on any failure
- *  (bad path, untracked file, non-git dir, parse failure) — must never block
- *  orchestration. Warning copy stays branch-neutral because `hash..HEAD` counts
- *  commits reachable from the current HEAD in `projectDir`, regardless of branch. */
+/** Count commits on the remote default branch (`origin/<default>`) since the
+ *  proposal file was last modified, and return a warning when the count exceeds
+ *  PROPOSAL_FRESHNESS_THRESHOLD. Returns "" on any failure (bad path, untracked
+ *  file, non-git dir, no `origin` default branch, proposal commit not an
+ *  ancestor of `origin/<default>`, parse failure) — must never block
+ *  orchestration. The count reflects upstream drift on the default branch, not
+ *  feature-branch churn, so orchestration worktrees checked out on
+ *  `ludics/.../root` branches still report the intended signal. Freshness of
+ *  `refs/remotes/origin/<default>` is delegated to callers that run
+ *  `git fetch origin` ahead of orchestration rounds. */
 function proposalFreshnessWarning(projectDir: string, proposalPath: string): string {
   if (!proposalPath || proposalPath === "inline") return "";
   try {
@@ -54,7 +60,12 @@ function proposalFreshnessWarning(projectDir: string, proposalPath: string): str
   }
   const hash = gitOutput(projectDir, ["log", "-1", "--format=%H", "--", proposalPath]);
   if (!hash) return "";
-  const countStr = gitOutput(projectDir, ["rev-list", "--count", `${hash}..HEAD`]);
+  const { origin } = detectDefaultBranches(projectDir, defaultRunGit);
+  if (!origin) return "";
+  const ref = `refs/remotes/origin/${origin}`;
+  const isAncestor = safeSyncOutput(["git", "merge-base", "--is-ancestor", hash, ref], { cwd: projectDir });
+  if (isAncestor.exitCode !== 0) return "";
+  const countStr = gitOutput(projectDir, ["rev-list", "--count", `${hash}..${ref}`]);
   if (!countStr) return "";
   const count = Number.parseInt(countStr, 10);
   if (Number.isNaN(count)) return "";
