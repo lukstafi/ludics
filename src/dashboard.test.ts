@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import type { SlotData } from "./slots/types.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -130,8 +131,27 @@ describe("computeSlotLiveness", () => {
   test("explicit Liveness field 'interrupted' in slot data returns 'interrupted'", async () => {
     const { computeSlotLiveness } = await import("./dashboard.ts");
     const { emptySlotData } = await import("./slots/json.ts");
-    const slotData = { ...emptySlotData(1), process: "test", liveness: "interrupted" };
+    const slotData: SlotData = { ...emptySlotData(1), process: "test", liveness: "interrupted" };
     expect(computeSlotLiveness({ slotNum: 1, mode: null, slotData })).toBe("interrupted");
+  });
+
+  test("explicit Liveness field 'escalated' in slot data returns 'escalated'", async () => {
+    const { computeSlotLiveness } = await import("./dashboard.ts");
+    const { emptySlotData } = await import("./slots/json.ts");
+    const slotData: SlotData = { ...emptySlotData(1), process: "test", liveness: "escalated" };
+    expect(computeSlotLiveness({ slotNum: 1, mode: null, slotData })).toBe("escalated");
+  });
+
+  test("escalated wins over an alive PID — user-initiated halt is sticky", async () => {
+    const { computeSlotLiveness } = await import("./dashboard.ts");
+    const { emptySlotData } = await import("./slots/json.ts");
+    writeT3codeSlotState(1, {
+      slot: 1,
+      threads: [],
+      orchestration: { stateFile: "orch.json", mode: "pair", pid: process.pid },
+    });
+    const slotData: SlotData = { ...emptySlotData(1), process: "test", liveness: "escalated" };
+    expect(computeSlotLiveness({ slotNum: 1, mode: "t3code", slotData })).toBe("escalated");
   });
 
   test("explicit Liveness field null in slot data falls through to PID check", async () => {

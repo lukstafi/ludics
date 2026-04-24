@@ -143,6 +143,55 @@ describe("slotDataToMarkdown round-trip fidelity", () => {
     }
   });
 
+  test("round-trip preserves 'escalated' liveness through markdown migration", () => {
+    // Regression: the SlotLiveness enum narrowing (task-4cd94043) must not
+    // silently collapse "escalated" to null on legacy markdown migration.
+    const original: SlotData = {
+      slot: 1,
+      process: "running",
+      task: "task-xyz",
+      mode: "tmux",
+      session: null,
+      path: null,
+      started: null,
+      adapterArgs: null,
+      machine: null,
+      sessionStarted: null,
+      liveness: "escalated",
+      terminals: "",
+      runtime: "",
+      git: "",
+    };
+
+    const tmp = mkdtempSync(join(tmpdir(), "ludics-rt-esc-"));
+    try {
+      const md = slotDataToMarkdown(original);
+      expect(md).toContain("**Liveness:** escalated");
+      const slotsFile = join(tmp, "slots.md");
+      writeFileSync(slotsFile, md);
+      const parsed = migrateMarkdownToSlotData(slotsFile, 1);
+      expect(parsed.get(1)!.liveness).toBe("escalated");
+    } finally {
+      rmSync(tmp, { recursive: true });
+    }
+  });
+
+  test("migration coerces unknown liveness string to null (forward-compat guard)", async () => {
+    // parseSlotLiveness is the validation boundary: a future release writing
+    // an unknown token (or a hand-edited slots.md) should degrade gracefully
+    // to null rather than land an invalid enum value in runtime state.
+    const { parseSlotLiveness } = await import("./types.ts");
+    expect(parseSlotLiveness("alive")).toBe("alive");
+    expect(parseSlotLiveness("interrupted")).toBe("interrupted");
+    expect(parseSlotLiveness("escalated")).toBe("escalated");
+    expect(parseSlotLiveness("  escalated  ")).toBe("escalated");
+    expect(parseSlotLiveness(null)).toBeNull();
+    expect(parseSlotLiveness(undefined)).toBeNull();
+    expect(parseSlotLiveness("")).toBeNull();
+    expect(parseSlotLiveness("bogus")).toBeNull();
+    expect(parseSlotLiveness(42)).toBeNull();
+  });
+
   test("round-trip preserves trailing spaces in section content", () => {
     const original: SlotData = {
       slot: 1,
@@ -191,7 +240,9 @@ describe("slotDataToMarkdown round-trip fidelity", () => {
       adapterArgs: "ADAPTER_SENTINEL",
       machine: "MACHINE_SENTINEL",
       sessionStarted: "SESSSTART_SENTINEL",
-      liveness: "LIVE_SENTINEL",
+      // `liveness` is a narrow enum (SlotLiveness) — use the real "alive" value
+      // rather than a made-up sentinel so the type still covers this key.
+      liveness: "alive",
       terminals: "TERM_SENTINEL",
       runtime: "RT_SENTINEL",
       git: "GIT_SENTINEL",

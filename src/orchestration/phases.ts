@@ -357,6 +357,21 @@ export function isBailedOut(state: OrchestrationState): boolean {
   return isPairBailedOut(state) || isSoloBailedOut(state);
 }
 
+/** Agents that have raised the `escalate` hand. Returned in declaration order
+ * so callers that surface names/reasons (notification, event log) produce a
+ * stable ordering. */
+export function escalatingAgents(state: OrchestrationState): AgentConfig[] {
+  return state.agents.filter((a) => (state.agentStates[a.name]?.status ?? "") === "escalate");
+}
+
+/** True when any agent has written `escalate` to its status file. Unlike
+ * `isBailedOut`, this is a disjunction — a single agent's hand-raise suffices.
+ * `escalate` is intentionally NOT in DONE_STATUSES: escalation is not "done",
+ * it is a resumable halt. */
+export function isEscalated(state: OrchestrationState): boolean {
+  return escalatingAgents(state).length > 0;
+}
+
 function hasAnyPr(state: OrchestrationState): boolean {
   return state.agents.some((agent) => {
     const url = state.agentStates[agent.name]?.prUrl;

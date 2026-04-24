@@ -64,7 +64,7 @@ interface SlotJson {
   githubUrl: string | null;
   terminalLinks: Record<string, string> | null;
   effort: string | null;
-  liveness: "alive" | "interrupted" | null;
+  liveness: "alive" | "interrupted" | "escalated" | null;
   machine: string | null;
   /** Pending controller action for remote slots, derived from intent files. */
   pendingAction: "starting" | "stopping" | "resuming" | null;
@@ -78,11 +78,13 @@ export interface SlotLivenessContext {
   slotData?: SlotData;
 }
 
-export function computeSlotLiveness(ctx: SlotLivenessContext): "alive" | "interrupted" | null {
+export function computeSlotLiveness(ctx: SlotLivenessContext): "alive" | "interrupted" | "escalated" | null {
   const { slotNum, mode, slotData } = ctx;
-  // Check explicit Liveness field from slot data (set by markSlotSetupFailed)
+  // Check explicit Liveness field from slot data (set by markSlotSetupFailed
+  // or the runner's escalation halt).
   if (slotData) {
     const explicit = (slotData.liveness ?? "").trim();
+    if (explicit === "escalated") return "escalated";
     if (explicit === "interrupted") return "interrupted";
   }
   if (!mode) return null;
@@ -260,13 +262,19 @@ function generateSlots(): SlotJson[] {
     const sessionStarted = rawSessionStarted ? rawSessionStarted : null;
 
     // Compute liveness — for local slots use PID check, for remote slots use heartbeat.
-    let liveness: "alive" | "interrupted" | null = null;
+    let liveness: "alive" | "interrupted" | "escalated" | null = null;
     if (!empty) {
       const explicitLiveness = (data.liveness ?? "").trim();
-      const shouldCheck = (phase && phase !== "done") || explicitLiveness === "interrupted";
+      const shouldCheck = (phase && phase !== "done")
+        || explicitLiveness === "interrupted"
+        || explicitLiveness === "escalated";
       if (shouldCheck) {
         if (!machineName || !isRemoteMachine(machineName)) {
           liveness = computeSlotLiveness({ slotNum: num, mode: (data.mode ?? "") || null, slotData: data });
+        } else if (explicitLiveness === "escalated") {
+          // Remote escalation marker propagates via git-sync of the slot json;
+          // the user's resume on the owning node is the only clearing path.
+          liveness = "escalated";
         } else {
           // Remote slot: use heartbeat freshness as liveness proxy
           liveness = heartbeatIsFresh(machineName) ? "alive" : "interrupted";

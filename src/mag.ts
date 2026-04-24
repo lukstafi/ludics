@@ -2023,9 +2023,12 @@ async function maybeAutoStartSlots(): Promise<void> {
     const taskId = data.task ?? "";
     if (!taskId) continue;
 
-    // Skip slots already marked as interrupted (setup failure) — needs manual resume
+    // Skip slots already marked as interrupted (setup failure) or escalated
+    // (agent-initiated halt per task-4cd94043) — both require manual resume.
+    // Mag must not silently restart an escalation; only explicit user action
+    // (`ludics slot N resume`) clears the marker.
     const slotLiveness = data.liveness ?? "";
-    if (slotLiveness === "interrupted") continue;
+    if (slotLiveness === "interrupted" || slotLiveness === "escalated") continue;
 
     // Skip if the slot has an active session for the CURRENT task
     const orchState = readOrchestrationState(slotNum);
@@ -2093,9 +2096,10 @@ function maybeUnstickAssignedSlots(): void {
     const taskId = data.task ?? "";
     if (!taskId) continue;
 
-    // Skip slots marked as interrupted — needs manual resume
+    // Skip slots marked as interrupted or escalated — both need explicit
+    // `ludics slot N resume` (no automatic unstick).
     const slotLiveness = data.liveness ?? "";
-    if (slotLiveness === "interrupted") continue;
+    if (slotLiveness === "interrupted" || slotLiveness === "escalated") continue;
 
     // Skip if session is active
     const sessionStarted = data.sessionStarted ?? "";

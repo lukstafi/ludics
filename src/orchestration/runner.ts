@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
-import { DONE_STATUSES, PHASE_CATEGORIES, allAgentsDone, agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, isBailedOut, pairReviewVerdict, phaseTimeoutExpired, requiredArtifactPath } from "./phases.ts";
+import { DONE_STATUSES, PHASE_CATEGORIES, allAgentsDone, agentParticipatesInPhase, escalatingAgents, evaluateTransition, findPlanFiles, isAgentDone, isBailedOut, isEscalated, pairReviewVerdict, phaseTimeoutExpired, requiredArtifactPath } from "./phases.ts";
 import {
   clearInterrupt, readAgentStatus, readMarker, readPhaseToken, readPrUrl,
   statusFileFingerprint, touchStatusFile, writeInterrupt, writePeerSync,
@@ -18,7 +18,8 @@ import { isoNow, makeId, nowEpoch, sleepMs } from "./util.ts";
 import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, validateAndFixPrFile, type PrVerification } from "./github.ts";
 import { updateFrontmatterField, addFrontmatterField, appendToSection } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../config.ts";
-import { notifyAgents } from "../notify.ts";
+import { notifyAgents, notifyOutgoing } from "../notify.ts";
+import { readSlotJson, writeSlotJson } from "../slots/json.ts";
 // workerReportStatus replaced by clusterReportWorkerSignal (lazy import)
 import { clusterRole } from "../cluster.ts";
 import { autoCommitWorktree, defaultMainBranch, pushBranch } from "./worktrees.ts";
@@ -1170,6 +1171,15 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
     while (true) {
       await refreshAgentStatuses(state, transport);
 
+      // Agent-initiated resumable halt — exit the poll loop immediately so
+      // runOrchestration's caller-side handler can persist state, emit the
+      // event + priority-5 notification, and flip slot liveness without any
+      // intervening phase-advance work (nudge, auto-commit, verification gate).
+      if (isEscalated(state)) {
+        persistState(state);
+        return;
+      }
+
       // Detect hung agents (static terminal) and send nudges / force-settle.
       await detectAndNudgeHungAgents(state, transport);
 
@@ -1483,6 +1493,74 @@ export function triggerCoderBailOut(
  * ahead of the base branch, skip PR creation and transition directly to done.
  * Returns true if bail-out was triggered (caller should break the loop).
  */
+/**
+ * Agent-initiated resumable halt.  Called when `isEscalated(state)` is true
+ * after a status refresh.  Emits one `escalation_requested` event per raising
+ * agent, fires a priority-5 `ludics notify outgoing` summarizing all raises,
+ * flips slot liveness to "escalated", and persists state twice (before and
+ * after the slot-json flip) so a mid-halt crash leaves a consistent record.
+ *
+ * Does NOT advance phase — the runner's outer loop must `return` after this
+ * runs, not `break` (breaking would fall through to persistState with an
+ * unchanged non-"done" phase).  This is the runtime analogue of a user-asked
+ * pause: resumption is via `ludics slot N resume`.
+ */
+export function handleEscalation(state: OrchestrationState): void {
+  const raisers = escalatingAgents(state);
+  if (raisers.length === 0) return; // defensive: caller should have gated
+
+  persistState(state);
+
+  const reasonFor = (name: string): { reason: string; warned: boolean } => {
+    const raw = (state.agentStates[name]?.statusMessage ?? "").trim();
+    if (raw === "") return { reason: "(no reason provided)", warned: true };
+    return { reason: raw, warned: false };
+  };
+
+  const parts: string[] = [];
+  for (const agent of raisers) {
+    const { reason, warned } = reasonFor(agent.name);
+    emitEvent({
+      event_type: "escalation_requested",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      phase: state.phase,
+      agent: agent.name,
+      reason,
+      reason_provided: !warned,
+      message: `${agent.name} escalated at phase ${state.phase}: ${reason}`,
+    });
+    if (warned) {
+      console.error(`ludics: slot ${state.slot} ${agent.name}: escalate status written with empty reason`);
+    }
+    parts.push(`${agent.name}: ${reason}`);
+  }
+
+  const message = raisers.length === 1
+    ? `Slot ${state.slot} agent ${raisers[0]!.name} escalated on task ${state.taskId} at phase ${state.phase}: ${reasonFor(raisers[0]!.name).reason}`
+    : `Slot ${state.slot} agents escalated on task ${state.taskId} at phase ${state.phase} — ${parts.join(" | ")}`;
+  const title = `slot ${state.slot} escalation`;
+  try {
+    notifyOutgoing(message, 5, title);
+  } catch (err) {
+    // notify is best-effort; still halt the runner even if the notification
+    // pipe is broken. The event log is the authoritative record.
+    console.error(`ludics: notifyOutgoing failed for slot ${state.slot} escalation: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  try {
+    const data = readSlotJson(state.slot);
+    data.liveness = "escalated";
+    writeSlotJson(state.slot, data);
+  } catch (err) {
+    console.error(`ludics: failed to set slot ${state.slot} liveness=escalated: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  persistState(state);
+}
+
 export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean {
   if (state.phase !== "pr-create") return false;
   const coder = state.agents.find(a => a.role === "coder");
@@ -1565,6 +1643,17 @@ export async function runOrchestration(
     persistState(state);
 
     await pollUntilDone(state, transport);
+
+    // Escalation halt — checked before any phase-advance work so we don't
+    // auto-commit, verify, or transition while the human is being flagged in.
+    // handleEscalation persists state, flips slot liveness, and emits the
+    // event + priority-5 notification. We return (not break) to preserve the
+    // non-"done" phase so `ludics slot N resume` can pick up exactly where
+    // the agent raised its hand.
+    if (isEscalated(state)) {
+      handleEscalation(state);
+      return;
+    }
 
     // Auto-commit any uncommitted work after agents finish their turn.
     // Push=false here; push happens before PR-related phases below.

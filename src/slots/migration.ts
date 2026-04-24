@@ -1,7 +1,7 @@
 // One-time slots.md → JSON migration helper
 
 import { readFileSync } from "fs";
-import type { SlotData } from "./types.ts";
+import { parseSlotLiveness, type SlotData } from "./types.ts";
 import { emptySlotData } from "./json.ts";
 
 function parseSlotBlocks(content: string): Map<number, string> {
@@ -78,7 +78,7 @@ function blockToSlotData(slot: number, block: string): SlotData {
   base.adapterArgs = nullIfEmpty(getField(block, "Adapter Args"));
   base.machine = nullIfEmpty(getField(block, "Machine"));
   base.sessionStarted = nullIfEmpty(getField(block, "Session Started"));
-  base.liveness = nullIfEmpty(getField(block, "Liveness"));
+  base.liveness = parseSlotLiveness(nullIfEmpty(getField(block, "Liveness")));
   base.terminals = extractSection(block, "Terminals");
   base.runtime = extractSection(block, "Runtime");
   base.git = extractSection(block, "Git");

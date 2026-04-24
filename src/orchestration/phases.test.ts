@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { agentParticipatesInPhase, evaluateTransition, findPlanFiles, isAgentDone, isBailedOut, isPairBailedOut, isSoloBailedOut, PHASE_CATEGORIES, phaseTimeoutExpired } from "./phases.ts";
+import { agentParticipatesInPhase, DONE_STATUSES, escalatingAgents, evaluateTransition, findPlanFiles, isAgentDone, isBailedOut, isEscalated, isPairBailedOut, isSoloBailedOut, PHASE_CATEGORIES, phaseTimeoutExpired } from "./phases.ts";
 import { statusFileFingerprint } from "./peer-sync.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
 import { applyPhaseSideEffects } from "./runner.ts";
@@ -1212,6 +1212,60 @@ describe("isSoloBailedOut / isBailedOut", () => {
     state.agentStates.coder.status = "bail-out";
     state.agentStates.reviewer.status = "done";
     expect(isBailedOut(state)).toBe(false);
+  });
+});
+
+describe("isEscalated / escalatingAgents", () => {
+  test("false when no agent has the escalate status", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "done";
+    state.agentStates.reviewer.status = "review-done";
+    expect(isEscalated(state)).toBe(false);
+    expect(escalatingAgents(state)).toEqual([]);
+  });
+
+  test("true when the coder escalates (pair mode)", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "escalate";
+    expect(isEscalated(state)).toBe(true);
+    expect(escalatingAgents(state).map((a) => a.name)).toEqual(["coder"]);
+  });
+
+  test("true when the reviewer escalates unilaterally (pair mode)", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "done";
+    state.agentStates.reviewer.status = "escalate";
+    expect(isEscalated(state)).toBe(true);
+    expect(escalatingAgents(state).map((a) => a.name)).toEqual(["reviewer"]);
+  });
+
+  test("true when both agents escalate simultaneously; both surface", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "escalate";
+    state.agentStates.reviewer.status = "escalate";
+    expect(isEscalated(state)).toBe(true);
+    expect(escalatingAgents(state).map((a) => a.name).sort()).toEqual(["coder", "reviewer"]);
+  });
+
+  test("true when a solo coder escalates", () => {
+    const state = makeSoloState();
+    state.agentStates.coder.status = "escalate";
+    expect(isEscalated(state)).toBe(true);
+    expect(escalatingAgents(state).map((a) => a.name)).toEqual(["coder"]);
+  });
+
+  test("escalate status is NOT a done status — stays out of DONE_STATUSES", () => {
+    expect(DONE_STATUSES.has("escalate")).toBe(false);
+  });
+
+  test("escalate does not route through isBailedOut", () => {
+    const state = makeState();
+    state.agentStates.coder.status = "escalate";
+    state.agentStates.reviewer.status = "escalate";
+    expect(isBailedOut(state)).toBe(false);
+    const solo = makeSoloState();
+    solo.agentStates.coder.status = "escalate";
+    expect(isBailedOut(solo)).toBe(false);
   });
 });
 
