@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   ALWAYS_POPULATED,
+  classifyLines,
   findFencedLines,
   findFencedShellBlocks,
   findInlineShellSpans,
@@ -116,6 +117,132 @@ describe("findInlineShellSpans", () => {
     const lines = ['Inspect `gh pr view --json x | jq ".title"` output.'];
     const spans = findInlineShellSpans(lines);
     expect(spans).toHaveLength(1);
+  });
+});
+
+describe("classifyLines — disjointness", () => {
+  // Hand-crafted mixed corpus: prose, ```sh, ```ts, indented ```bash inside a
+  // numbered list, and a few prose lines between blocks.
+  const corpus = [
+    "# Heading",
+    "",
+    "Some prose with a `gh pr view 1` backtick.",
+    "",
+    "```sh",
+    'echo "{{STATUS_FILE}}"',
+    "```",
+    "",
+    "Now a typescript block:",
+    "",
+    "```ts",
+    "// `gh pr view 2` is illustrative only",
+    "const x = 1;",
+    "```",
+    "",
+    "1. Indented bash example:",
+    "",
+    "   ```bash",
+    "   git status",
+    "   git log",
+    "   ```",
+    "",
+    "Trailing prose.",
+  ];
+
+  test("returns one classification per input line (length invariant)", () => {
+    const classes = classifyLines(corpus);
+    expect(classes).toHaveLength(corpus.length);
+  });
+
+  test("each element is well-formed (one of three kinds with expected fields)", () => {
+    for (const c of classifyLines(corpus)) {
+      if (c.kind === "prose") {
+        // No additional fields.
+      } else if (c.kind === "fence-marker") {
+        expect(c.blockKind === "shell" || c.blockKind === "other").toBe(true);
+      } else if (c.kind === "fence-body") {
+        expect(c.blockKind === "shell" || c.blockKind === "other").toBe(true);
+        expect(typeof c.indent).toBe("string");
+      } else {
+        // exhaustiveness — should be unreachable
+        throw new Error(`unexpected kind: ${JSON.stringify(c)}`);
+      }
+    }
+  });
+
+  test("disjointness: prose / fence-marker / fence-body never overlap on the same row", () => {
+    const classes = classifyLines(corpus);
+    let proseCount = 0;
+    let markerCount = 0;
+    let bodyCount = 0;
+    for (const c of classes) {
+      if (c.kind === "prose") proseCount++;
+      else if (c.kind === "fence-marker") markerCount++;
+      else if (c.kind === "fence-body") bodyCount++;
+    }
+    expect(proseCount + markerCount + bodyCount).toBe(corpus.length);
+  });
+
+  test("classifies ```sh body rows as fence-body shell", () => {
+    const classes = classifyLines(corpus);
+    // Line 5 is the body of the ```sh block (corpus[4] is the marker).
+    expect(classes[5]).toEqual({ kind: "fence-body", blockKind: "shell", indent: "" });
+  });
+
+  test("classifies ```ts body rows as fence-body other", () => {
+    const classes = classifyLines(corpus);
+    // Lines 11 and 12 are inside the ```ts block.
+    expect(classes[11]).toEqual({ kind: "fence-body", blockKind: "other", indent: "" });
+    expect(classes[12]).toEqual({ kind: "fence-body", blockKind: "other", indent: "" });
+  });
+
+  test("classifies indented ```bash body rows with the opening indent", () => {
+    const classes = classifyLines(corpus);
+    // corpus[17] is `   ```bash` (marker), bodies are 18 and 19.
+    expect(classes[18]).toEqual({ kind: "fence-body", blockKind: "shell", indent: "   " });
+    expect(classes[19]).toEqual({ kind: "fence-body", blockKind: "shell", indent: "   " });
+  });
+
+  test("disjointness invariant holds against a real orchestration template", () => {
+    // Pick a representative template; any one suffices since the invariant is
+    // structural. pair-coder-pr-create.md exists in skills/orchestration/.
+    const path = join(import.meta.dir, "..", "skills", "orchestration", "pair-coder-pr-create.md");
+    const text = readFileSync(path, "utf-8");
+    const lines = text.split(/\r?\n/);
+    const classes = classifyLines(lines);
+    expect(classes).toHaveLength(lines.length);
+    for (const c of classes) {
+      const ok =
+        c.kind === "prose" ||
+        c.kind === "fence-marker" ||
+        c.kind === "fence-body";
+      expect(ok).toBe(true);
+    }
+  });
+
+  test("ts-fence regression: inline-shell-shaped backtick inside ```ts is fence-body, not inline shell", () => {
+    // The round-2 Codex catch: a ```ts (non-shell) fence whose body contains a
+    // backtick span shaped like an inline shell command must classify as
+    // fence-body of blockKind: "other", and findInlineShellSpans must not
+    // emit a span pointing into that body.
+    const lines = [
+      "Example code:",
+      "",
+      "```ts",
+      '// `gh pr view 123` — illustrative only',
+      "const x: string = `hello`;",
+      "```",
+      "After the block.",
+    ];
+    const classes = classifyLines(lines);
+    // Body lines are 3 and 4.
+    expect(classes[3]).toEqual({ kind: "fence-body", blockKind: "other", indent: "" });
+    expect(classes[4]).toEqual({ kind: "fence-body", blockKind: "other", indent: "" });
+    // findInlineShellSpans must NOT emit a span pointing into the ```ts body.
+    const spans = findInlineShellSpans(lines);
+    for (const span of spans) {
+      expect(span.startLine === 3 || span.startLine === 4).toBe(false);
+    }
   });
 });
 
