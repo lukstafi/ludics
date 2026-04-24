@@ -4,10 +4,14 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   ALWAYS_POPULATED,
+  ENV_ASSIGNMENT_PREFIX,
+  SHELL_COMMANDS,
+  SHELL_KEYWORDS,
   classifyLines,
   findFencedLines,
   findFencedShellBlocks,
   findInlineShellSpans,
+  listTemplates,
   looksLikeShell,
   parseIfRanges,
   lintTemplate,
@@ -679,6 +683,202 @@ describe("runLint — CLI integration", () => {
       const stderr = new TextDecoder().decode(proc.stderr);
       expect(stderr).toContain("PROJECT_REPO");
       expect(stderr).toContain("bad.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SHELL_COMMANDS drift", () => {
+  // Meta-test (NOT a runtime lint rule templates must pass): walks every
+  // fenced shell block in skills/orchestration/*.md, tokenizes the first
+  // command of each chain segment, and asserts the token is a known dispatch
+  // form, a {{VAR}}-as-command, or a member of SHELL_COMMANDS ∪ SHELL_KEYWORDS.
+  // An unknown token means a template has started using a new tool — bump the
+  // static lists deliberately rather than weaken this test.
+
+  /** Quote-aware shell-chain split: respects single-quoted, double-quoted, and
+   *  backtick strings so `printf '%s|%s' "$a" "$b"` stays one segment. */
+  function splitOnShellChain(line: string): string[] {
+    const parts: string[] = [];
+    let buf = "";
+    let i = 0;
+    let quote: '"' | "'" | "`" | null = null;
+    while (i < line.length) {
+      const ch = line[i]!;
+      if (quote) {
+        if (ch === "\\" && i + 1 < line.length) {
+          buf += ch + line[i + 1]!;
+          i += 2;
+          continue;
+        }
+        if (ch === quote) quote = null;
+        buf += ch;
+        i++;
+        continue;
+      }
+      if (ch === "\\" && i + 1 < line.length) {
+        buf += ch + line[i + 1]!;
+        i += 2;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") {
+        quote = ch;
+        buf += ch;
+        i++;
+        continue;
+      }
+      if (ch === ";") {
+        parts.push(buf);
+        buf = "";
+        i++;
+        continue;
+      }
+      if (ch === "|") {
+        // `||` and `|` both terminate a segment.
+        parts.push(buf);
+        buf = "";
+        i += line[i + 1] === "|" ? 2 : 1;
+        continue;
+      }
+      if (ch === "&" && line[i + 1] === "&") {
+        parts.push(buf);
+        buf = "";
+        i += 2;
+        continue;
+      }
+      buf += ch;
+      i++;
+    }
+    parts.push(buf);
+    return parts;
+  }
+
+  /** Strip leading env-var assignments, including those with `$(...)`,
+   *  `"..."`, `'...'` values that may contain whitespace. Returns null when
+   *  the entire line is a pure assignment statement (no command follows),
+   *  signalling "skip this line". Otherwise returns the remainder starting
+   *  at the first command token. Falls back to the simple
+   *  `ENV_ASSIGNMENT_PREFIX` regex when the leading text doesn't look like
+   *  an assignment, preserving the runtime lint's behavior. */
+  function stripLeadingEnvAssignments(line: string): string | null {
+    let i = 0;
+    while (true) {
+      // Skip leading whitespace at this iteration.
+      while (i < line.length && /\s/.test(line[i]!)) i++;
+      const m = line.slice(i).match(/^[A-Z_][A-Z0-9_]*=/);
+      if (!m) {
+        // No assignment here — return remainder (or empty if we consumed all).
+        return i >= line.length ? null : line.slice(i);
+      }
+      i += m[0].length;
+      if (i >= line.length) return null; // pure `NAME=` with no value
+      const ch = line[i]!;
+      if (ch === '"' || ch === "'") {
+        const quote = ch;
+        i++;
+        while (i < line.length && line[i] !== quote) {
+          if (line[i] === "\\" && i + 1 < line.length) i += 2;
+          else i++;
+        }
+        if (i < line.length) i++; // skip closing quote
+      } else if (ch === "$" && line[i + 1] === "(") {
+        i += 2;
+        let depth = 1;
+        while (i < line.length && depth > 0) {
+          const c = line[i]!;
+          if (c === "(") depth++;
+          else if (c === ")") depth--;
+          if (depth === 0) break;
+          i++;
+        }
+        if (i < line.length) i++; // skip closing )
+      } else {
+        // Bare value: consume until whitespace.
+        while (i < line.length && !/\s/.test(line[i]!)) i++;
+      }
+      if (i >= line.length) return null; // pure assignment, no command after
+      // Whitespace follows: there may be more assignments or a command. Loop.
+    }
+  }
+
+  /** Strip leading `{{#IF VAR}}` / `{{/IF}}` template tags (one or more,
+   *  separated by whitespace). A line like
+   *  `{{#IF FOO}}{{#IF BAR}}command ...` becomes `command ...`. */
+  function stripLeadingTemplateTags(line: string): string {
+    return line.replace(/^(?:\{\{#IF\s+[A-Z0-9_]+\}\}\s*|\{\{\/IF\}\}\s*)+/, "");
+  }
+
+  function isKnownDispatchForm(token: string): boolean {
+    return /^\$\(/.test(token) || /^\[/.test(token) || /^\{/.test(token) || /^\(/.test(token);
+  }
+
+  function isVariableAsCommand(token: string): boolean {
+    return /^\{\{[A-Z0-9_]+\}\}/.test(token);
+  }
+
+  const known: ReadonlySet<string> = new Set([...SHELL_COMMANDS, ...SHELL_KEYWORDS]);
+
+  function collectFailures(dir: string): string[] {
+    const failures: string[] = [];
+    for (const name of listTemplates(dir)) {
+      const text = readFileSync(join(dir, name), "utf-8");
+      const lines = text.split(/\r?\n/);
+      const spans = findFencedShellBlocks(lines);
+      for (const span of spans) {
+        for (let i = span.startLine; i <= span.endLine; i++) {
+          const raw = lines[i]!;
+          let line = raw.replace(/^\s+/, "");
+          line = stripLeadingTemplateTags(line);
+          if (!line) continue;
+          if (line.startsWith("#")) continue; // shell comment
+          if (/^\\\s*$/.test(line)) continue; // line continuation only
+          // First, try the smart env-var stripper (handles `$(...)` values).
+          const stripped = stripLeadingEnvAssignments(line);
+          if (stripped === null) continue; // pure assignment line, no command
+          const segments = splitOnShellChain(stripped);
+          for (const seg of segments) {
+            const trimmed = seg.replace(/^\s+/, "");
+            if (!trimmed) continue;
+            // Each subsequent segment may also start with env-var prefixes
+            // (rare, but possible); apply the runtime regex to be safe.
+            const segBody = trimmed.replace(ENV_ASSIGNMENT_PREFIX, "");
+            const token = segBody.split(/\s+/)[0] ?? "";
+            if (!token) continue;
+            if (isKnownDispatchForm(token)) continue;
+            if (isVariableAsCommand(token)) continue;
+            if (known.has(token)) continue;
+            failures.push(
+              `${name}:${i + 1}: unknown shell first-token \`${token}\`; add to SHELL_COMMANDS or document exemption`,
+            );
+          }
+        }
+      }
+    }
+    return failures;
+  }
+
+  test("every fenced shell block in skills/orchestration/* uses a known first-token", () => {
+    const dir = join(import.meta.dir, "..", "skills", "orchestration");
+    const failures = collectFailures(dir);
+    expect(failures).toEqual([]);
+  });
+
+  test("the meta-test catches a synthetic unknown token", () => {
+    // Sanity: the test isn't trivially passing because the directory walks
+    // are short-circuiting somewhere. Build a tiny temp dir with a template
+    // that uses `helmfoo` (definitely not in SHELL_COMMANDS) and assert the
+    // failure surfaces.
+    const dir = mkdtempSync(join(tmpdir(), "lint-shell-drift-synthetic-"));
+    try {
+      writeFileSync(
+        join(dir, "x.md"),
+        ["```sh", "helmfoo deploy --release {{TASK_ID}}", "```"].join("\n"),
+      );
+      const failures = collectFailures(dir);
+      expect(failures.length).toBeGreaterThan(0);
+      expect(failures[0]).toContain("helmfoo");
+      expect(failures[0]).toContain("x.md");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -38,7 +38,7 @@ export const TEMPLATE_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> =
 };
 
 /** Command/keyword tokens that start a shell command. */
-const SHELL_COMMANDS = [
+export const SHELL_COMMANDS = [
   "git", "gh", "printf", "cat", "rm", "mkdir", "cp", "mv", "cd", "ls", "ln",
   "touch", "test", "chmod", "chown", "find", "awk", "sed", "grep", "egrep", "fgrep",
   "npm", "bun", "node", "python", "python3", "echo", "date", "eval", "source",
@@ -49,7 +49,7 @@ const SHELL_COMMANDS = [
 ] as const;
 
 /** Shell control-flow / compound-command keywords that start shell syntax. */
-const SHELL_KEYWORDS = [
+export const SHELL_KEYWORDS = [
   "if", "for", "while", "case", "until", "do", "done", "then", "else", "elif",
   "fi", "esac", "select", "function", "time",
 ] as const;
@@ -62,7 +62,7 @@ const SHELL_COMMAND_PREFIX = new RegExp(
 );
 
 /** A shell-style leading env-var assignment: `NAME=value ` (one or more). */
-const ENV_ASSIGNMENT_PREFIX = /^(?:[A-Z_][A-Z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/;
+export const ENV_ASSIGNMENT_PREFIX = /^(?:[A-Z_][A-Z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/;
 
 /** A pipe / logical chain / command separator followed by a command token —
  *  strong evidence that the span is shell and not prose. */
@@ -314,8 +314,9 @@ export function lintTemplate(
 ): Violation[] {
   const lines = text.split(/\r?\n/);
   const fencedSpans = findFencedShellBlocks(lines);
-  const fencedLines = findFencedLines(lines);
-  const inlineSpans = findInlineShellSpans(lines, fencedLines);
+  // No need to pre-compute findFencedLines: findInlineShellSpans now derives
+  // its skip set from classifyLines internally.
+  const inlineSpans = findInlineShellSpans(lines);
   const ifRanges = parseIfRanges(text);
   const violations: Violation[] = [];
   const varRe = /\{\{([A-Z0-9_]+)\}\}/g;
@@ -350,7 +351,7 @@ export function lintTemplate(
   return violations;
 }
 
-function listTemplates(dir: string): string[] {
+export function listTemplates(dir: string): string[] {
   return readdirSync(dir)
     .filter((name) => name.endsWith(".md"))
     .sort();
