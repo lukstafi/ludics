@@ -997,9 +997,14 @@ export function checkAndAnnotatePrBodyDrift(state: OrchestrationState): void {
   for (const agent of agentsWithPr) {
     const runtime = state.agentStates[agent.name]!;
     const prUrl = runtime.prUrl!;
+    // Skip merged PRs before any git/capture work — body is archival.
+    if (isPrMerged(prUrl)) continue;
+    // Lazy capture: covers flows that skipped pr-create (e.g. update-docs ->
+    // pr-comments when a PR already exists) and PR-URL-change recapture.
+    // On the first tick baseline === current, so no annotation fires.
+    capturePrBodyBaseline(state, agent, runtime);
     const baseline = runtime.prBodyBaselineCommits;
     if (baseline === undefined) continue;
-    if (isPrMerged(prUrl)) continue;
     const current = countCommitsAhead(agent.worktreePath, state.projectDir);
     if (current === null) continue;
     if (current === baseline) continue;
@@ -1012,6 +1017,7 @@ export function checkAndAnnotatePrBodyDrift(state: OrchestrationState): void {
     runtime.prBodyDriftAnnotatedAtCommits = current;
     runtime.prBodyBaselineCommits = current;
     runtime.prBodyBaselineAt = isoNow();
+    runtime.prBodyBaselineUrl = prUrl;
     emitEvent({
       event_type: "pr_body_drift_annotated",
       source: "orchestration",
@@ -1081,13 +1087,26 @@ export function validateAgentPrFiles(state: OrchestrationState): void {
 }
 
 /**
- * One-shot baseline capture for the drift-annotation tick: on the first poll
- * where `runtime.prUrl` is non-null, record the current commit count and
- * timestamp. Subsequent calls are no-ops (baseline already set).
+ * Baseline capture for the drift-annotation tick.
  *
- * Guarded so that merge-loop re-entry to pr-create preserves the original
- * sync point rather than resetting it. A git failure leaves the baseline
- * undefined, causing the drift check to be skipped fail-safe.
+ * Captures the current `origin/<base>..HEAD` commit count on the first poll
+ * where `runtime.prUrl` is non-null AND no baseline exists for that URL yet.
+ * Subsequent calls for the same PR are no-ops (baseline preserved across
+ * ticks and merge-loop re-entry to pr-create).
+ *
+ * If `runtime.prUrl` has been replaced since the tracked `prBodyBaselineUrl`
+ * (an agent replaced the PR mid-flow), the stale baseline + dedup marker are
+ * cleared and recapture runs against the new URL — otherwise drift comments
+ * could quote a commit history that belongs to a different PR.
+ *
+ * Callable from both pr-create (via `validateAgentPrFiles`) and pr-comments
+ * (via `checkAndAnnotatePrBodyDrift`) so flows that transition directly from
+ * `update-docs` (or any other phase) to `pr-comments` still get a sync point
+ * — lazy capture on the first drift tick is explicitly sanctioned by the
+ * proposal's "Baseline never captured" edge case.
+ *
+ * A git failure leaves the baseline undefined, causing the drift check to
+ * skip fail-safe.
  */
 function capturePrBodyBaseline(
   state: OrchestrationState,
@@ -1095,11 +1114,19 @@ function capturePrBodyBaseline(
   runtime: OrchestrationState["agentStates"][string],
 ): void {
   if (!runtime.prUrl) return;
+  // Invalidate baseline if the tracked PR URL changed (agent replaced the PR).
+  if (runtime.prBodyBaselineUrl && runtime.prBodyBaselineUrl !== runtime.prUrl) {
+    runtime.prBodyBaselineCommits = undefined;
+    runtime.prBodyBaselineAt = undefined;
+    runtime.prBodyDriftAnnotatedAtCommits = null;
+    runtime.prBodyBaselineUrl = undefined;
+  }
   if (runtime.prBodyBaselineCommits !== undefined) return;
   const n = countCommitsAhead(agent.worktreePath, state.projectDir);
   if (n === null) return;
   runtime.prBodyBaselineCommits = n;
   runtime.prBodyBaselineAt = isoNow();
+  runtime.prBodyBaselineUrl = runtime.prUrl;
   runtime.prBodyDriftAnnotatedAtCommits = null;
 }
 

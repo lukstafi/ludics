@@ -795,6 +795,7 @@ describe("capturePrBodyBaseline (via validateAgentPrFiles)", () => {
     expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(1);
     expect(typeof state.agentStates.coder!.prBodyBaselineAt).toBe("string");
     expect(state.agentStates.coder!.prBodyDriftAnnotatedAtCommits).toBeNull();
+    expect(state.agentStates.coder!.prBodyBaselineUrl).toBe("https://github.com/test/repo/pull/42");
   });
 
   test("preserves existing baseline on re-entry to pr-create", () => {
@@ -815,6 +816,7 @@ describe("capturePrBodyBaseline (via validateAgentPrFiles)", () => {
           turnLifecycle: null,
           prBodyBaselineCommits: 1,
           prBodyBaselineAt: "2026-04-23T14:20:05Z",
+          prBodyBaselineUrl: "https://github.com/test/repo/pull/42",
           prBodyDriftAnnotatedAtCommits: null,
         },
       },
@@ -988,12 +990,78 @@ describe("checkAndAnnotatePrBodyDrift", () => {
     expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(1);
   });
 
-  test("skips when baseline is undefined (never captured)", () => {
+  test("lazy-captures baseline when none exists and does not post on the same tick", () => {
+    // Slot transitioned update-docs -> pr-comments without visiting pr-create,
+    // so validateAgentPrFiles never ran. checkAndAnnotatePrBodyDrift must
+    // capture the baseline itself on the first tick and then NOT post (the
+    // current count equals the freshly-captured baseline).
     countSpy.mockReturnValue(5);
-    const state = makeDriftState({ prBodyBaselineCommits: undefined });
+    const state = makeDriftState({
+      prBodyBaselineCommits: undefined,
+      prBodyBaselineAt: undefined,
+      prBodyDriftAnnotatedAtCommits: undefined,
+    });
     checkAndAnnotatePrBodyDrift(state);
-    expect(countSpy).not.toHaveBeenCalled();
     expect(postSpy).not.toHaveBeenCalled();
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(5);
+    expect(typeof state.agentStates.coder!.prBodyBaselineAt).toBe("string");
+    expect(state.agentStates.coder!.prBodyBaselineUrl).toBe("https://github.com/test/repo/pull/42");
+  });
+
+  test("after lazy capture, a subsequent tick with a different count posts", () => {
+    // Tick 1: no baseline, count=3 → lazy-capture baseline=3.
+    countSpy.mockReturnValue(3);
+    const state = makeDriftState({
+      prBodyBaselineCommits: undefined,
+      prBodyBaselineAt: undefined,
+      prBodyDriftAnnotatedAtCommits: undefined,
+    });
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).not.toHaveBeenCalled();
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(3);
+
+    // Tick 2: count=5 → drift fires.
+    countSpy.mockReturnValue(5);
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(postSpy.mock.calls[0]![1]).toBe(3);
+    expect(postSpy.mock.calls[0]![2]).toBe(5);
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(5);
+  });
+
+  test("skips when baseline is undefined AND git fails (fail-safe)", () => {
+    countSpy.mockReturnValue(null);
+    const state = makeDriftState({
+      prBodyBaselineCommits: undefined,
+      prBodyBaselineAt: undefined,
+      prBodyDriftAnnotatedAtCommits: undefined,
+    });
+    checkAndAnnotatePrBodyDrift(state);
+    expect(postSpy).not.toHaveBeenCalled();
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBeUndefined();
+  });
+
+  test("recaptures baseline when prUrl changes mid-flow", () => {
+    // Start with baseline=1 for PR #42, tracked URL #42.
+    countSpy.mockReturnValue(10);
+    const state = makeDriftState({
+      prBodyBaselineCommits: 1,
+      prBodyBaselineAt: "2026-04-23T14:20:05Z",
+      prBodyDriftAnnotatedAtCommits: null,
+    });
+    state.agentStates.coder!.prBodyBaselineUrl = "https://github.com/test/repo/pull/42";
+    // Agent replaces the PR — runtime.prUrl now points at #99.
+    state.agentStates.coder!.prUrl = "https://github.com/test/repo/pull/99";
+
+    checkAndAnnotatePrBodyDrift(state);
+
+    // No annotation posted — the old baseline's 1 vs 10 mismatch does NOT
+    // count; the baseline is invalidated against the new PR first, then
+    // recaptured against the new URL.
+    expect(postSpy).not.toHaveBeenCalled();
+    expect(state.agentStates.coder!.prBodyBaselineCommits).toBe(10);
+    expect(state.agentStates.coder!.prBodyBaselineUrl).toBe("https://github.com/test/repo/pull/99");
+    expect(state.agentStates.coder!.prBodyDriftAnnotatedAtCommits).toBeNull();
   });
 
   test("skips when countCommitsAhead returns null (git error)", () => {
@@ -1122,6 +1190,7 @@ describe("prBody* state fields round-trip through persistState", () => {
           turnLifecycle: null,
           prBodyBaselineCommits: 3,
           prBodyBaselineAt: "2026-04-24T08:00:00Z",
+          prBodyBaselineUrl: "https://github.com/test/repo/pull/42",
           prBodyDriftAnnotatedAtCommits: 2,
         },
       },
@@ -1132,6 +1201,7 @@ describe("prBody* state fields round-trip through persistState", () => {
     expect(restored).not.toBeNull();
     expect(restored!.agentStates.coder!.prBodyBaselineCommits).toBe(3);
     expect(restored!.agentStates.coder!.prBodyBaselineAt).toBe("2026-04-24T08:00:00Z");
+    expect(restored!.agentStates.coder!.prBodyBaselineUrl).toBe("https://github.com/test/repo/pull/42");
     expect(restored!.agentStates.coder!.prBodyDriftAnnotatedAtCommits).toBe(2);
   });
 
@@ -1165,6 +1235,7 @@ describe("prBody* state fields round-trip through persistState", () => {
     expect(restored).not.toBeNull();
     expect(restored!.agentStates.coder!.prBodyBaselineCommits).toBeUndefined();
     expect(restored!.agentStates.coder!.prBodyBaselineAt).toBeUndefined();
+    expect(restored!.agentStates.coder!.prBodyBaselineUrl).toBeUndefined();
     expect(restored!.agentStates.coder!.prBodyDriftAnnotatedAtCommits).toBeUndefined();
   });
 });

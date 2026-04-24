@@ -95,6 +95,10 @@ export interface AgentRuntimeState {
    *  distinct count re-fires. `null` = no annotation posted yet at the
    *  current baseline. */
   prBodyDriftAnnotatedAtCommits?: number | null;
+  /** PR URL the current `prBodyBaseline*` values describe. Invalidates the
+   *  baseline (triggering recapture) when `runtime.prUrl` is replaced mid-flow
+   *  so drift comments for a new PR don't quote the old PR's history. */
+  prBodyBaselineUrl?: string;
 }
 
 export interface OrchestrationConfig {
