@@ -1,8 +1,10 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { readFileSync, writeFileSync, unlinkSync } from "fs";
-import { join } from "path";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, unlinkSync } from "fs";
+import { dirname, join } from "path";
+import { tmpdir } from "os";
 import { composeSkillMessage, resolveTemplatePath, substituteTemplate } from "./skills.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "./state.ts";
+import { ludicsRoot } from "../config.ts";
 
 function makeState(): OrchestrationState {
   return {
@@ -86,7 +88,7 @@ describe("skills", () => {
       // Without the flag, selection falls through to pair-<role>-<phase>.md or <phase>.md
       expect(resolveTemplatePath("update-docs", "pair", "coder", false)).not.toBe(synthetic);
     } finally {
-      try { unlinkSync(synthetic); } catch {}
+      try { unlinkSync(synthetic); } catch { /* ignore */ }
     }
   });
 
@@ -406,7 +408,7 @@ describe("skills", () => {
       else delete process.env.LUDICS_CONFIG;
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
-      try { unlinkSync(tmpCfg); } catch {}
+      try { unlinkSync(tmpCfg); } catch { /* ignore */ }
     }
   });
 
@@ -599,10 +601,7 @@ describe("skills", () => {
     proposalBody: string,
     extraCommits: number,
   ): void {
-    // Bun's fs import is loaded at the top of the file via the test-local dynamic imports;
-    // do it here too so the helper is self-contained.
-    const { mkdirSync, writeFileSync } = require("fs");
-    const { dirname, join: j } = require("path");
+    const j = join;
     mkdirSync(projectDir, { recursive: true });
     runGit(projectDir, ["init", "-q"]);
     runGit(projectDir, ["config", "user.email", "test@example.com"]);
@@ -883,7 +882,7 @@ describe("skills", () => {
       else delete process.env.LUDICS_CONFIG;
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
-      try { unlinkSync(tmpCfg); } catch {}
+      try { unlinkSync(tmpCfg); } catch { /* ignore */ }
     }
   });
 
@@ -921,7 +920,7 @@ describe("skills", () => {
       else delete process.env.LUDICS_CONFIG;
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
-      try { unlinkSync(tmpCfg); } catch {}
+      try { unlinkSync(tmpCfg); } catch { /* ignore */ }
     }
   });
 
@@ -1068,14 +1067,16 @@ describe("skills", () => {
       else delete process.env.LUDICS_CONFIG;
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
-      try { unlinkSync(tmpCfg); } catch {}
+      try { unlinkSync(tmpCfg); } catch { /* ignore */ }
     }
   });
 
   test("composeSkillMessage uses templateOverride when provided", async () => {
-    const { writeFileSync: writeFs, unlinkSync: unlinkFs, mkdtempSync: mkTmp } = require("fs");
-    const { join: joinPath } = require("path");
-    const { tmpdir: osTmpdir } = require("os");
+    const writeFs = writeFileSync;
+    const unlinkFs = unlinkSync;
+    const mkTmp = mkdtempSync;
+    const joinPath = join;
+    const osTmpdir = tmpdir;
     const tmpDir = mkTmp(joinPath(osTmpdir(), "ludics-skills-test-"));
     const overridePath = joinPath(tmpDir, "override.md");
     writeFs(overridePath, "Override for {{AGENT_NAME}} in {{WORKTREE_PATH}}");
@@ -1321,11 +1322,8 @@ describe("skills", () => {
     ctx["WORKTREE_PATH"] = "/tmp/worktree";
     ctx["STATUS_FILE"] = "/tmp/peer-sync/coder.status";
     ctx["DONE_STATUS"] = "pr-comments-done";
-    const { readFileSync: readFs } = require("fs");
-    const { join: joinPath } = require("path");
-    const { ludicsRoot } = require("../config.ts");
-    const templatePath = joinPath(ludicsRoot(), "skills", "orchestration", "pr-conflict-resolve.md");
-    const template = readFs(templatePath, "utf-8");
+    const templatePath = join(ludicsRoot(), "skills", "orchestration", "pr-conflict-resolve.md");
+    const template = readFileSync(templatePath, "utf-8");
     const result = substituteTemplate(template, ctx);
     expect(result).toContain("/tmp/peer-sync/coder.pr");
     expect(result).toContain("/tmp/worktree");
