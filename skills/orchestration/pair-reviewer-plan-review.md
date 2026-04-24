@@ -11,7 +11,7 @@ Check the merged plan against the proposal and the codebase:
 - If plan-merge found gaps, are they documented with ASSUMPTION GAP markers?
 
 {{#IF PROPOSAL_PATH}}
-- **Scope declarations**: are all out-of-scope files in the merged plan accompanied by a one-line scope-expansion justification? Flag missing justifications. Scope itself is not a blocker; undeclared expansions are a discipline issue. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
+- **Scope declarations**: are all out-of-scope files in the merged plan accompanied by a one-line scope-expansion justification? Flag missing justifications. Scope itself is not a blocker; undeclared expansions are a discipline issue. When in doubt on a feature branch that may be stale, prefer `git log main..HEAD --stat` for a per-commit summary and `git diff <commit>^..<commit> --stat` for each merge's actual change — deletions visible in `main..HEAD` but absent from per-commit diffs are main-side drift, not scope violations; rebase and re-check before flagging scope. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
 {{/IF}}
 
 If alignment gaps remain, use REQUEST_CHANGES with a concrete remediation — for example:

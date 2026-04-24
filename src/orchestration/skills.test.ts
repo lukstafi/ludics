@@ -1771,4 +1771,34 @@ describe("skills", () => {
     expect(raw).not.toContain("in your thinking");
     expect(raw).not.toContain("stating explicitly");
   });
+
+  test("gh-ludics-374: patterns-doc Scope declaration entry has per-commit diff procedure", () => {
+    const path = join(import.meta.dir, "../../docs/orchestration-patterns.md");
+    const raw = readFileSync(path, "utf-8");
+    const startIdx = raw.indexOf("### Scope declaration and salvage");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    const endIdx = raw.indexOf("\n### ", startIdx + 1);
+    const section = raw.slice(startIdx, endIdx === -1 ? raw.length : endIdx);
+    expect(section).toContain("Procedure (diff commands)");
+    expect(section).toContain("main..HEAD");
+    expect(section).toContain("<commit>^..<commit>");
+    expect(section).toContain("main-side drift");
+    expect(section).toContain("git rebase origin/main");
+  });
+
+  test("gh-ludics-374: pair-reviewer-plan-review scope bullet spells out per-commit diff commands", () => {
+    const path = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-plan-review.md");
+    const raw = readFileSync(path, "utf-8");
+    expect(raw).toContain("git log main..HEAD --stat");
+    expect(raw).toContain("git diff <commit>^..<commit> --stat");
+    expect(raw).toContain("main-side drift");
+  });
+
+  test("gh-ludics-374: pair-reviewer-review scope block spells out per-commit diff commands", () => {
+    const path = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-review.md");
+    const raw = readFileSync(path, "utf-8");
+    expect(raw).toContain("git log main..HEAD --stat");
+    expect(raw).toContain("git diff <commit>^..<commit> --stat");
+    expect(raw).toContain("main-side drift");
+  });
 });

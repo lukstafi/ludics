@@ -27,6 +27,8 @@ Task acceptance criteria from the task file:
 - **Accept as-is** if the expansion is small, directly supports the goal, and doesn't materially broaden the PR's review surface.
 - **Reject and ask for salvage** if the expansion is valuable but belongs in its own task. In the review body, explicitly ask the coder to salvage the rejected diff into a needs-confirmation follow-up (capture patch → revert → new task with `relates_to`) before continuing. Do not just tell them to revert — that throws away useful work.
 
+Before flagging apparent deletions as scope violations, cross-check with `git log main..HEAD --stat` (per-commit summary) and `git diff <commit>^..<commit> --stat`. Deletions that appear in `main..HEAD` but not in any per-commit diff are main-side drift from a stale branch; the remedy is rebase, not scope pushback.
+
 Flag **undeclared** out-of-scope changes (no `scope-expansion:` trailer in any commit, no mention in the plan) as a discipline issue in the review body even when you accept the content. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
 {{/IF}}
 
