@@ -28,6 +28,12 @@ printf 'bail-out|%s|<describe why task is obsolete>\n' "$(date +%s)" > "{{STATUS
 
 Solo bail-out is terminal — the runner transitions straight to `done` with no reviewer confirmation. Use bail-out only when there's genuinely nothing to do. Partially-done tasks still finish normally.
 
+If you believe you're stuck in a contradictory or looping situation that ordinary progress can't escape — e.g., contradictory instructions in the proposal you can't reconcile, or an environment problem no retry has fixed — raise your hand with `bail-out: escalate`. The runner halts at the current phase (no discarded work, no phase advance) and notifies the user. See [escalation contract](../../docs/orchestration-patterns.md#escalation-contract) for when to use it.
+
+```sh
+printf 'escalate|%s|<one-sentence reason>\n' "$(date +%s)" > "{{STATUS_FILE}}"
+```
+
 ```sh
 printf '%s|%s|coder work complete\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
 ```

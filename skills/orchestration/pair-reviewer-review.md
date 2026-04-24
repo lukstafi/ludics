@@ -38,6 +38,12 @@ printf 'bail-out-confirmed|%s|<describe why you agree task is obsolete>\n' "$(da
 
 If you disagree with the bail-out, write `REQUEST_CHANGES` in the review file and explain what's still needed.
 
+If you believe the pair is stuck in a contradictory or looping situation that ordinary feedback can't break — e.g., the coder keeps reproducing a misread of your review, or the review contents haven't meaningfully changed across rounds on unchanged coder output — raise your hand with `bail-out: escalate`. Reviewer-side escalation is unilateral: the runner halts immediately without waiting for the coder to confirm. See [escalation contract](../../docs/orchestration-patterns.md#escalation-contract) for when to use it.
+
+```sh
+printf 'escalate|%s|<one-sentence reason>\n' "$(date +%s)" > "{{STATUS_FILE}}"
+```
+
 ```sh
 printf '%s|%s|reviewer work review complete\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
 ```

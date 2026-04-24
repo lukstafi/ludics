@@ -279,6 +279,32 @@ If the reviewer disagrees, they write `REQUEST_CHANGES` in the review file and e
 
 **When to bail vs finish normally.** Bail-out is for tasks where there is genuinely nothing to do — the fix landed elsewhere, the feature was superseded, the bug no longer reproduces. A partially-done task still finishes normally.
 
+### Escalation contract
+
+**Principle.** When an agent believes it's stuck in a contradictory or looping situation that ordinary progress can't escape — the reviewer keeps reversing on unchanged work, a parser misread keeps inverting the verdict, contradictory instructions in the spec can't be reconciled — it raises its hand with `bail-out: escalate`. The runner halts at the current phase without discarding work, flags the slot, and notifies Mag/the user. The human inspects the situation, applies a manual fix, and resumes via `ludics slot N resume` — the same command that recovers an interrupted slot.
+
+**Why.** Round-count loop-detection is brittle (legitimate merge-round churn, plan-merge iterations, genuine disagreement-driven work cycles all trip a threshold) and fires late — N rounds of wasted agent time before the guardrail notices. Agents see the content (identical reviews, same coder output, contradictory reviewer guidance) and can detect the trap faster than any external counter. See task-4cd94043 and gh-ludics-310 (the 9-round loop that motivated this).
+
+**Distinction from bail-out.** `bail-out` means *done, no work needed* — the phase advances to done. `escalate` means *not done, need a human* — the phase does NOT advance. Both are resumable; bail-out resumes as "next task," escalate resumes as "pick up where the agent raised its hand."
+
+**Distinction from `interrupted`.** `interrupted` is a framework failure (setup error, orchestrator crash) — a passive signal. `escalated` is an agent-initiated collaborative ask — active signal. Both are cleared by the same `ludics slot N resume` command, but they preserve different provenance for retrospectives.
+
+**Shell block (coder, reviewer, or solo coder — unilateral; no handshake needed).**
+
+```sh
+printf 'escalate|%s|<one-sentence reason>\n' "$(date +%s)" > "{{STATUS_FILE}}"
+```
+
+**Reason field.** Non-empty is strongly encouraged but not required. An empty reason is accepted (to avoid blocking the very escape hatch the action is meant to enable); the notification reads "(no reason provided)" and a warning is logged.
+
+**What the runner does.** For each agent whose `.status` starts with `escalate`, emit an `escalation_requested` event with `{slot, task, phase, agent, reason}`. Fire a priority-5 `ludics notify outgoing` summarizing all raisers. Flip the slot's `liveness` to `"escalated"`. Persist state before and after the slot-json flip so a mid-halt crash leaves a consistent record. Return cleanly from `runOrchestration` — do **not** break (the outer loop would advance phase).
+
+**What Mag does.** Nothing. Mag's auto-start / auto-unstick paths skip slots with `liveness === "escalated"` the same way they skip `"interrupted"`. Only explicit user action clears the marker.
+
+**Resolution.** User reads the notification + peer-sync artifacts + PR state, applies whatever fix is needed (edit a review file, patch the code, `ludics orch skip`, etc.), then runs `ludics slot N resume`. Resume clears liveness back to `null` and re-enters the orchestrator at the preserved phase/round.
+
+**When to use.** Primary triggers are (a) "I've had nothing meaningful to do for 2–3 rounds on unchanged input" (coder observing a no-op loop), (b) "the review content hasn't meaningfully changed across rounds on unchanged coder output" (reviewer observing the same loop from the other side), (c) "the instructions or environment contradict themselves and I can't pick a path." Do **not** use it for: recoverable review/work disagreement (use normal review/work-round channels), tasks that are genuinely done (use bail-out), legitimate multi-round churn (the point of multi-round is iteration).
+
 ### Injectable subprocess runners
 
 **Principle.** When code reaches for `Bun.spawnSync` / `child_process`, accept an injectable runner type — `type RunGit = (args: string[], cwd: string) => RunGitResult` — with a production shim (`defaultRunGit`) and a test-side fake.
