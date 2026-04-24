@@ -10,6 +10,13 @@ import { harnessDir } from "./config.ts";
 
 export const HEALTH_GATE_THRESHOLD = 50;
 
+// Event types emitted by the gate itself — excluded from the line-delta
+// signal so self-generated telemetry cannot push future ticks over the
+// threshold on an otherwise-idle system.
+const GATE_INTERNAL_EVENT_MARKERS: readonly string[] = [
+  '"event_type":"health_check_skipped"',
+];
+
 export interface HealthGateDecision {
   skip: boolean;
   reason: string;
@@ -22,19 +29,34 @@ export interface HealthGateOptions {
   stateDir?: string;
 }
 
-function countLines(path: string): number | null {
+/** Count event lines eligible for the gate signal.
+ *  Excludes lines containing any GATE_INTERNAL_EVENT_MARKERS so the gate's
+ *  own skip telemetry cannot influence its future decisions. Returns null
+ *  on read error, 0 on empty/missing file. */
+export function countGateEligibleLines(path: string): number | null {
   try {
     if (!existsSync(path)) return null;
     const st = statSync(path);
     if (!st.isFile() || st.size === 0) return 0;
     const buf = readFileSync(path, "utf8");
     if (buf.length === 0) return 0;
-    let n = 0;
-    for (let i = 0; i < buf.length; i++) {
-      if (buf.charCodeAt(i) === 10) n++;
+
+    let count = 0;
+    let lineStart = 0;
+    for (let i = 0; i <= buf.length; i++) {
+      if (i === buf.length || buf.charCodeAt(i) === 10) {
+        if (i > lineStart) {
+          const line = buf.slice(lineStart, i);
+          let excluded = false;
+          for (const marker of GATE_INTERNAL_EVENT_MARKERS) {
+            if (line.includes(marker)) { excluded = true; break; }
+          }
+          if (!excluded) count++;
+        }
+        lineStart = i + 1;
+      }
     }
-    if (buf.charCodeAt(buf.length - 1) !== 10) n++;
-    return n;
+    return count;
   } catch {
     return null;
   }
@@ -59,7 +81,7 @@ export function shouldSkipHealthCheck(opts: HealthGateOptions = {}): HealthGateD
   const stateDir = opts.stateDir ?? harnessDir();
   const eventsFile = join(stateDir, "journal", "events.jsonl");
 
-  const count = countLines(eventsFile);
+  const count = countGateEligibleLines(eventsFile);
   if (count === null) {
     return {
       skip: false,
@@ -96,6 +118,16 @@ export function shouldSkipHealthCheck(opts: HealthGateOptions = {}): HealthGateD
   }
 
   const delta = count - prior.value;
+  if (delta < 0) {
+    // events.jsonl shrank vs the stored anchor (rotation, compaction, restore).
+    // The anchor is no longer trustworthy — fail open so a real run resets it.
+    return {
+      skip: false,
+      reason: `events.jsonl line count went backward (delta ${delta}) — anchor stale, fail open`,
+      currentLines: count,
+      priorLines: prior.value,
+    };
+  }
   if (delta < HEALTH_GATE_THRESHOLD) {
     return {
       skip: true,

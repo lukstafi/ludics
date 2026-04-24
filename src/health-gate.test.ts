@@ -112,4 +112,43 @@ describe("shouldSkipHealthCheck", () => {
     expect(res.currentLines).toBe(3);
     rmSync(dir, { recursive: true });
   });
+
+  test("negative delta (rotated/compacted log) → skip: false (fail open)", () => {
+    const dir = makeTmpDir();
+    // Current file has 200 eligible lines; prior anchor claims 1000.
+    writeEvents(dir, 200);
+    writeSnapshot(dir, { timestamp: "x", eventsJsonlLines: 1000 });
+    const res = shouldSkipHealthCheck({ stateDir: dir });
+    expect(res.skip).toBe(false);
+    expect(res.reason).toContain("backward");
+    expect(res.reason).toContain("fail open");
+    expect(res.currentLines).toBe(200);
+    expect(res.priorLines).toBe(1000);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("health_check_skipped events are excluded from the gate count", () => {
+    const dir = makeTmpDir();
+    // 40 real events + 20 skip-marker events = 60 physical lines, but only
+    // 40 gate-eligible. Prior 0 → delta 40 < 50 → skip.
+    const realLines = Array.from({ length: 40 }, (_, i) => JSON.stringify({ event_type: "mag_queue_feed", n: i }));
+    const skipLines = Array.from({ length: 20 }, (_, i) => JSON.stringify({ event_type: "health_check_skipped", n: i }));
+    writeFileSync(join(dir, "journal", "events.jsonl"), [...realLines, ...skipLines].join("\n") + "\n");
+    writeSnapshot(dir, { timestamp: "x", eventsJsonlLines: 0 });
+    const res = shouldSkipHealthCheck({ stateDir: dir });
+    expect(res.currentLines).toBe(40);
+    expect(res.skip).toBe(true);
+  });
+
+  test("many skip-marker events alone cannot push delta over threshold", () => {
+    const dir = makeTmpDir();
+    // Simulate 100 accumulated skip events and 0 real activity since last run.
+    const skipLines = Array.from({ length: 100 }, (_, i) => JSON.stringify({ event_type: "health_check_skipped", n: i }));
+    writeFileSync(join(dir, "journal", "events.jsonl"), skipLines.join("\n") + "\n");
+    writeSnapshot(dir, { timestamp: "x", eventsJsonlLines: 0 });
+    const res = shouldSkipHealthCheck({ stateDir: dir });
+    expect(res.currentLines).toBe(0);
+    expect(res.skip).toBe(false);
+    expect(res.reason).toContain("empty");
+  });
 });
