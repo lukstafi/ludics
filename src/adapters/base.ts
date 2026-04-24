@@ -5,7 +5,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from "fs";
 import { join, dirname } from "path";
-import { harnessDir } from "../config.ts";
+import { harnessDir as defaultHarnessDir } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import { PEER_SYNC_DIRNAME } from "../orchestration/peer-sync.ts";
 import type { AgentStatus } from "./types.ts";
@@ -32,13 +32,13 @@ export function slotSessionName(slot: number, role?: string, taskId?: string, fa
 // ---------------------------------------------------------------------------
 
 /** Get the state directory for a named adapter (e.g. "manual", "claude-ai"). */
-export function adapterStateDir(name: string): string {
-  return join(harnessDir(), name);
+export function adapterStateDir(name: string, harnessDir: string = defaultHarnessDir()): string {
+  return join(harnessDir, name);
 }
 
 /** Ensure the adapter state directory exists, creating it if needed. */
-export function ensureAdapterStateDir(name: string): string {
-  const dir = adapterStateDir(name);
+export function ensureAdapterStateDir(name: string, harnessDir: string = defaultHarnessDir()): string {
+  const dir = adapterStateDir(name, harnessDir);
   mkdirSync(dir, { recursive: true });
   return dir;
 }

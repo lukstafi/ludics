@@ -1,7 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import {
+  adapterStateDir,
+  ensureAdapterStateDir,
   readStateFile,
   writeStateFile,
   readStateKey,
@@ -254,5 +257,49 @@ describe("resolveProjectDir", () => {
   test("returns cwd for empty session", () => {
     expect(resolveProjectDir("")).toBe(process.cwd());
     expect(resolveProjectDir("null")).toBe(process.cwd());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// adapterStateDir / ensureAdapterStateDir — harnessDir parametrization
+// ---------------------------------------------------------------------------
+
+describe("adapterStateDir (harnessDir parametrization)", () => {
+  const ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
+  let ISO_TMP = "";
+  let DECOY = "";
+
+  beforeEach(() => {
+    ISO_TMP = mkdtempSync(join(tmpdir(), "ludics-adapterStateDir-"));
+    DECOY = mkdtempSync(join(tmpdir(), "ludics-adapterStateDir-decoy-"));
+    process.env.LUDICS_HARNESS_DIR = DECOY;
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR;
+    else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS;
+    rmSync(ISO_TMP, { recursive: true, force: true });
+    rmSync(DECOY, { recursive: true, force: true });
+  });
+
+  test("explicit harnessDir arg is authoritative over LUDICS_HARNESS_DIR", () => {
+    expect(adapterStateDir("manual", ISO_TMP)).toBe(join(ISO_TMP, "manual"));
+  });
+
+  test("default arg falls back to LUDICS_HARNESS_DIR", () => {
+    expect(adapterStateDir("manual")).toBe(join(DECOY, "manual"));
+  });
+
+  test("ensureAdapterStateDir creates under explicit harnessDir, not the decoy", () => {
+    const dir = ensureAdapterStateDir("manual", ISO_TMP);
+    expect(dir).toBe(join(ISO_TMP, "manual"));
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(join(DECOY, "manual"))).toBe(false);
+  });
+
+  test("ensureAdapterStateDir default arg creates under LUDICS_HARNESS_DIR", () => {
+    const dir = ensureAdapterStateDir("manual");
+    expect(dir).toBe(join(DECOY, "manual"));
+    expect(existsSync(dir)).toBe(true);
   });
 });

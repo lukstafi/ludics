@@ -17,11 +17,11 @@ import { readOrchestrationState } from "../orchestration/state.ts";
 const ADAPTER_NAME = "manual";
 
 function slotFile(ctx: AdapterContext): string {
-  return join(adapterStateDir(ADAPTER_NAME), `slot-${ctx.slot}.md`);
+  return join(adapterStateDir(ADAPTER_NAME, ctx.harnessDir), `slot-${ctx.slot}.md`);
 }
 
 function statusFile(ctx: AdapterContext): string {
-  return join(adapterStateDir(ADAPTER_NAME), `slot-${ctx.slot}.status`);
+  return join(adapterStateDir(ADAPTER_NAME, ctx.harnessDir), `slot-${ctx.slot}.status`);
 }
 
 export function readState(ctx: AdapterContext): string | null {
@@ -67,7 +67,7 @@ export function readState(ctx: AdapterContext): string | null {
 }
 
 export function start(ctx: AdapterContext): string {
-  ensureAdapterStateDir(ADAPTER_NAME);
+  ensureAdapterStateDir(ADAPTER_NAME, ctx.harnessDir);
 
   const now = isoTimestamp();
   const data = new Map<string, string>();
@@ -96,7 +96,7 @@ export function stop(ctx: AdapterContext): string {
   // Archive notes
   const nf = slotFile(ctx);
   if (existsSync(nf)) {
-    const archiveDir = join(adapterStateDir(ADAPTER_NAME), "archive");
+    const archiveDir = join(adapterStateDir(ADAPTER_NAME, ctx.harnessDir), "archive");
     mkdirSync(archiveDir, { recursive: true });
     const archiveName = `slot-${ctx.slot}-${now.replace(/[:.]/g, "-")}.md`;
     renameSync(nf, join(archiveDir, archiveName));

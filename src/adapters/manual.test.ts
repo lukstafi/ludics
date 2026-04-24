@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { readState } from "./manual.ts";
+import { readState, start, stop } from "./manual.ts";
 import { persistState, defaultOrchestrationConfig, type OrchestrationState } from "../orchestration/state.ts";
 import type { AdapterContext } from "./types.ts";
 
@@ -133,5 +133,79 @@ describe("manual readState — paused orchestration fallback", () => {
     const ctx = makeCtx(1);
     const result = readState(ctx);
     expect(result).toBeNull();
+  });
+});
+
+describe("manual adapter: ctx.harnessDir is authoritative over env", () => {
+  test("start/stop/readState write under ctx.harnessDir when LUDICS_HARNESS_DIR points elsewhere", () => {
+    // Point the env var at a decoy that must remain untouched.
+    const decoy = mkdtempSync(join(tmpdir(), "ludics-manual-decoy-"));
+    process.env.LUDICS_HARNESS_DIR = decoy;
+
+    // ctx.harnessDir points at the test's real harness — this must win.
+    const ctx = makeCtx(7);
+    const realHarness = harness();
+    expect(ctx.harnessDir).toBe(realHarness);
+    expect(decoy).not.toBe(realHarness);
+
+    try {
+      start(ctx);
+      const status = readState(ctx);
+      expect(status).not.toBeNull();
+      expect(status).toContain("manual (human work)");
+
+      // Files land under ctx.harnessDir, not under the decoy.
+      const manualDirReal = join(realHarness, "manual");
+      const manualDirDecoy = join(decoy, "manual");
+      expect(existsSync(join(manualDirReal, "slot-7.status"))).toBe(true);
+      expect(existsSync(join(manualDirReal, "slot-7.md"))).toBe(true);
+      expect(existsSync(manualDirDecoy)).toBe(false);
+
+      // stop also uses ctx.harnessDir — archive goes under real harness, decoy stays clean.
+      stop(ctx);
+      expect(existsSync(join(manualDirReal, "archive"))).toBe(true);
+      expect(existsSync(manualDirDecoy)).toBe(false);
+    } finally {
+      rmSync(decoy, { recursive: true, force: true });
+    }
+  });
+
+  test("readState resolves status file from ctx.harnessDir even when env points elsewhere", () => {
+    const decoy = mkdtempSync(join(tmpdir(), "ludics-manual-decoy-r-"));
+    // Seed the decoy with a conflicting status file so a bypass would pick it up.
+    const decoyManual = join(decoy, "manual");
+    mkdirSync(decoyManual, { recursive: true });
+    writeFileSync(
+      join(decoyManual, "slot-3.status"),
+      "status=active\nstarted=2026-01-01T00:00:00Z\ntask=DECOY\n",
+    );
+    writeFileSync(join(decoyManual, "slot-3.md"), "# DECOY NOTES\n");
+    process.env.LUDICS_HARNESS_DIR = decoy;
+
+    // Real ctx harness has no status file; must return null (not decoy content).
+    const ctx = makeCtx(3);
+
+    try {
+      const result = readState(ctx);
+      expect(result).toBeNull();
+    } finally {
+      rmSync(decoy, { recursive: true, force: true });
+    }
+  });
+
+  test("start writes notes content readable through ctx.harnessDir (round trip)", () => {
+    const decoy = mkdtempSync(join(tmpdir(), "ludics-manual-decoy-w-"));
+    process.env.LUDICS_HARNESS_DIR = decoy;
+
+    const ctx = makeCtx(5);
+    try {
+      start(ctx);
+      const notesPath = join(harness(), "manual", "slot-5.md");
+      expect(existsSync(notesPath)).toBe(true);
+      const body = readFileSync(notesPath, "utf-8");
+      expect(body).toContain("Manual Work Notes - Slot 5");
+    } finally {
+      rmSync(decoy, { recursive: true, force: true });
+    }
   });
 });
