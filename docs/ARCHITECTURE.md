@@ -212,6 +212,7 @@ The queue module (`src/queue.ts`) handles FIFO request/response:
 - `magLogs()` — show recent terminal activity
 - `magDoctor()` — health check for Mag setup
 - Keepalive/nudge mechanism to keep Mag responsive
+  - Settled-sentinel grace window: genuine Mag activity within ~90s of settle (`keepalive_interval × 1.5`) cannot clear the sentinel — the stop hook's own response text keeps rendering into the pane after `markMagSettled()`, so the guard preserves the sentinel until `maybeFeedMagQueue` can claim it for instant delivery (see `clearStaleSettled` in `src/mag.ts`, gh-ludics-308).
 - Terminal publishing: captures last 50 tmux lines, deduplicates via hash, publishes to ntfy.sh
 
 ### Skill Context Isolation
