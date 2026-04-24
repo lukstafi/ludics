@@ -48,7 +48,7 @@ Task acceptance criteria from the task file:
 {{TASK_AC}}
 {{/IF}}
 
-For each criterion, append a one-line confirmation to `{{WORKFLOW_FEEDBACK_FILE}}` under a `## AC Verification` heading (create the heading if absent), naming the evidence that satisfies it (file, test, commit). Only write the done status after every criterion has a confirmation line. See [AC self-check](../../docs/orchestration-patterns.md#ac-self-check).
+For each criterion, append a one-line confirmation to `{{WORKFLOW_FEEDBACK_FILE}}` under a `## AC Verification` heading (create the heading if absent), naming the evidence that satisfies it (file, test, commit). Each verification line must name the invariant the cited test enforces — not the capability the test's helper exposes; cite the exact assertion that would fail if the AC were violated, not a test that merely exercises the code path the AC would run through. Only write the done status after every criterion has a confirmation line. See [AC self-check](../../docs/orchestration-patterns.md#ac-self-check).
 
 If the task is already resolved on the base branch (fix already merged, no meaningful changes needed), don't make empty commits — they waste a round and pollute git history. Signal bail-out instead (see [bail-out contract](../../docs/orchestration-patterns.md#bail-out-contract)):
 
