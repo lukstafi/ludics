@@ -1,11 +1,11 @@
 // Dashboard — generate JSON data, serve, install
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync, statSync } from "fs";
-import { join, dirname } from "path";
+import { join } from "path";
 import YAML from "yaml";
 import { isPlainObject } from "./json.ts";
 import { safeSyncOutput } from "./spawn.ts";
-import { globalAdapter, harnessDir, loadConfigSync, slotsCount, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
+import { globalAdapter, harnessDir, loadConfigSync, ludicsRoot, slotsCount, effectivePriorityValue, milestonesEnabledProjects } from "./config.ts";
 import { readAllSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
 import { isRemoteMachine } from "./remote.ts";
@@ -1112,8 +1112,7 @@ export function dashboardServe(port: number = 7678): void {
 // --- Install ---
 
 export function dashboardInstall(): void {
-  // Use process.execPath — in compiled Bun binaries, process.argv[1] is virtual
-  const rootDir = dirname(dirname(process.execPath));
+  const rootDir = ludicsRoot();
   const templateDir = join(rootDir, "templates", "dashboard");
   const dashboardDir = join(harnessDir(), "dashboard");
 

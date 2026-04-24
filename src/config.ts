@@ -93,6 +93,14 @@ export interface LudicsFullConfig {
 }
 
 export function ludicsRoot(): string {
+  // Prefer cwd when it looks like a ludics checkout. Without this, a stale
+  // `~/.local/bin/ludics` symlink pointing at a task worktree would make every
+  // subsequent init re-install from the worktree (self-reinforcing hijack).
+  const cwd = process.cwd();
+  if (existsSync(join(cwd, "bin", "ludics")) && existsSync(join(cwd, "templates"))) {
+    return cwd;
+  }
+
   // Prefer the invoked entry script path in dev mode (`bun run src/index.ts`),
   // where process.execPath points to the Bun executable in ~/.bun/bin.
   const entry = process.argv[1] ?? "";
@@ -108,7 +116,7 @@ export function ludicsRoot(): string {
   if (execPath.includes("/bin/ludics")) {
     return execPath.replace(/\/bin\/.*$/, "");
   }
-  return process.cwd();
+  return cwd;
 }
 
 export function pointerConfigPath(): string {
