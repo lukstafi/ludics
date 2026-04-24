@@ -5,7 +5,7 @@ import { readOrchestrationState } from "../orchestration/state.ts";
 import type { AgentConfig } from "../orchestration/state.ts";
 import { T3CodeClient, waitForNewTurn } from "./client.ts";
 import { doctorServer, ensureServer, readServerRecord, readSlotState, serverStatus, stopServer, t3codeServerPath } from "./server.ts";
-import type { T3Thread, T3Project, T3ThreadMessage } from "./types.ts";
+import type { T3ThreadMessage } from "./types.ts";
 import { readFrontmatterField } from "../tasks/markdown.ts";
 
 // ---------------------------------------------------------------------------
@@ -318,7 +318,7 @@ function collectActiveTaskIds(harness: string): Set<string> {
     for (const file of readdirSync(slotsDir)) {
       if (!file.endsWith(".json")) continue;
       try {
-        const content = JSON.parse(readFileSync(join(slotsDir, file), "utf-8"));
+        const content = JSON.parse(readFileSync(join(slotsDir, file), "utf-8")) as { task?: string };
         if (content.task) active.add(String(content.task));
       } catch { /* ignore */ }
     }

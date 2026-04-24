@@ -1,6 +1,6 @@
-import { existsSync, openSync, readFileSync } from "fs";
+import { existsSync } from "fs";
 import { readFrontmatterField } from "../tasks/markdown.ts";
-import { basename, join, resolve } from "path";
+import { basename, resolve } from "path";
 import {
   getGitBranch,
   getMainRepoFromWorktree,
@@ -22,7 +22,6 @@ import {
 import { globalAdapter, loadConfigSync, type LudicsFullConfig } from "../config.ts";
 import {
   toWireProvider,
-  threadModel,
   type T3CodeServerRecord,
   type T3CodeThreadRecord,
   type T3InteractionMode,
@@ -44,10 +43,10 @@ import {
   type OrchestrationConfig,
   type OrchestrationState,
 } from "../orchestration/state.ts";
-import { initPeerSync, removePeerSyncSession, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
-import { createWorktrees, cleanupWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
+import { initPeerSync, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
+import { createWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
 import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/deferred-cleanup.ts";
-import { isoNow, ludicsSelfCommand, makeId, nowEpoch } from "../orchestration/util.ts";
+import { isoNow, makeId, nowEpoch } from "../orchestration/util.ts";
 
 interface ParsedAgentToken {
   name: string;

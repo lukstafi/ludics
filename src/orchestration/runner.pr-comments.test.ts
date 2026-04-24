@@ -10,7 +10,6 @@ import * as github from "./github.ts";
 import { type OrchestrationState } from "./state.ts";
 import {
   makeTmpDir,
-  makeGitRepo,
   makeState,
 } from "./runner.test-helpers.ts";
 

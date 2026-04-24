@@ -1,6 +1,8 @@
 // Network tests — verify hostname fallback chain and networkStatus output
 
 import { describe, it, expect, spyOn } from "bun:test";
+import { readFileSync } from "fs";
+import { join } from "path";
 import * as network from "./network.ts";
 import * as config from "./config.ts";
 
@@ -18,7 +20,7 @@ describe("networkHostname", () => {
     // After removing hostnameFromConfig, the fallback chain in tailscale mode is:
     // tailscale CLI → cluster machine host → localhost
     // Verify no config.network.hostname lookup exists
-    const src = require("fs").readFileSync(require.resolve("./network.ts"), "utf8");
+    const src = readFileSync(join(import.meta.dir, "network.ts"), "utf8");
     expect(src).not.toContain("hostnameFromConfig");
     expect(src).not.toContain("config.network");
   });

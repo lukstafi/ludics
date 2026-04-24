@@ -4,8 +4,9 @@ import { existsSync, readFileSync, readlinkSync, writeFileSync, mkdirSync, copyF
 import { join, dirname } from "path";
 import YAML from "yaml";
 import { safeSyncOutput } from "./spawn.ts";
-import { ludicsRoot, pointerConfigPath, harnessDir, loadConfigSync } from "./config.ts";
-import { dashboardInstall, dashboardStop, dashboardServe } from "./dashboard.ts";
+import { ludicsRoot, pointerConfigPath, loadConfigSync, slotsCount } from "./config.ts";
+import { dashboardInstall, dashboardStop } from "./dashboard.ts";
+import { writeSlotJson, emptySlotData } from "./slots/json.ts";
 import { triggersInstall } from "./triggers.ts";
 import { clusterTick } from "./cluster.ts";
 import { statePull } from "./state.ts";
@@ -305,8 +306,6 @@ function ensureHarness(root: string, repoDir: string, statePath: string): void {
   const slotsDir = join(harnessDir, "slots");
   if (!existsSync(slotsDir)) {
     mkdirSync(slotsDir, { recursive: true });
-    const { writeSlotJson, emptySlotData } = require("./slots/json.ts");
-    const { slotsCount } = require("./config.ts");
     const count = slotsCount();
     for (let i = 1; i <= count; i++) {
       writeSlotJson(i, emptySlotData(i), harnessDir);

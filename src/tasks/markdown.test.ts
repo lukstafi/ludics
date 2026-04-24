@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { addFrontmatterField, appendToSection, frontmatterBounds, readFrontmatterField, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter, writeTaskFile } from "./markdown.ts";
 
@@ -531,12 +531,12 @@ describe("parseTaskFrontmatter effort: tiny", () => {
   test("updateFrontmatterField preserves effort: tiny on write", () => {
     const tmpFile = `/tmp/ludics-tiny-roundtrip-${Date.now()}.md`;
     const content = "---\nid: task-1\ntitle: Test\neffort: tiny\n---\n\nbody\n";
-    require("fs").writeFileSync(tmpFile, content);
+    writeFileSync(tmpFile, content);
     // Update an unrelated field; verify effort stays "tiny"
     updateFrontmatterField(tmpFile, "priority", "A");
-    const after = require("fs").readFileSync(tmpFile, "utf-8");
+    const after = readFileSync(tmpFile, "utf-8");
     expect(readFrontmatterField(after, "effort")).toBe("tiny");
-    require("fs").unlinkSync(tmpFile);
+    unlinkSync(tmpFile);
   });
 });
 

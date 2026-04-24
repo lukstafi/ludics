@@ -62,9 +62,6 @@ export const PHASE_CATEGORIES: Record<Phase, PhaseCategory> = {
   done: "terminal",
 };
 
-/** Grace period (seconds) after a turn settles before treating as done without status update. */
-const SETTLED_GRACE_PERIOD_S = 30;
-
 /**
  * Return the path of the required artifact for this phase/agent, or null if
  * the phase has no required file artifact.  When a non-null path is returned,

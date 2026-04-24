@@ -129,8 +129,9 @@ export class T3CodeTransport implements OrchestrationTransport {
     return commandId;
   }
 
-  async sendEnter(_state: OrchestrationState, _agent: AgentConfig): Promise<void> {
+  async sendEnter(state: OrchestrationState, agent: AgentConfig): Promise<void> {
     // No-op for t3code — turns are dispatched via WebSocket, not terminal input.
+    void state; void agent;
   }
 
   async refreshAgentTransportState(state: OrchestrationState): Promise<void> {

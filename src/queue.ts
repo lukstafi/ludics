@@ -54,7 +54,7 @@ function breakStaleLock(lockDir: string, ownerFile: string): boolean {
     pidDead = true;
   }
   if (!ageStale && !pidDead) return false;
-  try { unlinkSync(ownerFile); } catch {}
+  try { unlinkSync(ownerFile); } catch { /* ignore */ }
   try { rmdirSync(lockDir); } catch { return false; }
   return true;
 }
@@ -89,8 +89,8 @@ export function withQueueLock<T>(fn: () => T): T {
   try {
     return fn();
   } finally {
-    try { unlinkSync(ownerFile); } catch {}
-    try { rmdirSync(lockDir); } catch {}
+    try { unlinkSync(ownerFile); } catch { /* ignore */ }
+    try { rmdirSync(lockDir); } catch { /* ignore */ }
   }
 }
 
@@ -317,7 +317,7 @@ export function recentResults(limit: number = 20): { file: string; data: Record<
     .slice(0, limit);
   return files.map(({ file, mtimeMs }) => {
     try {
-      const parsed = JSON.parse(readFileSync(file, "utf-8"));
+      const parsed: unknown = JSON.parse(readFileSync(file, "utf-8"));
       const data = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
         ? (parsed as Record<string, unknown>)
         : ({ error: "non-object result", raw: typeof parsed } as Record<string, unknown>);

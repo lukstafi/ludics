@@ -31,7 +31,7 @@ export function detectTestCommand(projectPath: string): string | null {
   try {
     const pkgPath = join(projectPath, "package.json");
     if (existsSync(pkgPath)) {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { scripts?: { test?: string } };
       if (pkg.scripts?.test) return "npm test";
     }
   } catch { /* malformed package.json — skip */ }
@@ -75,7 +75,7 @@ export function testHealthStatePath(): string {
 /** @internal exported for tests only */
 export function loadTestHealthState(): TestHealthState {
   try {
-    const parsed = JSON.parse(readFileSync(testHealthStatePath(), "utf8"));
+    const parsed: unknown = JSON.parse(readFileSync(testHealthStatePath(), "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
     return parsed as TestHealthState;
   } catch {

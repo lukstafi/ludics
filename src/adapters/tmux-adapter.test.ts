@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { AdapterContext } from "./types.ts";
+import { defaultOrchestrationConfig, initAgentRuntimeState, persistState, type OrchestrationState } from "../orchestration/state.ts";
 
 describe("tmux adapter exports", () => {
   test("adapter module is importable", async () => {
@@ -137,9 +138,7 @@ describe("tmux adapter stop — preserveState", () => {
   }
 
   function writeOrchState(harness: string): void {
-    const { defaultOrchestrationConfig, initAgentRuntimeState } = require("../orchestration/state.ts");
-    const { persistState } = require("../orchestration/state.ts");
-    const state = {
+    const state: OrchestrationState = {
       slot: 1,
       taskId: "test-task",
       mode: "pair",

@@ -3,14 +3,16 @@
 // Server handlers are called by dashboard-server routing.
 // Client helper is used by slots, cluster, and worker-signal modules.
 
-import { existsSync, readFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, readdirSync, unlinkSync, appendFileSync } from "fs";
 import { atomicWriteFileSync, writeJsonFile } from "./json.ts";
 import { join } from "path";
-import { harnessDir, loadConfigSync, slotsCount } from "./config.ts";
+import { harnessDir, loadConfigSync, slotsCount, stateRepoDir } from "./config.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, slotDataToMarkdown } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
+import { journalAppend } from "./journal.ts";
+import { updateFrontmatterField, appendToSection } from "./tasks/markdown.ts";
 import type { ClusterMachine } from "./cluster.ts";
 
 // --- Config helpers ---
@@ -142,7 +144,6 @@ export interface PendingIntent {
 const INTENT_TTL = 900; // seconds
 
 function intentsDir(): string {
-  const { stateRepoDir } = require("./config.ts");
   const hasher = new Bun.CryptoHasher("md5");
   hasher.update(stateRepoDir());
   const suffix = hasher.digest("hex").slice(0, 8);
@@ -161,7 +162,7 @@ export function recordIntent(slot: number, intent: PendingIntent): void {
 
 export function clearIntent(slot: number): void {
   const file = intentFilePath(slot);
-  try { if (existsSync(file)) { const { unlinkSync } = require("fs"); unlinkSync(file); } } catch { /* ignore */ }
+  try { if (existsSync(file)) unlinkSync(file); } catch { /* ignore */ }
 }
 
 export function getIntentForDashboard(slot: number): PendingIntent | null {
@@ -183,8 +184,7 @@ function getIntentsForMachine(machine: string): Record<number, PendingIntent> {
   const dir = intentsDir();
   if (!existsSync(dir)) return result;
   try {
-    const { readdirSync } = require("fs");
-    for (const file of readdirSync(dir) as string[]) {
+    for (const file of readdirSync(dir)) {
       const match = file.match(/^slot-(\d+)\.json$/);
       if (!match) continue;
       const slot = Number(match[1]);
@@ -206,8 +206,7 @@ function expireStaleIntents(): void {
   if (!existsSync(dir)) return;
   const now = Math.floor(Date.now() / 1000);
   try {
-    const { readdirSync } = require("fs");
-    for (const file of readdirSync(dir) as string[]) {
+    for (const file of readdirSync(dir)) {
       const match = file.match(/^slot-(\d+)\.json$/);
       if (!match) continue;
       try {
@@ -405,7 +404,6 @@ function handleHeartbeat(body: Record<string, unknown>): Response {
   }
 
   // Write heartbeat file to runtime dir (outside harness)
-  const { stateRepoDir } = require("./config.ts");
   const hasher = new Bun.CryptoHasher("md5");
   hasher.update(stateRepoDir());
   const suffix = hasher.digest("hex").slice(0, 8);
@@ -527,8 +525,7 @@ function handleGetIntents(req: Request): Response {
   if (existsSync(dir)) {
     const now = Math.floor(Date.now() / 1000);
     try {
-      const { readdirSync } = require("fs");
-      for (const file of readdirSync(dir) as string[]) {
+      for (const file of readdirSync(dir)) {
         const match = file.match(/^slot-(\d+)\.json$/);
         if (!match) continue;
         try {
@@ -557,7 +554,8 @@ function handleGetOrchestrationState(slot: number): Response {
   const file = join(harnessDir(), "orchestration", `slot-${slot}.json`);
   if (!existsSync(file)) return jsonResponse(404, { error: "orchestration state not found" });
   try {
-    return jsonResponse(200, JSON.parse(readFileSync(file, "utf-8")));
+    const parsed = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+    return jsonResponse(200, parsed);
   } catch {
     return jsonResponse(500, { error: "failed to read orchestration state" });
   }
@@ -570,7 +568,6 @@ function handlePostJournal(body: Record<string, unknown>): Response {
   const message = String(body.message ?? "");
   if (!category || !message) return jsonResponse(400, { error: "category and message required" });
   try {
-    const { journalAppend } = require("./journal.ts");
     journalAppend(category, message);
   } catch (err) {
     return jsonResponse(500, { error: String(err) });
@@ -580,7 +577,6 @@ function handlePostJournal(body: Record<string, unknown>): Response {
 
 function handlePostEvent(body: Record<string, unknown>): Response {
   try {
-    const { appendFileSync } = require("fs");
     const dir = join(harnessDir(), "journal");
     mkdirSync(dir, { recursive: true });
     // Use worker-supplied ts/epoch if present, otherwise generate
@@ -622,7 +618,6 @@ function handlePostTaskUpdate(body: Record<string, unknown>): Response {
   const file = join(harnessDir(), "tasks", `${taskId}.md`);
   if (!existsSync(file)) return jsonResponse(404, { error: "task not found" });
   try {
-    const { updateFrontmatterField } = require("./tasks/markdown.ts");
     updateFrontmatterField(file, field, value);
   } catch (err) {
     return jsonResponse(500, { error: String(err) });
@@ -640,7 +635,6 @@ function handlePostTaskSectionAppend(body: Record<string, unknown>): Response {
   const file = join(harnessDir(), "tasks", `${taskId}.md`);
   if (!existsSync(file)) return jsonResponse(404, { error: "task not found" });
   try {
-    const { appendToSection } = require("./tasks/markdown.ts");
     appendToSection(file, section, line);
   } catch (err) {
     return jsonResponse(500, { error: String(err) });

@@ -3,7 +3,7 @@
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "fs";
 import { atomicWriteFileSync } from "./json.ts";
-import { basename, join } from "path";
+import { join } from "path";
 import YAML from "yaml";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
@@ -261,31 +261,6 @@ function extractTurnsFromThread(
 }
 
 // --- Review verdict extraction ---
-
-function extractVerdicts(peerSyncDir: string): RetrospectiveVerdict[] {
-  const reviewsDir = join(peerSyncDir, "reviews");
-  if (!existsSync(reviewsDir)) return [];
-
-  const verdicts: RetrospectiveVerdict[] = [];
-
-  try {
-    const files = readdirSync(reviewsDir).filter((f: string) => f.endsWith(".md"));
-
-    for (const f of files) {
-      const parsed = parseReviewFilename(f);
-      if (parsed) {
-        const content = readFileSync(join(reviewsDir, f), "utf-8");
-        const verdict = parseVerdictFromContent(content);
-        verdicts.push({ round: parsed.round, type: parsed.type, verdict, reviewer: parsed.agentName });
-      }
-    }
-  } catch {
-    // ignore read errors
-  }
-
-  verdicts.sort((a, b) => a.round - b.round);
-  return verdicts;
-}
 
 export function extractReviews(peerSyncDir: string): RetrospectiveReview[] {
   const reviewsDir = join(peerSyncDir, "reviews");

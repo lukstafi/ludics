@@ -508,7 +508,6 @@ function triggersPauseMacos(): void {
       foundAny = true;
       const label = f.replace(".plist", "");
       const name = label.replace("com.ludics.", "");
-      const plist = join(agentsDir, f);
       safeSyncOutput(["launchctl", "disable", `gui/${uid}/${label}`]);
       safeSyncOutput(["launchctl", "bootout", `gui/${uid}/${label}`]);
       console.log(`Paused launchd trigger: ${name}`);

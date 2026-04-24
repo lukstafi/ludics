@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, stateRepoDir, effectivePriorityValue, milestonesEnabledProjects, milestoneKey, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, effectivePriorityValue, milestonesEnabledProjects, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
 import { formatUpstreamLagSection } from "./briefing-lag.ts";
 import { defaultRunGit, type RunGit } from "./git-runner.ts";
 import { clearSentinel, readSentinelEpoch, sentinelExists, sentinelFresh, touchSentinel } from "./sentinel.ts";
@@ -13,7 +13,7 @@ import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
 import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, recentResults } from "./queue.ts";
 import { getUrl } from "./network.ts";
-import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterMachine } from "./cluster.ts";
+import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
 import { isRemoteMachine } from "./remote.ts";
 // slot-intents.ts deleted — intents use in-memory store via cluster-http.ts
@@ -29,7 +29,7 @@ import {
   expirePendingRevises,
   expirePendingFollowupRevises,
 } from "./notify.ts";
-import { addFrontmatterField, updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, readFrontmatterField, priorityValue } from "./tasks/markdown.ts";
+import { updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, readFrontmatterField, priorityValue } from "./tasks/markdown.ts";
 import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
@@ -272,7 +272,7 @@ function writeStallNudgeEpoch(): void {
 }
 
 function clearStallState(): void {
-  try { unlinkSync(paneHashFile()); } catch {}
+  try { unlinkSync(paneHashFile()); } catch { /* ignore */ }
   clearSentinel(paneChangeEpochFile());
   clearSentinel(stallNudgeEpochFile());
 }
@@ -307,7 +307,7 @@ export async function maybeFeedMagQueue(): Promise<boolean> {
     } catch {
       return false; // another tick already claimed
     }
-    try { unlinkSync(claimPath); } catch {}
+    try { unlinkSync(claimPath); } catch { /* ignore */ }
   }
 
   const popped = await queuePopSkill();
@@ -1599,7 +1599,7 @@ export async function briefingPrecomputeContext(opts?: { runGit?: RunGit }): Pro
 
   // Capture slots
   const slotsR = safeSyncOutput(ludicsSelfCommand(["slots"]));
-  let slotsOutput = slotsR.ok ? slotsR.stdout : "(unavailable)";
+  const slotsOutput = slotsR.ok ? slotsR.stdout : "(unavailable)";
 
   // Capture sessions
   let sessionsContent = "(no sessions report available)";
@@ -1610,19 +1610,19 @@ export async function briefingPrecomputeContext(opts?: { runGit?: RunGit }): Pro
 
   // Flow ready
   const flowReadyR = safeSyncOutput(ludicsSelfCommand(["flow", "ready"]));
-  let flowReadyOutput = flowReadyR.ok ? flowReadyR.stdout : "(unavailable)";
+  const flowReadyOutput = flowReadyR.ok ? flowReadyR.stdout : "(unavailable)";
 
   // Flow critical
   const flowCriticalR = safeSyncOutput(ludicsSelfCommand(["flow", "critical"]));
-  let flowCriticalOutput = flowCriticalR.ok ? flowCriticalR.stdout : "(unavailable)";
+  const flowCriticalOutput = flowCriticalR.ok ? flowCriticalR.stdout : "(unavailable)";
 
   // Tasks needing elaboration
   const needsElabR = safeSyncOutput(ludicsSelfCommand(["tasks", "needs-elaboration"]));
-  let needsElabOutput = needsElabR.ok && needsElabR.stdout ? needsElabR.stdout : "None";
+  const needsElabOutput = needsElabR.ok && needsElabR.stdout ? needsElabR.stdout : "None";
 
   // Recent journal
   const journalR = safeSyncOutput(ludicsSelfCommand(["journal", "recent", "20"]));
-  let journalOutput = journalR.ok ? journalR.stdout : "(no journal entries)";
+  const journalOutput = journalR.ok ? journalR.stdout : "(no journal entries)";
 
   // Same-day check
   let samedayStatus = "new";
@@ -1735,73 +1735,6 @@ function matchCwdToProject(
   }
 
   return null;
-}
-
-function taskIsConcluded(taskId: string, harness: string): boolean {
-  const taskFile = join(harness, "tasks", `${taskId}.md`);
-  if (!existsSync(taskFile)) return false;
-
-  try {
-    const content = readFileSync(taskFile, "utf-8");
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fmMatch) return false;
-
-    const data = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>;
-    const status = String(data.status ?? "").trim().toLowerCase();
-    if (status === "done" || status === "abandoned") return true;
-
-    const completed = String(data.completed ?? "").trim().toLowerCase();
-    return !!completed && completed !== "null";
-  } catch {
-    return false;
-  }
-}
-
-interface BriefingClassifiedSession {
-  slot: number | null;
-  stale: boolean;
-  lastActivity: string;
-  orchestration: { type: string; phase: string; round: string } | null;
-}
-
-function readBriefingClassifiedSessions(sessionsFile: string): BriefingClassifiedSession[] | null {
-  if (!existsSync(sessionsFile)) return null;
-
-  // Keep behavior consistent with other pre-computations that require fresh session data.
-  try {
-    const mtime = statSync(sessionsFile).mtimeMs;
-    if (Date.now() - mtime > 900_000) return null;
-  } catch {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(readFileSync(sessionsFile, "utf-8")) as { classified?: Array<Record<string, unknown>> };
-    const raw = Array.isArray(parsed.classified) ? parsed.classified : [];
-
-    return raw.map((entry) => {
-      const slotValue = entry.slot;
-      const slot = typeof slotValue === "number"
-        ? slotValue
-        : (typeof slotValue === "string" && /^\d+$/.test(slotValue) ? parseInt(slotValue, 10) : null);
-      const orchestrationRaw = entry.orchestration;
-      const orchestration = orchestrationRaw && typeof orchestrationRaw === "object"
-        ? {
-          type: String((orchestrationRaw as Record<string, unknown>).type ?? ""),
-          phase: String((orchestrationRaw as Record<string, unknown>).phase ?? ""),
-          round: String((orchestrationRaw as Record<string, unknown>).round ?? ""),
-        }
-        : null;
-      return {
-        slot,
-        stale: Boolean(entry.stale),
-        lastActivity: String(entry.lastActivity ?? ""),
-        orchestration,
-      };
-    });
-  } catch {
-    return null;
-  }
 }
 
 function computeSessionProjectMatches(): string {
@@ -2110,7 +2043,8 @@ async function maybeAutoStartSlots(): Promise<void> {
     const slotMachine = data.machine ?? "";
     if (slotMachine && isRemoteMachine(slotMachine)) {
       try {
-        const { getIntentForDashboard } = require("./cluster-http.ts");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy to avoid import cycle: mag.ts → cluster-http.ts → (journal/events chain back into mag)
+        const { getIntentForDashboard } = require("./cluster-http.ts") as typeof import("./cluster-http.ts");
         const existing = getIntentForDashboard(slotNum);
         if (existing && existing.action === "start") continue;
       } catch { /* ignore */ }
@@ -2748,7 +2682,6 @@ async function processSlotIntents(freshSlots: Map<number, SlotData> | null): Pro
 
   // On worker: poll controller for pending intents via HTTP
   try {
-    const { clusterIsController } = require("./cluster.ts");
     if (!clusterIsController()) {
       if (!freshSlots) return; // no fresh state — skip
       const { clusterGetIntents, clusterDeleteIntent } = await import("./cluster-http.ts");

@@ -36,3 +36,6 @@ jobs:
 
       - name: Lint — no mock.module() in tests
         run: bun run lint:no-mock-module
+
+      - name: Lint — eslint
+        run: bun run lint

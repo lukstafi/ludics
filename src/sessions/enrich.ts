@@ -48,8 +48,9 @@ function enrichFromT3codeSlots(): Map<string, Orchestration> {
  * Enrich sessions with orchestration data from t3code slot state files.
  */
 export async function enrichSessions(
-  _sessions: DiscoveredSession[],
+  sessions: DiscoveredSession[],
 ): Promise<Map<string, Orchestration>> {
+  void sessions;
   return enrichFromT3codeSlots();
 }
 

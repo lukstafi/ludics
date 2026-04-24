@@ -30,8 +30,8 @@ function eventsFile(): string {
 export function emitEvent(event: Omit<LudicsEvent, "ts" | "epoch">): void {
   try {
     // Worker → forward to controller via HTTP (no local harness write)
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { clusterIsController, clusterCurrentMachineName } = require("./cluster.ts");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- circular: cluster.ts imports emitEvent from this module
+    const { clusterIsController, clusterCurrentMachineName } = require("./cluster.ts") as typeof import("./cluster.ts");
     if (clusterCurrentMachineName() && !clusterIsController()) {
       const now = new Date();
       const ts = now.toISOString().replace(/\.\d{3}Z$/, "Z");

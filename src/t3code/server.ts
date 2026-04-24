@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { createServer } from "node:net";
 import { join, resolve } from "path";
 import { Database } from "bun:sqlite";
@@ -78,9 +78,6 @@ export function t3codeServerPath(harnessDir: string = defaultHarnessDir()): stri
 export function t3codeStartingPath(harnessDir: string = defaultHarnessDir()): string {
   return join(t3codeDir(harnessDir), "starting.json");
 }
-
-/** How long (ms) a starting.json marker is considered fresh. */
-const STARTING_MARKER_TTL_MS = 120_000;
 
 export function t3codeServerStateDir(harnessDir: string = defaultHarnessDir()): string {
   return join(t3codeDir(harnessDir), "state");
@@ -699,10 +696,9 @@ export async function doctorServer(
         // Find all cached SDK versions and pick the highest
         if (existsSync(bunCacheDir)) {
           try {
-            const { readdirSync } = require("fs");
-            const entries: string[] = readdirSync(bunCacheDir);
+            const entries = readdirSync(bunCacheDir);
             const sdkVersions = entries
-              .map((e: string) => e.match(/^@anthropic-ai\+claude-agent-sdk@([0-9.]+)/)?.[1])
+              .map((e) => e.match(/^@anthropic-ai\+claude-agent-sdk@([0-9.]+)/)?.[1])
               .filter((v): v is string => v != null)
               .sort();
             if (sdkVersions.length > 0) latestCached = sdkVersions[sdkVersions.length - 1];
@@ -711,7 +707,8 @@ export async function doctorServer(
         // Check the canonical node_modules path
         const installedPkgPath = join(repoDir, "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json");
         try {
-          installedVersion = JSON.parse(readFileSync(installedPkgPath, "utf-8")).version;
+          const pkg = JSON.parse(readFileSync(installedPkgPath, "utf-8")) as { version?: string };
+          installedVersion = pkg.version ?? null;
         } catch { /* may be hoisted into .bun only */ }
         const effectiveVersion = installedVersion ?? latestCached;
         // Compare against npm registry latest

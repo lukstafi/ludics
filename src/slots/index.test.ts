@@ -108,7 +108,7 @@ describe("slotAssign", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "watch-streams-cleanup", "Watch streams cleanup");
 
-    slotAssign(1, "watch-streams-cleanup", "manual");
+    void slotAssign(1, "watch-streams-cleanup", "manual");
 
     const data = readSlotJson(1, harness);
     expect(data.process).toBe("Watch streams cleanup");
@@ -126,7 +126,7 @@ describe("slotAssign", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
 
-    slotAssign(2, "Investigate slot detection", "manual");
+    void slotAssign(2, "Investigate slot detection", "manual");
 
     const data = readSlotJson(2, harness);
     expect(data.process).toBe("Investigate slot detection");
@@ -142,7 +142,7 @@ describe("slotResume guards", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-resume-1", "Resume test");
-    slotAssign(1, "task-resume-1", "manual");
+    void slotAssign(1, "task-resume-1", "manual");
 
     await expect(slotResume(1)).rejects.toThrow("resume only supports t3code");
   });
@@ -154,7 +154,7 @@ describe("slotResume guards", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-resume-2", "Resume test 2");
-    slotAssign(1, "task-resume-2", "t3code");
+    void slotAssign(1, "task-resume-2", "t3code");
 
     await expect(slotResume(1)).rejects.toThrow("slot start");
   });
@@ -166,7 +166,7 @@ describe("slotResume guards", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-resume-3", "Resume test 3");
-    slotAssign(1, "task-resume-3", "t3code");
+    void slotAssign(1, "task-resume-3", "t3code");
 
     // Write t3code slot state but no orchestration state
     const t3codeDir = join(harness, "t3code");
@@ -188,7 +188,7 @@ describe("slotStart guard", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-guard-1", "Guard test");
-    slotAssign(1, "task-guard-1", "t3code", "", "", "--pair --coder claude-code");
+    void slotAssign(1, "task-guard-1", "t3code", "", "", "--pair --coder claude-code");
 
     // Write orchestration state for the same task (not done)
     const orchDir = join(harness, "orchestration");
@@ -440,7 +440,7 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-empty-args-1", "Empty args test");
     // slotAssign with no adapterArgs stores "null" which makeAdapterContext converts to ""
-    slotAssign(1, "task-empty-args-1", "t3code");
+    void slotAssign(1, "task-empty-args-1", "t3code");
     const data = readSlotJson(1, harness);
     const ctx = makeAdapterContext(1, data);
 
@@ -467,7 +467,7 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-whitespace-args-1", "Whitespace args test");
     // Assign with whitespace adapterArgs — stored as-is since "   " is truthy
-    slotAssign(1, "task-whitespace-args-1", "t3code", "", "", "   ");
+    void slotAssign(1, "task-whitespace-args-1", "t3code", "", "", "   ");
     const data = readSlotJson(1, harness);
     const ctx = makeAdapterContext(1, data);
 
@@ -492,7 +492,7 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     mkdirSync(harness, { recursive: true });
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
-    slotAssign(1, "null", "t3code");
+    void slotAssign(1, "null", "t3code");
     await expect(slotStart(1)).rejects.toThrow("no task is assigned");
   });
 
@@ -503,7 +503,7 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-medium-plan-1", "Medium plan test");
-    slotAssign(1, "task-medium-plan-1", "t3code");
+    void slotAssign(1, "task-medium-plan-1", "t3code");
     const data = readSlotJson(1, harness);
     const ctx = makeAdapterContext(1, data);
 
@@ -554,7 +554,7 @@ describe("slotStart — t3code empty-args auto-fill", () => {
       "---",
       "",
     ].join("\n"));
-    slotAssign(1, "task-skip-plan-1", "t3code");
+    void slotAssign(1, "task-skip-plan-1", "t3code");
     const data = readSlotJson(1, harness);
     const ctx = makeAdapterContext(1, data);
 
@@ -585,7 +585,7 @@ describe("markSlotSetupFailed", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-setup-fail-1", "Setup fail test");
 
-    slotAssign(1, "task-setup-fail-1", "tmux");
+    void slotAssign(1, "task-setup-fail-1", "tmux");
 
     // Task should be in-progress after assign
     const taskBefore = readFileSync(join(tasksDir, "task-setup-fail-1.md"), "utf-8");
@@ -621,7 +621,7 @@ slot: 1
 
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
-    slotAssign(1, "task-setup-fail-2", "tmux");
+    void slotAssign(1, "task-setup-fail-2", "tmux");
     markSlotSetupFailed(1, "worktree creation failed");
 
     const data = readSlotJson(1, harness);
@@ -649,7 +649,7 @@ describe("slotResume — interrupted fallback to fresh start", () => {
     writeTask(tasksDir, "task-resume-fallback-1", "Resume fallback test");
 
     // Assign and mark as interrupted (simulating pre-persistState failure)
-    slotAssign(1, "task-resume-fallback-1", "tmux", "", "", "--pair --coder claude --reviewer claude");
+    void slotAssign(1, "task-resume-fallback-1", "tmux", "", "", "--pair --coder claude --reviewer claude");
     markSlotSetupFailed(1, "worktree creation failed");
 
     // slotResume should fall back to slotStart, which will fail because tmux
@@ -683,7 +683,7 @@ describe("slotResume — interrupted fallback to fresh start", () => {
     writeTask(tasksDir, "task-resume-fallback-2", "Post-persistState failure");
 
     // Use tmux mode (fails fast in test, unlike t3code which hangs on ensureServer)
-    slotAssign(1, "task-resume-fallback-2", "tmux", "", "", "--pair --coder claude --reviewer claude");
+    void slotAssign(1, "task-resume-fallback-2", "tmux", "", "", "--pair --coder claude --reviewer claude");
     markSlotSetupFailed(1, "runner start failed after persistState");
 
     // Simulate: orchestration state was persisted before the failure,
@@ -773,7 +773,7 @@ describe("slotSetMode — preserve state on mode toggle", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-toggle-1", "Toggle test");
-    slotAssign(1, "task-toggle-1", "tmux");
+    void slotAssign(1, "task-toggle-1", "tmux");
 
     makeOrchState(harness, 1, "task-toggle-1");
     stampSessionStarted(harness);
@@ -804,7 +804,7 @@ describe("slotSetMode — preserve state on mode toggle", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-toggle-2", "Toggle test t3code");
-    slotAssign(1, "task-toggle-2", "t3code");
+    void slotAssign(1, "task-toggle-2", "t3code");
 
     makeOrchState(harness, 1, "task-toggle-2");
     stampSessionStarted(harness);
@@ -826,7 +826,7 @@ describe("slotSetMode — preserve state on mode toggle", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-toggle-3", "Toggle reject test");
-    slotAssign(1, "task-toggle-3", "manual");
+    void slotAssign(1, "task-toggle-3", "manual");
     stampSessionStarted(harness);
 
     await expect(slotSetMode(1, "t3code")).rejects.toThrow("has an active session");
@@ -839,7 +839,7 @@ describe("slotSetMode — preserve state on mode toggle", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-toggle-4", "CLI toggle test");
-    slotAssign(1, "task-toggle-4", "tmux");
+    void slotAssign(1, "task-toggle-4", "tmux");
 
     makeOrchState(harness, 1, "task-toggle-4");
     stampSessionStarted(harness);
@@ -859,7 +859,7 @@ describe("slotStop — preserve-state flag", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-preserve-1", "Preserve stop test");
-    slotAssign(1, "task-preserve-1", "tmux");
+    void slotAssign(1, "task-preserve-1", "tmux");
 
     // Write orchestration state
     const orchDir = join(harness, "orchestration");
@@ -906,7 +906,7 @@ describe("slotStop — preserve-state flag", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-preserve-2", "CLI preserve test");
-    slotAssign(1, "task-preserve-2", "tmux");
+    void slotAssign(1, "task-preserve-2", "tmux");
 
     // Write orch state
     const orchDir = join(harness, "orchestration");
@@ -955,7 +955,7 @@ describe("remote slot dispatch via HTTP", () => {
     mkdirSync(hbDir, { recursive: true });
     writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
 
-    slotAssign(1, "task-remote-1", "tmux", "", "", "", "worker-a");
+    void slotAssign(1, "task-remote-1", "tmux", "", "", "", "worker-a");
 
     // Should throw — no cluster config for "worker-a"
     await expect(slotStart(1)).rejects.toThrow("no cluster config for machine worker-a");
@@ -973,7 +973,7 @@ describe("remote slot dispatch via HTTP", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-1b", "Remote start offline test");
 
-    slotAssign(1, "task-remote-1b", "tmux", "", "", "", "worker-a");
+    void slotAssign(1, "task-remote-1b", "tmux", "", "", "", "worker-a");
 
     // No heartbeat → machine offline
     await expect(slotStart(1)).rejects.toThrow("offline — cannot start");
@@ -995,7 +995,7 @@ describe("remote slot dispatch via HTTP", () => {
     mkdirSync(hbDir, { recursive: true });
     writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
 
-    slotAssign(1, "task-remote-2", "tmux", "", "", "", "worker-a");
+    void slotAssign(1, "task-remote-2", "tmux", "", "", "", "worker-a");
 
     // Stamp Session Started to simulate an active session
     const slotData = readSlotJson(1, harness);
@@ -1025,7 +1025,7 @@ describe("remote slot dispatch via HTTP", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-3", "Remote force stop test");
 
-    slotAssign(1, "task-remote-3", "tmux", "", "", "", "worker-a");
+    void slotAssign(1, "task-remote-3", "tmux", "", "", "", "worker-a");
 
     await slotStop(1, true, false);
 
@@ -1046,7 +1046,7 @@ describe("remote slot dispatch via HTTP", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-stop-offline", "Remote stop offline test");
 
-    slotAssign(1, "task-remote-stop-offline", "tmux", "", "", "", "worker-a");
+    void slotAssign(1, "task-remote-stop-offline", "tmux", "", "", "", "worker-a");
 
     // No heartbeat → machine offline
     await expect(slotStop(1, false, false)).rejects.toThrow("offline — cannot stop");
@@ -1065,7 +1065,7 @@ describe("remote slot dispatch via HTTP", () => {
     mkdirSync(hbDir, { recursive: true });
     writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
 
-    slotAssign(1, "task-remote-stop-noconfig", "tmux", "", "", "", "worker-a");
+    void slotAssign(1, "task-remote-stop-noconfig", "tmux", "", "", "", "worker-a");
 
     // Heartbeat is fresh but no cluster config → should throw
     await expect(slotStop(1, false, false)).rejects.toThrow("no cluster config for machine worker-a");
@@ -1079,7 +1079,7 @@ describe("remote slot dispatch via HTTP", () => {
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-remote-4", "Remote resume test");
 
-    slotAssign(1, "task-remote-4", "tmux", "", "", "", "worker-a");
+    void slotAssign(1, "task-remote-4", "tmux", "", "", "", "worker-a");
 
     // No heartbeat → machine offline → should throw
     await expect(slotResume(1)).rejects.toThrow("offline — cannot resume");
@@ -1098,7 +1098,7 @@ describe("remote slot dispatch via HTTP", () => {
     mkdirSync(hbDir, { recursive: true });
     writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
 
-    slotAssign(1, "task-remote-4b", "tmux", "", "", "", "worker-a");
+    void slotAssign(1, "task-remote-4b", "tmux", "", "", "", "worker-a");
 
     // Heartbeat is fresh but no cluster config → should throw
     await expect(slotResume(1)).rejects.toThrow("no cluster config for machine worker-a");

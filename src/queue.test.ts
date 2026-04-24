@@ -528,7 +528,7 @@ appendFileSync(eventsFile, \`child-done \${Date.now()}\\n\`);
     // Simulates: process A mkdir'd the lock dir but was preempted before
     // writing the owner file. A contender must NOT break this lock; doing
     // so lets both A and the contender enter the critical section.
-    const { withQueueLock } = await loadQueue();
+    await loadQueue();
     const queueModulePath = new URL("./queue.ts", import.meta.url).pathname;
     const lockDir = join(tmpDir, "mag", "queue.jsonl.lock");
     const eventsFile = join(tmpDir, "grace-events.log");

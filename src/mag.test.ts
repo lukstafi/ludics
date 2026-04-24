@@ -346,7 +346,7 @@ describe("settled sentinel atomic claim", () => {
     } catch {
       return false;
     }
-    try { unlinkSync(claimPath); } catch {}
+    try { unlinkSync(claimPath); } catch { /* ignore */ }
     return true;
   }
 
@@ -559,9 +559,9 @@ describe("stale settled sentinel detection", () => {
 
     if (currentHash === null) return false;
     let previousHash: string | null = null;
-    try { previousHash = readFileSync(hashPath, "utf-8").trim() || null; } catch {}
+    try { previousHash = readFileSync(hashPath, "utf-8").trim() || null; } catch { /* ignore */ }
     if (previousHash !== null && currentHash !== previousHash) {
-      try { unlinkSync(sentinelPath); } catch {}
+      try { unlinkSync(sentinelPath); } catch { /* ignore */ }
       writeFileSync(hashPath, currentHash);
       return true; // sentinel was stale
     } else if (previousHash === null) {
