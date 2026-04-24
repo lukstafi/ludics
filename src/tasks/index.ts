@@ -365,7 +365,7 @@ function tasksDuplicates(): void {
     const content = readFileSync(join(dir, f), "utf-8");
     const fm = parseTaskFrontmatter(content);
     if (["done", "abandoned", "merged"].includes(fm.status ?? "")) continue;
-    if (!fm.title) continue;
+    if (!fm.title || !fm.id) continue;
 
     const fp = contentFingerprint(fm.title);
     if (!groups.has(fp)) groups.set(fp, []);
@@ -471,8 +471,8 @@ function tasksMigrateRefs(dryRun: boolean = false): void {
       continue;
     }
 
-    if (!isLegacyManualTaskId(fm.id)) continue;
-    const title = fm.title.trim();
+    if (!fm.id || !isLegacyManualTaskId(fm.id)) continue;
+    const title = (fm.title ?? "").trim();
     if (!title) {
       conflicts.push(`${fm.id}: missing title; cannot derive deterministic ID`);
       continue;

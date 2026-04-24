@@ -675,6 +675,7 @@ function healBlockedByLinks(tasksDir: string): void {
     const content = readFileSync(filePath, "utf-8");
     let fm;
     try { fm = parseTaskFrontmatter(content); } catch { continue; }
+    if (!fm.id) continue;
     taskMap.set(fm.id, { status: fm.status ?? "ready", filePath, fm });
   }
 
@@ -773,7 +774,7 @@ function tasksMilestoneWarnings(tasksDir: string): void {
 
     if (!milestonesProjects.has(fm.project ?? "")) continue;
 
-    if (!fm.milestone) {
+    if (!fm.milestone && fm.id) {
       missing.push(fm.id);
     }
   }

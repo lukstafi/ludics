@@ -40,6 +40,8 @@ export interface TaskFrontmatter {
   merged_into?: string;
   merged_from?: string[];
   t3code_threads?: string[];
+  proposal?: string;
+  deferred_launch?: string;
 }
 
 export interface TaskYamlEntry {

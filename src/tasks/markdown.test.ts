@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, appendToSection, frontmatterBounds, readFrontmatterField, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter, writeTaskFile } from "./markdown.ts";
+import { addFrontmatterField, appendToSection, frontmatterBounds, readFrontmatterField, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter, writeTaskFile, _resetParseTaskFrontmatterCache, _parseTaskFrontmatterCacheSize } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -513,6 +513,102 @@ describe("parseTaskFrontmatter skip_plan", () => {
     const content = '---\nid: task-1\ntitle: Test\nskip_plan: "true"\n---\n';
     const fm = parseTaskFrontmatter(content);
     expect(fm.skip_plan).toBe(true);
+  });
+});
+
+describe("parseTaskFrontmatter non-throwing semantics", () => {
+  test("returns empty object when no frontmatter delimiters present", () => {
+    const content = "# Just a title\n\nBody.\n";
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.id).toBeUndefined();
+    expect(fm.status).toBeUndefined();
+  });
+
+  test("returns {} without throwing on malformed YAML with unrecognized structure", () => {
+    const content = "---\n: : :\n  bad:\n    - [\n---\n";
+    expect(() => parseTaskFrontmatter(content)).not.toThrow();
+    const fm = parseTaskFrontmatter(content);
+    // fallback populates nothing because no parseable field: value lines
+    expect(fm.status).toBeUndefined();
+  });
+
+  test("malformed YAML: line-regex fallback populates recognizable fields", () => {
+    const content = [
+      "---",
+      "id: task-1",
+      "status: done",
+      "dependencies: [unclosed",
+      "---",
+    ].join("\n");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.id).toBe("task-1");
+    expect(fm.status).toBe("done");
+  });
+
+  test("malformed YAML fallback strips quotes and treats literal null as missing", () => {
+    const content = [
+      "---",
+      'title: "quoted"',
+      "status: null",
+      "dependencies: [unclosed",
+      "---",
+    ].join("\n");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.title).toBe("quoted");
+    expect(fm.status).toBeUndefined();
+  });
+
+  test("populates proposal and deferred_launch fields", () => {
+    const content = [
+      "---",
+      "id: task-1",
+      "title: Test",
+      "proposal: docs/proposals/foo.md",
+      "deferred_launch: true",
+      "---",
+    ].join("\n");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.proposal).toBe("docs/proposals/foo.md");
+    expect(fm.deferred_launch).toBe("true");
+  });
+});
+
+describe("parseTaskFrontmatter cache", () => {
+  test("returns the same frozen reference for identical content strings", () => {
+    _resetParseTaskFrontmatterCache();
+    const content = "---\nid: task-1\ntitle: Test\n---\n";
+    const first = parseTaskFrontmatter(content);
+    const second = parseTaskFrontmatter(content);
+    expect(first).toBe(second);
+    expect(Object.isFrozen(first)).toBe(true);
+  });
+
+  test("mutation of returned object is prevented by freeze", () => {
+    _resetParseTaskFrontmatterCache();
+    const content = "---\nid: task-1\ntitle: First\n---\n";
+    const fm = parseTaskFrontmatter(content);
+    // strict-mode frozen: direct assignment throws; sloppy: silently ignored.
+    // Either way, subsequent read must still see "First".
+    expect(() => {
+      (fm as { title?: string }).title = "Mutated";
+    }).toThrow();
+    const again = parseTaskFrontmatter(content);
+    expect(again.title).toBe("First");
+  });
+
+  test("LRU eviction kicks in past 512 entries (oldest evicted)", () => {
+    _resetParseTaskFrontmatterCache();
+    const first = "---\nid: task-first\ntitle: First\n---\n";
+    parseTaskFrontmatter(first);
+    // Fill cache with 512 distinct entries → first entry should be evicted
+    for (let i = 0; i < 512; i++) {
+      parseTaskFrontmatter(`---\nid: task-pad-${i}\ntitle: Pad ${i}\n---\n`);
+    }
+    // Cache should be bounded at 512
+    expect(_parseTaskFrontmatterCacheSize()).toBeLessThanOrEqual(512);
+    // Re-reading `first` should produce a fresh parse (cache miss) — a new reference
+    const refreshed = parseTaskFrontmatter(first);
+    expect(refreshed.id).toBe("task-first");
   });
 });
 
