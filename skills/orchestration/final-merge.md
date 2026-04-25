@@ -13,10 +13,8 @@ else
   state=$(gh pr view "$PR_URL" {{#IF PROJECT_REPO}}--repo "{{PROJECT_REPO}}" {{/IF}}--json state -q .state)
   [ "$state" = "MERGED" ] || exit 1
 fi
-```
-
-On success, create `{{MERGED_MARKER_FILE}}`. Retry up to 3 times on transient failures.
-
-```sh
+touch "{{MERGED_MARKER_FILE}}"
 printf '%s|%s|final merge complete\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
 ```
+
+Retry up to 3 times on transient failures.

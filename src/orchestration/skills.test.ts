@@ -373,6 +373,11 @@ describe("skills", () => {
     // Wrapper treats only state == "MERGED" as success, otherwise exits non-zero
     // so the runner's verifyPhaseOutcome retry/escalation takes over.
     expect(rendered).toContain('[ "$state" = "MERGED" ] || exit 1');
+    // Success path (primary merge OR rescue) reaches both MERGED_MARKER_FILE
+    // touch and STATUS_FILE write — the marker line must sit AFTER `fi` so
+    // both branches reach it, and BEFORE the STATUS_FILE printf so a missing
+    // marker can never coexist with a done STATUS_FILE.
+    expect(rendered).toMatch(/fi\ntouch "\/tmp\/merged"\nprintf '%s\|%s\|final merge complete\\n' 'review-done'/);
   });
 
   test("final-merge template omits --repo when PROJECT_REPO is empty but still passes the PR URL", () => {
@@ -384,6 +389,8 @@ describe("skills", () => {
     // Post-merge view fallback present without --repo when PROJECT_REPO is empty.
     expect(rendered).toContain('gh pr view "$PR_URL" --json state');
     expect(rendered).toContain('[ "$state" = "MERGED" ] || exit 1');
+    // Marker + STATUS_FILE sequence pinned: rescue path reaches both writes.
+    expect(rendered).toMatch(/fi\ntouch "\/tmp\/merged"\nprintf '%s\|%s\|final merge complete\\n' 'review-done'/);
   });
 
   test("buildSkillContext: hierarchical duo suppresses UPSTREAM_REPO when duoPeerSlot is set", async () => {
