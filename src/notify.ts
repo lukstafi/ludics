@@ -9,7 +9,7 @@ import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
 import { readAllSlotJson } from "./slots/json.ts";
 import { getUrl } from "./network.ts";
-import { readFrontmatterField } from "./tasks/markdown.ts";
+import { parseTaskFrontmatter } from "./tasks/markdown.ts";
 import { proposalLink } from "./dashboard.ts";
 
 function notificationLogFile(): string {
@@ -156,7 +156,7 @@ function taskProject(taskId: string): string {
     const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
     if (!existsSync(taskFile)) return "";
     const content = readFileSync(taskFile, "utf-8");
-    return readFrontmatterField(content, "project") ?? "";
+    return parseTaskFrontmatter(content).project ?? "";
   } catch {
     return "";
   }

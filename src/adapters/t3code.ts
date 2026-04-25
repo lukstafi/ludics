@@ -1,5 +1,5 @@
 import { existsSync } from "fs";
-import { readFrontmatterField } from "../tasks/markdown.ts";
+import { parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { basename, resolve } from "path";
 import {
   getGitBranch,
@@ -788,7 +788,7 @@ export function selectOrchestrationFlagsForTask(
   effort: string,
   config?: LudicsFullConfig,
 ): { adapter: string; args: string; isDuo: boolean } {
-  const skipPlan = readFrontmatterField(taskContent, "skip_plan") === "true";
+  const skipPlan = parseTaskFrontmatter(taskContent).skip_plan === true;
   return selectOrchestrationFlags(effort, config, { skipPlan });
 }
 

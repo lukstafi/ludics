@@ -13,7 +13,7 @@ import { journalAppend } from "../journal.ts";
 import { emitEvent } from "../events.ts";
 import { runAdapterAction, readAdapterState, readAdapterLastActivity } from "../adapters/index.ts";
 import type { AdapterContext } from "../adapters/index.ts";
-import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter, transitionStatus, readFrontmatterField } from "../tasks/markdown.ts";
+import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter, transitionStatus } from "../tasks/markdown.ts";
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
@@ -132,6 +132,23 @@ function taskFilePath(taskId: string): string {
   return join(harnessDir(), "tasks", `${taskId}.md`);
 }
 
+/**
+ * Read the raw `effort:` value from the frontmatter block without applying
+ * parseTaskFrontmatter's "medium" normalization for missing fields. Returns
+ * null when effort is absent, explicitly null, or when frontmatter is missing.
+ * Scoped to orchestration-flag selection which needs to distinguish "legacy
+ * task, field absent" (→ "small") from "explicit medium".
+ */
+function readRawEffortField(content: string): string | null {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return null;
+  const m = fmMatch[1]!.match(/^effort:\s*(.+)$/m);
+  if (!m) return null;
+  const raw = m[1]!.trim().replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
+  if (!raw || raw.toLowerCase() === "null") return null;
+  return raw;
+}
+
 function taskUpdateFrontmatter(taskId: string, field: string, value: string): void {
   const file = taskFilePath(taskId);
   if (!existsSync(file)) return;
@@ -172,7 +189,7 @@ function taskUpdateForSlotAssign(taskId: string, slot: number, adapter: string, 
   }
   if (!transitionStatus(file, ["ready", "deferred", "blocked", "needs-confirmation", "preempted"], "in-progress")) {
     const content = readFileSync(file, "utf-8");
-    const actual = readFrontmatterField(content, "status") ?? "unknown";
+    const actual = parseTaskFrontmatter(content).status ?? "unknown";
     console.error(`ludics: skipping slot assign for ${taskId}: status is '${actual}', expected one of [ready, deferred, blocked, needs-confirmation, preempted]`);
     return;
   }
@@ -200,7 +217,7 @@ function taskUpdateForSlotClear(taskId: string, finalStatus: string): void {
 
   if (!transitionStatus(file, expectedFrom, finalStatus)) {
     const content = readFileSync(file, "utf-8");
-    const actual = readFrontmatterField(content, "status") ?? "unknown";
+    const actual = parseTaskFrontmatter(content).status ?? "unknown";
     console.error(`ludics: skipping slot clear for ${taskId}: status is '${actual}', expected one of [${expectedFrom.join(", ")}]`);
     return;
   }
@@ -263,7 +280,7 @@ export async function slotAssign(
   if (existsSync(tf)) {
     taskId = taskOrDesc;
     const content = readFileSync(tf, "utf-8");
-    processDesc = readFrontmatterField(content, "title") ?? taskId;
+    processDesc = parseTaskFrontmatter(content).title || taskId;
   } else {
     taskId = null;
     processDesc = taskOrDesc;
@@ -310,7 +327,7 @@ export async function slotAssign(
     if (existsSync(oldTaskFile)) {
       updateFrontmatterField(oldTaskFile, "slot", "null");
       const oldContent = readFileSync(oldTaskFile, "utf-8");
-      const oldStatus = readFrontmatterField(oldContent, "status");
+      const oldStatus = parseTaskFrontmatter(oldContent).status;
       if (oldStatus === "in-progress" || oldStatus === "deferred") {
         updateFrontmatterField(oldTaskFile, "status", "ready");
       }
@@ -480,7 +497,7 @@ export function markSlotSetupFailed(slotNum: number, error: string): void {
     const taskFile = taskFilePath(taskId);
     if (existsSync(taskFile)) {
       const content = readFileSync(taskFile, "utf-8");
-      const status = readFrontmatterField(content, "status");
+      const status = parseTaskFrontmatter(content).status;
       if (status === "in-progress" || status === "deferred") {
         taskUpdateFrontmatter(taskId, "status", "ready");
       }
@@ -513,7 +530,7 @@ export function taskCompleteDirectly(taskId: string): void {
   }
   if (!transitionStatus(file, ["in-progress", "deferred"], "done")) {
     const content = readFileSync(file, "utf-8");
-    const actual = readFrontmatterField(content, "status") ?? "unknown";
+    const actual = parseTaskFrontmatter(content).status ?? "unknown";
     console.error(`ludics: skipping direct completion for ${taskId}: status is '${actual}', expected one of [in-progress, deferred]`);
     return;
   }
@@ -611,7 +628,7 @@ export async function slotPreempt(
     const taskFile = taskFilePath(data.task);
     if (!transitionStatus(taskFile, ["in-progress"], "preempted")) {
       const content = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
-      const actual = readFrontmatterField(content, "status") ?? "unknown";
+      const actual = parseTaskFrontmatter(content).status ?? "unknown";
       console.error(`ludics: skipping preempt status update for ${data.task}: status is '${actual}', expected 'in-progress'`);
     }
   }
@@ -713,7 +730,7 @@ export function makeAdapterContext(slotNum: number, data: SlotData): AdapterCont
     const taskFile = join(harnessDir(), "tasks", `${data.task}.md`);
     if (existsSync(taskFile)) {
       const content = readFileSync(taskFile, "utf-8");
-      const project = readFrontmatterField(content, "project");
+      const project = parseTaskFrontmatter(content).project;
       if (project) {
         resolvedPath = resolveProjectPath(project);
       }
@@ -811,7 +828,14 @@ export async function autoFillAdapterArgs(
     throw new Error(`slot ${ctx.slot}: ${ctx.mode} adapter requires orchestration flags but task file not found`);
   }
 
-  const effort = readFrontmatterField(content, "effort") ?? "small";
+  // parseTaskFrontmatter normalizes a missing `effort:` field to "medium" as
+  // its documented default, collapsing "field absent" with "field == medium".
+  // Pre-unification this site used readFrontmatterField which returned null
+  // for missing fields, so `?? "small"` fired for legacy/manual tasks that
+  // never declared effort. Preserve that small-orchestration default by
+  // consulting the raw frontmatter block before falling back on the parser's
+  // normalized value.
+  const effort = readRawEffortField(content) ?? "small";
   const { args: autoArgs } = selectOrchestrationFlagsForTask(content, effort);
   if (!autoArgs.trim()) {
     throw new Error(`slot ${ctx.slot}: selectOrchestrationFlagsForTask returned empty args for effort="${effort}"`);

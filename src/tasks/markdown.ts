@@ -34,92 +34,167 @@ function asBoolean(value: unknown): boolean {
   return false;
 }
 
-export function parseTaskFrontmatter(content: string): Partial<TaskFrontmatter> & { id: string; title: string } {
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!fmMatch) throw new Error("no frontmatter found");
+export type ParsedTaskFrontmatter = Partial<TaskFrontmatter>;
 
-  const data = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>;
-  const deps = (data.dependencies as Record<string, unknown>) ?? {};
-  return {
-    id: String(data.id ?? ""),
-    title: String(data.title ?? ""),
-    project: String(data.project ?? ""),
-    status: String(data.status ?? "ready"),
-    priority: String(data.priority ?? "B"),
-    deadline: data.deadline ? String(data.deadline) : null,
-    dependencies: {
-      blocks: Array.isArray(deps.blocks) ? (deps.blocks as string[]) : [],
-      blocked_by: Array.isArray(deps.blocked_by) ? (deps.blocked_by as string[]) : [],
-      relates_to: Array.isArray(deps.relates_to) ? (deps.relates_to as string[]) : [],
-      subtask_of: deps.subtask_of ? String(deps.subtask_of) : null,
-    },
-    effort: String(data.effort ?? "medium"),
-    skip_plan: asBoolean(data.skip_plan),
-    requirements: data.requirements ? data.requirements as { os?: string; gpu?: string } : undefined,
-    context: String(data.context ?? ""),
-    uses_browser: asBoolean(data.uses_browser),
-    slot: data.slot ? String(data.slot) : null,
-    adapter: data.adapter ? String(data.adapter) : null,
-    created: String(data.created ?? ""),
-    started: data.started ? String(data.started) : null,
-    completed: data.completed ? String(data.completed) : null,
-    modified: data.modified ? String(data.modified) : null,
-    source: String(data.source ?? ""),
-    url: data.url ? String(data.url) : undefined,
-    github_issue: data.github_issue ? Number(data.github_issue) : undefined,
-    github_title: data.github_title ? String(data.github_title) : undefined,
-    github_repo: data.github_repo ? String(data.github_repo) : undefined,
-    github_labels: data.github_labels ? String(data.github_labels) : undefined,
-    github_state: data.github_state ? String(data.github_state) : undefined,
-    github_state_reason: data.github_state !== undefined && data.github_state_reason === null
-      ? null
-      : (data.github_state_reason ? String(data.github_state_reason) : undefined),
-    github_updated_at: data.github_updated_at !== undefined && data.github_updated_at === null
-      ? null
-      : (data.github_updated_at ? String(data.github_updated_at) : undefined),
-    github_closed_at: data.github_closed_at !== undefined && data.github_closed_at === null
-      ? null
-      : (data.github_closed_at ? String(data.github_closed_at) : undefined),
-    milestone: data.milestone ? String(data.milestone) : undefined,
-    elaborated: data.elaborated ? String(data.elaborated) : undefined,
-    merged_into: data.merged_into ? String(data.merged_into) : undefined,
-    merged_from: Array.isArray(data.merged_from) ? (data.merged_from as string[]) : undefined,
-    t3code_threads: Array.isArray(data.t3code_threads) ? (data.t3code_threads as string[]) : undefined,
-  };
+const PARSE_CACHE = new Map<string, ParsedTaskFrontmatter>();
+const PARSE_CACHE_MAX = 512;
+
+/** Test-only: reset the module-level cache. Not exported via index. */
+export function _resetParseTaskFrontmatterCache(): void {
+  PARSE_CACHE.clear();
 }
 
-export function readFrontmatterField(content: string, field: string): string | null {
+/** Test-only: peek cache size. */
+export function _parseTaskFrontmatterCacheSize(): number {
+  return PARSE_CACHE.size;
+}
+
+export function parseTaskFrontmatter(content: string): ParsedTaskFrontmatter {
+  const hit = PARSE_CACHE.get(content);
+  if (hit) return hit;
+  const parsed = parseTaskFrontmatterUncached(content);
+  deepFreezeParsed(parsed);
+  if (PARSE_CACHE.size >= PARSE_CACHE_MAX) {
+    const firstKey = PARSE_CACHE.keys().next().value;
+    if (firstKey !== undefined) PARSE_CACHE.delete(firstKey);
+  }
+  PARSE_CACHE.set(content, parsed);
+  return parsed;
+}
+
+/**
+ * Freeze the parsed object and every nested container it owns so cached
+ * reads cannot be mutated through `.dependencies.blocks.push(...)` or
+ * similar nested paths. Shallow freeze alone leaves those arrays writable.
+ */
+function deepFreezeParsed(parsed: ParsedTaskFrontmatter): void {
+  if (parsed.dependencies) {
+    Object.freeze(parsed.dependencies.blocks);
+    Object.freeze(parsed.dependencies.blocked_by);
+    Object.freeze(parsed.dependencies.relates_to);
+    Object.freeze(parsed.dependencies);
+  }
+  if (parsed.merged_from) Object.freeze(parsed.merged_from);
+  if (parsed.t3code_threads) Object.freeze(parsed.t3code_threads);
+  if (parsed.requirements) Object.freeze(parsed.requirements);
+  Object.freeze(parsed);
+}
+
+function parseTaskFrontmatterUncached(content: string): ParsedTaskFrontmatter {
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!fmMatch) return null;
+  if (!fmMatch) return {};
   const fmBlock = fmMatch[1]!;
 
   let data: unknown;
   try {
     data = YAML.parse(fmBlock, { uniqueKeys: false });
   } catch {
-    // YAML parse failed — fall back to a frontmatter-scoped line regex so an
-    // explicit `field: value` line is still readable when some other field is
-    // malformed. Body-safe because the regex only sees the extracted block.
-    return readFrontmatterFieldLineFallback(fmBlock, field);
+    return parseTaskFrontmatterLineFallback(fmBlock);
   }
   if (typeof data !== "object" || data == null) {
-    return readFrontmatterFieldLineFallback(fmBlock, field);
+    return parseTaskFrontmatterLineFallback(fmBlock);
   }
 
-  const value = (data as Record<string, unknown>)[field];
-  if (value == null) return null;
-  const str = String(value);
-  if (!str || str.toLowerCase() === "null") return null;
-  return str;
+  const d = data as Record<string, unknown>;
+  const deps = (d.dependencies as Record<string, unknown>) ?? {};
+  return {
+    id: String(d.id ?? ""),
+    title: String(d.title ?? ""),
+    project: String(d.project ?? ""),
+    status: String(d.status ?? "ready"),
+    priority: String(d.priority ?? "B"),
+    deadline: d.deadline ? String(d.deadline) : null,
+    dependencies: {
+      blocks: Array.isArray(deps.blocks) ? (deps.blocks as string[]) : [],
+      blocked_by: Array.isArray(deps.blocked_by) ? (deps.blocked_by as string[]) : [],
+      relates_to: Array.isArray(deps.relates_to) ? (deps.relates_to as string[]) : [],
+      subtask_of: deps.subtask_of ? String(deps.subtask_of) : null,
+    },
+    effort: String(d.effort ?? "medium"),
+    skip_plan: asBoolean(d.skip_plan),
+    requirements: d.requirements ? d.requirements as { os?: string; gpu?: string } : undefined,
+    context: String(d.context ?? ""),
+    uses_browser: asBoolean(d.uses_browser),
+    slot: d.slot ? String(d.slot) : null,
+    adapter: d.adapter ? String(d.adapter) : null,
+    created: String(d.created ?? ""),
+    started: d.started ? String(d.started) : null,
+    completed: d.completed ? String(d.completed) : null,
+    modified: d.modified ? String(d.modified) : null,
+    source: String(d.source ?? ""),
+    url: d.url ? String(d.url) : undefined,
+    github_issue: d.github_issue ? Number(d.github_issue) : undefined,
+    github_title: d.github_title ? String(d.github_title) : undefined,
+    github_repo: d.github_repo ? String(d.github_repo) : undefined,
+    github_labels: d.github_labels ? String(d.github_labels) : undefined,
+    github_state: d.github_state ? String(d.github_state) : undefined,
+    github_state_reason: d.github_state !== undefined && d.github_state_reason === null
+      ? null
+      : (d.github_state_reason ? String(d.github_state_reason) : undefined),
+    github_updated_at: d.github_updated_at !== undefined && d.github_updated_at === null
+      ? null
+      : (d.github_updated_at ? String(d.github_updated_at) : undefined),
+    github_closed_at: d.github_closed_at !== undefined && d.github_closed_at === null
+      ? null
+      : (d.github_closed_at ? String(d.github_closed_at) : undefined),
+    milestone: d.milestone ? String(d.milestone) : undefined,
+    elaborated: d.elaborated ? String(d.elaborated) : undefined,
+    merged_into: d.merged_into ? String(d.merged_into) : undefined,
+    merged_from: Array.isArray(d.merged_from) ? (d.merged_from as string[]) : undefined,
+    t3code_threads: Array.isArray(d.t3code_threads) ? (d.t3code_threads as string[]) : undefined,
+    proposal: normalizeOptionalString(d.proposal),
+    deferred_launch: normalizeOptionalString(d.deferred_launch),
+  };
 }
 
-function readFrontmatterFieldLineFallback(fmBlock: string, field: string): string | null {
-  const rx = new RegExp(`^${field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*(.+)$`, "m");
-  const m = fmBlock.match(rx);
-  if (!m) return null;
-  const raw = m[1]!.trim().replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
-  if (!raw || raw.toLowerCase() === "null") return null;
-  return raw;
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const s = String(value);
+  if (!s || s.toLowerCase() === "null") return undefined;
+  return s;
+}
+
+/**
+ * Malformed-YAML fallback: parse individual `field: value` lines from the
+ * frontmatter block with a line regex. Populates only the string-shaped fields
+ * we can recognize — arrays / nested blocks stay undefined. Mirrors the
+ * null-literal and surrounding-quote handling of the old readFrontmatterField
+ * line fallback (task-485dcb6a round 2).
+ */
+function parseTaskFrontmatterLineFallback(fmBlock: string): ParsedTaskFrontmatter {
+  const out: Record<string, string> = {};
+  const lineRe = /^([A-Za-z_][A-Za-z0-9_]*):\s*(.+)$/gm;
+  for (const m of fmBlock.matchAll(lineRe)) {
+    const key = m[1]!;
+    const raw = m[2]!.trim().replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
+    if (!raw || raw.toLowerCase() === "null") continue;
+    out[key] = raw;
+  }
+  const fm: ParsedTaskFrontmatter = {};
+  if (out.id !== undefined) fm.id = out.id;
+  if (out.title !== undefined) fm.title = out.title;
+  if (out.project !== undefined) fm.project = out.project;
+  if (out.status !== undefined) fm.status = out.status;
+  if (out.priority !== undefined) fm.priority = out.priority;
+  if (out.effort !== undefined) fm.effort = out.effort;
+  if (out.context !== undefined) fm.context = out.context;
+  if (out.created !== undefined) fm.created = out.created;
+  if (out.source !== undefined) fm.source = out.source;
+  if (out.proposal !== undefined) fm.proposal = out.proposal;
+  if (out.deferred_launch !== undefined) fm.deferred_launch = out.deferred_launch;
+  if (out.url !== undefined) fm.url = out.url;
+  if (out.slot !== undefined) fm.slot = out.slot;
+  if (out.adapter !== undefined) fm.adapter = out.adapter;
+  if (out.milestone !== undefined) fm.milestone = out.milestone;
+  if (out.elaborated !== undefined) fm.elaborated = out.elaborated;
+  if (out.merged_into !== undefined) fm.merged_into = out.merged_into;
+  if (out.skip_plan !== undefined) fm.skip_plan = asBoolean(out.skip_plan);
+  if (out.uses_browser !== undefined) fm.uses_browser = asBoolean(out.uses_browser);
+  if (out.started !== undefined) fm.started = out.started;
+  if (out.completed !== undefined) fm.completed = out.completed;
+  if (out.modified !== undefined) fm.modified = out.modified;
+  if (out.deadline !== undefined) fm.deadline = out.deadline;
+  return fm;
 }
 
 /** Return line indices of the opening and closing `---` delimiters.
@@ -176,7 +251,7 @@ export function transitionStatus(
 ): boolean {
   if (!existsSync(filePath)) throw new Error(`task file not found: ${filePath}`);
   const content = readFileSync(filePath, "utf-8");
-  const current = readFrontmatterField(content, "status") ?? "ready";
+  const current = parseTaskFrontmatter(content).status ?? "ready";
   const allowed = Array.isArray(expectedFrom) ? expectedFrom : [expectedFrom];
   if (!allowed.includes(current)) {
     return false;

@@ -10,7 +10,7 @@ import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, loadConfigSync } from "./config.ts";
 import { readSlotJson } from "./slots/json.ts";
 import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES, CLEAR_STATUS_READY, CLEAR_STATUS_DONE } from "./slots/index.ts";
-import { updateFrontmatterField, addFrontmatterField, readFrontmatterField, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
+import { updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
 import { setQueueHold, maybeFeedMagQueue } from "./mag.ts";
@@ -45,7 +45,7 @@ export function startDashboardServer(
     return path.startsWith(homeRoot) && existsSync(path) && !statSync(path).isDirectory();
   }
 
-  function parseTaskFrontmatter(taskFilePath: string): { project: string; proposal: string | null } | null {
+  function readDashboardTaskInfo(taskFilePath: string): { project: string; proposal: string | null } | null {
     try {
       const content = readFileSync(taskFilePath, "utf-8");
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
@@ -96,7 +96,7 @@ export function startDashboardServer(
       return null;
     }
 
-    const parsed = parseTaskFrontmatter(taskFilePath);
+    const parsed = readDashboardTaskInfo(taskFilePath);
     if (!parsed || !parsed.proposal) return null;
 
     // Deprecated sentinel — kept for backward compat; resolve inline to the task file itself.
@@ -256,7 +256,7 @@ export function startDashboardServer(
               if (!("error" in taskResolved)) {
                 const taskFile = taskResolved.path;
                 const content = readFileSync(taskFile, "utf-8");
-                const currentPriority = readFrontmatterField(content, "priority") ?? "B";
+                const currentPriority = parseTaskFrontmatter(content).priority ?? "B";
                 const newPriority = PRIORITY_DECREASE[currentPriority] ?? currentPriority;
                 if (newPriority !== currentPriority) {
                   // Capture the write as a closure; execute only after clear succeeds.
@@ -290,7 +290,7 @@ export function startDashboardServer(
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
           const content = readFileSync(taskFile, "utf-8");
-          const currentPriority = readFrontmatterField(content, "priority") ?? "B";
+          const currentPriority = parseTaskFrontmatter(content).priority ?? "B";
           const newPriority = PRIORITY_INCREASE[currentPriority] ?? currentPriority;
           if (newPriority !== currentPriority) {
             addFrontmatterField(taskFile, "priority", newPriority);
@@ -315,7 +315,7 @@ export function startDashboardServer(
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
           const content = readFileSync(taskFile, "utf-8");
-          const currentStatus = readFrontmatterField(content, "status") ?? "";
+          const currentStatus = parseTaskFrontmatter(content).status ?? "";
           if (currentStatus !== "needs-confirmation") {
             return new Response(JSON.stringify({ error: "task is not needs-confirmation" }), {
               status: 409, headers: { "Content-Type": "application/json" },
@@ -342,7 +342,7 @@ export function startDashboardServer(
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
           const content = readFileSync(taskFile, "utf-8");
-          const currentStatus = readFrontmatterField(content, "status") ?? "";
+          const currentStatus = parseTaskFrontmatter(content).status ?? "";
           if (currentStatus !== "needs-confirmation") {
             return new Response(JSON.stringify({ error: "task is not needs-confirmation" }), {
               status: 409, headers: { "Content-Type": "application/json" },
@@ -369,7 +369,7 @@ export function startDashboardServer(
           if ("error" in resolved) return resolved.error;
           const taskFile = resolved.path;
           const approveContent = readFileSync(taskFile, "utf-8");
-          const approveStatus = readFrontmatterField(approveContent, "status");
+          const approveStatus = parseTaskFrontmatter(approveContent).status;
           if (approveStatus !== "deferred") {
             return new Response(
               JSON.stringify({ error: `task is ${approveStatus}, not deferred` }),

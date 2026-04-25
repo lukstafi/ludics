@@ -29,7 +29,7 @@ import {
   expirePendingRevises,
   expirePendingFollowupRevises,
 } from "./notify.ts";
-import { updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, readFrontmatterField, priorityValue } from "./tasks/markdown.ts";
+import { updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, priorityValue } from "./tasks/markdown.ts";
 import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
@@ -816,10 +816,10 @@ function isTaskDeferred(taskId: string): boolean {
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
   if (!existsSync(taskFile)) return false;
   const content = readFileSync(taskFile, "utf-8");
-  const status = readFrontmatterField(content, "status");
-  if (status === "deferred") return true;
+  const fm = parseTaskFrontmatter(content);
+  if (fm.status === "deferred") return true;
   // Legacy shim: treat deferred_launch: true as deferred, opportunistically migrate in-place
-  if (readFrontmatterField(content, "deferred_launch") === "true") {
+  if (fm.deferred_launch === "true") {
     updateFrontmatterField(taskFile, "status", "deferred");
     removeFrontmatterField(taskFile, "deferred_launch");
     removeFrontmatterField(taskFile, "approved");
@@ -959,7 +959,7 @@ function readTaskProject(taskId: string): string {
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
   if (!existsSync(taskFile)) return "";
   const content = readFileSync(taskFile, "utf-8");
-  return readFrontmatterField(content, "project") ?? "";
+  return parseTaskFrontmatter(content).project ?? "";
 }
 
 function resolveTaskProjectPath(taskId: string): string {
@@ -1295,7 +1295,7 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
           const tf = join(harnessDir(), "tasks", `${tid}.md`);
           if (existsSync(tf)) {
             const tfContent = readFileSync(tf, "utf-8");
-            const tfStatus = readFrontmatterField(tfContent, "status");
+            const tfStatus = parseTaskFrontmatter(tfContent).status;
             if (tfStatus === "deferred") {
               updateFrontmatterField(tf, "status", "ready");
               console.error(`ludics: approved deferred task ${tid} for auto-start`);
@@ -1448,43 +1448,40 @@ async function cleanupDoneTaskThreads(): Promise<void> {
   const tasksDir = join(harness, "tasks");
   if (!existsSync(tasksDir)) return;
 
-  // Collect thread IDs from completed tasks
+  // Collect thread IDs from completed tasks, and queue retrospective fallback
+  // for any done/abandoned task that does not yet have one. Both loops read the
+  // same files and test the same `status in {done, abandoned}` predicate, so we
+  // fold them into a single pass.
   const threadIdsToDelete: string[] = [];
+  const retroDir = join(harness, "retrospectives");
+  const retroFallbacks: string[] = [];
   try {
     const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
     for (const f of files) {
       const content = readFileSync(join(tasksDir, f), "utf-8");
-      const status = readFrontmatterField(content, "status") ?? "";
+      const fm = parseTaskFrontmatter(content);
+      const status = fm.status ?? "";
       if (status !== "done" && status !== "abandoned") continue;
-      const threadsStr = readFrontmatterField(content, "t3code_threads");
-      if (!threadsStr) continue;
-      const ids = threadsStr.split(",").map((s) => s.trim()).filter(Boolean);
-      threadIdsToDelete.push(...ids);
+
+      if (fm.t3code_threads && fm.t3code_threads.length > 0) {
+        threadIdsToDelete.push(...fm.t3code_threads);
+      }
+
+      const taskId = f.replace(/\.md$/, "");
+      const retroFile = join(retroDir, `${taskId}.json`);
+      if (!existsSync(retroFile)) retroFallbacks.push(taskId);
     }
   } catch {
     return;
   }
 
-  // Fallback: collect retrospective for done tasks that don't have one yet
-  {
-    const retroDir = join(harness, "retrospectives");
+  if (retroFallbacks.length > 0) {
     try {
-      const taskFiles = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
-      for (const f of taskFiles) {
-        const content = readFileSync(join(tasksDir, f), "utf-8");
-        const taskStatus = readFrontmatterField(content, "status") ?? "";
-        if (taskStatus !== "done" && taskStatus !== "abandoned") continue;
-
-        const taskId = f.replace(/\.md$/, "");
-        const retroFile = join(retroDir, `${taskId}.json`);
-        if (!existsSync(retroFile)) {
-          try {
-            const { collectRetrospectiveFallback } = await import("./retrospective.ts");
-            await collectRetrospectiveFallback(taskId);
-          } catch { /* best effort — ignore */ }
-        }
+      const { collectRetrospectiveFallback } = await import("./retrospective.ts");
+      for (const taskId of retroFallbacks) {
+        try { await collectRetrospectiveFallback(taskId); } catch { /* best effort — ignore */ }
       }
-    } catch { /* ignore */ }
+    } catch { /* ignore module load failure */ }
   }
 
   if (threadIdsToDelete.length === 0) return;
@@ -1820,7 +1817,7 @@ function computeSessionProjectMatches(): string {
         const taskFile = join(harness, "tasks", `${taskId}.md`);
         if (existsSync(taskFile)) {
           const content = readFileSync(taskFile, "utf-8");
-          const pm = readFrontmatterField(content, "project");
+          const pm = parseTaskFrontmatter(content).project;
           if (pm) projectsInSlots.set(pm, i);
         }
       }
@@ -1850,30 +1847,21 @@ function computeSessionProjectMatches(): string {
 
     for (const f of taskFiles) {
       const content = readFileSync(join(tasksDir, f), "utf-8");
-      const id = readFrontmatterField(content, "id");
+      const fm = parseTaskFrontmatter(content);
+      const id = fm.id;
       if (!id) continue;
       if (tasksInSlots.has(id)) continue;
 
-      const status = readFrontmatterField(content, "status");
-      if (status !== "ready") continue;
+      if (fm.status !== "ready") continue;
 
-      // Check blocked_by
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      if (fmMatch) {
-        try {
-          const fm = YAML.parse(fmMatch[1]!, { uniqueKeys: false }) as Record<string, unknown>;
-          const deps = fm.dependencies as Record<string, unknown> | undefined;
-          const blockedBy = deps?.blocked_by;
-          if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
-        } catch { /* skip parse errors */ }
-      }
+      const blockedBy = fm.dependencies?.blocked_by ?? [];
+      if (blockedBy.length > 0) continue;
 
-      const project = readFrontmatterField(content, "project") ?? "";
+      const project = fm.project ?? "";
       if (!project) continue;
 
-      const title = readFrontmatterField(content, "title") ?? id;
-
-      const priority = readFrontmatterField(content, "priority") ?? "B";
+      const title = fm.title || id;
+      const priority = fm.priority ?? "B";
 
       const elaborated = isElaborated(content);
 
@@ -2077,7 +2065,7 @@ async function maybeAutoStartSlots(): Promise<void> {
     if (isTaskDeferred(taskId)) continue;
 
     // Skip tasks from postponed projects
-    const projectName = readFrontmatterField(content, "project");
+    const projectName = parseTaskFrontmatter(content).project;
     if (projectName && postponedProjectSet().has(projectName.toLowerCase())) continue;
 
     // Task has a proposal but no session — auto-start
@@ -2129,7 +2117,7 @@ function maybeUnstickAssignedSlots(): void {
     const content = readFileSync(taskFile, "utf-8");
 
     // Task already completed or abandoned — nothing to unstick
-    const unstickStatus = readFrontmatterField(content, "status");
+    const unstickStatus = parseTaskFrontmatter(content).status;
     if (unstickStatus === "done" || unstickStatus === "abandoned" || unstickStatus === "merged") continue;
 
     // Already has proposal — maybeAutoStartSlots handles this
@@ -2650,7 +2638,7 @@ async function maybeClearDoneSlots(): Promise<void> {
     if (!existsSync(taskFile)) continue;
 
     const content = readFileSync(taskFile, "utf-8");
-    const taskStatus = readFrontmatterField(content, "status") ?? "";
+    const taskStatus = parseTaskFrontmatter(content).status ?? "";
 
     if (taskStatus === "done") {
       console.error(`ludics: auto-clearing slot ${slotNum} (task ${taskId} is ${taskStatus})`);
@@ -3480,7 +3468,7 @@ export async function runMag(args: string[]): Promise<void> {
         } else {
           // Only clear deferred — do not downgrade other statuses
           const evalContent = readFileSync(evalTaskFile, "utf-8");
-          const evalStatus = readFrontmatterField(evalContent, "status");
+          const evalStatus = parseTaskFrontmatter(evalContent).status;
           if (evalStatus === "deferred") {
             updateFrontmatterField(evalTaskFile, "status", "ready");
           }
@@ -3506,7 +3494,7 @@ export async function runMag(args: string[]): Promise<void> {
         const reviseTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
         if (existsSync(reviseTaskFile)) {
           const revContent = readFileSync(reviseTaskFile, "utf-8");
-          const revStatus = readFrontmatterField(revContent, "status");
+          const revStatus = parseTaskFrontmatter(revContent).status;
           if (revStatus === "ready" || revStatus === "in-progress") {
             const revSlot = findSlotForTask(taskId);
             if (revSlot !== null) {

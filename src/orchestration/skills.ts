@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { assertRepoRelativeProposalPath } from "../adapters/task-launch.ts";
-import { readFrontmatterField } from "../tasks/markdown.ts";
+import { parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { findProjectConfig, harnessDir as defaultHarnessDir, ludicsRoot } from "../config.ts";
 import { taskFilePath } from "./paths.ts";
 import { safeSyncOutput } from "../spawn.ts";
@@ -112,7 +112,7 @@ function taskSpecBriefText(state: OrchestrationState): string {
   const title = state.slotTitle?.trim() || state.taskId;
   const path = taskFilePath(taskId, state.harnessDir ?? defaultHarnessDir());
   const content = readFileIfExists(path);
-  const proposalValue = (content ? readFrontmatterField(content, "proposal") : null) ?? "";
+  const proposalValue = (content ? parseTaskFrontmatter(content).proposal : undefined) ?? "";
   const proposalRef =
     proposalValue && proposalValue !== "inline" // deprecated sentinel — kept for backward compat
       ? proposalValue
@@ -147,7 +147,7 @@ function taskSpecText(state: OrchestrationState): string {
   if (!content) return taskId;
 
   // When proposal is a file path, append a pointer + summary rather than inlining content.
-  const proposalValue = readFrontmatterField(content, "proposal");
+  const proposalValue = parseTaskFrontmatter(content).proposal ?? null;
   if (proposalValue) {
     // Deprecated sentinel — kept for backward compat; skip file resolution for inline proposals.
     if (proposalValue !== "inline") {
@@ -355,7 +355,7 @@ export function buildSkillContext(
   const stateHarnessDir = state.harnessDir ?? defaultHarnessDir();
   const _taskPath = state.taskId ? taskFilePath(state.taskId, stateHarnessDir) : null;
   const _taskContent = _taskPath ? readFileIfExists(_taskPath) : null;
-  const _proposalPath = (_taskContent ? readFrontmatterField(_taskContent, "proposal") : null) ?? "";
+  const _proposalPath = (_taskContent ? parseTaskFrontmatter(_taskContent).proposal : undefined) ?? "";
   const proposalPath = _proposalPath && _proposalPath !== "inline" // deprecated sentinel — kept for backward compat
     ? _proposalPath : "";
   const proposalFreshnessWarningText = proposalPath

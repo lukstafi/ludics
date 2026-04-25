@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, appendToSection, frontmatterBounds, readFrontmatterField, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter, writeTaskFile } from "./markdown.ts";
+import { addFrontmatterField, appendToSection, frontmatterBounds, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter, writeTaskFile, _resetParseTaskFrontmatterCache, _parseTaskFrontmatterCacheSize } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -50,7 +50,7 @@ describe("updateFrontmatterField upsert", () => {
     expect(fmMatch![1]).toContain("completed: 2026-04-13");
   });
 
-  test("round-trip: inserted field is readable by readFrontmatterField", () => {
+  test("round-trip: inserted field is readable by parseTaskFrontmatter", () => {
     const f = tmpFile("roundtrip.md", [
       "---",
       "id: task-1",
@@ -62,10 +62,11 @@ describe("updateFrontmatterField upsert", () => {
 
     updateFrontmatterField(f, "completed", "2026-04-13T18:00Z");
     const content = readFileSync(f, "utf-8");
-    expect(readFrontmatterField(content, "completed")).toBe("2026-04-13T18:00Z");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.completed).toBe("2026-04-13T18:00Z");
     // Existing fields preserved
-    expect(readFrontmatterField(content, "id")).toBe("task-1");
-    expect(readFrontmatterField(content, "status")).toBe("ready");
+    expect(fm.id).toBe("task-1");
+    expect(fm.status).toBe("ready");
   });
 
   test("inserts into frontmatter, not at body horizontal rule", () => {
@@ -191,64 +192,68 @@ describe("addFrontmatterField", () => {
   });
 });
 
-describe("readFrontmatterField", () => {
-  test("reads basic scalar value", () => {
+describe("parseTaskFrontmatter field reads", () => {
+  test("reads basic scalar value (proposal)", () => {
     const content = "---\nproposal: docs/proposals/foo.md\n---\n\n# Title";
-    expect(readFrontmatterField(content, "proposal")).toBe("docs/proposals/foo.md");
+    expect(parseTaskFrontmatter(content).proposal).toBe("docs/proposals/foo.md");
   });
 
-  test("reads double-quoted string", () => {
+  test("reads double-quoted proposal string", () => {
     const content = '---\nproposal: "docs/proposals/foo.md"\n---\n';
-    expect(readFrontmatterField(content, "proposal")).toBe("docs/proposals/foo.md");
+    expect(parseTaskFrontmatter(content).proposal).toBe("docs/proposals/foo.md");
   });
 
-  test("reads single-quoted string", () => {
+  test("reads single-quoted proposal string", () => {
     const content = "---\nproposal: 'docs/proposals/foo.md'\n---\n";
-    expect(readFrontmatterField(content, "proposal")).toBe("docs/proposals/foo.md");
+    expect(parseTaskFrontmatter(content).proposal).toBe("docs/proposals/foo.md");
   });
 
-  test("returns null for missing field", () => {
+  test("returns undefined for missing optional field (proposal)", () => {
     const content = "---\nid: task-1\nstatus: ready\n---\n";
-    expect(readFrontmatterField(content, "proposal")).toBeNull();
+    expect(parseTaskFrontmatter(content).proposal).toBeUndefined();
   });
 
-  test("returns null when no frontmatter", () => {
+  test("returns {} when no frontmatter", () => {
     const content = "# Just a markdown file\n\nNo frontmatter here.";
-    expect(readFrontmatterField(content, "proposal")).toBeNull();
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.proposal).toBeUndefined();
+    expect(fm.id).toBeUndefined();
   });
 
-  test("returns null for bare null value", () => {
+  test("bare null value for optional field → undefined", () => {
     const content = "---\nproposal: null\n---\n";
-    expect(readFrontmatterField(content, "proposal")).toBeNull();
+    expect(parseTaskFrontmatter(content).proposal).toBeUndefined();
   });
 
-  test("returns null for quoted 'null' string (backward compat)", () => {
+  test("quoted 'null' string for optional field → undefined", () => {
     const content = '---\nproposal: "null"\n---\n';
-    expect(readFrontmatterField(content, "proposal")).toBeNull();
+    expect(parseTaskFrontmatter(content).proposal).toBeUndefined();
   });
 
-  test("returns null for empty frontmatter", () => {
+  test("empty frontmatter yields empty-ish object", () => {
     const content = "---\n\n---\n";
-    expect(readFrontmatterField(content, "proposal")).toBeNull();
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.proposal).toBeUndefined();
+    expect(fm.id).toBeUndefined();
   });
 
-  test("coerces boolean to string", () => {
+  test("boolean uses_browser is typed as boolean", () => {
     const content = "---\nuses_browser: true\n---\n";
-    expect(readFrontmatterField(content, "uses_browser")).toBe("true");
+    expect(parseTaskFrontmatter(content).uses_browser).toBe(true);
   });
 
-  test("coerces number to string", () => {
+  test("numeric slot is coerced to string", () => {
     const content = "---\nslot: 2\n---\n";
-    expect(readFrontmatterField(content, "slot")).toBe("2");
+    expect(parseTaskFrontmatter(content).slot).toBe("2");
   });
 
   test("reads only from frontmatter, not body", () => {
     const content = "---\nproject: real\n---\n\nproject: fake\n";
-    expect(readFrontmatterField(content, "project")).toBe("real");
+    expect(parseTaskFrontmatter(content).project).toBe("real");
   });
 
-  test("body code-block shadowing: frontmatter status wins over body-scoped status (task-485dcb6a)", () => {
-    // Regression guard for the body-scope vulnerability closed by the
+  test("body code-block shadowing: frontmatter status wins (task-485dcb6a)", () => {
+    // Regression guard for the body-scope vulnerability closed by the original
     // regex → readFrontmatterField migration (task-485dcb6a / task-808ee2c7).
     // A naive /^status:\s*(.+)$/m would capture the code-block line "status: wrong".
     const content = [
@@ -270,28 +275,28 @@ describe("readFrontmatterField", () => {
       "Inline prose also mentions status: wrong here.",
     ].join("\n");
 
-    expect(readFrontmatterField(content, "status")).toBe("ready");
-    expect(readFrontmatterField(content, "priority")).toBe("B");
-    // Document the shadowing that the migration fixes: naive regex sees the code block.
-    expect(content.match(/^status:\s*(.+)$/m)?.[1]).toBe("ready");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.status).toBe("ready");
+    expect(fm.priority).toBe("B");
+    // Document the shadowing that the YAML-scoped parse fixes:
     const allStatusMatches = [...content.matchAll(/^status:\s*(.+)$/gm)].map((m) => m[1]);
     expect(allStatusMatches).toContain("wrong");
   });
 
-  test("stringifies array values", () => {
-    const content = "---\nblocks: [a, b]\n---\n";
-    expect(readFrontmatterField(content, "blocks")).toBe("a,b");
+  test("dependencies.blocks is typed as string[] (not joined)", () => {
+    const content = "---\ndependencies:\n  blocks: [a, b]\n---\n";
+    expect(parseTaskFrontmatter(content).dependencies?.blocks).toEqual(["a", "b"]);
   });
 
   test("duplicate keys use last value (uniqueKeys: false)", () => {
     const content = "---\nproject: first\nproject: second\n---\n";
-    expect(readFrontmatterField(content, "project")).toBe("second");
+    expect(parseTaskFrontmatter(content).project).toBe("second");
   });
 
-  test("returns null without throwing on malformed YAML", () => {
+  test("does not throw on malformed YAML; returns line-fallback object", () => {
     const content = "---\n: : :\n  bad:\n    - [\n---\n";
-    expect(() => readFrontmatterField(content, "project")).not.toThrow();
-    expect(readFrontmatterField(content, "project")).toBeNull();
+    expect(() => parseTaskFrontmatter(content)).not.toThrow();
+    expect(parseTaskFrontmatter(content).project).toBeUndefined();
   });
 
   test("malformed YAML: explicit status line still readable via frontmatter-scoped fallback (codex P2)", () => {
@@ -310,8 +315,9 @@ describe("readFrontmatterField", () => {
       "status: wrong",
     ].join("\n");
 
-    expect(readFrontmatterField(content, "status")).toBe("done");
-    expect(readFrontmatterField(content, "id")).toBe("task-1");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.status).toBe("done");
+    expect(fm.id).toBe("task-1");
   });
 
   test("malformed YAML fallback strips surrounding quotes and treats literal null as missing", () => {
@@ -323,8 +329,9 @@ describe("readFrontmatterField", () => {
       "---",
     ].join("\n");
 
-    expect(readFrontmatterField(content, "title")).toBe("quoted");
-    expect(readFrontmatterField(content, "status")).toBeNull();
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.title).toBe("quoted");
+    expect(fm.status).toBeUndefined();
   });
 });
 
@@ -516,6 +523,159 @@ describe("parseTaskFrontmatter skip_plan", () => {
   });
 });
 
+describe("parseTaskFrontmatter non-throwing semantics", () => {
+  test("returns empty object when no frontmatter delimiters present", () => {
+    const content = "# Just a title\n\nBody.\n";
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.id).toBeUndefined();
+    expect(fm.status).toBeUndefined();
+  });
+
+  test("returns {} without throwing on malformed YAML with unrecognized structure", () => {
+    const content = "---\n: : :\n  bad:\n    - [\n---\n";
+    expect(() => parseTaskFrontmatter(content)).not.toThrow();
+    const fm = parseTaskFrontmatter(content);
+    // fallback populates nothing because no parseable field: value lines
+    expect(fm.status).toBeUndefined();
+  });
+
+  test("malformed YAML: line-regex fallback populates recognizable fields", () => {
+    const content = [
+      "---",
+      "id: task-1",
+      "status: done",
+      "dependencies: [unclosed",
+      "---",
+    ].join("\n");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.id).toBe("task-1");
+    expect(fm.status).toBe("done");
+  });
+
+  test("malformed YAML fallback strips quotes and treats literal null as missing", () => {
+    const content = [
+      "---",
+      'title: "quoted"',
+      "status: null",
+      "dependencies: [unclosed",
+      "---",
+    ].join("\n");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.title).toBe("quoted");
+    expect(fm.status).toBeUndefined();
+  });
+
+  test("populates proposal and deferred_launch fields", () => {
+    const content = [
+      "---",
+      "id: task-1",
+      "title: Test",
+      "proposal: docs/proposals/foo.md",
+      "deferred_launch: true",
+      "---",
+    ].join("\n");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.proposal).toBe("docs/proposals/foo.md");
+    expect(fm.deferred_launch).toBe("true");
+  });
+});
+
+describe("parseTaskFrontmatter cache", () => {
+  test("returns the same frozen reference for identical content strings", () => {
+    _resetParseTaskFrontmatterCache();
+    const content = "---\nid: task-1\ntitle: Test\n---\n";
+    const first = parseTaskFrontmatter(content);
+    const second = parseTaskFrontmatter(content);
+    expect(first).toBe(second);
+    expect(Object.isFrozen(first)).toBe(true);
+  });
+
+  test("mutation of returned object is prevented by freeze", () => {
+    _resetParseTaskFrontmatterCache();
+    const content = "---\nid: task-1\ntitle: First\n---\n";
+    const fm = parseTaskFrontmatter(content);
+    // strict-mode frozen: direct assignment throws; sloppy: silently ignored.
+    // Either way, subsequent read must still see "First".
+    expect(() => {
+      (fm as { title?: string }).title = "Mutated";
+    }).toThrow();
+    const again = parseTaskFrontmatter(content);
+    expect(again.title).toBe("First");
+  });
+
+  test("nested arrays in cached entry cannot be mutated (dependencies.blocks)", () => {
+    _resetParseTaskFrontmatterCache();
+    const content = [
+      "---",
+      "id: task-1",
+      "title: Test",
+      "dependencies:",
+      "  blocks: [a]",
+      "  blocked_by: []",
+      "  relates_to: []",
+      "  subtask_of: null",
+      "---",
+    ].join("\n");
+    const first = parseTaskFrontmatter(content);
+    expect(first.dependencies?.blocks).toEqual(["a"]);
+    // A mutation attempt must not silently succeed: either throw (strict mode
+    // frozen array) or leave the array unchanged (sloppy mode), but never land
+    // as a cached side effect on the next read.
+    try {
+      (first.dependencies!.blocks as string[]).push("b");
+    } catch { /* frozen-array throw is fine */ }
+    const second = parseTaskFrontmatter(content);
+    expect(second.dependencies?.blocks).toEqual(["a"]);
+    expect(second).toBe(first);
+  });
+
+  test("nested arrays in cached entry cannot be mutated (merged_from, t3code_threads)", () => {
+    _resetParseTaskFrontmatterCache();
+    const content = [
+      "---",
+      "id: task-1",
+      "title: Test",
+      "merged_from: [task-x]",
+      "t3code_threads: [thread-1]",
+      "---",
+    ].join("\n");
+    const first = parseTaskFrontmatter(content);
+    try { (first.merged_from as string[]).push("task-y"); } catch { /* frozen */ }
+    try { (first.t3code_threads as string[]).push("thread-2"); } catch { /* frozen */ }
+    const second = parseTaskFrontmatter(content);
+    expect(second.merged_from).toEqual(["task-x"]);
+    expect(second.t3code_threads).toEqual(["thread-1"]);
+  });
+
+  test("LRU eviction kicks in past 512 entries — 513th distinct insert evicts the oldest", () => {
+    _resetParseTaskFrontmatterCache();
+    const first = "---\nid: task-first\ntitle: First\n---\n";
+    const beforeEviction = parseTaskFrontmatter(first);
+
+    // Confirm a repeat read with the same content string is a cache hit while
+    // the entry is still live — same reference proves the cache is serving it.
+    expect(parseTaskFrontmatter(first)).toBe(beforeEviction);
+
+    // Fill the cache with 511 more distinct entries → cache is now exactly at
+    // PARSE_CACHE_MAX=512 (first + 511 pads). Re-reading `first` must still
+    // hit the cache and return the same reference.
+    for (let i = 0; i < 511; i++) {
+      parseTaskFrontmatter(`---\nid: task-pad-${i}\ntitle: Pad ${i}\n---\n`);
+    }
+    expect(_parseTaskFrontmatterCacheSize()).toBe(512);
+    expect(parseTaskFrontmatter(first)).toBe(beforeEviction);
+
+    // The 513th distinct insert must evict the oldest entry (`first`). After
+    // that, re-reading `first` must be a cache miss and produce a fresh
+    // object with identity different from `beforeEviction`.
+    parseTaskFrontmatter(`---\nid: task-trigger\ntitle: Trigger\n---\n`);
+    expect(_parseTaskFrontmatterCacheSize()).toBe(512);
+    const afterEviction = parseTaskFrontmatter(first);
+    expect(afterEviction).not.toBe(beforeEviction);
+    expect(afterEviction.id).toBe("task-first");
+  });
+});
+
 describe("parseTaskFrontmatter effort: tiny", () => {
   test("parses effort: tiny as the string 'tiny'", () => {
     const content = "---\nid: task-1\ntitle: Test\neffort: tiny\n---\n";
@@ -523,9 +683,9 @@ describe("parseTaskFrontmatter effort: tiny", () => {
     expect(fm.effort).toBe("tiny");
   });
 
-  test("round-trips effort: tiny via readFrontmatterField", () => {
+  test("round-trips effort: tiny via parseTaskFrontmatter", () => {
     const content = "---\nid: task-1\ntitle: Test\neffort: tiny\n---\n\nbody\n";
-    expect(readFrontmatterField(content, "effort")).toBe("tiny");
+    expect(parseTaskFrontmatter(content).effort).toBe("tiny");
   });
 
   test("updateFrontmatterField preserves effort: tiny on write", () => {
@@ -535,7 +695,7 @@ describe("parseTaskFrontmatter effort: tiny", () => {
     // Update an unrelated field; verify effort stays "tiny"
     updateFrontmatterField(tmpFile, "priority", "A");
     const after = readFileSync(tmpFile, "utf-8");
-    expect(readFrontmatterField(after, "effort")).toBe("tiny");
+    expect(parseTaskFrontmatter(after).effort).toBe("tiny");
     unlinkSync(tmpFile);
   });
 });

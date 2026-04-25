@@ -5,7 +5,7 @@ import { join } from "path";
 import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCount, milestonesEnabledProjects } from "../config.ts";
 import { readAllSlotJson } from "../slots/json.ts";
 import { listStashes } from "../slots/preempt.ts";
-import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray, readFrontmatterField } from "./markdown.ts";
+import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
 import { queueRequest, parseQueueLines } from "../queue.ts";
@@ -253,7 +253,7 @@ function readTaskProjectName(tasksDir: string, taskId: string): string {
   const taskFile = join(tasksDir, `${taskId}.md`);
   if (!existsSync(taskFile)) return "";
   const taskContent = readFileSync(taskFile, "utf-8");
-  return readFrontmatterField(taskContent, "project") ?? "";
+  return parseTaskFrontmatter(taskContent).project ?? "";
 }
 
 function collectProjectsWithQueuedPreemption(tasksDir: string, queueContent: string, priProjects: string[]): Set<string> {
@@ -278,8 +278,9 @@ function collectProjectsWithQueuedPreemption(tasksDir: string, queueContent: str
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
   for (const file of files) {
     const content = readFileSync(join(tasksDir, file), "utf-8");
-    if (readFrontmatterField(content, "status") !== "preempt-queued") continue;
-    const project = readFrontmatterField(content, "project") ?? "";
+    const fm = parseTaskFrontmatter(content);
+    if (fm.status !== "preempt-queued") continue;
+    const project = fm.project ?? "";
     if (project && priProjects.includes(project)) {
       projects.add(project);
     }
@@ -675,6 +676,13 @@ function healBlockedByLinks(tasksDir: string): void {
     const content = readFileSync(filePath, "utf-8");
     let fm;
     try { fm = parseTaskFrontmatter(content); } catch { continue; }
+    if (!fm.id) continue;
+    // Malformed YAML falls through the line-regex recovery path, which can
+    // salvage top-level fields but cannot reconstruct the nested dependencies
+    // block. Skip such files here rather than treating absent `dependencies`
+    // as "no blockers" — otherwise pruning / backlink-healing would silently
+    // rewrite files we could not fully parse. See tasksReconcileBlockedStatus.
+    if (!fm.dependencies) continue;
     taskMap.set(fm.id, { status: fm.status ?? "ready", filePath, fm });
   }
 
@@ -728,8 +736,16 @@ function tasksReconcileBlockedStatus(tasksDir: string): void {
       fm = parseTaskFrontmatter(content);
     } catch { continue; }
 
+    // Guard against the malformed-YAML line-regex fallback: it populates
+    // top-level fields (e.g. status) but leaves nested `dependencies`
+    // undefined. Without this check, a partially-malformed task with
+    // `status: blocked` would be seen as having no blockers and rewritten
+    // to `ready` — silent state corruption. Pre-unification the parser
+    // threw on such files and the catch above short-circuited.
+    if (!fm.dependencies) continue;
+
     const status = fm.status ?? "ready";
-    const blockedBy = fm.dependencies?.blocked_by ?? [];
+    const blockedBy = fm.dependencies.blocked_by;
 
     // Skip terminal and active statuses
     if (["done", "abandoned", "merged", "in-progress", "deferred", "preempt-queued", "preempted"].includes(status)) continue;
@@ -773,7 +789,7 @@ function tasksMilestoneWarnings(tasksDir: string): void {
 
     if (!milestonesProjects.has(fm.project ?? "")) continue;
 
-    if (!fm.milestone) {
+    if (!fm.milestone && fm.id) {
       missing.push(fm.id);
     }
   }
@@ -806,8 +822,8 @@ function tasksQueueElaborations(): void {
     if (!existsSync(file)) continue;
 
     const content = readFileSync(file, "utf-8");
-    const status = readFrontmatterField(content, "status");
-    if (status !== null && status !== "ready") continue;
+    const status = parseTaskFrontmatter(content).status;
+    if (status !== undefined && status !== "ready") continue;
 
     if (isElaborated(content)) continue;
 
@@ -829,10 +845,11 @@ function tasksNeedsElaborationList(tasksDir: string): string[] {
 
   for (const f of files) {
     const content = readFileSync(join(tasksDir, f), "utf-8");
-    const id = readFrontmatterField(content, "id");
+    const fm = parseTaskFrontmatter(content);
+    const id = fm.id;
     if (!id) continue;
 
-    const status = readFrontmatterField(content, "status") ?? "";
+    const status = fm.status ?? "";
     if (["merged", "done", "abandoned", "needs-confirmation"].includes(status)) continue;
 
     if (!isElaborated(content)) result.push(id);
@@ -880,12 +897,13 @@ function tasksQueuePreemptions(): void {
 
   for (const f of files) {
     const content = readFileSync(join(tasksDir, f), "utf-8");
-    const id = readFrontmatterField(content, "id");
+    const fm = parseTaskFrontmatter(content);
+    const id = fm.id;
     if (!id) continue;
 
-    if (readFrontmatterField(content, "status") !== "ready") continue;
+    if (fm.status !== "ready") continue;
 
-    const project = readFrontmatterField(content, "project") ?? "";
+    const project = fm.project ?? "";
     if (!project) continue;
 
     if (!priProjects.includes(project)) continue;
