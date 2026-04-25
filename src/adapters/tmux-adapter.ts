@@ -1,7 +1,7 @@
 // tmux+ttyd adapter — implements the Adapter interface for tmux orchestration mode.
 // The existing src/adapters/tmux.ts holds shared tmux helpers; this file is the adapter entry point.
 
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { writeJsonFile } from "../json.ts";
 import { getMainRepoFromWorktree, latestMtime, resolveProjectDir, slotSessionName } from "./base.ts";
@@ -406,7 +406,6 @@ export async function sendPromptToAgent(
 
   // Atomic paste via load-buffer + paste-buffer for all providers.
   const promptFile = `/tmp/ludics-prompt-${target}-${Date.now()}.txt`;
-  const { writeFileSync, unlinkSync } = await import("fs");
   writeFileSync(promptFile, message);
   safeSyncOutput(["tmux", "load-buffer", promptFile]);
   safeSyncOutput(["tmux", "paste-buffer", "-t", target]);
