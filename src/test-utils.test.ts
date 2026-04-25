@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "fs";
-import { withTestHarness } from "./test-utils.ts";
+import {
+  captureConsoleError,
+  captureConsoleLog,
+  silenceConsoleError,
+  silenceConsoleWarn,
+  withTestHarness,
+} from "./test-utils.ts";
 
 function captureHooks(): {
   before: (fn: () => void) => void;
@@ -113,5 +119,114 @@ describe("withTestHarness", () => {
       if (pre === undefined) delete process.env.LUDICS_HARNESS_DIR;
       else process.env.LUDICS_HARNESS_DIR = pre;
     }
+  });
+});
+
+describe("captureConsoleLog", () => {
+  test("returns lines and restores console.log", () => {
+    const orig = console.log;
+    const lines = captureConsoleLog(() => {
+      console.log("hello");
+      console.log("world", 42);
+    });
+    expect(lines).toEqual(["hello", "world 42"]);
+    expect(console.log).toBe(orig);
+  });
+
+  test("restores console.log when fn throws and propagates", () => {
+    const orig = console.log;
+    expect(() => {
+      captureConsoleLog(() => {
+        console.log("before throw");
+        throw new Error("boom");
+      });
+    }).toThrow("boom");
+    expect(console.log).toBe(orig);
+  });
+
+  test("stringifies null arg as empty string (not 'null')", () => {
+    const lines = captureConsoleLog(() => {
+      console.log(null);
+    });
+    expect(lines).toEqual([""]);
+  });
+});
+
+describe("captureConsoleError", () => {
+  test("returns lines and restores console.error", () => {
+    const orig = console.error;
+    const lines = captureConsoleError(() => {
+      console.error("a", "b");
+      console.error("c");
+    });
+    expect(lines).toEqual(["a b", "c"]);
+    expect(console.error).toBe(orig);
+  });
+
+  test("restores console.error when fn throws and propagates", () => {
+    const orig = console.error;
+    expect(() => {
+      captureConsoleError(() => {
+        console.error("oops");
+        throw new Error("kaboom");
+      });
+    }).toThrow("kaboom");
+    expect(console.error).toBe(orig);
+  });
+});
+
+describe("silenceConsoleError", () => {
+  test("suppresses output and restores console.error", () => {
+    const orig = console.error;
+    const seen: unknown[] = [];
+    console.error = (...args: unknown[]) => { seen.push(args); };
+    try {
+      silenceConsoleError(() => {
+        console.error("must not be seen");
+      });
+      expect(seen).toEqual([]);
+      console.error("seen-after");
+      expect(seen).toEqual([["seen-after"]]);
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  test("restores console.error when fn throws and propagates", () => {
+    const orig = console.error;
+    expect(() => {
+      silenceConsoleError(() => {
+        throw new Error("silence-err");
+      });
+    }).toThrow("silence-err");
+    expect(console.error).toBe(orig);
+  });
+});
+
+describe("silenceConsoleWarn", () => {
+  test("suppresses output and restores console.warn", () => {
+    const orig = console.warn;
+    const seen: unknown[] = [];
+    console.warn = (...args: unknown[]) => { seen.push(args); };
+    try {
+      silenceConsoleWarn(() => {
+        console.warn("must not be seen");
+      });
+      expect(seen).toEqual([]);
+      console.warn("seen-after");
+      expect(seen).toEqual([["seen-after"]]);
+    } finally {
+      console.warn = orig;
+    }
+  });
+
+  test("restores console.warn when fn throws and propagates", () => {
+    const orig = console.warn;
+    expect(() => {
+      silenceConsoleWarn(() => {
+        throw new Error("silence-warn");
+      });
+    }).toThrow("silence-warn");
+    expect(console.warn).toBe(orig);
   });
 });

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { join } from "path";
 import type { SlotData } from "./slots/types.ts";
+import { silenceConsoleError } from "./test-utils.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -238,13 +239,7 @@ describe("generateNotifications shape guard", () => {
     );
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "notifications.json");
     const notifications = JSON.parse(readFileSync(outFile, "utf-8")) as unknown[];
@@ -290,13 +285,7 @@ describe("generateRecentlyCompleted shape guards", () => {
     );
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "recently-completed.json");
     const recent = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
@@ -314,13 +303,7 @@ describe("generateRecentlyCompleted shape guards", () => {
     writeFileSync(join(retroDir, "task-retro-1.json"), '"just a string"');
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "recently-completed.json");
     const recent = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
@@ -339,13 +322,7 @@ describe("generateT3code shape guard", () => {
     writeFileSync(join(t3Dir, "starting.json"), '"hello"');
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "t3code.json");
     const t3code = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>;
@@ -371,13 +348,7 @@ describe("deferred-launch sorting", () => {
     writeDeferredTask("task-no-date", "No date", null);
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "deferred-launch.json");
     const items = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
@@ -406,13 +377,7 @@ describe("needs-confirmation sorting", () => {
     writeNeedsConfirmationTask("task-nc-no-date", "No date", null);
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "needs-confirmation.json");
     const items = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
@@ -449,13 +414,7 @@ describe("tasks-tree link renders task.html", () => {
     writeTask("task-abc123", "Example task");
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "tasks-tree.json");
     const tree = JSON.parse(readFileSync(outFile, "utf-8")) as unknown[];
@@ -471,13 +430,7 @@ describe("tasks-tree link renders task.html", () => {
     writeTask("task-with space", "Needs encoding");
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "tasks-tree.json");
     const tree = JSON.parse(readFileSync(outFile, "utf-8")) as unknown[];
@@ -527,13 +480,7 @@ describe("slots.json field shape", () => {
     writeSlotJson(1, data);
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "slots.json");
     const slots = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
@@ -557,13 +504,7 @@ describe("slots.json field shape", () => {
     writeSlotJson(1, data);
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "slots.json");
     const slots = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
@@ -586,13 +527,7 @@ describe("slots.json field shape", () => {
     writeSlotJson(1, data);
 
     const { dashboardGenerate } = await import("./dashboard.ts");
-    const origErr = console.error;
-    console.error = () => {};
-    try {
-      dashboardGenerate();
-    } finally {
-      console.error = origErr;
-    }
+    silenceConsoleError(() => dashboardGenerate());
 
     const outFile = join(harnessDir(), "dashboard", "data", "slots.json");
     const slots = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
@@ -612,14 +547,10 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     mkdirSync(dashboardDir, { recursive: true });
     mkdirSync(join(dashboardDir, "data"), { recursive: true });
     // Silence boot logging + lazy-regeneration complaints
-    const origErr = console.error;
-    console.error = () => {};
-    let server: ReturnType<typeof startDashboardServer>;
-    try {
+    let server!: ReturnType<typeof startDashboardServer>;
+    silenceConsoleError(() => {
       server = startDashboardServer(0, dashboardDir, 3600);
-    } finally {
-      console.error = origErr;
-    }
+    });
     return {
       baseUrl: `http://localhost:${server.port}`,
       stop: () => { void server.stop(true); },

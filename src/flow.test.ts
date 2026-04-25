@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { flowBlocked } from "./flow.ts";
+import { captureConsoleLog } from "./test-utils.ts";
 
 const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
 let TMP = "";
@@ -55,14 +56,7 @@ describe("flowBlocked", () => {
     writeTask("task-b1", "B", ["task-blocker"]);
     writeTask("task-a1", "A", ["task-blocker"]);
 
-    const lines: string[] = [];
-    const orig = console.log;
-    console.log = (msg?: unknown) => { lines.push(String(msg ?? "")); };
-    try {
-      flowBlocked();
-    } finally {
-      console.log = orig;
-    }
+    const lines = captureConsoleLog(() => flowBlocked());
 
     const ids = lines.map((l) => l.split(" ")[0]);
     expect(ids).toEqual(["task-s1", "task-a1", "task-b1", "task-c1", "task-d1"]);
@@ -73,14 +67,7 @@ describe("flowBlocked", () => {
     writeTask("task-x1", "X", ["task-blocker"]);
     writeTask("task-s1", "S", ["task-blocker"]);
 
-    const lines: string[] = [];
-    const orig = console.log;
-    console.log = (msg?: unknown) => { lines.push(String(msg ?? "")); };
-    try {
-      flowBlocked();
-    } finally {
-      console.log = orig;
-    }
+    const lines = captureConsoleLog(() => flowBlocked());
 
     const ids = lines.map((l) => l.split(" ")[0]);
     expect(ids).toEqual(["task-s1", "task-d1", "task-x1"]);
