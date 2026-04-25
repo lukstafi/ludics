@@ -1707,6 +1707,55 @@ cluster:
     expect(warned).toBe(true);
   });
 
+  test("keeps machine null and warns when cluster configured but no self-match and no leader", async () => {
+    // Cluster is enabled, but no machine matches os.hostname() AND no machine
+    // has role: leader. defaultAssignMachine() should fall through to the
+    // final `return null` branch with the "no resolvable machine" stderr.
+    process.env.LUDICS_CONFIG = writeClusterConfig(TMP, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: unmatched-worker-a-xyz789
+      host: unmatched-worker-a-xyz789.nowhere.invalid
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+    - name: unmatched-worker-b-xyz789
+      host: unmatched-worker-b-xyz789.nowhere.invalid
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-no-self-no-leader", "Cluster with no resolvable machine");
+
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    let warned = false;
+    try {
+      await slotAssign(1, "task-no-self-no-leader", "tmux");
+      warned = errSpy.mock.calls.some(call =>
+        String(call[0] ?? "").includes("no resolvable machine")
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    const data = readSlotJson(1, harness);
+    expect(data.machine).toBeNull();
+    expect(warned).toBe(true);
+  });
+
   test("keeps machine null in non-federated (single-machine) setup", async () => {
     // Default writeConfig() (set by beforeEach) has no cluster block →
     // clusterEnabled() is false → defaultAssignMachine() returns null.
