@@ -7,7 +7,7 @@ import { formatUpstreamLagSection } from "./briefing-lag.ts";
 import { defaultRunGit, type RunGit } from "./git-runner.ts";
 import { clearSentinel, readSentinelEpoch, sentinelExists, sentinelFresh, touchSentinel } from "./sentinel.ts";
 import { syncStagingMainWithUpstream } from "./staging-ff.ts";
-import { atomicWriteFileSync, isPlainObject } from "./json.ts";
+import { atomicWriteFileSync, isPlainObject, writeJsonFile, writeJsonFileCompact } from "./json.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
@@ -470,7 +470,7 @@ function loadStartupAlertState(): Record<string, number> {
 
 function saveStartupAlertState(state: Record<string, number>): void {
   mkdirSync(magStateDir(), { recursive: true });
-  writeFileSync(startupAlertStateFile(), JSON.stringify(state, null, 2) + "\n");
+  writeJsonFile(startupAlertStateFile(), state);
 }
 
 function clearStartupAlertsForEpoch(startupEpoch: number): void {
@@ -671,7 +671,7 @@ function markFeedbackDigestQueued(repo: string): void {
   const state = readFeedbackDigestQueueState();
   state[repo] = Math.floor(Date.now() / 1000);
   mkdirSync(magStateDir(), { recursive: true });
-  writeFileSync(feedbackDigestStateFile(), JSON.stringify(state));
+  writeJsonFileCompact(feedbackDigestStateFile(), state);
 }
 
 function tryQueueFeedbackDigest(repo: string): { queued: boolean; reason?: string } {

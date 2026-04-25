@@ -132,6 +132,86 @@ describe("slotAssign", () => {
     expect(data.process).toBe("Investigate slot detection");
     expect(data.task).toBeNull();
   });
+
+  test("batches the three frontmatter field updates into a single atomic write (task-29bea074)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-tx-assign", "Transactional assign");
+
+    const taskFile = join(tasksDir, "task-tx-assign.md");
+    const jsonMod = await import("../json.ts");
+    const writeSpy = spyOn(jsonMod, "atomicWriteFileSync");
+
+    let writesToTaskFile: Array<[string, string]>;
+    try {
+      void slotAssign(1, "task-tx-assign", "manual");
+
+      // Capture before mockRestore wipes call history.
+      writesToTaskFile = writeSpy.mock.calls
+        .filter((call) => call[0] === taskFile)
+        .map((call) => [String(call[0]), String(call[1])] as [string, string]);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    // Exactly two atomic writes hit the task file:
+    //   1) transitionStatus flipping status: ready → in-progress
+    //   2) the batched (slot, adapter, started) write
+    // The pre-task-29bea074 behaviour did three separate per-field writes for
+    // (2) — yielding 4 here — which left the file partially populated if the
+    // process crashed mid-sequence (e.g. slot set, but adapter/started absent).
+    expect(writesToTaskFile).toHaveLength(2);
+
+    const batchedContent = writesToTaskFile[1]![1];
+    expect(batchedContent).toContain("slot: 1");
+    expect(batchedContent).toContain("adapter: manual");
+    expect(batchedContent).toMatch(/started: 20\d\d-/);
+
+    // Round-trip: persisted file matches the in-memory batched content for all 3 fields.
+    const persisted = readFileSync(taskFile, "utf-8");
+    expect(persisted).toContain("slot: 1");
+    expect(persisted).toContain("adapter: manual");
+    expect(persisted).toMatch(/started: 20\d\d-/);
+  });
+
+  test("slotClear single-field frontmatter updates remain atomic (task-29bea074 / AC11)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-tx-clear", "Transactional clear");
+    void slotAssign(1, "task-tx-clear", "manual");
+
+    const taskFile = join(tasksDir, "task-tx-clear.md");
+    const jsonMod = await import("../json.ts");
+    const writeSpy = spyOn(jsonMod, "atomicWriteFileSync");
+
+    let writesToTaskFile: Array<[string, string]>;
+    try {
+      await slotClear(1, "done");
+      writesToTaskFile = writeSpy.mock.calls
+        .filter((call) => call[0] === taskFile)
+        .map((call) => [String(call[0]), String(call[1])] as [string, string]);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    // slotClear does: transitionStatus (status: in-progress → done),
+    // then taskUpdateFrontmatter("slot","null"), then ("completed", ...).
+    // After AC9, every write is atomic. Each is still a single-field update —
+    // we don't batch slot+completed because a crash between them is benign
+    // (slot=null is the load-bearing field for slot reuse; completed is metadata).
+    expect(writesToTaskFile).toHaveLength(3);
+
+    const persisted = readFileSync(taskFile, "utf-8");
+    expect(persisted).toContain("status: done");
+    expect(persisted).toContain("slot: null");
+    expect(persisted).toMatch(/completed: 20\d\d-/);
+  });
 });
 
 describe("slotResume guards", () => {
