@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { hostname as osHostname, tmpdir } from "os";
 import { join } from "path";
 import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext } from "./index.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
@@ -1606,5 +1606,199 @@ describe("slotAssign reaps prior assignment on reassignment (task-72a318c3)", ()
     content = readFileSync(join(tasksDir, "task-old-reset.md"), "utf-8");
     expect(content).toContain("slot: null");
     expect(content).toContain("status: ready");
+  });
+});
+
+describe("slotAssign machine default in federated setup", () => {
+  function writeClusterConfig(homeDir: string, yaml: string): string {
+    const configDir = join(homeDir, ".config", "ludics");
+    mkdirSync(configDir, { recursive: true });
+    const configPath = join(configDir, "config.yaml");
+    writeFileSync(configPath, yaml);
+    return configPath;
+  }
+
+  test("defaults machine to current node name when cluster config self-matches", async () => {
+    const sysHost = osHostname().toLowerCase();
+    // Configure a machine whose host matches os.hostname() so
+    // clusterCurrentMachine() returns it via the system-hostname candidate.
+    // Also include a second machine so we can prove we picked the self-match
+    // rather than, say, the leader.
+    process.env.LUDICS_CONFIG = writeClusterConfig(TMP, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: self-match-node
+      host: ${sysHost}
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+    - name: leader-other
+      host: leader-other.test.local
+      os: linux
+      role: leader
+      always_on: false
+      gpu: ""
+`);
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-self-match", "Federated self-match");
+
+    await slotAssign(1, "task-self-match", "tmux");
+
+    const data = readSlotJson(1, harness);
+    expect(data.machine).toBe("self-match-node");
+  });
+
+  test("defaults machine to leader when current host is not in cluster.machines", async () => {
+    // No host entry matches os.hostname() (use a name/host guaranteed not to
+    // collide with any real machine). One machine is role: leader.
+    process.env.LUDICS_CONFIG = writeClusterConfig(TMP, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: unmatched-leader-xyz789
+      host: unmatched-leader-xyz789.nowhere.invalid
+      os: linux
+      role: leader
+      always_on: false
+      gpu: ""
+    - name: unmatched-worker-xyz789
+      host: unmatched-worker-xyz789.nowhere.invalid
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-leader-fallback", "Federated leader fallback");
+
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    let warned = false;
+    try {
+      await slotAssign(1, "task-leader-fallback", "tmux");
+      warned = errSpy.mock.calls.some(call =>
+        String(call[0] ?? "").includes("defaulting machine to leader")
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    const data = readSlotJson(1, harness);
+    expect(data.machine).toBe("unmatched-leader-xyz789");
+    expect(warned).toBe(true);
+  });
+
+  test("keeps machine null and warns when cluster configured but no self-match and no leader", async () => {
+    // Cluster is enabled, but no machine matches os.hostname() AND no machine
+    // has role: leader. defaultAssignMachine() should fall through to the
+    // final `return null` branch with the "no resolvable machine" stderr.
+    process.env.LUDICS_CONFIG = writeClusterConfig(TMP, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: unmatched-worker-a-xyz789
+      host: unmatched-worker-a-xyz789.nowhere.invalid
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+    - name: unmatched-worker-b-xyz789
+      host: unmatched-worker-b-xyz789.nowhere.invalid
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-no-self-no-leader", "Cluster with no resolvable machine");
+
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    let warned = false;
+    try {
+      await slotAssign(1, "task-no-self-no-leader", "tmux");
+      warned = errSpy.mock.calls.some(call =>
+        String(call[0] ?? "").includes("no resolvable machine")
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    const data = readSlotJson(1, harness);
+    expect(data.machine).toBeNull();
+    expect(warned).toBe(true);
+  });
+
+  test("keeps machine null in non-federated (single-machine) setup", async () => {
+    // Default writeConfig() (set by beforeEach) has no cluster block →
+    // clusterEnabled() is false → defaultAssignMachine() returns null.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-nonfed", "Non-federated default");
+
+    await slotAssign(1, "task-nonfed", "tmux");
+
+    const data = readSlotJson(1, harness);
+    expect(data.machine).toBeNull();
+  });
+
+  test("explicit --machine argument short-circuits the default", async () => {
+    process.env.LUDICS_CONFIG = writeClusterConfig(TMP, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: self-match-node
+      host: ${osHostname().toLowerCase()}
+      os: linux
+      role: leader
+      always_on: false
+      gpu: ""
+`);
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-explicit-machine", "Explicit machine overrides default");
+
+    await slotAssign(1, "task-explicit-machine", "tmux", "", "", "", "explicit-node");
+
+    const data = readSlotJson(1, harness);
+    expect(data.machine).toBe("explicit-node");
   });
 });

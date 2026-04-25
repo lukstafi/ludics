@@ -317,7 +317,11 @@ ludics flow check-cycle        # Check for dependency cycles
 ```bash
 ludics slots                   # Show all slots
 ludics slot <n>                # Show slot n details
-ludics slot <n> assign <task>  # Assign a task to slot n
+ludics slot <n> assign <task> [--machine <name>]  # Assign a task to slot n.
+                                                  # In a federated setup (cluster.machines configured),
+                                                  # --machine defaults to the current node (or the leader
+                                                  # if the current host is not in cluster.machines);
+                                                  # single-machine setups leave it null.
 ludics slot <n> clear          # Clear slot n
 ludics slot <n> start          # Start fresh agent session (use 'resume' for crash recovery)
 ludics slot <n> stop           # Stop agent session

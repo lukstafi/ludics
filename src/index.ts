@@ -106,8 +106,12 @@ Commands:
   slots                        Show all slots
   slots refresh                Refresh slot state from adapters
   slot <n>                     Show slot n
-  slot <n> assign <task|desc> [-a adapter] [-s session] [-p path] [-A "adapter args"]
-                               Assign a task to slot n
+  slot <n> assign <task|desc> [-a adapter] [-s session] [-p path] [-A "adapter args"] [--machine <name>]
+                               Assign a task to slot n. In a federated setup
+                               (cluster.machines configured), --machine defaults
+                               to the current node (or the leader if the current
+                               host is not in cluster.machines); in single-machine
+                               setups it stays null.
   slot <n> clear [in-progress|done|abandoned]
                                Clear slot n (optionally mark task in-progress/done/abandoned)
   slot <n> start               Start fresh agent session (use 'resume' for crash recovery)
