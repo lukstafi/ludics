@@ -255,4 +255,38 @@ describe("tasksReconcileBlockedStatus", () => {
     expect(readFileSync(join(tasksDir, "task-already-ready.md"), "utf-8")).toContain("status: ready");
     expect(readFileSync(join(tasksDir, "task-already-blocked.md"), "utf-8")).toContain("status: blocked");
   });
+
+  test("malformed YAML with status: blocked is not silently rewritten to ready", () => {
+    // Regression for codex P1: parseTaskFrontmatter's line-regex fallback
+    // salvages top-level scalars (status) but cannot reconstruct nested
+    // dependencies.blocked_by. Before the dependencies-undefined guard,
+    // this file would have been rewritten to `status: ready` because
+    // `fm.dependencies?.blocked_by ?? []` returned an empty array.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    const malformedFile = join(tasksDir, "task-malformed.md");
+    writeFileSync(malformedFile, [
+      "---",
+      "id: task-malformed",
+      "title: Malformed",
+      "status: blocked",
+      "dependencies: [unclosed",
+      "---",
+      "",
+      "# Body",
+      "",
+    ].join("\n"));
+    const before = readFileSync(malformedFile, "utf-8");
+
+    tasksReconcileBlockedStatus(tasksDir);
+
+    const after = readFileSync(malformedFile, "utf-8");
+    // Invariant: malformed files must not be rewritten. `status: blocked`
+    // survives verbatim; no status mutation.
+    expect(after).toBe(before);
+    expect(after).toContain("status: blocked");
+    expect(after).not.toContain("status: ready");
+  });
 });

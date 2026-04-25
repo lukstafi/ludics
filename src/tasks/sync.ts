@@ -677,6 +677,12 @@ function healBlockedByLinks(tasksDir: string): void {
     let fm;
     try { fm = parseTaskFrontmatter(content); } catch { continue; }
     if (!fm.id) continue;
+    // Malformed YAML falls through the line-regex recovery path, which can
+    // salvage top-level fields but cannot reconstruct the nested dependencies
+    // block. Skip such files here rather than treating absent `dependencies`
+    // as "no blockers" — otherwise pruning / backlink-healing would silently
+    // rewrite files we could not fully parse. See tasksReconcileBlockedStatus.
+    if (!fm.dependencies) continue;
     taskMap.set(fm.id, { status: fm.status ?? "ready", filePath, fm });
   }
 
@@ -730,8 +736,16 @@ function tasksReconcileBlockedStatus(tasksDir: string): void {
       fm = parseTaskFrontmatter(content);
     } catch { continue; }
 
+    // Guard against the malformed-YAML line-regex fallback: it populates
+    // top-level fields (e.g. status) but leaves nested `dependencies`
+    // undefined. Without this check, a partially-malformed task with
+    // `status: blocked` would be seen as having no blockers and rewritten
+    // to `ready` — silent state corruption. Pre-unification the parser
+    // threw on such files and the catch above short-circuited.
+    if (!fm.dependencies) continue;
+
     const status = fm.status ?? "ready";
-    const blockedBy = fm.dependencies?.blocked_by ?? [];
+    const blockedBy = fm.dependencies.blocked_by;
 
     // Skip terminal and active statuses
     if (["done", "abandoned", "merged", "in-progress", "deferred", "preempt-queued", "preempted"].includes(status)) continue;

@@ -520,6 +520,57 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     expect(args).toContain("--pair");
   });
 
+  test("task without explicit effort field gets small-orchestration flags (codex P2 regression)", async () => {
+    // Regression for codex P2: parseTaskFrontmatter normalizes a missing
+    // effort field to "medium", which would silently upgrade legacy / manual
+    // tasks that never declared effort to medium-orchestration flags. The
+    // readRawEffortField helper restores the pre-unification "small" default
+    // by inspecting the raw YAML block. This test would fail if the site
+    // reverted to `parseTaskFrontmatter(content).effort ?? "small"`, because
+    // that expression yields "medium" for any frontmatter missing `effort:`.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+
+    writeFileSync(join(tasksDir, "task-no-effort-1.md"), [
+      "---",
+      "id: task-no-effort-1",
+      'title: "Legacy task no effort"',
+      "project: demo",
+      "status: ready",
+      "priority: B",
+      "dependencies:",
+      "  blocks: []",
+      "  blocked_by: []",
+      "  relates_to: []",
+      "  subtask_of: null",
+      // NOTE: no `effort:` line — this is the regression case.
+      "context: demo",
+      "uses_browser: false",
+      "slot: null",
+      "adapter: null",
+      "created: 2026-03-07",
+      "started: null",
+      "completed: null",
+      "modified: null",
+      "source: local",
+      "---",
+      "",
+    ].join("\n"));
+
+    void slotAssign(1, "task-no-effort-1", "t3code");
+    const data = readSlotJson(1, harness);
+    const ctx = makeAdapterContext(1, data);
+    const result = await autoFillAdapterArgs(ctx, data);
+    expect(result).not.toBeNull();
+    // Invariant: `effort` reported by autoFillAdapterArgs must equal "small"
+    // for a task file without an explicit effort field. A regression to the
+    // normalized default would surface this as "medium".
+    expect(result!.effort).toBe("small");
+  });
+
   test("auto-fills medium task with skip_plan: true — omits --plan", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
