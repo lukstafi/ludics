@@ -21,6 +21,50 @@ try {
   canBindSocket = false;
 }
 
+type ConsoleChannel = "log" | "error" | "warn";
+
+function withConsoleOverride(
+  channel: ConsoleChannel,
+  override: (...args: unknown[]) => void,
+  fn: () => void,
+): void {
+  const orig = console[channel];
+  console[channel] = override;
+  try {
+    fn();
+  } finally {
+    console[channel] = orig;
+  }
+}
+
+function captureLines(channel: ConsoleChannel, fn: () => void): string[] {
+  const lines: string[] = [];
+  withConsoleOverride(channel, (...args: unknown[]) => {
+    lines.push(args.map((a) => String(a ?? "")).join(" "));
+  }, fn);
+  return lines;
+}
+
+/** Capture lines written to `console.log` while running `fn`; restores on return or throw. */
+export function captureConsoleLog(fn: () => void): string[] {
+  return captureLines("log", fn);
+}
+
+/** Capture lines written to `console.error` while running `fn`; restores on return or throw. */
+export function captureConsoleError(fn: () => void): string[] {
+  return captureLines("error", fn);
+}
+
+/** Run `fn` with `console.error` no-op'd; restores on return or throw. */
+export function silenceConsoleError(fn: () => void): void {
+  withConsoleOverride("error", () => {}, fn);
+}
+
+/** Run `fn` with `console.warn` no-op'd; restores on return or throw. */
+export function silenceConsoleWarn(fn: () => void): void {
+  withConsoleOverride("warn", () => {}, fn);
+}
+
 /** Isolate LUDICS_HARNESS_DIR to a fresh tmpdir per test; returns a getter for the current path. */
 export function withTestHarness(
   before: (fn: () => void) => void,
