@@ -17,7 +17,7 @@ A few places where drift tends to creep in:
 Write any PR URL to `{{PR_FILE}}`. Stop if `{{INTERRUPT_FILE}}` appears.
 
 {{#IF PROPOSAL_PATH}}
-Before signaling done, re-read `{{PROPOSAL_PATH}}` and walk through each acceptance criterion, stating explicitly (in your thinking) how the implementation satisfies it. Write the status file only once every criterion is met.
+Before signaling done, re-read `{{PROPOSAL_PATH}}` and walk through each acceptance criterion, stating explicitly (in your thinking) how the implementation satisfies it. Each criterion's mental walk should also name the harness condition that makes the test exercise that AC — a test that passes whether or not the condition holds does not enforce it. See [harness instantiation](../../docs/orchestration-patterns.md#harness-instantiation). Write the status file only once every criterion is met.
 {{/IF}}
 
 If the task is already resolved on the base branch (fix already merged, no meaningful changes needed), don't make empty commits — signal bail-out instead:

@@ -271,6 +271,31 @@ The sharpening question is: *what would fail if the AC were violated?* For a tes
 
 **Boundary.** The self-check is unconditional on proposal presence — tasks without a proposal still have an AC list in the task spec, and the walk applies there too.
 
+### Harness instantiation
+
+**Principle.** Every AC outcome — positive *and* negative — needs a test whose harness setup actually produces the condition the AC's wording targets. A test that never produces that condition cannot enforce the AC, no matter how invariant-phrased the verification line is.
+
+**Why.** [AC self-check](#ac-self-check)'s `**Invariant vs capability.**` rule fixes the *phrasing* of the verification line. This rule closes the loop on the *test setup*: even an invariant-phrased line is vacuous if the harness never instantiates the case the invariant talks about. The two together — invariant phrasing plus harness instantiation — are what makes an AC line enforceable.
+
+**Two AC shapes covered.**
+
+1. **Negative-path** (`silently skips on X`, `no-ops when Y`). The harness must make X / Y *actually happen* during the test, and the assertion must measure what the AC forbids — not what it permits. A "silently-skips-on-X" AC needs a test that fails iff X is ignored, not a test that fails iff X blocks.
+2. **N-outcome enumeration** (`returns A in case 1, B in case 2, …`). Each outcome needs a test whose harness instantiates *that* case. Neighbouring tests that traverse other branches do not bracket it; the no-self/no-leader fall-through, the absent-flag default, the empty-set return value all need their own assertion.
+
+**Falsifier framing.** Ask: *what harness condition would I have to remove for this test to fail?* If the answer is `none` or `the assertion itself`, the test is vacuous on that AC line. This is the *dual* of the existing invariant-falsifier question (`what would fail if the AC were violated?`) — together they describe both sides of an enforceable AC line.
+
+**Distinction from `**Invariant vs capability.**`.** Invariant phrasing is about how the verification *line* reads. Harness instantiation is about whether the test *setup* actually produces the case the invariant talks about. A line can be invariant-phrased and still vacuous if the setup never makes the relevant condition occur.
+
+**Worked example (before / after).** From task-91667552 (stale-base warning). The AC said the warning skips on `git fetch` failure.
+
+*Before* (capability-only setup, vacuous): `makeGitRepo` seeded `refs/remotes/origin/main` via `git update-ref` but never configured a fetchable origin URL. `git fetch origin main` failed with exit 128 in *every* test. The "skips on fetch failure" AC was vacuous: positive-path tests "passed" by measuring against cached refs after an *ignored* fetch failure; the code under review never read `fetched.exitCode`. The harness condition the AC needed (a *successful* fetch on the positive path) was not instantiated; the harness condition for the negative path (a *failed* fetch the code skips on) was instantiated for the wrong reason.
+
+*After* (harness instantiates the case): an `addRealOrigin` helper configures a real bare `file://` origin and pushes, so the positive-path fetch actually succeeds; a separate broken-URL regression test asserts `countWarnings === 0` AND `staleBaseLastWarnedCount === undefined` when the fetch genuinely fails. Each test names the harness condition (`origin URL is fetchable` vs. `origin URL is broken`) the AC outcome depends on. Removing either harness condition would now flip the corresponding assertion.
+
+**Boundary.** Applies to ACs whose evidence is a test or other executable check. Purely architectural ACs (`does not break X`) fall under the existing falsifier framing in [AC self-check](#ac-self-check). Doc/config ACs apply by analogy: the "harness condition" for a doc AC is the consumer that would break if the structural property were absent (an unresolvable anchor, a removed reader, a renamed symbol).
+
+See also [negative-case-regression-testing](#negative-case-regression-testing) (the *dynamic* version of this discipline — deliberately break the behaviour and watch the test fail), [collapsed-branch-negative-tests](#collapsed-branch-negative-tests) (negative assertions for removed branches), and [ac-self-check](#ac-self-check) (the invariant-vs-capability rule this complements).
+
 ### Bail-out contract
 
 **Principle.** When a task turns out to be already resolved on the base branch (upstream fix merged, no meaningful work left), don't make empty commits — signal bail-out instead. The reviewer independently verifies and confirms.
@@ -395,6 +420,25 @@ See also [caller-audit-on-signature-change](#caller-audit-on-signature-change).
 **Example.** `task-21b4c850`'s doc-link slug-resolution test passed round 1 but had two real bugs (phantom `##` anchors counted inside fenced code blocks; `[a-z0-9-]+` silently skipping malformed anchors). Both would have been caught by deliberately adding a link to a non-existent anchor, watching the test fail, then reverting.
 
 See also [regression-test-per-behaviour-change](#regression-test-per-behaviour-change).
+
+### Pre-assertion harness probe
+
+**Principle.** When an AC's passing condition is a property of *the world* (the live template set, the real config tree, the actual filesystem) rather than a unit-level invariant, run a one-liner probe (`bun -e`, `bun --print`, `rg`, ad-hoc grep) against the live target *before* drafting the assertion. Print every would-fail item with debug context; only then build the assertion against a known target.
+
+**Why.** Meta-tests like `this lint passes against the entire template set` are written at the level of *the world*, not at the level of one fixture. A speculative assertion about the world's state surfaces missing harness pieces only at test-run time, when the cost of fixing them is highest. A cheap upfront enumeration moves that surprise to plan time and lets the validator be shaped against real cases instead of imagined ones.
+
+**Recipe.**
+
+1. Identify the world the assertion targets (template set, config catalogue, fixture directory tree, generated file list).
+2. Write a one-liner that walks the world and prints every item the assertion would judge — *every* item, with debug context, not just a count.
+3. Decide what `pass` means based on the enumeration: which items belong, which don't, what shape the validator must learn to handle.
+4. Write the assertion against the now-known target.
+
+**Worked example.** From task-b435e58d (lint-template-safety): before drafting the meta-test for the env-stripper, the coder ran a `bun --print` script over `skills/orchestration/*.md` to enumerate first-tokens unknown to the parser. The probe surfaced `PR_URL=$(cat ...)` and `BASE=$(gh pr view ...)` cases — env-stripper gaps fixable *before* the assertion was written. Without the probe, the test would have been written, would have failed against the real world, and the gaps would have been diagnosed mid-test-debug instead of at plan time.
+
+**When not to apply.** Trivial unit assertions (a function's return value for a literal input) don't need a probe — the world is the function and you can read it. ACs whose passing condition is a unit invariant rather than a property of external state likewise don't qualify. The probe earns its keep when the assertion is integration- or meta-flavoured, where the *target set* is what you're least sure about.
+
+See also [negative-case-regression-testing](#negative-case-regression-testing) (the post-test stress check — same family, opposite end of the timeline) and [harness-instantiation](#harness-instantiation) (the AC-side companion: name the condition the assertion depends on).
 
 ---
 

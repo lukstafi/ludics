@@ -1502,6 +1502,7 @@ describe("skills", () => {
       "pair-coder-work.md",
       "pair-reviewer-plan-review.md",
       "pair-reviewer-review.md",
+      "solo-work.md",
     ];
     // Capture anchor fragments up to whitespace or any markdown-link terminator
     // (`)`, `]`, `>`, `"`, `'`). A narrower character class would silently skip
@@ -1820,6 +1821,105 @@ describe("skills", () => {
     expect(raw).toContain("git log main..HEAD --stat");
     expect(raw).toContain("git diff <commit>^..<commit> --stat");
     expect(raw).toContain("main-side drift");
+  });
+
+  test("gh-ludics-404: orchestration-patterns has Harness instantiation subsection with falsifier framing and worked example", () => {
+    const path = join(import.meta.dir, "../../docs/orchestration-patterns.md");
+    const raw = readFileSync(path, "utf-8");
+    const startIdx = raw.indexOf("### Harness instantiation");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    const endIdx = raw.indexOf("\n### ", startIdx + 1);
+    const section = raw.slice(startIdx, endIdx === -1 ? raw.length : endIdx);
+    // Falsifier prompt — the dual of the AC self-check invariant-falsifier.
+    expect(section).toContain("what harness condition would I have to remove for this test to fail");
+    // Both AC shapes covered.
+    expect(section).toMatch(/silently skips on X/);
+    expect(section).toMatch(/N-outcome enumeration/);
+    // task-91667552 worked example, before/after structure.
+    expect(section).toContain("task-91667552");
+    expect(section).toContain("addRealOrigin");
+    expect(section).toContain("staleBaseLastWarnedCount");
+    // Distinction-from-invariant-vs-capability paragraph.
+    expect(section).toContain("Invariant vs capability");
+    // Cross-references — slugs the See-also block points at.
+    expect(section).toContain("#negative-case-regression-testing");
+    expect(section).toContain("#collapsed-branch-negative-tests");
+    expect(section).toContain("#ac-self-check");
+  });
+
+  test("gh-ludics-404: orchestration-patterns has Pre-assertion harness probe section with recipe and worked example", () => {
+    const path = join(import.meta.dir, "../../docs/orchestration-patterns.md");
+    const raw = readFileSync(path, "utf-8");
+    const startIdx = raw.indexOf("### Pre-assertion harness probe");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    const endIdx = raw.indexOf("\n### ", startIdx + 1);
+    const section = raw.slice(startIdx, endIdx === -1 ? raw.length : endIdx);
+    // Four-step recipe markers must all be present.
+    expect(section).toMatch(/Recipe/);
+    expect(section).toMatch(/1\.\s.*world the assertion targets/);
+    expect(section).toMatch(/2\.\s.*one-liner that walks the world/);
+    expect(section).toMatch(/3\.\s.*pass/);
+    expect(section).toMatch(/4\.\s.*Write the assertion/);
+    // task-b435e58d worked example.
+    expect(section).toContain("task-b435e58d");
+    expect(section).toContain("bun --print");
+    // "When not to apply" boundary clause.
+    expect(section).toContain("When not to apply");
+    // Cross-references back to siblings.
+    expect(section).toContain("#negative-case-regression-testing");
+    expect(section).toContain("#harness-instantiation");
+  });
+
+  test("gh-ludics-404: pair-coder-work AC self-check names harness condition and links new anchors", () => {
+    const path = join(import.meta.dir, "../../skills/orchestration/pair-coder-work.md");
+    const raw = readFileSync(path, "utf-8");
+    // Locate the AC self-check paragraph by its existing distinctive opener.
+    const startIdx = raw.indexOf("For each criterion, append a one-line confirmation");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    const endIdx = raw.indexOf("\n\n", startIdx + 1);
+    const paragraph = raw.slice(startIdx, endIdx === -1 ? raw.length : endIdx);
+    // Harness-condition wording must live inside the same paragraph.
+    expect(paragraph).toContain("harness condition that instantiates");
+    expect(paragraph).toMatch(/test that passes whether or not that condition holds/);
+    // Both AC shapes named (skips-on-X and N-outcome).
+    expect(paragraph).toMatch(/skips on X/);
+    expect(paragraph).toMatch(/N-outcome enumerations/);
+    // New anchor links resolve.
+    expect(paragraph).toContain("../../docs/orchestration-patterns.md#harness-instantiation");
+    expect(paragraph).toContain("../../docs/orchestration-patterns.md#pre-assertion-harness-probe");
+    // Existing AC self-check link preserved.
+    expect(paragraph).toContain("../../docs/orchestration-patterns.md#ac-self-check");
+  });
+
+  test("gh-ludics-404: pair-reviewer-review AC verification asks harness-falsifier prompt and links new anchor", () => {
+    const path = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-review.md");
+    const raw = readFileSync(path, "utf-8");
+    const startIdx = raw.indexOf("**Acceptance criteria verification.**");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    const endIdx = raw.indexOf("\n\n", startIdx + 1);
+    const paragraph = raw.slice(startIdx, endIdx === -1 ? raw.length : endIdx);
+    // The falsifier prompt is the load-bearing addition.
+    expect(paragraph).toContain("what harness condition would I have to remove for this test to fail");
+    // Vacuous-on-AC-line outcomes treated as blocking.
+    expect(paragraph).toContain('"none"');
+    expect(paragraph).toContain("the assertion itself");
+    expect(paragraph).toContain("flag as blocking");
+    // Cross-link to the new doc subsection.
+    expect(paragraph).toContain("../../docs/orchestration-patterns.md#harness-instantiation");
+  });
+
+  test("gh-ludics-404: solo-work AC walk names harness condition and links new anchor", () => {
+    const path = join(import.meta.dir, "../../skills/orchestration/solo-work.md");
+    const raw = readFileSync(path, "utf-8");
+    const startIdx = raw.indexOf("Before signaling done, re-read");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    const endIdx = raw.indexOf("\n\n", startIdx + 1);
+    const paragraph = raw.slice(startIdx, endIdx === -1 ? raw.length : endIdx);
+    // Harness-condition clause inside the same paragraph as the AC walk.
+    expect(paragraph).toContain("harness condition that makes the test exercise that AC");
+    expect(paragraph).toMatch(/test that passes whether or not the condition holds/);
+    // Anchor link resolves to the new doc subsection.
+    expect(paragraph).toContain("../../docs/orchestration-patterns.md#harness-instantiation");
   });
 
   // task-f60547cd: state.harnessDir must be authoritative over the process-global
