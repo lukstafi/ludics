@@ -367,6 +367,20 @@ describe("skills", () => {
     expect(rendered).toContain('PR_URL=$(cat "/tmp/coder.pr"');
     expect(rendered).toContain('gh pr merge "$PR_URL" --repo "owner/my-staging" --merge --delete-branch');
     expect(rendered).not.toMatch(/gh pr merge --merge/);
+    // Post-merge view fallback rescues benign worktree-cleanup non-zero exits;
+    // must target the same staging repo as the primary merge.
+    expect(rendered).toContain('gh pr view "$PR_URL" --repo "owner/my-staging" --json state');
+    // Wrapper treats only state == "MERGED" as success, otherwise exits non-zero
+    // so the runner's verifyPhaseOutcome retry/escalation takes over.
+    expect(rendered).toContain('[ "$state" = "MERGED" ] || exit 1');
+    // Success path (primary merge OR rescue) reaches both MERGED_MARKER_FILE
+    // write and STATUS_FILE write — the marker line must sit AFTER `fi` so
+    // both branches reach it, and BEFORE the STATUS_FILE printf so a missing
+    // marker can never coexist with a done STATUS_FILE. Marker must carry a
+    // non-empty payload because peer-sync.ts:readMarker treats empty files as
+    // null (`return value || null` after trim).
+    expect(rendered).toMatch(/fi\nprintf 'merged\\n' > "\/tmp\/merged"\nprintf '%s\|%s\|final merge complete\\n' 'review-done'/);
+    expect(rendered).not.toMatch(/touch "\/tmp\/merged"/);
   });
 
   test("final-merge template omits --repo when PROJECT_REPO is empty but still passes the PR URL", () => {
@@ -375,6 +389,13 @@ describe("skills", () => {
     const rendered = substituteTemplate(template, { ...baseCtx(), PR_FILE: "/tmp/coder.pr" });
     expect(rendered).toContain('gh pr merge "$PR_URL" --merge --delete-branch');
     expect(rendered).not.toContain("--repo");
+    // Post-merge view fallback present without --repo when PROJECT_REPO is empty.
+    expect(rendered).toContain('gh pr view "$PR_URL" --json state');
+    expect(rendered).toContain('[ "$state" = "MERGED" ] || exit 1');
+    // Marker + STATUS_FILE sequence pinned: rescue path reaches both writes.
+    // Marker payload must be non-empty (readMarker rejects empty files).
+    expect(rendered).toMatch(/fi\nprintf 'merged\\n' > "\/tmp\/merged"\nprintf '%s\|%s\|final merge complete\\n' 'review-done'/);
+    expect(rendered).not.toMatch(/touch "\/tmp\/merged"/);
   });
 
   test("buildSkillContext: hierarchical duo suppresses UPSTREAM_REPO when duoPeerSlot is set", async () => {
