@@ -10,7 +10,7 @@
 import { describe, expect, test, beforeEach, afterEach, spyOn, setDefaultTimeout } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { handleEscalation, runOrchestration } from "./runner.ts";
+import { checkEscalationHalt, handleEscalation, runOrchestration } from "./runner.ts";
 import * as events from "../events.ts";
 import * as notify from "../notify.ts";
 import type { OrchestrationTransport } from "./transport.ts";
@@ -312,5 +312,61 @@ describe("handleEscalation — isolated halt helper", () => {
       eventSpy.mockRestore();
       notifySpy.mockRestore();
     }
+  });
+});
+
+describe("checkEscalationHalt — named pollUntilDone halt guard", () => {
+  let origHarnessDir: string | undefined;
+
+  beforeEach(() => {
+    origHarnessDir = process.env.LUDICS_HARNESS_DIR;
+  });
+
+  afterEach(() => {
+    if (origHarnessDir !== undefined) process.env.LUDICS_HARNESS_DIR = origHarnessDir;
+    else delete process.env.LUDICS_HARNESS_DIR;
+  });
+
+  test("returns false when no agent has the escalate status", () => {
+    const slot = 30;
+    const { harness, peerSyncDir } = seedHarness(slot);
+    process.env.LUDICS_HARNESS_DIR = harness;
+
+    const state = makeState({
+      slot,
+      phase: "work",
+      harnessDir: harness,
+      agentStates: {
+        coder: { status: "done", statusEpoch: 0, statusMessage: "", prUrl: null, interrupted: false },
+        reviewer: { status: "review-done", statusEpoch: 0, statusMessage: "", prUrl: null, interrupted: false },
+      },
+    }, peerSyncDir);
+
+    expect(checkEscalationHalt(state)).toBe(false);
+  });
+
+  test("returns true and persists state when an agent has escalated", () => {
+    const slot = 31;
+    const { harness, peerSyncDir } = seedHarness(slot);
+    process.env.LUDICS_HARNESS_DIR = harness;
+
+    const state = makeState({
+      slot,
+      phase: "work",
+      harnessDir: harness,
+      agentStates: {
+        coder: { status: "escalate", statusEpoch: 0, statusMessage: "stuck in a loop", prUrl: null, interrupted: false },
+        reviewer: { status: "review-done", statusEpoch: 0, statusMessage: "", prUrl: null, interrupted: false },
+      },
+    }, peerSyncDir);
+
+    expect(checkEscalationHalt(state)).toBe(true);
+
+    // Persisted: orchestration state-<N>.json must exist after the guard fires.
+    const persistedPath = join(harness, "orchestration", `slot-${slot}.json`);
+    const persisted = JSON.parse(readFileSync(persistedPath, "utf-8"));
+    expect(persisted.slot).toBe(slot);
+    // Phase must NOT have advanced — the guard halts in place.
+    expect(persisted.phase).toBe("work");
   });
 });

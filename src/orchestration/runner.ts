@@ -23,6 +23,7 @@ import { findProjectConfig, globalAdapter, harnessDir as defaultHarnessDir, ludi
 import { taskFilePath } from "./paths.ts";
 import { notifyAgents, notifyOutgoing } from "../notify.ts";
 import { readSlotJson, writeSlotJson } from "../slots/json.ts";
+import { setSlotLivenessOnData } from "../slots/index.ts";
 // workerReportStatus replaced by clusterReportWorkerSignal (lazy import)
 import { clusterRole } from "../cluster.ts";
 import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch } from "./worktrees.ts";
@@ -1424,10 +1425,7 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
       // runOrchestration's caller-side handler can persist state, emit the
       // event + priority-5 notification, and flip slot liveness without any
       // intervening phase-advance work (nudge, auto-commit, verification gate).
-      if (isEscalated(state)) {
-        persistState(state, state.harnessDir ?? defaultHarnessDir());
-        return;
-      }
+      if (checkEscalationHalt(state)) return;
 
       // Detect hung agents (static terminal) and send nudges / force-settle.
       await detectAndNudgeHungAgents(state, transport);
@@ -1808,13 +1806,26 @@ export function handleEscalation(state: OrchestrationState): void {
 
   try {
     const data = readSlotJson(state.slot);
-    data.liveness = "escalated";
+    setSlotLivenessOnData(data, "escalated");
     writeSlotJson(state.slot, data);
   } catch (err) {
     console.error(`ludics: failed to set slot ${state.slot} liveness=escalated: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   persistState(state, state.harnessDir ?? defaultHarnessDir());
+}
+
+/**
+ * Named guard for the escalation halt point in `pollUntilDone`. Mirrors the
+ * shape of `checkZeroCommitsAutoBailOut`: returns `true` when the caller
+ * should stop. Persists state before halting so a mid-halt crash leaves the
+ * runner with the latest agent statuses on disk. Caller uses `return` (not
+ * `break`) — see `pollUntilDone`.
+ */
+export function checkEscalationHalt(state: OrchestrationState): boolean {
+  if (!isEscalated(state)) return false;
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
+  return true;
 }
 
 export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean {

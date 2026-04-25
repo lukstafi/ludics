@@ -8,7 +8,7 @@ import { mergeAdapterState, addNoteToSlotData } from "./markdown.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, emptySlotData, slotJsonDir, slotDataToMarkdown } from "./json.ts";
 import { migrateMarkdownToSlotData } from "./migration.ts";
 import { cleanupStaleItems } from "../t3code/index.ts";
-import type { SlotData } from "./types.ts";
+import type { SlotData, SlotLiveness } from "./types.ts";
 import { stateMarkDirty } from "../state.ts";
 import { journalAppend } from "../journal.ts";
 import { emitEvent } from "../events.ts";
@@ -18,7 +18,7 @@ import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, par
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
-import { readSlotState, writeSlotState } from "../t3code/server.ts";
+import { readSlotState, writeSlotState, processAlive } from "../t3code/server.ts";
 import { agentCliCommand, isAgentAlive, readTmuxSlotState, startTtyd, tmuxSessionName, ttydPort, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { tmuxHasSession, tmuxNewSession, tmuxSendCommand, tmuxSendKeys } from "../adapters/tmux.ts";
 import { selectOrchestrationFlagsForTask } from "../adapters/t3code.ts";
@@ -41,6 +41,15 @@ let workerSlotsOverride: Map<number, SlotData> | null = null;
  *  Call with null to clear. */
 export function setWorkerSlotsOverride(data: Map<number, SlotData> | null): void {
   workerSlotsOverride = data;
+}
+
+/** Mutator-only liveness writer: structural mirror of `parseSlotLiveness` on
+ *  the read side. Sets `data.liveness = value` in place and returns `data` for
+ *  chaining. Does NOT touch `sessionStarted` or other companion fields —
+ *  callers continue to set those alongside this call. */
+export function setSlotLivenessOnData(data: SlotData, value: SlotLiveness): SlotData {
+  data.liveness = value;
+  return data;
 }
 
 export function findSlotForTask(taskId: string): number | null {
@@ -541,7 +550,7 @@ export function markSlotSetupFailed(slotNum: number, error: string): void {
   const taskId = data.task;
 
   // Mark slot as interrupted
-  data.liveness = "interrupted";
+  setSlotLivenessOnData(data, "interrupted");
   data.sessionStarted = null;
   writeSlotJson(slotNum, data);
 
@@ -948,7 +957,7 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
   // Clear any prior interrupted liveness and stamp active session marker
   const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
   data.sessionStarted = sessionStartedAt;
-  data.liveness = null;
+  setSlotLivenessOnData(data, null);
   writeSlotOrHttp(slotNum, data);
 
   journalAppend("slot", `Slot ${slotNum} started (adapter=${ctx.mode})`);
@@ -1011,13 +1020,8 @@ function readLiveOrchestratorPid(slotNum: number, mode: string, harness: string)
   } else {
     return null;
   }
-  if (pid === undefined || pid <= 0) return null;
-  try {
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
-  }
+  if (pid === undefined || !processAlive(pid)) return null;
+  return pid;
 }
 
 /**
@@ -1288,7 +1292,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   // Clear interrupted liveness and stamp session-active marker
   const sessionStartedAt = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
   data.sessionStarted = sessionStartedAt;
-  data.liveness = null;
+  setSlotLivenessOnData(data, null);
   writeSlotOrHttp(slotNum, data);
 
   journalAppend("slot", `Slot ${slotNum} resumed (adapter=${ctx.mode}, phase=${orchState.phase}, task=${ctx.taskId})`);
