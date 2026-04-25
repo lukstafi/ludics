@@ -367,6 +367,12 @@ describe("skills", () => {
     expect(rendered).toContain('PR_URL=$(cat "/tmp/coder.pr"');
     expect(rendered).toContain('gh pr merge "$PR_URL" --repo "owner/my-staging" --merge --delete-branch');
     expect(rendered).not.toMatch(/gh pr merge --merge/);
+    // Post-merge view fallback rescues benign worktree-cleanup non-zero exits;
+    // must target the same staging repo as the primary merge.
+    expect(rendered).toContain('gh pr view "$PR_URL" --repo "owner/my-staging" --json state');
+    // Wrapper treats only state == "MERGED" as success, otherwise exits non-zero
+    // so the runner's verifyPhaseOutcome retry/escalation takes over.
+    expect(rendered).toContain('[ "$state" = "MERGED" ] || exit 1');
   });
 
   test("final-merge template omits --repo when PROJECT_REPO is empty but still passes the PR URL", () => {
@@ -375,6 +381,9 @@ describe("skills", () => {
     const rendered = substituteTemplate(template, { ...baseCtx(), PR_FILE: "/tmp/coder.pr" });
     expect(rendered).toContain('gh pr merge "$PR_URL" --merge --delete-branch');
     expect(rendered).not.toContain("--repo");
+    // Post-merge view fallback present without --repo when PROJECT_REPO is empty.
+    expect(rendered).toContain('gh pr view "$PR_URL" --json state');
+    expect(rendered).toContain('[ "$state" = "MERGED" ] || exit 1');
   });
 
   test("buildSkillContext: hierarchical duo suppresses UPSTREAM_REPO when duoPeerSlot is set", async () => {
