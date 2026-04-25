@@ -19,7 +19,8 @@ import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState } from "../t3code/server.ts";
-import { readTmuxSlotState } from "../adapters/tmux-adapter.ts";
+import { agentCliCommand, isAgentAlive, readTmuxSlotState, startTtyd, tmuxSessionName, ttydPort, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
+import { tmuxHasSession, tmuxNewSession, tmuxSendCommand, tmuxSendKeys } from "../adapters/tmux.ts";
 import { selectOrchestrationFlagsForTask } from "../adapters/t3code.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
@@ -1162,8 +1163,6 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
 
   // --- tmux-specific: verify/recreate tmux session, windows, ttyd, agent CLIs ---
   if (ctx.mode === "tmux") {
-    const { tmuxHasSession, tmuxNewSession, tmuxSendCommand, tmuxSendKeys } = await import("../adapters/tmux.ts");
-    const { readTmuxSlotState, writeTmuxSlotState, tmuxSessionName, ttydPort, agentCliCommand, isAgentAlive, startTtyd } = await import("../adapters/tmux-adapter.ts");
     const tmuxState = readTmuxSlotState(slotNum, ctx.harnessDir);
 
     if (tmuxState?.orchestration?.pid) {
@@ -1277,7 +1276,6 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
       orchestration: { ...slotState.orchestration, pid: newPid },
     }, ctx.harnessDir);
   } else if (ctx.mode === "tmux") {
-    const { readTmuxSlotState, writeTmuxSlotState } = await import("../adapters/tmux-adapter.ts");
     const tmuxState = readTmuxSlotState(slotNum, ctx.harnessDir);
     if (tmuxState) {
       writeTmuxSlotState({

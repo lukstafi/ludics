@@ -27,7 +27,7 @@ import { readSlotJson, writeSlotJson } from "../slots/json.ts";
 import { clusterRole } from "../cluster.ts";
 import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
-import { readTmuxSlotState } from "../adapters/tmux-adapter.ts";
+import { agentPortRole, readTmuxSlotState, startTtyd, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { readSlotState } from "../t3code/server.ts";
 
 // --- Hung agent detection constants ---
@@ -662,8 +662,6 @@ async function ensureTtydAlive(state: OrchestrationState): Promise<void> {
   if (now - lastTtydCheckAt < TTYD_HEALTH_CHECK_INTERVAL_S) return;
   lastTtydCheckAt = now;
 
-  const { readTmuxSlotState, writeTmuxSlotState, startTtyd, agentPortRole } =
-    await import("../adapters/tmux-adapter.ts");
   const dir = state.harnessDir ?? defaultHarnessDir();
   const tmuxState = readTmuxSlotState(state.slot, dir);
   if (!tmuxState) return;
