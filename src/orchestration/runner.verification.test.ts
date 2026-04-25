@@ -702,6 +702,49 @@ describe("triggerCoderBailOut", () => {
       message: "0 commits ahead of base branch — no PR possible, skipping to done",
     });
   });
+
+  test("on-disk epoch matches runtime.statusEpoch even when Date.now() crosses a second boundary mid-call (gh-ludics-416)", () => {
+    // Codex review on PR #416 (task-29bea074): after the writeStatusFile
+    // migration, the helper stamps its own epoch from Date.now(). If the
+    // wall clock crosses a second boundary between the caller's nowEpoch()
+    // (recorded into runtime.statusEpoch) and the helper's Date.now()
+    // inside writeStatusFile, the on-disk timestamp would diverge from
+    // runtime.statusEpoch — silently breaking byte-identity asserted by
+    // the tests above. The fix passes runtime.statusEpoch through to
+    // writeStatusFile's optional epoch parameter; this test pins it.
+    const peerDir = makeTmpDir();
+    const state = makeState({ phase: "work" }, peerDir);
+    const coder = state.agents.find(a => a.role === "coder")!;
+
+    let dateNowCalls = 0;
+    const baseTimeMs = 1_700_000_000_000; // arbitrary fixed wall-clock anchor
+    const dateNowSpy = spyOn(Date, "now").mockImplementation(() => {
+      // First call → caller's nowEpoch(); subsequent calls → simulate
+      // crossing the next-second boundary inside writeStatusFile.
+      dateNowCalls += 1;
+      return dateNowCalls === 1 ? baseTimeMs : baseTimeMs + 1500;
+    });
+
+    let runtimeEpoch: number;
+    let onDiskEpoch: string;
+    try {
+      triggerCoderBailOut(
+        state, coder,
+        "work-phase no-op detection",
+        "Coder worktree has 0 commits ahead and no uncommitted diffs — triggering bail-out protocol",
+      );
+      runtimeEpoch = state.agentStates.coder!.statusEpoch;
+      const statusContents = readFileSync(join(peerDir, "coder.status"), "utf-8");
+      onDiskEpoch = statusContents.split("|")[1]!;
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+
+    // Pre-fix: runtimeEpoch = floor(baseTimeMs/1000), on-disk = that+1 →
+    // expect(onDiskEpoch).toBe(String(runtimeEpoch)) would fail.
+    expect(onDiskEpoch).toBe(String(runtimeEpoch));
+    expect(runtimeEpoch).toBe(Math.floor(baseTimeMs / 1000));
+  });
 });
 
 // ---------------------------------------------------------------------------

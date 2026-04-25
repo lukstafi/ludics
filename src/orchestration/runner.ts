@@ -1,6 +1,8 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
+import { atomicWriteFileSync } from "../json.ts";
+import { writeStatusFile } from "../adapters/base.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
 import { DONE_STATUSES, PHASE_CATEGORIES, allAgentsDone, agentParticipatesInPhase, escalatingAgents, evaluateTransition, findPlanFiles, isAgentDone, isBailedOut, isEscalated, pairReviewVerdict, phaseTimeoutExpired, requiredArtifactPath } from "./phases.ts";
 import {
@@ -781,7 +783,7 @@ async function enterPhase(
     for (const agent of state.agents) {
       if (!agentParticipatesInPhase(state, agent)) continue;
       const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
-      writeFileSync(statusPath, `pr-comments-done|${nowEpoch()}|awaiting-comments`);
+      writeStatusFile(statusPath, "pr-comments-done", "awaiting-comments");
       const rt = state.agentStates[agent.name];
       if (rt) {
         rt.status = "pr-comments-done";
@@ -842,8 +844,7 @@ async function enterPhase(
     // clobber a real <phase>-done written by an agent that completed while the
     // orchestrator was down.
     const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
-    const resetValue = `${state.phase}-pending|${nowEpoch()}|awaiting`;
-    writeFileSync(statusPath, resetValue);
+    writeStatusFile(statusPath, `${state.phase}-pending`, "awaiting");
 
     // Capture fingerprint from the reset .status file written above.
     const dispatchFp = statusFileFingerprint(state.peerSyncDir, agent.name);
@@ -1003,7 +1004,7 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
       // Uniform post-merge handling: the working-repo (staging) PR merge IS the
       // completion signal. Upstream-specific marker/event paths were removed — the
       // upstream repo is now only used for issue tracking and briefing lag reporting.
-      writeFileSync(markerFile, "merged\n");
+      atomicWriteFileSync(markerFile, "merged\n");
       state.agentStates[agent.name]!.status = "merged";
       state.agentStates[agent.name]!.statusMessage = "PR merged externally";
       emitEvent({
@@ -1568,7 +1569,7 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
     const mergedPath = mergedPlanFilePath(state.peerSyncDir, state.round, 0);
     if (!existsSync(mergedPath)) {
       mkdirSync(join(state.peerSyncDir, "plans"), { recursive: true });
-      writeFileSync(mergedPath, [
+      atomicWriteFileSync(mergedPath, [
         "# Stub Plan (planning phase skipped)",
         "",
         "## Pre-existing test failures (baseline)",
@@ -1724,9 +1725,16 @@ export function triggerCoderBailOut(
     runtime.status = "bail-out";
     runtime.statusEpoch = nowEpoch();
     runtime.statusMessage = statusMessage;
-    writeFileSync(
+    // Pass runtime.statusEpoch through so the on-disk timestamp stays
+    // byte-identical with the in-memory runtime field — verification tests
+    // assert this equality, and a second-boundary crossing between
+    // nowEpoch() above and writeStatusFile's internal Date.now() would
+    // otherwise produce divergent bail-out timestamps for the same event.
+    writeStatusFile(
       join(state.peerSyncDir, `${coder.name}.status`),
-      `bail-out|${runtime.statusEpoch}|${runtime.statusMessage}\n`,
+      "bail-out",
+      runtime.statusMessage,
+      runtime.statusEpoch,
     );
     emitEvent({
       event_type: "bail_out",

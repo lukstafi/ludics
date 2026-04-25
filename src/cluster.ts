@@ -1,11 +1,12 @@
 // Cluster — static controller role for multi-machine coordination
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { loadConfigSync, stateRepoDir } from "./config.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { hostnameTailscale } from "./network.ts";
 import { emitEvent } from "./events.ts";
+import { writeJsonFileCompact } from "./json.ts";
 
 const HEARTBEAT_TIMEOUT = parseInt(process.env.LUDICS_HEARTBEAT_TIMEOUT ?? "900", 10);
 
@@ -155,7 +156,7 @@ export function heartbeatPublish(): boolean {
   };
 
   // Write local heartbeat file
-  writeFileSync(join(dir, `${nodeName}.json`), JSON.stringify(heartbeatData) + "\n");
+  writeJsonFileCompact(join(dir, `${nodeName}.json`), heartbeatData);
   emitEvent({ event_type: "cluster_heartbeat", source: "cluster", scope: "cluster", message: nodeName });
   console.error(`ludics: cluster: published heartbeat for ${nodeName}`);
 

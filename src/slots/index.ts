@@ -1,8 +1,9 @@
 // Slot operations — list, show, assign, clear, note, start, stop, refresh
 
-import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { globalAdapter, harnessDir, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
+import { atomicWriteFileSync } from "../json.ts";
 import { mergeAdapterState, addNoteToSlotData } from "./markdown.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, emptySlotData, slotJsonDir, slotDataToMarkdown } from "./json.ts";
 import { migrateMarkdownToSlotData } from "./migration.ts";
@@ -180,14 +181,21 @@ function readRawEffortField(content: string): string | null {
   return raw;
 }
 
-function taskUpdateFrontmatter(taskId: string, field: string, value: string): void {
+/**
+ * Apply a batch of frontmatter field updates in a single read → mutate-in-memory →
+ * atomic-write cycle. Each field is matched on its first occurrence inside the
+ * `---`-delimited frontmatter block. Used by `taskUpdateForSlotAssign` to make
+ * the (slot, adapter, started) write transactional — a crash mid-sequence would
+ * otherwise leave the task with partial assignment (e.g. slot but no adapter).
+ */
+function taskUpdateFrontmatterFields(taskId: string, updates: Record<string, string>): void {
   const file = taskFilePath(taskId);
   if (!existsSync(file)) return;
 
   const content = readFileSync(file, "utf-8");
   const lines = content.split("\n");
+  const remaining = new Set(Object.keys(updates));
   let inFrontmatter = false;
-  let done = false;
 
   const output: string[] = [];
   for (const line of lines) {
@@ -201,15 +209,26 @@ function taskUpdateFrontmatter(taskId: string, field: string, value: string): vo
       output.push(line);
       continue;
     }
-    if (inFrontmatter && !done && line.startsWith(`${field}:`)) {
-      output.push(`${field}: ${value}`);
-      done = true;
-      continue;
+    if (inFrontmatter && remaining.size > 0) {
+      let matched = false;
+      for (const field of remaining) {
+        if (line.startsWith(`${field}:`)) {
+          output.push(`${field}: ${updates[field]}`);
+          remaining.delete(field);
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
     }
     output.push(line);
   }
 
-  writeFileSync(file, output.join("\n"));
+  atomicWriteFileSync(file, output.join("\n"));
+}
+
+function taskUpdateFrontmatter(taskId: string, field: string, value: string): void {
+  taskUpdateFrontmatterFields(taskId, { [field]: value });
 }
 
 function taskUpdateForSlotAssign(taskId: string, slot: number, adapter: string, started: string): void {
@@ -224,9 +243,11 @@ function taskUpdateForSlotAssign(taskId: string, slot: number, adapter: string, 
     console.error(`ludics: skipping slot assign for ${taskId}: status is '${actual}', expected one of [ready, deferred, blocked, needs-confirmation, preempted]`);
     return;
   }
-  taskUpdateFrontmatter(taskId, "slot", String(slot));
-  taskUpdateFrontmatter(taskId, "adapter", adapter);
-  taskUpdateFrontmatter(taskId, "started", started);
+  taskUpdateFrontmatterFields(taskId, {
+    slot: String(slot),
+    adapter,
+    started,
+  });
 }
 
 function taskUpdateForSlotClear(taskId: string, finalStatus: string): void {

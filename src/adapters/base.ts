@@ -110,12 +110,16 @@ export function readStatusFile(path: string): AgentStatus | null {
   };
 }
 
-/** Write a pipe-delimited status file (atomic). */
-export function writeStatusFile(path: string, status: string, message: string = ""): void {
+/** Write a pipe-delimited status file (atomic). When `epoch` is supplied the
+ * caller's value is written verbatim — useful when the on-disk timestamp must
+ * stay byte-identical with a runtime field (e.g. orchestration bail-out, where
+ * `runtime.statusEpoch` is asserted against the file by verification tests).
+ * Otherwise a fresh epoch is allocated from `Date.now()`. */
+export function writeStatusFile(path: string, status: string, message: string = "", epoch?: number): void {
   mkdirSync(dirname(path), { recursive: true });
-  const epoch = Math.floor(Date.now() / 1000);
+  const ts = epoch ?? Math.floor(Date.now() / 1000);
   const tmp = path + ".tmp";
-  writeFileSync(tmp, `${status}|${epoch}|${message}\n`);
+  writeFileSync(tmp, `${status}|${ts}|${message}\n`);
   renameSync(tmp, path);
 }
 
