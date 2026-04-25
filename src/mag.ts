@@ -181,17 +181,30 @@ function isMagReady(): boolean {
  * rendering into the pane after markMagSettled(), so without this guard the
  * next keepalive tick would see a hash change and clear the sentinel before
  * maybeFeedMagQueue could claim it for instant delivery (gh-ludics-308).
+ *
+ * @internal Exported for direct testing. Production callers use the zero-arg form.
+ * @param opts.nowMs Override `Date.now()` for deterministic age comparisons.
+ * @param opts.graceMs Override `keepaliveIntervalMs() * 1.5` for the sentinel grace window.
+ * @param opts.currentHash Override `captureLastMessageHash(MAG_SESSION_NAME)` to bypass tmux.
+ *   When the property is present (even as `null`), the override is used instead of capturing.
  */
-function clearStaleSettled(): void {
+export function clearStaleSettled(
+  opts: { nowMs?: number; graceMs?: number; currentHash?: string | null } = {},
+): void {
   if (!isMagSettled()) return;
+
+  const nowMs = opts.nowMs ?? Date.now();
+  const graceMs = opts.graceMs ?? keepaliveIntervalMs() * 1.5;
 
   const settledEpoch = readSentinelEpoch(settledSentinelFile());
   if (settledEpoch !== null) {
-    const ageMs = Date.now() - settledEpoch * 1000;
-    if (ageMs < keepaliveIntervalMs() * 1.5) return;
+    const ageMs = nowMs - settledEpoch * 1000;
+    if (ageMs < graceMs) return;
   }
 
-  const currentHash = captureLastMessageHash(MAG_SESSION_NAME);
+  const currentHash = "currentHash" in opts
+    ? opts.currentHash ?? null
+    : captureLastMessageHash(MAG_SESSION_NAME);
   if (currentHash === null) return;
   const previousHash = readPaneHash();
   if (previousHash !== null && currentHash !== previousHash) {
@@ -208,28 +221,31 @@ function clearStaleSettled(): void {
 
 // --- Stall detection helpers (file-persisted, keepalive is per-tick) ---
 
-function stallThresholdMs(): number {
+/**
+ * Read a `mag.<key>` config value, treat it as a number of seconds, and
+ * return milliseconds. Falls back to `defaultMs` if the value is missing,
+ * non-finite, or not strictly positive.
+ */
+function magSecondsConfig(key: string, defaultMs: number): number {
   const config = loadConfigSync();
   const mag = config.mag as Record<string, unknown> | undefined;
-  const configured = Number(mag?.stall_threshold_seconds);
+  const configured = Number(mag?.[key]);
   if (Number.isFinite(configured) && configured > 0) return configured * 1000;
-  return DEFAULT_STALL_THRESHOLD_MS;
+  return defaultMs;
+}
+
+function stallThresholdMs(): number {
+  return magSecondsConfig("stall_threshold_seconds", DEFAULT_STALL_THRESHOLD_MS);
 }
 
 function keepaliveIntervalMs(): number {
-  const config = loadConfigSync();
-  const mag = config.mag as Record<string, unknown> | undefined;
-  const configured = Number(mag?.keepalive_interval);
-  if (Number.isFinite(configured) && configured > 0) return configured * 1000;
-  return 60_000; // matches templates/launchd and templates/systemd via triggers.ts
+  // Key is `keepalive_interval` (no `_seconds`) — shared with launchd/systemd
+  // templates expanded by src/triggers.ts.
+  return magSecondsConfig("keepalive_interval", 60_000);
 }
 
 function stallNudgeCooldownMs(): number {
-  const config = loadConfigSync();
-  const mag = config.mag as Record<string, unknown> | undefined;
-  const configured = Number(mag?.stall_nudge_cooldown_seconds);
-  if (Number.isFinite(configured) && configured > 0) return configured * 1000;
-  return DEFAULT_STALL_NUDGE_COOLDOWN_MS;
+  return magSecondsConfig("stall_nudge_cooldown_seconds", DEFAULT_STALL_NUDGE_COOLDOWN_MS);
 }
 
 function paneHashFile(): string {

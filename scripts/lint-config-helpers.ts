@@ -187,6 +187,7 @@ function extractPathsFromBody(
  *   - magXxx?.property (alternative variable names like magConfig, magCfg)
  *   - (config.mag as ...)?.property (inline cast)
  *   - config.mag?.property (direct optional chaining)
+ *   - magSecondsConfig("property", ...) (shared helper for *_seconds keys)
  */
 export function extractMagPathsFromSource(sourceDir: string): Set<string> {
   const magProps = new Set<string>();
@@ -197,6 +198,9 @@ export function extractMagPathsFromSource(sourceDir: string): Set<string> {
   const p2 = /\bmag[A-Z]\w*\?\.(\w+)/g;
   // Pattern 3: (config.mag as Type)?.prop (inline cast)
   const p3 = /\.mag\b[^;]*?\)\?\.(\w+)/g;
+  // Pattern 4: magSecondsConfig("prop", ...) — shared helper that reads
+  // mag?.[key] dynamically, so the literal key only appears in the call site.
+  const p4 = /\bmagSecondsConfig\(\s*["'`](\w+)["'`]/g;
 
   function scanDir(dir: string): void {
     for (const entry of readdirSync(dir)) {
@@ -207,7 +211,7 @@ export function extractMagPathsFromSource(sourceDir: string): Set<string> {
           scanDir(full);
         } else if (entry.endsWith(".ts") && !entry.endsWith(".test.ts")) {
           const content = readFileSync(full, "utf-8");
-          for (const pattern of [p1, p2, p3]) {
+          for (const pattern of [p1, p2, p3, p4]) {
             pattern.lastIndex = 0;
             let m: RegExpExecArray | null;
             while ((m = pattern.exec(content)) !== null) {
