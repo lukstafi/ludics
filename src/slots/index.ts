@@ -120,10 +120,17 @@ function defaultAssignMachine(): string | null {
     if (current) return current;
     const leader = resolveController();
     if (leader) {
-      console.error(`ludics: slot assign: current host not in cluster.machines; defaulting machine to leader "${leader.name}"`);
+      console.error(
+        `ludics: slot assign: current host not in cluster.machines; defaulting machine to leader "${leader.name}". ` +
+        `Subsequent 'slot start/stop/resume' must be run from "${leader.name}" (or another configured cluster node) — ` +
+        `this host cannot dispatch to the leader locally. Pass --machine <name> to override.`
+      );
       return leader.name;
     }
-    console.error("ludics: slot assign: cluster configured but no resolvable machine (no self-match, no leader) — storing machine: null");
+    console.error(
+      "ludics: slot assign: cluster configured but no resolvable machine (no self-match, no leader) — storing machine: null. " +
+      "Dashboard ttyd links will be missing until machine is set. Pass --machine <name> to override."
+    );
     return null;
   } catch {
     return null;
