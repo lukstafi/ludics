@@ -17,7 +17,8 @@ import {
 import { isoNow, makeId, nowEpoch, sleepMs } from "./util.ts";
 import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, postPrDriftComment, validateAndFixPrFile, type PrVerification } from "./github.ts";
 import { updateFrontmatterField, addFrontmatterField, appendToSection } from "../tasks/markdown.ts";
-import { findProjectConfig, globalAdapter, harnessDir, ludicsRoot } from "../config.ts";
+import { findProjectConfig, globalAdapter, harnessDir as defaultHarnessDir, ludicsRoot } from "../config.ts";
+import { taskFilePath } from "./paths.ts";
 import { notifyAgents, notifyOutgoing } from "../notify.ts";
 import { readSlotJson, writeSlotJson } from "../slots/json.ts";
 // workerReportStatus replaced by clusterReportWorkerSignal (lazy import)
@@ -351,7 +352,7 @@ export function handleVerifyFailure(
     // Surface in dashboard via has_questions tile.
     // Use cluster forwarding when running as a worker so the controller's task file is updated.
     const questionLine = `- **Manual intervention required (slot ${state.slot})**: ${phaseLabel} failed after ${MAX_VERIFY_ATTEMPTS} attempts`;
-    surfaceManualIntervention(state.taskId, questionLine);
+    surfaceManualIntervention(state.taskId, questionLine, state.harnessDir ?? defaultHarnessDir());
     return "hold";
   }
 
@@ -362,9 +363,13 @@ export function handleVerifyFailure(
 }
 
 /** Set has_questions on the task and append the reason to ## Questions, cluster-safe. */
-export function surfaceManualIntervention(taskId: string, questionLine: string): void {
+export function surfaceManualIntervention(
+  taskId: string,
+  questionLine: string,
+  harnessDir: string = defaultHarnessDir(),
+): void {
   // Always write locally first so the data is persisted even if cluster forwarding fails.
-  const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+  const taskFile = taskFilePath(taskId, harnessDir);
   if (existsSync(taskFile)) {
     addFrontmatterField(taskFile, "has_questions", "true");
     appendToSection(taskFile, "Questions", questionLine);
@@ -657,7 +662,7 @@ async function ensureTtydAlive(state: OrchestrationState): Promise<void> {
 
   const { readTmuxSlotState, writeTmuxSlotState, startTtyd, agentPortRole } =
     await import("../adapters/tmux-adapter.ts");
-  const dir = harnessDir();
+  const dir = state.harnessDir ?? defaultHarnessDir();
   const tmuxState = readTmuxSlotState(state.slot, dir);
   if (!tmuxState) return;
 
@@ -868,7 +873,7 @@ async function enterPhase(
     };
 
     // Persist after each agent dispatch — crash recovery will have lifecycle data
-    persistState(state);
+    persistState(state, state.harnessDir ?? defaultHarnessDir());
   }
 
   state.phaseDispatched = true;
@@ -1421,7 +1426,7 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
       // event + priority-5 notification, and flip slot liveness without any
       // intervening phase-advance work (nudge, auto-commit, verification gate).
       if (isEscalated(state)) {
-        persistState(state);
+        persistState(state, state.harnessDir ?? defaultHarnessDir());
         return;
       }
 
@@ -1440,12 +1445,12 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
       // so the quiet-period tracking and re-dispatch logic run on the tick when agents finish.
       if (state.phase === "pr-comments") {
         await checkAndRedispatchPrComments(state, transport);
-        persistState(state);
+        persistState(state, state.harnessDir ?? defaultHarnessDir());
         // Return to the main loop so evaluateTransition can check quiet-period expiry.
         if (evaluateTransition(state) !== null) return;
       }
 
-      persistState(state);
+      persistState(state, state.harnessDir ?? defaultHarnessDir());
 
       if (allAgentsDone(state)) return;
 
@@ -1496,7 +1501,7 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
           stallType: "interrupted",
           message: `${agent.name}: nudged with status-write instruction (turn settled without done status)`,
         });
-        persistState(state);
+        persistState(state, state.harnessDir ?? defaultHarnessDir());
       }
 
       if (nowEpoch() >= deadline) {
@@ -1730,7 +1735,7 @@ export function triggerCoderBailOut(
       action, status: eventStatus, message,
     });
   }
-  persistState(state);
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
 }
 
 /**
@@ -1754,7 +1759,7 @@ export function handleEscalation(state: OrchestrationState): void {
   const raisers = escalatingAgents(state);
   if (raisers.length === 0) return; // defensive: caller should have gated
 
-  persistState(state);
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
 
   const reasonFor = (name: string): { reason: string; warned: boolean } => {
     const raw = (state.agentStates[name]?.statusMessage ?? "").trim();
@@ -1803,7 +1808,7 @@ export function handleEscalation(state: OrchestrationState): void {
     console.error(`ludics: failed to set slot ${state.slot} liveness=escalated: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  persistState(state);
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
 }
 
 export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean {
@@ -1815,7 +1820,7 @@ export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean 
   // solo contract (lone coder). Skip PR creation and transition directly to done.
   if (isBailedOut(state)) {
     state.phase = "done";
-    persistState(state);
+    persistState(state, state.harnessDir ?? defaultHarnessDir());
     return true;
   }
 
@@ -1834,7 +1839,7 @@ export function checkZeroCommitsAutoBailOut(state: OrchestrationState): boolean 
   // (agentParticipatesInPhase returns false for reviewer), so waiting for
   // bail-out-confirmed would deadlock.
   state.phase = "done";
-  persistState(state);
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
   return true;
 }
 
@@ -1845,7 +1850,9 @@ export async function runOrchestration(
   if (!transport) {
     transport = await createTransport(state);
   }
-  persistState(state);
+  // Ensure every downstream persistState preserves the caller-selected harness.
+  state.harnessDir ??= defaultHarnessDir();
+  persistState(state, state.harnessDir ?? defaultHarnessDir());
 
   // Startup grace for the sibling-state self-guard. The adapter writes
   // tmux-slot-<N>.json / t3code/slot-<N>.json only AFTER
@@ -1862,9 +1869,10 @@ export async function runOrchestration(
     // path deleted it without signaling us), exit cleanly instead of continuing
     // to corrupt orchestration/slot-<N>.json on the next persistState tick.
     {
+      const dir = state.harnessDir ?? defaultHarnessDir();
       const sibling = state.backend === "t3code"
-        ? readSlotState(state.slot, harnessDir())
-        : readTmuxSlotState(state.slot, harnessDir());
+        ? readSlotState(state.slot, dir)
+        : readTmuxSlotState(state.slot, dir);
       if (!sibling) {
         if (Date.now() - runnerStartMs < startupGraceMs) {
           // Parent adapter hasn't written sibling state yet — re-check.
@@ -1885,7 +1893,7 @@ export async function runOrchestration(
     }
 
     await enterPhase(state, transport);
-    persistState(state);
+    persistState(state, state.harnessDir ?? defaultHarnessDir());
 
     await pollUntilDone(state, transport);
 
@@ -1932,7 +1940,7 @@ export async function runOrchestration(
     const gateDecision = [prCreateDecision, finalMergeDecision].find(d => d !== "skip") ?? "skip";
 
     if (gateDecision === "redispatch" || gateDecision === "hold") {
-      persistState(state);
+      persistState(state, state.harnessDir ?? defaultHarnessDir());
       await sleepMs(state.config.pollInterval * 1000);
       continue; // re-enter loop: redispatch runs enterPhase, hold waits for timeout/human
     }
@@ -1942,7 +1950,7 @@ export async function runOrchestration(
     const next = maybeOverrideTransition(state, evaluated);
 
     if (!next) {
-      persistState(state);
+      persistState(state, state.harnessDir ?? defaultHarnessDir());
       await sleepMs(state.config.pollInterval * 1000);
       continue;
     }
@@ -2033,7 +2041,7 @@ export async function runOrchestration(
     state.confirmedPhase = null;
     state.phaseDispatched = false;
     state.currentPhaseToken = undefined;
-    persistState(state);
+    persistState(state, state.harnessDir ?? defaultHarnessDir());
   }
 
   // Orchestration complete — mark the task as done so maybeClearDoneSlots()
@@ -2051,7 +2059,7 @@ export async function runOrchestration(
       }
     } catch { /* standalone mode */ }
     if (!taskUpdated) {
-      const taskFile = join(harnessDir(), "tasks", `${state.taskId}.md`);
+      const taskFile = taskFilePath(state.taskId, state.harnessDir ?? defaultHarnessDir());
       if (existsSync(taskFile)) {
         updateFrontmatterField(taskFile, "status", "done");
         updateFrontmatterField(taskFile, "completed", isoNow());

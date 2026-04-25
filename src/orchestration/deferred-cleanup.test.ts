@@ -1,7 +1,8 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { cleanupDelayHours } from "../config.ts";
+import * as t3codeServer from "../t3code/server.ts";
 
 // Redirect harnessDir() to a temp directory via env var
 const tmpDir = join(import.meta.dir, ".test-tmp-deferred-cleanup");
@@ -259,5 +260,103 @@ describe("buildCleanupEntry", () => {
 describe("config cleanupDelayHours", () => {
   test("returns 25 by default (no config file)", () => {
     expect(cleanupDelayHours()).toBe(25);
+  });
+});
+
+// task-f60547cd: explicit harnessDir argument must isolate cleanup manifests from
+// the process-global LUDICS_HARNESS_DIR. The env-var-based tests above only prove
+// backward compatibility via default-arg fallback; these tests prove the bypass
+// is actually closed for callers who pass an explicit harnessDir.
+describe("explicit harnessDir argument (isolation)", () => {
+  let ISO = "";
+  beforeEach(() => {
+    ISO = join(tmpDir, "iso");
+    mkdirSync(join(ISO, "mag"), { recursive: true });
+  });
+
+  test("recordDeferredCleanup writes manifest under explicit harnessDir, not the env-var decoy", () => {
+    const entry = makeEntry({ taskId: "task-iso" });
+    // tmpDir is the env-var harness (the decoy here). ISO is the explicit target.
+    recordDeferredCleanup(entry, ISO);
+
+    const isoFile = join(ISO, "mag", "cleanup-pending.json");
+    const envFile = join(tmpDir, "mag", "cleanup-pending.json");
+    expect(existsSync(isoFile)).toBe(true);
+    expect(existsSync(envFile)).toBe(false);
+
+    // cleanupPendingPath reports the correct path for the explicit arg.
+    expect(cleanupPendingPath(ISO)).toBe(isoFile);
+  });
+
+  test("loadDeferredCleanups(ISO) ignores manifests under the env-var harness", () => {
+    // Seed the env-var harness with an entry — loading with the explicit arg must not see it.
+    recordDeferredCleanup(makeEntry({ taskId: "env-task" })); // default arg → env-var harness
+    recordDeferredCleanup(makeEntry({ taskId: "iso-task" }), ISO); // explicit → ISO
+
+    const envEntries = loadDeferredCleanups(); // default arg → env-var harness
+    const isoEntries = loadDeferredCleanups(ISO);
+
+    expect(envEntries.map((e) => e.taskId)).toEqual(["env-task"]);
+    expect(isoEntries.map((e) => e.taskId)).toEqual(["iso-task"]);
+  });
+
+  test("cancelDeferredCleanup(taskId, slot, ISO) only affects the explicit-harness manifest", () => {
+    recordDeferredCleanup(makeEntry({ taskId: "shared", slot: 1 })); // env-var harness
+    recordDeferredCleanup(makeEntry({ taskId: "shared", slot: 1 }), ISO);
+    cancelDeferredCleanup("shared", 1, ISO);
+    expect(loadDeferredCleanups().map((e) => e.taskId)).toEqual(["shared"]); // env-var unchanged
+    expect(loadDeferredCleanups(ISO)).toEqual([]); // ISO cleared
+  });
+
+  test("processDeferredCleanups(_, ISO) reads and clears the explicit-harness manifest", async () => {
+    // Old-enough entry (30h ago) with no worktrees/branches so cleanup is a no-op.
+    const entry = makeEntry({
+      timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+      worktreePaths: [], branches: [], tmuxSessionNames: [], peerSyncLink: null,
+    });
+    recordDeferredCleanup(entry, ISO);
+    await processDeferredCleanups(25, ISO);
+    expect(loadDeferredCleanups(ISO)).toEqual([]);
+  });
+
+  // Reviewer AC7 blocking item: prove the t3codeThreadIds branch passes the
+  // explicit harnessDir arg through to serverStatus({ harnessDir }).
+  // Uses the spyOn() pattern (see docs/testing-patterns.md) so the
+  // replacement does not leak across test files in the Bun runner.
+  test("processDeferredCleanups(_, ISO) passes ISO to serverStatus({ harnessDir }) in the t3codeThreadIds branch", async () => {
+    const capturedHarnessDirs: string[] = [];
+    const serverStatusSpy = spyOn(t3codeServer, "serverStatus").mockImplementation(
+      async (options: { harnessDir?: string } = {}) => {
+        capturedHarnessDirs.push(options.harnessDir ?? "<default>");
+        // Return "not running" to short-circuit before any T3CodeClient construction.
+        return { running: false, record: null, snapshot: null, reason: "stubbed" };
+      },
+    );
+
+    try {
+      // Entry must be old enough to process AND carry t3codeThreadIds to enter the branch.
+      // Empty worktreePaths/branches/sessions so the other cleanup steps are no-ops.
+      const entry = makeEntry({
+        timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+        worktreePaths: [], branches: [], tmuxSessionNames: [], peerSyncLink: null,
+        t3codeThreadIds: ["thread-abc", "thread-def"],
+      });
+      recordDeferredCleanup(entry, ISO);
+
+      await processDeferredCleanups(25, ISO);
+
+      // serverStatus was invoked exactly once, with ISO — not the env-var decoy (tmpDir).
+      expect(capturedHarnessDirs).toHaveLength(1);
+      expect(capturedHarnessDirs[0]).toBe(ISO);
+      expect(capturedHarnessDirs[0]).not.toBe(tmpDir);
+
+      // Because the stub returned {running: false}, the branch marks failed=true and the
+      // entry remains in the ISO manifest (proves the path-handling also threaded ISO).
+      const remaining = loadDeferredCleanups(ISO);
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]!.t3codeThreadIds).toEqual(["thread-abc", "thread-def"]);
+    } finally {
+      serverStatusSpy.mockRestore();
+    }
   });
 });

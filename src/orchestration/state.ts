@@ -196,6 +196,10 @@ export interface OrchestrationState {
   /** Commit count at which the stale-base warning last fired within
    *  staleBaseLastWarnedRound. Re-fire only when a new count exceeds this. */
   staleBaseLastWarnedCount?: number;
+  /** Caller-selected harness directory; populated at orchestration init and
+   *  backfilled from the readOrchestrationState() harnessDir arg for legacy
+   *  state files. Consumers should read via `state.harnessDir ?? defaultHarnessDir()`. */
+  harnessDir?: string;
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {
@@ -301,13 +305,17 @@ export function readOrchestrationState(
   // Worker: read from non-harness cache
   if (isWorkerContext()) {
     const state = readJsonFile<OrchestrationState>(workerCacheFilePath(slot));
-    if (state) return migrateState(state, slot);
-    return null;
+    if (!state) return null;
+    const migrated = migrateState(state, slot);
+    migrated.harnessDir ??= harnessDir;
+    return migrated;
   }
   // Controller/standalone: read from harness
   const state = readJsonFile<OrchestrationState>(stateFilePath(slot, harnessDir));
   if (!state) return null;
-  return migrateState(state, slot);
+  const migrated = migrateState(state, slot);
+  migrated.harnessDir ??= harnessDir;
+  return migrated;
 }
 
 export function persistState(

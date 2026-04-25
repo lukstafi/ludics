@@ -979,6 +979,7 @@ async function startOrchestratedThreads(
     branches: setup.branches,
     slotTitle: title,
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
+    harnessDir: ctx.harnessDir,
   };
   persistState(state, ctx.harnessDir);
 
@@ -1134,7 +1135,7 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
     if (orchestrationState) {
       recordDeferredCleanup(buildCleanupEntry(orchestrationState, ctx.slot, {
         t3codeThreadIds: threadIds,
-      }));
+      }), ctx.harnessDir);
       removeOrchestrationState(ctx.slot, ctx.harnessDir);
     } else if (threadIds.length > 0) {
       // Non-orchestrated single-thread sessions: defer thread deletion only.
@@ -1152,7 +1153,7 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
         tmuxSessionNames: [],
         peerSyncLink: null,
         t3codeThreadIds: threadIds,
-      });
+      }, ctx.harnessDir);
     }
     removeSlotState(ctx.slot, ctx.harnessDir);
   }

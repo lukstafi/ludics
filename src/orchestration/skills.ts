@@ -2,7 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { assertRepoRelativeProposalPath } from "../adapters/task-launch.ts";
 import { readFrontmatterField } from "../tasks/markdown.ts";
-import { findProjectConfig, harnessDir, ludicsRoot } from "../config.ts";
+import { findProjectConfig, harnessDir as defaultHarnessDir, ludicsRoot } from "../config.ts";
+import { taskFilePath } from "./paths.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import { defaultRunGit, detectDefaultBranches } from "../git-runner.ts";
 import type { Phase } from "./phases.ts";
@@ -109,7 +110,7 @@ function taskSpecBriefText(state: OrchestrationState): string {
   const taskId = state.taskId?.trim();
   if (!taskId) return state.slotTitle?.trim() || state.taskId;
   const title = state.slotTitle?.trim() || state.taskId;
-  const path = join(harnessDir(), "tasks", `${taskId}.md`);
+  const path = taskFilePath(taskId, state.harnessDir ?? defaultHarnessDir());
   const content = readFileIfExists(path);
   const proposalValue = (content ? readFrontmatterField(content, "proposal") : null) ?? "";
   const proposalRef =
@@ -141,7 +142,7 @@ function taskSpecText(state: OrchestrationState): string {
   if (!taskId) {
     return state.slotTitle?.trim() || state.taskId;
   }
-  const path = join(harnessDir(), "tasks", `${taskId}.md`);
+  const path = taskFilePath(taskId, state.harnessDir ?? defaultHarnessDir());
   const content = readFileIfExists(path);
   if (!content) return taskId;
 
@@ -180,9 +181,12 @@ function taskSpecText(state: OrchestrationState): string {
 /** Extract the body under `## Acceptance Criteria` from tasks/{taskId}.md.
  *  Returns "" when the task file, the section, or the non-placeholder body
  *  is missing. Stops at the next `##` heading or EOF. */
-function extractAcceptanceCriteria(taskId: string | undefined): string {
+function extractAcceptanceCriteria(
+  taskId: string | undefined,
+  harnessDir: string = defaultHarnessDir(),
+): string {
   if (!taskId) return "";
-  const path = join(harnessDir(), "tasks", `${taskId}.md`);
+  const path = taskFilePath(taskId, harnessDir);
   const content = readFileIfExists(path);
   if (!content) return "";
   const headingMatch = content.match(/^##\s+Acceptance Criteria\s*$/m);
@@ -348,7 +352,8 @@ export function buildSkillContext(
   const upstreamRepo = state.duoPeerSlot == null ? (_projectEntry?.upstream_repo ?? null) : null;
 
   // Extract proposal path from task frontmatter for templates that need just a reference
-  const _taskPath = state.taskId ? join(harnessDir(), "tasks", `${state.taskId}.md`) : null;
+  const stateHarnessDir = state.harnessDir ?? defaultHarnessDir();
+  const _taskPath = state.taskId ? taskFilePath(state.taskId, stateHarnessDir) : null;
   const _taskContent = _taskPath ? readFileIfExists(_taskPath) : null;
   const _proposalPath = (_taskContent ? readFrontmatterField(_taskContent, "proposal") : null) ?? "";
   const proposalPath = _proposalPath && _proposalPath !== "inline" // deprecated sentinel — kept for backward compat
@@ -375,7 +380,7 @@ export function buildSkillContext(
     PROPOSAL_PATH: proposalPath || "",
     PROPOSAL_INSTRUCTION: proposalInstruction || "",
     PROPOSAL_FRESHNESS_WARNING: proposalFreshnessWarningText || "",
-    TASK_AC: extractAcceptanceCriteria(state.taskId) || "",
+    TASK_AC: extractAcceptanceCriteria(state.taskId, stateHarnessDir) || "",
     PEER_REVIEW: peerReview ?? "(no review yet)",
     PEER_STATUS: peer ? (state.agentStates[peer.name]?.status ?? "unknown") : "unknown",
     PEER_PLAN: peerPlan ?? "(no plan yet)",

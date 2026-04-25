@@ -972,7 +972,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
   // Cancel any pending deferred cleanup for this task+slot
   try {
     const { cancelDeferredCleanup } = await import("../orchestration/deferred-cleanup.ts");
-    cancelDeferredCleanup(ctx.taskId, slotNum);
+    cancelDeferredCleanup(ctx.taskId, slotNum, ctx.harnessDir);
   } catch { /* non-critical */ }
 
   // Recoverable-from-fresh-start fallback: triggered when the slot was flagged

@@ -534,6 +534,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     branches: setup.branches,
     slotTitle: options.title ?? slotSessionName(ctx.slot, undefined, taskId),
     duoPeerSlot: orchestration.duoPeerSlot ?? null,
+    harnessDir: ctx.harnessDir,
   };
   persistState(state, ctx.harnessDir);
 
@@ -575,7 +576,7 @@ async function stop(ctx: AdapterContext, options?: { preserveState?: boolean }):
       recordDeferredCleanup(buildCleanupEntry(orchState, ctx.slot, {
         tmuxSessionNames: orchState.agents.map((a) =>
           tmuxSessionName(ctx.slot, a.name, orchState.taskId)),
-      }));
+      }), ctx.harnessDir);
       removeOrchestrationState(ctx.slot, ctx.harnessDir);
     }
   }
