@@ -93,6 +93,45 @@ describe("checkRule1", () => {
     expect(checkRule1(src, "t.test.ts")).toEqual([]);
   });
 
+  test("flags when a nearby `if (X === undefined)` does not control the delete (codex P1)", () => {
+    // The prior line's `if (orig === undefined) log();` is self-terminated by
+    // `;` — the delete on the next line is unconditional and must flag.
+    const src = [
+      "afterEach(() => {",
+      "  if (orig === undefined) log();",
+      "  delete process.env.LUDICS_HARNESS_DIR;",
+      "});",
+    ].join("\n");
+    const issues = checkRule1(src, "t.test.ts");
+    expect(issues.length).toBe(1);
+    expect(issues[0]!.line).toBe(3);
+  });
+
+  test("flags when an earlier `!== undefined` block already closed", () => {
+    // The `!== undefined` guard belongs to a closed block; the later delete is
+    // unguarded but the old 3-line lookback saw both `if (` and `undefined`.
+    const src = [
+      "if (orig !== undefined) { doSomething(); }",
+      "delete process.env.LUDICS_HARNESS_DIR;",
+    ].join("\n");
+    const issues = checkRule1(src, "t.test.ts");
+    expect(issues.length).toBe(1);
+    expect(issues[0]!.line).toBe(2);
+  });
+
+  test("accepts `} else { delete ...; }` (two-line else-braced form)", () => {
+    const src = [
+      "afterEach(() => {",
+      "  if (ORIG !== undefined) {",
+      "    process.env.LUDICS_HARNESS_DIR = ORIG;",
+      "  } else {",
+      "    delete process.env.LUDICS_HARNESS_DIR;",
+      "  }",
+      "});",
+    ].join("\n");
+    expect(checkRule1(src, "t.test.ts")).toEqual([]);
+  });
+
   test("flags when guard is further back than 3 non-blank lines", () => {
     const src = [
       "afterEach(() => {",
@@ -178,6 +217,36 @@ describe("parseImports", () => {
     ].join("\n");
     expect(parseImports(src)).toEqual(["./config.ts", "./events.ts"]);
   });
+
+  test("captures multi-line `import { ... } from '...'` (codex P2)", () => {
+    // Formatted imports spanning multiple lines were silently dropped by the
+    // prior line-by-line parser — rule 3 regressed to under-matching in
+    // real test files (e.g. src/adapters/base.test.ts).
+    const src = [
+      "import {",
+      "  readStateFile,",
+      "  writeStateFile,",
+      "} from './base.ts';",
+      "",
+      "import {",
+      "  a,",
+      "  b",
+      "}",
+      "from '../config.ts';",
+    ].join("\n");
+    expect(parseImports(src)).toEqual(["./base.ts", "../config.ts"]);
+  });
+
+  test("multi-line `import type { ... } from '...'` is still skipped", () => {
+    const src = [
+      "import type {",
+      "  ProjectConfig,",
+      "  OtherType,",
+      "} from './config.ts';",
+      "import { runtime } from './runtime.ts';",
+    ].join("\n");
+    expect(parseImports(src)).toEqual(["./runtime.ts"]);
+  });
 });
 
 describe("hasIsolationSetup", () => {
@@ -191,6 +260,21 @@ describe("hasIsolationSetup", () => {
   });
   test("false when neither token is present", () => {
     expect(hasIsolationSetup("const x = 1;")).toBe(false);
+  });
+
+  test("false when the env var is only *compared*, not assigned (codex P1)", () => {
+    // `===`, `==`, `!==` must not count as setup — the file only reads the
+    // variable. Before the `(?!=)` lookahead, each of these silently
+    // suppressed rule-3 warnings.
+    expect(
+      hasIsolationSetup("if (process.env.LUDICS_HARNESS_DIR === undefined) {}"),
+    ).toBe(false);
+    expect(
+      hasIsolationSetup("if (process.env.LUDICS_HARNESS_DIR == null) {}"),
+    ).toBe(false);
+    expect(
+      hasIsolationSetup("if (process.env.LUDICS_HARNESS_DIR !== 'x') {}"),
+    ).toBe(false);
   });
 });
 
@@ -504,6 +588,58 @@ describe("runCli", () => {
       // Error prefix vs warning prefix is distinguishable.
       expect(r.err.filter((l) => l.startsWith("❌")).length).toBe(2);
       expect(r.err.filter((l) => l.startsWith("⚠")).length).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rule-3 fires through a multi-line import of a target module (codex P2)", () => {
+    // The single-line parser missed this shape; rule 3 silently under-matched.
+    const { dir, cleanup } = makeRepoFixture({
+      "src/ml.test.ts": [
+        "import {",
+        "  harnessDir,",
+        "  stateRepoDir,",
+        "} from './config.ts';",
+      ].join("\n"),
+      "src/config.ts": "export function harnessDir(){}\nexport function stateRepoDir(){}",
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.exitCode).toBe(0);
+      expect(r.warningCount).toBe(1);
+      expect(
+        r.err.some(
+          (l) =>
+            l.includes("src/ml.test.ts") &&
+            l.includes("src/config.ts") &&
+            l.includes("rule-3"),
+        ),
+      ).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rule-3 still fires when the file only *reads* LUDICS_HARNESS_DIR (codex P1)", () => {
+    // A file that only compares the env var (`=== undefined`) does not
+    // establish isolation and must not suppress rule-3 warnings.
+    const { dir, cleanup } = makeRepoFixture({
+      "src/r.test.ts": [
+        "import { harnessDir } from './config.ts';",
+        "test('reads env', () => {",
+        "  if (process.env.LUDICS_HARNESS_DIR === undefined) throw new Error('x');",
+        "});",
+      ].join("\n"),
+      "src/config.ts": "export function harnessDir(){}",
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.exitCode).toBe(0);
+      expect(r.warningCount).toBe(1);
+      expect(
+        r.err.some((l) => l.includes("src/r.test.ts") && l.includes("rule-3")),
+      ).toBe(true);
     } finally {
       cleanup();
     }

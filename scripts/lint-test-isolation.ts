@@ -84,33 +84,86 @@ const GUARD_IF = /\bif\s*\(/;
 const GUARD_EQ = /[!=]==\s*undefined\b/;
 
 /**
- * A `delete` is accepted when:
- *   (a) the same line also has `if (` + `=== undefined`, or
- *   (b) the previous three non-blank lines (concatenated) contain both
- *       `if (` and `=== undefined`, or
- *   (c) the whole-file source contains the literal `withTestHarness(`.
+ * A `delete process.env.LUDICS_HARNESS_DIR;` is accepted only when an `if`/`else`
+ * guard *structurally controls* the delete. We look for one of these shapes:
+ *
+ *   (A) Same-line if-then form: `if (... === undefined) delete ...;`
+ *   (B) Same-line else-then form: current line starts with `else ` (or
+ *       `} else`) and contains the `delete`, and the immediately prior
+ *       non-blank line contains `if (` + `!== undefined`.
+ *   (C) Two-line braced form: the prior non-blank line *ends with `{`* and
+ *       contains `if (` + `=== undefined` (then delete is inside the block).
+ *   (D) Two-line else-braced form: the prior non-blank line is `} else {` or
+ *       `else {` (ending with `{`), and the line before that ends with `}`
+ *       and a recent `if (` + `!== undefined` is visible.
+ *   (E) Three-line brace-on-own-line form: the prior non-blank is exactly
+ *       `{`, and the line before ends with `)` and contains `if (` +
+ *       `=== undefined`.
+ *   (F) File-wide exemption: the source contains the literal
+ *       `withTestHarness(` anywhere.
+ *
+ * Crucially the bare 3-line lookback of "`if (` + `undefined` present somewhere
+ * nearby" is *not* sufficient — codex (PR #402) flagged that pattern as a
+ * false negative because `if (X === undefined) log(); delete ...;` would pass
+ * even though the delete is unconditional.
  */
 export function checkRule1(source: string, file: string): LintIssue[] {
   const out: LintIssue[] = [];
-  const hasHelperExemption = source.includes("withTestHarness(");
-  if (hasHelperExemption) return out;
+  if (source.includes("withTestHarness(")) return out; // (F)
 
   const lines = source.split("\n");
+
+  /** Index of the nth previous non-blank line (0 = immediate predecessor). */
+  function prevNonBlank(i: number, n: number): number {
+    let remaining = n;
+    for (let j = i - 1; j >= 0; j--) {
+      if (lines[j]!.trim().length === 0) continue;
+      if (remaining === 0) return j;
+      remaining--;
+    }
+    return -1;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (!DELETE_PATTERN.test(line)) continue;
 
-    if (GUARD_IF.test(line) && GUARD_EQ.test(line)) continue; // (a)
+    // (A) Same-line `if (...) delete ...;` — guard and delete co-located.
+    if (GUARD_IF.test(line) && GUARD_EQ.test(line)) continue;
 
-    // (b) previous three non-blank lines.
-    const lookback: string[] = [];
-    for (let j = i - 1; j >= 0 && lookback.length < 3; j--) {
-      const prev = lines[j]!;
-      if (prev.trim().length === 0) continue;
-      lookback.push(prev);
+    // (B) Same-line else-branch: `else delete ...` or `} else delete ...`.
+    //     Prior non-blank must have the `if (...) ... !== undefined` partner.
+    const pIdx = prevNonBlank(i, 0);
+    const prev = pIdx >= 0 ? lines[pIdx]! : "";
+    if (/^\s*(\}\s*)?else\b/.test(line) && GUARD_IF.test(prev) && GUARD_EQ.test(prev)) continue;
+
+    // (C) Prior non-blank ends with `{` and is the `if (...) {` opener.
+    if (/\{\s*$/.test(prev) && GUARD_IF.test(prev) && GUARD_EQ.test(prev)) continue;
+
+    // (D) Prior non-blank is `} else {` or `else {` opener. The matching
+    //     `if (...)` header lives further back (past the if-branch body);
+    //     walk up to 4 non-blank lines and accept if we find the partner.
+    if (/^\s*(\}\s*)?else\s*\{\s*$/.test(prev)) {
+      let matched = false;
+      for (let back = 1; back <= 4; back++) {
+        const idx = prevNonBlank(i, back);
+        if (idx < 0) break;
+        const candidate = lines[idx]!;
+        if (GUARD_IF.test(candidate) && GUARD_EQ.test(candidate)) {
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
     }
-    const joined = lookback.join("\n");
-    if (GUARD_IF.test(joined) && GUARD_EQ.test(joined)) continue;
+
+    // (E) Prior non-blank is a bare `{`, and the line before that is the
+    //     `if (...)` header ending with `)`.
+    if (/^\s*\{\s*$/.test(prev)) {
+      const ppIdx = prevNonBlank(i, 1);
+      const pp = ppIdx >= 0 ? lines[ppIdx]! : "";
+      if (/\)\s*$/.test(pp) && GUARD_IF.test(pp) && GUARD_EQ.test(pp)) continue;
+    }
 
     out.push({
       rule: "rule-1",
@@ -154,40 +207,52 @@ export function checkRule2(source: string, file: string): LintIssue[] {
 
 /**
  * Return the raw import-path strings for every runtime import in `source`:
- * both the `import ... from "..."` forms and bare side-effect imports
- * (`import "./foo.ts";`). Skips `import type` statements since they are
- * erased at compile time and cannot trigger module-load side effects.
+ * both the `import ... from "..."` forms (including multi-line) and bare
+ * side-effect imports (`import "./foo.ts";`). Skips `import type` statements
+ * since they are erased at compile time and cannot trigger module-load side
+ * effects.
  *
  * Side-effect imports are load-bearing for rule 3: `import "./config.ts";`
  * runs module-level code that touches `harnessDir()` even though it binds
  * no names — ignoring that shape would let a test regress into the
- * gh-ludics-306 class of bug without lint coverage.
+ * gh-ludics-306 class of bug without lint coverage. Formatted multi-line
+ * imports (`import {\n  a,\n  b,\n} from "./x.ts"`) are also load-bearing;
+ * codex (PR #402) flagged the prior single-line-only parser as a rule-3
+ * false negative for those shapes.
  */
 export function parseImports(source: string): string[] {
   const out: string[] = [];
-  // Line-level scan is sufficient; imports always live at top of file.
-  const lines = source.split("\n");
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line.startsWith("import")) continue;
-    if (line.startsWith("import type")) continue;
-    const fromMatch = /from\s+["']([^"']+)["']/.exec(line);
-    if (fromMatch) {
-      out.push(fromMatch[1]!);
-      continue;
-    }
-    // Side-effect import: `import "path";` (no `from`, no bindings).
-    const sideEffect = /^import\s+["']([^"']+)["']\s*;?\s*$/.exec(line);
-    if (sideEffect) out.push(sideEffect[1]!);
+  // Multi-line `import ... from "..."`. The body is `[^;]*?` so the match
+  // cannot cross statement boundaries — prevents false positives from e.g.
+  // a later import plus a stray `from "..."` substring in between.
+  const withFromRe = /\bimport\b\s+([^;]*?)from\s+["']([^"']+)["']/g;
+  let m: RegExpExecArray | null;
+  while ((m = withFromRe.exec(source)) !== null) {
+    const body = m[1]!;
+    if (/^\s*type\s+/.test(body)) continue; // `import type ... from "..."`
+    out.push(m[2]!);
+  }
+  // Side-effect imports: `import "path";` with no `from`, no bindings. Must
+  // sit on their own line so line-anchored matching is accurate.
+  const sideEffectRe = /^\s*import\s+["']([^"']+)["']\s*;?\s*$/gm;
+  while ((m = sideEffectRe.exec(source)) !== null) {
+    out.push(m[1]!);
   }
   return out;
 }
 
-/** True if the test source lexically contains one of the accepted setup tokens. */
+/**
+ * True if the test source lexically contains one of the accepted setup
+ * tokens. The `= <value>` probe uses a negative lookahead `(?!=)` so that
+ * comparison operators (`==`, `===`) do not count as a setup assignment —
+ * a file that only *reads* `process.env.LUDICS_HARNESS_DIR` must not
+ * suppress rule-3 warnings. Codex (PR #402) flagged the lookahead-less
+ * regex as a false-positive vector.
+ */
 export function hasIsolationSetup(source: string): boolean {
   return (
     source.includes("withTestHarness(") ||
-    /process\.env\.LUDICS_HARNESS_DIR\s*=/.test(source)
+    /process\.env\.LUDICS_HARNESS_DIR\s*=(?!=)/.test(source)
   );
 }
 
