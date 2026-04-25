@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { autoCommitWorktree, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, orchBranchName, orchWorktreeStem, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
+import { captureConsoleError } from "../test-utils.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
 
@@ -557,14 +558,7 @@ describe("ensureGitExcludes", () => {
     const countBefore = gitLogCount(repo);
 
     // Silence the expected warning so test output stays clean
-    const origErr = console.error;
-    const warnings: string[] = [];
-    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
-    try {
-      ensureGitExcludes(repo);
-    } finally {
-      console.error = origErr;
-    }
+    const warnings = captureConsoleError(() => ensureGitExcludes(repo));
 
     // Warning emitted about the skip
     expect(warnings.some((w) => w.includes("skipping untrack") && w.includes("pre-existing staged"))).toBe(true);
@@ -743,14 +737,9 @@ describe("removeWorktreeByPath prefix guard", () => {
     const repo = join(TMP, "remove-guard");
     initRepo(repo);
 
-    const warnings: string[] = [];
-    const origErr = console.error;
-    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
-    try {
+    const warnings = captureConsoleError(() => {
       removeWorktreeByPath(repo, "/some/random/path");
-    } finally {
-      console.error = origErr;
-    }
+    });
 
     expect(warnings.some((w) => w.includes("refusing") && w.includes("random"))).toBe(true);
   });
@@ -760,17 +749,12 @@ describe("removeWorktreeByPath prefix guard", () => {
     const repo = join(TMP, "remove-guard-generic");
     initRepo(repo);
 
-    const warnings: string[] = [];
-    const origErr = console.error;
-    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
-    try {
+    const warnings = captureConsoleError(() => {
       // These share the repo prefix but are not orchestration worktrees
       removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-backup"));
       removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-scratch"));
       removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-OLD"));
-    } finally {
-      console.error = origErr;
-    }
+    });
 
     expect(warnings).toHaveLength(3);
     expect(warnings.every((w) => w.includes("refusing"))).toBe(true);
@@ -786,14 +770,9 @@ describe("removeWorktreeByPath prefix guard", () => {
     const setup = createWorktrees(repo, "task-abc123", [{ name: "a1" }], "main", 1);
 
     // Should not warn — path matches orchestration naming
-    const warnings: string[] = [];
-    const origErr = console.error;
-    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
-    try {
+    const warnings = captureConsoleError(() => {
       removeWorktreeByPath(repo, setup.rootWorktree);
-    } finally {
-      console.error = origErr;
-    }
+    });
 
     expect(warnings.filter((w) => w.includes("refusing"))).toHaveLength(0);
 
@@ -810,14 +789,9 @@ describe("removeWorktreeByPath prefix guard", () => {
     // Create a worktree with single-token taskId + slot
     const setup = createWorktrees(repo, "feat", [{ name: "a1" }], "main", 1);
 
-    const warnings: string[] = [];
-    const origErr = console.error;
-    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
-    try {
+    const warnings = captureConsoleError(() => {
       removeWorktreeByPath(repo, setup.rootWorktree);
-    } finally {
-      console.error = origErr;
-    }
+    });
 
     expect(warnings.filter((w) => w.includes("refusing"))).toHaveLength(0);
 
@@ -841,20 +815,14 @@ describe("deleteBranches prefix guard", () => {
     run(["git", "branch", "feature-safe"], repo);
 
     // Capture stderr to verify warning
-    const origErr = console.error;
-    const warnings: string[] = [];
-    console.error = (...args: unknown[]) => { warnings.push(args.join(" ")); };
-
-    try {
+    const warnings = captureConsoleError(() => {
       deleteBranches(repo, [
         "ludics/test-task-s1/root",
         "main",
         "feature-safe",
         "master",
       ]);
-    } finally {
-      console.error = origErr;
-    }
+    });
 
     // The ludics/ branch should have been deleted
     const branchList = Bun.spawnSync(["git", "branch", "--list"], {
