@@ -13,7 +13,7 @@ else
   state=$(gh pr view "$PR_URL" {{#IF PROJECT_REPO}}--repo "{{PROJECT_REPO}}" {{/IF}}--json state -q .state)
   [ "$state" = "MERGED" ] || exit 1
 fi
-touch "{{MERGED_MARKER_FILE}}"
+printf 'merged\n' > "{{MERGED_MARKER_FILE}}"
 printf '%s|%s|final merge complete\n' '{{DONE_STATUS}}' "$(date +%s)" > "{{STATUS_FILE}}"
 ```
 
