@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { composeSkillMessage, resolveTemplatePath, substituteTemplate } from "./skills.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "./state.ts";
 import { ludicsRoot } from "../config.ts";
+import { captureConsoleError } from "../test-utils.ts";
 
 function makeState(): OrchestrationState {
   return {
@@ -436,15 +437,14 @@ describe("skills", () => {
   test("substituteTemplate: warns in dev mode for unknown placeholders", () => {
     const origDev = process.env.LUDICS_DEV;
     process.env.LUDICS_DEV = "1";
-    const warnings: string[] = [];
-    const origError = console.error;
-    console.error = (...args: unknown[]) => warnings.push(String(args[0]));
+    let text = "";
+    const warnings = captureConsoleError(() => {
+      text = substituteTemplate("hello {{TYPO_VAR}} world", baseCtx());
+    });
     try {
-      const text = substituteTemplate("hello {{TYPO_VAR}} world", baseCtx());
       expect(text).toBe("hello  world");
       expect(warnings.some((w) => w.includes("TYPO_VAR"))).toBe(true);
     } finally {
-      console.error = origError;
       if (origDev !== undefined) process.env.LUDICS_DEV = origDev;
       else delete process.env.LUDICS_DEV;
     }
@@ -455,15 +455,14 @@ describe("skills", () => {
     const origDebug = process.env.DEBUG;
     delete process.env.LUDICS_DEV;
     delete process.env.DEBUG;
-    const warnings: string[] = [];
-    const origError = console.error;
-    console.error = (...args: unknown[]) => warnings.push(String(args[0]));
+    let text = "";
+    const warnings = captureConsoleError(() => {
+      text = substituteTemplate("hello {{TYPO_VAR}} world", baseCtx());
+    });
     try {
-      const text = substituteTemplate("hello {{TYPO_VAR}} world", baseCtx());
       expect(text).toBe("hello  world");
       expect(warnings.length).toBe(0);
     } finally {
-      console.error = origError;
       if (origDev !== undefined) process.env.LUDICS_DEV = origDev;
       if (origDebug !== undefined) process.env.DEBUG = origDebug;
     }
