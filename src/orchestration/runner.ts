@@ -1725,10 +1725,16 @@ export function triggerCoderBailOut(
     runtime.status = "bail-out";
     runtime.statusEpoch = nowEpoch();
     runtime.statusMessage = statusMessage;
+    // Pass runtime.statusEpoch through so the on-disk timestamp stays
+    // byte-identical with the in-memory runtime field — verification tests
+    // assert this equality, and a second-boundary crossing between
+    // nowEpoch() above and writeStatusFile's internal Date.now() would
+    // otherwise produce divergent bail-out timestamps for the same event.
     writeStatusFile(
       join(state.peerSyncDir, `${coder.name}.status`),
       "bail-out",
       runtime.statusMessage,
+      runtime.statusEpoch,
     );
     emitEvent({
       event_type: "bail_out",
