@@ -73,6 +73,31 @@ See also [post-edit-occurrence-recheck](#post-edit-occurrence-recheck) for runni
 
 **Example.** A plan adding an `effort` field to `TaskEntry` lists: the YAML parser, the serializer, the briefing renderer, the dashboard column, the `lint:config-reference` fixtures, every test that constructs a `TaskEntry` literal. Each gets a disposition.
 
+### Read-boundary backfill for optional fields
+
+**Principle.** When you add a new optional field to a persisted shape (a type that round-trips through JSON, YAML, or any disk/network serializer), populate it inside the existing read-boundary normalizer — `migrateState`, `parseTaskFrontmatter`, or the equivalent for the type — rather than chasing every construction site. One `state.foo ??= defaultFoo` line in (or immediately adjacent to) the read function uniformly handles three populations: production init, legacy on-disk state predating the field, and test-constructed literals. Construction-site population alone reaches only the production init path the author already knows about.
+
+**Why.** Read functions are named, finite, and centralized — a maintainer can enumerate every read in seconds. Construction sites are diffuse: production init paths, test literal fixtures, HTTP-deserialized payloads, JSON loaded from disk that pre-dates the field. Backfilling at read covers all four classes; backfilling at construction covers only the production init path. Test fixtures that omit the new field then exercise the same backfill code path as legacy on-disk state — strictly more coverage, not less.
+
+**Worked example.** PR #399 added `OrchestrationState.harnessDir` (an optional persisted field). The original plan populated it only at the two production init sites — the `persistState` calls in `src/adapters/t3code.ts` and `src/adapters/tmux-adapter.ts`. The reviewer pointed out this leaves legacy state files (no field, written before the field existed) and test-constructed `OrchestrationState` literals undefined. Adding `migrated.harnessDir ??= harnessDir` immediately after `migrateState` in `readOrchestrationState` (in `src/orchestration/state.ts`, in both the worker-cache and controller-harness branches) normalizes all three populations uniformly. Construction-site population was kept as defense-in-depth.
+
+This codebase already carries two flavors of read-boundary normalizer:
+
+1. **Explicit post-processor** — `migrateState` in `src/orchestration/state.ts`, called inside `readOrchestrationState`. Already performs the legacy `feature → taskId` rename; PR #399 layered the `harnessDir` backfill alongside it. Best when the type is large and producers shouldn't be forced to enumerate every field.
+2. **Implicit destructuring with `??` defaults** — `parseTaskFrontmatter` in `src/tasks/markdown.ts`. Every parsed field carries a `?? default` (`status` defaults to `"ready"`, `priority` to `"B"`, dependency arrays to `[]`). New optional fields naturally accrete here as they're added to the type.
+
+The two flavors are equivalent in effect; the choice is stylistic.
+
+**When not to apply (and other boundary notes).**
+
+1. *The default must be derivable at read time.* `harnessDir` works because `readOrchestrationState` already takes `harnessDir` as a parameter — there's a free value to assign. If the default is computed from other state fields the read site doesn't already see, the backfill belongs higher up the call graph instead.
+2. *`??=` mutates in place.* That's fine when the read returns a fresh deserialized object (the case in every current ludics reader); it's a hazard if the read returns a shared/cached reference callers might already hold. Document the convention if you introduce a caching reader later.
+3. *Additions, not renames.* The pattern handles *adding* an optional field. *Renaming* needs a different shape — `state.new ??= state.old; delete state.old` — same migrator function, distinct construct (see the `feature → taskId` rename in `migrateState`). Document them separately.
+4. *Defense-in-depth at construction sites is cheap and worth keeping.* The rule is "always backfill at read", not "never set at construction." Belt-and-suspenders is fine; the principle just makes construction-site population non-load-bearing.
+5. *No runtime lint enforces this.* "This field was added without a backfill" is too weak a signal to detect mechanically — there's no syntactic marker on a type definition that says "this field is on a persisted shape." Review-time guidance (the data-shape paragraph in `skills/orchestration/pair-reviewer-plan-review.md`) is the enforcement layer.
+
+See also [data-shape consumer sweep](#data-shape-consumer-sweep) — both concern shape evolution; consumer sweep looks downstream at every read, while read-boundary backfill collapses the population responsibility into the read itself.
+
 ### Regression test per behaviour change
 
 **Principle.** Each behaviour change this round needs a regression test named in the plan and landed in the **first implementation round**, not deferred to a follow-up.
