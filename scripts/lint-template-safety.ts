@@ -42,10 +42,10 @@ export const SHELL_COMMANDS = [
   "git", "gh", "printf", "cat", "rm", "mkdir", "cp", "mv", "cd", "ls", "ln",
   "touch", "test", "chmod", "chown", "find", "awk", "sed", "grep", "egrep", "fgrep",
   "npm", "bun", "node", "python", "python3", "echo", "date", "eval", "source",
-  "export", "unset", "read", "xargs", "jq", "yq", "curl", "wget", "sudo", "kill",
+  "export", "unset", "read", "exit", "xargs", "jq", "yq", "curl", "wget", "sudo", "kill",
   "pkill", "bash", "sh", "zsh", "make", "docker", "ssh", "scp", "rsync", "tar",
   "gzip", "gunzip", "zip", "unzip", "diff", "patch", "pwd", "tee", "sort", "uniq",
-  "head", "tail", "wc", "tr", "cut", "true", "false",
+  "head", "tail", "wc", "tr", "cut", "true", "false", ":",
 ] as const;
 
 /** Shell control-flow / compound-command keywords that start shell syntax. */
