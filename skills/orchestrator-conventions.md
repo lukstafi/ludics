@@ -3,6 +3,16 @@
 Shared conventions for orchestrator skills. Each orchestrator references
 this file by section letter.
 
+## Scope posture
+
+When composing context briefs, surfacing verifier follow-ups, or framing
+worker requests, treat acceptance criteria as a floor (every criterion must
+be met) but not a ceiling (small adjacent fixes can be absorbed without
+spawning a follow-up). See
+[scope: floor, not ceiling](../docs/orchestration-patterns.md#scope-floor-not-ceiling)
+for the absorb/declare/reject boundary; do not pressure workers to defer
+fixes that fit the absorb tier.
+
 ## Section A — Task Resolution (task-based orchestrators only)
 
 Read the task file so Mag has it in context:

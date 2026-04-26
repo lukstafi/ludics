@@ -21,11 +21,13 @@ For data-shape changes or format-compat serializers, add a round-trip fidelity t
 Write any PR URL to `{{PR_FILE}}`. Stop if `{{INTERRUPT_FILE}}` appears.
 
 {{#IF PROPOSAL_PATH}}
-**Scope discipline**: If you realize a change touches a file outside the proposal's `## Scope`, do not include it silently. Either:
+**Scope discipline**: AC is a floor, not a ceiling — see [scope: floor, not ceiling](../../docs/orchestration-patterns.md#scope-floor-not-ceiling) for the boundary that decides absorb vs declare. Small adjacent fixes that the change made obvious (a typo, a one-line type tightening, a stale comment, an obvious dead-code drop in a file you're already editing) should be absorbed without ceremony — mention them in the commit body if helpful, but no `scope-expansion:` trailer or follow-up task is required.
+
+Reach for declare/defer when the fix is more than a few lines, introduces a new abstraction or new import, touches a file you wouldn't otherwise have opened, or materially broadens the PR's review surface:
 - **Declare it** — add a `scope-expansion: <one-line reason>` trailer to the commit message so the reviewer sees it and can decide per-expansion, or
 - **Defer it** — leave the file untouched and jot the idea in the task's `Notes` section (or open a follow-up task directly).
 
-"While I'm here" cleanups (dead code, reformatting, adjacent refactors) should normally be deferred to a separate parallel task rather than absorbed here. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
+Cross-cutting cleanups in unrelated files (whole-file reformatting, dead-code sweeps, adjacent refactors not driven by this change) still belong in a separate task, not here. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
 
 **Salvage on rejection**: If the reviewer rejects a declared scope expansion, capture the diff before reverting so nothing useful is lost:
 

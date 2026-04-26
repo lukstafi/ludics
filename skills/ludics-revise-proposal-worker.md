@@ -108,7 +108,7 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
      how rather than spec the what and why.
    - Shorten over-specified sections; proposals usually get sharper on each
      revision.
-   - Tighten scope if it's too broad or includes nice-to-haves.
+   - Tighten scope only when the user's feedback explicitly asks for trimming, or the proposal demonstrably mixes independent concerns that won't merge together. Do not pre-trim "nice-to-haves" that are genuinely adjacent to the core change — the implementing agent can absorb small adjacent fixes under [scope: floor, not ceiling](../../docs/orchestration-patterns.md#scope-floor-not-ceiling), so it is cheaper to leave them in than to re-elaborate later as separate tasks.
    - Update "Current State" if the codebase has shifted.
    - Fold in user feedback from the context brief.
    - Keep the Motivation / Current State / Proposed Change / Scope structure

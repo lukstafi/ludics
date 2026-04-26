@@ -13,6 +13,19 @@ $ARGUMENTS format: <arg1> <arg2> [<arg3>...]
 Split on whitespace. The first word is typically a task ID or repo identifier;
 subsequent words are paths or additional parameters.
 
+## Scope
+
+Acceptance criteria are a contract floor — every listed criterion must be
+satisfied. They are not an exhaustive ceiling: small adjacent fixes that the
+work makes obvious (a typo, a one-line type tightening, a stale comment, an
+obvious dead-code drop in a file already being edited) may be absorbed
+without spawning a follow-up task. The boundary and the reviewer's three
+tiers (absorb / accept-with-note / reject-and-salvage) are documented in
+[scope: floor, not ceiling](../docs/orchestration-patterns.md#scope-floor-not-ceiling).
+Reach for declare/salvage/follow-up only when a fix exceeds the absorb
+boundary — a few lines, same file or sibling test, no new abstractions or
+imports, no new public surface.
+
 ## Broader Context
 
 Some workers receive a `<context_brief>` as a trailing argument — free-form

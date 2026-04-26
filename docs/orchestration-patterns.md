@@ -133,6 +133,32 @@ See also [negative-case-regression-testing](#negative-case-regression-testing) f
 
 **Procedure (diff commands).** When assessing scope on a feature branch, prefer the per-commit view over the cumulative view: the branch may be stale against its base. `git diff main..HEAD --stat` is cumulative and conflates main-side drift with this branch's own work — on a branch that forked hours ago while other PRs landed, it can attribute unrelated deletions and additions to this branch. `git log main..HEAD --stat` (per-commit summary across the branch) and `git diff <commit>^..<commit> --stat` (a single commit's actual change against its own parent) attribute changes to the branch's own commits. Rule: when `main..HEAD` shows large deletions but the per-commit diffs do not, that is main-side drift from a stale branch, not a scope violation — the remedy is `git rebase origin/main` and re-review, not scope pushback or manual restoration. The same logic applies to any base branch, not only `main`. Runner-side plan-entry stale-base detection (forward link to task-91667552's runner warning, when it lands) is the prevention layer; if a reviewer is staring at a suspicious cumulative diff, the warning either did not fire or was missed.
 
+### Scope: floor, not ceiling
+
+**Principle.** Acceptance criteria are a contract floor — every listed criterion must be satisfied. They are not a ceiling. A coder may absorb small adjacent fixes that the change made obvious without a separate plan, declaration, or follow-up task. A reviewer should accept silently-absorbed incidentals rather than demand they be reverted.
+
+**Why.** Over-strict scope enforcement spawns a long tail of one-line follow-up tasks (typo fixes, stale comments, dead-code drops, one-line type tightenings) that cost more in coordination than they cost to land in the original PR. The "Scope declaration and salvage" pattern above is for the *substantive* expansions where shared-boundary discipline matters. It is not meant to gate every incidental fix.
+
+**Boundary (absorb without ceremony).** All of these must hold:
+
+- A few lines per fix, summing to a small fraction of the PR's diff.
+- Same file as a real change, or its sibling test file.
+- No new abstractions, no new imported modules, no new public surface.
+- No data-shape, schema, or interface change.
+- A reader of the PR would say "obviously this had to come along."
+
+When all hold, the coder absorbs the fix. The commit message body may mention it ("Also fixes a stale comment in the same block") but no `scope-expansion:` trailer is required. The reviewer accepts.
+
+**Boundary (declare or defer).** Reach for declare/salvage/follow-up when *any* of these hold: the fix is more than a few lines, it touches a file the change wouldn't otherwise have opened, it introduces a new abstraction, it materially broadens the PR's review surface, or a reasonable reviewer would want to evaluate it as its own change. Whole-file reformatting and unrelated refactors stay out — those are the proliferation risk.
+
+**Reviewer posture.** Three tiers, not two:
+
+- **Absorb silently** — the fix meets the boundary above. No comment, or one acknowledgement line. Do not request a revert.
+- **Accept with note** — the expansion is borderline (e.g. ~10–20 lines, still same module). Note "scope: accepted" in the review body so the trail is visible.
+- **Reject and ask for salvage** — only when the expansion is substantive enough that it would have warranted its own plan, or when it materially broadens the PR's review surface. Use the salvage procedure under "Scope declaration and salvage" above; do not just say "revert."
+
+**For verifiers.** Loose ends that meet the absorb boundary above should not be enumerated as `followups` — note them in `evidence` instead. Reserve the `followups` array for items that need their own commit, their own test, or their own review surface. A single coherent cleanup follow-up beats three tiny ones; if multiple loose ends are related, combine them.
+
 ### Assumption drift
 
 **Principle.** Mark unverified claims with `[UNVERIFIED]` in plans and proposals. Escalate substantive gaps between the proposal and the codebase with `⚠️ ASSUMPTION GAP: proposal assumes X but codebase has Y. Recommend <remediation>.` before proceeding. Treat proposals stale in storage as riskier than fresh ones — the commit count since the proposal was written is a freshness signal.

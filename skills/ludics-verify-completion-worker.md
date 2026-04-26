@@ -69,8 +69,14 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
      loose ends.
    - **complete-with-followups** — core criteria met, but deferred items,
      TODO comments, or minor unchecked criteria are worth capturing as
-     follow-up work. List each distinct loose end with a suggested title
-     and priority.
+     follow-up work. Reserve `followups` for items that need their own
+     commit, their own test, or their own review surface. Loose ends that
+     fit the absorb-tier boundary (a few lines, same file as a real change,
+     no new abstractions) should be noted in `evidence` instead — see
+     [scope: floor, not ceiling](../../docs/orchestration-patterns.md#scope-floor-not-ceiling).
+     If multiple loose ends are related, combine them into a single
+     follow-up rather than enumerating each one separately. List each
+     remaining distinct loose end with a suggested title and priority.
    - **uncertain** — some criteria appear met but others are unclear or
      can't be verified from the codebase alone. List specific questions.
    - **incomplete** — significant acceptance criteria are clearly unmet.

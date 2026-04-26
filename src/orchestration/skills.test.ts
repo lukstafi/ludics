@@ -1400,6 +1400,7 @@ describe("skills", () => {
     expect(withProposal).toContain("/tmp/salvage-task-xyz.patch");
     expect(withProposal).toContain("relates_to: [task-xyz]");
     expect(withProposal).toContain("under `dependencies:`");
+    expect(withProposal).toContain("scope-floor-not-ceiling");
     expect(withProposal).toContain("scope-declaration-and-salvage");
 
     const withoutProposal = substituteTemplate(template, {
@@ -1422,8 +1423,10 @@ describe("skills", () => {
     expect(withProposal).toContain("Scope review (discretion)");
     expect(withProposal).toContain("docs/proposals/my-feature.md");
     expect(withProposal).toContain("not automatic blockers");
-    expect(withProposal).toContain("Accept as-is");
+    expect(withProposal).toContain("Absorb silently");
+    expect(withProposal).toContain("Accept with note");
     expect(withProposal).toContain("Reject and ask for salvage");
+    expect(withProposal).toContain("scope-floor-not-ceiling");
     expect(withProposal).toContain("scope-declaration-and-salvage");
 
     const withoutProposal = substituteTemplate(template, {

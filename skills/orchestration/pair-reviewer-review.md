@@ -22,14 +22,15 @@ Task acceptance criteria from the task file:
 {{/IF}}
 
 {{#IF PROPOSAL_PATH}}
-**Scope review (discretion)**: Cross-reference the coder's changes against the proposal's `## Scope` section at `{{PROPOSAL_PATH}}`. Scope expansions are not automatic blockers — decide per-expansion whether the change belongs in this PR or should be salvaged to a follow-up:
+**Scope review (discretion)**: AC is a floor, not a ceiling — see [scope: floor, not ceiling](../../docs/orchestration-patterns.md#scope-floor-not-ceiling) for the absorb/declare/reject boundary. Cross-reference the coder's changes against the proposal's `## Scope` section at `{{PROPOSAL_PATH}}`. Scope expansions are not automatic blockers — decide per-expansion using three tiers, not two:
 
-- **Accept as-is** if the expansion is small, directly supports the goal, and doesn't materially broaden the PR's review surface.
-- **Reject and ask for salvage** if the expansion is valuable but belongs in its own task. In the review body, explicitly ask the coder to salvage the rejected diff into a needs-confirmation follow-up (capture patch → revert → new task with `relates_to`) before continuing. Do not just tell them to revert — that throws away useful work.
+- **Absorb silently** — small adjacent fixes that the change made obvious (typo, one-line type tightening, stale comment, dead-code drop in a file already being edited): a few lines, same file or sibling test, no new abstractions or imports, no new public surface. Accept without comment, or with a single acknowledgement line. Do not request a revert; one-line follow-up tasks for incidentals are exactly the proliferation we are avoiding.
+- **Accept with note** — borderline expansions (roughly 10–20 lines, still same module, directly supports the goal). Note "scope: accepted" in the review body so the trail is visible.
+- **Reject and ask for salvage** — only when the expansion is substantive enough that it would have warranted its own plan, or when it materially broadens the PR's review surface. In the review body, explicitly ask the coder to salvage the rejected diff into a needs-confirmation follow-up (capture patch → revert → new task with `relates_to`) before continuing. Do not just tell them to revert — that throws away useful work.
 
 Before flagging apparent deletions as scope violations, cross-check with `git log main..HEAD --stat` (per-commit summary) and `git diff <commit>^..<commit> --stat`. Deletions that appear in `main..HEAD` but not in any per-commit diff are main-side drift from a stale branch; the remedy is rebase, not scope pushback.
 
-Flag **undeclared** out-of-scope changes (no `scope-expansion:` trailer in any commit, no mention in the plan) as a discipline issue in the review body even when you accept the content. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
+A missing `scope-expansion:` trailer is a discipline note, not a blocker — call it out in the review body when the expansion warranted declaration (declare-tier or reject-tier), but do not flag it for absorb-tier fixes. See [scope declaration and salvage](../../docs/orchestration-patterns.md#scope-declaration-and-salvage).
 {{/IF}}
 
 If the coder wrote a `bail-out` status and you agree the task is already resolved or obsolete (verify against the base branch), confirm the bail-out (see [bail-out contract](../../docs/orchestration-patterns.md#bail-out-contract)):
