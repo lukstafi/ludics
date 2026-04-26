@@ -373,7 +373,7 @@ describe("skills", () => {
     expect(rendered).toContain('gh pr view "$PR_URL" --repo "owner/my-staging" --json state');
     // Wrapper treats only state == "MERGED" as success, otherwise exits non-zero
     // so the runner's verifyPhaseOutcome retry/escalation takes over.
-    expect(rendered).toContain('[ "$state" = "MERGED" ] || exit 1');
+    expect(rendered).toContain('[ "$STATE" = "MERGED" ] || exit 1');
     // Success path (primary merge OR rescue) reaches both MERGED_MARKER_FILE
     // write and STATUS_FILE write — the marker line must sit AFTER `fi` so
     // both branches reach it, and BEFORE the STATUS_FILE printf so a missing
@@ -392,7 +392,7 @@ describe("skills", () => {
     expect(rendered).not.toContain("--repo");
     // Post-merge view fallback present without --repo when PROJECT_REPO is empty.
     expect(rendered).toContain('gh pr view "$PR_URL" --json state');
-    expect(rendered).toContain('[ "$state" = "MERGED" ] || exit 1');
+    expect(rendered).toContain('[ "$STATE" = "MERGED" ] || exit 1');
     // Marker + STATUS_FILE sequence pinned: rescue path reaches both writes.
     // Marker payload must be non-empty (readMarker rejects empty files).
     expect(rendered).toMatch(/fi\nprintf 'merged\\n' > "\/tmp\/merged"\nprintf '%s\|%s\|final merge complete\\n' 'review-done'/);
