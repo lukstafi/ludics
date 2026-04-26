@@ -424,12 +424,7 @@ export async function tasksUpdate(): Promise<void> {
   for (const file of files) {
     const filePath = join(tasksDir, file);
     const content = readFileSync(filePath, "utf-8");
-    let fm;
-    try {
-      fm = parseTaskFrontmatter(content);
-    } catch {
-      continue;
-    }
+    const fm = parseTaskFrontmatter(content);
     if (!fm.id) continue;
     records.set(fm.id, {
       id: fm.id,
@@ -674,8 +669,7 @@ function healBlockedByLinks(tasksDir: string): void {
   for (const f of files) {
     const filePath = join(tasksDir, f);
     const content = readFileSync(filePath, "utf-8");
-    let fm;
-    try { fm = parseTaskFrontmatter(content); } catch { continue; }
+    const fm = parseTaskFrontmatter(content);
     if (!fm.id) continue;
     // Malformed YAML falls through the line-regex recovery path, which can
     // salvage top-level fields but cannot reconstruct the nested dependencies
@@ -731,10 +725,7 @@ function tasksReconcileBlockedStatus(tasksDir: string): void {
   for (const f of files) {
     const filePath = join(tasksDir, f);
     const content = readFileSync(filePath, "utf-8");
-    let fm;
-    try {
-      fm = parseTaskFrontmatter(content);
-    } catch { continue; }
+    const fm = parseTaskFrontmatter(content);
 
     // Guard against the malformed-YAML line-regex fallback: it populates
     // top-level fields (e.g. status) but leaves nested `dependencies`
@@ -778,10 +769,7 @@ function tasksMilestoneWarnings(tasksDir: string): void {
 
   for (const f of files) {
     const content = readFileSync(join(tasksDir, f), "utf-8");
-    let fm;
-    try {
-      fm = parseTaskFrontmatter(content);
-    } catch { continue; }
+    const fm = parseTaskFrontmatter(content);
 
     // Only warn for active (non-terminal) tasks
     const status = fm.status ?? "ready";
