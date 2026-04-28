@@ -6,6 +6,22 @@ import { harnessDir } from "../config.ts";
 import { isPlainObject } from "../json.ts";
 import type { SlotData } from "./types.ts";
 
+/**
+ * Normalize a raw `task` field (from slot JSON, markdown migration, or
+ * frontmatter) into a real task identifier or `undefined`. Treats `null`,
+ * `undefined`, the empty/whitespace string, and the legacy `"null"` sentinel
+ * (case-insensitive) as absent.
+ *
+ * Single source of truth for the normalization that callers used to do inline
+ * with `taskId && taskId !== "null"` checks.
+ */
+export function normalizeTaskId(raw: string | null | undefined): string | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.toLowerCase() === "null") return undefined;
+  return trimmed;
+}
+
 export function slotJsonDir(harness?: string): string {
   const h = harness ?? harnessDir();
   return join(h, "slots");

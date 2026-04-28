@@ -448,7 +448,7 @@ async function start(ctx: AdapterContext): Promise<string> {
   }
 
   const orchestration = options.orchestration;
-  const taskId = ctx.taskId && ctx.taskId !== "null" ? ctx.taskId : undefined;
+  const taskId = ctx.taskId;
   if (!taskId) {
     throw new Error(`slot ${ctx.slot}: taskId is required for orchestration. Assign a task first.`);
   }

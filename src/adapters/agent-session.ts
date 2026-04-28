@@ -59,7 +59,7 @@ function readLaunchFeature(
   ctx: AdapterContext,
   projectDir: string,
 ): string | null {
-  if (!ctx.taskId || ctx.taskId === "null") return null;
+  if (!ctx.taskId) return null;
   return readProposalLaunchMetadata(cfg.command, ctx.harnessDir, ctx.taskId, projectDir)?.launchFeature ?? null;
 }
 
@@ -147,7 +147,7 @@ export function createAgentSessionAdapter(cfg: AgentSessionConfig): Adapter {
     const knownName = (
       sessionInfo?.task
       || launchFeature
-      || (ctx.taskId && ctx.taskId !== "null" ? ctx.taskId : "")
+      || ctx.taskId
       || (ctx.session && ctx.session !== "null" && !/^\d+$/.test(ctx.session) ? ctx.session : "")
     ).trim();
     if (knownName) {

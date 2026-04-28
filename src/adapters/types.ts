@@ -5,7 +5,7 @@ export interface AdapterContext {
   mode: string;
   session: string;
   path: string;
-  taskId: string;
+  taskId: string | undefined;
   adapterArgs: string;
   started?: string;
   process: string;

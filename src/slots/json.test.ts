@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { slotDataToMarkdown } from "./json.ts";
+import { slotDataToMarkdown, normalizeTaskId } from "./json.ts";
 import { migrateMarkdownToSlotData } from "./migration.ts";
 import type { SlotData } from "./types.ts";
 
@@ -226,6 +226,23 @@ describe("slotDataToMarkdown round-trip fidelity", () => {
     } finally {
       rmSync(tmp, { recursive: true });
     }
+  });
+
+  test("normalizeTaskId returns undefined for absent/legacy-null inputs and trims real ids", () => {
+    // Absent forms — every shape that callers used to gate with
+    // `taskId && taskId !== "null"` must collapse to undefined here so guards
+    // upstream can be a single truthiness check.
+    expect(normalizeTaskId(null)).toBeUndefined();
+    expect(normalizeTaskId(undefined)).toBeUndefined();
+    expect(normalizeTaskId("")).toBeUndefined();
+    expect(normalizeTaskId("   ")).toBeUndefined();
+    expect(normalizeTaskId("null")).toBeUndefined();
+    expect(normalizeTaskId("NULL")).toBeUndefined();
+    expect(normalizeTaskId("  null  ")).toBeUndefined();
+
+    // Real task ids pass through (with trim).
+    expect(normalizeTaskId("task-abc123")).toBe("task-abc123");
+    expect(normalizeTaskId("  task-abc123  ")).toBe("task-abc123");
   });
 
   test("every SlotData key is represented in the output", () => {
