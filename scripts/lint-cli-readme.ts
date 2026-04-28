@@ -24,9 +24,11 @@ const root = join(import.meta.dir, "..");
 //
 // We use a backtick-aware match rather than scanning for the next `;` because
 // the template literal body contains parenthetical semicolons (e.g.
-// "cluster.machines);") that would otherwise truncate the block.
+// "cluster.machines);") that would otherwise truncate the block. The body
+// pattern `(?:\\[\s\S]|[^`])*` skips over escaped sequences (`\`` etc.) so an
+// inline `\`--flag\`` in USAGE doesn't truncate the block early.
 export function extractUsageBlock(source: string): string {
-  const match = source.match(/const USAGE = `([\s\S]*?)`/);
+  const match = source.match(/const USAGE = `((?:\\[\s\S]|[^`])*)`/);
   return match ? match[1]! : "";
 }
 

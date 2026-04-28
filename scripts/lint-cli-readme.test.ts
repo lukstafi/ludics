@@ -43,6 +43,27 @@ describe("extractUsageBlock", () => {
     expect(block).toBe("body");
     expect(block).not.toContain("should not appear");
   });
+
+  test("escaped backticks inside the body do not truncate the block", () => {
+    // If a USAGE line is ever written with inline code style — for example
+    // `\`--flag\`` — the parser must skip the escaped backticks rather than
+    // treat them as the end of the template literal. Otherwise commands past
+    // that line silently disappear and the lint produces false stale-doc
+    // failures (the same class of bug the `;`-based parser had).
+    const src = [
+      "const USAGE = `",
+      "  alpha — first command",
+      "  beta — supports the \\`--quiet\\` flag",
+      "  gamma — third command",
+      "`;",
+    ].join("\n");
+    const block = extractUsageBlock(src);
+    expect(block).toContain("alpha");
+    expect(block).toContain("beta");
+    expect(block).toContain("gamma");
+    const cmds = extractUsageCommands(src);
+    expect(cmds.has("gamma")).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
