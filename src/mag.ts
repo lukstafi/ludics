@@ -3234,6 +3234,11 @@ export function magBriefing(wait: boolean = true, timeout: number = 300): void {
   const requestId = queueRequest({ action: "briefing" });
   console.log(`Queued briefing request: ${requestId}`);
 
+  // Auto-compact after briefing — checkpoint compaction (task-a00fc0d9 /
+  // docs/proposals/auto-compact-after-checkpoints.md). Enqueued directly
+  // behind the briefing so it lands before any later automated enqueues.
+  queueRequest({ action: "message", content: "/compact" });
+
   // Auto-queue feedback-digest once daily alongside the briefing trigger.
   const fdResult = tryQueueFeedbackDigest("ludics");
   if (fdResult.queued) {
@@ -3391,6 +3396,10 @@ export async function runMag(args: string[]): Promise<void> {
         break;
       }
       queueRequest({ action: "health-check" });
+      // Auto-compact after health-check — checkpoint compaction (task-a00fc0d9 /
+      // docs/proposals/auto-compact-after-checkpoints.md). Enqueued unconditionally;
+      // a no-op /compact on a small context is acceptable.
+      queueRequest({ action: "message", content: "/compact" });
       console.log("Queued health-check request");
       break;
     case "message": {
