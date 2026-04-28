@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { spawnSync } from "child_process";
 import { commandLineMatchesServerRecord, processAlive, readServerRecord } from "./server.ts";
 import type { T3CodeServerRecord } from "./types.ts";
 
@@ -141,14 +140,11 @@ describe("processAlive", () => {
     expect(processAlive(Number.NaN)).toBe(false);
   });
 
-  test("returns false for a pid whose process has exited", () => {
-    // Spawn a short-lived child and wait for it to exit synchronously.
-    const r = spawnSync("/bin/sh", ["-c", "echo $$"], { encoding: "utf8" });
-    expect(r.status).toBe(0);
-    const deadPid = Number((r.stdout ?? "").trim());
-    expect(Number.isInteger(deadPid)).toBe(true);
-    expect(deadPid).toBeGreaterThan(0);
-    // The shell has already exited by the time spawnSync returns.
-    expect(processAlive(deadPid)).toBe(false);
+  test("returns false for a pid that cannot exist on any reasonable kernel", () => {
+    // INT32_MAX is far above Linux's pid_max (~2^22) and macOS's kern.maxproc
+    // (~10^5), so kill(2) returns ESRCH (or EINVAL on some kernels) and
+    // processAlive catches it. Using a sentinel pid avoids the PID-reuse race
+    // a freshly-exited spawnSync child would have on busy CI hosts.
+    expect(processAlive(2147483647)).toBe(false);
   });
 });
