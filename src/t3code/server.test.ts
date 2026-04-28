@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { commandLineMatchesServerRecord, readServerRecord } from "./server.ts";
+import { commandLineMatchesServerRecord, processAlive, readServerRecord } from "./server.ts";
 import type { T3CodeServerRecord } from "./types.ts";
 
 function makeRecord(overrides: Partial<T3CodeServerRecord> = {}): T3CodeServerRecord {
@@ -125,5 +125,26 @@ describe("readServerRecord", () => {
     expect(readServerRecord(tmpDir)).toBeNull();
 
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+describe("processAlive", () => {
+  test("returns true for the current process", () => {
+    expect(processAlive(process.pid)).toBe(true);
+  });
+
+  test("returns false for invalid pids without throwing", () => {
+    expect(processAlive(0)).toBe(false);
+    expect(processAlive(-1)).toBe(false);
+    expect(processAlive(1.5)).toBe(false);
+    expect(processAlive(Number.NaN)).toBe(false);
+  });
+
+  test("returns false for a pid that cannot exist on any reasonable kernel", () => {
+    // INT32_MAX is far above Linux's pid_max (~2^22) and macOS's kern.maxproc
+    // (~10^5), so kill(2) returns ESRCH (or EINVAL on some kernels) and
+    // processAlive catches it. Using a sentinel pid avoids the PID-reuse race
+    // a freshly-exited spawnSync child would have on busy CI hosts.
+    expect(processAlive(2147483647)).toBe(false);
   });
 });
