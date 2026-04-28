@@ -123,12 +123,6 @@ describe("orchestratedThreadTitle", () => {
     );
   });
 
-  test("falls back to role when taskId is 'null' string", () => {
-    expect(orchestratedThreadTitle(1, "coder", "null")).toBe(
-      "s1_coder_coder",
-    );
-  });
-
   test("uses agent name as role in duo mode", () => {
     expect(orchestratedThreadTitle(4, "agent-b", "task-abc")).toBe(
       "s4_agent-b_task-abc",

@@ -5,7 +5,7 @@ import { join } from "path";
 import { globalAdapter, harnessDir, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
 import { atomicWriteFileSync } from "../json.ts";
 import { mergeAdapterState, addNoteToSlotData } from "./markdown.ts";
-import { readSlotJson, writeSlotJson, readAllSlotJson, emptySlotData, slotJsonDir, slotDataToMarkdown } from "./json.ts";
+import { readSlotJson, writeSlotJson, readAllSlotJson, emptySlotData, slotJsonDir, slotDataToMarkdown, normalizeTaskId } from "./json.ts";
 import { migrateMarkdownToSlotData } from "./migration.ts";
 import { cleanupStaleItems } from "../t3code/index.ts";
 import type { SlotData, SlotLiveness } from "./types.ts";
@@ -786,10 +786,11 @@ export async function slotSetMode(slotNum: number, mode: string): Promise<void> 
 
 export function makeAdapterContext(slotNum: number, data: SlotData): AdapterContext {
   let resolvedPath = data.path ?? "";
+  const taskId = normalizeTaskId(data.task);
 
   // If path is empty, try to resolve from the task's project config
-  if (!resolvedPath && data.task) {
-    const taskFile = join(harnessDir(), "tasks", `${data.task}.md`);
+  if (!resolvedPath && taskId) {
+    const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
     if (existsSync(taskFile)) {
       const content = readFileSync(taskFile, "utf-8");
       const project = parseTaskFrontmatter(content).project;
@@ -805,7 +806,7 @@ export function makeAdapterContext(slotNum: number, data: SlotData): AdapterCont
     session: data.session ?? "",
     path: resolvedPath,
     started: data.started ?? "",
-    taskId: data.task ?? "",
+    taskId,
     adapterArgs: data.adapterArgs ?? "",
     process: data.process === "(empty)" ? "" : data.process,
     machine: data.machine ?? "",

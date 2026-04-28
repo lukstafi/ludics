@@ -9,7 +9,7 @@ import { existsSync, readdirSync } from "fs";
 import { basename, join } from "path";
 import { slotsCount } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
-import { readAllSlotJson } from "../slots/json.ts";
+import { readAllSlotJson, normalizeTaskId } from "../slots/json.ts";
 import { resolveProjectDir } from "../adapters/base.ts";
 import { findSessionByPrefixOrTask } from "../adapters/peer-sync.ts";
 import { readSlotState, serverStatus } from "../t3code/server.ts";
@@ -49,8 +49,8 @@ function resolveProjectDirForSlot(mode: SweepMode, slotPath: string, slotSession
   return unique[0] ?? process.cwd();
 }
 
-function providerCleanupName(taskId: string, session: string): string | null {
-  if (taskId && taskId !== "null") return taskId;
+function providerCleanupName(taskId: string | undefined, session: string): string | null {
+  if (taskId) return taskId;
   if (session && session !== "null" && !/^\d+$/.test(session)) return session;
   return null;
 }
@@ -63,7 +63,7 @@ function collectAttachedKeys(): Set<string> {
     const modeRaw = (data.mode ?? "").trim();
     if (!SWEEP_TARGET_MODES.has(modeRaw as SweepMode)) continue;
     const mode = modeRaw as SweepMode;
-    const taskId = (data.task ?? "").trim();
+    const taskId = normalizeTaskId(data.task);
     const slotSession = (data.session ?? "").trim();
     const slotPath = (data.path ?? "").trim();
 

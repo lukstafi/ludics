@@ -8,7 +8,7 @@ import { resolve, extname, join } from "path";
 import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, loadConfigSync } from "./config.ts";
-import { readSlotJson } from "./slots/json.ts";
+import { readSlotJson, normalizeTaskId } from "./slots/json.ts";
 import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES, CLEAR_STATUS_READY, CLEAR_STATUS_DONE } from "./slots/index.ts";
 import { updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
@@ -250,8 +250,8 @@ export function startDashboardServer(
           let pendingPriorityWrite: (() => void) | null = null;
           {
             const slotData = readSlotJson(slotNum);
-            const taskId = slotData.task;
-            if (taskId && taskId !== "null" && TASK_ID_RE.test(taskId)) {
+            const taskId = normalizeTaskId(slotData.task);
+            if (taskId && TASK_ID_RE.test(taskId)) {
               const taskResolved = resolveTaskFile(taskId);
               if (!("error" in taskResolved)) {
                 const taskFile = taskResolved.path;

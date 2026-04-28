@@ -519,7 +519,7 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     writeSlotJson(1, emptySlotData(1), harness);
     writeSlotJson(2, emptySlotData(2), harness);
     writeTask(tasksDir, "task-empty-args-1", "Empty args test");
-    // slotAssign with no adapterArgs stores "null" which makeAdapterContext converts to ""
+    // slotAssign with no adapterArgs stores "null" which makeAdapterContext normalizes to undefined
     void slotAssign(1, "task-empty-args-1", "t3code");
     const data = readSlotJson(1, harness);
     const ctx = makeAdapterContext(1, data);
@@ -704,6 +704,53 @@ describe("slotStart — t3code empty-args auto-fill", () => {
     expect(args).toContain("--pair");
     expect(args).toContain("--coder");
     expect(args).toContain("--reviewer");
+  });
+});
+
+describe("makeAdapterContext taskId normalization", () => {
+  // These tests are the contract that lets every downstream `ctx.taskId`
+  // consumer drop the legacy `taskId && taskId !== "null"` guard. If any of
+  // these break, the scattered guards we removed need to come back.
+  function buildSlotData(task: string | null): import("./types.ts").SlotData {
+    return {
+      slot: 1,
+      process: "running",
+      task,
+      mode: "t3code",
+      session: null,
+      path: "/tmp/proj",
+      started: null,
+      adapterArgs: null,
+      machine: null,
+      sessionStarted: null,
+      liveness: null,
+      terminals: "",
+      runtime: "",
+      git: "",
+    };
+  }
+
+  test("normalizes null SlotData.task to undefined", () => {
+    const ctx = makeAdapterContext(1, buildSlotData(null));
+    expect(ctx.taskId).toBeUndefined();
+  });
+
+  test("normalizes the legacy 'null' string sentinel to undefined", () => {
+    // SlotData.task is typed `string | null` but the markdown/migration layer
+    // can still surface the literal string "null" — normalization must catch
+    // it at the single ingestion point.
+    const ctx = makeAdapterContext(1, buildSlotData("null"));
+    expect(ctx.taskId).toBeUndefined();
+  });
+
+  test("normalizes empty string to undefined", () => {
+    const ctx = makeAdapterContext(1, buildSlotData(""));
+    expect(ctx.taskId).toBeUndefined();
+  });
+
+  test("preserves a real task id", () => {
+    const ctx = makeAdapterContext(1, buildSlotData("task-abc123"));
+    expect(ctx.taskId).toBe("task-abc123");
   });
 });
 
