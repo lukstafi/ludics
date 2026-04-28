@@ -1172,13 +1172,13 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
 
     if (tmuxState?.orchestration?.pid) {
       const pid = tmuxState.orchestration.pid;
-      let alive = false;
-      try { process.kill(pid, 0); alive = true; } catch { /* dead */ }
-      if (alive) {
+      if (processAlive(pid)) {
         console.error(`ludics: terminating stale orchestration runner (pid ${pid}) before resume`);
         try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
         await new Promise((resolve) => setTimeout(resolve, 500));
-        try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); } catch { /* dead */ }
+        if (processAlive(pid)) {
+          try { process.kill(pid, "SIGKILL"); } catch { /* race: died between check and kill */ }
+        }
       }
     }
 
@@ -1251,13 +1251,13 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     const slotState = readSlotState(slotNum, ctx.harnessDir)!;
     if (slotState.orchestration?.pid) {
       const pid = slotState.orchestration.pid;
-      let alive = false;
-      try { process.kill(pid, 0); alive = true; } catch { /* dead */ }
-      if (alive) {
+      if (processAlive(pid)) {
         console.error(`ludics: terminating stale orchestration runner (pid ${pid}) before resume`);
         try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
         await new Promise((resolve) => setTimeout(resolve, 500));
-        try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); } catch { /* dead */ }
+        if (processAlive(pid)) {
+          try { process.kill(pid, "SIGKILL"); } catch { /* race: died between check and kill */ }
+        }
       }
     }
   }

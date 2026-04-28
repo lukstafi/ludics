@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { commandLineMatchesServerRecord, readServerRecord } from "./server.ts";
+import { spawnSync } from "child_process";
+import { commandLineMatchesServerRecord, processAlive, readServerRecord } from "./server.ts";
 import type { T3CodeServerRecord } from "./types.ts";
 
 function makeRecord(overrides: Partial<T3CodeServerRecord> = {}): T3CodeServerRecord {
@@ -125,5 +126,29 @@ describe("readServerRecord", () => {
     expect(readServerRecord(tmpDir)).toBeNull();
 
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+describe("processAlive", () => {
+  test("returns true for the current process", () => {
+    expect(processAlive(process.pid)).toBe(true);
+  });
+
+  test("returns false for invalid pids without throwing", () => {
+    expect(processAlive(0)).toBe(false);
+    expect(processAlive(-1)).toBe(false);
+    expect(processAlive(1.5)).toBe(false);
+    expect(processAlive(Number.NaN)).toBe(false);
+  });
+
+  test("returns false for a pid whose process has exited", () => {
+    // Spawn a short-lived child and wait for it to exit synchronously.
+    const r = spawnSync("/bin/sh", ["-c", "echo $$"], { encoding: "utf8" });
+    expect(r.status).toBe(0);
+    const deadPid = Number((r.stdout ?? "").trim());
+    expect(Number.isInteger(deadPid)).toBe(true);
+    expect(deadPid).toBeGreaterThan(0);
+    // The shell has already exited by the time spawnSync returns.
+    expect(processAlive(deadPid)).toBe(false);
   });
 });

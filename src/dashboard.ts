@@ -1172,7 +1172,7 @@ export function dashboardStop(): void {
     // Wait for processes to die, escalate to SIGKILL
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
-      const alive = targetPids.filter((p) => { try { process.kill(p, 0); return true; } catch { return false; } });
+      const alive = targetPids.filter(processAlive);
       if (alive.length === 0) break;
       Bun.sleepSync(100);
     }

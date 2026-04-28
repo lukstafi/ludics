@@ -29,7 +29,7 @@ import { clusterRole } from "../cluster.ts";
 import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 import { agentPortRole, readTmuxSlotState, startTtyd, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
-import { readSlotState } from "../t3code/server.ts";
+import { readSlotState, processAlive } from "../t3code/server.ts";
 
 // --- Hung agent detection constants ---
 // A "hung agent" appears to be working (lifecycle running/dispatched) but the
@@ -673,10 +673,7 @@ async function ensureTtydAlive(state: OrchestrationState): Promise<void> {
     const pid = tmuxState.ttydPids[agent.name];
 
     // Check if PID is alive
-    let alive = false;
-    if (pid) {
-      try { process.kill(pid, 0); alive = true; } catch { /* dead */ }
-    }
+    const alive = pid ? processAlive(pid) : false;
     if (alive) continue;
 
     // Dead or missing — restart
