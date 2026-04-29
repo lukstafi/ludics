@@ -2277,11 +2277,14 @@ export function mergeRequirements(
   return merged;
 }
 
-interface ReadyCandidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string; elaborated: boolean; requirements?: { os?: string; gpu?: string } }
+export interface ReadyCandidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string; elaborated: boolean; requirements?: { os?: string; gpu?: string } }
 
 /** Compute the sorted ready queue — single source of truth for task ordering.
- *  Used by maybeFillEmptySlots, maybeQueueProposals, and dashboard generation. */
-function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandidate[] {
+ *  Used by maybeFillEmptySlots, maybeQueueProposals, and dashboard generation.
+ *  Exported for direct testability (mirrors the mergeRequirements pattern in
+ *  this file). Container tasks (frontmatter `leaf: false`) are filtered out
+ *  here so every consumer inherits the exclusion. */
+export function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandidate[] {
   const tasksDir = join(harnessDir(), "tasks");
   if (!existsSync(tasksDir)) return [];
   const cfg = config ?? loadConfigSync();
@@ -2325,6 +2328,11 @@ function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandidate[] {
     });
 
     if (tasksInSlots.has(id)) continue;
+    // Container tasks (work split into subtasks) are not actionable. The check
+    // is `=== false` (not falsy) so legacy tasks without the field are kept.
+    // Defensive coercion handles a stringified "false" from malformed input.
+    const leafRaw = fm.leaf;
+    if (leafRaw === false || leafRaw === "false") continue;
     if (status !== "ready") continue;
     const blockedBy = deps.blocked_by;
     if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
