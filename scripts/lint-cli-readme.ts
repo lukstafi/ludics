@@ -27,6 +27,11 @@ const root = join(import.meta.dir, "..");
 // "cluster.machines);") that would otherwise truncate the block. The body
 // pattern `(?:\\[\s\S]|[^`])*` skips over escaped sequences (`\`` etc.) so an
 // inline `\`--flag\`` in USAGE doesn't truncate the block early.
+//
+// Cautionary precedent: PR #429 / gh-ludics-431. The previous `indexOf(";")`
+// scan silently truncated USAGE for months, dropping ~12 commands from the
+// recognized set. When adding new string-scanning extractors elsewhere, prefer
+// non-greedy regex over delimiter-character scans.
 export function extractUsageBlock(source: string): string {
   const match = source.match(/const USAGE = `((?:\\[\s\S]|[^`])*)`/);
   return match ? match[1]! : "";
