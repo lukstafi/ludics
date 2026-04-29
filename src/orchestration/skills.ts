@@ -40,7 +40,7 @@ function gitOutput(cwd: string, args: string[]): string | null {
   return r.ok && r.stdout ? r.stdout : null;
 }
 
-const PROPOSAL_FRESHNESS_THRESHOLD = 10;
+const PROPOSAL_FRESHNESS_THRESHOLD = 6;
 
 /** Count commits on the remote default branch (`origin/<default>`) since the
  *  proposal file was last modified, and return a warning when the count exceeds
