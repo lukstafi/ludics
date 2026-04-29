@@ -6,7 +6,7 @@ import { join } from "path";
 import { harnessDir as defaultHarnessDir, cleanupDelayHours } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import type { OrchestrationState } from "./state.ts";
-import { removeWorktreeByPath, deleteBranches, orchBranchName } from "./worktrees.ts";
+import { removeWorktreeByPath, deleteBranches, orchBranchName, purgeOrphanDirIfRecoverable } from "./worktrees.ts";
 import { removePeerSyncLink } from "./peer-sync.ts";
 
 export interface CleanupEntry {
@@ -160,6 +160,17 @@ export async function processDeferredCleanups(
       } catch (err) {
         console.error(`ludics: deferred worktree removal failed for ${path}:`, err);
         failed = true;
+      }
+      // Defense-in-depth: if `removeWorktreeByPath` no-op'd because git no longer
+      // registered the path (e.g. a prior `git worktree prune` swept the admin
+      // record but left scaffolding on disk), fall back to purging the orchestration
+      // entries so the next slot start does not need the inline recovery branch.
+      // Best-effort: failures are logged inside `purgeOrphanDirIfRecoverable` and
+      // do NOT push the entry back into `remaining`.
+      try {
+        purgeOrphanDirIfRecoverable(path);
+      } catch (err) {
+        console.error(`ludics: orphan-dir purge fallback failed for ${path}:`, err);
       }
     }
 
