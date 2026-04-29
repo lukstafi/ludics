@@ -839,6 +839,9 @@ function tasksNeedsElaborationList(tasksDir: string): string[] {
 
     const status = fm.status ?? "";
     if (["merged", "done", "abandoned", "needs-confirmation"].includes(status)) continue;
+    // Container tasks (work split into subtasks) are not actionable; never
+    // queue them for elaboration even if they happen to be unelaborated.
+    if (fm.leaf === false) continue;
 
     if (!isElaborated(content)) result.push(id);
   }
@@ -890,6 +893,8 @@ function tasksQueuePreemptions(): void {
     if (!id) continue;
 
     if (fm.status !== "ready") continue;
+    // Container tasks are non-actionable; preempting a slot for one is wrong.
+    if (fm.leaf === false) continue;
 
     const project = fm.project ?? "";
     if (!project) continue;

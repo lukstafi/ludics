@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
+import { tasksNeedsElaborationList, tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
 import { emptySlotData, writeSlotJson } from "../slots/json.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-sync");
@@ -45,6 +45,41 @@ dependencies:
   blocked_by: []
   relates_to: []
   subtask_of: null
+---
+`);
+}
+
+function writeContainerTask(tasksDir: string, id: string, project: string, status: string): void {
+  writeFileSync(join(tasksDir, `${id}.md`), `---
+id: ${id}
+title: "${id}"
+project: ${project}
+status: ${status}
+priority: A
+elaborated: true
+leaf: false
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: null
+---
+`);
+}
+
+function writeChildTask(tasksDir: string, id: string, parent: string, status: string): void {
+  writeFileSync(join(tasksDir, `${id}.md`), `---
+id: ${id}
+title: "${id}"
+project: ludics
+status: ${status}
+priority: B
+elaborated: true
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: ${parent}
 ---
 `);
 }
@@ -160,6 +195,32 @@ describe("tasksQueuePreemptions", () => {
     const newEntries = allLines.slice(lines.length); // entries added by tasksQueuePreemptions
     const newTasks = newEntries.map((l) => (JSON.parse(l) as { task?: string }).task ?? "");
     expect(newTasks).toEqual(["task-beta-ready"]);
+  });
+
+  test("skips leaf:false container tasks (AC4 — preempt exclusion)", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(join(harness, "mag"), { recursive: true });
+
+    // Harness condition: a priority-project ready container exists alongside
+    // a leaf sibling. Both slots full → preempt path runs. If the filter is
+    // absent, the container also gets queued and the assertion below fails.
+    writeTask(tasksDir, "task-alpha-active", "alpha", "in-progress");
+    writeTask(tasksDir, "task-beta-active", "beta", "in-progress");
+    writeContainerTask(tasksDir, "task-alpha-container", "alpha", "ready");
+    writeTask(tasksDir, "task-beta-leaf", "beta", "ready");
+
+    writeSlotJson(1, { ...emptySlotData(1), process: "alpha active", task: "task-alpha-active" }, harness);
+    writeSlotJson(2, { ...emptySlotData(2), process: "beta active", task: "task-beta-active" }, harness);
+
+    tasksQueuePreemptions();
+
+    const queuedTasks = readQueueTasks(join(harness, "mag", "queue.jsonl"));
+    // Invariant: leaf:false container is NEVER preempt-queued. If filter is
+    // removed, this changes to ["task-alpha-container", "task-beta-leaf"].
+    expect(queuedTasks).toEqual(["task-beta-leaf"]);
+    expect(readFileSync(join(tasksDir, "task-alpha-container.md"), "utf-8")).toContain("status: ready");
   });
 
   test("keeps the limit per project when one project already has a stashed preemption", () => {
@@ -288,5 +349,53 @@ describe("tasksReconcileBlockedStatus", () => {
     expect(after).toBe(before);
     expect(after).toContain("status: blocked");
     expect(after).not.toContain("status: ready");
+  });
+});
+
+describe("tasksNeedsElaborationList", () => {
+  test("skips leaf:false container tasks (AC3 — elaboration exclusion)", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    // Harness condition: container task is `ready` AND not yet elaborated
+    // (no `elaborated:` line via writeUnElaboratedContainer below). Without
+    // the filter, the function would return its id.
+    writeFileSync(join(tasksDir, "task-container.md"), `---
+id: task-container
+title: "container"
+project: ludics
+status: ready
+priority: B
+leaf: false
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: null
+---
+`);
+    // Sibling leaf task in the same harness — proves the function is wired
+    // and would return the leaf if the container were not filtered.
+    writeFileSync(join(tasksDir, "task-leaf.md"), `---
+id: task-leaf
+title: "leaf"
+project: ludics
+status: ready
+priority: B
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: null
+---
+`);
+
+    const list = tasksNeedsElaborationList(tasksDir);
+
+    // Invariant: container is excluded from the elaboration list even when
+    // it is unelaborated and ready. Removing the filter flips this assertion.
+    expect(list).not.toContain("task-container");
+    expect(list).toContain("task-leaf");
   });
 });
