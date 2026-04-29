@@ -352,6 +352,201 @@ describe("tasksReconcileBlockedStatus", () => {
   });
 });
 
+describe("containerCompletionSweep", () => {
+  function readQueueActions(queueFile: string): Array<{ action?: string; task?: string }> {
+    if (!readFileSync) return [];
+    try {
+      return readFileSync(queueFile, "utf-8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { action?: string; task?: string });
+    } catch { return []; }
+  }
+
+  function setupContainerWithChildren(parent: string, children: Array<{ id: string; status: string }>): { harness: string; tasksDir: string; queueFile: string } {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(join(harness, "mag"), { recursive: true });
+    writeContainerTask(tasksDir, parent, "ludics", "ready");
+    for (const c of children) {
+      writeChildTask(tasksDir, c.id, parent, c.status);
+    }
+    return { harness, tasksDir, queueFile: join(harness, "mag", "queue.jsonl") };
+  }
+
+  test("enqueues verify-container-completion exactly once when all children resolve (AC6)", () => {
+    // Harness condition: leaf:false parent, two terminal children (one done,
+    // one abandoned), parent itself still `ready`.
+    const { tasksDir, queueFile } = setupContainerWithChildren("task-parent", [
+      { id: "task-child-a", status: "done" },
+      { id: "task-child-b", status: "abandoned" },
+    ]);
+
+    tasksReconcileBlockedStatus(tasksDir);
+    let entries = readQueueActions(queueFile).filter(e => e.action === "verify-container-completion");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.task).toBe("task-parent");
+
+    // Invariant: a second sweep with no state change does NOT re-enqueue
+    // (combined sentinel-fresh + fingerprint-match check). A regression here
+    // would cause notify-spam every sync tick.
+    tasksReconcileBlockedStatus(tasksDir);
+    entries = readQueueActions(queueFile).filter(e => e.action === "verify-container-completion");
+    expect(entries).toHaveLength(1);
+  });
+
+  test("vacuous parent (no children with subtask_of) does not enqueue (AC6 edge case)", () => {
+    // Harness condition: leaf:false parent, NO child files referencing it.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(join(harness, "mag"), { recursive: true });
+    writeContainerTask(tasksDir, "task-empty-parent", "ludics", "ready");
+
+    tasksReconcileBlockedStatus(tasksDir);
+    const entries = readQueueActions(join(harness, "mag", "queue.jsonl"));
+    expect(entries.filter(e => e.action === "verify-container-completion")).toHaveLength(0);
+  });
+
+  test("parent in TERMINAL_FOR_PARENT status is skipped (AC6 — already-decided guard)", () => {
+    // Harness condition: parent is `done` already; sweep must not re-enqueue.
+    // If the guard were missing, the queue would gain a stale entry.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(join(harness, "mag"), { recursive: true });
+    writeContainerTask(tasksDir, "task-done-parent", "ludics", "done");
+    writeChildTask(tasksDir, "task-child-1", "task-done-parent", "done");
+
+    tasksReconcileBlockedStatus(tasksDir);
+    const entries = readQueueActions(join(harness, "mag", "queue.jsonl"));
+    expect(entries.filter(e => e.action === "verify-container-completion")).toHaveLength(0);
+  });
+
+  test("re-fires when a child reopens then re-completes (AC7 — reset on child status flip)", () => {
+    // Harness condition: two terminal children → enqueue, then flip A back to
+    // ready (sentinel cleared by fingerprint mismatch), then back to done →
+    // sweep re-enqueues. Without fingerprint comparison, the sentinel would
+    // stay fresh and the second valid completion would be silently dropped.
+    const { tasksDir, queueFile } = setupContainerWithChildren("task-parent2", [
+      { id: "task-c2-a", status: "done" },
+      { id: "task-c2-b", status: "done" },
+    ]);
+
+    tasksReconcileBlockedStatus(tasksDir);
+    expect(readQueueActions(queueFile).filter(e => e.action === "verify-container-completion" && e.task === "task-parent2"))
+      .toHaveLength(1);
+
+    // Flip child-a back to ready: fingerprint changes, sentinel cleared,
+    // but children no longer all terminal so no enqueue this tick.
+    writeChildTask(tasksDir, "task-c2-a", "task-parent2", "ready");
+    tasksReconcileBlockedStatus(tasksDir);
+    expect(readQueueActions(queueFile).filter(e => e.action === "verify-container-completion" && e.task === "task-parent2"))
+      .toHaveLength(1);
+
+    // Flip back to done: fingerprint differs from prior sidecar (status `done`
+    // vs the prior sidecar's `done` — same; but sentinel was cleared above),
+    // so re-enqueue. We also need to drain the prior request from the queue
+    // because queueHasPendingActionForTask would otherwise dedupe. The
+    // intent is "after the user processes the first request, the second
+    // completion still re-fires" — drain to simulate that.
+    writeChildTask(tasksDir, "task-c2-a", "task-parent2", "done");
+    writeFileSync(queueFile, ""); // user/mag drained the prior request
+    tasksReconcileBlockedStatus(tasksDir);
+    expect(readQueueActions(queueFile).filter(e => e.action === "verify-container-completion" && e.task === "task-parent2"))
+      .toHaveLength(1);
+  });
+
+  test("re-fires when a new terminal child appears even though every child is still terminal (AC7 — reset on child-set change)", () => {
+    // Harness condition: two children both done → enqueue, then a NEW child
+    // is added with status: done. The "any non-terminal child" heuristic
+    // would NOT detect this; only the child-set fingerprint comparison does.
+    // This is the regression the round-1 review pinned.
+    const { tasksDir, queueFile } = setupContainerWithChildren("task-parent3", [
+      { id: "task-c3-a", status: "done" },
+      { id: "task-c3-b", status: "done" },
+    ]);
+
+    tasksReconcileBlockedStatus(tasksDir);
+    expect(readQueueActions(queueFile).filter(e => e.action === "verify-container-completion" && e.task === "task-parent3"))
+      .toHaveLength(1);
+
+    // Add a new terminal child. Drain the queue (so `queueHasPendingActionForTask`
+    // doesn't suppress) — this models the user processing the first notify.
+    writeChildTask(tasksDir, "task-c3-c", "task-parent3", "done");
+    writeFileSync(queueFile, "");
+
+    tasksReconcileBlockedStatus(tasksDir);
+    // Invariant: a 3-child set differs from the 2-child set fingerprint, so
+    // the sentinel is cleared and a fresh request fires. Without fingerprint
+    // tracking, the sentinel would stay fresh (since 6h > test runtime) and
+    // the user would never be told the parent's situation changed.
+    expect(readQueueActions(queueFile).filter(e => e.action === "verify-container-completion" && e.task === "task-parent3"))
+      .toHaveLength(1);
+  });
+
+  test("pending-request dedupe suppresses double-enqueue", () => {
+    // Harness condition: we pre-seed an unprocessed request, then the sweep
+    // must NOT add a second one for the same parent.
+    const { tasksDir, queueFile } = setupContainerWithChildren("task-parent4", [
+      { id: "task-c4-a", status: "done" },
+    ]);
+    writeFileSync(queueFile, JSON.stringify({
+      id: "req-pre", action: "verify-container-completion", task: "task-parent4", timestamp: "2026-04-29T00:00:00Z",
+    }) + "\n");
+
+    tasksReconcileBlockedStatus(tasksDir);
+
+    expect(readQueueActions(queueFile).filter(e => e.action === "verify-container-completion" && e.task === "task-parent4"))
+      .toHaveLength(1);
+  });
+
+  test("merged_from containment is NOT honored — only subtask_of", () => {
+    // Harness condition: parent has `merged_from` (irrelevant here) but no
+    // child references it via subtask_of. The sweep must treat it as vacuous.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(join(harness, "mag"), { recursive: true });
+    writeFileSync(join(tasksDir, "task-merge-parent.md"), `---
+id: task-merge-parent
+title: "merge parent"
+project: ludics
+status: ready
+priority: B
+leaf: false
+merged_from:
+  - task-old
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: null
+---
+`);
+    writeFileSync(join(tasksDir, "task-old.md"), `---
+id: task-old
+title: "old"
+project: ludics
+status: done
+priority: B
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: null
+---
+`);
+
+    tasksReconcileBlockedStatus(tasksDir);
+
+    expect(readQueueActions(join(harness, "mag", "queue.jsonl")).filter(e => e.action === "verify-container-completion"))
+      .toHaveLength(0);
+  });
+});
+
 describe("tasksNeedsElaborationList", () => {
   test("skips leaf:false container tasks (AC3 — elaboration exclusion)", () => {
     const harness = join(TMP, "ludics-state", "harness");
