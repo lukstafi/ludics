@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { PEER_SYNC_DIRNAME, peerSyncPath } from "./peer-sync.ts";
 import { slugify } from "./util.ts";
@@ -31,6 +31,91 @@ export const GIT_EXCLUDE_ENTRIES = [
   "node_modules",
   "_build_review*",
 ];
+
+/** Entries the orchestrator may write into a worktree root before any agent commits.
+ *  Used by the orphan-recovery path in {@link addWorktree} and the cleanup-hardening
+ *  path in `processDeferredCleanups`. Narrower than {@link GIT_EXCLUDE_ENTRIES} —
+ *  excludes `.agents`, `.agent-sessions`, and `_build_review*` (agent work-product
+ *  or sibling targets), so the presence of any of those means the dir contains
+ *  real work and recovery must NOT proceed silently. */
+export const ORPHAN_RECOVERY_ALLOWLIST = [
+  PEER_SYNC_DIRNAME,
+  ".claude",
+  ".ludics-orchestration.json",
+  "node_modules",
+] as const;
+
+/** Classify the contents of a directory at `path` for orphan-recovery purposes.
+ *  Returns `recoverable` with the entries to preserve when contents are a subset
+ *  of {@link ORPHAN_RECOVERY_ALLOWLIST} (after silently dropping `.DS_Store` noise),
+ *  or `unrecognized` with the offending entries otherwise. `.DS_Store` is treated
+ *  as silently-removable noise but does NOT count toward `preserve`. */
+export function classifyOrphanDir(
+  path: string,
+): { kind: "recoverable"; preserve: string[] } | { kind: "unrecognized"; offending: string[] } {
+  const entries = readdirSync(path);
+  const allowlist = new Set<string>(ORPHAN_RECOVERY_ALLOWLIST);
+  const preserve: string[] = [];
+  const offending: string[] = [];
+  let dropDsStore = false;
+  for (const entry of entries) {
+    if (entry === ".DS_Store") { dropDsStore = true; continue; }
+    if (allowlist.has(entry)) preserve.push(entry);
+    else offending.push(entry);
+  }
+  if (offending.length > 0) return { kind: "unrecognized", offending };
+  if (dropDsStore) {
+    try { rmSync(join(path, ".DS_Store"), { force: true }); } catch { /* best-effort */ }
+  }
+  return { kind: "recoverable", preserve };
+}
+
+/** Best-effort cleanup of an orphan worktree directory: if `path` exists, its
+ *  basename matches the orchestration worktree naming pattern relative to
+ *  `projectDir`, AND its contents match {@link ORPHAN_RECOVERY_ALLOWLIST},
+ *  remove the orchestration entries and `rmdir` the parent so the next
+ *  `addWorktree(path, ...)` does not need to enter the inline recovery branch.
+ *
+ *  Returns `true` on successful purge (or if `path` did not exist), `false` if
+ *  the path failed the orchestration-name guard, contents were unrecognized,
+ *  or any removal step failed. Does not throw — failures are logged via
+ *  `console.error`.
+ *
+ *  The orchestration-name guard mirrors {@link removeWorktreeByPath}'s safety
+ *  constraint: this is a destructive operation, and a corrupted or malicious
+ *  cleanup manifest could otherwise list arbitrary paths whose contents
+ *  happen to be a subset of the allow-list (e.g. a user's `node_modules` or
+ *  `.claude` directory) and have them silently wiped. The guard is enforced
+ *  inside the function rather than at the call site so it cannot be bypassed
+ *  by future callers. */
+export function purgeOrphanDirIfRecoverable(projectDir: string, path: string): boolean {
+  const repoName = basename(resolve(projectDir));
+  const base = basename(path);
+  const prefix = repoName + "-";
+  if (!base.startsWith(prefix) || !isOrchWorktreeSuffix(base.slice(prefix.length))) {
+    console.error(`ludics: refusing to purge orphan dir "${path}" — does not match orchestration naming`);
+    return false;
+  }
+  if (!existsSync(path)) return true;
+  let classification: ReturnType<typeof classifyOrphanDir>;
+  try {
+    classification = classifyOrphanDir(path);
+  } catch (err) {
+    console.error(`ludics: orphan-dir purge failed to read ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+  if (classification.kind === "unrecognized") return false;
+  try {
+    for (const entry of classification.preserve) {
+      rmSync(join(path, entry), { recursive: true, force: true });
+    }
+    rmdirSync(path);
+    return true;
+  } catch (err) {
+    console.error(`ludics: orphan-dir purge failed at ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
 
 /** Subset of {@link GIT_EXCLUDE_ENTRIES} that is unambiguously orchestration-internal —
  *  safe to proactively `git rm --cached` from the index so these paths do not enter
@@ -205,18 +290,66 @@ export function deleteBranches(projectDir: string, branches: string[]): void {
 
 function addWorktree(projectDir: string, path: string, branch: string, base: string): void {
   removeIfRegistered(projectDir, path);
+
+  // Orphan recovery: directory exists but git no longer registers it as a worktree
+  // (typically because `git worktree prune` swept the admin record while the
+  // scaffolding remained on disk). Move the orchestration entries aside, recreate
+  // the worktree via `git worktree add`, then move the entries back into place.
+  let recoveredEntries: string[] | null = null;
+  let tempDir: string | null = null;
   if (existsSync(path)) {
-    throw new Error(`refusing to reuse non-worktree path: ${path}`);
+    const c = classifyOrphanDir(path);
+    if (c.kind === "unrecognized") {
+      throw new Error(
+        `orphan worktree-directory detected at ${path} with non-orchestration content (${c.offending.join(", ")}); manual recovery needed`,
+      );
+    }
+    tempDir = `${path}.orphan-recover`;
+    if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    for (const entry of c.preserve) {
+      renameSync(join(path, entry), join(tempDir, entry));
+    }
+    rmdirSync(path);
+    recoveredEntries = c.preserve;
   }
+
   const branchExists = safeSyncOutput(
     ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
     { cwd: projectDir },
   ).ok;
-  if (branchExists) {
-    runGit(projectDir, ["worktree", "add", path, branch]);
-  } else {
-    runGit(projectDir, ["worktree", "add", "-b", branch, path, base]);
+  try {
+    if (branchExists) {
+      runGit(projectDir, ["worktree", "add", path, branch]);
+    } else {
+      runGit(projectDir, ["worktree", "add", "-b", branch, path, base]);
+    }
+  } catch (err) {
+    if (tempDir && existsSync(tempDir)) {
+      console.error(
+        `ludics: orphan recovery aborted for ${path}; preserved orchestration entries remain at ${tempDir}`,
+      );
+    }
+    throw err;
   }
+
+  if (recoveredEntries && tempDir) {
+    for (const entry of recoveredEntries) {
+      const target = join(path, entry);
+      if (existsSync(target) || lstatExistsLink(target)) {
+        rmSync(target, { recursive: true, force: true });
+      }
+      renameSync(join(tempDir, entry), target);
+    }
+    try { rmdirSync(tempDir); } catch { /* leftover noise — leave for operator */ }
+  }
+}
+
+/** `existsSync` follows symlinks, so a dangling symlink at `target` reports false
+ *  and a subsequent `renameSync(...)` would fail with EEXIST. Detect link presence
+ *  via `lstatSync` so we can pre-remove dangling links before moving entries back. */
+function lstatExistsLink(target: string): boolean {
+  try { return lstatSync(target).isSymbolicLink(); } catch { return false; }
 }
 
 export function defaultMainBranch(projectDir: string): string {

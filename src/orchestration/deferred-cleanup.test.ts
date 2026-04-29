@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { cleanupDelayHours } from "../config.ts";
 import * as t3codeServer from "../t3code/server.ts";
 
@@ -254,6 +254,144 @@ describe("buildCleanupEntry", () => {
     const entry = buildCleanupEntry(orchState, 1);
     // Convention-derived root branch
     expect(entry.branches).toContain("ludics/test-task-1-s1/root");
+  });
+});
+
+// task-d2a16a60: cleanup-side hardening — when the worktree path still exists
+// after `removeWorktreeByPath` (because git lost the registration but the
+// scaffolding sat on disk), processDeferredCleanups must purge the allow-list
+// entries directly so the next slot start does not need the addWorktree
+// recovery branch.
+describe("processDeferredCleanups orphan-dir hardening (task-d2a16a60)", () => {
+  function initBareRepo(repo: string): void {
+    mkdirSync(repo, { recursive: true });
+    Bun.spawnSync(["git", "init", "-b", "main"], { cwd: repo });
+    Bun.spawnSync(["git", "config", "user.email", "test@example.com"], { cwd: repo });
+    Bun.spawnSync(["git", "config", "user.name", "Test User"], { cwd: repo });
+    writeFileSync(join(repo, "README.md"), "init\n");
+    Bun.spawnSync(["git", "add", "README.md"], { cwd: repo });
+    Bun.spawnSync(["git", "commit", "-m", "init"], { cwd: repo });
+  }
+
+  test("purges an orphan worktree directory whose contents match the allow-list", async () => {
+    if (!Bun.which("git")) return;
+    // Real project + an orphan worktree dir at the canonical orchestration name.
+    // The dir contains allow-list scaffolding only, with no git registration.
+    const projectDir = join(tmpDir, "proj-orphan-cleanup");
+    initBareRepo(projectDir);
+    const repoName = "proj-orphan-cleanup";
+    const slug = "task-orphan-cleanup";
+    const orphanPath = join(dirname(projectDir), `${repoName}-${slug}-s1`);
+    mkdirSync(join(orphanPath, ".peer-sync"), { recursive: true });
+    writeFileSync(join(orphanPath, ".peer-sync", "coder.status"), "stale\n");
+    mkdirSync(join(orphanPath, ".claude"), { recursive: true });
+    writeFileSync(join(orphanPath, ".claude", "settings.local.json"), "{}\n");
+    writeFileSync(join(orphanPath, ".ludics-orchestration.json"), '{"agentName":"coder"}\n');
+
+    // Sanity: git does NOT know this path as a worktree (orphan condition).
+    const list = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], { cwd: projectDir }).stdout.toString();
+    expect(list).not.toContain(`worktree ${orphanPath}`);
+
+    recordDeferredCleanup(makeEntry({
+      timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+      projectDir,
+      taskId: slug,
+      slot: 1,
+      worktreePaths: [orphanPath],
+      branches: [],
+      tmuxSessionNames: [],
+      peerSyncLink: null,
+    }));
+
+    await processDeferredCleanups(25);
+
+    // Orphan dir is gone — the next slot start does not need addWorktree's recovery branch.
+    expect(existsSync(orphanPath)).toBe(false);
+    // Manifest was cleared (cleanup succeeded).
+    expect(loadDeferredCleanups()).toHaveLength(0);
+  });
+
+  // Regression for P1 reviewer comment on PR #435: a corrupted cleanup manifest
+  // could list a path whose basename is NOT the canonical orchestration shape but
+  // whose contents happen to be allow-list-only (e.g. a stray
+  // ~/Code/some-project/node_modules left in a manifest). Both `removeWorktreeByPath`
+  // and `purgeOrphanDirIfRecoverable` apply the same orchestration-name guard, so
+  // neither path can wipe the directory.
+  test("refuses to purge a manifest path whose basename does not match orchestration naming", async () => {
+    if (!Bun.which("git")) return;
+    const projectDir = join(tmpDir, "proj-orphan-corrupt");
+    initBareRepo(projectDir);
+    // Sibling path with allow-list-only contents but basename "user-data" — not a
+    // canonical {repoName}-{taskSlug}(-s{N})? shape.
+    const strayPath = join(dirname(projectDir), "user-data");
+    mkdirSync(join(strayPath, ".peer-sync"), { recursive: true });
+    writeFileSync(join(strayPath, ".peer-sync", "x"), "user content\n");
+    writeFileSync(join(strayPath, ".ludics-orchestration.json"), '{"agentName":"coder"}\n');
+
+    recordDeferredCleanup(makeEntry({
+      timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+      projectDir,
+      taskId: "task-corrupt",
+      slot: 1,
+      worktreePaths: [strayPath],
+      branches: [],
+      tmuxSessionNames: [],
+      peerSyncLink: null,
+    }));
+
+    const origErr = console.error;
+    const captured: string[] = [];
+    console.error = (...args: unknown[]) => { captured.push(args.map((a) => String(a)).join(" ")); };
+    try {
+      await processDeferredCleanups(25);
+    } finally {
+      console.error = origErr;
+    }
+
+    // Stray dir contents preserved — neither removal path touched them.
+    expect(existsSync(join(strayPath, ".peer-sync", "x"))).toBe(true);
+    expect(existsSync(join(strayPath, ".ludics-orchestration.json"))).toBe(true);
+    // Both guard layers logged a refusal: removeWorktreeByPath ("refusing to remove worktree")
+    // and purgeOrphanDirIfRecoverable ("refusing to purge orphan dir").
+    expect(captured.some((w) => w.includes("refusing to remove worktree") && w.includes("user-data"))).toBe(true);
+    expect(captured.some((w) => w.includes("refusing to purge orphan dir") && w.includes("user-data"))).toBe(true);
+  });
+
+  test("leaves dir intact and logs when contents are unrecognised; does NOT keep entry in manifest (best-effort)", async () => {
+    if (!Bun.which("git")) return;
+    const projectDir = join(tmpDir, "proj-orphan-stray");
+    initBareRepo(projectDir);
+    const repoName = "proj-orphan-stray";
+    const slug = "task-orphan-stray";
+    const orphanPath = join(dirname(projectDir), `${repoName}-${slug}-s1`);
+    mkdirSync(orphanPath, { recursive: true });
+    writeFileSync(join(orphanPath, "user-WIP.txt"), "important\n");
+
+    recordDeferredCleanup(makeEntry({
+      timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+      projectDir,
+      taskId: slug,
+      slot: 1,
+      worktreePaths: [orphanPath],
+      branches: [],
+      tmuxSessionNames: [],
+      peerSyncLink: null,
+    }));
+
+    // Silence expected console.error about the deferred cleanup completing.
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      await processDeferredCleanups(25);
+    } finally {
+      console.error = origErr;
+    }
+
+    // Stray file is preserved — the purge fallback declined to touch it.
+    expect(existsSync(join(orphanPath, "user-WIP.txt"))).toBe(true);
+    // Best-effort: the entry is NOT pushed back into `remaining` because the
+    // purge fallback's classify-only failure does not flip `failed`.
+    expect(loadDeferredCleanups()).toHaveLength(0);
   });
 });
 

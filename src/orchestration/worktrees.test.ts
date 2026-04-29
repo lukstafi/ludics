@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { autoCommitWorktree, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, orchBranchName, orchWorktreeStem, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
+import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, purgeOrphanDirIfRecoverable, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
 import { captureConsoleError } from "../test-utils.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
@@ -839,5 +839,240 @@ describe("deleteBranches prefix guard", () => {
     expect(warnings.some((w) => w.includes("main") && w.includes("refusing"))).toBe(true);
     expect(warnings.some((w) => w.includes("feature-safe") && w.includes("refusing"))).toBe(true);
     expect(warnings.some((w) => w.includes("master") && w.includes("refusing"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// orphan-worktree recovery (task-d2a16a60)
+// ---------------------------------------------------------------------------
+
+/** Seed the parent dir of the orchestration root worktree with allow-list scaffolding,
+ *  simulating the state where a prior `git worktree prune` (or partial removal) left
+ *  the directory on disk while git no longer knows it as a registered worktree. */
+function seedOrphanLayout(orphanPath: string, options: {
+  withDsStore?: boolean;
+  withStray?: { name: string; contents: string };
+} = {}): void {
+  mkdirSync(orphanPath, { recursive: true });
+  mkdirSync(join(orphanPath, ".peer-sync"), { recursive: true });
+  writeFileSync(join(orphanPath, ".peer-sync", "coder.status"), "pending|0|seed\n");
+  mkdirSync(join(orphanPath, ".claude"), { recursive: true });
+  writeFileSync(join(orphanPath, ".claude", "settings.local.json"), '{"hooks":{}}\n');
+  writeFileSync(join(orphanPath, ".ludics-orchestration.json"), '{"agentName":"coder"}\n');
+  if (options.withDsStore) writeFileSync(join(orphanPath, ".DS_Store"), "macos-finder-noise\n");
+  if (options.withStray) writeFileSync(join(orphanPath, options.withStray.name), options.withStray.contents);
+}
+
+describe("classifyOrphanDir", () => {
+  test("recognises pure allow-list contents as recoverable", () => {
+    mkdirSync(TMP, { recursive: true });
+    const path = join(TMP, "classify-recoverable");
+    seedOrphanLayout(path);
+
+    const result = classifyOrphanDir(path);
+    expect(result.kind).toBe("recoverable");
+    if (result.kind !== "recoverable") return;
+    expect(result.preserve.sort()).toEqual([".claude", ".ludics-orchestration.json", ".peer-sync"].sort());
+  });
+
+  test("flags any unrecognised entry, naming the offender", () => {
+    mkdirSync(TMP, { recursive: true });
+    const path = join(TMP, "classify-unrecognised");
+    seedOrphanLayout(path, { withStray: { name: "user-notes.md", contents: "do not lose\n" } });
+
+    const result = classifyOrphanDir(path);
+    expect(result.kind).toBe("unrecognized");
+    if (result.kind !== "unrecognized") return;
+    expect(result.offending).toContain("user-notes.md");
+    // Stray file MUST remain on disk — the throw path is non-destructive.
+    expect(existsSync(join(path, "user-notes.md"))).toBe(true);
+  });
+
+  test("silently drops .DS_Store and still classifies as recoverable", () => {
+    mkdirSync(TMP, { recursive: true });
+    const path = join(TMP, "classify-ds-store");
+    seedOrphanLayout(path, { withDsStore: true });
+
+    const result = classifyOrphanDir(path);
+    expect(result.kind).toBe("recoverable");
+    expect(existsSync(join(path, ".DS_Store"))).toBe(false);
+    // Allow-list entries unchanged
+    expect(existsSync(join(path, ".peer-sync", "coder.status"))).toBe(true);
+  });
+
+  test("does NOT include .DS_Store in the preserve list (allow-list constant carve-out)", () => {
+    expect(ORPHAN_RECOVERY_ALLOWLIST).not.toContain(".DS_Store");
+    mkdirSync(TMP, { recursive: true });
+    const path = join(TMP, "classify-ds-only-no-recovery");
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, ".DS_Store"), "noise\n");
+
+    const result = classifyOrphanDir(path);
+    expect(result.kind).toBe("recoverable");
+    if (result.kind !== "recoverable") return;
+    // .DS_Store is silently dropped, never preserved
+    expect(result.preserve).toEqual([]);
+  });
+});
+
+describe("addWorktree orphan recovery", () => {
+  test("recovers an orphan dir whose contents match the allow-list", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "orphan-recover-ok");
+    initRepo(repo);
+
+    // Pre-seed the canonical root-worktree path with allow-list scaffolding.
+    const stem = orchWorktreeStem("orphan-recover-ok", "task-orphan", 1);
+    const orphanPath = join(dirname(repo), stem);
+    seedOrphanLayout(orphanPath);
+    // Assert pre-condition: dir exists, no git registration.
+    expect(existsSync(orphanPath)).toBe(true);
+    const preList = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(preList).not.toContain(`worktree ${orphanPath}`);
+
+    // createWorktrees calls addWorktree(repo, orphanPath, ...) under the hood.
+    const setup = createWorktrees(repo, "task-orphan", [{ name: "coder" }], "main", 1, "pair");
+
+    // Worktree is now registered with git.
+    expect(setup.rootWorktree).toBe(orphanPath);
+    const postList = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(postList).toContain(`worktree ${orphanPath}`);
+
+    // Orchestration entries restored with original contents.
+    expect(readFileSync(join(orphanPath, ".peer-sync", "coder.status"), "utf-8")).toBe("pending|0|seed\n");
+    expect(readFileSync(join(orphanPath, ".ludics-orchestration.json"), "utf-8")).toBe('{"agentName":"coder"}\n');
+    expect(readFileSync(join(orphanPath, ".claude", "settings.local.json"), "utf-8")).toBe('{"hooks":{}}\n');
+
+    // Recovery temp dir cleaned up.
+    expect(existsSync(`${orphanPath}.orphan-recover`)).toBe(false);
+
+    cleanupWorktrees(repo, "task-orphan", [{ name: "coder" }], 1, "pair");
+  });
+
+  test("throws clearer error and leaves dir untouched when stray content is present", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "orphan-recover-stray");
+    initRepo(repo);
+
+    const stem = orchWorktreeStem("orphan-recover-stray", "task-stray", 1);
+    const orphanPath = join(dirname(repo), stem);
+    seedOrphanLayout(orphanPath, { withStray: { name: "user-WIP.txt", contents: "important work\n" } });
+
+    expect(() =>
+      createWorktrees(repo, "task-stray", [{ name: "coder" }], "main", 1, "pair"),
+    ).toThrow(/orphan worktree-directory detected at .* with non-orchestration content \(.*user-WIP\.txt.*\); manual recovery needed/);
+
+    // Stray file must be untouched on disk and the worktree remains unregistered.
+    expect(existsSync(join(orphanPath, "user-WIP.txt"))).toBe(true);
+    expect(readFileSync(join(orphanPath, "user-WIP.txt"), "utf-8")).toBe("important work\n");
+    const postList = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(postList).not.toContain(`worktree ${orphanPath}`);
+    // Recovery temp dir was never created.
+    expect(existsSync(`${orphanPath}.orphan-recover`)).toBe(false);
+  });
+
+  test("recovery silently drops .DS_Store and still registers the worktree", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "orphan-recover-ds-store");
+    initRepo(repo);
+
+    const stem = orchWorktreeStem("orphan-recover-ds-store", "task-ds", 2);
+    const orphanPath = join(dirname(repo), stem);
+    seedOrphanLayout(orphanPath, { withDsStore: true });
+
+    const setup = createWorktrees(repo, "task-ds", [{ name: "coder" }], "main", 2, "pair");
+    expect(setup.rootWorktree).toBe(orphanPath);
+    expect(existsSync(join(orphanPath, ".DS_Store"))).toBe(false);
+    expect(existsSync(join(orphanPath, ".peer-sync", "coder.status"))).toBe(true);
+
+    cleanupWorktrees(repo, "task-ds", [{ name: "coder" }], 2, "pair");
+  });
+});
+
+describe("purgeOrphanDirIfRecoverable", () => {
+  test("returns true and removes allow-list entries", () => {
+    mkdirSync(TMP, { recursive: true });
+    const projectDir = join(TMP, "myrepo");
+    mkdirSync(projectDir, { recursive: true });
+    const path = join(TMP, "myrepo-task-purge-s1");
+    seedOrphanLayout(path);
+
+    expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(true);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("returns false and leaves dir intact when contents are unrecognised", () => {
+    mkdirSync(TMP, { recursive: true });
+    const projectDir = join(TMP, "myrepo");
+    mkdirSync(projectDir, { recursive: true });
+    const path = join(TMP, "myrepo-task-unrec-s1");
+    seedOrphanLayout(path, { withStray: { name: "user-notes.md", contents: "keep me\n" } });
+
+    const warnings = captureConsoleError(() => {
+      expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(false);
+    });
+    // No console.error from the purge itself — classify-only path is silent.
+    expect(warnings).toHaveLength(0);
+    expect(existsSync(join(path, "user-notes.md"))).toBe(true);
+    expect(existsSync(join(path, ".peer-sync"))).toBe(true);
+  });
+
+  test("returns true when path does not exist (and matches orchestration naming)", () => {
+    mkdirSync(TMP, { recursive: true });
+    const projectDir = join(TMP, "myrepo");
+    mkdirSync(projectDir, { recursive: true });
+    expect(purgeOrphanDirIfRecoverable(projectDir, join(TMP, "myrepo-task-noexist-s1"))).toBe(true);
+  });
+
+  // Regression for P1 reviewer comment: a corrupted cleanup manifest could list
+  // a path whose contents happen to be a subset of the allow-list (e.g. a user's
+  // ~/Code/myproject/node_modules) but whose basename is NOT the canonical
+  // orchestration worktree shape. The orchestration-name guard inside
+  // purgeOrphanDirIfRecoverable must refuse such paths even though their
+  // contents would otherwise classify as "recoverable".
+  test("refuses path whose basename does not match orchestration naming, even if contents are allow-list-only", () => {
+    mkdirSync(TMP, { recursive: true });
+    const projectDir = join(TMP, "myrepo");
+    mkdirSync(projectDir, { recursive: true });
+    // Path basename is "user-data" — not "{repoName}-{taskSlug}(-s{N})?(-{agent})?"
+    const path = join(TMP, "user-data");
+    seedOrphanLayout(path); // pure allow-list content
+
+    const warnings = captureConsoleError(() => {
+      expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(false);
+    });
+    expect(warnings.some((w) => w.includes("refusing to purge") && w.includes("user-data"))).toBe(true);
+    // Contents preserved.
+    expect(existsSync(join(path, ".peer-sync", "coder.status"))).toBe(true);
+    expect(existsSync(join(path, ".claude"))).toBe(true);
+    expect(existsSync(join(path, ".ludics-orchestration.json"))).toBe(true);
+  });
+
+  test("refuses repo-prefixed non-task paths like backup or scratch (matches removeWorktreeByPath guard)", () => {
+    mkdirSync(TMP, { recursive: true });
+    const projectDir = join(TMP, "myrepo");
+    mkdirSync(projectDir, { recursive: true });
+    // "myrepo-backup" shares the prefix but the suffix "backup" is a single
+    // segment without a slot marker — same shape rejected by isOrchWorktreeSuffix.
+    const path = join(TMP, "myrepo-backup");
+    seedOrphanLayout(path);
+
+    const warnings = captureConsoleError(() => {
+      expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(false);
+    });
+    expect(warnings.some((w) => w.includes("refusing to purge"))).toBe(true);
+    expect(existsSync(join(path, ".peer-sync"))).toBe(true);
   });
 });
