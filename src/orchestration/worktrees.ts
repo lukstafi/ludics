@@ -70,13 +70,32 @@ export function classifyOrphanDir(
   return { kind: "recoverable", preserve };
 }
 
-/** Best-effort cleanup of an orphan worktree directory: if `path` exists and its
- *  contents match {@link ORPHAN_RECOVERY_ALLOWLIST}, remove the orchestration
- *  entries and `rmdir` the parent so the next `addWorktree(path, ...)` does not
- *  need to enter the inline recovery branch. Returns `true` on successful purge
- *  (or if `path` did not exist), `false` if contents were unrecognized or any
- *  removal step failed. Does not throw — failures are logged via `console.error`. */
-export function purgeOrphanDirIfRecoverable(path: string): boolean {
+/** Best-effort cleanup of an orphan worktree directory: if `path` exists, its
+ *  basename matches the orchestration worktree naming pattern relative to
+ *  `projectDir`, AND its contents match {@link ORPHAN_RECOVERY_ALLOWLIST},
+ *  remove the orchestration entries and `rmdir` the parent so the next
+ *  `addWorktree(path, ...)` does not need to enter the inline recovery branch.
+ *
+ *  Returns `true` on successful purge (or if `path` did not exist), `false` if
+ *  the path failed the orchestration-name guard, contents were unrecognized,
+ *  or any removal step failed. Does not throw — failures are logged via
+ *  `console.error`.
+ *
+ *  The orchestration-name guard mirrors {@link removeWorktreeByPath}'s safety
+ *  constraint: this is a destructive operation, and a corrupted or malicious
+ *  cleanup manifest could otherwise list arbitrary paths whose contents
+ *  happen to be a subset of the allow-list (e.g. a user's `node_modules` or
+ *  `.claude` directory) and have them silently wiped. The guard is enforced
+ *  inside the function rather than at the call site so it cannot be bypassed
+ *  by future callers. */
+export function purgeOrphanDirIfRecoverable(projectDir: string, path: string): boolean {
+  const repoName = basename(resolve(projectDir));
+  const base = basename(path);
+  const prefix = repoName + "-";
+  if (!base.startsWith(prefix) || !isOrchWorktreeSuffix(base.slice(prefix.length))) {
+    console.error(`ludics: refusing to purge orphan dir "${path}" — does not match orchestration naming`);
+    return false;
+  }
   if (!existsSync(path)) return true;
   let classification: ReturnType<typeof classifyOrphanDir>;
   try {

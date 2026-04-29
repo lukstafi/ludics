@@ -1004,20 +1004,24 @@ describe("addWorktree orphan recovery", () => {
 describe("purgeOrphanDirIfRecoverable", () => {
   test("returns true and removes allow-list entries", () => {
     mkdirSync(TMP, { recursive: true });
-    const path = join(TMP, "purge-recoverable");
+    const projectDir = join(TMP, "myrepo");
+    mkdirSync(projectDir, { recursive: true });
+    const path = join(TMP, "myrepo-task-purge-s1");
     seedOrphanLayout(path);
 
-    expect(purgeOrphanDirIfRecoverable(path)).toBe(true);
+    expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(true);
     expect(existsSync(path)).toBe(false);
   });
 
   test("returns false and leaves dir intact when contents are unrecognised", () => {
     mkdirSync(TMP, { recursive: true });
-    const path = join(TMP, "purge-unrecognised");
+    const projectDir = join(TMP, "myrepo");
+    mkdirSync(projectDir, { recursive: true });
+    const path = join(TMP, "myrepo-task-unrec-s1");
     seedOrphanLayout(path, { withStray: { name: "user-notes.md", contents: "keep me\n" } });
 
     const warnings = captureConsoleError(() => {
-      expect(purgeOrphanDirIfRecoverable(path)).toBe(false);
+      expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(false);
     });
     // No console.error from the purge itself — classify-only path is silent.
     expect(warnings).toHaveLength(0);
@@ -1025,7 +1029,50 @@ describe("purgeOrphanDirIfRecoverable", () => {
     expect(existsSync(join(path, ".peer-sync"))).toBe(true);
   });
 
-  test("returns true when path does not exist", () => {
-    expect(purgeOrphanDirIfRecoverable("/nonexistent/orphan-purge-xxxxx")).toBe(true);
+  test("returns true when path does not exist (and matches orchestration naming)", () => {
+    mkdirSync(TMP, { recursive: true });
+    const projectDir = join(TMP, "myrepo");
+    mkdirSync(projectDir, { recursive: true });
+    expect(purgeOrphanDirIfRecoverable(projectDir, join(TMP, "myrepo-task-noexist-s1"))).toBe(true);
+  });
+
+  // Regression for P1 reviewer comment: a corrupted cleanup manifest could list
+  // a path whose contents happen to be a subset of the allow-list (e.g. a user's
+  // ~/Code/myproject/node_modules) but whose basename is NOT the canonical
+  // orchestration worktree shape. The orchestration-name guard inside
+  // purgeOrphanDirIfRecoverable must refuse such paths even though their
+  // contents would otherwise classify as "recoverable".
+  test("refuses path whose basename does not match orchestration naming, even if contents are allow-list-only", () => {
+    mkdirSync(TMP, { recursive: true });
+    const projectDir = join(TMP, "myrepo");
+    mkdirSync(projectDir, { recursive: true });
+    // Path basename is "user-data" — not "{repoName}-{taskSlug}(-s{N})?(-{agent})?"
+    const path = join(TMP, "user-data");
+    seedOrphanLayout(path); // pure allow-list content
+
+    const warnings = captureConsoleError(() => {
+      expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(false);
+    });
+    expect(warnings.some((w) => w.includes("refusing to purge") && w.includes("user-data"))).toBe(true);
+    // Contents preserved.
+    expect(existsSync(join(path, ".peer-sync", "coder.status"))).toBe(true);
+    expect(existsSync(join(path, ".claude"))).toBe(true);
+    expect(existsSync(join(path, ".ludics-orchestration.json"))).toBe(true);
+  });
+
+  test("refuses repo-prefixed non-task paths like backup or scratch (matches removeWorktreeByPath guard)", () => {
+    mkdirSync(TMP, { recursive: true });
+    const projectDir = join(TMP, "myrepo");
+    mkdirSync(projectDir, { recursive: true });
+    // "myrepo-backup" shares the prefix but the suffix "backup" is a single
+    // segment without a slot marker — same shape rejected by isOrchWorktreeSuffix.
+    const path = join(TMP, "myrepo-backup");
+    seedOrphanLayout(path);
+
+    const warnings = captureConsoleError(() => {
+      expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(false);
+    });
+    expect(warnings.some((w) => w.includes("refusing to purge"))).toBe(true);
+    expect(existsSync(join(path, ".peer-sync"))).toBe(true);
   });
 });

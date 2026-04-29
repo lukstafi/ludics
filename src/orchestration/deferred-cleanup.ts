@@ -168,7 +168,7 @@ export async function processDeferredCleanups(
       // Best-effort: failures are logged inside `purgeOrphanDirIfRecoverable` and
       // do NOT push the entry back into `remaining`.
       try {
-        purgeOrphanDirIfRecoverable(path);
+        purgeOrphanDirIfRecoverable(entry.projectDir, path);
       } catch (err) {
         console.error(`ludics: orphan-dir purge fallback failed for ${path}:`, err);
       }

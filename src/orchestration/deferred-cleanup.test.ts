@@ -311,6 +311,52 @@ describe("processDeferredCleanups orphan-dir hardening (task-d2a16a60)", () => {
     expect(loadDeferredCleanups()).toHaveLength(0);
   });
 
+  // Regression for P1 reviewer comment on PR #435: a corrupted cleanup manifest
+  // could list a path whose basename is NOT the canonical orchestration shape but
+  // whose contents happen to be allow-list-only (e.g. a stray
+  // ~/Code/some-project/node_modules left in a manifest). Both `removeWorktreeByPath`
+  // and `purgeOrphanDirIfRecoverable` apply the same orchestration-name guard, so
+  // neither path can wipe the directory.
+  test("refuses to purge a manifest path whose basename does not match orchestration naming", async () => {
+    if (!Bun.which("git")) return;
+    const projectDir = join(tmpDir, "proj-orphan-corrupt");
+    initBareRepo(projectDir);
+    // Sibling path with allow-list-only contents but basename "user-data" — not a
+    // canonical {repoName}-{taskSlug}(-s{N})? shape.
+    const strayPath = join(dirname(projectDir), "user-data");
+    mkdirSync(join(strayPath, ".peer-sync"), { recursive: true });
+    writeFileSync(join(strayPath, ".peer-sync", "x"), "user content\n");
+    writeFileSync(join(strayPath, ".ludics-orchestration.json"), '{"agentName":"coder"}\n');
+
+    recordDeferredCleanup(makeEntry({
+      timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+      projectDir,
+      taskId: "task-corrupt",
+      slot: 1,
+      worktreePaths: [strayPath],
+      branches: [],
+      tmuxSessionNames: [],
+      peerSyncLink: null,
+    }));
+
+    const origErr = console.error;
+    const captured: string[] = [];
+    console.error = (...args: unknown[]) => { captured.push(args.map((a) => String(a)).join(" ")); };
+    try {
+      await processDeferredCleanups(25);
+    } finally {
+      console.error = origErr;
+    }
+
+    // Stray dir contents preserved — neither removal path touched them.
+    expect(existsSync(join(strayPath, ".peer-sync", "x"))).toBe(true);
+    expect(existsSync(join(strayPath, ".ludics-orchestration.json"))).toBe(true);
+    // Both guard layers logged a refusal: removeWorktreeByPath ("refusing to remove worktree")
+    // and purgeOrphanDirIfRecoverable ("refusing to purge orphan dir").
+    expect(captured.some((w) => w.includes("refusing to remove worktree") && w.includes("user-data"))).toBe(true);
+    expect(captured.some((w) => w.includes("refusing to purge orphan dir") && w.includes("user-data"))).toBe(true);
+  });
+
   test("leaves dir intact and logs when contents are unrecognised; does NOT keep entry in manifest (best-effort)", async () => {
     if (!Bun.which("git")) return;
     const projectDir = join(tmpDir, "proj-orphan-stray");
