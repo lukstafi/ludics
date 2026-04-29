@@ -14,26 +14,43 @@ silently fixes those gaps and removes the line-loop code we maintain.
 
 Source: harness `tasks/task-61aee08e.md`. All five elaboration questions
 were resolved on 2026-04-29 (vendor as ESM file, `marked` over
-`markdown-it`, no DOMPurify, accept loss of `target="_blank"`,
-browser-only consumer).
+`markdown-it`, ~~no DOMPurify~~ → **DOMPurify post-pass added** on
+post-elaboration review (Q3's premise that `marked` escapes raw HTML
+by default was wrong; `marked` passes raw HTML through per CommonMark
+and the `sanitize` option was removed in v5; without a sanitizer the
+dashboard's XSS posture would weaken vs today's hand-rolled
+`escapeHtml` pre-pass), accept loss of `target="_blank"`, browser-only
+consumer).
 
 ## Acceptance Criteria
 
 - A vendored ESM build of `marked` lives at
   `templates/dashboard/vendor/marked.esm.js` with its MIT license header
-  preserved at the top of the file. A sibling
+  preserved at the top of the file. A vendored ESM build of DOMPurify
+  lives at `templates/dashboard/vendor/purify.es.js` with its
+  Apache-2.0 / MPL-2.0 license header preserved (added by post-elaboration
+  review — see updated Q3 below). A sibling
   `templates/dashboard/vendor/README.md` records: package name, version,
-  upstream URL, license, and the `dashboardInstall` install path so a
-  future maintainer knows how to bump it.
+  upstream URL, license, and the `dashboardInstall` install path for
+  both bundles so a future maintainer knows how to bump them.
 - `templates/dashboard/markdown.js` no longer contains the line-loop
   renderer (`markdownToHtml`, `parseTableRow`, `inlineFormat`,
   `escapeHtml` browser DOM-roundtrip helpers). It is rewritten as a thin
-  wrapper that imports `marked` from `./vendor/marked.esm.js`, exposes
-  `window.markdownToHtml = (md) => marked.parse(md ?? "", { gfm: true })`,
-  and (because some `dashboard.js` code paths still call `escapeHtml`
-  directly — confirm via grep) preserves a `window.escapeHtml` shim that
-  performs the same DOM `textContent` round-trip the current file does,
-  unless no remaining caller exists.
+  wrapper that imports `marked` from `./vendor/marked.esm.js` and
+  `DOMPurify` from `./vendor/purify.es.js`, then exposes
+  `window.markdownToHtml = (md) => DOMPurify.sanitize(marked.parse(md ?? "", { gfm: true }), { FORBID_TAGS: ["style"], FORBID_ATTR: ["style"] })`.
+  The DOMPurify config closes the inline-style spoofing vector: while
+  `<style>` tags are stripped by DOMPurify default, the `style="..."`
+  attribute is *not*, which would let untrusted MD apply
+  `position:fixed;…` overlays or `display:none` to hide controls.
+  `FORBID_ATTR: ["style"]` strips the attribute while leaving the host
+  tag intact (so `<div style="…">x</div>` becomes `<div>x</div>`,
+  preserving the Option B benign-HTML contract for everything except
+  the styling vector). The wrapper also (because some `dashboard.js`
+  code paths still call `escapeHtml` directly — confirm via grep)
+  preserves a `window.escapeHtml` shim that performs the same DOM
+  `textContent` round-trip the current file does, unless no remaining
+  caller exists.
 - All eight HTML pages that load `markdown.js` are updated to load it as
   an ES module: `<script type="module" src="markdown.js"></script>`.
   The full list (verified on HEAD `be78a23`):
@@ -73,10 +90,36 @@ browser-only consumer).
     `<input type="checkbox" disabled>` markup — silent upgrade over
     today's literal-text behavior).
   - Nested unordered list (one level of indentation).
-  - HTML escaping in source: feeding `<script>alert(1)</script>` in MD
-    produces an output where `<script>` is rendered as escaped text, not
-    an actual `<script>` element. This pins the no-DOMPurify decision
-    (Q3).
+  - Sanitisation of dangerous HTML in source (replaces the original
+    "escape to text" fixture — see updated Q3 below): feeding
+    `<script>alert(1)</script>` in MD produces output that contains
+    no `<script>` tag and no `alert(1)` payload (DOMPurify default
+    config strips it). Feeding `[click](javascript:alert(1))` produces
+    an `<a>` whose `href` is missing or non-`javascript:`. Feeding
+    `<img src="x" onerror="alert(1)">` produces output containing no
+    `onerror` attribute and no `alert(1)` payload.
+  - Benign HTML in source (Option B contract): feeding `<b>hello</b>`
+    in MD produces output containing `<b>hello</b>` as HTML, NOT
+    escaped text. This is a deliberate behaviour change vs the
+    hand-rolled renderer's escapeHtml-pre-pass posture, accepted
+    because (a) the hand-rolled renderer's text-rendering of benign
+    HTML was an incidental side effect of `escapeHtml`, not a
+    designed contract; (b) standard Markdown / GFM allows benign
+    inline HTML; (c) DOMPurify's default policy + the `FORBID_ATTR:
+    ["style"]` tightening keep the dashboard safe against `<script>`,
+    event-handler attributes, dangerous URL schemes, AND inline-CSS
+    spoofing.
+  - Inline-style spoofing guard: feeding
+    `<div style="position:fixed;...">spoof</div>` produces output
+    where the `style` attribute is removed (`<div>spoof</div>`).
+    Feeding `<style>.x { display: none }</style>` produces output
+    that contains no `<style>` tag.
+  - Vendor↔npm sync: `templates/dashboard/vendor/marked.esm.js` is
+    byte-identical to `node_modules/marked/lib/marked.esm.js`, and
+    `templates/dashboard/vendor/purify.es.js` is byte-identical to
+    `node_modules/dompurify/dist/purify.es.mjs`. A regression test
+    asserts both pairs match so a `bun install` that bumps a parser
+    version without re-vendoring fails CI loudly.
   - Empty / nullish input: `markdownToHtml(null)` and
     `markdownToHtml(undefined)` return `""`. (Today's renderer's
     early-guard behavior must be preserved by the wrapper — see
@@ -230,8 +273,18 @@ http://localhost:7678/ and copied verbatim by `dashboardInstall` in
 - **Source URL**:
   https://cdn.jsdelivr.net/npm/marked@<VERSION>/lib/marked.esm.js
 
-To bump: re-download from the same URL with the new version, update the
-version number above, and re-run `bun test
+## purify.es.js
+
+- **Package**: dompurify
+- **Version**: <pin to the dompurify version installed transitively
+  via isomorphic-dompurify>
+- **License**: Apache-2.0 OR MPL-2.0 (header preserved at top of file)
+- **Upstream**: https://github.com/cure53/DOMPurify
+- **Source URL**:
+  https://cdn.jsdelivr.net/npm/dompurify@<VERSION>/dist/purify.es.mjs
+
+To bump: re-download from the same URLs with the new versions, update
+the version numbers above, and re-run `bun test
 templates/dashboard/markdown.test.ts` to confirm output parity on the
 fixture set.
 ```
@@ -242,15 +295,19 @@ The full new contents (sketch):
 
 ```javascript
 // markdown.js -- Markdown-to-HTML for dashboard pages.
-// Wraps the vendored `marked` library; preserves the `markdownToHtml`
-// global so existing call sites in proposal.html, task.html,
-// briefing.html, retrospective.html, health.html, task-creator.html,
-// and dashboard.js need no change beyond switching the <script> tag to
-// type="module".
+// Pipes vendored marked through vendored DOMPurify so dangerous HTML
+// in MD source cannot reach innerHTML. Exposes window.markdownToHtml
+// and window.escapeHtml so existing call sites in dashboard.js and
+// the page templates need no API change beyond loading this file as
+// an ES module.
 
 import { marked } from "./vendor/marked.esm.js";
+import DOMPurify from "./vendor/purify.es.js";
 
-window.markdownToHtml = (md) => marked.parse(md ?? "", { gfm: true });
+const PURIFY_CONFIG = { FORBID_TAGS: ["style"], FORBID_ATTR: ["style"] };
+
+window.markdownToHtml = (md) =>
+    DOMPurify.sanitize(marked.parse(md ?? "", { gfm: true }), PURIFY_CONFIG);
 
 // Preserve escapeHtml as a global only if any call site still uses it.
 // Confirm via `grep -rn 'escapeHtml' templates/dashboard/` before
@@ -263,12 +320,20 @@ window.escapeHtml = (str) => {
 };
 ```
 
-Two things worth noting:
+Four things worth noting:
 
 - `gfm: true` is the default in `marked` v5+, but pass it explicitly so
   intent is visible to a future reader.
 - The `md ?? ""` guard is load-bearing: today's renderer returns `""`
   for `null` / `undefined`; `marked.parse(undefined)` throws.
+- The DOMPurify post-pass restores the dashboard's HTML-in-source
+  XSS posture relative to today (which the bare `marked.parse(...)`
+  would weaken — see updated Q3 below).
+- `FORBID_ATTR: ["style"]` closes the inline-style spoofing vector
+  (DOMPurify default strips `<style>` tags but leaves `style="…"`
+  attributes untouched, which would let untrusted MD apply
+  `position:fixed;…` overlays or hide controls via `display:none`).
+  `FORBID_TAGS: ["style"]` is belt-and-braces (already default).
 
 ### 3. Switch `<script>` tags to `type="module"`
 
@@ -289,18 +354,21 @@ this is a one-line change per page. No CSP header is set today by
 `dashboard-server.ts`, so no `nonce` plumbing is needed. (If a CSP is
 added later, no inline glue means we don't need a nonce.)
 
-### 4. Add `marked` as a dev/regular dependency for the test
+### 4. Add `marked` and `isomorphic-dompurify` as regular deps for the test
 
 ```bash
 cd ~/ludics
-bun add marked
+bun add marked isomorphic-dompurify
 ```
 
-This adds `"marked": "^<version>"` to `package.json` `dependencies`. The
-CLI never imports `marked` (verify), so the Bun-compiled binary is
-unaffected. Choosing a regular dep (over devDependency) keeps the
-import resolution unambiguous in Bun's test runner without requiring
-`--with-dev` flags.
+This adds both to `package.json` `dependencies`. The CLI never imports
+either (verify with `grep -rln 'from "marked"\|from "isomorphic-dompurify"' src/`),
+so the Bun-compiled binary is unaffected. Choosing regular deps (over
+devDependencies) keeps import resolution unambiguous in Bun's test
+runner without requiring `--with-dev` flags. `isomorphic-dompurify` is
+preferred over raw `dompurify` for the test side because DOMPurify
+needs a DOM and `isomorphic-dompurify` provides a JSDOM shim
+automatically when run under Node/Bun.
 
 The test file then imports directly:
 
@@ -308,11 +376,18 @@ The test file then imports directly:
 // templates/dashboard/markdown.test.ts
 import { describe, expect, test } from "bun:test";
 import { marked } from "marked";
+import DOMPurify from "isomorphic-dompurify";
 
+// Mirrors the wrapper in templates/dashboard/markdown.js: marked(GFM)
+// followed by DOMPurify.sanitize with the inline-style guard.
+const PURIFY_CONFIG = { FORBID_TAGS: ["style"], FORBID_ATTR: ["style"] };
 const render = (md: string | null | undefined) =>
-    marked.parse(md ?? "", { gfm: true });
+    DOMPurify.sanitize(
+        marked.parse(md ?? "", { gfm: true }) as string,
+        PURIFY_CONFIG,
+    );
 
-describe("dashboard Markdown rendering (via marked, gfm)", () => {
+describe("dashboard Markdown rendering (marked + DOMPurify, gfm)", () => {
     test("nullish input renders as empty string", () => {
         expect(render(null)).toBe("");
         expect(render(undefined)).toBe("");
@@ -358,21 +433,42 @@ describe("dashboard Markdown rendering (via marked, gfm)", () => {
         expect(out).toMatch(/<li>[\s\S]*<ul>[\s\S]*inner/);
     });
 
-    test("escapes HTML in source (no DOMPurify needed)", () => {
+    test("raw <script> in source is sanitised away", () => {
         const out = render("<script>alert(1)</script>");
-        expect(out).toContain("&lt;script&gt;");
-        expect(out).not.toContain("<script>alert");
+        expect(out).not.toMatch(/<script[\s>]/i);
+        expect(out).not.toContain("alert(1)");
+    });
+
+    test("javascript: URLs in links are stripped from href", () => {
+        const out = render("[click](javascript:alert(1))");
+        expect(out).not.toMatch(/href=["']?javascript:/i);
+    });
+
+    test("event-handler attributes are stripped", () => {
+        const out = render('<img src="x" onerror="alert(1)">');
+        expect(out).not.toContain("onerror");
+        expect(out).not.toContain("alert(1)");
+    });
+
+    // Behaviour change vs the hand-rolled renderer's escapeHtml-pre-pass
+    // posture (Option B contract): benign raw HTML in source survives.
+    test("benign raw HTML in source is preserved as HTML", () => {
+        const out = render("<b>hello</b>");
+        expect(out).toContain("<b>hello</b>");
+        expect(out).not.toContain("&lt;b&gt;");
     });
 });
 ```
 
-The test imports `marked` from the npm package, not from the vendored
-file. This is a deliberate choice: testing the npm package validates
-the exact same library code (same source, same version) without needing
-to dynamic-import an ESM file from disk in Bun's test environment.
-Worker should pin the `marked` version in `package.json` to the same
-version vendored under `templates/dashboard/vendor/` and add a comment
-in `vendor/README.md` reminding the next bumper to keep both in sync.
+The test imports `marked` and `isomorphic-dompurify` from npm, not
+from the vendored files. This is a deliberate choice: testing the npm
+packages validates the exact same library code (same source, same
+version) without needing to dynamic-import browser-targeted ESM files
+from disk in Bun's test environment. Worker should pin the `marked`
+and `dompurify` versions installed by `bun add` to the same versions
+vendored under `templates/dashboard/vendor/` and add a "To bump"
+section in `vendor/README.md` reminding the next maintainer to keep
+both in sync.
 
 The alternative — dynamic-importing
 `templates/dashboard/vendor/marked.esm.js` directly from the test — is
@@ -424,12 +520,19 @@ checkboxes).
   listed in Acceptance Criteria.
 - Delete the line-loop renderer functions in the same PR.
 
-**Out of scope** (per task body and elaboration Q3, Q4):
+**Out of scope** (per task body and elaboration Q4; Q3's
+"no DOMPurify" answer was overridden post-elaboration — see updated
+opening summary and Approach section):
 
 - Adding new Markdown features (footnotes, math, mermaid, syntax
   highlighting). Those land as separate tasks once the migration is in.
-- DOMPurify or any post-pass sanitizer. `marked`'s default HTML-in-
-  source escaping matches the current posture (Q3 resolution).
+- Tightening the DOMPurify config beyond the
+  `FORBID_TAGS: ["style"]` / `FORBID_ATTR: ["style"]` set added in
+  this PR (custom `ALLOWED_TAGS` / `ALLOWED_ATTR` allow-lists,
+  link-target hardening, etc.). The current config preserves
+  XSS-safety + closes the inline-style spoofing vector flagged by
+  PR-#436 review while keeping the Option B benign-HTML upgrade;
+  further tightening is a future task if a real need surfaces.
 - Preserving `target="_blank"` on links. Accepted change per Q4 — user
   uses middle-click / cmd-click for new tab.
 - Server-side AST manipulation (heading extraction, ToC, etc.).
