@@ -333,6 +333,59 @@ describe("parseTaskFrontmatter field reads", () => {
     expect(fm.title).toBe("quoted");
     expect(fm.status).toBeUndefined();
   });
+
+  test("leaf: false round-trips as boolean false (container marker)", () => {
+    const content = [
+      "---",
+      "id: task-container",
+      "title: parent",
+      "status: ready",
+      "leaf: false",
+      "---",
+    ].join("\n");
+    expect(parseTaskFrontmatter(content).leaf).toBe(false);
+  });
+
+  test("leaf absent stays undefined (legacy tasks must not be filtered)", () => {
+    const content = [
+      "---",
+      "id: task-leaf",
+      "title: leaf",
+      "status: ready",
+      "---",
+    ].join("\n");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.leaf).toBeUndefined();
+    // Critical: the consumer guard is `=== false`, so undefined must not coerce.
+    expect(fm.leaf === false).toBe(false);
+  });
+
+  test("leaf: true round-trips as boolean true (explicit non-container)", () => {
+    const content = [
+      "---",
+      "id: task-explicit",
+      "title: explicit leaf",
+      "status: ready",
+      "leaf: true",
+      "---",
+    ].join("\n");
+    expect(parseTaskFrontmatter(content).leaf).toBe(true);
+  });
+
+  test("leaf: false survives malformed-YAML line fallback path", () => {
+    // Trigger the fallback by leaving an unclosed array in dependencies.
+    const content = [
+      "---",
+      "id: task-fb",
+      "status: blocked",
+      "leaf: false",
+      "dependencies: [unclosed",
+      "---",
+    ].join("\n");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.leaf).toBe(false);
+    expect(fm.id).toBe("task-fb");
+  });
 });
 
 describe("appendToSection", () => {

@@ -16,6 +16,10 @@ export interface TaskFrontmatter {
   /** tiny, small, medium, large — see docs/task-frontmatter-reference.md#effort-levels */
   effort: string;
   skip_plan?: boolean;
+  /** When `false`, this task is a container — its work is split across children
+   *  via `subtask_of`. Container tasks are excluded from auto-queue, preempt,
+   *  elaboration auto-queue, and slotAssign. Set by `/ludics-split-task`. */
+  leaf?: boolean;
   requirements?: { os?: string; gpu?: string };
   context: string;
   uses_browser: boolean;

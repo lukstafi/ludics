@@ -1,7 +1,7 @@
 // Mag session management — start/stop/status/attach/logs/doctor/briefing/queue
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, effectivePriorityValue, milestonesEnabledProjects, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
 import { formatUpstreamLagSection } from "./briefing-lag.ts";
 import { defaultRunGit, type RunGit } from "./git-runner.ts";
@@ -2026,6 +2026,53 @@ function markAutoProposalQueued(taskId: string): void {
   touchSentinel(autoProposalDebounceFile(taskId));
 }
 
+// --- Container completion sweep debounce + child-set fingerprint ---
+//
+// Mirrors the auto-proposal-debounce shape but pairs the freshness sentinel
+// with a `.children` sidecar that records the parent's child-set state at
+// last enqueue. The sweep clears the sentinel whenever the current child
+// set differs (reopen, new child added — even one that is already terminal),
+// satisfying the AC7 reset rules without write-time hooks.
+
+const CONTAINER_COMPLETION_DEBOUNCE_SECONDS = 6 * 3600;
+
+function containerCompletionDir(): string {
+  return join(magStateDir(), "container-completion-checked");
+}
+
+export function containerCompletionDebounceFile(parentId: string): string {
+  return join(containerCompletionDir(), `${encodeURIComponent(parentId)}.epoch`);
+}
+
+export function containerCompletionChildrenFile(parentId: string): string {
+  return join(containerCompletionDir(), `${encodeURIComponent(parentId)}.children`);
+}
+
+export function containerCompletionDebounced(parentId: string): boolean {
+  return sentinelFresh(containerCompletionDebounceFile(parentId), new Date(), CONTAINER_COMPLETION_DEBOUNCE_SECONDS);
+}
+
+export function markContainerCompletionQueued(parentId: string): void {
+  touchSentinel(containerCompletionDebounceFile(parentId));
+}
+
+export function clearContainerCompletionSentinel(parentId: string): void {
+  clearSentinel(containerCompletionDebounceFile(parentId));
+  try { unlinkSync(containerCompletionChildrenFile(parentId)); } catch { /* best-effort */ }
+}
+
+export function readContainerCompletionFingerprint(parentId: string): string | null {
+  const f = containerCompletionChildrenFile(parentId);
+  if (!existsSync(f)) return null;
+  try { return readFileSync(f, "utf-8"); } catch { return null; }
+}
+
+export function writeContainerCompletionFingerprint(parentId: string, fp: string): void {
+  const f = containerCompletionChildrenFile(parentId);
+  mkdirSync(dirname(f), { recursive: true });
+  atomicWriteFileSync(f, fp);
+}
+
 /** Auto-start slots that have proposals but no active session. */
 async function maybeAutoStartSlots(): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
@@ -2277,11 +2324,14 @@ export function mergeRequirements(
   return merged;
 }
 
-interface ReadyCandidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string; elaborated: boolean; requirements?: { os?: string; gpu?: string } }
+export interface ReadyCandidate { id: string; priority: string; project: string; milestone?: string; hasDeadline: boolean; deadline: string; effort: string; elaborated: boolean; requirements?: { os?: string; gpu?: string } }
 
 /** Compute the sorted ready queue — single source of truth for task ordering.
- *  Used by maybeFillEmptySlots, maybeQueueProposals, and dashboard generation. */
-function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandidate[] {
+ *  Used by maybeFillEmptySlots, maybeQueueProposals, and dashboard generation.
+ *  Exported for direct testability (mirrors the mergeRequirements pattern in
+ *  this file). Container tasks (frontmatter `leaf: false`) are filtered out
+ *  here so every consumer inherits the exclusion. */
+export function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandidate[] {
   const tasksDir = join(harnessDir(), "tasks");
   if (!existsSync(tasksDir)) return [];
   const cfg = config ?? loadConfigSync();
@@ -2325,6 +2375,11 @@ function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandidate[] {
     });
 
     if (tasksInSlots.has(id)) continue;
+    // Container tasks (work split into subtasks) are not actionable. The check
+    // is `=== false` (not falsy) so legacy tasks without the field are kept.
+    // Defensive coercion handles a stringified "false" from malformed input.
+    const leafRaw = fm.leaf;
+    if (leafRaw === false || leafRaw === "false") continue;
     if (status !== "ready") continue;
     const blockedBy = deps.blocked_by;
     if (Array.isArray(blockedBy) && blockedBy.length > 0) continue;
@@ -3552,6 +3607,13 @@ export async function runMag(args: string[]): Promise<void> {
       console.log(`Queued verify-completion request for ${taskId}`);
       break;
     }
+    case "verify-container-completion": {
+      const taskId = args[1];
+      if (!taskId) throw new Error("task id required");
+      queueRequest({ action: "verify-container-completion", task: taskId });
+      console.log(`Queued verify-container-completion request for ${taskId}`);
+      break;
+    }
     case "feedback-digest": {
       const fdResult = tryQueueFeedbackDigest("ludics");
       if (fdResult.queued) {
@@ -3660,6 +3722,6 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     default:
-      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, process-suggestions, completed, message, queue, queue pop one, queue pop all, queue-pop, on-stop, context, feedback-digest)`);
+      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, verify-container-completion, health-check, adopt-sessions, process-suggestions, completed, message, queue, queue pop one, queue pop all, queue-pop, on-stop, context, feedback-digest)`);
   }
 }

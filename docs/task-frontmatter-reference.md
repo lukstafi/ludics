@@ -74,3 +74,25 @@ The `skip_plan: true` frontmatter flag is only consulted at `medium` effort:
 ### Notes on extension
 
 The four levels above describe today's scale. Nothing in the model precludes a future `huge` or `epic` level if a class of work emerges that genuinely needs a different orchestration shape; the framing here is descriptive rather than normative. New levels would need corresponding entries in the dashboard validation allowlist, the `selectOrchestrationFlags` mapping, and this section.
+
+## `leaf` (container marker)
+
+Type: `boolean | undefined`. Default: `undefined` (treated as a leaf task).
+
+Set to `false` by `/ludics-split-task` when a task is decomposed into children via `subtask_of`. Indicates the task is a **container** — its work has been split and the parent itself has no actionable deliverable.
+
+**Effect on automation**:
+
+- `getSortedReadyCandidates` in `src/mag.ts` skips `leaf: false` entries, which automatically suppresses container tasks from `maybeFillEmptySlots`, `maybeQueueProposals`, and dashboard-generation consumers.
+- `tasksNeedsElaborationList` and `tasksQueuePreemptions` in `src/tasks/sync.ts` apply symmetric filters, so containers are never auto-queued for elaboration or preemption.
+- `slotAssign` in `src/slots/index.ts` throws before any slot mutation when the resolved task has `leaf: false` — assign a child instead.
+- `/ludics-elaborate` and `/ludics-draft-proposal` short-circuit on `leaf: false`: append a single deduped Notes line `Skipped: container task — work split into children` and exit without worker delegation.
+- Flow views and dashboard surfaces are intentionally **not** filtered, so containers remain visible for orphan-detection.
+
+**Container completion trigger**: the sweep in `tasksReconcileBlockedStatus` watches every `leaf: false` parent. When all children (via `subtask_of`) reach `done`/`abandoned`, it enqueues `/ludics-verify-container-completion <parent-id>`. Debounce details:
+
+- A 6-hour freshness sentinel under `mag/container-completion-checked/<parent-id>.epoch` suppresses re-fire while the child set is unchanged.
+- A `.children` sidecar records the sorted child-id+status fingerprint at last enqueue. The sweep clears the sentinel whenever the current fingerprint differs — covering both child reopen and newly-added child cases (including newly-added but already-terminal children).
+- `queueHasPendingActionForTask("verify-container-completion", parentId)` is the secondary dedupe while a request is unprocessed.
+
+The verify skill summarizes children, files `needs-confirmation` follow-ups for residual ambiguity (the dashboard's existing surface picks them up via `/api/tasks/<id>/confirm` and `/dismiss`), and notifies the user via `ludics notify outgoing`. **The parent's status transition stays user-driven** — the harness never auto-closes a container.

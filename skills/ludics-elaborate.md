@@ -36,6 +36,20 @@ Follow [orchestrator-conventions.md](orchestrator-conventions.md):
 - **E** (Result JSON): write the result with the request ID.
 - **F** (Error Handling): standard patterns.
 
+### Container short-circuit (before Step D)
+
+If the task's frontmatter has `leaf: false`, the work has already been split
+into subtasks and elaborating the parent is a no-op. After Step A, before
+worker delegation:
+
+1. Use the `Edit` tool to append a single line to the task's `## Notes`
+   section: `Skipped: container task — work split into children`.
+   The shared `appendToSection` helper dedupes (skips if the exact line is
+   already present), so repeated stale queue items do not stack.
+2. Write a result JSON with `"status": "skipped-container"` and the parent's
+   id, then exit. **Do not invoke the worker.**
+3. The queue-pop layer drops this request rather than re-queueing.
+
 Worker: `/ludics-elaborate-worker <task_id> <project_path> <context_brief>`
 
 ## Status routing

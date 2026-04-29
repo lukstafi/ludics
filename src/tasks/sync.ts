@@ -8,7 +8,14 @@ import { listStashes } from "../slots/preempt.ts";
 import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
-import { queueRequest, parseQueueLines } from "../queue.ts";
+import { queueRequest, queueHasPendingActionForTask, parseQueueLines } from "../queue.ts";
+import {
+  clearContainerCompletionSentinel,
+  containerCompletionDebounced,
+  markContainerCompletionQueued,
+  readContainerCompletionFingerprint,
+  writeContainerCompletionFingerprint,
+} from "../mag.ts";
 import { safeSyncOutput } from "../spawn.ts";
 
 function yamlEscape(value: string): string {
@@ -657,15 +664,20 @@ export async function tasksUpdate(): Promise<void> {
   );
 }
 
+type TaskMap = Map<string, { status: string; filePath: string; fm: ReturnType<typeof parseTaskFrontmatter> }>;
+
 /**
  * Heal blocked_by/blocks links: remove done/abandoned tasks from blocked_by,
  * and ensure each blocked_by reference has a matching blocks backlink.
+ *
+ * Returns the parsed taskMap so the container-completion sweep can reuse it
+ * without re-parsing every file.
  */
-function healBlockedByLinks(tasksDir: string): void {
+function healBlockedByLinks(tasksDir: string): TaskMap {
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
 
   // Build id -> { status, filePath, fm } map
-  const taskMap = new Map<string, { status: string; filePath: string; fm: ReturnType<typeof parseTaskFrontmatter> }>();
+  const taskMap: TaskMap = new Map();
   for (const f of files) {
     const filePath = join(tasksDir, f);
     const content = readFileSync(filePath, "utf-8");
@@ -713,11 +725,81 @@ function healBlockedByLinks(tasksDir: string): void {
   if (healed > 0) {
     console.error(`ludics: healed ${healed} blocked_by/blocks link(s)`);
   }
+
+  return taskMap;
+}
+
+/**
+ * Sweep `leaf: false` parents and queue `verify-container-completion` exactly
+ * once per (parent, child-set) state when every child is terminal. Reuses the
+ * `taskMap` from `healBlockedByLinks` so this is a single extra walk over
+ * an already-parsed structure.
+ *
+ * Debounce: a fresh `.epoch` sentinel suppresses re-fire within 6 hours.
+ * Reset rule: a `.children` sidecar records the child-set fingerprint at
+ * last enqueue. Whenever the current fingerprint differs, the sentinel is
+ * cleared — covering both child-status reopen AND new-child-added cases.
+ */
+function containerCompletionSweep(taskMap: TaskMap): void {
+  const TERMINAL_FOR_PARENT = new Set([
+    "done", "abandoned", "merged", "needs-confirmation",
+    "in-progress", "deferred", "preempt-queued", "preempted",
+  ]);
+  const TERMINAL_FOR_CHILD = new Set(["done", "abandoned"]);
+
+  // Single pass to index children by parent.
+  const childrenByParent = new Map<string, Array<{ id: string; status: string }>>();
+  for (const [childId, child] of taskMap) {
+    const parent = child.fm.dependencies?.subtask_of;
+    if (!parent) continue;
+    let arr = childrenByParent.get(parent);
+    if (!arr) { arr = []; childrenByParent.set(parent, arr); }
+    arr.push({ id: childId, status: child.status });
+  }
+
+  for (const [parentId, entry] of taskMap) {
+    if (entry.fm.leaf !== false) continue;
+    if (TERMINAL_FOR_PARENT.has(entry.status)) continue;
+
+    const children = childrenByParent.get(parentId) ?? [];
+    if (children.length === 0) continue; // vacuous — never enqueue
+
+    const sorted = children.slice().sort((a, b) => a.id.localeCompare(b.id));
+    const currentFingerprint = sorted.map(c => `${c.id}:${c.status}`).join("\n");
+
+    const prior = readContainerCompletionFingerprint(parentId);
+    if (prior !== null && prior !== currentFingerprint) {
+      // Child set changed (reopen, new child, status flip). Reset so the
+      // next all-terminal state re-fires the verify skill.
+      clearContainerCompletionSentinel(parentId);
+    }
+
+    const allTerminal = sorted.every(c => TERMINAL_FOR_CHILD.has(c.status));
+    if (!allTerminal) continue;
+
+    // All terminal: enqueue unless already debounced for this exact state.
+    const fpUnchanged = prior !== null && prior === currentFingerprint;
+    if (fpUnchanged && containerCompletionDebounced(parentId)) continue;
+    if (queueHasPendingActionForTask("verify-container-completion", parentId)) continue;
+
+    queueRequest({ action: "verify-container-completion", task: parentId });
+    markContainerCompletionQueued(parentId);
+    writeContainerCompletionFingerprint(parentId, currentFingerprint);
+    emitEvent({
+      event_type: "container_completion_queued",
+      source: "sync",
+      scope: "task",
+      task: parentId,
+      message: `${sorted.length} child(ren) all terminal`,
+    });
+  }
 }
 
 function tasksReconcileBlockedStatus(tasksDir: string): void {
-  // Heal stale blocked_by links before checking status
-  healBlockedByLinks(tasksDir);
+  // Heal stale blocked_by links before checking status, capturing the parsed
+  // taskMap so the container-completion sweep can reuse it.
+  const taskMap = healBlockedByLinks(tasksDir);
+  containerCompletionSweep(taskMap);
 
   const files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
   let reconciled = 0;
@@ -839,6 +921,9 @@ function tasksNeedsElaborationList(tasksDir: string): string[] {
 
     const status = fm.status ?? "";
     if (["merged", "done", "abandoned", "needs-confirmation"].includes(status)) continue;
+    // Container tasks (work split into subtasks) are not actionable; never
+    // queue them for elaboration even if they happen to be unelaborated.
+    if (fm.leaf === false) continue;
 
     if (!isElaborated(content)) result.push(id);
   }
@@ -890,6 +975,8 @@ function tasksQueuePreemptions(): void {
     if (!id) continue;
 
     if (fm.status !== "ready") continue;
+    // Container tasks are non-actionable; preempting a slot for one is wrong.
+    if (fm.leaf === false) continue;
 
     const project = fm.project ?? "";
     if (!project) continue;
@@ -913,4 +1000,4 @@ function tasksQueuePreemptions(): void {
   }
 }
 
-export { tasksNeedsElaborationList, tasksQueueElaborations, tasksQueuePreemptions, tasksReconcileBlockedStatus, contentFingerprint };
+export { tasksNeedsElaborationList, tasksQueueElaborations, tasksQueuePreemptions, tasksReconcileBlockedStatus, containerCompletionSweep, contentFingerprint };
