@@ -9,12 +9,12 @@ beforeEach(() => {
 });
 
 describe("hasRegisteredAction", () => {
-  test("returns true for all 14 known queue actions", () => {
+  test("returns true for all 15 known queue actions", () => {
     const known = [
       "briefing", "suggest", "elaborate", "health-check", "learn",
       "sync-learnings", "feedback-digest", "draft-proposal", "revise-proposal",
-      "split-task", "preempt", "verify-completion", "adopt-sessions",
-      "process-suggestions",
+      "split-task", "preempt", "verify-completion", "verify-container-completion",
+      "adopt-sessions", "process-suggestions",
     ];
     for (const action of known) {
       expect(hasRegisteredAction(action), `expected "${action}" to be registered`).toBe(true);
@@ -74,6 +74,19 @@ describe("resolveSkillCommand — single-arg skills", () => {
 
   test("verify-completion with task", () => {
     expect(resolveSkillCommand("verify-completion", { task: "task-042" })).toBe("/ludics-verify-completion task-042");
+  });
+
+  test("verify-container-completion with task (AC8 — registry resolves new skill)", () => {
+    // Invariant: the queue-pop layer dispatches /ludics-verify-container-completion
+    // for the action emitted by containerCompletionSweep. If skill frontmatter
+    // (queue-action / queue-args) drifted, this assertion is the canary.
+    expect(resolveSkillCommand("verify-container-completion", { task: "task-parent" }))
+      .toBe("/ludics-verify-container-completion task-parent");
+  });
+
+  test("verify-container-completion without task returns null (queue-required-args)", () => {
+    expect(resolveSkillCommand("verify-container-completion", {})).toBeNull();
+    expect(resolveSkillCommand("verify-container-completion", { task: "" })).toBeNull();
   });
 
   test("feedback-digest with repo (no queue-args declared, repo ignored)", () => {

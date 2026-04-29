@@ -66,6 +66,20 @@ questions from elaboration — skip the proposal:
 - Write result JSON with `"status": "blocked"` and `"unanswered questions"`.
 - Don't delegate to the worker; Mag's nag loop reminds the user to answer.
 
+### Container short-circuit
+
+If the task's frontmatter has `leaf: false`, the work has already been split
+into subtasks and drafting a proposal for the parent is a no-op. Before any
+worker delegation:
+
+1. Use the `Edit` tool to append a single line to the task's `## Notes`
+   section: `Skipped: container task — work split into children`. The shared
+   `appendToSection` helper dedupes — repeated stale queue items do not stack.
+2. Write a result JSON with `"status": "skipped-container"` and the parent's
+   id, then exit. **Do not invoke the worker, and do not write a proposal
+   file.**
+3. The queue-pop layer drops this request rather than re-queueing.
+
 <!-- section:status-routing -->
 ## Status routing
 
