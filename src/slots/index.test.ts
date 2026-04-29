@@ -120,6 +120,73 @@ describe("slotAssign", () => {
     expect(task).toContain("adapter: manual");
   });
 
+  test("rejects leaf:false container tasks before any slot mutation (AC5)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+
+    // Harness condition: a real task file exists with `leaf: false`. The
+    // existsSync(tf) branch fires; if the guard isn't there, slot mutation
+    // proceeds and the byte-equality assertion below fails.
+    writeFileSync(join(tasksDir, "task-container.md"), `---
+id: task-container
+title: "Container parent"
+project: demo
+status: ready
+priority: B
+leaf: false
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: null
+effort: medium
+context: demo
+uses_browser: false
+slot: null
+adapter: null
+created: 2026-04-29
+started: null
+completed: null
+modified: null
+source: local
+---
+`);
+
+    const slotPath = join(harness, "slots", "slot-1.json");
+    const slotBefore = readFileSync(slotPath, "utf-8");
+    const taskPath = join(tasksDir, "task-container.md");
+    const taskBefore = readFileSync(taskPath, "utf-8");
+
+    // Invariant: the throw must happen before any write. Asserting the
+    // error message also pins the actionable hint that names the parent.
+    await expect(slotAssign(1, "task-container", "manual"))
+      .rejects.toThrow(/container task task-container/);
+
+    // Atomic-failure invariant: slot JSON byte-identical post-throw.
+    expect(readFileSync(slotPath, "utf-8")).toBe(slotBefore);
+    // Atomic-failure invariant: task frontmatter untouched (slot/status/started
+    // would all change if the mutation path had been entered).
+    expect(readFileSync(taskPath, "utf-8")).toBe(taskBefore);
+  });
+
+  test("free-form description assignment bypasses the leaf guard (no task file resolves)", () => {
+    // Harness condition: NO task file at this path; existsSync(tf) is false,
+    // so the leaf-check branch never runs. This codifies the AC5 carve-out.
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+
+    void slotAssign(1, "task-container", "manual"); // looks like a task id but no file
+
+    const data = readSlotJson(1, harness);
+    expect(data.task).toBeNull(); // treated as free-form because no file
+    expect(data.process).toBe("task-container");
+  });
+
   test("keeps free-text descriptions as non-task assignments", () => {
     const harness = join(TMP, "ludics-state", "harness");
     mkdirSync(harness, { recursive: true });

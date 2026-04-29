@@ -342,7 +342,16 @@ export async function slotAssign(
   if (existsSync(tf)) {
     taskId = taskOrDesc;
     const content = readFileSync(tf, "utf-8");
-    processDesc = parseTaskFrontmatter(content).title || taskId;
+    const fm = parseTaskFrontmatter(content);
+    // Container tasks (work split into subtasks) cannot be assigned — the
+    // parent is non-actionable. Throw before any slot mutation so the call
+    // is atomic: no slot file write, no prior-slot cleanup, no status flip.
+    if (fm.leaf === false) {
+      throw new Error(
+        `Cannot assign container task ${taskId} to slot ${slotNum} — its work was split into subtasks. Assign a child instead.`,
+      );
+    }
+    processDesc = fm.title || taskId;
   } else {
     taskId = null;
     processDesc = taskOrDesc;
