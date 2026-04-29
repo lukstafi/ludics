@@ -8,8 +8,15 @@
 import { marked } from "./vendor/marked.esm.js";
 import DOMPurify from "./vendor/purify.es.js";
 
+// FORBID_ATTR: ["style"] closes the inline-style spoofing vector
+// (e.g. <div style="position:fixed;...">). DOMPurify default strips
+// <style> tags but leaves the style attribute intact; without this,
+// untrusted MD could hide controls or overlay the page via inline
+// CSS. FORBID_TAGS: ["style"] is belt-and-braces (already default).
+const PURIFY_CONFIG = { FORBID_TAGS: ["style"], FORBID_ATTR: ["style"] };
+
 window.markdownToHtml = (md) =>
-    DOMPurify.sanitize(marked.parse(md ?? "", { gfm: true }));
+    DOMPurify.sanitize(marked.parse(md ?? "", { gfm: true }), PURIFY_CONFIG);
 
 window.escapeHtml = (str) => {
     if (!str) return "";

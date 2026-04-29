@@ -38,11 +38,19 @@ consumer).
   `escapeHtml` browser DOM-roundtrip helpers). It is rewritten as a thin
   wrapper that imports `marked` from `./vendor/marked.esm.js` and
   `DOMPurify` from `./vendor/purify.es.js`, then exposes
-  `window.markdownToHtml = (md) => DOMPurify.sanitize(marked.parse(md ?? "", { gfm: true }))`,
-  and (because some `dashboard.js` code paths still call `escapeHtml`
-  directly — confirm via grep) preserves a `window.escapeHtml` shim that
-  performs the same DOM `textContent` round-trip the current file does,
-  unless no remaining caller exists.
+  `window.markdownToHtml = (md) => DOMPurify.sanitize(marked.parse(md ?? "", { gfm: true }), { FORBID_TAGS: ["style"], FORBID_ATTR: ["style"] })`.
+  The DOMPurify config closes the inline-style spoofing vector: while
+  `<style>` tags are stripped by DOMPurify default, the `style="..."`
+  attribute is *not*, which would let untrusted MD apply
+  `position:fixed;…` overlays or `display:none` to hide controls.
+  `FORBID_ATTR: ["style"]` strips the attribute while leaving the host
+  tag intact (so `<div style="…">x</div>` becomes `<div>x</div>`,
+  preserving the Option B benign-HTML contract for everything except
+  the styling vector). The wrapper also (because some `dashboard.js`
+  code paths still call `escapeHtml` directly — confirm via grep)
+  preserves a `window.escapeHtml` shim that performs the same DOM
+  `textContent` round-trip the current file does, unless no remaining
+  caller exists.
 - All eight HTML pages that load `markdown.js` are updated to load it as
   an ES module: `<script type="module" src="markdown.js"></script>`.
   The full list (verified on HEAD `be78a23`):
@@ -97,9 +105,21 @@ consumer).
     because (a) the hand-rolled renderer's text-rendering of benign
     HTML was an incidental side effect of `escapeHtml`, not a
     designed contract; (b) standard Markdown / GFM allows benign
-    inline HTML; (c) DOMPurify's default policy keeps the dashboard
-    safe against `<script>`, event-handler attributes, and dangerous
-    URL schemes.
+    inline HTML; (c) DOMPurify's default policy + the `FORBID_ATTR:
+    ["style"]` tightening keep the dashboard safe against `<script>`,
+    event-handler attributes, dangerous URL schemes, AND inline-CSS
+    spoofing.
+  - Inline-style spoofing guard: feeding
+    `<div style="position:fixed;...">spoof</div>` produces output
+    where the `style` attribute is removed (`<div>spoof</div>`).
+    Feeding `<style>.x { display: none }</style>` produces output
+    that contains no `<style>` tag.
+  - Vendor↔npm sync: `templates/dashboard/vendor/marked.esm.js` is
+    byte-identical to `node_modules/marked/lib/marked.esm.js`, and
+    `templates/dashboard/vendor/purify.es.js` is byte-identical to
+    `node_modules/dompurify/dist/purify.es.mjs`. A regression test
+    asserts both pairs match so a `bun install` that bumps a parser
+    version without re-vendoring fails CI loudly.
   - Empty / nullish input: `markdownToHtml(null)` and
     `markdownToHtml(undefined)` return `""`. (Today's renderer's
     early-guard behavior must be preserved by the wrapper — see
@@ -284,8 +304,10 @@ The full new contents (sketch):
 import { marked } from "./vendor/marked.esm.js";
 import DOMPurify from "./vendor/purify.es.js";
 
+const PURIFY_CONFIG = { FORBID_TAGS: ["style"], FORBID_ATTR: ["style"] };
+
 window.markdownToHtml = (md) =>
-    DOMPurify.sanitize(marked.parse(md ?? "", { gfm: true }));
+    DOMPurify.sanitize(marked.parse(md ?? "", { gfm: true }), PURIFY_CONFIG);
 
 // Preserve escapeHtml as a global only if any call site still uses it.
 // Confirm via `grep -rn 'escapeHtml' templates/dashboard/` before
@@ -298,7 +320,7 @@ window.escapeHtml = (str) => {
 };
 ```
 
-Three things worth noting:
+Four things worth noting:
 
 - `gfm: true` is the default in `marked` v5+, but pass it explicitly so
   intent is visible to a future reader.
@@ -306,8 +328,12 @@ Three things worth noting:
   for `null` / `undefined`; `marked.parse(undefined)` throws.
 - The DOMPurify post-pass restores the dashboard's HTML-in-source
   XSS posture relative to today (which the bare `marked.parse(...)`
-  would weaken — see updated Q3 below). Default DOMPurify config is
-  used; benign HTML round-trips, dangerous content is stripped.
+  would weaken — see updated Q3 below).
+- `FORBID_ATTR: ["style"]` closes the inline-style spoofing vector
+  (DOMPurify default strips `<style>` tags but leaves `style="…"`
+  attributes untouched, which would let untrusted MD apply
+  `position:fixed;…` overlays or hide controls via `display:none`).
+  `FORBID_TAGS: ["style"]` is belt-and-braces (already default).
 
 ### 3. Switch `<script>` tags to `type="module"`
 
@@ -353,9 +379,13 @@ import { marked } from "marked";
 import DOMPurify from "isomorphic-dompurify";
 
 // Mirrors the wrapper in templates/dashboard/markdown.js: marked(GFM)
-// followed by DOMPurify.sanitize.
+// followed by DOMPurify.sanitize with the inline-style guard.
+const PURIFY_CONFIG = { FORBID_TAGS: ["style"], FORBID_ATTR: ["style"] };
 const render = (md: string | null | undefined) =>
-    DOMPurify.sanitize(marked.parse(md ?? "", { gfm: true }) as string);
+    DOMPurify.sanitize(
+        marked.parse(md ?? "", { gfm: true }) as string,
+        PURIFY_CONFIG,
+    );
 
 describe("dashboard Markdown rendering (marked + DOMPurify, gfm)", () => {
     test("nullish input renders as empty string", () => {
@@ -496,11 +526,13 @@ opening summary and Approach section):
 
 - Adding new Markdown features (footnotes, math, mermaid, syntax
   highlighting). Those land as separate tasks once the migration is in.
-- Tightening the DOMPurify config beyond defaults (custom
-  `ALLOWED_TAGS` / `ALLOWED_ATTR`). Default config preserves
-  XSS-safety with the silent benign-HTML upgrade pinned by the
-  Option B fixture; tightening is a future task if a real need
-  surfaces.
+- Tightening the DOMPurify config beyond the
+  `FORBID_TAGS: ["style"]` / `FORBID_ATTR: ["style"]` set added in
+  this PR (custom `ALLOWED_TAGS` / `ALLOWED_ATTR` allow-lists,
+  link-target hardening, etc.). The current config preserves
+  XSS-safety + closes the inline-style spoofing vector flagged by
+  PR-#436 review while keeping the Option B benign-HTML upgrade;
+  further tightening is a future task if a real need surfaces.
 - Preserving `target="_blank"` on links. Accepted change per Q4 — user
   uses middle-click / cmd-click for new tab.
 - Server-side AST manipulation (heading extraction, ToC, etc.).
