@@ -190,13 +190,21 @@
                 const response = await fetch('/api/queue-cancel?id=' + encodeURIComponent(id), { method: 'POST' });
                 if (response.ok) {
                     const body = await response.json();
-                    if (body.status === 'cancelled' && typeof body.content === 'string' && body.content.length > 0) {
-                        const ta = document.getElementById('queue-message');
-                        if (ta) {
-                            const existing = ta.value;
-                            const sep = existing && existing.trim() ? '\n\n' : '';
-                            ta.value = existing + sep + body.content;
-                            ta.focus();
+                    if (body.status === 'cancelled') {
+                        let hydrated = '';
+                        if (typeof body.content === 'string' && body.content.length > 0) {
+                            hydrated = body.content;
+                        } else if (typeof body.slashCommand === 'string' && body.slashCommand.length > 0) {
+                            hydrated = body.slashCommand;
+                        }
+                        if (hydrated) {
+                            const ta = document.getElementById('queue-message');
+                            if (ta) {
+                                const existing = ta.value;
+                                const sep = existing && existing.trim() ? '\n\n' : '';
+                                ta.value = existing + sep + hydrated;
+                                ta.focus();
+                            }
                         }
                     }
                 }

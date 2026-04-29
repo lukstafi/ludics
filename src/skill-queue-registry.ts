@@ -139,6 +139,10 @@ function resolveArg(
  *
  * Optional trailing args whose value is empty are silently skipped so they are
  * not appended as empty strings.
+ *
+ * Multi-line arg values (e.g. `feedback`) are rendered on separate lines below
+ * the slash command so the skill receives them as free-form trailing text via
+ * `$ARGUMENTS`. Single-line args render inline.
  */
 export function resolveSkillCommand(
   action: string,
@@ -158,11 +162,18 @@ export function resolveSkillCommand(
     return entry.command;
   }
 
-  const parts: string[] = [entry.command];
+  const inline: string[] = [entry.command];
+  const trailing: string[] = [];
   for (const argName of entry.args) {
     const value = resolveArg(entry, request, argName);
-    if (value) parts.push(value);
+    if (!value) continue;
+    if (trailing.length === 0 && !value.includes("\n")) {
+      inline.push(value);
+    } else {
+      trailing.push(value);
+    }
   }
 
-  return parts.join(" ");
+  const head = inline.join(" ");
+  return trailing.length === 0 ? head : `${head}\n${trailing.join("\n\n")}`;
 }

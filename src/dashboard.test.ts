@@ -627,29 +627,65 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     try {
       const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
       expect(resp.status).toBe(200);
-      const body = await resp.json() as { status: string; content: string | null; action: string; task?: string };
+      const body = await resp.json() as { status: string; content: string | null; action: string; task?: string; slashCommand: string | null };
       expect(body.status).toBe("cancelled");
       expect(body.content).toBe("please recycle me");
       expect(body.action).toBe("message");
       expect(body.task).toBeUndefined();
+      expect(body.slashCommand).toBeNull();
     } finally {
       stop();
     }
     expect(queueList().map(i => i.id)).toEqual([idB]);
   });
 
-  test("POST /api/queue-cancel returns null content for non-message actions and includes task field", async () => {
+  test("POST /api/queue-cancel returns slashCommand for non-message actions", async () => {
     const { queueRequest } = await import("./queue.ts");
     const idA = queueRequest({ action: "elaborate", task: "task-abc" });
 
     const { baseUrl, stop } = await startServer();
     try {
       const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      const body = await resp.json() as { status: string; content: string | null; action: string; task?: string };
+      const body = await resp.json() as { status: string; content: string | null; action: string; task?: string; slashCommand: string | null };
       expect(body.status).toBe("cancelled");
       expect(body.content).toBeNull();
       expect(body.action).toBe("elaborate");
       expect(body.task).toBe("task-abc");
+      expect(body.slashCommand).toBe("/ludics-elaborate task-abc");
+    } finally {
+      stop();
+    }
+  });
+
+  test("POST /api/queue-cancel renders multi-line feedback below slash command", async () => {
+    const { queueRequest } = await import("./queue.ts");
+    const idA = queueRequest({
+      action: "revise-proposal",
+      task: "task-abc",
+      feedback: "First concern.\nSecond concern.",
+    });
+
+    const { baseUrl, stop } = await startServer();
+    try {
+      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
+      const body = await resp.json() as { status: string; slashCommand: string | null };
+      expect(body.status).toBe("cancelled");
+      expect(body.slashCommand).toBe("/ludics-revise-proposal task-abc\nFirst concern.\nSecond concern.");
+    } finally {
+      stop();
+    }
+  });
+
+  test("POST /api/queue-cancel returns null slashCommand for actions with no skill mapping", async () => {
+    const { queueRequest } = await import("./queue.ts");
+    const idA = queueRequest({ action: "complete-task", task: "task-abc" });
+
+    const { baseUrl, stop } = await startServer();
+    try {
+      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
+      const body = await resp.json() as { status: string; slashCommand: string | null };
+      expect(body.status).toBe("cancelled");
+      expect(body.slashCommand).toBeNull();
     } finally {
       stop();
     }

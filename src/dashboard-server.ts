@@ -15,6 +15,7 @@ import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
 import { setQueueHold, maybeFeedMagQueue } from "./mag.ts";
 import { queueList, queueRequest, recentResults, queuePromoteToTop, queueCancel } from "./queue.ts";
+import { resolveSkillCommand } from "./skill-queue-registry.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
 
 const MIME_TYPES: Record<string, string> = {
@@ -493,7 +494,10 @@ export function startDashboardServer(
           const content = typeof request.content === "string" ? request.content : null;
           const action = typeof request.action === "string" ? request.action : "unknown";
           const task = typeof request.task === "string" ? request.task : undefined;
-          const body: Record<string, unknown> = { status: "cancelled", content, action };
+          const slashCommand = action !== "message" && action !== "unknown"
+            ? resolveSkillCommand(action, request as Record<string, unknown>)
+            : null;
+          const body: Record<string, unknown> = { status: "cancelled", content, action, slashCommand };
           if (task !== undefined) body.task = task;
           return new Response(JSON.stringify(body), {
             headers: { "Content-Type": "application/json" },

@@ -105,6 +105,15 @@ describe("resolveSkillCommand — multi-arg skills", () => {
     expect(resolveSkillCommand("preempt", { task: "task-042" }))
       .toBe("/ludics-preempt task-042 suggest");
   });
+
+  test("revise-proposal with multi-line feedback splits to a new line", () => {
+    expect(
+      resolveSkillCommand("revise-proposal", {
+        task: "task-042",
+        feedback: "First point.\nSecond point.",
+      }),
+    ).toBe("/ludics-revise-proposal task-042\nFirst point.\nSecond point.");
+  });
 });
 
 describe("resolveSkillCommand — required args", () => {
