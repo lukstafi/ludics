@@ -3607,6 +3607,13 @@ export async function runMag(args: string[]): Promise<void> {
       console.log(`Queued verify-completion request for ${taskId}`);
       break;
     }
+    case "verify-container-completion": {
+      const taskId = args[1];
+      if (!taskId) throw new Error("task id required");
+      queueRequest({ action: "verify-container-completion", task: taskId });
+      console.log(`Queued verify-container-completion request for ${taskId}`);
+      break;
+    }
     case "feedback-digest": {
       const fdResult = tryQueueFeedbackDigest("ludics");
       if (fdResult.queued) {
@@ -3715,6 +3722,6 @@ export async function runMag(args: string[]): Promise<void> {
       break;
     }
     default:
-      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, health-check, adopt-sessions, process-suggestions, completed, message, queue, queue pop one, queue pop all, queue-pop, on-stop, context, feedback-digest)`);
+      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, verify-container-completion, health-check, adopt-sessions, process-suggestions, completed, message, queue, queue pop one, queue pop all, queue-pop, on-stop, context, feedback-digest)`);
   }
 }

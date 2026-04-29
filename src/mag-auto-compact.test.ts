@@ -88,4 +88,23 @@ describe("auto-compact does not fire for unrelated actions", () => {
     expect(items).toHaveLength(1);
     expect(items[0]!.action).toBe("elaborate");
   });
+
+  test("verify-container-completion <id> enqueues a single matching request", async () => {
+    // Harness condition: the CLI sub-command exists and the dispatcher routes
+    // to queueRequest with the right action+task. If the case were missing
+    // (the round-1 reviewer's first remediation point), runMag would throw
+    // and the queue would stay empty — both assertions would fail.
+    const { runMag } = await import("./mag.ts");
+    await runMag(["verify-container-completion", "task-parent"]);
+
+    const items = readQueue();
+    expect(items).toHaveLength(1);
+    expect(items[0]!.action).toBe("verify-container-completion");
+    expect(items[0]!.task).toBe("task-parent");
+  });
+
+  test("verify-container-completion without an id throws", async () => {
+    const { runMag } = await import("./mag.ts");
+    await expect(runMag(["verify-container-completion"])).rejects.toThrow("task id required");
+  });
 });

@@ -51,13 +51,12 @@ inline.
    - Capture the parent's `title` and `project` for the notify summary.
 
 2. **Enumerate children** by scanning every `*.md` file under
-   `$LUDICS_STATE_PATH/tasks/` whose frontmatter has
-   `dependencies.subtask_of == <parent_id>`. Use `parseTaskFrontmatter` via
-   the harness CLI (`ludics tasks list --json` exists; otherwise read files
-   directly with the standard `Read` tool — keep the work in this orchestrator
-   turn). For each child, record `id`, `status`, and a one-line outcome
-   summary by reading the child's `## Notes` section and trimming to a single
-   line (or fall back to `(no notes)`).
+   `$LUDICS_STATE_PATH/tasks/` with the standard `Read` / `Glob` tools.
+   Inspect each file's YAML frontmatter and keep the ones whose
+   `dependencies.subtask_of` equals `<parent_id>`. For each match, record
+   the `id`, `status`, and a one-line outcome summary taken from the
+   child's `## Notes` section (trim to a single line; fall back to
+   `(no notes)`). All work stays in this orchestrator turn — no worker.
 
 3. **Identify residual ambiguity.** Read the parent's body (everything after
    the frontmatter `---` and the `# Title` heading). Compare its scoped

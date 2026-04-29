@@ -161,6 +161,7 @@ Commands:
   mag draft-proposal <id>     Generate proposal document for task
   mag split-task <id>          Split multi-concern task into subtasks
   mag verify-completion <id>   Deep-inspect task completion, create follow-ups
+  mag verify-container-completion <id>  Review container task once all subtasks resolve
   mag health-check             Check for deadlines, issues
   mag adopt-sessions [--force] Discover sessions and queue adoption for Mag
   mag process-suggestions <id> Queue suggestion processing for completed task
