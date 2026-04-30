@@ -25,9 +25,28 @@ import {
   comparePaths,
 } from "./lint-config-helpers.ts";
 
-if (import.meta.main) {
-  const root = join(import.meta.dir, "..");
+export interface RunLintResult {
+  exitCode: number;
+  /** TS-interface paths missing from the reference YAML. */
+  missingFromYaml: string[];
+  /** YAML paths missing from the TS interface. */
+  missingFromTs: string[];
+  /** Harness paths not present in the reference YAML. */
+  harnessExtras: string[];
+}
 
+/**
+ * Run the bidirectional drift check against an arbitrary repo root. Reads
+ * `<root>/templates/config.reference.yaml`, `<root>/src/config.ts`, and
+ * `<root>/templates/harness/config.yaml` (the harness path remains overridable
+ * via the `LUDICS_HARNESS_CONFIG_PATH` env var so tests can point at a
+ * fabricated fixture without duplicating the rest of the repo).
+ *
+ * Carries forward the env-var carve-out from the previous CLI block —
+ * `staleThresholdSeconds` is computed from an env var, not the config YAML —
+ * and the FREEFORM_CHILDREN / WILDCARD_MAP_PATHS sets unchanged.
+ */
+export function runLint(root: string): RunLintResult {
   // 1. Parse TS interfaces from src/config.ts
   const configSource = readFileSync(join(root, "src", "config.ts"), "utf-8");
   const knownInterfaces = new Set(["ProjectConfig", "AdapterConfigEntry"]);
@@ -81,30 +100,7 @@ if (import.meta.main) {
   // 6. Compare
   const { missingFromYaml, missingFromTs } = comparePaths(tsPaths, yamlCheckPaths);
 
-  // 7. Report
-  let errors = 0;
-
-  if (missingFromYaml.length > 0) {
-    console.error(
-      "\n❌  TypeScript interface has keys not documented in config.reference.yaml:",
-    );
-    for (const p of missingFromYaml) {
-      console.error(`     - ${p}`);
-    }
-    errors += missingFromYaml.length;
-  }
-
-  if (missingFromTs.length > 0) {
-    console.error(
-      "\n❌  config.reference.yaml has keys not in TypeScript interface:",
-    );
-    for (const p of missingFromTs) {
-      console.error(`     - ${p}`);
-    }
-    errors += missingFromTs.length;
-  }
-
-  // 8. Direction 3: templates/harness/config.yaml must be a subset of
+  // 7. Direction 3: templates/harness/config.yaml must be a subset of
   //    config.reference.yaml keys. The harness config is a sparse user-facing
   //    example and only needs to contain keys that exist in the reference.
   //
@@ -143,22 +139,57 @@ if (import.meta.main) {
   }
   harnessExtras.sort();
 
-  if (harnessExtras.length > 0) {
+  const errors =
+    missingFromYaml.length + missingFromTs.length + harnessExtras.length;
+
+  return {
+    exitCode: errors > 0 ? 1 : 0,
+    missingFromYaml,
+    missingFromTs,
+    harnessExtras,
+  };
+}
+
+if (import.meta.main) {
+  // Optional first positional arg overrides the root directory, which lets
+  // tests exercise the real CLI exit-code paths against a tmp fixture.
+  const argRoot = process.argv[2];
+  const root = argRoot ? argRoot : join(import.meta.dir, "..");
+  const result = runLint(root);
+
+  if (result.missingFromYaml.length > 0) {
+    console.error(
+      "\n❌  TypeScript interface has keys not documented in config.reference.yaml:",
+    );
+    for (const p of result.missingFromYaml) {
+      console.error(`     - ${p}`);
+    }
+  }
+
+  if (result.missingFromTs.length > 0) {
+    console.error(
+      "\n❌  config.reference.yaml has keys not in TypeScript interface:",
+    );
+    for (const p of result.missingFromTs) {
+      console.error(`     - ${p}`);
+    }
+  }
+
+  if (result.harnessExtras.length > 0) {
     console.error(
       "\n❌  templates/harness/config.yaml has keys not in config.reference.yaml:",
     );
-    for (const p of harnessExtras) {
+    for (const p of result.harnessExtras) {
       console.error(`     - ${p}`);
     }
-    errors += harnessExtras.length;
   }
 
-  if (errors === 0) {
+  if (result.exitCode === 0) {
     console.log(
       "✅  Config reference is in sync with TypeScript interfaces, and " +
         "harness config is a subset of the reference.",
     );
   }
 
-  process.exit(errors > 0 ? 1 : 0);
+  process.exit(result.exitCode);
 }
