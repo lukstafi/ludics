@@ -368,8 +368,10 @@ function readonlySet<T>(set: Set<T>): ReadonlySet<T> {
       if (prop === "add" || prop === "delete" || prop === "clear") {
         throw new TypeError(`readonly Set: '${String(prop)}' is not allowed`);
       }
-      const value = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === "function"
+        ? (value as (...args: unknown[]) => unknown).bind(target)
+        : value;
     },
   }) as ReadonlySet<T>;
 }
