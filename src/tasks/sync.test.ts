@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { contentFingerprint, tasksNeedsElaborationList, tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
+import { contentFingerprint, formatYamlScalar, tasksNeedsElaborationList, tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
 import { emptySlotData, writeSlotJson } from "../slots/json.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-sync");
@@ -635,5 +635,55 @@ describe("contentFingerprint", () => {
     // different fingerprint. A constant-output bug (e.g. hashing "" instead
     // of `normalized`) would flip this.
     expect(contentFingerprint("Completely different task")).not.toBe(baseline);
+  });
+});
+
+describe("formatYamlScalar", () => {
+  // Each branch is pinned by a per-mutation falsifier per the task's AC. The
+  // null/empty-string path is intentionally routed through the shared
+  // `renderFrontmatterValue` seam in `markdown.ts`; the boolean/number/
+  // identifier/quoted-string branches stay layered above it.
+
+  test("null renders to YAML null token via the shared seam", () => {
+    // Mutation: replace the helper's return with `"NULL"` and this assertion
+    // flips — proving the seam is wired in (not coincidental output from a
+    // legacy `if (value === null) return "null"` branch in this file).
+    expect(formatYamlScalar(null)).toBe("null");
+  });
+
+  test("empty string also collapses to null (alignment with renderFrontmatterValue)", () => {
+    // Mutation: drop the `value === ""` clause and `""` falls through to the
+    // identifier-regex / quoted-string branch, returning `'""'` — flipping
+    // this assertion.
+    expect(formatYamlScalar("")).toBe("null");
+  });
+
+  test("boolean true/false render to bare tokens", () => {
+    // Mutation: remove the boolean branch and `true` falls through to
+    // `renderFrontmatterValue` (or, if the type were widened, into the
+    // string branches) — neither yields the bare `"true"` token.
+    expect(formatYamlScalar(true)).toBe("true");
+    expect(formatYamlScalar(false)).toBe("false");
+  });
+
+  test("numbers stringify (including 0, which is falsy)", () => {
+    // Mutation: replace `typeof value === "number"` with `if (!value) return …`
+    // and `0` routes through the null/empty branch — flipping the 0 case.
+    expect(formatYamlScalar(42)).toBe("42");
+    expect(formatYamlScalar(0)).toBe("0");
+  });
+
+  test("identifier-shaped strings pass through unquoted", () => {
+    // Mutation: remove the identifier regex and `"hello-world"` falls through
+    // to the quoted-string branch, producing `'"hello-world"'` instead.
+    expect(formatYamlScalar("hello-world")).toBe("hello-world");
+  });
+
+  test("free-form strings are quoted with yamlEscape applied", () => {
+    // Mutation: remove the quoted-string branch and `"hello world"` returns
+    // unquoted — flipping this assertion.
+    expect(formatYamlScalar("hello world")).toBe('"hello world"');
+    // Embedded quotes get backslash-escaped (yamlEscape behaviour preserved).
+    expect(formatYamlScalar('he said "hi"')).toBe('"he said \\"hi\\""');
   });
 });

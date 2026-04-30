@@ -5,7 +5,7 @@ import { join } from "path";
 import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCount, milestonesEnabledProjects } from "../config.ts";
 import { readAllSlotJson } from "../slots/json.ts";
 import { listStashes } from "../slots/preempt.ts";
-import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray } from "./markdown.ts";
+import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray, renderFrontmatterValue } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
 import { queueRequest, queueHasPendingActionForTask, parseQueueLines } from "../queue.ts";
@@ -210,10 +210,13 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function formatYamlScalar(value: string | number | boolean | null): string {
-  if (value === null) return "null";
+export function formatYamlScalar(value: string | number | boolean | null): string {
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") return String(value);
+  // value is string | null here — delegate the null/empty-string normalization
+  // to the shared `renderFrontmatterValue` seam so the YAML-null token lives in
+  // exactly one place in src/.
+  if (value === null || value === "") return renderFrontmatterValue(value);
   // Only quote strings that contain special YAML characters or could be misinterpreted
   if (/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(value)) return value;
   return `"${yamlEscape(value)}"`;
