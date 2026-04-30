@@ -199,12 +199,18 @@ export interface OrchestrationState {
    *  doesn't skip validation. Captured before applyPhaseSideEffects() mutates round/planMergeRound.
    *  Consumed and cleared by enterPhase() on the next iteration. */
   previousPhaseCtx?: { phase: Phase; round: number; planMergeRound: number };
-  /** Round number at which the stale-base warning last fired (Item A dedup memo).
-   *  When state.round changes, the remembered count resets. */
-  staleBaseLastWarnedRound?: number;
-  /** Commit count at which the stale-base warning last fired within
-   *  staleBaseLastWarnedRound. Re-fire only when a new count exceeds this. */
-  staleBaseLastWarnedCount?: number;
+  /** Per-(round, phase-category) dedup memo for the stale-base warning
+   *  (gh-ludics-409). Coder-category covers `plan`/`work`; reviewer-category
+   *  covers `plan-review`/`review`. A warning that fired in one category in
+   *  round N does not suppress a warning in the other category in the same
+   *  round. Reads tolerate undefined entries (treated as "no prior warning");
+   *  persisted state from before this field existed is backfilled by
+   *  migrateState() from the legacy scalar fields
+   *  `staleBaseLastWarnedRound` / `...Count`. */
+  staleBaseLastWarned?: {
+    coder?: { round: number; count: number };
+    reviewer?: { round: number; count: number };
+  };
   /** Caller-selected harness directory; populated at orchestration init and
    *  backfilled from the readOrchestrationState() harnessDir arg for legacy
    *  state files. Consumers should read via `state.harnessDir ?? defaultHarnessDir()`. */
@@ -310,6 +316,30 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
   if (state.config && state.config.autoRecoverWrongFilename === undefined) {
     state.config.autoRecoverWrongFilename = true;
   }
+  // gh-ludics-409: migrate legacy scalar memo fields into the per-category
+  // record. Persisted state from gh-ludics-374's shipped build carries
+  // `staleBaseLastWarnedRound` / `...Count`; map them into
+  // `staleBaseLastWarned.coder` (the only category the legacy warning ever
+  // populated) so dedup state survives the upgrade. Strip the legacy keys
+  // unconditionally so persistState() doesn't write them back out.
+  const legacy = state as unknown as {
+    staleBaseLastWarnedRound?: number;
+    staleBaseLastWarnedCount?: number;
+  };
+  if (
+    state.staleBaseLastWarned === undefined
+    && (legacy.staleBaseLastWarnedRound !== undefined
+        || legacy.staleBaseLastWarnedCount !== undefined)
+  ) {
+    state.staleBaseLastWarned = {
+      coder: {
+        round: legacy.staleBaseLastWarnedRound ?? 0,
+        count: legacy.staleBaseLastWarnedCount ?? 0,
+      },
+    };
+  }
+  delete legacy.staleBaseLastWarnedRound;
+  delete legacy.staleBaseLastWarnedCount;
   return state;
 }
 

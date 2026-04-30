@@ -1826,6 +1826,61 @@ describe("skills", () => {
     expect(raw).toContain("main-side drift");
   });
 
+  test("gh-ludics-409: pair-coder-work salvage block prepends cat-file verification", () => {
+    const path = join(import.meta.dir, "../../skills/orchestration/pair-coder-work.md");
+    const raw = readFileSync(path, "utf-8");
+    const startIdx = raw.indexOf("**Salvage on rejection**");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    const endIdx = raw.indexOf("\n{{/IF}}", startIdx);
+    expect(endIdx).toBeGreaterThan(startIdx);
+    const block = raw.slice(startIdx, endIdx);
+    // Verification literals present.
+    expect(block).toMatch(/git cat-file -e main:<path>/);
+    expect(block).toMatch(/git cat-file -e HEAD:<path>/);
+    expect(block).toMatch(/stale-base/i);
+    // Ordering invariant: verification must precede the irreversible patch
+    // capture / revert. A verification appended after the revert is useless.
+    const verifyIdx = block.indexOf("git cat-file");
+    const captureIdx = block.indexOf("salvage-{{TASK_ID}}.patch");
+    expect(verifyIdx).toBeGreaterThanOrEqual(0);
+    expect(captureIdx).toBeGreaterThanOrEqual(0);
+    expect(verifyIdx).toBeLessThan(captureIdx);
+  });
+
+  test("gh-ludics-409: pair-reviewer-review per-commit-diff paragraph adds cat-file post-hoc check", () => {
+    const path = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-review.md");
+    const raw = readFileSync(path, "utf-8");
+    const startIdx = raw.indexOf("Before flagging apparent deletions");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    const endIdx = raw.indexOf("\n\n", startIdx);
+    expect(endIdx).toBeGreaterThan(startIdx);
+    const para = raw.slice(startIdx, endIdx);
+    // Existing per-commit guidance (gh-ludics-374) preserved in the same paragraph.
+    expect(para).toMatch(/git log main\.\.HEAD --stat/);
+    // New: post-hoc cat-file verification folded into the same paragraph (no new section).
+    expect(para).toMatch(/git cat-file -e main:<path>/);
+    expect(para).toMatch(/REQUEST_CHANGES/);
+  });
+
+  test("gh-ludics-409: orchestration-patterns Procedure block names runner coverage and cat-file verification", () => {
+    const path = join(import.meta.dir, "../../docs/orchestration-patterns.md");
+    const raw = readFileSync(path, "utf-8");
+    const procIdx = raw.indexOf("**Procedure (diff commands).**");
+    expect(procIdx).toBeGreaterThanOrEqual(0);
+    const endIdx = raw.indexOf("\n\n", procIdx);
+    expect(endIdx).toBeGreaterThan(procIdx);
+    const procBlock = raw.slice(procIdx, endIdx);
+    // Falsifier: forward-link `when it lands` no longer appears in the block.
+    expect(procBlock).not.toMatch(/when it lands/);
+    // Present-tense coverage statement names the new reviewer phases.
+    expect(procBlock).toContain("plan-review");
+    expect(procBlock).toMatch(/`review`/);
+    expect(procBlock).toContain("warnStaleBase");
+    // Canonical per-file verification step.
+    expect(procBlock).toContain("git cat-file -e main:<path>");
+    expect(procBlock).toContain("git cat-file -e HEAD:<path>");
+  });
+
   test("gh-ludics-404: orchestration-patterns has Harness instantiation subsection with falsifier framing and worked example", () => {
     const path = join(import.meta.dir, "../../docs/orchestration-patterns.md");
     const raw = readFileSync(path, "utf-8");
@@ -1841,7 +1896,7 @@ describe("skills", () => {
     // task-91667552 worked example, before/after structure.
     expect(section).toContain("task-91667552");
     expect(section).toContain("addRealOrigin");
-    expect(section).toContain("staleBaseLastWarnedCount");
+    expect(section).toContain("staleBaseLastWarned?.coder?.count");
     // Distinction-from-invariant-vs-capability paragraph.
     expect(section).toContain("Invariant vs capability");
     // Cross-references — slugs the See-also block points at.
