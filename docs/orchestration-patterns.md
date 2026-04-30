@@ -59,7 +59,11 @@ If a new pattern needs to be added, it should pass the same bar the templates ho
 
 **When `skip with reason` is appropriate.** Any hit outside the intended blast radius — a fixture, a doc snippet, a deprecated module — gets a one-phrase reason. Leaving a hit unlabelled is the common failure mode; the disposition list forces the decision into the plan where the reviewer can see it.
 
+**Single grep, double duty.** The same `grep -n <token> <files>` that enumerates the targets also catalogs the nearby out-of-scope hits — different modules, deprecated paths, fixtures — so one command produces both the modify list and the scope-boundary citation. Record the boundary calls inline in the disposition list rather than running a separate audit pass; the list is the natural home for them. The reviewer's "why didn't you also touch line N?" question then has a pre-written answer cited from the same evidence the modify list rests on.
+
 **Boundary.** If the symbol is a primitive name collision (`type`, `handle`, `data`), the sweep is noisy and probably useless — swap the approach to "search for the specific call signature" or "search for the import path". The principle is exhaustiveness, not blind greps.
+
+**The grep itself can lie.** Leading-anchor patterns like `^export function` or `^export const` miss `export { ... }` re-export blocks — a symbol can be publicly exposed without ever appearing as the head of a declaration line. `src/adapters/tmux-adapter.ts`'s trailing `export { ... }` block is the worked example: it re-exports `readTmuxSlotState`, `writeTmuxSlotState`, `removeTmuxSlotState`, and `agentPortRole` alongside the adapter object's own members, none of which a `^export function` grep would surface. Use a broader pattern — `grep -nE 'export[[:space:]]*\{'` (or `rg 'export\s*\{'`) — alongside the leading-anchor patterns when the question is "is this name publicly exposed?" rather than "where is it declared?". The leading `\{` only works in extended-regex mode; default `grep` is BRE and errors with `Unmatched \{`. See also gh-ludics-406 (the consumer-side sibling: lint scripts that regex-extract symbol references break silently on DRY refactors) — same family of regex-shape blind spot, opposite end of the import chain.
 
 See also [post-edit-occurrence-recheck](#post-edit-occurrence-recheck) for running the same sweep *after* the edit, and in both directions (forward and inverse).
 
@@ -111,7 +115,7 @@ See also [data-shape consumer sweep](#data-shape-consumer-sweep) — both concer
 3. Modified validation → tests covering the new rule and its edge cases.
 4. New CLI output or changed log line → a test asserting the exact string (or a shape-stable regex).
 
-**When not to apply.** A pure refactor that doesn't change observable behaviour doesn't need a new regression test — the existing tests are the coverage. The judgment call is "did I change what a caller can observe?", not "did I change any code?"
+**When not to apply.** A pure refactor that doesn't change observable behaviour doesn't need a new regression test — the existing tests are the coverage. The judgment call is "did I change what a caller can observe?", not "did I change any code?" The no-new-test decision still owes the plan a citation: name the existing test (or test file) that already covers the touched call sites, so the refactor case leaves a reviewable artifact reviewers can point to instead of a silent skip.
 
 See also [negative-case-regression-testing](#negative-case-regression-testing) for the stress-test discipline that keeps a new regression test honest.
 
