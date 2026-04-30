@@ -73,8 +73,16 @@ normalize, so they stay out of scope.
   `src/tasks/markdown.test.ts` suites pass without modification (other
   than the new helper-level tests added for the falsifiers above).
 - `grep -n '"null"' src/tasks/sync.ts` no longer matches the
-  `formatYamlScalar` body. (After the change, the only `"null"` literal
-  in `src/` outside of test files is in `renderFrontmatterValue`'s body.)
+  `formatYamlScalar` body. (After the change, the only **write-side**
+  `"null"` literal in `src/` outside of test files is in
+  `renderFrontmatterValue`'s body in `src/tasks/markdown.ts`. Read-side
+  normalizers — `normalizeOptionalString` and
+  `parseTaskFrontmatterLineFallback` in `src/tasks/markdown.ts`, plus the
+  similar `=== "null"` comparisons in `dashboard.ts`, `slots/index.ts`,
+  `mag.ts`, and the various adapter / sweep modules — necessarily compare
+  against the YAML `"null"` token coming back from disk and stay out of
+  scope, per the Approach section's grep expectation: "any read-side
+  normalizers … remain.")
 
 ## Context
 
