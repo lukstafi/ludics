@@ -29,7 +29,18 @@ interface SkillQueueEntry {
   requiredArgs: string[];
 }
 
-/** Module-level cache; null means "not yet loaded". */
+/**
+ * Module-level cache; null means "not yet loaded".
+ *
+ * Audit (gh-ludics-405): skip-with-rationale on the deep-freeze retrofit.
+ * `SkillQueueEntry` records (with mutable `args[]`, `defaults`, `requiredArgs`)
+ * never escape this module's public surface — `resolveSkillCommand` returns a
+ * resolved `string | null`, `hasRegisteredAction` returns a `boolean`. Verified
+ * callers: `mag.ts:resolveSkillCommand/hasRegisteredAction`,
+ * `dashboard-server.ts:resolveSkillCommand`. None receive entries by reference.
+ * If a future caller surface returns `SkillQueueEntry` directly, that change
+ * must add the freeze.
+ */
 let cache: Map<string, SkillQueueEntry> | null = null;
 
 /** Clear the registry cache. Useful in tests and for process-lifetime resets. */

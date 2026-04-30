@@ -220,6 +220,49 @@ describe("generateHealthData", () => {
     expect(second.doctor.output).toBe(first.doctor.output);
     expect(second.doctor.timestamp).toBe(first.doctor.timestamp);
   });
+
+  test("doctor cache TTL eviction replaces the returned doctor.timestamp across the boundary", async () => {
+    const {
+      generateHealthData,
+      _resetDoctorCache,
+      _setDoctorCacheCachedAt,
+      _peekDoctorCache,
+    } = await import("./dashboard.ts");
+    _resetDoctorCache();
+
+    // Read 1: populate the cache; capture the returned timestamp at the
+    // public boundary (the AC's identity proxy is `data.doctor.timestamp`,
+    // not `_peekDoctorCache()` — that would test an internal seam, not the
+    // observable invariant).
+    const data1 = generateHealthData() as { doctor: { timestamp: string } };
+    const ts1 = data1.doctor.timestamp;
+    expect(typeof ts1).toBe("string");
+    // Cross-check the cache is in fact materialised (positive control on
+    // the harness condition: a real cached record exists to be evicted).
+    expect(_peekDoctorCache()).not.toBeNull();
+
+    // Read 2 within TTL: returned timestamp must equal ts1. If the cache
+    // were a no-op (re-spawning every call), ts2 would generally differ
+    // from ts1 because the subprocess sets a fresh `new Date().toISOString()`
+    // on each miss.
+    const data2 = generateHealthData() as { doctor: { timestamp: string } };
+    const ts2 = data2.doctor.timestamp;
+    expect(ts2).toBe(ts1);
+
+    // Force the cache past the 5-minute TTL deterministically; pair with a
+    // small clock advance so the post-eviction `new Date().toISOString()`
+    // is guaranteed to differ from ts1 even on the fastest hardware.
+    _setDoctorCacheCachedAt(Date.now() - 600_000);
+    await Bun.sleep(5);
+
+    // Read 3 post-TTL: cache miss, re-spawn → fresh timestamp at the public
+    // boundary. This is the AC's "replaced across the boundary" assertion.
+    const data3 = generateHealthData() as { doctor: { timestamp: string } };
+    const ts3 = data3.doctor.timestamp;
+    expect(ts3).not.toBe(ts1);
+    // Sanity: ts3 is a real ISO string, not a stale empty/null value.
+    expect(new Date(ts3).toISOString()).toBe(ts3);
+  });
 });
 
 describe("generateNotifications shape guard", () => {
