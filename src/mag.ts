@@ -283,6 +283,32 @@ function clearStallState(): void {
 // --- Queue feed and stall nudge helpers ---
 
 /**
+ * Decide whether a queue-fed command should carry the `Ludics: ` prefix.
+ * Structural rule: if the raw queue record has a string `content` field
+ * (the `{ action: "message", content: string }` shape — user-typed messages
+ * and content-bearing automated entries like `/compact`), feed verbatim so
+ * Claude Code's slash-command parser still dispatches it. Otherwise (every
+ * automated skill invocation, which carries `task` or no payload) prefix
+ * with `Ludics: ` so Mag sees a normal user prompt and decides whether to
+ * act. Parse failure defaults to prefixing (treat as automated).
+ *
+ * Exported for testing.
+ */
+export function applyQueueFeedPrefix(rawLine: string, command: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawLine);
+  } catch {
+    return `Ludics: ${command}`;
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const content = (parsed as Record<string, unknown>).content;
+    if (typeof content === "string") return command;
+  }
+  return `Ludics: ${command}`;
+}
+
+/**
  * When Mag is ready for input and queue has Mag-turn work, pop one item
  * and deliver. "Ready" means either the settled sentinel is set (stop
  * hook fired at end of last turn) or isMagReady() reports the pane has
@@ -316,9 +342,10 @@ export async function maybeFeedMagQueue(): Promise<boolean> {
   const popped = await queuePopSkill();
   if (!popped) return false;
 
-  const sent = triggerSkill(MAG_SESSION_NAME, popped.command);
+  const delivered = applyQueueFeedPrefix(popped.line, popped.command);
+  const sent = triggerSkill(MAG_SESSION_NAME, delivered);
   if (sent) {
-    emitEvent({ event_type: "mag_queue_feed", source: "keepalive", scope: "mag", message: `delivered: ${popped.command}` });
+    emitEvent({ event_type: "mag_queue_feed", source: "keepalive", scope: "mag", message: `delivered: ${delivered}` });
   } else {
     // Requeue the failed item for retry on next keepalive cycle.
     let retryCount = 0;

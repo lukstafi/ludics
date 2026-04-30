@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix } from "./mag.ts";
 import type { RunGit } from "./git-runner.ts";
 
 describe("normalizeLaunchAdapter", () => {
@@ -220,6 +220,91 @@ describe("resolveQueueRequestCommand — backward compat parsing", () => {
       false,
     );
     expect(result).toBeNull();
+  });
+});
+
+describe("applyQueueFeedPrefix — structural prefix decision", () => {
+  // Positive case: task-bearing automated action gets prefix.
+  // Harness condition: rawLine has `task` field and NO `content` field.
+  // Invariant: any QueueAction whose JSON omits `content` is automated and
+  // must be visibly distinguishable to Mag (no leading `/`, so Claude Code
+  // does not auto-dispatch the embedded slash command).
+  test("automated task-bearing action gets 'Ludics: ' prefix", () => {
+    const raw = JSON.stringify({ action: "draft-proposal", task: "task-X" });
+    const result = applyQueueFeedPrefix(raw, "/ludics-draft-proposal task-X");
+    expect(result.startsWith("Ludics: ")).toBe(true);
+    expect(result).toBe("Ludics: /ludics-draft-proposal task-X");
+  });
+
+  // Negative case: content-bearing message action goes through verbatim.
+  // Harness condition: rawLine has `content: string` field.
+  // Invariant: content-bearing entries (user-typed messages OR auto-fed
+  // slash commands like `/compact` queued via the message channel) reach
+  // Mag without prefix so Claude Code's parser still dispatches them.
+  test("content-bearing message action does NOT get prefix", () => {
+    const raw = JSON.stringify({ action: "message", content: "hello" });
+    const result = applyQueueFeedPrefix(raw, "hello");
+    expect(result.startsWith("Ludics: ")).toBe(false);
+    expect(result).toBe("hello");
+  });
+
+  // AC 2a: load-bearing /compact case. The keepalive auto-schedules
+  // `/compact` as a `message` action whose content is fed verbatim;
+  // prefixing would break Claude Code's slash-command auto-dispatch.
+  // Harness condition: rawLine has `content: "/compact"`.
+  // Invariant: command remains exactly "/compact" — no prefix, even
+  // though it starts with `/`.
+  test("'/compact' message action is fed verbatim (load-bearing)", () => {
+    const raw = JSON.stringify({ action: "message", content: "/compact" });
+    const result = applyQueueFeedPrefix(raw, "/compact");
+    expect(result).toBe("/compact");
+  });
+
+  // Falsifier: empty-string content still counts as content-bearing.
+  // (typeof content === "string" — present but empty is still "user
+  // shape" and should not be prefixed.)
+  test("empty-string content is still content-bearing (no prefix)", () => {
+    const raw = JSON.stringify({ action: "message", content: "" });
+    const result = applyQueueFeedPrefix(raw, "");
+    expect(result).toBe("");
+  });
+
+  // Falsifier: non-string content (e.g. null) is NOT content-bearing,
+  // so the structural rule prefixes. Guards against a future variant
+  // accidentally sneaking through with a falsy non-string content.
+  test("non-string content field is treated as automated (gets prefix)", () => {
+    const raw = JSON.stringify({ action: "weird", content: null, task: "task-X" });
+    const result = applyQueueFeedPrefix(raw, "/ludics-weird task-X");
+    expect(result).toBe("Ludics: /ludics-weird task-X");
+  });
+
+  // Defensive default: malformed JSON → treat as automated.
+  test("parse failure defaults to prefixing (treat as automated)", () => {
+    const result = applyQueueFeedPrefix("not-json{{{", "/ludics-foo");
+    expect(result).toBe("Ludics: /ludics-foo");
+  });
+
+  // Falsifier: an action-name allowlist that omits `message` would
+  // pass the positive test but fail this — `process-suggestions` has
+  // a `task` field but no `content`, must be prefixed.
+  test("process-suggestions task-bearing action gets prefix", () => {
+    const raw = JSON.stringify({ action: "process-suggestions", task: "task-Y" });
+    const result = applyQueueFeedPrefix(raw, "/ludics-process-suggestions task-Y");
+    expect(result).toBe("Ludics: /ludics-process-suggestions task-Y");
+  });
+
+  // Inversion falsifier guard: if the structural condition is
+  // accidentally inverted (prefixing content-bearing, not prefixing
+  // task-bearing), the positive and negative tests above would both
+  // fail. This explicit cross-pair confirms both branches in one shot.
+  test("inversion-resistant: task-bearing prefixed, content-bearing not", () => {
+    const taskRaw = JSON.stringify({ action: "elaborate", task: "task-Z" });
+    const messageRaw = JSON.stringify({ action: "message", content: "free-form" });
+    const taskResult = applyQueueFeedPrefix(taskRaw, "/ludics-elaborate task-Z");
+    const messageResult = applyQueueFeedPrefix(messageRaw, "free-form");
+    // Task-bearing must start with "Ludics: ", content-bearing must not.
+    expect(taskResult.startsWith("Ludics: ")).toBe(true);
+    expect(messageResult.startsWith("Ludics: ")).toBe(false);
   });
 });
 
