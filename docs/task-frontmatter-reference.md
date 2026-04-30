@@ -2,7 +2,7 @@
 
 Reference documentation for the YAML frontmatter on `task-*.md` files. Each section describes a single field: how to choose a value, what the orchestrator does with it, and worked examples drawn from real triage decisions.
 
-This doc grows over time. Today it covers `effort`; future additions are expected for the priority ladder (`S` / `A` / `B` / `C` / `D`), the status lifecycle (`ready` → `in-progress` → `done` / `merged` / etc.), and interaction flags like `skip_plan`, `uses_browser`, and `requirements`.
+This doc grows over time. Today it covers `effort`, `leaf` (container marker), and the full `## Status` lifecycle (see § Status below). Future additions are expected for the priority ladder (`S` / `A` / `B` / `C` / `D`) and interaction flags like `skip_plan`, `uses_browser`, and `requirements`.
 
 For the authoritative list of fields and their TypeScript types, see [`TaskFrontmatter` in `src/tasks/types.ts`](../src/tasks/types.ts). For the orchestration mapping, see `selectOrchestrationFlags` in [`src/adapters/t3code.ts`](../src/adapters/t3code.ts).
 
@@ -74,6 +74,146 @@ The `skip_plan: true` frontmatter flag is only consulted at `medium` effort:
 ### Notes on extension
 
 The four levels above describe today's scale. Nothing in the model precludes a future `huge` or `epic` level if a class of work emerges that genuinely needs a different orchestration shape; the framing here is descriptive rather than normative. New levels would need corresponding entries in the dashboard validation allowlist, the `selectOrchestrationFlags` mapping, and this section.
+
+## Status
+
+The `status` field is a single string drawn from the central allowlist
+`VALID_STATUSES` exported from `src/tasks/markdown.ts`. The runtime type
+on `TaskFrontmatter.status` is free-form `string` for backwards
+compatibility, but every code path that consumes status now flows
+through the centralised constants (`VALID_STATUSES`, `TERMINAL_STATUSES`,
+`READY_QUEUE_ELIGIBLE_STATUSES`, `BLOCKED_RECONCILE_SKIP_STATUSES`).
+
+The CLI `ludics tasks status <task-id> <status>` setter validates input
+against `VALID_STATUSES` and rejects unknown spellings.
+
+The eleven recognised statuses below cover the lifecycle from intake to
+terminal disposition. Each subsection documents the semantic of the
+status, the actor that flips a task into it, and the path that exits.
+
+### `ready`
+
+Fresh / unblocked / awaiting slot assignment. Auto-queued by the
+keepalive's `getSortedReadyCandidates()` ordering once the task is
+elaborated and has a proposal.
+
+Transitions: set by `tasks sync` for fresh GitHub-derived tasks, by the
+elaborate worker on completion, by `/api/task-confirm` (revive from
+`needs-confirmation`), by `/api/deferred-approve` (revive from
+`deferred`), and by `/api/stale-revive` (revive from `stale`). Exits to
+`in-progress` when assigned to a slot, or directly to `blocked` if
+`dependencies.blocked_by` becomes non-empty.
+
+### `in-progress`
+
+Task is assigned to a slot and the orchestration runner is actively
+working on it. The slot's `slot.json` records the assignment; the task's
+`slot:` and `started:` frontmatter fields point at the active slot.
+
+Transitions: set by `slotAssign()`. Exits to `done` (PR merged), `abandoned`
+(user gives up), `merged` (work folded into another task), or
+`needs-confirmation` (verify-completion produced ambiguity).
+
+### `deferred`
+
+A proposal has been generated but the user has not yet approved
+auto-start. The dashboard's "Deferred Launch" panel surfaces these for
+one-click approve / abandon.
+
+Transitions: set by `/ludics-draft-proposal` when the worker confidence
+is low or `start_sessions` autonomy is `manual` / `suggest`. Exits to
+`ready` via `/api/deferred-approve` or terminal `abandoned` via
+`/api/deferred-abandon`.
+
+### `preempted`
+
+The task was previously in-progress when a higher-priority task arrived
+and preempted its slot. The original task's stash is recorded so it can
+be resumed.
+
+Transitions: set by the slot preempt path. Exits to `in-progress` when
+resumed.
+
+### `preempt-queued`
+
+An earlier preempt attempt failed to clear the slot cleanly; the task is
+queued for a second-chance preempt.
+
+Transitions: set by the preempt retry logic. Exits to `preempted` once
+the preempt completes, or back to `in-progress` if the preempt is
+cancelled.
+
+### `done`
+
+Task is complete. The PR has merged (or the work was otherwise finished)
+and the retrospective has been written.
+
+Transitions: set by the orchestration runner when the PR-merged
+verification passes. Terminal.
+
+### `abandoned`
+
+Explicitly closed without completion. Auto-closes the corresponding
+GitHub issue (if any).
+
+Transitions: set by `ludics tasks abandon`, by `/api/task-dismiss`
+(needs-confirmation dismissal), by `/api/deferred-abandon`, or by
+`/api/stale-abandon` (which composes a `stale → ready` flip then
+`tasksAbandon`). Terminal.
+
+### `merged`
+
+Task content has been folded into another task via `merged_into`.
+Duplicate-detection (`tasks duplicates` + `tasks merge`) is the typical
+entry path.
+
+Transitions: set by `ludics tasks merge`. Terminal. Reversible only via
+`ludics tasks unmerge`.
+
+### `needs-confirmation`
+
+The verify-completion sweep produced ambiguity that the harness cannot
+auto-resolve. The dashboard's "Needs Confirmation" panel surfaces these
+for user disposition.
+
+Transitions: set by `/ludics-verify-container-completion` and the
+verify-failure path in the orchestration runner. Exits to `ready` via
+`/api/task-confirm` or `abandoned` via `/api/task-dismiss`.
+
+### `blocked`
+
+`dependencies.blocked_by` is non-empty. The blocked-status reconciler
+(`tasksReconcileBlockedStatus()`) maintains this in lockstep with the
+`blocked_by` field.
+
+Transitions: set automatically by the reconciler when a task gains a
+blocker; flipped back to `ready` when the last blocker resolves. The
+reconciler skips this transition for tasks already in
+`BLOCKED_RECONCILE_SKIP_STATUSES` (terminal + active states).
+
+### `stale`
+
+Task work has been superseded; the originally-proposed design has
+already shipped or the premise has been invalidated. Resolve by
+abandoning (auto-closes GH issue) or reviving via the dashboard
+(transitions back to `ready`).
+
+`stale` is in `TERMINAL_STATUSES` — the keepalive's auto-proposal
+queue, the unstick path, the duplicate filter, the abandon-path guard,
+the milestone warnings, the needs-elaboration sweep, the deadline
+warnings, and the t3code thread cleanup all treat stale tasks as
+terminal-for-active-work. The `containerCompletionSweep` also treats
+`stale` parents as terminal so children completing after the parent
+goes stale don't trigger a verify-container-completion request.
+
+Transitions: auto-set by `/ludics-draft-proposal` when the worker
+returns `status: stale` (the routing flips frontmatter via
+`transitionStatus(taskFile, "ready", "stale")` and appends rationale to
+`## Notes`). Auto-blocked-by-precondition: a subsequent
+`/ludics-draft-proposal` invocation for an already-stale task returns
+`status: blocked-stale` without delegating to the worker. Exits via the
+dashboard's "Stale" panel — Revive (`/api/stale-revive`, flip to
+`ready`) or Abandon (`/api/stale-abandon`, terminal disposition).
 
 ## `leaf` (container marker)
 
