@@ -35,7 +35,10 @@ export function listTestFiles(dir: string): string[] {
       continue;
     }
     for (const entry of entries) {
-      if (entry.startsWith(".")) continue;
+      // Match the previous `grep -r` semantics: do NOT skip dot-directories.
+      // GNU grep recurses into hidden dirs by default, so an offending
+      // `*.test.ts` under `src/.something/` was caught before. Skipping dots
+      // would silently weaken the policy (codex P2 on PR #468).
       const full = join(cur, entry);
       let st;
       try {

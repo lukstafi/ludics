@@ -93,6 +93,26 @@ describe("runLint", () => {
     }
   });
 
+  test("scans dot-directories (matches grep -r semantics; codex P2 on PR #468)", () => {
+    // GNU `grep -r 'mock\.module(' src/ templates/ --include='*.test.ts'`
+    // recurses into hidden dirs by default. The TS rewrite must match that
+    // behavior — skipping dot-dirs would silently weaken the policy and let
+    // an offending `*.test.ts` under `src/.something/` go unnoticed.
+    const { root, cleanup } = makeFixture({
+      "src/.hidden/foo.test.ts": [
+        "import { mock } from 'bun:test';",
+        "mock.module('./bar', () => ({ bar: 1 }));",
+      ].join("\n"),
+    });
+    try {
+      const result = runLint(root);
+      expect(result.exitCode).toBe(1);
+      expect(result.offenders).toEqual(["src/.hidden/foo.test.ts"]);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("returns exit 0 when neither src/ nor templates/ exist", () => {
     const { root, cleanup } = makeFixture({});
     try {
