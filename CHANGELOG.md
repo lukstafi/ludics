@@ -6,6 +6,7 @@ Simplified upstream workflow: for projects declaring `upstream_repo`, orchestrat
 
 ### Documentation / contracts
 
+- **Removed `tests/test.sh`** ([#407](https://github.com/lukstafi/ludics/issues/407)). The bash script silently failed on macOS system bash 3.2 at the `${var,,}` lowercase expansion (line 102), making it unreliable as "tests pass" AC evidence. Coverage is replaced by `bun run smoke` (compiled-binary smoke: `help`, `doctor`, unknown-command via `scripts/smoke.ts`) and `bun run lint:hooks` (`shellcheck` over `templates/hooks/*.sh` via `scripts/lint-hooks.ts`). Existing `contentFingerprint` and `setQueueHold` sentinel coverage migrated to `src/tasks/sync.test.ts` and `src/mag.test.ts`. `bun test` is now the unambiguous canonical command for "tests pass" AC evidence in this repo.
 - **Small-effort tasks are now explicitly documented to skip the plan phase.** `skip_plan` remains a manual override applying only to medium effort. No behavior change; the rule is now asserted by tests (`selectOrchestrationFlags` / `selectOrchestrationFlagsForTask`).
 - **Manual-smoke evidence playbook.** New `## Manual-Smoke Evidence` section in `skills/worker-conventions.md` documents two probe patterns (wrapper-pipeline + live HTTP via `startDashboardServer`) for ACs that require runtime verification of deterministically-rendered, statically-served surfaces. Cross-linked from `ludics-elaborate`, `ludics-draft-proposal`, `ludics-verify-completion`. New helper: `bun run scripts/dev-dashboard-mirror.ts` boots the dashboard against a temp-dir mirror.
 

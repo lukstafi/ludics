@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { tasksNeedsElaborationList, tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
+import { contentFingerprint, tasksNeedsElaborationList, tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
 import { emptySlotData, writeSlotJson } from "../slots/json.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-sync");
@@ -592,5 +592,48 @@ dependencies:
     // it is unelaborated and ready. Removing the filter flips this assertion.
     expect(list).not.toContain("task-container");
     expect(list).toContain("task-leaf");
+  });
+});
+
+describe("contentFingerprint", () => {
+  // Migrated from the deleted bash test script (gh-ludics-407): that script
+  // inlined a duplicate fingerprint implementation gated on bash 4+ syntax.
+  // These tests assert the same five behaviours against the TS implementation
+  // directly.
+
+  const baseline = contentFingerprint("Add dark mode support");
+
+  test("returns 8-char lowercase hex", () => {
+    // Invariant: fingerprint format is exactly 8 hex chars. Slicing or
+    // hashing changes that produce non-hex or wrong-length output flip this.
+    expect(baseline).toMatch(/^[0-9a-f]{8}$/);
+    expect(baseline.length).toBe(8);
+  });
+
+  test("is case-insensitive", () => {
+    // Invariant: case folding happens before hashing. Removing toLowerCase()
+    // flips this — uppercase input would hash differently.
+    expect(contentFingerprint("ADD DARK MODE SUPPORT")).toBe(baseline);
+  });
+
+  test("normalizes whitespace", () => {
+    // Invariant: surrounding + collapsed internal whitespace is normalized
+    // before hashing. Removing the trim/collapse pipeline flips this.
+    expect(contentFingerprint("  Add   dark  mode  support  ")).toBe(baseline);
+  });
+
+  test("strips non-alphanumeric characters", () => {
+    // Invariant: punctuation does not affect the fingerprint. The regex
+    // `[^a-z0-9 ]` strip is what makes "dark-mode" and "darkmode" collide.
+    const punctuated = contentFingerprint("Add dark-mode support!");
+    const stripped = contentFingerprint("Add darkmode support");
+    expect(punctuated).toBe(stripped);
+  });
+
+  test("distinct inputs produce distinct fingerprints", () => {
+    // Invariant: the hash is content-sensitive — unrelated text produces a
+    // different fingerprint. A constant-output bug (e.g. hashing "" instead
+    // of `normalized`) would flip this.
+    expect(contentFingerprint("Completely different task")).not.toBe(baseline);
   });
 });

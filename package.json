@@ -11,11 +11,13 @@
     "lint:cli-readme": "bun run scripts/lint-cli-readme.ts",
     "lint:config-reference": "bun run scripts/lint-config-reference.ts",
     "lint:contracts": "bun run scripts/lint-contracts.ts",
+    "lint:hooks": "bun run scripts/lint-hooks.ts",
     "lint:template-safety": "bun run scripts/lint-template-safety.ts",
     "lint:test-isolation": "bun run scripts/lint-test-isolation.ts",
     "lint:vendor-sync": "bun run scripts/lint-vendor-sync.ts",
     "lint:no-mock-module": "! grep -r 'mock\\.module(' src/ templates/ --include='*.test.ts' -l",
-    "lint:no-shadow-util": "bun run scripts/lint-no-shadow-util.ts"
+    "lint:no-shadow-util": "bun run scripts/lint-no-shadow-util.ts",
+    "smoke": "bun run scripts/smoke.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
