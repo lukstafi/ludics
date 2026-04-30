@@ -141,6 +141,7 @@ Commands:
   tasks migrate-refs [--dry-run]
                                Migrate legacy task-<number> IDs to deterministic IDs and rewrite references
   tasks abandon <id>           Abandon a task (clears slot if assigned, sets status/completed)
+  tasks priority <id> <level>  Set task priority (S, A, B, C, D); increases clear the auto-proposal debounce
   tasks migrate-deferred       Migrate legacy deferred_launch/approved fields to status: deferred
 
   flow ready                   Priority-sorted ready tasks

@@ -2028,7 +2028,7 @@ ${matches}
 
 const AUTO_PROPOSAL_DEBOUNCE_SECONDS = 1800;
 
-function autoProposalDebounceFile(taskId: string): string {
+export function autoProposalDebounceFile(taskId: string): string {
   return join(magStateDir(), "auto-proposal-debounce", `${encodeURIComponent(taskId)}.epoch`);
 }
 
@@ -2038,6 +2038,15 @@ function autoProposalDebounced(taskId: string): boolean {
 
 function markAutoProposalQueued(taskId: string): void {
   touchSentinel(autoProposalDebounceFile(taskId));
+}
+
+/**
+ * Remove the auto-proposal debounce sentinel for a task. Best-effort;
+ * absent files are silently ignored. Called from priority-bump and
+ * queue-promote seams as the user-driven "act on this now" lever.
+ */
+export function clearAutoProposalDebounce(taskId: string): void {
+  clearSentinel(autoProposalDebounceFile(taskId));
 }
 
 // --- Container completion sweep debounce + child-set fingerprint ---
@@ -3510,8 +3519,8 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
       }
       const { queuePromoteToTop } = await import("./queue.ts");
       const result = queuePromoteToTop(id);
-      if (result === "not-found") process.exitCode = 1;
-      console.log(result);
+      if (result.status === "not-found") process.exitCode = 1;
+      console.log(result.status);
     } else if (sub2 === "cancel") {
       const id = args[1];
       if (!id) throw new Error("id required (usage: mag queue cancel <id>)");

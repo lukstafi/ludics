@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { SlotData } from "./slots/types.ts";
@@ -746,5 +746,124 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// task-2db5eca6: priority-bump and queue-promote should clear the
+// auto-proposal debounce so the next keepalive cycle re-evaluates the task.
+// Decreases (slot-postpone) keep the sentinel intact (asymmetric by design).
+describe("dashboard HTTP debounce semantics — task-promote / queue-promote / slot-postpone", () => {
+  async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
+    const { buildHandlers } = await import("./dashboard-server.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(dashboardDir, { recursive: true });
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+    return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+  }
+
+  function writeTaskFile(id: string, priority: string, status: string = "ready"): string {
+    const tasksRoot = join(harnessDir(), "tasks");
+    mkdirSync(tasksRoot, { recursive: true });
+    const file = join(tasksRoot, `${id}.md`);
+    writeFileSync(file, `---\nid: ${id}\ntitle: "${id}"\nstatus: ${status}\npriority: ${priority}\n---\n\n# ${id}\n`);
+    return file;
+  }
+
+  function writeSentinel(id: string): string {
+    const dir = join(harnessDir(), "mag", "auto-proposal-debounce");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${encodeURIComponent(id)}.epoch`);
+    writeFileSync(path, String(Date.now()));
+    return path;
+  }
+
+  // AC3: increase clears sentinel
+  test("POST /api/task-promote on B → A clears the debounce sentinel", async () => {
+    writeTaskFile("task-X", "B");
+    const sentinel = writeSentinel("task-X");
+    expect(existsSync(sentinel)).toBe(true);
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/task-promote?task=task-X", { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { priority: string };
+    expect(body.priority).toBe("A");
+    expect(existsSync(sentinel)).toBe(false);
+    const { parseTaskFrontmatter } = await import("./tasks/markdown.ts");
+    const fm = parseTaskFrontmatter(readFileSync(join(harnessDir(), "tasks", "task-X.md"), "utf-8"));
+    expect(fm.priority).toBe("A");
+  });
+
+  // AC4: no-op clamp at S preserves sentinel — gate on newPriority !== currentPriority
+  test("POST /api/task-promote at S clamp preserves the sentinel (no-op)", async () => {
+    writeTaskFile("task-Y", "S");
+    const sentinel = writeSentinel("task-Y");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/task-promote?task=task-Y", { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { priority: string };
+    expect(body.priority).toBe("S");
+    expect(existsSync(sentinel)).toBe(true);
+  });
+
+  // AC5: decrease via slot-postpone leaves the sentinel intact
+  test("POST /api/slot-postpone (A → B) leaves the sentinel intact", async () => {
+    const { writeSlotJson, emptySlotData } = await import("./slots/json.ts");
+    writeTaskFile("task-Z", "A", "in-progress");
+    const slotData = { ...emptySlotData(1), task: "task-Z" };
+    writeSlotJson(1, slotData);
+    const sentinel = writeSentinel("task-Z");
+
+    const handler = await makeHandler();
+    const origError = console.error;
+    console.error = () => {};
+    let resp: Response;
+    try {
+      resp = await handler(new Request("http://x/api/slot-postpone?slot=1", { method: "POST" }));
+    } finally {
+      console.error = origError;
+    }
+    expect(resp.status).toBe(200);
+    expect(existsSync(sentinel)).toBe(true);
+    const { parseTaskFrontmatter } = await import("./tasks/markdown.ts");
+    const fm = parseTaskFrontmatter(readFileSync(join(harnessDir(), "tasks", "task-Z.md"), "utf-8"));
+    expect(fm.priority).toBe("B");
+  });
+
+  // AC6: queue-promote of a task-bound item clears the matching sentinel
+  test("POST /api/queue-promote on a task-bound item clears that task's sentinel", async () => {
+    const { queueRequest, queueList } = await import("./queue.ts");
+    const idA = queueRequest({ action: "briefing" });
+    const idB = queueRequest({ action: "briefing" });
+    const idC = queueRequest({ action: "draft-proposal", task: "task-X" });
+    expect(queueList().map(i => i.id)).toEqual([idA, idB, idC]);
+    const sentinel = writeSentinel("task-X");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-promote?id=${encodeURIComponent(idC)}`, { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("promoted");
+    expect(queueList().map(i => i.id)).toEqual([idC, idA, idB]);
+    expect(existsSync(sentinel)).toBe(false);
+  });
+
+  // AC7: queue-promote of a task-less item is harmless (no spurious clear, no error)
+  test("POST /api/queue-promote on a task-less item is harmless", async () => {
+    const { queueRequest } = await import("./queue.ts");
+    const idA = queueRequest({ action: "briefing" });
+    const idB = queueRequest({ action: "briefing" });
+    // An unrelated sentinel must remain untouched — guards against clearing
+    // sentinels for tasks not named on the promoted record.
+    const otherSentinel = writeSentinel("task-other");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-promote?id=${encodeURIComponent(idB)}`, { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("promoted");
+    expect(existsSync(otherSentinel)).toBe(true);
+    void idA;
   });
 });
