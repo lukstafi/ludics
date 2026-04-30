@@ -58,13 +58,18 @@ coverage is dropped.
    CHANGELOG entry under the current unreleased section describes the
    removal and replacements.
 9. After the change, running `grep -rn "tests/test.sh\|bash tests/test"
-   --include="*.md" --include="*.ts" --include="*.json" --include="*.sh"`
-   over the repo (excluding `node_modules`, `CHANGELOG.md`, and
-   `docs/proposals/`) returns no matches. `docs/proposals/` is excluded
-   because the proposal file itself is a historical artefact that
-   references `tests/test.sh` in its inventory and approach; preserving
-   the proposal as provenance (the established repo convention) is
-   compatible with removing all *live* references to the bash script.
+   --include="*.md" --include="*.ts" --include="*.json" --include="*.sh"
+   --exclude-dir=node_modules --exclude-dir=proposals --exclude=CHANGELOG.md`
+   over the repo returns no matches. `--exclude-dir=proposals` is the
+   portable basename form (GNU/BSD `grep --exclude-dir` matches directory
+   basenames, not slash-separated paths, so the path-form
+   `--exclude-dir="docs/proposals"` is unreliable). `docs/proposals/` is
+   excluded because the proposal file itself is a historical artefact
+   that references `tests/test.sh` in its inventory and approach;
+   preserving the proposal as provenance (the established repo
+   convention) is compatible with removing all *live* references to the
+   bash script. Equivalent `git grep` form:
+   `git grep -n -- "tests/test.sh\|bash tests/test" '*.md' '*.ts' '*.json' '*.sh' ':(exclude)docs/proposals/' ':(exclude)CHANGELOG.md'`.
 10. `bun run lint:hooks` and `bun run smoke` both exit 0 on `main` post-merge
     (verified by the implementing PR's evidence section).
 11. `bun test` post-merge produces a strictly greater number of expectations
