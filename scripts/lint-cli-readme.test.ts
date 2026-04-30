@@ -289,6 +289,34 @@ describe("CLI integration", () => {
     }
   });
 
+  test("exits non-zero when USAGE has a command missing from README ## CLI Reference (additive direction)", () => {
+    // FIXTURE_INDEX_SYNCED lists `alpha` + `beta`; README CLI Reference here
+    // lists only `alpha`. The lint must fail (exit non-zero) — this is the
+    // additive direction this task elevates from warn-only to fatal.
+    // Per Clause 4: assert exitCode is *not* zero, not that it equals 1.
+    const FIXTURE_README_MISSING = [
+      "## CLI Reference",
+      "",
+      "ludics alpha",
+      "",
+    ].join("\n");
+    const { root, cleanup } = makeFixture({
+      "src/index.ts": FIXTURE_INDEX_SYNCED,
+      "README.md": FIXTURE_README_MISSING,
+    });
+    try {
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-cli-readme.ts"), root],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).not.toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("exits non-zero when README cites a command not in USAGE (drives import.meta.main)", () => {
     // README "ghost" is stale (not in USAGE) — the lint exists to catch this.
     const FIXTURE_README_DRIFT = [
