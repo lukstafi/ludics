@@ -190,3 +190,30 @@ describe("orchDiff / runOrchestrationCli diff", () => {
     );
   });
 });
+
+describe("runOrchestrationCli unknown-subcommand listing (gh-ludics-438)", () => {
+  // Invariant: the default-case error includes the canonical
+  // `(use: status, confirm, interrupt, skip, log, diff, on-stop)` listing.
+  // If the wording reverts to the bare `unknown orch subcommand: ${sub}`
+  // it had on `main`, the regex below fails. `run-internal` is an internal
+  // self-relaunch entrypoint and must NOT appear in the public listing.
+  //
+  // Harness condition: invoke runOrchestrationCli with a sentinel sub that
+  // is not a real case label and not the empty default; the dispatcher
+  // takes the unknown-subcommand branch.
+
+  test("emits canonical (use: ...) listing and excludes run-internal", async () => {
+    let err: Error | null = null;
+    try {
+      await runOrchestrationCli(["__bogus__"]);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).not.toBeNull();
+    const msg = err!.message;
+    expect(msg).toBe(
+      "unknown orch subcommand: __bogus__ (use: status, confirm, interrupt, skip, log, diff, on-stop)",
+    );
+    expect(msg).not.toContain("run-internal");
+  });
+});

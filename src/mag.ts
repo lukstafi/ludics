@@ -3423,321 +3423,305 @@ async function magCompleted(proposalName: string): Promise<void> {
   emitEvent({ event_type: "mag_completed", source: "mag", scope: "mag", task: matchedTaskId, slot: matchedSlot ?? undefined, message: `completed via proposal signal: ${proposalName}` });
 }
 
+// First-level subcommand handler. Each handler receives the args after the
+// subcommand name (i.e. args.slice(1) from runMag's input).
+type MagSubHandler = (args: string[]) => Promise<void> | void;
+
+// Registry of mag subcommands. Insertion order is the help-listing order.
+// Lint enforcement: scripts/lint-cli-subcommands.ts reads the keys via regex
+// to validate parity with src/index.ts USAGE and the runMag default error.
+//
+// `queue-pop` is a DEPRECATED alias of `on-stop`, kept for backward
+// compatibility with older hook scripts. The lint allow-list pins this pair.
+const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSubHandler>([
+  ["start", async (args) => { await magStart(args); }],
+  ["stop", () => { magStop(); }],
+  ["status", () => { magStatusCmd(); }],
+  ["attach", () => { magAttach(); }],
+  ["logs", (args) => {
+    const lines = args[0] ? parseInt(args[0], 10) : 100;
+    magLogs(lines);
+  }],
+  ["doctor", () => { magDoctor(); }],
+  ["briefing", () => { magBriefing(); }],
+  ["suggest", () => {
+    queueRequest({ action: "suggest" });
+    console.log("Queued suggest request");
+  }],
+  ["elaborate", (args) => {
+    const taskId = args[0];
+    if (!taskId) throw new Error("task id required");
+    queueRequest({ action: "elaborate", task: taskId });
+    console.log(`Queued elaborate request for ${taskId}`);
+  }],
+  ["health-check", () => {
+    if (!clusterIsController()) {
+      console.error("ludics: mag health-check skipped — not the cluster controller");
+      return;
+    }
+    queueRequest({ action: "health-check" });
+    // Auto-compact after health-check — checkpoint compaction (task-a00fc0d9 /
+    // docs/proposals/auto-compact-after-checkpoints.md). Enqueued unconditionally;
+    // a no-op /compact on a small context is acceptable.
+    queueRequest({ action: "message", content: "/compact" });
+    console.log("Queued health-check request");
+  }],
+  ["message", (args) => {
+    const text = args.join(" ");
+    if (!text) throw new Error("message text required");
+    magMessage(text);
+  }],
+  ["queue", async (args) => {
+    const sub2 = args[0];
+    if (sub2 === "pop") {
+      const mode = args[1];
+      if (args.length > 2) {
+        throw new Error(`unexpected trailing arguments: ${args.slice(2).join(" ")} (usage: mag queue pop one|all)`);
+      }
+      const { queuePopOne, queuePopAll } = await import("./queue.ts");
+      if (mode === "one") {
+        const line = queuePopOne();
+        if (line === null) {
+          process.exitCode = 1;
+        } else {
+          console.log(line);
+        }
+      } else if (mode === "all") {
+        const lines = queuePopAll();
+        if (lines.length === 0) {
+          process.exitCode = 1;
+        } else {
+          for (const l of lines) console.log(l);
+        }
+      } else {
+        throw new Error(`unknown queue pop mode: ${mode ?? "(missing)"} (use: one, all)`);
+      }
+    } else if (sub2 === "promote") {
+      const id = args[1];
+      if (!id) throw new Error("id required (usage: mag queue promote <id>)");
+      if (args.length > 2) {
+        throw new Error(`unexpected trailing arguments: ${args.slice(2).join(" ")} (usage: mag queue promote <id>)`);
+      }
+      const { queuePromoteToTop } = await import("./queue.ts");
+      const result = queuePromoteToTop(id);
+      if (result === "not-found") process.exitCode = 1;
+      console.log(result);
+    } else if (sub2 === "cancel") {
+      const id = args[1];
+      if (!id) throw new Error("id required (usage: mag queue cancel <id>)");
+      if (args.length > 2) {
+        throw new Error(`unexpected trailing arguments: ${args.slice(2).join(" ")} (usage: mag queue cancel <id>)`);
+      }
+      const { queueCancel } = await import("./queue.ts");
+      const result = queueCancel(id);
+      if (result.status === "not-found") {
+        process.exitCode = 1;
+        console.log("not-found");
+      } else {
+        console.log(result.line);
+      }
+    } else if (!sub2) {
+      const { queueShow } = await import("./queue.ts");
+      queueShow();
+    } else {
+      throw new Error(`unknown queue subcommand: ${sub2} (use: pop one, pop all, promote <id>, cancel <id>)`);
+    }
+  }],
+  ["context", async () => { await magContext(); }],
+  ["auto-start-evaluate", async (args) => {
+    const taskId = args[0];
+    const confidence = args[1];
+    const rationale = args[2] ?? "";
+    if (!taskId) throw new Error("task id required");
+    const result = evaluateAutoStartDecisionPure(
+      confidence === "high" || confidence === "low" ? confidence : undefined,
+      rationale,
+      startSessionsAutonomy(),
+      findSlotForTask(taskId) !== null,
+    );
+    // Side effect: set or clear deferred status in task frontmatter
+    const evalTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+    if (existsSync(evalTaskFile)) {
+      if (result.decision === "defer-to-user") {
+        // If the task is already in a slot, clear the slot to free it for other work
+        const evalSlot = findSlotForTask(taskId);
+        if (evalSlot !== null) {
+          await slotClear(evalSlot, "deferred");
+        } else {
+          updateFrontmatterField(evalTaskFile, "status", "deferred");
+        }
+      } else {
+        // Only clear deferred — do not downgrade other statuses
+        const evalContent = readFileSync(evalTaskFile, "utf-8");
+        const evalStatus = parseTaskFrontmatter(evalContent).status;
+        if (evalStatus === "deferred") {
+          updateFrontmatterField(evalTaskFile, "status", "ready");
+        }
+      }
+    }
+    console.log(JSON.stringify(result));
+  }],
+  ["draft-proposal", (args) => {
+    const taskId = args[0];
+    if (!taskId) throw new Error("task id required");
+    queueRequest({ action: "draft-proposal", task: taskId });
+    console.log(`Queued draft-proposal request for ${taskId}`);
+  }],
+  ["revise-proposal", async (args) => {
+    const taskArg = args[0];
+    if (!taskArg) throw new Error("task id required (comma-separated for multiple)");
+    const taskIds = taskArg.split(",");
+    const feedback = args.slice(1).join(" ");
+    for (const taskId of taskIds) {
+      // Set status back to deferred so re-evaluation after revision can re-assess
+      const reviseTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+      if (existsSync(reviseTaskFile)) {
+        const revContent = readFileSync(reviseTaskFile, "utf-8");
+        const revStatus = parseTaskFrontmatter(revContent).status;
+        if (revStatus === "ready" || revStatus === "in-progress") {
+          const revSlot = findSlotForTask(taskId);
+          if (revSlot !== null) {
+            await slotClear(revSlot, "deferred");
+          } else {
+            updateFrontmatterField(reviseTaskFile, "status", "deferred");
+          }
+        }
+      }
+      if (feedback) {
+        queueRequest({ action: "revise-proposal", task: taskId, feedback });
+      } else {
+        queueRequest({ action: "revise-proposal", task: taskId });
+      }
+    }
+    console.log(`Queued revise-proposal request for ${taskIds.join(", ")}`);
+  }],
+  ["split-task", (args) => {
+    const taskId = args[0];
+    if (!taskId) throw new Error("task id required");
+    queueRequest({ action: "split-task", task: taskId });
+    console.log(`Queued split-task request for ${taskId}`);
+  }],
+  ["verify-completion", (args) => {
+    const taskId = args[0];
+    if (!taskId) throw new Error("task id required");
+    queueRequest({ action: "verify-completion", task: taskId });
+    console.log(`Queued verify-completion request for ${taskId}`);
+  }],
+  ["verify-container-completion", (args) => {
+    const taskId = args[0];
+    if (!taskId) throw new Error("task id required");
+    queueRequest({ action: "verify-container-completion", task: taskId });
+    console.log(`Queued verify-container-completion request for ${taskId}`);
+  }],
+  ["feedback-digest", () => {
+    const fdResult = tryQueueFeedbackDigest("ludics");
+    if (fdResult.queued) {
+      console.log("Queued feedback-digest request");
+    } else {
+      console.log(`Skipped feedback-digest: ${fdResult.reason}`);
+    }
+  }],
+  ["adopt-sessions", (args) => {
+    if (!clusterIsController()) {
+      console.error("ludics: mag adopt-sessions skipped — not the cluster controller");
+      return;
+    }
+    const force = args.includes("--force");
+    const refresh = safeSyncOutput(ludicsSelfCommand(["sessions", "report"]));
+    if (!refresh.ok) {
+      throw new Error(refresh.stderr ? `adopt-sessions: failed to refresh sessions: ${refresh.stderr}` : "adopt-sessions: failed to refresh sessions");
+    }
+
+    const sessionsFile = join(harnessDir(), "sessions.json");
+    const fingerprint = adoptSessionsFingerprintData(sessionsFile);
+    if (!fingerprint) {
+      throw new Error("adopt-sessions: failed to read sessions.json after refresh");
+    }
+
+    mkdirSync(magStateDir(), { recursive: true });
+    const fingerprintFile = adoptSessionsFingerprintFile();
+    const previous = existsSync(fingerprintFile) ? readFileSync(fingerprintFile, "utf-8").trim() : "";
+    const changed = previous !== fingerprint.hash;
+    writeFileSync(fingerprintFile, fingerprint.hash + "\n");
+
+    if (!force && !changed) {
+      console.log("Skipped adopt-sessions: no unclassified session changes");
+      return;
+    }
+
+    if (!force && fingerprint.unclassifiedCount === 0) {
+      console.log("Skipped adopt-sessions: no unclassified sessions");
+      return;
+    }
+
+    if (queueHasPendingAction("adopt-sessions")) {
+      console.log("Skipped adopt-sessions request: already pending in queue");
+      return;
+    }
+
+    queueRequest({ action: "adopt-sessions" });
+    console.log(`Queued adopt-sessions request (${fingerprint.unclassifiedCount} unclassified session(s))`);
+  }],
+  ["process-suggestions", (args) => {
+    const taskId = args[0];
+    if (!taskId) throw new Error("task id required");
+    queueRequest({ action: "process-suggestions", task: taskId });
+    console.log(`Queued process-suggestions request for ${taskId}`);
+  }],
+  ["completed", async (args) => {
+    const proposalName = args[0];
+    if (!proposalName) throw new Error("proposal name required (without .md extension)");
+    await magCompleted(proposalName);
+  }],
+  ["on-stop", async (args) => {
+    // Called by the stop hook to mark Mag as settled and attempt immediate queue delivery
+    const cwd = args[0] ?? "";
+    const hookEventName = args[1] ?? "";
+    if (hookEventName && hookEventName !== "Stop") return;
+    if (cwd) {
+      const harness = harnessDir();
+      if (!cwd.startsWith(harness)) return;
+    }
+    writeStopHookTimestamp();
+    clearStartupWatchdogEpoch();
+    if (existsSync(join(harnessDir(), "mag", "paused"))) return;
+    if (!clusterIsController()) return;
+    markMagSettled();
+    clearStallState();
+    // Attempt immediate queue delivery (keepalive is fallback for items queued while idle)
+    await maybeFeedMagQueue();
+  }],
+  // DEPRECATED: kept for backward compatibility with older hook scripts.
+  // New hook scripts use "on-stop" instead. Pinned in lint allow-list.
+  ["queue-pop", async (args) => {
+    const cwd = args[0] ?? "";
+    const hookEventName = args[1] ?? "";
+    if (hookEventName && hookEventName !== "Stop") {
+      return;
+    }
+    if (cwd) {
+      const harness = harnessDir();
+      if (!cwd.startsWith(harness)) {
+        return;
+      }
+    }
+    writeStopHookTimestamp();
+    clearStartupWatchdogEpoch();
+    if (existsSync(join(harnessDir(), "mag", "paused"))) return;
+    if (!clusterIsController()) return;
+    const popped = await queuePopSkill();
+    if (popped) {
+      console.log(JSON.stringify({ decision: "block", reason: popped.command }));
+    }
+  }],
+]);
+
 export async function runMag(args: string[]): Promise<void> {
   const sub = args[0] ?? "";
-
-  switch (sub) {
-    case "start":
-      await magStart(args.slice(1));
-      break;
-    case "stop":
-      magStop();
-      break;
-    case "status":
-      magStatusCmd();
-      break;
-    case "attach":
-      magAttach();
-      break;
-    case "logs": {
-      const lines = args[1] ? parseInt(args[1], 10) : 100;
-      magLogs(lines);
-      break;
-    }
-    case "doctor":
-      magDoctor();
-      break;
-    case "briefing":
-      magBriefing();
-      break;
-    case "suggest":
-      queueRequest({ action: "suggest" });
-      console.log("Queued suggest request");
-      break;
-    case "elaborate": {
-      const taskId = args[1];
-      if (!taskId) throw new Error("task id required");
-      queueRequest({ action: "elaborate", task: taskId });
-      console.log(`Queued elaborate request for ${taskId}`);
-      break;
-    }
-    case "health-check":
-      if (!clusterIsController()) {
-        console.error("ludics: mag health-check skipped — not the cluster controller");
-        break;
-      }
-      queueRequest({ action: "health-check" });
-      // Auto-compact after health-check — checkpoint compaction (task-a00fc0d9 /
-      // docs/proposals/auto-compact-after-checkpoints.md). Enqueued unconditionally;
-      // a no-op /compact on a small context is acceptable.
-      queueRequest({ action: "message", content: "/compact" });
-      console.log("Queued health-check request");
-      break;
-    case "message": {
-      const text = args.slice(1).join(" ");
-      if (!text) throw new Error("message text required");
-      magMessage(text);
-      break;
-    }
-    case "queue": {
-      const sub2 = args[1];
-      if (sub2 === "pop") {
-        const mode = args[2];
-        if (args.length > 3) {
-          throw new Error(`unexpected trailing arguments: ${args.slice(3).join(" ")} (usage: mag queue pop one|all)`);
-        }
-        const { queuePopOne, queuePopAll } = await import("./queue.ts");
-        if (mode === "one") {
-          const line = queuePopOne();
-          if (line === null) {
-            process.exitCode = 1;
-          } else {
-            console.log(line);
-          }
-        } else if (mode === "all") {
-          const lines = queuePopAll();
-          if (lines.length === 0) {
-            process.exitCode = 1;
-          } else {
-            for (const l of lines) console.log(l);
-          }
-        } else {
-          throw new Error(`unknown queue pop mode: ${mode ?? "(missing)"} (use: one, all)`);
-        }
-      } else if (sub2 === "promote") {
-        const id = args[2];
-        if (!id) throw new Error("id required (usage: mag queue promote <id>)");
-        if (args.length > 3) {
-          throw new Error(`unexpected trailing arguments: ${args.slice(3).join(" ")} (usage: mag queue promote <id>)`);
-        }
-        const { queuePromoteToTop } = await import("./queue.ts");
-        const result = queuePromoteToTop(id);
-        if (result === "not-found") process.exitCode = 1;
-        console.log(result);
-      } else if (sub2 === "cancel") {
-        const id = args[2];
-        if (!id) throw new Error("id required (usage: mag queue cancel <id>)");
-        if (args.length > 3) {
-          throw new Error(`unexpected trailing arguments: ${args.slice(3).join(" ")} (usage: mag queue cancel <id>)`);
-        }
-        const { queueCancel } = await import("./queue.ts");
-        const result = queueCancel(id);
-        if (result.status === "not-found") {
-          process.exitCode = 1;
-          console.log("not-found");
-        } else {
-          console.log(result.line);
-        }
-      } else if (!sub2) {
-        const { queueShow } = await import("./queue.ts");
-        queueShow();
-      } else {
-        throw new Error(`unknown queue subcommand: ${sub2} (use: pop one, pop all, promote <id>, cancel <id>)`);
-      }
-      break;
-    }
-    case "context":
-      await magContext();
-      break;
-    case "auto-start-evaluate": {
-      const taskId = args[1];
-      const confidence = args[2];
-      const rationale = args[3] ?? "";
-      if (!taskId) throw new Error("task id required");
-      const result = evaluateAutoStartDecisionPure(
-        confidence === "high" || confidence === "low" ? confidence : undefined,
-        rationale,
-        startSessionsAutonomy(),
-        findSlotForTask(taskId) !== null,
-      );
-      // Side effect: set or clear deferred status in task frontmatter
-      const evalTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
-      if (existsSync(evalTaskFile)) {
-        if (result.decision === "defer-to-user") {
-          // If the task is already in a slot, clear the slot to free it for other work
-          const evalSlot = findSlotForTask(taskId);
-          if (evalSlot !== null) {
-            await slotClear(evalSlot, "deferred");
-          } else {
-            updateFrontmatterField(evalTaskFile, "status", "deferred");
-          }
-        } else {
-          // Only clear deferred — do not downgrade other statuses
-          const evalContent = readFileSync(evalTaskFile, "utf-8");
-          const evalStatus = parseTaskFrontmatter(evalContent).status;
-          if (evalStatus === "deferred") {
-            updateFrontmatterField(evalTaskFile, "status", "ready");
-          }
-        }
-      }
-      console.log(JSON.stringify(result));
-      break;
-    }
-    case "draft-proposal": {
-      const taskId = args[1];
-      if (!taskId) throw new Error("task id required");
-      queueRequest({ action: "draft-proposal", task: taskId });
-      console.log(`Queued draft-proposal request for ${taskId}`);
-      break;
-    }
-    case "revise-proposal": {
-      const taskArg = args[1];
-      if (!taskArg) throw new Error("task id required (comma-separated for multiple)");
-      const taskIds = taskArg.split(",");
-      const feedback = args.slice(2).join(" ");
-      for (const taskId of taskIds) {
-        // Set status back to deferred so re-evaluation after revision can re-assess
-        const reviseTaskFile = join(harnessDir(), "tasks", `${taskId}.md`);
-        if (existsSync(reviseTaskFile)) {
-          const revContent = readFileSync(reviseTaskFile, "utf-8");
-          const revStatus = parseTaskFrontmatter(revContent).status;
-          if (revStatus === "ready" || revStatus === "in-progress") {
-            const revSlot = findSlotForTask(taskId);
-            if (revSlot !== null) {
-              await slotClear(revSlot, "deferred");
-            } else {
-              updateFrontmatterField(reviseTaskFile, "status", "deferred");
-            }
-          }
-        }
-        if (feedback) {
-          queueRequest({ action: "revise-proposal", task: taskId, feedback });
-        } else {
-          queueRequest({ action: "revise-proposal", task: taskId });
-        }
-      }
-      console.log(`Queued revise-proposal request for ${taskIds.join(", ")}`);
-      break;
-    }
-    case "split-task": {
-      const taskId = args[1];
-      if (!taskId) throw new Error("task id required");
-      queueRequest({ action: "split-task", task: taskId });
-      console.log(`Queued split-task request for ${taskId}`);
-      break;
-    }
-    case "verify-completion": {
-      const taskId = args[1];
-      if (!taskId) throw new Error("task id required");
-      queueRequest({ action: "verify-completion", task: taskId });
-      console.log(`Queued verify-completion request for ${taskId}`);
-      break;
-    }
-    case "verify-container-completion": {
-      const taskId = args[1];
-      if (!taskId) throw new Error("task id required");
-      queueRequest({ action: "verify-container-completion", task: taskId });
-      console.log(`Queued verify-container-completion request for ${taskId}`);
-      break;
-    }
-    case "feedback-digest": {
-      const fdResult = tryQueueFeedbackDigest("ludics");
-      if (fdResult.queued) {
-        console.log("Queued feedback-digest request");
-      } else {
-        console.log(`Skipped feedback-digest: ${fdResult.reason}`);
-      }
-      break;
-    }
-    case "adopt-sessions": {
-      if (!clusterIsController()) {
-        console.error("ludics: mag adopt-sessions skipped — not the cluster controller");
-        break;
-      }
-      const force = args.includes("--force");
-      const refresh = safeSyncOutput(ludicsSelfCommand(["sessions", "report"]));
-      if (!refresh.ok) {
-        throw new Error(refresh.stderr ? `adopt-sessions: failed to refresh sessions: ${refresh.stderr}` : "adopt-sessions: failed to refresh sessions");
-      }
-
-      const sessionsFile = join(harnessDir(), "sessions.json");
-      const fingerprint = adoptSessionsFingerprintData(sessionsFile);
-      if (!fingerprint) {
-        throw new Error("adopt-sessions: failed to read sessions.json after refresh");
-      }
-
-      mkdirSync(magStateDir(), { recursive: true });
-      const fingerprintFile = adoptSessionsFingerprintFile();
-      const previous = existsSync(fingerprintFile) ? readFileSync(fingerprintFile, "utf-8").trim() : "";
-      const changed = previous !== fingerprint.hash;
-      writeFileSync(fingerprintFile, fingerprint.hash + "\n");
-
-      if (!force && !changed) {
-        console.log("Skipped adopt-sessions: no unclassified session changes");
-        break;
-      }
-
-      if (!force && fingerprint.unclassifiedCount === 0) {
-        console.log("Skipped adopt-sessions: no unclassified sessions");
-        break;
-      }
-
-      if (queueHasPendingAction("adopt-sessions")) {
-        console.log("Skipped adopt-sessions request: already pending in queue");
-        break;
-      }
-
-      queueRequest({ action: "adopt-sessions" });
-      console.log(`Queued adopt-sessions request (${fingerprint.unclassifiedCount} unclassified session(s))`);
-      break;
-    }
-    case "process-suggestions": {
-      const taskId = args[1];
-      if (!taskId) throw new Error("task id required");
-      queueRequest({ action: "process-suggestions", task: taskId });
-      console.log(`Queued process-suggestions request for ${taskId}`);
-      break;
-    }
-    case "completed": {
-      const proposalName = args[1];
-      if (!proposalName) throw new Error("proposal name required (without .md extension)");
-      await magCompleted(proposalName);
-      break;
-    }
-    case "on-stop": {
-      // Called by the stop hook to mark Mag as settled and attempt immediate queue delivery
-      const cwd = args[1] ?? "";
-      const hookEventName = args[2] ?? "";
-      if (hookEventName && hookEventName !== "Stop") break;
-      if (cwd) {
-        const harness = harnessDir();
-        if (!cwd.startsWith(harness)) break;
-      }
-      writeStopHookTimestamp();
-      clearStartupWatchdogEpoch();
-      if (existsSync(join(harnessDir(), "mag", "paused"))) break;
-      if (!clusterIsController()) break;
-      markMagSettled();
-      clearStallState();
-      // Attempt immediate queue delivery (keepalive is fallback for items queued while idle)
-      await maybeFeedMagQueue();
-      break;
-    }
-    // DEPRECATED: kept for backward compatibility with older hook scripts.
-    // New hook scripts use "on-stop" instead.
-    case "queue-pop": {
-      const cwd = args[1] ?? "";
-      const hookEventName = args[2] ?? "";
-      if (hookEventName && hookEventName !== "Stop") {
-        break;
-      }
-      if (cwd) {
-        const harness = harnessDir();
-        if (!cwd.startsWith(harness)) {
-          break;
-        }
-      }
-      writeStopHookTimestamp();
-      clearStartupWatchdogEpoch();
-      if (existsSync(join(harnessDir(), "mag", "paused"))) break;
-      if (!clusterIsController()) break;
-      const popped = await queuePopSkill();
-      if (popped) {
-        console.log(JSON.stringify({ decision: "block", reason: popped.command }));
-      }
-      break;
-    }
-    default:
-      throw new Error(`unknown mag command: ${sub} (use: start, stop, status, attach, logs, doctor, briefing, suggest, analyze, elaborate, draft-proposal, split-task, verify-completion, verify-container-completion, health-check, adopt-sessions, process-suggestions, completed, message, queue, queue pop one, queue pop all, queue-pop, on-stop, context, feedback-digest)`);
+  const handler = magSubcommands.get(sub);
+  if (!handler) {
+    const listing = [...magSubcommands.keys()].join(", ");
+    throw new Error(`unknown mag command: ${sub} (use: ${listing})`);
   }
+  await handler(args.slice(1));
 }

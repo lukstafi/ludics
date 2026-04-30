@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag } from "./mag.ts";
 import type { RunGit } from "./git-runner.ts";
 
 describe("normalizeLaunchAdapter", () => {
@@ -822,5 +822,52 @@ describe("magStateFile atomic write", () => {
     expect(readFileSync(file, "utf-8")).toBe(body);
     expect(existsSync(file + ".tmp")).toBe(false);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("runMag unknown-command listing (gh-ludics-438)", () => {
+  // Invariant: the default-case error listing is derived from the
+  // `magSubcommands` registry keys, not a hand-maintained literal. If the
+  // registry refactor is reverted, the message would either drift from
+  // reality (current `analyze`/`feedback-digest` mismatch) or fail to
+  // include newly added cases. These assertions enforce that derivation.
+  //
+  // Harness condition: invoke runMag with a sentinel sub the registry has
+  // never had; the dispatcher takes the missing-handler branch and emits
+  // the derived listing.
+
+  test("listing includes every live first-level case (no drift)", async () => {
+    let err: Error | null = null;
+    try {
+      await runMag(["__bogus__"]);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).not.toBeNull();
+    const msg = err!.message;
+    expect(msg).toMatch(/^unknown mag command: __bogus__ \(use: /);
+    // Real cases that drift on `main`'s hand-maintained listing — must
+    // appear in the derived listing.
+    expect(msg).toContain("auto-start-evaluate");
+    expect(msg).toContain("revise-proposal");
+    expect(msg).toContain("feedback-digest");
+    // Spot-check a handful of long-standing cases.
+    expect(msg).toContain("start");
+    expect(msg).toContain("verify-container-completion");
+  });
+
+  test("listing excludes stale entries previously hand-typed in default", async () => {
+    let err: Error | null = null;
+    try {
+      await runMag(["__bogus__"]);
+    } catch (e) {
+      err = e as Error;
+    }
+    const msg = err!.message;
+    // `analyze` had no handler — it was literal-only drift.
+    expect(msg).not.toContain("analyze");
+    // Nested second-level commands must not pollute the first-level listing.
+    expect(msg).not.toContain("queue pop one");
+    expect(msg).not.toContain("queue pop all");
   });
 });
