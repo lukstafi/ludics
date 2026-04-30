@@ -67,6 +67,7 @@ async function fetchAllData() {
             fetchNeedsConfirmation(),
             fetchUnansweredQuestions(),
             fetchDeferredLaunch(),
+            fetchStale(),
             fetchNotifications(),
             fetchMagStatus(),
             fetchT3codeLink(),
@@ -646,6 +647,63 @@ function fetchDeferredLaunch() {
             </li>`;
         },
     });
+}
+
+function fetchStale() {
+    return fetchAndRenderTaskList({
+        jsonFile: 'stale.json',
+        listId: 'stale-list',
+        emptyText: 'No stale tasks',
+        renderItem(task) {
+            const priority = task.priority || '-';
+            const priorityClass = `priority-${priority}`;
+            return `
+            <li class="stale-item">
+                <span class="priority ${priorityClass}">${escapeHtml(priority)}</span>
+                <a class="task-title stale-link" href="${taskLink(task.id)}" target="_blank">${escapeHtml(task.title || task.id)}</a>
+                <span class="stale-actions">
+                    <button class="revive-btn" onclick="reviveStale('${escapeHtml(task.id)}')" title="Revive: flip stale → ready">Revive</button>
+                    <button class="abandon-btn" onclick="abandonStale('${escapeHtml(task.id)}')" title="Abandon task">Abandon</button>
+                </span>
+            </li>`;
+        },
+    });
+}
+
+async function reviveStale(taskId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+        const response = await fetch(`/api/stale-revive?task=${encodeURIComponent(taskId)}`);
+        if (response.ok) {
+            fetchAllData();
+        } else {
+            btn.textContent = 'Revive';
+            setTimeout(() => { btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = 'Revive';
+        setTimeout(() => { btn.disabled = false; }, 2000);
+    }
+}
+
+async function abandonStale(taskId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+        const response = await fetch(`/api/stale-abandon?task=${encodeURIComponent(taskId)}`);
+        if (response.ok) {
+            fetchAllData();
+        } else {
+            btn.textContent = 'Abandon';
+            setTimeout(() => { btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = 'Abandon';
+        setTimeout(() => { btn.disabled = false; }, 2000);
+    }
 }
 
 async function approveDeferred(taskId) {

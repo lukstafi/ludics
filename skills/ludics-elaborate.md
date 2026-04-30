@@ -82,8 +82,21 @@ Routing by status:
 
 If `questions` is non-empty (and not `"none"`):
 
-1. Add `has_questions: true` to the task frontmatter — this blocks proposal
-   generation until the user answers and removes the field.
+1. Verify the worker wrote `has_questions: true`. The worker is now the sole
+   atomic writer of this field (see ludics-elaborate-worker.md
+   § Update task file) — collapsing to one writer per file eliminates the
+   race where the keepalive's auto-proposal queue fired between the worker's
+   `elaborated:` write and the orchestrator's post-worker `has_questions:`
+   write. Read the task frontmatter; if `questions` was non-empty but
+   `has_questions` is missing, emit a loud
+   `console.error("worker omitted has_questions for <task_id> — falling back")`
+   warning and call `addFrontmatterField(taskFile, "has_questions", "true")`
+   to paper over the omission. The fallback write is conditional on
+   absence: never re-write if the field is already present (the upsert
+   helper would create a duplicate frontmatter line in malformed files).
+   Per Q4's resolution, the failure mode is *agentic* (a worker LLM
+   forgetting an instruction), not algorithmic, so the orchestrator papers
+   over but logs visibly so regressions surface in the events log.
 2. Send the questions as a numbered list:
 
    ```bash

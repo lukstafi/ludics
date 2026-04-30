@@ -551,6 +551,15 @@ const deferredLaunchConfig: FilteredTaskTileConfig = {
   sort: byCreatedDescNullLast,
 };
 
+const staleConfig: FilteredTaskTileConfig = {
+  filter: (task) => task.status === "stale",
+  extraFields: (task) => ({
+    created: task.created,
+    relatesTo: task.dependencies.relates_to,
+  }),
+  sort: byCreatedDescNullLast,
+};
+
 function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
   if (tasks.length === 0) return [];
 
@@ -1077,6 +1086,9 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "deferred-launch.json"), JSON.stringify(generateFilteredTaskList(tasks, deferredLaunchConfig), null, 2));
   console.error("  deferred-launch.json");
+
+  writeFileSync(join(dataDir, "stale.json"), JSON.stringify(generateFilteredTaskList(tasks, staleConfig), null, 2));
+  console.error("  stale.json");
 
   writeFileSync(join(dataDir, "tasks-tree.json"), JSON.stringify(generateTasksTree(tasks), null, 2));
   console.error("  tasks-tree.json");

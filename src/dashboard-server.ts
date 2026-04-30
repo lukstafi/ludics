@@ -9,8 +9,9 @@ import YAML from "yaml";
 import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, loadConfigSync } from "./config.ts";
 import { readSlotJson, normalizeTaskId } from "./slots/json.ts";
-import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES, CLEAR_STATUS_READY, CLEAR_STATUS_DONE } from "./slots/index.ts";
-import { updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
+import { slotClear, slotSetMode, slotStart, slotResume, findSlotForTask, VALID_CLEAR_STATUSES, CLEAR_STATUS_READY, CLEAR_STATUS_DONE } from "./slots/index.ts";
+import { updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, transitionStatus, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
+import { emitEvent } from "./events.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
 import { setQueueHold, maybeFeedMagQueue, clearAutoProposalDebounce } from "./mag.ts";
@@ -401,6 +402,101 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
         const resolved = resolveTaskFile(taskParam);
         if ("error" in resolved) return resolved.error;
         await tasksAbandon(taskParam, { source: "dashboard", scope: "task" });
+        lastGenerated = 0;
+        return new Response(JSON.stringify({ status: "abandoned" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(String(e), { status: 500 });
+      }
+    }
+
+    // API: revive a stale task (flip status: stale -> ready)
+    if (pathname === "/api/stale-revive") {
+      const taskParam = url.searchParams.get("task");
+      if (!taskParam || !TASK_ID_RE.test(taskParam)) {
+        return new Response("Bad Request: invalid task id", { status: 400 });
+      }
+      try {
+        const resolved = resolveTaskFile(taskParam);
+        if ("error" in resolved) return resolved.error;
+        const taskFile = resolved.path;
+        // transitionStatus enforces stale -> ready exactly. Any other current
+        // status returns false (the endpoint must NOT silently revive
+        // unrelated statuses — see proposal § Edge Cases #5).
+        const ok = transitionStatus(taskFile, "stale", "ready");
+        if (!ok) {
+          return new Response(JSON.stringify({ error: "task is not stale" }), {
+            status: 409, headers: { "Content-Type": "application/json" },
+          });
+        }
+        lastGenerated = 0;
+        return new Response(JSON.stringify({ status: "ready" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(String(e), { status: 500 });
+      }
+    }
+
+    // API: abandon a stale task. We bypass tasksAbandon and do the abandon
+    // flow inline because (a) tasksAbandon's terminal-status guard rejects
+    // status: stale, and (b) the de-stale-then-abandon sequence does not
+    // compose with tasksAbandon's slot-aware path — for a slotted task,
+    // tasksAbandon delegates to slotClear -> taskUpdateForSlotClear, whose
+    // `expectedFrom` for `abandoned` is [in-progress, deferred, preempted];
+    // a freshly-de-staled task is `ready`, so the status flip silently
+    // no-ops while the endpoint reports success (Codex PR #476 review).
+    //
+    // Inline order:
+    //  1. transitionStatus(stale → abandoned) — atomic, returns false if
+    //     the task is no longer stale (raced with another writer).
+    //  2. Mirror tasksAbandon's frontmatter cleanup (completed timestamp,
+    //     remove deferred_launch/approved).
+    //  3. If slotted, clear the slot's runtime state with finalStatus
+    //     "ready" so taskUpdateForSlotClear's `expectedFrom` (which now
+    //     would see status=abandoned, not in [in-progress, deferred])
+    //     silently leaves the already-correct frontmatter alone. The
+    //     console.error inside taskUpdateForSlotClear is informational.
+    //  4. Emit task_abandon event to mirror tasksAbandon's observability.
+    if (pathname === "/api/stale-abandon") {
+      const taskParam = url.searchParams.get("task");
+      if (!taskParam || !TASK_ID_RE.test(taskParam)) {
+        return new Response("Bad Request: invalid task id", { status: 400 });
+      }
+      try {
+        const resolved = resolveTaskFile(taskParam);
+        if ("error" in resolved) return resolved.error;
+        const taskFile = resolved.path;
+
+        const ok = transitionStatus(taskFile, "stale", "abandoned");
+        if (!ok) {
+          return new Response(JSON.stringify({ error: "task is not stale" }), {
+            status: 409, headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        const completed = new Date().toISOString().slice(0, 19) + "Z";
+        updateFrontmatterField(taskFile, "completed", completed);
+        removeFrontmatterField(taskFile, "deferred_launch");
+        removeFrontmatterField(taskFile, "approved");
+
+        const slotNum = findSlotForTask(taskParam);
+        if (slotNum !== null) {
+          await slotClear(slotNum, "ready");
+        }
+
+        emitEvent({
+          event_type: "task_abandon",
+          source: "dashboard",
+          scope: "task",
+          task: taskParam,
+          status: "abandoned",
+          message: slotNum !== null
+            ? `abandoned from slot ${slotNum} (stale → abandoned)`
+            : "abandoned (stale → abandoned, no slot)",
+        });
+
         lastGenerated = 0;
         return new Response(JSON.stringify({ status: "abandoned" }), {
           headers: { "Content-Type": "application/json" },

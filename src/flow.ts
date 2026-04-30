@@ -6,7 +6,7 @@ import YAML from "yaml";
 import { harnessDir, slotsCount, effectivePriority, effectivePriorityValue, milestonesEnabledProjects, postponedProjectSet } from "./config.ts";
 import { readAllSlotJson } from "./slots/json.ts";
 import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
-import { priorityValue } from "./tasks/markdown.ts";
+import { priorityValue, TERMINAL_STATUSES } from "./tasks/markdown.ts";
 
 interface TaskData {
   id: string;
@@ -240,9 +240,7 @@ export function flowCritical(): void {
     .filter(
       (t) =>
         t.deadline &&
-        t.status !== "done" &&
-        t.status !== "abandoned" &&
-        t.status !== "merged",
+        !TERMINAL_STATUSES.includes(t.status ?? ""),
     )
     .map((t) => {
       const deadlineEpoch = new Date(t.deadline!).getTime() / 1000;

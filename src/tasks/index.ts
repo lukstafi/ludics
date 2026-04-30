@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, renameSync } from "fs";
 import { extname, join } from "path";
 import { harnessDir } from "../config.ts";
-import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus, priorityValue, TASK_ID_RE } from "./markdown.ts";
+import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus, priorityValue, TASK_ID_RE, TERMINAL_STATUSES, VALID_STATUSES } from "./markdown.ts";
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
@@ -364,7 +364,7 @@ function tasksDuplicates(): void {
   for (const f of files) {
     const content = readFileSync(join(dir, f), "utf-8");
     const fm = parseTaskFrontmatter(content);
-    if (["done", "abandoned", "merged"].includes(fm.status ?? "")) continue;
+    if (TERMINAL_STATUSES.includes(fm.status ?? "")) continue;
     if (!fm.title || !fm.id) continue;
 
     const fp = contentFingerprint(fm.title);
@@ -621,7 +621,7 @@ export async function tasksAbandon(
   const content = readFileSync(taskFile, "utf-8");
   const fm = parseTaskFrontmatter(content);
   const currentStatus = fm.status ?? "";
-  if (["done", "abandoned", "merged"].includes(currentStatus)) {
+  if (TERMINAL_STATUSES.includes(currentStatus)) {
     throw new Error(`task ${taskId} is already in terminal status: ${currentStatus}`);
   }
 
@@ -803,6 +803,38 @@ export async function runTasks(args: string[]): Promise<void> {
       await tasksSetPriority(id, level);
       break;
     }
+    case "status": {
+      const id = args[1];
+      const value = args[2];
+      if (!id) throw new Error("task ID required (usage: tasks status <task-id> <status>)");
+      if (!value) {
+        throw new Error(
+          `status required (usage: tasks status <task-id> <status>; status is one of: ${VALID_STATUSES.join(", ")})`,
+        );
+      }
+      if (args.length > 3) {
+        throw new Error(
+          `unexpected trailing arguments: ${args.slice(3).join(" ")} (usage: tasks status <task-id> <status>)`,
+        );
+      }
+      // Path-safety guard: reject IDs containing `/`, `..`, or other
+      // characters that would let `join(tasksDir(), `${id}.md`)` escape the
+      // tasks directory or touch a sibling file. Mirrors the guard in
+      // tasksSetPriority (line 657).
+      if (!TASK_ID_RE.test(id)) {
+        throw new Error(`invalid task ID: ${id} (must match ${TASK_ID_RE})`);
+      }
+      if (!(VALID_STATUSES as readonly string[]).includes(value)) {
+        throw new Error(
+          `invalid status: ${value} (use one of: ${VALID_STATUSES.join(", ")})`,
+        );
+      }
+      const taskFile = join(tasksDir(), `${id}.md`);
+      if (!existsSync(taskFile)) throw new Error(`task not found: ${id}`);
+      updateFrontmatterField(taskFile, "status", value);
+      console.log(`ludics: set ${id} status → ${value}`);
+      break;
+    }
     case "migrate-deferred": {
       const dir = tasksDir();
       if (!existsSync(dir)) {
@@ -834,7 +866,7 @@ export async function runTasks(args: string[]): Promise<void> {
     }
     default:
       throw new Error(
-        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, queue-elaborations, check, merge, unmerge, duplicates, abandon, priority, migrate-refs, migrate-deferred)`,
+        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, queue-elaborations, check, merge, unmerge, duplicates, abandon, priority, status, migrate-refs, migrate-deferred)`,
       );
   }
 }

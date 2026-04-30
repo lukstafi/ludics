@@ -9,6 +9,40 @@ import type { TaskFrontmatter } from "./types.ts";
 /** Regex for valid task IDs — used across all task-related endpoints. */
 export const TASK_ID_RE = /^[A-Za-z0-9._-]+$/;
 
+/** Full enumeration of recognised task statuses. The runtime type on
+ *  `TaskFrontmatter.status` remains free-form `string` for backwards
+ *  compatibility — this constant is the central allowlist consumed by
+ *  the CLI status setter and the inline skip-lists in `mag.ts` /
+ *  `tasks/sync.ts` / `tasks/index.ts`. */
+export const VALID_STATUSES = [
+  "ready", "in-progress", "deferred", "preempted", "preempt-queued",
+  "done", "abandoned", "merged", "needs-confirmation", "blocked", "stale",
+] as const;
+
+/** Statuses that mark a task as terminal: no further automated work,
+ *  no auto-elaboration, no proposal queueing. `stale` joins the classic
+ *  `done`/`abandoned`/`merged` triple as a terminal disposition for
+ *  superseded work. Note this is narrower than
+ *  `containerCompletionSweep`'s `TERMINAL_FOR_PARENT` (which also
+ *  includes `needs-confirmation` and the active states); the asymmetry
+ *  is preserved deliberately. */
+export const TERMINAL_STATUSES: readonly string[] = [
+  "done", "abandoned", "merged", "stale",
+];
+
+/** Statuses eligible for the auto-proposal ready queue. Today only
+ *  `ready`; named for intent-locality so future readers see the
+ *  invariant rather than re-deriving it from the inline filter. */
+export const READY_QUEUE_ELIGIBLE_STATUSES: readonly string[] = ["ready"];
+
+/** Statuses skipped by `tasksReconcileBlockedStatus` — the reconciler
+ *  must not flip terminal or already-active tasks between `ready` and
+ *  `blocked`. */
+export const BLOCKED_RECONCILE_SKIP_STATUSES: readonly string[] = [
+  ...TERMINAL_STATUSES,
+  "in-progress", "deferred", "preempt-queued", "preempted",
+];
+
 export const PRIORITY_INCREASE: Record<string, string> = { D: "C", C: "B", B: "A", A: "S" };
 export const PRIORITY_DECREASE: Record<string, string> = { S: "A", A: "B", B: "C", C: "D" };
 

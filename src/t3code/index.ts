@@ -6,7 +6,7 @@ import type { AgentConfig } from "../orchestration/state.ts";
 import { T3CodeClient, waitForNewTurn } from "./client.ts";
 import { doctorServer, ensureServer, readServerRecord, readSlotState, serverStatus, stopServer, t3codeServerPath } from "./server.ts";
 import type { T3ThreadMessage } from "./types.ts";
-import { parseTaskFrontmatter } from "../tasks/markdown.ts";
+import { parseTaskFrontmatter, TERMINAL_STATUSES as TASK_TERMINAL_STATUSES } from "../tasks/markdown.ts";
 import { isoNow, makeId } from "../orchestration/util.ts";
 
 // ---------------------------------------------------------------------------
@@ -260,7 +260,7 @@ function stripFlags(
 // Cleanup stale threads and projects
 // ---------------------------------------------------------------------------
 
-const TERMINAL_STATUSES = new Set(["done", "abandoned", "merged"]);
+const TERMINAL_STATUSES = new Set<string>([...TASK_TERMINAL_STATUSES]);
 const STALE_AGE_MS = 25 * 60 * 60 * 1_000; // 25 hours
 
 /** Collect all thread IDs currently referenced by slot state files. */
