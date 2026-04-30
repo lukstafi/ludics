@@ -10,7 +10,7 @@ import { dashboardGenerate } from "./dashboard.ts";
 import { harnessDir, loadConfigSync } from "./config.ts";
 import { readSlotJson, normalizeTaskId } from "./slots/json.ts";
 import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES, CLEAR_STATUS_READY, CLEAR_STATUS_DONE } from "./slots/index.ts";
-import { updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
+import { updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter, transitionStatus, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
 import { setQueueHold, maybeFeedMagQueue, clearAutoProposalDebounce } from "./mag.ts";
@@ -400,6 +400,63 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
       try {
         const resolved = resolveTaskFile(taskParam);
         if ("error" in resolved) return resolved.error;
+        await tasksAbandon(taskParam, { source: "dashboard", scope: "task" });
+        lastGenerated = 0;
+        return new Response(JSON.stringify({ status: "abandoned" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(String(e), { status: 500 });
+      }
+    }
+
+    // API: revive a stale task (flip status: stale -> ready)
+    if (pathname === "/api/stale-revive") {
+      const taskParam = url.searchParams.get("task");
+      if (!taskParam || !TASK_ID_RE.test(taskParam)) {
+        return new Response("Bad Request: invalid task id", { status: 400 });
+      }
+      try {
+        const resolved = resolveTaskFile(taskParam);
+        if ("error" in resolved) return resolved.error;
+        const taskFile = resolved.path;
+        // transitionStatus enforces stale -> ready exactly. Any other current
+        // status returns false (the endpoint must NOT silently revive
+        // unrelated statuses — see proposal § Edge Cases #5).
+        const ok = transitionStatus(taskFile, "stale", "ready");
+        if (!ok) {
+          return new Response(JSON.stringify({ error: "task is not stale" }), {
+            status: 409, headers: { "Content-Type": "application/json" },
+          });
+        }
+        lastGenerated = 0;
+        return new Response(JSON.stringify({ status: "ready" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(String(e), { status: 500 });
+      }
+    }
+
+    // API: abandon a stale task (de-stale -> ready, then tasksAbandon).
+    // tasksAbandon's terminal-status guard rejects status: stale, so we
+    // sequence transitionStatus(stale -> ready) first, then call abandon.
+    // The order also yields a clean 409 when the task is no longer stale.
+    if (pathname === "/api/stale-abandon") {
+      const taskParam = url.searchParams.get("task");
+      if (!taskParam || !TASK_ID_RE.test(taskParam)) {
+        return new Response("Bad Request: invalid task id", { status: 400 });
+      }
+      try {
+        const resolved = resolveTaskFile(taskParam);
+        if ("error" in resolved) return resolved.error;
+        const taskFile = resolved.path;
+        const ok = transitionStatus(taskFile, "stale", "ready");
+        if (!ok) {
+          return new Response(JSON.stringify({ error: "task is not stale" }), {
+            status: 409, headers: { "Content-Type": "application/json" },
+          });
+        }
         await tasksAbandon(taskParam, { source: "dashboard", scope: "task" });
         lastGenerated = 0;
         return new Response(JSON.stringify({ status: "abandoned" }), {

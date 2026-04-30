@@ -867,3 +867,135 @@ describe("dashboard HTTP debounce semantics — task-promote / queue-promote / s
     void idA;
   });
 });
+
+describe("stale.json tile (AC 10)", () => {
+  function writeStaleTask(id: string, title: string, created: string | null): void {
+    const tasksDir = join(harnessDir(), "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    const createdLine = created ? `created: "${created}"` : "created: null";
+    writeFileSync(
+      join(tasksDir, `${id}.md`),
+      `---\nid: ${id}\ntitle: "${title}"\nstatus: stale\npriority: B\n${createdLine}\ncontext: ludics\n---\n\n# ${title}\n`,
+    );
+  }
+  function writeReadySibling(id: string): void {
+    const tasksDir = join(harnessDir(), "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(
+      join(tasksDir, `${id}.md`),
+      `---\nid: ${id}\ntitle: "${id}"\nstatus: ready\npriority: B\ncreated: "2026-04-30"\ncontext: ludics\n---\n\n# ${id}\n`,
+    );
+  }
+
+  test("stale.json contains only status: stale tasks, sorted created desc null-last", async () => {
+    // Harness condition: three stale tasks differing only in `created`, plus
+    // a ready sibling. Without the staleConfig.filter, the ready sibling
+    // would surface; without the byCreatedDescNullLast sort, ordering would
+    // be filesystem order. Both invariants are exercised.
+    writeStaleTask("task-stale-old", "Old", "2026-01-15");
+    writeStaleTask("task-stale-new", "New", "2026-04-15");
+    writeStaleTask("task-stale-no-date", "Undated", null);
+    writeReadySibling("task-ready-sibling");
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    silenceConsoleError(() => dashboardGenerate());
+
+    const outFile = join(harnessDir(), "dashboard", "data", "stale.json");
+    const items = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const ids = items.map((it) => it.id);
+
+    // Invariant: ready sibling NOT present (filter holds).
+    // Mutation: change filter to `task.status !== "done"` and ready sibling
+    // surfaces, flipping this assertion.
+    expect(ids).not.toContain("task-ready-sibling");
+    // Invariant: all three stale tasks present, ordered by created desc
+    // with null last.
+    expect(ids).toEqual(["task-stale-new", "task-stale-old", "task-stale-no-date"]);
+  });
+});
+
+describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () => {
+  async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
+    const { buildHandlers } = await import("./dashboard-server.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(dashboardDir, { recursive: true });
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+    return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+  }
+
+  function writeTask(id: string, status: string): string {
+    const tasksDir = join(harnessDir(), "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    const file = join(tasksDir, `${id}.md`);
+    writeFileSync(
+      file,
+      `---\nid: ${id}\ntitle: "${id}"\nstatus: ${status}\npriority: B\ncontext: ludics\ndependencies:\n  blocks: []\n  blocked_by: []\n  relates_to: []\n  subtask_of: null\n---\n\n# ${id}\n\n## Notes\n\n`,
+    );
+    return file;
+  }
+
+  test("POST /api/stale-revive flips stale -> ready and returns 'ready'", async () => {
+    // Harness condition: the task starts at status: stale. If transitionStatus
+    // were called with the wrong expected source (e.g. "deferred"), the
+    // assertion that the file ends up at "status: ready" would fail.
+    const file = writeTask("task-stale-revive", "stale");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/stale-revive?task=task-stale-revive"));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("ready");
+    // Invariant: frontmatter now reads status: ready. Mutation: drop the
+    // updateFrontmatterField inside transitionStatus and this fails.
+    expect(readFileSync(file, "utf-8")).toContain("status: ready");
+  });
+
+  test("POST /api/stale-revive on non-stale task returns 409 and does not mutate", async () => {
+    // Harness condition: task is `ready`, not stale. The endpoint must NOT
+    // silently re-flip — see proposal § Edge Cases #5.
+    const file = writeTask("task-not-stale", "ready");
+    const before = readFileSync(file, "utf-8");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/stale-revive?task=task-not-stale"));
+    expect(resp.status).toBe(409);
+    expect(readFileSync(file, "utf-8")).toBe(before);
+  });
+
+  test("POST /api/stale-abandon de-stales then abandons, ending in status: abandoned", async () => {
+    // Harness condition: task starts at status: stale. The endpoint composes
+    // transitionStatus(stale -> ready) + tasksAbandon. If either step is
+    // skipped or the order is reversed, tasksAbandon's terminal-status guard
+    // (which now includes stale) throws and the response status flips to 500.
+    const file = writeTask("task-stale-abandon", "stale");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/stale-abandon?task=task-stale-abandon"));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("abandoned");
+    // Invariant: file ends up status: abandoned. Mutation: drop the
+    // tasksAbandon call and the file would still read status: ready.
+    expect(readFileSync(file, "utf-8")).toContain("status: abandoned");
+  });
+
+  test("POST /api/stale-abandon on non-stale task returns 409 and does not abandon", async () => {
+    // Harness condition: task is `ready`. tasksAbandon must NOT fire —
+    // dashboard's stale-abandon must only operate on stale tasks.
+    const file = writeTask("task-ready-abandon-attempt", "ready");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/stale-abandon?task=task-ready-abandon-attempt"));
+    expect(resp.status).toBe(409);
+    // Invariant: status: ready preserved (not flipped to abandoned).
+    const after = readFileSync(file, "utf-8");
+    expect(after).toContain("status: ready");
+    expect(after).not.toContain("status: abandoned");
+  });
+
+  test("POST /api/stale-revive rejects malformed task id with 400", async () => {
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/stale-revive?task=not%20a%20task"));
+    expect(resp.status).toBe(400);
+  });
+});
