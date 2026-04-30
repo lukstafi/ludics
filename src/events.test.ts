@@ -60,6 +60,9 @@ afterEach(() => {
 });
 
 describe("eventsQuery validation", () => {
+  // TODO(once-import-is-static): replace with captureConsoleLog from ./test-utils.ts
+  // — the wrapper is only async because of the local `await import("./events.ts")`;
+  // once that becomes a static top-level import this collapses to a one-liner.
   async function captureOutput(args: string[]): Promise<string[]> {
     const lines: string[] = [];
     const origLog = console.log;

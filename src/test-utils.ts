@@ -25,46 +25,49 @@ try {
 
 type ConsoleChannel = "log" | "error" | "warn";
 
-function withConsoleOverride(
+function withConsoleOverride<T>(
   channel: ConsoleChannel,
   override: (...args: unknown[]) => void,
-  fn: () => void,
-): void {
+  fn: () => T,
+): T {
   const orig = console[channel];
   console[channel] = override;
   try {
-    fn();
+    return fn();
   } finally {
     console[channel] = orig;
   }
 }
 
-function captureLines(channel: ConsoleChannel, fn: () => void): string[] {
+function captureLines<T>(
+  channel: ConsoleChannel,
+  fn: () => T,
+): { lines: string[]; value: T } {
   const lines: string[] = [];
-  withConsoleOverride(channel, (...args: unknown[]) => {
+  const value = withConsoleOverride(channel, (...args: unknown[]) => {
     lines.push(args.map((a) => String(a ?? "")).join(" "));
   }, fn);
-  return lines;
+  return { lines, value };
 }
 
 /** Capture lines written to `console.log` while running `fn`; restores on return or throw. */
-export function captureConsoleLog(fn: () => void): string[] {
+export function captureConsoleLog<T>(fn: () => T): { lines: string[]; value: T } {
   return captureLines("log", fn);
 }
 
 /** Capture lines written to `console.error` while running `fn`; restores on return or throw. */
-export function captureConsoleError(fn: () => void): string[] {
+export function captureConsoleError<T>(fn: () => T): { lines: string[]; value: T } {
   return captureLines("error", fn);
 }
 
 /** Run `fn` with `console.error` no-op'd; restores on return or throw. */
-export function silenceConsoleError(fn: () => void): void {
-  withConsoleOverride("error", () => {}, fn);
+export function silenceConsoleError<T>(fn: () => T): T {
+  return withConsoleOverride("error", () => {}, fn);
 }
 
 /** Run `fn` with `console.warn` no-op'd; restores on return or throw. */
-export function silenceConsoleWarn(fn: () => void): void {
-  withConsoleOverride("warn", () => {}, fn);
+export function silenceConsoleWarn<T>(fn: () => T): T {
+  return withConsoleOverride("warn", () => {}, fn);
 }
 
 /** Isolate LUDICS_HARNESS_DIR to a fresh tmpdir per test; returns a getter for the current path. */

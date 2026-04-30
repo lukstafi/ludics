@@ -438,7 +438,7 @@ describe("skills", () => {
     const origDev = process.env.LUDICS_DEV;
     process.env.LUDICS_DEV = "1";
     let text = "";
-    const warnings = captureConsoleError(() => {
+    const { lines: warnings } = captureConsoleError(() => {
       text = substituteTemplate("hello {{TYPO_VAR}} world", baseCtx());
     });
     try {
@@ -456,7 +456,7 @@ describe("skills", () => {
     delete process.env.LUDICS_DEV;
     delete process.env.DEBUG;
     let text = "";
-    const warnings = captureConsoleError(() => {
+    const { lines: warnings } = captureConsoleError(() => {
       text = substituteTemplate("hello {{TYPO_VAR}} world", baseCtx());
     });
     try {

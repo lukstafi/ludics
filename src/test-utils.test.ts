@@ -314,7 +314,7 @@ describe("withSyntheticHarness", () => {
 describe("captureConsoleLog", () => {
   test("returns lines and restores console.log", () => {
     const orig = console.log;
-    const lines = captureConsoleLog(() => {
+    const { lines } = captureConsoleLog(() => {
       console.log("hello");
       console.log("world", 42);
     });
@@ -334,17 +334,34 @@ describe("captureConsoleLog", () => {
   });
 
   test("stringifies null arg as empty string (not 'null')", () => {
-    const lines = captureConsoleLog(() => {
+    const { lines } = captureConsoleLog(() => {
       console.log(null);
     });
     expect(lines).toEqual([""]);
+  });
+
+  test("returns fn's value alongside captured lines (T = number)", () => {
+    const result = captureConsoleLog(() => {
+      console.log("side-effect");
+      return 42;
+    });
+    expect(result.value).toBe(42);
+    expect(result.lines).toEqual(["side-effect"]);
+  });
+
+  test("infers T = void when fn returns nothing (caller-compat)", () => {
+    const result = captureConsoleLog(() => {
+      console.log("just side effects");
+    });
+    expect(result.lines).toEqual(["just side effects"]);
+    expect(result.value).toBeUndefined();
   });
 });
 
 describe("captureConsoleError", () => {
   test("returns lines and restores console.error", () => {
     const orig = console.error;
-    const lines = captureConsoleError(() => {
+    const { lines } = captureConsoleError(() => {
       console.error("a", "b");
       console.error("c");
     });
@@ -361,6 +378,15 @@ describe("captureConsoleError", () => {
       });
     }).toThrow("kaboom");
     expect(console.error).toBe(orig);
+  });
+
+  test("returns fn's value alongside captured lines (T = string)", () => {
+    const result = captureConsoleError(() => {
+      console.error("warn-1");
+      return "the-return";
+    });
+    expect(result.value).toBe("the-return");
+    expect(result.lines).toEqual(["warn-1"]);
   });
 });
 
@@ -390,6 +416,20 @@ describe("silenceConsoleError", () => {
     }).toThrow("silence-err");
     expect(console.error).toBe(orig);
   });
+
+  test("returns fn's value (T = number)", () => {
+    const value = silenceConsoleError(() => {
+      console.error("muted");
+      return 7;
+    });
+    expect(value).toBe(7);
+  });
+
+  test("returns fn's value (T = object identity)", () => {
+    const sentinel = { id: "sentinel" };
+    const value = silenceConsoleError(() => sentinel);
+    expect(value).toBe(sentinel);
+  });
 });
 
 describe("silenceConsoleWarn", () => {
@@ -417,5 +457,13 @@ describe("silenceConsoleWarn", () => {
       });
     }).toThrow("silence-warn");
     expect(console.warn).toBe(orig);
+  });
+
+  test("returns fn's value (T = string)", () => {
+    const value = silenceConsoleWarn(() => {
+      console.warn("muted");
+      return "warn-return";
+    });
+    expect(value).toBe("warn-return");
   });
 });
