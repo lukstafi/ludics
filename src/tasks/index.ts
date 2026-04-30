@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, renameSync } from "fs";
 import { extname, join } from "path";
 import { harnessDir } from "../config.ts";
-import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus, priorityValue } from "./markdown.ts";
+import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus, priorityValue, TASK_ID_RE } from "./markdown.ts";
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
@@ -654,6 +654,9 @@ const VALID_PRIORITY_RE = /^[SABCD]$/;
  * debounce intact (asymmetric by design; see task-2db5eca6).
  */
 export async function tasksSetPriority(taskId: string, newPriority: string): Promise<void> {
+  if (!TASK_ID_RE.test(taskId)) {
+    throw new Error(`invalid task ID: ${taskId} (must match ${TASK_ID_RE})`);
+  }
   if (!VALID_PRIORITY_RE.test(newPriority)) {
     throw new Error(`invalid priority: ${newPriority} (use: S, A, B, C, D)`);
   }

@@ -131,6 +131,23 @@ describe("tasksSetPriority", () => {
   test("missing task file throws", async () => {
     await expect(tasksSetPriority("task-missing", "A")).rejects.toThrow(/task not found/);
   });
+
+  // Path-traversal guard (codex review on PR #467): IDs containing path
+  // separators must be rejected before path construction so they cannot
+  // resolve outside the tasks directory and mutate unrelated *.md files.
+  test("rejects path-traversal task IDs before touching the filesystem", async () => {
+    // Sibling `decoy.md` in harness/ — would be hit by `../decoy` if the
+    // guard were missing. The assertion is twofold: (a) the helper rejects
+    // pre-construction, and (b) the decoy is byte-identical afterward.
+    const decoyPath = join(harness(), "decoy.md");
+    const decoyBefore = "---\nid: decoy\npriority: B\n---\n";
+    writeFileSync(decoyPath, decoyBefore);
+    await expect(tasksSetPriority("../decoy", "A")).rejects.toThrow(/invalid task ID/);
+    expect(readFileSync(decoyPath, "utf-8")).toBe(decoyBefore);
+    // Also reject embedded slash and other shell-meaningful chars.
+    await expect(tasksSetPriority("task/sub", "A")).rejects.toThrow(/invalid task ID/);
+    await expect(tasksSetPriority("", "A")).rejects.toThrow(/invalid task ID/);
+  });
 });
 
 describe("runTasks priority subcommand", () => {
