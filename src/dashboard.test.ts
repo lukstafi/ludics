@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -541,20 +541,12 @@ describe("slots.json field shape", () => {
 // slotResume() itself is already tested in src/slots/index.test.ts.
 
 describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
-  async function startServer(): Promise<{ baseUrl: string; stop: () => void }> {
-    const { startDashboardServer } = await import("./dashboard-server.ts");
+  async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
+    const { buildHandlers } = await import("./dashboard-server.ts");
     const dashboardDir = join(harnessDir(), "dashboard");
     mkdirSync(dashboardDir, { recursive: true });
     mkdirSync(join(dashboardDir, "data"), { recursive: true });
-    // Silence boot logging + lazy-regeneration complaints
-    let server!: ReturnType<typeof startDashboardServer>;
-    silenceConsoleError(() => {
-      server = startDashboardServer(0, dashboardDir, 3600);
-    });
-    return {
-      baseUrl: `http://localhost:${server.port}`,
-      stop: () => { void server.stop(true); },
-    };
+    return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
   }
 
   test("POST /api/queue-promote moves target to head and returns 'promoted'", async () => {
@@ -564,16 +556,12 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     const idC = queueRequest({ action: "briefing" });
     expect(queueList().map(i => i.id)).toEqual([idA, idB, idC]);
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-promote?id=${encodeURIComponent(idC)}`, { method: "POST" });
-      expect(resp.status).toBe(200);
-      expect(resp.headers.get("content-type")).toContain("application/json");
-      const body = await resp.json() as { status: string };
-      expect(body.status).toBe("promoted");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-promote?id=${encodeURIComponent(idC)}`, { method: "POST" }));
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-type")).toContain("application/json");
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("promoted");
     expect(queueList().map(i => i.id)).toEqual([idC, idA, idB]);
   });
 
@@ -582,14 +570,10 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     const idA = queueRequest({ action: "briefing" });
     const idB = queueRequest({ action: "briefing" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-promote?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      const body = await resp.json() as { status: string };
-      expect(body.status).toBe("already-head");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-promote?id=${encodeURIComponent(idA)}`, { method: "POST" }));
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("already-head");
     expect(queueList().map(i => i.id)).toEqual([idA, idB]);
   });
 
@@ -597,25 +581,17 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     const { queueRequest } = await import("./queue.ts");
     queueRequest({ action: "briefing" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-promote?id=req-0-0`, { method: "POST" });
-      expect(resp.status).toBe(200);
-      const body = await resp.json() as { status: string };
-      expect(body.status).toBe("not-found");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue-promote?id=req-0-0", { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("not-found");
   });
 
   test("POST /api/queue-promote rejects malformed id with 400", async () => {
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-promote?id=not-a-queue-id`, { method: "POST" });
-      expect(resp.status).toBe(400);
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue-promote?id=not-a-queue-id", { method: "POST" }));
+    expect(resp.status).toBe(400);
   });
 
   test("POST /api/queue-cancel removes item and returns content for message actions", async () => {
@@ -623,19 +599,15 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     const idA = queueRequest({ action: "message", content: "please recycle me" });
     const idB = queueRequest({ action: "briefing" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      expect(resp.status).toBe(200);
-      const body = await resp.json() as { status: string; content: string | null; action: string; task?: string; slashCommand: string | null };
-      expect(body.status).toBe("cancelled");
-      expect(body.content).toBe("please recycle me");
-      expect(body.action).toBe("message");
-      expect(body.task).toBeUndefined();
-      expect(body.slashCommand).toBeNull();
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string; content: string | null; action: string; task?: string; slashCommand: string | null };
+    expect(body.status).toBe("cancelled");
+    expect(body.content).toBe("please recycle me");
+    expect(body.action).toBe("message");
+    expect(body.task).toBeUndefined();
+    expect(body.slashCommand).toBeNull();
     expect(queueList().map(i => i.id)).toEqual([idB]);
   });
 
@@ -643,18 +615,14 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     const { queueRequest } = await import("./queue.ts");
     const idA = queueRequest({ action: "elaborate", task: "task-abc" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      const body = await resp.json() as { status: string; content: string | null; action: string; task?: string; slashCommand: string | null };
-      expect(body.status).toBe("cancelled");
-      expect(body.content).toBeNull();
-      expect(body.action).toBe("elaborate");
-      expect(body.task).toBe("task-abc");
-      expect(body.slashCommand).toBe("/ludics-elaborate task-abc");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" }));
+    const body = await resp.json() as { status: string; content: string | null; action: string; task?: string; slashCommand: string | null };
+    expect(body.status).toBe("cancelled");
+    expect(body.content).toBeNull();
+    expect(body.action).toBe("elaborate");
+    expect(body.task).toBe("task-abc");
+    expect(body.slashCommand).toBe("/ludics-elaborate task-abc");
   });
 
   test("POST /api/queue-cancel renders multi-line feedback below slash command", async () => {
@@ -665,55 +633,75 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
       feedback: "First concern.\nSecond concern.",
     });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      const body = await resp.json() as { status: string; slashCommand: string | null };
-      expect(body.status).toBe("cancelled");
-      expect(body.slashCommand).toBe("/ludics-revise-proposal task-abc\nFirst concern.\nSecond concern.");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" }));
+    const body = await resp.json() as { status: string; slashCommand: string | null };
+    expect(body.status).toBe("cancelled");
+    expect(body.slashCommand).toBe("/ludics-revise-proposal task-abc\nFirst concern.\nSecond concern.");
   });
 
   test("POST /api/queue-cancel returns null slashCommand for actions with no skill mapping", async () => {
     const { queueRequest } = await import("./queue.ts");
     const idA = queueRequest({ action: "complete-task", task: "task-abc" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      const body = await resp.json() as { status: string; slashCommand: string | null };
-      expect(body.status).toBe("cancelled");
-      expect(body.slashCommand).toBeNull();
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" }));
+    const body = await resp.json() as { status: string; slashCommand: string | null };
+    expect(body.status).toBe("cancelled");
+    expect(body.slashCommand).toBeNull();
   });
 
   test("POST /api/queue-cancel returns 'not-found' for unknown id without mutating queue", async () => {
     const { queueRequest, queueList } = await import("./queue.ts");
     const idA = queueRequest({ action: "briefing" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=req-0-0`, { method: "POST" });
-      expect(resp.status).toBe(200);
-      const body = await resp.json() as { status: string };
-      expect(body.status).toBe("not-found");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue-cancel?id=req-0-0", { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("not-found");
     expect(queueList().map(i => i.id)).toEqual([idA]);
   });
 
   test("POST /api/queue-cancel rejects malformed id with 400", async () => {
-    const { baseUrl, stop } = await startServer();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue-cancel?id=", { method: "POST" }));
+    expect(resp.status).toBe(400);
+  });
+
+  test("buildHandlers isolates lastGenerated debounce state across factory calls", async () => {
+    // AC1 falsifier: each buildHandlers(...) call must own its own
+    // lastGenerated counter. The handler debounces dashboardGenerate() via
+    // `now - lastGenerated >= ttlSeconds`. If lastGenerated were shared
+    // (e.g. module-level), handlerA's first /data hit would advance it for
+    // handlerB too, and handlerB's first /data hit would skip regeneration
+    // — failing the third assertion below. With per-factory state,
+    // handlerB starts at lastGenerated=0 and triggers its own regen.
+    const dashboardMod = await import("./dashboard.ts");
+    const { buildHandlers } = await import("./dashboard-server.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(dashboardDir, { recursive: true });
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+
+    const spy = spyOn(dashboardMod, "dashboardGenerate").mockImplementation(() => {});
     try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=`, { method: "POST" });
-      expect(resp.status).toBe(400);
+      const handlerA = buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+      const handlerB = buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+
+      // handlerA, first /data/* hit: lastGenerated=0, ttlSeconds=3600 → regen.
+      await handlerA(new Request("http://x/data/slots.json"));
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // handlerA, second /data/* hit within TTL: no regen (debounce works).
+      await handlerA(new Request("http://x/data/slots.json"));
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // handlerB, first /data/* hit: independent counter starts at 0, so
+      // it must regen. With shared state this would still be 1.
+      await handlerB(new Request("http://x/data/slots.json"));
+      expect(spy).toHaveBeenCalledTimes(2);
     } finally {
-      stop();
+      spy.mockRestore();
     }
   });
 });
