@@ -558,7 +558,7 @@ describe("ensureGitExcludes", () => {
     const countBefore = gitLogCount(repo);
 
     // Silence the expected warning so test output stays clean
-    const warnings = captureConsoleError(() => ensureGitExcludes(repo));
+    const { lines: warnings } = captureConsoleError(() => ensureGitExcludes(repo));
 
     // Warning emitted about the skip
     expect(warnings.some((w) => w.includes("skipping untrack") && w.includes("pre-existing staged"))).toBe(true);
@@ -737,7 +737,7 @@ describe("removeWorktreeByPath prefix guard", () => {
     const repo = join(TMP, "remove-guard");
     initRepo(repo);
 
-    const warnings = captureConsoleError(() => {
+    const { lines: warnings } = captureConsoleError(() => {
       removeWorktreeByPath(repo, "/some/random/path");
     });
 
@@ -749,7 +749,7 @@ describe("removeWorktreeByPath prefix guard", () => {
     const repo = join(TMP, "remove-guard-generic");
     initRepo(repo);
 
-    const warnings = captureConsoleError(() => {
+    const { lines: warnings } = captureConsoleError(() => {
       // These share the repo prefix but are not orchestration worktrees
       removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-backup"));
       removeWorktreeByPath(repo, join(dirname(repo), "remove-guard-generic-scratch"));
@@ -770,7 +770,7 @@ describe("removeWorktreeByPath prefix guard", () => {
     const setup = createWorktrees(repo, "task-abc123", [{ name: "a1" }], "main", 1);
 
     // Should not warn — path matches orchestration naming
-    const warnings = captureConsoleError(() => {
+    const { lines: warnings } = captureConsoleError(() => {
       removeWorktreeByPath(repo, setup.rootWorktree);
     });
 
@@ -789,7 +789,7 @@ describe("removeWorktreeByPath prefix guard", () => {
     // Create a worktree with single-token taskId + slot
     const setup = createWorktrees(repo, "feat", [{ name: "a1" }], "main", 1);
 
-    const warnings = captureConsoleError(() => {
+    const { lines: warnings } = captureConsoleError(() => {
       removeWorktreeByPath(repo, setup.rootWorktree);
     });
 
@@ -815,7 +815,7 @@ describe("deleteBranches prefix guard", () => {
     run(["git", "branch", "feature-safe"], repo);
 
     // Capture stderr to verify warning
-    const warnings = captureConsoleError(() => {
+    const { lines: warnings } = captureConsoleError(() => {
       deleteBranches(repo, [
         "ludics/test-task-s1/root",
         "main",
@@ -1020,7 +1020,7 @@ describe("purgeOrphanDirIfRecoverable", () => {
     const path = join(TMP, "myrepo-task-unrec-s1");
     seedOrphanLayout(path, { withStray: { name: "user-notes.md", contents: "keep me\n" } });
 
-    const warnings = captureConsoleError(() => {
+    const { lines: warnings } = captureConsoleError(() => {
       expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(false);
     });
     // No console.error from the purge itself — classify-only path is silent.
@@ -1050,7 +1050,7 @@ describe("purgeOrphanDirIfRecoverable", () => {
     const path = join(TMP, "user-data");
     seedOrphanLayout(path); // pure allow-list content
 
-    const warnings = captureConsoleError(() => {
+    const { lines: warnings } = captureConsoleError(() => {
       expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(false);
     });
     expect(warnings.some((w) => w.includes("refusing to purge") && w.includes("user-data"))).toBe(true);
@@ -1069,7 +1069,7 @@ describe("purgeOrphanDirIfRecoverable", () => {
     const path = join(TMP, "myrepo-backup");
     seedOrphanLayout(path);
 
-    const warnings = captureConsoleError(() => {
+    const { lines: warnings } = captureConsoleError(() => {
       expect(purgeOrphanDirIfRecoverable(projectDir, path)).toBe(false);
     });
     expect(warnings.some((w) => w.includes("refusing to purge"))).toBe(true);

@@ -56,7 +56,7 @@ describe("flowBlocked", () => {
     writeTask("task-b1", "B", ["task-blocker"]);
     writeTask("task-a1", "A", ["task-blocker"]);
 
-    const lines = captureConsoleLog(() => flowBlocked());
+    const { lines } = captureConsoleLog(() => flowBlocked());
 
     const ids = lines.map((l) => l.split(" ")[0]);
     expect(ids).toEqual(["task-s1", "task-a1", "task-b1", "task-c1", "task-d1"]);
@@ -67,7 +67,7 @@ describe("flowBlocked", () => {
     writeTask("task-x1", "X", ["task-blocker"]);
     writeTask("task-s1", "S", ["task-blocker"]);
 
-    const lines = captureConsoleLog(() => flowBlocked());
+    const { lines } = captureConsoleLog(() => flowBlocked());
 
     const ids = lines.map((l) => l.split(" ")[0]);
     expect(ids).toEqual(["task-s1", "task-d1", "task-x1"]);
