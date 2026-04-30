@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld } from "./mag.ts";
 import type { RunGit } from "./git-runner.ts";
 
 describe("normalizeLaunchAdapter", () => {
@@ -651,6 +651,79 @@ describe("stale settled sentinel detection", () => {
 // role is now fulfilled by src/queue.ts:queuePopExpected, which has its own
 // coverage in src/queue.test.ts ("queuePopExpected" describe) including mismatch-
 // without-mutation, malformed-JSON head, and empty-queue cases.
+
+describe("setQueueHold sentinel", () => {
+  // Migrated from tests/test.sh (gh-ludics-407): the bash script emulated the
+  // mkdirSync({recursive: true}) + writeFileSync sentinel-write path with
+  // `mkdir -p` + `touch` and asserted both the fresh-harness ENOENT branch
+  // and idempotent re-hold. Test the production helper directly.
+
+  let TMP = "";
+  const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-mag-qh-"));
+    process.env.LUDICS_HARNESS_DIR = TMP;
+    // Note: deliberately do NOT pre-create TMP/mag — the fresh-harness case
+    // exercises the mkdirSync({recursive: true}) ENOENT branch in setQueueHold.
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HARNESS_DIR === undefined) {
+      delete process.env.LUDICS_HARNESS_DIR;
+    } else {
+      process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
+    }
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  test("setQueueHold(true) creates sentinel when mag/ does not pre-exist", () => {
+    // Invariant: setQueueHold's mkdirSync({recursive: true}) handles the
+    // fresh-harness ENOENT scenario. Removing the recursive flag flips this.
+    // Harness condition: TMP/mag is intentionally absent on entry.
+    expect(existsSync(join(TMP, "mag"))).toBe(false);
+    expect(setQueueHold(true, "test")).toBe(true);
+    expect(existsSync(join(TMP, "mag", "queue-hold"))).toBe(true);
+    expect(isQueueHeld()).toBe(true);
+  });
+
+  test("setQueueHold(true) creates sentinel when mag/ already exists", () => {
+    // Invariant: mkdirSync({recursive: true}) is also idempotent against an
+    // already-existing directory (no EEXIST throw).
+    // Harness condition: TMP/mag pre-created before the call.
+    mkdirSync(join(TMP, "mag"), { recursive: true });
+    expect(setQueueHold(true, "test")).toBe(true);
+    expect(existsSync(join(TMP, "mag", "queue-hold"))).toBe(true);
+  });
+
+  test("setQueueHold(true) is idempotent — second call is a no-op", () => {
+    // Invariant: setQueueHold short-circuits when state already matches —
+    // no second writeFileSync, no throw, returns false. The early-return
+    // `if (held === isQueueHeld()) return false` is what enforces this.
+    // Harness condition: queue is already held when the second call runs.
+    setQueueHold(true, "test");
+    expect(setQueueHold(true, "test")).toBe(false);
+    expect(existsSync(join(TMP, "mag", "queue-hold"))).toBe(true);
+  });
+
+  test("setQueueHold(false) removes sentinel after a hold", () => {
+    // Invariant: resume removes the sentinel via unlinkSync; isQueueHeld
+    // reflects sentinel absence. Skipping the unlink flips this.
+    // Harness condition: queue was held immediately before resume.
+    setQueueHold(true, "test");
+    expect(setQueueHold(false, "test")).toBe(true);
+    expect(existsSync(join(TMP, "mag", "queue-hold"))).toBe(false);
+    expect(isQueueHeld()).toBe(false);
+  });
+
+  test("setQueueHold(false) is idempotent on already-not-held", () => {
+    // Invariant: same short-circuit on the resume branch — no unlinkSync
+    // ENOENT throw on a fresh harness with no sentinel.
+    // Harness condition: no prior hold; sentinel does not exist on entry.
+    expect(isQueueHeld()).toBe(false);
+    expect(setQueueHold(false, "test")).toBe(false);
+  });
+});
 
 describe("magStateFile atomic write", () => {
   test("writes session state via atomic tmp+rename (no .tmp leftover)", async () => {
