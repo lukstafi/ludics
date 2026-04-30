@@ -52,24 +52,11 @@ import {
   tmuxRunShell,
 } from "./adapters/tmux.ts";
 import { safeSyncOutput } from "./spawn.ts";
+import { ludicsSelfCommand } from "./orchestration/util.ts";
 
 const MAG_SESSION_NAME = process.env.LUDICS_MAG_SESSION ?? "ludics-mag";
 const MAG_DEFAULT_PORT = process.env.LUDICS_MAG_PORT ?? "7679";
 const FEEDBACK_DIGEST_COOLDOWN_SECONDS = 120;
-const SCRIPT_EXT_RE = /\.(?:[cm]?[jt]sx?)$/i;
-
-function ludicsSelfCommand(args: string[]): string[] {
-  // Compiled binary: invoke directly via process.execPath.
-  // Script mode (bun/node): invoke the current entry script.
-  const entry = process.argv[1];
-  if (entry && SCRIPT_EXT_RE.test(entry) && existsSync(entry)) {
-    if (process.execPath.toLowerCase().endsWith("bun")) {
-      return [process.execPath, "run", entry, ...args];
-    }
-    return [process.execPath, entry, ...args];
-  }
-  return [process.execPath, ...args];
-}
 
 function magStateDir(): string {
   return join(harnessDir(), "mag");

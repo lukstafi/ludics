@@ -7,18 +7,11 @@ import { T3CodeClient, waitForNewTurn } from "./client.ts";
 import { doctorServer, ensureServer, readServerRecord, readSlotState, serverStatus, stopServer, t3codeServerPath } from "./server.ts";
 import type { T3ThreadMessage } from "./types.ts";
 import { parseTaskFrontmatter } from "../tasks/markdown.ts";
+import { isoNow, makeId } from "../orchestration/util.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function isoNow(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-function makeId(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID()}`;
-}
 
 async function withClient<T>(
   fn: (client: T3CodeClient) => Promise<T>,
