@@ -44,9 +44,17 @@ PR #402).
   HEAD.
 - `bun run lint:test-isolation` and `bun run lint:contracts` continue to pass
   (no script changes — only test changes).
-- The assertion catches a regression: temporarily removing the side-effect-
-  import branch in `parseImports` (in `lint-test-isolation.ts`) makes the
-  pinned-count test fail. Worker verifies this manually and reverts.
+- The pinned-count assertion catches a real `parseImports` coverage
+  regression: worker temporarily breaks one of `parseImports`'s matcher
+  branches (the side-effect-import loop OR, if no real test file under `src/`
+  uses that shape, the multi-line `withFromRe` body — whichever flips the
+  HEAD count) and confirms the integration assertion fails, then reverts.
+  The proposal originally specified the side-effect branch; on HEAD that
+  probe is empirically a no-op (the proposal's own context flags side-effect
+  matching as "purely a coverage fix — no actual test file uses side-effect
+  imports of target modules"), so the multi-line probe is the live-tree
+  proxy that exercises the same invariant. Worker records which probe
+  produced the failing count and the observed delta in the AC verification.
 - Lints without a warning tier (`lint-template-safety`, `lint-config-helpers`,
   `lint-cli-readme`) are not modified — pinning warnings on a lint that emits
   none would be churn for no signal.
