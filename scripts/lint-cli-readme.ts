@@ -19,6 +19,27 @@ const root = join(import.meta.dir, "..");
 // Pure helpers (exported for unit testing)
 // ---------------------------------------------------------------------------
 
+// SILENT-DRIFT WARNING (gh-ludics-406):
+// `extractUsageCommands` and `extractReadmeCommands` are regex-over-source
+// extractors. Their safety claim — "every README CLI Reference command is
+// still in USAGE" — depends on the literal patterns below appearing in their
+// respective sources. A refactor that builds USAGE programmatically (e.g.
+// `commands.map(c => "  " + c.name).join("\n")`) or moves the README CLI
+// Reference into a shared markdown partial *deletes* the literals from view.
+// The regex still runs, just with fewer hits, and the lint passes silently.
+//
+// Recognised patterns:
+//   USAGE source — `^\s{1,4}([a-z][\w-]*)\b` against the USAGE template
+//                  literal body extracted via `extractUsageBlock`.
+//   README — `^ludics\s+([a-z][\w-]*)\b` against the `## CLI Reference`
+//            section sliced by `extractCliReferenceSection`.
+//
+// If you change how USAGE or the README CLI Reference is constructed, update
+// the patterns AND keep the floor-count tests in
+// scripts/lint-cli-readme.test.ts ("extractUsageCommands: floor count …",
+// "extractReadmeCommands: floor count …") in sync. The floor-count tests
+// are the mechanical guard that catches DRY-only collapses of either side.
+
 // Extract the contents of `const USAGE = \`...\`` as opaque text. Returns the
 // string between the opening and closing backticks (or "" if not found).
 //

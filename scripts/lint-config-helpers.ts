@@ -180,6 +180,27 @@ function extractPathsFromBody(
 // Mag Source Grep
 // ---------------------------------------------------------------------------
 
+// SILENT-DRIFT WARNING (gh-ludics-406):
+// `extractMagPathsFromSource` is a regex-over-source extractor. Its safety
+// claim — "every mag config key reachable from src/ is documented" — depends
+// on the literal access patterns below appearing at the call sites. A
+// "DRY-only" refactor that wraps any of these patterns behind a new helper,
+// table, or loop *deletes* the literals from source. The regex still runs,
+// just with fewer hits, and the lint passes silently with reduced coverage.
+//
+// If you introduce a new helper that reads `mag?.<key>` (or sibling), add a
+// matching regex pattern below AND keep the floor-count test in
+// scripts/lint-config-helpers.test.ts ("extractMagPathsFromSource: floor
+// count of N keys") in sync. The floor-count test is the mechanical guard
+// that catches the next instance of this silent-drift class.
+//
+// Recognised patterns (mirror in the test's failure-mode comment):
+//   - mag?.property                              (local variable after cast)
+//   - magXxx?.property                           (e.g. magConfig?.x)
+//   - (config.mag as ...)?.property              (inline cast)
+//   - config.mag?.property                       (direct optional chaining)
+//   - magSecondsConfig("property", ...)          (shared *_seconds helper)
+
 /**
  * Extract first-level mag property names accessed in source code.
  * Scans .ts files for mag config access patterns:

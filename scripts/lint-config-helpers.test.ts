@@ -6,6 +6,7 @@ import {
   extractInterfaceBody,
   parseFieldDeclarations,
   extractInterfacePaths,
+  extractMagPathsFromSource,
   flattenYamlPaths,
   collectArrayPaths,
   comparePaths,
@@ -308,6 +309,29 @@ describe("harness config subset of reference", () => {
     };
     const extras = [...hp].filter((p) => !rp.has(p) && !isUnderRefArray(p));
     expect(extras).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Floor-count guard for extractMagPathsFromSource (gh-ludics-406)
+//
+// Mirrors the meta-test pattern in scripts/lint-template-safety.test.ts (the
+// "expected size for the current result literal" sanity check). The extractor
+// has no second source of truth to assert equality against, so we use a floor
+// instead of equality. Failure here means **either**:
+//   (a) a DRY refactor collapsed call sites — add a regex / register the new
+//       helper in extractMagPathsFromSource, then re-run this test;
+//   (b) keys were intentionally removed — lower the floor and note what
+//       moved in this comment.
+// Today the extractor finds 15 keys; the floor is set to 10 with slack so
+// single-key removal does not trip the lint.
+// ---------------------------------------------------------------------------
+
+describe("extractMagPathsFromSource floor count", () => {
+  test("real src/ yields at least 10 mag.* paths (silent-drift guard)", () => {
+    const repoRoot = join(import.meta.dir, "..");
+    const set = extractMagPathsFromSource(join(repoRoot, "src"));
+    expect(set.size).toBeGreaterThanOrEqual(10);
   });
 });
 
