@@ -192,6 +192,96 @@ describe("addFrontmatterField", () => {
   });
 });
 
+describe("updateFrontmatterField null/empty normalization", () => {
+  // Invariant: when callers pass JS `null` or `""`, the writer emits the
+  // canonical YAML null token `null` on disk — never the JS-literal string
+  // `"null"` and never an empty value. Replaces the legacy
+  // `updateFrontmatterField(file, "slot", "null")` write idiom.
+  test("null value renders as canonical YAML null on existing field", () => {
+    const f = tmpFile("null-update.md", [
+      "---",
+      "id: task-1",
+      "slot: 3",
+      "---",
+      "",
+      "# Title",
+    ].join("\n"));
+
+    updateFrontmatterField(f, "slot", null);
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("slot: null");
+    // Round-trip: parser sees the field as absent (null/undefined-y).
+    const fm = parseTaskFrontmatter(result);
+    expect(fm.slot ?? null).toBeNull();
+  });
+
+  test("empty string value normalizes to YAML null on existing field", () => {
+    const f = tmpFile("empty-update.md", [
+      "---",
+      "id: task-1",
+      "slot: 3",
+      "---",
+      "",
+      "# Title",
+    ].join("\n"));
+
+    updateFrontmatterField(f, "slot", "");
+    const result = readFileSync(f, "utf-8");
+    // Must be the canonical `null` token, not a dangling `slot: ` line.
+    expect(result).toContain("slot: null");
+    expect(result).not.toMatch(/^slot:\s*$/m);
+  });
+
+  test("null value renders as YAML null when upserting a missing field", () => {
+    const f = tmpFile("null-upsert.md", [
+      "---",
+      "id: task-1",
+      "status: ready",
+      "---",
+      "",
+      "# Title",
+    ].join("\n"));
+
+    updateFrontmatterField(f, "slot", null);
+    const result = readFileSync(f, "utf-8");
+    const fmMatch = result.match(/^---\n([\s\S]*?)\n---/);
+    expect(fmMatch).not.toBeNull();
+    expect(fmMatch![1]).toContain("slot: null");
+  });
+
+  test("non-empty string value passes through verbatim (regression guard)", () => {
+    // Harness condition: value is a real, non-empty, non-null string —
+    // the only branch where the normalization rule must NOT fire.
+    const f = tmpFile("passthrough.md", [
+      "---",
+      "id: task-1",
+      "slot: null",
+      "---",
+      "",
+      "# Title",
+    ].join("\n"));
+
+    updateFrontmatterField(f, "slot", "3");
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("slot: 3");
+    expect(result).not.toContain("slot: null");
+  });
+
+  test("addFrontmatterField inherits the same null/empty normalization", () => {
+    const f = tmpFile("add-null.md", [
+      "---",
+      "id: task-1",
+      "---",
+      "",
+      "# Title",
+    ].join("\n"));
+
+    addFrontmatterField(f, "slot", null);
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("slot: null");
+  });
+});
+
 describe("parseTaskFrontmatter field reads", () => {
   test("reads basic scalar value (proposal)", () => {
     const content = "---\nproposal: docs/proposals/foo.md\n---\n\n# Title";

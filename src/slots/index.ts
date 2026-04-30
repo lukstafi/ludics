@@ -14,7 +14,7 @@ import { journalAppend } from "../journal.ts";
 import { emitEvent } from "../events.ts";
 import { runAdapterAction, readAdapterState, readAdapterLastActivity } from "../adapters/index.ts";
 import type { AdapterContext } from "../adapters/index.ts";
-import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter, transitionStatus } from "../tasks/markdown.ts";
+import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter, transitionStatus, renderFrontmatterValue } from "../tasks/markdown.ts";
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
@@ -198,7 +198,7 @@ function readRawEffortField(content: string): string | null {
  * the (slot, adapter, started) write transactional — a crash mid-sequence would
  * otherwise leave the task with partial assignment (e.g. slot but no adapter).
  */
-function taskUpdateFrontmatterFields(taskId: string, updates: Record<string, string>): void {
+function taskUpdateFrontmatterFields(taskId: string, updates: Record<string, string | null>): void {
   const file = taskFilePath(taskId);
   if (!existsSync(file)) return;
 
@@ -223,7 +223,7 @@ function taskUpdateFrontmatterFields(taskId: string, updates: Record<string, str
       let matched = false;
       for (const field of remaining) {
         if (line.startsWith(`${field}:`)) {
-          output.push(`${field}: ${updates[field]}`);
+          output.push(`${field}: ${renderFrontmatterValue(updates[field]!)}`);
           remaining.delete(field);
           matched = true;
           break;
@@ -237,7 +237,7 @@ function taskUpdateFrontmatterFields(taskId: string, updates: Record<string, str
   atomicWriteFileSync(file, output.join("\n"));
 }
 
-function taskUpdateFrontmatter(taskId: string, field: string, value: string): void {
+function taskUpdateFrontmatter(taskId: string, field: string, value: string | null): void {
   taskUpdateFrontmatterFields(taskId, { [field]: value });
 }
 
@@ -283,7 +283,7 @@ function taskUpdateForSlotClear(taskId: string, finalStatus: string): void {
     console.error(`ludics: skipping slot clear for ${taskId}: status is '${actual}', expected one of [${expectedFrom.join(", ")}]`);
     return;
   }
-  taskUpdateFrontmatter(taskId, "slot", "null");
+  taskUpdateFrontmatter(taskId, "slot", null);
 
   if (finalStatus === "done" || finalStatus === "abandoned") {
     const completed = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
@@ -396,7 +396,7 @@ export async function slotAssign(
   if (oldData.task && oldData.task !== taskId) {
     const oldTaskFile = taskFilePath(oldData.task);
     if (existsSync(oldTaskFile)) {
-      updateFrontmatterField(oldTaskFile, "slot", "null");
+      updateFrontmatterField(oldTaskFile, "slot", null);
       const oldContent = readFileSync(oldTaskFile, "utf-8");
       const oldStatus = parseTaskFrontmatter(oldContent).status;
       if (oldStatus === "in-progress" || oldStatus === "deferred") {
@@ -434,7 +434,10 @@ export async function slotAssign(
     taskUpdateForSlotAssign(taskId, slotNum, adapter, started);
   }
 
-  journalAppend("slot", `Slot ${slotNum} assigned: ${processDesc} (task=${taskId ?? "null"}, adapter=${adapter})`);
+  journalAppend(
+    "slot",
+    `Slot ${slotNum} assigned: ${processDesc}${taskId ? ` (task=${taskId})` : ""} (adapter=${adapter})`,
+  );
   emitEvent({ event_type: "slot_assign", source: "cli", scope: "slot", slot: slotNum, task: taskId ?? undefined, adapter, message: processDesc });
   stateMarkDirty();
 }
@@ -605,7 +608,7 @@ export function taskCompleteDirectly(taskId: string): void {
     console.error(`ludics: skipping direct completion for ${taskId}: status is '${actual}', expected one of [in-progress, deferred]`);
     return;
   }
-  taskUpdateFrontmatter(taskId, "slot", "null");
+  taskUpdateFrontmatter(taskId, "slot", null);
   const completed = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
   taskUpdateFrontmatter(taskId, "completed", completed);
   pruneBlockedBy(taskId);

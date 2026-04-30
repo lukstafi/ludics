@@ -209,19 +209,31 @@ export function frontmatterBounds(lines: string[]): { openLine: number; closeLin
   return null;
 }
 
-export function updateFrontmatterField(filePath: string, field: string, value: string): void {
+/** Normalize a frontmatter scalar to its on-disk YAML form. JS `null` and
+ *  the empty string both render as the canonical YAML null token, so any
+ *  "absent" sentinel a caller passes ends up as a single shape on disk
+ *  (`<field>: null`). Non-empty strings pass through verbatim. Exported so
+ *  other writers in the repo can share the rule without re-stating the
+ *  literal — keeps `grep '"null"'` from re-finding the legacy sentinel. */
+export function renderFrontmatterValue(value: string | null): string {
+  return (value === null || value === "") ? "null" : value;
+}
+
+export function updateFrontmatterField(filePath: string, field: string, value: string | null): void {
   if (!existsSync(filePath)) return;
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n");
   const bounds = frontmatterBounds(lines);
   if (!bounds) return;
 
+  const rendered = renderFrontmatterValue(value);
+
   let done = false;
   const output: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
     if (i > bounds.openLine && i < bounds.closeLine && !done && lines[i]!.startsWith(`${field}:`)) {
-      output.push(`${field}: ${value}`);
+      output.push(`${field}: ${rendered}`);
       done = true;
       continue;
     }
@@ -230,13 +242,13 @@ export function updateFrontmatterField(filePath: string, field: string, value: s
 
   if (!done) {
     // Upsert: insert before the frontmatter closing ---
-    output.splice(bounds.closeLine, 0, `${field}: ${value}`);
+    output.splice(bounds.closeLine, 0, `${field}: ${rendered}`);
   }
 
   atomicWriteFileSync(filePath, output.join("\n"));
 }
 
-export function addFrontmatterField(filePath: string, field: string, value: string): void {
+export function addFrontmatterField(filePath: string, field: string, value: string | null): void {
   updateFrontmatterField(filePath, field, value);
 }
 
