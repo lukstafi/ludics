@@ -10,7 +10,7 @@
 import { existsSync } from "fs";
 import { join } from "path";
 import {
-  detectDefaultBranchesAuthoritative,
+  detectDefaultBranches,
   expandHome,
   hasRemote,
   withCheckout,
@@ -113,7 +113,7 @@ export function syncStagingMainWithUpstream(
     // After `git fetch upstream` above, network connectivity + credentials
     // are warm — use the authoritative `ls-remote --symref` tier so non-
     // main/master defaults (e.g. `develop`, `trunk`) are detected correctly.
-    const branches = detectDefaultBranchesAuthoritative(path, opts.runGit);
+    const branches = detectDefaultBranches(path, opts.runGit, { authoritative: true });
     if (!branches.origin || !branches.upstream) {
       out.push({ project, outcome: "skipped-no-default-branch" });
       touchSentinel(sentinel, opts.now);

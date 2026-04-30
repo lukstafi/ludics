@@ -868,31 +868,89 @@ describe("skills", () => {
     }
   });
 
-  test("PROPOSAL_FRESHNESS_WARNING: empty when origin has no detectable default branch", async () => {
+  test("PROPOSAL_FRESHNESS_WARNING: empty when no base ref can be resolved (no origin/upstream/main/master)", async () => {
     const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
     const { join: j } = await import("path");
-    const tmpDir = mkdtempSync("/tmp/ludics-freshness-noorigin-");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-nobase-");
     const origHarness = process.env.LUDICS_HARNESS_DIR;
     try {
       const harnessTasks = j(tmpDir, "harness", "tasks");
       const projectDir = j(tmpDir, "project");
       mkdir2(harnessTasks, { recursive: true });
-      write2(j(harnessTasks, "task-noorigin.md"), [
-        "---", "id: task-noorigin", "proposal: docs/proposals/noorigin.md", "---",
+      write2(j(harnessTasks, "task-nobase.md"), [
+        "---", "id: task-nobase", "proposal: docs/proposals/nobase.md", "---",
         "", "## Acceptance Criteria", "- [ ] Do the thing",
       ].join("\n"));
-      // 15 commits would have triggered the warning under origin/main semantics —
-      // but with seedOrigin=false no refs/remotes/origin/* refs exist, so
-      // detectDefaultBranches returns origin=null and the helper returns "".
-      initGitRepoWithProposal(
-        projectDir, "docs/proposals/noorigin.md", "# No-origin proposal\n", 15,
-        { seedOrigin: false },
-      );
+      // Init on a non-main, non-master branch so resolveBaseRef's local
+      // refs/heads/{main,master} probes both fail. With no origin/upstream
+      // remotes seeded either, every cascade tier misses and the helper
+      // returns null — proposalFreshnessWarning must then no-op.
+      mkdirSync(projectDir, { recursive: true });
+      runGit(projectDir, ["init", "-q", "--initial-branch", "dev"]);
+      runGit(projectDir, ["config", "user.email", "test@example.com"]);
+      runGit(projectDir, ["config", "user.name", "test"]);
+      runGit(projectDir, ["config", "commit.gpgsign", "false"]);
+      const proposalRel = "docs/proposals/nobase.md";
+      const proposalAbs = j(projectDir, proposalRel);
+      mkdirSync(dirname(proposalAbs), { recursive: true });
+      writeFileSync(proposalAbs, "# No-base proposal\n");
+      runGit(projectDir, ["add", proposalRel]);
+      runGit(projectDir, ["commit", "-q", "-m", "init"]);
+      // 15 extra commits — would have triggered a warning if any base ref
+      // resolved.
+      for (let i = 0; i < 15; i++) {
+        runGit(projectDir, ["commit", "-q", "--allow-empty", "-m", `x${i}`]);
+      }
       process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
       const { buildSkillContext } = await import("./skills.ts");
-      const state = { ...makeState(), taskId: "task-noorigin", projectDir, round: 1 };
+      const state = { ...makeState(), taskId: "task-nobase", projectDir, round: 1 };
       const ctx = buildSkillContext(state, state.agents[0]!);
       expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: warns against local main when origin is absent (post-resolveBaseRef semantics)", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-localmain-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-localmain.md"), [
+        "---", "id: task-localmain", "proposal: docs/proposals/localmain.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      // No origin/upstream remotes, but the local default branch IS main.
+      // Post-migration resolveBaseRef cascade falls through to refs/heads/main
+      // and the freshness count runs against that. Confirms the user-acked
+      // semantics change in the proposal: origin-less repos with a local
+      // main now surface drift instead of silently returning "".
+      mkdirSync(projectDir, { recursive: true });
+      runGit(projectDir, ["init", "-q", "--initial-branch", "main"]);
+      runGit(projectDir, ["config", "user.email", "test@example.com"]);
+      runGit(projectDir, ["config", "user.name", "test"]);
+      runGit(projectDir, ["config", "commit.gpgsign", "false"]);
+      const proposalRel = "docs/proposals/localmain.md";
+      const proposalAbs = j(projectDir, proposalRel);
+      mkdirSync(dirname(proposalAbs), { recursive: true });
+      writeFileSync(proposalAbs, "# Local-main proposal\n");
+      runGit(projectDir, ["add", proposalRel]);
+      runGit(projectDir, ["commit", "-q", "-m", "init"]);
+      for (let i = 0; i < 15; i++) {
+        runGit(projectDir, ["commit", "-q", "--allow-empty", "-m", `m${i}`]);
+      }
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-localmain", projectDir, round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toContain("Freshness warning");
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toContain("15 commits");
     } finally {
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
