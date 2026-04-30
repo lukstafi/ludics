@@ -260,14 +260,17 @@ import { existsSync, readFileSync } from "fs";
 describe("atomic writes for intent/heartbeat/orchestration-state", () => {
   test("recordIntent writes a round-trippable file with no .tmp leftover", async () => {
     const mod = await import("./cluster-http.ts");
-    const intent = {
+    const intent: import("./cluster-http.ts").PendingIntent = {
+      action: "start",
+      epoch: Math.floor(Date.now() / 1000),
+      machine: "host-a",
       taskId: "task-abc",
-      kind: "assign",
-      recordedAt: "2026-04-24T00:00:00Z",
-    } as unknown as import("./cluster-http.ts").PendingIntent;
+    };
     mod.recordIntent(2, intent);
     const round = mod.getIntentForDashboard(2);
     expect(round).not.toBeNull();
+    expect(round?.action).toBe("start");
+    expect(round?.taskId).toBe("task-abc");
   });
 
   test("POST /api/cluster/orchestration-state writes pretty JSON atomically", async () => {
@@ -289,5 +292,97 @@ describe("atomic writes for intent/heartbeat/orchestration-state", () => {
     // so we assert no .tmp sibling appears in the harness directory (atomicity holds
     // across the runtime dir too, verified indirectly by the 200 response).
     expect(existsSync(join(harnessDir, ".tmp"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parsePendingIntent — boundary validator (gh-ludics-411 AC 1)
+// ---------------------------------------------------------------------------
+
+describe("parsePendingIntent", () => {
+  const NOW = 1_750_000_000;
+  const valid = { action: "start" as const, epoch: NOW, machine: "host-a" };
+
+  test("accepts each of the three valid action values", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid, action: "start" })).toEqual({ action: "start", epoch: NOW, machine: "host-a" });
+    expect(parsePendingIntent({ ...valid, action: "stop" })).toEqual({ action: "stop", epoch: NOW, machine: "host-a" });
+    expect(parsePendingIntent({ ...valid, action: "resume" })).toEqual({ action: "resume", epoch: NOW, machine: "host-a" });
+  });
+
+  test("rejects whitespace-padded action (no trim — JSON-on-disk shouldn't gain whitespace)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid, action: "  start  " })).toBeNull();
+    expect(parsePendingIntent({ ...valid, action: "start\n" })).toBeNull();
+  });
+
+  test("rejects unknown action strings", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid, action: "unknown" })).toBeNull();
+    expect(parsePendingIntent({ ...valid, action: "" })).toBeNull();
+    expect(parsePendingIntent({ ...valid, action: "START" })).toBeNull();
+  });
+
+  test("rejects non-integer / non-finite epoch", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid, epoch: "1750000000" })).toBeNull();
+    expect(parsePendingIntent({ ...valid, epoch: NaN })).toBeNull();
+    expect(parsePendingIntent({ ...valid, epoch: Infinity })).toBeNull();
+    expect(parsePendingIntent({ ...valid, epoch: 1.5 })).toBeNull();
+  });
+
+  test("rejects empty / missing / non-string machine", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid, machine: "" })).toBeNull();
+    const noMachine: Record<string, unknown> = { action: "start", epoch: NOW };
+    expect(parsePendingIntent(noMachine)).toBeNull();
+    expect(parsePendingIntent({ ...valid, machine: 42 })).toBeNull();
+  });
+
+  test("preserves optional taskId and preserveState when valid", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    const out = parsePendingIntent({ ...valid, taskId: "task-99", preserveState: true });
+    expect(out).toEqual({ action: "start", epoch: NOW, machine: "host-a", taskId: "task-99", preserveState: true });
+  });
+
+  test("rejects optional fields with wrong type", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid, taskId: 42 })).toBeNull();
+    expect(parsePendingIntent({ ...valid, preserveState: "yes" })).toBeNull();
+  });
+
+  test("rejects null, undefined, and non-objects", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent(null)).toBeNull();
+    expect(parsePendingIntent(undefined)).toBeNull();
+    expect(parsePendingIntent("start")).toBeNull();
+    expect(parsePendingIntent(42)).toBeNull();
+    expect(parsePendingIntent([])).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// File-read boundary regression: getIntentForDashboard skips malformed files
+// ---------------------------------------------------------------------------
+
+describe("intent file-read boundary (parsePendingIntent at JSON.parse seams)", () => {
+  test("getIntentForDashboard returns null for a malformed intent file but works for a valid sibling", async () => {
+    const mod = await import("./cluster-http.ts");
+    const valid: import("./cluster-http.ts").PendingIntent = {
+      action: "resume",
+      epoch: Math.floor(Date.now() / 1000),
+      machine: "host-b",
+    };
+    mod.recordIntent(3, valid);
+
+    // Hand-corrupt slot 4's intent by writing a malformed JSON file directly.
+    // Reuse intentsDir() shape — `${HOME}/.ludics-intents-<md5(stateRepoDir)>`.
+    // Easier: write an invalid action through the same recordIntent helper by
+    // first coercing the type, simulating a foreign-machine JSON write.
+    const corrupt = { action: "danse-macabre", epoch: 0, machine: "" } as unknown as import("./cluster-http.ts").PendingIntent;
+    mod.recordIntent(4, corrupt);
+
+    expect(mod.getIntentForDashboard(3)?.action).toBe("resume");
+    expect(mod.getIntentForDashboard(4)).toBeNull(); // malformed → skipped
   });
 });
