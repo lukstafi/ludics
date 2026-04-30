@@ -195,6 +195,19 @@ export interface SetupOrchTestStateResult {
  * state is built, pre-create one with `makeTmpDir()` and pass it in via
  * `tmpRoot`; otherwise the helper allocates its own.
  */
+/** Fields that `setupOrchTestState` owns authoritatively — callers cannot
+ *  redirect them via `overrides`, since doing so would silently decouple the
+ *  persisted state from the helper's required arguments and from
+ *  `stateFilePath(opts.slot, harness)`. */
+const SETUP_ORCH_RESERVED_OVERRIDE_KEYS = ["slot", "agents"] as const;
+
+/** Overrides accepted by `setupOrchTestState`: any `OrchestrationState` field
+ *  except those the helper owns authoritatively. */
+export type SetupOrchTestStateOverrides = Omit<
+  Partial<OrchestrationState>,
+  (typeof SETUP_ORCH_RESERVED_OVERRIDE_KEYS)[number]
+>;
+
 export function setupOrchTestState(opts: {
   slot: number;
   agents: AgentConfig[];
@@ -202,10 +215,23 @@ export function setupOrchTestState(opts: {
   phase?: OrchestrationState["phase"];
   preparePeerSync?: boolean;
   peerSyncDir?: string;
-  overrides?: Partial<OrchestrationState>;
+  overrides?: SetupOrchTestStateOverrides;
   /** Optional pre-existing root; if omitted the helper allocates via `mkdtempSync`. */
   tmpRoot?: string;
 }): SetupOrchTestStateResult {
+  // Defense-in-depth: fence reserved keys at runtime even when callers pass an
+  // un-typed object (e.g. a `Partial<OrchestrationState>` cast). The compile-time
+  // `Omit` above blocks the typed path; this check blocks the untyped one.
+  if (opts.overrides) {
+    for (const k of SETUP_ORCH_RESERVED_OVERRIDE_KEYS) {
+      if (k in opts.overrides) {
+        throw new Error(
+          `setupOrchTestState: 'overrides.${k}' is reserved; pass it via the top-level 'opts.${k}' argument instead`,
+        );
+      }
+    }
+  }
+
   const prevHarness = process.env.LUDICS_HARNESS_DIR;
   const tmpRoot = opts.tmpRoot ?? mkdtempSync(join(tmpdir(), "ludics-orch-test-"));
   const harness = join(tmpRoot, "harness");
