@@ -30,6 +30,7 @@ import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch } 
 import type { OrchestrationTransport } from "./transport.ts";
 import { agentPortRole, readTmuxSlotState, startTtyd, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { readSlotState, processAlive } from "../t3code/server.ts";
+import { recoverWrongFilename } from "./wrong-filename-recovery.ts";
 
 // --- Hung agent detection constants ---
 // A "hung agent" appears to be working (lifecycle running/dispatched) but the
@@ -1392,6 +1393,23 @@ export function autoCommitAllAgents(
   }
 }
 
+/** Drive the wrong-filename recovery branch once per poll cycle.
+ *  Invokes `recoverWrongFilename` for each phase-participating agent that
+ *  has self-reported phase completion (status in DONE_STATUSES) — exactly
+ *  the precondition for the artifact gate's 10s warning to fire. */
+export async function runWrongFilenameRecovery(
+  state: OrchestrationState,
+  transport: OrchestrationTransport,
+): Promise<void> {
+  for (const agent of state.agents) {
+    if (!agentParticipatesInPhase(state, agent)) continue;
+    const runtime = state.agentStates[agent.name];
+    if (!runtime) continue;
+    if (!DONE_STATUSES.has(runtime.status)) continue;
+    await recoverWrongFilename(state, agent, runtime, transport);
+  }
+}
+
 async function pollUntilDone(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
   const timeout = state.config.timeouts[state.phase] ?? 600;
   const deadline = state.phaseStartedAt + timeout;
@@ -1426,6 +1444,13 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
 
       // Detect hung agents (static terminal) and send nudges / force-settle.
       await detectAndNudgeHungAgents(state, transport);
+
+      // Wrong-filename recovery: auto-cp safe alternatives onto the
+      // canonical artifact path, or send a targeted nudge listing
+      // recently-modified candidates. Runs after status refresh so
+      // `runtime.status` is fresh, and before `evaluateTransition` so an
+      // auto-cp becomes visible to this same tick's done-check.
+      await runWrongFilenameRecovery(state, transport);
 
       // Restart dead ttyd processes so dashboard terminals stay live.
       await ensureTtydAlive(state);

@@ -68,6 +68,12 @@ export interface AgentTurnLifecycle {
   lastPaneHash?: string | null;
   /** ISO timestamp when pane output last changed. */
   lastPaneChangeAt?: string | null;
+  // --- Wrong-filename recovery dedup (per-(round, planMergeRound) tuple) ---
+  /** state.round at which the most recent wrong-filename nudge fired. */
+  wrongFilenameNudgeRound?: number;
+  /** state.planMergeRound (??-1) at which the most recent wrong-filename nudge fired.
+   *  Distinguishes plan-merge / plan-review iterations within a single outer round. */
+  wrongFilenameNudgePlanMergeRound?: number | null;
 }
 
 export interface AgentRuntimeState {
@@ -117,6 +123,9 @@ export interface OrchestrationConfig {
   prCommentsTimeout: number;
   /** How often (seconds) to poll GitHub for new PR comments during pr-comments phase. */
   prCommentsCheckInterval: number;
+  /** Gates the wrong-filename auto-cp branch only. When false, whitelisted suspects
+   *  fall through to the targeted-nudge branch instead of being auto-copied. */
+  autoRecoverWrongFilename: boolean;
 }
 
 export interface OrchestrationState {
@@ -250,6 +259,7 @@ export function defaultOrchestrationConfig(
     prCommentsTimeout: overrides.prCommentsTimeout ?? DEFAULT_PR_COMMENTS_TIMEOUT,
     prCommentsCheckInterval:
       overrides.prCommentsCheckInterval ?? DEFAULT_PR_COMMENTS_CHECK_INTERVAL,
+    autoRecoverWrongFilename: overrides.autoRecoverWrongFilename ?? true,
   };
 }
 
@@ -294,6 +304,11 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
     if (state.agents && state.agents.length !== 1) {
       console.error(`ludics: slot ${slot} has mode="solo" with ${state.agents.length} agents — invariant violation (solo must have exactly one agent)`);
     }
+  }
+  // Fill in fields added after the on-disk schema was first written so reads
+  // of legacy slot-N.json don't surface `undefined` to downstream consumers.
+  if (state.config && state.config.autoRecoverWrongFilename === undefined) {
+    state.config.autoRecoverWrongFilename = true;
   }
   return state;
 }

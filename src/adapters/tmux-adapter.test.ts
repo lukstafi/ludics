@@ -5,6 +5,40 @@ import { join } from "path";
 import type { AdapterContext } from "./types.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, persistState, type OrchestrationState } from "../orchestration/state.ts";
 
+describe("tmux adapter — wrong-filename recovery flag pass-through", () => {
+  // tmux-adapter.ts imports `parseOrchestrationAdapterArgs` from t3code
+  // (`tmux-adapter.ts:37`) and threads the resulting orchestration.config
+  // through `defaultOrchestrationConfig(orchestration.config)` at the start
+  // path's persistState call (`tmux-adapter.ts:525`). This test locks in
+  // that --no-auto-recover-wrong-filename actually arrives at the persisted
+  // OrchestrationState.config without being overridden by the default.
+  test("--no-auto-recover-wrong-filename round-trips through defaultOrchestrationConfig as false", async () => {
+    const { parseOrchestrationAdapterArgs } = await import("./t3code.ts");
+    const { defaultOrchestrationConfig } = await import("../orchestration/state.ts");
+    const parsed = parseOrchestrationAdapterArgs("--pair --no-auto-recover-wrong-filename");
+    expect(parsed.orchestration?.config.autoRecoverWrongFilename).toBe(false);
+    // Mirrors the call at tmux-adapter.ts:525.
+    const persisted = defaultOrchestrationConfig(parsed.orchestration!.config);
+    expect(persisted.autoRecoverWrongFilename).toBe(false);
+  });
+
+  test("--auto-recover-wrong-filename round-trips as true", async () => {
+    const { parseOrchestrationAdapterArgs } = await import("./t3code.ts");
+    const { defaultOrchestrationConfig } = await import("../orchestration/state.ts");
+    const parsed = parseOrchestrationAdapterArgs("--pair --auto-recover-wrong-filename");
+    const persisted = defaultOrchestrationConfig(parsed.orchestration!.config);
+    expect(persisted.autoRecoverWrongFilename).toBe(true);
+  });
+
+  test("default (no flag) → defaultOrchestrationConfig produces true", async () => {
+    const { parseOrchestrationAdapterArgs } = await import("./t3code.ts");
+    const { defaultOrchestrationConfig } = await import("../orchestration/state.ts");
+    const parsed = parseOrchestrationAdapterArgs("--pair");
+    const persisted = defaultOrchestrationConfig(parsed.orchestration!.config);
+    expect(persisted.autoRecoverWrongFilename).toBe(true);
+  });
+});
+
 describe("tmux adapter exports", () => {
   test("adapter module is importable", async () => {
     const mod = await import("./tmux-adapter.ts");

@@ -340,6 +340,12 @@ export function parseOrchestrationAdapterArgs(raw: string): ParsedAdapterArgs {
       case "--auto-finish":
         orchestrationConfig.autoFinish = true;
         break;
+      case "--auto-recover-wrong-filename":
+        orchestrationConfig.autoRecoverWrongFilename = true;
+        break;
+      case "--no-auto-recover-wrong-filename":
+        orchestrationConfig.autoRecoverWrongFilename = false;
+        break;
       case "--mag-tailoring":
         orchestrationConfig.useMagTailoring = true;
         break;
