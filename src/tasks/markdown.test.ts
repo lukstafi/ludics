@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, appendToSection, frontmatterBounds, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter, writeTaskFile, _resetParseTaskFrontmatterCache, _parseTaskFrontmatterCacheSize } from "./markdown.ts";
+import { addFrontmatterField, appendToSection, frontmatterBounds, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter, writeTaskFile, _resetParseTaskFrontmatterCache, _parseTaskFrontmatterCacheSize, VALID_STATUSES, TERMINAL_STATUSES, READY_QUEUE_ELIGIBLE_STATUSES, BLOCKED_RECONCILE_SKIP_STATUSES } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -914,5 +914,80 @@ None.
     const p = join(TMP_DIR, "task-newfile.md");
     expect(existsSync(p)).toBe(true);
     expect(existsSync(p + ".tmp")).toBe(false);
+  });
+});
+
+describe("VALID_STATUSES centralised constant", () => {
+  test("VALID_STATUSES enumerates the full status set including stale", () => {
+    // Harness condition: VALID_STATUSES is the contract for the CLI status
+    // setter and the central source of truth for status names. If `stale`
+    // is missing, the new `tasks status <id> stale` subcommand would reject
+    // a valid input.
+    const set = new Set(VALID_STATUSES);
+    expect(set.has("ready")).toBe(true);
+    expect(set.has("in-progress")).toBe(true);
+    expect(set.has("deferred")).toBe(true);
+    expect(set.has("preempted")).toBe(true);
+    expect(set.has("preempt-queued")).toBe(true);
+    expect(set.has("done")).toBe(true);
+    expect(set.has("abandoned")).toBe(true);
+    expect(set.has("merged")).toBe(true);
+    expect(set.has("needs-confirmation")).toBe(true);
+    expect(set.has("blocked")).toBe(true);
+    expect(set.has("stale")).toBe(true);
+  });
+
+  test("TERMINAL_STATUSES includes stale alongside done/abandoned/merged", () => {
+    // Harness condition: TERMINAL_STATUSES is consumed by the skip-list
+    // refactor sites in mag.ts / sync.ts / index.ts. Removing `stale` from
+    // this constant would silently re-allow stale tasks to be unstuck,
+    // duplicated, or surfaced in milestone warnings.
+    expect(TERMINAL_STATUSES).toContain("done");
+    expect(TERMINAL_STATUSES).toContain("abandoned");
+    expect(TERMINAL_STATUSES).toContain("merged");
+    expect(TERMINAL_STATUSES).toContain("stale");
+    // Negative control: ready and in-progress are NOT terminal.
+    expect(TERMINAL_STATUSES).not.toContain("ready");
+    expect(TERMINAL_STATUSES).not.toContain("in-progress");
+  });
+
+  test("READY_QUEUE_ELIGIBLE_STATUSES is exactly { ready }", () => {
+    expect(READY_QUEUE_ELIGIBLE_STATUSES).toEqual(["ready"]);
+  });
+
+  test("BLOCKED_RECONCILE_SKIP_STATUSES is the union of TERMINAL_STATUSES and the active states", () => {
+    // Harness condition: BLOCKED_RECONCILE_SKIP_STATUSES drives
+    // tasksReconcileBlockedStatus's skip predicate. Stale tasks must be in
+    // the skip list so the reconciler doesn't flip them between ready and
+    // blocked.
+    const set = new Set(BLOCKED_RECONCILE_SKIP_STATUSES);
+    for (const t of TERMINAL_STATUSES) expect(set.has(t)).toBe(true);
+    expect(set.has("in-progress")).toBe(true);
+    expect(set.has("deferred")).toBe(true);
+    expect(set.has("preempt-queued")).toBe(true);
+    expect(set.has("preempted")).toBe(true);
+    expect(set.has("stale")).toBe(true);
+    // Negative control: `ready` and `blocked` are not in the skip list
+    // (those are the two endpoints of the reconciler's flip).
+    expect(set.has("ready")).toBe(false);
+    expect(set.has("blocked")).toBe(false);
+  });
+
+  test("transitionStatus accepts stale as a target", () => {
+    // Harness condition: orchestrator's stale routing path calls
+    // transitionStatus(taskFile, "ready", "stale"). If the helper rejected
+    // unknown targets (it does not — free-form), this test falsifies that
+    // change.
+    const f = tmpFile("transition-stale.md", [
+      "---",
+      "id: task-1",
+      "status: ready",
+      "---",
+      "",
+      "# Title",
+    ].join("\n"));
+    const ok = transitionStatus(f, "ready", "stale");
+    expect(ok).toBe(true);
+    expect(readFileSync(f, "utf-8")).toContain("status: stale");
   });
 });
