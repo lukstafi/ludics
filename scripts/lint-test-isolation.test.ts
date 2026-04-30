@@ -1,5 +1,4 @@
 import { describe, test, expect } from "bun:test";
-import { spawnSync } from "bun";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -767,17 +766,19 @@ describe("runCli", () => {
 // ---------------------------------------------------------------------------
 
 describe("integration", () => {
-  test("lint-test-isolation exits 0 on current repo", () => {
-    const result = spawnSync({
-      cmd: ["bun", "run", join(import.meta.dir, "lint-test-isolation.ts")],
-      cwd: join(import.meta.dir, ".."),
-      stdout: "pipe",
-      stderr: "pipe",
+  test("lint-test-isolation: no errors, warning count pinned", () => {
+    const repo = join(import.meta.dir, "..");
+    const result = runCli({
+      srcDir: join(repo, "src"),
+      repoRoot: repo,
+      writeErr: () => {},
+      writeOut: () => {},
     });
-    if (result.exitCode !== 0) {
-      console.error(result.stderr.toString());
-      console.error(result.stdout.toString());
-    }
-    expect(result.exitCode).toBe(0);
+    expect(result.errorCount).toBe(0);
+    // When this fails: either a new test introduced an unhandled isolation
+    // anti-pattern (regression — fix the test) OR a matcher improvement
+    // found new real-world hits (coverage upgrade — justify and update the
+    // count).
+    expect(result.warningCount).toBe(19);
   });
 });
