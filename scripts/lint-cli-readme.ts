@@ -5,9 +5,13 @@
  * Checks that every command listed in the README CLI Reference section is
  * still present in the USAGE constant in src/index.ts.
  *
- * Exit code:
- *   0 — no stale-doc errors (warnings about undocumented commands are non-fatal)
- *   1 — one or more README commands not found in USAGE (documentation drift)
+ * Exit code (symmetric contract — both directions are fatal):
+ *   0 — USAGE in src/index.ts and the README `## CLI Reference` section
+ *       list the same set of top-level subcommands.
+ *   1 — drift in either direction: a README command missing from USAGE
+ *       (stale docs) OR a USAGE command missing from the README CLI
+ *       Reference (undocumented). Both produce non-zero exit so CI catches
+ *       additions and removals on the same first round.
  */
 
 import { readFileSync } from "fs";
@@ -135,17 +139,15 @@ if (import.meta.main) {
   }
 
   if (undocumented.length > 0) {
-    console.warn(`\n⚠️   USAGE commands not documented in README (undocumented — warnings only):`);
+    console.error(`\n❌  USAGE commands not documented in README ## CLI Reference:`);
     for (const cmd of undocumented) {
-      console.warn(`     - ${cmd}`);
+      console.error(`     - ${cmd}`);
     }
   }
 
   if (stale.length === 0 && undocumented.length === 0) {
     console.log("✅  CLI Reference is in sync with USAGE.");
-  } else if (stale.length === 0) {
-    console.log("✅  No stale docs found (some commands are undocumented — see warnings above).");
   }
 
-  process.exit(stale.length > 0 ? 1 : 0);
+  process.exit(stale.length > 0 || undocumented.length > 0 ? 1 : 0);
 }

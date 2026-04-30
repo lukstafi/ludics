@@ -367,6 +367,104 @@ ludics mag queue promote <id> # Move a pending request to the head of the queue
 ludics mag queue cancel <id>  # Remove a pending request (prints the JSON line)
 ```
 
+### Dashboard
+
+```bash
+ludics dashboard generate         # Generate JSON data for the dashboard
+ludics dashboard serve [port]     # Serve dashboard (default port: 7678)
+ludics dashboard stop             # Stop the dashboard server
+ludics dashboard restart [port]   # Restart the dashboard server
+ludics dashboard install          # Install dashboard assets to state repo
+```
+
+### t3code adapter
+
+```bash
+ludics t3code [status]                    # Show shared t3code server status
+ludics t3code start                       # Start the shared t3code server
+ludics t3code stop                        # Stop the shared t3code server
+ludics t3code doctor                      # Verify binary, process, HTTP, and WebSocket
+ludics t3code thread <id> log [--last N]  # Show message history for a thread
+ludics t3code thread <id> send [--wait] "<msg>"
+                                          # Send a user message to a thread
+ludics t3code thread <id> response        # Show last assistant response for a thread
+ludics t3code slot <N> log [--agent coder|reviewer] [--last N]
+                                          # Show message history for a slot's agent thread
+ludics t3code slot <N> send [--agent coder|reviewer] [--wait] "<msg>"
+                                          # Send a user message to a slot's agent thread
+ludics t3code slot <N> response [--agent coder|reviewer]
+                                          # Show last assistant response for a slot's agent
+ludics t3code cleanup [--dry-run]         # Soft-delete stale threads/projects
+```
+
+### tmux adapter
+
+```bash
+ludics tmux status                  # Show tmux session state, windows, and ttyd processes
+ludics tmux list-panes              # Show all panes with process state
+ludics tmux attach <slot> [agent]   # Attach to a slot's agent tmux window
+ludics tmux capture <slot> [agent]  # Capture pane content for debugging
+```
+
+### Sessions
+
+```bash
+ludics sessions [--json]            # Discover and classify all agent sessions
+ludics sessions report [--json]     # Generate sessions report for Mag (Markdown + JSON)
+ludics sessions refresh [--json]    # Re-run discovery and update report
+ludics sessions show [filter]       # Show detailed session info (optional cwd/id filter)
+ludics sessions sweep [--dry-run]   # Cleanup detached known sessions after 3 sweeps
+```
+
+### State sync
+
+```bash
+ludics sync           # Pull + push state repo (full sync)
+ludics state pull     # Pull latest from state repo
+ludics state push     # Push local changes to state repo
+```
+
+### Journal & events
+
+```bash
+ludics journal                # Show today's journal entries
+ludics journal recent [n]     # Show last n journal entries
+ludics journal list [days]    # List journal files from last n days
+ludics events [--type X] [--task Y] [--scope S] [--source R] [--since T] [--limit N]
+                              # Query the structured event log
+```
+
+### Cluster & network
+
+```bash
+ludics network status         # Show network configuration
+ludics cluster status         # Show cluster status (multi-machine)
+ludics cluster tick           # Publish heartbeat + run election
+ludics cluster heartbeat      # Publish heartbeat only
+ludics cluster ping <machine> # Ping another cluster machine
+```
+
+### Queue control
+
+```bash
+ludics queue hold     # Suppress automatic slot assignments
+ludics queue resume   # Re-enable automatic slot assignments
+ludics queue status   # Show whether queue is held or active
+```
+
+### Configuration
+
+```bash
+ludics config proposals-path <project>
+                      # Print resolved proposals directory path for a project
+```
+
+### Misc
+
+```bash
+ludics quote          # Print a random quote
+```
+
 ### Using skills directly
 
 You don't need Mag to use ludics skills. Clone your harness repository and run Claude Code in the harness directory — skills like `ludics-briefing`, `ludics-elaborate`, and others work directly. This is useful for read-only tasks (checking status, getting briefings) or when you need something done immediately without waiting for Mag queue.
