@@ -203,7 +203,10 @@ export function queuePopAll(): string[] {
   return lines;
 }
 
-export type QueuePromoteResult = "promoted" | "already-head" | "not-found";
+export type QueuePromoteResult =
+  | { status: "promoted"; record: Record<string, unknown> }
+  | { status: "already-head" }
+  | { status: "not-found" };
 
 function findLineIndexById(lines: string[], id: string): number {
   return lines.findIndex(line => {
@@ -216,13 +219,14 @@ export function queuePromoteToTop(id: string): QueuePromoteResult {
   const result = withQueueLock<QueuePromoteResult>(() => {
     const lines = readQueueLines();
     const idx = findLineIndexById(lines, id);
-    if (idx < 0) return "not-found";
-    if (idx === 0) return "already-head";
+    if (idx < 0) return { status: "not-found" };
+    if (idx === 0) return { status: "already-head" };
     const [promoted] = lines.splice(idx, 1);
     writeQueueLines([promoted!, ...lines]);
-    return "promoted";
+    const record = parseJsonRecord(promoted!) ?? {};
+    return { status: "promoted", record };
   });
-  if (result === "promoted") {
+  if (result.status === "promoted") {
     emitEvent({ event_type: "queue_mutate", source: "cli", scope: "queue", action: "promote", message: id });
   }
   return result;

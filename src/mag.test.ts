@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile } from "./mag.ts";
 import type { RunGit } from "./git-runner.ts";
 
 describe("normalizeLaunchAdapter", () => {
@@ -460,6 +460,51 @@ describe("settled sentinel atomic claim", () => {
     expect(atomicClaim()).toBe(true);
     expect(atomicClaim()).toBe(false);
     expect(atomicClaim()).toBe(false);
+  });
+});
+
+describe("clearAutoProposalDebounce", () => {
+  const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
+  let TMP = "";
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-debounce-"));
+    process.env.LUDICS_HARNESS_DIR = TMP;
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HARNESS_DIR === undefined) delete process.env.LUDICS_HARNESS_DIR;
+    else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  // AC1: clear-when-present
+  test("removes a fresh debounce sentinel for the named task", () => {
+    const path = autoProposalDebounceFile("task-X");
+    mkdirSync(join(TMP, "mag", "auto-proposal-debounce"), { recursive: true });
+    writeFileSync(path, String(Date.now()));
+    expect(existsSync(path)).toBe(true);
+    clearAutoProposalDebounce("task-X");
+    expect(existsSync(path)).toBe(false);
+  });
+
+  // AC2: idempotent-when-absent
+  test("is a no-op when the sentinel does not exist", () => {
+    const path = autoProposalDebounceFile("task-Y");
+    expect(existsSync(path)).toBe(false);
+    expect(() => clearAutoProposalDebounce("task-Y")).not.toThrow();
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("does not affect debounce sentinels for other tasks", () => {
+    const keep = autoProposalDebounceFile("task-keep");
+    const drop = autoProposalDebounceFile("task-drop");
+    mkdirSync(join(TMP, "mag", "auto-proposal-debounce"), { recursive: true });
+    writeFileSync(keep, String(Date.now()));
+    writeFileSync(drop, String(Date.now()));
+    clearAutoProposalDebounce("task-drop");
+    expect(existsSync(keep)).toBe(true);
+    expect(existsSync(drop)).toBe(false);
   });
 });
 

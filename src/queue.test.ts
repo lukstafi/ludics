@@ -609,20 +609,20 @@ describe("queueRequest holds the queue lock", () => {
 describe("queuePromoteToTop", () => {
   test("returns not-found for empty queue", async () => {
     const { queuePromoteToTop } = await loadQueue();
-    expect(queuePromoteToTop("req-1-1")).toBe("not-found");
+    expect(queuePromoteToTop("req-1-1")).toEqual({ status: "not-found" });
   });
 
   test("returns not-found for unknown id", async () => {
     const { queueRequest, queuePromoteToTop } = await loadQueue();
     queueRequest({ action: "briefing" });
-    expect(queuePromoteToTop("req-never-1")).toBe("not-found");
+    expect(queuePromoteToTop("req-never-1")).toEqual({ status: "not-found" });
   });
 
   test("returns already-head when target is already at index 0", async () => {
     const qf = join(tmpDir, "mag", "queue.jsonl");
     writeFileSync(qf, '{"id":"req-1-1","action":"briefing"}\n{"id":"req-2-2","action":"briefing"}\n');
     const { queuePromoteToTop } = await loadQueue();
-    expect(queuePromoteToTop("req-1-1")).toBe("already-head");
+    expect(queuePromoteToTop("req-1-1")).toEqual({ status: "already-head" });
     expect(readFileSync(qf, "utf-8")).toBe('{"id":"req-1-1","action":"briefing"}\n{"id":"req-2-2","action":"briefing"}\n');
   });
 
@@ -634,7 +634,12 @@ describe("queuePromoteToTop", () => {
       '{"id":"req-c","action":"briefing"}\n',
     );
     const { queuePromoteToTop, queueList } = await loadQueue();
-    expect(queuePromoteToTop("req-b")).toBe("promoted");
+    const result = queuePromoteToTop("req-b");
+    expect(result.status).toBe("promoted");
+    if (result.status === "promoted") {
+      expect(result.record.id).toBe("req-b");
+      expect(result.record.action).toBe("briefing");
+    }
     const items = queueList();
     expect(items.map(i => i.id)).toEqual(["req-b", "req-a", "req-c"]);
   });
@@ -647,7 +652,7 @@ describe("queuePromoteToTop", () => {
       '{"id":"req-c","action":"briefing"}\n',
     );
     const { queuePromoteToTop, queueList } = await loadQueue();
-    expect(queuePromoteToTop("req-c")).toBe("promoted");
+    expect(queuePromoteToTop("req-c").status).toBe("promoted");
     const items = queueList();
     expect(items.map(i => i.id)).toEqual(["req-c", "req-a", "req-b"]);
   });

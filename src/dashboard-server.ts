@@ -13,7 +13,7 @@ import { slotClear, slotSetMode, slotStart, slotResume, VALID_CLEAR_STATUSES, CL
 import { updateFrontmatterField, addFrontmatterField, parseTaskFrontmatter, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
-import { setQueueHold, maybeFeedMagQueue } from "./mag.ts";
+import { setQueueHold, maybeFeedMagQueue, clearAutoProposalDebounce } from "./mag.ts";
 import { queueList, queueRequest, recentResults, queuePromoteToTop, queueCancel } from "./queue.ts";
 import { resolveSkillCommand } from "./skill-queue-registry.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
@@ -295,6 +295,10 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
         const newPriority = PRIORITY_INCREASE[currentPriority] ?? currentPriority;
         if (newPriority !== currentPriority) {
           addFrontmatterField(taskFile, "priority", newPriority);
+          // Priority increase is a user-driven "act on this now" signal —
+          // invalidate the auto-proposal debounce so the next keepalive cycle
+          // re-evaluates this task instead of waiting out the TTL.
+          clearAutoProposalDebounce(taskParam);
         }
         lastGenerated = 0;
         return new Response(JSON.stringify({ priority: newPriority }), {
@@ -466,9 +470,19 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
         return new Response("Bad Request: invalid queue id", { status: 400 });
       }
       try {
-        const status = queuePromoteToTop(idParam);
+        const result = queuePromoteToTop(idParam);
+        if (result.status === "promoted") {
+          // Promoting a task-bound queue item is the user's "act on this now"
+          // gesture for that task — clear its auto-proposal debounce so the
+          // next keepalive cycle re-evaluates eligibility. Items without a
+          // bound task (e.g. action: "briefing") are no-ops here.
+          const taskField = result.record["task"];
+          if (typeof taskField === "string" && taskField.length > 0) {
+            clearAutoProposalDebounce(taskField);
+          }
+        }
         lastGenerated = 0;
-        return new Response(JSON.stringify({ status }), {
+        return new Response(JSON.stringify({ status: result.status }), {
           headers: { "Content-Type": "application/json" },
         });
       } catch (e) {

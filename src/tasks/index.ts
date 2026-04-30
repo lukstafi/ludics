@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, renameSync } from "fs";
 import { extname, join } from "path";
 import { harnessDir } from "../config.ts";
-import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus } from "./markdown.ts";
+import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus, priorityValue, TASK_ID_RE } from "./markdown.ts";
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
@@ -644,6 +644,43 @@ export async function tasksAbandon(
   });
 }
 
+const VALID_PRIORITY_RE = /^[SABCD]$/;
+
+/**
+ * Set a task's `priority` frontmatter field. When the new level is a strict
+ * increase over the current value (lower numeric `priorityValue`), also clear
+ * the auto-proposal debounce so the next keepalive cycle re-evaluates the
+ * task — the user's "act on this now" lever. Decreases and no-ops keep the
+ * debounce intact (asymmetric by design; see task-2db5eca6).
+ */
+export async function tasksSetPriority(taskId: string, newPriority: string): Promise<void> {
+  if (!TASK_ID_RE.test(taskId)) {
+    throw new Error(`invalid task ID: ${taskId} (must match ${TASK_ID_RE})`);
+  }
+  if (!VALID_PRIORITY_RE.test(newPriority)) {
+    throw new Error(`invalid priority: ${newPriority} (use: S, A, B, C, D)`);
+  }
+  const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+  if (!existsSync(taskFile)) {
+    throw new Error(`task not found: ${taskId}`);
+  }
+  const content = readFileSync(taskFile, "utf-8");
+  const currentPriority = parseTaskFrontmatter(content).priority ?? "B";
+  if (newPriority === currentPriority) {
+    console.log(`ludics: task ${taskId} already at priority ${currentPriority} (no change)`);
+    return;
+  }
+  addFrontmatterField(taskFile, "priority", newPriority);
+  const isIncrease = priorityValue(newPriority) < priorityValue(currentPriority);
+  if (isIncrease) {
+    const { clearAutoProposalDebounce } = await import("../mag.ts");
+    clearAutoProposalDebounce(taskId);
+    console.log(`ludics: task ${taskId} priority ${currentPriority} → ${newPriority} (debounce cleared)`);
+  } else {
+    console.log(`ludics: task ${taskId} priority ${currentPriority} → ${newPriority} (debounce kept)`);
+  }
+}
+
 export async function runTasks(args: string[]): Promise<void> {
   const sub = args[0] ?? "";
 
@@ -755,6 +792,17 @@ export async function runTasks(args: string[]): Promise<void> {
       console.log(`ludics: abandoned task ${id}`);
       break;
     }
+    case "priority": {
+      const id = args[1];
+      const level = args[2];
+      if (!id) throw new Error("task ID required (usage: tasks priority <task-id> <level>)");
+      if (!level) throw new Error("priority level required (usage: tasks priority <task-id> <level>; level is one of S, A, B, C, D)");
+      if (args.length > 3) {
+        throw new Error(`unexpected trailing arguments: ${args.slice(3).join(" ")} (usage: tasks priority <task-id> <level>)`);
+      }
+      await tasksSetPriority(id, level);
+      break;
+    }
     case "migrate-deferred": {
       const dir = tasksDir();
       if (!existsSync(dir)) {
@@ -786,7 +834,7 @@ export async function runTasks(args: string[]): Promise<void> {
     }
     default:
       throw new Error(
-        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, queue-elaborations, check, merge, unmerge, duplicates, abandon, migrate-refs, migrate-deferred)`,
+        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, queue-elaborations, check, merge, unmerge, duplicates, abandon, priority, migrate-refs, migrate-deferred)`,
       );
   }
 }
