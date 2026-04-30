@@ -65,7 +65,26 @@ If a new pattern needs to be added, it should pass the same bar the templates ho
 
 **The grep itself can lie.** Leading-anchor patterns like `^export function` or `^export const` miss `export { ... }` re-export blocks — a symbol can be publicly exposed without ever appearing as the head of a declaration line. `src/adapters/tmux-adapter.ts`'s trailing `export { ... }` block is the worked example: it re-exports `readTmuxSlotState`, `writeTmuxSlotState`, `removeTmuxSlotState`, and `agentPortRole` alongside the adapter object's own members, none of which a `^export function` grep would surface. Use a broader pattern — `grep -nE 'export[[:space:]]*\{'` (or `rg 'export\s*\{'`) — alongside the leading-anchor patterns when the question is "is this name publicly exposed?" rather than "where is it declared?". The leading `\{` only works in extended-regex mode; default `grep` is BRE and errors with `Unmatched \{`. See also gh-ludics-406 (the consumer-side sibling: lint scripts that regex-extract symbol references break silently on DRY refactors) — same family of regex-shape blind spot, opposite end of the import chain.
 
-See also [post-edit-occurrence-recheck](#post-edit-occurrence-recheck) for running the same sweep *after* the edit, and in both directions (forward and inverse).
+See also [post-edit-occurrence-recheck](#post-edit-occurrence-recheck) for running the same sweep *after* the edit, and in both directions (forward and inverse). See also [patterncount-enumeration-for-bulk-migrations](#patterncount-enumeration-for-bulk-migrations) for the durable form of the site enumeration this entry advocates.
+
+### Pattern+count enumeration for bulk migrations
+
+**Principle.** When a bulk migration touches more than a handful of sites, express the site set in the proposal as `grep -c '<exact-pattern>' <path> = N`, not as a line range. The same exact-pattern grep that *enumerates* the cohort is the one that *qualifies* it for `replace_all`.
+
+**Why.** Pattern+count is rebase-stable — exact-string counts survive unrelated commits the way line ranges don't — and mechanically verifiable: a reviewer or worker can re-run the same grep and compare to the proposal's stated count without a visual scan. A line-range proposal can match the stated bound and still miss sites that fall outside it; pattern+count cannot.
+
+**Recipe.**
+
+1. Pick the exact pattern that defines a site (the inline call shape, the regex, the string literal — whatever is character-identical across the cohort).
+2. Record `grep -c '<pattern>' <path> = N` in the proposal, not a line range. If the migration spans multiple files, list one `grep -c` per file with its expected count.
+3. At edit time, re-run the grep and confirm the count matches the proposal before starting. If it doesn't, the pattern set has drifted since the proposal — pause and reconcile.
+4. If the pattern is character-identical across the cohort (verified by step 3's count matching), a single `Edit { replace_all: true }` collapses N edits into one operation; iterate site-by-site only on the residue.
+
+**Worked example.** `task-95310454`'s dashboard console-silence migration. The original proposal said "12 sites in lines 241–565". The actual count was 13: a 13th site at the `startDashboardServer` wrapper (~line 615) sat outside the proposed line range and was caught only on a thorough sweep. A pattern+count enumeration — `grep -c 'originalConsoleX(\.\.\.args)' src/dashboard.ts = 13` — would have surfaced the 13th site at proposal-write time, before any edit was attempted. 12 of the 13 sites then collapsed in one `Edit { replace_all: true }` because the inline pattern was character-identical; the 13th, with different surrounding context, iterated as a single follow-up edit.
+
+**Boundary.** Pattern+count earns its keep on bulk migrations (≥3 sites). For 1–2 site changes, line refs (or symbol-name references — see [symbol-name-references](#symbol-name-references)) are still fine and shorter. `replace_all` is only safe under exact-pattern identity verified by `grep -c`: whitespace or indentation drift defeats the match, and subtle context differences (a different surrounding helper, an alternative cast) usually mean the cohort needs splitting into `grep -c` sub-counts before any `replace_all` is attempted.
+
+See also [exhaustive-occurrence-search](#exhaustive-occurrence-search), [post-edit-occurrence-recheck](#post-edit-occurrence-recheck).
 
 ### Data-shape consumer sweep
 
@@ -546,4 +565,4 @@ See also [negative-case-regression-testing](#negative-case-regression-testing) (
 
 **Example.** `task-c5937037`'s `task-files/` → `task.html?task=` migration touched three `dashboard.js` patterns and one `dashboard.ts` line. The inverse grep for `task.html?task=` caught an encoding inconsistency where one site used `encodeURIComponent` while the others used `escapeHtml` — the kind of half-migration the forward-direction grep doesn't see.
 
-See also [exhaustive-occurrence-search](#exhaustive-occurrence-search).
+See also [exhaustive-occurrence-search](#exhaustive-occurrence-search). See also [patterncount-enumeration-for-bulk-migrations](#patterncount-enumeration-for-bulk-migrations) for the proposal-time enumeration that drives the post-edit recheck.
