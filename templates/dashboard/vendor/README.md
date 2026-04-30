@@ -30,11 +30,15 @@ http://localhost:7678/ and copied verbatim by `dashboardInstall` in
 2. `cp node_modules/marked/lib/marked.esm.js templates/dashboard/vendor/marked.esm.js`.
 3. `cp node_modules/dompurify/dist/purify.es.mjs templates/dashboard/vendor/purify.es.js`.
 4. Update the version numbers above to match.
-5. Re-run `bun test templates/dashboard/markdown.test.ts` to confirm
+5. Run `bun run lint:vendor-sync` to verify the vendored copies match
+   the freshly installed npm copies byte-for-byte. CI runs the same
+   lint, so any skew will fail loudly.
+6. Re-run `bun test templates/dashboard/markdown.test.ts` to confirm
    the fixture set still passes against the new versions.
 
 The npm-installed versions (used by the Bun-runnable test) and the
 vendored copies (served to the browser) **must** stay in sync. The
 test imports `marked` from npm and `isomorphic-dompurify` from npm,
 which means a version skew between npm and vendored files would not
-be caught by the test alone — keep them aligned via the steps above.
+be caught by the test alone — `lint:vendor-sync` enforces alignment
+in CI; the steps above keep it green.
