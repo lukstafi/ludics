@@ -25,7 +25,7 @@ import { selectOrchestrationFlagsForTask } from "../adapters/t3code.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
-import { heartbeatIsFresh, clusterMachine } from "../cluster.ts";
+import { heartbeatIsFresh, clusterMachine, clusterEnabled, clusterCurrentMachineName } from "../cluster.ts";
 import { safeSyncOutput } from "../spawn.ts";
 
 export const VALID_CLEAR_STATUSES = ["ready", "in-progress", "done", "abandoned"] as const;
@@ -849,6 +849,19 @@ async function ensureRemoteMachineReachable(
   adapter: string,
   intentPayload: Record<string, unknown>,
 ): Promise<void> {
+  // Off-cluster guard: cluster is configured but this host is not in
+  // cluster.machines, so heartbeats are invisible here and there is no HTTP
+  // route to the leader. Fire BEFORE heartbeatIsFresh so the operator does
+  // not see the misleading "offline" message that simply means "no local
+  // visibility from off-cluster". slotStop --force skips this function
+  // entirely, so the force escape hatch is preserved for free.
+  if (clusterEnabled() && clusterCurrentMachineName() === null) {
+    throw new Error(
+      `slot ${slotNum}: this host is not in cluster.machines; cannot ${action} on "${machine}". ` +
+      `Run from "${machine}" (or another configured cluster node), use the dashboard launch button, ` +
+      `or re-assign with --machine <thisHost> to make the slot local.`
+    );
+  }
   if (!heartbeatIsFresh(machine)) {
     throw new Error(`slot ${slotNum}: assigned machine ${machine} is offline — cannot ${action}`);
   }

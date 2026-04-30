@@ -17,7 +17,10 @@ const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
 const ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
 let TMP = "";
 
-function writeConfig(homeDir: string, { cluster }: { cluster?: boolean } = {}): string {
+function writeConfig(
+  homeDir: string,
+  { cluster, includeSelf }: { cluster?: boolean; includeSelf?: boolean } = {},
+): string {
   const configDir = join(homeDir, ".config", "ludics");
   mkdirSync(configDir, { recursive: true });
   const configPath = join(configDir, "config.yaml");
@@ -38,6 +41,20 @@ slots:
       always_on: false
       gpu: ""
 `;
+    if (includeSelf) {
+      // Add a machine entry that matches the test runner's hostname so
+      // clusterCurrentMachineName() resolves non-null. Used for "on-cluster
+      // dispatch to a peer" tests; omit for off-cluster tests where we
+      // want clusterCurrentMachineName() to return null.
+      const self = osHostname();
+      yaml += `    - name: self
+      host: ${self}
+      os: linux
+      role: controller
+      always_on: true
+      gpu: ""
+`;
+    }
   }
   writeFileSync(configPath, yaml);
   return configPath;
@@ -1473,8 +1490,10 @@ describe("remote slot dispatch via HTTP", () => {
   });
 
   test("remote slotStop (non-force) writes a stop intent and returns early", async () => {
-    // Need cluster config so clusterMachine("worker-a") resolves
-    process.env.LUDICS_CONFIG = writeConfig(TMP, { cluster: true });
+    // Need cluster config so clusterMachine("worker-a") resolves; also need
+    // a self entry so clusterCurrentMachineName() is non-null and the
+    // off-cluster guard inside ensureRemoteMachineReachable does not fire.
+    process.env.LUDICS_CONFIG = writeConfig(TMP, { cluster: true, includeSelf: true });
 
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
@@ -1595,6 +1614,136 @@ describe("remote slot dispatch via HTTP", () => {
 
     // Heartbeat is fresh but no cluster config → should throw
     await expect(slotResume(1)).rejects.toThrow("no cluster config for machine worker-a");
+  });
+});
+
+describe("off-cluster guard (task-93b9bcb2)", () => {
+  // cluster: true with NO self entry → clusterEnabled() === true and
+  // clusterCurrentMachineName() === null. This is the "cluster configured
+  // but this host is not in cluster.machines" condition that should
+  // trigger the new diagnostic before heartbeatIsFresh runs.
+
+  function freshenWorkerHeartbeat(): void {
+    // Fresh so the test would otherwise reach (and fail at) heartbeatIsFresh.
+    // The new guard must fire BEFORE that check, replacing the misleading
+    // "offline — cannot start" error.
+    const hbDir = getHeartbeatsDir();
+    mkdirSync(hbDir, { recursive: true });
+    writeFileSync(
+      join(hbDir, "worker-a.json"),
+      JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }),
+    );
+  }
+
+  test("slotStart off-cluster throws the off-cluster diagnostic, not 'offline'", async () => {
+    process.env.LUDICS_CONFIG = writeConfig(TMP, { cluster: true });
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-offcluster-1", "Off-cluster start test");
+
+    freshenWorkerHeartbeat();
+    void slotAssign(1, "task-offcluster-1", "tmux", "", "", "", "worker-a");
+
+    await expect(slotStart(1)).rejects.toThrow(/this host is not in cluster\.machines/);
+    // Ensure the misleading "offline" error is NOT surfaced off-cluster.
+    await expect(slotStart(1)).rejects.not.toThrow(/offline — cannot start/);
+  });
+
+  test("slotStop (non-force) off-cluster throws the off-cluster diagnostic", async () => {
+    process.env.LUDICS_CONFIG = writeConfig(TMP, { cluster: true });
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-offcluster-2", "Off-cluster stop test");
+
+    freshenWorkerHeartbeat();
+    void slotAssign(1, "task-offcluster-2", "tmux", "", "", "", "worker-a");
+
+    await expect(slotStop(1, false, false)).rejects.toThrow(/this host is not in cluster\.machines/);
+  });
+
+  test("slotResume off-cluster throws the off-cluster diagnostic", async () => {
+    process.env.LUDICS_CONFIG = writeConfig(TMP, { cluster: true });
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-offcluster-3", "Off-cluster resume test");
+
+    freshenWorkerHeartbeat();
+    void slotAssign(1, "task-offcluster-3", "tmux", "", "", "", "worker-a");
+
+    await expect(slotResume(1)).rejects.toThrow(/this host is not in cluster\.machines/);
+  });
+
+  test("slotStop --force off-cluster succeeds and clears local state", async () => {
+    process.env.LUDICS_CONFIG = writeConfig(TMP, { cluster: true });
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-offcluster-4", "Off-cluster force-stop test");
+
+    void slotAssign(1, "task-offcluster-4", "tmux", "", "", "", "worker-a");
+
+    // Stamp Session Started so we can verify the force path cleared it.
+    const slotData = readSlotJson(1, harness);
+    slotData.sessionStarted = "2026-04-04T20:00Z";
+    writeSlotJson(1, slotData, harness);
+
+    // Force-stop must NOT throw the off-cluster diagnostic — it bypasses
+    // ensureRemoteMachineReachable entirely, so the new guard inherits the
+    // escape hatch for free.
+    await slotStop(1, true, false);
+
+    const data = readSlotJson(1, harness);
+    expect(data.sessionStarted).toBeNull();
+
+    // No intent recorded — force stop skips remote dispatch.
+    const intent = getIntentForDashboard(1);
+    expect(intent).toBeNull();
+  });
+
+  test("error names the assigned machine and lists three recovery paths", async () => {
+    process.env.LUDICS_CONFIG = writeConfig(TMP, { cluster: true });
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-offcluster-5", "Off-cluster recovery-paths test");
+
+    freshenWorkerHeartbeat();
+    void slotAssign(1, "task-offcluster-5", "tmux", "", "", "", "worker-a");
+
+    let captured: Error | null = null;
+    try {
+      await slotStart(1);
+    } catch (err) {
+      captured = err as Error;
+    }
+    expect(captured).not.toBeNull();
+    const msg = captured!.message;
+    // Names the assigned machine.
+    expect(msg).toContain('"worker-a"');
+    // Recovery path 1: run from configured node.
+    expect(msg).toMatch(/Run from "worker-a"/);
+    // Recovery path 2: dashboard launch button.
+    expect(msg).toMatch(/dashboard launch button/);
+    // Recovery path 3: re-assign with --machine <thisHost>.
+    expect(msg).toMatch(/--machine <thisHost>/);
   });
 });
 
