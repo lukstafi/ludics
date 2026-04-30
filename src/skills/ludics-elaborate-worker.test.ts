@@ -14,7 +14,7 @@
 // regression Part 1 exists to prevent.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { addFrontmatterField, parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { withSyntheticHarness } from "../test-utils.ts";

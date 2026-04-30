@@ -803,6 +803,31 @@ export async function runTasks(args: string[]): Promise<void> {
       await tasksSetPriority(id, level);
       break;
     }
+    case "status": {
+      const id = args[1];
+      const value = args[2];
+      if (!id) throw new Error("task ID required (usage: tasks status <task-id> <status>)");
+      if (!value) {
+        throw new Error(
+          `status required (usage: tasks status <task-id> <status>; status is one of: ${VALID_STATUSES.join(", ")})`,
+        );
+      }
+      if (args.length > 3) {
+        throw new Error(
+          `unexpected trailing arguments: ${args.slice(3).join(" ")} (usage: tasks status <task-id> <status>)`,
+        );
+      }
+      if (!(VALID_STATUSES as readonly string[]).includes(value)) {
+        throw new Error(
+          `invalid status: ${value} (use one of: ${VALID_STATUSES.join(", ")})`,
+        );
+      }
+      const taskFile = join(tasksDir(), `${id}.md`);
+      if (!existsSync(taskFile)) throw new Error(`task not found: ${id}`);
+      updateFrontmatterField(taskFile, "status", value);
+      console.log(`ludics: set ${id} status → ${value}`);
+      break;
+    }
     case "migrate-deferred": {
       const dir = tasksDir();
       if (!existsSync(dir)) {
@@ -834,7 +859,7 @@ export async function runTasks(args: string[]): Promise<void> {
     }
     default:
       throw new Error(
-        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, queue-elaborations, check, merge, unmerge, duplicates, abandon, priority, migrate-refs, migrate-deferred)`,
+        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, queue-elaborations, check, merge, unmerge, duplicates, abandon, priority, status, migrate-refs, migrate-deferred)`,
       );
   }
 }

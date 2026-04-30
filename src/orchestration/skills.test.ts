@@ -2334,7 +2334,10 @@ describe("skill templates — stale + has_questions atomic write", () => {
     // orchestrator to the pre-fix two-writer shape and this fails.
     expect(md).not.toMatch(/^\d+\.\s*Add `has_questions: true` to the task frontmatter/m);
     // Property: verify-and-fallback vocabulary is present in the section.
-    const section = md.match(/## Questions notification([\s\S]*?)(?:^## |\Z)/m);
+    // Capture body from `## Questions notification` to the next `## ` heading
+    // or end-of-file. Multi-line $-anchor on its own would match line-end and
+    // capture an empty body — use a `\n## ` lookahead boundary instead.
+    const section = md.match(/## Questions notification\n([\s\S]*?)(?=\n## |$)/);
     expect(section).not.toBeNull();
     const body = section![1]!;
     expect(body).toMatch(/verify|fallback|warning/i);

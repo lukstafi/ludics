@@ -301,6 +301,8 @@ ludics tasks create <title>    # Create a new task manually
 ludics tasks files             # List individual task files
 ludics tasks priority <id> <level>
                                 # Set task priority (S, A, B, C, D); increases clear the auto-proposal debounce
+ludics tasks status <id> <status>
+                                # Set task status (one of: ready, in-progress, deferred, preempted, preempt-queued, done, abandoned, merged, needs-confirmation, blocked, stale)
 ```
 
 ### Flow engine
