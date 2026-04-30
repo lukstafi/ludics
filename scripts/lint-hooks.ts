@@ -18,12 +18,25 @@ function shellcheckPath(): string | null {
   return path || null;
 }
 
-function listHookScripts(): string[] {
-  if (!existsSync(hooksDir) || !statSync(hooksDir).isDirectory()) return [];
-  return readdirSync(hooksDir)
-    .filter((name) => name.endsWith(".sh"))
-    .map((name) => join(hooksDir, name))
-    .sort();
+// Recursive walk — mirrors the prior `find templates/hooks -name '*.sh'`
+// semantics so hook scripts in nested subdirectories are still linted.
+// Exported for unit testing.
+export function listHookScripts(rootDir: string = hooksDir): string[] {
+  if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) return [];
+  const found: string[] = [];
+  const stack: string[] = [rootDir];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.isFile() && entry.name.endsWith(".sh")) {
+        found.push(full);
+      }
+    }
+  }
+  return found.sort();
 }
 
 function main(): number {
@@ -67,4 +80,6 @@ function main(): number {
   return 0;
 }
 
-process.exit(main());
+if (import.meta.main) {
+  process.exit(main());
+}
