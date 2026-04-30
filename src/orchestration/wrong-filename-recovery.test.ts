@@ -548,6 +548,110 @@ describe("recoverWrongFilename — driver outcomes", () => {
     }
   });
 
+  test("(P1 regression) lc === null → returns none, no nudge spam, sentinels not consulted", async () => {
+    // Codex review: when runtime.turnLifecycle is null (legacy / resume /
+    // setup paths), we have nowhere to persist the nudge sentinel, so
+    // sending a nudge would re-fire on every poll forever and
+    // `recoveryRecentlyActed` would NOT suppress the existing warning.
+    // The driver bails out of the nudge branch in that state — auto-cp
+    // still runs above, but the nudge path is skipped so we don't get
+    // double-spam (warning + nudge every 10s).
+    const dir = makePeerSync();
+    const state = makeState(dir);
+    state.agentStates["coder"].turnLifecycle = null;
+    const junk = join(dir, "plans", "scratch.md");
+    writeFile(junk, "x", state.phaseStartedAt + 30);
+
+    const { transport, calls } = makeMockTransport();
+    const events: Array<Record<string, unknown>> = [];
+    const eventSpy = spyOn(eventsMod, "emitEvent").mockImplementation((e) => { events.push(e as Record<string, unknown>); });
+    try {
+      // First poll
+      let outcome = await recoverWrongFilename(state, state.agents[0], state.agentStates["coder"], transport);
+      expect(outcome).toBe("none");
+      expect(calls).toEqual([]);
+      expect(events.find((e) => e.event_type === "orchestration_wrong_filename_nudge")).toBeUndefined();
+      // Second poll (would have re-fired before the fix)
+      outcome = await recoverWrongFilename(state, state.agents[0], state.agentStates["coder"], transport);
+      expect(outcome).toBe("none");
+      expect(calls).toEqual([]);
+    } finally {
+      eventSpy.mockRestore();
+    }
+  });
+
+  test("(P1 regression) lc === null still allows auto-cp (FS-only, idempotent)", async () => {
+    // Auto-cp doesn't need lifecycle state — it's pure FS, idempotent
+    // (next tick sees canonical and returns "none"). Confirm the lc=null
+    // bail-out is on the nudge branch only, not auto-cp.
+    const dir = makePeerSync();
+    const state = makeState(dir);
+    state.agentStates["coder"].turnLifecycle = null;
+    const suspect = join(dir, "plans", "round-1-coder.md");
+    writeFile(suspect, "merged-content", state.phaseStartedAt + 30);
+
+    const { transport, calls } = makeMockTransport();
+    const eventSpy = spyOn(eventsMod, "emitEvent");
+    try {
+      const outcome = await recoverWrongFilename(state, state.agents[0], state.agentStates["coder"], transport);
+      expect(outcome).toBe("cp");
+      expect(calls).toEqual([]);
+      expect(readFileSync(mergedPlanFilePath(dir, 1, 0), "utf8")).toBe("merged-content");
+    } finally {
+      eventSpy.mockRestore();
+    }
+  });
+
+  test("(P2 regression) auto-cp uses strict > on phaseStartedAt boundary", async () => {
+    // Codex review: mtime and phaseStartedAt are both floored to seconds.
+    // A file written in the same wall-clock second as the phase
+    // transition is ambiguous between "last write of previous phase" and
+    // "first write of new phase". Auto-cp is destructive so it uses
+    // strict `>` (not `>=`) — boundary-second files are excluded.
+    const dir = makePeerSync();
+    const state = makeState(dir);
+    setSettledLifecycle(state, "coder");
+    const suspect = join(dir, "plans", "round-1-coder.md");
+    // mtime exactly at phaseStartedAt → must NOT auto-cp.
+    writeFile(suspect, "boundary", state.phaseStartedAt);
+
+    const { transport, calls } = makeMockTransport();
+    const events: Array<Record<string, unknown>> = [];
+    const eventSpy = spyOn(eventsMod, "emitEvent").mockImplementation((e) => { events.push(e as Record<string, unknown>); });
+    try {
+      const outcome = await recoverWrongFilename(state, state.agents[0], state.agentStates["coder"], transport);
+      // Falls through to nudge branch (the suspect IS recent enough for
+      // the informational scan, which keeps `>=`), so outcome is
+      // "nudge", not "cp".
+      expect(outcome).toBe("nudge");
+      expect(events.find((e) => e.event_type === "orchestration_artifact_recovered")).toBeUndefined();
+      expect(existsSync(mergedPlanFilePath(dir, 1, 0))).toBe(false);
+      expect(calls.length).toBe(1);
+    } finally {
+      eventSpy.mockRestore();
+    }
+  });
+
+  test("(P2 regression) auto-cp fires for mtime = phaseStartedAt + 1 second", async () => {
+    // Sanity check: just one second past the boundary auto-cp's normally.
+    const dir = makePeerSync();
+    const state = makeState(dir);
+    setSettledLifecycle(state, "coder");
+    const suspect = join(dir, "plans", "round-1-coder.md");
+    writeFile(suspect, "in-phase", state.phaseStartedAt + 1);
+
+    const { transport, calls } = makeMockTransport();
+    const eventSpy = spyOn(eventsMod, "emitEvent");
+    try {
+      const outcome = await recoverWrongFilename(state, state.agents[0], state.agentStates["coder"], transport);
+      expect(outcome).toBe("cp");
+      expect(calls).toEqual([]);
+      expect(readFileSync(mergedPlanFilePath(dir, 1, 0), "utf8")).toBe("in-phase");
+    } finally {
+      eventSpy.mockRestore();
+    }
+  });
+
   test("non-eligible phase → none (work, merge-amend)", async () => {
     const dir = makePeerSync();
     for (const phase of ["work", "merge-amend"] as const) {

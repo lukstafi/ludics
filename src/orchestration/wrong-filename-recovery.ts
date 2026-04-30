@@ -223,7 +223,14 @@ export async function recoverWrongFilename(
         continue;
       }
       const mtimeSec = Math.floor(st.mtimeMs / 1000);
-      if (mtimeSec < state.phaseStartedAt) continue;
+      // Strict `>` (not `>=`): mtime and phaseStartedAt are both floored to
+      // seconds, so a file written in the same wall-clock second as the
+      // phase transition is ambiguous between "last write of previous
+      // phase" and "first write of new phase". Auto-cp is destructive
+      // (overwrites the canonical), so we exclude that boundary second.
+      // The proposal text's `>=` is preserved for the informational nudge
+      // scan via `scanRecentlyModified`.
+      if (mtimeSec <= state.phaseStartedAt) continue;
       if (!best || mtimeSec > best.mtime) {
         best = { path: sp, mtime: mtimeSec };
       }
@@ -252,8 +259,17 @@ export async function recoverWrongFilename(
 
   // --- Nudge dedup ---
   const lc = runtime.turnLifecycle;
-  if (lc
-      && lc.wrongFilenameNudgeRound === state.round
+  // No-lifecycle bail-out: when `runtime.turnLifecycle` is null (legacy /
+  // resume / setup paths), we have nowhere to persist the nudge sentinel
+  // — sending the nudge would re-fire on every poll forever, AND
+  // `recoveryRecentlyActed` would still return false so the existing
+  // 10s warning would also keep spamming. Skip the nudge branch
+  // entirely; auto-cp above already handled the recoverable case, and
+  // `validateDoneStatus`'s existing warning matches today's behaviour
+  // for legacy state. Once the runner re-dispatches the agent and
+  // installs a turnLifecycle, the full recovery path engages.
+  if (!lc) return "none";
+  if (lc.wrongFilenameNudgeRound === state.round
       && (lc.wrongFilenameNudgePlanMergeRound ?? null) === (state.planMergeRound ?? -1)) {
     return "none";
   }
@@ -261,8 +277,8 @@ export async function recoverWrongFilename(
   // --- TUI gating (proposal-aligned) ---
   // - dispatched | starting | running → defer
   // - error → diagnostic-only (no nudge)
-  // - settled or no lifecycle → proceed
-  if (lc) {
+  // - settled → proceed
+  {
     if (lc.state === "dispatched" || lc.state === "starting" || lc.state === "running") {
       return "deferred";
     }
@@ -292,12 +308,11 @@ export async function recoverWrongFilename(
   const body = buildNudgeBody(state, canonical, candidates);
   try {
     await transport.sendTurn(state, agent, body);
-    if (lc) {
-      lc.nudgeAttempts = (lc.nudgeAttempts ?? 0) + 1;
-      lc.lastNudgeAt = isoNow();
-      lc.wrongFilenameNudgeRound = state.round;
-      lc.wrongFilenameNudgePlanMergeRound = state.planMergeRound ?? -1;
-    }
+    // `lc` is guaranteed non-null here by the no-lifecycle bail-out above.
+    lc.nudgeAttempts = (lc.nudgeAttempts ?? 0) + 1;
+    lc.lastNudgeAt = isoNow();
+    lc.wrongFilenameNudgeRound = state.round;
+    lc.wrongFilenameNudgePlanMergeRound = state.planMergeRound ?? -1;
     emitEvent({
       event_type: "orchestration_wrong_filename_nudge",
       source: "orchestration",
