@@ -58,6 +58,13 @@ The worker creates the directory; this step just resolves the path.
 
 Worker: `/ludics-draft-proposal-worker <task_id> <project_path> <proposals_path> <context_brief>`
 
+- **Manual-smoke ACs.** When drafting an AC that requires manual visual or
+  runtime verification, see
+  [Manual-Smoke Evidence](worker-conventions.md#manual-smoke-evidence) in
+  worker-conventions for the two probe shapes (wrapper-pipeline + live
+  HTTP) the harness can deliver. Phrase the AC so its evidence layer is
+  one of those, not "open the dashboard in a browser."
+
 <!-- section:precondition-check -->
 ## Precondition check
 

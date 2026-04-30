@@ -7,6 +7,7 @@ Simplified upstream workflow: for projects declaring `upstream_repo`, orchestrat
 ### Documentation / contracts
 
 - **Small-effort tasks are now explicitly documented to skip the plan phase.** `skip_plan` remains a manual override applying only to medium effort. No behavior change; the rule is now asserted by tests (`selectOrchestrationFlags` / `selectOrchestrationFlagsForTask`).
+- **Manual-smoke evidence playbook.** New `## Manual-Smoke Evidence` section in `skills/worker-conventions.md` documents two probe patterns (wrapper-pipeline + live HTTP via `startDashboardServer`) for ACs that require runtime verification of deterministically-rendered, statically-served surfaces. Cross-linked from `ludics-elaborate`, `ludics-draft-proposal`, `ludics-verify-completion`. New helper: `bun run scripts/dev-dashboard-mirror.ts` boots the dashboard against a temp-dir mirror.
 
 ### Breaking changes
 

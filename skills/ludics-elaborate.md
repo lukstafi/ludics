@@ -36,6 +36,12 @@ Follow [orchestrator-conventions.md](orchestrator-conventions.md):
 - **E** (Result JSON): write the result with the request ID.
 - **F** (Error Handling): standard patterns.
 
+- **Manual-smoke ACs.** When elaboration surfaces an AC that implies visual
+  or runtime verification, point the worker at
+  [Manual-Smoke Evidence](worker-conventions.md#manual-smoke-evidence) in
+  worker-conventions rather than inlining guidance. Two probe shapes
+  (wrapper-pipeline + live HTTP) cover the harness-deliverable cases.
+
 ### Container short-circuit (before Step D)
 
 If the task's frontmatter has `leaf: false`, the work has already been split

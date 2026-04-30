@@ -26,6 +26,92 @@ Reach for declare/salvage/follow-up only when a fix exceeds the absorb
 boundary — a few lines, same file or sibling test, no new abstractions or
 imports, no new public surface.
 
+## Manual-Smoke Evidence
+
+When an AC requires "manual smoke verification," reviewers will not accept
+*substitution-by-argument* ("the unit tests exercise the same library
+combination, therefore manual smoke is covered") and will not accept
+deferral. The harness *can* produce real evidence for any deterministically-
+rendered, statically-served surface; "I can't open a browser" is not a valid
+limit when rendering is deterministic from MD source + library versions and
+the server is a static file server. Two patterns work, often used together:
+
+### (a) Wrapper-pipeline probe
+
+Run the wrapper's exact pipeline at the *vendored* library versions against
+real harness content. Capture the output (HTML, transformed text, whatever
+the wrapper produces) so the reviewer can read what a user would see.
+
+Recipe:
+
+1. Install the libraries from npm at the *exact* versions claimed by the
+   vendored bundles (e.g. `templates/dashboard/vendor/README.md` cites
+   versions for `marked` and `isomorphic-dompurify`).
+2. Write a small `.ts` file under `/tmp/` that imports those libraries and
+   replays the wrapper's pipeline (including any pre/post-processing such
+   as `task.html`'s frontmatter strip).
+3. Feed it 2–3 real harness files spanning the variation the AC cares
+   about (e.g. a task file with frontmatter, a proposal with code blocks,
+   a briefing with tables).
+4. Capture stdout/stderr into `/tmp/<probe-name>.transcript` and quote
+   key sections in the workflow-feedback or PR comment.
+
+> **Verify version alignment first.** If `package.json` and
+> `templates/dashboard/vendor/` drift, the probe silently tests the wrong
+> artifact. Cross-check the version string in the vendored bundle against
+> the npm-installed version before trusting the evidence. (See
+> task-d024e32c — `lint:vendor-sync`.)
+
+### (b) Live HTTP probe
+
+Instantiate the *real* server entrypoint against a temp-dir mirror of the
+asset tree, then `fetch` (or `curl`) the routes the AC names. The transcript
+becomes the evidence.
+
+Entrypoint signature:
+`startDashboardServer(port: number, dashboardDir: string, ttlSeconds: number): ReturnType<typeof Bun.serve>`
+exported from `src/dashboard-server.ts`. Pass `port = 0` to let Bun pick a
+free port; read the resolved port back from the returned server's `.port`.
+
+Worked example: `src/dashboard.test.ts` around line 545 shows the canonical
+shape (mirror under `harnessDir()/dashboard`, boot with port 0, `fetch`,
+`stop`). Lift it instead of writing your own.
+
+For the dashboard specifically,
+`bun run scripts/dev-dashboard-mirror.ts` performs the temp-dir mirror +
+boot dance and prints the URL; pipe its output into your evidence
+transcript. Example:
+
+```bash
+bun run scripts/dev-dashboard-mirror.ts
+# dashboard listening on http://localhost:54321 (mirror=/tmp/ludics-dash-mirror-XXXX)
+curl http://localhost:54321/index.html | head
+curl http://localhost:54321/task.html?task=<id> | head
+curl http://localhost:54321/vendor/marked.esm.js | head -1
+```
+
+### Patterns combined
+
+For ACs that exercise both rendering *and* serving (the markdown-renderer
+case from task-61aee08e), run (a) first to prove the pipeline is correct
+given the inputs, then (b) to prove the server actually delivers those
+inputs to the browser.
+
+### What this does *not* cover
+
+- Subjective visual judgement ("the layout looks right on mobile",
+  "typography feels balanced"). These ACs still need a human; the playbook
+  is for deterministic rendering only.
+- Stateful interaction flows (clicking through a multi-step UI). Out of
+  scope for static-content surfaces.
+
+### Hygiene
+
+- Probe scripts and transcripts live under `/tmp/`, never in the repo.
+- Name them with the task ID: `/tmp/<task-id>-<probe>.ts`,
+  `/tmp/<task-id>-<probe>.transcript`.
+- Cite paths in the PR comment so reviewers can rerun if needed.
+
 ## Broader Context
 
 Some workers receive a `<context_brief>` as a trailing argument — free-form
