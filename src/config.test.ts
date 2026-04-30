@@ -6,6 +6,7 @@ import {
   effectivePriority,
   _resetPostponedProjectsCache,
   _resetPriorityProjectsCache,
+  _peekPriorityProjectsCache,
 } from "./config.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-config");
@@ -108,23 +109,36 @@ describe("postponedProjectSet cache", () => {
   });
 });
 
-describe("priorityProjectSet cache (observed via effectivePriority)", () => {
-  test("priority cache identity holds across effectivePriority calls", () => {
-    // First call materializes the cache; second call must hit it. Observable
-    // signal is the boost behaviour: alpha (priority: true) gets bumped from
-    // C → B; beta (no priority) stays at C.
+describe("priorityProjectSet cache", () => {
+  test("returns the same singleton reference across calls (cache identity)", () => {
+    // Pre-eviction reference: first effectivePriority call materializes the
+    // cache; capture via the test-only peek helper.
+    expect(_peekPriorityProjectsCache()).toBeNull();
     expect(effectivePriority("C", "alpha")).toBe("B");
+    const beforeReset = _peekPriorityProjectsCache();
+    expect(beforeReset).not.toBeNull();
+    // Mid-fill identity: a subsequent effectivePriority call must hit the
+    // same cached set, not allocate a fresh one. If priorityProjectSet()
+    // started returning a fresh ReadonlySet each call (while preserving
+    // .has() semantics) this assertion would fail.
     expect(effectivePriority("C", "alpha")).toBe("B");
+    expect(_peekPriorityProjectsCache()).toBe(beforeReset);
     expect(effectivePriority("C", "beta")).toBe("C");
+    expect(_peekPriorityProjectsCache()).toBe(beforeReset);
   });
 
-  test("eviction (cache reset) re-reads config so updated priorities take effect", () => {
-    // Pre-reset: alpha is the only priority project.
+  test("eviction (cache reset) replaces the singleton — post-reset reference is not the pre-reset one", () => {
     expect(effectivePriority("C", "alpha")).toBe("B");
-    expect(effectivePriority("C", "beta")).toBe("C");
+    const beforeReset = _peekPriorityProjectsCache();
+    expect(beforeReset).not.toBeNull();
 
-    // Rewrite config to make beta the priority project; without resetting the
-    // cache, the bump would still apply to alpha (stale singleton).
+    _resetPriorityProjectsCache();
+    // Reset clears the singleton — peek must return null until next call.
+    expect(_peekPriorityProjectsCache()).toBeNull();
+
+    // Rewrite config to make beta (not alpha) the priority project, so the
+    // post-reset re-read both materialises a *different* ReadonlySet
+    // reference AND reflects the new on-disk state.
     const configPath = process.env.LUDICS_CONFIG!;
     writeFileSync(configPath, `state_repo: owner/ludics-state
 state_path: harness
@@ -136,14 +150,31 @@ projects:
     priority: true
 `);
 
-    // Without reset: stale cache still bumps alpha (proves the cache was
-    // serving by identity rather than re-reading on each call).
-    expect(effectivePriority("C", "alpha")).toBe("B");
-
-    _resetPriorityProjectsCache();
-
-    // After reset: fresh load. alpha no longer priority; beta now is.
     expect(effectivePriority("C", "alpha")).toBe("C");
+    const afterReset = _peekPriorityProjectsCache();
+    expect(afterReset).not.toBeNull();
+    expect(afterReset).not.toBe(beforeReset);
+    // Behaviour cross-check: fresh load reflects new config.
     expect(effectivePriority("C", "beta")).toBe("B");
+  });
+
+  test("stale cache (no reset) ignores config rewrite — proves the cache served by identity, not re-read", () => {
+    expect(effectivePriority("C", "alpha")).toBe("B");
+    const beforeRewrite = _peekPriorityProjectsCache();
+
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: alpha
+    repo: owner/alpha
+  - name: beta
+    repo: owner/beta
+    priority: true
+`);
+
+    // Without reset: same singleton reference, same stale boost.
+    expect(effectivePriority("C", "alpha")).toBe("B");
+    expect(_peekPriorityProjectsCache()).toBe(beforeRewrite);
   });
 });

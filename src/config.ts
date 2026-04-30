@@ -506,6 +506,15 @@ export function _resetPriorityProjectsCache(): void {
 }
 
 /**
+ * Test-only: peek the cached priority-project set reference for identity-based
+ * eviction tests (mirrors the canonical pre/post-eviction `===`/`!==` rungs in
+ * `src/tasks/markdown.test.ts`). Not exported via index.ts.
+ */
+export function _peekPriorityProjectsCache(): ReadonlySet<string> | null {
+  return _priorityProjectsCache;
+}
+
+/**
  * Returns the effective (virtual) priority for a task, applying a one-level
  * boost when the task's project has `priority: true` in config:
  *   A → S, B → A, C → B, D → C (non-priority tasks keep their actual priority).
