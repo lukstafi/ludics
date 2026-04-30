@@ -463,6 +463,39 @@ describe("warnStaleBase", () => {
     expect(state.staleBaseLastWarned?.coder?.count).toBe(5);
   });
 
+  test("gh-ludics-409: solo mode buckets reviewer-named phases under coder dedup (no duplicate warning across work→review)", () => {
+    // Codex P2 review: in solo mode, `agentParticipatesInPhase` routes
+    // every non-setup/done phase to the coder agent, so a reviewer-named
+    // phase like `review` is still executed by the coder. Bucketing it
+    // under the reviewer memo would let the warning re-fire at the same
+    // commit count within a single round for a single actor — defeating
+    // dedup. The category should resolve to "coder" in that case.
+    const { worktree, repoDir } = setupStaleRepo(5);
+    const state = stateFor(worktree, repoDir);
+    state.mode = "solo";
+    state.phase = "work";
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1);
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(5);
+    // Same round, same staleness, switch to a reviewer-named phase. Solo
+    // mode must keep using the coder bucket — no duplicate warning.
+    state.phase = "review";
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1); // dedup held
+    // Reviewer bucket must remain empty in solo mode.
+    expect(state.staleBaseLastWarned?.reviewer).toBeUndefined();
+    // Falsifier control: pair mode at the same call sequence DOES re-fire
+    // (proves the bucket-merge is mode-conditional, not unconditional).
+    const pairState = stateFor(setupStaleRepo(5).worktree, setupStaleRepo(5).repoDir);
+    pairState.mode = "pair";
+    pairState.phase = "work";
+    warnStaleBase(pairState);
+    pairState.phase = "review";
+    warnStaleBase(pairState);
+    expect(pairState.staleBaseLastWarned?.coder?.count).toBe(5);
+    expect(pairState.staleBaseLastWarned?.reviewer?.count).toBe(5);
+  });
+
   test("gh-ludics-409: reviewer-category memo re-arms on count-decrease within the round", () => {
     const { worktree, repoDir } = setupStaleRepo(10);
     const state = stateFor(worktree, repoDir);

@@ -1834,10 +1834,15 @@ describe("skills", () => {
     const endIdx = raw.indexOf("\n{{/IF}}", startIdx);
     expect(endIdx).toBeGreaterThan(startIdx);
     const block = raw.slice(startIdx, endIdx);
-    // Verification literals present.
-    expect(block).toMatch(/git cat-file -e main:<path>/);
+    // Verification literals present, with $BASE substitution rather than
+    // hard-coded `main` so non-main default branches (master, trunk, …)
+    // are handled (Codex P2 review).
+    expect(block).toMatch(/git cat-file -e "\$BASE:<path>"/);
     expect(block).toMatch(/git cat-file -e HEAD:<path>/);
+    expect(block).toMatch(/symbolic-ref.*refs\/remotes\/origin\/HEAD/);
     expect(block).toMatch(/stale-base/i);
+    // Falsifier: hard-coded `main:<path>` form must not reappear.
+    expect(block).not.toMatch(/git cat-file -e main:<path>/);
     // Ordering invariant: verification must precede the irreversible patch
     // capture / revert. A verification appended after the revert is useless.
     const verifyIdx = block.indexOf("git cat-file");
@@ -1857,9 +1862,14 @@ describe("skills", () => {
     const para = raw.slice(startIdx, endIdx);
     // Existing per-commit guidance (gh-ludics-374) preserved in the same paragraph.
     expect(para).toMatch(/git log main\.\.HEAD --stat/);
-    // New: post-hoc cat-file verification folded into the same paragraph (no new section).
-    expect(para).toMatch(/git cat-file -e main:<path>/);
+    // New: post-hoc cat-file verification folded into the same paragraph
+    // (no new section), using $BASE substitution rather than hard-coded
+    // `main` (Codex P2 review).
+    expect(para).toMatch(/git cat-file -e "\$BASE:<path>"/);
+    expect(para).toMatch(/symbolic-ref.*refs\/remotes\/origin\/HEAD/);
     expect(para).toMatch(/REQUEST_CHANGES/);
+    // Falsifier: hard-coded `main:<path>` form must not reappear.
+    expect(para).not.toMatch(/git cat-file -e main:<path>/);
   });
 
   test("gh-ludics-409: orchestration-patterns Procedure block names runner coverage and cat-file verification", () => {
@@ -1876,9 +1886,14 @@ describe("skills", () => {
     expect(procBlock).toContain("plan-review");
     expect(procBlock).toMatch(/`review`/);
     expect(procBlock).toContain("warnStaleBase");
-    // Canonical per-file verification step.
-    expect(procBlock).toContain("git cat-file -e main:<path>");
+    // Canonical per-file verification step, with $BASE substitution rather
+    // than a hard-coded `main` so non-main default branches are handled
+    // (Codex P2 review).
+    expect(procBlock).toContain('git cat-file -e "$BASE:<path>"');
     expect(procBlock).toContain("git cat-file -e HEAD:<path>");
+    expect(procBlock).toMatch(/symbolic-ref.*refs\/remotes\/origin\/HEAD/);
+    // Falsifier: hard-coded `main:<path>` form must not reappear.
+    expect(procBlock).not.toMatch(/git cat-file -e main:<path>/);
   });
 
   test("gh-ludics-404: orchestration-patterns has Harness instantiation subsection with falsifier framing and worked example", () => {

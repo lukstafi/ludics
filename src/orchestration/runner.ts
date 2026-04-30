@@ -152,14 +152,25 @@ export function warnMissingRegressionTestsSection(
 
 /**
  * Map the active phase to the dedup category for the stale-base warning.
- * Coder phases (`plan`, `work`) and reviewer phases (`plan-review`, `review`)
- * each get their own memo entry so a coder warning in round N does not
- * suppress a reviewer warning in round N (gh-ludics-409). Phases outside
- * either set are not covered by the warning at all and return null.
+ * Coder phases (`plan`, `work`) and reviewer phases (`plan-review`,
+ * `review`) each get their own memo entry so a coder warning in round N
+ * does not suppress a reviewer warning in round N (gh-ludics-409). Phases
+ * outside either set are not covered by the warning at all and return null.
+ *
+ * Solo mode caveat: in solo mode the coder agent executes every non-setup
+ * phase including `review` / `plan-review` (see `agentParticipatesInPhase`),
+ * so reviewer-named phases bucket under "coder" — otherwise dedup would
+ * fail to suppress duplicate warnings within a single round for a single
+ * actor. Solo mode currently never enters those phases via
+ * `evaluateTransitionSolo`, so this is a defense-in-depth branch against
+ * legacy state files or future transitions.
  */
-function staleBaseCategoryOf(phase: Phase): "coder" | "reviewer" | null {
+function staleBaseCategoryOf(state: OrchestrationState): "coder" | "reviewer" | null {
+  const phase = state.phase;
   if (phase === "plan" || phase === "work") return "coder";
-  if (phase === "plan-review" || phase === "review") return "reviewer";
+  if (phase === "plan-review" || phase === "review") {
+    return state.mode === "solo" ? "coder" : "reviewer";
+  }
   return null;
 }
 
@@ -233,7 +244,7 @@ export function warnStaleBase(state: OrchestrationState): void {
     // Look up the per-category dedup entry (gh-ludics-409). Caller filters
     // on staleBaseCategoryOf() before invoking; the null branch here is
     // defense-in-depth for direct callers (tests).
-    const category = staleBaseCategoryOf(state.phase);
+    const category = staleBaseCategoryOf(state);
     if (category === null) return;
     const memo = (state.staleBaseLastWarned ??= {});
     const entry = memo[category] ?? { round: state.round, count: 0 };
@@ -781,10 +792,10 @@ async function enterPhase(
   }
 
   // Item A: stale-base warning. Fires on entry to `plan` / `work` (coder
-  // category) and `plan-review` / `review` (reviewer category, gh-ludics-409).
-  // Dedup is "newly needing rebase" per round per phase-category — see
-  // warnStaleBase() and staleBaseCategoryOf().
-  if (staleBaseCategoryOf(state.phase) !== null) {
+  // category) and `plan-review` / `review` (reviewer category, gh-ludics-409;
+  // also bucketed under coder in solo mode — see staleBaseCategoryOf()).
+  // Dedup is "newly needing rebase" per round per phase-category.
+  if (staleBaseCategoryOf(state) !== null) {
     warnStaleBase(state);
   }
 
