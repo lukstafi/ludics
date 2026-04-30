@@ -4,7 +4,8 @@
 
 import { readdirSync, statSync, existsSync } from "fs";
 import { join, basename } from "path";
-import type { DiscoveredSession, SourceKind } from "../types.ts";
+import type { DiscoveredSession } from "../types.ts";
+import { parseSourceKind } from "../types.ts";
 import { readFirstLines } from "./read-lines.ts";
 
 const MAX_SCAN_LINES = 20;
@@ -172,7 +173,7 @@ export async function discoverCodex(
       cwd: normalizeCwd(cwd),
       cwdNormalized: normalizeCwd(cwd),
       sessionId,
-      source: source as SourceKind,
+      source: parseSourceKind(source),
       lastActivityEpoch: mtimeEpoch,
       meta,
     });
