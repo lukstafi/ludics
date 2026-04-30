@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isAgentDone } from "./phases.ts";
 import { updateTurnLifecycle } from "./transport-t3code.ts";
-import { refreshAgentStatuses, runOrchestration } from "./runner.ts";
+import { refreshAgentStatuses, runOrchestration, runWrongFilenameRecovery } from "./runner.ts";
+import * as wfr from "./wrong-filename-recovery.ts";
 import * as peerSync from "./peer-sync.ts";
 import * as events from "../events.ts";
 import { orchOnStop } from "./index.ts";
@@ -1288,6 +1289,51 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
       expect(msgs.some((m: string) => m.includes("PID mismatch"))).toBe(true);
     } finally {
       errSpy.mockRestore();
+    }
+  });
+});
+
+describe("runWrongFilenameRecovery — runner integration", () => {
+  test("invokes recoverWrongFilename only for participating agents whose status is in DONE_STATUSES", async () => {
+    const state = makeState({ phase: "plan-merge", planMergeRound: 0 });
+    state.agentStates["coder"].status = "plan-merge-done";
+    state.agentStates["reviewer"].status = "running"; // not a done status
+    const transport: OrchestrationTransport = {
+      async sendTurn() { return "cmd"; },
+      async sendEnter() {},
+      async refreshAgentTransportState() {},
+      async interruptAgent() {},
+    };
+    const calls: string[] = [];
+    const spy = spyOn(wfr, "recoverWrongFilename").mockImplementation(async (_s, agent) => {
+      calls.push(agent.name);
+      return "none";
+    });
+    try {
+      await runWrongFilenameRecovery(state, transport);
+      // Only coder participates in plan-merge AND has a done-status. Reviewer
+      // doesn't participate in plan-merge at all, and isn't in DONE_STATUSES.
+      expect(calls).toEqual(["coder"]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("skips agents whose status is not in DONE_STATUSES even if they participate", async () => {
+    const state = makeState({ phase: "plan-merge" });
+    state.agentStates["coder"].status = "running";
+    const transport: OrchestrationTransport = {
+      async sendTurn() { return "cmd"; },
+      async sendEnter() {},
+      async refreshAgentTransportState() {},
+      async interruptAgent() {},
+    };
+    const spy = spyOn(wfr, "recoverWrongFilename").mockImplementation(async () => "none");
+    try {
+      await runWrongFilenameRecovery(state, transport);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
     }
   });
 });

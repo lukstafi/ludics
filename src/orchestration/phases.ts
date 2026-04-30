@@ -8,6 +8,7 @@ import { reviewFilePath } from "./review-files.ts";
 import type { AgentConfig, AgentRuntimeState, OrchestrationState } from "./state.ts";
 import { readDuoPeerState, bothSlotsReadyForMerge, isMergeCoordinator } from "./cross-slot.ts";
 import { nowEpoch } from "./util.ts";
+import { recoveryRecentlyActed } from "./wrong-filename-recovery.ts";
 
 export type Phase =
   | "setup"
@@ -195,6 +196,13 @@ function validateDoneStatus(state: OrchestrationState, agent: AgentConfig, runti
   // bail-out-confirmed without the coder side must not skip artifact checks.
   if ((runtime.status === "bail-out" || runtime.status === "bail-out-confirmed") && isBailedOut(state)) return true;
   if (!hasRequiredArtifact(state, agent)) {
+    // Suppress the 10s warning when the wrong-filename recovery driver
+    // already nudged this (round, planMergeRound) tuple — its own
+    // diagnostic event covers visibility, and we don't want to spam
+    // both event types on every poll. The driver lives in
+    // wrong-filename-recovery.ts and runs from runner.ts before this
+    // gate is consulted.
+    if (recoveryRecentlyActed(state, agent, runtime)) return false;
     emitEvent({
       event_type: "orchestration_warning",
       source: "orchestration",

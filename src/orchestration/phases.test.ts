@@ -1326,3 +1326,85 @@ describe("harness isolation regression", () => {
     expect(existsSync(harness!)).toBe(true);
   });
 });
+
+describe("validateDoneStatus suppression for wrong-filename recovery", () => {
+  // The artifact gate's 10s `orchestration_warning` is suppressed for one tick
+  // when the wrong-filename recovery driver has already nudged this
+  // (round, planMergeRound) tuple — the driver's own diagnostic event
+  // covers visibility.
+
+  function makeMissingArtifactState(opts: {
+    nudgeRound?: number;
+    nudgeMergeRound?: number | null;
+    planMergeRound?: number;
+  } = {}): OrchestrationState {
+    const peerSyncDir = mkdtempSync(join(tmpdir(), "phases-supp-"));
+    mkdirSync(join(peerSyncDir, "plans"), { recursive: true });
+    const state = makeState({
+      phase: "plan-merge",
+      planMergeRound: opts.planMergeRound ?? 0,
+      peerSyncDir,
+    });
+    // Status that triggers the artifact gate; lifecycle settled with a fresh
+    // fingerprint so isAgentDone reaches validateDoneStatus.
+    state.agentStates["coder"].status = "plan-merge-done";
+    state.agentStates["coder"].turnLifecycle = {
+      dispatchCommandId: "cmd",
+      dispatchedAt: "2026-04-30T00:00:00Z",
+      phaseToken: "tok",
+      observedTurnId: "turn",
+      state: "settled",
+      turnStartedAt: "2026-04-30T00:00:00Z",
+      turnCompletedAt: "2026-04-30T00:00:01Z",
+      completionSource: "snapshot",
+      statusFileFingerprint: "fp-old",
+      lastStopHookAt: null,
+      wrongFilenameNudgeRound: opts.nudgeRound,
+      wrongFilenameNudgePlanMergeRound: opts.nudgeMergeRound,
+    };
+    // Ensure fingerprint differs from baseline (no dispatchStatusFingerprint set
+    // means isStatusFresh returns true).
+    return state;
+  }
+
+  test("suppresses orchestration_warning when sentinels match this tuple", async () => {
+    const state = makeMissingArtifactState({ nudgeRound: 1, nudgeMergeRound: 0, planMergeRound: 0 });
+    const eventsMod = await import("../events.ts");
+    const events: Array<Record<string, unknown>> = [];
+    const spy = spyOn(eventsMod, "emitEvent").mockImplementation((e) => { events.push(e as Record<string, unknown>); });
+    try {
+      const done = isAgentDone(state, state.agents[0]);
+      expect(done).toBe(false);
+      expect(events.find((e) => e.event_type === "orchestration_warning")).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("emits orchestration_warning when sentinel round mismatches", async () => {
+    const state = makeMissingArtifactState({ nudgeRound: 99, nudgeMergeRound: 0, planMergeRound: 0 });
+    const eventsMod = await import("../events.ts");
+    const events: Array<Record<string, unknown>> = [];
+    const spy = spyOn(eventsMod, "emitEvent").mockImplementation((e) => { events.push(e as Record<string, unknown>); });
+    try {
+      const done = isAgentDone(state, state.agents[0]);
+      expect(done).toBe(false);
+      expect(events.some((e) => e.event_type === "orchestration_warning")).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("emits orchestration_warning when sentinel planMergeRound mismatches", async () => {
+    const state = makeMissingArtifactState({ nudgeRound: 1, nudgeMergeRound: 99, planMergeRound: 0 });
+    const eventsMod = await import("../events.ts");
+    const events: Array<Record<string, unknown>> = [];
+    const spy = spyOn(eventsMod, "emitEvent").mockImplementation((e) => { events.push(e as Record<string, unknown>); });
+    try {
+      isAgentDone(state, state.agents[0]);
+      expect(events.some((e) => e.event_type === "orchestration_warning")).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
