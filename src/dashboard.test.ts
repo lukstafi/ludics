@@ -998,4 +998,36 @@ describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () =
     const resp = await handler(new Request("http://x/api/stale-revive?task=not%20a%20task"));
     expect(resp.status).toBe(400);
   });
+
+  test("POST /api/stale-abandon on a slotted stale task ends with status: abandoned (not silently left at ready)", async () => {
+    // Harness condition: a `stale` task is also assigned to a slot. Codex
+    // round-2 review noted that the de-stale-then-abandon composition is
+    // unsafe: tasksAbandon for a slotted task delegates to slotClear ->
+    // taskUpdateForSlotClear, whose abandoned `expectedFrom` is
+    // [in-progress, deferred, preempted] — `ready` is NOT in that list, so
+    // the freshly-de-staled task silently stays at `ready` while the
+    // endpoint still returns `{"status":"abandoned"}`. The fix lifts that
+    // gate; this test pins the invariant.
+    const file = writeTask("task-slotted-stale", "stale");
+    // Mark the task as assigned to slot 1 so findSlotForTask picks it up.
+    const { writeSlotJson, emptySlotData } = await import("./slots/json.ts");
+    const slotData = { ...emptySlotData(1), task: "task-slotted-stale", process: "tmux:s1" };
+    writeSlotJson(1, slotData);
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/stale-abandon?task=task-slotted-stale"));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("abandoned");
+    // Invariant: file MUST end at status: abandoned, not silently stay at
+    // some intermediate state while the endpoint reports success.
+    // Mutation: revert /api/stale-abandon to delegate to tasksAbandon
+    // after a `stale → ready` flip and this assertion fails because
+    // taskUpdateForSlotClear's `expectedFrom` does not include `ready`,
+    // so the slotted task silently keeps the intermediate `ready` while
+    // the endpoint returns 200 (the exact Codex PR #476 review finding).
+    const after = readFileSync(file, "utf-8");
+    expect(after).toContain("status: abandoned");
+    expect(after).not.toMatch(/^status: ready$/m);
+  });
 });
