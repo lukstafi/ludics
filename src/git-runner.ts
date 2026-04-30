@@ -46,11 +46,21 @@ export interface DetectDefaultBranchesOptions {
   /**
    * When true, insert an `ls-remote --symref <remote> HEAD` network tier
    * between the local symbolic-ref tier and the `main`/`master` probe tier.
-   * Intended for callers that have just warmed network connectivity (e.g.
-   * after `git fetch <remote>`), so the round-trip is cheap. Default
-   * `false` — fully local, no network.
+   * Performs up to N network round-trips — one `ls-remote --symref` per
+   * remote queried, i.e. 2 for the `{ origin, upstream }` pair when both
+   * remotes exist. Intended for callers that have just warmed network
+   * connectivity (e.g. after `git fetch <remote>`), so the round-trip is
+   * cheap.
+   *
+   * Default `false` — fully local, no network I/O.
+   *
+   * The `IO` suffix in the option name is load-bearing: it surfaces the
+   * network contract at call sites without requiring readers to consult
+   * JSDoc. `{ authoritativeIO: true }` reads as "this path performs
+   * network I/O" at a glance — preserving the lexical-signal property
+   * that a separate `…Authoritative` export name used to provide.
    */
-  authoritative?: boolean;
+  authoritativeIO?: boolean;
 }
 
 /**
@@ -75,7 +85,7 @@ export interface DetectDefaultBranchesOptions {
  * Tier ordering per remote (each tier short-circuits on success):
  *  1. `git symbolic-ref refs/remotes/<remote>/HEAD` — present when the repo
  *     was cloned or `git remote set-head <remote> -a` has been run.
- *  2. (only when `opts.authoritative === true`) `git ls-remote --symref
+ *  2. (only when `opts.authoritativeIO === true`) `git ls-remote --symref
  *     <remote> HEAD` — network round-trip; parses `ref: refs/heads/<n>
  *     HEAD` from stdout. Used by callers that already warmed the network
  *     (e.g. immediately after `git fetch`) to detect non-`main`/`master`
@@ -89,7 +99,7 @@ export function detectDefaultBranches(
   runGit: RunGit,
   opts: DetectDefaultBranchesOptions = {},
 ): DetectedBranches {
-  const authoritative = opts.authoritative === true;
+  const authoritativeIO = opts.authoritativeIO === true;
   const read = (remote: string): string | null => {
     const primary = runGit(["symbolic-ref", `refs/remotes/${remote}/HEAD`], cwd);
     if (primary.exitCode === 0) {
@@ -100,7 +110,7 @@ export function detectDefaultBranches(
         if (name) return name;
       }
     }
-    if (authoritative) {
+    if (authoritativeIO) {
       const symref = runGit(["ls-remote", "--symref", remote, "HEAD"], cwd);
       if (symref.exitCode === 0) {
         // Expected line: `ref: refs/heads/<branch>\tHEAD` (whitespace may
