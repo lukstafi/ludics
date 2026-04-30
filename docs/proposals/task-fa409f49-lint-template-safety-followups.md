@@ -60,9 +60,28 @@ The improvements:
   same input. When the helper returns a non-null remainder,
   `looksLikeShell` continues with that remainder through the existing
   `SHELL_COMMAND_PREFIX` / `$(/${` / `SHELL_CHAIN` checks.
-- After the lift, `looksLikeShell("PR_URL=$(cat \"x\" 2>/dev/null) gh pr view")`
-  returns `true` (today: `false`, because the regex halts mid-`$(...)`).
-  This gap-closure is exercised by at least one new unit test.
+- After the lift, `looksLikeShell` correctly classifies pure-assignment
+  lines whose RHS is `$(...)` as **not** shell. Concretely:
+  `looksLikeShell("PR_URL=$(cat \"x\" 2>/dev/null)")` returns `false`
+  (today: `true`, because `body.replace(ENV_ASSIGNMENT_PREFIX, "")` halts
+  mid-`$(...)` and leaves the residual `$(` to be picked up by the
+  independent `/\$\(|\$\{/` recognizer, falsely flagging the assignment as
+  a shell command). The same input with a real command appended —
+  `looksLikeShell("PR_URL=$(cat \"x\" 2>/dev/null) gh pr view")` — keeps
+  its existing `true` classification, but now via `SHELL_COMMAND_PREFIX`
+  matching the post-strip remainder rather than via the `$(` fallback;
+  i.e., the helper correctly identifies the *command* (`gh pr view`) as
+  the shell signal instead of relying on the `$(` artefact inside the
+  assignment value. Both directions of this gap-closure are exercised by
+  new unit tests.
+
+  > **AC drafting note (added during coder verification on 2026-04-30):**
+  > the original AC bullet claimed today's behavior on the
+  > "`PR_URL=$(...) gh pr view`" input is `false`. Empirical probe shows
+  > today's behavior is `true` (the `$(/${` recognizer fires). The AC has
+  > been revised to the actually-load-bearing case (pure-assignment
+  > `PR_URL=$(...)` without a trailing command, where today's `true`
+  > result is incorrect and the new helper produces the correct `false`).
 - `ENV_ASSIGNMENT_PREFIX` may be retained as an exported constant for the
   one residual fallback consumer (the per-segment stripper in the
   meta-test's `splitOnShellChain` segment loop) or removed entirely if

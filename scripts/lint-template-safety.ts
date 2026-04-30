@@ -61,8 +61,69 @@ const SHELL_COMMAND_PREFIX = new RegExp(
   `^(?:${SHELL_COMMAND_ALT}|:|\\[|\\[\\[|\\{|\\(|\\$\\()\\b`,
 );
 
-/** A shell-style leading env-var assignment: `NAME=value ` (one or more). */
+/** A shell-style leading env-var assignment: `NAME=value ` (one or more).
+ *  Retained for the per-segment fallback consumer in
+ *  `scripts/lint-template-safety.test.ts`'s `splitOnShellChain` segment loop,
+ *  where post-`&&`/`;` segments rarely contain `$(...)` values with embedded
+ *  whitespace. The load-bearing `looksLikeShell` path now goes through
+ *  `stripLeadingEnvAssignments`, which correctly handles `$(...)` /
+ *  double-quoted / single-quoted values containing whitespace (the regex's
+ *  `\S*` alternative halts mid-`$(...)` on values like
+ *  `PR_URL=$(cat "..." 2>/dev/null)`). */
 export const ENV_ASSIGNMENT_PREFIX = /^(?:[A-Z_][A-Z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/;
+
+/** Strip leading env-var assignments from a shell-line candidate, including
+ *  assignments whose values are `$(...)`, `"..."`, or `'...'` and may contain
+ *  whitespace. Returns `null` when the entire line is one or more pure
+ *  assignments with no command after (e.g. `FOO=bar`, `FOO="bar baz"`,
+ *  `FOO=$(date)`) — the caller should treat this as "not a shell command".
+ *  Returns the remainder starting at the first command token otherwise.
+ *
+ *  Used by `looksLikeShell` to close the gap where the simpler
+ *  `ENV_ASSIGNMENT_PREFIX` regex's `\S*` alternative halts at the first
+ *  whitespace inside a `$(...)` value, causing patterns like
+ *  `PR_URL=$(cat "..." 2>/dev/null) gh pr view` to be misclassified as prose.
+ *  The meta-test in `scripts/lint-template-safety.test.ts` consumes this
+ *  same helper so the runtime lint and the meta-test agree on env-prefix
+ *  semantics. */
+export function stripLeadingEnvAssignments(line: string): string | null {
+  let i = 0;
+  while (true) {
+    while (i < line.length && /\s/.test(line[i]!)) i++;
+    const m = line.slice(i).match(/^[A-Z_][A-Z0-9_]*=/);
+    if (!m) {
+      return i >= line.length ? null : line.slice(i);
+    }
+    i += m[0].length;
+    if (i >= line.length) return null; // pure `NAME=` with no value
+    const ch = line[i]!;
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      i++;
+      while (i < line.length && line[i] !== quote) {
+        if (line[i] === "\\" && i + 1 < line.length) i += 2;
+        else i++;
+      }
+      if (i < line.length) i++; // skip closing quote
+    } else if (ch === "$" && line[i + 1] === "(") {
+      i += 2;
+      let depth = 1;
+      while (i < line.length && depth > 0) {
+        const c = line[i]!;
+        if (c === "(") depth++;
+        else if (c === ")") depth--;
+        if (depth === 0) break;
+        i++;
+      }
+      if (i < line.length) i++; // skip closing )
+    } else {
+      // Bare value: consume until whitespace.
+      while (i < line.length && !/\s/.test(line[i]!)) i++;
+    }
+    if (i >= line.length) return null; // pure assignment, no command after
+    // Whitespace follows: there may be more assignments or a command. Loop.
+  }
+}
 
 /** A pipe / logical chain / command separator followed by a command token —
  *  strong evidence that the span is shell and not prose. */
@@ -78,7 +139,8 @@ const SHELL_CHAIN = new RegExp(
  *   - pipe / chain / redirection into a recognized command token
  *  Keeps prose-style backticks (file paths, identifiers, quoted values) out. */
 export function looksLikeShell(body: string): boolean {
-  const stripped = body.replace(/^\s+/, "").replace(ENV_ASSIGNMENT_PREFIX, "");
+  const stripped = stripLeadingEnvAssignments(body.replace(/^\s+/, ""));
+  if (stripped === null) return false;
   if (SHELL_COMMAND_PREFIX.test(stripped)) return true;
   if (/\$\(|\$\{/.test(body)) return true;
   if (SHELL_CHAIN.test(body)) return true;
@@ -225,17 +287,14 @@ export function findFencedLines(lines: string[]): Set<number> {
  *  (no double-reporting), and non-shell blocks (e.g., ```ts) must not be
  *  inline-scanned at all.
  *
- *  Default skip is `classifyLines(lines)[i].kind !== "prose"` — the same
- *  partition the other scanners derive from. The optional `fencedLines`
- *  parameter is preserved for back-compat callers but is no longer the
- *  load-bearing skip mechanism. */
-export function findInlineShellSpans(lines: string[], fencedLines?: Set<number>): ShellSpan[] {
-  const skip: (i: number) => boolean = fencedLines
-    ? (i: number) => fencedLines.has(i)
-    : (() => {
-        const classes = classifyLines(lines);
-        return (i: number) => classes[i]!.kind !== "prose";
-      })();
+ *  Skip set is derived from `classifyLines(lines)`: any non-`prose` row is
+ *  skipped. This is the single source of truth for the partition; the
+ *  function takes no opt-in skip override — a previous `fencedLines?:
+ *  Set<number>` parameter was removed because it allowed callers to hand
+ *  in a stale set that disagreed with the partition. */
+export function findInlineShellSpans(lines: string[]): ShellSpan[] {
+  const classes = classifyLines(lines);
+  const skip = (i: number) => classes[i]!.kind !== "prose";
   const spans: ShellSpan[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (skip(i)) continue;

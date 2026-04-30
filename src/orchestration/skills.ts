@@ -259,14 +259,27 @@ export function resolveTemplatePath(
  * non-empty at template-substitution time. Templates may use these
  * variables freely inside shell contexts without `{{#IF VAR}}` guards.
  *
+ * **Empty-default-marker convention (project-wide for template-context
+ * builders).** Inside `buildSkillContext`'s `result` literal — and inside
+ * any analogous template-context builder that the lint pipeline classifies
+ * by RHS shape — every assignment whose RHS *may legitimately produce an
+ * empty string* must carry a visible `?? ""`, `: ""`, or `|| ""` marker on
+ * the assignment line itself. The marker hoists the "may be empty" signal
+ * from the upstream `const`/helper definition into the assignment site,
+ * where future readers (and the drift test) can see it without chasing
+ * through callees. Conversely, assignments backed by inherently non-empty
+ * sources (e.g. `agent.provider`, `state.round.toString()`, a literal) must
+ * NOT carry the marker — adding `|| ""` to a value that cannot produce an
+ * empty string would falsely advertise the field as optional and is the
+ * one explicit anti-pattern this convention guards against.
+ *
  * CI-drift-pair — see `scripts/lint-template-safety.test.ts`
  * "ALWAYS_POPULATED_KEYS drift" describe block: a bidirectional invariant
  * test parses the `result` object literal below and asserts every
  * non-empty-default assignment is in this set, and every key in this set
  * has such an assignment. Maintainers adding a new always-populated key
- * touch only this file (this set + the `result` literal). Empty-default
- * assignments must surface a `?? ""`, `: ""`, or `|| ""` marker on the
- * assignment line so the drift test can classify them correctly.
+ * touch only this file (this set + the `result` literal); the convention
+ * above is what lets the drift test classify each line correctly.
  */
 export const ALWAYS_POPULATED_KEYS: ReadonlySet<string> = new Set([
   "PHASE",

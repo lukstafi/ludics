@@ -16,6 +16,7 @@ import {
   parseIfRanges,
   lintTemplate,
   runLint,
+  stripLeadingEnvAssignments,
 } from "./lint-template-safety.ts";
 
 describe("findFencedShellBlocks", () => {
@@ -289,6 +290,65 @@ describe("looksLikeShell", () => {
 
   test("rejects assignment-without-command", () => {
     expect(looksLikeShell("FOO=bar")).toBe(false);
+  });
+
+  // Gap-closure: previously the brittle ENV_ASSIGNMENT_PREFIX regex's `\S*`
+  // alternative halted mid-`$(...)`, leaving residual `$(` characters that the
+  // independent `/\$\(|\$\{/` recognizer would then false-positive on. With
+  // stripLeadingEnvAssignments, pure-assignment lines whose RHS is `$(...)` are
+  // correctly classified as not-a-shell-command.
+  test("rejects pure-assignment lines whose RHS contains $(...) with whitespace", () => {
+    expect(looksLikeShell(`PR_URL=$(cat "x" 2>/dev/null)`)).toBe(false);
+    expect(looksLikeShell(`FOO=$(date +%s)`)).toBe(false);
+  });
+
+  test("accepts $(...)-valued assignment followed by a real command", () => {
+    // The post-strip remainder is `gh pr view`, matching SHELL_COMMAND_PREFIX.
+    // Verifies the helper consumed the full `$(...)` body (whitespace and
+    // nested redirection included) rather than halting mid-value.
+    expect(
+      looksLikeShell(`PR_URL=$(cat "x" 2>/dev/null) gh pr view`),
+    ).toBe(true);
+  });
+});
+
+describe("stripLeadingEnvAssignments", () => {
+  test("returns null for pure assignment with no command", () => {
+    expect(stripLeadingEnvAssignments("FOO=bar")).toBeNull();
+    expect(stripLeadingEnvAssignments(`FOO="bar baz"`)).toBeNull();
+    expect(stripLeadingEnvAssignments(`FOO='bar baz'`)).toBeNull();
+    expect(stripLeadingEnvAssignments(`FOO=$(date)`)).toBeNull();
+    expect(stripLeadingEnvAssignments(`PR_URL=$(cat "x" 2>/dev/null)`)).toBeNull();
+  });
+
+  test("returns null for multiple chained pure assignments", () => {
+    expect(stripLeadingEnvAssignments(`FOO=bar BAZ="qux"`)).toBeNull();
+    expect(stripLeadingEnvAssignments(`A=1 B=$(date) C="d e f"`)).toBeNull();
+  });
+
+  test("returns the command remainder when a command follows", () => {
+    expect(stripLeadingEnvAssignments("FOO=bar gh pr view")).toBe("gh pr view");
+    expect(stripLeadingEnvAssignments(`FOO="bar baz" gh pr view`)).toBe(
+      "gh pr view",
+    );
+    expect(
+      stripLeadingEnvAssignments(`PR_URL=$(cat "x" 2>/dev/null) gh pr view`),
+    ).toBe("gh pr view");
+  });
+
+  test("returns the input verbatim when no leading assignment is present", () => {
+    // Used by looksLikeShell to feed the SHELL_COMMAND_PREFIX recognizer.
+    expect(stripLeadingEnvAssignments("gh pr view")).toBe("gh pr view");
+    expect(stripLeadingEnvAssignments("APPROVE")).toBe("APPROVE");
+    expect(stripLeadingEnvAssignments("{{STATUS_FILE}}")).toBe(
+      "{{STATUS_FILE}}",
+    );
+  });
+
+  test("handles single-quoted values with embedded escapes and whitespace", () => {
+    expect(stripLeadingEnvAssignments(`FOO='it\\'s fine' gh pr view`)).toBe(
+      "gh pr view",
+    );
   });
 });
 
@@ -752,54 +812,6 @@ describe("SHELL_COMMANDS drift", () => {
     }
     parts.push(buf);
     return parts;
-  }
-
-  /** Strip leading env-var assignments, including those with `$(...)`,
-   *  `"..."`, `'...'` values that may contain whitespace. Returns null when
-   *  the entire line is a pure assignment statement (no command follows),
-   *  signalling "skip this line". Otherwise returns the remainder starting
-   *  at the first command token. Falls back to the simple
-   *  `ENV_ASSIGNMENT_PREFIX` regex when the leading text doesn't look like
-   *  an assignment, preserving the runtime lint's behavior. */
-  function stripLeadingEnvAssignments(line: string): string | null {
-    let i = 0;
-    while (true) {
-      // Skip leading whitespace at this iteration.
-      while (i < line.length && /\s/.test(line[i]!)) i++;
-      const m = line.slice(i).match(/^[A-Z_][A-Z0-9_]*=/);
-      if (!m) {
-        // No assignment here — return remainder (or empty if we consumed all).
-        return i >= line.length ? null : line.slice(i);
-      }
-      i += m[0].length;
-      if (i >= line.length) return null; // pure `NAME=` with no value
-      const ch = line[i]!;
-      if (ch === '"' || ch === "'") {
-        const quote = ch;
-        i++;
-        while (i < line.length && line[i] !== quote) {
-          if (line[i] === "\\" && i + 1 < line.length) i += 2;
-          else i++;
-        }
-        if (i < line.length) i++; // skip closing quote
-      } else if (ch === "$" && line[i + 1] === "(") {
-        i += 2;
-        let depth = 1;
-        while (i < line.length && depth > 0) {
-          const c = line[i]!;
-          if (c === "(") depth++;
-          else if (c === ")") depth--;
-          if (depth === 0) break;
-          i++;
-        }
-        if (i < line.length) i++; // skip closing )
-      } else {
-        // Bare value: consume until whitespace.
-        while (i < line.length && !/\s/.test(line[i]!)) i++;
-      }
-      if (i >= line.length) return null; // pure assignment, no command after
-      // Whitespace follows: there may be more assignments or a command. Loop.
-    }
   }
 
   /** Strip leading `{{#IF VAR}}` / `{{/IF}}` template tags (one or more,
