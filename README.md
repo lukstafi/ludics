@@ -299,6 +299,8 @@ ludics tasks convert           # Convert tasks.yaml to task files (also run by s
 ludics tasks update            # Refresh GitHub metadata for existing tasks (preserves local title edits)
 ludics tasks create <title>    # Create a new task manually
 ludics tasks files             # List individual task files
+ludics tasks priority <id> <level>
+                                # Set task priority (S, A, B, C, D); increases clear the auto-proposal debounce
 ```
 
 ### Flow engine
