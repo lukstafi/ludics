@@ -1,41 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
-import { tmpdir } from "os";
+import { mkdirSync, readFileSync } from "fs";
 import { join } from "path";
+import { withSyntheticHarness } from "./test-utils.ts";
 
 // Regression test for task-a00fc0d9 / docs/proposals/auto-compact-after-checkpoints.md:
 // every queued health-check / briefing request must be followed by a
 // { action: "message", content: "/compact" } request.
 
-let tmpDir: string;
-const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
-const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
-const ORIGINAL_CLUSTER_NAME = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+const getTmpDir = withSyntheticHarness(beforeEach, afterEach);
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "ludics-auto-compact-"));
-  mkdirSync(join(tmpDir, "mag"), { recursive: true });
-  process.env.LUDICS_HARNESS_DIR = tmpDir;
-  // No config file → loadConfigSync throws → clusterEnabled() is false →
+  // Synthetic config has no `cluster:` block → clusterEnabled() is false →
   // clusterIsController() returns true (standalone). That harness condition
   // is what lets these branches reach the queueRequest calls; if it stops
   // holding, both tests fail because the queue stays empty.
-  delete process.env.LUDICS_CONFIG;
-  delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
-});
-
-afterEach(() => {
-  rmSync(tmpDir, { recursive: true, force: true });
-  if (ORIGINAL_HARNESS_DIR === undefined) delete process.env.LUDICS_HARNESS_DIR;
-  else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
-  if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG;
-  else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
-  if (ORIGINAL_CLUSTER_NAME === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
-  else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_CLUSTER_NAME;
+  mkdirSync(join(getTmpDir(), "mag"), { recursive: true });
 });
 
 function readQueue(): Record<string, unknown>[] {
-  const qf = join(tmpDir, "mag", "queue.jsonl");
+  const qf = join(getTmpDir(), "mag", "queue.jsonl");
   const content = readFileSync(qf, "utf-8");
   return content
     .split("\n")

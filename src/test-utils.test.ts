@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
+import YAML from "yaml";
 import {
   captureConsoleError,
   captureConsoleLog,
   silenceConsoleError,
   silenceConsoleWarn,
+  withSyntheticHarness,
   withTestHarness,
 } from "./test-utils.ts";
 
@@ -118,6 +120,193 @@ describe("withTestHarness", () => {
     } finally {
       if (pre === undefined) delete process.env.LUDICS_HARNESS_DIR;
       else process.env.LUDICS_HARNESS_DIR = pre;
+    }
+  });
+});
+
+describe("withSyntheticHarness", () => {
+  function snapshotEnv(): { harness: string | undefined; config: string | undefined; cluster: string | undefined } {
+    return {
+      harness: process.env.LUDICS_HARNESS_DIR,
+      config: process.env.LUDICS_CONFIG,
+      cluster: process.env.LUDICS_CLUSTER_MACHINE_NAME,
+    };
+  }
+  function restoreEnv(s: { harness: string | undefined; config: string | undefined; cluster: string | undefined }): void {
+    if (s.harness === undefined) delete process.env.LUDICS_HARNESS_DIR;
+    else process.env.LUDICS_HARNESS_DIR = s.harness;
+    if (s.config === undefined) delete process.env.LUDICS_CONFIG;
+    else process.env.LUDICS_CONFIG = s.config;
+    if (s.cluster === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
+    else process.env.LUDICS_CLUSTER_MACHINE_NAME = s.cluster;
+  }
+
+  test("sets all three env vars correctly during a before/after cycle", () => {
+    const pre = snapshotEnv();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "before-helper";
+    const hooks = captureHooks();
+    const getDir = withSyntheticHarness(hooks.before, hooks.after);
+    try {
+      hooks.runBefore();
+      const dir = getDir();
+      expect(dir).not.toBe("");
+      expect(existsSync(dir)).toBe(true);
+      expect(process.env.LUDICS_HARNESS_DIR).toBe(dir);
+      expect(process.env.LUDICS_CONFIG).toBe(`${dir}/config.yaml`);
+      // LUDICS_CLUSTER_MACHINE_NAME must be cleared, not set to "undefined".
+      expect(process.env.LUDICS_CLUSTER_MACHINE_NAME).toBeUndefined();
+    } finally {
+      hooks.runAfter();
+      restoreEnv(pre);
+    }
+  });
+
+  test("restores captured sentinel values after teardown", () => {
+    const pre = snapshotEnv();
+    process.env.LUDICS_HARNESS_DIR = "/sentinel-harness";
+    process.env.LUDICS_CONFIG = "/sentinel-config";
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "sentinel-cluster";
+    const hooks = captureHooks();
+    const getDir = withSyntheticHarness(hooks.before, hooks.after);
+    try {
+      hooks.runBefore();
+      const dir = getDir();
+      expect(existsSync(dir)).toBe(true);
+      hooks.runAfter();
+      expect(process.env.LUDICS_HARNESS_DIR).toBe("/sentinel-harness");
+      expect(process.env.LUDICS_CONFIG).toBe("/sentinel-config");
+      expect(process.env.LUDICS_CLUSTER_MACHINE_NAME).toBe("sentinel-cluster");
+      expect(existsSync(dir)).toBe(false);
+    } finally {
+      restoreEnv(pre);
+    }
+  });
+
+  test("restores undefined when originals were unset (not the literal 'undefined')", () => {
+    const pre = snapshotEnv();
+    delete process.env.LUDICS_HARNESS_DIR;
+    delete process.env.LUDICS_CONFIG;
+    delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
+    const hooks = captureHooks();
+    const getDir = withSyntheticHarness(hooks.before, hooks.after);
+    try {
+      hooks.runBefore();
+      const dir = getDir();
+      expect(existsSync(dir)).toBe(true);
+      hooks.runAfter();
+      expect(process.env.LUDICS_HARNESS_DIR).toBeUndefined();
+      expect(process.env.LUDICS_HARNESS_DIR).not.toBe("undefined");
+      expect(process.env.LUDICS_CONFIG).toBeUndefined();
+      expect(process.env.LUDICS_CONFIG).not.toBe("undefined");
+      expect(process.env.LUDICS_CLUSTER_MACHINE_NAME).toBeUndefined();
+      expect(process.env.LUDICS_CLUSTER_MACHINE_NAME).not.toBe("undefined");
+      expect(existsSync(dir)).toBe(false);
+    } finally {
+      restoreEnv(pre);
+    }
+  });
+
+  test("config.yaml is written with projects: [] by default", () => {
+    const pre = snapshotEnv();
+    const hooks = captureHooks();
+    const getDir = withSyntheticHarness(hooks.before, hooks.after);
+    try {
+      hooks.runBefore();
+      const dir = getDir();
+      const cfgPath = `${dir}/config.yaml`;
+      expect(existsSync(cfgPath)).toBe(true);
+      const parsed = YAML.parse(readFileSync(cfgPath, "utf-8")) as Record<string, unknown>;
+      expect(parsed.state_repo).toBe("test/state");
+      expect(parsed.state_path).toBe("harness");
+      expect(parsed.projects).toEqual([]);
+    } finally {
+      hooks.runAfter();
+      restoreEnv(pre);
+    }
+  });
+
+  test("config.yaml reflects an explicit projects override when provided", () => {
+    const pre = snapshotEnv();
+    const hooks = captureHooks();
+    const getDir = withSyntheticHarness(hooks.before, hooks.after, {
+      projects: [
+        { name: "alpha", repo: "user/alpha" },
+        { name: "beta", repo: "user/beta", issues: true },
+      ],
+    });
+    try {
+      hooks.runBefore();
+      const dir = getDir();
+      const cfgPath = `${dir}/config.yaml`;
+      const parsed = YAML.parse(readFileSync(cfgPath, "utf-8")) as Record<string, unknown>;
+      expect(parsed.projects).toEqual([
+        { name: "alpha", repo: "user/alpha" },
+        { name: "beta", repo: "user/beta", issues: true },
+      ]);
+    } finally {
+      hooks.runAfter();
+      restoreEnv(pre);
+    }
+  });
+
+  test("tmpdir is removed after teardown", () => {
+    const pre = snapshotEnv();
+    const hooks = captureHooks();
+    const getDir = withSyntheticHarness(hooks.before, hooks.after);
+    try {
+      hooks.runBefore();
+      const dir = getDir();
+      expect(existsSync(dir)).toBe(true);
+      hooks.runAfter();
+      expect(existsSync(dir)).toBe(false);
+    } finally {
+      restoreEnv(pre);
+    }
+  });
+
+  test("returns a fresh tmpdir on each before/after cycle", () => {
+    const pre = snapshotEnv();
+    const hooks = captureHooks();
+    const getDir = withSyntheticHarness(hooks.before, hooks.after);
+    try {
+      hooks.runBefore();
+      const first = getDir();
+      hooks.runAfter();
+      hooks.runBefore();
+      const second = getDir();
+      hooks.runAfter();
+      expect(first).not.toBe(second);
+    } finally {
+      restoreEnv(pre);
+    }
+  });
+
+  test("double registration: each helper restores the real original, not a sibling's tmpdir or config path", () => {
+    const pre = snapshotEnv();
+    process.env.LUDICS_HARNESS_DIR = "/real-harness";
+    process.env.LUDICS_CONFIG = "/real-config";
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "real-cluster";
+    const hooksA = captureHooks();
+    const hooksB = captureHooks();
+    try {
+      // Both helpers register at the same "real original" — i.e. before any before() runs.
+      withSyntheticHarness(hooksA.before, hooksA.after);
+      withSyntheticHarness(hooksB.before, hooksB.after);
+
+      // Simulate per-test lifecycle with both helpers active.
+      hooksA.runBefore();
+      hooksB.runBefore();
+      expect(process.env.LUDICS_HARNESS_DIR).not.toBe("/real-harness");
+      expect(process.env.LUDICS_CONFIG).not.toBe("/real-config");
+      expect(process.env.LUDICS_CLUSTER_MACHINE_NAME).toBeUndefined();
+      // Teardown in either order must land back on the real originals.
+      hooksA.runAfter();
+      hooksB.runAfter();
+      expect(process.env.LUDICS_HARNESS_DIR).toBe("/real-harness");
+      expect(process.env.LUDICS_CONFIG).toBe("/real-config");
+      expect(process.env.LUDICS_CLUSTER_MACHINE_NAME).toBe("real-cluster");
+    } finally {
+      restoreEnv(pre);
     }
   });
 });
