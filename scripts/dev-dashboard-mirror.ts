@@ -12,13 +12,24 @@ import { mkdtempSync, mkdirSync, cpSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { startDashboardServer } from "../src/dashboard-server.ts";
 
-function parseArg(name: string, fallback: string): string {
+function parseNumberArg(name: string, fallback: number): number {
   const i = process.argv.indexOf(name);
-  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1]! : fallback;
+  if (i < 0) return fallback;
+  const raw = process.argv[i + 1];
+  if (raw === undefined || raw.startsWith("--")) {
+    console.error(`error: ${name} requires a numeric value`);
+    process.exit(2);
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    console.error(`error: ${name} value ${JSON.stringify(raw)} is not a finite number`);
+    process.exit(2);
+  }
+  return n;
 }
 
-const port = Number(parseArg("--port", "0"));
-const ttl = Number(parseArg("--ttl", "3600"));
+const port = parseNumberArg("--port", 0);
+const ttl = parseNumberArg("--ttl", 3600);
 const keep = process.argv.includes("--keep");
 
 // AC7 requires the mirror to live under /tmp/ literally — not the platform
@@ -27,14 +38,23 @@ const keep = process.argv.includes("--keep");
 const root = mkdtempSync("/tmp/ludics-dash-mirror-");
 const dashboardDir = join(root, "dashboard");
 const tasksDir = join(root, "tasks");
-mkdirSync(tasksDir, { recursive: true });
-cpSync(
-  resolve(import.meta.dir, "..", "templates", "dashboard"),
-  dashboardDir,
-  { recursive: true },
-);
 
-const server = startDashboardServer(port, dashboardDir, ttl);
+let server: ReturnType<typeof startDashboardServer>;
+try {
+  mkdirSync(tasksDir, { recursive: true });
+  cpSync(
+    resolve(import.meta.dir, "..", "templates", "dashboard"),
+    dashboardDir,
+    { recursive: true },
+  );
+  server = startDashboardServer(port, dashboardDir, ttl);
+} catch (err) {
+  // Server start (or mirror copy) threw before signal handlers were
+  // registered — clean up the temp directory so we don't leak it.
+  rmSync(root, { recursive: true, force: true });
+  throw err;
+}
+
 console.log(
   `dashboard listening on http://localhost:${server.port} (mirror=${root}${keep ? ", kept" : ""})`,
 );
