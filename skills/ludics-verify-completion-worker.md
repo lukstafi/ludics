@@ -65,6 +65,8 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 <!-- section:make-judgment -->
 4. **Make a completion judgment**:
 
+   When the task's ACs are unusually contract-heavy, consult [`../docs/ac-rigor-reference.md`](../docs/ac-rigor-reference.md) for the durable failure modes (vacuous harness, byte-pinned assertions, etc.).
+
    - **complete** — all acceptance criteria appear met with no critical
      loose ends.
    - **complete-with-followups** — core criteria met, but deferred items,
