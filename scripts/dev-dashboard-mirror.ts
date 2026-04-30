@@ -9,7 +9,6 @@
 // Usage: bun run scripts/dev-dashboard-mirror.ts [--port N] [--ttl SEC] [--keep]
 
 import { mkdtempSync, mkdirSync, cpSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { startDashboardServer } from "../src/dashboard-server.ts";
 
@@ -22,7 +21,10 @@ const port = Number(parseArg("--port", "0"));
 const ttl = Number(parseArg("--ttl", "3600"));
 const keep = process.argv.includes("--keep");
 
-const root = mkdtempSync(join(tmpdir(), "ludics-dash-mirror-"));
+// AC7 requires the mirror to live under /tmp/ literally — not the platform
+// tmpdir, which on macOS resolves to /var/folders/.../T. The playbook's
+// example transcript and reviewer probe both expect a /tmp/ path.
+const root = mkdtempSync("/tmp/ludics-dash-mirror-");
 const dashboardDir = join(root, "dashboard");
 const tasksDir = join(root, "tasks");
 mkdirSync(tasksDir, { recursive: true });
