@@ -350,6 +350,26 @@ describe("stripLeadingEnvAssignments", () => {
       "gh pr view",
     );
   });
+
+  // Regression: the depth counter inside the `$(...)` walker incremented on
+  // every `(` / `)` regardless of quoting, so a quoted `(` inside the
+  // substitution body left depth unbalanced and the walker consumed past the
+  // real closing `)` into the trailing command — producing `null` (Codex
+  // review on PR #455). The walker now tracks quoted regions explicitly.
+  test("handles quoted parentheses inside $(...) without skewing depth", () => {
+    expect(
+      stripLeadingEnvAssignments(`FOO=$(printf '(') gh pr view`),
+    ).toBe("gh pr view");
+    expect(
+      stripLeadingEnvAssignments(`FOO=$(printf ')') gh pr view`),
+    ).toBe("gh pr view");
+    expect(
+      stripLeadingEnvAssignments(`FOO=$(printf "(") gh pr view`),
+    ).toBe("gh pr view");
+    expect(stripLeadingEnvAssignments(`FOO=$(printf '(')`)).toBeNull();
+    // looksLikeShell consumer must agree.
+    expect(looksLikeShell(`FOO=$(printf '(') gh pr view`)).toBe(true);
+  });
 });
 
 describe("parseIfRanges", () => {

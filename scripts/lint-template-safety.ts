@@ -108,8 +108,19 @@ export function stripLeadingEnvAssignments(line: string): string | null {
     } else if (ch === "$" && line[i + 1] === "(") {
       i += 2;
       let depth = 1;
+      // Track quoted regions so quoted `(` / `)` inside the substitution body
+      // don't skew the depth counter (e.g. `$(printf '(')` is a single
+      // balanced substitution despite the quoted `(`).
+      let quote: '"' | "'" | null = null;
       while (i < line.length && depth > 0) {
         const c = line[i]!;
+        if (quote) {
+          if (c === "\\" && i + 1 < line.length) { i += 2; continue; }
+          if (c === quote) quote = null;
+          i++;
+          continue;
+        }
+        if (c === '"' || c === "'") { quote = c; i++; continue; }
         if (c === "(") depth++;
         else if (c === ")") depth--;
         if (depth === 0) break;
