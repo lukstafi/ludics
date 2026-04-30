@@ -39,6 +39,13 @@ Follow [orchestrator-conventions.md](orchestrator-conventions.md):
 
 Worker: `/ludics-verify-completion-worker <task_id> <project_path> <context_brief>`
 
+- **Manual-smoke ACs require evidence, not argument.** Do not accept
+  "unit tests exercise the same library combination" as evidence for an
+  AC that names a route, an asset, or a rendered surface. See
+  [Manual-Smoke Evidence](worker-conventions.md#manual-smoke-evidence) for
+  the two probe shapes (wrapper-pipeline + live HTTP) the harness can
+  deliver.
+
 ## Verdict routing
 
 Extract the final ` ```json ` block from the worker. Fields:
