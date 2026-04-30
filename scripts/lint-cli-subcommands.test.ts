@@ -276,6 +276,32 @@ describe("checkSite — negative fixtures", () => {
     );
     expect(result.errors.some((e) => e.includes("zero cases"))).toBe(true);
   });
+
+  test("flags hasListing: true site whose default error drops the (use: ...) clause", () => {
+    // Codex review (2026-04-30): without this guard, a dispatcher with
+    // `hasListing: true` whose default error reverts to the bare
+    // `unknown foo command: ${sub}` (no `(use: ...)` clause) silently
+    // passes — extractListing returns null and the cases ⊄ listing /
+    // listing ⊄ cases checks are skipped entirely.
+    const src = [
+      "function runFoo(args: string[]) {",
+      `  switch (args[0]) {`,
+      `    case "alpha": break;`,
+      `    case "beta": break;`,
+      `    default: throw new Error(\`unknown foo command: \${sub}\`);`,
+      "  }",
+      "}",
+    ].join("\n");
+    const usage = "  foo alpha   first\n  foo beta   second\n";
+    const result = checkSite(
+      { file: "f.ts", prefix: "foo", fnName: "runFoo", shape: "switch", hasListing: true },
+      src,
+      usage,
+    );
+    expect(
+      result.errors.some((e) => e.includes("expected canonical default") && e.includes("(use: ...)")),
+    ).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

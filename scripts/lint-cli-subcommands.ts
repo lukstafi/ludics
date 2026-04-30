@@ -314,6 +314,18 @@ export function checkSite(
     );
   }
 
+  // hasListing: true means the dispatcher promises a default `(use: …)`
+  // listing. If extractListing returned null (the clause is missing or its
+  // shape no longer matches the canonical regex), surface that as a
+  // violation — silently skipping the comparison would let a regression
+  // that drops the listing pass the lint, which is the very drift this
+  // script exists to catch.
+  if (site.hasListing && listing === null) {
+    errors.push(
+      `[${site.prefix}] expected canonical default '(use: ...)' listing in ${site.fnName} body, found none — listing must match /unknown ${site.prefix} (sub)?command: \\$\\{var\\} \\(use: …\\)/`,
+    );
+  }
+
   if (normListing) {
     const casesNotInListing = setDiff(normCases, normListing);
     if (casesNotInListing.length > 0) {
