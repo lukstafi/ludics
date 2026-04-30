@@ -2752,10 +2752,12 @@ async function processSlotIntents(freshSlots: Map<number, SlotData> | null): Pro
       const { setWorkerSlotsOverride } = await import("./slots/index.ts");
       const result = await clusterGetIntents();
       if (!result.ok || !result.data) return;
-      const intents = (result.data as { intents?: Record<string, unknown> })?.intents ?? result.data;
-      for (const [slotStr, rawIntent] of Object.entries(intents as Record<string, unknown>)) {
+      // result.data is Record<number, PendingIntent> validated by
+      // parsePendingIntent at the HTTP-client boundary — every entry's
+      // action is "start" | "stop" | "resume", epoch is a finite integer,
+      // and machine is a non-empty string. No re-cast needed.
+      for (const [slotStr, intent] of Object.entries(result.data)) {
         const slotNum = Number(slotStr);
-        const intent = rawIntent as { action: string; machine: string; epoch: number; preserveState?: boolean };
         if (intent.machine !== currentMachine) continue;
         if ((Math.floor(Date.now() / 1000) - intent.epoch) > 900) {
           await clusterDeleteIntent(slotNum).catch(() => {});

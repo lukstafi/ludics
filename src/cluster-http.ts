@@ -141,6 +141,75 @@ export interface PendingIntent {
   preserveState?: boolean;
 }
 
+/** Validate an untrusted intent payload (file-on-disk read, HTTP body) into
+ *  a typed {@link PendingIntent}. Returns `null` on any unrecoverable field —
+ *  callers skip the intent and rely on the existing 15-min TTL sweep to clean
+ *  up the file. Per gh-ludics-411 AC 1, the contract is:
+ *  - `action`: exact whitelist match (no trim — JSON-on-disk shouldn't gain
+ *    whitespace, and trimming would mask real corruption).
+ *  - `epoch`: `parseInt`-coerce — accept either a number or a string-encoded
+ *    integer; reject `NaN`/`Infinity`. Cross-process JSON writers may emit
+ *    epochs as strings.
+ *  - `machine` and `taskId`: string-coerce non-string values with `String(…)`
+ *    so a single function returns either a fully-validated intent or `null`.
+ *  - `preserveState`: optional bool, no coercion (no sensible target). */
+export function parsePendingIntent(raw: unknown): PendingIntent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+
+  const action = r.action;
+  if (action !== "start" && action !== "stop" && action !== "resume") return null;
+
+  let epoch: number;
+  if (typeof r.epoch === "number") {
+    if (!Number.isFinite(r.epoch)) return null;
+    epoch = Math.trunc(r.epoch); // mirror parseInt's float-truncation
+  } else if (typeof r.epoch === "string") {
+    epoch = parseInt(r.epoch, 10);
+    if (Number.isNaN(epoch)) return null;
+  } else {
+    return null;
+  }
+
+  if (r.machine === undefined || r.machine === null) return null;
+  const machine = typeof r.machine === "string" ? r.machine : String(r.machine);
+  if (machine === "") return null;
+
+  const out: PendingIntent = { action, epoch, machine };
+
+  if (r.taskId !== undefined && r.taskId !== null) {
+    const taskId = typeof r.taskId === "string" ? r.taskId : String(r.taskId);
+    if (taskId !== "") out.taskId = taskId;
+  }
+
+  if (r.preserveState !== undefined) {
+    if (typeof r.preserveState !== "boolean") return null;
+    out.preserveState = r.preserveState;
+  }
+
+  return out;
+}
+
+/** Validate the `/api/cluster/intents` GET response body. Server shape is
+ *  `{ intents: Record<number, PendingIntent> }` (set by `handleGetIntents`).
+ *  Walks each entry through {@link parsePendingIntent} so the worker-side
+ *  HTTP-client boundary never returns a payload whose `action`/`epoch` is
+ *  unvalidated. Exported for direct testing of the boundary contract. */
+export function validateIntentsPayload(rawData: unknown): Record<number, PendingIntent> {
+  const payload = rawData as { intents?: unknown } | null | undefined;
+  const rawIntents = (payload && typeof payload === "object" ? payload.intents : undefined);
+  if (!rawIntents || typeof rawIntents !== "object") return {};
+  const validated: Record<number, PendingIntent> = {};
+  for (const [slotStr, rawIntent] of Object.entries(rawIntents as Record<string, unknown>)) {
+    const slotNum = Number(slotStr);
+    if (!Number.isFinite(slotNum)) continue;
+    const intent = parsePendingIntent(rawIntent);
+    if (!intent) continue;
+    validated[slotNum] = intent;
+  }
+  return validated;
+}
+
 const INTENT_TTL = 900; // seconds
 
 function intentsDir(): string {
@@ -169,7 +238,8 @@ export function getIntentForDashboard(slot: number): PendingIntent | null {
   const file = intentFilePath(slot);
   if (!existsSync(file)) return null;
   try {
-    const intent = JSON.parse(readFileSync(file, "utf-8")) as PendingIntent;
+    const intent = parsePendingIntent(JSON.parse(readFileSync(file, "utf-8")));
+    if (!intent) return null;
     if ((Math.floor(Date.now() / 1000) - intent.epoch) >= INTENT_TTL) {
       clearIntent(slot);
       return null;
@@ -189,7 +259,8 @@ function getIntentsForMachine(machine: string): Record<number, PendingIntent> {
       if (!match) continue;
       const slot = Number(match[1]);
       try {
-        const intent = JSON.parse(readFileSync(join(dir, file), "utf-8")) as PendingIntent;
+        const intent = parsePendingIntent(JSON.parse(readFileSync(join(dir, file), "utf-8")));
+        if (!intent) continue;
         if (intent.machine === machine && (now - intent.epoch) < INTENT_TTL) {
           result[slot] = intent;
         } else if ((now - intent.epoch) >= INTENT_TTL) {
@@ -210,7 +281,8 @@ function expireStaleIntents(): void {
       const match = file.match(/^slot-(\d+)\.json$/);
       if (!match) continue;
       try {
-        const intent = JSON.parse(readFileSync(join(dir, file), "utf-8")) as PendingIntent;
+        const intent = parsePendingIntent(JSON.parse(readFileSync(join(dir, file), "utf-8")));
+        if (!intent) continue;
         if ((now - intent.epoch) >= INTENT_TTL) clearIntent(Number(match[1]));
       } catch { /* skip */ }
     }
@@ -278,7 +350,8 @@ export async function clusterPostSlotUpdate(slot: number, sections: Record<strin
 
 export async function clusterGetIntents(): Promise<{ ok: boolean; data?: Record<number, PendingIntent> }> {
   const result = await resolveAndGet("/api/cluster/intents");
-  return { ok: result.ok, data: result.data as Record<number, PendingIntent> | undefined };
+  if (!result.ok) return { ok: false };
+  return { ok: true, data: validateIntentsPayload(result.data) };
 }
 
 export async function clusterDeleteIntent(slot: number): Promise<{ ok: boolean }> {
@@ -529,7 +602,8 @@ function handleGetIntents(req: Request): Response {
         const match = file.match(/^slot-(\d+)\.json$/);
         if (!match) continue;
         try {
-          const intent = JSON.parse(readFileSync(join(dir, file), "utf-8")) as PendingIntent;
+          const intent = parsePendingIntent(JSON.parse(readFileSync(join(dir, file), "utf-8")));
+          if (!intent) continue;
           if ((now - intent.epoch) < INTENT_TTL) all[Number(match[1])] = intent;
         } catch { /* skip */ }
       }

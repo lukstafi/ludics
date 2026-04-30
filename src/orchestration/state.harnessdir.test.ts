@@ -1,11 +1,13 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
   defaultOrchestrationConfig,
+  initAgentRuntimeState,
   persistState,
   readOrchestrationState,
+  type AgentTurnLifecycle,
   type OrchestrationState,
 } from "./state.ts";
 
@@ -127,5 +129,127 @@ describe("OrchestrationState.harnessDir", () => {
     // Fallback writes to DECOY (defaultHarnessDir() target) — this is the
     // behaviour the top-of-runOrchestration seed prevents for real runs.
     expect(existsSync(join(DECOY, "orchestration", "slot-5.json"))).toBe(true);
+  });
+});
+
+// gh-ludics-411 AC 3 read-boundary regression: writing a corrupted slot
+// state file to disk and asserting readOrchestrationState() applies the
+// per-field policy (throw / coerce / drop). This proves the validator
+// is wired through the read path, not just the migrateState() helper —
+// the helper-level cases live in phases.test.ts.
+describe("readOrchestrationState — boundary validators (gh-ludics-411 AC 3)", () => {
+  function writeSlot(slot: number, mutate: (s: OrchestrationState) => void): void {
+    const state = baseState(slot, REAL);
+    state.agents = [
+      { name: "coder", provider: "claude-code", role: "coder", model: "claude-sonnet-4-6", branch: "a", worktreePath: "/tmp/a" },
+    ];
+    state.agentStates = initAgentRuntimeState(["coder"]);
+    mutate(state);
+    const path = join(REAL, "orchestration", `slot-${slot}.json`);
+    writeFileSync(path, JSON.stringify(state, null, 2));
+  }
+
+  function lifecycle(overrides: Partial<AgentTurnLifecycle> = {}): AgentTurnLifecycle {
+    return {
+      dispatchCommandId: "c1",
+      dispatchedAt: "2026-04-22T00:00:00Z",
+      phaseToken: "p1",
+      observedTurnId: null,
+      state: "settled",
+      turnStartedAt: null,
+      turnCompletedAt: null,
+      completionSource: null,
+      statusFileFingerprint: null,
+      lastStopHookAt: null,
+      ...overrides,
+    };
+  }
+
+  test("throws when slot JSON has corrupt mode (\"throw\" policy at read boundary)", () => {
+    writeSlot(7, (s) => { (s as { mode: string }).mode = "weird"; });
+    expect(() => readOrchestrationState(7, REAL)).toThrow(/mode.*weird/);
+  });
+
+  test("coerces invalid backend to globalAdapter() and logs once at read boundary", async () => {
+    const { globalAdapter } = await import("../config.ts");
+    const expectedFallback = globalAdapter();
+    writeSlot(8, (s) => { (s as { backend: string }).backend = "junk"; });
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const loaded = readOrchestrationState(8, REAL);
+      calls = [...spy.mock.calls];
+      expect(loaded).not.toBeNull();
+      expect(loaded!.backend).toBe(expectedFallback);
+      const backendLogs = calls.filter((c) => String(c[0] ?? "").includes("backend"));
+      expect(backendLogs.length).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("drops invalid agents[].role at read boundary (\"drop\" policy)", () => {
+    writeSlot(9, (s) => { (s.agents[0] as { role?: string }).role = "narrator"; });
+    const loaded = readOrchestrationState(9, REAL);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.agents[0].role).toBeUndefined();
+  });
+
+  test("coerces invalid turnLifecycle.state and PRESERVES sentinel-null completionSource without logging", () => {
+    writeSlot(10, (s) => {
+      s.agentStates.coder.turnLifecycle = lifecycle({
+        state: "galaxy-brain" as "settled",
+        completionSource: null,
+      });
+    });
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const loaded = readOrchestrationState(10, REAL);
+      calls = [...spy.mock.calls];
+      expect(loaded).not.toBeNull();
+      const lc = loaded!.agentStates.coder.turnLifecycle;
+      expect(lc?.state).toBe("error");
+      expect(lc?.completionSource).toBeNull();
+      // turnLifecycle.state coerced once; completionSource:null fast-path = no log.
+      const stateLogs = calls.filter((c) => String(c[0] ?? "").includes("turnLifecycle.state"));
+      const csLogs = calls.filter((c) => String(c[0] ?? "").includes("completionSource"));
+      expect(stateLogs.length).toBe(1);
+      expect(csLogs).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Positive control: a fully-valid slot state file flows through the read
+  // boundary without any validator-driven console.error or mutation.
+  // Required by the AC self-check format (positive-control sibling fixture).
+  test("happy path: legal slot JSON round-trips silently through readOrchestrationState", () => {
+    writeSlot(11, (s) => {
+      s.backend = "tmux";
+      s.agentStates.coder.turnLifecycle = lifecycle({
+        state: "running",
+        completionSource: "snapshot",
+      });
+    });
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const loaded = readOrchestrationState(11, REAL);
+      calls = [...spy.mock.calls];
+      expect(loaded).not.toBeNull();
+      expect(loaded!.mode).toBe("pair");
+      expect(loaded!.backend).toBe("tmux");
+      expect(loaded!.agents[0].role).toBe("coder");
+      expect(loaded!.agentStates.coder.turnLifecycle?.state).toBe("running");
+      expect(loaded!.agentStates.coder.turnLifecycle?.completionSource).toBe("snapshot");
+      const validatorLogs = calls.filter((c) => {
+        const msg = String(c[0] ?? "");
+        return msg.includes("OrchestrationState.") || msg.includes("invalid");
+      });
+      expect(validatorLogs).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -1,6 +1,6 @@
 import { existsSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
-import { harnessDir as defaultHarnessDir } from "../config.ts";
+import { harnessDir as defaultHarnessDir, globalAdapter } from "../config.ts";
 import type { T3ProviderKind } from "../t3code/types.ts";
 import { nowEpoch, readJsonFile, writeJsonFile } from "./util.ts";
 import type { Phase } from "./phases.ts";
@@ -296,10 +296,104 @@ function isWorkerContext(): boolean {
   }
 }
 
+/**
+ * File-local validator for narrow string unions read off disk
+ * (gh-ludics-411 AC 3). `migrateState` is the single read-boundary for every
+ * `OrchestrationState` deserialization, so per-field whitelist checks here
+ * cover both the controller `readJsonFile<OrchestrationState>` site and the
+ * worker cache equivalent. Policy is per-field, per the proposal:
+ *  - "throw" — invariant fields whose corruption should halt the read
+ *    (caller has its own catch-and-fall-through path).
+ *  - "coerce" — fields with a meaningful safe default; emit a console.error
+ *    and substitute `fallback`.
+ *  - "drop" — optional fields whose absence is already a documented state;
+ *    invalid values are removed by the caller (`delete state.foo`).
+ */
+function validateAndCoerce<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  policy: "throw" | "coerce" | "drop",
+  fallback: T | null,
+  fieldPath: string,
+  slot: number,
+): T | null {
+  if (typeof value === "string" && (allowed as readonly string[]).includes(value)) {
+    return value as T;
+  }
+  if (policy === "throw") {
+    throw new Error(`ludics: slot ${slot} corrupt OrchestrationState.${fieldPath}: ${JSON.stringify(value)}`);
+  }
+  if (policy === "drop") {
+    console.error(`ludics: slot ${slot} dropping invalid OrchestrationState.${fieldPath}: ${JSON.stringify(value)}`);
+    return null;
+  }
+  // policy === "coerce"
+  console.error(`ludics: slot ${slot} coercing invalid OrchestrationState.${fieldPath}: ${JSON.stringify(value)} → ${JSON.stringify(fallback)}`);
+  return fallback;
+}
+
 export function migrateState(state: OrchestrationState, slot: number): OrchestrationState {
   if (!state.taskId && (state as unknown as Record<string, unknown>).feature) {
     state.taskId = String((state as unknown as Record<string, unknown>).feature);
   }
+
+  // --- AC 3 boundary validators (string unions read from disk JSON) -------
+  state.mode = validateAndCoerce(
+    state.mode, ["duo", "pair", "solo"] as const, "throw", null, "mode", slot,
+  ) as "duo" | "pair" | "solo";
+
+  if (state.backend !== undefined) {
+    const validated = validateAndCoerce(
+      state.backend, ["t3code", "tmux"] as const, "coerce", globalAdapter(), "backend", slot,
+    );
+    state.backend = validated as "t3code" | "tmux";
+  }
+
+  if (state.agents) {
+    for (const agent of state.agents) {
+      agent.provider = validateAndCoerce(
+        agent.provider, ["codex", "claude-code"] as const, "throw", null,
+        "agents[].provider", slot,
+      ) as T3ProviderKind;
+
+      if (agent.role !== undefined) {
+        const validated = validateAndCoerce(
+          agent.role, ["coder", "reviewer"] as const, "drop", null,
+          "agents[].role", slot,
+        );
+        if (validated === null) delete agent.role;
+        else agent.role = validated;
+      }
+    }
+  }
+
+  if (state.agentStates) {
+    for (const runtime of Object.values(state.agentStates)) {
+      const lc = runtime.turnLifecycle;
+      if (lc != null) {
+        lc.state = validateAndCoerce(
+          lc.state,
+          ["dispatched", "starting", "running", "settled", "error"] as const,
+          "coerce", "error", "turnLifecycle.state", slot,
+        ) as "dispatched" | "starting" | "running" | "settled" | "error";
+
+        // Sentinel-null fast-path: `null` is a valid value here (means
+        // "completion source unknown"), not an "absent" marker. Skip the
+        // validator on null/undefined to avoid spurious console.error logs
+        // on every healthy state-file read.
+        if (lc.completionSource !== null && lc.completionSource !== undefined) {
+          const validated = validateAndCoerce(
+            lc.completionSource,
+            ["snapshot", "stop-hook", "timeout"] as const,
+            "coerce", null, "turnLifecycle.completionSource", slot,
+          );
+          lc.completionSource = validated as "snapshot" | "stop-hook" | "timeout" | null;
+        }
+      }
+    }
+  }
+  // ------------------------------------------------------------------------
+
   if (state.mode === "duo" && state.duoPeerSlot == null) {
     console.error(`ludics: slot ${slot} has legacy mode="duo" without duoPeerSlot — should be cleared and re-assigned`);
   }
