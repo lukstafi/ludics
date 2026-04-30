@@ -13,7 +13,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 
-const root = join(import.meta.dir, "..");
+const defaultRoot = join(import.meta.dir, "..");
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for unit testing)
@@ -119,6 +119,10 @@ export function lintCliReadme(indexSrc: string, readmeSrc: string): LintResult {
 // ---------------------------------------------------------------------------
 
 if (import.meta.main) {
+  // Optional first positional arg overrides the root directory, which lets
+  // tests exercise the real CLI exit-code paths against a tmp fixture.
+  const argRoot = process.argv[2];
+  const root = argRoot ? argRoot : defaultRoot;
   const indexSrc = readFileSync(join(root, "src", "index.ts"), "utf-8");
   const readmeSrc = readFileSync(join(root, "README.md"), "utf-8");
   const { stale, undocumented } = lintCliReadme(indexSrc, readmeSrc);

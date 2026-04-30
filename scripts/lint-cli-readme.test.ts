@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
-import { readFileSync } from "fs";
+import { spawnSync } from "bun";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import {
   extractUsageBlock,
@@ -225,5 +227,91 @@ describe("real repository", () => {
     const readmeSrc = readFileSync(join(root, "README.md"), "utf-8");
     const cmds = extractReadmeCommands(readmeSrc);
     expect(cmds.size).toBeGreaterThanOrEqual(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI integration — drive the real script against tmp-fixture roots so the
+// `import.meta.main` exit-code branches are observable.
+// ---------------------------------------------------------------------------
+
+function makeFixture(files: Record<string, string>): {
+  root: string;
+  cleanup: () => void;
+} {
+  const root = mkdtempSync(join(tmpdir(), "lint-cli-readme-"));
+  for (const [rel, body] of Object.entries(files)) {
+    const abs = join(root, rel);
+    mkdirSync(join(abs, ".."), { recursive: true });
+    writeFileSync(abs, body);
+  }
+  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+const FIXTURE_INDEX_SYNCED = [
+  "const USAGE = `",
+  "  alpha — first command",
+  "  beta — second command",
+  "`;",
+].join("\n");
+
+const FIXTURE_README_SYNCED = [
+  "## Intro",
+  "",
+  "## CLI Reference",
+  "",
+  "ludics alpha",
+  "ludics beta",
+  "",
+  "## Other",
+].join("\n");
+
+describe("CLI integration", () => {
+  test("exits 0 against a tmp fixture where USAGE and README are in sync", () => {
+    const { root, cleanup } = makeFixture({
+      "src/index.ts": FIXTURE_INDEX_SYNCED,
+      "README.md": FIXTURE_README_SYNCED,
+    });
+    try {
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-cli-readme.ts"), root],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (result.exitCode !== 0) {
+        console.error(result.stderr.toString());
+        console.error(result.stdout.toString());
+      }
+      expect(result.exitCode).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("exits non-zero when README cites a command not in USAGE (drives import.meta.main)", () => {
+    // README "ghost" is stale (not in USAGE) — the lint exists to catch this.
+    const FIXTURE_README_DRIFT = [
+      "## CLI Reference",
+      "",
+      "ludics alpha",
+      "ludics ghost",
+      "",
+    ].join("\n");
+    const { root, cleanup } = makeFixture({
+      "src/index.ts": FIXTURE_INDEX_SYNCED,
+      "README.md": FIXTURE_README_DRIFT,
+    });
+    try {
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-cli-readme.ts"), root],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).not.toBe(0);
+    } finally {
+      cleanup();
+    }
   });
 });

@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { spawnSync } from "bun";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -809,6 +810,68 @@ describe("integration", () => {
     // anti-pattern (regression — fix the test) OR a matcher improvement
     // found new real-world hits (coverage upgrade — justify and update the
     // count).
-    expect(result.warningCount).toBe(19);
+    expect(result.warningCount).toBe(20);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI integration — drive the real script against tmp-fixture roots so the
+// `import.meta.main` exit-code branches are observable.
+// ---------------------------------------------------------------------------
+
+describe("CLI integration", () => {
+  test("exits 0 against a clean tmp fixture (drives import.meta.main)", () => {
+    const { dir, cleanup } = makeRepoFixture({
+      "src/safe.test.ts": [
+        "import { foo } from './foo.ts';",
+        "beforeEach(() => { process.env.LUDICS_HARNESS_DIR = '/tmp/x'; });",
+      ].join("\n"),
+      "src/foo.ts": "export const foo = 1;",
+    });
+    try {
+      const result = spawnSync({
+        cmd: [
+          "bun", "run",
+          join(import.meta.dir, "lint-test-isolation.ts"),
+          join(dir, "src"),
+        ],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (result.exitCode !== 0) {
+        console.error(result.stderr.toString());
+        console.error(result.stdout.toString());
+      }
+      expect(result.exitCode).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("exits non-zero against a tmp fixture with a rule-1 violation", () => {
+    // Unconditional `delete process.env.LUDICS_HARNESS_DIR;` — rule-1 error.
+    const { dir, cleanup } = makeRepoFixture({
+      "src/r1.test.ts": [
+        "afterEach(() => {",
+        "  delete process.env.LUDICS_HARNESS_DIR;",
+        "});",
+      ].join("\n"),
+    });
+    try {
+      const result = spawnSync({
+        cmd: [
+          "bun", "run",
+          join(import.meta.dir, "lint-test-isolation.ts"),
+          join(dir, "src"),
+        ],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).not.toBe(0);
+    } finally {
+      cleanup();
+    }
   });
 });

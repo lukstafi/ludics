@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { spawnSync } from "bun";
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -564,5 +565,61 @@ describe("integration", () => {
     const repo = join(import.meta.dir, "..");
     const { orch } = sumPairedFields(join(repo, "skills"));
     expect(orch).toBeGreaterThanOrEqual(25);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI integration — drive the real script against tmp-fixture skills dirs
+// so the `import.meta.main` exit-code branches are observable.
+// ---------------------------------------------------------------------------
+
+describe("CLI integration", () => {
+  test("exits 0 against a clean paired tmp fixture (drives import.meta.main)", () => {
+    const { dir, cleanup } = makeFixture({
+      "ludics-foo-worker.md": FIXTURE_WORKER_MD,
+      "ludics-foo.md": FIXTURE_ORCH_MD,
+    });
+    try {
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-contracts.ts"), dir],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (result.exitCode !== 0) {
+        console.error(result.stderr.toString());
+        console.error(result.stdout.toString());
+      }
+      expect(result.exitCode).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("exits non-zero against a tmp fixture with worker-only-field drift", () => {
+    const driftingWorker = [
+      "### Response Contract",
+      "",
+      "1. `status` — string, required.",
+      "2. `task_id` — string, required.",
+      "3. `summary` — string, required.",
+      "4. `rogue_field` — string, required.",
+      "",
+    ].join("\n");
+    const { dir, cleanup } = makeFixture({
+      "ludics-drifty-worker.md": driftingWorker,
+      "ludics-drifty.md": FIXTURE_ORCH_MD,
+    });
+    try {
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-contracts.ts"), dir],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).not.toBe(0);
+    } finally {
+      cleanup();
+    }
   });
 });

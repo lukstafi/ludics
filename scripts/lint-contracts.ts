@@ -347,7 +347,10 @@ export function runCli(options: RunCliOptions = {}): RunCliResult {
 
 // Run as a CLI when invoked directly; stay silent when imported from tests.
 if (import.meta.main) {
-  process.exit(runCli().exitCode);
+  // Optional first positional arg overrides the skills directory, which lets
+  // tests exercise the real CLI exit-code paths against a tmp fixture.
+  const argSkillsDir = process.argv[2];
+  process.exit(runCli({ skillsDir: argSkillsDir || undefined }).exitCode);
 }
 
 // Silence the unused-basename import when this module is used only as a
