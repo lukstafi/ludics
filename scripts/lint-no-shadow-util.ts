@@ -43,13 +43,16 @@ export interface ShadowIssue {
 
 /**
  * Parse the canonical helper-name set from a `util.ts` source string by
- * collecting every `^export function NAME` declaration. Re-exports
+ * collecting every `^export [async] function NAME` declaration. Re-exports
  * (`export { ... } from`) are ignored — they're not `function`
- * declarations and cannot be shadowed by a `function` definition.
+ * declarations and cannot be shadowed by a `function` definition. The
+ * `async` modifier is accepted so a future `export async function ...`
+ * helper enters the canonical set automatically (otherwise async exports
+ * would be a false-negative bypass for the shadow rule).
  */
 export function extractCanonicalNames(utilSource: string): Set<string> {
   const names = new Set<string>();
-  const re = /^export\s+function\s+([A-Za-z_][\w]*)\s*\(/gm;
+  const re = /^export\s+(?:async\s+)?function\s+([A-Za-z_][\w]*)\s*\(/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(utilSource)) !== null) {
     names.add(m[1]!);
@@ -63,9 +66,13 @@ export function extractCanonicalNames(utilSource: string): Set<string> {
 
 /**
  * Find shadow definitions in `source` against the canonical `names` set.
- * Matches `^(export\s+)?function NAME(` line-anchored — does not match
- * method assignments (`obj.NAME = function`), arrow-form (`const NAME =`),
- * commented-out lines (`// function NAME(`), or call sites (`NAME(...)`).
+ * Matches `^\s*(export\s+)?(async\s+)?function NAME(` — line-anchored but
+ * tolerant of leading whitespace so an indented redefinition (inside
+ * another scope, or just formatted with indentation) cannot bypass the
+ * rule. Also accepts the `async` modifier so async helpers are caught.
+ * Does not match method assignments (`obj.NAME = function`), arrow-form
+ * (`const NAME = () =>`), commented-out lines (`// function NAME(`), or
+ * call sites (`NAME(...)`).
  */
 export function findShadowsInFile(
   source: string,
@@ -74,7 +81,9 @@ export function findShadowsInFile(
   const out: { line: number; name: string }[] = [];
   const lines = source.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    const m = /^(?:export\s+)?function\s+([A-Za-z_][\w]*)\s*\(/.exec(lines[i]!);
+    const m = /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][\w]*)\s*\(/.exec(
+      lines[i]!,
+    );
     if (m && names.has(m[1]!)) {
       out.push({ line: i + 1, name: m[1]! });
     }

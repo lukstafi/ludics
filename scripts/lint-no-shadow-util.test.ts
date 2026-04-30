@@ -60,6 +60,19 @@ describe("extractCanonicalNames", () => {
     expect(names.has("newHelper")).toBe(true);
   });
 
+  test("dynamic discovery picks up `export async function` helpers", () => {
+    // Without the `async` arm, an `export async function` added to util.ts
+    // would silently fall out of the canonical set — duplicates of it
+    // elsewhere would not be flagged. This test pins the async arm so a
+    // future regex narrowing would fail here.
+    const src = [
+      "export function isoNow(): string { return ''; }",
+      "export async function fetchSomething(): Promise<void> {}",
+    ].join("\n");
+    const names = extractCanonicalNames(src);
+    expect(names.has("fetchSomething")).toBe(true);
+  });
+
   test("does not match indented or method-form definitions", () => {
     const src = [
       "  export function notAtStart(): void {}", // leading spaces — not a top-level export
@@ -125,6 +138,32 @@ describe("findShadowsInFile", () => {
     expect(findShadowsInFile(src, names)).toEqual([
       { line: 1, name: "isoNow" },
       { line: 2, name: "makeId" },
+    ]);
+  });
+
+  test("flags an INDENTED shadow (inside another scope or just formatted with indent)", () => {
+    // Without leading-whitespace tolerance, a redefinition could bypass the
+    // rule by simply indenting the line — e.g., wrapping it inside another
+    // function. This test pins the `^\s*` tolerance.
+    const src = [
+      "function outer() {",
+      "  function isoNow(): string { return 'shadow'; }",
+      "  return isoNow();",
+      "}",
+    ].join("\n");
+    expect(findShadowsInFile(src, names)).toEqual([
+      { line: 2, name: "isoNow" },
+    ]);
+  });
+
+  test("flags an `async function` shadow (canonical name matched ignoring async modifier)", () => {
+    // Names like `fetchSomething` could legitimately be added as async
+    // helpers in util.ts; the shadow scan must accept the `async` modifier
+    // for parity with extractCanonicalNames.
+    const namesAsync = new Set(["fetchSomething"]);
+    const src = "async function fetchSomething(): Promise<void> {}";
+    expect(findShadowsInFile(src, namesAsync)).toEqual([
+      { line: 1, name: "fetchSomething" },
     ]);
   });
 });
