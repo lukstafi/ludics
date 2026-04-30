@@ -8,6 +8,7 @@ import { harnessDir } from "../config.ts";
 import { isPlainObject } from "../json.ts";
 import { isGitWorktree, getMainRepoFromWorktree } from "../adapters/base.ts";
 import { expandHome } from "../git-runner.ts";
+import { isoNow } from "../orchestration/util.ts";
 
 export type SweepMode = "agent-claude" | "agent-codex" | "t3code";
 
@@ -40,10 +41,6 @@ export interface KnownSessionInput {
   name: string;
   cleanupCommand?: string[];
   seenAt?: string;
-}
-
-function isoNow(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 export function normalizeProjectDirForSweep(raw: string): string {

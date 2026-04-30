@@ -14,6 +14,7 @@ import { resolveProjectDir } from "../adapters/base.ts";
 import { findSessionByPrefixOrTask } from "../adapters/peer-sync.ts";
 import { readSlotState, serverStatus } from "../t3code/server.ts";
 import type { T3Snapshot } from "../t3code/types.ts";
+import { isoNow } from "../orchestration/util.ts";
 import {
   type KnownSessionRecord,
   type SweepMode,
@@ -26,10 +27,6 @@ import {
 
 interface SweepOptions {
   dryRun: boolean;
-}
-
-function isoNow(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 function resolveProjectDirForSlot(mode: SweepMode, slotPath: string, slotSession: string): string {
