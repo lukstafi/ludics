@@ -323,20 +323,43 @@ describe("parsePendingIntent", () => {
     expect(parsePendingIntent({ ...valid, action: "START" })).toBeNull();
   });
 
-  test("rejects non-integer / non-finite epoch", async () => {
+  test("parseInt-coerces string-encoded epoch (proposal AC 1 contract)", async () => {
     const { parsePendingIntent } = await import("./cluster-http.ts");
-    expect(parsePendingIntent({ ...valid, epoch: "1750000000" })).toBeNull();
-    expect(parsePendingIntent({ ...valid, epoch: NaN })).toBeNull();
-    expect(parsePendingIntent({ ...valid, epoch: Infinity })).toBeNull();
-    expect(parsePendingIntent({ ...valid, epoch: 1.5 })).toBeNull();
+    // String integers must round-trip — JSON writers from other processes
+    // sometimes emit numeric fields as strings.
+    expect(parsePendingIntent({ ...valid, epoch: "1750000000" })).toEqual({
+      action: "start", epoch: 1_750_000_000, machine: "host-a",
+    });
+    // parseInt truncates floats and tolerates trailing garbage.
+    expect(parsePendingIntent({ ...valid, epoch: "1750000000.9" })?.epoch).toBe(1_750_000_000);
   });
 
-  test("rejects empty / missing / non-string machine", async () => {
+  test("rejects non-finite / unparseable epoch", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid, epoch: NaN })).toBeNull();
+    expect(parsePendingIntent({ ...valid, epoch: Infinity })).toBeNull();
+    expect(parsePendingIntent({ ...valid, epoch: -Infinity })).toBeNull();
+    expect(parsePendingIntent({ ...valid, epoch: "not-a-number" })).toBeNull();
+    const noEpoch: Record<string, unknown> = { action: "start", machine: "host-a" };
+    expect(parsePendingIntent(noEpoch)).toBeNull();
+    expect(parsePendingIntent({ ...valid, epoch: {} })).toBeNull();
+  });
+
+  test("string-coerces non-string machine (proposal AC 1 contract)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    // Per proposal AC 1: "machine/taskId string-coerce so a single function
+    // returns either a fully-validated PendingIntent or null."
+    expect(parsePendingIntent({ ...valid, machine: 42 })).toEqual({
+      action: "start", epoch: NOW, machine: "42",
+    });
+  });
+
+  test("rejects empty / missing machine even after coercion", async () => {
     const { parsePendingIntent } = await import("./cluster-http.ts");
     expect(parsePendingIntent({ ...valid, machine: "" })).toBeNull();
     const noMachine: Record<string, unknown> = { action: "start", epoch: NOW };
     expect(parsePendingIntent(noMachine)).toBeNull();
-    expect(parsePendingIntent({ ...valid, machine: 42 })).toBeNull();
+    expect(parsePendingIntent({ ...valid, machine: null })).toBeNull();
   });
 
   test("preserves optional taskId and preserveState when valid", async () => {
@@ -345,10 +368,20 @@ describe("parsePendingIntent", () => {
     expect(out).toEqual({ action: "start", epoch: NOW, machine: "host-a", taskId: "task-99", preserveState: true });
   });
 
-  test("rejects optional fields with wrong type", async () => {
+  test("string-coerces non-string taskId; drops empty after coercion", async () => {
     const { parsePendingIntent } = await import("./cluster-http.ts");
-    expect(parsePendingIntent({ ...valid, taskId: 42 })).toBeNull();
+    // Proposal AC 1: taskId is also string-coerce.
+    expect(parsePendingIntent({ ...valid, taskId: 42 })?.taskId).toBe("42");
+    // Empty after coercion is dropped (taskId is optional).
+    expect(parsePendingIntent({ ...valid, taskId: "" })?.taskId).toBeUndefined();
+    // Explicit null on optional field is treated as absent.
+    expect(parsePendingIntent({ ...valid, taskId: null })?.taskId).toBeUndefined();
+  });
+
+  test("rejects non-bool preserveState (no sensible coercion target)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
     expect(parsePendingIntent({ ...valid, preserveState: "yes" })).toBeNull();
+    expect(parsePendingIntent({ ...valid, preserveState: 1 })).toBeNull();
   });
 
   test("rejects null, undefined, and non-objects", async () => {
@@ -384,5 +417,90 @@ describe("intent file-read boundary (parsePendingIntent at JSON.parse seams)", (
 
     expect(mod.getIntentForDashboard(3)?.action).toBe("resume");
     expect(mod.getIntentForDashboard(4)).toBeNull(); // malformed → skipped
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateIntentsPayload — HTTP-client boundary (gh-ludics-411 AC 1, the
+// `clusterGetIntents()` cast that was previously unchecked). Tested as a
+// pure function plus an integration test that drives clusterGetIntents()
+// through a stubbed fetch so the worker keepalive path is exercised
+// end-to-end.
+// ---------------------------------------------------------------------------
+
+describe("validateIntentsPayload", () => {
+  const NOW = 1_750_000_000;
+  const validIntent = { action: "start", epoch: NOW, machine: "host-a" };
+
+  test("filters out malformed intent entries while preserving valid siblings", async () => {
+    const { validateIntentsPayload } = await import("./cluster-http.ts");
+    const payload = {
+      intents: {
+        "1": validIntent,
+        "2": { action: "danse-macabre", epoch: 0, machine: "" }, // bad action
+        "3": { action: "stop", epoch: NaN, machine: "host-b" },   // bad epoch
+        "4": { action: "resume", epoch: NOW, machine: "" },       // empty machine
+        "5": { action: "resume", epoch: "1750000099", machine: 42 }, // coerced
+      },
+    };
+    const out = validateIntentsPayload(payload);
+    expect(Object.keys(out).sort()).toEqual(["1", "5"]);
+    expect(out[1]).toEqual({ action: "start", epoch: NOW, machine: "host-a" });
+    expect(out[5]).toEqual({ action: "resume", epoch: 1_750_000_099, machine: "42" });
+  });
+
+  test("returns {} on missing/non-object intents field", async () => {
+    const { validateIntentsPayload } = await import("./cluster-http.ts");
+    expect(validateIntentsPayload(undefined)).toEqual({});
+    expect(validateIntentsPayload(null)).toEqual({});
+    expect(validateIntentsPayload({})).toEqual({});
+    expect(validateIntentsPayload({ intents: null })).toEqual({});
+    expect(validateIntentsPayload({ intents: "string" })).toEqual({});
+  });
+
+  test("skips entries whose slot key is non-numeric", async () => {
+    const { validateIntentsPayload } = await import("./cluster-http.ts");
+    const payload = { intents: { "abc": validIntent, "1": validIntent } };
+    const out = validateIntentsPayload(payload);
+    expect(Object.keys(out)).toEqual(["1"]);
+  });
+});
+
+describe("clusterGetIntents — HTTP-client boundary integration (gh-ludics-411 AC 1)", () => {
+  test("stubbed GET response with one valid + one malformed entry: malformed is dropped", async () => {
+    // Spy on the cluster-side resolver so resolveAndGet succeeds with a
+    // synthetic ClusterMachine, then stub fetch to return our mock payload.
+    const cluster = await import("./cluster.ts");
+    const NOW = 1_750_000_000;
+    const fakeMachine = {
+      name: "controller",
+      ip: "127.0.0.1",
+      port: 1,
+      seniority: 0,
+      role: "controller" as const,
+    } as unknown as import("./cluster.ts").ClusterMachine;
+
+    const resolveSpy = spyOn(cluster, "resolveController").mockReturnValue(fakeMachine);
+    const stubFetch = (async () => new Response(JSON.stringify({
+      intents: {
+        "1": { action: "start", epoch: NOW, machine: "host-a" },
+        "2": { action: "danse-macabre", epoch: 0, machine: "" }, // malformed
+      },
+    }), { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(stubFetch);
+
+    try {
+      const mod = await import("./cluster-http.ts");
+      const result = await mod.clusterGetIntents();
+      expect(result.ok).toBe(true);
+      expect(result.data).toBeDefined();
+      // Only slot 1 (the valid intent) survives the boundary; slot 2 is
+      // dropped before mag.ts::workerKeepalive sees it.
+      expect(Object.keys(result.data!).sort()).toEqual(["1"]);
+      expect(result.data![1].action).toBe("start");
+    } finally {
+      fetchSpy.mockRestore();
+      resolveSpy.mockRestore();
+    }
   });
 });

@@ -142,31 +142,72 @@ export interface PendingIntent {
 }
 
 /** Validate an untrusted intent payload (file-on-disk read, HTTP body) into
- *  a typed {@link PendingIntent}. Returns `null` on any malformed field —
- *  callers skip the intent and rely on the existing 15-min TTL sweep to
- *  clean up the file. The whole struct is validated, not only `action`,
- *  because a corrupt epoch breaks the `now - intent.epoch` arithmetic
- *  downstream. Action match is exact (no trim) — JSON-on-disk shouldn't
- *  gain whitespace, and trimming would mask real corruption. */
+ *  a typed {@link PendingIntent}. Returns `null` on any unrecoverable field —
+ *  callers skip the intent and rely on the existing 15-min TTL sweep to clean
+ *  up the file. Per gh-ludics-411 AC 1, the contract is:
+ *  - `action`: exact whitelist match (no trim — JSON-on-disk shouldn't gain
+ *    whitespace, and trimming would mask real corruption).
+ *  - `epoch`: `parseInt`-coerce — accept either a number or a string-encoded
+ *    integer; reject `NaN`/`Infinity`. Cross-process JSON writers may emit
+ *    epochs as strings.
+ *  - `machine` and `taskId`: string-coerce non-string values with `String(…)`
+ *    so a single function returns either a fully-validated intent or `null`.
+ *  - `preserveState`: optional bool, no coercion (no sensible target). */
 export function parsePendingIntent(raw: unknown): PendingIntent | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
+
   const action = r.action;
   if (action !== "start" && action !== "stop" && action !== "resume") return null;
-  const epoch = r.epoch;
-  if (typeof epoch !== "number" || !Number.isFinite(epoch) || !Number.isInteger(epoch)) return null;
-  const machine = r.machine;
-  if (typeof machine !== "string" || machine === "") return null;
-  const out: PendingIntent = { action, epoch, machine };
-  if (r.taskId !== undefined) {
-    if (typeof r.taskId !== "string") return null;
-    out.taskId = r.taskId;
+
+  let epoch: number;
+  if (typeof r.epoch === "number") {
+    if (!Number.isFinite(r.epoch)) return null;
+    epoch = Math.trunc(r.epoch); // mirror parseInt's float-truncation
+  } else if (typeof r.epoch === "string") {
+    epoch = parseInt(r.epoch, 10);
+    if (Number.isNaN(epoch)) return null;
+  } else {
+    return null;
   }
+
+  if (r.machine === undefined || r.machine === null) return null;
+  const machine = typeof r.machine === "string" ? r.machine : String(r.machine);
+  if (machine === "") return null;
+
+  const out: PendingIntent = { action, epoch, machine };
+
+  if (r.taskId !== undefined && r.taskId !== null) {
+    const taskId = typeof r.taskId === "string" ? r.taskId : String(r.taskId);
+    if (taskId !== "") out.taskId = taskId;
+  }
+
   if (r.preserveState !== undefined) {
     if (typeof r.preserveState !== "boolean") return null;
     out.preserveState = r.preserveState;
   }
+
   return out;
+}
+
+/** Validate the `/api/cluster/intents` GET response body. Server shape is
+ *  `{ intents: Record<number, PendingIntent> }` (set by `handleGetIntents`).
+ *  Walks each entry through {@link parsePendingIntent} so the worker-side
+ *  HTTP-client boundary never returns a payload whose `action`/`epoch` is
+ *  unvalidated. Exported for direct testing of the boundary contract. */
+export function validateIntentsPayload(rawData: unknown): Record<number, PendingIntent> {
+  const payload = rawData as { intents?: unknown } | null | undefined;
+  const rawIntents = (payload && typeof payload === "object" ? payload.intents : undefined);
+  if (!rawIntents || typeof rawIntents !== "object") return {};
+  const validated: Record<number, PendingIntent> = {};
+  for (const [slotStr, rawIntent] of Object.entries(rawIntents as Record<string, unknown>)) {
+    const slotNum = Number(slotStr);
+    if (!Number.isFinite(slotNum)) continue;
+    const intent = parsePendingIntent(rawIntent);
+    if (!intent) continue;
+    validated[slotNum] = intent;
+  }
+  return validated;
 }
 
 const INTENT_TTL = 900; // seconds
@@ -310,21 +351,7 @@ export async function clusterPostSlotUpdate(slot: number, sections: Record<strin
 export async function clusterGetIntents(): Promise<{ ok: boolean; data?: Record<number, PendingIntent> }> {
   const result = await resolveAndGet("/api/cluster/intents");
   if (!result.ok) return { ok: false };
-  // Server shape: { intents: Record<number, PendingIntent> } (handleGetIntents).
-  // Validate every entry through parsePendingIntent so callers (mag.ts
-  // workerKeepalive) can switch on intent.action without a re-cast.
-  const payload = result.data as { intents?: unknown } | null | undefined;
-  const rawIntents = (payload && typeof payload === "object" ? payload.intents : undefined);
-  if (!rawIntents || typeof rawIntents !== "object") return { ok: true, data: {} };
-  const validated: Record<number, PendingIntent> = {};
-  for (const [slotStr, rawIntent] of Object.entries(rawIntents as Record<string, unknown>)) {
-    const slotNum = Number(slotStr);
-    if (!Number.isFinite(slotNum)) continue;
-    const intent = parsePendingIntent(rawIntent);
-    if (!intent) continue;
-    validated[slotNum] = intent;
-  }
-  return { ok: true, data: validated };
+  return { ok: true, data: validateIntentsPayload(result.data) };
 }
 
 export async function clusterDeleteIntent(slot: number): Promise<{ ok: boolean }> {
