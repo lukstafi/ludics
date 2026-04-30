@@ -786,7 +786,7 @@ export async function runTasks(args: string[]): Promise<void> {
     }
     default:
       throw new Error(
-        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, check, merge, unmerge, duplicates, abandon, migrate-refs, migrate-deferred)`,
+        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, queue-elaborations, check, merge, unmerge, duplicates, abandon, migrate-refs, migrate-deferred)`,
       );
   }
 }

@@ -22,6 +22,7 @@ import { runEvents } from "./events.ts";
 import { runT3Code } from "./t3code/index.ts";
 import { runOrchestrationCli } from "./orchestration/index.ts";
 import { safeSyncOutput } from "./spawn.ts";
+import { formatUnknownTopLevel } from "./cli-dispatch.ts";
 
 const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   sessions: runSessions,
@@ -165,6 +166,12 @@ Commands:
   mag health-check             Check for deadlines, issues
   mag adopt-sessions [--force] Discover sessions and queue adoption for Mag
   mag process-suggestions <id> Queue suggestion processing for completed task
+  mag revise-proposal <ids> ["feedback"]
+                               Reset task(s) to deferred and queue revision (comma-separated ids)
+  mag auto-start-evaluate <id> <high|low> [rationale]
+                               Evaluate auto-start decision and update task status
+  mag completed <proposal>     Mark a proposal completed (without .md extension)
+  mag feedback-digest          Queue a feedback digest run
   mag message "text"           Send async message to Mag
   mag queue                    Show pending queue requests
   mag queue pop one            Pop and print first queue item (JSONL)
@@ -175,6 +182,8 @@ Commands:
 
   notify outgoing <msg>        Send notification to user
   notify agents <msg>          Send operational notification
+  notify proposal <id> <title> <summary> <file>
+                               Notify a proposal-ready event
   notify subscribe             Subscribe to incoming messages (long-running)
   notify recent [n]            Show recent notifications
 
@@ -233,8 +242,8 @@ Commands:
   network status               Show network configuration
   cluster status              Show cluster status (multi-machine)
   cluster tick                Publish heartbeat
-  
   cluster heartbeat           Publish heartbeat only
+  cluster ping <machine>      Ping another cluster machine
 
   queue hold                   Suppress automatic slot assignments
   queue resume                 Re-enable automatic slot assignments
@@ -386,7 +395,7 @@ async function main(): Promise<void> {
   if (handler) {
     await handler(args.slice(1));
   } else {
-    console.error(`ludics ${cmd}: not yet migrated`);
+    console.error(formatUnknownTopLevel(cmd, Object.keys(MIGRATED_COMMANDS)));
     process.exit(1);
   }
 }

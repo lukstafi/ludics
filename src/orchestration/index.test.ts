@@ -190,3 +190,35 @@ describe("orchDiff / runOrchestrationCli diff", () => {
     );
   });
 });
+
+describe("runOrchestrationCli unknown-subcommand listing (gh-ludics-438)", () => {
+  // Invariant: the default-case error names every public subcommand and
+  // excludes internal entry points. `run-internal` (self-relaunch) and
+  // `on-stop` (Stop-hook entry) stay callable but are absent from public
+  // help — mirrors INTERNAL_HIDDEN.orch in scripts/lint-cli-subcommands.ts
+  // and the templates/hooks/ludics-on-stop.sh:106 caller.
+  //
+  // Harness condition: invoke runOrchestrationCli with a sentinel sub that
+  // is not a real case label and not the empty default; the dispatcher
+  // takes the unknown-subcommand branch.
+
+  test("emits canonical (use: ...) listing and excludes internal entries", async () => {
+    let err: Error | null = null;
+    try {
+      await runOrchestrationCli(["__bogus__"]);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).not.toBeNull();
+    const msg = err!.message;
+    expect(msg).toBe(
+      "unknown orch subcommand: __bogus__ (use: status, confirm, interrupt, skip, log, diff)",
+    );
+    // Both internal entries must be absent from user-facing help.
+    const useMatch = msg.match(/\(use: ([^)]*)\)/);
+    expect(useMatch).not.toBeNull();
+    const useEntries = useMatch![1]!.split(/,\s*/);
+    expect(useEntries).not.toContain("run-internal");
+    expect(useEntries).not.toContain("on-stop");
+  });
+});

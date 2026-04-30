@@ -173,7 +173,10 @@ export async function runOrchestrationCli(args: string[]): Promise<void> {
       orchOnStop(args.slice(1));
       return;
     default:
-      throw new Error(`unknown orch subcommand: ${sub}`);
+      // `on-stop` and `run-internal` are hook / self-relaunch entry points;
+      // they stay callable but are intentionally absent from public help.
+      // Mirrors INTERNAL_HIDDEN.orch in scripts/lint-cli-subcommands.ts.
+      throw new Error(`unknown orch subcommand: ${sub} (use: status, confirm, interrupt, skip, log, diff)`);
   }
 }
 

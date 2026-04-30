@@ -28,6 +28,9 @@ jobs:
       - name: Lint CLI/README drift
         run: bun run lint:cli-readme
 
+      - name: Lint CLI sub-command drift
+        run: bun run lint:cli-subcommands
+
       - name: Lint config reference drift
         run: bun run lint:config-reference
 

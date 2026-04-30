@@ -9,6 +9,7 @@
     "lint": "bun run --bun eslint \"src/**/*.ts\" --max-warnings=0",
     "lint:fix": "bun run --bun eslint \"src/**/*.ts\" --fix",
     "lint:cli-readme": "bun run scripts/lint-cli-readme.ts",
+    "lint:cli-subcommands": "bun run scripts/lint-cli-subcommands.ts",
     "lint:config-reference": "bun run scripts/lint-config-reference.ts",
     "lint:contracts": "bun run scripts/lint-contracts.ts",
     "lint:hooks": "bun run scripts/lint-hooks.ts",
