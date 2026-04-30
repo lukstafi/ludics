@@ -1920,18 +1920,37 @@ describe("skills", () => {
     const endIdx = raw.indexOf("\n{{/IF}}", startIdx);
     expect(endIdx).toBeGreaterThan(startIdx);
     const block = raw.slice(startIdx, endIdx);
-    // Verification literals present, with $BASE substitution rather than
-    // hard-coded `main` so non-main default branches (master, trunk, …)
-    // are handled (Codex P2 review).
-    expect(block).toMatch(/git cat-file -e "\$BASE:<path>"/);
+    // Merge-base form: resolves the actual fork point rather than reading
+    // the current `origin/$BASE` tip (task-d5c37bc5). $BASE substitution
+    // preserved so non-main default branches (master, trunk, …) keep
+    // working (Codex P2 review carried forward from gh-ludics-409).
+    expect(block).toMatch(/git merge-base "origin\/\$BASE" HEAD/);
+    expect(block).toMatch(/git cat-file -e "\$MERGE_BASE:<path>"/);
+    expect(block).toMatch(/git cat-file -e "origin\/\$BASE:<path>"/);
     expect(block).toMatch(/git cat-file -e HEAD:<path>/);
     expect(block).toMatch(/symbolic-ref.*refs\/remotes\/origin\/HEAD/);
     expect(block).toMatch(/stale-base/i);
-    // Falsifier: hard-coded `main:<path>` form must not reappear.
+    // Both arms named: arm (a) is shared-history at the fork, arm (b) is
+    // fork-point-vs-tip drift (file added to main after the fork). A
+    // one-armed merge-base check fails this assertion.
+    expect(block).toMatch(/shared history at fork/i);
+    expect(block).toMatch(/fork-point-vs-tip drift/i);
+    // Empty-MERGE_BASE fall-through guard (Codex P2 review on PR #475):
+    // when MERGE_BASE is empty (orphan / unfetched / shallow) neither
+    // arm is conclusive, and the prose must say so explicitly so arm (b)
+    // doesn't fire on unrelated state.
+    expect(block).toMatch(/\[ -z "\$MERGE_BASE" \]/);
+    // Arm (b) explicitly gates on a non-empty MERGE_BASE before testing
+    // "absent at fork point" via negated cat-file. Without this gate,
+    // arm (b) silently fires on orphan branches.
+    expect(block).toMatch(/\[ -n "\$MERGE_BASE" \] && ! git cat-file -e "\$MERGE_BASE:<path>"/);
+    // Falsifiers: legacy conjunction form must not reappear in the
+    // verification position, and no hard-coded `main:<path>`.
+    expect(block).not.toMatch(/git cat-file -e "\$BASE:<path>"/);
     expect(block).not.toMatch(/git cat-file -e main:<path>/);
     // Ordering invariant: verification must precede the irreversible patch
     // capture / revert. A verification appended after the revert is useless.
-    const verifyIdx = block.indexOf("git cat-file");
+    const verifyIdx = block.indexOf("git merge-base");
     const captureIdx = block.indexOf("salvage-{{TASK_ID}}.patch");
     expect(verifyIdx).toBeGreaterThanOrEqual(0);
     expect(captureIdx).toBeGreaterThanOrEqual(0);
@@ -1948,13 +1967,26 @@ describe("skills", () => {
     const para = raw.slice(startIdx, endIdx);
     // Existing per-commit guidance (gh-ludics-374) preserved in the same paragraph.
     expect(para).toMatch(/git log main\.\.HEAD --stat/);
-    // New: post-hoc cat-file verification folded into the same paragraph
-    // (no new section), using $BASE substitution rather than hard-coded
-    // `main` (Codex P2 review).
-    expect(para).toMatch(/git cat-file -e "\$BASE:<path>"/);
+    // Merge-base form folded into the same paragraph (no new section)
+    // (task-d5c37bc5). $BASE substitution preserved so non-main defaults
+    // (master, trunk, …) keep working (Codex P2 review).
+    expect(para).toMatch(/git merge-base "origin\/\$BASE" HEAD/);
+    expect(para).toMatch(/git cat-file -e "\$MERGE_BASE:<path>"/);
+    expect(para).toMatch(/git cat-file -e "origin\/\$BASE:<path>"/);
+    expect(para).toMatch(/git cat-file -e HEAD:<path>/);
     expect(para).toMatch(/symbolic-ref.*refs\/remotes\/origin\/HEAD/);
     expect(para).toMatch(/REQUEST_CHANGES/);
-    // Falsifier: hard-coded `main:<path>` form must not reappear.
+    // Both arms named: arm (a) shared-history at fork, arm (b)
+    // fork-point-vs-tip drift. A one-armed check fails this assertion.
+    expect(para).toMatch(/shared history at fork/i);
+    expect(para).toMatch(/fork-point-vs-tip drift/i);
+    // Empty-MERGE_BASE fall-through guard (Codex P2 review on PR #475).
+    expect(para).toMatch(/\[ -z "\$MERGE_BASE" \]/);
+    // Arm (b) gates on non-empty MERGE_BASE before negated cat-file.
+    expect(para).toMatch(/\[ -n "\$MERGE_BASE" \] && ! git cat-file -e "\$MERGE_BASE:<path>"/);
+    // Falsifiers: legacy conjunction form gone from the verification
+    // position, and no hard-coded `main:<path>`.
+    expect(para).not.toMatch(/git cat-file -e "\$BASE:<path>"/);
     expect(para).not.toMatch(/git cat-file -e main:<path>/);
   });
 
@@ -1972,14 +2004,69 @@ describe("skills", () => {
     expect(procBlock).toContain("plan-review");
     expect(procBlock).toMatch(/`review`/);
     expect(procBlock).toContain("warnStaleBase");
-    // Canonical per-file verification step, with $BASE substitution rather
-    // than a hard-coded `main` so non-main default branches are handled
-    // (Codex P2 review).
-    expect(procBlock).toContain('git cat-file -e "$BASE:<path>"');
+    // Merge-base form (task-d5c37bc5): resolves the actual fork point
+    // rather than reading the current `origin/$BASE` tip. $BASE
+    // substitution preserved so non-main defaults (master, trunk, …)
+    // keep working (Codex P2 review).
+    expect(procBlock).toContain('git merge-base "origin/$BASE" HEAD');
+    expect(procBlock).toContain('git cat-file -e "$MERGE_BASE:<path>"');
+    expect(procBlock).toContain('git cat-file -e "origin/$BASE:<path>"');
     expect(procBlock).toContain("git cat-file -e HEAD:<path>");
     expect(procBlock).toMatch(/symbolic-ref.*refs\/remotes\/origin\/HEAD/);
-    // Falsifier: hard-coded `main:<path>` form must not reappear.
+    // Both arms named: arm (a) shared-history at fork, arm (b)
+    // fork-point-vs-tip drift. A one-armed check fails this assertion.
+    expect(procBlock).toMatch(/shared history at fork/i);
+    expect(procBlock).toMatch(/fork-point-vs-tip drift/i);
+    // Empty-MERGE_BASE fall-through guard (Codex P2 review on PR #475).
+    expect(procBlock).toMatch(/\[ -z "\$MERGE_BASE" \]/);
+    // Arm (b) gates on non-empty MERGE_BASE before negated cat-file.
+    expect(procBlock).toContain('[ -n "$MERGE_BASE" ] && ! git cat-file -e "$MERGE_BASE:<path>"');
+    // Falsifiers: legacy conjunction form gone from the verification
+    // position, and no hard-coded `main:<path>`.
+    expect(procBlock).not.toMatch(/git cat-file -e "\$BASE:<path>"/);
     expect(procBlock).not.toMatch(/git cat-file -e main:<path>/);
+  });
+
+  test("task-d5c37bc5: MERGE_BASE literal appears at exactly the three salvage call-sites", () => {
+    // AC1 of docs/proposals/salvage-stale-base-merge-base-form.md: the
+    // merge-base verification block must appear at exactly the three
+    // lockstep call-sites and no fourth — a sibling skill or doc gaining
+    // a similar block silently regresses the AC.
+    //
+    // The proposal file itself contains MERGE_BASE because it is the
+    // spec that introduces the form (not a call-site); the AC's revised
+    // falsifier excludes it explicitly.
+    const repoRoot = join(import.meta.dir, "../..");
+    const proc = Bun.spawnSync({
+      cmd: [
+        "git",
+        "grep",
+        "-l",
+        "MERGE_BASE",
+        "--",
+        "skills/",
+        "docs/",
+        ":(exclude)docs/proposals/salvage-stale-base-merge-base-form.md",
+      ],
+      cwd: repoRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.exitCode).toBe(0);
+    const hits = new Set(
+      proc.stdout
+        .toString()
+        .trim()
+        .split("\n")
+        .filter((line) => line.length > 0),
+    );
+    expect(hits).toEqual(
+      new Set([
+        "skills/orchestration/pair-coder-work.md",
+        "skills/orchestration/pair-reviewer-review.md",
+        "docs/orchestration-patterns.md",
+      ]),
+    );
   });
 
   test("gh-ludics-404: orchestration-patterns has Harness instantiation subsection with falsifier framing and worked example", () => {

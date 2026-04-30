@@ -19,7 +19,7 @@ Each criterion below is a separate falsifier; reviewer should treat them as a ch
    - `skills/orchestration/pair-reviewer-review.md` — paragraph beginning `Before flagging apparent deletions as scope violations`.
    - `docs/orchestration-patterns.md` — the `**Procedure (diff commands).**` paragraph inside `### Scope declaration and salvage`.
 
-   Falsifier: a `git grep` for the new `MERGE_BASE` literal across `skills/` and `docs/` returns exactly three files (the three above).
+   Falsifier: `git grep -l 'MERGE_BASE' -- skills/ docs/ ':(exclude)docs/proposals/salvage-stale-base-merge-base-form.md'` returns exactly the three files above. The proposal file is excluded because it is the spec that introduces the form, not a verification call-site; including it would make the AC self-falsifying. The test enforces this invariant programmatically (see `task-d5c37bc5: MERGE_BASE literal appears at exactly the three salvage call-sites` in `src/orchestration/skills.test.ts`).
 
 2. **Both arms present at every site.** Each of the three sites describes both case (a) — file present at the merge-base (shared history with the fork point) — and case (b) — file absent at merge-base, present on `origin/$BASE`, absent on `HEAD` (fork-point-vs-tip drift). At each site, both arms short-circuit the salvage/revert with the per-commit-diff push-back.
 
