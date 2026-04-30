@@ -3469,6 +3469,10 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
     queueRequest({ action: "elaborate", task: taskId });
     console.log(`Queued elaborate request for ${taskId}`);
   }],
+  ["sync-learnings", () => {
+    queueRequest({ action: "sync-learnings" });
+    console.log("Queued sync-learnings request");
+  }],
   ["health-check", () => {
     if (!clusterIsController()) {
       console.error("ludics: mag health-check skipped — not the cluster controller");
