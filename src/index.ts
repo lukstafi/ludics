@@ -173,6 +173,7 @@ Commands:
                                Evaluate auto-start decision and update task status
   mag completed <proposal>     Mark a proposal completed (without .md extension)
   mag feedback-digest          Queue a feedback digest run
+  mag sync-learnings           Queue a learnings-consolidation run
   mag message "text"           Send async message to Mag
   mag queue                    Show pending queue requests
   mag queue pop one            Pop and print first queue item (JSONL)

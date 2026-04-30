@@ -26,6 +26,21 @@ Reach for declare/salvage/follow-up only when a fix exceeds the absorb
 boundary — a few lines, same file or sibling test, no new abstractions or
 imports, no new public surface.
 
+## Skill body CLI references
+
+Skill markdown bodies are executable specs — Mag and human readers literally
+run the `ludics ...` commands cited in code formatting. Every literal
+`ludics <verb> <sub>` written inside backticks or a fenced code block must
+resolve to a real dispatcher case and a USAGE entry in `src/index.ts`. The
+`lint:skill-cli-refs` script catches drift in CI; sanity-check locally
+before opening a PR with `bun run lint:skill-cli-refs`.
+
+**Prefer direct tools where an equivalent exists** — `Read`, `Glob`, and
+`Bash` are validated by the agent harness and compose better than shelling
+to `ludics tasks list --json` or similar. This is guidance only; firing
+`ludics notify`, `ludics slot N assign`, etc. remains entirely fine where
+there is no equivalent direct path.
+
 ## Manual-Smoke Evidence
 
 When an AC requires "manual smoke verification," reviewers will not accept

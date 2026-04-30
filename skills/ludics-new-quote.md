@@ -13,7 +13,7 @@ This skill searches for quotable passages from Jean-Yves Girard's writings and c
 
 2. **Search for Girard quotes.** Use web search to find quotable passages. Good sources and search strategies:
    - Search: `Girard "linear logic" quotes site:girard.perso.math.cnrs.fr`
-   - Search: `Girard "Locus Solum" ludics quotes remarks`
+   - Search: `Girard "Locus Solum" Ludics quotes remarks`
    - Search: `Girard "Blind Spot" lectures logic quotes`
    - Search: `Girard "meaning of logical rules" quotes`
    - Search: `Girard "geometry of interaction" quotes epigrams`

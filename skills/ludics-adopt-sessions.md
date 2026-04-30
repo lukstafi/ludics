@@ -167,7 +167,7 @@ Brief report:
 ```
 Adopted 2 sessions:
 - Slot 2: claude-code on ocannl → task-101 "Implement tensor concatenation" (agent-claude)
-- Slot 5: codex on ludics → ludics development (agent-codex)
+- Slot 5: codex on ludics → ludics-development (agent-codex)
 Skipped: 1 stale, 1 unmatched (scratch), 1 project already in slot 3
 ```
 

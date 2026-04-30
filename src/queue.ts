@@ -130,7 +130,7 @@ function nextRequestId(): string {
 }
 
 export type QueueAction =
-  | { action: "briefing" | "suggest" | "health-check" | "adopt-sessions" }
+  | { action: "briefing" | "suggest" | "health-check" | "adopt-sessions" | "sync-learnings" }
   | { action: "elaborate" | "draft-proposal" | "split-task" | "verify-completion" | "verify-container-completion" | "complete-task" | "process-suggestions"; task: string }
   | { action: "revise-proposal"; task: string; feedback?: string }
   | { action: "preempt"; task: string; autonomy: string }

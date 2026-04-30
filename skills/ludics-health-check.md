@@ -184,7 +184,7 @@ This skill is invoked when:
 - Blocked tasks: 3
 - Queue pending: 0
 - Tasks needing elaboration: 5
-- Test suites: ludics passing, other-project passing
+- Test suites: ludics: passing, other-project: passing
 
 ## Elaboration Status
 - 2 tasks awaiting elaboration (queued automatically by mag keepalive)

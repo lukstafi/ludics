@@ -359,6 +359,7 @@ ludics mag suggest           # Get task suggestions
 ludics mag analyze <issue>   # Analyze GitHub issue
 ludics mag elaborate <id>    # Elaborate task into detailed spec
 ludics mag health-check      # Check for deadlines, issues
+ludics mag sync-learnings    # Queue a learnings-consolidation run
 ludics mag queue             # Show pending requests
 ludics mag queue pop one     # Atomic dequeue of one request
 ludics mag queue pop all     # Atomic dequeue of all requests
