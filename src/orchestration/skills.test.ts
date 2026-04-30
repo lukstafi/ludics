@@ -2010,6 +2010,48 @@ describe("skills", () => {
     expect(procBlock).not.toMatch(/git cat-file -e main:<path>/);
   });
 
+  test("task-d5c37bc5: MERGE_BASE literal appears at exactly the three salvage call-sites", () => {
+    // AC1 of docs/proposals/salvage-stale-base-merge-base-form.md: the
+    // merge-base verification block must appear at exactly the three
+    // lockstep call-sites and no fourth — a sibling skill or doc gaining
+    // a similar block silently regresses the AC.
+    //
+    // The proposal file itself contains MERGE_BASE because it is the
+    // spec that introduces the form (not a call-site); the AC's revised
+    // falsifier excludes it explicitly.
+    const repoRoot = join(import.meta.dir, "../..");
+    const proc = Bun.spawnSync({
+      cmd: [
+        "git",
+        "grep",
+        "-l",
+        "MERGE_BASE",
+        "--",
+        "skills/",
+        "docs/",
+        ":(exclude)docs/proposals/salvage-stale-base-merge-base-form.md",
+      ],
+      cwd: repoRoot,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.exitCode).toBe(0);
+    const hits = new Set(
+      proc.stdout
+        .toString()
+        .trim()
+        .split("\n")
+        .filter((line) => line.length > 0),
+    );
+    expect(hits).toEqual(
+      new Set([
+        "skills/orchestration/pair-coder-work.md",
+        "skills/orchestration/pair-reviewer-review.md",
+        "docs/orchestration-patterns.md",
+      ]),
+    );
+  });
+
   test("gh-ludics-404: orchestration-patterns has Harness instantiation subsection with falsifier framing and worked example", () => {
     const path = join(import.meta.dir, "../../docs/orchestration-patterns.md");
     const raw = readFileSync(path, "utf-8");
