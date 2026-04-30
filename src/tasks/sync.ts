@@ -222,7 +222,7 @@ export function formatYamlScalar(value: string | number | boolean | null): strin
   return `"${yamlEscape(value)}"`;
 }
 
-function setFrontmatterScalar(filePath: string, field: string, value: string | number | boolean | null): boolean {
+export function setFrontmatterScalar(filePath: string, field: string, value: string | number | boolean | null): boolean {
   const content = readFileSync(filePath, "utf-8");
   const rendered = formatYamlScalar(value);
   const desiredLine = `${field}: ${rendered}`;

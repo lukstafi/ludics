@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { contentFingerprint, formatYamlScalar, tasksNeedsElaborationList, tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
+import { contentFingerprint, formatYamlScalar, setFrontmatterScalar, tasksNeedsElaborationList, tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
+import { renderFrontmatterValue } from "./markdown.ts";
 import { emptySlotData, writeSlotJson } from "../slots/json.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-sync");
@@ -685,5 +686,87 @@ describe("formatYamlScalar", () => {
     expect(formatYamlScalar("hello world")).toBe('"hello world"');
     // Embedded quotes get backslash-escaped (yamlEscape behaviour preserved).
     expect(formatYamlScalar('he said "hi"')).toBe('"he said \\"hi\\""');
+  });
+
+  test("rendered output round-trips through renderFrontmatterValue unchanged (double-application no-op)", () => {
+    // Invariant for AC7: setFrontmatterScalar passes formatYamlScalar's
+    // output to updateFrontmatterField / addFrontmatterField, which re-apply
+    // renderFrontmatterValue. The double application must be a no-op for
+    // every rendered shape, otherwise desiredLine would not equal the
+    // existing line on the second identical write.
+    // Mutation: if renderFrontmatterValue is altered to not pass through
+    // non-empty rendered strings (e.g. wraps them in quotes), one of these
+    // would fail.
+    const cases: Array<string | number | boolean | null> = [
+      null, "", true, false, 0, 42, "hello-world", "hello world", 'has "quotes"',
+    ];
+    for (const v of cases) {
+      const rendered = formatYamlScalar(v);
+      expect(renderFrontmatterValue(rendered)).toBe(rendered);
+    }
+  });
+});
+
+describe("setFrontmatterScalar", () => {
+  // AC7 falsifier: identical second write returns false (desiredLine ===
+  // existingLine short-circuit). The double application of
+  // renderFrontmatterValue inside formatYamlScalar -> updateFrontmatterField
+  // must remain idempotent for this short-circuit to fire.
+
+  let tmpDir: string;
+  let taskFile: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync("/tmp/ludics-sfs-");
+    taskFile = join(tmpDir, "task.md");
+    writeFileSync(taskFile, `---
+id: task-x
+title: "x"
+---
+body
+`);
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("first write of a null field adds the line and returns true", () => {
+    // Harness: the field does not exist on disk, so setFrontmatterScalar
+    // takes the addFrontmatterField branch and writes `<field>: null`.
+    expect(setFrontmatterScalar(taskFile, "github_state_reason", null)).toBe(true);
+    expect(readFileSync(taskFile, "utf-8")).toContain("github_state_reason: null\n");
+  });
+
+  test("identical second write returns false (desiredLine short-circuit)", () => {
+    // Harness condition: same value written twice in a row. The second call
+    // must hit the `existingLine === desiredLine` short-circuit and bail
+    // without rewriting. This *only* works because renderFrontmatterValue
+    // is idempotent on its own non-empty output — the double-application
+    // through updateFrontmatterField has to land back on the same string.
+    // Mutation: stub renderFrontmatterValue to return `<input>+":fixed"`,
+    // and the second call would render a different desiredLine, miss the
+    // short-circuit, and return true — failing this assertion.
+    expect(setFrontmatterScalar(taskFile, "github_state_reason", null)).toBe(true);
+    expect(setFrontmatterScalar(taskFile, "github_state_reason", null)).toBe(false);
+  });
+
+  test("identical second write of a quoted free-form string also short-circuits", () => {
+    // Same invariant for the quoted-string branch: the rendered shape
+    // `"hello world"` must round-trip through renderFrontmatterValue
+    // unchanged so the second write returns false.
+    expect(setFrontmatterScalar(taskFile, "title", "hello world")).toBe(true);
+    expect(setFrontmatterScalar(taskFile, "title", "hello world")).toBe(false);
+  });
+
+  test("empty-string write produces the YAML-null shape on disk (alignment shift)", () => {
+    // AC2's on-disk consequence: setFrontmatterScalar(file, field, "")
+    // writes `<field>: null` (was `<field>: ""` before this task). Mutation:
+    // revert the empty-string branch and the file would contain
+    // `github_labels: ""` instead.
+    expect(setFrontmatterScalar(taskFile, "github_labels", "")).toBe(true);
+    expect(readFileSync(taskFile, "utf-8")).toContain("github_labels: null\n");
+    // And the second identical write also short-circuits.
+    expect(setFrontmatterScalar(taskFile, "github_labels", "")).toBe(false);
   });
 });
