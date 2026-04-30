@@ -14,7 +14,7 @@ import { journalAppend } from "../journal.ts";
 import { emitEvent } from "../events.ts";
 import { runAdapterAction, readAdapterState, readAdapterLastActivity } from "../adapters/index.ts";
 import type { AdapterContext } from "../adapters/index.ts";
-import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter, transitionStatus } from "../tasks/markdown.ts";
+import { addFrontmatterField, updateFrontmatterField, updateDependencyArray, parseTaskFrontmatter, transitionStatus, renderFrontmatterValue } from "../tasks/markdown.ts";
 import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
@@ -223,9 +223,7 @@ function taskUpdateFrontmatterFields(taskId: string, updates: Record<string, str
       let matched = false;
       for (const field of remaining) {
         if (line.startsWith(`${field}:`)) {
-          const raw = updates[field]!;
-          const rendered = (raw === null || raw === "") ? "null" : raw;
-          output.push(`${field}: ${rendered}`);
+          output.push(`${field}: ${renderFrontmatterValue(updates[field]!)}`);
           remaining.delete(field);
           matched = true;
           break;

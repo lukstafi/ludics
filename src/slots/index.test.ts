@@ -200,6 +200,55 @@ source: local
     expect(data.task).toBeNull();
   });
 
+  test("journal entry omits (task=...) parenthetical when no task resolves (task-138eb60b AC3)", () => {
+    // Harness condition: pass a taskId-shaped string that does NOT resolve to
+    // any task file ("null"). slotAssign normalizes the local taskId to JS
+    // `null` (the existsSync(tf) branch is false), exercising the *absent*
+    // arm of the journal-format conditional. This is the only branch the AC
+    // guards; a regression that re-introduced a `task=null` placeholder, or
+    // dropped the conditional entirely (`(task=undefined)`, etc.), would
+    // surface here.
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(harness, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+
+    void slotAssign(1, "null", "t3code");
+
+    const today = new Date().toISOString().slice(0, 10);
+    const journalPath = join(harness, "journal", `${today}.md`);
+    const journal = readFileSync(journalPath, "utf-8");
+    const assignLine = journal.split("\n").find((l) => l.includes("Slot 1 assigned"));
+    expect(assignLine).toBeDefined();
+    // Invariant: no `(task=...)` parenthetical at all when taskId is absent.
+    expect(assignLine!).not.toMatch(/\(task=/);
+    // Adapter parenthetical and processDesc are still present.
+    expect(assignLine!).toContain("(adapter=t3code)");
+  });
+
+  test("journal entry includes (task=<id>) when a task resolves (task-138eb60b AC3 sibling)", () => {
+    // Sibling/positive control for the AC3 conditional: when a task file
+    // exists, `taskId` is set and the parenthetical must reappear with the
+    // resolved id. Pins that the writer didn't drop the parenthetical
+    // unconditionally.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-journal-id", "Journal id present");
+
+    void slotAssign(1, "task-journal-id", "manual");
+
+    const today = new Date().toISOString().slice(0, 10);
+    const journalPath = join(harness, "journal", `${today}.md`);
+    const journal = readFileSync(journalPath, "utf-8");
+    const assignLine = journal.split("\n").find((l) => l.includes("Slot 1 assigned"));
+    expect(assignLine).toBeDefined();
+    expect(assignLine!).toContain("(task=task-journal-id)");
+    expect(assignLine!).toContain("(adapter=manual)");
+  });
+
   test("batches the three frontmatter field updates into a single atomic write (task-29bea074)", async () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");

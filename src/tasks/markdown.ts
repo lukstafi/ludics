@@ -209,6 +209,16 @@ export function frontmatterBounds(lines: string[]): { openLine: number; closeLin
   return null;
 }
 
+/** Normalize a frontmatter scalar to its on-disk YAML form. JS `null` and
+ *  the empty string both render as the canonical YAML null token, so any
+ *  "absent" sentinel a caller passes ends up as a single shape on disk
+ *  (`<field>: null`). Non-empty strings pass through verbatim. Exported so
+ *  other writers in the repo can share the rule without re-stating the
+ *  literal — keeps `grep '"null"'` from re-finding the legacy sentinel. */
+export function renderFrontmatterValue(value: string | null): string {
+  return (value === null || value === "") ? "null" : value;
+}
+
 export function updateFrontmatterField(filePath: string, field: string, value: string | null): void {
   if (!existsSync(filePath)) return;
   const content = readFileSync(filePath, "utf-8");
@@ -216,8 +226,7 @@ export function updateFrontmatterField(filePath: string, field: string, value: s
   const bounds = frontmatterBounds(lines);
   if (!bounds) return;
 
-  // Normalize JS null and empty string to the canonical YAML null token.
-  const rendered = (value === null || value === "") ? "null" : value;
+  const rendered = renderFrontmatterValue(value);
 
   let done = false;
   const output: string[] = [];
