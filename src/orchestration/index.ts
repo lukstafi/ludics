@@ -173,7 +173,7 @@ export async function runOrchestrationCli(args: string[]): Promise<void> {
       orchOnStop(args.slice(1));
       return;
     default:
-      throw new Error(`unknown orch subcommand: ${sub}`);
+      throw new Error(`unknown orch subcommand: ${sub} (use: status, confirm, interrupt, skip, log, diff, on-stop)`);
   }
 }
 

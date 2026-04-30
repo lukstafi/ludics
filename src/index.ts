@@ -22,6 +22,7 @@ import { runEvents } from "./events.ts";
 import { runT3Code } from "./t3code/index.ts";
 import { runOrchestrationCli } from "./orchestration/index.ts";
 import { safeSyncOutput } from "./spawn.ts";
+import { formatUnknownTopLevel } from "./cli-dispatch.ts";
 
 const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   sessions: runSessions,
@@ -386,7 +387,7 @@ async function main(): Promise<void> {
   if (handler) {
     await handler(args.slice(1));
   } else {
-    console.error(`ludics ${cmd}: not yet migrated`);
+    console.error(formatUnknownTopLevel(cmd, Object.keys(MIGRATED_COMMANDS)));
     process.exit(1);
   }
 }
