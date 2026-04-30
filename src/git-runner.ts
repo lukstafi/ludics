@@ -41,25 +41,55 @@ export function hasRemote(cwd: string, name: string, runGit: RunGit): boolean {
   return r.stdout.split(/\r?\n/).map((s) => s.trim()).includes(name);
 }
 
+/** Options for {@link detectDefaultBranches}. */
+export interface DetectDefaultBranchesOptions {
+  /**
+   * When true, insert an `ls-remote --symref <remote> HEAD` network tier
+   * between the local symbolic-ref tier and the `main`/`master` probe tier.
+   * Intended for callers that have just warmed network connectivity (e.g.
+   * after `git fetch <remote>`), so the round-trip is cheap. Default
+   * `false` — fully local, no network.
+   */
+  authoritative?: boolean;
+}
+
 /**
- * Detect the default branch name for each of origin and upstream.
+ * Detect the default branch *name* for each of origin and upstream.
  *
- * Local-only: no network round-trip. Used by the briefing path where any
- * added latency would compound on every tick.
+ * **Returns names, not refs.** A bare `"main"` is the branch name; using
+ * it as `git log main..HEAD` compares against the *local* `main`, which in
+ * worktrees already contains the branch's commits and silently yields zero
+ * output. For a ready-to-use comparison base, prefer
+ * {@link resolveBaseRef}.
  *
- * Primary path: `git symbolic-ref refs/remotes/<remote>/HEAD`. This ref
- * exists when the repo was cloned (git creates it automatically) or when
- * the user has explicitly run `git remote set-head <remote> -a`.
+ * @example
+ * // WRONG — `main` is interpreted as the local branch:
+ * //   git log main..HEAD            // silently empty in worktrees
+ * // RIGHT — qualify with the remote:
+ * //   const { origin } = detectDefaultBranches(cwd, runGit);
+ * //   if (origin) runGit(["log", `origin/${origin}..HEAD`], cwd);
+ * // BETTER — use the helper that returns a ready-to-use ref:
+ * //   const base = resolveBaseRef(cwd, runGit);
+ * //   if (base) runGit(["log", `${base}..HEAD`], cwd);
  *
- * Fallback: for manually-added remotes (`git remote add upstream … && git
- * fetch upstream`), git does NOT create `refs/remotes/upstream/HEAD`, so
- * the primary path returns null. Probe the two overwhelmingly common
- * default branches — `main` then `master` — via `git rev-parse --verify`.
- *
- * If neither the symbolic ref nor a `main`/`master` ref is present, return
- * null.
+ * Tier ordering per remote (each tier short-circuits on success):
+ *  1. `git symbolic-ref refs/remotes/<remote>/HEAD` — present when the repo
+ *     was cloned or `git remote set-head <remote> -a` has been run.
+ *  2. (only when `opts.authoritative === true`) `git ls-remote --symref
+ *     <remote> HEAD` — network round-trip; parses `ref: refs/heads/<n>
+ *     HEAD` from stdout. Used by callers that already warmed the network
+ *     (e.g. immediately after `git fetch`) to detect non-`main`/`master`
+ *     defaults like `develop` or `trunk`.
+ *  3. `git rev-parse --verify --quiet refs/remotes/<remote>/{main,master}`
+ *     — covers manually-added remotes that lack `refs/remotes/<r>/HEAD`.
+ *  4. `null`.
  */
-export function detectDefaultBranches(cwd: string, runGit: RunGit): DetectedBranches {
+export function detectDefaultBranches(
+  cwd: string,
+  runGit: RunGit,
+  opts: DetectDefaultBranchesOptions = {},
+): DetectedBranches {
+  const authoritative = opts.authoritative === true;
   const read = (remote: string): string | null => {
     const primary = runGit(["symbolic-ref", `refs/remotes/${remote}/HEAD`], cwd);
     if (primary.exitCode === 0) {
@@ -68,6 +98,15 @@ export function detectDefaultBranches(cwd: string, runGit: RunGit): DetectedBran
       if (line.startsWith(prefix)) {
         const name = line.slice(prefix.length);
         if (name) return name;
+      }
+    }
+    if (authoritative) {
+      const symref = runGit(["ls-remote", "--symref", remote, "HEAD"], cwd);
+      if (symref.exitCode === 0) {
+        // Expected line: `ref: refs/heads/<branch>\tHEAD` (whitespace may
+        // be a tab or spaces depending on git version).
+        const m = symref.stdout.match(/^ref:\s+refs\/heads\/(.+?)\s+HEAD\b/m);
+        if (m && m[1]) return m[1];
       }
     }
     for (const candidate of ["main", "master"]) {
@@ -83,46 +122,41 @@ export function detectDefaultBranches(cwd: string, runGit: RunGit): DetectedBran
 }
 
 /**
- * Detect the default branch name with an authoritative `ls-remote --symref`
- * tier that queries the remote directly. Intended for paths that have
- * already established network connectivity (e.g. `git fetch <remote>` moments
- * earlier), so the ls-remote round-trip is cheap.
+ * Resolve a ready-to-use comparison base (a git ref) for `git log
+ * <base>..HEAD`, `git diff <base>...HEAD`, and similar invocations.
  *
- * Tier ordering per remote: symbolic-ref (local) → ls-remote --symref
- * (network) → main/master probe (local) → null. Each tier short-circuits
- * on success.
+ * Cascade (first non-null wins):
+ *  1. If `detectDefaultBranches(cwd, runGit).origin` is non-null, return
+ *     `origin/<that-name>`.
+ *  2. Else if `.upstream` is non-null, return `upstream/<that-name>`.
+ *  3. Else, for each candidate in `["main", "master"]`, probe
+ *     `git rev-parse --verify --quiet refs/heads/<candidate>`; on the
+ *     first non-empty success return the bare name.
+ *  4. Else `null`.
+ *
+ * Prefer this over {@link detectDefaultBranches} when a single comparison
+ * base is wanted. `detectDefaultBranches` returns branch *names*, so
+ * passing them straight into `git log <name>..HEAD` compares against the
+ * *local* branch — which in worktrees already contains the branch's
+ * commits and silently yields zero output. `resolveBaseRef`'s return value
+ * is always remote-qualified (or a verified local fallback), so this
+ * footgun cannot fire.
+ *
+ * Local-only: no network round-trip. Each call performs at most a small
+ * handful of `git` invocations; no caching is performed.
  */
-export function detectDefaultBranchesAuthoritative(
-  cwd: string,
-  runGit: RunGit,
-): DetectedBranches {
-  const read = (remote: string): string | null => {
-    const primary = runGit(["symbolic-ref", `refs/remotes/${remote}/HEAD`], cwd);
-    if (primary.exitCode === 0) {
-      const line = primary.stdout.trim();
-      const prefix = `refs/remotes/${remote}/`;
-      if (line.startsWith(prefix)) {
-        const name = line.slice(prefix.length);
-        if (name) return name;
-      }
-    }
-    const symref = runGit(["ls-remote", "--symref", remote, "HEAD"], cwd);
-    if (symref.exitCode === 0) {
-      // Expected line: `ref: refs/heads/<branch>\tHEAD` (whitespace may be
-      // a tab or spaces depending on git version).
-      const m = symref.stdout.match(/^ref:\s+refs\/heads\/(.+?)\s+HEAD\b/m);
-      if (m && m[1]) return m[1];
-    }
-    for (const candidate of ["main", "master"]) {
-      const verify = runGit(
-        ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${candidate}`],
-        cwd,
-      );
-      if (verify.exitCode === 0 && verify.stdout.trim() !== "") return candidate;
-    }
-    return null;
-  };
-  return { origin: read("origin"), upstream: read("upstream") };
+export function resolveBaseRef(cwd: string, runGit: RunGit): string | null {
+  const detected = detectDefaultBranches(cwd, runGit);
+  if (detected.origin) return `origin/${detected.origin}`;
+  if (detected.upstream) return `upstream/${detected.upstream}`;
+  for (const candidate of ["main", "master"]) {
+    const verify = runGit(
+      ["rev-parse", "--verify", "--quiet", `refs/heads/${candidate}`],
+      cwd,
+    );
+    if (verify.exitCode === 0 && verify.stdout.trim() !== "") return candidate;
+  }
+  return null;
 }
 
 /**

@@ -2,9 +2,9 @@ import { describe, test, expect } from "bun:test";
 import { resolve } from "path";
 import {
   detectDefaultBranches,
-  detectDefaultBranchesAuthoritative,
   expandHome,
   hasRemote,
+  resolveBaseRef,
   withCheckout,
   type RunGit,
 } from "./git-runner.ts";
@@ -83,7 +83,7 @@ describe("git-runner helpers", () => {
     expect(b.upstream).toBeNull();
   });
 
-  test("detectDefaultBranchesAuthoritative: prefers local symbolic-ref when present", () => {
+  test("detectDefaultBranches({ authoritative: true }): prefers local symbolic-ref when present", () => {
     // If symbolic-ref succeeds we should NOT call ls-remote (no network).
     const calls: string[][] = [];
     const rg: RunGit = (args) => {
@@ -96,13 +96,13 @@ describe("git-runner helpers", () => {
       }
       return { stdout: "", exitCode: 0 };
     };
-    const b = detectDefaultBranchesAuthoritative("/x", rg);
+    const b = detectDefaultBranches("/x", rg, { authoritative: true });
     expect(b.origin).toBe("main");
     expect(b.upstream).toBe("main");
     expect(calls.some((c) => c[0] === "ls-remote")).toBe(false);
   });
 
-  test("detectDefaultBranchesAuthoritative: falls back to ls-remote --symref when symbolic-ref fails", () => {
+  test("detectDefaultBranches({ authoritative: true }): falls back to ls-remote --symref when symbolic-ref fails", () => {
     const rg = fakeGit([
       { match: ["symbolic-ref"], stdout: "", exitCode: 128 },
       {
@@ -114,24 +114,24 @@ describe("git-runner helpers", () => {
         stdout: "ref: refs/heads/trunk\tHEAD\n0123abc\tHEAD\n",
       },
     ]);
-    const b = detectDefaultBranchesAuthoritative("/x", rg);
+    const b = detectDefaultBranches("/x", rg, { authoritative: true });
     expect(b.origin).toBe("trunk");
     expect(b.upstream).toBe("develop");
   });
 
-  test("detectDefaultBranchesAuthoritative: ls-remote failure falls through to main/master probe", () => {
+  test("detectDefaultBranches({ authoritative: true }): ls-remote failure falls through to main/master probe", () => {
     const rg = fakeGit([
       { match: ["symbolic-ref"], stdout: "", exitCode: 128 },
       { match: ["ls-remote"], stdout: "", exitCode: 128 },
       { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/main"], stdout: "feedface\n" },
       { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], stdout: "deadbeef\n" },
     ]);
-    const b = detectDefaultBranchesAuthoritative("/x", rg);
+    const b = detectDefaultBranches("/x", rg, { authoritative: true });
     expect(b.origin).toBe("main");
     expect(b.upstream).toBe("main");
   });
 
-  test("detectDefaultBranchesAuthoritative: ls-remote without `ref:` line falls through", () => {
+  test("detectDefaultBranches({ authoritative: true }): ls-remote without `ref:` line falls through", () => {
     const rg = fakeGit([
       { match: ["symbolic-ref"], stdout: "", exitCode: 128 },
       // exit 0 but stdout lacks "ref: refs/heads/..." — treat as unknown and fall through.
@@ -139,9 +139,105 @@ describe("git-runner helpers", () => {
       { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/master"], stdout: "x\n" },
       { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/master"], stdout: "x\n" },
     ]);
-    const b = detectDefaultBranchesAuthoritative("/x", rg);
+    const b = detectDefaultBranches("/x", rg, { authoritative: true });
     expect(b.origin).toBe("master");
     expect(b.upstream).toBe("master");
+  });
+
+  test("detectDefaultBranches: default (no opts) does not invoke ls-remote — guards the briefing-lag no-network contract", () => {
+    // Briefing-lag invokes detectDefaultBranches every keepalive tick on
+    // every project; an accidental network round-trip per tick would be a
+    // serious regression. This test pins the no-network default by failing
+    // if any ls-remote call leaks through.
+    const calls: string[][] = [];
+    const rg: RunGit = (args) => {
+      calls.push(args.slice());
+      // Force the cascade past the symref tier so the bug — ls-remote
+      // firing in non-authoritative mode — would be observable.
+      if (args[0] === "symbolic-ref") return { stdout: "", exitCode: 128 };
+      if (args[0] === "rev-parse" && args[3]?.endsWith("/main")) {
+        return { stdout: "deadbeef\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 128 };
+    };
+    detectDefaultBranches("/x", rg);
+    expect(calls.some((c) => c[0] === "ls-remote")).toBe(false);
+    // And for authoritative: false explicitly, same guarantee.
+    const calls2: string[][] = [];
+    const rg2: RunGit = (args) => {
+      calls2.push(args.slice());
+      if (args[0] === "symbolic-ref") return { stdout: "", exitCode: 128 };
+      if (args[0] === "rev-parse" && args[3]?.endsWith("/main")) {
+        return { stdout: "deadbeef\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 128 };
+    };
+    detectDefaultBranches("/x", rg2, { authoritative: false });
+    expect(calls2.some((c) => c[0] === "ls-remote")).toBe(false);
+  });
+});
+
+describe("resolveBaseRef", () => {
+  test("origin symref present → returns origin/<name>", () => {
+    const rg = fakeGit([
+      { match: ["symbolic-ref", "refs/remotes/origin/HEAD"], stdout: "refs/remotes/origin/main\n" },
+      { match: ["symbolic-ref", "refs/remotes/upstream/HEAD"], stdout: "refs/remotes/upstream/develop\n" },
+    ]);
+    expect(resolveBaseRef("/x", rg)).toBe("origin/main");
+  });
+
+  test("origin absent + upstream symref present → returns upstream/<name>", () => {
+    const rg = fakeGit([
+      { match: ["symbolic-ref", "refs/remotes/origin/HEAD"], stdout: "", exitCode: 128 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], stdout: "", exitCode: 1 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/master"], stdout: "", exitCode: 1 },
+      { match: ["symbolic-ref", "refs/remotes/upstream/HEAD"], stdout: "refs/remotes/upstream/develop\n" },
+    ]);
+    expect(resolveBaseRef("/x", rg)).toBe("upstream/develop");
+  });
+
+  test("both remote symrefs empty + refs/heads/main exists → returns 'main'", () => {
+    const rg = fakeGit([
+      { match: ["symbolic-ref"], stdout: "", exitCode: 128 },
+      // No remote main/master.
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], stdout: "", exitCode: 1 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/master"], stdout: "", exitCode: 1 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/main"], stdout: "", exitCode: 1 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/master"], stdout: "", exitCode: 1 },
+      // Local main exists.
+      { match: ["rev-parse", "--verify", "--quiet", "refs/heads/main"], stdout: "abcdef\n" },
+    ]);
+    expect(resolveBaseRef("/x", rg)).toBe("main");
+  });
+
+  test("both remote symrefs empty + refs/heads/master only → returns 'master'", () => {
+    const rg = fakeGit([
+      { match: ["symbolic-ref"], stdout: "", exitCode: 128 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], stdout: "", exitCode: 1 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/master"], stdout: "", exitCode: 1 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/main"], stdout: "", exitCode: 1 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/master"], stdout: "", exitCode: 1 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/heads/main"], stdout: "", exitCode: 1 },
+      { match: ["rev-parse", "--verify", "--quiet", "refs/heads/master"], stdout: "fedcba\n" },
+    ]);
+    expect(resolveBaseRef("/x", rg)).toBe("master");
+  });
+
+  test("all probes fail → returns null", () => {
+    const rg = fakeGit([]);
+    expect(resolveBaseRef("/x", rg)).toBeNull();
+  });
+
+  test("no network round-trip — ls-remote is never invoked", () => {
+    // Pins the local-only contract: resolveBaseRef must not call
+    // ls-remote even on a fully-empty repo where every probe fails.
+    const calls: string[][] = [];
+    const rg: RunGit = (args) => {
+      calls.push(args.slice());
+      return { stdout: "", exitCode: 128 };
+    };
+    resolveBaseRef("/x", rg);
+    expect(calls.some((c) => c[0] === "ls-remote")).toBe(false);
   });
 });
 

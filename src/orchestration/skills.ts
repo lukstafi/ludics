@@ -5,7 +5,7 @@ import { parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { findProjectConfig, harnessDir as defaultHarnessDir, ludicsRoot } from "../config.ts";
 import { taskFilePath } from "./paths.ts";
 import { safeSyncOutput } from "../spawn.ts";
-import { defaultRunGit, detectDefaultBranches } from "../git-runner.ts";
+import { defaultRunGit, resolveBaseRef } from "../git-runner.ts";
 import type { Phase } from "./phases.ts";
 import { planFilePath, mergedPlanFilePath } from "./plan-files.ts";
 import { parseReviewFilename, reviewFilePath } from "./review-files.ts";
@@ -42,15 +42,18 @@ function gitOutput(cwd: string, args: string[]): string | null {
 
 const PROPOSAL_FRESHNESS_THRESHOLD = 6;
 
-/** Count commits on the remote default branch (`origin/<default>`) since the
- *  proposal file was last modified, and return a warning when the count exceeds
- *  PROPOSAL_FRESHNESS_THRESHOLD. Returns "" on any failure (bad path, untracked
- *  file, non-git dir, no `origin` default branch, proposal commit not an
- *  ancestor of `origin/<default>`, parse failure) — must never block
- *  orchestration. The count reflects upstream drift on the default branch, not
- *  feature-branch churn, so orchestration worktrees checked out on
- *  `ludics/.../root` branches still report the intended signal. Freshness of
- *  `refs/remotes/origin/<default>` is delegated to callers that run
+/** Count commits on the resolved default branch ref since the proposal file
+ *  was last modified, and return a warning when the count exceeds
+ *  PROPOSAL_FRESHNESS_THRESHOLD. The base ref comes from `resolveBaseRef`
+ *  (cascade: `origin/<n>` → `upstream/<n>` → local `main`/`master`), so
+ *  origin-less projects (upstream-only or local-only) still surface drift
+ *  against whatever ref does exist. Returns "" on any failure (bad path,
+ *  untracked file, non-git dir, no resolvable base ref, proposal commit
+ *  not an ancestor of the base, parse failure) — must never block
+ *  orchestration. The count reflects upstream drift on the default branch,
+ *  not feature-branch churn, so orchestration worktrees checked out on
+ *  `ludics/.../root` branches still report the intended signal. Freshness
+ *  of `refs/remotes/origin/<default>` is delegated to callers that run
  *  `git fetch origin` ahead of orchestration rounds. */
 function proposalFreshnessWarning(projectDir: string, proposalPath: string): string {
   if (!proposalPath || proposalPath === "inline") return "";
@@ -61,9 +64,8 @@ function proposalFreshnessWarning(projectDir: string, proposalPath: string): str
   }
   const hash = gitOutput(projectDir, ["log", "-1", "--format=%H", "--", proposalPath]);
   if (!hash) return "";
-  const { origin } = detectDefaultBranches(projectDir, defaultRunGit);
-  if (!origin) return "";
-  const ref = `refs/remotes/origin/${origin}`;
+  const ref = resolveBaseRef(projectDir, defaultRunGit);
+  if (!ref) return "";
   const isAncestor = safeSyncOutput(["git", "merge-base", "--is-ancestor", hash, ref], { cwd: projectDir });
   if (isAncestor.exitCode !== 0) return "";
   const countStr = gitOutput(projectDir, ["rev-list", "--count", `${hash}..${ref}`]);
