@@ -484,5 +484,10 @@ export function runCli(options: RunCliOptions = {}): RunCliResult {
 }
 
 if (import.meta.main) {
-  process.exit(runCli().exitCode);
+  // Optional first positional arg overrides the source directory, which lets
+  // tests exercise the real CLI exit-code paths against a tmp fixture. The
+  // override points at the *src* directory (not the repo root); `repoRoot`
+  // defaults to `dirname(srcDir)` per the existing `runCli` logic.
+  const argSrcDir = process.argv[2];
+  process.exit(runCli({ srcDir: argSrcDir || undefined }).exitCode);
 }
