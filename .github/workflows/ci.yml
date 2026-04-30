@@ -40,5 +40,8 @@ jobs:
       - name: Lint worker/orchestrator contracts
         run: bun run lint:contracts
 
+      - name: Lint — vendor sync
+        run: bun run lint:vendor-sync
+
       - name: Lint — eslint
         run: bun run lint
