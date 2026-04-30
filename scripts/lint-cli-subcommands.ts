@@ -287,8 +287,12 @@ export function checkSite(
   const usageSubs = extractUsageSubs(usageBlock, site.prefix);
 
   // For comparison, normalise (alias-resolve, drop empty/hidden).
+  // The listing is NOT stripped of hidden entries: that way, if a hidden
+  // hook/internal entry leaks back into the user-facing listing, the
+  // listing-vs-cases comparison surfaces the leak (listing has it, normCases
+  // does not). All current dispatcher listings exclude hidden entries.
   const normCases = normalise(cases, site.prefix, { stripHidden: true });
-  const normListing = listing ? normalise(listing, site.prefix, { stripHidden: true }) : null;
+  const normListing = listing ? normalise(listing, site.prefix, { stripHidden: false }) : null;
   const inlineHandled = new Set(USAGE_INLINE_HANDLED[site.prefix] ?? []);
   const normUsage = new Set(
     [...normalise(usageSubs, site.prefix, { stripHidden: false })].filter((x) => !inlineHandled.has(x)),

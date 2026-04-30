@@ -3427,6 +3427,12 @@ async function magCompleted(proposalName: string): Promise<void> {
 // subcommand name (i.e. args.slice(1) from runMag's input).
 type MagSubHandler = (args: string[]) => Promise<void> | void;
 
+// Hook entry points / deprecated compat aliases that stay callable but never
+// surface in user-facing help. Mirrors INTERNAL_HIDDEN.mag in
+// scripts/lint-cli-subcommands.ts — the lint also strips these when
+// comparing against src/index.ts USAGE.
+const MAG_HIDDEN_SUBCOMMANDS: ReadonlySet<string> = new Set(["on-stop", "queue-pop"]);
+
 // Registry of mag subcommands. Insertion order is the help-listing order.
 // Lint enforcement: scripts/lint-cli-subcommands.ts reads the keys via regex
 // to validate parity with src/index.ts USAGE and the runMag default error.
@@ -3720,7 +3726,9 @@ export async function runMag(args: string[]): Promise<void> {
   const sub = args[0] ?? "";
   const handler = magSubcommands.get(sub);
   if (!handler) {
-    const listing = [...magSubcommands.keys()].join(", ");
+    const listing = [...magSubcommands.keys()]
+      .filter((k) => !MAG_HIDDEN_SUBCOMMANDS.has(k))
+      .join(", ");
     throw new Error(`unknown mag command: ${sub} (use: ${listing})`);
   }
   await handler(args.slice(1));

@@ -870,4 +870,33 @@ describe("runMag unknown-command listing (gh-ludics-438)", () => {
     expect(msg).not.toContain("queue pop one");
     expect(msg).not.toContain("queue pop all");
   });
+
+  test("listing excludes internal hook entry points (on-stop / queue-pop)", async () => {
+    // Invariant: hook entries (`on-stop`, deprecated alias `queue-pop`) stay
+    // callable for templates/hooks/ludics-on-stop.sh but never surface in
+    // user-facing help. Without the MAG_HIDDEN_SUBCOMMANDS filter, the
+    // derived listing would leak both names into `(use: ...)` output.
+    //
+    // Harness condition: invoke runMag with a sentinel sub so the
+    // unknown-handler branch fires; capture the listing string.
+    let err: Error | null = null;
+    try {
+      await runMag(["__bogus__"]);
+    } catch (e) {
+      err = e as Error;
+    }
+    const msg = err!.message;
+    // The (use: …) listing must not contain either internal entry. Anchor
+    // the assertion to that segment so we don't trip on the `${sub}`
+    // payload: the sentinel would never collide with these names anyway,
+    // but the listing-side check is the real contract.
+    const useMatch = msg.match(/\(use: ([^)]*)\)/);
+    expect(useMatch).not.toBeNull();
+    const useEntries = useMatch![1]!.split(/,\s*/);
+    expect(useEntries).not.toContain("on-stop");
+    expect(useEntries).not.toContain("queue-pop");
+    // Sanity: the public commands are still present.
+    expect(useEntries).toContain("start");
+    expect(useEntries).toContain("completed");
+  });
 });
