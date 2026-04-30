@@ -1317,6 +1317,195 @@ describe("migrateState — solo invariants", () => {
   });
 });
 
+// gh-ludics-411 AC 3: per-field policy for boundary validators on
+// `OrchestrationState` string unions. Helper-level tests; the
+// read-boundary regression lives in state.harnessdir.test.ts.
+describe("migrateState — boundary validators (gh-ludics-411 AC 3)", () => {
+  test("throws on invalid mode (\"throw\" policy — invariant)", () => {
+    const state = makeSoloState();
+    (state as { mode: string }).mode = "weird";
+    expect(() => migrateState(state, 1)).toThrow(/mode.*weird/);
+  });
+
+  test("coerces invalid backend to globalAdapter() default and logs once (\"coerce\" policy)", async () => {
+    const { globalAdapter } = await import("../config.ts");
+    const expectedFallback = globalAdapter();
+    const state = makeSoloState({ backend: "junk" as "tmux" });
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const result = migrateState(state, 5);
+      // Capture .mock.calls BEFORE mockRestore (per memory feedback).
+      calls = [...spy.mock.calls];
+      expect(result.backend).toBe(expectedFallback);
+      const backendLogs = calls.filter((c) => String(c[0] ?? "").includes("backend"));
+      expect(backendLogs.length).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("legacy state with backend === undefined passes through unchanged (no log)", () => {
+    const state = makeSoloState();
+    delete (state as { backend?: string }).backend;
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const result = migrateState(state, 6);
+      calls = [...spy.mock.calls];
+      expect(result.backend).toBeUndefined();
+      const backendLogs = calls.filter((c) => String(c[0] ?? "").includes("backend"));
+      expect(backendLogs).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("throws on invalid agents[].provider (\"throw\" policy — wire-protocol-bound)", () => {
+    const state = makeSoloState();
+    (state.agents[0] as { provider: string }).provider = "rogue-llm";
+    expect(() => migrateState(state, 7)).toThrow(/provider.*rogue-llm/);
+  });
+
+  test("drops invalid agents[].role and logs (\"drop\" policy)", () => {
+    const state = makeSoloState();
+    (state.agents[0] as { role?: string }).role = "narrator";
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const result = migrateState(state, 8);
+      calls = [...spy.mock.calls];
+      expect(result.agents[0].role).toBeUndefined();
+      const roleLogs = calls.filter((c) => String(c[0] ?? "").includes("agents[].role"));
+      expect(roleLogs.length).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("coerces invalid turnLifecycle.state to \"error\" (\"coerce\" policy)", () => {
+    const state = makeSoloState();
+    state.agentStates.coder.turnLifecycle = {
+      dispatchCommandId: "c1",
+      dispatchedAt: "2026-04-22T00:00:00Z",
+      phaseToken: "p1",
+      observedTurnId: null,
+      state: "galaxy-brain" as "settled",
+      turnStartedAt: null,
+      turnCompletedAt: null,
+      completionSource: null,
+      statusFileFingerprint: null,
+      lastStopHookAt: null,
+    };
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const result = migrateState(state, 9);
+      calls = [...spy.mock.calls];
+      expect(result.agentStates.coder.turnLifecycle?.state).toBe("error");
+      const stateLogs = calls.filter((c) => String(c[0] ?? "").includes("turnLifecycle.state"));
+      expect(stateLogs.length).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("coerces invalid turnLifecycle.completionSource to null (\"coerce\" policy)", () => {
+    const state = makeSoloState();
+    state.agentStates.coder.turnLifecycle = {
+      dispatchCommandId: "c1",
+      dispatchedAt: "2026-04-22T00:00:00Z",
+      phaseToken: "p1",
+      observedTurnId: null,
+      state: "settled",
+      turnStartedAt: null,
+      turnCompletedAt: null,
+      completionSource: "plot-twist" as "snapshot",
+      statusFileFingerprint: null,
+      lastStopHookAt: null,
+    };
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const result = migrateState(state, 10);
+      calls = [...spy.mock.calls];
+      expect(result.agentStates.coder.turnLifecycle?.completionSource).toBeNull();
+      const csLogs = calls.filter((c) => String(c[0] ?? "").includes("completionSource"));
+      expect(csLogs.length).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Sentinel-null fast-path: `null` is the documented "completion source
+  // unknown" value. The validator must NOT log on null/undefined or
+  // healthy state-file reads will spam stderr.
+  test("preserves turnLifecycle.completionSource === null without logging", () => {
+    const state = makeSoloState();
+    state.agentStates.coder.turnLifecycle = {
+      dispatchCommandId: "c1",
+      dispatchedAt: "2026-04-22T00:00:00Z",
+      phaseToken: "p1",
+      observedTurnId: null,
+      state: "settled",
+      turnStartedAt: null,
+      turnCompletedAt: null,
+      completionSource: null,
+      statusFileFingerprint: null,
+      lastStopHookAt: null,
+    };
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const result = migrateState(state, 11);
+      calls = [...spy.mock.calls];
+      expect(result.agentStates.coder.turnLifecycle?.completionSource).toBeNull();
+      const csLogs = calls.filter((c) => String(c[0] ?? "").includes("completionSource"));
+      expect(csLogs).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Positive-control sibling — happy-path through every validator with
+  // legal values flows through silently (no console.error). Required by
+  // the AC self-check format from prior memory feedback.
+  test("happy path: legal values pass through without coercion or logging", () => {
+    const state = makeSoloState();
+    state.backend = "tmux";
+    state.agentStates.coder.turnLifecycle = {
+      dispatchCommandId: "c1",
+      dispatchedAt: "2026-04-22T00:00:00Z",
+      phaseToken: "p1",
+      observedTurnId: null,
+      state: "running",
+      turnStartedAt: null,
+      turnCompletedAt: null,
+      completionSource: "snapshot",
+      statusFileFingerprint: null,
+      lastStopHookAt: null,
+    };
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const result = migrateState(state, 12);
+      calls = [...spy.mock.calls];
+      expect(result.mode).toBe("solo");
+      expect(result.backend).toBe("tmux");
+      expect(result.agents[0].role).toBe("coder");
+      expect(result.agentStates.coder.turnLifecycle?.state).toBe("running");
+      expect(result.agentStates.coder.turnLifecycle?.completionSource).toBe("snapshot");
+      const validatorLogs = calls.filter((c) => {
+        const msg = String(c[0] ?? "");
+        return msg.includes("OrchestrationState.") || msg.includes("invalid");
+      });
+      expect(validatorLogs).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe("harness isolation regression", () => {
   test("LUDICS_HARNESS_DIR is set to the explicit path under TEST_TMP", () => {
     const harness = process.env.LUDICS_HARNESS_DIR;
