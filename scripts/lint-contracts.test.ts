@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -518,5 +518,51 @@ describe("integration", () => {
     // found new real-world hits (coverage upgrade — justify and update the
     // count).
     expect(result.warningCount).toBe(0);
+  });
+
+  // Floor-count guards for the two regex-over-markdown extractors
+  // (gh-ludics-406). Per-pair field counts are small (5–10), so the
+  // assertion is on the **total field count summed across all paired skill
+  // files** in the real skills/ directory — that aggregate is the
+  // meaningful integrity signal. Mirrors the meta-test pattern in
+  // scripts/lint-template-safety.test.ts. Failure here means **either**:
+  //   (a) a docs refactor collapsed contract surfaces — e.g. the
+  //       `### Response Contract` numbered list moved into a shared partial
+  //       or routing tables were generated rather than authored — update the
+  //       extractor and re-run;
+  //   (b) skill pairs were intentionally consolidated/removed — lower the
+  //       floor and note what moved in this comment.
+  // Today both totals are 37 across 5 paired skills. Floors are set to 25
+  // each with slack to tolerate skill churn.
+  function sumPairedFields(skillsDir: string): { worker: number; orch: number } {
+    let worker = 0;
+    let orch = 0;
+    const entries = readdirSync(skillsDir);
+    for (const f of entries) {
+      if (!/^ludics-.*-worker\.md$/.test(f)) continue;
+      const orchFile = f.replace(/-worker\.md$/, ".md");
+      try {
+        const wMd = readFileSync(join(skillsDir, f), "utf-8");
+        const oMd = readFileSync(join(skillsDir, orchFile), "utf-8");
+        worker += extractWorkerFields(wMd).fields.size;
+        orch += extractOrchestratorFields(oMd).fields.size;
+      } catch {
+        // missing orchestrator counterpart — skip; covered by the
+        // worker-without-orchestrator warning in runCli.
+      }
+    }
+    return { worker, orch };
+  }
+
+  test("extractWorkerFields: floor count of 25 across paired skills", () => {
+    const repo = join(import.meta.dir, "..");
+    const { worker } = sumPairedFields(join(repo, "skills"));
+    expect(worker).toBeGreaterThanOrEqual(25);
+  });
+
+  test("extractOrchestratorFields: floor count of 25 across paired skills", () => {
+    const repo = join(import.meta.dir, "..");
+    const { orch } = sumPairedFields(join(repo, "skills"));
+    expect(orch).toBeGreaterThanOrEqual(25);
   });
 });

@@ -26,6 +26,28 @@ const skillsDir = join(root, "skills");
 // Pure extractors (exported for tests)
 // ---------------------------------------------------------------------------
 
+// SILENT-DRIFT WARNING (gh-ludics-406):
+// `extractWorkerFields` and `extractOrchestratorFields` are regex-over-markdown
+// extractors. Their safety claim — "worker contract fields and orchestrator
+// routing fields stay in sync per pair" — depends on the literal patterns
+// below appearing in each skill markdown file. A docs refactor that extracts
+// the `### Response Contract` numbered list into a shared partial, or replaces
+// the routing table with a generated one, *deletes* the literals from view.
+// The extractor still runs, just with fewer hits, and the lint passes silently.
+//
+// Recognised patterns:
+//   worker — `^\s*\d+\.\s+\`([a-z_][\w]*)\`` under `### Response Contract`,
+//            outside fenced (```) blocks.
+//   orchestrator — `^\|\s*\`([a-z_][\w]*)\`\s*\|` under
+//            `## Status routing` or `## Verdict routing`.
+//
+// If you change how either contract surface is authored (templating, table
+// generation, alternate heading), update the patterns AND keep the floor-count
+// tests in scripts/lint-contracts.test.ts ("extractWorkerFields: floor count
+// across paired skills", "extractOrchestratorFields: floor count across
+// paired skills") in sync. The floor-count tests are the mechanical guard
+// that catches DRY-only collapses across the skill set.
+
 export interface ExtractResult {
   fields: Set<string>;
   hasSection: boolean;

@@ -202,4 +202,28 @@ describe("real repository", () => {
     const { stale } = lintCliReadme(indexSrc, readmeSrc);
     expect(stale).toEqual([]);
   });
+
+  // Floor-count guards for the two regex-over-source extractors
+  // (gh-ludics-406). Mirrors the meta-test pattern in
+  // scripts/lint-template-safety.test.ts. The extractors have no second
+  // source of truth to assert equality against, so we use a floor instead of
+  // equality. Failure here means **either**:
+  //   (a) a DRY refactor collapsed call sites — e.g. USAGE was changed to be
+  //       built programmatically, or the README CLI Reference moved into a
+  //       shared partial — update the regex / extraction surface and re-run;
+  //   (b) commands were intentionally removed — lower the floor and note
+  //       what moved in this comment.
+  // Today USAGE has 27 commands and README has 14. Floors are set with
+  // slack so single-command removals do not trip the lint.
+  test("extractUsageCommands: floor count of 20 against real src/index.ts", () => {
+    const indexSrc = readFileSync(join(root, "src", "index.ts"), "utf-8");
+    const cmds = extractUsageCommands(indexSrc);
+    expect(cmds.size).toBeGreaterThanOrEqual(20);
+  });
+
+  test("extractReadmeCommands: floor count of 10 against real README.md", () => {
+    const readmeSrc = readFileSync(join(root, "README.md"), "utf-8");
+    const cmds = extractReadmeCommands(readmeSrc);
+    expect(cmds.size).toBeGreaterThanOrEqual(10);
+  });
 });
