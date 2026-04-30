@@ -102,6 +102,8 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    Stay on goal/what, not how — no implementation plan, no effort estimates,
    no micro-managed steps. Coding agents handle the how during their plan phase.
 
+   When the task's ACs are unusually contract-heavy, consult [`../docs/ac-rigor-reference.md`](../docs/ac-rigor-reference.md) before writing the criteria.
+
 <!-- section:commit-push -->
 8. **Commit and push**:
    Strip the `<project_path>/` prefix from `<proposals_path>` to get the repo-relative path:
