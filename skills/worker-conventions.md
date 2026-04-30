@@ -44,8 +44,9 @@ there is no equivalent direct path.
 ## AC verification rigor
 
 When ACs are unusually contract-heavy, see [`docs/ac-rigor-reference.md`](../docs/ac-rigor-reference.md). Sections (grep-able in-place):
-- Vacuous test harness — assert on the artifact the AC names; Vacuous doc/config harness — same rule, doc artifacts; Proposal beats task file when AC counts diverge; Self-contradicting AC literal probe — revise the AC, not the verification narrative; Literal-grep AC — relocate the literal, don't keep it under a new rule.
-- Per-element assertions for enumerated-element ACs; Byte-pinned assertions on rendered or normalised output; Prose-only template instructions are unverifiable; AC verification evidence must survive the commit boundary; No-regression framing when the gate baseline is red.
+- Vacuous-harness family: Vacuous test harness — assert on the artifact the AC names; Vacuous doc/config harness — same rule, doc artifacts; Probe before cleanup — distinguish 'AC satisfied' from 'cleanup hid the violation'.
+- Falsifier-shape family: Literal-grep AC — relocate the literal, don't keep it under a new rule; Per-element assertions for enumerated-element ACs; Byte-pinned assertions on rendered or normalised output; Prose-only template instructions are unverifiable; Literal paths in ACs are literal — don't substitute the platform abstraction.
+- Process-around-the-AC: Proposal beats task file when AC counts diverge; Self-contradicting AC literal probe — revise the AC, not the verification narrative; AC verification evidence must survive the commit boundary; Diff-enumerated verification lines go stale — anchor to invariants, not snapshots; No-regression framing when the gate baseline is red.
 
 ## Manual-Smoke Evidence
 

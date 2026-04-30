@@ -2,7 +2,7 @@
 
 Reference documentation for writing and verifying acceptance criteria (ACs) on tasks whose contract is unusually heavy. Each section captures one durable learning from a reviewer round where an AC line passed mechanically while still failing to enforce the property the AC named. The doc is project-agnostic: workers consult it when the AC ledger calls for extra rigor, then return to the task at hand.
 
-This doc grows over time. Today it covers ten clauses across five thematic families; further reviewer-flagged learnings (literal paths in ACs, diff-enumerated lines, probe-before-cleanup, and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
+This doc grows over time. Today it covers thirteen clauses across five thematic families; further reviewer-flagged learnings (closed-set / cardinality probes, stash-prod mutation tests, and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
 
 → See also: [`orchestration-patterns.md` § AC self-check](orchestration-patterns.md#ac-self-check) for the *invariant-vs-capability* phrasing rule, and [`orchestration-patterns.md` § Harness instantiation](orchestration-patterns.md#harness-instantiation) for the *falsifier-framing* rule. The two together describe both sides of an enforceable AC line; the clauses below extend them to specific recurring failure modes.
 
@@ -21,6 +21,10 @@ A test that traverses an AC's code path doesn't enforce its invariant. The harne
 ### Vacuous doc/config harness — same rule, doc artifacts
 
 The vacuous-harness rule applies equally to doc and config-shape ACs. Verification lines like "a reader can identify all five elements" or "removing the heading would break the entry" are vacuous: the only edit needed to falsify them is the assertion sentence itself. The non-vacuous shape for a doc AC is a concrete `body.includes("<literal>")` or `grep -F` check whose `false` outcome is naturally produced by removing the AC's required content. Every AC verification line — even for doc artifacts — must name a probe whose negative outcome is reachable by *violating the AC*, not by *editing the verification sentence*.
+
+### Probe before cleanup — distinguish 'AC satisfied' from 'cleanup hid the violation'
+
+A probe that runs after the implementation's automatic cleanup completes — SIGINT handler, atexit, defer, finally — is vacuous on the runtime artefact: it returns the same empty/missing result whether the AC was honoured or violated. Run probes against runtime state (filesystem entries, processes, ports) *before cleanup* fires, so the negative outcome distinguishes "AC violated" from "cleanup raced ahead." When cleanup is automatic, add a `--keep` flag, a debugger pause, or run the probe inside the implementation's own lifetime (a child process that probes then signals the parent). This extends the doc/config-harness clause to runtime-cleanup state — same shape failure: the assertion's `false` outcome must be reachable by violating the AC, not produced unconditionally by the harness.
 
 ## Proposal-as-canonical family
 
@@ -54,6 +58,10 @@ Byte-identity assertions are an unmarked contract surface that migrations and li
 
 AC-bearing side effects must appear as actual shell commands in the rendered template, not as agent-readable prose. When an AC asserts a side effect (file written, marker created, env var set), the side effect must appear as a *shell command* in the rendered template; agent-readable prose ("On success, create `{{MARKER}}`") cannot be pinned by a string-match test, so a regression in agent behaviour slips past CI. Default to encoding AC-bearing side effects as actual shell commands inside the same fenced block as their precondition; reserve prose for context the agent is expected to *interpret*, not *execute*. Tests then assert against the rendered template via literal-string match (`toContain('touch "...MARKER..."')`) rather than fuzzy "the agent should do this" verification.
 
+### Literal paths in ACs are literal — don't substitute the platform abstraction
+
+When an AC names a specific filesystem path (`/tmp/...`, `~/.config/...`, `/var/log/...`), treat the literal as a contract surface, not a hint. Substituting a "portable" temp helper — `mkdtempSync(join(tmpdir(), "..."))`, `os.tmpdir()`, `process.env.TMPDIR` — coincides with `/tmp/` on Linux but resolves to `/var/folders/<user>/<random>/T/...` on macOS, so the AC silently fails one platform while passing the other. Before signalling done, grep the implementation for `tmpdir`, `os.tmpdir`, or any `path.join` wrapping a portable temp helper; any hit against the AC's literal-path prefix is a divergence. Use `mkdtempSync("<literal-prefix>")` with the AC's literal prefix instead, so the cross-platform behaviour matches the contract verbatim.
+
 ## Verification-evidence family
 
 Verification evidence is read by the reviewer *after* the commit lands. Evidence formats that depend on the working tree (bare `git diff`, transient `/tmp/` paths) silently go empty once the work is committed.
@@ -61,6 +69,10 @@ Verification evidence is read by the reviewer *after* the commit lands. Evidence
 ### AC verification evidence must survive the commit boundary
 
 AC verification evidence must survive the commit boundary — citing bare `git diff` (no range) or `git diff HEAD` reads as "diff against the working tree" and goes empty once the change is committed. The reviewer reads the ledger after the commit lands, so pre-commit-only evidence stops instantiating its claim. Use either a symmetric `git diff main...HEAD -- <paths>` cross-check (stable across rebases of the topic branch) or line-numbered direct source reads on the post-commit tree (`file.ts:LINE` with the structural property quoted). An AC line citing bare `git diff` is a *form* defect (re-derive evidence) rather than an *implementation* defect — don't issue REQUEST_CHANGES on the underlying code if the assertion still holds via another harness.
+
+### Diff-enumerated verification lines go stale — anchor to invariants, not snapshots
+
+AC verification entries that enumerate observable artefacts (file lists, line counts, test counts, commit lists) are diff-coupled — they must be refreshed in the same turn as any commit that changes the things they enumerate. A verification line like "no edits to any test file" or "five files in diff" is correct at the moment it's written and silently wrong after the next commit lands a sibling test file or refactors a hunk. Anchor each verification line to the AC's invariant ("no `src/` paths in diff", "no pre-existing test files modified") rather than to a snapshot of the file list at that moment. The invariant is stable across rounds; the file list isn't, and a stale enumeration reads as evidence that no longer instantiates its claim.
 
 ## Baseline-aware framing family
 
