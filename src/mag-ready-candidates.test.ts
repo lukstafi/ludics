@@ -63,3 +63,20 @@ describe("getSortedReadyCandidates leaf filter (AC2)", () => {
     expect(getSortedReadyCandidates()).toEqual([]);
   });
 });
+
+describe("getSortedReadyCandidates excludes status: stale (AC 9)", () => {
+  test("stale tasks do not surface in the ready candidate list", () => {
+    // Harness condition: a stale task and a sibling ready task in the same
+    // harness. If the `status !== "ready"` filter were removed (or stale
+    // were treated as ready-eligible), the stale task would surface alongside
+    // the ready one.
+    writeTask("task-ready-sibling", {});
+    writeTask("task-stale-victim", { status: "stale" });
+
+    const ids = getSortedReadyCandidates().map((c) => c.id).sort();
+
+    expect(ids).toContain("task-ready-sibling");
+    // Invariant: status: stale MUST be excluded from the ready queue.
+    expect(ids).not.toContain("task-stale-victim");
+  });
+});

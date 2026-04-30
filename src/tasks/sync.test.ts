@@ -302,6 +302,38 @@ describe("tasksReconcileBlockedStatus", () => {
     }
   });
 
+  test("stale task with blockers is NOT flipped to blocked (stale is in skip list)", () => {
+    // Harness condition: a `stale` task with non-empty blocked_by. Without
+    // BLOCKED_RECONCILE_SKIP_STATUSES including stale, the reconciler would
+    // try to flip ready→blocked here. Since stale is terminal, it must be
+    // left alone.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    writeTaskWithBlockedBy(tasksDir, "task-stale-with-blockers", "stale", ["task-dep"]);
+    tasksReconcileBlockedStatus(tasksDir);
+
+    // Invariant: stale status survives the sweep verbatim.
+    expect(readFileSync(join(tasksDir, "task-stale-with-blockers.md"), "utf-8")).toContain("status: stale");
+  });
+
+  test("stale task with no blockers is NOT flipped to ready (stale is in skip list)", () => {
+    // Harness condition: a `stale` task with empty blocked_by. The
+    // status==="blocked" reset path must not catch stale tasks.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    writeTaskWithBlockedBy(tasksDir, "task-stale-no-blockers", "stale", []);
+    tasksReconcileBlockedStatus(tasksDir);
+
+    // Invariant: stale survives even with empty blocked_by.
+    const after = readFileSync(join(tasksDir, "task-stale-no-blockers.md"), "utf-8");
+    expect(after).toContain("status: stale");
+    expect(after).not.toContain("status: ready");
+  });
+
   test("does not change already-consistent statuses", () => {
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
@@ -423,6 +455,27 @@ describe("containerCompletionSweep", () => {
 
     tasksReconcileBlockedStatus(tasksDir);
     const entries = readQueueActions(join(harness, "mag", "queue.jsonl"));
+    expect(entries.filter(e => e.action === "verify-container-completion")).toHaveLength(0);
+  });
+
+  test("stale parent does not enqueue verify-container-completion (AC 6 — stale ∈ TERMINAL_FOR_PARENT)", () => {
+    // Harness condition: leaf:false parent is `stale`; both children are
+    // terminal. Without `stale` in TERMINAL_FOR_PARENT, the sweep would
+    // queue a verify-container-completion request for a task whose work
+    // has already been superseded.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(join(harness, "mag"), { recursive: true });
+    writeContainerTask(tasksDir, "task-stale-parent", "ludics", "stale");
+    writeChildTask(tasksDir, "task-stale-child-a", "task-stale-parent", "done");
+    writeChildTask(tasksDir, "task-stale-child-b", "task-stale-parent", "abandoned");
+
+    tasksReconcileBlockedStatus(tasksDir);
+    const entries = readQueueActions(join(harness, "mag", "queue.jsonl"));
+    // Invariant: stale parent is skipped — no verify-container-completion
+    // queued. Mutation: removing `stale` from TERMINAL_FOR_PARENT flips this
+    // assertion (the sweep would queue a request).
     expect(entries.filter(e => e.action === "verify-container-completion")).toHaveLength(0);
   });
 
@@ -593,6 +646,52 @@ dependencies:
     // it is unelaborated and ready. Removing the filter flips this assertion.
     expect(list).not.toContain("task-container");
     expect(list).toContain("task-leaf");
+  });
+
+  test("stale tasks are excluded from the needs-elaboration list (AC 6 scope expansion)", () => {
+    // Harness condition: a stale task that is both unelaborated AND has
+    // status: stale. Without `stale` in the skip list, the function would
+    // return its id, causing keepalive to auto-queue elaboration for a
+    // superseded task.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+
+    writeFileSync(join(tasksDir, "task-stale-unelaborated.md"), `---
+id: task-stale-unelaborated
+title: "stale-victim"
+project: ludics
+status: stale
+priority: B
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: null
+---
+`);
+    // Sibling unelaborated leaf — proves the function would have included
+    // the stale task if the filter were absent.
+    writeFileSync(join(tasksDir, "task-leaf-eligible.md"), `---
+id: task-leaf-eligible
+title: "leaf"
+project: ludics
+status: ready
+priority: B
+dependencies:
+  blocks: []
+  blocked_by: []
+  relates_to: []
+  subtask_of: null
+---
+`);
+
+    const list = tasksNeedsElaborationList(tasksDir);
+
+    // Invariant: stale tasks must not appear in the needs-elaboration list.
+    // Mutation: removing `stale` from the skip list flips this assertion.
+    expect(list).not.toContain("task-stale-unelaborated");
+    expect(list).toContain("task-leaf-eligible");
   });
 });
 

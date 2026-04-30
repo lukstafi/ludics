@@ -130,7 +130,12 @@ describe("tasksAbandon", () => {
     const tasksDir = join(harness, "tasks");
     mkdirSync(tasksDir, { recursive: true });
 
-    for (const status of ["done", "abandoned", "merged"]) {
+    // Harness condition: each terminal status (done, abandoned, merged, stale)
+    // must trip the abandon-path's TERMINAL_STATUSES guard. Adding `stale` to
+    // TERMINAL_STATUSES (AC 6) is what makes the stale iteration succeed —
+    // mutation: drop `stale` from TERMINAL_STATUSES and the stale loop
+    // iteration would no longer reject (tasksAbandon would re-flip status).
+    for (const status of ["done", "abandoned", "merged", "stale"]) {
       writeTaskFile(tasksDir, "task-term", { status });
       eventSpy.mockClear();
 

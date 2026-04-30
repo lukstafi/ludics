@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, renameSync } from "fs";
 import { extname, join } from "path";
 import { harnessDir } from "../config.ts";
-import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus, priorityValue, TASK_ID_RE } from "./markdown.ts";
+import { parseTaskFrontmatter, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, transitionStatus, priorityValue, TASK_ID_RE, TERMINAL_STATUSES, VALID_STATUSES } from "./markdown.ts";
 import { tasksSync, tasksConvert, tasksUpdate, tasksNeedsElaborationList, tasksQueueElaborations, contentFingerprint } from "./sync.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
@@ -364,7 +364,7 @@ function tasksDuplicates(): void {
   for (const f of files) {
     const content = readFileSync(join(dir, f), "utf-8");
     const fm = parseTaskFrontmatter(content);
-    if (["done", "abandoned", "merged"].includes(fm.status ?? "")) continue;
+    if (TERMINAL_STATUSES.includes(fm.status ?? "")) continue;
     if (!fm.title || !fm.id) continue;
 
     const fp = contentFingerprint(fm.title);
@@ -621,7 +621,7 @@ export async function tasksAbandon(
   const content = readFileSync(taskFile, "utf-8");
   const fm = parseTaskFrontmatter(content);
   const currentStatus = fm.status ?? "";
-  if (["done", "abandoned", "merged"].includes(currentStatus)) {
+  if (TERMINAL_STATUSES.includes(currentStatus)) {
     throw new Error(`task ${taskId} is already in terminal status: ${currentStatus}`);
   }
 

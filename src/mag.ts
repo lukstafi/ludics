@@ -29,7 +29,7 @@ import {
   expirePendingRevises,
   expirePendingFollowupRevises,
 } from "./notify.ts";
-import { updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, priorityValue } from "./tasks/markdown.ts";
+import { updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, priorityValue, TERMINAL_STATUSES } from "./tasks/markdown.ts";
 import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
@@ -2202,9 +2202,9 @@ function maybeUnstickAssignedSlots(): void {
     if (!existsSync(taskFile)) continue;
     const content = readFileSync(taskFile, "utf-8");
 
-    // Task already completed or abandoned — nothing to unstick
-    const unstickStatus = parseTaskFrontmatter(content).status;
-    if (unstickStatus === "done" || unstickStatus === "abandoned" || unstickStatus === "merged") continue;
+    // Task is terminal (done / abandoned / merged / stale) — nothing to unstick.
+    const unstickStatus = parseTaskFrontmatter(content).status ?? "";
+    if (TERMINAL_STATUSES.includes(unstickStatus)) continue;
 
     // Already has proposal — maybeAutoStartSlots handles this
     if (content.includes("\nproposal:")) continue;

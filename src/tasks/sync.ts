@@ -5,7 +5,7 @@ import { join } from "path";
 import { loadConfigSync, harnessDir, priorityProjects, preemptAutonomy, slotsCount, milestonesEnabledProjects } from "../config.ts";
 import { readAllSlotJson } from "../slots/json.ts";
 import { listStashes } from "../slots/preempt.ts";
-import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray, renderFrontmatterValue } from "./markdown.ts";
+import { writeTaskFile, updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, updateDependencyArray, renderFrontmatterValue, TERMINAL_STATUSES, BLOCKED_RECONCILE_SKIP_STATUSES } from "./markdown.ts";
 import { isElaborated } from "./elaboration.ts";
 import { emitEvent } from "../events.ts";
 import { queueRequest, queueHasPendingActionForTask, parseQueueLines } from "../queue.ts";
@@ -745,7 +745,7 @@ function healBlockedByLinks(tasksDir: string): TaskMap {
  */
 function containerCompletionSweep(taskMap: TaskMap): void {
   const TERMINAL_FOR_PARENT = new Set([
-    "done", "abandoned", "merged", "needs-confirmation",
+    "done", "abandoned", "merged", "stale", "needs-confirmation",
     "in-progress", "deferred", "preempt-queued", "preempted",
   ]);
   const TERMINAL_FOR_CHILD = new Set(["done", "abandoned"]);
@@ -824,7 +824,7 @@ function tasksReconcileBlockedStatus(tasksDir: string): void {
     const blockedBy = fm.dependencies.blocked_by;
 
     // Skip terminal and active statuses
-    if (["done", "abandoned", "merged", "in-progress", "deferred", "preempt-queued", "preempted"].includes(status)) continue;
+    if (BLOCKED_RECONCILE_SKIP_STATUSES.includes(status)) continue;
 
     if (blockedBy.length > 0 && status === "ready") {
       if (setFrontmatterScalar(filePath, "status", "blocked")) {
@@ -858,7 +858,7 @@ function tasksMilestoneWarnings(tasksDir: string): void {
 
     // Only warn for active (non-terminal) tasks
     const status = fm.status ?? "ready";
-    if (["done", "abandoned", "merged"].includes(status)) continue;
+    if (TERMINAL_STATUSES.includes(status)) continue;
 
     if (!milestonesProjects.has(fm.project ?? "")) continue;
 
@@ -923,7 +923,7 @@ function tasksNeedsElaborationList(tasksDir: string): string[] {
     if (!id) continue;
 
     const status = fm.status ?? "";
-    if (["merged", "done", "abandoned", "needs-confirmation"].includes(status)) continue;
+    if ([...TERMINAL_STATUSES, "needs-confirmation"].includes(status)) continue;
     // Container tasks (work split into subtasks) are not actionable; never
     // queue them for elaboration even if they happen to be unelaborated.
     if (fm.leaf === false) continue;
