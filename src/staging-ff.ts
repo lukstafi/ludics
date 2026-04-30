@@ -111,9 +111,9 @@ export function syncStagingMainWithUpstream(
     }
 
     // After `git fetch upstream` above, network connectivity + credentials
-    // are warm — use the authoritative `ls-remote --symref` tier so non-
-    // main/master defaults (e.g. `develop`, `trunk`) are detected correctly.
-    const branches = detectDefaultBranches(path, opts.runGit, { authoritative: true });
+    // are warm — opt into the `ls-remote --symref` tier so non-main/master
+    // defaults (e.g. `develop`, `trunk`) are detected correctly.
+    const branches = detectDefaultBranches(path, opts.runGit, { authoritativeIO: true });
     if (!branches.origin || !branches.upstream) {
       out.push({ project, outcome: "skipped-no-default-branch" });
       touchSentinel(sentinel, opts.now);

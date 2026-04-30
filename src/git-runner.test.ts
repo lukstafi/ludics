@@ -83,7 +83,7 @@ describe("git-runner helpers", () => {
     expect(b.upstream).toBeNull();
   });
 
-  test("detectDefaultBranches({ authoritative: true }): prefers local symbolic-ref when present", () => {
+  test("detectDefaultBranches({ authoritativeIO: true }): prefers local symbolic-ref when present", () => {
     // If symbolic-ref succeeds we should NOT call ls-remote (no network).
     const calls: string[][] = [];
     const rg: RunGit = (args) => {
@@ -96,13 +96,13 @@ describe("git-runner helpers", () => {
       }
       return { stdout: "", exitCode: 0 };
     };
-    const b = detectDefaultBranches("/x", rg, { authoritative: true });
+    const b = detectDefaultBranches("/x", rg, { authoritativeIO: true });
     expect(b.origin).toBe("main");
     expect(b.upstream).toBe("main");
     expect(calls.some((c) => c[0] === "ls-remote")).toBe(false);
   });
 
-  test("detectDefaultBranches({ authoritative: true }): falls back to ls-remote --symref when symbolic-ref fails", () => {
+  test("detectDefaultBranches({ authoritativeIO: true }): falls back to ls-remote --symref when symbolic-ref fails", () => {
     const rg = fakeGit([
       { match: ["symbolic-ref"], stdout: "", exitCode: 128 },
       {
@@ -114,24 +114,24 @@ describe("git-runner helpers", () => {
         stdout: "ref: refs/heads/trunk\tHEAD\n0123abc\tHEAD\n",
       },
     ]);
-    const b = detectDefaultBranches("/x", rg, { authoritative: true });
+    const b = detectDefaultBranches("/x", rg, { authoritativeIO: true });
     expect(b.origin).toBe("trunk");
     expect(b.upstream).toBe("develop");
   });
 
-  test("detectDefaultBranches({ authoritative: true }): ls-remote failure falls through to main/master probe", () => {
+  test("detectDefaultBranches({ authoritativeIO: true }): ls-remote failure falls through to main/master probe", () => {
     const rg = fakeGit([
       { match: ["symbolic-ref"], stdout: "", exitCode: 128 },
       { match: ["ls-remote"], stdout: "", exitCode: 128 },
       { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/main"], stdout: "feedface\n" },
       { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"], stdout: "deadbeef\n" },
     ]);
-    const b = detectDefaultBranches("/x", rg, { authoritative: true });
+    const b = detectDefaultBranches("/x", rg, { authoritativeIO: true });
     expect(b.origin).toBe("main");
     expect(b.upstream).toBe("main");
   });
 
-  test("detectDefaultBranches({ authoritative: true }): ls-remote without `ref:` line falls through", () => {
+  test("detectDefaultBranches({ authoritativeIO: true }): ls-remote without `ref:` line falls through", () => {
     const rg = fakeGit([
       { match: ["symbolic-ref"], stdout: "", exitCode: 128 },
       // exit 0 but stdout lacks "ref: refs/heads/..." — treat as unknown and fall through.
@@ -139,7 +139,7 @@ describe("git-runner helpers", () => {
       { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/master"], stdout: "x\n" },
       { match: ["rev-parse", "--verify", "--quiet", "refs/remotes/upstream/master"], stdout: "x\n" },
     ]);
-    const b = detectDefaultBranches("/x", rg, { authoritative: true });
+    const b = detectDefaultBranches("/x", rg, { authoritativeIO: true });
     expect(b.origin).toBe("master");
     expect(b.upstream).toBe("master");
   });
@@ -153,7 +153,7 @@ describe("git-runner helpers", () => {
     const rg: RunGit = (args) => {
       calls.push(args.slice());
       // Force the cascade past the symref tier so the bug — ls-remote
-      // firing in non-authoritative mode — would be observable.
+      // firing when authoritativeIO is unset — would be observable.
       if (args[0] === "symbolic-ref") return { stdout: "", exitCode: 128 };
       if (args[0] === "rev-parse" && args[3]?.endsWith("/main")) {
         return { stdout: "deadbeef\n", exitCode: 0 };
@@ -162,7 +162,7 @@ describe("git-runner helpers", () => {
     };
     detectDefaultBranches("/x", rg);
     expect(calls.some((c) => c[0] === "ls-remote")).toBe(false);
-    // And for authoritative: false explicitly, same guarantee.
+    // And for authoritativeIO: false explicitly, same guarantee.
     const calls2: string[][] = [];
     const rg2: RunGit = (args) => {
       calls2.push(args.slice());
@@ -172,7 +172,7 @@ describe("git-runner helpers", () => {
       }
       return { stdout: "", exitCode: 128 };
     };
-    detectDefaultBranches("/x", rg2, { authoritative: false });
+    detectDefaultBranches("/x", rg2, { authoritativeIO: false });
     expect(calls2.some((c) => c[0] === "ls-remote")).toBe(false);
   });
 });
