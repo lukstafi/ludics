@@ -102,6 +102,27 @@ describe("parseOrchestrationAdapterArgs", () => {
     expect(parsed.orchestration?.agents[1]?.name).toBe("reviewer");
     expect(parsed.orchestration?.agents[1]?.provider).toBe("claude-code");
   });
+
+  test("--auto-recover-wrong-filename sets autoRecoverWrongFilename to true", () => {
+    const parsed = parseOrchestrationAdapterArgs("--pair --auto-recover-wrong-filename");
+    expect(parsed.orchestration?.config.autoRecoverWrongFilename).toBe(true);
+  });
+
+  test("--no-auto-recover-wrong-filename sets autoRecoverWrongFilename to false", () => {
+    const parsed = parseOrchestrationAdapterArgs("--pair --no-auto-recover-wrong-filename");
+    expect(parsed.orchestration?.config.autoRecoverWrongFilename).toBe(false);
+  });
+
+  test("default autoRecoverWrongFilename is true when no flag is passed", () => {
+    const parsed = parseOrchestrationAdapterArgs("--pair");
+    // Adapter parser writes a partial config; the absence of an explicit
+    // toggle leaves the field unset, and defaultOrchestrationConfig() (used
+    // when the partial is plumbed through tmux/t3code start paths) supplies
+    // the default. The runtime-effective default is asserted in
+    // wrong-filename-recovery.test.ts; this assertion locks in that the
+    // adapter parser does NOT silently force the field to false.
+    expect(parsed.orchestration?.config.autoRecoverWrongFilename).not.toBe(false);
+  });
 });
 
 describe("orchestratedThreadTitle", () => {
