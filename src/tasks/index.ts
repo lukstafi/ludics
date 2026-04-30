@@ -817,6 +817,13 @@ export async function runTasks(args: string[]): Promise<void> {
           `unexpected trailing arguments: ${args.slice(3).join(" ")} (usage: tasks status <task-id> <status>)`,
         );
       }
+      // Path-safety guard: reject IDs containing `/`, `..`, or other
+      // characters that would let `join(tasksDir(), `${id}.md`)` escape the
+      // tasks directory or touch a sibling file. Mirrors the guard in
+      // tasksSetPriority (line 657).
+      if (!TASK_ID_RE.test(id)) {
+        throw new Error(`invalid task ID: ${id} (must match ${TASK_ID_RE})`);
+      }
       if (!(VALID_STATUSES as readonly string[]).includes(value)) {
         throw new Error(
           `invalid status: ${value} (use one of: ${VALID_STATUSES.join(", ")})`,

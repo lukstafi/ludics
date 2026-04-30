@@ -101,6 +101,54 @@ describe("ludics tasks status <id> <status> (AC 12)", () => {
     ).rejects.toThrow(/task not found/);
   });
 
+  test("rejects path-traversal task IDs before any sibling file is touched (TASK_ID_RE guard)", async () => {
+    // Harness condition: a *sibling* directory next to tasks/ contains a
+    // decoy file whose path would be reachable via `../decoy/sibling.md`
+    // if the CLI did `join(tasksDir(), `${id}.md`)` without validation.
+    // The decoy file is non-empty and has no frontmatter, so any
+    // updateFrontmatterField mutation would either leave a `.tmp` sibling
+    // or rewrite the file's contents. We assert the file is byte-identical
+    // before and after the rejected call.
+    const harnessDir = harness();
+    mkdirSync(join(harnessDir, "tasks"), { recursive: true });
+    const decoyDir = join(harnessDir, "decoy");
+    mkdirSync(decoyDir, { recursive: true });
+    const decoyFile = join(decoyDir, "sibling.md");
+    const decoyContent = "# Decoy — must not be touched by the CLI\n";
+    writeFileSync(decoyFile, decoyContent);
+
+    // Each rejected ID below contains a character TASK_ID_RE explicitly
+    // forbids (`/`, space, `$`, `..` with leading slash). Without the
+    // guard the first id would resolve to `<tasks>/../decoy/sibling.md`
+    // — escaping the tasks directory and overwriting the decoy file.
+    // (Note: a bare `..` happens to be safe because `${id}.md` renders as
+    // `...md` and lands inside the tasks dir; we don't include it because
+    // TASK_ID_RE *accepts* it, so a "rejected" assertion would be wrong.
+    // We test the IDs the regex truly rejects.)
+    const malicious = [
+      "../decoy/sibling",
+      "task/sub",
+      "task with space",
+      "task$injection",
+    ];
+
+    for (const id of malicious) {
+      const before = readFileSync(decoyFile, "utf-8");
+      await expect(
+        silenceConsoleError(async () => runTasks(["status", id, "ready"])),
+      ).rejects.toThrow(/invalid task ID/);
+      // Invariant: the rejection happens at the CLI boundary, BEFORE the
+      // join+updateFrontmatterField sequence. Mutation: drop the
+      // TASK_ID_RE.test guard and the first iteration's `..` path would
+      // resolve to `<harness>/tasks/../decoy/sibling.md` — the
+      // updateFrontmatterField call would either touch the decoy file or
+      // throw a different error path (not "invalid task ID").
+      const after = readFileSync(decoyFile, "utf-8");
+      expect(after).toBe(decoyContent);
+      expect(after).toBe(before);
+    }
+  });
+
   test("accepts every status in VALID_STATUSES (smoke loop)", async () => {
     // Harness condition: a fresh fixture for each iteration. Mutation: drop
     // a status from VALID_STATUSES and the corresponding loop iteration
