@@ -220,6 +220,38 @@ describe("generateHealthData", () => {
     expect(second.doctor.output).toBe(first.doctor.output);
     expect(second.doctor.timestamp).toBe(first.doctor.timestamp);
   });
+
+  test("doctor cache TTL eviction replaces the cached record (identity assertion)", async () => {
+    const {
+      generateHealthData,
+      _resetDoctorCache,
+      _setDoctorCacheCachedAt,
+      _peekDoctorCache,
+    } = await import("./dashboard.ts");
+    _resetDoctorCache();
+
+    // First read materializes the cache record; capture pre-eviction reference.
+    generateHealthData();
+    const beforeEviction = _peekDoctorCache();
+    expect(beforeEviction).not.toBeNull();
+
+    // Mid-fill identity assertion: a second read inside TTL must serve the
+    // same record by reference (not just field-equivalent). This is the
+    // "cache is serving by identity until eviction" rung from
+    // markdown.test.ts:583-680.
+    generateHealthData();
+    expect(_peekDoctorCache()).toBe(beforeEviction);
+
+    // Back-date `cachedAt` past the 5-minute TTL boundary so the next read
+    // forces a re-spawn deterministically (no clock waiting).
+    _setDoctorCacheCachedAt(Date.now() - 600_000);
+
+    generateHealthData();
+    const afterEviction = _peekDoctorCache();
+    expect(afterEviction).not.toBeNull();
+    // Post-eviction identity is broken: a fresh record was constructed.
+    expect(afterEviction).not.toBe(beforeEviction);
+  });
 });
 
 describe("generateNotifications shape guard", () => {

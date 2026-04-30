@@ -355,10 +355,39 @@ export function postponedProjects(): Set<string> {
   return new Set((config.projects ?? []).filter((p) => p.postponed).map((p) => p.name.toLowerCase()));
 }
 
-let _postponedProjectsCache: Set<string> | null = null;
-export function postponedProjectSet(): Set<string> {
-  if (!_postponedProjectsCache) _postponedProjectsCache = postponedProjects();
+/**
+ * Wrap a Set in a Proxy that throws on any mutator method, so cached singletons
+ * cannot be polluted by callers (`postponedProjectSet().add(x)`). `Object.freeze`
+ * is inert on Set — `.add()` / `.delete()` / `.clear()` still mutate the backing
+ * store. The Proxy enforces the read-only contract at runtime; the public return
+ * type is `ReadonlySet<string>` so TypeScript blocks mutation calls at compile time.
+ */
+function readonlySet<T>(set: Set<T>): ReadonlySet<T> {
+  return new Proxy(set, {
+    get(target, prop) {
+      if (prop === "add" || prop === "delete" || prop === "clear") {
+        throw new TypeError(`readonly Set: '${String(prop)}' is not allowed`);
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as ReadonlySet<T>;
+}
+
+// Cached singleton of postponed-project names. Audit (gh-ludics-405): callers
+// in mag.ts and flow.ts use `.has()` only, but the structural hazard remains —
+// any future caller doing `postponedProjectSet().add(x)` would permanently
+// pollute the cache. The Proxy mutator-trap closes that hazard at runtime;
+// `ReadonlySet<string>` closes it at compile time.
+let _postponedProjectsCache: ReadonlySet<string> | null = null;
+export function postponedProjectSet(): ReadonlySet<string> {
+  if (!_postponedProjectsCache) _postponedProjectsCache = readonlySet(postponedProjects());
   return _postponedProjectsCache;
+}
+
+/** Test-only: reset cached postponed-project set. Not exported via index.ts. */
+export function _resetPostponedProjectsCache(): void {
+  _postponedProjectsCache = null;
 }
 
 export function preemptAutonomy(): "auto" | "suggest" {
@@ -455,13 +484,25 @@ export function resolveProposalsPath(projectDir: string, configuredPath?: string
   return join(projectDir, "docs", "proposals");
 }
 
-/** Set of projects with `priority: true` in config, cached per process. */
-let _priorityProjectsCache: Set<string> | null = null;
-function priorityProjectSet(): Set<string> {
+/**
+ * Set of projects with `priority: true` in config, cached per process.
+ * Audit (gh-ludics-405): `priorityProjectSet` is module-private and only
+ * `.has()` is read by callers, but it shares the same structural hazard as
+ * `postponedProjectSet` — a singleton mutable Set returned by getter. Same
+ * Proxy + ReadonlySet strategy applied for consistency with the postponed
+ * cache; both sites use `readonlySet()`.
+ */
+let _priorityProjectsCache: ReadonlySet<string> | null = null;
+function priorityProjectSet(): ReadonlySet<string> {
   if (!_priorityProjectsCache) {
-    _priorityProjectsCache = new Set(priorityProjects().map((p) => p.toLowerCase()));
+    _priorityProjectsCache = readonlySet(new Set(priorityProjects().map((p) => p.toLowerCase())));
   }
   return _priorityProjectsCache;
+}
+
+/** Test-only: reset cached priority-project set. Not exported via index.ts. */
+export function _resetPriorityProjectsCache(): void {
+  _priorityProjectsCache = null;
 }
 
 /**

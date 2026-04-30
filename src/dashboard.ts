@@ -980,12 +980,38 @@ function generateBriefing(): Record<string, unknown> {
 
 // --- Generate health.json ---
 
+/**
+ * Audit (gh-ludics-405): skip-with-rationale on the deep-freeze retrofit.
+ * `generateHealthData` returns a fresh shallow `{ output, timestamp }` literal
+ * built at the return site (see below) — callers never receive the cached
+ * record itself, so mutation through the returned object cannot pollute the
+ * cache. The identity-based TTL eviction test still applies: see
+ * `_setDoctorCacheCachedAt` below and `dashboard.test.ts`'s
+ * "doctor cache TTL eviction replaces the cached record" test.
+ */
 let doctorCache: { output: string; timestamp: string; cachedAt: number } | null = null;
 const DOCTOR_CACHE_TTL = 300_000; // 5 minutes
 
 /** Exported for testing; resets the doctor subprocess cache. */
 export function _resetDoctorCache(): void {
   doctorCache = null;
+}
+
+/**
+ * Test-only: back-date the doctor cache's `cachedAt` so the next read crosses
+ * the TTL boundary deterministically. Not exported via index.ts.
+ */
+export function _setDoctorCacheCachedAt(epochMs: number): void {
+  if (doctorCache) doctorCache.cachedAt = epochMs;
+}
+
+/**
+ * Test-only: peek the underlying cached record reference so identity-based
+ * eviction tests can compare pre/post-TTL references directly. Not exported
+ * via index.ts.
+ */
+export function _peekDoctorCache(): { output: string; timestamp: string; cachedAt: number } | null {
+  return doctorCache;
 }
 
 export function generateHealthData(): Record<string, unknown> {
