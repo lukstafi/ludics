@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -669,30 +669,39 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     expect(resp.status).toBe(400);
   });
 
-  test("buildHandlers gives each call its own lastGenerated counter (isolation)", async () => {
-    // Regression test for AC: dispatcher owns its own lastGenerated counter
-    // (one per factory call, isolated between callers). If lastGenerated were
-    // shared (e.g. module-level), regen-resetting endpoints called against
-    // handler A would influence handler B's regen state.
+  test("buildHandlers isolates lastGenerated debounce state across factory calls", async () => {
+    // AC1 falsifier: each buildHandlers(...) call must own its own
+    // lastGenerated counter. The handler debounces dashboardGenerate() via
+    // `now - lastGenerated >= ttlSeconds`. If lastGenerated were shared
+    // (e.g. module-level), handlerA's first /data hit would advance it for
+    // handlerB too, and handlerB's first /data hit would skip regeneration
+    // — failing the third assertion below. With per-factory state,
+    // handlerB starts at lastGenerated=0 and triggers its own regen.
+    const dashboardMod = await import("./dashboard.ts");
     const { buildHandlers } = await import("./dashboard-server.ts");
-    const { queueRequest } = await import("./queue.ts");
     const dashboardDir = join(harnessDir(), "dashboard");
     mkdirSync(dashboardDir, { recursive: true });
     mkdirSync(join(dashboardDir, "data"), { recursive: true });
 
-    const handlerA = buildHandlers({ dashboardDir, ttlSeconds: 3600 });
-    const handlerB = buildHandlers({ dashboardDir, ttlSeconds: 3600 });
-    expect(handlerA).not.toBe(handlerB);
+    const spy = spyOn(dashboardMod, "dashboardGenerate").mockImplementation(() => {});
+    try {
+      const handlerA = buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+      const handlerB = buildHandlers({ dashboardDir, ttlSeconds: 3600 });
 
-    // Each handler must independently dispatch identical requests.
-    const idA = queueRequest({ action: "briefing" });
-    const respA = await handlerA(new Request("http://x/api/queue", { method: "GET" }));
-    const respB = await handlerB(new Request("http://x/api/queue", { method: "GET" }));
-    expect(respA.status).toBe(200);
-    expect(respB.status).toBe(200);
-    const bodyA = await respA.json() as { pending: { id: string }[] };
-    const bodyB = await respB.json() as { pending: { id: string }[] };
-    expect(bodyA.pending.map(p => p.id)).toEqual([idA]);
-    expect(bodyB.pending.map(p => p.id)).toEqual([idA]);
+      // handlerA, first /data/* hit: lastGenerated=0, ttlSeconds=3600 → regen.
+      await handlerA(new Request("http://x/data/slots.json"));
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // handlerA, second /data/* hit within TTL: no regen (debounce works).
+      await handlerA(new Request("http://x/data/slots.json"));
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // handlerB, first /data/* hit: independent counter starts at 0, so
+      // it must regen. With shared state this would still be 1.
+      await handlerB(new Request("http://x/data/slots.json"));
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
