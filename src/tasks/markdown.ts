@@ -209,19 +209,22 @@ export function frontmatterBounds(lines: string[]): { openLine: number; closeLin
   return null;
 }
 
-export function updateFrontmatterField(filePath: string, field: string, value: string): void {
+export function updateFrontmatterField(filePath: string, field: string, value: string | null): void {
   if (!existsSync(filePath)) return;
   const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n");
   const bounds = frontmatterBounds(lines);
   if (!bounds) return;
 
+  // Normalize JS null and empty string to the canonical YAML null token.
+  const rendered = (value === null || value === "") ? "null" : value;
+
   let done = false;
   const output: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
     if (i > bounds.openLine && i < bounds.closeLine && !done && lines[i]!.startsWith(`${field}:`)) {
-      output.push(`${field}: ${value}`);
+      output.push(`${field}: ${rendered}`);
       done = true;
       continue;
     }
@@ -230,13 +233,13 @@ export function updateFrontmatterField(filePath: string, field: string, value: s
 
   if (!done) {
     // Upsert: insert before the frontmatter closing ---
-    output.splice(bounds.closeLine, 0, `${field}: ${value}`);
+    output.splice(bounds.closeLine, 0, `${field}: ${rendered}`);
   }
 
   atomicWriteFileSync(filePath, output.join("\n"));
 }
 
-export function addFrontmatterField(filePath: string, field: string, value: string): void {
+export function addFrontmatterField(filePath: string, field: string, value: string | null): void {
   updateFrontmatterField(filePath, field, value);
 }
 

@@ -270,7 +270,7 @@ function tasksMerge(targetId: string, sourceIds: string[]): void {
       continue;
     }
     addFrontmatterField(srcFile, "merged_into", targetId);
-    updateFrontmatterField(srcFile, "slot", "null");
+    updateFrontmatterField(srcFile, "slot", null);
     mergedIds.push(srcId);
     console.log(`Merged: ${srcId} -> ${targetId}`);
   }
