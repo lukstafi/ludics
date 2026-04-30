@@ -135,7 +135,12 @@ export function formatViolation(v: Violation): string {
 }
 
 if (import.meta.main) {
-  const root = join(import.meta.dir, "..");
+  // Optional first positional arg overrides the repo root, which lets tests
+  // exercise the real CLI exit-code paths against a temp directory built with
+  // the same `templates/dashboard/vendor/...` + `node_modules/...` shape that
+  // PAIRS expects. Mirrors `lint-template-safety.ts`'s argv override.
+  const argRoot = process.argv[2];
+  const root = argRoot ? argRoot : join(import.meta.dir, "..");
   const violations = checkPairs(root);
   if (violations.length === 0) {
     console.log(

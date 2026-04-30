@@ -207,4 +207,86 @@ describe("CLI integration", () => {
     }
     expect(result.exitCode).toBe(0);
   });
+
+  test("exits 0 against a tmp fixture root where every PAIR matches", () => {
+    // Mirror the real PAIRS shape so the script's hardcoded paths resolve
+    // inside the tmp root.
+    const { root, cleanup } = makeFixture({
+      "templates/dashboard/vendor/marked.esm.js": "MARKED IDENTICAL\n",
+      "node_modules/marked/lib/marked.esm.js": "MARKED IDENTICAL\n",
+      "templates/dashboard/vendor/purify.es.js": "PURIFY IDENTICAL\n",
+      "node_modules/dompurify/dist/purify.es.mjs": "PURIFY IDENTICAL\n",
+    });
+    try {
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-vendor-sync.ts"), root],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString()).toContain("byte-for-byte");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("exits non-zero when a tmp fixture has one drifting PAIR (drives import.meta.main)", () => {
+    // The "exits 1 on drift" AC is what this lint exists to enforce; without a
+    // CLI-path test instantiating drift, the claim rests on inspection of the
+    // import.meta.main block. This harness builds the same path layout PAIRS
+    // expects, makes one upstream byte-different from its vendored copy, and
+    // proves the real script returns a non-zero exit code.
+    const { root, cleanup } = makeFixture({
+      "templates/dashboard/vendor/marked.esm.js": "MARKED VENDORED\n",
+      "node_modules/marked/lib/marked.esm.js": "MARKED UPSTREAM\n", // ← drift
+      "templates/dashboard/vendor/purify.es.js": "PURIFY IDENTICAL\n",
+      "node_modules/dompurify/dist/purify.es.mjs": "PURIFY IDENTICAL\n",
+    });
+    try {
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-vendor-sync.ts"), root],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).not.toBe(0);
+      const stderr = result.stderr.toString();
+      expect(stderr).toContain("vendor-sync");
+      // Failure-message AC (proposal): both paths, both byte counts, and the
+      // exact cp command must appear in the rendered output.
+      expect(stderr).toContain("templates/dashboard/vendor/marked.esm.js");
+      expect(stderr).toContain("node_modules/marked/lib/marked.esm.js");
+      expect(stderr).toContain("MARKED VENDORED\n".length.toString());
+      expect(stderr).toContain("MARKED UPSTREAM\n".length.toString());
+      expect(stderr).toContain(
+        "cp node_modules/marked/lib/marked.esm.js templates/dashboard/vendor/marked.esm.js",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("exits non-zero with bun-install hint when upstream is missing", () => {
+    // Failure-message AC (proposal): missing upstream → message names the
+    // pair AND points at `bun install` rather than `cp`.
+    const { root, cleanup } = makeFixture({
+      "templates/dashboard/vendor/marked.esm.js": "MARKED\n",
+      // marked upstream intentionally omitted
+      "templates/dashboard/vendor/purify.es.js": "PURIFY\n",
+      "node_modules/dompurify/dist/purify.es.mjs": "PURIFY\n",
+    });
+    try {
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-vendor-sync.ts"), root],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr.toString()).toContain("bun install");
+    } finally {
+      cleanup();
+    }
+  });
 });
