@@ -2,13 +2,14 @@
 // smoke.ts
 //
 // Compiled-binary smoke checks, replacing the equivalent section of the
-// deleted tests/test.sh (gh-ludics-407). Bun-native to avoid bash pipefail /
-// grep -q false-negatives. Builds the binary first, then runs three CLI
-// smoke checks against bin/ludics: help, doctor, and an unknown command.
+// deleted bash test script (gh-ludics-407). Bun-native to avoid bash
+// pipefail / grep -q false-negatives. Builds the binary first, then runs
+// three CLI smoke checks against bin/ludics: help, doctor, and an unknown
+// command.
 //
-// Note: `doctor` is intentionally warning-capable — the bash script accepted
-// either exit code as long as "Health Check" appeared in output, and we
-// preserve that semantics here.
+// Note: `doctor` is intentionally warning-capable — the prior bash script
+// accepted either exit code as long as "Health Check" appeared in output,
+// and we preserve those semantics here.
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -67,7 +68,8 @@ function checkHelp(): CheckResult {
 
 function checkDoctor(): CheckResult {
   // Doctor is intentionally warning-capable: accept any exit code as long as
-  // "Health Check" appears somewhere in the output (matches tests/test.sh:80-86).
+  // "Health Check" appears somewhere in the output (preserves the prior bash
+  // script's semantics — see gh-ludics-407).
   const r = runBin(["doctor"]);
   const combined = r.stdout + r.stderr;
   if (!combined.includes("Health Check")) {

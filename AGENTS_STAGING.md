@@ -75,9 +75,10 @@ In fresh worktrees, run bun install before bun run typecheck or bun run build. W
 
 <!-- End entry -->
 <!-- Entry: gh-ludics-30-followup-coder | 2026-03-05T19:36:15+0100 -->
-### Smoke Test Precondition and Pipefail Gotcha
+### Smoke and Hook Lint Precondition
 
-- `tests/test.sh` expects `bin/ludics` to exist; run `bun run build` before smoke tests in a fresh checkout.
-- The smoke checks using `echo "$output" | grep -q ...` can produce false negatives under `set -o pipefail`, because `grep -q` exits early and upstream `echo` can fail with SIGPIPE. If output appears contradictory, validate command and grep exit codes separately.
+- `bun run smoke` builds the binary and runs the CLI smoke checks in one shot — no separate `bun run build` needed in a fresh checkout.
+- `bun run lint:hooks` runs `shellcheck` over `templates/hooks/*.sh`; it skips cleanly with a non-error message when `shellcheck` is not installed.
+- Both targets are TypeScript (`scripts/smoke.ts`, `scripts/lint-hooks.ts`) using `Bun.spawnSync` for explicit exit-code inspection, so the previous `set -o pipefail` + `grep -q` SIGPIPE gotcha no longer applies.
 
 <!-- End entry -->

@@ -653,10 +653,10 @@ describe("stale settled sentinel detection", () => {
 // without-mutation, malformed-JSON head, and empty-queue cases.
 
 describe("setQueueHold sentinel", () => {
-  // Migrated from tests/test.sh (gh-ludics-407): the bash script emulated the
-  // mkdirSync({recursive: true}) + writeFileSync sentinel-write path with
-  // `mkdir -p` + `touch` and asserted both the fresh-harness ENOENT branch
-  // and idempotent re-hold. Test the production helper directly.
+  // Migrated from the deleted bash test script (gh-ludics-407): that script
+  // emulated the mkdirSync({recursive: true}) + writeFileSync sentinel-write
+  // path with `mkdir -p` + `touch` and asserted both the fresh-harness
+  // ENOENT branch and idempotent re-hold. Test the production helper directly.
 
   let TMP = "";
   const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;

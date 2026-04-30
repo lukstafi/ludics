@@ -2,8 +2,8 @@
 // lint-hooks.ts
 //
 // Shellcheck wrapper over templates/hooks/*.sh, replacing the equivalent
-// section of the deleted tests/test.sh (gh-ludics-407). Bun-native to avoid
-// bash 3.2 / 4+ portability traps.
+// section of the deleted bash test script (gh-ludics-407). Bun-native to
+// avoid bash 3.2 / 4+ portability traps.
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";

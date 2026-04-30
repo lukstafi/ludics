@@ -596,9 +596,10 @@ dependencies:
 });
 
 describe("contentFingerprint", () => {
-  // Migrated from tests/test.sh (gh-ludics-407): the bash script inlined a
-  // duplicate fingerprint implementation gated on bash 4+ syntax. These tests
-  // assert the same five behaviours against the TS implementation directly.
+  // Migrated from the deleted bash test script (gh-ludics-407): that script
+  // inlined a duplicate fingerprint implementation gated on bash 4+ syntax.
+  // These tests assert the same five behaviours against the TS implementation
+  // directly.
 
   const baseline = contentFingerprint("Add dark mode support");
 

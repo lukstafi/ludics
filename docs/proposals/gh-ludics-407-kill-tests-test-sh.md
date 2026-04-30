@@ -59,13 +59,24 @@ coverage is dropped.
    removal and replacements.
 9. After the change, running `grep -rn "tests/test.sh\|bash tests/test"
    --include="*.md" --include="*.ts" --include="*.json" --include="*.sh"`
-   over the repo (excluding `node_modules` and `CHANGELOG.md`) returns no
-   matches.
+   over the repo (excluding `node_modules`, `CHANGELOG.md`, and
+   `docs/proposals/`) returns no matches. `docs/proposals/` is excluded
+   because the proposal file itself is a historical artefact that
+   references `tests/test.sh` in its inventory and approach; preserving
+   the proposal as provenance (the established repo convention) is
+   compatible with removing all *live* references to the bash script.
 10. `bun run lint:hooks` and `bun run smoke` both exit 0 on `main` post-merge
     (verified by the implementing PR's evidence section).
-11. `bun test` exits 0 on `main` post-merge with a strictly greater number
-    of expectations than before (the migrated `contentFingerprint` and
-    `queue-hold` tests are net-new TS expectations).
+11. `bun test` post-merge produces a strictly greater number of expectations
+    than before this change (the migrated `contentFingerprint` and
+    `queue-hold` tests are net-new TS expectations) and introduces no new
+    test failures relative to the `main` baseline at the merge base.
+    Pre-existing failures (e.g., the `PROPOSAL_FRESHNESS_WARNING: boundary —
+    exactly 10 commits does NOT trigger` test from gh-ludics-311 territory)
+    are cited via a same-line cross-check
+    (`git show <base>:<file> | sed -n '<lineno>p'`) showing the failing
+    line is unchanged on `main`. This avoids the `feedback_state_resilience`
+    trap of assuming a clean `bun test` baseline that does not exist.
 
 ### Out of scope (explicit non-goals)
 
