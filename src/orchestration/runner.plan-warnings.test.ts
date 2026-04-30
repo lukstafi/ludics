@@ -229,8 +229,8 @@ describe("warnStaleBase", () => {
     expect(lastWarning(emitSpy)!.message).toMatch(/5 commit/);
     expect(lastWarning(emitSpy)!.message).toContain("origin/main");
     expect(lastWarning(emitSpy)!.message).toContain("git rebase");
-    expect(state.staleBaseLastWarnedCount).toBe(5);
-    expect(state.staleBaseLastWarnedRound).toBe(1);
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(5);
+    expect(state.staleBaseLastWarned?.coder?.round).toBe(1);
   });
 
   test("no warning when below threshold (happy path)", () => {
@@ -239,7 +239,7 @@ describe("warnStaleBase", () => {
     warnStaleBase(state);
     expect(countWarnings(emitSpy)).toBe(0);
     // Memo reset to 0 for current round but no warning fired.
-    expect(state.staleBaseLastWarnedCount).toBe(0);
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(0);
   });
 
   test("custom threshold honored", () => {
@@ -257,7 +257,7 @@ describe("warnStaleBase", () => {
     warnStaleBase(state);
     expect(countWarnings(emitSpy)).toBe(0);
     // Dedup memo untouched.
-    expect(state.staleBaseLastWarnedRound).toBeUndefined();
+    expect(state.staleBaseLastWarned).toBeUndefined();
 
     process.env.LUDICS_WARN_BASE_STALENESS_THRESHOLD = "-1";
     warnStaleBase(state);
@@ -315,8 +315,7 @@ describe("warnStaleBase", () => {
 
     // Must not emit (fetch failed) and must not update the dedup memo.
     expect(countWarnings(emitSpy)).toBe(0);
-    expect(state.staleBaseLastWarnedCount).toBeUndefined();
-    expect(state.staleBaseLastWarnedRound).toBeUndefined();
+    expect(state.staleBaseLastWarned).toBeUndefined();
   });
 
   test("missing worktree path silently skipped", () => {
@@ -355,7 +354,7 @@ describe("warnStaleBase", () => {
     advanceOriginMain(repoDir, 3);
     warnStaleBase(state);
     expect(countWarnings(emitSpy)).toBe(2);
-    expect(state.staleBaseLastWarnedCount).toBe(8);
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(8);
   });
 
   test("dedup: resets on round change — re-fires at same or growing count", () => {
@@ -367,8 +366,8 @@ describe("warnStaleBase", () => {
     state.round = 2;
     warnStaleBase(state);
     expect(countWarnings(emitSpy)).toBe(2);
-    expect(state.staleBaseLastWarnedRound).toBe(2);
-    expect(state.staleBaseLastWarnedCount).toBe(5);
+    expect(state.staleBaseLastWarned?.coder?.round).toBe(2);
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(5);
   });
 
   test("dedup: re-arms after staleness decreases within same round (rebase → drift)", () => {
@@ -381,7 +380,7 @@ describe("warnStaleBase", () => {
     const state = stateFor(worktree, repoDir);
     warnStaleBase(state);
     expect(countWarnings(emitSpy)).toBe(1);
-    expect(state.staleBaseLastWarnedCount).toBe(10);
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(10);
 
     // Simulate `git rebase origin/main` in the worktree — fast-forwards to
     // origin/main since the worktree branch has no commits of its own.
@@ -397,7 +396,7 @@ describe("warnStaleBase", () => {
     // Running warnStaleBase now should observe count=0 and re-arm the memo.
     warnStaleBase(state);
     expect(countWarnings(emitSpy)).toBe(1); // below threshold, no new warn
-    expect(state.staleBaseLastWarnedCount).toBe(0); // re-armed
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(0); // re-armed
 
     // Origin drifts again past the threshold (5 commits).
     advanceOriginMain(repoDir, 5);
@@ -405,7 +404,7 @@ describe("warnStaleBase", () => {
     // Must re-fire — without the re-arm, the gate `count <= lastCount` with
     // stale lastCount=10 would suppress the 5-commit warning.
     expect(countWarnings(emitSpy)).toBe(2);
-    expect(state.staleBaseLastWarnedCount).toBe(5);
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(5);
   });
 
   test("fetch timeout silently skipped (bounded phase-entry cost)", () => {
@@ -418,7 +417,181 @@ describe("warnStaleBase", () => {
     const state = stateFor(worktree, repoDir);
     warnStaleBase(state);
     expect(countWarnings(emitSpy)).toBe(0);
-    expect(state.staleBaseLastWarnedCount).toBeUndefined();
-    expect(state.staleBaseLastWarnedRound).toBeUndefined();
+    expect(state.staleBaseLastWarned).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // gh-ludics-409: reviewer-phase coverage + per-category dedup
+  // ---------------------------------------------------------------------------
+
+  test("gh-ludics-409: fires on entry to plan-review when staleness meets threshold", () => {
+    const { worktree, repoDir } = setupStaleRepo(5);
+    const state = stateFor(worktree, repoDir);
+    state.phase = "plan-review";
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1);
+    expect(state.staleBaseLastWarned?.reviewer?.count).toBe(5);
+    expect(state.staleBaseLastWarned?.reviewer?.round).toBe(1);
+    // Coder-category memo must remain untouched.
+    expect(state.staleBaseLastWarned?.coder).toBeUndefined();
+  });
+
+  test("gh-ludics-409: fires on entry to review when staleness meets threshold", () => {
+    const { worktree, repoDir } = setupStaleRepo(5);
+    const state = stateFor(worktree, repoDir);
+    state.phase = "review";
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1);
+    expect(state.staleBaseLastWarned?.reviewer?.count).toBe(5);
+    expect(state.staleBaseLastWarned?.coder).toBeUndefined();
+  });
+
+  test("gh-ludics-409: coder-category warning at plan does not suppress reviewer warning at review in same round", () => {
+    const { worktree, repoDir } = setupStaleRepo(5);
+    const state = stateFor(worktree, repoDir);
+    state.phase = "plan";
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1);
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(5);
+    // Same round, same staleness, switch category. Reviewer entry must
+    // re-fire — the dedup memo is per-category, not per-round.
+    state.phase = "review";
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(2);
+    expect(state.staleBaseLastWarned?.reviewer?.count).toBe(5);
+    // Coder entry survives unchanged.
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(5);
+  });
+
+  test("gh-ludics-409: solo mode buckets reviewer-named phases under coder dedup (no duplicate warning across work→review)", () => {
+    // Codex P2 review: in solo mode, `agentParticipatesInPhase` routes
+    // every non-setup/done phase to the coder agent, so a reviewer-named
+    // phase like `review` is still executed by the coder. Bucketing it
+    // under the reviewer memo would let the warning re-fire at the same
+    // commit count within a single round for a single actor — defeating
+    // dedup. The category should resolve to "coder" in that case.
+    const { worktree, repoDir } = setupStaleRepo(5);
+    const state = stateFor(worktree, repoDir);
+    state.mode = "solo";
+    state.phase = "work";
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1);
+    expect(state.staleBaseLastWarned?.coder?.count).toBe(5);
+    // Same round, same staleness, switch to a reviewer-named phase. Solo
+    // mode must keep using the coder bucket — no duplicate warning.
+    state.phase = "review";
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1); // dedup held
+    // Reviewer bucket must remain empty in solo mode.
+    expect(state.staleBaseLastWarned?.reviewer).toBeUndefined();
+    // Falsifier control: pair mode at the same call sequence DOES re-fire
+    // (proves the bucket-merge is mode-conditional, not unconditional).
+    const pairState = stateFor(setupStaleRepo(5).worktree, setupStaleRepo(5).repoDir);
+    pairState.mode = "pair";
+    pairState.phase = "work";
+    warnStaleBase(pairState);
+    pairState.phase = "review";
+    warnStaleBase(pairState);
+    expect(pairState.staleBaseLastWarned?.coder?.count).toBe(5);
+    expect(pairState.staleBaseLastWarned?.reviewer?.count).toBe(5);
+  });
+
+  test("gh-ludics-409: reviewer-category memo re-arms on count-decrease within the round", () => {
+    const { worktree, repoDir } = setupStaleRepo(10);
+    const state = stateFor(worktree, repoDir);
+    state.phase = "review";
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1);
+    expect(state.staleBaseLastWarned?.reviewer?.count).toBe(10);
+
+    // Coder rebases mid-round; staleness drops to 0.
+    Bun.spawnSync(["git", "rebase", "origin/main"], { cwd: worktree });
+    warnStaleBase(state);
+    expect(countWarnings(emitSpy)).toBe(1); // below threshold post-rebase
+    expect(state.staleBaseLastWarned?.reviewer?.count).toBe(0); // re-armed
+
+    // Origin drifts again past the threshold (5 commits, below the previous
+    // peak of 10).
+    advanceOriginMain(repoDir, 5);
+    warnStaleBase(state);
+    // Must re-fire — without the re-arm, `count <= lastCount` with stale
+    // lastCount=10 would suppress the 5-commit warning.
+    expect(countWarnings(emitSpy)).toBe(2);
+    expect(state.staleBaseLastWarned?.reviewer?.count).toBe(5);
+  });
+
+  // ---------------------------------------------------------------------------
+  // gh-ludics-409: migrateState backfill for legacy persisted memo
+  // ---------------------------------------------------------------------------
+
+  test("gh-ludics-409: migrateState backfills legacy scalar memo into staleBaseLastWarned.coder and strips legacy keys", async () => {
+    const { migrateState, defaultOrchestrationConfig } = await import("./state.ts");
+    type StateLike = import("./state.ts").OrchestrationState;
+    const legacy = {
+      slot: 1, taskId: "t", mode: "pair", phase: "work",
+      round: 3, mergeRound: 0, agents: [], agentStates: {},
+      config: defaultOrchestrationConfig(),
+      phaseStartedAt: 0, startedAt: "x",
+      projectDir: "/", rootWorktree: "/", peerSyncDir: "/",
+      threadIds: {},
+      // Legacy scalar fields (gh-ludics-374 shape, pre-409).
+      staleBaseLastWarnedRound: 3,
+      staleBaseLastWarnedCount: 7,
+    } as unknown as StateLike;
+    const migrated = migrateState(legacy, 1);
+    // Backfill happened — coder-category entry populated.
+    expect(migrated.staleBaseLastWarned?.coder?.round).toBe(3);
+    expect(migrated.staleBaseLastWarned?.coder?.count).toBe(7);
+    // Reviewer-category remains untouched.
+    expect(migrated.staleBaseLastWarned?.reviewer).toBeUndefined();
+    // Legacy keys stripped — otherwise persistState would write them back
+    // to disk and migrateState would re-run on every read.
+    expect((migrated as unknown as Record<string, unknown>).staleBaseLastWarnedRound).toBeUndefined();
+    expect((migrated as unknown as Record<string, unknown>).staleBaseLastWarnedCount).toBeUndefined();
+  });
+
+  test("gh-ludics-409: migrateState leaves staleBaseLastWarned untouched when both legacy keys absent", async () => {
+    // Negative control: if the backfill ran unconditionally, the previous
+    // test would still pass; this guards against that false positive by
+    // confirming the migration is gated on legacy-key presence.
+    const { migrateState, defaultOrchestrationConfig } = await import("./state.ts");
+    type StateLike = import("./state.ts").OrchestrationState;
+    const fresh = {
+      slot: 1, taskId: "t", mode: "pair", phase: "work",
+      round: 1, mergeRound: 0, agents: [], agentStates: {},
+      config: defaultOrchestrationConfig(),
+      phaseStartedAt: 0, startedAt: "x",
+      projectDir: "/", rootWorktree: "/", peerSyncDir: "/",
+      threadIds: {},
+    } as unknown as StateLike;
+    const migrated = migrateState(fresh, 1);
+    expect(migrated.staleBaseLastWarned).toBeUndefined();
+  });
+
+  test("gh-ludics-409: migrateState round-trips through JSON and preserves backfill", async () => {
+    // Round-trip fidelity: serialize a legacy persisted state, parse it
+    // back, run migrateState, and confirm the new shape persists through
+    // a second JSON round-trip without re-introducing the legacy keys.
+    const { migrateState, defaultOrchestrationConfig } = await import("./state.ts");
+    type StateLike = import("./state.ts").OrchestrationState;
+    const legacyOnDisk = JSON.stringify({
+      slot: 1, taskId: "t", mode: "pair", phase: "work",
+      round: 2, mergeRound: 0, agents: [], agentStates: {},
+      config: defaultOrchestrationConfig(),
+      phaseStartedAt: 0, startedAt: "x",
+      projectDir: "/", rootWorktree: "/", peerSyncDir: "/",
+      threadIds: {},
+      staleBaseLastWarnedRound: 2,
+      staleBaseLastWarnedCount: 9,
+    });
+    const parsed = JSON.parse(legacyOnDisk) as StateLike;
+    const migrated = migrateState(parsed, 1);
+    expect(migrated.staleBaseLastWarned?.coder?.count).toBe(9);
+    // Second round-trip: the migrated shape persists cleanly, legacy keys gone.
+    const reparsed = JSON.parse(JSON.stringify(migrated)) as StateLike;
+    expect(reparsed.staleBaseLastWarned?.coder?.round).toBe(2);
+    expect(reparsed.staleBaseLastWarned?.coder?.count).toBe(9);
+    expect((reparsed as unknown as Record<string, unknown>).staleBaseLastWarnedRound).toBeUndefined();
+    expect((reparsed as unknown as Record<string, unknown>).staleBaseLastWarnedCount).toBeUndefined();
   });
 });

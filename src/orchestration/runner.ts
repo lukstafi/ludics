@@ -151,15 +151,40 @@ export function warnMissingRegressionTestsSection(
 }
 
 /**
- * Item A: stale-base warning. Before the coder starts planning or working,
- * refresh `origin/<main>` and count the commits landed on it since the
- * worktree's merge-base. If the count meets the threshold (default 5, tunable
- * via `LUDICS_WARN_BASE_STALENESS_THRESHOLD`; `<=0` disables), emit a nudge
+ * Map the active phase to the dedup category for the stale-base warning.
+ * Coder phases (`plan`, `work`) and reviewer phases (`plan-review`,
+ * `review`) each get their own memo entry so a coder warning in round N
+ * does not suppress a reviewer warning in round N (gh-ludics-409). Phases
+ * outside either set are not covered by the warning at all and return null.
+ *
+ * Solo mode caveat: in solo mode the coder agent executes every non-setup
+ * phase including `review` / `plan-review` (see `agentParticipatesInPhase`),
+ * so reviewer-named phases bucket under "coder" — otherwise dedup would
+ * fail to suppress duplicate warnings within a single round for a single
+ * actor. Solo mode currently never enters those phases via
+ * `evaluateTransitionSolo`, so this is a defense-in-depth branch against
+ * legacy state files or future transitions.
+ */
+function staleBaseCategoryOf(state: OrchestrationState): "coder" | "reviewer" | null {
+  const phase = state.phase;
+  if (phase === "plan" || phase === "work") return "coder";
+  if (phase === "plan-review" || phase === "review") {
+    return state.mode === "solo" ? "coder" : "reviewer";
+  }
+  return null;
+}
+
+/**
+ * Item A: stale-base warning. Before a covered phase begins, refresh
+ * `origin/<main>` and count the commits landed on it since the worktree's
+ * merge-base. If the count meets the threshold (default 5, tunable via
+ * `LUDICS_WARN_BASE_STALENESS_THRESHOLD`; `<=0` disables), emit a nudge
  * toward `git rebase`.
  *
- * Dedup memo (`state.staleBaseLastWarnedRound`/`...Count`) rewarns only when
- * the count grows within the same round; reset on round change.
- * Advisory only — any git failure silently skips.
+ * Dedup memo (`state.staleBaseLastWarned[category]`) rewarns only when the
+ * count grows within the same round and category; reset on round change.
+ * Coder and reviewer categories memo independently — see
+ * `staleBaseCategoryOf()`. Advisory only — any git failure silently skips.
  */
 export function warnStaleBase(state: OrchestrationState): void {
   const raw = process.env.LUDICS_WARN_BASE_STALENESS_THRESHOLD;
@@ -216,26 +241,33 @@ export function warnStaleBase(state: OrchestrationState): void {
     if (!Number.isFinite(countParsed)) return;
     const count = countParsed;
 
-    // Reset dedup memo on round change.
-    if (state.staleBaseLastWarnedRound !== state.round) {
-      state.staleBaseLastWarnedRound = state.round;
-      state.staleBaseLastWarnedCount = 0;
+    // Look up the per-category dedup entry (gh-ludics-409). Caller filters
+    // on staleBaseCategoryOf() before invoking; the null branch here is
+    // defense-in-depth for direct callers (tests).
+    const category = staleBaseCategoryOf(state);
+    if (category === null) return;
+    const memo = (state.staleBaseLastWarned ??= {});
+    const entry = memo[category] ?? { round: state.round, count: 0 };
+    // Reset dedup entry on round change.
+    if (entry.round !== state.round) {
+      entry.round = state.round;
+      entry.count = 0;
     }
     // Re-arm dedup when staleness decreases (coder rebased mid-round): a
     // subsequent drift back above threshold should fire again, even if its
     // count is below the previously-warned peak. Without this reset, the
     // "newly needing rebase" warning would be suppressed in exactly the
     // workflow (rebase then drift) it is meant to protect.
-    const lastCount = state.staleBaseLastWarnedCount ?? 0;
-    if (count < lastCount) {
-      state.staleBaseLastWarnedCount = 0;
-    }
-    const effectiveLastCount = state.staleBaseLastWarnedCount ?? 0;
+    const lastCount = entry.count;
+    if (count < lastCount) entry.count = 0;
+    const effectiveLastCount = entry.count;
+    // Persist the round-reset / re-arm even when no warning fires below.
+    memo[category] = entry;
     if (count < threshold) return;
     if (count <= effectiveLastCount) return;
 
-    state.staleBaseLastWarnedCount = count;
-    state.staleBaseLastWarnedRound = state.round;
+    entry.count = count;
+    entry.round = state.round;
     emitEvent({
       event_type: "orchestration_warning",
       source: "orchestration",
@@ -759,10 +791,11 @@ async function enterPhase(
     state.previousPhaseCtx = undefined; // consumed
   }
 
-  // Item A: stale-base warning on entry to `plan` (primary hook) and `work`
-  // (covers plan-skip modes and staleness that lands mid-plan). Dedup is
-  // "newly needing rebase" per round — see warnStaleBase().
-  if (state.phase === "plan" || state.phase === "work") {
+  // Item A: stale-base warning. Fires on entry to `plan` / `work` (coder
+  // category) and `plan-review` / `review` (reviewer category, gh-ludics-409;
+  // also bucketed under coder in solo mode — see staleBaseCategoryOf()).
+  // Dedup is "newly needing rebase" per round per phase-category.
+  if (staleBaseCategoryOf(state) !== null) {
     warnStaleBase(state);
   }
 
