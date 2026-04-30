@@ -40,6 +40,9 @@ jobs:
       - name: Lint worker/orchestrator contracts
         run: bun run lint:contracts
 
+      - name: Lint — no util.ts function shadows
+        run: bun run lint:no-shadow-util
+
       - name: Lint — vendor sync
         run: bun run lint:vendor-sync
 
