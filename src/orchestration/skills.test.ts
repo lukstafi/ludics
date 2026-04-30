@@ -2262,3 +2262,81 @@ describe("skills", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Skill template contracts: stale workflow + atomic has_questions write
+// ---------------------------------------------------------------------------
+//
+// These tests pin invariants on the *content* of skill markdown files
+// (skills/ludics-elaborate.md, skills/ludics-elaborate-worker.md,
+// skills/ludics-draft-proposal.md). The skills run in forked agent
+// contexts so we cannot exercise them as TS functions; the regression
+// boundary is the literal instruction text the orchestrator/worker reads.
+// Each assertion below cites the structural property whose absence would
+// re-introduce the regression the AC exists to prevent.
+
+describe("skill templates — stale + has_questions atomic write", () => {
+  const skillsDir = join(ludicsRoot(), "skills");
+
+  test("ludics-draft-proposal precondition rejects status: stale (AC 8)", () => {
+    // Harness condition: the precondition section in the live template
+    // must contain `blocked-stale`. If a refactor removed the stale
+    // precondition, the orchestrator would delegate to the worker for an
+    // already-stale task and re-do the same compute — the regression Part 2
+    // exists to prevent.
+    const md = readFileSync(join(skillsDir, "ludics-draft-proposal.md"), "utf-8");
+    expect(md).toContain("blocked-stale");
+    // Property: the blocked-stale text sits inside the precondition-check
+    // section. A presence check anywhere in the file would not pin
+    // section-locality; we extract the section and search within it.
+    const section = md.match(/<!-- section:precondition-check -->([\s\S]*?)<!-- section:/);
+    expect(section).not.toBeNull();
+    expect(section![1]!).toContain("blocked-stale");
+    expect(section![1]!).toContain("status: stale");
+  });
+
+  test("ludics-draft-proposal stale routing flips status and appends to Notes (AC 7)", () => {
+    // Harness condition: the routing block contains BOTH the
+    // `transitionStatus(taskFile, "ready", "stale")` invocation AND the
+    // `appendToSection(taskFile, "Notes", ...)` invocation. Mutation: drop
+    // either helper from the markdown and the corresponding assertion fails.
+    const md = readFileSync(join(skillsDir, "ludics-draft-proposal.md"), "utf-8");
+    expect(md).toMatch(/transitionStatus\([^)]*"stale"/);
+    expect(md).toMatch(/appendToSection\([^)]*Notes/);
+  });
+
+  test("ludics-elaborate-worker writes has_questions atomically when questions non-empty (AC 1)", () => {
+    // Harness condition: the worker template's `### 6. Update task file`
+    // section names `addFrontmatterField` with `has_questions` as the field.
+    // This is the contract that makes the elaborate worker the sole writer
+    // of `has_questions: true`, eliminating the race window with the
+    // orchestrator's post-worker write.
+    const md = readFileSync(join(skillsDir, "ludics-elaborate-worker.md"), "utf-8");
+    // Probe per AC 1: the canonical call form starts a line.
+    expect(md).toMatch(/^addFrontmatterField\(.*has_questions/m);
+    // Property: the instruction sits inside the section delimited by
+    // `<!-- section:update-task -->` and the next `<!-- section: -->`
+    // marker. The boundary is the next *section comment*, NOT a `##`
+    // heading — the section's body contains an example fenced block with
+    // `## Context`, `## Tentative Design`, `## Questions` placeholders that
+    // would otherwise cut the capture short.
+    const section = md.match(/<!-- section:update-task -->([\s\S]*?)<!-- section:/);
+    expect(section).not.toBeNull();
+    expect(section![1]!).toMatch(/addFrontmatterField[\s\S]*has_questions/);
+  });
+
+  test("ludics-elaborate orchestrator no longer unconditionally writes has_questions (AC 2)", () => {
+    // Harness condition: the orchestrator template's Questions notification
+    // section is the verify-and-fallback shape, not the original
+    // imperative "Add has_questions: true" line.
+    const md = readFileSync(join(skillsDir, "ludics-elaborate.md"), "utf-8");
+    // Property: original imperative line gone. Mutation: revert the
+    // orchestrator to the pre-fix two-writer shape and this fails.
+    expect(md).not.toMatch(/^\d+\.\s*Add `has_questions: true` to the task frontmatter/m);
+    // Property: verify-and-fallback vocabulary is present in the section.
+    const section = md.match(/## Questions notification([\s\S]*?)(?:^## |\Z)/m);
+    expect(section).not.toBeNull();
+    const body = section![1]!;
+    expect(body).toMatch(/verify|fallback|warning/i);
+  });
+});

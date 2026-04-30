@@ -173,6 +173,22 @@ elaborated: <today's date>
 [numbered questions about genuine ambiguities, or "None."]
 ```
 
+**If your `questions` list is non-empty (i.e. you wrote at least one
+genuine question into the `## Questions` section above), also write
+`has_questions: true` to the frontmatter atomically with `elaborated:`:**
+
+```text
+addFrontmatterField(taskFile, "has_questions", "true")
+```
+
+This must land in the same write window as `elaborated:` so the keepalive's
+auto-proposal queue cannot fire between the two updates. The helper is the
+project's atomic upsert in `src/tasks/markdown.ts`.
+
+If your `questions` list is empty (you wrote `## Questions\n\nNone.`), do NOT
+write `has_questions` — its absence is the signal that proposal generation
+may proceed.
+
 <!-- section:final-response -->
 ## Final Response
 

@@ -73,6 +73,13 @@ questions from elaboration — skip the proposal:
 - Write result JSON with `"status": "blocked"` and `"unanswered questions"`.
 - Don't delegate to the worker; Mag's nag loop reminds the user to answer.
 
+If the task frontmatter has `status: stale`, this task has been previously
+marked stale and re-running draft-proposal would repeat the same conclusion
+at the same compute cost — skip:
+- Write result JSON `{"status": "blocked-stale", "reason": "task previously marked stale"}`.
+- Don't delegate to the worker; the dashboard's Stale panel exposes
+  Revive (flip to `ready`) and Abandon actions for user disposition.
+
 ### Container short-circuit
 
 If the task's frontmatter has `leaf: false`, the work has already been split
@@ -111,7 +118,13 @@ Routing by status:
   `skip_plan: true` as well; otherwise remove any stale `skip_plan` from a
   prior run. `skip_plan: true` causes medium-effort tasks to skip the plan
   phase in orchestration. Then go to auto-start evaluation.
-- **stale** — write result JSON with `"status": "stale"` and stop.
+- **stale** — call `transitionStatus(taskFile, "ready", "stale")` to flip
+  the task's frontmatter status; append a one-line rationale to the task's
+  `## Notes` section via `appendToSection(taskFile, "Notes", "<rationale>")`
+  (worker pointers + summary); then write result JSON with `"status": "stale"`
+  and stop. The flip is idempotent — `transitionStatus` returns `false` if
+  the current status is no longer `ready` (e.g. concurrent abandon won), and
+  the routing must not clobber that later state.
 - **split-needed** — queue the split skill and stop:
   ```bash
   ludics mag split-task <task_id>
