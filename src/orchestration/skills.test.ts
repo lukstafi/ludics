@@ -751,7 +751,7 @@ describe("skills", () => {
     }
   });
 
-  test("PROPOSAL_FRESHNESS_WARNING: boundary — exactly 10 commits does NOT trigger", async () => {
+  test("PROPOSAL_FRESHNESS_WARNING: boundary — exactly 6 commits does NOT trigger", async () => {
     const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
     const { join: j } = await import("path");
     const tmpDir = mkdtempSync("/tmp/ludics-freshness-boundary-");
@@ -764,13 +764,41 @@ describe("skills", () => {
         "---", "id: task-boundary", "proposal: docs/proposals/boundary.md", "---",
         "", "## Acceptance Criteria", "- [ ] Do the thing",
       ].join("\n"));
-      initGitRepoWithProposal(projectDir, "docs/proposals/boundary.md", "# Boundary proposal\n", 10);
+      initGitRepoWithProposal(projectDir, "docs/proposals/boundary.md", "# Boundary proposal\n", 6);
       process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
       const { buildSkillContext } = await import("./skills.ts");
       const state = { ...makeState(), taskId: "task-boundary", projectDir, round: 1 };
       const ctx = buildSkillContext(state, state.agents[0]!);
-      // Threshold is strictly > 10, so 10 commits since proposal does NOT trigger.
+      // Threshold is strictly > 6, so 6 commits since proposal does NOT trigger.
       expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toBe("");
+    } finally {
+      if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
+      else delete process.env.LUDICS_HARNESS_DIR;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PROPOSAL_FRESHNESS_WARNING: boundary — exactly 7 commits DOES trigger", async () => {
+    const { mkdtempSync, mkdirSync: mkdir2, writeFileSync: write2, rmSync } = await import("fs");
+    const { join: j } = await import("path");
+    const tmpDir = mkdtempSync("/tmp/ludics-freshness-boundary-trigger-");
+    const origHarness = process.env.LUDICS_HARNESS_DIR;
+    try {
+      const harnessTasks = j(tmpDir, "harness", "tasks");
+      const projectDir = j(tmpDir, "project");
+      mkdir2(harnessTasks, { recursive: true });
+      write2(j(harnessTasks, "task-boundary-trigger.md"), [
+        "---", "id: task-boundary-trigger", "proposal: docs/proposals/boundary-trigger.md", "---",
+        "", "## Acceptance Criteria", "- [ ] Do the thing",
+      ].join("\n"));
+      initGitRepoWithProposal(projectDir, "docs/proposals/boundary-trigger.md", "# Boundary trigger proposal\n", 7);
+      process.env.LUDICS_HARNESS_DIR = j(tmpDir, "harness");
+      const { buildSkillContext } = await import("./skills.ts");
+      const state = { ...makeState(), taskId: "task-boundary-trigger", projectDir, round: 1 };
+      const ctx = buildSkillContext(state, state.agents[0]!);
+      // Threshold is strictly > 6, so 7 commits since proposal DOES trigger.
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toContain("Freshness warning");
+      expect(ctx["PROPOSAL_FRESHNESS_WARNING"]).toContain("7 commits");
     } finally {
       if (origHarness !== undefined) process.env.LUDICS_HARNESS_DIR = origHarness;
       else delete process.env.LUDICS_HARNESS_DIR;
