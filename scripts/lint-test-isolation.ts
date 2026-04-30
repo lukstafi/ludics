@@ -16,7 +16,7 @@
  *                    imports `src/config.ts`, `src/events.ts`,
  *                    `src/slots/json.ts`, or `src/adapters/base.ts` without
  *                    either setting `LUDICS_HARNESS_DIR` or invoking
- *                    `withTestHarness(`.
+ *                    `withTestHarness(` / `withSyntheticHarness(`.
  *
  * Exit code: 1 iff errorCount > 0. Warnings never fail.
  */
@@ -40,8 +40,9 @@ export const RULE_3_TARGETS = new Set<string>([
 
 /**
  * Test files known-safe despite no explicit harness setup. Repo-relative with
- * forward slashes. Keep this list short — prefer adding `withTestHarness(` or
- * an explicit `process.env.LUDICS_HARNESS_DIR = ` in the test itself.
+ * forward slashes. Keep this list short — prefer adding `withTestHarness(`,
+ * `withSyntheticHarness(`, or an explicit `process.env.LUDICS_HARNESS_DIR = `
+ * in the test itself.
  */
 export const RULE_3_ALLOWLIST = new Set<string>([
   "src/adapters/task-launch.test.ts",
@@ -100,7 +101,7 @@ const GUARD_EQ = /[!=]==\s*undefined\b/;
  *       `{`, and the line before ends with `)` and contains `if (` +
  *       `=== undefined`.
  *   (F) File-wide exemption: the source contains the literal
- *       `withTestHarness(` anywhere.
+ *       `withTestHarness(` or `withSyntheticHarness(` anywhere.
  *
  * Crucially the bare 3-line lookback of "`if (` + `undefined` present somewhere
  * nearby" is *not* sufficient — codex (PR #402) flagged that pattern as a
@@ -109,7 +110,7 @@ const GUARD_EQ = /[!=]==\s*undefined\b/;
  */
 export function checkRule1(source: string, file: string): LintIssue[] {
   const out: LintIssue[] = [];
-  if (source.includes("withTestHarness(")) return out; // (F)
+  if (source.includes("withTestHarness(") || source.includes("withSyntheticHarness(")) return out; // (F)
 
   const lines = source.split("\n");
 
@@ -252,6 +253,7 @@ export function parseImports(source: string): string[] {
 export function hasIsolationSetup(source: string): boolean {
   return (
     source.includes("withTestHarness(") ||
+    source.includes("withSyntheticHarness(") ||
     /process\.env\.LUDICS_HARNESS_DIR\s*=(?!=)/.test(source)
   );
 }
@@ -317,7 +319,7 @@ export function checkRule3(input: Rule3Input): LintIssue[] {
           rule: "rule-3",
           severity: "warning",
           file: input.file,
-          message: `imports ${resolved} without LUDICS_HARNESS_DIR setup or withTestHarness() (direct import "${raw}")`,
+          message: `imports ${resolved} without LUDICS_HARNESS_DIR setup or withTestHarness()/withSyntheticHarness() (direct import "${raw}")`,
         },
       ];
     }
@@ -335,7 +337,7 @@ export function checkRule3(input: Rule3Input): LintIssue[] {
             rule: "rule-3",
             severity: "warning",
             file: input.file,
-            message: `imports ${nres} via ${resolved} ("${raw}") without LUDICS_HARNESS_DIR setup or withTestHarness()`,
+            message: `imports ${nres} via ${resolved} ("${raw}") without LUDICS_HARNESS_DIR setup or withTestHarness()/withSyntheticHarness()`,
           },
         ];
       }

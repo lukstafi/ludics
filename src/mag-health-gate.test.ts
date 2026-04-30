@@ -1,40 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { resolveQueueRequestCommand } from "./mag.ts";
+import { withSyntheticHarness } from "./test-utils.ts";
 
 describe("resolveQueueRequestCommand — health-check activity gate", () => {
-  const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
-  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
-  const ORIGINAL_CLUSTER_NAME = process.env.LUDICS_CLUSTER_MACHINE_NAME;
-  let stateDir: string;
-  let configPath: string;
+  const getStateDir = withSyntheticHarness(beforeEach, afterEach);
 
   beforeEach(() => {
-    stateDir = mkdtempSync(join(tmpdir(), "mag-health-gate-"));
-    mkdirSync(join(stateDir, "journal"), { recursive: true });
-    mkdirSync(join(stateDir, "mag"), { recursive: true });
-    // Minimal config with no projects so runAllTestHealth() is a no-op
-    // when the gate does not skip.
-    configPath = join(stateDir, "config.yaml");
-    writeFileSync(configPath, "state_repo: test/state\nstate_path: harness\nprojects: []\n");
-    process.env.LUDICS_HARNESS_DIR = stateDir;
-    process.env.LUDICS_CONFIG = configPath;
-    delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
-  });
-
-  afterEach(() => {
-    if (ORIGINAL_HARNESS_DIR === undefined) delete process.env.LUDICS_HARNESS_DIR;
-    else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
-    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG;
-    else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
-    if (ORIGINAL_CLUSTER_NAME === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
-    else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_CLUSTER_NAME;
-    rmSync(stateDir, { recursive: true, force: true });
+    mkdirSync(join(getStateDir(), "journal"), { recursive: true });
+    mkdirSync(join(getStateDir(), "mag"), { recursive: true });
   });
 
   test("returns null and emits health_check_skipped when delta < 50", async () => {
+    const stateDir = getStateDir();
     const lines = Array.from({ length: 1030 }, (_, i) => `{"n":${i}}`).join("\n") + "\n";
     writeFileSync(join(stateDir, "journal", "events.jsonl"), lines);
     writeFileSync(
@@ -58,6 +37,7 @@ describe("resolveQueueRequestCommand — health-check activity gate", () => {
   });
 
   test("peek path (executeProgrammatic=false) returns skill command regardless of gate", async () => {
+    const stateDir = getStateDir();
     const lines = Array.from({ length: 10 }, (_, i) => `{"n":${i}}`).join("\n") + "\n";
     writeFileSync(join(stateDir, "journal", "events.jsonl"), lines);
     writeFileSync(
@@ -70,6 +50,7 @@ describe("resolveQueueRequestCommand — health-check activity gate", () => {
   });
 
   test("first run (no health-last.json) returns skill command", async () => {
+    const stateDir = getStateDir();
     const lines = Array.from({ length: 5 }, (_, i) => `{"n":${i}}`).join("\n") + "\n";
     writeFileSync(join(stateDir, "journal", "events.jsonl"), lines);
 
@@ -78,6 +59,7 @@ describe("resolveQueueRequestCommand — health-check activity gate", () => {
   });
 
   test("delta over threshold returns skill command", async () => {
+    const stateDir = getStateDir();
     const lines = Array.from({ length: 1200 }, (_, i) => `{"n":${i}}`).join("\n") + "\n";
     writeFileSync(join(stateDir, "journal", "events.jsonl"), lines);
     writeFileSync(

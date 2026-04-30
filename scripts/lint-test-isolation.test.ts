@@ -92,6 +92,20 @@ describe("checkRule1", () => {
     expect(checkRule1(src, "t.test.ts")).toEqual([]);
   });
 
+  test("whole-file exemption when `withSyntheticHarness(` appears anywhere", () => {
+    // Mirror of the withTestHarness exemption: withSyntheticHarness is the
+    // task-bad0f605 sibling helper that also owns LUDICS_HARNESS_DIR teardown.
+    const src = [
+      "import { withSyntheticHarness } from './test-utils.ts';",
+      "const getDir = withSyntheticHarness(beforeEach, afterEach);",
+      "",
+      "afterEach(() => {",
+      "  delete process.env.LUDICS_HARNESS_DIR;  // would flag without the exemption",
+      "});",
+    ].join("\n");
+    expect(checkRule1(src, "t.test.ts")).toEqual([]);
+  });
+
   test("flags when a nearby `if (X === undefined)` does not control the delete (codex P1)", () => {
     // The prior line's `if (orig === undefined) log();` is self-terminated by
     // `;` — the delete on the next line is unconditional and must flag.
@@ -256,6 +270,9 @@ describe("hasIsolationSetup", () => {
   });
   test("true if source calls withTestHarness(", () => {
     expect(hasIsolationSetup("const g = withTestHarness(beforeEach, afterEach);")).toBe(true);
+  });
+  test("true if source calls withSyntheticHarness(", () => {
+    expect(hasIsolationSetup("const g = withSyntheticHarness(beforeEach, afterEach);")).toBe(true);
   });
   test("false when neither token is present", () => {
     expect(hasIsolationSetup("const x = 1;")).toBe(false);
@@ -423,6 +440,19 @@ describe("checkRule3", () => {
       source: [
         "import { harnessDir } from './config.ts';",
         "const getHarness = withTestHarness(beforeEach, afterEach);",
+      ].join("\n"),
+      directImports: ["./config.ts"],
+      resolver: () => "src/config.ts",
+    });
+    expect(issues).toEqual([]);
+  });
+
+  test("negative: file uses withSyntheticHarness", () => {
+    const issues = rule3({
+      file: "src/x.test.ts",
+      source: [
+        "import { harnessDir } from './config.ts';",
+        "const getDir = withSyntheticHarness(beforeEach, afterEach);",
       ].join("\n"),
       directImports: ["./config.ts"],
       resolver: () => "src/config.ts",

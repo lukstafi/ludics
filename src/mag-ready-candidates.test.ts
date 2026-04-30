@@ -1,32 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 
 import { getSortedReadyCandidates } from "./mag.ts";
+import { withSyntheticHarness } from "./test-utils.ts";
 
-let tmpDir: string;
-const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
-const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
-const ORIGINAL_CLUSTER_NAME = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+const getTmpDir = withSyntheticHarness(beforeEach, afterEach);
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "ludics-ready-candidates-"));
-  mkdirSync(join(tmpDir, "tasks"), { recursive: true });
-  mkdirSync(join(tmpDir, "slots"), { recursive: true });
-  process.env.LUDICS_HARNESS_DIR = tmpDir;
-  delete process.env.LUDICS_CONFIG;
-  delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
-});
-
-afterEach(() => {
-  rmSync(tmpDir, { recursive: true, force: true });
-  if (ORIGINAL_HARNESS_DIR === undefined) delete process.env.LUDICS_HARNESS_DIR;
-  else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
-  if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG;
-  else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
-  if (ORIGINAL_CLUSTER_NAME === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
-  else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_CLUSTER_NAME;
+  mkdirSync(join(getTmpDir(), "tasks"), { recursive: true });
+  mkdirSync(join(getTmpDir(), "slots"), { recursive: true });
 });
 
 function writeTask(id: string, fm: Record<string, string | boolean>): void {
@@ -48,7 +31,7 @@ function writeTask(id: string, fm: Record<string, string | boolean>): void {
   lines.push("created: 2026-04-29");
   lines.push("source: manual");
   lines.push("---", "", `# ${id}`, "");
-  writeFileSync(join(tmpDir, "tasks", `${id}.md`), lines.join("\n"));
+  writeFileSync(join(getTmpDir(), "tasks", `${id}.md`), lines.join("\n"));
 }
 
 describe("getSortedReadyCandidates leaf filter (AC2)", () => {

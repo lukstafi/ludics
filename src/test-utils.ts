@@ -1,8 +1,10 @@
 // Shared test utilities for the ludics test suite.
 
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import YAML from "yaml";
+import type { ProjectConfig } from "./config.ts";
 
 /**
  * Whether this environment can bind a loopback socket.
@@ -83,6 +85,57 @@ export function withTestHarness(
   after(() => {
     if (saved === undefined) delete process.env.LUDICS_HARNESS_DIR;
     else process.env.LUDICS_HARNESS_DIR = saved;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return () => dir;
+}
+
+export interface WithSyntheticHarnessOptions {
+  projects?: ProjectConfig[];
+}
+
+/**
+ * Isolate LUDICS_HARNESS_DIR + LUDICS_CONFIG + LUDICS_CLUSTER_MACHINE_NAME for tests
+ * that drive `resolveQueueRequestCommand` (or any code that hits `loadConfigSync()` /
+ * `runAllTestHealth()`). Without this trio, those code paths load the real user
+ * config and run actual project test suites — see task-4889872a / PR #390.
+ *
+ * Returns a getter for the current synthetic state directory so tests can write
+ * fixture files (`journal/events.jsonl`, `mag/health-last.json`, etc.) inside it.
+ */
+export function withSyntheticHarness(
+  before: (fn: () => void) => void,
+  after: (fn: () => void) => void,
+  opts?: WithSyntheticHarnessOptions,
+): () => string {
+  // Capture originals at registration time, not inside `before`, so a file that
+  // registers the helper twice doesn't save a sibling helper's tmp values as
+  // "original" and leak deleted paths back into process.env after teardown.
+  const savedHarness = process.env.LUDICS_HARNESS_DIR;
+  const savedConfig = process.env.LUDICS_CONFIG;
+  const savedCluster = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+  const projects = opts?.projects ?? [];
+  let dir = "";
+  before(() => {
+    dir = mkdtempSync(join(tmpdir(), "ludics-test-synthetic-"));
+    const cfgPath = join(dir, "config.yaml");
+    const cfgBody = YAML.stringify({
+      state_repo: "test/state",
+      state_path: "harness",
+      projects,
+    });
+    writeFileSync(cfgPath, cfgBody);
+    process.env.LUDICS_HARNESS_DIR = dir;
+    process.env.LUDICS_CONFIG = cfgPath;
+    delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
+  });
+  after(() => {
+    if (savedHarness === undefined) delete process.env.LUDICS_HARNESS_DIR;
+    else process.env.LUDICS_HARNESS_DIR = savedHarness;
+    if (savedConfig === undefined) delete process.env.LUDICS_CONFIG;
+    else process.env.LUDICS_CONFIG = savedConfig;
+    if (savedCluster === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
+    else process.env.LUDICS_CLUSTER_MACHINE_NAME = savedCluster;
     rmSync(dir, { recursive: true, force: true });
   });
   return () => dir;
