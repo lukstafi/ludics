@@ -69,20 +69,22 @@ See also [post-edit-occurrence-recheck](#post-edit-occurrence-recheck) for runni
 
 ### Pattern+count enumeration for bulk migrations
 
-**Principle.** When a bulk migration touches more than a handful of sites, express the site set in the proposal as `grep -c '<exact-pattern>' <path> = N`, not as a line range. The same exact-pattern grep that *enumerates* the cohort is the one that *qualifies* it for `replace_all`.
+**Principle.** When a bulk migration touches more than a handful of sites, express the site set in the proposal as `grep -oF '<exact-pattern>' <path> | wc -l = N`, not as a line range. The same exact-pattern grep that *enumerates* the cohort is the one that *qualifies* it for `replace_all`.
+
+Why `-oF | wc -l` rather than `grep -c`: `grep -c` counts *lines* containing a match (under-counting when two call sites share a line — minified code, chained calls, compressed fixtures), and treats the pattern as a regex by default (regex metacharacters like `.`, `(`, `[`, `?` would inflate or deflate the count). `-o` prints each match on its own line; `-F` reads the pattern as a fixed string. The pair `grep -oF | wc -l` therefore counts *occurrences* of a *literal* pattern — exactly the semantics this entry's "exact-pattern, character-identical" framing requires.
 
 **Why.** Pattern+count is rebase-stable — exact-string counts survive unrelated commits the way line ranges don't — and mechanically verifiable: a reviewer or worker can re-run the same grep and compare to the proposal's stated count without a visual scan. A line-range proposal can match the stated bound and still miss sites that fall outside it; pattern+count cannot.
 
 **Recipe.**
 
 1. Pick the exact pattern that defines a site (the inline call shape, the regex, the string literal — whatever is character-identical across the cohort).
-2. Record `grep -c '<pattern>' <path> = N` in the proposal, not a line range. If the migration spans multiple files, list one `grep -c` per file with its expected count.
-3. At edit time, re-run the grep and confirm the count matches the proposal before starting. If it doesn't, the pattern set has drifted since the proposal — pause and reconcile.
+2. Record `grep -oF '<pattern>' <path> | wc -l = N` in the proposal, not a line range. If the migration spans multiple files, list one `grep -oF | wc -l` per file with its expected count.
+3. At edit time, re-run the same `grep -oF | wc -l` invocation and confirm the count matches the proposal before starting. If it doesn't, the pattern set has drifted since the proposal — pause and reconcile.
 4. If the pattern is character-identical across the cohort (verified by step 3's count matching), a single `Edit { replace_all: true }` collapses N edits into one operation; iterate site-by-site only on the residue.
 
-**Worked example.** `task-95310454`'s dashboard console-silence migration. The original proposal said "12 sites in lines 241–565". The actual count was 13: a 13th site at the `startDashboardServer` wrapper (~line 615) sat outside the proposed line range and was caught only on a thorough sweep. A pattern+count enumeration — `grep -c 'originalConsoleX(\.\.\.args)' src/dashboard.ts = 13` — would have surfaced the 13th site at proposal-write time, before any edit was attempted. 12 of the 13 sites then collapsed in one `Edit { replace_all: true }` because the inline pattern was character-identical; the 13th, with different surrounding context, iterated as a single follow-up edit.
+**Worked example.** `task-95310454`'s dashboard console-silence migration. The original proposal said "12 sites in lines 241–565". The actual count was 13: a 13th site at the `startDashboardServer` wrapper (~line 615) sat outside the proposed line range and was caught only on a thorough sweep. A pattern+count enumeration — `grep -oF 'originalConsoleX(...args)' src/dashboard.ts | wc -l = 13` — would have surfaced the 13th site at proposal-write time, before any edit was attempted. 12 of the 13 sites then collapsed in one `Edit { replace_all: true }` because the inline pattern was character-identical; the 13th, with different surrounding context, iterated as a single follow-up edit.
 
-**Boundary.** Pattern+count earns its keep on bulk migrations (≥3 sites). For 1–2 site changes, line refs (or symbol-name references — see [symbol-name-references](#symbol-name-references)) are still fine and shorter. `replace_all` is only safe under exact-pattern identity verified by `grep -c`: whitespace or indentation drift defeats the match, and subtle context differences (a different surrounding helper, an alternative cast) usually mean the cohort needs splitting into `grep -c` sub-counts before any `replace_all` is attempted.
+**Boundary.** Pattern+count earns its keep on bulk migrations (≥3 sites). For 1–2 site changes, line refs (or symbol-name references — see [symbol-name-references](#symbol-name-references)) are still fine and shorter. `replace_all` is only safe under exact-pattern identity verified by `grep -oF | wc -l`: whitespace or indentation drift defeats the match, and subtle context differences (a different surrounding helper, an alternative cast) usually mean the cohort needs splitting into per-pattern sub-counts before any `replace_all` is attempted.
 
 See also [exhaustive-occurrence-search](#exhaustive-occurrence-search), [post-edit-occurrence-recheck](#post-edit-occurrence-recheck).
 
