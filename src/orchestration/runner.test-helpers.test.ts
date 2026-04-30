@@ -110,6 +110,73 @@ describe("setupOrchTestState", () => {
     }
   });
 
+  test("LIFO cleanup (b then a) keeps env pointing at a live harness throughout", () => {
+    const sentinel = "/tmp/sentinel-lifo";
+    const before = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = sentinel;
+    try {
+      const a = setupOrchTestState({
+        slot: 21,
+        agents: [{ name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "main", worktreePath: "/tmp/a" }],
+      });
+      const b = setupOrchTestState({
+        slot: 22,
+        agents: [{ name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "main", worktreePath: "/tmp/b" }],
+      });
+      expect(process.env.LUDICS_HARNESS_DIR as string | undefined).toBe(b.harness);
+      b.cleanup();
+      // After b cleanup, env must point at a's still-live harness, not at the
+      // pre-sequence sentinel and not at a deleted path.
+      expect(process.env.LUDICS_HARNESS_DIR as string | undefined).toBe(a.harness);
+      expect(existsSync(a.tmpRoot)).toBe(true);
+      a.cleanup();
+      // After final cleanup, env restores to the pre-sequence sentinel.
+      expect(process.env.LUDICS_HARNESS_DIR as string | undefined).toBe(sentinel);
+    } finally {
+      if (before === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = before;
+    }
+  });
+
+  test("FIFO cleanup (a then b) does not redirect env to a deleted harness (codex P2)", () => {
+    // Regression for codex review on PR #453: under FIFO cleanup the prior
+    // unconditional restore set LUDICS_HARNESS_DIR back to a's harness path
+    // (already deleted by a.cleanup()) when b cleaned up. The fix uses a
+    // module-level stack so the *final* cleanup restores the pre-sequence
+    // value rather than any sibling's prev.
+    const sentinel = "/tmp/sentinel-fifo";
+    const before = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = sentinel;
+    try {
+      const a = setupOrchTestState({
+        slot: 31,
+        agents: [{ name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "main", worktreePath: "/tmp/a" }],
+      });
+      const b = setupOrchTestState({
+        slot: 32,
+        agents: [{ name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "main", worktreePath: "/tmp/b" }],
+      });
+      // FIFO order: a first, b still active.
+      a.cleanup();
+      expect(existsSync(a.tmpRoot)).toBe(false);
+      // env must still point at b's live harness (a was inactive, so its
+      // cleanup must not stomp on the active sibling).
+      expect(process.env.LUDICS_HARNESS_DIR as string | undefined).toBe(b.harness);
+      // b is still readable.
+      expect(existsSync(b.tmpRoot)).toBe(true);
+      expect(existsSync(stateFilePath(32, b.harness))).toBe(true);
+
+      b.cleanup();
+      // Critical: env must NOT be set to a.harness (deleted). It must restore
+      // to the pre-sequence sentinel.
+      expect(process.env.LUDICS_HARNESS_DIR as string | undefined).toBe(sentinel);
+      expect(process.env.LUDICS_HARNESS_DIR as string | undefined).not.toBe(a.harness);
+    } finally {
+      if (before === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = before;
+    }
+  });
+
   test("AC1/AC7: overrides cannot clobber helper-controlled slot", () => {
     expect(() =>
       setupOrchTestState({

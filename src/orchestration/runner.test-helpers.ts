@@ -201,6 +201,26 @@ export interface SetupOrchTestStateResult {
  *  `stateFilePath(opts.slot, harness)`. */
 const SETUP_ORCH_RESERVED_OVERRIDE_KEYS = ["slot", "agents"] as const;
 
+/**
+ * Stack of `LUDICS_HARNESS_DIR` values currently owned by live
+ * `setupOrchTestState` calls. Lets `cleanup` restore correctly under both
+ * LIFO and out-of-order cleanup sequences:
+ *
+ *   - When `cleanup` runs while sibling calls are still active, it never
+ *     redirects `process.env.LUDICS_HARNESS_DIR` to its own captured `prev`
+ *     (which may already point at a sibling's now-deleted tmpRoot).
+ *   - Only the *final* cleanup (stack empties) restores the
+ *     `harnessAtSequenceStart` value that was captured before any helper-call
+ *     ran in this Bun process — i.e. what `LUDICS_HARNESS_DIR` had been
+ *     before the chain began.
+ *
+ * Module-level state is safe here because Bun runs tests serially within a
+ * file and per-file processes are isolated; a leaked stack entry would
+ * indicate a missing `cleanup()` in the test, which is a test bug.
+ */
+const activeHarnessStack: string[] = [];
+let harnessAtSequenceStart: string | undefined;
+
 /** Overrides accepted by `setupOrchTestState`: any `OrchestrationState` field
  *  except those the helper owns authoritatively. */
 export type SetupOrchTestStateOverrides = Omit<
@@ -232,10 +252,17 @@ export function setupOrchTestState(opts: {
     }
   }
 
-  const prevHarness = process.env.LUDICS_HARNESS_DIR;
   const tmpRoot = opts.tmpRoot ?? mkdtempSync(join(tmpdir(), "ludics-orch-test-"));
   const harness = join(tmpRoot, "harness");
   mkdirSync(orchestrationDir(harness), { recursive: true });
+
+  // Capture the pre-sequence env once (when the stack was empty); subsequent
+  // pushes don't overwrite it, so out-of-order cleanups can still recover the
+  // original value. Cleared when the stack drains.
+  if (activeHarnessStack.length === 0) {
+    harnessAtSequenceStart = process.env.LUDICS_HARNESS_DIR;
+  }
+  activeHarnessStack.push(harness);
   process.env.LUDICS_HARNESS_DIR = harness;
 
   const state = makeState({
@@ -251,8 +278,26 @@ export function setupOrchTestState(opts: {
   writeJsonFile(stateFilePath(state.slot, harness), state);
 
   const cleanup = (): void => {
-    if (prevHarness === undefined) delete process.env.LUDICS_HARNESS_DIR;
-    else process.env.LUDICS_HARNESS_DIR = prevHarness;
+    const idx = activeHarnessStack.lastIndexOf(harness);
+    if (idx !== -1) activeHarnessStack.splice(idx, 1);
+
+    if (activeHarnessStack.length > 0) {
+      // Sibling calls are still active. Only redirect the env var if it
+      // currently points at *us*; otherwise a sibling already retargeted it
+      // and we must not stomp on their state. When we own it, point at the
+      // most-recently-pushed sibling so the active CLI calls keep working.
+      if (process.env.LUDICS_HARNESS_DIR === harness) {
+        process.env.LUDICS_HARNESS_DIR = activeHarnessStack[activeHarnessStack.length - 1]!;
+      }
+    } else {
+      // Final cleanup: restore the pre-sequence value (which is the env value
+      // before *any* setupOrchTestState ran in this chain — never a sibling's
+      // tmpRoot that could already be deleted).
+      const original = harnessAtSequenceStart;
+      harnessAtSequenceStart = undefined;
+      if (original === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = original;
+    }
     rmSync(tmpRoot, { recursive: true, force: true });
   };
 
