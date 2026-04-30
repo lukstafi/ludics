@@ -1935,6 +1935,15 @@ describe("skills", () => {
     // one-armed merge-base check fails this assertion.
     expect(block).toMatch(/shared history at fork/i);
     expect(block).toMatch(/fork-point-vs-tip drift/i);
+    // Empty-MERGE_BASE fall-through guard (Codex P2 review on PR #475):
+    // when MERGE_BASE is empty (orphan / unfetched / shallow) neither
+    // arm is conclusive, and the prose must say so explicitly so arm (b)
+    // doesn't fire on unrelated state.
+    expect(block).toMatch(/\[ -z "\$MERGE_BASE" \]/);
+    // Arm (b) explicitly gates on a non-empty MERGE_BASE before testing
+    // "absent at fork point" via negated cat-file. Without this gate,
+    // arm (b) silently fires on orphan branches.
+    expect(block).toMatch(/\[ -n "\$MERGE_BASE" \] && ! git cat-file -e "\$MERGE_BASE:<path>"/);
     // Falsifiers: legacy conjunction form must not reappear in the
     // verification position, and no hard-coded `main:<path>`.
     expect(block).not.toMatch(/git cat-file -e "\$BASE:<path>"/);
@@ -1971,6 +1980,10 @@ describe("skills", () => {
     // fork-point-vs-tip drift. A one-armed check fails this assertion.
     expect(para).toMatch(/shared history at fork/i);
     expect(para).toMatch(/fork-point-vs-tip drift/i);
+    // Empty-MERGE_BASE fall-through guard (Codex P2 review on PR #475).
+    expect(para).toMatch(/\[ -z "\$MERGE_BASE" \]/);
+    // Arm (b) gates on non-empty MERGE_BASE before negated cat-file.
+    expect(para).toMatch(/\[ -n "\$MERGE_BASE" \] && ! git cat-file -e "\$MERGE_BASE:<path>"/);
     // Falsifiers: legacy conjunction form gone from the verification
     // position, and no hard-coded `main:<path>`.
     expect(para).not.toMatch(/git cat-file -e "\$BASE:<path>"/);
@@ -2004,6 +2017,10 @@ describe("skills", () => {
     // fork-point-vs-tip drift. A one-armed check fails this assertion.
     expect(procBlock).toMatch(/shared history at fork/i);
     expect(procBlock).toMatch(/fork-point-vs-tip drift/i);
+    // Empty-MERGE_BASE fall-through guard (Codex P2 review on PR #475).
+    expect(procBlock).toMatch(/\[ -z "\$MERGE_BASE" \]/);
+    // Arm (b) gates on non-empty MERGE_BASE before negated cat-file.
+    expect(procBlock).toContain('[ -n "$MERGE_BASE" ] && ! git cat-file -e "$MERGE_BASE:<path>"');
     // Falsifiers: legacy conjunction form gone from the verification
     // position, and no hard-coded `main:<path>`.
     expect(procBlock).not.toMatch(/git cat-file -e "\$BASE:<path>"/);
