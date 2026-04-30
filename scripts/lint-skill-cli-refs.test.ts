@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
   IN_SCOPE_GLOBS,
@@ -11,7 +11,6 @@ import {
   lintSkillCliRefs,
   resolveCliRefs,
 } from "./lint-skill-cli-refs.ts";
-import { extractUsageBlock } from "./lint-cli-readme.ts";
 
 // ---------------------------------------------------------------------------
 // extractCodeSpans — code-context extractor (AC #3, AC #10)
@@ -257,11 +256,10 @@ describe("real repository", () => {
   test("lintSkillCliRefs returns zero errors against real corpus (AC #13)", () => {
     const files = collectInScopeFiles(root);
     const indexSrc = readFileSync(join(root, "src", "index.ts"), "utf-8");
-    const usageBlock = extractUsageBlock(indexSrc);
     const result = lintSkillCliRefs(
       files,
       (rel) => readFileSync(join(root, rel), "utf-8"),
-      usageBlock,
+      indexSrc,
       (rel) => readFileSync(join(root, rel), "utf-8"),
     );
     expect(result.errors).toEqual([]);
@@ -270,23 +268,28 @@ describe("real repository", () => {
   // Floor-count meta-test (AC #9, gh-ludics-406 convention). The lint's
   // safety claim — "every backtick-/fence-scoped `ludics …` reference
   // resolves to a live dispatcher" — depends on the regex actually
-  // matching meaningful refs in the corpus. A DRY refactor that hides
-  // skill prose behind a partials/include mechanism would let this lint
-  // pass vacuously. The current corpus has ~89 distinct refs across the
-  // four globs; the floor of 30 is conservative with slack so individual
-  // skill rewrites do not trip the lint.
-  test("extractCliRefs: floor count of 30 against real corpus", () => {
+  // matching *distinct* (verb, sub) pairs in the corpus. A DRY refactor
+  // that hides skill prose behind a partials/include mechanism would
+  // collapse the pair set and let this lint pass vacuously. The current
+  // corpus has ~30 distinct (verb, sub|null) pairs across the four globs;
+  // the floor of 18 is conservative with slack so individual skill
+  // rewrites do not trip the lint.
+  test("extractCliRefs: floor count of 18 distinct (verb, sub) pairs against real corpus", () => {
     const files = collectInScopeFiles(root);
     const spans = files.flatMap((f) =>
       extractCodeSpans(f, readFileSync(join(root, f), "utf-8")),
     );
     const refs = extractCliRefs(spans);
-    expect(refs.length).toBeGreaterThanOrEqual(30);
+    const pairs = new Set<string>();
+    for (const r of refs) {
+      pairs.add(`${r.verb}\t${r.sub ?? ""}`);
+    }
+    expect(pairs.size).toBeGreaterThanOrEqual(18);
   });
 
   test("buildTopLevelIndex includes USAGE commands plus ludics aliases", () => {
     const indexSrc = readFileSync(join(root, "src", "index.ts"), "utf-8");
-    const top = buildTopLevelIndex(extractUsageBlock(indexSrc));
+    const top = buildTopLevelIndex(indexSrc);
     // Pre-assertion harness probe: known commands must be present.
     expect(top.has("mag")).toBe(true);
     expect(top.has("tasks")).toBe(true);
@@ -317,6 +320,59 @@ describe("real repository", () => {
     // Slot dispatcher must include the canonical sub-set.
     for (const sub of ["assign", "clear", "start", "stop", "preempt", "resume", "restore", "mode", "note"]) {
       expect(subs.get("slot")!.has(sub), `slot sub "${sub}" missing`).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI entrypoint exit-code behaviour (AC #1 — must fail CI with non-zero exit)
+// ---------------------------------------------------------------------------
+
+describe("CLI entrypoint", () => {
+  const root = join(import.meta.dir, "..");
+  const scriptPath = join(root, "scripts", "lint-skill-cli-refs.ts");
+
+  test("happy path: spawning the script against the real corpus exits 0", () => {
+    // Pre-assertion harness probe: the live tree is the same one the
+    // integration test asserts is clean. Spawning the actual CLI proves
+    // the entrypoint wires lintSkillCliRefs → process.exit(0) on the
+    // success branch.
+    const proc = Bun.spawnSync({
+      cmd: ["bun", "run", scriptPath],
+      cwd: root,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString()).toContain("✅");
+  });
+
+  test("failure path: a tampered in-scope file causes the CLI to exit 1", () => {
+    // Harness condition: temporarily inject a known-bogus reference into
+    // an in-scope template file, run the CLI, then restore the file.
+    // The invariant being enforced is the AC #1 wording — *the CLI
+    // entrypoint* must fail with a non-zero exit when an unresolved
+    // ref is present, not just an in-process resolver call. Mutation-
+    // testing this path catches a future refactor that drops the
+    // process.exit(1) branch (e.g. by returning the error count without
+    // exiting).
+    const target = join(root, "templates", "harness", "CLAUDE.md");
+    const original = readFileSync(target, "utf-8");
+    const tampered = original + "\n\nProbe: `ludics mag does-not-exist-xyz`\n";
+    try {
+      writeFileSync(target, tampered);
+      const proc = Bun.spawnSync({
+        cmd: ["bun", "run", scriptPath],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(proc.exitCode).toBe(1);
+      const stderr = proc.stderr.toString();
+      expect(stderr).toContain("does-not-exist-xyz");
+      expect(stderr).toContain("❌");
+    } finally {
+      writeFileSync(target, original);
     }
   });
 });

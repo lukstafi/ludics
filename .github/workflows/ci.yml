@@ -31,6 +31,9 @@ jobs:
       - name: Lint CLI sub-command drift
         run: bun run lint:cli-subcommands
 
+      - name: Lint skill body CLI references
+        run: bun run lint:skill-cli-refs
+
       - name: Lint config reference drift
         run: bun run lint:config-reference
 

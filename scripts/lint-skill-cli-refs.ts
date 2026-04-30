@@ -52,7 +52,7 @@
 import { readFileSync } from "fs";
 import { Glob } from "bun";
 import { join } from "path";
-import { extractUsageBlock } from "./lint-cli-readme.ts";
+import { extractUsageCommands } from "./lint-cli-readme.ts";
 import {
   ALIASES,
   DISPATCHERS,
@@ -257,14 +257,14 @@ export function buildSubCommandIndex(
   return out;
 }
 
-// Recognized top-level verb set — USAGE commands ∪ ludics aliases.
-export function buildTopLevelIndex(usageBlock: string): Set<string> {
-  // extractUsageCommands operates on the whole index source — but here we
-  // already have just the block. Replay the same regex inline.
-  const out = new Set<string>();
-  const re = /^\s{1,4}([a-z][\w-]*)\b/gm;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(usageBlock)) !== null) out.add(m[1]!);
+// Recognized top-level verb set — USAGE commands ∪ ludics aliases. Reuses
+// `extractUsageCommands` from `lint-cli-readme.ts` (the existing
+// gh-ludics-431-aware extractor) so there is exactly one parser for the
+// USAGE template literal — adding a second copy here would reintroduce
+// the silent-truncation drift class that 431 fixed (per AC #4 / reviewer
+// item #3).
+export function buildTopLevelIndex(indexSrc: string): Set<string> {
+  const out = new Set<string>(extractUsageCommands(indexSrc));
   for (const [canonical, alias] of ALIASES["ludics"] ?? []) {
     if (canonical) out.add(canonical);
     if (alias) out.add(alias);
@@ -349,7 +349,7 @@ export interface LintResult {
 export function lintSkillCliRefs(
   files: ReadonlyArray<string>,
   readSource: (path: string) => string,
-  indexUsageBlock: string,
+  indexSrc: string,
   readDispatcherSource: (relPath: string) => string,
 ): LintResult {
   const spans: CodeSpan[] = [];
@@ -358,7 +358,7 @@ export function lintSkillCliRefs(
     spans.push(...extractCodeSpans(file, src));
   }
   const refs = extractCliRefs(spans);
-  const topLevel = buildTopLevelIndex(indexUsageBlock);
+  const topLevel = buildTopLevelIndex(indexSrc);
   const subsByPrefix = buildSubCommandIndex(readDispatcherSource);
   const errors = resolveCliRefs(refs, topLevel, subsByPrefix);
   return { refs, errors };
@@ -378,11 +378,10 @@ export function collectInScopeFiles(rootDir: string): string[] {
 if (import.meta.main) {
   const files = collectInScopeFiles(root);
   const indexSrc = readFileSync(join(root, "src", "index.ts"), "utf-8");
-  const usageBlock = extractUsageBlock(indexSrc);
   const result = lintSkillCliRefs(
     files,
     (rel) => readFileSync(join(root, rel), "utf-8"),
-    usageBlock,
+    indexSrc,
     (rel) => readFileSync(join(root, rel), "utf-8"),
   );
 
@@ -408,7 +407,5 @@ if (import.meta.main) {
       `         + default-listing, which lint:cli-subcommands enforces).\n` +
       `   See scripts/lint-skill-cli-refs.ts for the regex shape.\n`,
   );
-  // Used by extractUsageCommands floor-count guard (gh-ludics-406 convention).
-  void extractUsageCommands;
   process.exit(1);
 }
