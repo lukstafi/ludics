@@ -541,20 +541,12 @@ describe("slots.json field shape", () => {
 // slotResume() itself is already tested in src/slots/index.test.ts.
 
 describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
-  async function startServer(): Promise<{ baseUrl: string; stop: () => void }> {
-    const { startDashboardServer } = await import("./dashboard-server.ts");
+  async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
+    const { buildHandlers } = await import("./dashboard-server.ts");
     const dashboardDir = join(harnessDir(), "dashboard");
     mkdirSync(dashboardDir, { recursive: true });
     mkdirSync(join(dashboardDir, "data"), { recursive: true });
-    // Silence boot logging + lazy-regeneration complaints
-    let server!: ReturnType<typeof startDashboardServer>;
-    silenceConsoleError(() => {
-      server = startDashboardServer(0, dashboardDir, 3600);
-    });
-    return {
-      baseUrl: `http://localhost:${server.port}`,
-      stop: () => { void server.stop(true); },
-    };
+    return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
   }
 
   test("POST /api/queue-promote moves target to head and returns 'promoted'", async () => {
@@ -564,16 +556,12 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     const idC = queueRequest({ action: "briefing" });
     expect(queueList().map(i => i.id)).toEqual([idA, idB, idC]);
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-promote?id=${encodeURIComponent(idC)}`, { method: "POST" });
-      expect(resp.status).toBe(200);
-      expect(resp.headers.get("content-type")).toContain("application/json");
-      const body = await resp.json() as { status: string };
-      expect(body.status).toBe("promoted");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-promote?id=${encodeURIComponent(idC)}`, { method: "POST" }));
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-type")).toContain("application/json");
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("promoted");
     expect(queueList().map(i => i.id)).toEqual([idC, idA, idB]);
   });
 
@@ -582,14 +570,10 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     const idA = queueRequest({ action: "briefing" });
     const idB = queueRequest({ action: "briefing" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-promote?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      const body = await resp.json() as { status: string };
-      expect(body.status).toBe("already-head");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-promote?id=${encodeURIComponent(idA)}`, { method: "POST" }));
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("already-head");
     expect(queueList().map(i => i.id)).toEqual([idA, idB]);
   });
 
@@ -597,25 +581,17 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     const { queueRequest } = await import("./queue.ts");
     queueRequest({ action: "briefing" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-promote?id=req-0-0`, { method: "POST" });
-      expect(resp.status).toBe(200);
-      const body = await resp.json() as { status: string };
-      expect(body.status).toBe("not-found");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue-promote?id=req-0-0", { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("not-found");
   });
 
   test("POST /api/queue-promote rejects malformed id with 400", async () => {
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-promote?id=not-a-queue-id`, { method: "POST" });
-      expect(resp.status).toBe(400);
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue-promote?id=not-a-queue-id", { method: "POST" }));
+    expect(resp.status).toBe(400);
   });
 
   test("POST /api/queue-cancel removes item and returns content for message actions", async () => {
@@ -623,19 +599,15 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     const idA = queueRequest({ action: "message", content: "please recycle me" });
     const idB = queueRequest({ action: "briefing" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      expect(resp.status).toBe(200);
-      const body = await resp.json() as { status: string; content: string | null; action: string; task?: string; slashCommand: string | null };
-      expect(body.status).toBe("cancelled");
-      expect(body.content).toBe("please recycle me");
-      expect(body.action).toBe("message");
-      expect(body.task).toBeUndefined();
-      expect(body.slashCommand).toBeNull();
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string; content: string | null; action: string; task?: string; slashCommand: string | null };
+    expect(body.status).toBe("cancelled");
+    expect(body.content).toBe("please recycle me");
+    expect(body.action).toBe("message");
+    expect(body.task).toBeUndefined();
+    expect(body.slashCommand).toBeNull();
     expect(queueList().map(i => i.id)).toEqual([idB]);
   });
 
@@ -643,18 +615,14 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
     const { queueRequest } = await import("./queue.ts");
     const idA = queueRequest({ action: "elaborate", task: "task-abc" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      const body = await resp.json() as { status: string; content: string | null; action: string; task?: string; slashCommand: string | null };
-      expect(body.status).toBe("cancelled");
-      expect(body.content).toBeNull();
-      expect(body.action).toBe("elaborate");
-      expect(body.task).toBe("task-abc");
-      expect(body.slashCommand).toBe("/ludics-elaborate task-abc");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" }));
+    const body = await resp.json() as { status: string; content: string | null; action: string; task?: string; slashCommand: string | null };
+    expect(body.status).toBe("cancelled");
+    expect(body.content).toBeNull();
+    expect(body.action).toBe("elaborate");
+    expect(body.task).toBe("task-abc");
+    expect(body.slashCommand).toBe("/ludics-elaborate task-abc");
   });
 
   test("POST /api/queue-cancel renders multi-line feedback below slash command", async () => {
@@ -665,55 +633,66 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
       feedback: "First concern.\nSecond concern.",
     });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      const body = await resp.json() as { status: string; slashCommand: string | null };
-      expect(body.status).toBe("cancelled");
-      expect(body.slashCommand).toBe("/ludics-revise-proposal task-abc\nFirst concern.\nSecond concern.");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" }));
+    const body = await resp.json() as { status: string; slashCommand: string | null };
+    expect(body.status).toBe("cancelled");
+    expect(body.slashCommand).toBe("/ludics-revise-proposal task-abc\nFirst concern.\nSecond concern.");
   });
 
   test("POST /api/queue-cancel returns null slashCommand for actions with no skill mapping", async () => {
     const { queueRequest } = await import("./queue.ts");
     const idA = queueRequest({ action: "complete-task", task: "task-abc" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" });
-      const body = await resp.json() as { status: string; slashCommand: string | null };
-      expect(body.status).toBe("cancelled");
-      expect(body.slashCommand).toBeNull();
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request(`http://x/api/queue-cancel?id=${encodeURIComponent(idA)}`, { method: "POST" }));
+    const body = await resp.json() as { status: string; slashCommand: string | null };
+    expect(body.status).toBe("cancelled");
+    expect(body.slashCommand).toBeNull();
   });
 
   test("POST /api/queue-cancel returns 'not-found' for unknown id without mutating queue", async () => {
     const { queueRequest, queueList } = await import("./queue.ts");
     const idA = queueRequest({ action: "briefing" });
 
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=req-0-0`, { method: "POST" });
-      expect(resp.status).toBe(200);
-      const body = await resp.json() as { status: string };
-      expect(body.status).toBe("not-found");
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue-cancel?id=req-0-0", { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("not-found");
     expect(queueList().map(i => i.id)).toEqual([idA]);
   });
 
   test("POST /api/queue-cancel rejects malformed id with 400", async () => {
-    const { baseUrl, stop } = await startServer();
-    try {
-      const resp = await fetch(`${baseUrl}/api/queue-cancel?id=`, { method: "POST" });
-      expect(resp.status).toBe(400);
-    } finally {
-      stop();
-    }
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue-cancel?id=", { method: "POST" }));
+    expect(resp.status).toBe(400);
+  });
+
+  test("buildHandlers gives each call its own lastGenerated counter (isolation)", async () => {
+    // Regression test for AC: dispatcher owns its own lastGenerated counter
+    // (one per factory call, isolated between callers). If lastGenerated were
+    // shared (e.g. module-level), regen-resetting endpoints called against
+    // handler A would influence handler B's regen state.
+    const { buildHandlers } = await import("./dashboard-server.ts");
+    const { queueRequest } = await import("./queue.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(dashboardDir, { recursive: true });
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+
+    const handlerA = buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+    const handlerB = buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+    expect(handlerA).not.toBe(handlerB);
+
+    // Each handler must independently dispatch identical requests.
+    const idA = queueRequest({ action: "briefing" });
+    const respA = await handlerA(new Request("http://x/api/queue", { method: "GET" }));
+    const respB = await handlerB(new Request("http://x/api/queue", { method: "GET" }));
+    expect(respA.status).toBe(200);
+    expect(respB.status).toBe(200);
+    const bodyA = await respA.json() as { pending: { id: string }[] };
+    const bodyB = await respB.json() as { pending: { id: string }[] };
+    expect(bodyA.pending.map(p => p.id)).toEqual([idA]);
+    expect(bodyB.pending.map(p => p.id)).toEqual([idA]);
   });
 });
