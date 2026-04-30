@@ -6,21 +6,9 @@ This doc grows over time. Today it covers ten clauses across five thematic famil
 
 → See also: [`orchestration-patterns.md` § AC self-check](orchestration-patterns.md#ac-self-check) for the *invariant-vs-capability* phrasing rule, and [`orchestration-patterns.md` § Harness instantiation](orchestration-patterns.md#harness-instantiation) for the *falsifier-framing* rule. The two together describe both sides of an enforceable AC line; the clauses below extend them to specific recurring failure modes.
 
-## Vocabulary
+**Vocabulary.** The doc uses three terms in the same sense as the cross-linked sections above. **AC** — an acceptance criterion: one bullet on the proposal's contract list, named by an invariant the implementation must satisfy. **Harness condition** — the concrete setup state that makes a verification probe (test, grep, file read) actually exercise the AC's case rather than merely traversing the surrounding code path; a test that passes whether or not the harness condition holds does not enforce its AC. **Falsifier** — the answer to *what would fail if the AC were violated?* For a test-backed AC, that's the assertion line that flips; for a doc/config AC, it's the structural property (a resolvable anchor, a consumer that still reads the field, a referenced symbol that still exists) whose absence the AC is asserting against.
 
-The doc uses three terms in the same sense as the cross-linked sections above.
-
-- **AC** — an acceptance criterion: one bullet on the proposal's contract list, named by an invariant the implementation must satisfy.
-- **Harness condition** — the concrete setup state that makes a verification probe (test, grep, file read) actually exercise the AC's case rather than merely traversing the surrounding code path. A test that passes whether or not the harness condition holds does not enforce its AC.
-- **Falsifier** — the answer to *what would fail if the AC were violated?* For a test-backed AC, that's the assertion line that flips. For a doc/config AC, it's the structural property (a resolvable anchor, a consumer that still reads the field, a referenced symbol that still exists) whose absence the AC is asserting against.
-
-## Table of contents
-
-- [Vacuous-harness family](#vacuous-harness-family) — assertions that traverse but don't enforce.
-- [Proposal-as-canonical family](#proposal-as-canonical-family) — the proposal is the contract; the task file isn't.
-- [Falsifier-shape family](#falsifier-shape-family) — picking a probe whose negative outcome is reachable by violating the AC.
-- [Verification-evidence family](#verification-evidence-family) — evidence must survive the commit boundary.
-- [Baseline-aware framing family](#baseline-aware-framing-family) — gate-passing ACs need no-regression framing when the baseline is red.
+**Thematic table of contents.** [Vacuous-harness family](#vacuous-harness-family) — assertions that traverse but don't enforce. [Proposal-as-canonical family](#proposal-as-canonical-family) — the proposal is the contract; the task file isn't. [Falsifier-shape family](#falsifier-shape-family) — picking a probe whose negative outcome is reachable by violating the AC. [Verification-evidence family](#verification-evidence-family) — evidence must survive the commit boundary. [Baseline-aware framing family](#baseline-aware-framing-family) — gate-passing ACs need no-regression framing when the baseline is red.
 
 ## Vacuous-harness family
 
