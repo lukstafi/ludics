@@ -963,10 +963,11 @@ describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () =
   });
 
   test("POST /api/stale-abandon de-stales then abandons, ending in status: abandoned", async () => {
-    // Harness condition: task starts at status: stale. The endpoint composes
-    // transitionStatus(stale -> ready) + tasksAbandon. If either step is
-    // skipped or the order is reversed, tasksAbandon's terminal-status guard
-    // (which now includes stale) throws and the response status flips to 500.
+    // Harness condition: task starts at status: stale, no slot. The handler
+    // calls transitionStatus(stale → abandoned) inline (it bypasses
+    // tasksAbandon because tasksAbandon's terminal-status guard rejects
+    // status: stale). If the inline transitionStatus is skipped or its
+    // expectedFrom/to are wrong, the file does not end up at abandoned.
     const file = writeTask("task-stale-abandon", "stale");
 
     const handler = await makeHandler();
@@ -975,7 +976,7 @@ describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () =
     const body = await resp.json() as { status: string };
     expect(body.status).toBe("abandoned");
     // Invariant: file ends up status: abandoned. Mutation: drop the
-    // tasksAbandon call and the file would still read status: ready.
+    // transitionStatus call and the file would still read status: stale.
     expect(readFileSync(file, "utf-8")).toContain("status: abandoned");
   });
 
@@ -1006,9 +1007,17 @@ describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () =
     // clear the slot. With the 409 pre-check, neither happens.
     const file = writeTask("task-slotted-stale", "stale");
     const before = readFileSync(file, "utf-8");
-    const { writeSlotJson, emptySlotData, readSlotJson } = await import("./slots/json.ts");
-    const slotData = { ...emptySlotData(1), task: "task-slotted-stale", process: "tmux:s1" };
+    const { writeSlotJson, emptySlotData, slotJsonPath } = await import("./slots/json.ts");
+    const slotData = {
+      ...emptySlotData(1),
+      task: "task-slotted-stale",
+      process: "tmux:s1",
+      liveness: "alive" as const,
+      session: "sess-stale",
+    };
     writeSlotJson(1, slotData);
+    const slotFile = slotJsonPath(1);
+    const slotBefore = readFileSync(slotFile, "utf-8");
 
     const handler = await makeHandler();
     const resp = await handler(new Request("http://x/api/stale-abandon?task=task-slotted-stale"));
@@ -1025,8 +1034,11 @@ describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () =
     expect(after).toContain("status: stale");
     expect(after).not.toContain("status: abandoned");
     expect(after).not.toContain("completed:");
-    // Invariant: slot's `task` field is unchanged.
-    expect(readSlotJson(1).task).toBe("task-slotted-stale");
+    // Invariant: slot JSON is byte-identical (no field — task, process,
+    // liveness, session, or anything else — was mutated). Mutation: any
+    // residual slotClear or in-place field write would change the file
+    // bytes and fail this assertion, even if `task` was left intact.
+    expect(readFileSync(slotFile, "utf-8")).toBe(slotBefore);
   });
 
   test("POST /api/deferred-abandon de-defers and abandons a non-slotted deferred task", async () => {
@@ -1052,9 +1064,17 @@ describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () =
     // tasksAbandon, which clears the slot and flips status to abandoned.
     const file = writeTask("task-slotted-deferred", "deferred");
     const before = readFileSync(file, "utf-8");
-    const { writeSlotJson, emptySlotData, readSlotJson } = await import("./slots/json.ts");
-    const slotData = { ...emptySlotData(1), task: "task-slotted-deferred", process: "tmux:s1" };
+    const { writeSlotJson, emptySlotData, slotJsonPath } = await import("./slots/json.ts");
+    const slotData = {
+      ...emptySlotData(1),
+      task: "task-slotted-deferred",
+      process: "tmux:s1",
+      liveness: "alive" as const,
+      session: "sess-deferred",
+    };
     writeSlotJson(1, slotData);
+    const slotFile = slotJsonPath(1);
+    const slotBefore = readFileSync(slotFile, "utf-8");
 
     const handler = await makeHandler();
     const resp = await handler(new Request("http://x/api/deferred-abandon?task=task-slotted-deferred"));
@@ -1071,8 +1091,11 @@ describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () =
     expect(after).toBe(before);
     expect(after).toContain("status: deferred");
     expect(after).not.toContain("status: abandoned");
-    // Invariant: slot's `task` field is unchanged.
-    expect(readSlotJson(1).task).toBe("task-slotted-deferred");
+    // Invariant: slot JSON is byte-identical (tasksAbandon's slot-aware
+    // path would clear `task`, `process`, `liveness`, `session`, etc. —
+    // any of those mutations would change the file bytes and fail this
+    // assertion, even if a future regression somehow preserved `task`).
+    expect(readFileSync(slotFile, "utf-8")).toBe(slotBefore);
   });
 });
 
