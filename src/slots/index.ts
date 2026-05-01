@@ -535,9 +535,16 @@ export async function slotClear(slotNum: number, finalStatus: string = "ready"):
   // for the slot. "merged" is not a valid finalStatus today (rejected by
   // VALID_CLEAR_STATUSES, no callsite); revisit if a merge-via-slot path appears.
   if ((finalStatus === "done" || finalStatus === "abandoned") && hasStash(slotNum)) {
+    console.error(
+      `ludics: auto-restoring preempted work to slot ${slotNum} (trigger: ${finalStatus})`,
+    );
+    await slotRestore(slotNum);
+    // Emit observability after slotRestore succeeds, so a failed restore
+    // (e.g. corrupt stash where hasStash() is true but readStash() returns
+    // null) does not produce a success-looking slot_auto_restore event.
     journalAppend(
       "slot",
-      `Slot ${slotNum} auto-restoring preempted work (trigger: ${finalStatus})`,
+      `Slot ${slotNum} auto-restored preempted work (trigger: ${finalStatus})`,
     );
     emitEvent({
       event_type: "slot_auto_restore",
@@ -546,10 +553,6 @@ export async function slotClear(slotNum: number, finalStatus: string = "ready"):
       slot: slotNum,
       message: `trigger: ${finalStatus}`,
     });
-    console.error(
-      `ludics: auto-restoring preempted work to slot ${slotNum} (trigger: ${finalStatus})`,
-    );
-    await slotRestore(slotNum);
   }
 
   // Best-effort t3code cleanup after clearing a slot
