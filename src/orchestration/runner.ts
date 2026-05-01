@@ -733,12 +733,17 @@ export async function ensureTtydAlive(state: OrchestrationState): Promise<void> 
 
     const role = agentPortRole(agent, i);
 
-    // Window-reset path: no record, or last restart > 5 min ago. A
-    // long-quiet flap was a transient blip; start a fresh count.
-    if (!prev || (now - prev.firstRestartAt) > TTYD_FLAP_QUIET_RESET_S) {
+    // Window-reset path: no record, or quiet > 5 min since the LAST
+    // restart (not the first — that would misclassify an active flap
+    // whose incident started > 5 min ago as "quiet"). Legacy records
+    // without lastRestartAt fall back to firstRestartAt; this is correct
+    // for the count==1 case where they coincide and acceptable for
+    // higher counts because the next restart re-stamps lastRestartAt.
+    const lastRestartAt = prev?.lastRestartAt ?? prev?.firstRestartAt;
+    if (!prev || (now - lastRestartAt!) > TTYD_FLAP_QUIET_RESET_S) {
       const newPid = startTtyd(state.slot, agent.name, role, state.taskId);
       tmuxState.ttydPids[agent.name] = newPid;
-      records[agent.name] = { count: 1, firstRestartAt: now };
+      records[agent.name] = { count: 1, firstRestartAt: now, lastRestartAt: now };
       changed = true;
       emitEvent({
         event_type: "ttyd_restarted",
@@ -762,6 +767,7 @@ export async function ensureTtydAlive(state: OrchestrationState): Promise<void> 
       records[agent.name] = {
         count: nextCount,
         firstRestartAt: prev.firstRestartAt,
+        lastRestartAt: prev.lastRestartAt,
         backoffUntil: TTYD_GIVE_UP_SENTINEL,
       };
       changed = true;
@@ -782,7 +788,7 @@ export async function ensureTtydAlive(state: OrchestrationState): Promise<void> 
     // Below threshold — restart and increment within the current window.
     const newPid = startTtyd(state.slot, agent.name, role, state.taskId);
     tmuxState.ttydPids[agent.name] = newPid;
-    records[agent.name] = { count: nextCount, firstRestartAt: prev.firstRestartAt };
+    records[agent.name] = { count: nextCount, firstRestartAt: prev.firstRestartAt, lastRestartAt: now };
     changed = true;
     emitEvent({
       event_type: "ttyd_restarted",

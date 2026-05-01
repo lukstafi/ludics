@@ -1507,14 +1507,20 @@ describe("ensureTtydAlive — flap suppression", () => {
     expect(persisted.ttydRestartCounts!.coder!.backoffUntil).toBeUndefined();
   });
 
-  test("a >300s quiet period resets the counter to count:1 instead of crossing threshold", async () => {
-    // count=9 already accumulated, but firstRestartAt is 301s old → the
-    // window-reset path must fire BEFORE the threshold check, otherwise
-    // nextCount=10 would prematurely escalate.
+  test("quiet > 5 min since the LAST restart resets to count:1 even when firstRestartAt is recent", async () => {
+    // The reset is gated on lastRestartAt, not firstRestartAt. Seed a
+    // fixture where firstRestartAt is recent (50 s ago) but lastRestartAt
+    // is old (301 s ago). The reset must fire because nothing has
+    // restarted in 5+ min — even though the incident itself is young.
+    //
+    // Mutation: gating on `now - prev.firstRestartAt` (the prior bug)
+    // sees `50 ≤ 300` → no reset → enters threshold check → nextCount=10
+    // → emits ttyd_flapping. This test's `expect(types).toEqual(["ttyd_restarted"])`
+    // would then fail.
     seedSlot(4, {
       ttydPids: { coder: 99999999 },
       ttydRestartCounts: {
-        coder: { count: 9, firstRestartAt: nowSeconds - 301 },
+        coder: { count: 9, firstRestartAt: nowSeconds - 50, lastRestartAt: nowSeconds - 301 },
       },
     });
     const state = makeTmuxState(4);
@@ -1523,14 +1529,71 @@ describe("ensureTtydAlive — flap suppression", () => {
     await ensureTtydAlive(state);
 
     const types = eventTypes();
-    // Invariant: window-reset wins over threshold-cross when quiet > 5min.
-    // Mutation: swapping the order of the window-reset and threshold checks
-    // would emit ttyd_flapping here instead of ttyd_restarted.
     expect(types).toEqual(["ttyd_restarted"]);
     const persisted = readSlot(4)!;
     expect(persisted.ttydRestartCounts!.coder!.count).toBe(1);
     expect(persisted.ttydRestartCounts!.coder!.firstRestartAt).toBe(nowSeconds);
+    expect(persisted.ttydRestartCounts!.coder!.lastRestartAt).toBe(nowSeconds);
     expect(persisted.ttydRestartCounts!.coder!.backoffUntil).toBeUndefined();
+  });
+
+  test("active flap whose firstRestartAt is older than 5 min does NOT reset when lastRestartAt is recent", async () => {
+    // The reviewer's concrete falsifier (round-2 REQUEST_CHANGES): a
+    // record at count=9 with firstRestartAt=600s ago AND lastRestartAt=11s
+    // ago is an ACTIVE flap, not a stale incident. The reset MUST NOT
+    // fire here; the next poll must cross the threshold and emit
+    // ttyd_flapping.
+    //
+    // Mutation: gating on firstRestartAt (`now - 600 > 300` → reset) would
+    // produce types=["ttyd_restarted"] and count=1. The strict
+    // `expect(types).toEqual(["ttyd_flapping"])` plus
+    // `expect(... .count).toBe(10)` below fail under that mutation.
+    seedSlot(7, {
+      ttydPids: { coder: 99999999 },
+      ttydRestartCounts: {
+        coder: { count: 9, firstRestartAt: nowSeconds - 600, lastRestartAt: nowSeconds - 11 },
+      },
+    });
+    const state = makeTmuxState(7);
+
+    __resetTtydCheckGateForTests();
+    await ensureTtydAlive(state);
+
+    const types = eventTypes();
+    // (now - firstRestartAt) = 600 — exactly at the window edge, satisfies
+    // the threshold's `≤ TTYD_FLAP_WINDOW_S`.
+    expect(types).toEqual(["ttyd_flapping"]);
+    const persisted = readSlot(7)!;
+    expect(persisted.ttydRestartCounts!.coder!.count).toBe(10);
+    expect(persisted.ttydRestartCounts!.coder!.backoffUntil).toBe(Number.MAX_SAFE_INTEGER);
+    // Reviewer's concrete falsifier from REQUEST_CHANGES: the buggy gate
+    // would have lost lastRestartAt=11; the fixed gate keeps it.
+    expect(persisted.ttydRestartCounts!.coder!.lastRestartAt).toBe(nowSeconds - 11);
+  });
+
+  test("legacy record without lastRestartAt falls back to firstRestartAt for the quiet gate", async () => {
+    // Back-compat: records persisted before the lastRestartAt field was
+    // added must still load. For a legacy count==1 record they coincide;
+    // for higher counts, behaviour is acceptable (the next restart will
+    // stamp lastRestartAt and the gate becomes precise).
+    seedSlot(8, {
+      ttydPids: { coder: 99999999 },
+      ttydRestartCounts: {
+        // No lastRestartAt — pre-fix shape.
+        coder: { count: 1, firstRestartAt: nowSeconds - 301 },
+      },
+    });
+    const state = makeTmuxState(8);
+
+    __resetTtydCheckGateForTests();
+    await ensureTtydAlive(state);
+
+    // Fallback (firstRestartAt) > 300 → reset to a fresh record that NOW
+    // includes lastRestartAt.
+    const persisted = readSlot(8)!;
+    expect(persisted.ttydRestartCounts!.coder!.count).toBe(1);
+    expect(persisted.ttydRestartCounts!.coder!.firstRestartAt).toBe(nowSeconds);
+    expect(persisted.ttydRestartCounts!.coder!.lastRestartAt).toBe(nowSeconds);
   });
 
   test("ttyd_flapping payload includes restart_count, window_seconds, and the per-agent log path", async () => {

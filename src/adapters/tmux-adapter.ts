@@ -49,6 +49,16 @@ const PORT_BASE = 7681; // port 7680 reserved
 export interface TtydRestartRecord {
   count: number;
   firstRestartAt: number;
+  /** Epoch seconds of the most-recent restart. Used by `ensureTtydAlive`'s
+   *  window-reset gate: a quiet period is measured against the *last*
+   *  restart, not the first, so an active flap whose first incident is
+   *  older than the quiet window does not get spuriously reset.
+   *
+   *  Optional only for back-compat with records persisted before this
+   *  field was introduced; readers fall back to `firstRestartAt` when
+   *  absent (correct for the count==1 case where they coincide).
+   */
+  lastRestartAt?: number;
   backoffUntil?: number;
 }
 

@@ -385,20 +385,46 @@ describe("readTmuxSlotState read-boundary preserves sparse ttydRestartCounts", (
     expect(Object.prototype.hasOwnProperty.call(state, "ttydRestartCounts")).toBe(false);
   });
 
-  test("ttydRestartCounts round-trips byte-faithfully when present", async () => {
+  test("ttydRestartCounts round-trips byte-faithfully when present (includes lastRestartAt)", async () => {
     const { readTmuxSlotState, writeTmuxSlotState } = await import("./tmux-adapter.ts");
     const fixture = {
       slot: 4,
       ttydPids: { coder: 1234 },
       ttydRestartCounts: {
-        coder: { count: 3, firstRestartAt: 1700000000 },
-        reviewer: { count: 10, firstRestartAt: 1700000100, backoffUntil: Number.MAX_SAFE_INTEGER },
+        coder: { count: 3, firstRestartAt: 1700000000, lastRestartAt: 1700000060 },
+        reviewer: {
+          count: 10,
+          firstRestartAt: 1700000100,
+          lastRestartAt: 1700000400,
+          backoffUntil: Number.MAX_SAFE_INTEGER,
+        },
       },
     } as unknown as Parameters<typeof writeTmuxSlotState>[0];
     writeTmuxSlotState(fixture, tmpDir);
     const round = readTmuxSlotState(4, tmpDir);
     expect(round).toEqual(fixture);
-    // Sentinel value survives JSON round-trip.
+    // Sentinel value AND new lastRestartAt field both survive JSON round-trip.
     expect(round!.ttydRestartCounts!.reviewer!.backoffUntil).toBe(Number.MAX_SAFE_INTEGER);
+    expect(round!.ttydRestartCounts!.coder!.lastRestartAt).toBe(1700000060);
+    expect(round!.ttydRestartCounts!.reviewer!.lastRestartAt).toBe(1700000400);
+  });
+
+  test("legacy record without lastRestartAt round-trips with the field undefined", async () => {
+    const { readTmuxSlotState, writeTmuxSlotState } = await import("./tmux-adapter.ts");
+    const legacy = {
+      slot: 5,
+      ttydPids: {},
+      ttydRestartCounts: {
+        // Pre-fix shape — explicitly OMITs lastRestartAt.
+        coder: { count: 1, firstRestartAt: 1700000000 },
+      },
+    } as unknown as Parameters<typeof writeTmuxSlotState>[0];
+    writeTmuxSlotState(legacy, tmpDir);
+    const round = readTmuxSlotState(5, tmpDir);
+    expect(round!.ttydRestartCounts!.coder!.count).toBe(1);
+    expect(round!.ttydRestartCounts!.coder!.firstRestartAt).toBe(1700000000);
+    // Invariant: legacy field stays undefined on read; the runner falls
+    // back to firstRestartAt only when this field is absent.
+    expect(round!.ttydRestartCounts!.coder!.lastRestartAt).toBeUndefined();
   });
 });
