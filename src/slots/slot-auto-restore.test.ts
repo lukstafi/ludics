@@ -173,4 +173,31 @@ describe("slotClear auto-restore (task-4028c493)", () => {
     const autoRestore = events.filter((e) => e.event_type === "slot_auto_restore");
     expect(autoRestore.length).toBe(0);
   });
+
+  test("corrupt stash: failed restore does NOT emit a success-looking event", async () => {
+    // Codex review on PR #482: emitting slot_auto_restore before the await
+    // means a thrown slotRestore (e.g. hasStash() true but readStash() null
+    // due to a corrupted stash file) records success-looking observability
+    // while the slot is left unrestored. Invariant: slot_auto_restore fires
+    // only after slotRestore resolves.
+    const { harness, stashFile } = await setUpPreemptedSlot();
+
+    // Corrupt the stash JSON. hasStash() (existsSync) still returns true,
+    // but readStash() catches the JSON parse error and returns null, so
+    // slotRestore throws "no preempted stash to restore".
+    writeFileSync(stashFile, "{ not valid json", "utf-8");
+    expect(hasStash(1)).toBe(true);
+
+    let threw = false;
+    try {
+      await slotClear(1, "abandoned");
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+
+    const events = readEvents(harness);
+    const autoRestore = events.filter((e) => e.event_type === "slot_auto_restore");
+    expect(autoRestore.length).toBe(0);
+  });
 });
