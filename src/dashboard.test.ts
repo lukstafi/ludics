@@ -999,36 +999,80 @@ describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () =
     expect(resp.status).toBe(400);
   });
 
-  test("POST /api/stale-abandon on a slotted stale task ends with status: abandoned (not silently left at ready)", async () => {
-    // Harness condition: a `stale` task is also assigned to a slot. Codex
-    // round-2 review noted that the de-stale-then-abandon composition is
-    // unsafe: tasksAbandon for a slotted task delegates to slotClear ->
-    // taskUpdateForSlotClear, whose abandoned `expectedFrom` is
-    // [in-progress, deferred, preempted] — `ready` is NOT in that list, so
-    // the freshly-de-staled task silently stays at `ready` while the
-    // endpoint still returns `{"status":"abandoned"}`. The fix lifts that
-    // gate; this test pins the invariant.
+  test("POST /api/stale-abandon on a slotted stale task returns 409 and does not mutate task or slot", async () => {
+    // Harness condition: a `stale` task is also assigned to slot 1
+    // (writeSlotJson(1, { task: "task-slotted-stale" })). Without the
+    // 409 pre-check, the handler would flip status to abandoned and
+    // clear the slot. With the 409 pre-check, neither happens.
     const file = writeTask("task-slotted-stale", "stale");
-    // Mark the task as assigned to slot 1 so findSlotForTask picks it up.
-    const { writeSlotJson, emptySlotData } = await import("./slots/json.ts");
+    const before = readFileSync(file, "utf-8");
+    const { writeSlotJson, emptySlotData, readSlotJson } = await import("./slots/json.ts");
     const slotData = { ...emptySlotData(1), task: "task-slotted-stale", process: "tmux:s1" };
     writeSlotJson(1, slotData);
 
     const handler = await makeHandler();
     const resp = await handler(new Request("http://x/api/stale-abandon?task=task-slotted-stale"));
+    // Invariant: response is 409 with the slot number in the error body.
+    // Mutation: drop the findSlotForTask pre-check and the response is
+    // 200, the assertions below all flip.
+    expect(resp.status).toBe(409);
+    const body = await resp.json() as { error: string };
+    expect(body.error).toContain("slot 1");
+    expect(body.error).toContain("use slot operations");
+    // Invariant: task remains stale — no `completed` written, no status flip.
+    const after = readFileSync(file, "utf-8");
+    expect(after).toBe(before);
+    expect(after).toContain("status: stale");
+    expect(after).not.toContain("status: abandoned");
+    expect(after).not.toContain("completed:");
+    // Invariant: slot's `task` field is unchanged.
+    expect(readSlotJson(1).task).toBe("task-slotted-stale");
+  });
+
+  test("POST /api/deferred-abandon de-defers and abandons a non-slotted deferred task", async () => {
+    // Harness condition: deferred task with no slot assignment.
+    // tasksAbandon's terminal-status guard accepts `deferred`, so the
+    // existing flow runs end-to-end and produces status: abandoned.
+    const file = writeTask("task-deferred-abandon", "deferred");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/deferred-abandon?task=task-deferred-abandon"));
     expect(resp.status).toBe(200);
     const body = await resp.json() as { status: string };
     expect(body.status).toBe("abandoned");
-    // Invariant: file MUST end at status: abandoned, not silently stay at
-    // some intermediate state while the endpoint reports success.
-    // Mutation: revert /api/stale-abandon to delegate to tasksAbandon
-    // after a `stale → ready` flip and this assertion fails because
-    // taskUpdateForSlotClear's `expectedFrom` does not include `ready`,
-    // so the slotted task silently keeps the intermediate `ready` while
-    // the endpoint returns 200 (the exact Codex PR #476 review finding).
+    // Invariant: task transitions to abandoned. Mutation: drop the
+    // tasksAbandon call and this assertion fails (status would still
+    // read deferred).
+    expect(readFileSync(file, "utf-8")).toContain("status: abandoned");
+  });
+
+  test("POST /api/deferred-abandon on a slotted deferred task returns 409 and does not mutate task or slot", async () => {
+    // Harness condition: a `deferred` task is also assigned to slot 1.
+    // Without the 409 pre-check, the handler would delegate to
+    // tasksAbandon, which clears the slot and flips status to abandoned.
+    const file = writeTask("task-slotted-deferred", "deferred");
+    const before = readFileSync(file, "utf-8");
+    const { writeSlotJson, emptySlotData, readSlotJson } = await import("./slots/json.ts");
+    const slotData = { ...emptySlotData(1), task: "task-slotted-deferred", process: "tmux:s1" };
+    writeSlotJson(1, slotData);
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/deferred-abandon?task=task-slotted-deferred"));
+    // Invariant: response is 409 with the slot number.
+    // Mutation: drop the findSlotForTask pre-check and the response
+    // becomes 200 (or 500 from tasksAbandon's slot-clear path) and the
+    // assertions below flip.
+    expect(resp.status).toBe(409);
+    const body = await resp.json() as { error: string };
+    expect(body.error).toContain("slot 1");
+    expect(body.error).toContain("use slot operations");
+    // Invariant: task remains deferred (no status flip).
     const after = readFileSync(file, "utf-8");
-    expect(after).toContain("status: abandoned");
-    expect(after).not.toMatch(/^status: ready$/m);
+    expect(after).toBe(before);
+    expect(after).toContain("status: deferred");
+    expect(after).not.toContain("status: abandoned");
+    // Invariant: slot's `task` field is unchanged.
+    expect(readSlotJson(1).task).toBe("task-slotted-deferred");
   });
 });
 
