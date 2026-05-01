@@ -1357,7 +1357,6 @@ describe("ensureTtydAlive — flap suppression", () => {
   let nowSeconds = 1700000000;
   let pidCounter = 5000;
 
-  function setNow(epoch: number): void { nowSeconds = epoch; }
   function advance(seconds: number): void { nowSeconds += seconds; }
 
   function seedSlot(slot: number, init: Partial<tmuxAdapter.TmuxSlotState> = {}): void {

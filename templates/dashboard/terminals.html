@@ -63,7 +63,11 @@
     <div class="terminal-grid">
         <!-- Populated by JS from data/terminals.json -->
     </div>
-    <script>
+    <script type="module">
+        // task-7476a03a — Terminals tab posts /api/ttyd-reset once per page
+        // lifetime so a Cmd-Shift-R reload clears any ttyd flap-suppression.
+        import { maybeResetTtydCounters } from './terminals-reset.js';
+
         function showError(msg) {
             const grid = document.querySelector('.terminal-grid');
             grid.classList.add('error');
@@ -83,6 +87,8 @@
                 }
                 const data = await resp.json();
                 clearError();
+                // Fire-and-forget — render must not block on reset.
+                maybeResetTtydCounters(data.activeSlots || []);
                 renderTerminals(data.terminals || [], data.activeSlots || []);
                 document.getElementById('last-update').textContent =
                     'Last update: ' + new Date().toLocaleTimeString();
