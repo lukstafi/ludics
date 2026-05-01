@@ -1031,3 +1031,144 @@ describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () =
     expect(after).not.toMatch(/^status: ready$/m);
   });
 });
+
+// task-7476a03a — slot ttyd flap-suppression. /api/ttyd-reset is the
+// recovery endpoint posted by the Terminals tab on full page reload.
+describe("dashboard HTTP /api/ttyd-reset", () => {
+  async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
+    const { buildHandlers } = await import("./dashboard-server.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(dashboardDir, { recursive: true });
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+    return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+  }
+
+  function tmuxStatePath(slot: number): string {
+    return join(harnessDir(), "orchestration", `tmux-slot-${slot}.json`);
+  }
+
+  function seedTmuxState(slot: number, state: object): void {
+    const dir = join(harnessDir(), "orchestration");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(tmuxStatePath(slot), JSON.stringify(state));
+  }
+
+  test("400 for missing or out-of-range slot", async () => {
+    const handler = await makeHandler();
+    for (const url of [
+      "http://x/api/ttyd-reset",
+      "http://x/api/ttyd-reset?slot=0",
+      "http://x/api/ttyd-reset?slot=7",
+      "http://x/api/ttyd-reset?slot=abc",
+    ]) {
+      const resp = await handler(new Request(url, { method: "POST" }));
+      // Invariant: every malformed slot must hit 400 — silently dropping a
+      // bad request would leave the user thinking the reset succeeded.
+      // Mutation: replacing /^[1-6]$/ with /^\d+$/ allows slot=7 (200), failing.
+      expect(resp.status).toBe(400);
+    }
+  });
+
+  test("404 when no tmux-slot file exists for that slot", async () => {
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/ttyd-reset?slot=2", { method: "POST" }));
+    expect(resp.status).toBe(404);
+  });
+
+  test("agent-targeted reset deletes the named key and drops the field when the map empties", async () => {
+    seedTmuxState(3, {
+      slot: 3,
+      ttydPids: { coder: 1234, reviewer: 1235 },
+      ttydRestartCounts: {
+        coder: { count: 10, firstRestartAt: 1700000000, backoffUntil: Number.MAX_SAFE_INTEGER },
+      },
+      orchestration: { stateFile: "orch.json", mode: "pair", pid: process.pid },
+    });
+
+    const handler = await makeHandler();
+    const resp = await handler(
+      new Request("http://x/api/ttyd-reset?slot=3&agent=coder", { method: "POST" }),
+    );
+    expect(resp.status).toBe(200);
+
+    const persisted = JSON.parse(readFileSync(tmuxStatePath(3), "utf-8"));
+    // Invariant: emptying the per-agent map drops the entire field so the
+    // sparse-shape contract holds. Mutation: changing the inner-`delete`
+    // path to skip the empty-check would leave `ttydRestartCounts: {}` on
+    // disk and the assertion below fails.
+    expect(persisted.ttydRestartCounts).toBeUndefined();
+    // Other fields untouched.
+    expect(persisted.ttydPids).toEqual({ coder: 1234, reviewer: 1235 });
+    expect(persisted.orchestration.pid).toBe(process.pid);
+  });
+
+  test("agent-targeted reset preserves remaining sibling counters", async () => {
+    seedTmuxState(4, {
+      slot: 4,
+      ttydPids: { coder: 1234, reviewer: 1235 },
+      ttydRestartCounts: {
+        coder: { count: 10, firstRestartAt: 1700000000, backoffUntil: Number.MAX_SAFE_INTEGER },
+        reviewer: { count: 3, firstRestartAt: 1700000050 },
+      },
+    });
+
+    const handler = await makeHandler();
+    const resp = await handler(
+      new Request("http://x/api/ttyd-reset?slot=4&agent=coder", { method: "POST" }),
+    );
+    expect(resp.status).toBe(200);
+
+    const persisted = JSON.parse(readFileSync(tmuxStatePath(4), "utf-8"));
+    expect(persisted.ttydRestartCounts).toBeDefined();
+    expect(persisted.ttydRestartCounts.coder).toBeUndefined();
+    expect(persisted.ttydRestartCounts.reviewer).toEqual({ count: 3, firstRestartAt: 1700000050 });
+  });
+
+  test("slot-wide reset (no agent param) drops the entire field", async () => {
+    seedTmuxState(5, {
+      slot: 5,
+      ttydPids: { coder: 1234, reviewer: 1235 },
+      ttydRestartCounts: {
+        coder: { count: 10, firstRestartAt: 1700000000, backoffUntil: Number.MAX_SAFE_INTEGER },
+        reviewer: { count: 3, firstRestartAt: 1700000050 },
+      },
+    });
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/ttyd-reset?slot=5", { method: "POST" }));
+    expect(resp.status).toBe(200);
+
+    const persisted = JSON.parse(readFileSync(tmuxStatePath(5), "utf-8"));
+    expect(persisted.ttydRestartCounts).toBeUndefined();
+  });
+
+  test("200 no-op when the slot exists but has no flap counters yet", async () => {
+    seedTmuxState(6, { slot: 6, ttydPids: {} });
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/ttyd-reset?slot=6", { method: "POST" }));
+    expect(resp.status).toBe(200);
+
+    const persisted = JSON.parse(readFileSync(tmuxStatePath(6), "utf-8"));
+    expect(persisted.ttydRestartCounts).toBeUndefined();
+    expect(persisted.ttydPids).toEqual({});
+  });
+
+  test("round-trips through readTmuxSlotState — counter is gone after reset", async () => {
+    seedTmuxState(1, {
+      slot: 1,
+      ttydPids: {},
+      ttydRestartCounts: {
+        coder: { count: 10, firstRestartAt: 1700000000, backoffUntil: Number.MAX_SAFE_INTEGER },
+      },
+    });
+
+    const handler = await makeHandler();
+    await handler(new Request("http://x/api/ttyd-reset?slot=1", { method: "POST" }));
+
+    const { readTmuxSlotState } = await import("./adapters/tmux-adapter.ts");
+    const round = readTmuxSlotState(1, harnessDir());
+    expect(round).not.toBeNull();
+    expect(round!.ttydRestartCounts).toBeUndefined();
+  });
+});

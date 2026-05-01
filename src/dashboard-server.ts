@@ -13,6 +13,7 @@ import { slotClear, slotSetMode, slotStart, slotResume, findSlotForTask, VALID_C
 import { updateFrontmatterField, addFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, transitionStatus, TASK_ID_RE, PRIORITY_INCREASE, PRIORITY_DECREASE } from "./tasks/markdown.ts";
 import { emitEvent } from "./events.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
+import { readTmuxSlotState, writeTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
 import { setQueueHold, maybeFeedMagQueue, clearAutoProposalDebounce } from "./mag.ts";
 import { queueList, queueRequest, recentResults, queuePromoteToTop, queueCancel } from "./queue.ts";
@@ -168,6 +169,37 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
     // Regenerate data if stale on any request to /data/
     if (pathname.startsWith("/data/")) {
       maybeRegenerate();
+    }
+
+    // API: clear ttyd flap-suppression counters for a slot (or one agent in it).
+    // Triggered from the Terminals tab on full page reload — the user's
+    // natural "kick it" gesture becomes the recovery action.
+    // task-7476a03a — slot ttyd observability + flap-suppression.
+    if (pathname === "/api/ttyd-reset" && req.method === "POST") {
+      const slotParam = url.searchParams.get("slot");
+      const agentParam = url.searchParams.get("agent");
+      if (!slotParam || !/^[1-6]$/.test(slotParam)) {
+        return new Response("Bad Request: slot must be 1-6", { status: 400 });
+      }
+      const slot = parseInt(slotParam, 10);
+      const tmuxState = readTmuxSlotState(slot, harnessDir());
+      if (!tmuxState) return new Response("Not Found", { status: 404 });
+      if (!tmuxState.ttydRestartCounts) {
+        // Already sparse — no-op succeeds without rewriting the file.
+        return new Response("OK", { status: 200 });
+      }
+      if (agentParam) {
+        delete tmuxState.ttydRestartCounts[agentParam];
+        if (Object.keys(tmuxState.ttydRestartCounts).length === 0) {
+          // Keep persisted shape sparse so future reads see undefined.
+          delete tmuxState.ttydRestartCounts;
+        }
+      } else {
+        // Slot-wide reset → drop the entire field.
+        delete tmuxState.ttydRestartCounts;
+      }
+      writeTmuxSlotState(tmuxState, harnessDir());
+      return new Response("OK", { status: 200 });
     }
 
     // API: clear a slot as done
