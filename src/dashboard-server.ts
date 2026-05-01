@@ -488,6 +488,14 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
     // unslotted stale tasks we bypass tasksAbandon and do the abandon
     // flow inline because tasksAbandon's terminal-status guard rejects
     // status: stale.
+    //
+    // The findSlotForTask / transitionStatus pair is check-then-act; a
+    // task could in principle be slotted between the two calls. Per
+    // proposal § Race notes (task-ad39a394) this is accepted as
+    // best-effort: no production path slots a stale task post-check
+    // (the staleness sweeper never targets in-progress, slot-assign
+    // paths reject non-ready/deferred statuses for stale tasks). The
+    // same applies symmetrically to /api/deferred-abandon below.
     if (pathname === "/api/stale-abandon") {
       const taskParam = url.searchParams.get("task");
       if (!taskParam || !TASK_ID_RE.test(taskParam)) {
