@@ -530,10 +530,29 @@ export async function slotClear(slotNum: number, finalStatus: string = "ready"):
 
   stateMarkDirty();
 
-  // Auto-restore preempted work when priority task completes
-  if (finalStatus === "done" && hasStash(slotNum)) {
-    console.error(`ludics: auto-restoring preempted work to slot ${slotNum}`);
+  // Auto-restore preempted work when priority task is gone for good (done or abandoned).
+  // "ready" (Postpone) is excluded — the priority task is coming back and would race
+  // for the slot. "merged" is not a valid finalStatus today (rejected by
+  // VALID_CLEAR_STATUSES, no callsite); revisit if a merge-via-slot path appears.
+  if ((finalStatus === "done" || finalStatus === "abandoned") && hasStash(slotNum)) {
+    console.error(
+      `ludics: auto-restoring preempted work to slot ${slotNum} (trigger: ${finalStatus})`,
+    );
     await slotRestore(slotNum);
+    // Emit observability after slotRestore succeeds, so a failed restore
+    // (e.g. corrupt stash where hasStash() is true but readStash() returns
+    // null) does not produce a success-looking slot_auto_restore event.
+    journalAppend(
+      "slot",
+      `Slot ${slotNum} auto-restored preempted work (trigger: ${finalStatus})`,
+    );
+    emitEvent({
+      event_type: "slot_auto_restore",
+      source: "cli",
+      scope: "slot",
+      slot: slotNum,
+      message: `trigger: ${finalStatus}`,
+    });
   }
 
   // Best-effort t3code cleanup after clearing a slot
