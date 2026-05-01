@@ -424,7 +424,11 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
       }
     }
 
-    // API: abandon a deferred task (clear slot if assigned, set abandoned)
+    // API: abandon a deferred task. Slotted deferred tasks are rejected
+    // with 409 — the user must clear the slot first (slot operations'
+    // terminal transitions handle displaced-task recovery via
+    // task-4028c493). tasksAbandon's slot-aware path is preserved for
+    // the CLI caller `ludics tasks abandon <id>`.
     if (pathname === "/api/deferred-abandon") {
       const taskParam = url.searchParams.get("task");
       if (!taskParam || !TASK_ID_RE.test(taskParam)) {
@@ -433,6 +437,13 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
       try {
         const resolved = resolveTaskFile(taskParam);
         if ("error" in resolved) return resolved.error;
+        const slotNum = findSlotForTask(taskParam);
+        if (slotNum !== null) {
+          return new Response(
+            JSON.stringify({ error: `task is in slot ${slotNum}; use slot operations to change state` }),
+            { status: 409, headers: { "Content-Type": "application/json" } },
+          );
+        }
         await tasksAbandon(taskParam, { source: "dashboard", scope: "task" });
         lastGenerated = 0;
         return new Response(JSON.stringify({ status: "abandoned" }), {
@@ -471,26 +482,20 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
       }
     }
 
-    // API: abandon a stale task. We bypass tasksAbandon and do the abandon
-    // flow inline because (a) tasksAbandon's terminal-status guard rejects
-    // status: stale, and (b) the de-stale-then-abandon sequence does not
-    // compose with tasksAbandon's slot-aware path — for a slotted task,
-    // tasksAbandon delegates to slotClear -> taskUpdateForSlotClear, whose
-    // `expectedFrom` for `abandoned` is [in-progress, deferred, preempted];
-    // a freshly-de-staled task is `ready`, so the status flip silently
-    // no-ops while the endpoint reports success (Codex PR #476 review).
+    // API: abandon a stale task. Slotted stale tasks are rejected with
+    // 409 — the user must clear the slot first (slot operations' terminal
+    // transitions handle displaced-task recovery via task-4028c493). For
+    // unslotted stale tasks we bypass tasksAbandon and do the abandon
+    // flow inline because tasksAbandon's terminal-status guard rejects
+    // status: stale.
     //
-    // Inline order:
-    //  1. transitionStatus(stale → abandoned) — atomic, returns false if
-    //     the task is no longer stale (raced with another writer).
-    //  2. Mirror tasksAbandon's frontmatter cleanup (completed timestamp,
-    //     remove deferred_launch/approved).
-    //  3. If slotted, clear the slot's runtime state with finalStatus
-    //     "ready" so taskUpdateForSlotClear's `expectedFrom` (which now
-    //     would see status=abandoned, not in [in-progress, deferred])
-    //     silently leaves the already-correct frontmatter alone. The
-    //     console.error inside taskUpdateForSlotClear is informational.
-    //  4. Emit task_abandon event to mirror tasksAbandon's observability.
+    // The findSlotForTask / transitionStatus pair is check-then-act; a
+    // task could in principle be slotted between the two calls. Per
+    // proposal § Race notes (task-ad39a394) this is accepted as
+    // best-effort: no production path slots a stale task post-check
+    // (the staleness sweeper never targets in-progress, slot-assign
+    // paths reject non-ready/deferred statuses for stale tasks). The
+    // same applies symmetrically to /api/deferred-abandon below.
     if (pathname === "/api/stale-abandon") {
       const taskParam = url.searchParams.get("task");
       if (!taskParam || !TASK_ID_RE.test(taskParam)) {
@@ -500,6 +505,14 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
         const resolved = resolveTaskFile(taskParam);
         if ("error" in resolved) return resolved.error;
         const taskFile = resolved.path;
+
+        const slotNum = findSlotForTask(taskParam);
+        if (slotNum !== null) {
+          return new Response(
+            JSON.stringify({ error: `task is in slot ${slotNum}; use slot operations to change state` }),
+            { status: 409, headers: { "Content-Type": "application/json" } },
+          );
+        }
 
         const ok = transitionStatus(taskFile, "stale", "abandoned");
         if (!ok) {
@@ -513,20 +526,13 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
         removeFrontmatterField(taskFile, "deferred_launch");
         removeFrontmatterField(taskFile, "approved");
 
-        const slotNum = findSlotForTask(taskParam);
-        if (slotNum !== null) {
-          await slotClear(slotNum, "ready");
-        }
-
         emitEvent({
           event_type: "task_abandon",
           source: "dashboard",
           scope: "task",
           task: taskParam,
           status: "abandoned",
-          message: slotNum !== null
-            ? `abandoned from slot ${slotNum} (stale → abandoned)`
-            : "abandoned (stale → abandoned, no slot)",
+          message: "abandoned (stale → abandoned)",
         });
 
         lastGenerated = 0;
