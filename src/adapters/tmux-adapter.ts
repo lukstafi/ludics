@@ -262,13 +262,24 @@ function createTmuxAgentSession(slot: number, agentName: string, cwd: string, ta
 }
 
 /**
+ * POSIX shell single-quote escape: wrap `s` in single quotes and replace
+ * any embedded `'` with `'\''` (close-quote, literal-quote, reopen-quote).
+ * Required because HOME may legitimately contain an apostrophe (e.g.
+ * `/Users/O'Connor`) and a naive single-quote interpolation would make
+ * the bash command unparseable, causing ttyd restarts to fail repeatedly.
+ */
+function shellSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Build the spawn argv for slot ttyd, mirroring src/mag.ts's bash-with-`exec`
  * redirection so ttyd's stdout/stderr append to a per-agent log file. The
  * `exec` makes bash replace itself with ttyd, so `proc.pid` continues to
  * point at ttyd (preserves processAlive semantics). Substitutions are
- * single-quoted defensively even though all inputs are validated upstream
- * (numeric slot, alpha agent name, TASK_ID_RE-validated taskId, fixed log
- * directory).
+ * shell-quoted via shellSingleQuote so HOMEs / agent names containing `'`
+ * round-trip correctly even though most inputs are validated upstream
+ * (numeric slot, alpha agent name, TASK_ID_RE-validated taskId).
  */
 export function buildTtydSpawnArgs(
   slot: number,
@@ -279,7 +290,7 @@ export function buildTtydSpawnArgs(
   const port = ttydPort(slot, role);
   const target = tmuxTarget(slot, agentName, taskId);
   const logFile = ttydLogPath(slot, agentName);
-  const cmd = `exec ttyd --writable --port ${port} tmux attach -t '${target}' >>'${logFile}' 2>&1`;
+  const cmd = `exec ttyd --writable --port ${port} tmux attach -t ${shellSingleQuote(target)} >>${shellSingleQuote(logFile)} 2>&1`;
   return setsidWrap(["bash", "-c", cmd]);
 }
 

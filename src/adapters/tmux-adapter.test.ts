@@ -355,6 +355,35 @@ describe("buildTtydSpawnArgs — bash wrapper appends to per-agent log file", ()
     // Single-quoted target name.
     expect(cmd).toContain("-t 's2_reviewer_task-abc'");
   });
+
+  test("HOME containing an apostrophe is escaped via '\\'' so the bash command stays parseable", async () => {
+    const savedHome = process.env.HOME;
+    const tmpRoot = mkdtempSync(join(tmpdir(), "ludics-quote-home-"));
+    // Simulate /Users/O'Connor: a directory whose name actually contains '.
+    const home = join(tmpRoot, "O'Connor");
+    mkdirSync(join(home, "Library/Logs"), { recursive: true });
+    process.env.HOME = home;
+    try {
+      // Re-import to re-resolve HOME (function reads process.env.HOME on each call).
+      const mod = await import("./tmux-adapter.ts");
+      const args = mod.buildTtydSpawnArgs(1, "coder", "coder", "task-xyz");
+      const cmd = args[args.length - 1]!;
+      // Invariant: the literal apostrophe in HOME must be encoded as the
+      // POSIX close-reopen sequence '\''. A naive single-quote interpolation
+      // would emit `'/.../O'Connor/.../...-ttyd.log'` — bash would parse
+      // that as: <single-quoted "/.../O">, <Connor/.../...>, <single-quoted
+      // ".log">, which has unbalanced state and command parsing fails or
+      // misroutes redirection. Mutation: dropping the .replace() call here
+      // makes this assertion fail.
+      expect(cmd).toContain(`O'\\''Connor`);
+      // Sanity: the escaped path is still the redirection target.
+      expect(cmd).toMatch(/>>'.*O'\\''Connor.*ludics-slot-1-coder-ttyd\.log'/);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("readTmuxSlotState read-boundary preserves sparse ttydRestartCounts", () => {
