@@ -28,7 +28,7 @@ import { setSlotLivenessOnData } from "../slots/index.ts";
 import { clusterRole } from "../cluster.ts";
 import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
-import { agentPortRole, readTmuxSlotState, startTtyd, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
+import { agentPortRole, readTmuxSlotState, startTtyd, ttydLogPath, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { readSlotState, processAlive } from "../t3code/server.ts";
 import { recoverWrongFilename } from "./wrong-filename-recovery.ts";
 
@@ -51,6 +51,16 @@ const HUNG_IDLE_RUNNING_THRESHOLD_S = 180;
 const HUNG_NUDGE_COOLDOWN_S = 90;
 /** Seconds between ttyd liveness checks in the poll loop. */
 const TTYD_HEALTH_CHECK_INTERVAL_S = 30;
+/** Hard threshold window for ttyd flap detection — 10 minutes. */
+const TTYD_FLAP_WINDOW_S = 600;
+/** Restarts within TTYD_FLAP_WINDOW_S before the runner gives up. */
+const TTYD_FLAP_THRESHOLD = 10;
+/** Quiet period that resets the flap counter — a transient blip after this
+ *  much idle time starts a fresh count, not an escalation. */
+const TTYD_FLAP_QUIET_RESET_S = 300;
+/** backoffUntil sentinel that encodes the give-up state without a separate
+ *  boolean field — keeps TmuxSlotState.ttydRestartCounts shape on disk. */
+const TTYD_GIVE_UP_SENTINEL = Number.MAX_SAFE_INTEGER;
 
 // --- Verification gate constants and types ---
 type VerificationDecision = "advance" | "redispatch" | "hold" | "skip";
@@ -690,7 +700,14 @@ export async function detectAndNudgeHungAgents(
 
 let lastTtydCheckAt = 0;
 
-async function ensureTtydAlive(state: OrchestrationState): Promise<void> {
+/** Test-only: reset the module-scoped 30-s gate so unit tests can drive
+ *  consecutive `ensureTtydAlive` calls without faking the clock-floor.
+ *  Production callers never need this. */
+export function __resetTtydCheckGateForTests(): void {
+  lastTtydCheckAt = 0;
+}
+
+export async function ensureTtydAlive(state: OrchestrationState): Promise<void> {
   if (state.backend !== "tmux") return;
   const now = nowEpoch();
   if (now - lastTtydCheckAt < TTYD_HEALTH_CHECK_INTERVAL_S) return;
@@ -703,16 +720,69 @@ async function ensureTtydAlive(state: OrchestrationState): Promise<void> {
   let changed = false;
   for (let i = 0; i < state.agents.length; i++) {
     const agent = state.agents[i]!;
-    const pid = tmuxState.ttydPids[agent.name];
+    const records = (tmuxState.ttydRestartCounts ??= {});
+    const prev = records[agent.name];
 
-    // Check if PID is alive
+    // Give-up state — skip processAlive AND startTtyd. AC requires no
+    // further events, no respawn, no liveness churn while suppressed.
+    if (prev?.backoffUntil === TTYD_GIVE_UP_SENTINEL) continue;
+
+    const pid = tmuxState.ttydPids[agent.name];
     const alive = pid ? processAlive(pid) : false;
     if (alive) continue;
 
-    // Dead or missing — restart
     const role = agentPortRole(agent, i);
+
+    // Window-reset path: no record, or last restart > 5 min ago. A
+    // long-quiet flap was a transient blip; start a fresh count.
+    if (!prev || (now - prev.firstRestartAt) > TTYD_FLAP_QUIET_RESET_S) {
+      const newPid = startTtyd(state.slot, agent.name, role, state.taskId);
+      tmuxState.ttydPids[agent.name] = newPid;
+      records[agent.name] = { count: 1, firstRestartAt: now };
+      changed = true;
+      emitEvent({
+        event_type: "ttyd_restarted",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.taskId,
+        agent: agent.name,
+        pid: newPid,
+        message: `${agent.name}: ttyd died (was pid ${pid ?? "none"}), restarted as pid ${newPid}`,
+      });
+      continue;
+    }
+
+    const nextCount = prev.count + 1;
+
+    // Threshold-cross — single emission of ttyd_flapping, no respawn. The
+    // sentinel makes the next poll short-circuit at the give-up branch
+    // above (so this event fires exactly once per flap incident).
+    if (nextCount >= TTYD_FLAP_THRESHOLD && (now - prev.firstRestartAt) <= TTYD_FLAP_WINDOW_S) {
+      records[agent.name] = {
+        count: nextCount,
+        firstRestartAt: prev.firstRestartAt,
+        backoffUntil: TTYD_GIVE_UP_SENTINEL,
+      };
+      changed = true;
+      emitEvent({
+        event_type: "ttyd_flapping",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.taskId,
+        agent: agent.name,
+        restart_count: nextCount,
+        window_seconds: TTYD_FLAP_WINDOW_S,
+        message: `${agent.name}: ttyd flapping (${nextCount} restarts within ${now - prev.firstRestartAt}s) — see ${ttydLogPath(state.slot, agent.name)}`,
+      });
+      continue;
+    }
+
+    // Below threshold — restart and increment within the current window.
     const newPid = startTtyd(state.slot, agent.name, role, state.taskId);
     tmuxState.ttydPids[agent.name] = newPid;
+    records[agent.name] = { count: nextCount, firstRestartAt: prev.firstRestartAt };
     changed = true;
     emitEvent({
       event_type: "ttyd_restarted",
