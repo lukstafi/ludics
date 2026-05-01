@@ -286,3 +286,174 @@ describe("writeTmuxSlotState atomic write", () => {
     expect(existsSync(join(tmpDir, "orchestration", "tmux-slot-9.json"))).toBe(true);
   });
 });
+
+// task-7476a03a — slot ttyd observability + flap-suppression. The next three
+// describe blocks lock in (1) per-agent log path resolution, (2) bash-wrapper
+// spawn argv shape, and (3) read-boundary preservation of the new optional
+// ttydRestartCounts field.
+describe("ttydLogPath — log location follows Mag's HOME/Library/Logs precedent", () => {
+  let TMP = "";
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-ttyd-log-"));
+    savedHome = process.env.HOME;
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  test("returns ~/Library/Logs/ludics-slot-{N}-{agent}-ttyd.log when HOME/Library/Logs exists", async () => {
+    process.env.HOME = TMP;
+    mkdirSync(join(TMP, "Library/Logs"), { recursive: true });
+    const { ttydLogPath } = await import("./tmux-adapter.ts");
+    expect(ttydLogPath(1, "coder")).toBe(join(TMP, "Library/Logs", "ludics-slot-1-coder-ttyd.log"));
+    expect(ttydLogPath(6, "reviewer")).toBe(join(TMP, "Library/Logs", "ludics-slot-6-reviewer-ttyd.log"));
+  });
+
+  test("falls back to /tmp when HOME/Library/Logs is absent", async () => {
+    process.env.HOME = TMP;
+    // Do not create Library/Logs.
+    const { ttydLogPath } = await import("./tmux-adapter.ts");
+    expect(ttydLogPath(2, "coder")).toBe("/tmp/ludics-slot-2-coder-ttyd.log");
+  });
+});
+
+describe("buildTtydSpawnArgs — bash wrapper appends to per-agent log file", () => {
+  test("argv ends with bash -c containing exec ttyd and append-redirection to ttydLogPath", async () => {
+    const mod = await import("./tmux-adapter.ts");
+    const args = mod.buildTtydSpawnArgs(3, "coder", "coder", "task-7476a03a");
+    // Last three argv entries are always: bash, -c, <command-string>
+    expect(args[args.length - 3]).toBe("bash");
+    expect(args[args.length - 2]).toBe("-c");
+    const cmd = args[args.length - 1]!;
+    // Must `exec` so proc.pid is ttyd's, not bash's. Append-redirection
+    // (>>) preserves cause-of-death history across restarts.
+    expect(cmd).toContain("exec ttyd");
+    expect(cmd).toContain("--writable");
+    const expectedLog = mod.ttydLogPath(3, "coder");
+    expect(cmd).toContain(`>>'${expectedLog}'`);
+    expect(cmd).toContain("2>&1");
+    // The argv must still go through setsidWrap — either setsid prefix
+    // (Linux) or perl POSIX::setsid fallback (macOS without setsid).
+    const head = args[0]!;
+    const usesSetsid = head.endsWith("/setsid") || head === "setsid";
+    const usesPerl = head === "perl";
+    expect(usesSetsid || usesPerl).toBe(true);
+  });
+
+  test("port and target derive from slot+role+taskId", async () => {
+    const { buildTtydSpawnArgs } = await import("./tmux-adapter.ts");
+    const cmd = buildTtydSpawnArgs(2, "reviewer", "reviewer", "task-abc")[
+      buildTtydSpawnArgs(2, "reviewer", "reviewer", "task-abc").length - 1
+    ]!;
+    // Slot 2 reviewer port: 7681 + (2-1)*2 + 1 = 7684.
+    expect(cmd).toContain("--port 7684");
+    // Single-quoted target name.
+    expect(cmd).toContain("-t 's2_reviewer_task-abc'");
+  });
+
+  test("HOME containing an apostrophe is escaped via '\\'' so the bash command stays parseable", async () => {
+    const savedHome = process.env.HOME;
+    const tmpRoot = mkdtempSync(join(tmpdir(), "ludics-quote-home-"));
+    // Simulate /Users/O'Connor: a directory whose name actually contains '.
+    const home = join(tmpRoot, "O'Connor");
+    mkdirSync(join(home, "Library/Logs"), { recursive: true });
+    process.env.HOME = home;
+    try {
+      // Re-import to re-resolve HOME (function reads process.env.HOME on each call).
+      const mod = await import("./tmux-adapter.ts");
+      const args = mod.buildTtydSpawnArgs(1, "coder", "coder", "task-xyz");
+      const cmd = args[args.length - 1]!;
+      // Invariant: the literal apostrophe in HOME must be encoded as the
+      // POSIX close-reopen sequence '\''. A naive single-quote interpolation
+      // would emit `'/.../O'Connor/.../...-ttyd.log'` — bash would parse
+      // that as: <single-quoted "/.../O">, <Connor/.../...>, <single-quoted
+      // ".log">, which has unbalanced state and command parsing fails or
+      // misroutes redirection. Mutation: dropping the .replace() call here
+      // makes this assertion fail.
+      expect(cmd).toContain(`O'\\''Connor`);
+      // Sanity: the escaped path is still the redirection target.
+      expect(cmd).toMatch(/>>'.*O'\\''Connor.*ludics-slot-1-coder-ttyd\.log'/);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readTmuxSlotState read-boundary preserves sparse ttydRestartCounts", () => {
+  let tmpDir = "";
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "ludics-ttyd-readboundary-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("legacy on-disk JSON without ttydRestartCounts reads back as undefined (no {} backfill)", async () => {
+    const { readTmuxSlotState } = await import("./tmux-adapter.ts");
+    const orchDir = join(tmpDir, "orchestration");
+    mkdirSync(orchDir, { recursive: true });
+    // Hand-write a legacy state — explicitly OMITs ttydRestartCounts.
+    writeFileSync(
+      join(orchDir, "tmux-slot-1.json"),
+      JSON.stringify({ slot: 1, ttydPids: {} }),
+    );
+    const state = readTmuxSlotState(1, tmpDir);
+    expect(state).not.toBeNull();
+    // Invariant: read boundary keeps the field sparse — undefined, not {}.
+    // Mutation: replacing the read with `parsed.ttydRestartCounts ??= {}` makes this fail.
+    expect(state!.ttydRestartCounts).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(state, "ttydRestartCounts")).toBe(false);
+  });
+
+  test("ttydRestartCounts round-trips byte-faithfully when present (includes lastRestartAt)", async () => {
+    const { readTmuxSlotState, writeTmuxSlotState } = await import("./tmux-adapter.ts");
+    const fixture = {
+      slot: 4,
+      ttydPids: { coder: 1234 },
+      ttydRestartCounts: {
+        coder: { count: 3, firstRestartAt: 1700000000, lastRestartAt: 1700000060 },
+        reviewer: {
+          count: 10,
+          firstRestartAt: 1700000100,
+          lastRestartAt: 1700000400,
+          backoffUntil: Number.MAX_SAFE_INTEGER,
+        },
+      },
+    } as unknown as Parameters<typeof writeTmuxSlotState>[0];
+    writeTmuxSlotState(fixture, tmpDir);
+    const round = readTmuxSlotState(4, tmpDir);
+    expect(round).toEqual(fixture);
+    // Sentinel value AND new lastRestartAt field both survive JSON round-trip.
+    expect(round!.ttydRestartCounts!.reviewer!.backoffUntil).toBe(Number.MAX_SAFE_INTEGER);
+    expect(round!.ttydRestartCounts!.coder!.lastRestartAt).toBe(1700000060);
+    expect(round!.ttydRestartCounts!.reviewer!.lastRestartAt).toBe(1700000400);
+  });
+
+  test("legacy record without lastRestartAt round-trips with the field undefined", async () => {
+    const { readTmuxSlotState, writeTmuxSlotState } = await import("./tmux-adapter.ts");
+    const legacy = {
+      slot: 5,
+      ttydPids: {},
+      ttydRestartCounts: {
+        // Pre-fix shape — explicitly OMITs lastRestartAt.
+        coder: { count: 1, firstRestartAt: 1700000000 },
+      },
+    } as unknown as Parameters<typeof writeTmuxSlotState>[0];
+    writeTmuxSlotState(legacy, tmpDir);
+    const round = readTmuxSlotState(5, tmpDir);
+    expect(round!.ttydRestartCounts!.coder!.count).toBe(1);
+    expect(round!.ttydRestartCounts!.coder!.firstRestartAt).toBe(1700000000);
+    // Invariant: legacy field stays undefined on read; the runner falls
+    // back to firstRestartAt only when this field is absent.
+    expect(round!.ttydRestartCounts!.coder!.lastRestartAt).toBeUndefined();
+  });
+});

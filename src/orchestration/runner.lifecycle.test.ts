@@ -3,7 +3,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isAgentDone } from "./phases.ts";
 import { updateTurnLifecycle } from "./transport-t3code.ts";
-import { refreshAgentStatuses, runOrchestration, runWrongFilenameRecovery } from "./runner.ts";
+import { ensureTtydAlive, refreshAgentStatuses, runOrchestration, runWrongFilenameRecovery, __resetTtydCheckGateForTests } from "./runner.ts";
+import * as tmuxAdapter from "../adapters/tmux-adapter.ts";
+import * as t3codeServer from "../t3code/server.ts";
+import * as orchUtil from "./util.ts";
 import * as wfr from "./wrong-filename-recovery.ts";
 import * as peerSync from "./peer-sync.ts";
 import * as events from "../events.ts";
@@ -1335,5 +1338,287 @@ describe("runWrongFilenameRecovery — runner integration", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// task-7476a03a — flap-suppression state machine. With processAlive forced
+// false and a controlled clock, the machine must (1) emit ttyd_restarted
+// while count < 10 in the 10-min window, (2) emit exactly one ttyd_flapping
+// at the threshold and stop calling startTtyd, (3) be silent on subsequent
+// polls while suppressed, (4) restart freshly after the record is deleted,
+// and (5) reset the counter rather than escalate after a >5-min quiet gap.
+describe("ensureTtydAlive — flap suppression", () => {
+  let tmpDir = "";
+  let harness = "";
+  let processAliveSpy: ReturnType<typeof spyOn>;
+  let nowSpy: ReturnType<typeof spyOn>;
+  let startTtydSpy: ReturnType<typeof spyOn>;
+  let emitSpy: ReturnType<typeof spyOn>;
+  let nowSeconds = 1700000000;
+  let pidCounter = 5000;
+
+  function advance(seconds: number): void { nowSeconds += seconds; }
+
+  function seedSlot(slot: number, init: Partial<tmuxAdapter.TmuxSlotState> = {}): void {
+    mkdirSync(join(harness, "orchestration"), { recursive: true });
+    const state: tmuxAdapter.TmuxSlotState = {
+      slot,
+      ttydPids: { coder: 99999999 },
+      ...init,
+    };
+    writeFileSync(
+      join(harness, "orchestration", `tmux-slot-${slot}.json`),
+      JSON.stringify(state),
+    );
+  }
+
+  function readSlot(slot: number): tmuxAdapter.TmuxSlotState | null {
+    return tmuxAdapter.readTmuxSlotState(slot, harness);
+  }
+
+  function makeTmuxState(slot: number) {
+    return makeState({
+      slot,
+      backend: "tmux",
+      taskId: "task-7476a03a",
+      harnessDir: harness,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+      ],
+    });
+  }
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    harness = join(tmpDir, "harness");
+    mkdirSync(harness, { recursive: true });
+    nowSeconds = 1700000000;
+    pidCounter = 5000;
+    processAliveSpy = spyOn(t3codeServer, "processAlive").mockImplementation(() => false);
+    nowSpy = spyOn(orchUtil, "nowEpoch").mockImplementation(() => nowSeconds);
+    // Spy startTtyd so we never actually spawn bash/ttyd.
+    startTtydSpy = spyOn(tmuxAdapter, "startTtyd").mockImplementation(() => ++pidCounter);
+    emitSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    __resetTtydCheckGateForTests();
+  });
+
+  afterEach(() => {
+    processAliveSpy.mockRestore();
+    nowSpy.mockRestore();
+    startTtydSpy.mockRestore();
+    emitSpy.mockRestore();
+    __resetTtydCheckGateForTests();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function eventTypes(): string[] {
+    return emitSpy.mock.calls.map((call: unknown[]) => {
+      const arg = call[0] as { event_type?: string } | undefined;
+      return arg?.event_type ?? "";
+    });
+  }
+
+  test("9 below-threshold polls emit ttyd_restarted, the 10th poll within 600s emits exactly one ttyd_flapping with no startTtyd call", async () => {
+    seedSlot(1);
+    const state = makeTmuxState(1);
+
+    // Drive 10 polls. Advance 31s between calls so the 30-s gate passes
+    // each time. firstRestartAt stays inside the 10-min window through
+    // poll 10 (9 * 31s = 279s ≤ 600).
+    for (let i = 0; i < 10; i++) {
+      __resetTtydCheckGateForTests(); // bypass the module-scoped 30s gate per call
+      await ensureTtydAlive(state);
+      advance(31);
+    }
+
+    const types = eventTypes();
+    const restarts = types.filter((t) => t === "ttyd_restarted").length;
+    const flapping = types.filter((t) => t === "ttyd_flapping").length;
+    // Invariant: 9 successful restarts (counts 1..9), then exactly one
+    // flap event at count=10. Mutation: changing `count + 1 >= THRESHOLD`
+    // to `count >= THRESHOLD` makes restarts==10 and flapping==0 on the
+    // tenth call (it would cross at the 11th instead).
+    expect(restarts).toBe(9);
+    expect(flapping).toBe(1);
+    // Threshold-crossing poll must NOT call startTtyd. AC: "do NOT call
+    // startTtyd". 9 restarts === 9 spawn invocations.
+    expect(startTtydSpy.mock.calls.length).toBe(9);
+
+    // Persisted shape: backoffUntil sentinel set on the agent's record.
+    const persisted = readSlot(1);
+    expect(persisted!.ttydRestartCounts!.coder!.backoffUntil).toBe(Number.MAX_SAFE_INTEGER);
+    expect(persisted!.ttydRestartCounts!.coder!.count).toBe(10);
+  });
+
+  test("subsequent polls while suppressed are silent — no processAlive, no startTtyd, no emitEvent", async () => {
+    // Pre-seed give-up state directly so the test isolates the short-circuit branch.
+    seedSlot(2, {
+      ttydPids: { coder: 99999999 },
+      ttydRestartCounts: {
+        coder: { count: 10, firstRestartAt: nowSeconds - 100, backoffUntil: Number.MAX_SAFE_INTEGER },
+      },
+    });
+    const state = makeTmuxState(2);
+
+    // Reset call counters AFTER the seed (we want to count only what
+    // happens during the suppressed poll, not the test setup).
+    processAliveSpy.mockClear();
+    startTtydSpy.mockClear();
+    emitSpy.mockClear();
+
+    advance(31);
+    __resetTtydCheckGateForTests();
+    await ensureTtydAlive(state);
+
+    // Invariant: give-up branch short-circuits BEFORE processAlive. Mutation:
+    // dropping the `if (prev?.backoffUntil === SENTINEL) continue;` guard
+    // makes processAlive get called and a fresh ttyd_restarted gets emitted.
+    expect(processAliveSpy.mock.calls.length).toBe(0);
+    expect(startTtydSpy.mock.calls.length).toBe(0);
+    expect(emitSpy.mock.calls.length).toBe(0);
+  });
+
+  test("deleting the agent's record restarts ttyd freshly without re-emitting ttyd_flapping", async () => {
+    // Start from give-up state, simulate the /api/ttyd-reset effect by
+    // deleting the agent's record and persisting.
+    seedSlot(3, {
+      ttydPids: { coder: 99999999 },
+      ttydRestartCounts: {
+        coder: { count: 10, firstRestartAt: nowSeconds - 100, backoffUntil: Number.MAX_SAFE_INTEGER },
+      },
+    });
+    // Edit on disk so readTmuxSlotState picks up the cleared shape next poll.
+    const initial = readSlot(3)!;
+    delete initial.ttydRestartCounts!.coder;
+    tmuxAdapter.writeTmuxSlotState(initial, harness);
+
+    const state = makeTmuxState(3);
+    advance(31);
+    __resetTtydCheckGateForTests();
+    await ensureTtydAlive(state);
+
+    const types = eventTypes();
+    expect(types).toEqual(["ttyd_restarted"]);
+    // No re-emission of ttyd_flapping — the prior incident is closed.
+    expect(types.includes("ttyd_flapping")).toBe(false);
+
+    const persisted = readSlot(3)!;
+    expect(persisted.ttydRestartCounts!.coder!.count).toBe(1);
+    expect(persisted.ttydRestartCounts!.coder!.backoffUntil).toBeUndefined();
+  });
+
+  test("quiet > 5 min since the LAST restart resets to count:1 even when firstRestartAt is recent", async () => {
+    // The reset is gated on lastRestartAt, not firstRestartAt. Seed a
+    // fixture where firstRestartAt is recent (50 s ago) but lastRestartAt
+    // is old (301 s ago). The reset must fire because nothing has
+    // restarted in 5+ min — even though the incident itself is young.
+    //
+    // Mutation: gating on `now - prev.firstRestartAt` (the prior bug)
+    // sees `50 ≤ 300` → no reset → enters threshold check → nextCount=10
+    // → emits ttyd_flapping. This test's `expect(types).toEqual(["ttyd_restarted"])`
+    // would then fail.
+    seedSlot(4, {
+      ttydPids: { coder: 99999999 },
+      ttydRestartCounts: {
+        coder: { count: 9, firstRestartAt: nowSeconds - 50, lastRestartAt: nowSeconds - 301 },
+      },
+    });
+    const state = makeTmuxState(4);
+
+    __resetTtydCheckGateForTests();
+    await ensureTtydAlive(state);
+
+    const types = eventTypes();
+    expect(types).toEqual(["ttyd_restarted"]);
+    const persisted = readSlot(4)!;
+    expect(persisted.ttydRestartCounts!.coder!.count).toBe(1);
+    expect(persisted.ttydRestartCounts!.coder!.firstRestartAt).toBe(nowSeconds);
+    expect(persisted.ttydRestartCounts!.coder!.lastRestartAt).toBe(nowSeconds);
+    expect(persisted.ttydRestartCounts!.coder!.backoffUntil).toBeUndefined();
+  });
+
+  test("active flap whose firstRestartAt is older than 5 min does NOT reset when lastRestartAt is recent", async () => {
+    // The reviewer's concrete falsifier (round-2 REQUEST_CHANGES): a
+    // record at count=9 with firstRestartAt=600s ago AND lastRestartAt=11s
+    // ago is an ACTIVE flap, not a stale incident. The reset MUST NOT
+    // fire here; the next poll must cross the threshold and emit
+    // ttyd_flapping.
+    //
+    // Mutation: gating on firstRestartAt (`now - 600 > 300` → reset) would
+    // produce types=["ttyd_restarted"] and count=1. The strict
+    // `expect(types).toEqual(["ttyd_flapping"])` plus
+    // `expect(... .count).toBe(10)` below fail under that mutation.
+    seedSlot(7, {
+      ttydPids: { coder: 99999999 },
+      ttydRestartCounts: {
+        coder: { count: 9, firstRestartAt: nowSeconds - 600, lastRestartAt: nowSeconds - 11 },
+      },
+    });
+    const state = makeTmuxState(7);
+
+    __resetTtydCheckGateForTests();
+    await ensureTtydAlive(state);
+
+    const types = eventTypes();
+    // (now - firstRestartAt) = 600 — exactly at the window edge, satisfies
+    // the threshold's `≤ TTYD_FLAP_WINDOW_S`.
+    expect(types).toEqual(["ttyd_flapping"]);
+    const persisted = readSlot(7)!;
+    expect(persisted.ttydRestartCounts!.coder!.count).toBe(10);
+    expect(persisted.ttydRestartCounts!.coder!.backoffUntil).toBe(Number.MAX_SAFE_INTEGER);
+    // Reviewer's concrete falsifier from REQUEST_CHANGES: the buggy gate
+    // would have lost lastRestartAt=11; the fixed gate keeps it.
+    expect(persisted.ttydRestartCounts!.coder!.lastRestartAt).toBe(nowSeconds - 11);
+  });
+
+  test("legacy record without lastRestartAt falls back to firstRestartAt for the quiet gate", async () => {
+    // Back-compat: records persisted before the lastRestartAt field was
+    // added must still load. For a legacy count==1 record they coincide;
+    // for higher counts, behaviour is acceptable (the next restart will
+    // stamp lastRestartAt and the gate becomes precise).
+    seedSlot(8, {
+      ttydPids: { coder: 99999999 },
+      ttydRestartCounts: {
+        // No lastRestartAt — pre-fix shape.
+        coder: { count: 1, firstRestartAt: nowSeconds - 301 },
+      },
+    });
+    const state = makeTmuxState(8);
+
+    __resetTtydCheckGateForTests();
+    await ensureTtydAlive(state);
+
+    // Fallback (firstRestartAt) > 300 → reset to a fresh record that NOW
+    // includes lastRestartAt.
+    const persisted = readSlot(8)!;
+    expect(persisted.ttydRestartCounts!.coder!.count).toBe(1);
+    expect(persisted.ttydRestartCounts!.coder!.firstRestartAt).toBe(nowSeconds);
+    expect(persisted.ttydRestartCounts!.coder!.lastRestartAt).toBe(nowSeconds);
+  });
+
+  test("ttyd_flapping payload includes restart_count, window_seconds, and the per-agent log path", async () => {
+    seedSlot(5, {
+      ttydPids: { coder: 99999999 },
+      ttydRestartCounts: {
+        coder: { count: 9, firstRestartAt: nowSeconds - 60 },
+      },
+    });
+    const state = makeTmuxState(5);
+    __resetTtydCheckGateForTests();
+    await ensureTtydAlive(state);
+
+    const flapCalls = emitSpy.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { event_type?: string } | undefined)?.event_type === "ttyd_flapping",
+    );
+    expect(flapCalls.length).toBe(1);
+    const payload = flapCalls[0][0] as Record<string, unknown>;
+    // Diff anchor — proposal AC enumerates each of these literal fields.
+    expect(payload.event_type).toBe("ttyd_flapping");
+    expect(payload.slot).toBe(5);
+    expect(payload.agent).toBe("coder");
+    expect(payload.restart_count).toBe(10);
+    expect(payload.window_seconds).toBe(600);
+    const expectedLog = tmuxAdapter.ttydLogPath(5, "coder");
+    expect(String(payload.message)).toContain(expectedLog);
   });
 });

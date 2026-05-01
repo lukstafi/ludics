@@ -46,9 +46,28 @@ const PORT_BASE = 7681; // port 7680 reserved
 // Tmux slot state — persisted alongside orchestration state
 // ---------------------------------------------------------------------------
 
+export interface TtydRestartRecord {
+  count: number;
+  firstRestartAt: number;
+  /** Epoch seconds of the most-recent restart. Used by `ensureTtydAlive`'s
+   *  window-reset gate: a quiet period is measured against the *last*
+   *  restart, not the first, so an active flap whose first incident is
+   *  older than the quiet window does not get spuriously reset.
+   *
+   *  Optional only for back-compat with records persisted before this
+   *  field was introduced; readers fall back to `firstRestartAt` when
+   *  absent (correct for the count==1 case where they coincide).
+   */
+  lastRestartAt?: number;
+  backoffUntil?: number;
+}
+
 interface TmuxSlotState {
   slot: number;
   ttydPids: Record<string, number>; // agent name → ttyd PID
+  // Per-agent flap-suppression counters. Optional: legacy on-disk JSON omits
+  // it. Sparse-shape contract — see readTmuxSlotState below.
+  ttydRestartCounts?: Record<string, TtydRestartRecord>;
   orchestration?: {
     stateFile: string;
     mode: "duo" | "pair" | "solo";
@@ -60,10 +79,24 @@ function tmuxSlotPath(slot: number, harnessDir: string): string {
   return join(harnessDir, "orchestration", `tmux-slot-${slot}.json`);
 }
 
+// Per-slot per-agent ttyd log path. Mirrors src/mag.ts's HOME/Library/Logs
+// preference with a /tmp fallback for non-macOS hosts so newsyslog rotates
+// the macOS path for free.
+export function ttydLogPath(slot: number, agentName: string): string {
+  const home = process.env.HOME ?? "~";
+  const libraryLogs = join(home, "Library/Logs");
+  const dir = existsSync(libraryLogs) ? libraryLogs : "/tmp";
+  return join(dir, `ludics-slot-${slot}-${agentName}-ttyd.log`);
+}
+
 function readTmuxSlotState(slot: number, harnessDir: string): TmuxSlotState | null {
   const path = tmuxSlotPath(slot, harnessDir);
   if (!existsSync(path)) return null;
   try {
+    // Read-boundary for TmuxSlotState. Optional persisted fields stay sparse:
+    // ttydRestartCounts is preserved as-on-disk (undefined for legacy files,
+    // populated Record when present). New optional fields should land here so
+    // every reader sees the same normalized shape.
     return JSON.parse(readFileSync(path, "utf-8")) as TmuxSlotState;
   } catch {
     return null;
@@ -228,17 +261,50 @@ function createTmuxAgentSession(slot: number, agentName: string, cwd: string, ta
   safeSyncOutput(["tmux", "set-option", "-t", sessionName, "mouse", "off"]);
 }
 
-export function startTtyd(slot: number, agentName: string, role: "coder" | "reviewer", taskId?: string): number {
+/**
+ * POSIX shell single-quote escape: wrap `s` in single quotes and replace
+ * any embedded `'` with `'\''` (close-quote, literal-quote, reopen-quote).
+ * Required because HOME may legitimately contain an apostrophe (e.g.
+ * `/Users/O'Connor`) and a naive single-quote interpolation would make
+ * the bash command unparseable, causing ttyd restarts to fail repeatedly.
+ */
+function shellSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Build the spawn argv for slot ttyd, mirroring src/mag.ts's bash-with-`exec`
+ * redirection so ttyd's stdout/stderr append to a per-agent log file. The
+ * `exec` makes bash replace itself with ttyd, so `proc.pid` continues to
+ * point at ttyd (preserves processAlive semantics). Substitutions are
+ * shell-quoted via shellSingleQuote so HOMEs / agent names containing `'`
+ * round-trip correctly even though most inputs are validated upstream
+ * (numeric slot, alpha agent name, TASK_ID_RE-validated taskId).
+ */
+export function buildTtydSpawnArgs(
+  slot: number,
+  agentName: string,
+  role: "coder" | "reviewer",
+  taskId?: string,
+): string[] {
   const port = ttydPort(slot, role);
   const target = tmuxTarget(slot, agentName, taskId);
+  const logFile = ttydLogPath(slot, agentName);
+  const cmd = `exec ttyd --writable --port ${port} tmux attach -t ${shellSingleQuote(target)} >>${shellSingleQuote(logFile)} 2>&1`;
+  return setsidWrap(["bash", "-c", cmd]);
+}
+
+export function startTtyd(slot: number, agentName: string, role: "coder" | "reviewer", taskId?: string): number {
+  const port = ttydPort(slot, role);
 
   // Kill any stale ttyd on this port
   safeSyncOutput(["pkill", "-f", `ttyd.*--port ${port}`]);
 
   // Use setsidWrap to detach ttyd into its own process session so it survives
-  // when the parent (launchd oneshot keepalive) exits.
+  // when the parent (launchd oneshot keepalive) exits. The bash wrapper
+  // appends ttyd's output to the per-agent log file at ttydLogPath.
   const proc = Bun.spawn(
-    setsidWrap(["ttyd", "--writable", "--port", String(port), "tmux", "attach", "-t", target]),
+    buildTtydSpawnArgs(slot, agentName, role, taskId),
     { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
   );
   if (typeof (proc as { unref?: () => void }).unref === "function") {
@@ -668,4 +734,5 @@ async function lastActivity(ctx: AdapterContext): Promise<string | null> {
 const adapter = { readState, start, stop, lastActivity } satisfies Adapter;
 
 export { readState, start, stop, lastActivity, readTmuxSlotState, writeTmuxSlotState, removeTmuxSlotState, agentPortRole };
+export type { TmuxSlotState };
 export default adapter;
