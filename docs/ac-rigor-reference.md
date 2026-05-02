@@ -2,7 +2,7 @@
 
 Reference documentation for writing and verifying acceptance criteria (ACs) on tasks whose contract is unusually heavy. Each section captures one durable learning from a reviewer round where an AC line passed mechanically while still failing to enforce the property the AC named. The doc is project-agnostic: workers consult it when the AC ledger calls for extra rigor, then return to the task at hand.
 
-This doc grows over time. Today it covers thirteen clauses across five thematic families; further reviewer-flagged learnings (closed-set / cardinality probes, stash-prod mutation tests, and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
+This doc grows over time. Today it covers fourteen clauses across five thematic families; further reviewer-flagged learnings (closed-set / cardinality probes, stash-prod mutation tests, and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
 
 → See also: [`orchestration-patterns.md` § AC self-check](orchestration-patterns.md#ac-self-check) for the *invariant-vs-capability* phrasing rule, and [`orchestration-patterns.md` § Harness instantiation](orchestration-patterns.md#harness-instantiation) for the *falsifier-framing* rule. The two together describe both sides of an enforceable AC line; the clauses below extend them to specific recurring failure modes.
 
@@ -57,6 +57,10 @@ Byte-identity assertions are an unmarked contract surface that migrations and li
 ### Prose-only template instructions are unverifiable
 
 AC-bearing side effects must appear as actual shell commands in the rendered template, not as agent-readable prose. When an AC asserts a side effect (file written, marker created, env var set), the side effect must appear as a *shell command* in the rendered template; agent-readable prose ("On success, create `{{MARKER}}`") cannot be pinned by a string-match test, so a regression in agent behaviour slips past CI. Default to encoding AC-bearing side effects as actual shell commands inside the same fenced block as their precondition; reserve prose for context the agent is expected to *interpret*, not *execute*. Tests then assert against the rendered template via literal-string match (`toContain('touch "...MARKER..."')`) rather than fuzzy "the agent should do this" verification.
+
+### Time-since-X ACs need two boundary fixtures
+
+A `time-since-X` AC ("quiet > N seconds resets the counter", "throttle when last action < N seconds ago") whose verification seeds a single timestamp passes vacuously whenever a *different* candidate timestamp would also satisfy the gate. The harness condition has to distinguish the AC's named timestamp from any plausible single-timestamp mutation. Worked example: a "quiet > 5 min resets the restart counter" test seeded `firstRestartAt = now - 301s` and asserted the reset, but the gate was meant to read `now - lastRestartAt > 300s` — the test passed under both the correct gate (with legacy-record fallback to `firstRestartAt`) and the buggy gate (gating on `firstRestartAt` directly), because the two timestamps coincided in the fixture. The reviewer caught it only by hand-writing a falsifier with `firstRestartAt` and `lastRestartAt` set to *different* values. Diff-anchor: any test for `now - X > N` must have a sibling test where the OTHER plausible timestamp would also satisfy the gate but `X` does not — two fixtures, two diverging timestamps, only the AC's named timestamp drives the assertion.
 
 ### Literal paths in ACs are literal — don't substitute the platform abstraction
 
