@@ -20,7 +20,9 @@ import {
 } from "./tmux.ts";
 import {
   defaultOrchestrationConfig,
+  DEFAULT_SUBSTANTIVE_STALL_CONFIG,
   initAgentRuntimeState,
+  parseSubstantiveStallOverrides,
   persistState,
   readOrchestrationState,
   removeOrchestrationState,
@@ -529,6 +531,20 @@ async function start(ctx: AdapterContext): Promise<string> {
   const configPhaseTimeouts = orchCfg?.phase_timeouts as Record<string, number> | undefined;
   if (configPhaseTimeouts && typeof configPhaseTimeouts === "object") {
     orchestration.config.timeouts = { ...configPhaseTimeouts, ...(orchestration.config.timeouts ?? {}) };
+  }
+
+  // task-a670cdbf: wire mag.orchestration.substantive_stall.* YAML keys
+  // into orchestration.config.substantiveStall so the persisted state's
+  // hung detector reads YAML overrides. The runtime in
+  // detectAndNudgeHungAgents reads state.config.substantiveStall.* —
+  // without this wiring the YAML keys are documented but ignored.
+  const substantiveStallOverrides = parseSubstantiveStallOverrides(orchCfg?.substantive_stall);
+  if (Object.keys(substantiveStallOverrides).length > 0) {
+    orchestration.config.substantiveStall = {
+      ...DEFAULT_SUBSTANTIVE_STALL_CONFIG,
+      ...(orchestration.config.substantiveStall ?? {}),
+      ...substantiveStallOverrides,
+    };
   }
 
   const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode);

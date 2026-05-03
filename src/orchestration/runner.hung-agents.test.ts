@@ -297,6 +297,89 @@ describe("detectAndNudgeHungAgents", () => {
     expect(evts).not.toContain("agent_hung_detected");
   });
 
+  test("AC17 substantive-clear post-detection: substantive diff after breakAndPrompt clears hung lifecycle AND blocks escalation", async () => {
+    // Two-phase test. Phase 1: hung detection #1 fires (within cooldown).
+    // Phase 2: pane produces substantive output. The transport-tmux
+    // substantive-diff branch clears hungDetectedAt /
+    // substantiveStallSince / substantiveStallChars / hungNudgeAttempts.
+    // A subsequent detector pass past cooldown must NOT escalate
+    // (no agent_hung_force_settle event, interruptAgent not called)
+    // and the lifecycle must be back to a clean post-recovery state.
+
+    const tmuxAdapter = await import("../adapters/tmux.ts");
+    const { TmuxTransport } = await import("./transport-tmux.ts");
+
+    const state = makeTmuxState({ tmpDir });
+    state.config.substantiveStall.thresholdSeconds = 1200;
+    state.config.substantiveStall.nudgeCooldownSeconds = 180;
+    state.config.substantiveStall.maxNudgeAttempts = 2;
+    state.harnessDir = process.env.LUDICS_HARNESS_DIR;
+
+    // Phase 1: post-detection state — hungDetectedAt set 60 s ago,
+    // substantive-stall window past 20 min, breakAndPrompt already issued.
+    const PRIOR_PANE = "Working 20m 5s\n• ⠋"; // spinner-only chrome
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      substantiveStallSince: new Date(Date.now() - 1300 * 1000).toISOString(),
+      substantiveStallChars: 250,
+      lastPaneRaw: PRIOR_PANE,
+      lastPaneHash: "abc123",
+      hungDetectedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+      hungNudgeAttempts: 1,
+      // Pin the dispatch+phaseToken so refreshAgentTransportState
+      // doesn't try to advance lifecycle state.
+      dispatchedAt: new Date(Date.now() - 1500 * 1000).toISOString(),
+      turnStartedAt: new Date(Date.now() - 1400 * 1000).toISOString(),
+    });
+
+    // Phase 2: mock tmuxCapture to return a *substantive* diff —
+    // a tool-call line ≫ minChars (30) over the prior pane.
+    const SUBSTANTIVE_PANE = `${PRIOR_PANE}\n • Ran shell \`bun run build\` (exit 0, 4.2s)\n  ↳ output truncated\nRan tests: ok\n`;
+    const captureSpy = spyOn(tmuxAdapter, "tmuxCapture").mockReturnValue(SUBSTANTIVE_PANE);
+    // Stub readStopHookRecord (peer-sync) so the lifecycle isn't
+    // forcibly settled by an unrelated stop-hook record.
+    const peerSync = await import("./peer-sync.ts");
+    const stopHookSpy = spyOn(peerSync, "readStopHookRecord").mockReturnValue(null);
+    // Stub isAgentAlive (avoids spawning pgrep).
+    const tmuxAdapterMod = await import("../adapters/tmux-adapter.ts");
+    const aliveSpy = spyOn(tmuxAdapterMod, "isAgentAlive").mockReturnValue(true);
+
+    try {
+      // Run the transport refresh — this triggers substantive-diff branch.
+      const transport = new TmuxTransport();
+      await transport.refreshAgentTransportState(state);
+
+      const lcAfterRefresh = state.agentStates.coder.turnLifecycle!;
+      // Substantive-clear invariant — every field reset.
+      expect(lcAfterRefresh.hungDetectedAt).toBeNull();
+      expect(lcAfterRefresh.substantiveStallSince).toBeNull();
+      expect(lcAfterRefresh.substantiveStallChars).toBe(0);
+      expect(lcAfterRefresh.hungNudgeAttempts).toBe(0);
+      // lastPaneRaw advanced to the new substantive capture.
+      expect(lcAfterRefresh.lastPaneRaw).toBe(SUBSTANTIVE_PANE);
+
+      // Now, fast-forward past cooldown (simulate by clearing the
+      // earlier emit calls so we count only post-clear events) and
+      // run the detector. With cleared lifecycle, the detector must
+      // NOT emit force_settle and must NOT call interruptAgent.
+      emitSpy.mock.calls.length = 0; // drop refresh-emit history
+      const { transport: recordingTransport, log } = makeRecordingTransport();
+      await detectAndNudgeHungAgents(state, recordingTransport);
+
+      const evts = emitSpy.mock.calls.map(
+        (c: unknown[]) => (c[0] as { event_type?: string }).event_type,
+      );
+      expect(evts).not.toContain("agent_hung_force_settle");
+      expect(evts).not.toContain("agent_hung_detected");
+      expect(log.interruptAgent).toBe(0);
+      expect(log.breakAndPrompt).toHaveLength(0);
+    } finally {
+      captureSpy.mockRestore();
+      stopHookSpy.mockRestore();
+      aliveSpy.mockRestore();
+    }
+  });
+
   test("AC21: hung-incident JSON file written with required fields and FIFO-pruned to 50", async () => {
     const incidentsDir = join(process.env.LUDICS_HARNESS_DIR!, "mag", "hung-incidents");
     // Pre-seed 50 older incidents directly so this single detection is the 51st.

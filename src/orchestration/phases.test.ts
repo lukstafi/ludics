@@ -6,7 +6,13 @@ import { agentParticipatesInPhase, DONE_STATUSES, escalatingAgents, evaluateTran
 import { statusFileFingerprint } from "./peer-sync.ts";
 import { mergedPlanFilePath } from "./plan-files.ts";
 import { applyPhaseSideEffects } from "./runner.ts";
-import { defaultOrchestrationConfig, initAgentRuntimeState, migrateState, type OrchestrationState } from "./state.ts";
+import {
+  defaultOrchestrationConfig,
+  initAgentRuntimeState,
+  migrateState,
+  parseSubstantiveStallOverrides,
+  type OrchestrationState,
+} from "./state.ts";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
@@ -1585,6 +1591,58 @@ describe("migrateState — substantive_stall config backfill (task-a670cdbf)", (
       minPct: 0.1,
       nudgeCooldownSeconds: 90,
       maxNudgeAttempts: 3,
+    });
+  });
+});
+
+describe("parseSubstantiveStallOverrides — YAML→config (task-a670cdbf)", () => {
+  test("maps every snake_case YAML key to its camelCase config field", () => {
+    const yaml = {
+      threshold_seconds: 600,
+      min_chars: 50,
+      min_pct: 0.1,
+      nudge_cooldown_seconds: 90,
+      max_nudge_attempts: 3,
+    };
+    expect(parseSubstantiveStallOverrides(yaml)).toEqual({
+      thresholdSeconds: 600,
+      minChars: 50,
+      minPct: 0.1,
+      nudgeCooldownSeconds: 90,
+      maxNudgeAttempts: 3,
+    });
+  });
+
+  test("invalid types are dropped — typo-resilient", () => {
+    const yaml = {
+      threshold_seconds: "1200",      // string, dropped
+      min_chars: 30,                  // valid, kept
+      min_pct: null,                  // null, dropped
+      nudge_cooldown_seconds: { x: 1 }, // object, dropped
+      max_nudge_attempts: 2,          // valid, kept
+    };
+    const out = parseSubstantiveStallOverrides(yaml);
+    expect(out).toEqual({ minChars: 30, maxNudgeAttempts: 2 });
+  });
+
+  test("absent block → empty partial (no overrides)", () => {
+    expect(parseSubstantiveStallOverrides(undefined)).toEqual({});
+    expect(parseSubstantiveStallOverrides(null)).toEqual({});
+    expect(parseSubstantiveStallOverrides({})).toEqual({});
+    expect(parseSubstantiveStallOverrides("not an object")).toEqual({});
+  });
+
+  test("partial override flows through defaultOrchestrationConfig — other leaves default-filled", () => {
+    // End-to-end: parse YAML → overrides → config → all five leaves populated.
+    const yaml = { threshold_seconds: 1800 };
+    const overrides = parseSubstantiveStallOverrides(yaml);
+    const config = defaultOrchestrationConfig({ substantiveStall: { ...overrides } as never });
+    expect(config.substantiveStall).toEqual({
+      thresholdSeconds: 1800,
+      minChars: 30,
+      minPct: 0.05,
+      nudgeCooldownSeconds: 180,
+      maxNudgeAttempts: 2,
     });
   });
 });

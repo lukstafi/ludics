@@ -186,6 +186,40 @@ export const DEFAULT_SUBSTANTIVE_STALL_CONFIG: SubstantiveStallConfig = {
   maxNudgeAttempts: 2,
 };
 
+/**
+ * Parse `mag.orchestration.substantive_stall.*` YAML keys into a
+ * `Partial<SubstantiveStallConfig>` for `defaultOrchestrationConfig`.
+ * YAML uses snake_case; the runtime config is camelCase. Each leaf is
+ * validated as `typeof === "number"` (per
+ * `feedback_narrowing_needs_boundary_validators`); invalid values are
+ * dropped silently so a hand-edited config.yaml typo can't crash slot
+ * init — the leaf falls through to its default in
+ * `defaultOrchestrationConfig`.
+ */
+export function parseSubstantiveStallOverrides(
+  raw: unknown,
+): Partial<SubstantiveStallConfig> {
+  if (!raw || typeof raw !== "object") return {};
+  const yaml = raw as Record<string, unknown>;
+  const out: Partial<SubstantiveStallConfig> = {};
+  if (typeof yaml.threshold_seconds === "number") {
+    out.thresholdSeconds = yaml.threshold_seconds;
+  }
+  if (typeof yaml.min_chars === "number") {
+    out.minChars = yaml.min_chars;
+  }
+  if (typeof yaml.min_pct === "number") {
+    out.minPct = yaml.min_pct;
+  }
+  if (typeof yaml.nudge_cooldown_seconds === "number") {
+    out.nudgeCooldownSeconds = yaml.nudge_cooldown_seconds;
+  }
+  if (typeof yaml.max_nudge_attempts === "number") {
+    out.maxNudgeAttempts = yaml.max_nudge_attempts;
+  }
+  return out;
+}
+
 export interface OrchestrationState {
   slot: number;
   taskId: string;

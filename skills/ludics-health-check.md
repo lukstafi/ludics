@@ -87,11 +87,20 @@ This skill is invoked when:
      (spinner-only churn, read loop closed) — the lifecycle field
      `turnLifecycle.hungDetectedAt` is set but tmux slots have no
      `Mode=t3code` JSON to read.
+
+     The baseline anchor is the previous run's persisted
+     `eventsJsonlLines` (read from `mag/health-last.json` in step 5);
+     `tail -n +<prev+1>` skips lines this run already counted last
+     tick. When `health-last.json` is absent or unreadable, treat
+     the anchor as `1` (scan whole file).
      ```bash
-     tail -n +"$EVENTS_BASELINE_LINE" "$EVENTS_FILE" \
-       | grep -F '"event_type":"agent_hung_detected"'
-     tail -n +"$EVENTS_BASELINE_LINE" "$EVENTS_FILE" \
-       | grep -F '"event_type":"agent_hung_force_settle"'
+     PREV_EVENTS_LINES=$(jq -r '.eventsJsonlLines // 0' \
+       "$LUDICS_STATE_PATH/mag/health-last.json" 2>/dev/null || echo 0)
+     TAIL_FROM=$((PREV_EVENTS_LINES + 1))
+     tail -n +"$TAIL_FROM" "$EVENTS_FILE" \
+       | grep -F '"event_type":"agent_hung_detected"' || true
+     tail -n +"$TAIL_FROM" "$EVENTS_FILE" \
+       | grep -F '"event_type":"agent_hung_force_settle"' || true
      ```
      - For each detection, report: slot, agent, phase, stallSeconds,
        diffCharsAccumulated. Optionally cross-reference the
