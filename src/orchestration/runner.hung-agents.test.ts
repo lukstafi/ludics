@@ -297,6 +297,100 @@ describe("detectAndNudgeHungAgents", () => {
     expect(evts).not.toContain("agent_hung_detected");
   });
 
+  test("refreshAgentTransportState raw-pane capture: first-tick seeds lastPaneRaw without seeding substantiveStallSince", async () => {
+    // AC: "In transport-tmux.ts:refreshAgentTransportState, capture the
+    // raw pane and feed it into the per-agent lifecycle." First-tick
+    // invariant: lastPaneRaw was null → after refresh it equals the
+    // captured 50-line pane AND substantiveStallSince stays null
+    // (no diff to evaluate yet). Mutation-test: removing the
+    // `lc.lastPaneRaw == null` branch in transport-tmux.ts breaks
+    // this assertion (substantiveStallSince would seed prematurely).
+    const tmuxAdapter = await import("../adapters/tmux.ts");
+    const { TmuxTransport } = await import("./transport-tmux.ts");
+
+    const state = makeTmuxState({ tmpDir });
+    state.harnessDir = process.env.LUDICS_HARNESS_DIR;
+    const FIRST_PANE = "❯ session prompt\n  echo hello\n";
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      lastPaneRaw: null,
+      lastPaneHash: null,
+      substantiveStallSince: null,
+    });
+
+    const captureSpy = spyOn(tmuxAdapter, "tmuxCapture").mockReturnValue(FIRST_PANE);
+    const peerSync = await import("./peer-sync.ts");
+    const stopHookSpy = spyOn(peerSync, "readStopHookRecord").mockReturnValue(null);
+    const tmuxAdapterMod = await import("../adapters/tmux-adapter.ts");
+    const aliveSpy = spyOn(tmuxAdapterMod, "isAgentAlive").mockReturnValue(true);
+
+    try {
+      const transport = new TmuxTransport();
+      await transport.refreshAgentTransportState(state);
+
+      const lc = state.agentStates.coder.turnLifecycle!;
+      expect(lc.lastPaneRaw).toBe(FIRST_PANE); // raw-pane fed into lifecycle
+      expect(lc.substantiveStallSince).toBeNull(); // no diff yet on first tick
+      expect(lc.substantiveStallChars).toBe(0);
+    } finally {
+      captureSpy.mockRestore();
+      stopHookSpy.mockRestore();
+      aliveSpy.mockRestore();
+    }
+  });
+
+  test("refreshAgentTransportState raw-pane capture: under-threshold diff seeds substantiveStallSince and refreshes lastPaneRaw", async () => {
+    // AC continues: under-threshold diff between successive captures
+    // must seed `substantiveStallSince` (it was null) AND refresh
+    // `lastPaneRaw` to the new capture (per the proposal: "also update
+    // lastPaneRaw to current — otherwise a slow-but-genuine diff would
+    // accumulate below threshold tick-by-tick and never register").
+    // Mutation-test: dropping the `lc.lastPaneRaw = rawCapture;`
+    // assignment in the under-threshold branch breaks the second
+    // assertion; dropping the `??=` for substantiveStallSince breaks
+    // the first.
+    const tmuxAdapter = await import("../adapters/tmux.ts");
+    const { TmuxTransport } = await import("./transport-tmux.ts");
+
+    const state = makeTmuxState({ tmpDir });
+    state.harnessDir = process.env.LUDICS_HARNESS_DIR;
+    state.config.substantiveStall.minChars = 30;
+    state.config.substantiveStall.minPct = 0.05;
+
+    const PRIOR_PANE = "X".repeat(1500) + "Working 1m 30s" + "Y".repeat(400);
+    const NEXT_SPINNER = "X".repeat(1500) + "Working 1m 31s" + "Y".repeat(400);
+    state.agentStates.coder.turnLifecycle = makeLifecycle({
+      state: "running",
+      lastPaneRaw: PRIOR_PANE,
+      lastPaneHash: "prior-hash",
+      substantiveStallSince: null,
+      substantiveStallChars: 0,
+    });
+
+    const captureSpy = spyOn(tmuxAdapter, "tmuxCapture").mockReturnValue(NEXT_SPINNER);
+    const peerSync = await import("./peer-sync.ts");
+    const stopHookSpy = spyOn(peerSync, "readStopHookRecord").mockReturnValue(null);
+    const tmuxAdapterMod = await import("../adapters/tmux-adapter.ts");
+    const aliveSpy = spyOn(tmuxAdapterMod, "isAgentAlive").mockReturnValue(true);
+
+    try {
+      const transport = new TmuxTransport();
+      await transport.refreshAgentTransportState(state);
+
+      const lc = state.agentStates.coder.turnLifecycle!;
+      // Under-threshold path: stall window now seeded.
+      expect(lc.substantiveStallSince).not.toBeNull();
+      // lastPaneRaw refreshed to current capture (not stuck at prior).
+      expect(lc.lastPaneRaw).toBe(NEXT_SPINNER);
+      // Cumulative residual chars accumulated for the event payload.
+      expect(lc.substantiveStallChars).toBeGreaterThan(0);
+    } finally {
+      captureSpy.mockRestore();
+      stopHookSpy.mockRestore();
+      aliveSpy.mockRestore();
+    }
+  });
+
   test("AC17 substantive-clear post-detection: substantive diff after breakAndPrompt clears hung lifecycle AND blocks escalation", async () => {
     // Two-phase test. Phase 1: hung detection #1 fires (within cooldown).
     // Phase 2: pane produces substantive output. The transport-tmux

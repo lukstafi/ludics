@@ -58,4 +58,42 @@ describe("ludics-health-check skill content (task-a670cdbf)", () => {
     // duplicates ongoing hung incidents on every health tick.
     expect(body).toContain("slot-hung:");
   });
+
+  test("severity ladder ties warning to agent_hung_detected and critical to agent_hung_force_settle (AC: 'as a warning')", () => {
+    // The AC literal is "Health-check skill surfaces agent_hung_detected
+    // events as a warning." A skill that mentions both event types but
+    // doesn't *associate* the warning level with first-detect would
+    // pass a weaker presence test. Here we lock the association
+    // structurally: the severity sentence in the hung block must
+    // co-locate "warning" with `agent_hung_detected` and "critical"
+    // with `agent_hung_force_settle`. Mutation-test: swapping the
+    // levels in the skill markdown breaks this assertion.
+    //
+    // Implementation: extract a window around the hung-events grep
+    // pattern and assert both severity associations live inside it.
+    const hungSection = (() => {
+      const lines = body.split("\n");
+      let start = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (/Hung-agent layer.*event-driven/.test(lines[i]!)) {
+          start = i;
+          break;
+        }
+      }
+      if (start === -1) throw new Error("hung-agent skill section not found");
+      // Take up to 60 following lines (or until the next top-level numbered step).
+      const slice: string[] = [];
+      for (let i = start; i < Math.min(lines.length, start + 60); i++) {
+        if (i > start && /^\d+\.\s/.test(lines[i]!)) break;
+        slice.push(lines[i]!);
+      }
+      return slice.join("\n");
+    })();
+
+    // First-detect → warning. The literal "warning" must appear paired
+    // with `agent_hung_detected` in the severity sentence.
+    expect(/warning\s+on\s+`agent_hung_detected`/.test(hungSection)).toBe(true);
+    // Escalation → critical paired with `agent_hung_force_settle`.
+    expect(/critical\s+on\s+`agent_hung_force_settle`/.test(hungSection)).toBe(true);
+  });
 });
