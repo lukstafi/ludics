@@ -503,8 +503,8 @@ export function makeMockTransport(snapshot: T3Snapshot | null): OrchestrationTra
 
           // Post-nudge outcome classification (settled-no-signal layer)
           if ((lc.settledNoSignalDetectedAt ?? null) !== null && lc.state === "settled") {
-            const nudgeAttempts = lc.settledNoSignalNudgeAttempts ?? 0;
-            if (nudgeAttempts > 0) {
+            const settledNoSignalNudgeAttempts = lc.settledNoSignalNudgeAttempts ?? 0;
+            if (settledNoSignalNudgeAttempts > 0) {
               const currentAMId = latestTurn?.assistantMessageId ?? null;
               const preAMId = lc.preNudgeAssistantMessageId ?? null;
               const agentResponded = currentAMId !== null && currentAMId !== preAMId;
@@ -517,8 +517,8 @@ export function makeMockTransport(snapshot: T3Snapshot | null): OrchestrationTra
                 slot: state.slot,
                 task: state.taskId,
                 agent: agent.name,
-                nudgeAttempts,
-                message: `${agent.name}: stall resolved (${agentResponded ? "alive" : "dead"}) after ${nudgeAttempts} nudge(s)`,
+                settledNoSignalNudgeAttempts,
+                message: `${agent.name}: stall resolved (${agentResponded ? "alive" : "dead"}) after ${settledNoSignalNudgeAttempts} nudge(s)`,
               });
             }
             lc.settledNoSignalDetectedAt = null;

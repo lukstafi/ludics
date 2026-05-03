@@ -70,9 +70,95 @@ describe("TmuxTransport class", () => {
     expect(typeof transport.sendTurn).toBe("function");
     expect(typeof transport.refreshAgentTransportState).toBe("function");
     expect(typeof transport.interruptAgent).toBe("function");
+    // task-a670cdbf: tmux transport ships breakAndPrompt for hung recovery.
+    expect(typeof transport.breakAndPrompt).toBe("function");
     // No subscribeEvents — pure polling
     const asTransport = transport as import("./transport.ts").OrchestrationTransport;
     expect(asTransport.subscribeEvents).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-a670cdbf — breakAndPrompt: exactly one C-c, then sendTurn(message)
+// ---------------------------------------------------------------------------
+
+describe("TmuxTransport.breakAndPrompt (AC13)", () => {
+  let sendKeysCalls: string[];
+  let sendKeysSpy: ReturnType<typeof spyOn>;
+  let spawnSyncSpy: ReturnType<typeof spyOn>;
+  let sleepSpy: ReturnType<typeof spyOn>;
+  let writeFileSpy: ReturnType<typeof spyOn>;
+  let panePidSpy: ReturnType<typeof spyOn>;
+  let sendCommandSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    sendKeysCalls = [];
+    sendKeysSpy = spyOn(tmux, "tmuxSendKeys").mockImplementation((_target: string, keys: string) => {
+      sendKeysCalls.push(keys);
+      return true;
+    });
+    spawnSyncSpy = spyOn(Bun, "spawnSync").mockImplementation((...args: unknown[]) => {
+      const cmd = args[0] as string[];
+      if (cmd[0] === "pgrep") return { exitCode: 0, stdout: Buffer.from("99999\n"), stderr: Buffer.from("") } as never;
+      if (cmd[0] === "ps") return { exitCode: 0, stdout: Buffer.from("claude\n"), stderr: Buffer.from("") } as never;
+      return { exitCode: 0, stdout: Buffer.from(""), stderr: Buffer.from("") } as never;
+    });
+    sleepSpy = spyOn(Bun, "sleep").mockResolvedValue(undefined as never);
+    sendCommandSpy = spyOn(tmux, "tmuxSendCommand").mockImplementation(() => true);
+    writeFileSpy = spyOn(fs, "writeFileSync").mockImplementation(() => undefined);
+    panePidSpy = spyOn(tmux, "tmuxPanePid").mockReturnValue(12345);
+  });
+
+  afterEach(() => {
+    sendKeysSpy.mockRestore();
+    spawnSyncSpy.mockRestore();
+    sleepSpy.mockRestore();
+    sendCommandSpy.mockRestore();
+    writeFileSpy.mockRestore();
+    panePidSpy.mockRestore();
+  });
+
+  test("sends exactly one C-c, sleeps, then sendTurn — never two C-c", async () => {
+    const transport = new TmuxTransport();
+    const agent: AgentConfig = {
+      name: "coder",
+      role: "coder",
+      provider: "claude-code",
+      model: "claude-opus-4-6",
+      branch: "test",
+      worktreePath: "/tmp/test",
+    };
+    const state = {
+      slot: 1,
+      taskId: "test-task",
+      mode: "pair" as const,
+      phase: "work" as const,
+      round: 1,
+      mergeRound: 0,
+      agents: [agent],
+      agentStates: initAgentRuntimeState(["coder"]),
+      config: defaultOrchestrationConfig(),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/p",
+      rootWorktree: "/tmp/p",
+      peerSyncDir: "/tmp/p/.peer-sync",
+      threadIds: {},
+    } satisfies OrchestrationState;
+
+    // Capture before mockRestore (per feedback_capture_mock_calls_before_restore).
+    await transport.breakAndPrompt(state, agent, "fresh prompt");
+
+    const cCalls = sendKeysCalls.filter((k) => k === "C-c");
+    expect(cCalls).toHaveLength(1);
+
+    // sleep called at least once (the 2 s pre-sendTurn delay).
+    expect(sleepSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+    // sendTurn fired (paste-buffer load-buffer call surfaces in spawnSync).
+    const loadBuf = spawnSyncSpy.mock.calls.find(
+      (c: unknown[]) => Array.isArray(c[0]) && (c[0] as string[])[1] === "load-buffer",
+    );
+    expect(loadBuf).toBeDefined();
   });
 });
 

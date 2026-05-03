@@ -74,10 +74,34 @@ This skill is invoked when:
      flag as info: "Unrecognized session at [cwd] — not matched to any configured project"
    - For each active `Mode=t3code` slot, read orchestration state:
      `cat "$LUDICS_STATE_PATH/orchestration/slot-<N>.json" 2>/dev/null`
-     - Check each agent's `turnLifecycle.stallDetectedAt`
+     - Check each agent's `turnLifecycle.settledNoSignalDetectedAt`
+       (renamed from `stallDetectedAt` in task-a670cdbf — the layer
+       detects settled-without-signal, not hung).
      - If non-null, report: slot number, agent name, phase, stall age, nudge count
      - Build stable issue key: `slot-stall:<slot>:<agent>`
-     - Severity: warning if nudgeAttempts < 2, critical if >= 2
+     - Severity: warning if `settledNoSignalNudgeAttempts < 2`, critical if `>= 2`
+   - Hung-agent layer (tmux-only, event-driven; task-a670cdbf): scan
+     the post-baseline tail of `journal/events.jsonl` for
+     `agent_hung_detected` and `agent_hung_force_settle` records.
+     This is the only visibility for genuinely-hung tmux agents
+     (spinner-only churn, read loop closed) — the lifecycle field
+     `turnLifecycle.hungDetectedAt` is set but tmux slots have no
+     `Mode=t3code` JSON to read.
+     ```bash
+     tail -n +"$EVENTS_BASELINE_LINE" "$EVENTS_FILE" \
+       | grep -F '"event_type":"agent_hung_detected"'
+     tail -n +"$EVENTS_BASELINE_LINE" "$EVENTS_FILE" \
+       | grep -F '"event_type":"agent_hung_force_settle"'
+     ```
+     - For each detection, report: slot, agent, phase, stallSeconds,
+       diffCharsAccumulated. Optionally cross-reference the
+       per-detection JSON file under
+       `mag/hung-incidents/<iso>-slot<N>-<agent>.json` for the
+       full pane snapshot.
+     - Build stable issue key: `slot-hung:<slot>:<agent>`
+     - Severity: warning on `agent_hung_detected`, critical on
+       `agent_hung_force_settle` (escalation already happened — the
+       agent was force-settled).
 
 <!-- section:check-queue -->
 3. **Check queue health**:

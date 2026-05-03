@@ -476,18 +476,17 @@ export function preparePhaseRedispatch(state: OrchestrationState): void {
  *  Escalation: Enter → "Continue." → full re-dispatch → force-settle. */
 const SETTLED_NO_SIGNAL_MAX_NUDGE_ATTEMPTS = 3;
 
-// --- Hung-agent (substantive-diff) detection constants — task-a670cdbf ---
+// --- Hung-agent (substantive-diff) detection — task-a670cdbf ---
 // A "hung agent" is alive but its read loop is closed: spinner animates,
 // pane bytes change every tick, but no substantive output is produced.
 // Detection: trim shared prefix/suffix between successive 50-line pane
 // captures; under-threshold residual sustained over the threshold window
 // is hung. Recovery: breakAndPrompt (one C-c + 2 s + sendTurn); on second
 // detection escalate to interruptAgent.
-/** HUNG_RECOVERY_* identifiers chosen distinct from the legacy
- *  HUNG_NUDGE_COOLDOWN_S / HUNG_MAX_NUDGE_ATTEMPTS to keep the AC1
- *  literal grep clean (those legacies are now SETTLED_NO_SIGNAL_*). */
-const DEFAULT_HUNG_RECOVERY_COOLDOWN_S = 180;
-const DEFAULT_HUNG_RECOVERY_MAX_ATTEMPTS = 2;
+//
+// Defaults live in `DEFAULT_SUBSTANTIVE_STALL_CONFIG` (state.ts) and the
+// runtime reads `state.config.substantiveStall.*` so YAML overrides and
+// test-time mocks both flow through the same path.
 
 // --- Interrupted agent constants ---
 // An "interrupted agent" had its turn settle (stop hook fired) but never wrote

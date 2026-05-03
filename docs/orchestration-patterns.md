@@ -8,6 +8,8 @@ Organized by workflow touchpoint. When a pattern applies at more than one touchp
 - [Coding](#coding)
 - [Reviewing](#reviewing)
 
+For stall-detection vocabulary (settled vs hung) and the two-detector architecture (settled-no-signal vs substantive-diff hung) see [docs/orchestration-stall-detection.md](orchestration-stall-detection.md).
+
 The templates point here with short links of the form `see [pattern](../../docs/orchestration-patterns.md#<slug>)`. Slugs are lowercase and hyphen-separated (GitHub's default markdown anchor); they stay stable as long as headings don't rename.
 
 If a new pattern needs to be added, it should pass the same bar the templates hold themselves to: *name the concern, state the principle, explain why it exists, show one concrete example, and describe when not to apply it*. Entries that can't pass that bar are rules masquerading as patterns and belong elsewhere — a CI lint, a runtime assertion, or simply nowhere.
