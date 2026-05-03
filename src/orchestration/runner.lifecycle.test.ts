@@ -658,6 +658,123 @@ describe("refreshAgentStatuses", () => {
 });
 
 // ===========================================================================
+// resolvePrUrl — gh pr list fallback when .pr file is missing/blank/markdown
+// (task-bce80781 AC (a)). Heals all three failure hypotheses: no .pr written,
+// validateAgentPrFiles not invoked, gh pr create silent fail.
+// ===========================================================================
+
+describe("resolvePrUrl — branch-name fallback (gh-bce80781)", () => {
+  let tmpDir: string;
+  let spawnSpy: ReturnType<typeof spyOn> | undefined;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    spawnSpy?.mockRestore();
+    spawnSpy = undefined;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("blank .pr file falls back to gh pr list and persists URL to disk", async () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "pr-comments-done|0|done" });
+    // Write a blank .pr file — simulates the "PR exists on GitHub but the
+    // agent never wrote the markdown body" hypothesis.
+    writeFileSync(join(peerSyncDir, "coder.pr"), "");
+    const recoveredUrl = "https://github.com/lukstafi/ludics/pull/482";
+    const spawn = await import("../spawn.ts");
+    spawnSpy = spyOn(spawn, "safeSyncOutput").mockReturnValue({
+      ok: true, exitCode: 0, stdout: recoveredUrl, stderr: "", timedOut: false,
+    });
+
+    const state = makeState({ phase: "pr-comments" }, peerSyncDir);
+    state.agents[0]!.branch = "ludics/task-4028c493-s2/root";
+    state.agents[0]!.worktreePath = tmpDir;
+
+    // Drive the real refreshAgentStatuses path (which calls resolvePrUrl).
+    await refreshAgentStatuses(state, makeMockTransport(null));
+
+    // Invariant 1: runtime.prUrl is the recovered URL.
+    expect(state.agentStates.coder.prUrl).toBe(recoveredUrl);
+    // Invariant 2: .pr file on disk now contains the URL (so subsequent polls
+    // hit the fast path and never re-shell-out).
+    expect(readFileSync(join(peerSyncDir, "coder.pr"), "utf-8").trim()).toBe(recoveredUrl);
+    // Invariant 3: the gh pr list call was issued exactly once with --head <branch>.
+    const ghCalls = spawnSpy.mock.calls.filter((c: any) =>
+      Array.isArray(c[0]) && c[0][0] === "gh" && c[0][2] === "list"
+      && c[0].includes("--head") && c[0].includes(state.agents[0]!.branch));
+    expect(ghCalls).toHaveLength(1);
+    expect(ghCalls[0]![0]).toContain("--head");
+    expect(ghCalls[0]![0]).toContain("ludics/task-4028c493-s2/root");
+  });
+
+  test("missing .pr file falls back to gh pr list", async () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "pr-comments-done|0|done" });
+    // No .pr file written at all — the "agent never wrote the file" hypothesis.
+    const recoveredUrl = "https://github.com/lukstafi/ludics/pull/482";
+    const spawn = await import("../spawn.ts");
+    spawnSpy = spyOn(spawn, "safeSyncOutput").mockReturnValue({
+      ok: true, exitCode: 0, stdout: recoveredUrl, stderr: "", timedOut: false,
+    });
+
+    const state = makeState({ phase: "pr-comments" }, peerSyncDir);
+    state.agents[0]!.branch = "feat/something";
+    state.agents[0]!.worktreePath = tmpDir;
+
+    await refreshAgentStatuses(state, makeMockTransport(null));
+
+    expect(state.agentStates.coder.prUrl).toBe(recoveredUrl);
+    expect(readFileSync(join(peerSyncDir, "coder.pr"), "utf-8").trim()).toBe(recoveredUrl);
+  });
+
+  test("valid .pr file fast path: no shell-out", async () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "pr-comments-done|0|done" });
+    const existingUrl = "https://github.com/lukstafi/ludics/pull/100";
+    writeFileSync(join(peerSyncDir, "coder.pr"), existingUrl + "\n");
+    const spawn = await import("../spawn.ts");
+    spawnSpy = spyOn(spawn, "safeSyncOutput").mockReturnValue({
+      ok: false, exitCode: -1, stdout: "", stderr: "should not be called", timedOut: false,
+    });
+
+    const state = makeState({ phase: "pr-comments" }, peerSyncDir);
+    state.agents[0]!.branch = "feat/something";
+    state.agents[0]!.worktreePath = tmpDir;
+
+    await refreshAgentStatuses(state, makeMockTransport(null));
+
+    expect(state.agentStates.coder.prUrl).toBe(existingUrl);
+    // No `gh pr list` call: the fast path returned the URL.
+    const ghCalls = spawnSpy.mock.calls.filter((c: any) =>
+      Array.isArray(c[0]) && c[0][0] === "gh" && c[0][2] === "list"
+      && c[0].includes("--head") && c[0].includes(state.agents[0]!.branch));
+    expect(ghCalls).toHaveLength(0);
+  });
+
+  test("gh pr list non-zero exit returns null and preserves prior runtime.prUrl", async () => {
+    const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "pr-comments-done|0|done" });
+    writeFileSync(join(peerSyncDir, "coder.pr"), "");
+    const spawn = await import("../spawn.ts");
+    spawnSpy = spyOn(spawn, "safeSyncOutput").mockReturnValue({
+      ok: false, exitCode: 1, stdout: "", stderr: "auth failure", timedOut: false,
+    });
+
+    const state = makeState({ phase: "pr-comments" }, peerSyncDir);
+    state.agents[0]!.branch = "feat/something";
+    state.agents[0]!.worktreePath = tmpDir;
+    state.agentStates.coder.prUrl = "https://github.com/o/r/pull/77"; // pre-existing in-memory value
+
+    await refreshAgentStatuses(state, makeMockTransport(null));
+
+    // Invariant: caller's `?? runtime.prUrl` preserves the previous value
+    // when fallback fails — error path is neutral, no exception.
+    expect(state.agentStates.coder.prUrl).toBe("https://github.com/o/r/pull/77");
+    // .pr file remains blank (no successful URL to write back).
+    expect(readFileSync(join(peerSyncDir, "coder.pr"), "utf-8")).toBe("");
+  });
+});
+
+// ===========================================================================
 // orchOnStop env-var fallback tests (task-41f81ece)
 // ===========================================================================
 
