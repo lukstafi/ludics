@@ -74,10 +74,43 @@ This skill is invoked when:
      flag as info: "Unrecognized session at [cwd] — not matched to any configured project"
    - For each active `Mode=t3code` slot, read orchestration state:
      `cat "$LUDICS_STATE_PATH/orchestration/slot-<N>.json" 2>/dev/null`
-     - Check each agent's `turnLifecycle.stallDetectedAt`
+     - Check each agent's `turnLifecycle.settledNoSignalDetectedAt`
+       (renamed from `stallDetectedAt` in task-a670cdbf — the layer
+       detects settled-without-signal, not hung).
      - If non-null, report: slot number, agent name, phase, stall age, nudge count
      - Build stable issue key: `slot-stall:<slot>:<agent>`
-     - Severity: warning if nudgeAttempts < 2, critical if >= 2
+     - Severity: warning if `settledNoSignalNudgeAttempts < 2`, critical if `>= 2`
+   - Hung-agent layer (tmux-only, event-driven; task-a670cdbf): scan
+     the post-baseline tail of `journal/events.jsonl` for
+     `agent_hung_detected` and `agent_hung_force_settle` records.
+     This is the only visibility for genuinely-hung tmux agents
+     (spinner-only churn, read loop closed) — the lifecycle field
+     `turnLifecycle.hungDetectedAt` is set but tmux slots have no
+     `Mode=t3code` JSON to read.
+
+     The baseline anchor is the previous run's persisted
+     `eventsJsonlLines` (read from `mag/health-last.json` in step 5);
+     `tail -n +<prev+1>` skips lines this run already counted last
+     tick. When `health-last.json` is absent or unreadable, treat
+     the anchor as `1` (scan whole file).
+     ```bash
+     PREV_EVENTS_LINES=$(jq -r '.eventsJsonlLines // 0' \
+       "$LUDICS_STATE_PATH/mag/health-last.json" 2>/dev/null || echo 0)
+     TAIL_FROM=$((PREV_EVENTS_LINES + 1))
+     tail -n +"$TAIL_FROM" "$EVENTS_FILE" \
+       | grep -F '"event_type":"agent_hung_detected"' || true
+     tail -n +"$TAIL_FROM" "$EVENTS_FILE" \
+       | grep -F '"event_type":"agent_hung_force_settle"' || true
+     ```
+     - For each detection, report: slot, agent, phase, stallSeconds,
+       diffCharsAccumulated. Optionally cross-reference the
+       per-detection JSON file under
+       `mag/hung-incidents/<iso>-slot<N>-<agent>.json` for the
+       full pane snapshot.
+     - Build stable issue key: `slot-hung:<slot>:<agent>`
+     - Severity: warning on `agent_hung_detected`, critical on
+       `agent_hung_force_settle` (escalation already happened — the
+       agent was force-settled).
 
 <!-- section:check-queue -->
 3. **Check queue health**:

@@ -7,8 +7,10 @@ import {
 } from "../adapters/tmux.ts";
 import {
   tmuxSessionName, isAgentAlive, agentCliCommand, sendPromptToAgent,
-  ttydPort, tmuxPaneOutputHash,
+  ttydPort,
 } from "../adapters/tmux-adapter.ts";
+import { tmuxCapture } from "../adapters/tmux.ts";
+import { substantiveDiff } from "./runner.ts";
 
 // Re-export for backwards compatibility (used by tests)
 export { ttydPort };
@@ -89,12 +91,42 @@ export class TmuxTransport implements OrchestrationTransport {
         continue;
       }
 
-      // Track pane output changes for hung-agent detection and completion detection
+      // Track pane output changes for stall-detection and completion detection.
+      // One tmuxCapture call feeds both the existing pane-hash (settled-no-signal
+      // detector) and the new substantive-diff hung detector (task-a670cdbf).
       const target = tmuxSessionName(state.slot, agent.name, state.taskId);
-      const paneHash = tmuxPaneOutputHash(target);
-      if (paneHash && paneHash !== lc.lastPaneHash) {
-        lc.lastPaneHash = paneHash;
-        lc.lastPaneChangeAt = isoNow();
+      const rawCapture = tmuxCapture(target, 50);
+      if (rawCapture) {
+        const hasher = new Bun.CryptoHasher("md5");
+        hasher.update(rawCapture);
+        const paneHash = hasher.digest("hex");
+        if (paneHash !== lc.lastPaneHash) {
+          lc.lastPaneHash = paneHash;
+          lc.lastPaneChangeAt = isoNow();
+        }
+        // Substantive-diff feed for the hung detector.
+        const cfg = state.config.substantiveStall;
+        if (lc.lastPaneRaw == null) {
+          // First observation — seed only.
+          lc.lastPaneRaw = rawCapture;
+        } else if (rawCapture !== lc.lastPaneRaw) {
+          const { chars, pct } = substantiveDiff(lc.lastPaneRaw, rawCapture);
+          if (chars > cfg.minChars || pct > cfg.minPct) {
+            // Substantive — clear stall window AND any in-flight hung-recovery
+            // bookkeeping (proposal AC17).
+            lc.substantiveStallSince = null;
+            lc.substantiveStallChars = 0;
+            lc.hungDetectedAt = null;
+            lc.hungNudgeAttempts = 0;
+            lc.lastPaneRaw = rawCapture;
+          } else {
+            // Under-threshold — start the stall window if absent; refresh raw
+            // so a slow-but-genuine diff doesn't accrue forever.
+            lc.substantiveStallSince ??= isoNow();
+            lc.substantiveStallChars = (lc.substantiveStallChars ?? 0) + chars;
+            lc.lastPaneRaw = rawCapture;
+          }
+        }
       }
 
       // Check process state
@@ -164,6 +196,25 @@ export class TmuxTransport implements OrchestrationTransport {
         }
       }
     }
+  }
+
+  /**
+   * Hung-agent recovery (task-a670cdbf): exactly one C-c (NOT two — we want
+   * to break the agent's stream back to the prompt without exiting the
+   * session), 2 s sleep to let the TUI return to prompt, then re-dispatch
+   * a fresh prompt via sendTurn.
+   *
+   * Distinct from `interruptAgent` which is force-settle (C-c × 2 + SIGTERM).
+   */
+  async breakAndPrompt(
+    state: OrchestrationState,
+    agent: AgentConfig,
+    message: string,
+  ): Promise<void> {
+    const target = tmuxSessionName(state.slot, agent.name, state.taskId);
+    tmuxSendKeys(target, "C-c");
+    await Bun.sleep(2000);
+    await this.sendTurn(state, agent, message);
   }
 
   // tmux transport does not support event subscription — pure polling only

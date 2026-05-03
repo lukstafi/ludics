@@ -189,10 +189,10 @@ export class T3CodeTransport implements OrchestrationTransport {
           }
         }
 
-        // Post-nudge outcome classification
-        if ((lc.stallDetectedAt ?? null) !== null && lc.state === "settled") {
-          const nudgeAttempts = lc.nudgeAttempts ?? 0;
-          if (nudgeAttempts > 0) {
+        // Post-nudge outcome classification (settled-no-signal layer)
+        if ((lc.settledNoSignalDetectedAt ?? null) !== null && lc.state === "settled") {
+          const settledNoSignalNudgeAttempts = lc.settledNoSignalNudgeAttempts ?? 0;
+          if (settledNoSignalNudgeAttempts > 0) {
             const currentAMId = latestTurn?.assistantMessageId ?? null;
             const preAMId = lc.preNudgeAssistantMessageId ?? null;
             const agentResponded = currentAMId !== null && currentAMId !== preAMId;
@@ -205,14 +205,14 @@ export class T3CodeTransport implements OrchestrationTransport {
               slot: state.slot,
               task: state.taskId,
               agent: agent.name,
-              nudgeAttempts,
-              message: `${agent.name}: stall resolved (${agentResponded ? "alive" : "dead"}) after ${nudgeAttempts} nudge(s)`,
+              settledNoSignalNudgeAttempts,
+              message: `${agent.name}: stall resolved (${agentResponded ? "alive" : "dead"}) after ${settledNoSignalNudgeAttempts} nudge(s)`,
             });
           }
-          // Clear stall bookkeeping
-          lc.stallDetectedAt = null;
-          lc.nudgeAttempts = 0;
-          lc.lastNudgeAt = null;
+          // Clear settled-no-signal bookkeeping
+          lc.settledNoSignalDetectedAt = null;
+          lc.settledNoSignalNudgeAttempts = 0;
+          lc.lastSettledNoSignalNudgeAt = null;
           lc.preNudgeAssistantMessageId = null;
         }
       }

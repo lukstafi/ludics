@@ -53,13 +53,15 @@ export interface AgentTurnLifecycle {
   statusFileFingerprint: string | null;
   /** ISO timestamp of the most recent stop hook for this agent. */
   lastStopHookAt: string | null;
-  // --- Stall detection & nudge fields ---
-  /** ISO timestamp when stall was first detected (null = no active stall). */
-  stallDetectedAt?: string | null;
-  /** Number of nudge messages sent during this stall episode. */
-  nudgeAttempts?: number;
-  /** ISO timestamp of the most recent nudge dispatch. */
-  lastNudgeAt?: string | null;
+  // --- Settled-no-signal detection & nudge fields ---
+  // (renamed from stallDetectedAt / nudgeAttempts / lastNudgeAt;
+  //  see migrateState read-forward shim)
+  /** ISO timestamp when settled-no-signal was first detected (null = none active). */
+  settledNoSignalDetectedAt?: string | null;
+  /** Number of nudge messages sent during this settled-no-signal episode. */
+  settledNoSignalNudgeAttempts?: number;
+  /** ISO timestamp of the most recent settled-no-signal nudge dispatch. */
+  lastSettledNoSignalNudgeAt?: string | null;
   /** assistantMessageId from the thread's latestTurn at the moment a nudge was sent.
    *  Used to classify post-nudge outcome: if it changes after settlement,
    *  the agent was alive; if unchanged, the session was dead. */
@@ -68,12 +70,38 @@ export interface AgentTurnLifecycle {
   lastPaneHash?: string | null;
   /** ISO timestamp when pane output last changed. */
   lastPaneChangeAt?: string | null;
+  // --- Hung-agent detection (substantive-diff trigger) ---
+  /** Raw 50-line tmux pane capture from the previous tick (~2KB). Used by
+   *  the substantive-diff hung detector. Null on first observation. */
+  lastPaneRaw?: string | null;
+  /** ISO timestamp when the first under-threshold diff in a stall run was
+   *  observed; cleared on the first substantive diff after detection. */
+  substantiveStallSince?: string | null;
+  /** Cumulative residual-diff char count from `substantiveStallSince` onward;
+   *  reported in the `agent_hung_detected` event payload as
+   *  `diffCharsAccumulated`. Cleared alongside `substantiveStallSince`. */
+  substantiveStallChars?: number;
+  /** ISO timestamp when the hung detector first fired for this episode. */
+  hungDetectedAt?: string | null;
+  /** Number of breakAndPrompt + force-settle attempts in this hung episode.
+   *  0 = no detection yet; 1 = breakAndPrompt sent; 2 = force-settled. */
+  hungNudgeAttempts?: number;
+  // --- Wrong-filename recovery counters (split from settled-no-signal) ---
+  /** Number of wrong-filename nudges sent. */
+  wrongFilenameNudgeAttempts?: number;
+  /** ISO timestamp of the most recent wrong-filename nudge dispatch. */
+  lastWrongFilenameNudgeAt?: string | null;
   // --- Wrong-filename recovery dedup (per-(round, planMergeRound) tuple) ---
   /** state.round at which the most recent wrong-filename nudge fired. */
   wrongFilenameNudgeRound?: number;
   /** state.planMergeRound (??-1) at which the most recent wrong-filename nudge fired.
    *  Distinguishes plan-merge / plan-review iterations within a single outer round. */
   wrongFilenameNudgePlanMergeRound?: number | null;
+  // --- Interrupted-agent nudge counters (split from settled-no-signal) ---
+  /** Number of "Continue." nudges sent for an interrupted-but-not-done agent. */
+  interruptedNudgeAttempts?: number;
+  /** ISO timestamp of the most recent interrupted-agent nudge dispatch. */
+  lastInterruptedNudgeAt?: string | null;
 }
 
 export interface AgentRuntimeState {
@@ -129,6 +157,67 @@ export interface OrchestrationConfig {
   /** Gates the wrong-filename auto-cp branch only. When false, whitelisted suspects
    *  fall through to the targeted-nudge branch instead of being auto-copied. */
   autoRecoverWrongFilename: boolean;
+  /** Substantive-diff hung-detector knobs. See
+   *  `mag.orchestration.substantive_stall.*` in templates/config.reference.yaml. */
+  substantiveStall: SubstantiveStallConfig;
+}
+
+/** Tunables for the substantive-diff hung detector
+ *  (see `detectAndNudgeHungAgents` in runner.ts). */
+export interface SubstantiveStallConfig {
+  /** Sustained-low-diff window before hung is declared (default: 1200, 20 min). */
+  thresholdSeconds: number;
+  /** Pane diff floor for "substantive" output (default: 30 chars). */
+  minChars: number;
+  /** Pane diff percent floor (default: 0.05). */
+  minPct: number;
+  /** Cooldown between breakAndPrompt and force-settle escalation
+   *  (default: 180, 3 min). */
+  nudgeCooldownSeconds: number;
+  /** 1 breakAndPrompt + 1 force-settle (default: 2). */
+  maxNudgeAttempts: number;
+}
+
+export const DEFAULT_SUBSTANTIVE_STALL_CONFIG: SubstantiveStallConfig = {
+  thresholdSeconds: 1200,
+  minChars: 30,
+  minPct: 0.05,
+  nudgeCooldownSeconds: 180,
+  maxNudgeAttempts: 2,
+};
+
+/**
+ * Parse `mag.orchestration.substantive_stall.*` YAML keys into a
+ * `Partial<SubstantiveStallConfig>` for `defaultOrchestrationConfig`.
+ * YAML uses snake_case; the runtime config is camelCase. Each leaf is
+ * validated as `typeof === "number"` (per
+ * `feedback_narrowing_needs_boundary_validators`); invalid values are
+ * dropped silently so a hand-edited config.yaml typo can't crash slot
+ * init — the leaf falls through to its default in
+ * `defaultOrchestrationConfig`.
+ */
+export function parseSubstantiveStallOverrides(
+  raw: unknown,
+): Partial<SubstantiveStallConfig> {
+  if (!raw || typeof raw !== "object") return {};
+  const yaml = raw as Record<string, unknown>;
+  const out: Partial<SubstantiveStallConfig> = {};
+  if (typeof yaml.threshold_seconds === "number") {
+    out.thresholdSeconds = yaml.threshold_seconds;
+  }
+  if (typeof yaml.min_chars === "number") {
+    out.minChars = yaml.min_chars;
+  }
+  if (typeof yaml.min_pct === "number") {
+    out.minPct = yaml.min_pct;
+  }
+  if (typeof yaml.nudge_cooldown_seconds === "number") {
+    out.nudgeCooldownSeconds = yaml.nudge_cooldown_seconds;
+  }
+  if (typeof yaml.max_nudge_attempts === "number") {
+    out.maxNudgeAttempts = yaml.max_nudge_attempts;
+  }
+  return out;
 }
 
 export interface OrchestrationState {
@@ -287,6 +376,18 @@ export function defaultOrchestrationConfig(
     prCommentsStuckThreshold:
       overrides.prCommentsStuckThreshold ?? DEFAULT_PR_COMMENTS_STUCK_THRESHOLD,
     autoRecoverWrongFilename: overrides.autoRecoverWrongFilename ?? true,
+    substantiveStall: {
+      thresholdSeconds:
+        overrides.substantiveStall?.thresholdSeconds ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.thresholdSeconds,
+      minChars:
+        overrides.substantiveStall?.minChars ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.minChars,
+      minPct:
+        overrides.substantiveStall?.minPct ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.minPct,
+      nudgeCooldownSeconds:
+        overrides.substantiveStall?.nudgeCooldownSeconds ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.nudgeCooldownSeconds,
+      maxNudgeAttempts:
+        overrides.substantiveStall?.maxNudgeAttempts ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.maxNudgeAttempts,
+    },
   };
 }
 
@@ -392,6 +493,41 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
     for (const runtime of Object.values(state.agentStates)) {
       const lc = runtime.turnLifecycle;
       if (lc != null) {
+        // --- task-a670cdbf legacy field rename (read-forward) ---
+        // Loud per-key migration so persisted slots upgrade cleanly without
+        // dual-reads at write time. Negative-control AC requires the legacy
+        // keys to be absent in-memory after load.
+        const legacy = lc as unknown as Record<string, unknown>;
+        if ("stallDetectedAt" in legacy) {
+          if (lc.settledNoSignalDetectedAt === undefined) {
+            lc.settledNoSignalDetectedAt = legacy.stallDetectedAt as string | null;
+          }
+          delete legacy.stallDetectedAt;
+        }
+        if ("nudgeAttempts" in legacy) {
+          if (lc.settledNoSignalNudgeAttempts === undefined) {
+            lc.settledNoSignalNudgeAttempts = legacy.nudgeAttempts as number;
+          }
+          delete legacy.nudgeAttempts;
+        }
+        if ("lastNudgeAt" in legacy) {
+          if (lc.lastSettledNoSignalNudgeAt === undefined) {
+            lc.lastSettledNoSignalNudgeAt = legacy.lastNudgeAt as string | null;
+          }
+          delete legacy.lastNudgeAt;
+        }
+        // Default-fill the new optional fields so consumers don't need
+        // scattered ?? guards. ??= preserves a persisted null (sentinel).
+        lc.lastPaneRaw ??= null;
+        lc.substantiveStallSince ??= null;
+        lc.substantiveStallChars ??= 0;
+        lc.hungDetectedAt ??= null;
+        lc.hungNudgeAttempts ??= 0;
+        lc.wrongFilenameNudgeAttempts ??= 0;
+        lc.lastWrongFilenameNudgeAt ??= null;
+        lc.interruptedNudgeAttempts ??= 0;
+        lc.lastInterruptedNudgeAt ??= null;
+
         lc.state = validateAndCoerce(
           lc.state,
           ["dispatched", "starting", "running", "settled", "error"] as const,
@@ -477,6 +613,18 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
   // gh-bce80781: backfill new config field for legacy state files.
   if (state.config && state.config.prCommentsStuckThreshold === undefined) {
     state.config.prCommentsStuckThreshold = DEFAULT_PR_COMMENTS_STUCK_THRESHOLD;
+  }
+  // task-a670cdbf: backfill substantive-stall config for legacy state files.
+  // Per-leaf so a partial override doesn't drop the missing leaves.
+  if (state.config) {
+    const ss = (state.config.substantiveStall ?? {}) as Partial<SubstantiveStallConfig>;
+    state.config.substantiveStall = {
+      thresholdSeconds: ss.thresholdSeconds ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.thresholdSeconds,
+      minChars: ss.minChars ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.minChars,
+      minPct: ss.minPct ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.minPct,
+      nudgeCooldownSeconds: ss.nudgeCooldownSeconds ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.nudgeCooldownSeconds,
+      maxNudgeAttempts: ss.maxNudgeAttempts ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.maxNudgeAttempts,
+    };
   }
   return state;
 }

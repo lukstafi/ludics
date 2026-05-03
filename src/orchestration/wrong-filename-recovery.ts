@@ -309,8 +309,8 @@ export async function recoverWrongFilename(
   try {
     await transport.sendTurn(state, agent, body);
     // `lc` is guaranteed non-null here by the no-lifecycle bail-out above.
-    lc.nudgeAttempts = (lc.nudgeAttempts ?? 0) + 1;
-    lc.lastNudgeAt = isoNow();
+    lc.wrongFilenameNudgeAttempts = (lc.wrongFilenameNudgeAttempts ?? 0) + 1;
+    lc.lastWrongFilenameNudgeAt = isoNow();
     lc.wrongFilenameNudgeRound = state.round;
     lc.wrongFilenameNudgePlanMergeRound = state.planMergeRound ?? -1;
     emitEvent({
@@ -330,7 +330,7 @@ export async function recoverWrongFilename(
     return "nudge";
   } catch (err) {
     emitEvent({
-      event_type: "orchestration_nudge_failed",
+      event_type: "orchestration_wrong_filename_nudge_failed",
       source: "orchestration",
       scope: "slot",
       slot: state.slot,

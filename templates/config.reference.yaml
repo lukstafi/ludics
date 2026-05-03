@@ -136,6 +136,18 @@ mag:
       merge-amend: 1200
       suggest-refactor: 1200
       final-merge: 3600
+    # Substantive-diff hung-detector knobs (task-a670cdbf). Distinct from the
+    # outer mag.stall_threshold_seconds which controls Mag-coordinator stall
+    # nudging. The hung detector trims shared prefix/suffix from successive
+    # 50-line tmux pane captures and counts the residual diff; under-threshold
+    # sustained for `threshold_seconds` is hung. Recovery: breakAndPrompt
+    # (one C-c + sendTurn); on second detection escalates to interruptAgent.
+    substantive_stall:
+      threshold_seconds: 1200      # Sustained-low-diff window before hung is declared (default: 1200, 20 min)
+      min_chars: 30                # Pane diff floor for "substantive" output (default: 30; codex spinner ~8-12 chars/sec)
+      min_pct: 0.05                # Pane diff percent floor for short panes (default: 0.05)
+      nudge_cooldown_seconds: 180  # Cooldown between breakAndPrompt and force-settle escalation (default: 180, 3 min)
+      max_nudge_attempts: 2        # 1 breakAndPrompt + 1 force-settle (default: 2)
 
   # Autonomy levels: auto | suggest | manual
   autonomy_level:

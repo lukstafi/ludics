@@ -27,11 +27,14 @@ function orchStatus(slot: number): void {
     const effort = agent.thinkingEffort ? ` thinking=${agent.thinkingEffort}` : "";
     const lc = runtime?.turnLifecycle;
     const lcInfo = lc ? ` turn=${lc.state}${lc.observedTurnId ? ` id=${lc.observedTurnId.slice(0, 8)}` : ""}` : "";
-    const stallInfo = lc?.stallDetectedAt
-      ? ` HUNG(nudges=${lc.nudgeAttempts ?? 0}, since=${lc.stallDetectedAt})`
+    const stallInfo = lc?.settledNoSignalDetectedAt
+      ? ` SETTLED-NO-SIGNAL(nudges=${lc.settledNoSignalNudgeAttempts ?? 0}, since=${lc.settledNoSignalDetectedAt})`
+      : "";
+    const hungInfo = lc?.hungDetectedAt
+      ? ` HUNG(attempts=${lc.hungNudgeAttempts ?? 0}, since=${lc.hungDetectedAt})`
       : "";
     console.log(
-      `${agent.name}: status=${runtime?.status ?? "unknown"} provider=${agent.provider} model=${agent.model}${effort} pr=${runtime?.prUrl ?? "-"}${lcInfo}${stallInfo}`,
+      `${agent.name}: status=${runtime?.status ?? "unknown"} provider=${agent.provider} model=${agent.model}${effort} pr=${runtime?.prUrl ?? "-"}${lcInfo}${stallInfo}${hungInfo}`,
     );
   }
   console.log("timeouts:");

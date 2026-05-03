@@ -26,6 +26,7 @@
     "prCommentsCheckInterval",
     "prCommentsStuckThreshold",
     "prCommentsTimeout",
+    "substantiveStall",
     "timeouts",
     "useMagTailoring"
   ],

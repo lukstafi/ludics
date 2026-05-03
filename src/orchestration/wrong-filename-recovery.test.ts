@@ -104,8 +104,8 @@ function setSettledLifecycle(state: OrchestrationState, agent: string) {
     completionSource: "snapshot",
     statusFileFingerprint: null,
     lastStopHookAt: null,
-    nudgeAttempts: 0,
-    lastNudgeAt: null,
+    wrongFilenameNudgeAttempts: 0,
+    lastWrongFilenameNudgeAt: null,
   };
 }
 
@@ -257,7 +257,7 @@ describe("attemptAutoCp", () => {
 });
 
 describe("recoverWrongFilename — driver outcomes", () => {
-  test("(a) canonical present → none, no events, no sendTurn, nudgeAttempts unchanged", async () => {
+  test("(a) canonical present → none, no events, no sendTurn, wrongFilenameNudgeAttempts unchanged", async () => {
     const dir = makePeerSync();
     const state = makeState(dir);
     setSettledLifecycle(state, "coder");
@@ -269,7 +269,7 @@ describe("recoverWrongFilename — driver outcomes", () => {
       expect(outcome).toBe("none");
       expect(calls).toEqual([]);
       expect(eventSpy).not.toHaveBeenCalled();
-      expect(state.agentStates["coder"].turnLifecycle?.nudgeAttempts).toBe(0);
+      expect(state.agentStates["coder"].turnLifecycle?.wrongFilenameNudgeAttempts).toBe(0);
     } finally {
       eventSpy.mockRestore();
     }
@@ -311,7 +311,7 @@ describe("recoverWrongFilename — driver outcomes", () => {
       expect(readFileSync(canonical, "utf8")).toBe("merged-content");
       expect(Math.floor(statSync(canonical).mtimeMs / 1000)).toBe(fixedMtime);
       expect(events.find((e) => e.event_type === "orchestration_artifact_recovered")).toBeTruthy();
-      expect(state.agentStates["coder"].turnLifecycle?.nudgeAttempts).toBe(0);
+      expect(state.agentStates["coder"].turnLifecycle?.wrongFilenameNudgeAttempts).toBe(0);
     } finally {
       eventSpy.mockRestore();
     }
@@ -339,7 +339,7 @@ describe("recoverWrongFilename — driver outcomes", () => {
       expect(nudgeEv).toBeTruthy();
       expect((nudgeEv as { candidatePaths: string[] }).candidatePaths).toContain(junk);
       const lc = state.agentStates["coder"].turnLifecycle!;
-      expect(lc.nudgeAttempts).toBe(1);
+      expect(lc.wrongFilenameNudgeAttempts).toBe(1);
       expect(lc.wrongFilenameNudgeRound).toBe(1);
       expect(lc.wrongFilenameNudgePlanMergeRound).toBe(0);
     } finally {
@@ -413,7 +413,7 @@ describe("recoverWrongFilename — driver outcomes", () => {
     const lc = state.agentStates["coder"].turnLifecycle!;
     lc.wrongFilenameNudgeRound = 1;
     lc.wrongFilenameNudgePlanMergeRound = 0;
-    lc.nudgeAttempts = 1;
+    lc.wrongFilenameNudgeAttempts = 1;
 
     state.round = 2;
     // Non-parsing filename so the auto-cp branch finds nothing and we
@@ -428,7 +428,7 @@ describe("recoverWrongFilename — driver outcomes", () => {
       expect(outcome).toBe("nudge");
       expect(calls.length).toBe(1);
       expect(lc.wrongFilenameNudgeRound).toBe(2);
-      expect(lc.nudgeAttempts).toBe(2);
+      expect(lc.wrongFilenameNudgeAttempts).toBe(2);
     } finally {
       eventSpy.mockRestore();
     }
@@ -450,7 +450,7 @@ describe("recoverWrongFilename — driver outcomes", () => {
       let outcome = await recoverWrongFilename(state, state.agents[0], state.agentStates["coder"], transport);
       expect(outcome).toBe("deferred");
       expect(calls).toEqual([]);
-      expect(lc.nudgeAttempts).toBe(0);
+      expect(lc.wrongFilenameNudgeAttempts).toBe(0);
       expect(lc.wrongFilenameNudgeRound).toBeUndefined();
 
       lc.state = "settled";
@@ -541,7 +541,7 @@ describe("recoverWrongFilename — driver outcomes", () => {
       expect(outcome).toBe("diagnostic-only");
       expect(calls).toEqual([]);
       expect(events.find((e) => e.event_type === "orchestration_artifact_recovery_skipped")).toBeTruthy();
-      expect(lc.nudgeAttempts).toBe(0);
+      expect(lc.wrongFilenameNudgeAttempts).toBe(0);
       expect(lc.wrongFilenameNudgeRound).toBeUndefined();
     } finally {
       eventSpy.mockRestore();

@@ -295,7 +295,15 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
         // and has been nudged multiple times without updating status, treat as
         // done.  The agent likely completed its work but skipped the status
         // write (e.g. didn't execute the printf command in the template).
-        if ((lc.nudgeAttempts ?? 0) >= 2
+        // Union-of-counters across the three nudge layers (task-a670cdbf):
+        // settled-no-signal, wrong-filename, and interrupted-agent each
+        // mean "we've poked the agent". The treat-as-done gate's intent is
+        // "enough pokes that residual status staleness is forgiveable" — the
+        // triggering layer doesn't matter, so sum them.
+        const nudgesObserved = (lc.settledNoSignalNudgeAttempts ?? 0)
+          + (lc.wrongFilenameNudgeAttempts ?? 0)
+          + (lc.interruptedNudgeAttempts ?? 0);
+        if (nudgesObserved >= 2
             && requiredArtifactPath(state, agent) !== null
             && hasRequiredArtifact(state, agent)) {
           emitEvent({
@@ -304,7 +312,7 @@ export function isAgentDone(state: OrchestrationState, agent: AgentConfig): bool
             scope: "slot",
             slot: state.slot,
             task: state.taskId,
-            message: `${agent.name}: status stale but artifact present after ${lc.nudgeAttempts} nudges — treating as done`,
+            message: `${agent.name}: status stale but artifact present after ${nudgesObserved} nudges — treating as done`,
           });
           return true;
         }

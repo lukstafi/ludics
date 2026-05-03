@@ -34,6 +34,8 @@ import {
 import { runOrchestrationForSlot } from "../orchestration/runner.ts";
 import {
   defaultOrchestrationConfig,
+  DEFAULT_SUBSTANTIVE_STALL_CONFIG,
+  parseSubstantiveStallOverrides,
   initAgentRuntimeState,
   persistState,
   readOrchestrationState,
@@ -884,6 +886,19 @@ async function startOrchestratedThreads(
   const configPhaseTimeouts = orchCfg?.phase_timeouts as Record<string, number> | undefined;
   if (configPhaseTimeouts && typeof configPhaseTimeouts === "object") {
     orchestration.config.timeouts = { ...configPhaseTimeouts, ...(orchestration.config.timeouts ?? {}) };
+  }
+
+  // task-a670cdbf: wire mag.orchestration.substantive_stall.* YAML keys
+  // into the persisted state.config.substantiveStall so the runtime
+  // detector reads YAML overrides. defaultOrchestrationConfig fills any
+  // missing leaves; migrateState backfills legacy slot JSON on read.
+  const substantiveStallOverrides = parseSubstantiveStallOverrides(orchCfg?.substantive_stall);
+  if (Object.keys(substantiveStallOverrides).length > 0) {
+    orchestration.config.substantiveStall = {
+      ...DEFAULT_SUBSTANTIVE_STALL_CONFIG,
+      ...(orchestration.config.substantiveStall ?? {}),
+      ...substantiveStallOverrides,
+    };
   }
 
   const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode);
