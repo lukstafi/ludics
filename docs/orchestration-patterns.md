@@ -274,6 +274,10 @@ A matching error count with set drift is still a regression; only the diff tells
 
 **Extending the list.** When a new lint-enforced doc pairing appears, add the pair here. Templates should point at this heading, not inline the pair.
 
+### Lockstep contract-prose rewrite
+
+When a file documents its own contract — a header docstring, top-of-file comment block, leading prose section, or any other in-file description of what the file does — and the change modifies what the file actually does, edit the prose in the same commit. The prose is a code-shaped artifact, not commentary; future readers and grep audits use it as the source-of-truth claim, so silent drift is the failure mode. Concrete trigger: `scripts/lint-cli-readme.ts` (PR #473) advertised in its header *"warnings about undocumented commands are non-fatal"* while the round-1 fix flipped the exit-code branch but left the header intact, leaving a self-contradicting file. Distinct from the neighbouring `### CI drift files` rule, which covers lint-enforced drift between *paired* files; this rule covers un-lint-enforced drift between *the file's prose and the file's behaviour* in the same file. The rule is language-agnostic: applies equally to a Python `"""docstring"""`, an OCaml `(** *)` block, a Rust `//!` module comment, a Go `// Package` header, a shell `# About:` banner, a `<!-- about -->` README region, or a `description:` field in a YAML/TOML config.
+
 ### Multi-pattern symbol extraction
 
 **Principle.** When extracting a symbol usage that can be written multiple ways in the codebase, union the matches from multiple regex patterns instead of relying on one.

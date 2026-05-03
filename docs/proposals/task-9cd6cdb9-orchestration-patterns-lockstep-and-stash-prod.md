@@ -38,9 +38,11 @@ If any of the three relative-position checks fails, the AC is falsified. (The "i
 
 The new entry follows the user's resolved Option B shape: a one-sentence rule body, plus a parenthetical or follow-on sentence anchoring with the concrete `scripts/lint-cli-readme.ts` trigger from PR #473. **No** `**Principle.**`, `**Why.**`, `**When not to apply.**`, or `**Worked example.**` bold-prefixed subheaders appear within the new entry's body (between the new `### ` heading and the next `### `/`## ` heading). Body length: 3–5 sentences inclusive (matching the retrospective body's "pithy form" target).
 
-**Falsifier (no subheaders):** `awk '/^### Lockstep contract-prose rewrite/,/^(### |## )/' docs/orchestration-patterns.md | grep -E '^\*\*(Principle|Why|When not to apply|Worked example)\.\*\*'` returns any match.
+**Falsifier (no subheaders):** `awk '/^### Lockstep contract-prose rewrite/{p=1;next} p && /^(### |## )/{exit} p' docs/orchestration-patterns.md | grep -E '^\*\*(Principle|Why|When not to apply|Worked example)\.\*\*'` returns any match.
 
-**Falsifier (concrete-trigger anchor present):** `awk '/^### Lockstep contract-prose rewrite/,/^(### |## )/' docs/orchestration-patterns.md | grep -F "lint-cli-readme"` returns no match. (The retrospective's concrete trigger — `scripts/lint-cli-readme.ts` — must appear in the entry as a parenthetical anchor.)
+**Falsifier (concrete-trigger anchor present):** `awk '/^### Lockstep contract-prose rewrite/{p=1;next} p && /^(### |## )/{exit} p' docs/orchestration-patterns.md | grep -F "lint-cli-readme"` returns no match. (The retrospective's concrete trigger — `scripts/lint-cli-readme.ts` — must appear in the entry as a parenthetical anchor.)
+
+> **Awk-range form note.** The `{p=1;next} p && /…/{exit} p` form supersedes the legacy `awk '/^### X/,/^(### |## )/'` comma-range, which is degenerate when the start pattern itself matches the close pattern (the heading begins with `### `, so the comma-range opens and closes on the same line and outputs only the heading line — never the body the falsifier is meant to probe). The two forms have the same intent (extract the body of the named section); only the corrected form actually instantiates that intent.
 
 ### AC4 — Pattern 1 body content: language-agnostic rule, naming the failure mode
 
@@ -51,7 +53,7 @@ The new entry's body covers all of:
 3. **Concrete trigger anchor.** A parenthetical citing `scripts/lint-cli-readme.ts` (PR #473): the header advertised "warnings about undocumented commands are non-fatal" while the round-1 fix flipped the exit-code branch but left the header intact — a self-contradicting file.
 4. **Distinction from `### CI drift files`.** The rule must read as covering drift between *the file's prose and the file's behaviour* (un-lint-enforced; same file), not drift between *lint-paired files* (machine-enforced; pair of files). The neighbour entry already encodes the latter; this entry generalises the lockstep idea to the in-file case.
 
-**Falsifier (per-element literal presence):** `grep -F` for any of the literal phrases below against the new entry's body returns no match (run via `awk '/^### Lockstep contract-prose rewrite/,/^(### |## )/' docs/orchestration-patterns.md | grep -F "<phrase>"`):
+**Falsifier (per-element literal presence):** `grep -F` for any of the literal phrases below against the new entry's body returns no match (run via `awk '/^### Lockstep contract-prose rewrite/{p=1;next} p && /^(### |## )/{exit} p' docs/orchestration-patterns.md | grep -F "<phrase>"` — see the awk-range form note under AC3):
 
 - `code-shaped artifact` — the load-bearing framing line (the rule that future readers and grep audits *use the prose as source-of-truth* is what makes silent drift the failure mode).
 - `lint-cli-readme` — the concrete trigger anchor.
@@ -89,7 +91,7 @@ The new clause body (prose between the new H3 and the next `### ` or `## ` headi
 
 The body is between 4 and 7 sentences inclusive (matching the doc's existing template; the Time-since-X sibling clause is 5 sentences, the X-unchanged sibling clause is 4–7).
 
-**Falsifier (per-element literal presence):** `grep -F` for any of the literal phrases below against `docs/ac-rigor-reference.md` returns no match (a probe on the new clause body via `awk '/^### Stash-prod mutation test/,/^(### |## )/' docs/ac-rigor-reference.md | grep -F "<phrase>"`):
+**Falsifier (per-element literal presence):** `grep -F` for any of the literal phrases below against `docs/ac-rigor-reference.md` returns no match (a probe on the new clause body via `awk '/^### Stash-prod mutation test/{p=1;next} p && /^(### |## )/{exit} p' docs/ac-rigor-reference.md | grep -F "<phrase>"` — see the awk-range form note under AC3):
 
 - `git stash push --` — the literal command form (must match exactly, including the trailing space-and-double-dash; this is the mutation-testable falsifier the clause exemplifies).
 - `git stash pop` — the restoration step (one-line restore is part of the technique).
@@ -104,6 +106,8 @@ The new clause's cross-link references the existing heading `### No-regression f
 **Falsifier (exact title literal present):** `awk '/^### Stash-prod mutation test/,/^(### |## )/' docs/ac-rigor-reference.md | grep -F "No-regression framing when the gate baseline is red"` returns no match.
 
 **Falsifier (heading still exists, unmodified):** `grep -F "### No-regression framing when the gate baseline is red" docs/ac-rigor-reference.md` returns no match. (The cited heading must survive this commit — no rename, no relocation.)
+
+The body-extraction probe above also uses the corrected awk form (see the awk-range form note under AC3): `awk '/^### Stash-prod mutation test/{p=1;next} p && /^(### |## )/{exit} p' docs/ac-rigor-reference.md | grep -F "No-regression framing when the gate baseline is red"`.
 
 ### AC9 — Clause cardinality is exactly 16
 
@@ -157,6 +161,8 @@ In `skills/worker-conventions.md`, § "AC verification rigor" (currently the thr
 No source-code files (`src/**`, `scripts/**`, `templates/**`), no tests (`*.test.ts`), no schema files.
 
 **Falsifier:** `git diff --name-only main...HEAD` returns any path outside the four-path set above, or any of the four paths is missing from the diff at completion.
+
+**Recovery if the proposal commit is already on `main` at implementation time.** When the orchestrator commits the proposal one or more rounds before the implementation phase begins, `main` may have advanced past the proposal commit by the time the implementation lands — `git diff --name-only main...HEAD` then returns only the three doc paths the implementation touches, and the proposal path is missing from the diff *at the symmetric base* even though the proposal exists at `main` (no longer a *new* file in `main...HEAD`). The recovery: include the proposal path in the diff by editing the proposal in the same commit (e.g., a falsifier-form clarification, an awk-range fix, a recovery note like this one); the edit puts the proposal back into `main...HEAD` and the four-path set is satisfied literally. The AC's load-bearing invariant is **no source-code (`src/**`, `scripts/**`, `templates/**`), no test files (`*.test.ts`), no schema files** — that invariant is what reviewers should reject on; the four-path enumeration is the snapshot expression of "exactly the docs scope, nothing else." When the snapshot can't be reconstructed without artificial commits, a same-PR proposal edit (typically AC-rigor cleanup such as the awk-range fix landing alongside this very recovery note) reconciles the literal and the invariant in one move.
 
 ## Context
 
