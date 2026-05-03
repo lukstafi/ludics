@@ -2,7 +2,7 @@
 
 Reference documentation for writing and verifying acceptance criteria (ACs) on tasks whose contract is unusually heavy. Each section captures one durable learning from a reviewer round where an AC line passed mechanically while still failing to enforce the property the AC named. The doc is project-agnostic: workers consult it when the AC ledger calls for extra rigor, then return to the task at hand.
 
-This doc grows over time. Today it covers fifteen clauses across five thematic families; further reviewer-flagged learnings (closed-set / cardinality probes, stash-prod mutation tests, and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
+This doc grows over time. Today it covers sixteen clauses across five thematic families; further reviewer-flagged learnings (closed-set / cardinality probes, and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
 
 → See also: [`orchestration-patterns.md` § AC self-check](orchestration-patterns.md#ac-self-check) for the *invariant-vs-capability* phrasing rule, and [`orchestration-patterns.md` § Harness instantiation](orchestration-patterns.md#harness-instantiation) for the *falsifier-framing* rule. The two together describe both sides of an enforceable AC line; the clauses below extend them to specific recurring failure modes.
 
@@ -17,6 +17,10 @@ The shared rule: an AC verification line is vacuous when the only edit needed to
 ### Vacuous test harness — assert on the artifact the AC names
 
 A test that traverses an AC's code path doesn't enforce its invariant. The harness condition must be paired with an assertion that reads the artifact the AC names — the journal file, the rendered output, the on-disk state — not just "the surrounding code path runs." If removing the assertion is the only edit needed to falsify the AC, the test is vacuous on that AC line. Pair every invariant-phrased verification line with an assertion whose negative outcome is reachable by *violating the AC*, not by *editing the test*.
+
+### Stash-prod mutation test — confirm your new test actually falsifies
+
+A regression test that traverses the production change without enforcing it is vacuous on its own AC: it passes whether or not the production fix is present. Mutation-test the new regression test by stashing the production change — `git stash push -- <production-file>` reverts only the lint/bug fix while leaving the new test in place; the test runner (`bun test`, `pytest`, whatever) then surfaces the assertion that fires under regression, and `git stash pop` restores in one step. This beats editing the test fixture or temporarily breaking the production code in-place — cheaper, less error-prone, and robust to multi-file stash sets when scoped via the path argument. Same toolset as the **No-regression framing when the gate baseline is red** clause (Baseline-aware framing family) but a distinct probe: stash-and-rerun answers *"is this failure pre-existing in main?"*, while stash-prod answers *"does my new test actually exercise my new code?"* — a reader landing on either clause should follow the cross-link to find the other. The clause body itself names the literal `git stash push --` command form so a verification probe can assert this clause is non-stub — the kind of mutation-testable assertion the clause prescribes.
 
 ### Vacuous doc/config harness — same rule, doc artifacts
 
