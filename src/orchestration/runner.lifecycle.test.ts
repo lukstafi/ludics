@@ -665,7 +665,7 @@ describe("refreshAgentStatuses", () => {
 
 describe("resolvePrUrl — branch-name fallback (gh-bce80781)", () => {
   let tmpDir: string;
-  let spawnSpy: ReturnType<typeof spyOn> | undefined;
+  let spawnSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     tmpDir = makeTmpDir();
@@ -673,7 +673,6 @@ describe("resolvePrUrl — branch-name fallback (gh-bce80781)", () => {
 
   afterEach(() => {
     spawnSpy?.mockRestore();
-    spawnSpy = undefined;
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
