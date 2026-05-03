@@ -123,6 +123,9 @@ export interface OrchestrationConfig {
   prCommentsTimeout: number;
   /** How often (seconds) to poll GitHub for new PR comments during pr-comments phase. */
   prCommentsCheckInterval: number;
+  /** Seconds since the last redispatch after which a quiet pr-comments phase with an
+   *  unaddressed review on the PR triggers a one-shot orchestration_warning. Default 600. */
+  prCommentsStuckThreshold: number;
   /** Gates the wrong-filename auto-cp branch only. When false, whitelisted suspects
    *  fall through to the targeted-nudge branch instead of being auto-copied. */
   autoRecoverWrongFilename: boolean;
@@ -179,10 +182,25 @@ export interface OrchestrationState {
    *  The runner reads this to select the correct transport, preventing split-brain
    *  when the global config differs from the slot's original backend.  */
   backend?: "t3code" | "tmux";
-  /** Set when the coder is re-dispatched in pr-comments phase (new comments to address).
-   *  Cleared on fresh pr-comments entry. Used to shortcut to final-merge once all agents
-   *  are done — avoids the full quiet-period wait after the coder has responded. */
-  prCommentsCoderDispatched?: boolean;
+  /** True while the coder is currently dispatched in pr-comments and not-yet-settled
+   *  for the latest review; false otherwise. Cleared on coder-settle (via isAgentDone()
+   *  in refreshAgentStatuses), on every redispatchForPrComments re-arm boundary, and
+   *  on fresh pr-comments phase entry. The shortcut to final-merge requires
+   *  !prCommentsCoderActive AND prCommentsRedispatchCount >= 1 — i.e. the coder has
+   *  settled after at least one review-driven redispatch. */
+  prCommentsCoderActive?: boolean;
+  /** Number of redispatchForPrComments() invocations since fresh pr-comments phase
+   *  entry. The shortcut requires >= 1 so first-entry quiet state cannot bypass review
+   *  handling. Reset to undefined by resetPrCommentsState. */
+  prCommentsRedispatchCount?: number;
+  /** Epoch of the most recent redispatchForPrComments invocation in this pr-comments
+   *  phase. Used by the stuck-phase warning to compute (now - lastRedispatchAt) and
+   *  to rebase fetchNewPrCommentCount for the unaddressed-review probe. Reset by
+   *  resetPrCommentsState. */
+  prCommentsLastRedispatchAt?: number;
+  /** Epoch of the last pr-comments-stuck warning emission. Edge-triggered dedup:
+   *  cleared on next successful redispatch and on fresh phase entry. */
+  prCommentsStuckWarnedAt?: number;
   /** Last non-unknown mergeable_state observed per agent PR during pr-comments.
    *  Persisted so crash/resume doesn't re-trigger the same conflict dispatch.
    *  Keyed by agent name. Reset on fresh transition into pr-comments via
@@ -240,6 +258,7 @@ export const DEFAULT_TIMEOUTS: Record<string, number> = {
 
 export const DEFAULT_PR_COMMENTS_TIMEOUT = 1800; // 30 min quiet before auto-merging
 export const DEFAULT_PR_COMMENTS_CHECK_INTERVAL = 60; // poll GitHub every 60 s
+export const DEFAULT_PR_COMMENTS_STUCK_THRESHOLD = 600; // 10 min quiet-after-redispatch before stuck warning
 
 export const DEFAULT_POLL_INTERVAL = 10;
 export const DEFAULT_LEARNING_INTERVAL = 3600;
@@ -265,6 +284,8 @@ export function defaultOrchestrationConfig(
     prCommentsTimeout: overrides.prCommentsTimeout ?? DEFAULT_PR_COMMENTS_TIMEOUT,
     prCommentsCheckInterval:
       overrides.prCommentsCheckInterval ?? DEFAULT_PR_COMMENTS_CHECK_INTERVAL,
+    prCommentsStuckThreshold:
+      overrides.prCommentsStuckThreshold ?? DEFAULT_PR_COMMENTS_STUCK_THRESHOLD,
     autoRecoverWrongFilename: overrides.autoRecoverWrongFilename ?? true,
   };
 }
@@ -419,6 +440,7 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
   const legacy = state as unknown as {
     staleBaseLastWarnedRound?: number;
     staleBaseLastWarnedCount?: number;
+    prCommentsCoderDispatched?: boolean;
   };
   if (
     state.staleBaseLastWarned === undefined
@@ -434,6 +456,17 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
   }
   delete legacy.staleBaseLastWarnedRound;
   delete legacy.staleBaseLastWarnedCount;
+  // gh-bce80781: rename prCommentsCoderDispatched → prCommentsCoderActive.
+  // Copy the legacy value into the new field if absent, then strip the legacy
+  // key unconditionally so persistState never round-trips it.
+  if (state.prCommentsCoderActive === undefined && legacy.prCommentsCoderDispatched !== undefined) {
+    state.prCommentsCoderActive = legacy.prCommentsCoderDispatched;
+  }
+  delete legacy.prCommentsCoderDispatched;
+  // gh-bce80781: backfill new config field for legacy state files.
+  if (state.config && state.config.prCommentsStuckThreshold === undefined) {
+    state.config.prCommentsStuckThreshold = DEFAULT_PR_COMMENTS_STUCK_THRESHOLD;
+  }
   return state;
 }
 

@@ -600,14 +600,20 @@ describe("checkAndRedispatchPrComments conflict detection", () => {
       phase: "pr-create",
       prCommentsLastCheckAt: 999,
       prCommentsQuietSince: 888,
-      prCommentsCoderDispatched: true,
+      prCommentsCoderActive: true,
+      prCommentsRedispatchCount: 3,
+      prCommentsLastRedispatchAt: 777,
+      prCommentsStuckWarnedAt: 555,
       prMergeableStates: { coder: "dirty" },
       prCodexReviewFallbackPosted: true,
     });
     applyPhaseSideEffects(state, "pr-comments");
     expect(state.prCommentsLastCheckAt).toBe(state.phaseStartedAt - 600);
     expect(state.prCommentsQuietSince).toBeUndefined();
-    expect(state.prCommentsCoderDispatched).toBe(false);
+    expect(state.prCommentsCoderActive).toBe(false);
+    expect(state.prCommentsRedispatchCount).toBeUndefined();
+    expect(state.prCommentsLastRedispatchAt).toBeUndefined();
+    expect(state.prCommentsStuckWarnedAt).toBeUndefined();
     expect(state.prMergeableStates).toEqual({});
     expect(state.prCodexReviewFallbackPosted).toBeUndefined();
   });
@@ -738,7 +744,10 @@ describe("resetPrCommentsState", () => {
       phase: "pr-comments",
       prCommentsLastCheckAt: 999,
       prCommentsQuietSince: 888,
-      prCommentsCoderDispatched: true,
+      prCommentsCoderActive: true,
+      prCommentsRedispatchCount: 4,
+      prCommentsLastRedispatchAt: 666,
+      prCommentsStuckWarnedAt: 555,
       prMergeableStates: { coder: "dirty" },
       prCodexReviewFallbackPosted: true,
       prCodexReviewDeferredSince: 777,
@@ -746,7 +755,10 @@ describe("resetPrCommentsState", () => {
     resetPrCommentsState(state);
     expect(state.prCommentsLastCheckAt).toBe(state.phaseStartedAt - 600);
     expect(state.prCommentsQuietSince).toBeUndefined();
-    expect(state.prCommentsCoderDispatched).toBe(false);
+    expect(state.prCommentsCoderActive).toBe(false);
+    expect(state.prCommentsRedispatchCount).toBeUndefined();
+    expect(state.prCommentsLastRedispatchAt).toBeUndefined();
+    expect(state.prCommentsStuckWarnedAt).toBeUndefined();
     expect(state.prMergeableStates).toEqual({});
     expect(state.prCodexReviewFallbackPosted).toBeUndefined();
     // prCodexReviewDeferredSince has independent lifecycle — must NOT be touched

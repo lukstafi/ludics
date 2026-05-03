@@ -485,9 +485,12 @@ export function findPlanFiles(
 export function prCommentsReadyForFinalMerge(state: OrchestrationState): boolean {
   if (!hasAnyPr(state)) return false;
 
-  // Shortcut: coder has responded to PR comments — skip quiet period wait.
+  // Shortcut: coder has settled after at least one review-driven redispatch.
+  // The redispatch-count precondition prevents the shortcut from firing on
+  // first pr-comments entry before any review has been observed.
   if (
-    state.prCommentsCoderDispatched
+    !state.prCommentsCoderActive
+    && (state.prCommentsRedispatchCount ?? 0) >= 1
     && allAgentsDone(state)
     && state.prCommentsQuietSince
     && !state.prCodexReviewDeferredSince
@@ -683,12 +686,13 @@ export function evaluateTransition(state: OrchestrationState): Phase | null {
         return null;
       }
 
-      // Shortcut: coder has responded to PR comments — skip quiet period wait.
+      // Shortcut: coder has settled after at least one review-driven redispatch.
       // Gated on prCommentsQuietSince (a fresh poll found no new comments after
       // the last redispatch) so late reviewer comments are not skipped.
       // Also blocked while Codex review deferral is unresolved.
       if (
-        state.prCommentsCoderDispatched
+        !state.prCommentsCoderActive
+        && (state.prCommentsRedispatchCount ?? 0) >= 1
         && hasAnyPr(state)
         && allAgentsDone(state)
         && state.prCommentsQuietSince
