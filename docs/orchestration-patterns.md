@@ -376,7 +376,27 @@ The sharpening question is: *what would fail if the AC were violated?* For a tes
 
 **Boundary.** Applies to ACs whose evidence is a test or other executable check. Purely architectural ACs (`does not break X`) fall under the existing falsifier framing in [AC self-check](#ac-self-check). Doc/config ACs apply by analogy: the "harness condition" for a doc AC is the consumer that would break if the structural property were absent (an unresolvable anchor, a removed reader, a renamed symbol).
 
-See also [negative-case-regression-testing](#negative-case-regression-testing) (the *dynamic* version of this discipline — deliberately break the behaviour and watch the test fail), [collapsed-branch-negative-tests](#collapsed-branch-negative-tests) (negative assertions for removed branches), and [ac-self-check](#ac-self-check) (the invariant-vs-capability rule this complements).
+See also [negative-case-regression-testing](#negative-case-regression-testing) (the *dynamic* version of this discipline — deliberately break the behaviour and watch the test fail), [collapsed-branch-negative-tests](#collapsed-branch-negative-tests) (negative assertions for removed branches), [ac-self-check](#ac-self-check) (the invariant-vs-capability rule this complements), and [mutation-evidence](#mutation-evidence) (the implementation-line dependency check this complements).
+
+### Mutation evidence
+
+**Principle.** Every test-shaped AC verification line cites a one-line mutation showing the named assertion would **flip from PASS to FAIL** when the targeted production code is stubbed, inverted, or removed. Without the mutation, the assertion may pass whether or not the fix is in place — a vacuous harness the reviewer typically catches in REQUEST_CHANGES.
+
+**Why.** [Harness instantiation](#harness-instantiation) closes the loop on the test *setup* — the AC's case is actually produced. Mutation evidence closes the loop on the test *implementation dependency* — the assertion's truth actually depends on the line under test, not on a separate invariant elsewhere or a fixture coincidence. The two together (setup-side + implementation-line-side) make the assertion an enforceable falsifier instead of a tautology that traverses the AC's code path.
+
+**Three canonical mutation shapes.**
+
+1. **One-liner mutation** — `sed -i 's/<old>/<broken>/' <file>` against a single textual line (a literal, a regex, a constant, a comparison operator). Cheapest shape; fits when the production change is a one-character tweak or a single literal.
+2. **Typed-code mutation** — use the `Edit tool` against a typed code path: flip a return value, swap a comparison operator, stub a function body to `throw`. Fits when the production change is structural (a new branch, a new helper, a guard clause) and `sed` would mangle surrounding tokens.
+3. **Guard-removal mutation** — `git stash push -- <file>` to revert the production change while leaving the new test in place, then `bun test <test-file>` and watch the cited assertion flip; `git stash pop` to restore. Fits when the change spans multiple lines or files and re-typing the inverse is more error-prone than stashing the whole production diff. Same technique as the [baseline-aware framing](#no-regression-ac-framing)'s stash-and-rerun, applied to mutation rather than baseline detection.
+
+**Edge case — already-broken-on-base.** When the regression test exists but fails on the base branch (because the bug it was meant to catch is the reason it fails), the mutation phrasing changes shape: cite that the assertion *passes* after the fix and *would still fail* with the fix reverted, not "flips from PASS to FAIL" (which presumes a green baseline). The guard-removal mutation shape (stash the production change, rerun) is the natural fit here — stashing puts the tree back into the broken-base state and the assertion fails again.
+
+**Edge case — multi-assertion AC.** When a single AC cites N assertions (composite evidence), name **one mutation per cited assertion**, not one mutation per AC. A single mutation that flips three assertions tells you they all transit the same line, which is a different (weaker) property than "each of the three measures the invariant the AC names." See the composite-evidence paragraph in [AC self-check](#ac-self-check).
+
+**Doc/config carve-out.** Mutation evidence is **required for test-shaped AC verification lines** (assertion line cited; mutation flips PASS to FAIL). For doc / config / lint ACs whose verification is a structural property — a resolvable anchor, a consumer that still reads the field, a `grep -F` on a literal — the structural-property check itself is the falsifier (removing the anchor / consumer / literal flips the check), and mutation evidence on top of it is **optional but encouraged**. Cross-link: see [vacuous-docconfig-harness](../docs/ac-rigor-reference.md#vacuous-docconfig-harness--same-rule-doc-artifacts) for the same rule viewed from the structural-property side.
+
+**See also** [harness-instantiation](#harness-instantiation) (the setup-side companion that this [mutation-evidence](#mutation-evidence) discipline complements), [negative-case-regression-testing](#negative-case-regression-testing) (the broader dynamic-verification family), [pre-assertion-harness-probe](#pre-assertion-harness-probe) (the plan-time companion), and [ac-self-check](#ac-self-check) (the invariant-phrasing companion).
 
 ### Bail-out contract
 

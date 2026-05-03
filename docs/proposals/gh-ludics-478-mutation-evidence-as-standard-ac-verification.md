@@ -62,9 +62,11 @@ Source: https://github.com/lukstafi/ludics/issues/478
   - `grep -F 'optional but encouraged' docs/orchestration-patterns.md`
     returns at least one match inside the new entry.
 - [ ] The new entry cross-links to
-      `ac-rigor-reference.md#vacuous-doc-config-harness-same-rule-doc-artifacts`
-      (the existing Vacuous doc/config harness clause). Falsifier:
-      `grep -F 'vacuous-doc-config-harness' docs/orchestration-patterns.md`
+      `ac-rigor-reference.md#vacuous-docconfig-harness--same-rule-doc-artifacts`
+      (the existing Vacuous doc/config harness clause; the actual GitHub-
+      rendered slug — `/` is dropped from `doc/config` and the em-dash
+      collapses surrounding spaces into `--`). Falsifier:
+      `grep -F 'vacuous-docconfig-harness' docs/orchestration-patterns.md`
       returns at least one match.
 - [ ] The existing `### Harness instantiation` entry retains its
       `See also` line and that line names the new entry. Falsifier:
@@ -143,11 +145,30 @@ and is recorded in the PR description.
       (per affected tree, recorded in PR description):
       `grep -F 'feedback_mutation_test_before_done' ~/.claude/projects/-Users-lukstafi-<project>/memory/MEMORY.md`
       returns no matches after the change.
-- [ ] Both the file deletion and the index update are committed in the
-      coder memory tree's git history (these trees are git-tracked and
-      synced to the harness via the existing keepalive checkpoint). The
-      PR description names the relevant commit SHA(s) so the reviewer can
-      verify provenance without re-deriving the deletion.
+- [ ] Provenance evidence is recorded in the PR description so the
+      reviewer can verify the change without re-deriving it. Two
+      acceptable shapes — pick whichever matches the actual tree state
+      and prefer reproducible reality over a phantom artifact:
+  - **Git-tracked tree** — if the affected memory tree is under a git
+    repository (verify with `git -C <memory-dir> rev-parse --show-toplevel`
+    succeeding), the PR description names the commit SHA(s) for the
+    deletion + index update.
+  - **Untracked tree (current state on this machine, 2026-05-03)** —
+    the canonical Mag memory tree at
+    `/Users/lukstafi/.claude/projects/-Users-lukstafi-ludics/memory/`
+    is **not** under any git repository (`git -C … rev-parse
+    --show-toplevel` returns `fatal: not a git repository`, no `.git`
+    in the parent chain through `~/.claude`). For untracked trees the
+    PR description carries the reproducible post-change evidence
+    instead: pre/post `find ~/.claude/projects -maxdepth 3 -name
+    'feedback_mutation_test_before_done.md'` transcripts plus the
+    post-change `grep -F 'feedback_mutation_test_before_done'
+    /Users/lukstafi/.claude/projects/-Users-lukstafi-ludics/memory/MEMORY.md`
+    (no matches). The reviewer reproduces both checks independently.
+
+  Do not fabricate a commit SHA for an untracked tree. If a tree
+  becomes git-tracked later (e.g. via the keepalive checkpoint), the
+  git-tracked shape becomes the preferred verification.
 
 ### No code changes
 
