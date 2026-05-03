@@ -348,6 +348,77 @@ export function gitDiff(root: string, base: string | null): string {
   return out.stdout ?? "";
 }
 
+/** Read a file's contents at `base` via `git show`. Returns `null` when the
+ *  file didn't exist at `base` or `base` is null. Used to compare the live
+ *  snapshot against its committed predecessor — the "snapshot-was-refreshed"
+ *  attack vector Codex flagged: a developer running `--update` alongside a
+ *  type change without touching the migrator/test passes the source-vs-current-
+ *  snapshot check (they match), so we have to compare current snapshot
+ *  against the base-ref snapshot to catch the silent drift. */
+export function gitShowAtBase(
+  root: string,
+  base: string | null,
+  filePath: string,
+): string | null {
+  if (!base) return null;
+  const out = spawnSync(
+    "git",
+    ["-C", root, "show", `${base}:${filePath}`],
+    { encoding: "utf-8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  if (out.status !== 0) return null;
+  return out.stdout ?? null;
+}
+
+/** Detect field-set drift between the snapshot at `base` and the current
+ *  on-disk snapshot. When the developer ran `--update` to refresh the
+ *  snapshot in the same commit as a type change, `checkShapes` (source vs
+ *  current snapshot) is clean — but the snapshot itself just changed, and
+ *  the change must still be paired with a migrator/test diff. Returns one
+ *  ShapeViolation per type whose field set differs between base and current
+ *  snapshots. Returns [] when `baseSnapshot` is null (no base context — local
+ *  development without `origin/main` fetched, or this PR introduces the
+ *  snapshot for the first time). */
+export function checkSnapshotDiff(
+  baseSnapshot: Snapshot | null,
+  currentSnapshot: Snapshot,
+): ShapeViolation[] {
+  if (baseSnapshot === null) return [];
+  const out: ShapeViolation[] = [];
+  const types = new Set([...Object.keys(baseSnapshot), ...Object.keys(currentSnapshot)]);
+  for (const t of [...types].sort()) {
+    const persisted = PERSISTED_TYPES.find((p) => p.typeName === t);
+    if (!persisted) continue; // only enforce on allowlisted types
+    const oldFields = new Set(baseSnapshot[t] ?? []);
+    const newFields = new Set(currentSnapshot[t] ?? []);
+    const added = [...newFields].filter((f) => !oldFields.has(f));
+    const removed = [...oldFields].filter((f) => !newFields.has(f));
+    if (added.length > 0) {
+      out.push({
+        kind: "field-added",
+        typeName: t,
+        sourcePath: persisted.sourcePath,
+        fields: added,
+        hint:
+          `${t} snapshot gained fields since ${baseSnapshot === null ? "<no base>" : "base"}: ${added.join(", ")}. ` +
+          `Touch ${MIGRATOR_SITES[t]?.fnName ?? "<migrator>"} + a *.migrate*.test.ts (or sibling test).`,
+      });
+    }
+    if (removed.length > 0) {
+      out.push({
+        kind: "field-removed",
+        typeName: t,
+        sourcePath: persisted.sourcePath,
+        fields: removed,
+        hint:
+          `${t} snapshot dropped fields since base: ${removed.join(", ")}. ` +
+          `Touch ${MIGRATOR_SITES[t]?.fnName ?? "<migrator>"} (e.g. \`delete state.${removed[0]}\`) + a *.migrate*.test.ts.`,
+      });
+    }
+  }
+  return out;
+}
+
 interface DiffFile {
   readonly path: string;
   readonly hunks: ReadonlyArray<DiffHunk>;
@@ -673,13 +744,15 @@ export function run(opts: RunOptions): { exitCode: number; stdout: string; stder
         `     Run \`bun scripts/lint-state-migration.ts --update\` to bootstrap.\n`,
     };
   }
-  const shapeViolations = checkShapes(opts.root, PERSISTED_TYPES, snapshot);
-  // Always inspect the diff — both directions of the proposal's symmetric
-  // asymmetry must trip the lint:
-  //   (a) field-touch with no migrator/test pair (handled by enforceCoChange
-  //       below, gated on shapeViolations).
-  //   (b) migrator-body change with no test pair (handled by
-  //       enforceMigratorTestPairing, fires even when shape is clean).
+  // Always inspect the diff — three asymmetry vectors must trip the lint:
+  //   (a) field-touch with no migrator/test pair (snapshot stale; caught by
+  //       checkShapes → enforceCoChange).
+  //   (b) snapshot-and-source co-modified with no migrator/test pair
+  //       (developer ran --update, both sides match the new shape, but
+  //       no backfill / regression test landed; caught by checkSnapshotDiff
+  //       → enforceCoChange).  Codex flagged this in PR #489 review.
+  //   (c) migrator-body change with no test pair (caught by
+  //       enforceMigratorTestPairing, fires regardless of shape state).
   const base = resolveBase(opts.root, opts.env);
   const diff = gitDiff(opts.root, base);
   const diffFiles = parseDiff(diff);
@@ -688,6 +761,21 @@ export function run(opts: RunOptions): { exitCode: number; stdout: string; stder
     if (!existsSync(abs)) return null;
     return readFileSync(abs, "utf-8");
   };
+  const sourceVsSnapshot = checkShapes(opts.root, PERSISTED_TYPES, snapshot);
+  const baseSnapshotText = gitShowAtBase(opts.root, base, SNAPSHOT_PATH);
+  const baseSnapshot: Snapshot | null = baseSnapshotText
+    ? (JSON.parse(baseSnapshotText) as Snapshot)
+    : null;
+  const snapshotVsBase = checkSnapshotDiff(baseSnapshot, snapshot);
+  // Dedup by typeName: when both arms surface a violation for the same type,
+  // we only want one set of co-change requirements to fire, not two. Prefer
+  // sourceVsSnapshot's record (it carries the more actionable hint —
+  // "run --update" — when the snapshot is stale).
+  const sourceVsSnapshotTypes = new Set(sourceVsSnapshot.map((v) => v.typeName));
+  const shapeViolations: ShapeViolation[] = [
+    ...sourceVsSnapshot,
+    ...snapshotVsBase.filter((v) => !sourceVsSnapshotTypes.has(v.typeName)),
+  ];
   const coChange = enforceCoChange(shapeViolations, diffFiles, readSource);
   const orphanMigrator = enforceMigratorTestPairing(diffFiles, readSource).filter(
     // Dedup: shape-driven coChange already covers the same (path, fnName)
@@ -698,14 +786,24 @@ export function run(opts: RunOptions): { exitCode: number; stdout: string; stder
           && c.missing !== "migrator",
     ),
   );
-  if (shapeViolations.length === 0 && orphanMigrator.length === 0) {
+  // Suppress shape violations whose co-change pair is satisfied — the
+  // legitimate shape-change workflow is "type touch + migrator + test +
+  // --update", and `enforceCoChange` returns [] for paired types. Only
+  // emit shape violations as diagnostic context for an unpaired co-change.
+  const unpairedTypes = new Set(coChange.map((v) => v.typeName));
+  const reportedShape = shapeViolations.filter((v) =>
+    v.kind === "type-missing" || v.kind === "snapshot-missing-type"
+      ? true  // structural problems are always emitted
+      : unpairedTypes.has(v.typeName),
+  );
+  if (reportedShape.length === 0 && coChange.length === 0 && orphanMigrator.length === 0) {
     return {
       exitCode: 0,
       stdout: `✅  All ${PERSISTED_TYPES.length} persisted-shape types match the snapshot.\n`,
       stderr: "",
     };
   }
-  const all: Violation[] = [...shapeViolations, ...coChange, ...orphanMigrator];
+  const all: Violation[] = [...reportedShape, ...coChange, ...orphanMigrator];
 
   const lines: string[] = [];
   lines.push(`\n❌  ${all.length} state-migration ${all.length === 1 ? "violation" : "violations"}:\n`);

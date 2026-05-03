@@ -17,6 +17,7 @@ import {
   findChangedTestFiles,
   enforceCoChange,
   enforceMigratorTestPairing,
+  checkSnapshotDiff,
   formatViolation,
   parseArgv,
   PERSISTED_TYPES,
@@ -541,6 +542,65 @@ describe("enforceCoChange", () => {
 });
 
 // ---------------------------------------------------------------------------
+// checkSnapshotDiff — snapshot-was-refreshed attack vector (Codex review,
+// PR #489): when type + snapshot are co-modified, source-vs-snapshot is
+// clean but the snapshot itself drifted from base. Field-set drift between
+// the base-ref snapshot and the current snapshot must still trigger the
+// migrator/test co-change requirement.
+// ---------------------------------------------------------------------------
+
+describe("checkSnapshotDiff", () => {
+  test("returns [] when baseSnapshot is null (no base context)", () => {
+    expect(checkSnapshotDiff(null, { OrchestrationState: ["slot"] })).toEqual([]);
+  });
+
+  test("returns [] when base and current snapshots agree", () => {
+    const snap = { OrchestrationState: ["slot"] };
+    expect(checkSnapshotDiff(snap, snap)).toEqual([]);
+  });
+
+  test("emits field-added when current snapshot has fields the base lacks", () => {
+    const violations = checkSnapshotDiff(
+      { OrchestrationState: ["slot"] },
+      { OrchestrationState: ["newField", "slot"] },
+    );
+    expect(violations.length).toBe(1);
+    expect(violations[0]!.kind).toBe("field-added");
+    expect(violations[0]!.fields).toEqual(["newField"]);
+    expect(violations[0]!.typeName).toBe("OrchestrationState");
+  });
+
+  test("emits field-removed when base snapshot has fields the current lacks", () => {
+    const violations = checkSnapshotDiff(
+      { OrchestrationState: ["slot", "oldField"] },
+      { OrchestrationState: ["slot"] },
+    );
+    expect(violations.length).toBe(1);
+    expect(violations[0]!.kind).toBe("field-removed");
+    expect(violations[0]!.fields).toEqual(["oldField"]);
+  });
+
+  test("emits both field-added AND field-removed for a rename (gh-ludics-409 shape)", () => {
+    // Reflects the staleBaseLastWarnedRound/Count → staleBaseLastWarned
+    // rename that motivated this lint in the first place.
+    const violations = checkSnapshotDiff(
+      { OrchestrationState: ["staleBaseLastWarnedCount", "staleBaseLastWarnedRound"] },
+      { OrchestrationState: ["staleBaseLastWarned"] },
+    );
+    expect(violations.map((v) => v.kind).sort()).toEqual(["field-added", "field-removed"]);
+  });
+
+  test("ignores types not in PERSISTED_TYPES allowlist", () => {
+    // A snapshot key for a type that's not on the allowlist must not
+    // produce violations — the lint's contract is the allowlist scope.
+    expect(checkSnapshotDiff(
+      { ArbitraryType: ["a"] },
+      { ArbitraryType: ["a", "b"] },
+    )).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // enforceMigratorTestPairing — reverse-direction asymmetry (proposal AC #9 —
 // "migrator change with no test fixture" must fire even when shape is clean)
 // ---------------------------------------------------------------------------
@@ -903,6 +963,186 @@ describe("CLI integration", () => {
         cwd: repoRoot, stdout: "pipe", stderr: "pipe",
         env: { ...process.env, GIT_BASE: baseSha },
       });
+      expect(result.exitCode).toBe(0);
+    } finally { cleanup(); }
+  });
+
+  test("exits non-zero when type AND snapshot are co-modified but no migrator/test (Codex attack vector)", () => {
+    // Codex review on PR #489: developer adds a new field to a persisted
+    // type AND runs `--update` to refresh the snapshot in the same commit,
+    // but skips the migrator backfill and the legacy-fixture test.
+    // checkShapes (source-vs-current-snapshot) is clean — but the snapshot
+    // itself just changed from base, and that drift must still demand
+    // migrator + test pairing. The snapshot-vs-base check is the load-
+    // bearing piece; without it the lint's safety objective is defeated.
+    const baseSrc = [
+      "export function migrateState(state: any, slot: number) { return state; }",
+      "export interface OrchestrationState {",
+      "  slot: number;",
+      "}",
+      "export interface OrchestrationConfig {",
+      "  timeouts: object;",
+      "}",
+    ].join("\n");
+    const baseSnapshot = JSON.stringify({
+      OrchestrationState: ["slot"],
+      OrchestrationConfig: ["timeouts"],
+      CleanupEntry: ["slot"],
+      PreemptStash: ["slotNum"],
+      SessionSweepState: ["sessions", "version"],
+      SlotData: ["slot"],
+      TmuxSlotState: ["slot"],
+    }, null, 2) + "\n";
+    const { root, cleanup } = makeFixture({
+      "src/orchestration/state.ts": baseSrc,
+      "src/orchestration/deferred-cleanup.ts":
+        "export function loadDeferredCleanups() { return []; }\nexport interface CleanupEntry {\n  slot: number;\n}\n",
+      "src/slots/preempt.ts":
+        "export function readStash() { return null; }\nexport interface PreemptStash {\n  slotNum: number;\n}\n",
+      "src/sessions/sweep-state.ts":
+        "export function loadSessionSweepState() { return { version: 1, sessions: {} }; }\nexport interface SessionSweepState {\n  version: 1;\n  sessions: object;\n}\n",
+      "src/slots/types.ts": "export interface SlotData {\n  slot: number;\n}\n",
+      "src/slots/json.ts": "export function normalizeTaskId(s: string) { return s; }\n",
+      "src/adapters/tmux-adapter.ts":
+        "export function readTmuxSlotState() { return null; }\ninterface TmuxSlotState {\n  slot: number;\n}\n",
+      [SNAPSHOT_PATH]: baseSnapshot,
+    });
+    try {
+      spawnSync({ cmd: ["git", "init", "-q"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "config", "user.email", "t@t.t"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "config", "user.name", "t"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "add", "-A"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "commit", "-q", "-m", "base"], cwd: root });
+      const baseSha = spawnSync({
+        cmd: ["git", "-C", root, "rev-parse", "HEAD"], cwd: root, stdout: "pipe",
+      }).stdout.toString().trim();
+
+      // Working-tree edit: add `newField` to OrchestrationState in BOTH
+      // source AND snapshot (developer ran --update). No migrator, no test.
+      writeFileSync(join(root, "src/orchestration/state.ts"), [
+        "export function migrateState(state: any, slot: number) { return state; }",
+        "export interface OrchestrationState {",
+        "  slot: number;",
+        "  newField: string;",
+        "}",
+        "export interface OrchestrationConfig {",
+        "  timeouts: object;",
+        "}",
+      ].join("\n"));
+      writeFileSync(join(root, SNAPSHOT_PATH), JSON.stringify({
+        OrchestrationState: ["newField", "slot"],  // ← snapshot refreshed
+        OrchestrationConfig: ["timeouts"],
+        CleanupEntry: ["slot"],
+        PreemptStash: ["slotNum"],
+        SessionSweepState: ["sessions", "version"],
+        SlotData: ["slot"],
+        TmuxSlotState: ["slot"],
+      }, null, 2) + "\n");
+
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-state-migration.ts"), root],
+        cwd: repoRoot, stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, GIT_BASE: baseSha },
+      });
+      expect(result.exitCode).not.toBe(0);
+      const stderr = result.stderr.toString();
+      expect(stderr).toContain("OrchestrationState");
+      expect(stderr).toContain("newField");
+      // Load-bearing: this case must NOT be detected by checkShapes alone
+      // (which is clean here — source matches current snapshot). The
+      // violation must come from the snapshot-vs-base check, which means
+      // the message describes the field added relative to base, not
+      // relative to a stale snapshot. Either kind label is acceptable;
+      // the assertion that the lint *fired* is the load-bearing piece.
+      expect(stderr).toContain("co-change-missing");
+    } finally { cleanup(); }
+  });
+
+  test("exits 0 when type+snapshot are co-modified WITH paired migrator+test (Codex attack vector, paired)", () => {
+    // Symmetric companion: same scenario but with migrator body touched +
+    // a test file touched. Lint must accept this as the legitimate
+    // shape-change workflow.
+    const baseSrc = [
+      "export function migrateState(state: any, slot: number) {",
+      "  return state;",
+      "}",
+      "export interface OrchestrationState {",
+      "  slot: number;",
+      "}",
+      "export interface OrchestrationConfig {",
+      "  timeouts: object;",
+      "}",
+    ].join("\n");
+    const baseSnapshot = JSON.stringify({
+      OrchestrationState: ["slot"],
+      OrchestrationConfig: ["timeouts"],
+      CleanupEntry: ["slot"],
+      PreemptStash: ["slotNum"],
+      SessionSweepState: ["sessions", "version"],
+      SlotData: ["slot"],
+      TmuxSlotState: ["slot"],
+    }, null, 2) + "\n";
+    const { root, cleanup } = makeFixture({
+      "src/orchestration/state.ts": baseSrc,
+      "src/orchestration/state.migrate.test.ts":
+        "import { test } from 'bun:test';\ntest('placeholder', () => {});\n",
+      "src/orchestration/deferred-cleanup.ts":
+        "export function loadDeferredCleanups() { return []; }\nexport interface CleanupEntry {\n  slot: number;\n}\n",
+      "src/slots/preempt.ts":
+        "export function readStash() { return null; }\nexport interface PreemptStash {\n  slotNum: number;\n}\n",
+      "src/sessions/sweep-state.ts":
+        "export function loadSessionSweepState() { return { version: 1, sessions: {} }; }\nexport interface SessionSweepState {\n  version: 1;\n  sessions: object;\n}\n",
+      "src/slots/types.ts": "export interface SlotData {\n  slot: number;\n}\n",
+      "src/slots/json.ts": "export function normalizeTaskId(s: string) { return s; }\n",
+      "src/adapters/tmux-adapter.ts":
+        "export function readTmuxSlotState() { return null; }\ninterface TmuxSlotState {\n  slot: number;\n}\n",
+      [SNAPSHOT_PATH]: baseSnapshot,
+    });
+    try {
+      spawnSync({ cmd: ["git", "init", "-q"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "config", "user.email", "t@t.t"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "config", "user.name", "t"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "add", "-A"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "commit", "-q", "-m", "base"], cwd: root });
+      const baseSha = spawnSync({
+        cmd: ["git", "-C", root, "rev-parse", "HEAD"], cwd: root, stdout: "pipe",
+      }).stdout.toString().trim();
+
+      // Add field to source, refresh snapshot, ALSO touch migrator body
+      // and test file.
+      writeFileSync(join(root, "src/orchestration/state.ts"), [
+        "export function migrateState(state: any, slot: number) {",
+        "  state.newField ??= 'default';",  // ← migrator backfill
+        "  return state;",
+        "}",
+        "export interface OrchestrationState {",
+        "  slot: number;",
+        "  newField: string;",
+        "}",
+        "export interface OrchestrationConfig {",
+        "  timeouts: object;",
+        "}",
+      ].join("\n"));
+      writeFileSync(join(root, SNAPSHOT_PATH), JSON.stringify({
+        OrchestrationState: ["newField", "slot"],
+        OrchestrationConfig: ["timeouts"],
+        CleanupEntry: ["slot"],
+        PreemptStash: ["slotNum"],
+        SessionSweepState: ["sessions", "version"],
+        SlotData: ["slot"],
+        TmuxSlotState: ["slot"],
+      }, null, 2) + "\n");
+      writeFileSync(join(root, "src/orchestration/state.migrate.test.ts"),
+        "import { test } from 'bun:test';\ntest('placeholder', () => {});\ntest('newField backfill', () => {});\n");
+
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-state-migration.ts"), root],
+        cwd: repoRoot, stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, GIT_BASE: baseSha },
+      });
+      if (result.exitCode !== 0) {
+        console.error("STDERR:", result.stderr.toString());
+      }
       expect(result.exitCode).toBe(0);
     } finally { cleanup(); }
   });
