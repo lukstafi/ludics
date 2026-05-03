@@ -419,11 +419,12 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBe("final-merge");
   });
 
-  test("pr-comments transitions to final-merge immediately when coder has responded", () => {
+  test("pr-comments transitions to final-merge immediately when coder has settled after a redispatch", () => {
     const now = Math.floor(Date.now() / 1000);
     const state = makeState({
       phase: "pr-comments",
-      prCommentsCoderDispatched: true,
+      prCommentsCoderActive: false,
+      prCommentsRedispatchCount: 1,
       prCommentsQuietSince: now - 10, // fresh poll found no new comments
     });
     state.agentStates.coder.status = "pr-comments-done";
@@ -432,12 +433,47 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBe("final-merge");
   });
 
+  test("pr-comments shortcut blocked while coder is currently active on the latest review", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const state = makeState({
+      phase: "pr-comments",
+      phaseStartedAt: now - 90,
+      prCommentsCoderActive: true,
+      prCommentsRedispatchCount: 1,
+      prCommentsQuietSince: now - 10,
+      config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
+    });
+    state.agentStates.coder.status = "pr-comments-done";
+    state.agentStates.reviewer.status = "pr-comments-done";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
+    // Coder still working on the latest review — shortcut must not fire.
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
+  test("pr-comments shortcut blocked before any redispatch has happened", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const state = makeState({
+      phase: "pr-comments",
+      phaseStartedAt: now - 90,
+      prCommentsCoderActive: false,
+      // prCommentsRedispatchCount unset (undefined) — no review observed yet.
+      prCommentsQuietSince: now - 10,
+      config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
+    });
+    state.agentStates.coder.status = "pr-comments-done";
+    state.agentStates.reviewer.status = "pr-comments-done";
+    state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
+    // No redispatch has occurred yet — shortcut must not fire even on quiet first entry.
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
   test("pr-comments shortcut blocked while Codex review deferral is active", () => {
     const now = Math.floor(Date.now() / 1000);
     const state = makeState({
       phase: "pr-comments",
       phaseStartedAt: now - 90,
-      prCommentsCoderDispatched: true,
+      prCommentsCoderActive: false,
+      prCommentsRedispatchCount: 1,
       prCommentsQuietSince: now - 10,
       prCodexReviewDeferredSince: now - 60,
       config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
@@ -454,7 +490,8 @@ describe("evaluateTransition", () => {
     const state = makeState({
       phase: "pr-comments",
       phaseStartedAt: now - 90,
-      prCommentsCoderDispatched: true,
+      prCommentsCoderActive: false,
+      prCommentsRedispatchCount: 1,
       // prCommentsQuietSince not set — no fresh poll since last redispatch
       config: defaultOrchestrationConfig({ prCommentsTimeout: 1800 }),
     });
@@ -464,7 +501,7 @@ describe("evaluateTransition", () => {
     expect(evaluateTransition(state)).toBeNull();
   });
 
-  test("pr-comments does not shortcut when coder has not been dispatched", () => {
+  test("pr-comments does not shortcut when no redispatch has happened", () => {
     const now = Math.floor(Date.now() / 1000);
     const state = makeState({
       phase: "pr-comments",
@@ -474,7 +511,7 @@ describe("evaluateTransition", () => {
     state.agentStates.coder.status = "pr-comments-done";
     state.agentStates.reviewer.status = "pr-comments-done";
     state.agentStates.coder.prUrl = "https://github.com/owner/repo/pull/1";
-    // No prCommentsCoderDispatched — shortcut must not fire, quiet period not elapsed
+    // No redispatch has fired (prCommentsRedispatchCount undefined) — shortcut must not fire.
     expect(evaluateTransition(state)).toBeNull();
   });
 
@@ -1096,11 +1133,12 @@ describe("solo mode — evaluateTransition", () => {
     expect(evaluateTransition(state)).toBeNull();
   });
 
-  test("pr-comments → final-merge via coder-dispatched shortcut", () => {
+  test("pr-comments → final-merge via coder-settled-after-redispatch shortcut", () => {
     const state = makeSoloState({ phase: "pr-comments" });
     state.agentStates.coder.status = "done";
     state.agentStates.coder.prUrl = "https://github.com/o/r/pull/4";
-    state.prCommentsCoderDispatched = true;
+    state.prCommentsCoderActive = false;
+    state.prCommentsRedispatchCount = 1;
     state.prCommentsQuietSince = Math.floor(Date.now() / 1000) - 5;
     expect(evaluateTransition(state)).toBe("final-merge");
   });
@@ -1314,6 +1352,100 @@ describe("migrateState — solo invariants", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// gh-bce80781: prCommentsCoderDispatched → prCommentsCoderActive rename + new
+// config field. The legacy key must back-fill into the new field name on first
+// read and the legacy key must be stripped so persistState never round-trips it.
+describe("migrateState — prCommentsCoderActive rename + legacy backfill (gh-bce80781)", () => {
+  test("legacy persisted prCommentsCoderDispatched=true backfills prCommentsCoderActive and strips the legacy key", () => {
+    const state = makeSoloState();
+    // Construct a legacy-shaped state by injecting the deprecated key onto an
+    // otherwise valid state. The cast goes through `unknown` because the legacy
+    // key is no longer part of the type surface.
+    (state as unknown as { prCommentsCoderDispatched?: boolean }).prCommentsCoderDispatched = true;
+    expect(state.prCommentsCoderActive).toBeUndefined();
+
+    const result = migrateState(state, 1);
+
+    expect(result.prCommentsCoderActive).toBe(true);
+    expect("prCommentsCoderDispatched" in result).toBe(false);
+
+    // Round-trip: serialize+parse+migrate again must remain stable; the
+    // legacy key must not be re-introduced from the migrated form.
+    const roundTrip = migrateState(JSON.parse(JSON.stringify(result)), 1);
+    expect(roundTrip.prCommentsCoderActive).toBe(true);
+    expect("prCommentsCoderDispatched" in roundTrip).toBe(false);
+  });
+
+  test("legacy mid-phase slot with prCommentsCoderDispatched=true also backfills prCommentsRedispatchCount=1", () => {
+    // Codex review on PR #492: without this backfill, upgraded mid-phase slots
+    // would never satisfy the new (prCommentsRedispatchCount ?? 0) >= 1
+    // shortcut precondition and would wait the full quiet-period timeout.
+    const state = makeSoloState();
+    (state as unknown as { prCommentsCoderDispatched?: boolean }).prCommentsCoderDispatched = true;
+    expect(state.prCommentsRedispatchCount).toBeUndefined();
+
+    const result = migrateState(state, 1);
+
+    expect(result.prCommentsCoderActive).toBe(true);
+    expect(result.prCommentsRedispatchCount).toBe(1);
+    expect("prCommentsCoderDispatched" in result).toBe(false);
+  });
+
+  test("legacy slot with prCommentsCoderDispatched=false does NOT spuriously set prCommentsRedispatchCount", () => {
+    // Negative control: false-valued legacy field means "not currently
+    // dispatched" — we cannot infer that any redispatch ever happened.
+    // Leave prCommentsRedispatchCount undefined so the shortcut precondition
+    // correctly blocks first-entry firing.
+    const state = makeSoloState();
+    (state as unknown as { prCommentsCoderDispatched?: boolean }).prCommentsCoderDispatched = false;
+
+    const result = migrateState(state, 1);
+
+    expect(result.prCommentsCoderActive).toBe(false);
+    expect(result.prCommentsRedispatchCount).toBeUndefined();
+  });
+
+  test("legacy slot with prCommentsCoderDispatched=true does not clobber an explicit prCommentsRedispatchCount", () => {
+    // Belt-and-suspenders: if the persisted state somehow already carries
+    // prCommentsRedispatchCount (e.g. cross-version forward compat), the
+    // backfill must not overwrite it.
+    const state = makeSoloState();
+    (state as unknown as { prCommentsCoderDispatched?: boolean }).prCommentsCoderDispatched = true;
+    state.prCommentsRedispatchCount = 5;
+
+    const result = migrateState(state, 1);
+
+    expect(result.prCommentsCoderActive).toBe(true);
+    expect(result.prCommentsRedispatchCount).toBe(5);
+  });
+
+  test("legacy state with no prCommentsCoderDispatched leaves prCommentsCoderActive undefined", () => {
+    const state = makeSoloState();
+    expect("prCommentsCoderDispatched" in state).toBe(false);
+    const result = migrateState(state, 1);
+    expect(result.prCommentsCoderActive).toBeUndefined();
+    expect("prCommentsCoderDispatched" in result).toBe(false);
+  });
+
+  test("idempotent: migrating twice does not flip-flop the field or re-introduce the legacy key", () => {
+    const state = makeSoloState();
+    (state as unknown as { prCommentsCoderDispatched?: boolean }).prCommentsCoderDispatched = false;
+    const once = migrateState(state, 1);
+    expect(once.prCommentsCoderActive).toBe(false);
+    expect("prCommentsCoderDispatched" in once).toBe(false);
+    const twice = migrateState(once, 1);
+    expect(twice.prCommentsCoderActive).toBe(false);
+    expect("prCommentsCoderDispatched" in twice).toBe(false);
+  });
+
+  test("legacy state without prCommentsStuckThreshold backfills config default (600)", () => {
+    const state = makeSoloState();
+    delete (state.config as { prCommentsStuckThreshold?: number }).prCommentsStuckThreshold;
+    const result = migrateState(state, 1);
+    expect(result.config.prCommentsStuckThreshold).toBe(600);
   });
 });
 

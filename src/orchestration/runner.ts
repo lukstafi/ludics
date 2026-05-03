@@ -1,4 +1,5 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { safeSyncOutput } from "../spawn.ts";
 import { join } from "path";
 import { emitEvent } from "../events.ts";
 import { atomicWriteFileSync } from "../json.ts";
@@ -483,6 +484,38 @@ function phaseActiveStatus(phase: OrchestrationState["phase"]): string {
 }
 
 /**
+ * Resolve the agent's PR URL with a `.pr` file fast path and a `gh pr list`
+ * branch-name fallback. Returns null on every failure mode (file missing,
+ * file invalid, gh non-zero, empty stdout) — caller composes with `?? runtime.prUrl`.
+ *
+ * On a successful fallback resolution, writes the URL back to the `.pr` file
+ * so subsequent polls do not re-shell-out.
+ *
+ * Heals all three (a)-failure hypotheses in the proposal: no `.pr` file written,
+ * `validateAgentPrFiles` not invoked, and `gh pr create` silent fail.
+ */
+export function resolvePrUrl(state: OrchestrationState, agent: AgentConfig): string | null {
+  // 1. .pr file fast path — when content is already a valid PR URL, no shell-out.
+  const fromFile = readPrUrl(state.peerSyncDir, agent.name);
+  if (fromFile && isPrUrl(fromFile)) return fromFile;
+
+  // 2. Fallback: ask GitHub for the open PR on this branch.
+  if (!agent.branch) return null;
+  const projectRepo = findProjectConfig(state.projectDir)?.repo;
+  const args = ["gh", "pr", "list", "--head", agent.branch, "--state", "open", "--json", "url", "--jq", ".[0].url"];
+  if (projectRepo) args.splice(2, 0, "--repo", projectRepo);
+  const result = safeSyncOutput(args, { cwd: agent.worktreePath });
+  if (!result.ok) return null;
+  const url = result.stdout.trim();
+  if (!url || !isPrUrl(url)) return null;
+
+  // 3. Persist back to the `.pr` file so subsequent polls don't re-shell-out.
+  const prFile = join(state.peerSyncDir, `${agent.name}.pr`);
+  writeFileSync(prFile, url + "\n");
+  return url;
+}
+
+/**
  * Refresh agent statuses from peer-sync (shared) and transport-specific backend.
  * The transport's refreshAgentTransportState() handles turn lifecycle updates
  * from the backend (t3code snapshot, tmux process state, etc.).
@@ -495,7 +528,7 @@ export async function refreshAgentStatuses(state: OrchestrationState, transport:
     runtime.status = peerStatus.status;
     runtime.statusEpoch = peerStatus.epoch;
     runtime.statusMessage = peerStatus.message;
-    runtime.prUrl = readPrUrl(state.peerSyncDir, agent.name) ?? runtime.prUrl;
+    runtime.prUrl = resolvePrUrl(state, agent) ?? runtime.prUrl;
 
     if (readMarker(state.peerSyncDir, `${agent.name}.merged`) !== null) {
       runtime.status = "merged";
@@ -505,6 +538,23 @@ export async function refreshAgentStatuses(state: OrchestrationState, transport:
 
   // --- 2. Transport-specific state refresh (turn lifecycle, process state) ---
   await transport.refreshAgentTransportState(state);
+
+  // --- 2a. Edge-sensitive flip-back: clear prCommentsCoderActive when the coder
+  //         settles after the latest pr-comments redispatch. Uses isAgentDone()
+  //         (lifecycle + fingerprint freshness) — NOT raw runtime.status, because
+  //         redispatchForPrComments only touches the .status mtime; the on-disk
+  //         content remains pr-comments-done from the previous turn until the
+  //         agent writes the new turn's status. Outer guard makes this idempotent
+  //         once flipped (no churn on subsequent polls).
+  if (state.phase === "pr-comments" && state.prCommentsCoderActive) {
+    for (const agent of state.agents) {
+      if (agent.role !== "coder") continue;
+      if (!agentParticipatesInPhase(state, agent)) continue;
+      if (isAgentDone(state, agent)) {
+        state.prCommentsCoderActive = false;
+      }
+    }
+  }
 
   // --- 3. Detect inconsistencies ---
   for (const agent of state.agents) {
@@ -831,7 +881,10 @@ function markActiveAgents(state: OrchestrationState): void {
 export function resetPrCommentsState(state: OrchestrationState): void {
   state.prCommentsLastCheckAt = state.phaseStartedAt - 600;
   state.prCommentsQuietSince = undefined;
-  state.prCommentsCoderDispatched = false;
+  state.prCommentsCoderActive = false;
+  state.prCommentsRedispatchCount = undefined;
+  state.prCommentsLastRedispatchAt = undefined;
+  state.prCommentsStuckWarnedAt = undefined;
   state.prMergeableStates = {};
   state.prCodexReviewFallbackPosted = undefined;
 }
@@ -991,7 +1044,15 @@ async function enterPhase(
 }
 
 /** Send a fresh turn message to each participating agent without changing phaseDispatched. */
-async function redispatchForPrComments(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
+async function redispatchForPrComments(
+  state: OrchestrationState,
+  transport: OrchestrationTransport,
+  newCommentCount: number,
+): Promise<void> {
+  // Per-poll bookkeeping (not per-agent): one redispatch tick may dispatch multiple agents.
+  state.prCommentsRedispatchCount = (state.prCommentsRedispatchCount ?? 0) + 1;
+  state.prCommentsLastRedispatchAt = nowEpoch();
+  state.prCommentsStuckWarnedAt = undefined; // re-arm dedup so a future stall can re-warn
   const phaseToken = readPhaseToken(state.peerSyncDir) ?? makeId("phase");
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
@@ -1009,7 +1070,25 @@ async function redispatchForPrComments(state: OrchestrationState, transport: Orc
     runtime.dispatchStatusFingerprint = dispatchFp;
     const skillMessage = await composeSkillMessage(state, agent);
     const commandId = await transport.sendTurn(state, agent, skillMessage);
-    if (agent.role === "coder") state.prCommentsCoderDispatched = true;
+    if (agent.role === "coder") {
+      // Edge-triggered emission on false → true transition of prCommentsCoderActive.
+      // Idempotent across repeated redispatches while the coder hasn't settled.
+      const wasActive = state.prCommentsCoderActive === true;
+      state.prCommentsCoderActive = true;
+      if (!wasActive) {
+        emitEvent({
+          event_type: "pr_comments_redispatch",
+          source: "orchestration",
+          scope: "slot",
+          slot: state.slot,
+          task: state.taskId,
+          message: `pr-comments redispatch #${state.prCommentsRedispatchCount} for ${runtime.prUrl ?? "<no-prUrl>"} (${newCommentCount} new comments)`,
+          prUrl: runtime.prUrl,
+          newCommentCount,
+          dispatchCount: state.prCommentsRedispatchCount,
+        });
+      }
+    }
     // Reset lifecycle for the re-dispatched turn.
     runtime.turnLifecycle = {
       dispatchCommandId: commandId,
@@ -1219,12 +1298,72 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
 
   state.prCommentsLastCheckAt = now;
 
+  // Stuck-phase warning: must run before the redispatch branch so
+  // checkPrCommentsStuckWarning can short-circuit on totalNewComments > 0
+  // (same-tick redispatch ⇒ system is responding, not stuck).
+  checkPrCommentsStuckWarning(state, totalNewComments);
+
   if (totalNewComments > 0) {
     state.prCommentsQuietSince = 0; // Reset quiet period.
-    await redispatchForPrComments(state, transport);
+    await redispatchForPrComments(state, transport, totalNewComments);
   } else if (!state.prCommentsQuietSince) {
     state.prCommentsQuietSince = now;
   }
+}
+
+/**
+ * Warn once when pr-comments has gone stuck: the coder is not currently working,
+ * an unaddressed review is visible on the PR (older than the last redispatch),
+ * and the `prCommentsStuckThreshold` window has elapsed since that redispatch.
+ *
+ * Three-stage gate (in this order):
+ *   (a) Same-tick suppression: if the runner is about to redispatch on this tick
+ *       (totalNewComments > 0), do not warn — that's a false positive (the system
+ *       DID detect the review and IS responding).
+ *   (b) Fast guard (zero GitHub calls): only proceed when phase=pr-comments,
+ *       coder is not active, a prior redispatch exists, and the threshold has
+ *       elapsed since that redispatch.
+ *   (c) Anchored probe (one GitHub call, suspected-stall polls only): rebases
+ *       fetchNewPrCommentCount to lastRedispatchAt — count > 0 ⇔ ≥1 review
+ *       timestamp lies after lastRedispatchAt.
+ *
+ * Edge-triggered dedup via prCommentsStuckWarnedAt; reset by resetPrCommentsState
+ * on fresh phase entry and by redispatchForPrComments on every successful redispatch.
+ */
+function checkPrCommentsStuckWarning(state: OrchestrationState, totalNewComments: number): void {
+  // (a) Same-tick suppression: redispatch fires on this tick ⇒ not stuck.
+  if (totalNewComments > 0) return;
+
+  // (b) Fast guard.
+  if (state.phase !== "pr-comments") return;
+  if (state.prCommentsCoderActive) return;
+  const lastRedispatchAt = state.prCommentsLastRedispatchAt;
+  if (!lastRedispatchAt) return;
+  const threshold = state.config.prCommentsStuckThreshold;
+  const now = nowEpoch();
+  if (now - lastRedispatchAt <= threshold) return;
+
+  // (c) Anchored probe — rebased to lastRedispatchAt so we see reviews that
+  // arrived after the most recent redispatch but before this tick's lastCheck.
+  const coder = state.agents.find((a) => a.role === "coder");
+  if (!coder) return;
+  const prUrl = state.agentStates[coder.name]?.prUrl;
+  if (!prUrl) return;
+  const unaddressed = fetchNewPrCommentCount(prUrl, lastRedispatchAt);
+  if (unaddressed === 0) return;
+
+  // Edge-triggered dedup.
+  if (state.prCommentsStuckWarnedAt && now - state.prCommentsStuckWarnedAt <= threshold) return;
+
+  state.prCommentsStuckWarnedAt = now;
+  emitEvent({
+    event_type: "orchestration_warning",
+    source: "orchestration",
+    scope: "slot",
+    slot: state.slot,
+    task: state.taskId,
+    message: "pr-comments: review observed but no redispatch detected",
+  });
 }
 
 /**
