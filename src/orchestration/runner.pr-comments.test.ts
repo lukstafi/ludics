@@ -1256,3 +1256,293 @@ describe("prBody* state fields round-trip through persistState", () => {
 // handleVerifyFailure
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Sequential reviews flip-flop + pr_comments_redispatch event idempotency
+// (task-bce80781 AC (b) + glue/observability)
+// ---------------------------------------------------------------------------
+
+describe("checkAndRedispatchPrComments — sequential reviews / coderActive flip-flop (gh-bce80781)", () => {
+  let commentCountSpy: ReturnType<typeof spyOn>;
+  let mergedSpy: ReturnType<typeof spyOn>;
+  let verifySpy: ReturnType<typeof spyOn>;
+  let eventSpy: ReturnType<typeof spyOn>;
+  let emittedEvents: Array<{ event_type?: string; message?: string; dispatchCount?: number; newCommentCount?: number }>;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const transport: OrchestrationTransport = {
+    sendTurn: async () => "cmd-redispatch",
+    sendEnter: async () => {},
+    refreshAgentTransportState: async () => {},
+    interruptAgent: async () => {},
+  };
+
+  function makeFlipFlopState(peerSyncDir: string): OrchestrationState {
+    return makeState({
+      phase: "pr-comments",
+      // checkInterval gate is `now - lastCheck < interval` → set lastCheck old enough.
+      phaseStartedAt: nowSec - 600,
+      prCommentsLastCheckAt: nowSec - 600,
+      prCommentsCoderActive: false,
+      prCommentsRedispatchCount: undefined,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: peerSyncDir },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done",
+          statusEpoch: nowSec - 100,
+          statusMessage: "ready",
+          prUrl: "https://github.com/o/r/pull/1",
+          interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+    }, peerSyncDir);
+  }
+
+  beforeEach(() => {
+    mergedSpy = spyOn(github, "isPrMerged").mockReturnValue(false);
+    verifySpy = spyOn(github, "getPrVerification").mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "clean", reason: "ok",
+    });
+    commentCountSpy = spyOn(github, "fetchNewPrCommentCount");
+    emittedEvents = [];
+    eventSpy = spyOn(events, "emitEvent").mockImplementation((ev: unknown) => {
+      emittedEvents.push(ev as { event_type?: string });
+    });
+  });
+
+  afterEach(() => {
+    mergedSpy.mockRestore();
+    verifySpy.mockRestore();
+    commentCountSpy.mockRestore();
+    eventSpy.mockRestore();
+  });
+
+  test("two sequential reviews flip prCommentsCoderActive false→true→false→true→false; one event per redispatch edge", async () => {
+    const dir = makeTmpDir();
+    const state = makeFlipFlopState(dir);
+
+    // --- Tick 1: review #1 arrives. fetchNewPrCommentCount returns 1.
+    commentCountSpy.mockReturnValue(1);
+    expect(state.prCommentsCoderActive).toBe(false);
+    expect(state.prCommentsRedispatchCount).toBeUndefined();
+
+    await checkAndRedispatchPrComments(state, transport);
+
+    // Invariant: redispatch fired ⇒ flag true, count = 1, lastRedispatchAt set,
+    // exactly one pr_comments_redispatch event with dispatchCount = 1.
+    expect(state.prCommentsCoderActive).toBe(true);
+    expect(state.prCommentsRedispatchCount).toBe(1);
+    expect(state.prCommentsLastRedispatchAt).toBeGreaterThan(0);
+    const ev1 = emittedEvents.filter((e) => e.event_type === "pr_comments_redispatch");
+    expect(ev1).toHaveLength(1);
+    expect(ev1[0]!.dispatchCount).toBe(1);
+    expect(ev1[0]!.newCommentCount).toBe(1);
+
+    // --- Tick 2: another poll fires while the coder is still working
+    // (coderActive stays true, no new comments in this tick → no redispatch
+    // and no new event). Idempotency on the false→true edge means a stale
+    // redispatch must NOT re-emit if the flag never flips.
+    commentCountSpy.mockReturnValue(0);
+    state.prCommentsLastCheckAt = nowSec - 600; // re-arm poll-interval
+    await checkAndRedispatchPrComments(state, transport);
+    expect(state.prCommentsCoderActive).toBe(true);
+    expect(state.prCommentsRedispatchCount).toBe(1);
+    expect(emittedEvents.filter((e) => e.event_type === "pr_comments_redispatch")).toHaveLength(1);
+
+    // --- Settle: coder finishes review #1 turn. Drive the flip-back via
+    // refreshAgentStatuses with a settled lifecycle + fresh status fingerprint
+    // (different from dispatchStatusFingerprint).
+    state.agentStates.coder!.turnLifecycle = {
+      dispatchCommandId: "cmd-redispatch",
+      dispatchedAt: new Date().toISOString(),
+      phaseToken: "tok",
+      observedTurnId: "t1",
+      state: "settled",
+      turnStartedAt: new Date().toISOString(),
+      turnCompletedAt: new Date().toISOString(),
+      completionSource: "snapshot",
+      statusFileFingerprint: "fp-fresh",
+      lastStopHookAt: null,
+      stallDetectedAt: null,
+      nudgeAttempts: 0,
+      lastNudgeAt: null,
+      preNudgeAssistantMessageId: null,
+    };
+    // Force a different fingerprint so isStatusFresh returns true.
+    state.agentStates.coder!.dispatchStatusFingerprint = "fp-stale";
+    // Refresh re-reads peer-sync; rewrite a fresh status so status content + mtime change.
+    writeFileSync(join(dir, "coder.status"), "pr-comments-done|" + (nowSec + 1) + "|done\n");
+
+    const { refreshAgentStatuses } = await import("./runner.ts");
+    await refreshAgentStatuses(state, transport);
+
+    expect(state.prCommentsCoderActive).toBe(false);
+
+    // --- Tick 3: review #2 arrives. Same redispatch path; second edge ⇒
+    // second event with dispatchCount = 2.
+    commentCountSpy.mockReturnValue(1);
+    state.prCommentsLastCheckAt = nowSec - 600;
+    await checkAndRedispatchPrComments(state, transport);
+    expect(state.prCommentsCoderActive).toBe(true);
+    expect(state.prCommentsRedispatchCount).toBe(2);
+    const ev2 = emittedEvents.filter((e) => e.event_type === "pr_comments_redispatch");
+    expect(ev2).toHaveLength(2);
+    expect(ev2[1]!.dispatchCount).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stuck-phase warning (task-bce80781 AC 12, glue/observability)
+// ---------------------------------------------------------------------------
+
+describe("checkAndRedispatchPrComments — pr-comments stuck warning (gh-bce80781)", () => {
+  let commentCountSpy: ReturnType<typeof spyOn>;
+  let mergedSpy: ReturnType<typeof spyOn>;
+  let verifySpy: ReturnType<typeof spyOn>;
+  let eventSpy: ReturnType<typeof spyOn>;
+  let emittedEvents: Array<{ event_type?: string; message?: string }>;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const transport: OrchestrationTransport = {
+    sendTurn: async () => "cmd",
+    sendEnter: async () => {},
+    refreshAgentTransportState: async () => {},
+    interruptAgent: async () => {},
+  };
+
+  function makeStuckState(peerSyncDir: string, overrides: Partial<OrchestrationState> = {}): OrchestrationState {
+    return makeState({
+      phase: "pr-comments",
+      phaseStartedAt: nowSec - 2000,
+      prCommentsLastCheckAt: nowSec - 600,
+      prCommentsCoderActive: false,
+      prCommentsRedispatchCount: 1,
+      prCommentsLastRedispatchAt: nowSec - 1200, // > 600 threshold
+      prCommentsQuietSince: nowSec - 1100,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: peerSyncDir },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done", statusEpoch: nowSec, statusMessage: "",
+          prUrl: "https://github.com/o/r/pull/1", interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+      ...overrides,
+    }, peerSyncDir);
+  }
+
+  beforeEach(() => {
+    mergedSpy = spyOn(github, "isPrMerged").mockReturnValue(false);
+    verifySpy = spyOn(github, "getPrVerification").mockReturnValue({
+      exists: true, state: "open", merged: false, mergeableState: "clean", reason: "ok",
+    });
+    commentCountSpy = spyOn(github, "fetchNewPrCommentCount");
+    emittedEvents = [];
+    eventSpy = spyOn(events, "emitEvent").mockImplementation((ev: unknown) => {
+      emittedEvents.push(ev as { event_type?: string; message?: string });
+    });
+  });
+
+  afterEach(() => {
+    mergedSpy.mockRestore();
+    verifySpy.mockRestore();
+    commentCountSpy.mockRestore();
+    eventSpy.mockRestore();
+  });
+
+  test("emits one orchestration_warning when stuck (no current poll comments, unaddressed review since lastRedispatch); deduped on subsequent ticks", async () => {
+    const dir = makeTmpDir();
+    const state = makeStuckState(dir);
+
+    // Two distinct call patterns:
+    //  (1) regular per-poll fetch with since=lastCheckAt → quiet (no comments since last check).
+    //  (2) stuck-warning probe with since=lastRedispatchAt → unaddressed review present.
+    commentCountSpy.mockImplementation((_url: string, since: number) => {
+      if (since === state.prCommentsLastRedispatchAt) return 1; // stuck-warning probe sees the review
+      return 0;                                                  // regular poll is quiet
+    });
+
+    await checkAndRedispatchPrComments(state, transport);
+
+    // Invariant: exactly one orchestration_warning with the AC-12 message;
+    // prCommentsStuckWarnedAt set; the stuck-probe call was issued exactly
+    // once with since === lastRedispatchAt.
+    const warnings = emittedEvents.filter(
+      (e) => e.event_type === "orchestration_warning"
+        && e.message === "pr-comments: review observed but no redispatch detected",
+    );
+    expect(warnings).toHaveLength(1);
+    expect(state.prCommentsStuckWarnedAt).toBeGreaterThan(0);
+    const probeCalls = commentCountSpy.mock.calls.filter((c: unknown[]) => c[1] === state.prCommentsLastRedispatchAt);
+    expect(probeCalls).toHaveLength(1);
+
+    // --- Tick 2 within the same threshold window: dedup must suppress.
+    state.prCommentsLastCheckAt = nowSec - 600; // re-arm poll-interval
+    await checkAndRedispatchPrComments(state, transport);
+    const warnings2 = emittedEvents.filter(
+      (e) => e.event_type === "orchestration_warning"
+        && e.message === "pr-comments: review observed but no redispatch detected",
+    );
+    expect(warnings2).toHaveLength(1); // still 1 — dedup held
+  });
+
+  test("same-tick suppression: when totalNewComments > 0, NO stuck warning fires (the runner is about to redispatch)", async () => {
+    const dir = makeTmpDir();
+    const state = makeStuckState(dir);
+
+    // Regular per-poll fetch returns >0 — same tick will redispatch.
+    // Anchored probe returns >0 too (would otherwise fire the warning).
+    // The same-tick suppression at stage (a) of the helper must short-circuit
+    // BEFORE the probe — the warning must NOT fire and the probe must NOT run.
+    commentCountSpy.mockReturnValue(1);
+
+    await checkAndRedispatchPrComments(state, transport);
+
+    // Invariant: zero stuck warnings emitted; the rebased probe was not called.
+    const warnings = emittedEvents.filter(
+      (e) => e.event_type === "orchestration_warning"
+        && e.message === "pr-comments: review observed but no redispatch detected",
+    );
+    expect(warnings).toHaveLength(0);
+    const probeCalls = commentCountSpy.mock.calls.filter((c: unknown[]) => c[1] === state.prCommentsLastRedispatchAt);
+    expect(probeCalls).toHaveLength(0);
+
+    // And the same-tick redispatch DID fire — flag flipped, count incremented.
+    expect(state.prCommentsCoderActive).toBe(true);
+    expect(state.prCommentsRedispatchCount).toBe(2); // started at 1 in fixture
+  });
+
+  test("healthy quiet poll: zero rebased-probe calls when within threshold", async () => {
+    const dir = makeTmpDir();
+    const state = makeStuckState(dir, {
+      prCommentsLastRedispatchAt: nowSec - 60, // well within 600s threshold
+    });
+
+    commentCountSpy.mockReturnValue(0);
+
+    await checkAndRedispatchPrComments(state, transport);
+
+    // Fast guard short-circuits → no probe, no warning.
+    const probeCalls = commentCountSpy.mock.calls.filter((c: unknown[]) => c[1] === state.prCommentsLastRedispatchAt);
+    expect(probeCalls).toHaveLength(0);
+    expect(state.prCommentsStuckWarnedAt).toBeUndefined();
+  });
+
+  test("coder-active poll: zero rebased-probe calls", async () => {
+    const dir = makeTmpDir();
+    const state = makeStuckState(dir, { prCommentsCoderActive: true });
+
+    commentCountSpy.mockReturnValue(0);
+
+    await checkAndRedispatchPrComments(state, transport);
+
+    // Fast guard short-circuits on prCommentsCoderActive=true.
+    const probeCalls = commentCountSpy.mock.calls.filter((c: unknown[]) => c[1] === state.prCommentsLastRedispatchAt);
+    expect(probeCalls).toHaveLength(0);
+    expect(state.prCommentsStuckWarnedAt).toBeUndefined();
+  });
+});
