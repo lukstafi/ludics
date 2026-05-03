@@ -16,6 +16,7 @@ import {
   hasFunctionBodyDiff,
   findChangedTestFiles,
   enforceCoChange,
+  enforceMigratorTestPairing,
   formatViolation,
   parseArgv,
   PERSISTED_TYPES,
@@ -540,6 +541,97 @@ describe("enforceCoChange", () => {
 });
 
 // ---------------------------------------------------------------------------
+// enforceMigratorTestPairing — reverse-direction asymmetry (proposal AC #9 —
+// "migrator change with no test fixture" must fire even when shape is clean)
+// ---------------------------------------------------------------------------
+
+describe("enforceMigratorTestPairing", () => {
+  const stateSrcAfterEdit = [
+    "export function migrateState(state: State, slot: number): State {",
+    "  state.foo = 'x';",  // body line that the diff hunk references
+    "  return state;",
+    "}",
+  ].join("\n");
+
+  test("emits missing=test when a migrator body is touched and no test file is touched", () => {
+    const diff = [
+      "diff --git a/src/orchestration/state.ts b/src/orchestration/state.ts",
+      "+++ b/src/orchestration/state.ts",
+      "@@ -1,3 +1,4 @@",
+      " export function migrateState(state: State, slot: number): State {",
+      "+  state.foo = 'x';",
+      "   return state;",
+      " }",
+      "",
+    ].join("\n");
+    const out = enforceMigratorTestPairing(parseDiff(diff), (p) =>
+      p === "src/orchestration/state.ts" ? stateSrcAfterEdit : null,
+    );
+    expect(out.length).toBeGreaterThanOrEqual(1);
+    expect(out[0]!.missing).toBe("test");
+    expect(out[0]!.migratorSite.fnName).toBe("migrateState");
+    expect(out[0]!.hint).toContain("migrateState");
+  });
+
+  test("returns [] when migrator body is touched AND a test file is touched", () => {
+    const diff = [
+      "diff --git a/src/orchestration/state.ts b/src/orchestration/state.ts",
+      "+++ b/src/orchestration/state.ts",
+      "@@ -1,3 +1,4 @@",
+      " export function migrateState(state: State, slot: number): State {",
+      "+  state.foo = 'x';",
+      "   return state;",
+      " }",
+      "diff --git a/src/orchestration/state.migrate.test.ts b/src/orchestration/state.migrate.test.ts",
+      "+++ b/src/orchestration/state.migrate.test.ts",
+      "@@ -0,0 +1 @@",
+      "+test('x', () => {});",
+      "",
+    ].join("\n");
+    const out = enforceMigratorTestPairing(parseDiff(diff), (p) =>
+      p === "src/orchestration/state.ts" ? stateSrcAfterEdit : null,
+    );
+    expect(out).toEqual([]);
+  });
+
+  test("returns [] when no migrator body is touched (refactor outside any MIGRATOR_SITES function)", () => {
+    const diff = [
+      "diff --git a/src/orchestration/state.ts b/src/orchestration/state.ts",
+      "+++ b/src/orchestration/state.ts",
+      "@@ -100,0 +101 @@",
+      "+const UNRELATED = 1;",
+      "",
+    ].join("\n");
+    const out = enforceMigratorTestPairing(parseDiff(diff), (p) =>
+      p === "src/orchestration/state.ts" ? stateSrcAfterEdit : null,
+    );
+    expect(out).toEqual([]);
+  });
+
+  test("dedupes by (path, fnName) — migrateState shared by two types emits one violation", () => {
+    // OrchestrationState and OrchestrationConfig both map to migrateState in
+    // src/orchestration/state.ts. A single body diff must produce ONE
+    // violation, not two — otherwise the lint would double-count this case.
+    const diff = [
+      "diff --git a/src/orchestration/state.ts b/src/orchestration/state.ts",
+      "+++ b/src/orchestration/state.ts",
+      "@@ -1,3 +1,4 @@",
+      " export function migrateState(state: State, slot: number): State {",
+      "+  state.foo = 'x';",
+      "   return state;",
+      " }",
+      "",
+    ].join("\n");
+    const out = enforceMigratorTestPairing(parseDiff(diff), (p) =>
+      p === "src/orchestration/state.ts" ? stateSrcAfterEdit : null,
+    );
+    // Exactly one violation for migrateState, not two.
+    const migrateStateHits = out.filter((v) => v.migratorSite.fnName === "migrateState");
+    expect(migrateStateHits.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // formatViolation
 // ---------------------------------------------------------------------------
 
@@ -677,6 +769,141 @@ describe("CLI integration", () => {
       expect(stderr).toContain("OrchestrationState");
       expect(stderr).toContain("newField");
       expect(stderr).toContain("field-added");
+    } finally { cleanup(); }
+  });
+
+  test("exits non-zero when migrator body is touched but no test diff (reverse-direction asymmetry)", () => {
+    // Proposal AC: "migrator change with no test fixture" must exit 1 even
+    // when the snapshot is clean. Build a real git fixture where the
+    // committed source matches the snapshot (clean shape), then modify
+    // migrateState's body in the working tree without touching any test
+    // file. The lint must inspect the working-tree diff and fail.
+    const baseSrc = [
+      "export function migrateState(state: any, slot: number) { return state; }",
+      "export interface OrchestrationState { slot: number; }",
+      "export interface OrchestrationConfig { timeouts: object; }",
+    ].join("\n");
+    const { root, cleanup } = makeFixture({
+      "src/orchestration/state.ts": baseSrc,
+      "src/orchestration/deferred-cleanup.ts":
+        "export function loadDeferredCleanups() { return []; }\nexport interface CleanupEntry { slot: number; }\n",
+      "src/slots/preempt.ts":
+        "export function readStash() { return null; }\nexport interface PreemptStash { slotNum: number; }\n",
+      "src/sessions/sweep-state.ts":
+        "export function loadSessionSweepState() { return { version: 1, sessions: {} }; }\nexport interface SessionSweepState {\n  version: 1;\n  sessions: object;\n}\n",
+      "src/slots/types.ts": "export interface SlotData { slot: number; }\n",
+      "src/slots/json.ts": "export function normalizeTaskId(s: string) { return s; }\n",
+      "src/adapters/tmux-adapter.ts":
+        "export function readTmuxSlotState() { return null; }\ninterface TmuxSlotState { slot: number; }\n",
+      [SNAPSHOT_PATH]: JSON.stringify({
+        OrchestrationState: ["slot"],
+        OrchestrationConfig: ["timeouts"],
+        CleanupEntry: ["slot"],
+        PreemptStash: ["slotNum"],
+        SessionSweepState: ["sessions", "version"],
+        SlotData: ["slot"],
+        TmuxSlotState: ["slot"],
+      }, null, 2) + "\n",
+    });
+    try {
+      // Init git, commit baseline.
+      spawnSync({ cmd: ["git", "init", "-q"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "config", "user.email", "t@t.t"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "config", "user.name", "t"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "add", "-A"], cwd: root });
+      const c1 = spawnSync({ cmd: ["git", "-C", root, "commit", "-q", "-m", "base"], cwd: root });
+      expect(c1.exitCode).toBe(0);
+      const baseSha = spawnSync({
+        cmd: ["git", "-C", root, "rev-parse", "HEAD"], cwd: root, stdout: "pipe",
+      }).stdout.toString().trim();
+      // Modify ONLY the migrator body — no test file touched. Source still
+      // declares the same field set, so the snapshot stays clean. The reverse
+      // asymmetry is the only thing that can fire.
+      writeFileSync(join(root, "src/orchestration/state.ts"), [
+        "export function migrateState(state: any, slot: number) {",
+        "  // gh-ludics-XXX: refactor — no field change",
+        "  return state;",
+        "}",
+        "export interface OrchestrationState { slot: number; }",
+        "export interface OrchestrationConfig { timeouts: object; }",
+      ].join("\n"));
+
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-state-migration.ts"), root],
+        cwd: repoRoot, stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, GIT_BASE: baseSha },
+      });
+      expect(result.exitCode).not.toBe(0);
+      const stderr = result.stderr.toString();
+      expect(stderr).toContain("migrateState");
+      expect(stderr).toContain("co-change-missing");
+      // Sanity: the message should NOT name a shape violation kind because
+      // the snapshot was clean — only the migrator/test pairing fired.
+      expect(stderr).not.toContain("field-added");
+      expect(stderr).not.toContain("field-removed");
+    } finally { cleanup(); }
+  });
+
+  test("exits 0 when migrator body is touched AND a test file is touched (paired reverse direction)", () => {
+    // Symmetric companion to the previous test — proves the exit code in
+    // the reverse direction is genuinely contingent on the test pairing,
+    // not just on whether the snapshot is dirty.
+    const baseSrc = [
+      "export function migrateState(state: any, slot: number) { return state; }",
+      "export interface OrchestrationState { slot: number; }",
+      "export interface OrchestrationConfig { timeouts: object; }",
+    ].join("\n");
+    const { root, cleanup } = makeFixture({
+      "src/orchestration/state.ts": baseSrc,
+      "src/orchestration/state.migrate.test.ts":
+        "import { test } from 'bun:test';\ntest('placeholder', () => {});\n",
+      "src/orchestration/deferred-cleanup.ts":
+        "export function loadDeferredCleanups() { return []; }\nexport interface CleanupEntry { slot: number; }\n",
+      "src/slots/preempt.ts":
+        "export function readStash() { return null; }\nexport interface PreemptStash { slotNum: number; }\n",
+      "src/sessions/sweep-state.ts":
+        "export function loadSessionSweepState() { return { version: 1, sessions: {} }; }\nexport interface SessionSweepState {\n  version: 1;\n  sessions: object;\n}\n",
+      "src/slots/types.ts": "export interface SlotData { slot: number; }\n",
+      "src/slots/json.ts": "export function normalizeTaskId(s: string) { return s; }\n",
+      "src/adapters/tmux-adapter.ts":
+        "export function readTmuxSlotState() { return null; }\ninterface TmuxSlotState { slot: number; }\n",
+      [SNAPSHOT_PATH]: JSON.stringify({
+        OrchestrationState: ["slot"],
+        OrchestrationConfig: ["timeouts"],
+        CleanupEntry: ["slot"],
+        PreemptStash: ["slotNum"],
+        SessionSweepState: ["sessions", "version"],
+        SlotData: ["slot"],
+        TmuxSlotState: ["slot"],
+      }, null, 2) + "\n",
+    });
+    try {
+      spawnSync({ cmd: ["git", "init", "-q"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "config", "user.email", "t@t.t"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "config", "user.name", "t"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "add", "-A"], cwd: root });
+      spawnSync({ cmd: ["git", "-C", root, "commit", "-q", "-m", "base"], cwd: root });
+      const baseSha = spawnSync({
+        cmd: ["git", "-C", root, "rev-parse", "HEAD"], cwd: root, stdout: "pipe",
+      }).stdout.toString().trim();
+      // Touch migrator body AND the test file in the same working-tree edit.
+      writeFileSync(join(root, "src/orchestration/state.ts"), [
+        "export function migrateState(state: any, slot: number) {",
+        "  // refactor",
+        "  return state;",
+        "}",
+        "export interface OrchestrationState { slot: number; }",
+        "export interface OrchestrationConfig { timeouts: object; }",
+      ].join("\n"));
+      writeFileSync(join(root, "src/orchestration/state.migrate.test.ts"),
+        "import { test } from 'bun:test';\ntest('placeholder', () => {});\ntest('refactor', () => {});\n");
+
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-state-migration.ts"), root],
+        cwd: repoRoot, stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, GIT_BASE: baseSha },
+      });
+      expect(result.exitCode).toBe(0);
     } finally { cleanup(); }
   });
 

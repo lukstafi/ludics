@@ -569,6 +569,46 @@ function missingHint(
   }
 }
 
+/** Reverse-direction asymmetry check: the proposal AC requires non-zero exit
+ *  on "migrator change with no test fixture" even when the snapshot is clean
+ *  (the developer touched a migrator body — possibly to add a backfill that
+ *  doesn't change the type's field set, or to land a refactor — without
+ *  shipping a paired legacy-fixture test). Returns one violation per unique
+ *  `(path, fnName)` migrator function whose body was touched. The caller is
+ *  responsible for deduping against `enforceCoChange`'s output, which already
+ *  reports "missing: test" for shape-violated types whose migrator was
+ *  touched. */
+export function enforceMigratorTestPairing(
+  diffFiles: ReadonlyArray<DiffFile>,
+  readSource: (path: string) => string | null,
+): CoChangeViolation[] {
+  const out: CoChangeViolation[] = [];
+  const testFiles = findChangedTestFiles(diffFiles);
+  const testTouched = testFiles.length > 0;
+  const seen = new Set<string>();
+  for (const [typeName, site] of Object.entries(MIGRATOR_SITES)) {
+    const key = `${site.path}:${site.fnName}`;
+    if (seen.has(key)) continue;
+    const source = readSource(site.path);
+    if (!source) continue;
+    if (!hasFunctionBodyDiff(diffFiles, site.path, site.fnName, source)) continue;
+    seen.add(key);
+    if (testTouched) continue;
+    out.push({
+      kind: "co-change-missing",
+      typeName,
+      missing: "test",
+      migratorSite: site,
+      hint:
+        `${site.fnName} in ${site.path} was touched but no *.migrate*.test.ts ` +
+        `(or sibling test under ${dirname(site.path)}) was touched in this ` +
+        `diff. Pair every migrator-body change with a legacy-fixture test, ` +
+        `including pure refactors.`,
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Formatting
 // ---------------------------------------------------------------------------
@@ -634,14 +674,12 @@ export function run(opts: RunOptions): { exitCode: number; stdout: string; stder
     };
   }
   const shapeViolations = checkShapes(opts.root, PERSISTED_TYPES, snapshot);
-  if (shapeViolations.length === 0) {
-    return {
-      exitCode: 0,
-      stdout: `✅  All ${PERSISTED_TYPES.length} persisted-shape types match the snapshot.\n`,
-      stderr: "",
-    };
-  }
-  // Drift detected — require co-change.
+  // Always inspect the diff — both directions of the proposal's symmetric
+  // asymmetry must trip the lint:
+  //   (a) field-touch with no migrator/test pair (handled by enforceCoChange
+  //       below, gated on shapeViolations).
+  //   (b) migrator-body change with no test pair (handled by
+  //       enforceMigratorTestPairing, fires even when shape is clean).
   const base = resolveBase(opts.root, opts.env);
   const diff = gitDiff(opts.root, base);
   const diffFiles = parseDiff(diff);
@@ -651,7 +689,23 @@ export function run(opts: RunOptions): { exitCode: number; stdout: string; stder
     return readFileSync(abs, "utf-8");
   };
   const coChange = enforceCoChange(shapeViolations, diffFiles, readSource);
-  const all: Violation[] = [...shapeViolations, ...coChange];
+  const orphanMigrator = enforceMigratorTestPairing(diffFiles, readSource).filter(
+    // Dedup: shape-driven coChange already covers the same (path, fnName)
+    // when shape is dirty AND migrator was touched but test wasn't.
+    (v) => !coChange.some(
+      (c) => c.migratorSite.path === v.migratorSite.path
+          && c.migratorSite.fnName === v.migratorSite.fnName
+          && c.missing !== "migrator",
+    ),
+  );
+  if (shapeViolations.length === 0 && orphanMigrator.length === 0) {
+    return {
+      exitCode: 0,
+      stdout: `✅  All ${PERSISTED_TYPES.length} persisted-shape types match the snapshot.\n`,
+      stderr: "",
+    };
+  }
+  const all: Violation[] = [...shapeViolations, ...coChange, ...orphanMigrator];
 
   const lines: string[] = [];
   lines.push(`\n❌  ${all.length} state-migration ${all.length === 1 ? "violation" : "violations"}:\n`);
