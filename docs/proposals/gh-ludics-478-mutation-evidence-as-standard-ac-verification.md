@@ -62,9 +62,11 @@ Source: https://github.com/lukstafi/ludics/issues/478
   - `grep -F 'optional but encouraged' docs/orchestration-patterns.md`
     returns at least one match inside the new entry.
 - [ ] The new entry cross-links to
-      `ac-rigor-reference.md#vacuous-doc-config-harness-same-rule-doc-artifacts`
-      (the existing Vacuous doc/config harness clause). Falsifier:
-      `grep -F 'vacuous-doc-config-harness' docs/orchestration-patterns.md`
+      `ac-rigor-reference.md#vacuous-docconfig-harness--same-rule-doc-artifacts`
+      (the existing Vacuous doc/config harness clause; the actual GitHub-
+      rendered slug — `/` is dropped from `doc/config` and the em-dash
+      collapses surrounding spaces into `--`). Falsifier:
+      `grep -F 'vacuous-docconfig-harness' docs/orchestration-patterns.md`
       returns at least one match.
 - [ ] The existing `### Harness instantiation` entry retains its
       `See also` line and that line names the new entry. Falsifier:
