@@ -1379,6 +1379,49 @@ describe("migrateState — prCommentsCoderActive rename + legacy backfill (gh-bc
     expect("prCommentsCoderDispatched" in roundTrip).toBe(false);
   });
 
+  test("legacy mid-phase slot with prCommentsCoderDispatched=true also backfills prCommentsRedispatchCount=1", () => {
+    // Codex review on PR #492: without this backfill, upgraded mid-phase slots
+    // would never satisfy the new (prCommentsRedispatchCount ?? 0) >= 1
+    // shortcut precondition and would wait the full quiet-period timeout.
+    const state = makeSoloState();
+    (state as unknown as { prCommentsCoderDispatched?: boolean }).prCommentsCoderDispatched = true;
+    expect(state.prCommentsRedispatchCount).toBeUndefined();
+
+    const result = migrateState(state, 1);
+
+    expect(result.prCommentsCoderActive).toBe(true);
+    expect(result.prCommentsRedispatchCount).toBe(1);
+    expect("prCommentsCoderDispatched" in result).toBe(false);
+  });
+
+  test("legacy slot with prCommentsCoderDispatched=false does NOT spuriously set prCommentsRedispatchCount", () => {
+    // Negative control: false-valued legacy field means "not currently
+    // dispatched" — we cannot infer that any redispatch ever happened.
+    // Leave prCommentsRedispatchCount undefined so the shortcut precondition
+    // correctly blocks first-entry firing.
+    const state = makeSoloState();
+    (state as unknown as { prCommentsCoderDispatched?: boolean }).prCommentsCoderDispatched = false;
+
+    const result = migrateState(state, 1);
+
+    expect(result.prCommentsCoderActive).toBe(false);
+    expect(result.prCommentsRedispatchCount).toBeUndefined();
+  });
+
+  test("legacy slot with prCommentsCoderDispatched=true does not clobber an explicit prCommentsRedispatchCount", () => {
+    // Belt-and-suspenders: if the persisted state somehow already carries
+    // prCommentsRedispatchCount (e.g. cross-version forward compat), the
+    // backfill must not overwrite it.
+    const state = makeSoloState();
+    (state as unknown as { prCommentsCoderDispatched?: boolean }).prCommentsCoderDispatched = true;
+    state.prCommentsRedispatchCount = 5;
+
+    const result = migrateState(state, 1);
+
+    expect(result.prCommentsCoderActive).toBe(true);
+    expect(result.prCommentsRedispatchCount).toBe(5);
+  });
+
   test("legacy state with no prCommentsCoderDispatched leaves prCommentsCoderActive undefined", () => {
     const state = makeSoloState();
     expect("prCommentsCoderDispatched" in state).toBe(false);

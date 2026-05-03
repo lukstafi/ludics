@@ -459,8 +459,19 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
   // gh-bce80781: rename prCommentsCoderDispatched → prCommentsCoderActive.
   // Copy the legacy value into the new field if absent, then strip the legacy
   // key unconditionally so persistState never round-trips it.
+  //
+  // The legacy semantics ("we have dispatched at some point") implied
+  // prCommentsRedispatchCount >= 1 once the flag had ever been set true.
+  // The new prCommentsReadyForFinalMerge shortcut requires
+  // (prCommentsRedispatchCount ?? 0) >= 1, so for legacy slots mid-phase that
+  // had already redispatched (legacy flag === true), backfill the count to 1
+  // — otherwise the upgraded slot would wait the full quiet-period timeout
+  // before advancing instead of taking the shortcut. (Codex review on PR #492.)
   if (state.prCommentsCoderActive === undefined && legacy.prCommentsCoderDispatched !== undefined) {
     state.prCommentsCoderActive = legacy.prCommentsCoderDispatched;
+    if (legacy.prCommentsCoderDispatched === true && state.prCommentsRedispatchCount === undefined) {
+      state.prCommentsRedispatchCount = 1;
+    }
   }
   delete legacy.prCommentsCoderDispatched;
   // gh-bce80781: backfill new config field for legacy state files.
