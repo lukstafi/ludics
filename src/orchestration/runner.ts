@@ -33,23 +33,27 @@ import { agentPortRole, readTmuxSlotState, startTtyd, ttydLogPath, writeTmuxSlot
 import { readSlotState, processAlive } from "../t3code/server.ts";
 import { recoverWrongFilename } from "./wrong-filename-recovery.ts";
 
-// --- Hung agent detection constants ---
-// A "hung agent" appears to be working (lifecycle running/dispatched) but the
-// terminal output is static — the agent is frozen or finished without signaling.
-// Rare in tmux, more common in t3code (process liveness bug).
-/** Seconds of static pane output before a running agent is considered hung.
+// --- Settled-no-signal detection constants ---
+// A "settled-no-signal" agent appears to be working (lifecycle running/dispatched)
+// but the terminal output is static — the agent has actually settled (= ready for
+// input) but the authoritative completion signal hasn't arrived. Rare in tmux,
+// more common in t3code (process liveness bug). Renamed from "hung" 2026-05-03
+// (task-a670cdbf) — the genuinely-hung case (spinner-only churn) is now handled
+// by the separate substantive-diff detector below.
+/** Seconds of static pane output before a running agent is considered settled-no-signal.
  *  Lower than agent-duo timeouts because this only fires when terminal is static
  *  (no evidence of work), not when the agent is actively producing output. */
-const HUNG_RUNNING_THRESHOLD_S = 180;
-/** Seconds of static pane output before a dispatched (never-started) agent is considered hung.
+const SETTLED_NO_SIGNAL_RUNNING_THRESHOLD_S = 180;
+/** Seconds of static pane output before a dispatched (never-started) agent is considered settled-no-signal.
  *  Short because a failed dispatch should be detected quickly. */
-const HUNG_DISPATCH_THRESHOLD_S = 90;
+const SETTLED_NO_SIGNAL_DISPATCH_THRESHOLD_S = 90;
 /** Seconds of static pane output before a running agent that never wrote a done
- *  status is considered hung.  Covers prompt-injection failures (agent alive but
- *  never received its task) and incoherent agents that stop producing output. */
-const HUNG_IDLE_RUNNING_THRESHOLD_S = 180;
-/** Minimum seconds between nudge attempts for hung agents. */
-const HUNG_NUDGE_COOLDOWN_S = 90;
+ *  status is considered settled-no-signal.  Covers prompt-injection failures
+ *  (agent alive but never received its task) and incoherent agents that stop
+ *  producing output. */
+const SETTLED_NO_SIGNAL_IDLE_RUNNING_THRESHOLD_S = 180;
+/** Minimum seconds between nudge attempts for settled-no-signal agents. */
+const SETTLED_NO_SIGNAL_NUDGE_COOLDOWN_S = 90;
 /** Seconds between ttyd liveness checks in the poll loop. */
 const TTYD_HEALTH_CHECK_INTERVAL_S = 30;
 /** Hard threshold window for ttyd flap detection — 10 minutes. */
@@ -468,9 +472,22 @@ export function preparePhaseRedispatch(state: OrchestrationState): void {
   state.currentPhaseToken = undefined;
   state.phaseStartedAt = nowEpoch(); // Reset timer so retries get a fresh timeout window
 }
-/** Force-settle a hung agent after this many failed nudges.
+/** Force-settle a settled-no-signal agent after this many failed nudges.
  *  Escalation: Enter → "Continue." → full re-dispatch → force-settle. */
-const HUNG_MAX_NUDGE_ATTEMPTS = 3;
+const SETTLED_NO_SIGNAL_MAX_NUDGE_ATTEMPTS = 3;
+
+// --- Hung-agent (substantive-diff) detection constants — task-a670cdbf ---
+// A "hung agent" is alive but its read loop is closed: spinner animates,
+// pane bytes change every tick, but no substantive output is produced.
+// Detection: trim shared prefix/suffix between successive 50-line pane
+// captures; under-threshold residual sustained over the threshold window
+// is hung. Recovery: breakAndPrompt (one C-c + 2 s + sendTurn); on second
+// detection escalate to interruptAgent.
+/** HUNG_RECOVERY_* identifiers chosen distinct from the legacy
+ *  HUNG_NUDGE_COOLDOWN_S / HUNG_MAX_NUDGE_ATTEMPTS to keep the AC1
+ *  literal grep clean (those legacies are now SETTLED_NO_SIGNAL_*). */
+const DEFAULT_HUNG_RECOVERY_COOLDOWN_S = 180;
+const DEFAULT_HUNG_RECOVERY_MAX_ATTEMPTS = 2;
 
 // --- Interrupted agent constants ---
 // An "interrupted agent" had its turn settle (stop hook fired) but never wrote
@@ -586,19 +603,24 @@ function detectAgentInconsistencies(
 }
 
 /**
- * Detect hung agents and send nudge messages.
- * A "hung agent" appears to be working (lifecycle running/dispatched) but its
- * terminal output is static — the agent is frozen or finished without signaling.
+ * Detect settled-no-signal agents and send nudge messages.
+ * A "settled-no-signal" agent appears to be working (lifecycle running/dispatched)
+ * but its terminal output is static — the agent has settled (read-loop open) and
+ * recovery via Enter / "Continue." / re-dispatch / "stop" works because pasted
+ * input reaches the read loop.
  *
- * Hung conditions (only reached if snapshot reconciliation didn't resolve it):
- * 1. Running hung: DONE_STATUSES + lc.state === "running" + pane static > HUNG_RUNNING_THRESHOLD_S
- * 2. Dispatch hung: lc.state === "dispatched" + pane static > HUNG_DISPATCH_THRESHOLD_S
- * 3. Idle running hung: lc.state === "running" + NOT done + pane static > HUNG_IDLE_RUNNING_THRESHOLD_S
+ * Settled-no-signal conditions (only reached if snapshot reconciliation didn't resolve):
+ * 1. Running stall: DONE_STATUSES + lc.state === "running" + pane static > SETTLED_NO_SIGNAL_RUNNING_THRESHOLD_S
+ * 2. Dispatch stall: lc.state === "dispatched" + pane static > SETTLED_NO_SIGNAL_DISPATCH_THRESHOLD_S
+ * 3. Idle running stall: lc.state === "running" + NOT done + pane static > SETTLED_NO_SIGNAL_IDLE_RUNNING_THRESHOLD_S
  *    (prompt injection failed or agent went incoherent and stopped producing output)
  *
- * Recovery progression: detect → nudge (up to HUNG_MAX_NUDGE_ATTEMPTS) → force-settle
+ * Recovery progression: detect → nudge (up to SETTLED_NO_SIGNAL_MAX_NUDGE_ATTEMPTS) → force-settle.
+ *
+ * The genuinely-hung case (spinner-only churn, read loop closed) is handled by
+ * the separate `detectAndNudgeHungAgents` substantive-diff detector below.
  */
-export async function detectAndNudgeHungAgents(
+export async function detectAndNudgeSettledNoSignal(
   state: OrchestrationState,
   transport: OrchestrationTransport,
 ): Promise<void> {
@@ -610,8 +632,8 @@ export async function detectAndNudgeHungAgents(
     if (runtime.interrupted) continue;
 
     const now = nowEpoch();
-    let isHung = false;
-    let hungType: "running" | "dispatch" | null = null;
+    let isStalled = false;
+    let stallType: "running" | "dispatch" | null = null;
 
     // Running stall: peer-sync done + turn still running + pane output static.
     // If pane output is still changing, the agent is actively working — not stalled.
@@ -619,9 +641,9 @@ export async function detectAndNudgeHungAgents(
       const paneStaticSince = lc.lastPaneChangeAt
         ? now - Math.floor(new Date(lc.lastPaneChangeAt).getTime() / 1000)
         : now - Math.floor(new Date(lc.turnStartedAt).getTime() / 1000);
-      if (paneStaticSince > HUNG_RUNNING_THRESHOLD_S) {
-        isHung = true;
-        hungType = "running";
+      if (paneStaticSince > SETTLED_NO_SIGNAL_RUNNING_THRESHOLD_S) {
+        isStalled = true;
+        stallType = "running";
       }
     }
     // Dispatch stall: turn never started + pane output static.
@@ -629,9 +651,9 @@ export async function detectAndNudgeHungAgents(
       const paneStaticSince = lc.lastPaneChangeAt
         ? now - Math.floor(new Date(lc.lastPaneChangeAt).getTime() / 1000)
         : now - Math.floor(new Date(lc.dispatchedAt).getTime() / 1000);
-      if (paneStaticSince > HUNG_DISPATCH_THRESHOLD_S) {
-        isHung = true;
-        hungType = "dispatch";
+      if (paneStaticSince > SETTLED_NO_SIGNAL_DISPATCH_THRESHOLD_S) {
+        isStalled = true;
+        stallType = "dispatch";
       }
     }
     // Idle-running stall: agent process is alive (state === "running") but
@@ -642,36 +664,36 @@ export async function detectAndNudgeHungAgents(
       const paneStaticSince = lc.lastPaneChangeAt
         ? now - Math.floor(new Date(lc.lastPaneChangeAt).getTime() / 1000)
         : now - Math.floor(new Date(lc.turnStartedAt).getTime() / 1000);
-      if (paneStaticSince > HUNG_IDLE_RUNNING_THRESHOLD_S) {
-        isHung = true;
-        hungType = "running";
+      if (paneStaticSince > SETTLED_NO_SIGNAL_IDLE_RUNNING_THRESHOLD_S) {
+        isStalled = true;
+        stallType = "running";
       }
     }
 
-    if (!isHung) continue;
+    if (!isStalled) continue;
 
     // --- First detection ---
-    if (!(lc.stallDetectedAt ?? null)) {
-      lc.stallDetectedAt = isoNow();
+    if (!(lc.settledNoSignalDetectedAt ?? null)) {
+      lc.settledNoSignalDetectedAt = isoNow();
       emitEvent({
-        event_type: "orchestration_hung_detected",
+        event_type: "orchestration_settled_no_signal_detected",
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
         task: state.taskId,
         agent: agent.name,
         phase: state.phase,
-        hungType,
-        message: `${agent.name}: hung agent detected (${hungType}), lc.state=${lc.state}, status=${runtime.status}`,
+        stallType,
+        message: `${agent.name}: settled-no-signal detected (${stallType}), lc.state=${lc.state}, status=${runtime.status}`,
       });
     }
 
-    const attempts = lc.nudgeAttempts ?? 0;
+    const attempts = lc.settledNoSignalNudgeAttempts ?? 0;
 
-    // --- Force-settle after HUNG_MAX_NUDGE_ATTEMPTS ---
-    if (attempts >= HUNG_MAX_NUDGE_ATTEMPTS) {
+    // --- Force-settle after SETTLED_NO_SIGNAL_MAX_NUDGE_ATTEMPTS ---
+    if (attempts >= SETTLED_NO_SIGNAL_MAX_NUDGE_ATTEMPTS) {
       emitEvent({
-        event_type: "orchestration_hung_force_settle",
+        event_type: "orchestration_settled_no_signal_force_settle",
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
@@ -679,17 +701,17 @@ export async function detectAndNudgeHungAgents(
         agent: agent.name,
         phase: state.phase,
         attempts,
-        message: `${agent.name}: force-settling hung agent after ${attempts} nudge attempts`,
+        message: `${agent.name}: force-settling settled-no-signal agent after ${attempts} nudge attempts`,
       });
       await interruptAgent(state, agent, transport);
       continue;
     }
 
     // --- Nudge cooldown ---
-    const lastNudge = lc.lastNudgeAt
-      ? Math.floor(new Date(lc.lastNudgeAt).getTime() / 1000)
+    const lastNudge = lc.lastSettledNoSignalNudgeAt
+      ? Math.floor(new Date(lc.lastSettledNoSignalNudgeAt).getTime() / 1000)
       : 0;
-    if (now - lastNudge < HUNG_NUDGE_COOLDOWN_S) continue;
+    if (now - lastNudge < SETTLED_NO_SIGNAL_NUDGE_COOLDOWN_S) continue;
 
     // --- Send phase-aware nudge with escalation ---
     // Idle agents: Enter → "Continue." → full re-dispatch → force-settle
@@ -707,17 +729,17 @@ export async function detectAndNudgeHungAgents(
         if (runtime.status === "idle") {
           // Nudge #3: full re-dispatch — prompt injection likely failed entirely
           nudgeMessage = await composeSkillMessage(state, agent);
-        } else if (hungType === "dispatch") {
+        } else if (stallType === "dispatch") {
           nudgeMessage = `Your session appears stuck. Please respond to confirm you are working on the ${state.phase} phase.`;
         } else {
           nudgeMessage = `Your work for the ${state.phase} phase is complete. Stop and wait for further instructions.`;
         }
         await transport.sendTurn(state, agent, nudgeMessage);
       }
-      lc.nudgeAttempts = attempts + 1;
-      lc.lastNudgeAt = isoNow();
+      lc.settledNoSignalNudgeAttempts = attempts + 1;
+      lc.lastSettledNoSignalNudgeAt = isoNow();
       emitEvent({
-        event_type: "orchestration_nudge_sent",
+        event_type: "orchestration_settled_no_signal_nudge_sent",
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
@@ -725,22 +747,216 @@ export async function detectAndNudgeHungAgents(
         agent: agent.name,
         phase: state.phase,
         attempt: attempts + 1,
-        hungType,
-        message: `${agent.name}: hung nudge #${attempts + 1} sent (${hungType})`,
+        stallType,
+        message: `${agent.name}: settled-no-signal nudge #${attempts + 1} sent (${stallType})`,
       });
     } catch (err) {
       // Nudge dispatch failed — log, don't throw. Next cycle retries.
       emitEvent({
-        event_type: "orchestration_nudge_failed",
+        event_type: "orchestration_settled_no_signal_nudge_failed",
         source: "orchestration",
         scope: "slot",
         slot: state.slot,
         task: state.taskId,
         agent: agent.name,
-        message: `${agent.name}: nudge dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
+        message: `${agent.name}: settled-no-signal nudge dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
       });
-      // Do NOT increment nudgeAttempts on failure — the next poll cycle will retry.
+      // Do NOT increment settledNoSignalNudgeAttempts on failure — the next poll cycle will retry.
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// task-a670cdbf — Hung-agent (substantive-diff) detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure helper: residual diff between two strings after trimming common prefix
+ * and common suffix. Returns `{ chars, pct }` where:
+ *  - `chars` is the max of residual prev/curr lengths;
+ *  - `pct` is `chars / max(prev.length, curr.length, 1)`.
+ *
+ * Used by the substantive-diff hung detector to distinguish spinner-only
+ * churn (under-threshold) from genuine output (over-threshold). O(n).
+ */
+export function substantiveDiff(prev: string, curr: string): { chars: number; pct: number } {
+  let p = 0;
+  const minLen = Math.min(prev.length, curr.length);
+  while (p < minLen && prev[p] === curr[p]) p++;
+  let s = 0;
+  while (
+    s < minLen - p
+    && prev[prev.length - 1 - s] === curr[curr.length - 1 - s]
+  ) s++;
+  const residualPrev = Math.max(0, prev.length - p - s);
+  const residualCurr = Math.max(0, curr.length - p - s);
+  const chars = Math.max(residualPrev, residualCurr);
+  const denom = Math.max(prev.length, curr.length, 1);
+  return { chars, pct: chars / denom };
+}
+
+/**
+ * Detect genuinely-hung agents (read loop closed, spinner-only churn) and
+ * recover via breakAndPrompt → interruptAgent.
+ *
+ * Trigger: `lc.substantiveStallSince` set for longer than
+ * `state.config.substantiveStall.thresholdSeconds` (default 1200 s = 20 min).
+ *
+ * Skipped when: lc settled/error; runtime.interrupted; settled-no-signal layer
+ * has claimed the agent (`lc.settledNoSignalDetectedAt` set); transport is not
+ * tmux (t3code uses authoritative server turn-state).
+ *
+ * Recovery:
+ *  1. attempts === 0 → emit `agent_hung_detected`, persist incident,
+ *     `transport.breakAndPrompt(state, agent, composeSkillMessage(...))`,
+ *     set `lc.hungDetectedAt = now`, `lc.hungNudgeAttempts = 1`.
+ *  2. attempts === 1 (post-cooldown) → emit `agent_hung_force_settle`,
+ *     `transport.interruptAgent(state, agent)`, set `lc.hungNudgeAttempts = 2`.
+ *  3. Substantive diff post-detection clears `hungDetectedAt`,
+ *     `substantiveStallSince`, `substantiveStallChars`, `hungNudgeAttempts`
+ *     (handled in transport-tmux.ts:refreshAgentTransportState).
+ */
+export async function detectAndNudgeHungAgents(
+  state: OrchestrationState,
+  transport: OrchestrationTransport,
+): Promise<void> {
+  if (state.backend !== "tmux") return;
+
+  const cfg = state.config.substantiveStall;
+  for (const agent of state.agents) {
+    if (!agentParticipatesInPhase(state, agent)) continue;
+    const runtime = state.agentStates[agent.name]!;
+    const lc = runtime.turnLifecycle;
+    if (!lc || lc.state === "settled" || lc.state === "error") continue;
+    if (runtime.interrupted) continue;
+    // Settled-no-signal layer takes priority on this tick.
+    if (lc.settledNoSignalDetectedAt) continue;
+    if (!lc.substantiveStallSince) continue;
+
+    const stallSeconds = nowEpoch()
+      - Math.floor(new Date(lc.substantiveStallSince).getTime() / 1000);
+    if (stallSeconds < cfg.thresholdSeconds) continue;
+
+    const attempts = lc.hungNudgeAttempts ?? 0;
+    if (attempts >= cfg.maxNudgeAttempts) continue;
+
+    const paneSnapshot = lc.lastPaneRaw ?? "";
+    const diffCharsAccumulated = lc.substantiveStallChars ?? 0;
+
+    if (attempts === 0) {
+      // Detection #1 → breakAndPrompt
+      const detectedAt = isoNow();
+      lc.hungDetectedAt = detectedAt;
+      lc.hungNudgeAttempts = 1;
+      const promptSent = await composeSkillMessage(state, agent);
+      emitEvent({
+        event_type: "agent_hung_detected",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.taskId,
+        agent: agent.name,
+        phase: state.phase,
+        stallSeconds,
+        diffCharsAccumulated,
+        paneSnapshot,
+        message: `${agent.name}: hung agent detected (substantive-stall ${stallSeconds}s)`,
+      });
+      writeHungIncident(state, agent, {
+        detectedAt,
+        slot: state.slot,
+        agent: agent.name,
+        phase: state.phase,
+        round: state.round,
+        stallSeconds,
+        diffCharsAccumulated,
+        paneSnapshot,
+        promptSent,
+      });
+      try {
+        if (typeof transport.breakAndPrompt === "function") {
+          await transport.breakAndPrompt(state, agent, promptSent);
+        }
+      } catch {
+        // Swallow — next poll re-evaluates and may escalate.
+      }
+    } else {
+      // Detection #2 — must wait the cooldown before escalating.
+      const detectedAtSec = lc.hungDetectedAt
+        ? Math.floor(new Date(lc.hungDetectedAt).getTime() / 1000)
+        : 0;
+      if (nowEpoch() - detectedAtSec < cfg.nudgeCooldownSeconds) continue;
+      lc.hungNudgeAttempts = 2;
+      emitEvent({
+        event_type: "agent_hung_force_settle",
+        source: "orchestration",
+        scope: "slot",
+        slot: state.slot,
+        task: state.taskId,
+        agent: agent.name,
+        phase: state.phase,
+        attempts: 2,
+        message: `${agent.name}: force-settling hung agent after breakAndPrompt failed`,
+      });
+      try {
+        await interruptAgent(state, agent, transport);
+      } catch {
+        // Already settled/dead — next poll observes terminal state.
+      }
+    }
+  }
+}
+
+const DEFAULT_HUNG_INCIDENT_RETENTION = 50;
+
+interface HungIncidentRecord {
+  detectedAt: string;
+  slot: number;
+  agent: string;
+  phase: string;
+  round: number;
+  stallSeconds: number;
+  diffCharsAccumulated: number;
+  paneSnapshot: string;
+  promptSent: string;
+}
+
+/**
+ * Persist a hung-agent incident record under `mag/hung-incidents/`. FIFO-prunes
+ * the directory to the newest 50 files so disk usage stays bounded. Best-effort:
+ * a write failure surfaces as an `orchestration_warning` event but does not
+ * abort recovery (the detector already emitted `agent_hung_detected`).
+ */
+function writeHungIncident(
+  state: OrchestrationState,
+  agent: AgentConfig,
+  record: HungIncidentRecord,
+): void {
+  try {
+    const harness = state.harnessDir ?? defaultHarnessDir();
+    const dir = join(harness, "mag", "hung-incidents");
+    mkdirSync(dir, { recursive: true });
+    const safeIso = record.detectedAt.replace(/:/g, "-");
+    const filename = `${safeIso}-slot${record.slot}-${agent.name}.json`;
+    atomicWriteFileSync(join(dir, filename), JSON.stringify(record, null, 2) + "\n");
+    // FIFO prune — ISO sorts lexicographically, so oldest first.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("fs") as typeof import("fs");
+    const entries = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
+    while (entries.length > DEFAULT_HUNG_INCIDENT_RETENTION) {
+      const victim = entries.shift();
+      if (!victim) break;
+      try { fs.unlinkSync(join(dir, victim)); } catch { /* ignore */ }
+    }
+  } catch (err) {
+    emitEvent({
+      event_type: "orchestration_warning",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      message: `hung-incident write failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
   }
 }
 
@@ -1026,10 +1242,19 @@ async function enterPhase(
       completionSource: null,
       statusFileFingerprint: dispatchFp,
       lastStopHookAt: null,
-      stallDetectedAt: null,
-      nudgeAttempts: 0,
-      lastNudgeAt: null,
+      settledNoSignalDetectedAt: null,
+      settledNoSignalNudgeAttempts: 0,
+      lastSettledNoSignalNudgeAt: null,
       preNudgeAssistantMessageId: null,
+      lastPaneRaw: null,
+      substantiveStallSince: null,
+      substantiveStallChars: 0,
+      hungDetectedAt: null,
+      hungNudgeAttempts: 0,
+      wrongFilenameNudgeAttempts: 0,
+      lastWrongFilenameNudgeAt: null,
+      interruptedNudgeAttempts: 0,
+      lastInterruptedNudgeAt: null,
     };
 
     // Persist after each agent dispatch — crash recovery will have lifecycle data
@@ -1101,10 +1326,19 @@ async function redispatchForPrComments(
       completionSource: null,
       statusFileFingerprint: dispatchFp,
       lastStopHookAt: null,
-      stallDetectedAt: null,
-      nudgeAttempts: 0,
-      lastNudgeAt: null,
+      settledNoSignalDetectedAt: null,
+      settledNoSignalNudgeAttempts: 0,
+      lastSettledNoSignalNudgeAt: null,
       preNudgeAssistantMessageId: null,
+      lastPaneRaw: null,
+      substantiveStallSince: null,
+      substantiveStallChars: 0,
+      hungDetectedAt: null,
+      hungNudgeAttempts: 0,
+      wrongFilenameNudgeAttempts: 0,
+      lastWrongFilenameNudgeAt: null,
+      interruptedNudgeAttempts: 0,
+      lastInterruptedNudgeAt: null,
     };
   }
 }
@@ -1143,10 +1377,19 @@ async function redispatchForConflict(
       completionSource: null,
       statusFileFingerprint: dispatchFp,
       lastStopHookAt: null,
-      stallDetectedAt: null,
-      nudgeAttempts: 0,
-      lastNudgeAt: null,
+      settledNoSignalDetectedAt: null,
+      settledNoSignalNudgeAttempts: 0,
+      lastSettledNoSignalNudgeAt: null,
       preNudgeAssistantMessageId: null,
+      lastPaneRaw: null,
+      substantiveStallSince: null,
+      substantiveStallChars: 0,
+      hungDetectedAt: null,
+      hungNudgeAttempts: 0,
+      wrongFilenameNudgeAttempts: 0,
+      lastWrongFilenameNudgeAt: null,
+      interruptedNudgeAttempts: 0,
+      lastInterruptedNudgeAt: null,
     };
 
     emitEvent({
@@ -1690,7 +1933,11 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
       // intervening phase-advance work (nudge, auto-commit, verification gate).
       if (checkEscalationHalt(state)) return;
 
-      // Detect hung agents (static terminal) and send nudges / force-settle.
+      // Detect settled-no-signal agents (static terminal, read loop open) and
+      // send Enter / "Continue." / re-dispatch / force-settle.
+      await detectAndNudgeSettledNoSignal(state, transport);
+      // Detect genuinely-hung agents (substantive-diff stall, read loop closed)
+      // and recover via breakAndPrompt → interruptAgent.
       await detectAndNudgeHungAgents(state, transport);
 
       // Wrong-filename recovery: auto-cp safe alternatives onto the
@@ -1731,9 +1978,11 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
         if (DONE_STATUSES.has(rt.status)) continue; // actually done
         if (rt.interrupted) continue;
 
-        // Settled but not done — nudge with "Continue."
-        const nudgeCooldown = alc.lastNudgeAt
-          ? nowEpoch() - Math.floor(new Date(alc.lastNudgeAt).getTime() / 1000)
+        // Settled but not done — nudge with "Continue." (interrupted-agent layer:
+        // distinct from settled-no-signal; its own counter so the two layers
+        // don't aliase each other's nudge bookkeeping).
+        const nudgeCooldown = alc.lastInterruptedNudgeAt
+          ? nowEpoch() - Math.floor(new Date(alc.lastInterruptedNudgeAt).getTime() / 1000)
           : Infinity;
         if (nudgeCooldown < INTERRUPTED_NUDGE_COOLDOWN_S) continue;
 
@@ -1744,9 +1993,11 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
         alc.turnStartedAt = null;
         alc.turnCompletedAt = null;
         alc.completionSource = null;
-        alc.lastNudgeAt = isoNow();
-        alc.nudgeAttempts = (alc.nudgeAttempts ?? 0) + 1;
-        alc.stallDetectedAt = null;
+        alc.lastInterruptedNudgeAt = isoNow();
+        alc.interruptedNudgeAttempts = (alc.interruptedNudgeAttempts ?? 0) + 1;
+        // Clear settled-no-signal bookkeeping on entering interrupted recovery
+        // (same agent now has a fresh dispatched lifecycle).
+        alc.settledNoSignalDetectedAt = null;
 
         const statusPath = join(state.peerSyncDir, `${agent.name}.status`);
         const doneStatus = doneStatusForPhase(state.phase);
@@ -1757,14 +2008,14 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
         alc.observedTurnId = makeId("tmux-turn");
 
         emitEvent({
-          event_type: "orchestration_nudge_sent",
+          event_type: "orchestration_interrupted_nudge_sent",
           source: "orchestration",
           scope: "slot",
           slot: state.slot,
           task: state.taskId,
           agent: agent.name,
           phase: state.phase,
-          attempt: alc.nudgeAttempts,
+          attempt: alc.interruptedNudgeAttempts,
           stallType: "interrupted",
           message: `${agent.name}: nudged with status-write instruction (turn settled without done status)`,
         });

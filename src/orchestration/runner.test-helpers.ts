@@ -56,10 +56,19 @@ export function makeLifecycle(overrides: Partial<AgentTurnLifecycle> = {}): Agen
     completionSource: null,
     statusFileFingerprint: null,
     lastStopHookAt: null,
-    stallDetectedAt: null,
-    nudgeAttempts: 0,
-    lastNudgeAt: null,
+    settledNoSignalDetectedAt: null,
+    settledNoSignalNudgeAttempts: 0,
+    lastSettledNoSignalNudgeAt: null,
     preNudgeAssistantMessageId: null,
+    lastPaneRaw: null,
+    substantiveStallSince: null,
+    substantiveStallChars: 0,
+    hungDetectedAt: null,
+    hungNudgeAttempts: 0,
+    wrongFilenameNudgeAttempts: 0,
+    lastWrongFilenameNudgeAt: null,
+    interruptedNudgeAttempts: 0,
+    lastInterruptedNudgeAt: null,
     ...overrides,
   };
 }
@@ -492,9 +501,9 @@ export function makeMockTransport(snapshot: T3Snapshot | null): OrchestrationTra
             }
           }
 
-          // Post-nudge outcome classification
-          if ((lc.stallDetectedAt ?? null) !== null && lc.state === "settled") {
-            const nudgeAttempts = lc.nudgeAttempts ?? 0;
+          // Post-nudge outcome classification (settled-no-signal layer)
+          if ((lc.settledNoSignalDetectedAt ?? null) !== null && lc.state === "settled") {
+            const nudgeAttempts = lc.settledNoSignalNudgeAttempts ?? 0;
             if (nudgeAttempts > 0) {
               const currentAMId = latestTurn?.assistantMessageId ?? null;
               const preAMId = lc.preNudgeAssistantMessageId ?? null;
@@ -512,9 +521,9 @@ export function makeMockTransport(snapshot: T3Snapshot | null): OrchestrationTra
                 message: `${agent.name}: stall resolved (${agentResponded ? "alive" : "dead"}) after ${nudgeAttempts} nudge(s)`,
               });
             }
-            lc.stallDetectedAt = null;
-            lc.nudgeAttempts = 0;
-            lc.lastNudgeAt = null;
+            lc.settledNoSignalDetectedAt = null;
+            lc.settledNoSignalNudgeAttempts = 0;
+            lc.lastSettledNoSignalNudgeAt = null;
             lc.preNudgeAssistantMessageId = null;
           }
         }

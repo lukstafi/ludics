@@ -1365,9 +1365,9 @@ describe("checkAndRedispatchPrComments — sequential reviews / coderActive flip
       completionSource: "snapshot",
       statusFileFingerprint: "fp-fresh",
       lastStopHookAt: null,
-      stallDetectedAt: null,
-      nudgeAttempts: 0,
-      lastNudgeAt: null,
+      settledNoSignalDetectedAt: null,
+      settledNoSignalNudgeAttempts: 0,
+      lastSettledNoSignalNudgeAt: null,
       preNudgeAssistantMessageId: null,
     };
     // Force a different fingerprint so isStatusFresh returns true.

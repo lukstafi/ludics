@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach, spyOn, setDefaultTimeout } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
-import { detectAndNudgeHungAgents, refreshAgentStatuses } from "./runner.ts";
+import { detectAndNudgeSettledNoSignal, refreshAgentStatuses } from "./runner.ts";
 import * as events from "../events.ts";
 import {
   makeTmpDir,
@@ -15,7 +15,7 @@ import {
 
 setDefaultTimeout(20_000);
 
-describe("detectAndNudgeHungAgents", () => {
+describe("detectAndNudgeSettledNoSignal", () => {
   let tmpDir: string;
   let emitSpy: ReturnType<typeof spyOn>;
 
@@ -40,14 +40,14 @@ describe("detectAndNudgeHungAgents", () => {
       turnStartedAt: new Date(Date.now() - 400_000).toISOString(), // 400s ago > 300s threshold
     });
 
-    await detectAndNudgeHungAgents(state, noopTransport);
+    await detectAndNudgeSettledNoSignal(state, noopTransport);
 
     const lc = state.agentStates.coder.turnLifecycle!;
-    expect(lc.stallDetectedAt).not.toBeNull();
-    // Nudge attempt won't succeed (readServerRecord returns null) so nudgeAttempts stays 0
+    expect(lc.settledNoSignalDetectedAt).not.toBeNull();
+    // Nudge attempt won't succeed (readServerRecord returns null) so settledNoSignalNudgeAttempts stays 0
     // but stall is detected
     const stallEvent = emitSpy.mock.calls.find(
-      (c: unknown[]) => (c[0] as { event_type?: string }).event_type === "orchestration_hung_detected",
+      (c: unknown[]) => (c[0] as { event_type?: string }).event_type === "orchestration_settled_no_signal_detected",
     );
     expect(stallEvent).toBeDefined();
   });
@@ -59,10 +59,10 @@ describe("detectAndNudgeHungAgents", () => {
       dispatchedAt: new Date(Date.now() - 200_000).toISOString(), // 200s > 120s threshold
     });
 
-    await detectAndNudgeHungAgents(state, noopTransport);
+    await detectAndNudgeSettledNoSignal(state, noopTransport);
 
     const lc = state.agentStates.coder.turnLifecycle!;
-    expect(lc.stallDetectedAt).not.toBeNull();
+    expect(lc.settledNoSignalDetectedAt).not.toBeNull();
   });
 
   test("below threshold: no stall detected", async () => {
@@ -74,28 +74,28 @@ describe("detectAndNudgeHungAgents", () => {
       turnStartedAt: new Date(Date.now() - 60_000).toISOString(), // 60s < 180s threshold
     });
 
-    await detectAndNudgeHungAgents(state, noopTransport);
+    await detectAndNudgeSettledNoSignal(state, noopTransport);
 
     const lc = state.agentStates.coder.turnLifecycle!;
-    expect(lc.stallDetectedAt).toBeNull();
+    expect(lc.settledNoSignalDetectedAt).toBeNull();
   });
 
-  test("nudge cooldown respected: recent lastNudgeAt → no nudge", async () => {
+  test("nudge cooldown respected: recent lastSettledNoSignalNudgeAt → no nudge", async () => {
     const state = makeState({ phase: "work" }, tmpDir);
     state.agentStates.coder.status = "done";
     state.agentStates.coder.turnLifecycle = makeLifecycle({
       state: "running",
       observedTurnId: "turn-1",
       turnStartedAt: new Date(Date.now() - 400_000).toISOString(),
-      stallDetectedAt: new Date(Date.now() - 100_000).toISOString(),
-      nudgeAttempts: 1,
-      lastNudgeAt: new Date(Date.now() - 30_000).toISOString(), // 30s ago < 300s cooldown
+      settledNoSignalDetectedAt: new Date(Date.now() - 100_000).toISOString(),
+      settledNoSignalNudgeAttempts: 1,
+      lastSettledNoSignalNudgeAt: new Date(Date.now() - 30_000).toISOString(), // 30s ago < 300s cooldown
     });
 
-    await detectAndNudgeHungAgents(state, noopTransport);
+    await detectAndNudgeSettledNoSignal(state, noopTransport);
 
-    // nudgeAttempts should stay at 1 (cooldown prevented another nudge)
-    expect(state.agentStates.coder.turnLifecycle!.nudgeAttempts).toBe(1);
+    // settledNoSignalNudgeAttempts should stay at 1 (cooldown prevented another nudge)
+    expect(state.agentStates.coder.turnLifecycle!.settledNoSignalNudgeAttempts).toBe(1);
   });
 
   test("force-settle after MAX_NUDGE_ATTEMPTS: interruptAgent called", async () => {
@@ -105,18 +105,18 @@ describe("detectAndNudgeHungAgents", () => {
       state: "running",
       observedTurnId: "turn-1",
       turnStartedAt: new Date(Date.now() - 400_000).toISOString(),
-      stallDetectedAt: new Date(Date.now() - 1500_000).toISOString(),
-      nudgeAttempts: 3, // >= MAX_NUDGE_ATTEMPTS
-      lastNudgeAt: new Date(Date.now() - 400_000).toISOString(),
+      settledNoSignalDetectedAt: new Date(Date.now() - 1500_000).toISOString(),
+      settledNoSignalNudgeAttempts: 3, // >= MAX_NUDGE_ATTEMPTS
+      lastSettledNoSignalNudgeAt: new Date(Date.now() - 400_000).toISOString(),
     });
 
-    await detectAndNudgeHungAgents(state, noopTransport);
+    await detectAndNudgeSettledNoSignal(state, noopTransport);
 
     // interruptAgent sets interrupted = true and status = "interrupted"
     expect(state.agentStates.coder.interrupted).toBe(true);
     expect(state.agentStates.coder.status).toBe("interrupted");
     const forceEvent = emitSpy.mock.calls.find(
-      (c: unknown[]) => (c[0] as { event_type?: string }).event_type === "orchestration_hung_force_settle",
+      (c: unknown[]) => (c[0] as { event_type?: string }).event_type === "orchestration_settled_no_signal_force_settle",
     );
     expect(forceEvent).toBeDefined();
   });
@@ -130,9 +130,9 @@ describe("detectAndNudgeHungAgents", () => {
       completionSource: "snapshot",
     });
 
-    await detectAndNudgeHungAgents(state, noopTransport);
+    await detectAndNudgeSettledNoSignal(state, noopTransport);
 
-    expect(state.agentStates.coder.turnLifecycle!.stallDetectedAt).toBeNull();
+    expect(state.agentStates.coder.turnLifecycle!.settledNoSignalDetectedAt).toBeNull();
   });
 
   test("interrupted agent is skipped", async () => {
@@ -145,9 +145,9 @@ describe("detectAndNudgeHungAgents", () => {
     });
     state.agentStates.coder.status = "done";
 
-    await detectAndNudgeHungAgents(state, noopTransport);
+    await detectAndNudgeSettledNoSignal(state, noopTransport);
 
-    expect(state.agentStates.coder.turnLifecycle!.stallDetectedAt).toBeNull();
+    expect(state.agentStates.coder.turnLifecycle!.settledNoSignalDetectedAt).toBeNull();
   });
 });
 
@@ -178,9 +178,9 @@ describe("post-nudge outcome classification", () => {
       state: "running",
       observedTurnId: "turn-1",
       turnStartedAt: new Date(Date.now() - 200_000).toISOString(),
-      stallDetectedAt: new Date(Date.now() - 100_000).toISOString(),
-      nudgeAttempts: 1,
-      lastNudgeAt: new Date(Date.now() - 50_000).toISOString(),
+      settledNoSignalDetectedAt: new Date(Date.now() - 100_000).toISOString(),
+      settledNoSignalNudgeAttempts: 1,
+      lastSettledNoSignalNudgeAt: new Date(Date.now() - 50_000).toISOString(),
       preNudgeAssistantMessageId: "msg-old",
     });
 
@@ -200,8 +200,8 @@ describe("post-nudge outcome classification", () => {
 
     const lc = state.agentStates.coder.turnLifecycle!;
     // Stall should be cleared after settlement
-    expect(lc.stallDetectedAt).toBeNull();
-    expect(lc.nudgeAttempts).toBe(0);
+    expect(lc.settledNoSignalDetectedAt).toBeNull();
+    expect(lc.settledNoSignalNudgeAttempts).toBe(0);
 
     // Check events journal
     const eventsPath = join(tmpDir, "harness", "journal", "events.jsonl");
@@ -219,9 +219,9 @@ describe("post-nudge outcome classification", () => {
       state: "running",
       observedTurnId: "turn-1",
       turnStartedAt: new Date(Date.now() - 200_000).toISOString(),
-      stallDetectedAt: new Date(Date.now() - 100_000).toISOString(),
-      nudgeAttempts: 1,
-      lastNudgeAt: new Date(Date.now() - 50_000).toISOString(),
+      settledNoSignalDetectedAt: new Date(Date.now() - 100_000).toISOString(),
+      settledNoSignalNudgeAttempts: 1,
+      lastSettledNoSignalNudgeAt: new Date(Date.now() - 50_000).toISOString(),
       preNudgeAssistantMessageId: "msg-same",
     });
 
@@ -240,8 +240,8 @@ describe("post-nudge outcome classification", () => {
     await refreshAgentStatuses(state, makeMockTransport(snapshot));
 
     const lc = state.agentStates.coder.turnLifecycle!;
-    expect(lc.stallDetectedAt).toBeNull();
-    expect(lc.nudgeAttempts).toBe(0);
+    expect(lc.settledNoSignalDetectedAt).toBeNull();
+    expect(lc.settledNoSignalNudgeAttempts).toBe(0);
 
     const eventsPath = join(tmpDir, "harness", "journal", "events.jsonl");
     if (existsSync(eventsPath)) {
@@ -251,15 +251,15 @@ describe("post-nudge outcome classification", () => {
     }
   });
 
-  test("settlement without any nudge (nudgeAttempts=0) → no outcome event, stall cleared", async () => {
+  test("settlement without any nudge (settledNoSignalNudgeAttempts=0) → no outcome event, stall cleared", async () => {
     const peerSyncDir = makePeerSyncDir({ root: tmpDir, coder: tmpDir }, { coder: "done|1|done" });
     const state = makeState({ phase: "work" }, peerSyncDir);
     state.agentStates.coder.turnLifecycle = makeLifecycle({
       state: "running",
       observedTurnId: "turn-1",
       turnStartedAt: new Date(Date.now() - 200_000).toISOString(),
-      stallDetectedAt: new Date(Date.now() - 100_000).toISOString(),
-      nudgeAttempts: 0, // no nudge was sent
+      settledNoSignalDetectedAt: new Date(Date.now() - 100_000).toISOString(),
+      settledNoSignalNudgeAttempts: 0, // no nudge was sent
     });
 
     const snapshot = makeSnapshot([{
@@ -275,8 +275,8 @@ describe("post-nudge outcome classification", () => {
     await refreshAgentStatuses(state, makeMockTransport(snapshot));
 
     const lc = state.agentStates.coder.turnLifecycle!;
-    expect(lc.stallDetectedAt).toBeNull();
-    expect(lc.nudgeAttempts).toBe(0);
+    expect(lc.settledNoSignalDetectedAt).toBeNull();
+    expect(lc.settledNoSignalNudgeAttempts).toBe(0);
 
     // No nudge outcome event should be emitted
     const eventsPath = join(tmpDir, "harness", "journal", "events.jsonl");

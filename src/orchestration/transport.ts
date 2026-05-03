@@ -49,6 +49,21 @@ export interface OrchestrationTransport {
   ): Promise<void>;
 
   /**
+   * Hung-agent recovery primitive (task-a670cdbf): exactly one C-c (NOT two —
+   * we want to break the agent's stream back to the prompt without exiting
+   * the session), wait, then re-dispatch a fresh prompt. Tmux-only;
+   * t3code transport omits this method and the substantive-diff detector
+   * skips t3code agents entirely.
+   *
+   * Distinct from `interruptAgent` which is force-settle (C-c × 2 + SIGTERM).
+   */
+  breakAndPrompt?(
+    state: OrchestrationState,
+    agent: AgentConfig,
+    message: string,
+  ): Promise<void>;
+
+  /**
    * Subscribe to transport events for early poll wakeup (optional optimization).
    * Returns an unsubscribe function, or null if event subscription is not supported.
    * The callback is invoked when a relevant transport event occurs (e.g., turn completed).
