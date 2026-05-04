@@ -3317,9 +3317,17 @@ export function magBriefing(wait: boolean = true, timeout: number = 300): void {
   // Auto-queue feedback-digest once daily alongside the briefing trigger.
   // Lands before /compact so digest can consume the briefing's in-flight
   // context (task-304a02a6 / docs/proposals/task-304a02a6-reorder-briefing-auto-queue.md).
-  const fdResult = tryQueueFeedbackDigest("ludics");
-  if (fdResult.queued) {
-    console.error("ludics: briefing queued feedback-digest for ludics");
+  // Wrapped so a digest enqueue failure (queue-lock timeout, state-file write
+  // error) cannot suppress the unconditional /compact below — the auto-compact
+  // contract (task-a00fc0d9) requires /compact after every briefing.
+  try {
+    const fdResult = tryQueueFeedbackDigest("ludics");
+    if (fdResult.queued) {
+      console.error("ludics: briefing queued feedback-digest for ludics");
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`ludics: feedback-digest enqueue failed: ${msg}`);
   }
 
   // Auto-compact after briefing — checkpoint compaction (task-a00fc0d9 /
