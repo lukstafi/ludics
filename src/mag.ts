@@ -57,6 +57,7 @@ import { ludicsSelfCommand } from "./orchestration/util.ts";
 const MAG_SESSION_NAME = process.env.LUDICS_MAG_SESSION ?? "ludics-mag";
 const MAG_DEFAULT_PORT = process.env.LUDICS_MAG_PORT ?? "7679";
 const FEEDBACK_DIGEST_COOLDOWN_SECONDS = 120;
+const BRIEFING_AUTO_COOLDOWN_SECONDS = 90 * 60;
 
 function magStateDir(): string {
   return join(harnessDir(), "mag");
@@ -3306,10 +3307,47 @@ export function magDoctor(): void {
   }
 }
 
-export function magBriefing(wait: boolean = true, timeout: number = 300): void {
+function briefingLastQueuedFile(): string {
+  return join(magStateDir(), "briefing-last-queued.epoch");
+}
+
+function readBriefingLastQueuedEpoch(): number | null {
+  const file = briefingLastQueuedFile();
+  if (!existsSync(file)) return null;
+  try {
+    const n = Number.parseInt(readFileSync(file, "utf-8").trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function markBriefingQueued(): void {
+  mkdirSync(magStateDir(), { recursive: true });
+  writeFileSync(briefingLastQueuedFile(), String(Math.floor(Date.now() / 1000)));
+}
+
+export function magBriefing(
+  wait: boolean = true,
+  timeout: number = 300,
+  opts: { auto?: boolean } = {},
+): void {
   if (!clusterIsController()) {
     console.error("ludics: mag briefing skipped — not the cluster controller");
     return;
+  }
+  if (opts.auto) {
+    const last = readBriefingLastQueuedEpoch();
+    if (last !== null) {
+      const elapsed = Math.floor(Date.now() / 1000) - last;
+      if (elapsed < BRIEFING_AUTO_COOLDOWN_SECONDS) {
+        const remaining = BRIEFING_AUTO_COOLDOWN_SECONDS - elapsed;
+        console.error(
+          `ludics: auto briefing skipped — last sequence queued ${elapsed}s ago (cooldown ${BRIEFING_AUTO_COOLDOWN_SECONDS}s, ${remaining}s remaining)`,
+        );
+        return;
+      }
+    }
   }
   const requestId = queueRequest({ action: "briefing" });
   console.log(`Queued briefing request: ${requestId}`);
@@ -3335,6 +3373,8 @@ export function magBriefing(wait: boolean = true, timeout: number = 300): void {
   // as the LAST follow-up so the next session starts fresh, after
   // feedback-digest has had a chance to consume the briefing context.
   queueRequest({ action: "message", content: "/compact" });
+
+  markBriefingQueued();
 
   if (!wait) {
     console.log("Mag will process when ready");
@@ -3469,7 +3509,7 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
     magLogs(lines);
   }],
   ["doctor", () => { magDoctor(); }],
-  ["briefing", () => { magBriefing(); }],
+  ["briefing", (args) => { magBriefing(true, 300, { auto: args.includes("--auto") }); }],
   ["suggest", () => {
     queueRequest({ action: "suggest" });
     console.log("Queued suggest request");

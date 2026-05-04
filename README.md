@@ -192,7 +192,7 @@ adapters:
 triggers:
   startup:
     enabled: true
-    action: mag briefing
+    action: mag briefing --auto
   sync:
     enabled: true
     interval: 3600

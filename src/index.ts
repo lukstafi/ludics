@@ -83,9 +83,10 @@ const MIGRATED_COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
     console.log("");
     flowReady();
   },
-  briefing: async () => {
+  briefing: async (args) => {
+    const auto = args.includes("--auto");
     const { magBriefing } = await import("./mag.ts");
-    magBriefing();
+    magBriefing(true, 300, { auto });
   },
   doctor: async () => {
     const { magDoctor } = await import("./mag.ts");
@@ -158,7 +159,7 @@ Commands:
   mag attach                   Attach to Mag tmux session
   mag logs [n]                 Show recent Mag activity
   mag doctor                   Health check for Mag setup
-  mag briefing                 Request morning briefing
+  mag briefing [--auto]        Request morning briefing (--auto skips if last sequence < 90min ago)
   mag suggest                  Get task suggestions
   mag elaborate <id>           Elaborate task into detailed spec
   mag draft-proposal <id>     Generate proposal document for task
@@ -258,7 +259,7 @@ Commands:
   quote                        Print a random quote
 
   status                       Overview of slots + tasks
-  briefing                     Morning briefing
+  briefing [--auto]            Morning briefing (--auto skips if last sequence < 90min ago)
   init [--no-hooks] [--no-dashboard] [--no-triggers] [--restart-t3code]
                                Initialize config, harness, hooks, dashboard, and triggers
   stop [pause|uninstall]       Stop scheduled activity (default: pause)

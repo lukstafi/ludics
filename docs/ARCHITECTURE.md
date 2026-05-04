@@ -720,7 +720,7 @@ Events that fire automation (implemented in `src/triggers.ts`, ~400 lines):
 |---------|-----------|----------------|
 | Startup | launchd `RunAtLoad` / systemd `WantedBy` | `mag start` |
 | Sync | launchd `StartInterval` / systemd timer | `tasks sync` |
-| Morning | launchd `StartCalendarInterval` | `mag briefing` |
+| Morning | launchd `StartCalendarInterval` | `mag briefing --auto` |
 | Health | launchd `StartInterval` | `mag health-check` |
 | Watch | launchd `WatchPaths` / inotify | `tasks sync` |
 
@@ -805,7 +805,7 @@ triggers:
     enabled: true
     hour: 8
     minute: 0
-    action: mag briefing
+    action: mag briefing --auto
   watch:
     - paths:
         - ~/repos/ocannl/README.md

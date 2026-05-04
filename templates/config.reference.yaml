@@ -204,7 +204,7 @@ triggers:
   # Run at system login
   startup:
     enabled: false
-    action: mag briefing
+    action: mag briefing --auto
 
   # Periodic sync (e.g., every hour)
   sync:
@@ -212,12 +212,14 @@ triggers:
     interval: 3600            # seconds
     action: tasks sync
 
-  # Morning briefing (StartCalendarInterval)
+  # Morning briefing (StartCalendarInterval). The --auto flag makes the
+  # trigger a no-op if the briefing → feedback-digest → /compact sequence
+  # was queued less than 90 minutes ago (e.g. you ran it manually earlier).
   morning:
     enabled: false
     hour: 8                   # 08:00
     minute: 0
-    action: mag briefing
+    action: mag briefing --auto
 
   # Periodic health check (wall-clock aligned)
   health:

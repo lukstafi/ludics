@@ -29,7 +29,7 @@ function sanitizeAction(action: string): string {
 }
 
 function commandFromAction(action: string): string {
-  return action || "mag briefing";
+  return action || "mag briefing --auto";
 }
 
 function triggerGet(section: string, key: string): string {

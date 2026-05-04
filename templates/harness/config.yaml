@@ -74,7 +74,7 @@ notifications:
 triggers:
   startup:
     enabled: true
-    action: mag briefing
+    action: mag briefing --auto
 
   sync:
     enabled: true
@@ -85,7 +85,7 @@ triggers:
     enabled: true
     hour: 8
     minute: 20
-    action: mag briefing
+    action: mag briefing --auto
 
   health:
     enabled: true
