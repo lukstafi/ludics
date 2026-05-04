@@ -3314,16 +3314,19 @@ export function magBriefing(wait: boolean = true, timeout: number = 300): void {
   const requestId = queueRequest({ action: "briefing" });
   console.log(`Queued briefing request: ${requestId}`);
 
-  // Auto-compact after briefing — checkpoint compaction (task-a00fc0d9 /
-  // docs/proposals/auto-compact-after-checkpoints.md). Enqueued directly
-  // behind the briefing so it lands before any later automated enqueues.
-  queueRequest({ action: "message", content: "/compact" });
-
   // Auto-queue feedback-digest once daily alongside the briefing trigger.
+  // Lands before /compact so digest can consume the briefing's in-flight
+  // context (task-304a02a6 / docs/proposals/task-304a02a6-reorder-briefing-auto-queue.md).
   const fdResult = tryQueueFeedbackDigest("ludics");
   if (fdResult.queued) {
     console.error("ludics: briefing queued feedback-digest for ludics");
   }
+
+  // Auto-compact after briefing — checkpoint compaction (task-a00fc0d9 /
+  // docs/proposals/auto-compact-after-checkpoints.md). Enqueued unconditionally
+  // as the LAST follow-up so the next session starts fresh, after
+  // feedback-digest has had a chance to consume the briefing context.
+  queueRequest({ action: "message", content: "/compact" });
 
   if (!wait) {
     console.log("Mag will process when ready");
