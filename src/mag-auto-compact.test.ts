@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync } from "fs";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { withSyntheticHarness } from "./test-utils.ts";
 
@@ -27,16 +27,91 @@ function readQueue(): Record<string, unknown>[] {
 }
 
 describe("magBriefing auto-compact follow-up", () => {
-  test("enqueues /compact directly behind the briefing entry", async () => {
+  test("enqueues /compact as the final item, with feedback-digest between briefing and /compact", async () => {
+    // Harness condition: clean state — no pre-existing pending feedback-digest
+    // in queue.jsonl, no cooldown state file. The synthetic harness creates a
+    // fresh tmp dir each test, so both gates open and tryQueueFeedbackDigest
+    // actually enqueues. If that condition stops holding, items[1] would not be
+    // "feedback-digest" and the middle-slot assertion would fail loudly.
     const { magBriefing } = await import("./mag.ts");
     magBriefing(false);
 
     const items = readQueue();
-    // Must be at least: briefing, /compact (feedback-digest may follow).
-    expect(items.length).toBeGreaterThanOrEqual(2);
+    // briefing → feedback-digest → /compact. /compact must always land last
+    // (the AC's invariant); feedback-digest in the middle is the ungated path.
+    expect(items).toHaveLength(3);
     expect(items[0]!.action).toBe("briefing");
-    expect(items[1]!.action).toBe("message");
-    expect(items[1]!.content).toBe("/compact");
+    expect(items[1]!.action).toBe("feedback-digest");
+    expect(items[items.length - 1]!.action).toBe("message");
+    expect(items[items.length - 1]!.content).toBe("/compact");
+  });
+
+  test("when feedback-digest is gated, queue is briefing → /compact (length 2)", async () => {
+    // Harness condition: pre-seed queue.jsonl with a pending feedback-digest
+    // entry for "ludics" so queueHasPendingFeedbackDigest() returns true and
+    // tryQueueFeedbackDigest short-circuits with { queued: false }. Without
+    // this seed, digest would fire and the length-2 assertion would fail.
+    const qf = join(getTmpDir(), "mag", "queue.jsonl");
+    writeFileSync(
+      qf,
+      JSON.stringify({ id: "seed", action: "feedback-digest", repo: "ludics" }) + "\n",
+    );
+
+    const { magBriefing } = await import("./mag.ts");
+    magBriefing(false);
+
+    const items = readQueue();
+    // Drop the pre-seeded sentinel; only assert on what magBriefing wrote.
+    const written = items.slice(1);
+    expect(written).toHaveLength(2);
+    expect(written[0]!.action).toBe("briefing");
+    expect(written[1]!.action).toBe("message");
+    expect(written[1]!.content).toBe("/compact");
+    // /compact must be last regardless of digest gating.
+    expect(items[items.length - 1]!.action).toBe("message");
+    expect(items[items.length - 1]!.content).toBe("/compact");
+  });
+
+  test("/compact still enqueues when feedback-digest enqueue throws", async () => {
+    // Harness condition: spy on queue.queueRequest to throw on the
+    // feedback-digest action only (simulating a queue-lock timeout or
+    // state-file write failure inside tryQueueFeedbackDigest). Without the
+    // try/catch around the digest call, the throw would propagate out of
+    // magBriefing before /compact is enqueued, leaving the queue with only
+    // the briefing entry. Mutation: removing the try/catch makes this test
+    // fail because /compact never lands and `errSpy` never sees the warning.
+    const queueMod = await import("./queue.ts");
+    const origQueueRequest = queueMod.queueRequest;
+    let calls = 0;
+    const requestSpy = spyOn(queueMod, "queueRequest").mockImplementation(
+      ((req: Parameters<typeof origQueueRequest>[0]) => {
+        calls++;
+        if (req.action === "feedback-digest") {
+          throw new Error("simulated queue-lock timeout");
+        }
+        return origQueueRequest(req);
+      }) as typeof origQueueRequest,
+    );
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const { magBriefing } = await import("./mag.ts");
+      magBriefing(false);
+
+      const items = readQueue();
+      // briefing was queued (call 1), feedback-digest threw (call 2),
+      // /compact still queued (call 3). On disk: briefing + /compact only.
+      expect(calls).toBeGreaterThanOrEqual(3);
+      expect(items).toHaveLength(2);
+      expect(items[0]!.action).toBe("briefing");
+      expect(items[1]!.action).toBe("message");
+      expect(items[1]!.content).toBe("/compact");
+      const errLines = errSpy.mock.calls.map((c) => String(c[0] ?? ""));
+      expect(errLines.some((l) => l.includes("feedback-digest enqueue failed"))).toBe(true);
+    } finally {
+      requestSpy.mockRestore();
+      errSpy.mockRestore();
+    }
   });
 });
 
