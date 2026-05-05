@@ -46,6 +46,43 @@ Cluster related items into themes. Examples:
 
 Each theme: short title + list of data points.
 
+### 3a. Filter — capture-textbook
+
+For each theme/data-point grouped in step 3, decide between two
+dispositions before falling through to GH issue filing:
+
+- **`file-issue`** (existing behaviour, continues into step 4):
+  actionable workflow defect that should become a tracked GitHub
+  issue.
+- **`capture-textbook`** (new): competent-SWE-filter-rejected
+  recurring lesson that should be remembered but not turned into
+  always-loaded prompt doctrine. The lesson is real but too general
+  or too obvious to live in always-loaded prompts; journaling it to
+  `docs/swe-textbook.md` keeps it findable for Mag without bloating
+  the prompts. See
+  `harness/claude-memory/feedback_competent_swe_filter.md`.
+
+For the `capture-textbook` path:
+
+1. Derive `ENTRY_HEADLINE` (a short pattern-naming phrase) and
+   `PRECIPITATING_RETRO` (the source feature/agent/date or the
+   originating task/issue/PR) from the data point.
+2. Run the canonical idempotency check at
+   `docs/swe-textbook.md#capture-idempotency` and treat its outputs
+   per that section's prose contract: on `append`, write a fresh
+   `### ENTRY_HEADLINE` block to `docs/swe-textbook.md` with the
+   four labelled fields (`Description:`, `Precipitating retro:`,
+   `Filter decision:`, optional `Second occurrence:`); on
+   `skip-duplicate`, do not append, but you MAY amend the matched
+   entry's `Second occurrence:` line.
+3. Captured items are NOT counted toward `issues_skipped`. Their
+   count surfaces via `textbookCaptures.length` in the Response
+   Contract — this is a third disposition, not discarded work.
+
+A single feedback theme may both file a GH issue (for an actionable
+workflow defect) and capture a textbook entry (for an orthogonal
+recurring lesson). The two dispositions are independent.
+
 ### 4. Fetch existing issues and ensure label
 
 Parse `$ARGUMENTS` to extract the repo (the entire argument string, e.g., `owner/repo`).
@@ -103,9 +140,14 @@ as the last code block in your response:
 4. `issues_skipped` — number, required. 0 when none skipped.
 5. `files_processed` — number, required. 0 when none processed.
 6. `summary` — string, required.
+7. `textbookCaptures` — array, optional, default `[]`. Each item:
+   `{"feedbackItem": "...", "entryHeadline": "...",
+   "precipitatingRetro": "..."}`. Captured items from step 3a; do
+   not double-count them in `issues_skipped`.
 
 Note: when `status = "error"`, count fields may be absent. The `summary` or
-`error` field carries the explanation.
+`error` field carries the explanation. `textbookCaptures` defaults to
+`[]` when absent.
 
 ```json
 {
@@ -114,7 +156,8 @@ Note: when `status = "error"`, count fields may be absent. The `summary` or
   "issues_updated": <count>,
   "issues_skipped": <count>,
   "files_processed": <count>,
-  "summary": "<one-line summary>"
+  "summary": "<one-line summary>",
+  "textbookCaptures": []
 }
 ```
 
