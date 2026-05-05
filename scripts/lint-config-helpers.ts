@@ -251,6 +251,81 @@ export function extractMagPathsFromSource(sourceDir: string): Set<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Adapter Source Grep (gh-ludics-496)
+// ---------------------------------------------------------------------------
+
+// SILENT-DRIFT WARNING (gh-ludics-496):
+// `extractAdapterReadKeysFromSource` is a regex-over-source extractor.
+// Its safety claim — "every documented `mag.orchestration.<leaf>` YAML
+// key is read by at least one adapter" — depends on the literal access
+// patterns below appearing at the call sites. A "DRY-only" refactor
+// that wraps any of these patterns behind a new helper, table, or loop
+// *deletes* the literals from source. The regex still runs, just with
+// fewer hits, and the lint passes silently with reduced coverage.
+//
+// If you introduce a new helper that reads `orchCfg?.<key>` (or
+// sibling), add a matching regex pattern below AND keep the
+// floor-count tests in scripts/lint-config-helpers.test.ts
+// ("extractAdapterReadKeysFromSource floor count") in sync.
+//
+// The floor-count tests are the mechanical guard that catches the
+// next instance of this silent-drift class. A second guard
+// (zero-match self-test) lives in scripts/lint-config-reference.ts:
+// when either adapter file's extractor returns the empty set, the
+// whole lint fails with a distinct error so a complete refactor
+// cannot make the lint silently green.
+//
+// Recognised patterns (mirror in the test's failure-mode comment):
+//   - orchCfg?.property        (primary; every current call site)
+//   - orchCfg.property         (non-optional variant; defensive)
+//
+// Comment forms (e.g. `// orchCfg.foo`, `/* orchCfg.bar */`) are
+// stripped before matching so a comment mention does not silently
+// satisfy coverage for an unimplemented key.
+
+/**
+ * Extract first-segment keys read from `orchCfg` in a single adapter
+ * source file. Strips JSDoc / block / line comments before scanning so
+ * a comment mention of `orchCfg.<key>` does not falsely satisfy
+ * coverage. Returns the empty set when the file is missing or
+ * unreadable — the caller (runLint) turns that into a self-test
+ * error rather than an exception.
+ */
+export function extractAdapterReadKeysFromSource(
+  adapterFile: string,
+): Set<string> {
+  let source: string;
+  try {
+    source = readFileSync(adapterFile, "utf-8");
+  } catch {
+    return new Set();
+  }
+
+  // Strip comments so `// orchCfg.future_key` does not satisfy coverage.
+  // Mirror parseFieldDeclarations' three-step strip (JSDoc, block, line).
+  const cleaned = source
+    .replace(/\/\*\*[\s\S]*?\*\//g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
+
+  const keys = new Set<string>();
+  // Pattern 1: orchCfg?.key (primary)
+  const p1 = /\borchCfg\?\.(\w+)/g;
+  // Pattern 2: orchCfg.key (non-optional variant; defensive)
+  const p2 = /\borchCfg\.(\w+)/g;
+
+  for (const pattern of [p1, p2]) {
+    pattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(cleaned)) !== null) {
+      keys.add(m[1]);
+    }
+  }
+
+  return keys;
+}
+
+// ---------------------------------------------------------------------------
 // YAML Flattener
 // ---------------------------------------------------------------------------
 

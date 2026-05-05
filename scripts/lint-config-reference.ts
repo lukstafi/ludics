@@ -20,6 +20,7 @@ import YAML from "yaml";
 import {
   extractInterfacePaths,
   extractMagPathsFromSource,
+  extractAdapterReadKeysFromSource,
   flattenYamlPaths,
   collectArrayPaths,
   comparePaths,
@@ -33,7 +34,34 @@ export interface RunLintResult {
   missingFromTs: string[];
   /** Harness paths not present in the reference YAML. */
   harnessExtras: string[];
+  /**
+   * mag.orchestration.<leaf> YAML keys not read by either adapter
+   * (silently inert). Empty when every documented leaf has an
+   * adapter read site, or is listed in `IGNORE_ADAPTER_READ`.
+   * Distinct from `inertSelfTestErrors` so a complete extractor
+   * miss is not misdiagnosed as every YAML key being inert.
+   */
+  inertYamlKeys: string[];
+  /**
+   * Adapter source files for which `extractAdapterReadKeysFromSource`
+   * returned the empty set — a self-test against silent regex drift.
+   * Non-empty means the literal `orchCfg?.<key>` access patterns the
+   * extractor depends on may have been DRY-refactored behind a
+   * helper, so the lint can no longer protect anything.
+   */
+  inertSelfTestErrors: string[];
 }
+
+/**
+ * mag.orchestration.<leaf> keys intentionally not read by any
+ * adapter (e.g., a future YAML key consumed only by a CLI command).
+ * One-line per-entry rationale required when adding an entry —
+ * silent escape hatches defeat the whole lint.
+ *
+ * Initially empty: gh-ludics-496 verified every current leaf is
+ * covered by at least one adapter read site.
+ */
+const IGNORE_ADAPTER_READ = new Set<string>();
 
 /**
  * Run the bidirectional drift check against an arbitrary repo root. Reads
@@ -139,14 +167,61 @@ export function runLint(root: string): RunLintResult {
   }
   harnessExtras.sort();
 
+  // 8. Direction 4 (gh-ludics-496): every documented leaf under
+  //    `mag.orchestration:` in the reference YAML must have at least
+  //    one literal read site in `src/adapters/t3code.ts` OR
+  //    `src/adapters/tmux-adapter.ts`. Disjunctive because
+  //    `default_mode` / `default_coder` / `default_reviewer` are
+  //    t3code-only concepts. First-segment granularity:
+  //    `phase_timeouts` covers `phase_timeouts.work` etc.,
+  //    `substantive_stall` covers its inner leaves, because the
+  //    adapters spread the whole record / pass it into a shared
+  //    parser.
+  const orchBlock =
+    yamlObj &&
+    typeof yamlObj === "object" &&
+    yamlObj.mag &&
+    typeof yamlObj.mag === "object"
+      ? (yamlObj.mag as Record<string, unknown>).orchestration
+      : undefined;
+  const documentedOrchKeys =
+    orchBlock && typeof orchBlock === "object"
+      ? Object.keys(orchBlock as Record<string, unknown>)
+      : [];
+
+  const t3codeAdapterPath = join(root, "src", "adapters", "t3code.ts");
+  const tmuxAdapterPath = join(root, "src", "adapters", "tmux-adapter.ts");
+  const tCovered = extractAdapterReadKeysFromSource(t3codeAdapterPath);
+  const mCovered = extractAdapterReadKeysFromSource(tmuxAdapterPath);
+
+  const inertYamlKeys: string[] = [];
+  for (const k of documentedOrchKeys) {
+    if (IGNORE_ADAPTER_READ.has(k)) continue;
+    if (tCovered.has(k)) continue;
+    if (mCovered.has(k)) continue;
+    inertYamlKeys.push(k);
+  }
+  inertYamlKeys.sort();
+
+  const inertSelfTestErrors: string[] = [];
+  if (tCovered.size === 0) inertSelfTestErrors.push("src/adapters/t3code.ts");
+  if (mCovered.size === 0) inertSelfTestErrors.push("src/adapters/tmux-adapter.ts");
+  inertSelfTestErrors.sort();
+
   const errors =
-    missingFromYaml.length + missingFromTs.length + harnessExtras.length;
+    missingFromYaml.length +
+    missingFromTs.length +
+    harnessExtras.length +
+    inertYamlKeys.length +
+    inertSelfTestErrors.length;
 
   return {
     exitCode: errors > 0 ? 1 : 0,
     missingFromYaml,
     missingFromTs,
     harnessExtras,
+    inertYamlKeys,
+    inertSelfTestErrors,
   };
 }
 
@@ -181,6 +256,28 @@ if (import.meta.main) {
     );
     for (const p of result.harnessExtras) {
       console.error(`     - ${p}`);
+    }
+  }
+
+  if (result.inertYamlKeys.length > 0) {
+    console.error(
+      "\n❌  config.reference.yaml documents mag.orchestration keys " +
+        "not read by either adapter (silently inert):",
+    );
+    for (const k of result.inertYamlKeys) {
+      console.error(`     - mag.orchestration.${k}`);
+    }
+  }
+
+  if (result.inertSelfTestErrors.length > 0) {
+    console.error(
+      "\n❌  Adapter-source extractor returned zero keys for these " +
+        "files — the literal `orchCfg?.<key>` patterns may have been " +
+        "DRY-refactored behind a helper. Re-extend " +
+        "scripts/lint-config-helpers.ts:extractAdapterReadKeysFromSource:",
+    );
+    for (const f of result.inertSelfTestErrors) {
+      console.error(`     - ${f}`);
     }
   }
 
