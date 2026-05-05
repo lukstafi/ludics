@@ -8,8 +8,11 @@ queue-required-args: [task]
 
 # /ludics-process-suggestions - Process Retrospective Suggestions
 
-Process a completed task's retrospective to create follow-up tasks from
-substantive suggestions. Nitpicky suggestions are skipped with reasoning.
+Process a completed task's retrospective and route each suggestion to
+one of three dispositions: substantive items become follow-up tasks
+(`create-task`), recurring competent-SWE-filter items are journaled to
+`docs/swe-textbook.md` (`capture-textbook`), and one-off hygiene items
+are dropped with logged reasoning (`skip-with-reason`).
 
 <!-- section:trigger -->
 ## Trigger
@@ -98,15 +101,56 @@ Manual: `ludics mag process-suggestions <task-id>`
    For each existing follow-up, read its title. Skip any new suggestion that
    substantially overlaps with an existing follow-up title or theme.
 
+   The `capture-textbook` disposition (introduced in step 8) runs a
+   *separate* duplicate guard whose canonical implementation lives at
+   `docs/swe-textbook.md#capture-idempotency`. Do not duplicate that
+   logic here — when the time comes (step 8a), pass `ENTRY_HEADLINE`
+   and `PRECIPITATING_RETRO` to the canonical check and treat its
+   `append` / `skip-duplicate` outputs per its prose contract. The
+   single-source-of-truth invariant for that guard is enforced by the
+   shape test in `docs/swe-textbook.shape.test.ts`.
+
 <!-- section:classify -->
-8. Classify each distinct suggestion as substantive (create a task) or
-   nitpicky (skip with logged reasoning).
+8. Classify each distinct suggestion into one of three dispositions:
+
+   - **Substantive process/code/workflow item** → `create-task`.
+     Architectural change, missing error handling, real test-coverage
+     gap, workflow improvement that reduces friction across multiple
+     tasks. See "Judgment Criteria" below.
+   - **Recurring-but-not-doctrine** (competent-SWE-filter item with
+     real signal but too general for always-loaded prompts) →
+     `capture-textbook`. The lesson is true but obvious to a competent
+     engineer; capturing it as always-loaded prompt text would just
+     bloat the prompts. Journaled to `docs/swe-textbook.md` instead.
+     See `harness/claude-memory/feedback_competent_swe_filter.md`.
+   - **One-off hygiene/style/reminder item** → `skip-with-reason`.
+     Variable renaming, comment rewording, formatting nits, suggestions
+     already covered by existing tasks.
 
    When several substantive suggestions touch neighboring code (same file,
    same function, or tightly-coupled modules), combine them into one
    follow-up task. The title reflects the combined scope and the context
    lists the constituent suggestions. A single coherent cleanup beats three
    tiny tasks.
+
+<!-- section:capture-textbook -->
+8a. For each `capture-textbook` suggestion, derive `ENTRY_HEADLINE`
+    (a short pattern-naming phrase) and use `$ARGUMENTS` as
+    `PRECIPITATING_RETRO`. Run the canonical idempotency check at
+    `docs/swe-textbook.md#capture-idempotency` and treat its outputs
+    per that section's prose contract:
+
+    - On `append`: write a fresh `### ENTRY_HEADLINE` block to
+      `docs/swe-textbook.md` with the four required labelled fields
+      (`Description:`, `Precipitating retro:`, `Filter decision:`,
+      and optionally `Second occurrence:`).
+    - On `skip-duplicate`: do not append a new entry. You MAY amend
+      the matched entry's `Second occurrence:` line with the new
+      precipitating retro and a one-line note. Record the existing
+      entry as the capture target in the result JSON.
+
+    Only `create-task` items create Ludics tasks (step 9); the
+    `capture-textbook` path bypasses task creation entirely.
 
 <!-- section:create-tasks -->
 9. For substantive suggestions (or groups of related suggestions):
@@ -160,8 +204,16 @@ Manual: `ludics mag process-suggestions <task-id>`
       "timestamp": "<ISO timestamp>",
       "created": <count>,
       "skipped": <count>,
+      "captured": <count>,
       "tasks": ["task-xxx", ...],
-      "skipReasons": [{"suggestion": "...", "reason": "..."}]
+      "skipReasons": [{"suggestion": "...", "reason": "..."}],
+      "textbookCaptures": [
+        {
+          "suggestion": "...",
+          "entryHeadline": "...",
+          "precipitatingRetro": "..."
+        }
+      ]
     }
     RESULT_EOF
     ```
@@ -181,6 +233,18 @@ Substantive (create a task):
   reviewer flagged the issue and the coder didn't address it before task
   completion. Lean toward substantive unless the issue is purely stylistic
   (variable naming, formatting).
+
+Recurring-but-not-doctrine (capture in textbook):
+- The suggestion identifies a real lesson — a competent engineer
+  *could* miss it under deadline pressure or in unfamiliar territory
+  — but the lesson is too general or too obvious to add as
+  always-loaded prompt text without bloating prompts.
+- The pattern has been seen before in retros (recurrence raises
+  signal) but has not crossed the threshold for codification as
+  doctrine.
+- Items the competent-SWE filter
+  (`harness/claude-memory/feedback_competent_swe_filter.md`) would
+  otherwise drop silently, where the journal is the right home.
 
 Nitpicky (skip):
 - Variable/function renaming for style preference.
@@ -207,5 +271,6 @@ Report a summary after processing:
 STATUS: completed | empty | error
 CREATED: <count>
 SKIPPED: <count>
+CAPTURED: <count>
 TASKS: [list of created task IDs]
 ```

@@ -49,6 +49,7 @@ Extract the final ` ```json ` block from the worker. Fields:
 | `issues_skipped` | result JSON | 0 |
 | `files_processed` | result JSON | 0 |
 | `summary` | result output | empty string |
+| `textbookCaptures` | result JSON | `[]` |
 
 Routing by status:
 - **completed** — write the result JSON.
@@ -62,14 +63,20 @@ Routing by status:
   "issues_created": 0,
   "issues_updated": 0,
   "issues_skipped": 0,
-  "files_processed": 0
+  "files_processed": 0,
+  "textbookCaptures": []
 }
 ```
 
-Output: `"Created N issues, updated N, skipped N (N files processed)"`.
+Output: `"Created N issues, updated N, skipped N, captured N to textbook (N files processed)"`.
 
 ## Delegation strategy
 
 - Worker (`/ludics-feedback-digest-worker`) runs in isolated context: feedback
-  reading, theme extraction, issue dedup/filing, file cleanup.
-- Orchestrator (this skill) runs inline in Mag: result JSON.
+  reading, theme extraction, issue dedup/filing, file cleanup, and the
+  `capture-textbook` disposition (step 3a) that journals
+  competent-SWE-filter-rejected lessons to `docs/swe-textbook.md`.
+- Orchestrator (this skill) runs inline in Mag: result JSON. The
+  orchestrator preserves worker-reported `textbookCaptures` in the
+  result JSON; it does **not** read or write `docs/swe-textbook.md`
+  itself — the worker is the only writing surface.

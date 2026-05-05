@@ -227,6 +227,7 @@ summarises, it does not replace. Vocabulary matches "Field Annotations" above.
 | feedback-digest | `issues_skipped` | number | required | 0 when none; may be absent on `status = "error"` only |
 | feedback-digest | `files_processed` | number | required | 0 when none; may be absent on `status = "error"` only |
 | feedback-digest | `summary` | string | required | |
+| feedback-digest | `textbookCaptures` | object[] | optional | items `{feedbackItem, entryHeadline, precipitatingRetro}`; default `[]` |
 
 ## Error Handling
 
