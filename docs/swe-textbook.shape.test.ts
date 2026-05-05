@@ -148,6 +148,24 @@ describe("docs/swe-textbook.md (AC1, AC2, AC5, AC6)", () => {
     expect(guard).toContain("PRECIPITATING_RETRO");
   });
 
+  test("AC5-positive — input contract states ENTRY_HEADLINE excludes the leading `### ` prefix", () => {
+    // Regression for codex review on PR #499: the original contract
+    // said "ENTRY_HEADLINE — the proposed `### <headline>` text",
+    // but the bash snippet does `grep -Fq "### ${ENTRY_HEADLINE}"` —
+    // a caller following the contract literally produces `### ###
+    // <headline>` and the guard never matches existing entries.
+    // Fix: contract names the bare headline phrase only; the guard
+    // prepends `### ` itself. Mutation: revert to "the proposed `###
+    // <headline>` text" → assertion fails on the "without" literal.
+    const guard = slice(
+      body,
+      /^## Capture Idempotency/,
+      /^### "Issue is updated"/,
+    );
+    expect(guard).toMatch(/ENTRY_HEADLINE[\s\S]{0,200}without[\s\S]{0,40}leading[\s\S]{0,40}###/i);
+    expect(guard).toMatch(/guard prepends `### `/i);
+  });
+
   test("AC6 — at least one `### ` headline exists and the seed entry cites gh-ocannl-270", () => {
     const headlines = body.match(/^### /gm);
     expect(headlines).not.toBeNull();

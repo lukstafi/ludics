@@ -43,7 +43,11 @@ section enforces.
 
 Inputs from the calling skill:
 
-- `ENTRY_HEADLINE` — the proposed `### <headline>` text.
+- `ENTRY_HEADLINE` — the proposed headline text **without** the
+  leading `### ` markdown prefix; the guard prepends `### ` itself
+  when it scans the textbook. (E.g., for an entry that will render
+  as `### My pattern name`, the caller passes `ENTRY_HEADLINE="My
+  pattern name"`.)
 - `PRECIPITATING_RETRO` — the proposed `Precipitating retro:` value.
 
 Outputs:
