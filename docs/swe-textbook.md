@@ -97,3 +97,75 @@ the "obvious-to-experienced-engineer" bucket and be discarded from a
 competent engineers under deadline pressure (the contracted artifact
 lives on the *other* side of the fence). Captured here rather than
 skipped silently.
+
+### New OrchestrationConfig fields require parse+merge in adapter init
+
+Description: A typed configuration object that drives runtime
+behaviour usually has four independent surfaces a new field has to
+land on: the interface declaration, the in-code default, any
+backfill the persistent-state migrator applies to old records, and
+the parse+merge step the initialisation path performs against the
+user-facing YAML. The first three are easy to spot — they live next
+to each other in the same file or test — and a typed compiler will
+flag drift between them. The fourth is the most distant from the
+field declaration and the least visible to the type checker: if the
+init path never reads the YAML key, the documented config is
+silently inert and the field always takes its default. Adding a
+shared parser called from each init consumer is the cheapest way to
+keep the fourth surface visible. The pattern: a single helper named
+after the value it produces, called from each adapter's existing
+config-load consumer, fed into the partial-config record that the
+defaults function consumes — so the adapter knows to read the YAML,
+the parser knows the shape, and the merge knows the precedence.
+Test the parser as a unit; integration coverage at the call sites
+catches regressions there.
+
+Precipitating retro: `task-a670cdbf` round-2 review of PR #493
+(settled-no-signal / hung-detection split). The reviewer's blocking
+line: the new `mag.orchestration.substantive_stall.*` YAML keys
+were documented and runtime-honoured, but neither adapter init
+extracted them from the YAML — so the keys were silently inert
+until the round-2 fix shipped a shared
+`parseSubstantiveStallOverrides` parser called from both adapter
+call sites.
+
+Filter decision: Under the competent-SWE filter this is an
+"obvious-to-experienced-engineer" doctrine reminder — wiring up the
+read site is part of the same change as adding the field, by
+definition. Captured here rather than promoted to always-loaded
+agent prompts because the failure mode survives competent engineers
+under deadline pressure when the four surfaces sit in different
+files. The same precipitating retro is closed mechanically by the
+adapter-call-site lint shipped in gh-ludics-496, which makes the
+typed-default-plus-backfill checkbox no longer sufficient.
+
+### "Adapter init reads YAML" is a separate AC for OrchestrationConfig field additions
+
+Description: When an acceptance criteria list enumerates the surfaces
+that have to change for a new typed config field — interface,
+default, migration backfill — the adapter init path's read of the
+user-facing YAML is easy to bundle into the umbrella line "config
+field exists". That bundling lets a typed-interface-plus-default
+checkbox count as completion even when the YAML is silently
+ignored. The remedy is to give the init-side read its own AC,
+phrased as a behavioural property at the user-visible boundary
+("setting the YAML key to a non-default value produces the
+non-default behaviour"), distinct from any structural AC about the
+type or the default. The behavioural framing makes the AC
+falsifiable by an end-to-end test that sets the YAML and observes
+the runtime, not by an inspection of the type declaration.
+
+Precipitating retro: `task-a670cdbf` round-2 review of PR #493. The
+proposal's AC list bundled the YAML-read step into "config field
+exists"; round-1 implementation satisfied the structural ACs without
+satisfying the behavioural one, and the gap surfaced only at
+round-2 review.
+
+Filter decision: Under the competent-SWE filter this is also
+"obvious-to-experienced-engineer" doctrine — separate ACs for
+separate surfaces is general AC-writing hygiene. Captured here
+rather than promoted to AC templates loaded by always-on agent
+prompts because the doctrine is most useful as guidance to humans
+writing proposals, not as a rule enforced at every coder turn. The
+mechanical lint from the sibling entry above closes the same
+failure mode for the specific case of `OrchestrationConfig` fields.

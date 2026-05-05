@@ -308,6 +308,51 @@ describe("skills/worker-conventions.md (AC4d field-contract reference)", () => {
   });
 });
 
+// gh-ludics-496 textbook entries (AC9 of that proposal). Pins both new
+// `### …` blocks and their shared `task-a670cdbf` precipitating retro.
+// Mutation: drop either entry → assertion fails on the headline literal;
+// drop the retro citation → assertion fails on `task-a670cdbf`.
+describe("docs/swe-textbook.md (gh-ludics-496 entries)", () => {
+  const body = read(TEXTBOOK_PATH);
+
+  const ENTRY_A_HEADLINE =
+    "### New OrchestrationConfig fields require parse+merge in adapter init";
+  const ENTRY_B_HEADLINE =
+    '### "Adapter init reads YAML" is a separate AC for OrchestrationConfig field additions';
+
+  test("entry A — present with all four labelled fields and the retro", () => {
+    const entryA = slice(
+      body,
+      new RegExp("^" + ENTRY_A_HEADLINE.replace(/[+]/g, "\\+")),
+      new RegExp(
+        "^" + ENTRY_B_HEADLINE.replace(/[.*+?^${}()|[\]\\"]/g, "\\$&"),
+      ),
+    );
+    expect(entryA).toContain("Description:");
+    expect(entryA).toContain("Precipitating retro:");
+    expect(entryA).toContain("Filter decision:");
+    expect(entryA).toContain("task-a670cdbf");
+  });
+
+  test("entry B — present with all four labelled fields and the retro", () => {
+    const entryB = sliceToEnd(
+      body,
+      new RegExp(
+        "^" + ENTRY_B_HEADLINE.replace(/[.*+?^${}()|[\]\\"]/g, "\\$&"),
+      ),
+    );
+    expect(entryB).toContain("Description:");
+    expect(entryB).toContain("Precipitating retro:");
+    expect(entryB).toContain("Filter decision:");
+    expect(entryB).toContain("task-a670cdbf");
+  });
+
+  test("both headlines literally present in the textbook body", () => {
+    expect(body).toContain(ENTRY_A_HEADLINE);
+    expect(body).toContain(ENTRY_B_HEADLINE);
+  });
+});
+
 describe("AC7 — negative control on agent-loaded prompts", () => {
   test("no `skills/**.md` outside the AC7 allowlist mentions `swe-textbook`", () => {
     // Harness: walk every .md file under skills/ and check the
