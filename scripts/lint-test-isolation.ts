@@ -54,6 +54,19 @@ const SCAN_EXCLUDE = new Set<string>([
   "src/test-utils.ts",
 ]);
 
+/**
+ * Failure-message heuristic surfaced by both the CLI summary
+ * (when warningCount > 0) and the integration test's guarded
+ * throw. Names `withSyntheticHarness` (positive recommendation —
+ * actually isolates the harness env) and the pin-bump fallback.
+ * If `withSyntheticHarness` is renamed in src/test-utils.ts,
+ * update RULE_3_TARGETS / hasIsolationSetup AND this string in
+ * the same PR (gh-ludics-497).
+ */
+export function formatWarningCountHeuristic(warningCount: number): string {
+  return `(${warningCount} warnings — to silence a new test: wrap with withSyntheticHarness(beforeEach, afterEach) from src/test-utils.ts (preferred — actually isolates the harness env), OR bump the pinned count in scripts/lint-test-isolation.test.ts (only for pure-unit tests with no harness needs).`;
+}
+
 // ---------------------------------------------------------------------------
 // Issue shape
 // ---------------------------------------------------------------------------
@@ -470,11 +483,13 @@ export function runCli(options: RunCliOptions = {}): RunCliResult {
   }
 
   if (errorCount === 0) {
-    const suffix =
-      warningCount > 0
-        ? ` (${warningCount} warning${warningCount === 1 ? "" : "s"})`
-        : "";
-    writeOut(`✅  No test-isolation anti-patterns detected${suffix}.`);
+    if (warningCount > 0) {
+      writeOut(
+        `✅  No test-isolation anti-patterns detected ${formatWarningCountHeuristic(warningCount)}`,
+      );
+    } else {
+      writeOut(`✅  No test-isolation anti-patterns detected.`);
+    }
     return { exitCode: 0, errorCount, warningCount, issues };
   }
   writeErr(

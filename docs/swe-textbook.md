@@ -169,3 +169,19 @@ prompts because the doctrine is most useful as guidance to humans
 writing proposals, not as a rule enforced at every coder turn. The
 mechanical lint from the sibling entry above closes the same
 failure mode for the specific case of `OrchestrationConfig` fields.
+
+### Cherry-picking one named lint into pair-coder-work.md is editorially inconsistent
+
+Description: Named-lint enumeration in `pair-coder-work.md` is editorially inconsistent unless you name **all** repo-wide gates; cherry-picking one (`lint:test-isolation`) advertises it as special. The competent-SWE filter applies — the other lints (`bun run lint`, `bun run typecheck`, `bun run lint:contracts`, etc.) are not enumerated either. The skill says "Build, lint, and run targeted tests before signaling done" without naming individual scripts; adding one named lint inverts that established editorial stance.
+
+Precipitating retro: `task-a670cdbf` round-2 review of PR #493; aggregated via `/ludics-feedback-digest` 2026-05-04 (gh-ludics-497 issue body action 1).
+
+Filter decision: Under the competent-SWE filter this is doctrine ("remind coders to run X") and would be skipped from a `/ludics-process-suggestions` run. Captured here rather than promoted to always-loaded agent prompts because surfacing the failure message at the moment of trip (gh-ludics-497 action 2c) accomplishes the ergonomic goal without naming the lint in a checklist.
+
+### "Optional pre-commit hook" feedback-digest items must verify the infra exists
+
+Description: Feedback-digest items proposing optional pre-commit hook integration if a Husky setup exists should verify the infrastructure is present before treating as in-scope. Introducing Husky is a separate decision affecting every commit on every machine; not a workflow-feedback fix. The verification pattern: `ls .husky` plus a `package.json` grep for `"husky"` / `"lint-staged"` keys — both empty means the proposal's "if exists" antecedent is false and the action is captured-as-doctrine rather than executed.
+
+Precipitating retro: `task-a670cdbf` round-2 review of PR #493; aggregated via `/ludics-feedback-digest` 2026-05-04 (gh-ludics-497 issue body action 3).
+
+Filter decision: Under the competent-SWE filter this is doctrine — verifying infrastructure preconditions before acting on a conditional suggestion is general engineering hygiene. Captured here because the failure mode is asymmetric: feedback-digest aggregation tends to bundle "if X exists, also do Y" suggestions without checking X, and a competent reviewer can still miss that the antecedent never held.
