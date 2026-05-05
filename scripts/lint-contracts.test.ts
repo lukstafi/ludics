@@ -10,6 +10,7 @@ import {
   lintPair,
   hasOrchestratorRoutingSection,
   runCli,
+  formatContractsHeuristic,
 } from "./lint-contracts.ts";
 
 // ---------------------------------------------------------------------------
@@ -514,11 +515,11 @@ describe("integration", () => {
       writeOut: () => {},
     });
     expect(result.errorCount).toBe(0);
-    // When this fails: either a new skill pair introduced a worker/orchestrator
-    // field-contract drift (regression — fix the pair) OR a matcher improvement
-    // found new real-world hits (coverage upgrade — justify and update the
-    // count).
-    expect(result.warningCount).toBe(0);
+    const expectedWarningCount = 0;
+    if (result.warningCount !== expectedWarningCount) {
+      throw new Error(formatContractsHeuristic(result.warningCount));
+    }
+    expect(result.warningCount).toBe(expectedWarningCount);
   });
 
   // Floor-count guards for the two regex-over-markdown extractors

@@ -22,6 +22,18 @@ import { join, basename } from "path";
 const root = join(import.meta.dir, "..");
 const skillsDir = join(root, "skills");
 
+/**
+ * Failure-message heuristic surfaced by the integration test's
+ * guarded throw when the pinned contracts warning count drifts.
+ * Distinct from the test-isolation heuristic: contracts-lint
+ * failure mode is field-contract drift (regression — fix the
+ * pair) OR matcher coverage upgrade (justify and update the
+ * count). gh-ludics-497.
+ */
+export function formatContractsHeuristic(warningCount: number): string {
+  return `(${warningCount} warnings — either a new skill pair introduced a worker/orchestrator field-contract drift (regression — fix the pair), OR a matcher improvement found new real-world hits (coverage upgrade — justify and update the pinned count in scripts/lint-contracts.test.ts).`;
+}
+
 // ---------------------------------------------------------------------------
 // Pure extractors (exported for tests)
 // ---------------------------------------------------------------------------

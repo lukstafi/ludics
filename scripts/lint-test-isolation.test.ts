@@ -13,6 +13,7 @@ import {
   listTestFiles,
   runCli,
   RULE_3_TARGETS,
+  formatWarningCountHeuristic,
 } from "./lint-test-isolation.ts";
 
 // ---------------------------------------------------------------------------
@@ -790,6 +791,55 @@ describe("runCli", () => {
       cleanup();
     }
   });
+
+  test("CLI summary appends heuristic when warningCount > 0 (gh-ludics-497 AC2 positive)", () => {
+    // Rule-3 fixture produces exactly one warning, no errors. Exercises the
+    // success-summary branch in runCli with warningCount > 0 so the heuristic
+    // body is appended to the writeOut sink.
+    const { dir, cleanup } = makeRepoFixture({
+      "src/r3.test.ts": "import { harnessDir } from './config.ts';\n",
+      "src/config.ts": "export function harnessDir(){}",
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.exitCode).toBe(0);
+      expect(r.errorCount).toBe(0);
+      expect(r.warningCount).toBe(1);
+      const summary = r.out.join("\n");
+      expect(summary).toContain("✅  No test-isolation anti-patterns detected");
+      expect(summary).toContain(
+        "wrap with withSyntheticHarness(beforeEach, afterEach) from src/test-utils.ts",
+      );
+      expect(summary).toContain(
+        "bump the pinned count in scripts/lint-test-isolation.test.ts",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("CLI summary omits heuristic when warningCount === 0 (gh-ludics-497 AC2 negative)", () => {
+    // Clean fixture — zero-warning success summary must remain byte-identical
+    // to the pre-gh-ludics-497 output so any downstream success-grep keeps
+    // matching.
+    const { dir, cleanup } = makeRepoFixture({
+      "src/safe.test.ts": [
+        "import { foo } from './foo.ts';",
+        "beforeEach(() => { process.env.LUDICS_HARNESS_DIR = '/tmp/x'; });",
+      ].join("\n"),
+      "src/foo.ts": "export const foo = 1;",
+    });
+    try {
+      const r = driveRunCli(dir);
+      expect(r.warningCount).toBe(0);
+      const summary = r.out.join("\n");
+      expect(summary).toBe("✅  No test-isolation anti-patterns detected.");
+      expect(summary).not.toContain("withSyntheticHarness");
+      expect(summary).not.toContain("bump the pinned count");
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -806,11 +856,11 @@ describe("integration", () => {
       writeOut: () => {},
     });
     expect(result.errorCount).toBe(0);
-    // When this fails: either a new test introduced an unhandled isolation
-    // anti-pattern (regression — fix the test) OR a matcher improvement
-    // found new real-world hits (coverage upgrade — justify and update the
-    // count).
-    expect(result.warningCount).toBe(20);
+    const expectedWarningCount = 20;
+    if (result.warningCount !== expectedWarningCount) {
+      throw new Error(formatWarningCountHeuristic(result.warningCount));
+    }
+    expect(result.warningCount).toBe(expectedWarningCount);
   });
 });
 
