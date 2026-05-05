@@ -1,12 +1,14 @@
 import { describe, test, expect } from "bun:test";
 import { spawnSync } from "bun";
-import { readFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import {
   extractInterfaceBody,
   parseFieldDeclarations,
   extractInterfacePaths,
   extractMagPathsFromSource,
+  extractAdapterReadKeysFromSource,
   flattenYamlPaths,
   collectArrayPaths,
   comparePaths,
@@ -332,6 +334,110 @@ describe("extractMagPathsFromSource floor count", () => {
     const repoRoot = join(import.meta.dir, "..");
     const set = extractMagPathsFromSource(join(repoRoot, "src"));
     expect(set.size).toBeGreaterThanOrEqual(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractAdapterReadKeysFromSource (gh-ludics-496)
+//
+// Same DRY-refactor-safety failure-mode as extractMagPathsFromSource (see
+// SILENT-DRIFT WARNING in scripts/lint-config-helpers.ts). The floor-count
+// tests below pin the live extractor against an inadvertent collapse of
+// `orchCfg?.<key>` literals behind a helper. Failure here means **either**:
+//   (a) a DRY refactor collapsed call sites — register the new helper in
+//       extractAdapterReadKeysFromSource, then re-run this test; or
+//   (b) keys were intentionally removed — lower the floor and note here.
+// Today t3code yields 11 distinct keys (floor 9 with slack); tmux yields
+// 8 (floor 6 with slack).
+// ---------------------------------------------------------------------------
+
+describe("extractAdapterReadKeysFromSource", () => {
+  function withTmpFile<T>(body: string, fn: (path: string) => T): T {
+    const dir = mkdtempSync(join(tmpdir(), "extract-orch-keys-"));
+    const path = join(dir, "adapter.ts");
+    writeFileSync(path, body);
+    try {
+      return fn(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("(a) positive — recognises orchCfg?.<key> and orchCfg.<key>", () => {
+    const src = [
+      "const m = orchCfg?.coder_model as string | undefined;",
+      "const t = orchCfg?.phase_timeouts;",
+      "const a = orchCfg.legacy_alias;",
+      "",
+    ].join("\n");
+    withTmpFile(src, (path) => {
+      const set = extractAdapterReadKeysFromSource(path);
+      expect(set.size).toBe(3);
+      expect(set.has("coder_model")).toBe(true);
+      expect(set.has("phase_timeouts")).toBe(true);
+      expect(set.has("legacy_alias")).toBe(true);
+    });
+  });
+
+  test("(b) negative — source without orchCfg returns empty set", () => {
+    const src = "const x = otherCfg?.coder_model;\nexport {};\n";
+    withTmpFile(src, (path) => {
+      const set = extractAdapterReadKeysFromSource(path);
+      expect(set.size).toBe(0);
+    });
+  });
+
+  test("(b') comments do not count — // and /* */ mentions ignored", () => {
+    // Mutation: drop the comment-strip in extractAdapterReadKeysFromSource
+    // → this test's `set.size === 0` flips to 3 (three comment hits).
+    const src = [
+      "// orchCfg.commented_line",
+      "/* orchCfg?.commented_block */",
+      "/**",
+      " * orchCfg?.jsdoc_mention",
+      " */",
+      "export {};",
+      "",
+    ].join("\n");
+    withTmpFile(src, (path) => {
+      const set = extractAdapterReadKeysFromSource(path);
+      expect(set.size).toBe(0);
+    });
+  });
+
+  test("(c) floor count — live src/adapters/t3code.ts yields >= 9 keys", () => {
+    const repoRoot = join(import.meta.dir, "..");
+    const set = extractAdapterReadKeysFromSource(
+      join(repoRoot, "src", "adapters", "t3code.ts"),
+    );
+    expect(set.size).toBeGreaterThanOrEqual(9);
+  });
+
+  test("(d) floor count — live src/adapters/tmux-adapter.ts yields >= 6 keys", () => {
+    const repoRoot = join(import.meta.dir, "..");
+    const set = extractAdapterReadKeysFromSource(
+      join(repoRoot, "src", "adapters", "tmux-adapter.ts"),
+    );
+    expect(set.size).toBeGreaterThanOrEqual(6);
+  });
+
+  test("(e) motivating keys — t3code reads phase_timeouts AND substantive_stall", () => {
+    // Pins the precise failure mode the lint exists to prevent: if either
+    // motivating key drops out of the live extractor, the new lint stops
+    // covering its own precipitating class (task-a670cdbf).
+    const repoRoot = join(import.meta.dir, "..");
+    const set = extractAdapterReadKeysFromSource(
+      join(repoRoot, "src", "adapters", "t3code.ts"),
+    );
+    expect(set.has("phase_timeouts")).toBe(true);
+    expect(set.has("substantive_stall")).toBe(true);
+  });
+
+  test("(f) self-test floor — missing file returns empty set, no throw", () => {
+    const set = extractAdapterReadKeysFromSource(
+      join(tmpdir(), "definitely-does-not-exist-" + Date.now() + ".ts"),
+    );
+    expect(set.size).toBe(0);
   });
 });
 
