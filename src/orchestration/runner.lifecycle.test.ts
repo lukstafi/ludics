@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, afterEach, spyOn, setDefaultTimeout
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isAgentDone } from "./phases.ts";
+import * as phases from "./phases.ts";
 import { updateTurnLifecycle } from "./transport-t3code.ts";
 import { ensureTtydAlive, refreshAgentStatuses, runOrchestration, runWrongFilenameRecovery, __resetTtydCheckGateForTests } from "./runner.ts";
 import * as tmuxAdapter from "../adapters/tmux-adapter.ts";
@@ -1346,14 +1347,18 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
   test("exits early when tmux sibling state has a mismatched PID", async () => {
     const state = makeState({ slot: 4, backend: "tmux", phase: "work" }, peerSyncDir);
     const wrongPid = process.pid + 1;
+    const tmuxSlotPath = join(harness, "orchestration", "tmux-slot-4.json");
     writeFileSync(
-      join(harness, "orchestration", "tmux-slot-4.json"),
+      tmuxSlotPath,
       JSON.stringify({
         orchestration: { pid: wrongPid, stateFile: "x", mode: "pair" },
         sessionNames: { coder: "s", reviewer: "r" },
         ttydPids: {},
       }),
     );
+    // gh-ludics-509: ensure the seeded wrong PID is treated as live so the
+    // reclaim path doesn't fire (defends against host PID-recycling flakes).
+    const aliveSpy = spyOn(t3codeServer, "processAlive").mockImplementation(() => true);
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
     try {
       await runOrchestration(state, stubTransport());
@@ -1362,22 +1367,31 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
       expect(msgs.some((m: string) => m.includes(String(process.pid)))).toBe(true);
     } finally {
       errSpy.mockRestore();
+      aliveSpy.mockRestore();
     }
+    // AC2 invariant: a live mismatch must NOT rewrite the sibling state.
+    // (A mutation that wrote `process.pid` and then logged/returned would
+    // still fire the "PID mismatch" log above; this assertion catches it.)
+    const persisted = JSON.parse(readFileSync(tmuxSlotPath, "utf-8"));
+    expect(persisted.orchestration.pid).toBe(wrongPid);
   });
 
   test("PID mismatch exits immediately even during the startup grace window", async () => {
-    // Grace only covers missing-file races; a PID mismatch is a real conflict
-    // (parent always writes our own pid) and must exit without waiting.
+    // Grace only covers missing-file races; a live PID mismatch is a real
+    // conflict (parent always writes our own pid) and must exit without waiting.
     process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = "60000";
     const state = makeState({ slot: 8, backend: "tmux", phase: "work" }, peerSyncDir);
+    const wrongPid = process.pid + 1;
+    const tmuxSlotPath = join(harness, "orchestration", "tmux-slot-8.json");
     writeFileSync(
-      join(harness, "orchestration", "tmux-slot-8.json"),
+      tmuxSlotPath,
       JSON.stringify({
-        orchestration: { pid: process.pid + 1, stateFile: "x", mode: "pair" },
+        orchestration: { pid: wrongPid, stateFile: "x", mode: "pair" },
         sessionNames: { coder: "s", reviewer: "r" },
         ttydPids: {},
       }),
     );
+    const aliveSpy = spyOn(t3codeServer, "processAlive").mockImplementation(() => true);
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
     const before = Date.now();
     try {
@@ -1388,19 +1402,25 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
       expect(msgs.some((m: string) => m.includes("PID mismatch"))).toBe(true);
     } finally {
       errSpy.mockRestore();
+      aliveSpy.mockRestore();
     }
+    // AC2 invariant: live mismatch must NOT rewrite the sibling state.
+    const persisted = JSON.parse(readFileSync(tmuxSlotPath, "utf-8"));
+    expect(persisted.orchestration.pid).toBe(wrongPid);
   });
 
   test("exits early when t3code sibling state has a mismatched PID", async () => {
     const state = makeState({ slot: 5, backend: "t3code", phase: "work" }, peerSyncDir);
     const wrongPid = process.pid + 1;
+    const t3codeSlotPath = join(harness, "t3code", "slot-5.json");
     writeFileSync(
-      join(harness, "t3code", "slot-5.json"),
+      t3codeSlotPath,
       JSON.stringify({
         orchestration: { pid: wrongPid, stateFile: "x", mode: "pair" },
         threads: [],
       }),
     );
+    const aliveSpy = spyOn(t3codeServer, "processAlive").mockImplementation(() => true);
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
     try {
       await runOrchestration(state, stubTransport());
@@ -1408,7 +1428,172 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
       expect(msgs.some((m: string) => m.includes("PID mismatch"))).toBe(true);
     } finally {
       errSpy.mockRestore();
+      aliveSpy.mockRestore();
     }
+    // AC2 invariant: live mismatch must NOT rewrite the sibling state.
+    const persisted = JSON.parse(readFileSync(t3codeSlotPath, "utf-8"));
+    expect(persisted.orchestration.pid).toBe(wrongPid);
+  });
+
+  // ------------------------------------------------------------------------
+  // gh-ludics-509: stale sibling-PID lock reclaim — runner self-heals when
+  // the recorded sibling pid is dead (the bug that wedged slot 1 in setup).
+  // ------------------------------------------------------------------------
+
+  test("reclaims stale tmux sibling lock when recorded PID is dead", async () => {
+    const DEAD_PID = 2147483647; // sentinel; AC1 falsifier seed.
+    const SLOT = 11;
+    writeFileSync(
+      join(harness, "orchestration", `tmux-slot-${SLOT}.json`),
+      JSON.stringify({
+        slot: SLOT,
+        orchestration: { pid: DEAD_PID, stateFile: "x", mode: "pair" },
+        sessionNames: { coder: "s" },
+        ttydPids: {},
+      }),
+    );
+    // Empty-agents `setup` phase — completes one phase deterministically:
+    // enterPhase returns at the setup early-return; allAgentsDone is true on
+    // empty participants; evaluateTransition is mocked to "done" so the
+    // while-loop exits cleanly. No `.catch(() => {})`. No timeout race.
+    const state = makeState(
+      { slot: SLOT, backend: "tmux", phase: "setup", agents: [] },
+      peerSyncDir,
+    );
+
+    const aliveSpy = spyOn(t3codeServer, "processAlive")
+      .mockImplementation((p: number) => p !== DEAD_PID);
+    const transitionSpy = spyOn(phases, "evaluateTransition").mockReturnValue("done");
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    const transport: OrchestrationTransport = {
+      async sendTurn() { return "cmd-stub"; },
+      async refreshAgentTransportState() { /* no-op */ },
+      async sendEnter() { /* no-op */ },
+      async interruptAgent() { /* no-op */ },
+    };
+
+    let errMessages: string[] = [];
+    let transitionCalls = 0;
+    try {
+      await runOrchestration(state, transport);
+      // Capture spy state BEFORE mockRestore (bun:test wipes call history).
+      errMessages = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      transitionCalls = transitionSpy.mock.calls.length;
+    } finally {
+      aliveSpy.mockRestore();
+      transitionSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+
+    // AC1 phase-completion invariant: the runner falls through into
+    // enterPhase / pollUntilDone / evaluateTransition (NOT just return after
+    // emitEvent). If a hypothetical mutation added `return;` after the
+    // reclaim emitEvent, evaluateTransition would never be called and
+    // state.phase would remain "setup".
+    expect(transitionCalls).toBeGreaterThan(0);
+    expect(state.phase).toBe("done");
+
+    // AC1: sibling state file rewritten with our pid.
+    const persisted = JSON.parse(
+      readFileSync(join(harness, "orchestration", `tmux-slot-${SLOT}.json`), "utf-8"),
+    );
+    expect(persisted.orchestration.pid).toBe(process.pid);
+    // Negative control on the spread: untouched fields survive.
+    expect(persisted.sessionNames.coder).toBe("s");
+    expect(persisted.orchestration.mode).toBe("pair");
+
+    // AC4: journal event emitted with the expected fields.
+    const eventsPath = join(harness, "journal", "events.jsonl");
+    expect(existsSync(eventsPath)).toBe(true);
+    const journal = readFileSync(eventsPath, "utf-8")
+      .trim().split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const reclaim = journal.find((e) => e.event_type === "orchestration_lock_reclaimed");
+    expect(reclaim).toBeDefined();
+    expect(reclaim!.slot).toBe(SLOT);
+    expect(reclaim!.deadPid).toBe(DEAD_PID);
+    expect(reclaim!.newPid).toBe(process.pid);
+    expect(reclaim!.backend).toBe("tmux");
+
+    // The reclaim console log fired; the live-mismatch exit log did NOT.
+    expect(errMessages.some((m) =>
+      m.includes("reclaiming stale lock")
+      && m.includes(String(DEAD_PID))
+      && m.includes(String(process.pid))
+    )).toBe(true);
+    expect(errMessages.some((m) =>
+      m.includes("PID mismatch") && m.includes("exiting")
+    )).toBe(false);
+  });
+
+  test("reclaims stale t3code sibling lock when recorded PID is dead", async () => {
+    const DEAD_PID = 2147483647;
+    const SLOT = 12;
+    writeFileSync(
+      join(harness, "t3code", `slot-${SLOT}.json`),
+      JSON.stringify({
+        slot: SLOT,
+        threads: [],
+        orchestration: { pid: DEAD_PID, stateFile: "x", mode: "pair" },
+      }),
+    );
+    const state = makeState(
+      { slot: SLOT, backend: "t3code", phase: "setup", agents: [] },
+      peerSyncDir,
+    );
+
+    const aliveSpy = spyOn(t3codeServer, "processAlive")
+      .mockImplementation((p: number) => p !== DEAD_PID);
+    const transitionSpy = spyOn(phases, "evaluateTransition").mockReturnValue("done");
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    const transport: OrchestrationTransport = {
+      async sendTurn() { return "cmd-stub"; },
+      async refreshAgentTransportState() { /* no-op */ },
+      async sendEnter() { /* no-op */ },
+      async interruptAgent() { /* no-op */ },
+    };
+
+    let errMessages: string[] = [];
+    let transitionCalls = 0;
+    try {
+      await runOrchestration(state, transport);
+      errMessages = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      transitionCalls = transitionSpy.mock.calls.length;
+    } finally {
+      aliveSpy.mockRestore();
+      transitionSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+
+    // AC3 phase-completion invariant (parallel to AC1): the runner falls
+    // through into evaluateTransition rather than returning after emitEvent.
+    expect(transitionCalls).toBeGreaterThan(0);
+    expect(state.phase).toBe("done");
+
+    // AC3: read back via readSlotState (round-trip through the t3code reader).
+    const persisted = t3codeServer.readSlotState(SLOT, harness);
+    expect(persisted).not.toBeNull();
+    expect(persisted!.orchestration?.pid).toBe(process.pid);
+    expect(persisted!.threads).toEqual([]);
+
+    // AC4: journal event with backend === "t3code".
+    const eventsPath = join(harness, "journal", "events.jsonl");
+    const journal = readFileSync(eventsPath, "utf-8")
+      .trim().split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const reclaim = journal.find((e) => e.event_type === "orchestration_lock_reclaimed");
+    expect(reclaim).toBeDefined();
+    expect(reclaim!.slot).toBe(SLOT);
+    expect(reclaim!.deadPid).toBe(DEAD_PID);
+    expect(reclaim!.newPid).toBe(process.pid);
+    expect(reclaim!.backend).toBe("t3code");
+
+    expect(errMessages.some((m) => m.includes("reclaiming stale lock"))).toBe(true);
+    expect(errMessages.some((m) =>
+      m.includes("PID mismatch") && m.includes("exiting")
+    )).toBe(false);
   });
 });
 

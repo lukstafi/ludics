@@ -111,6 +111,30 @@ This skill is invoked when:
      - Severity: warning on `agent_hung_detected`, critical on
        `agent_hung_force_settle` (escalation already happened — the
        agent was force-settled).
+   - Auto-resume cluster layer (gh-ludics-509; event-driven): scan the
+     same post-baseline tail of `journal/events.jsonl` for
+     `orchestration_auto_resume_failed` records. Sustained clusters
+     for the same slot indicate a wedged auto-resume loop where every
+     keepalive tick spawns a runner that immediately exits — the
+     symptom of a stale sibling-PID lock. The runner's self-heal
+     (gh-ludics-509) closes the original failure mode; this rule
+     surfaces *future* regressions of the same shape within minutes
+     instead of hours. Threshold: ≥3 events for the same slot within
+     the last 30 minutes.
+     ```bash
+     NOW_EPOCH=$(date +%s)
+     WINDOW_START=$((NOW_EPOCH - 1800))   # 30 minutes
+     tail -n +"$TAIL_FROM" "$EVENTS_FILE" \
+       | grep -F '"event_type":"orchestration_auto_resume_failed"' \
+       | jq -c --argjson cutoff "$WINDOW_START" \
+           'select(.epoch >= $cutoff) | {slot, ts, message}' \
+       | jq -s 'group_by(.slot) | map(select(length >= 3))' || true
+     ```
+     - For each cluster, report: slot, count of events in the window,
+       first/last timestamp, last `message`.
+     - Build stable issue key: `auto-resume-stuck:<slot>`
+     - Severity: warning (the runner self-heals; the cluster signals
+       a pattern worth investigating, not an immediate emergency).
 
 <!-- section:check-queue -->
 3. **Check queue health**:
