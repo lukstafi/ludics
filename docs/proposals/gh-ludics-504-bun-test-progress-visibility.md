@@ -29,13 +29,17 @@ say only "run `bun test`".
    accidental.
 
 2. **Note recommends file redirection over pipe-to-tail.** The note
-   recommends `bun test 2>&1 > /tmp/<name>.out` (or the `tee` equivalent,
+   recommends `bun test > /tmp/<name>.out 2>&1` (or the `tee` equivalent,
    `bun test 2>&1 | tee /tmp/<name>.out`) as the load-bearing form for
-   capturing output the harness can watch in real time. It explicitly calls
-   out that `bun test 2>&1 | tail -40` (or any pipe-to-`tail`/`head`/`grep`
-   without `--line-buffered`) buffers stdout and leaves the captured file
-   empty until the suite finishes — the failure mode this note exists to
-   prevent.
+   capturing output the harness can watch in real time. POSIX-shell
+   ordering matters: `> file 2>&1` captures both streams to the file,
+   while `2>&1 > file` duplicates stderr to the *original* terminal
+   stdout before stdout is redirected and silently drops stderr — so the
+   note must use the `> file 2>&1` order, not the reversed form. It
+   explicitly calls out that `bun test 2>&1 | tail -40` (or any
+   pipe-to-`tail`/`head`/`grep` without `--line-buffered`) buffers stdout
+   and leaves the captured file empty until the suite finishes — the
+   failure mode this note exists to prevent.
 
 3. **Per-round filename suffix is suggested.** The note suggests a
    per-round-distinct filename (e.g. `/tmp/bun-test-baseline.out`,
@@ -122,8 +126,9 @@ addresses the filtering use case but does nothing for the upstream
    orchestration-patterns already covers. The implementer may invert this
    if they read the boundary differently — the AC accepts either home.)
 2. Add a `## Running the test suite` heading. Body covers, in order: the
-   recommended capture form (`bun test 2>&1 > /tmp/<name>.out` or `tee`),
-   the failure mode it prevents (pipe-to-`tail` buffering), the
+   recommended capture form (`bun test > /tmp/<name>.out 2>&1` or `tee`,
+   noting that `2>&1 > file` reverses the redirection chain and drops
+   stderr), the failure mode it prevents (pipe-to-`tail` buffering), the
    per-round-suffix suggestion, and the `.peer-sync/` worktree fallback.
 3. Update `skills/orchestration/pair-coder-plan.md`: append a short
    `see [running the test suite](../worker-conventions.md#running-the-test-suite)`

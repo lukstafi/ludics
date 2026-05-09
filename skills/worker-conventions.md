@@ -41,6 +41,15 @@ to `ludics tasks list --json` or similar. This is guidance only; firing
 `ludics notify`, `ludics slot N assign`, etc. remains entirely fine where
 there is no equivalent direct path.
 
+## Running the test suite
+
+When capturing `bun test` output to a file the harness or a watcher can read in real time, use file redirection (or `tee`) — not a pipe-to-`tail`/`head`/`grep`. This section lives here, in worker-conventions, because it's about *how a worker invokes the suite for capture*, not about the cross-worker baseline pattern that `docs/orchestration-patterns.md` already covers.
+
+- **Recommended:** `bun test > /tmp/<name>.out 2>&1` (or `bun test 2>&1 | tee /tmp/<name>.out` if you also want it on the terminal). Order matters in POSIX shells: `> file 2>&1` sends stdout to the file *then* duplicates stderr from the now-redirected stdout, so both streams land in the file; `2>&1 > file` does the opposite (duplicates stderr to the original terminal stdout, then redirects stdout to the file) and silently drops stderr. Writing to a regular file flushes line-by-line, so a watcher (`tail -f`, harness file read) sees progress as the suite runs.
+- **Avoid:** `bun test 2>&1 | tail -40` (or any pipe-to-`tail`/`head`/`grep` without `--line-buffered`). Stdout into a pipe is block-buffered (4–8 KiB) and `bun test` does not flush per-line, so during a 50+ second run the captured file stays empty until the suite ends — making a healthy run look hung.
+- **Per-round filename suffix:** prefer round-distinct names like `/tmp/bun-test-baseline.out`, `/tmp/bun-test-round-N.out` so a stale file from an earlier round can't be mistaken for current output.
+- **Worktree fallback:** if `/tmp` is unavailable or undesirable, a worktree-relative path such as `.peer-sync/bun-test-baseline.out` works equally well — file redirection is what makes the bytes visible, not the directory.
+
 ## AC verification rigor
 
 When ACs are unusually contract-heavy, see [`docs/ac-rigor-reference.md`](../docs/ac-rigor-reference.md). Sections (grep-able in-place):
