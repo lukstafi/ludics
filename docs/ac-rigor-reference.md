@@ -2,7 +2,7 @@
 
 Reference documentation for writing and verifying acceptance criteria (ACs) on tasks whose contract is unusually heavy. Each section captures one durable learning from a reviewer round where an AC line passed mechanically while still failing to enforce the property the AC named. The doc is project-agnostic: workers consult it when the AC ledger calls for extra rigor, then return to the task at hand.
 
-This doc grows over time. Today it covers twenty-two clauses across five thematic families; further reviewer-flagged learnings (and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
+This doc grows over time. Today it covers twenty-four clauses across five thematic families; further reviewer-flagged learnings (and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
 
 → See also: [`orchestration-patterns.md` § AC self-check](orchestration-patterns.md#ac-self-check) for the *invariant-vs-capability* phrasing rule, and [`orchestration-patterns.md` § Harness instantiation](orchestration-patterns.md#harness-instantiation) for the *falsifier-framing* rule. The two together describe both sides of an enforceable AC line; the clauses below extend them to specific recurring failure modes.
 
@@ -35,6 +35,25 @@ The vacuous-harness rule applies equally to doc and config-shape ACs. Verificati
 ### Probe before cleanup — distinguish 'AC satisfied' from 'cleanup hid the violation'
 
 A probe that runs after the implementation's automatic cleanup completes — SIGINT handler, atexit, defer, finally — is vacuous on the runtime artefact: it returns the same empty/missing result whether the AC was honoured or violated. Run probes against runtime state (filesystem entries, processes, ports) *before cleanup* fires, so the negative outcome distinguishes "AC violated" from "cleanup raced ahead." When cleanup is automatic, add a `--keep` flag, a debugger pause, or run the probe inside the implementation's own lifetime (a child process that probes then signals the parent). This extends the doc/config-harness clause to runtime-cleanup state — same shape failure: the assertion's `false` outcome must be reachable by violating the AC, not produced unconditionally by the harness.
+
+### Real-decoy + byte-identity for path-safety probes
+
+Path-safety regression tests need a *real sibling decoy file* plus *byte-identity comparison*, not just `expect.rejects.toThrow`. A `rejects.toThrow(/invalid task ID/)` assertion passes whenever the runtime throws — including the harmless "task not found" path that doesn't actually exercise traversal — so the test traverses the production code path but does not enforce the path-safety invariant the AC names. The non-vacuous shape: seed a real file outside the protected directory before the test, run each malicious-ID call, then assert byte-identity on the seeded file's contents. Inline recipe (the kind of mutation-testable assertion the clause prescribes — same dogfood-the-discipline shape as the `Stash-prod mutation test` precedent above):
+
+```ts
+const decoyPath = join(siblingDir, "decoy.md");
+const decoyContent = "untouched";
+writeFileSync(decoyPath, decoyContent);
+expect(() => tasksSetStatus(maliciousId, "ready")).toThrow(/invalid task ID/);
+const after = readFileSync(decoyPath, "utf8");
+expect(after).toBe(decoyContent);
+```
+
+Mutation-test by removing the production guard and confirming the call *resolves* (writes via traversal) instead of rejecting; if the test still passes after the mutation, the byte-identity assertion was paraphrased away or the decoy was seeded inside the protected directory and the assertion is wrong. Concrete trigger: PR #476 round 2's `tasks status` `TASK_ID_RE` guard, where a first-draft test relying on `rejects.toThrow` alone would have passed even after removing the production guard (because the missing-file path threw a different error that still matched the regex).
+
+### Test inputs your guard accepts pass for the wrong reason
+
+The malicious-set in a path-safety test should be exactly the strings the guard *rejects*, not the strings that "look bad." A first draft of the malicious-IDs list for the `TASK_ID_RE` regression often includes `..`, but `TASK_ID_RE = /^[A-Za-z0-9._-]+$/` *accepts* dots — bare `..` resolves to `<tasks>/...md`, a literal weird-named file inside the protected directory (no traversal happened); the `rejects.toThrow` assertion then fires only because the file is missing, not because the guard rejected the input. The test passes for the wrong reason — the guard's coverage of `..` is unverified, and a future regex change that drops `.` from the character class would not break this test even though it would now leak. Always inspect the regex's character class before deciding what's "rejected": here, `[A-Za-z0-9._-]` admits `.`, so `..` and `....` are *not* in the rejected set even though they look path-traversal-shaped. The malicious set should be exactly the inputs whose first character or any subsequent character violates `[A-Za-z0-9._-]` — `/`, `\`, leading slash, embedded NUL, control bytes, etc. Concrete trigger: PR #476 round 2 mutation-test for the `tasks status` guard, where bare `..` was initially in the malicious list and the test passed after removing the production guard (for the wrong reason — the missing-file path masked the traversal).
 
 ## Proposal-as-canonical family
 
