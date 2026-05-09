@@ -30,7 +30,7 @@ import { clusterRole } from "../cluster.ts";
 import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 import { agentPortRole, readTmuxSlotState, startTtyd, ttydLogPath, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
-import { readSlotState, processAlive } from "../t3code/server.ts";
+import { readSlotState, writeSlotState, processAlive } from "../t3code/server.ts";
 import { recoverWrongFilename } from "./wrong-filename-recovery.ts";
 
 // --- Settled-no-signal detection constants ---
@@ -2395,8 +2395,13 @@ export async function runOrchestration(
   // tmux-slot-<N>.json / t3code/slot-<N>.json only AFTER
   // startOrchestrationProcess returns (~500ms wait), so the child runner can
   // reach its first guard check before the parent has finished bookkeeping.
-  // Only the "file missing" branch gets a grace; a PID mismatch is always a
-  // real conflict (the parent always writes our own pid) and exits immediately.
+  // Branch shape:
+  //   - missing file: startup grace, then exit if still missing
+  //   - live PID mismatch: real conflict, exit immediately (a live sibling owns the lock)
+  //   - dead PID mismatch (gh-ludics-509): stale lock from a prior crashed runner;
+  //     reclaim it (rewrite the field with our own pid, emit an event) and proceed
+  //   - missing/null recordedPid: malformed ownership; treat as live mismatch and exit
+  //     (no AC asks for reclaim of malformed sibling state — fail-closed is safer).
   const runnerStartMs = Date.now();
   const startupGraceMs = Number(process.env.LUDICS_RUNNER_STARTUP_GRACE_MS ?? "5000");
 
@@ -2421,11 +2426,60 @@ export async function runOrchestration(
         );
         return;
       }
-      if (sibling.orchestration?.pid !== process.pid) {
-        console.error(
-          `ludics: runner slot ${state.slot}: sibling PID mismatch (expected ${process.pid}, got ${sibling.orchestration?.pid}) — exiting`,
-        );
-        return;
+      const recordedPid = sibling.orchestration?.pid;
+      if (recordedPid !== process.pid) {
+        if (typeof recordedPid === "number" && !processAlive(recordedPid)) {
+          // Stale sibling-PID lock (gh-ludics-509): the recorded pid is dead,
+          // so the previous runner crashed without clearing the lock. Reclaim
+          // it by rewriting the sibling state with our own pid, then fall
+          // through to enterPhase. Atomic-rename writes mean concurrent
+          // reclaimers self-heal — the loser sees a live mismatch on its
+          // next iteration and exits cleanly.
+          console.error(
+            `ludics: runner slot ${state.slot}: reclaiming stale lock from dead pid ${recordedPid} (now ${process.pid})`,
+          );
+          if (state.backend === "tmux") {
+            // Cast OK: state.backend === "tmux" was used to read this very file.
+            const tmuxSibling = sibling as NonNullable<ReturnType<typeof readTmuxSlotState>>;
+            writeTmuxSlotState(
+              {
+                ...tmuxSibling,
+                slot: state.slot,
+                ttydPids: tmuxSibling.ttydPids ?? {},
+                orchestration: { ...tmuxSibling.orchestration!, pid: process.pid },
+              },
+              dir,
+            );
+          } else {
+            const t3Sibling = sibling as NonNullable<ReturnType<typeof readSlotState>>;
+            writeSlotState(
+              {
+                ...t3Sibling,
+                slot: state.slot,
+                threads: t3Sibling.threads ?? [],
+                orchestration: { ...t3Sibling.orchestration!, pid: process.pid },
+              },
+              dir,
+            );
+          }
+          emitEvent({
+            event_type: "orchestration_lock_reclaimed",
+            source: "orchestration",
+            scope: "slot",
+            slot: state.slot,
+            task: state.taskId,
+            deadPid: recordedPid,
+            newPid: process.pid,
+            backend: state.backend,
+            message: `reclaimed stale sibling lock from dead pid ${recordedPid}`,
+          });
+        } else {
+          // Live sibling owns the lock (or recordedPid is malformed/missing) — exit.
+          console.error(
+            `ludics: runner slot ${state.slot}: sibling PID mismatch (expected ${process.pid}, got ${recordedPid}) — exiting`,
+          );
+          return;
+        }
       }
     }
 
