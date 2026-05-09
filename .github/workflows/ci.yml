@@ -43,6 +43,9 @@ jobs:
       - name: Lint — no mock.module() in tests
         run: bun run lint:no-mock-module
 
+      - name: Lint — no NUL bytes in tracked text files
+        run: bun run lint:no-nul-bytes
+
       - name: Lint worker/orchestrator contracts
         run: bun run lint:contracts
 

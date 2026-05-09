@@ -12,7 +12,7 @@ Reviewer guidance from prior round:
 
 Commit in small batches (4-6 files), and include a regression test alongside each behavior change in the same batch — deferring the test to a follow-up round tends to drift into abandonment. Build, lint, and run targeted tests before signaling done.
 
-Before modifying any symbol, re-run a project-wide grep for it — the plan's occurrence list may have missed an inline reimplementation (regex pattern, copy-pasted logic, string literal) that the same change needs to reach. Handle new hits in this round rather than deferring. See [exhaustive occurrence search](../../docs/orchestration-patterns.md#exhaustive-occurrence-search) for the variants to look for.
+Before modifying any symbol, re-run a project-wide grep for it — the plan's occurrence list may have missed an inline reimplementation (regex pattern, copy-pasted logic, string literal) that the same change needs to reach. Handle new hits in this round rather than deferring. See [exhaustive occurrence search](../../docs/orchestration-patterns.md#exhaustive-occurrence-search) for the variants to look for. Avoid embedded control bytes in regex sentinels; if a closer's job is "match nothing," refactor to a `sliceToEnd`-style helper instead of a NUL-bearing literal (the `lint:no-nul-bytes` CI step pins this invariant).
 
 Documented interfaces drift when the code behind them changes — config schemas drift from their reference doc, CLI USAGE strings drift from the README. When you touch one side, update the other in the same round so CI can confirm the pair; see [CI drift files](../../docs/orchestration-patterns.md#ci-drift-files) for the known pairs and their lint scripts.
 
