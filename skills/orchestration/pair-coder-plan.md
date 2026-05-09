@@ -6,7 +6,7 @@ Write an implementation plan for `{{TASK_ID}}` to `{{PLAN_FILE}}` from `{{WORKTR
 
 {{TASK_SPEC}}
 
-Before any code changes, run `bun test` and record the exact failing test names under a `## Pre-existing test failures (baseline)` section in the plan (use `none` when clean). The reviewer treats this list as the non-blocking backdrop for the review — see [pre-existing failures baseline](../../docs/orchestration-patterns.md#pre-existing-failures-baseline) for how the list is used and what to write when planning was skipped. For the capture form that keeps progress visible (file redirection, not pipe-to-`tail`), see [running the test suite](../worker-conventions.md#running-the-test-suite).
+Before any code changes, run `{{TEST_COMMAND}}` and record the exact failing test names under a `## Pre-existing test failures (baseline)` section in the plan (use `none` when clean). The reviewer treats this list as the non-blocking backdrop for the review — see [pre-existing failures baseline](../../docs/orchestration-patterns.md#pre-existing-failures-baseline) for how the list is used and what to write when planning was skipped. For the capture form that keeps progress visible (file redirection, not pipe-to-`tail`), see [running the test suite](../worker-conventions.md#running-the-test-suite).
 
 As you plan, include a dedicated `## Regression Tests` section in the plan output. For each file that this round modifies with a behaviour change, list the regression test and its target test file using the format:
 

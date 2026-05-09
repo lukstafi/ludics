@@ -5,7 +5,9 @@ import { tmpdir } from "os";
 import { composeSkillMessage, resolveTemplatePath, substituteTemplate } from "./skills.ts";
 import { defaultOrchestrationConfig, initAgentRuntimeState, type OrchestrationState } from "./state.ts";
 import { ludicsRoot } from "../config.ts";
+import * as config from "../config.ts";
 import { captureConsoleError } from "../test-utils.ts";
+import { rmSync } from "fs";
 
 function makeState(): OrchestrationState {
   return {
@@ -259,6 +261,104 @@ describe("skills", () => {
     const coder = state.agents.find((a) => a.role === "coder")!;
     const ctx = buildSkillContext(state, coder);
     expect(ctx["MERGED_PLAN_FILE"]).toContain("round-2-merged-2.md");
+  });
+
+  test("buildSkillContext: TEST_COMMAND prefers configured project.test_command over filesystem detection", async () => {
+    const { buildSkillContext } = await import("./skills.ts");
+    const tmpDir = mkdtempSync(join(tmpdir(), "ludics-test-cmd-cfg-"));
+    try {
+      // Write a dune-project file so detectTestCommand would return "dune runtest" if consulted.
+      writeFileSync(join(tmpDir, "dune-project"), "(lang dune 3.0)\n");
+      const cfgSpy = spyOn(config, "findProjectConfig").mockReturnValue({
+        name: "p", repo: "o/p", test_command: "  pytest -q  ",
+      } as any);
+      try {
+        const state = { ...makeState(), projectDir: tmpDir };
+        const ctx = buildSkillContext(state, state.agents[0]!);
+        expect(ctx["TEST_COMMAND"]).toBe("pytest -q");
+      } finally {
+        cfgSpy.mockRestore();
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("buildSkillContext: TEST_COMMAND falls back to detectTestCommand when project.test_command unset (Dune project)", async () => {
+    const { buildSkillContext } = await import("./skills.ts");
+    const tmpDir = mkdtempSync(join(tmpdir(), "ludics-test-cmd-dune-"));
+    try {
+      writeFileSync(join(tmpDir, "dune-project"), "(lang dune 3.0)\n");
+      const cfgSpy = spyOn(config, "findProjectConfig").mockReturnValue({
+        name: "ocaml-thing", repo: "o/ocaml-thing",
+      } as any);
+      try {
+        const state = { ...makeState(), projectDir: tmpDir };
+        const ctx = buildSkillContext(state, state.agents[0]!);
+        expect(ctx["TEST_COMMAND"]).toBe("dune runtest");
+      } finally {
+        cfgSpy.mockRestore();
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("buildSkillContext: TEST_COMMAND falls back to bun test when project unconfigured and no detectable runner", async () => {
+    const { buildSkillContext } = await import("./skills.ts");
+    const tmpDir = mkdtempSync(join(tmpdir(), "ludics-test-cmd-empty-"));
+    try {
+      const cfgSpy = spyOn(config, "findProjectConfig").mockReturnValue(undefined as any);
+      try {
+        const state = { ...makeState(), projectDir: tmpDir };
+        const ctx = buildSkillContext(state, state.agents[0]!);
+        expect(ctx["TEST_COMMAND"]).toBe("bun test");
+      } finally {
+        cfgSpy.mockRestore();
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("substituteTemplate: TEST_COMMAND in pair-coder-plan.md does not log unknown-variable warning under LUDICS_DEV=1", async () => {
+    const { buildSkillContext } = await import("./skills.ts");
+    const tmpDir = mkdtempSync(join(tmpdir(), "ludics-test-cmd-warn-"));
+    const origDev = process.env.LUDICS_DEV;
+    try {
+      writeFileSync(join(tmpDir, "dune-project"), "(lang dune 3.0)\n");
+      const cfgSpy = spyOn(config, "findProjectConfig").mockReturnValue({
+        name: "p", repo: "o/p",
+      } as any);
+      try {
+        process.env.LUDICS_DEV = "1";
+        const state = { ...makeState(), projectDir: tmpDir };
+        const ctx = buildSkillContext(state, state.agents[0]!);
+        const planPath = join(import.meta.dir, "../../skills/orchestration/pair-coder-plan.md");
+        const gatherPath = join(import.meta.dir, "../../skills/orchestration/pair-reviewer-gather.md");
+        const planTpl = readFileSync(planPath, "utf-8");
+        const gatherTpl = readFileSync(gatherPath, "utf-8");
+        // Both templates must reference {{TEST_COMMAND}} (substitution AC).
+        expect(planTpl).toContain("{{TEST_COMMAND}}");
+        expect(gatherTpl).toContain("{{TEST_COMMAND}}");
+        const captured = captureConsoleError(() => ({
+          plan: substituteTemplate(planTpl, ctx),
+          gather: substituteTemplate(gatherTpl, ctx),
+        }));
+        for (const line of captured.lines) {
+          expect(line).not.toContain("unknown variable {{TEST_COMMAND}}");
+        }
+        // Sanity: the substitution actually rendered the dune command in both.
+        expect(captured.value.plan).toContain("`dune runtest`");
+        expect(captured.value.gather).toContain("`dune runtest`");
+      } finally {
+        cfgSpy.mockRestore();
+      }
+    } finally {
+      if (origDev === undefined) delete process.env.LUDICS_DEV;
+      else process.env.LUDICS_DEV = origDev;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   test("substituteTemplate: UPSTREAM_REPO is empty when not set", () => {
@@ -2035,7 +2135,9 @@ describe("skills", () => {
     //
     // The proposal file itself contains MERGE_BASE because it is the
     // spec that introduces the form (not a call-site); the AC's revised
-    // falsifier excludes it explicitly.
+    // falsifier excludes it explicitly. docs/ac-rigor-reference.md cites
+    // the same literal in its worked-example narration of the AC and is
+    // likewise not a call-site.
     const repoRoot = join(import.meta.dir, "../..");
     const proc = Bun.spawnSync({
       cmd: [
@@ -2047,6 +2149,7 @@ describe("skills", () => {
         "skills/",
         "docs/",
         ":(exclude)docs/proposals/salvage-stale-base-merge-base-form.md",
+        ":(exclude)docs/ac-rigor-reference.md",
       ],
       cwd: repoRoot,
       stdout: "pipe",

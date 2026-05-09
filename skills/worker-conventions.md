@@ -142,6 +142,12 @@ inputs to the browser.
 - Name them with the task ID: `/tmp/<task-id>-<probe>.ts`,
   `/tmp/<task-id>-<probe>.transcript`.
 - Cite paths in the PR comment so reviewers can rerun if needed.
+- When a probe script edited a tracked file (e.g. injected a temporary
+  dune stanza, appended a debug println), clean up with
+  `git checkout -- <path>` rather than tail-trimming. macOS `head` does
+  not accept negative line counts (`head -n -<N>` is a GNU extension), so
+  the trick that works on Linux silently truncates the wrong region on
+  macOS — the checkout form works on both.
 
 ## Broader Context
 

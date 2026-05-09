@@ -3,6 +3,7 @@ import { join } from "path";
 import { assertRepoRelativeProposalPath } from "../adapters/task-launch.ts";
 import { parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { findProjectConfig, harnessDir as defaultHarnessDir, ludicsRoot } from "../config.ts";
+import { detectTestCommand } from "../health.ts";
 import { taskFilePath } from "./paths.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import { defaultRunGit, resolveBaseRef } from "../git-runner.ts";
@@ -317,6 +318,7 @@ export const ALWAYS_POPULATED_KEYS: ReadonlySet<string> = new Set([
   "MERGED_MARKER_FILE",
   "PEER_SYNC_DIR",
   "DONE_STATUS",
+  "TEST_COMMAND",
 ]);
 
 export function buildSkillContext(
@@ -428,6 +430,10 @@ export function buildSkillContext(
         } of 3.\n`
       : "",
     UPSTREAM_REPO: upstreamRepo ?? "",
+    TEST_COMMAND:
+      (_projectEntry?.test_command?.trim() || null)
+        ?? detectTestCommand(state.projectDir)
+        ?? "bun test",
   };
 
   // Auto-inject project config string fields as PROJECT_<FIELD> variables.
