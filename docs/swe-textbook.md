@@ -69,6 +69,22 @@ fi
 echo "append"
 ```
 
+**Known soft-spot — `ASSUMPTION GAP` escalation.** The disjunctive guard
+above (`headline OR retro`) returns `skip-duplicate` whenever a new entry
+shares either key with any existing entry. The case it silently
+collapses: a new entry whose `Precipitating retro:` matches an existing
+entry's, but whose headline and `Filter decision:` describe a materially
+distinct lesson. Under the bare contract the caller would amend the
+matched entry's `Second occurrence:` line and drop the new lesson. When
+the caller runs inside an orchestrated coder/reviewer pair, the right
+move is to surface the choice in the merged plan with an
+`⚠️ ASSUMPTION GAP: …` marker (per `pair-coder-plan-merge.md`) so the
+reviewer sees and rules on the divergence at plan-merge time. When the
+caller is a one-shot Mag invocation of `/ludics-feedback-digest` (no
+merged plan), the equivalent discipline is to surface the choice in the
+digest's result JSON and commit message rather than silently routing
+through `skip-duplicate`.
+
 ---
 
 ### "Issue is updated" means an actual GH-side comment, not a one-way docs cite
