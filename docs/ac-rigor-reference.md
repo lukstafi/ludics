@@ -2,7 +2,7 @@
 
 Reference documentation for writing and verifying acceptance criteria (ACs) on tasks whose contract is unusually heavy. Each section captures one durable learning from a reviewer round where an AC line passed mechanically while still failing to enforce the property the AC named. The doc is project-agnostic: workers consult it when the AC ledger calls for extra rigor, then return to the task at hand.
 
-This doc grows over time. Today it covers seventeen clauses across five thematic families; further reviewer-flagged learnings (closed-set / cardinality probes, and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
+This doc grows over time. Today it covers nineteen clauses across five thematic families; further reviewer-flagged learnings (and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
 
 → See also: [`orchestration-patterns.md` § AC self-check](orchestration-patterns.md#ac-self-check) for the *invariant-vs-capability* phrasing rule, and [`orchestration-patterns.md` § Harness instantiation](orchestration-patterns.md#harness-instantiation) for the *falsifier-framing* rule. The two together describe both sides of an enforceable AC line; the clauses below extend them to specific recurring failure modes.
 
@@ -21,6 +21,10 @@ A test that traverses an AC's code path doesn't enforce its invariant. The harne
 ### Stash-prod mutation test — confirm your new test actually falsifies
 
 A regression test that traverses the production change without enforcing it is vacuous on its own AC: it passes whether or not the production fix is present. Mutation-test the new regression test by stashing the production change — `git stash push -- <production-file>` reverts only the lint/bug fix while leaving the new test in place; the test runner (`bun test`, `pytest`, whatever) then surfaces the assertion that fires under regression, and `git stash pop` restores in one step. This beats editing the test fixture or temporarily breaking the production code in-place — cheaper, less error-prone, and robust to multi-file stash sets when scoped via the path argument. Same toolset as the **No-regression framing when the gate baseline is red** clause (Baseline-aware framing family) but a distinct probe: stash-and-rerun answers *"is this failure pre-existing in main?"*, while stash-prod answers *"does my new test actually exercise my new code?"* — a reader landing on either clause should follow the cross-link to find the other. The clause body itself names the literal `git stash push --` command form so a verification probe can assert this clause is non-stub — the kind of mutation-testable assertion the clause prescribes.
+
+### Sibling-mutation for cardinality probes
+
+When an AC has a *cardinality* limb ("exactly N files contain the literal", "exactly N call-sites match the pattern"), mutation-test the cardinality probe by **sibling-append**: append the AC's literal to a non-target file, rerun the test, and watch the cardinality assertion trip. This is a *fourth* canonical mutation shape alongside the three enumerated in [`orchestration-patterns.md` § Mutation evidence](orchestration-patterns.md#mutation-evidence) (one-liner / typed-code / guard-removal). Stash-prod (above) and the three orchestration-patterns shapes all *subtract from* the world (revert a line, stash a diff, remove a guard) to verify the per-site assertion fires; sibling-append *adds to* the world to verify the cardinality assertion fires. They're complementary peers for complementary AC limbs — stash-prod (subtract from world) for the per-site limb ("if site X is reverted, the X-specific assertion fails"), sibling-append (add to world) for the cardinality limb ("if a sibling not in the AC's enumeration gains the literal, the cardinality assertion fails"). A test that only mutation-tests via stash-prod misses the cardinality regression mode; a test that only mutation-tests via sibling-append misses the per-site regression mode. When an AC has both limbs, both mutation shapes are needed for a full ledger. Pair this mutation shape with the **set-equality probe shape** in the Falsifier-shape family (the cardinality clause whose body sketches `expect(hits).toEqual(new Set([…]))`); set-equality is what makes the sibling-append flip a specific named assertion rather than just a count.
 
 ### Vacuous doc/config harness — same rule, doc artifacts
 
@@ -42,6 +46,8 @@ AC verification walks the *proposal*, not the *task file*. When the two diverge 
 
 When an AC's literal probe ("removing branch X makes test Y fail") is empirically a no-op because the world doesn't exercise X, revise the AC text in the proposal — don't substitute a proxy probe in the verification narrative. Substituting a proxy in workflow-feedback looks like AC verification but is actually doing AC-revision in a place reviewers can't see as a change. If you would have to write "the AC's literal text is unsatisfiable" in your verification line, edit the proposal AC instead — the proposal is the contract; the verification narrative isn't a side channel for amending it. Revising in the same PR keeps the contract honest and the review surface visible.
 
+**What to revise into.** The revision must be programmatically enforceable, not a prose-level paraphrase explaining why the count is "really" right. When the AC's falsifier is a `git grep`-style literal probe and the proposal file naturally contains the literal it introduces (because the proposal is the spec), the enforceable revision adds an explicit `:(exclude)<spec-file>` clause to the falsifier's pathspec **and** lands an enforcing test that spawns the exact `git grep` invocation with the exclusion and asserts set-equality on the returned paths. Manual diff-review fallbacks ("the proposal is descriptive only — not a call-site") are prose-shaped, not falsifier-shaped: the AC line either pins a check whose negative outcome is reachable by violating the AC, or it doesn't. Worked example from `task-d5c37bc5` (PR #475) round 2: the AC1 falsifier was revised from `git grep -n 'MERGE_BASE' -- skills/ docs/` (which returned four files because the proposal introduces the literal) to `git grep -n 'MERGE_BASE' -- skills/ docs/ ':(exclude)docs/proposals/salvage-stale-base-merge-base-form.md'`, and a regression test was added that spawns that exact invocation and asserts set-equality on the three target paths.
+
 ## Falsifier-shape family
 
 The shared rule: pick a probe whose negative outcome is naturally produced by violating the AC, and decompose multi-element ACs so each element has its own falsifier. Literal-grep ACs, enumerated-element ACs, byte-pinned assertions on rendered output, and prose-only templates each fail this shape in characteristic ways.
@@ -53,6 +59,17 @@ When an AC's verifier is a literal `grep -F` against a target file, *any* match 
 ### Per-element assertions for enumerated-element ACs
 
 "Failure message names X, Y, Z" ACs need one toContain per element, not one composite assertion. A single composite check passes even if a required element is silently dropped; separate `toContain` clauses — one per required element — guarantee that dropping any element fails a specific, named assertion. The required elements aren't a set, they're a checklist; the assertion shape should reflect that. Composite regexes also tend to false-pass on whitespace-and-ordering changes humans would consider regressions.
+
+### Closed-set / cardinality ACs — set-equality is the strongest probe shape
+
+When an AC names "exactly N call-sites" / "exactly N files match" / "exactly these paths gain the literal," set-equality is the probe shape that subsumes both count-only and per-element-presence probes — it's both a count probe (sizes must match) AND an enumeration probe (membership must match), in one assertion. A pure-count probe (`grep -c`) catches additions (a fourth file gains the literal) but misses *substitution* failures: rename target A → renamed file, sibling B gains the literal, cardinality stays at N, count-only probe passes. A pure-per-element-presence loop catches removals (one of the named files lost the literal) but misses *additions* — the AC's named files all match, but a fifth unmentioned file also gained the literal, and the per-element checklist passes vacuously. Set-equality is the join: substitution AND addition AND removal each flip a specific named assertion, because both the size and the membership are pinned by the same `toEqual` call.
+
+```ts
+const hits = new Set(spawnGitGrep().stdout.trim().split("\n").filter(Boolean));
+expect(hits).toEqual(new Set(["skills/foo.md", "skills/bar.md", "docs/baz.md"]));
+```
+
+Mutation-test the cardinality limb by sibling-append (see [Sibling-mutation for cardinality probes](#sibling-mutation-for-cardinality-probes), Vacuous-harness family) — appending the literal to an unrelated file flips the assertion under cardinality regression where a count-only probe would pass. Set-equality and sibling-append are paired probe / mutation shapes for closed-set ACs the way per-site assertions and stash-prod mutation are paired for per-site ACs.
 
 ### Byte-pinned assertions on rendered or normalised output
 
