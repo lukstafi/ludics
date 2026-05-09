@@ -2402,6 +2402,18 @@ export async function runOrchestration(
   //     reclaim it (rewrite the field with our own pid, emit an event) and proceed
   //   - missing/null recordedPid: malformed ownership; treat as live mismatch and exit
   //     (no AC asks for reclaim of malformed sibling state — fail-closed is safer).
+  //
+  // Operator workaround for a stuck slot whose pid field has been cleared
+  // (e.g. someone deleted the field thinking that "removes the lock"):
+  // restore `orchestration.pid` in tmux-slot-<N>.json / t3code/slot-<N>.json
+  // to a known-dead integer (any pid not in `ps`), then re-run
+  // `ludics slot <N> resume`. The next runner will hit the dead-pid branch
+  // above and reclaim the lock cleanly. Do NOT clear the field — the runner
+  // intentionally fails closed on undefined to avoid clobbering a sibling
+  // whose write lost a race. (Encountered 2026-05-09 while unblocking
+  // slot 1 post-merge of gh-ludics-509; if recurrence motivates
+  // auto-reclaim of the malformed-pid case, file a sibling AC and update
+  // this comment.)
   const runnerStartMs = Date.now();
   const startupGraceMs = Number(process.env.LUDICS_RUNNER_STARTUP_GRACE_MS ?? "5000");
 
