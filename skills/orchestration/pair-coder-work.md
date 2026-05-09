@@ -40,13 +40,18 @@ Cross-cutting cleanups in unrelated files (whole-file reformatting, dead-code sw
 **Acceptance Criteria self-check.** Before writing the done status, verify every acceptance criterion is satisfied. Produce a visible checklist — don't just think it through. AC drift is the long-tail failure mode of this workflow.
 
 {{#IF PROPOSAL_PATH}}
-1. Re-read `{{PROPOSAL_PATH}}` in the project repo for the authoritative acceptance criteria.
+1. Re-read `{{PROPOSAL_PATH}}` in the project repo — its `## Acceptance Criteria` section is the authoritative AC list. Count the bullets there; that count is the length of the `## AC Verification` checklist you must produce, and walk every one of them. Do not substitute the task-file summary below — when the proposal expands the task-file's N bullets into M > N ACs, the proposal prevails and you walk all M.
 {{/IF}}
 {{#UNLESS PROPOSAL_PATH}}
 1. Re-read the task spec above (from context) for the acceptance criteria — no proposal file exists for this task.
 {{/UNLESS}}
 {{#IF TASK_AC}}
+{{#IF PROPOSAL_PATH}}
+Task-file ACs (non-authoritative coarsened reference — for context only; the proposal's `## Acceptance Criteria` is the checklist):
+{{/IF}}
+{{#UNLESS PROPOSAL_PATH}}
 Task acceptance criteria from the task file:
+{{/UNLESS}}
 
 {{TASK_AC}}
 {{/IF}}
