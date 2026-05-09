@@ -1347,8 +1347,9 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
   test("exits early when tmux sibling state has a mismatched PID", async () => {
     const state = makeState({ slot: 4, backend: "tmux", phase: "work" }, peerSyncDir);
     const wrongPid = process.pid + 1;
+    const tmuxSlotPath = join(harness, "orchestration", "tmux-slot-4.json");
     writeFileSync(
-      join(harness, "orchestration", "tmux-slot-4.json"),
+      tmuxSlotPath,
       JSON.stringify({
         orchestration: { pid: wrongPid, stateFile: "x", mode: "pair" },
         sessionNames: { coder: "s", reviewer: "r" },
@@ -1368,6 +1369,11 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
       errSpy.mockRestore();
       aliveSpy.mockRestore();
     }
+    // AC2 invariant: a live mismatch must NOT rewrite the sibling state.
+    // (A mutation that wrote `process.pid` and then logged/returned would
+    // still fire the "PID mismatch" log above; this assertion catches it.)
+    const persisted = JSON.parse(readFileSync(tmuxSlotPath, "utf-8"));
+    expect(persisted.orchestration.pid).toBe(wrongPid);
   });
 
   test("PID mismatch exits immediately even during the startup grace window", async () => {
@@ -1375,10 +1381,12 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
     // conflict (parent always writes our own pid) and must exit without waiting.
     process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = "60000";
     const state = makeState({ slot: 8, backend: "tmux", phase: "work" }, peerSyncDir);
+    const wrongPid = process.pid + 1;
+    const tmuxSlotPath = join(harness, "orchestration", "tmux-slot-8.json");
     writeFileSync(
-      join(harness, "orchestration", "tmux-slot-8.json"),
+      tmuxSlotPath,
       JSON.stringify({
-        orchestration: { pid: process.pid + 1, stateFile: "x", mode: "pair" },
+        orchestration: { pid: wrongPid, stateFile: "x", mode: "pair" },
         sessionNames: { coder: "s", reviewer: "r" },
         ttydPids: {},
       }),
@@ -1396,13 +1404,17 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
       errSpy.mockRestore();
       aliveSpy.mockRestore();
     }
+    // AC2 invariant: live mismatch must NOT rewrite the sibling state.
+    const persisted = JSON.parse(readFileSync(tmuxSlotPath, "utf-8"));
+    expect(persisted.orchestration.pid).toBe(wrongPid);
   });
 
   test("exits early when t3code sibling state has a mismatched PID", async () => {
     const state = makeState({ slot: 5, backend: "t3code", phase: "work" }, peerSyncDir);
     const wrongPid = process.pid + 1;
+    const t3codeSlotPath = join(harness, "t3code", "slot-5.json");
     writeFileSync(
-      join(harness, "t3code", "slot-5.json"),
+      t3codeSlotPath,
       JSON.stringify({
         orchestration: { pid: wrongPid, stateFile: "x", mode: "pair" },
         threads: [],
@@ -1418,6 +1430,9 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
       errSpy.mockRestore();
       aliveSpy.mockRestore();
     }
+    // AC2 invariant: live mismatch must NOT rewrite the sibling state.
+    const persisted = JSON.parse(readFileSync(t3codeSlotPath, "utf-8"));
+    expect(persisted.orchestration.pid).toBe(wrongPid);
   });
 
   // ------------------------------------------------------------------------
@@ -1459,15 +1474,25 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
     };
 
     let errMessages: string[] = [];
+    let transitionCalls = 0;
     try {
       await runOrchestration(state, transport);
       // Capture spy state BEFORE mockRestore (bun:test wipes call history).
       errMessages = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      transitionCalls = transitionSpy.mock.calls.length;
     } finally {
       aliveSpy.mockRestore();
       transitionSpy.mockRestore();
       errSpy.mockRestore();
     }
+
+    // AC1 phase-completion invariant: the runner falls through into
+    // enterPhase / pollUntilDone / evaluateTransition (NOT just return after
+    // emitEvent). If a hypothetical mutation added `return;` after the
+    // reclaim emitEvent, evaluateTransition would never be called and
+    // state.phase would remain "setup".
+    expect(transitionCalls).toBeGreaterThan(0);
+    expect(state.phase).toBe("done");
 
     // AC1: sibling state file rewritten with our pid.
     const persisted = JSON.parse(
@@ -1531,14 +1556,21 @@ describe("runOrchestration self-guard (task-72a318c3)", () => {
     };
 
     let errMessages: string[] = [];
+    let transitionCalls = 0;
     try {
       await runOrchestration(state, transport);
       errMessages = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      transitionCalls = transitionSpy.mock.calls.length;
     } finally {
       aliveSpy.mockRestore();
       transitionSpy.mockRestore();
       errSpy.mockRestore();
     }
+
+    // AC3 phase-completion invariant (parallel to AC1): the runner falls
+    // through into evaluateTransition rather than returning after emitEvent.
+    expect(transitionCalls).toBeGreaterThan(0);
+    expect(state.phase).toBe("done");
 
     // AC3: read back via readSlotState (round-trip through the t3code reader).
     const persisted = t3codeServer.readSlotState(SLOT, harness);
