@@ -2,7 +2,7 @@
 
 Reference documentation for writing and verifying acceptance criteria (ACs) on tasks whose contract is unusually heavy. Each section captures one durable learning from a reviewer round where an AC line passed mechanically while still failing to enforce the property the AC named. The doc is project-agnostic: workers consult it when the AC ledger calls for extra rigor, then return to the task at hand.
 
-This doc grows over time. Today it covers nineteen clauses across five thematic families; further reviewer-flagged learnings (and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
+This doc grows over time. Today it covers twenty-two clauses across five thematic families; further reviewer-flagged learnings (and others) are expected to land as additional `### ` subsections under the same families or new sibling families.
 
 → See also: [`orchestration-patterns.md` § AC self-check](orchestration-patterns.md#ac-self-check) for the *invariant-vs-capability* phrasing rule, and [`orchestration-patterns.md` § Harness instantiation](orchestration-patterns.md#harness-instantiation) for the *falsifier-framing* rule. The two together describe both sides of an enforceable AC line; the clauses below extend them to specific recurring failure modes.
 
@@ -29,6 +29,8 @@ When an AC has a *cardinality* limb ("exactly N files contain the literal", "exa
 ### Vacuous doc/config harness — same rule, doc artifacts
 
 The vacuous-harness rule applies equally to doc and config-shape ACs. Verification lines like "a reader can identify all five elements" or "removing the heading would break the entry" are vacuous: the only edit needed to falsify them is the assertion sentence itself. The non-vacuous shape for a doc AC is a concrete `body.includes("<literal>")` or `grep -F` check whose `false` outcome is naturally produced by removing the AC's required content. Every AC verification line — even for doc artifacts — must name a probe whose negative outcome is reachable by *violating the AC*, not by *editing the verification sentence*.
+
+**Per-AC clause: pair the two probes — heading-anchor AND content-fingerprint.** For a doc structural AC, *both* a heading-anchor probe (so cross-doc links and table-of-contents jumps don't 404) AND a content-fingerprint probe (so a future heading-rename or content-deletion that drops the substantive text actually surfaces) are required as a mandatory pair, one of each per AC clause. Heading-only passes a heading whose body has been emptied; content-only passes a doc that buries the phrase in some unrelated paragraph with no anchor reachable from outside. Mutation-test by deleting either target — the heading line, or the body literal — independently and confirm at least one of the paired assertions breaks for each deletion. Worked example: `task-a670cdbf` round 3 caught both shape failures across a single doc round and routed reviewer pushback into this pair-of-probes discipline; ten ACs in that round each got a heading-anchor + content-fingerprint pair.
 
 ### Probe before cleanup — distinguish 'AC satisfied' from 'cleanup hid the violation'
 
@@ -59,6 +61,10 @@ When an AC's verifier is a literal `grep -F` against a target file, *any* match 
 ### Per-element assertions for enumerated-element ACs
 
 "Failure message names X, Y, Z" ACs need one toContain per element, not one composite assertion. A single composite check passes even if a required element is silently dropped; separate `toContain` clauses — one per required element — guarantee that dropping any element fails a specific, named assertion. The required elements aren't a set, they're a checklist; the assertion shape should reflect that. Composite regexes also tend to false-pass on whitespace-and-ordering changes humans would consider regressions.
+
+### Window-scoped pairing assertion for "Surfaces X as Y" ACs
+
+When an AC asserts an *association* between two literals — "surfaces `agent_hung_detected` as a warning", "fires `pre-merge` on `merge-vote-rejected`", "logs the `restart` action under the `attempt-3` heading" — the falsifier must be a regex inside a content window that pins the two halves *together*, not two independent `toContain` calls that pass whenever both literals exist anywhere in the file. Extract a slice from a sentinel heading to the next top-level marker (e.g., everything between `## Observed events` and the following `## ` heading), then regex-assert the pairing inside that slice (e.g., `/warning\s+on\s+`agent_hung_detected`/`). Mutation-test by swapping the two halves of the pairing in the source — change the severity from `warning` to `error`, or rewire the event_type to a sibling literal — and confirm the regex assertion breaks. This is the *association* counterpart to **Per-element assertions for enumerated-element ACs** above (per-element handles N independently-asserted set elements; window-scoped pairing handles 2 co-located literals whose AC names their relationship). Worked example: `task-a670cdbf` round 3 caught the `agent_hung_detected` ↔ "warning" pairing passing under two-independent-`toContain`s while the source had drifted such that the literals existed in unrelated paragraphs of the same skill markdown.
 
 ### Closed-set / cardinality ACs — set-equality is the strongest probe shape
 
@@ -91,6 +97,10 @@ When an AC asserts that a structured record (slot JSON, config file, persisted s
 
 When an AC names a specific filesystem path (`/tmp/...`, `~/.config/...`, `/var/log/...`), treat the literal as a contract surface, not a hint. Substituting a "portable" temp helper — `mkdtempSync(join(tmpdir(), "..."))`, `os.tmpdir()`, `process.env.TMPDIR` — coincides with `/tmp/` on Linux but resolves to `/var/folders/<user>/<random>/T/...` on macOS, so the AC silently fails one platform while passing the other. Before signalling done, grep the implementation for `tmpdir`, `os.tmpdir`, or any `path.join` wrapping a portable temp helper; any hit against the AC's literal-path prefix is a divergence. Use `mkdtempSync("<literal-prefix>")` with the AC's literal prefix instead, so the cross-platform behaviour matches the contract verbatim.
 
+### Capture-and-feed ACs need a direct mock-driven invariant test, not indirect coverage
+
+When an AC names a *capture-and-feed* relationship — "X captures from Y and feeds into Z", "the producer reads from the I/O surface and the consumer field reflects the captured value" — indirect coverage citations ("covered by AC17 setup paths", "exercised through the integration harness") are vacuous on the producer-to-consumer edge that the AC actually names: the integration harness traverses the edge but doesn't pin the mocked-in value as the observable consumer field. The direct shape is a three-step mock-driven invariant test: mock the producer's I/O at the boundary, call the producer, assert the consumer field updated to the mocked value. When the producer has two branches (first-tick vs steady-state, under-threshold vs over-threshold), each branch needs its own dedicated test — a two-state invariant ("first-tick seeds X without seeding Y" / "under-threshold seeds Y AND refreshes X") — because each branch exercises a distinct producer-to-consumer path that indirect coverage cannot distinguish. Worked example: `task-a670cdbf` round 3 rejected indirect coverage ("covered by AC17 setup paths") for the `transport-tmux.refreshAgentTransportState` raw-pane-capture AC; the reviewer required the direct shape with `tmuxCapture` mocked, `refreshAgentTransportState` called, and the consumer field asserted equal to the mocked value. Indirect coverage stays useful as integration evidence but does not satisfy a capture-and-feed AC line.
+
 ## Verification-evidence family
 
 Verification evidence is read by the reviewer *after* the commit lands. Evidence formats that depend on the working tree (bare `git diff`, transient `/tmp/` paths) silently go empty once the work is committed.
@@ -98,6 +108,10 @@ Verification evidence is read by the reviewer *after* the commit lands. Evidence
 ### AC verification evidence must survive the commit boundary
 
 AC verification evidence must survive the commit boundary — citing bare `git diff` (no range) or `git diff HEAD` reads as "diff against the working tree" and goes empty once the change is committed. The reviewer reads the ledger after the commit lands, so pre-commit-only evidence stops instantiating its claim. Use either a symmetric `git diff main...HEAD -- <paths>` cross-check (stable across rebases of the topic branch) or line-numbered direct source reads on the post-commit tree (`file.ts:LINE` with the structural property quoted). An AC line citing bare `git diff` is a *form* defect (re-derive evidence) rather than an *implementation* defect — don't issue REQUEST_CHANGES on the underlying code if the assertion still holds via another harness.
+
+### AC-cited test paths are load-bearing — ls-probe each before done-status
+
+When an AC verification line cites a test path (`(in src/foo.test.ts)`, `bun test src/bar.test.ts`, `the assertion in path/to/x.test.ts:42`), that test path is itself a load-bearing claim — the verification narrative reads as evidence that the cited assertion exists, not just that the AC's invariant is plausibly tested somewhere in the worktree. Treat each cited test path as a probe: run `ls <path>` (or an equivalent file-existence check) against every test file referenced in the verification log before signalling done. Worked example: `task-a670cdbf` round 2 caught two non-existent test file citations — `src/adapters/t3code-orchestration-config.test.ts` and `src/mag-health-check-skill.test.ts` — that read as concrete evidence in the verification log but pointed at files the worktree did not contain. Same shape as **AC verification evidence must survive the commit boundary** above: the verification line is a contract surface, and a probe that 404s on its own cited test path is a form defect even when the underlying AC is tested elsewhere.
 
 ### Diff-enumerated verification lines go stale — anchor to invariants, not snapshots
 
