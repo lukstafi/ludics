@@ -318,6 +318,7 @@ export const ALWAYS_POPULATED_KEYS: ReadonlySet<string> = new Set([
   "MERGED_MARKER_FILE",
   "PEER_SYNC_DIR",
   "DONE_STATUS",
+  "TEST_COMMAND",
 ]);
 
 export function buildSkillContext(
