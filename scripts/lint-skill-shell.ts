@@ -304,6 +304,14 @@ const FOR_RE = /\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\b\s+in\b/g;
  *  assignment pool. */
 const READ_RE = /\bread\b((?:\s+-[A-Za-z]+)*)\s+((?:[A-Za-z_][A-Za-z0-9_]*\s+)*[A-Za-z_][A-Za-z0-9_]*)/g;
 
+/** `${NAME:=value}` / `${NAME=value}` — bash parameter expansion that BOTH
+ *  references and *assigns* NAME (when NAME is unset/empty). Distinct from
+ *  `${NAME:-value}` / `${NAME-value}` which only substitute. The lint
+ *  recognizes the assignment shape so a skill author who writes
+ *  `: "${CREATED_TASKS:=}"` to "default-if-unset" gets credit for an
+ *  in-file definition, matching real bash semantics. */
+const PARAM_ASSIGN_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*):?=/g;
+
 export function extractAssignmentsFromLine(text: string): string[] {
   const names: string[] = [];
   for (const m of text.matchAll(BARE_ASSIGN_RE)) names.push(m[1]!);
@@ -313,6 +321,7 @@ export function extractAssignmentsFromLine(text: string): string[] {
       if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) names.push(n);
     }
   }
+  for (const m of text.matchAll(PARAM_ASSIGN_RE)) names.push(m[1]!);
   return names;
 }
 

@@ -193,6 +193,30 @@ describe("extractAssignmentsFromLine", () => {
   test("read with -r flag still binds the name", () => {
     expect(extractAssignmentsFromLine("read -r line")).toContain("line");
   });
+
+  test("${NAME:=value} default-and-assign binds NAME (real bash semantics)", () => {
+    // bash's `${NAME:=value}` parameter expansion *assigns* to NAME when
+    // NAME is unset/empty, in addition to substituting. The lint must
+    // give credit for this idiom so that a skill author who writes
+    // `: "${CREATED_TASKS:=}"` to default-if-unset doesn't get flagged
+    // for the subsequent `$CREATED_TASKS` reference.
+    expect(extractAssignmentsFromLine(': "${CREATED_TASKS:=}"')).toContain("CREATED_TASKS");
+    expect(extractAssignmentsFromLine('echo "${FOO:=bar}"')).toContain("FOO");
+  });
+
+  test("${NAME=value} (no colon) also binds NAME", () => {
+    // Same as `:=` but only assigns when NAME is unset (not when empty).
+    // Still an assignment in bash; lint recognizes it.
+    expect(extractAssignmentsFromLine('echo "${FOO=bar}"')).toContain("FOO");
+  });
+
+  test("${NAME:-value} substitution-only does NOT bind NAME", () => {
+    // `${NAME:-value}` substitutes a default but does NOT assign. The
+    // lint must not give credit, otherwise the typo-class catch is
+    // inverted (a `${MISSING:-fallback}` typo would silently pass).
+    expect(extractAssignmentsFromLine('echo "${MISSING:-fallback}"'))
+      .not.toContain("MISSING");
+  });
 });
 
 // ---------------------------------------------------------------------------
