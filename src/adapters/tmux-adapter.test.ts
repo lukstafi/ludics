@@ -457,3 +457,149 @@ describe("readTmuxSlotState read-boundary preserves sparse ttydRestartCounts", (
     expect(round!.ttydRestartCounts!.coder!.lastRestartAt).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scope (3a) cold-start CWD invariant — tmux backend.
+// (`proposal-commit-on-main-and-worktree-resume`.)
+//
+// Pins that an agent launched at cold-start has its tmux session born
+// inside the agent's per-agent worktree path returned from
+// `createWorktrees`. The load-bearing chain in `setupOrchestratedSlot` is
+//   for each agent:
+//     createTmuxAgentSession(slot, agent.name, agent.worktreePath, taskId)
+//       → tmuxNewSession(name, cwd)
+// — and the per-agent loop now lives in the named helper
+// `startTmuxAgentSessionsForOrchestratedSlot` so the test exercises the
+// same body `setupOrchestratedSlot` calls. A real `createWorktrees(..., "duo")`
+// produces distinct duo paths; the spy on `tmuxNewSession` sees those exact
+// paths per agent. A mutation in the helper that swaps `agent.worktreePath`
+// for `peerSyncDir` (or any other slot-shared path) flips the test
+// PASS→FAIL — verified locally.
+//
+// Subsequent-turn CWD is not asserted: `TmuxTransport.sendTurn` injects
+// prompts without `cd`, so the cold-start CWD is preserved by construction.
+// ---------------------------------------------------------------------------
+
+import { createWorktrees, cleanupWorktrees } from "../orchestration/worktrees.ts";
+import type { AgentConfig } from "../orchestration/state.ts";
+
+const TMUX_TMP = join(import.meta.dir, ".test-tmp-tmux-cwd");
+
+function initRepo(repo: string): void {
+  mkdirSync(repo, { recursive: true });
+  Bun.spawnSync(["git", "init", "-b", "main"], { cwd: repo, stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> });
+  Bun.spawnSync(["git", "config", "user.email", "test@example.com"], { cwd: repo, stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> });
+  Bun.spawnSync(["git", "config", "user.name", "Test User"], { cwd: repo, stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> });
+  writeFileSync(join(repo, "README.md"), "init\n");
+  Bun.spawnSync(["git", "add", "README.md"], { cwd: repo, stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> });
+  Bun.spawnSync(["git", "commit", "-m", "init"], { cwd: repo, stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> });
+}
+
+describe("tmux adapter cold-start CWD", () => {
+  test("setupOrchestratedSlot per-agent loop sees distinct duo worktree paths from createWorktrees as tmuxNewSession cwd", async () => {
+    if (!Bun.which("git")) return;
+    const tmuxMod = await import("./tmux.ts");
+    const { spyOn } = await import("bun:test");
+
+    // Driving the same helper `setupOrchestratedSlot` calls (rather than
+    // a hand-built agent fixture) guarantees that any future refactor of
+    // the per-agent loop is also exercised by this test.
+    const { startTmuxAgentSessionsForOrchestratedSlot } = await import("./tmux-adapter.ts");
+
+    rmSync(TMUX_TMP, { recursive: true, force: true });
+    mkdirSync(TMUX_TMP, { recursive: true });
+    const repo = join(TMUX_TMP, "repo-cwd");
+    initRepo(repo);
+
+    // Real createWorktrees with mode "duo" — produces two distinct
+    // per-agent worktree paths and registers the branches with git.
+    const setup = createWorktrees(
+      repo,
+      "task-coldstart",
+      [{ name: "coder" }, { name: "reviewer" }],
+      "main",
+      9,
+      "duo",
+    );
+    expect(setup.agentWorktrees.coder).not.toBe(setup.agentWorktrees.reviewer);
+    expect(setup.agentWorktrees.coder).not.toBe(setup.peerSyncDir);
+    expect(setup.agentWorktrees.reviewer).not.toBe(setup.peerSyncDir);
+
+    // Spy on the inner tmux primitives BEFORE the helper runs.
+    const captured: Array<{ name: string; cwd: string | undefined }> = [];
+    const newSessionSpy = spyOn(tmuxMod, "tmuxNewSession").mockImplementation((name: string, cwd?: string) => {
+      captured.push({ name, cwd });
+    });
+    const hasSessionSpy = spyOn(tmuxMod, "tmuxHasSession").mockReturnValue(false);
+    // bootAgentCli routes through tmuxSendCommand; mock so it doesn't
+    // shell out to a tmux that may not be installed.
+    const sendCommandSpy = spyOn(tmuxMod, "tmuxSendCommand").mockImplementation(() => true);
+    // Avoid the post-create `tmux set-option ... mouse off` shelling out.
+    const safeSpawnMod = await import("../spawn.ts");
+    const safeSpy = spyOn(safeSpawnMod, "safeSyncOutput").mockReturnValue({
+      ok: true, exitCode: 0, stdout: "", stderr: "", timedOut: false,
+    });
+
+    try {
+      // Mirror the AgentConfig shape `setupOrchestratedSlot` constructs
+      // at tmux-adapter.ts: each agent's worktreePath is sourced from
+      // setup.agentWorktrees[agent.name] returned by createWorktrees.
+      const agents: AgentConfig[] = [
+        {
+          name: "coder",
+          provider: "claude-code",
+          role: "coder",
+          model: "claude-sonnet-4-6",
+          branch: setup.branches.coder!,
+          worktreePath: setup.agentWorktrees.coder!,
+        },
+        {
+          name: "reviewer",
+          provider: "codex",
+          role: "reviewer",
+          model: "gpt-5.4",
+          branch: setup.branches.reviewer!,
+          worktreePath: setup.agentWorktrees.reviewer!,
+        },
+      ];
+
+      // Drive the exact helper that `setupOrchestratedSlot` invokes per
+      // round (`tmux-adapter.ts:594-597`). startTtyd is disabled so the
+      // test does not depend on a real ttyd binary; the AC scope is the
+      // tmux session's CWD, not ttyd lifecycle.
+      startTmuxAgentSessionsForOrchestratedSlot(
+        9, agents, setup.peerSyncDir, "task-coldstart", false,
+      );
+
+      // Per-agent invariant: each tmuxNewSession call's cwd argument is
+      // the agent's distinct per-agent worktree path returned from
+      // createWorktrees — NOT the slot-shared peerSyncDir or the project
+      // dir. Mutation: replacing `agent.worktreePath` with
+      // `peerSyncDir` (or `setup.rootWorktree`, or `repo`) in the loop
+      // body collapses both calls onto a single path, which fails the
+      // distinct-paths assertion below.
+      expect(captured).toHaveLength(2);
+      const byAgent = new Map(captured.map((c) => [c.name, c.cwd]));
+      // Distinct: each per-agent session's cwd matches that agent's
+      // worktree, not aliased to a shared path.
+      const coderSessionName = captured[0]!.name;
+      const reviewerSessionName = captured[1]!.name;
+      expect(byAgent.get(coderSessionName)).toBe(setup.agentWorktrees.coder!);
+      expect(byAgent.get(reviewerSessionName)).toBe(setup.agentWorktrees.reviewer!);
+      expect(byAgent.get(coderSessionName)).not.toBe(byAgent.get(reviewerSessionName));
+      // Defensive: neither cwd is the shared peerSyncDir / projectDir —
+      // pins the negative case the reviewer's mutation aimed at.
+      expect(byAgent.get(coderSessionName)).not.toBe(setup.peerSyncDir);
+      expect(byAgent.get(coderSessionName)).not.toBe(repo);
+      expect(byAgent.get(reviewerSessionName)).not.toBe(setup.peerSyncDir);
+      expect(byAgent.get(reviewerSessionName)).not.toBe(repo);
+    } finally {
+      newSessionSpy.mockRestore();
+      hasSessionSpy.mockRestore();
+      sendCommandSpy.mockRestore();
+      safeSpy.mockRestore();
+      cleanupWorktrees(repo, "task-coldstart", [{ name: "coder" }, { name: "reviewer" }], 9, "duo");
+      rmSync(TMUX_TMP, { recursive: true, force: true });
+    }
+  });
+});

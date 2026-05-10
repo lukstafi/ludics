@@ -250,8 +250,52 @@ function resolveAgentThinkingEffort(
 // tmux window + ttyd setup
 // ---------------------------------------------------------------------------
 
-/** Create a dedicated tmux session for an agent. One session per agent for full isolation. */
-function createTmuxAgentSession(slot: number, agentName: string, cwd: string, taskId?: string): void {
+/**
+ * Per-agent loop body extracted from `setupOrchestratedSlot` so the
+ * cold-start CWD invariant is testable without standing up the full
+ * AdapterContext / config / state-persistence pipeline.
+ *
+ * For each agent, this is the canonical "born inside the worktree"
+ * sequence: a fresh tmux session whose CWD is `agent.worktreePath`
+ * (the per-agent path returned from `createWorktrees`), an optional ttyd
+ * for browser access, then the persistent agent-CLI boot.
+ *
+ * Pinned by `proposal-commit-on-main-and-worktree-resume` scope (3a):
+ * a regression test in `src/adapters/tmux-adapter.test.ts` builds an
+ * `agents` array from a real `createWorktrees(..., "duo")` setup and
+ * asserts that each call to `tmuxNewSession` sees the matching
+ * per-agent path. A mutation here that swaps `agent.worktreePath` for
+ * `peerSyncDir` (or any other slot-shared path) flips that test PASS→FAIL.
+ */
+export function startTmuxAgentSessionsForOrchestratedSlot(
+  slot: number,
+  agents: AgentConfig[],
+  peerSyncDir: string,
+  taskId: string | undefined,
+  startTtydEnabled: boolean,
+): Record<string, number> {
+  const ttydPids: Record<string, number> = {};
+  for (let i = 0; i < agents.length; i++) {
+    const agent = agents[i]!;
+    createTmuxAgentSession(slot, agent.name, agent.worktreePath, taskId);
+    const role = agentPortRole(agent, i);
+    if (startTtydEnabled) ttydPids[agent.name] = startTtyd(slot, agent.name, role, taskId);
+    // Boot persistent interactive agent CLI in the session
+    bootAgentCli(slot, agent, peerSyncDir, "setup", taskId);
+  }
+  return ttydPids;
+}
+
+/**
+ * Create a dedicated tmux session for an agent. One session per agent for full isolation.
+ *
+ * Exported as a test seam: regression tests for the cold-start CWD
+ * invariant (`proposal-commit-on-main-and-worktree-resume` scope (3a))
+ * spy on the inner `tmuxNewSession` and assert that the `cwd` argument
+ * threaded through this function matches the agent's per-agent worktree
+ * path returned by `createWorktrees`.
+ */
+export function createTmuxAgentSession(slot: number, agentName: string, cwd: string, taskId?: string): void {
   const sessionName = tmuxSessionName(slot, agentName, taskId);
   // Kill existing session if present (stale from prior run)
   if (tmuxHasSession(sessionName)) {
@@ -584,15 +628,9 @@ async function start(ctx: AdapterContext): Promise<string> {
   writeAgentMarkerFiles(setup.peerSyncDir, setup.agentWorktrees);
 
   // --- tmux-specific setup: create sessions + ttyd + boot agent CLIs ---
-  const ttydPids: Record<string, number> = {};
-  for (let i = 0; i < agents.length; i++) {
-    const agent = agents[i]!;
-    createTmuxAgentSession(ctx.slot, agent.name, agent.worktreePath, taskId);
-    const role = agentPortRole(agent, i);
-    if (ctx.startTtyd !== false) ttydPids[agent.name] = startTtyd(ctx.slot, agent.name, role, taskId);
-    // Boot persistent interactive agent CLI in the session
-    bootAgentCli(ctx.slot, agent, setup.peerSyncDir, "setup", taskId);
-  }
+  const ttydPids = startTmuxAgentSessionsForOrchestratedSlot(
+    ctx.slot, agents, setup.peerSyncDir, taskId, ctx.startTtyd !== false,
+  );
 
   // --- Build orchestration state (no t3code threadIds) ---
   const state: OrchestrationState = {
