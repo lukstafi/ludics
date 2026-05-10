@@ -229,6 +229,40 @@ function worktreeExists(projectDir: string, path: string): boolean {
   return list.split("\n").some((line) => line === `worktree ${path}`);
 }
 
+/**
+ * True iff `path` is registered with git as a worktree AND that registration's
+ * branch line is `branch refs/heads/<branch>`. Used by the resume short-circuit
+ * in {@link addWorktree} — the directory existing on disk is not enough; git
+ * must agree (a) that the directory IS the worktree and (b) that it tracks
+ * the named branch. Any other shape (different path, different branch,
+ * detached HEAD, prunable record) falls through to the teardown-and-recreate
+ * path.
+ */
+function registeredWorktreeMatches(projectDir: string, path: string, branch: string): boolean {
+  const list = maybeGit(projectDir, ["worktree", "list", "--porcelain"]);
+  if (!list) return false;
+  // `git worktree list --porcelain` emits records separated by blank lines,
+  // each beginning with `worktree <path>`. Find the record for `path` and
+  // verify its `branch` line equals `refs/heads/<branch>`.
+  const records = list.split(/\n\n+/);
+  for (const record of records) {
+    const lines = record.split("\n");
+    const head = lines[0];
+    if (head !== `worktree ${path}`) continue;
+    if (lines.includes("prunable")) return false;
+    return lines.includes(`branch refs/heads/${branch}`);
+  }
+  return false;
+}
+
+/** True iff the local branch ref `refs/heads/<branch>` exists in `projectDir`. */
+function branchRefExists(projectDir: string, branch: string): boolean {
+  return safeSyncOutput(
+    ["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+    { cwd: projectDir },
+  ).ok;
+}
+
 function removeIfRegistered(projectDir: string, path: string): void {
   if (worktreeExists(projectDir, path)) {
     maybeGit(projectDir, ["worktree", "remove", "--force", path]);
@@ -289,6 +323,32 @@ export function deleteBranches(projectDir: string, branches: string[]): void {
 }
 
 function addWorktree(projectDir: string, path: string, branch: string, base: string): void {
+  // Resume short-circuit: when the worktree directory still exists on disk,
+  // the branch ref still exists in projectDir, AND git's own registration
+  // agrees that this directory tracks this branch, leave everything alone.
+  // No removeIfRegistered, no `git worktree add`, no filesystem touch — so any
+  // uncommitted scratch the user (or a mid-round agent) left in the worktree
+  // survives the call.
+  //
+  // Conservative: any inconsistency (registered path differs, registered
+  // branch differs, prunable record, detached HEAD, missing branch ref)
+  // falls through to the existing teardown-and-recreate path so the
+  // orphan-recovery branch below remains the recovery seam for unusual
+  // states.
+  //
+  // Paired with scope (1) of `proposal-commit-on-main-and-worktree-resume`:
+  // the proposal commit is reliably on the project's default branch before
+  // `createWorktrees` runs, so per-agent branches inherit it on first
+  // creation, and a later resume preserves whatever the agents have done
+  // since.
+  if (
+    existsSync(path) &&
+    branchRefExists(projectDir, branch) &&
+    registeredWorktreeMatches(projectDir, path, branch)
+  ) {
+    return;
+  }
+
   removeIfRegistered(projectDir, path);
 
   // Orphan recovery: directory exists but git no longer registers it as a worktree
@@ -409,6 +469,16 @@ export function createWorktrees(
   const branches: Record<string, string> = {
     root: orchBranchName(taskId, slot, "root"),
   };
+  // Invariant (paired with scope (1) of `proposal-commit-on-main-and-worktree-resume`):
+  // every per-agent and root branch is forked from `mainBranch` (resolved by
+  // `defaultMainBranch(projectDir)` unless the caller passes a different
+  // value). In duo mode the coder and reviewer never share a branch, so the
+  // proposal commit reaches them only if it is already on `mainBranch` at
+  // the moment `addWorktree` runs — which is what the worker-skill edits in
+  // `skills/ludics-{draft,revise}-proposal-worker.md` step "Commit and push"
+  // guarantee. Do not change the `mainBranch` argument here without also
+  // re-validating that the worker still commits the proposal on the same
+  // branch.
   addWorktree(projectDir, rootWorktree, branches.root, mainBranch);
 
   const agentWorktrees: Record<string, string> = {};
@@ -420,7 +490,9 @@ export function createWorktrees(
       agentWorktrees[agent.name] = rootWorktree;
     }
   } else {
-    // Duo mode: each agent gets its own worktree and branch
+    // Duo mode: each agent gets its own worktree and branch.
+    // Each per-agent branch is forked from `mainBranch` (see invariant
+    // comment on the root `addWorktree` call above).
     for (const agent of agents) {
       const path = join(parentDir, `${stem}-${slugify(agent.name)}`);
       const branch = orchBranchName(taskId, slot, slugify(agent.name));

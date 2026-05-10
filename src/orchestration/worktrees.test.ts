@@ -1076,3 +1076,192 @@ describe("purgeOrphanDirIfRecoverable", () => {
     expect(existsSync(join(path, ".peer-sync"))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scope (2): per-agent branches inherit commits placed on main BEFORE
+// createWorktrees runs. Pins the invariant that paired with scope (1)
+// guarantees the proposal commit reaches both coder and reviewer in duo mode.
+// (`proposal-commit-on-main-and-worktree-resume`.)
+// ---------------------------------------------------------------------------
+
+describe("createWorktrees forks per-agent branches from the default branch", () => {
+  test("duo mode: commits placed on main before createWorktrees are visible on every per-agent branch", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "fork-from-main");
+    initRepo(repo);
+
+    // Place a "proposal" commit on main BEFORE createWorktrees runs.
+    // This is the canonical scope-(1)-then-(2) sequence: proposal on
+    // default branch first, then orchestration forks per-agent worktrees.
+    writeFileSync(join(repo, "PROPOSAL.md"), "proposal body\n");
+    run(["git", "add", "PROPOSAL.md"], repo);
+    run(["git", "commit", "-m", "proposal: scope-2 fixture"], repo);
+
+    const setup = createWorktrees(
+      repo,
+      "fork-feat",
+      [{ name: "coder" }, { name: "reviewer" }],
+      "main",
+      9,
+      "duo",
+    );
+
+    // Per-agent branches must inherit the proposal commit, so the file
+    // exists in each per-agent worktree's checkout.
+    for (const agent of ["coder", "reviewer"]) {
+      const wt = setup.agentWorktrees[agent]!;
+      expect(existsSync(join(wt, "PROPOSAL.md"))).toBe(true);
+      expect(readFileSync(join(wt, "PROPOSAL.md"), "utf-8")).toBe("proposal body\n");
+      // Branch is forked, not shared.
+      expect(setup.branches[agent]).not.toBe(setup.branches.root);
+    }
+    // Root worktree also carries the commit.
+    expect(existsSync(join(setup.rootWorktree, "PROPOSAL.md"))).toBe(true);
+
+    cleanupWorktrees(repo, "fork-feat", [{ name: "coder" }, { name: "reviewer" }], 9, "duo");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scope (3b): resume short-circuit preserves worktree directory contents.
+// (`proposal-commit-on-main-and-worktree-resume`.)
+// ---------------------------------------------------------------------------
+
+describe("addWorktree resume short-circuit", () => {
+  test("re-creating an existing worktree+branch preserves uncommitted scratch and branch HEAD", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "resume-shortcircuit");
+    initRepo(repo);
+
+    // First call: cold-start. createWorktrees materialises the worktrees
+    // and forks per-agent branches from main.
+    const taskId = "resume-feat";
+    const agents = [{ name: "coder" }, { name: "reviewer" }];
+    const slot = 11;
+    const first = createWorktrees(repo, taskId, agents, "main", slot, "duo");
+
+    // Capture the branch HEADs and write uncommitted scratch into one of
+    // the worktrees, simulating an agent's mid-round work-in-progress.
+    const headsBefore: Record<string, string> = {};
+    for (const agent of ["coder", "reviewer"]) {
+      const wt = first.agentWorktrees[agent]!;
+      headsBefore[agent] = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+        cwd: wt, stdout: "pipe", stderr: "pipe",
+        env: process.env as Record<string, string>,
+      }).stdout.toString().trim();
+    }
+    const scratchPath = join(first.agentWorktrees.coder!, "SCRATCH-WIP.txt");
+    writeFileSync(scratchPath, "agent uncommitted work\n");
+
+    // Second call: simulates resume / restart of the slot. Same args, same
+    // stem — addWorktree should short-circuit instead of removing+re-adding.
+    const second = createWorktrees(repo, taskId, agents, "main", slot, "duo");
+
+    // Identity: worktree paths must be the same.
+    expect(second.rootWorktree).toBe(first.rootWorktree);
+    expect(second.agentWorktrees.coder).toBe(first.agentWorktrees.coder);
+    expect(second.agentWorktrees.reviewer).toBe(first.agentWorktrees.reviewer);
+
+    // Invariant: uncommitted scratch survives the resume (the property the
+    // short-circuit exists to enforce — `git worktree remove --force`
+    // would have wiped this file).
+    expect(existsSync(scratchPath)).toBe(true);
+    expect(readFileSync(scratchPath, "utf-8")).toBe("agent uncommitted work\n");
+
+    // Invariant: branches are not reset. (addWorktree never ran `git
+    // reset`, but pin it here for the short-circuit path explicitly so a
+    // future refactor cannot silently introduce a reset.)
+    for (const agent of ["coder", "reviewer"]) {
+      const wt = second.agentWorktrees[agent]!;
+      const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+        cwd: wt, stdout: "pipe", stderr: "pipe",
+        env: process.env as Record<string, string>,
+      }).stdout.toString().trim();
+      expect(head).toBe(headsBefore[agent]!);
+    }
+
+    cleanupWorktrees(repo, "resume-feat", [{ name: "coder" }, { name: "reviewer" }], 11, "duo");
+  });
+
+  test("falls through to teardown-and-recreate when the directory exists but git does NOT register it (orphan)", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "shortcircuit-fallthrough-orphan");
+    initRepo(repo);
+
+    // Pre-seed the canonical worktree path with allow-list scaffolding but
+    // no git registration — same shape as the orphan-recovery test, which
+    // is exactly the "directory exists but registration disagrees" case
+    // the short-circuit must NOT short-circuit.
+    const stem = orchWorktreeStem("shortcircuit-fallthrough-orphan", "task-fallthrough", 4);
+    const orphanPath = join(dirname(repo), stem);
+    seedOrphanLayout(orphanPath);
+
+    // Pre-condition: dir exists, no git registration.
+    expect(existsSync(orphanPath)).toBe(true);
+    const preList = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(preList).not.toContain(`worktree ${orphanPath}`);
+
+    // createWorktrees must fall through to the orphan-recovery path,
+    // not short-circuit on directory-exists alone.
+    const setup = createWorktrees(repo, "task-fallthrough", [{ name: "coder" }], "main", 4, "pair");
+    expect(setup.rootWorktree).toBe(orphanPath);
+    const postList = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
+      cwd: repo, stdout: "pipe", stderr: "pipe",
+      env: process.env as Record<string, string>,
+    }).stdout.toString();
+    expect(postList).toContain(`worktree ${orphanPath}`);
+
+    cleanupWorktrees(repo, "task-fallthrough", [{ name: "coder" }], 4, "pair");
+  });
+
+  test("falls through when the registered branch differs from the requested branch", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "shortcircuit-fallthrough-branch");
+    initRepo(repo);
+
+    // First, materialise a worktree on branch `wrong-branch` at the
+    // canonical orchestration path.
+    const stem = orchWorktreeStem("shortcircuit-fallthrough-branch", "task-fb", 5);
+    const path = join(dirname(repo), stem);
+    run(["git", "branch", "wrong-branch"], repo);
+    run(["git", "worktree", "add", path, "wrong-branch"], repo);
+    expect(existsSync(path)).toBe(true);
+
+    // Now ask createWorktrees to materialise a pair-mode worktree at the
+    // same path, but for a different branch (the canonical
+    // `ludics/task-fb-s5/root`). The short-circuit MUST decline because
+    // the registered branch differs — short-circuiting would silently
+    // leave the worktree on `wrong-branch`.
+    //
+    // The teardown-and-recreate path (`git worktree remove --force` then
+    // `git worktree add path branch`) handles this case correctly.
+    const setup = createWorktrees(repo, "task-fb", [{ name: "coder" }], "main", 5, "pair");
+    expect(setup.rootWorktree).toBe(path);
+
+    // Worktree must now be on the canonical orchestration branch, not on
+    // `wrong-branch` — proving the short-circuit fell through.
+    const head = Bun.spawnSync(
+      ["git", "symbolic-ref", "--short", "HEAD"],
+      { cwd: path, stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
+    ).stdout.toString().trim();
+    expect(head).toBe(setup.branches.root);
+    expect(head).not.toBe("wrong-branch");
+
+    cleanupWorktrees(repo, "task-fb", [{ name: "coder" }], 5, "pair");
+    safeRun(["git", "branch", "-D", "wrong-branch"], repo);
+  });
+});
+
+function safeRun(cmd: string[], cwd: string): void {
+  Bun.spawnSync(cmd, {
+    cwd, stdout: "pipe", stderr: "pipe",
+    env: process.env as Record<string, string>,
+  });
+}
