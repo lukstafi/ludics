@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, purgeOrphanDirIfRecoverable, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
+import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, parseRegisteredWorktreeMatches, purgeOrphanDirIfRecoverable, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
 import { captureConsoleError } from "../test-utils.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
@@ -1256,6 +1256,103 @@ describe("addWorktree resume short-circuit", () => {
 
     cleanupWorktrees(repo, "task-fb", [{ name: "coder" }], 5, "pair");
     safeRun(["git", "branch", "-D", "wrong-branch"], repo);
+  });
+
+});
+
+// Regression for Codex P2 reviewer note on PR #519: `git worktree list
+// --porcelain` can emit `prunable <reason>` (not just bare `prunable`),
+// so an exact-equality check on `prunable` lets the short-circuit
+// silently accept a stale registration. parseRegisteredWorktreeMatches
+// is the pure helper extracted so this can be tested directly without
+// having to manufacture the messy on-disk state.
+describe("parseRegisteredWorktreeMatches: prunable-with-reason rejection", () => {
+  const PATH = "/tmp/wt-path";
+  const BRANCH = "ludics/task-x/coder";
+
+  test("returns true for a clean registered record matching path + branch", () => {
+    const porcelain = [
+      `worktree ${PATH}`,
+      `HEAD abc123`,
+      `branch refs/heads/${BRANCH}`,
+      ``,
+    ].join("\n");
+    expect(parseRegisteredWorktreeMatches(porcelain, PATH, BRANCH)).toBe(true);
+  });
+
+  test("returns false when the record carries a bare `prunable` line (existing behaviour)", () => {
+    const porcelain = [
+      `worktree ${PATH}`,
+      `HEAD abc123`,
+      `branch refs/heads/${BRANCH}`,
+      `prunable`,
+      ``,
+    ].join("\n");
+    expect(parseRegisteredWorktreeMatches(porcelain, PATH, BRANCH)).toBe(false);
+  });
+
+  // Load-bearing assertion for the Codex P2 fix: a real-world git
+  // emission shape (`prunable gitdir file points to non-existent
+  // location`) must be rejected, not accepted. Mutation: reverting the
+  // prefix-match in parseRegisteredWorktreeMatches to a literal
+  // `=== "prunable"` makes this assertion flip from false→true.
+  test("returns false when the record carries a `prunable <reason>` line (Codex P2 reviewer fix)", () => {
+    const porcelain = [
+      `worktree ${PATH}`,
+      `HEAD abc123`,
+      `branch refs/heads/${BRANCH}`,
+      `prunable gitdir file points to non-existent location`,
+      ``,
+    ].join("\n");
+    expect(parseRegisteredWorktreeMatches(porcelain, PATH, BRANCH)).toBe(false);
+  });
+
+  // Defence-in-depth: leading whitespace on the prunable line should
+  // also be rejected. Some git versions / locales may indent.
+  test("returns false when the prunable line has leading whitespace", () => {
+    const porcelain = [
+      `worktree ${PATH}`,
+      `HEAD abc123`,
+      `branch refs/heads/${BRANCH}`,
+      `  prunable some reason`,
+      ``,
+    ].join("\n");
+    expect(parseRegisteredWorktreeMatches(porcelain, PATH, BRANCH)).toBe(false);
+  });
+
+  // Negative control: a line that merely contains the substring
+  // "prunable" but is not the prunable marker (e.g. a hypothetical
+  // future record field) must NOT trigger rejection — exact prefix
+  // match, not substring match.
+  test("does NOT reject lines that merely contain 'prunable' as a substring", () => {
+    const porcelain = [
+      `worktree ${PATH}`,
+      `HEAD abc123`,
+      `branch refs/heads/${BRANCH}`,
+      `# this comment mentions prunable but is not the marker`,
+      ``,
+    ].join("\n");
+    expect(parseRegisteredWorktreeMatches(porcelain, PATH, BRANCH)).toBe(true);
+  });
+
+  test("returns false when the record's branch differs from the requested branch", () => {
+    const porcelain = [
+      `worktree ${PATH}`,
+      `HEAD abc123`,
+      `branch refs/heads/different-branch`,
+      ``,
+    ].join("\n");
+    expect(parseRegisteredWorktreeMatches(porcelain, PATH, BRANCH)).toBe(false);
+  });
+
+  test("returns false when path is not registered at all", () => {
+    const porcelain = [
+      `worktree /tmp/some-other`,
+      `HEAD abc123`,
+      `branch refs/heads/some-other`,
+      ``,
+    ].join("\n");
+    expect(parseRegisteredWorktreeMatches(porcelain, PATH, BRANCH)).toBe(false);
   });
 });
 

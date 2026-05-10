@@ -241,15 +241,38 @@ function worktreeExists(projectDir: string, path: string): boolean {
 function registeredWorktreeMatches(projectDir: string, path: string, branch: string): boolean {
   const list = maybeGit(projectDir, ["worktree", "list", "--porcelain"]);
   if (!list) return false;
-  // `git worktree list --porcelain` emits records separated by blank lines,
-  // each beginning with `worktree <path>`. Find the record for `path` and
-  // verify its `branch` line equals `refs/heads/<branch>`.
-  const records = list.split(/\n\n+/);
+  return parseRegisteredWorktreeMatches(list, path, branch);
+}
+
+/**
+ * Pure helper extracted from {@link registeredWorktreeMatches} for testability.
+ * Given a `git worktree list --porcelain` body, return whether `path` is
+ * registered, not prunable, and tracks `refs/heads/<branch>`.
+ *
+ * `git worktree list --porcelain` emits records separated by blank lines,
+ * each beginning with `worktree <path>`.
+ *
+ * The `prunable` marker can appear bare (`prunable`) or with an attached
+ * reason (`prunable gitdir file points to non-existent location`), so
+ * match by prefix on the trimmed line — exact-equality matching would
+ * miss the with-reason form and let the short-circuit accept a stale
+ * registration. (Codex P2 reviewer note on PR #519.)
+ */
+export function parseRegisteredWorktreeMatches(
+  porcelain: string,
+  path: string,
+  branch: string,
+): boolean {
+  if (!porcelain) return false;
+  const records = porcelain.split(/\n\n+/);
   for (const record of records) {
     const lines = record.split("\n");
     const head = lines[0];
     if (head !== `worktree ${path}`) continue;
-    if (lines.includes("prunable")) return false;
+    if (lines.some((line) => {
+      const trimmed = line.trim();
+      return trimmed === "prunable" || trimmed.startsWith("prunable ");
+    })) return false;
     return lines.includes(`branch refs/heads/${branch}`);
   }
   return false;
