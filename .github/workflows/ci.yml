@@ -34,6 +34,9 @@ jobs:
       - name: Lint skill body CLI references
         run: bun run lint:skill-cli-refs
 
+      - name: Lint skill body shell variables
+        run: bun run lint:skill-shell
+
       - name: Lint config reference drift
         run: bun run lint:config-reference
 

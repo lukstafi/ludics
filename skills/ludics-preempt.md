@@ -61,13 +61,13 @@ This skill is invoked when:
    ### `auto` mode
    Execute the preemption directly:
    ```bash
-   ludics slot N preempt $TASK_ID -a claude-code
+   ludics slot N preempt $1 -a claude-code
    ```
 
    ### `suggest` mode
    Send a notification with the recommendation:
    ```bash
-   ludics notify outgoing "Priority task $TASK_ID ready. Recommend preempting slot N (currently: <description>). Run: ludics slot N preempt $TASK_ID"
+   ludics notify outgoing "Priority task $1 ready. Recommend preempting slot N (currently: <description>). Run: ludics slot N preempt $1"
    ```
 
    ### On failure / no suitable slot
