@@ -95,7 +95,10 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    Worked example (memory subtree, `~/.claude/projects/-*/memory/`):
    - Pre-state: `find ~/.claude/projects/-*/memory -name '<file>'` → expected hits.
    - Post-state: the same `find` invocation → expected empty.
-   - Index update: `grep -F '<slug>' <project>/memory/MEMORY.md` → expected no match.
+   - Index update: `grep -F '<slug>' ~/.claude/projects/-*/memory/MEMORY.md`
+     → expected no match. Target the memory-subtree `MEMORY.md` directly (the
+     `~/.claude/projects/-<encoded-project>/memory/MEMORY.md` path), not a
+     project-local `<project>/memory/MEMORY.md`, which does not exist.
    - Optional secondary evidence: the harness-side keepalive-commit SHA, only
      if the harness sync has run; not load-bearing. See `CLAUDE.md` /
      `MEMORY.md` for the harness-side tracking detail — do not inline that
