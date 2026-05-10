@@ -179,10 +179,18 @@ Manual: `ludics mag process-suggestions <task-id>`
     non-null and non-empty, post a comment on the PR confirming the created
     follow-up tasks:
     ```bash
+    # PR_URL is the prUrl field from the retrospective JSON parsed in
+    # the parse-retrospective section. CREATED_TASKS is a space-separated
+    # list of task IDs populated in step 9 as each follow-up task is
+    # created; `${CREATED_TASKS:=}` defaults it to empty if step 9 created
+    # no tasks (without clobbering a value set in step 9).
+    PR_URL=$(jq -r '.prUrl // empty' "$LUDICS_STATE_PATH/retrospectives/$ARGUMENTS.json")
+    : "${CREATED_TASKS:=}"
+    [ -n "$PR_URL" ] && [ -n "$CREATED_TASKS" ] || exit 0
     gh pr comment "$PR_URL" --body "$(cat <<EOF
     **Follow-up tasks created from retrospective:**
 
-    $(for task_id in "${CREATED_TASKS[@]}"; do
+    $(for task_id in $CREATED_TASKS; do
       title=$(grep '^title:' "$LUDICS_STATE_PATH/tasks/$task_id.md" | sed 's/^title: //')
       echo "- \`$task_id\`: $title (needs-confirmation)"
     done)
