@@ -106,13 +106,49 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
 
 <!-- section:commit-push -->
 8. **Commit and push**:
-   Strip the `<project_path>/` prefix from `<proposals_path>` to get the repo-relative path:
+   Strip the `<project_path>/` prefix from `<proposals_path>` to get the repo-relative path.
+
+   The shared `~/<repo-name>` checkout's HEAD is unspecified state — a prior
+   slot or session may have left it on a stale orchestration branch. Switch
+   to the project's default branch and fast-forward it *before* staging, so
+   the proposal commit lands on the branch from which the orchestration
+   runner forks per-agent worktrees. Resolve the default-branch name the
+   same way `defaultMainBranch` does in `src/orchestration/worktrees.ts`
+   (do not hard-code `"main"` — projects on `master`/`trunk` are covered):
+
    ```bash
    cd <project_path>
+   default_branch=$(
+     git symbolic-ref --quiet --short refs/remotes/origin/HEAD \
+       | sed 's|^origin/||'
+   )
+   default_branch=${default_branch:-main}
+   git checkout "$default_branch"      # fail-loud: stop on uncommitted changes / detached HEAD
+   git pull --ff-only origin "$default_branch"
    git add <proposals_path_relative>/<feature>.md
    git commit -m "proposal: <title>"
-   git push
+   if ! git push origin "$default_branch"; then
+     git pull --rebase origin "$default_branch"
+     git push origin "$default_branch"   # one retry for concurrent-push race; fail-loud after
+   fi
    ```
+
+   **Fail-loud on operator-state corruption.** If `git checkout
+   "$default_branch"` cannot succeed (uncommitted changes on the prior
+   branch, detached HEAD that cannot be left, etc.), stop and emit
+   `status: "error"` with the diagnostic message from git. Do not commit on
+   a different branch. Do not stash, reset, or otherwise paper over the
+   stale state — the operator's prior checkout state is theirs to recover.
+
+   **Concurrent-push race is handled with one retry, not fail-loud.** A push
+   that fails because the remote tip advanced (another slot pushed in the
+   same window) is recovered with a single `git pull --rebase origin
+   "$default_branch" && git push origin "$default_branch"`. A second
+   failure is fail-loud (`status: "error"`).
+
+   The push targets the named branch explicitly (`git push origin
+   "$default_branch"`) — do not fall back to a bare `git push` that relies
+   on the working tree's prior HEAD or upstream tracking.
 
 <!-- section:update-frontmatter -->
 9. **Update task frontmatter**: Set `proposal: <proposals_path_relative>/<feature-name>.md`
