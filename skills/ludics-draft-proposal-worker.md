@@ -79,6 +79,43 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    GitHub issue, task context, and resolved questions. Each criterion should be
    verifiable. Do NOT invent requirements beyond what the user stated or implied.
 
+   ### AC verification reachability — find/grep over commit-SHA when the path is outside project git context
+
+   When an AC's named path sits outside `git -C <project_path>`'s introspection
+   reach, the AC's primary evidence must use tooling reachable from the project
+   worktree (find/grep), not a commit-SHA from the unreachable subtree.
+
+   Why: `git -C <subpath>` walks parents looking for a `.git` directory and
+   returns "not a git repository" when none is found, so an AC that demands a
+   SHA from that subtree is self-contradicting at verification time.
+   Precipitating instance: `gh-ludics-478` round 1 (PR #491) generated such an
+   AC against `~/.claude/projects/-*/memory/`; commit `b4f5a92` reconciled it
+   by switching to find/grep evidence with optional secondary harness-side SHA.
+
+   Worked example (memory subtree, `~/.claude/projects/-*/memory/` — where
+   `-*` is the structural-shape glob; substitute `-<encoded-project>` in
+   actual verification commands so the check stays scoped to the current
+   project rather than aggregating across every project's memory tree):
+   - Pre-state: `find ~/.claude/projects/-<encoded-project>/memory -name '<file>'` → expected hits.
+   - Post-state: the same `find` invocation → expected empty.
+   - Index update: `grep -F '<slug>' ~/.claude/projects/-<encoded-project>/memory/MEMORY.md`
+     → expected no match. Use the project-scoped path (Claude Code encodes
+     the project root into the directory slug, e.g. `-Users-lukstafi-ludics`);
+     a literal `~/.claude/projects/-*/memory/MEMORY.md` would shell-glob
+     across every project's memory index and produce false positives or
+     negatives from unrelated projects. The project-local
+     `<project>/memory/MEMORY.md` does not exist either, so do not use it.
+   - Optional secondary evidence: the harness-side keepalive-commit SHA, only
+     if the harness sync has run; not load-bearing. See `CLAUDE.md` /
+     `MEMORY.md` for the harness-side tracking detail — do not inline that
+     mechanism here.
+
+   The same rule applies to other paths outside the project's git context:
+   cache dirs, generated artefacts, and parent-symlinked trees (where the
+   symlink target's git context is unreachable from the symlink path) follow
+   the same pattern. Add future instances as new bullets under this
+   subsection rather than spawning new subsections.
+
    ## Context
    How things work now. Key files and code pointers by function/type/symbol
    name — not line numbers, which drift as other PRs merge before implementation.
