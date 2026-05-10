@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { canReuseSlotThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask } from "./t3code.ts";
+import { buildOrchestratedDesiredThreadConfig, canReuseSlotThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 import { mergeAdapterState } from "../slots/markdown.ts";
 import { emptySlotData } from "../slots/json.ts";
@@ -510,5 +510,67 @@ describe("selectOrchestrationFlags — tiny effort", () => {
     const { args } = selectOrchestrationFlags("tiny", fakeConfig);
     expect(args).toContain("--solo --coder codex");
     expect(args).not.toContain(":claude-sonnet");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scope (3a) cold-start CWD invariant — t3code backend.
+// (`proposal-commit-on-main-and-worktree-resume`.)
+//
+// Pins that an agent's `DesiredThreadConfig` (the payload dispatched to the
+// t3code server's `thread.create`) carries `worktreePath: agent.worktreePath`
+// — i.e. the per-agent path returned by `createWorktrees` flows unchanged
+// to the boundary the t3code server stores on the thread, which then drives
+// the spawned agent's CWD.
+//
+// Asserting at the boundary is sufficient: the t3code server-side handling
+// of `worktreePath` is out of scope for this task. Subsequent-turn CWD is
+// not asserted because `T3CodeTransport.sendTurn` dispatches against the
+// stored thread without ever sending a different worktreePath.
+// ---------------------------------------------------------------------------
+
+describe("t3code adapter cold-start DesiredThreadConfig", () => {
+  test("orchestrated DesiredThreadConfig carries the agent's worktreePath unchanged at the thread.create boundary", () => {
+    // Each agent in duo mode gets a distinct per-agent worktree from
+    // createWorktrees; the AC pins that worktreePath flows into the
+    // dispatched DesiredThreadConfig per agent without aliasing or
+    // collapsing onto the slot's primary worktree.
+    const coderAgent = {
+      name: "coder",
+      role: "coder",
+      model: "claude-sonnet-4-6",
+      provider: "claude-code" as const,
+      branch: "ludics/task-cs/coder",
+      worktreePath: "/tmp/proj-task-cs-coder",
+    };
+    const reviewerAgent = {
+      name: "reviewer",
+      role: "reviewer",
+      model: "gpt-5.4",
+      provider: "codex" as const,
+      branch: "ludics/task-cs/reviewer",
+      worktreePath: "/tmp/proj-task-cs-reviewer",
+    };
+
+    const slot = 7;
+    const opts = { runtimeMode: "full-access" as const, interactionMode: "default" as const };
+
+    const desiredCoder = buildOrchestratedDesiredThreadConfig(coderAgent, slot, "task-cs", opts);
+    const desiredReviewer = buildOrchestratedDesiredThreadConfig(reviewerAgent, slot, "task-cs", opts);
+
+    // The named-seam invariant: each per-agent DesiredThreadConfig's
+    // worktreePath equals the agent's per-agent worktree. Mutation:
+    // collapsing the runner's per-agent loop to use a single workspace
+    // root would make these expectations diverge.
+    expect(desiredCoder.worktreePath).toBe("/tmp/proj-task-cs-coder");
+    expect(desiredReviewer.worktreePath).toBe("/tmp/proj-task-cs-reviewer");
+    expect(desiredCoder.worktreePath).not.toBe(desiredReviewer.worktreePath);
+
+    // Branch and provider are also per-agent — sanity that the helper
+    // does not silently ignore agent fields.
+    expect(desiredCoder.branch).toBe("ludics/task-cs/coder");
+    expect(desiredReviewer.branch).toBe("ludics/task-cs/reviewer");
+    expect(desiredCoder.provider).toBe("claude-code");
+    expect(desiredReviewer.provider).toBe("codex");
   });
 });

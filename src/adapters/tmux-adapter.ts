@@ -250,8 +250,16 @@ function resolveAgentThinkingEffort(
 // tmux window + ttyd setup
 // ---------------------------------------------------------------------------
 
-/** Create a dedicated tmux session for an agent. One session per agent for full isolation. */
-function createTmuxAgentSession(slot: number, agentName: string, cwd: string, taskId?: string): void {
+/**
+ * Create a dedicated tmux session for an agent. One session per agent for full isolation.
+ *
+ * Exported as a test seam: regression tests for the cold-start CWD
+ * invariant (`proposal-commit-on-main-and-worktree-resume` scope (3a))
+ * spy on the inner `tmuxNewSession` and assert that the `cwd` argument
+ * threaded through this function matches the agent's per-agent worktree
+ * path returned by `createWorktrees`.
+ */
+export function createTmuxAgentSession(slot: number, agentName: string, cwd: string, taskId?: string): void {
   const sessionName = tmuxSessionName(slot, agentName, taskId);
   // Kill existing session if present (stale from prior run)
   if (tmuxHasSession(sessionName)) {

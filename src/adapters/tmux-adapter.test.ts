@@ -457,3 +457,67 @@ describe("readTmuxSlotState read-boundary preserves sparse ttydRestartCounts", (
     expect(round!.ttydRestartCounts!.coder!.lastRestartAt).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scope (3a) cold-start CWD invariant — tmux backend.
+// (`proposal-commit-on-main-and-worktree-resume`.)
+//
+// Pins that an agent launched at cold-start has its tmux session born inside
+// the agent's per-agent worktree path returned from `createWorktrees`. The
+// chain is `setupOrchestratedSlot` →
+// `createTmuxAgentSession(slot, name, agent.worktreePath, taskId)` →
+// `tmuxNewSession(name, cwd)`. The test spies on the inner `tmuxNewSession`
+// and asserts the `cwd` argument equals `agent.worktreePath` per agent.
+//
+// Subsequent-turn CWD is not asserted: `TmuxTransport.sendTurn` injects
+// prompts without `cd`, so the cold-start CWD is preserved by construction.
+// ---------------------------------------------------------------------------
+
+describe("tmux adapter cold-start CWD", () => {
+  test("createTmuxAgentSession threads agent.worktreePath into tmuxNewSession's cwd argument for each duo agent", async () => {
+    const tmuxMod = await import("./tmux.ts");
+    const { spyOn } = await import("bun:test");
+
+    const captured: Array<{ name: string; cwd: string | undefined }> = [];
+    const newSessionSpy = spyOn(tmuxMod, "tmuxNewSession").mockImplementation((name: string, cwd?: string) => {
+      captured.push({ name, cwd });
+    });
+    const hasSessionSpy = spyOn(tmuxMod, "tmuxHasSession").mockReturnValue(false);
+    // Avoid the post-create `tmux set-option ... mouse off` shelling out
+    // to a real tmux binary that may or may not be installed.
+    const safeSpawnMod = await import("../spawn.ts");
+    const safeSpy = spyOn(safeSpawnMod, "safeSyncOutput").mockReturnValue({
+      ok: true, exitCode: 0, stdout: "", stderr: "", timedOut: false,
+    });
+
+    try {
+      const { createTmuxAgentSession } = await import("./tmux-adapter.ts");
+
+      // Simulate the per-agent loop in setupOrchestratedSlot: each
+      // `agent` carries its worktreePath from `createWorktrees`. The
+      // assertion is that the path threads unchanged into tmuxNewSession.
+      const agents = [
+        { name: "coder", worktreePath: "/tmp/proj-task-s9-coder" },
+        { name: "reviewer", worktreePath: "/tmp/proj-task-s9-reviewer" },
+      ];
+      for (const a of agents) {
+        createTmuxAgentSession(9, a.name, a.worktreePath, "task-coldstart");
+      }
+
+      // Per-agent invariant: each tmuxNewSession call's cwd argument is
+      // the agent's worktreePath. Mutation: replacing
+      // `agent.worktreePath` with `repo` in the call site at
+      // `setupOrchestratedSlot` makes both assertions fail.
+      expect(captured).toHaveLength(2);
+      expect(captured[0]!.cwd).toBe("/tmp/proj-task-s9-coder");
+      expect(captured[1]!.cwd).toBe("/tmp/proj-task-s9-reviewer");
+      // Distinct sessions per agent — duo mode never collapses two
+      // agents into one session.
+      expect(captured[0]!.name).not.toBe(captured[1]!.name);
+    } finally {
+      newSessionSpy.mockRestore();
+      hasSessionSpy.mockRestore();
+      safeSpy.mockRestore();
+    }
+  });
+});

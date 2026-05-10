@@ -107,6 +107,35 @@ function normalizeWorkspacePath(ctx: AdapterContext): string {
 }
 
 /** Build orchestrated thread title — delegates to shared slotSessionName convention */
+/**
+ * Build the {@link DesiredThreadConfig} dispatched to the t3code server for a
+ * single orchestration agent. Extracted as a named export so a regression
+ * test can pin the cold-start invariant — the `worktreePath` field on the
+ * payload MUST equal the agent's per-agent worktree path returned by
+ * `createWorktrees` — without standing up a t3code-server fixture.
+ *
+ * Pinned by `proposal-commit-on-main-and-worktree-resume` scope (3a):
+ * the t3code-side handling of `worktreePath` (project resolution, thread
+ * creation, CWD enforcement) is out of scope; the boundary asserted here
+ * is the value the runner constructs and dispatches.
+ */
+export function buildOrchestratedDesiredThreadConfig(
+  agent: { name: string; role?: string | null; model: string; provider?: T3ProviderKind; branch: string; worktreePath: string },
+  slot: number,
+  taskId: string | undefined,
+  options: { runtimeMode: T3RuntimeMode; interactionMode: T3InteractionMode },
+): DesiredThreadConfig {
+  return {
+    worktreePath: agent.worktreePath,
+    title: orchestratedThreadTitle(slot, agent.role ?? agent.name, taskId),
+    model: agent.model,
+    provider: agent.provider,
+    runtimeMode: options.runtimeMode,
+    interactionMode: options.interactionMode,
+    branch: agent.branch,
+  };
+}
+
 export function orchestratedThreadTitle(slot: number, role: string, taskId?: string): string {
   return slotSessionName(slot, role, taskId);
 }
@@ -951,15 +980,12 @@ async function startOrchestratedThreads(
     const projectId = await ensureProject(client, snapshot, projectDir, defaultModelSelection);
     const created: T3CodeThreadRecord[] = [];
     for (const agent of agents) {
-      const desired: DesiredThreadConfig = {
-        worktreePath: agent.worktreePath,
-        title: orchestratedThreadTitle(ctx.slot, agent.role ?? agent.name, ctx.taskId),
-        model: agent.model,
-        provider: agent.provider,
-        runtimeMode: options.runtimeMode,
-        interactionMode: options.interactionMode,
-        branch: agent.branch,
-      };
+      const desired = buildOrchestratedDesiredThreadConfig(
+        agent,
+        ctx.slot,
+        ctx.taskId,
+        { runtimeMode: options.runtimeMode, interactionMode: options.interactionMode },
+      );
       created.push(
         await ensureThread(
           client,
