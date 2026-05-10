@@ -1,0 +1,812 @@
+import { describe, test, expect } from "bun:test";
+import { readFileSync, writeFileSync, unlinkSync } from "fs";
+import { join } from "path";
+import {
+  IN_SCOPE_GLOBS,
+  collectInScopeFiles,
+  computeCodeMask,
+  countTriggerRows,
+  findDescribeBlocks,
+  findMatchingBrace,
+  findSpawnIndices,
+  findTriggers,
+  hasPragmaAbove,
+  lintCorpus,
+  lintFile,
+  spawnCoversTrigger,
+} from "./lint-test-spawn-coverage.ts";
+
+const root = join(import.meta.dir, "..");
+
+// The lint scans `scripts/*.test.ts` — including this file. To prevent the
+// synthetic-source fixtures below from being seen as real triggers when the
+// lint reads this file's bytes, we interpolate the keywords from uppercase
+// constants. The trigger regex is case-sensitive and matches lowercase
+// `test|it` only, so `${TEST}(...` in the source bytes does NOT match,
+// while at runtime the strings resolve to lowercase `test(...` for the
+// recognizer to find as intended. (Without this, the live-corpus assertion
+// would fail with dozens of self-induced violations.)
+const TEST = "test";
+const IT = "it";
+
+// ---------------------------------------------------------------------------
+// IN_SCOPE_GLOBS — single literal, scoped to scripts/*.test.ts only
+// ---------------------------------------------------------------------------
+
+describe("IN_SCOPE_GLOBS", () => {
+  test("is exactly scripts/*.test.ts (no src/, templates/, docs/ extension)", () => {
+    expect(IN_SCOPE_GLOBS).toEqual(["scripts/*.test.ts"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findMatchingBrace — balanced-brace walker (skips strings, templates, comments)
+// ---------------------------------------------------------------------------
+
+describe("findMatchingBrace", () => {
+  test("finds the matching `}` for a flat block", () => {
+    const src = "x = { foo: 1 }";
+    const start = src.indexOf("{");
+    expect(findMatchingBrace(src, start)).toBe(src.lastIndexOf("}"));
+  });
+
+  test("skips `{` / `}` inside double-quoted strings", () => {
+    const src = 'x = { s: "{not a brace}" }';
+    const start = src.indexOf("{");
+    expect(findMatchingBrace(src, start)).toBe(src.length - 1);
+  });
+
+  test("skips `{` / `}` inside template literals (and substitution interiors)", () => {
+    const src = "x = { s: `${a}` }";
+    const start = src.indexOf("{");
+    expect(findMatchingBrace(src, start)).toBe(src.length - 1);
+  });
+
+  test("skips `{` / `}` inside line and block comments", () => {
+    const src = "x = { // }\n /* } */ y: 1 }";
+    const start = src.indexOf("{");
+    expect(findMatchingBrace(src, start)).toBe(src.length - 1);
+  });
+
+  test("returns -1 when startIdx is not `{`", () => {
+    expect(findMatchingBrace("abc", 0)).toBe(-1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findDescribeBlocks — describe(…) callsite discovery
+// ---------------------------------------------------------------------------
+
+describe("findDescribeBlocks", () => {
+  test("locates a single describe block with body offsets", () => {
+    const src = ['describe("a", () => {', "  const x = 1;", "});"].join("\n");
+    const blocks = findDescribeBlocks(src);
+    expect(blocks).toHaveLength(1);
+    expect(src[blocks[0]!.bodyStart]).toBe("{");
+    expect(src[blocks[0]!.bodyEnd]).toBe("}");
+  });
+
+  test("locates nested describes (each registered separately)", () => {
+    const src = [
+      'describe("outer", () => {',
+      '  describe("inner", () => {',
+      "    const x = 1;",
+      "  });",
+      "});",
+    ].join("\n");
+    const blocks = findDescribeBlocks(src);
+    expect(blocks).toHaveLength(2);
+    const [first, second] = blocks;
+    const outer = first!.bodyEnd > second!.bodyEnd ? first! : second!;
+    const inner = outer === first ? second! : first!;
+    expect(outer.bodyStart < inner.bodyStart).toBe(true);
+    expect(outer.bodyEnd > inner.bodyEnd).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findTriggers — recognizer narrowness
+// ---------------------------------------------------------------------------
+
+describe("findTriggers — Q2 narrowness", () => {
+  test(`recognizes ${TEST}("exits 0|1|non-zero …")`, () => {
+    const src = [
+      `${TEST}("exits 0 on a clean tree", () => {});`,
+      `${TEST}("exits 1 with a violation", () => {});`,
+      `${TEST}("exits non-zero on bad input", () => {});`,
+    ].join("\n");
+    const triggers = findTriggers(src);
+    expect(triggers).toHaveLength(3);
+    expect(triggers.map((t) => t.testName)).toEqual([
+      "exits 0 on a clean tree",
+      "exits 1 with a violation",
+      "exits non-zero on bad input",
+    ]);
+  });
+
+  test(`recognizes ${IT}("exits 0 …") alongside test (Q4 alias)`, () => {
+    const src = `${IT}("exits 0 against an empty fixture", () => {});`;
+    const triggers = findTriggers(src);
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0]!.testName).toBe("exits 0 against an empty fixture");
+  });
+
+  test(`does NOT recognize "exits after grace window …" (no leading numeric)`, () => {
+    // Mutation evidence: if the recognizer were widened to `exits\s+\w+`,
+    // this assertion fires. Falsifies the runner.lifecycle false-positive
+    // class structurally.
+    const src = `${TEST}("exits after grace window when tmux sibling state is missing", () => {});`;
+    expect(findTriggers(src)).toEqual([]);
+  });
+
+  test(`does NOT recognize "exits early when …"`, () => {
+    const src = `${TEST}("exits early when t3code sibling state has a mismatched PID", () => {});`;
+    expect(findTriggers(src)).toEqual([]);
+  });
+
+  test(`does NOT recognize "returns exit 0 …" synonym (intentional narrow scope)`, () => {
+    const src = `${TEST}("returns exit 0 against an empty fixture", () => {});`;
+    expect(findTriggers(src)).toEqual([]);
+  });
+
+  test(`does NOT recognize "fails CI when …" synonym`, () => {
+    const src = `${TEST}("fails CI when descriptor is missing", () => {});`;
+    expect(findTriggers(src)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findSpawnIndices — Q3 allowlist
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// computeCodeMask + non-code masking — codex P1/P2 regression coverage
+// ---------------------------------------------------------------------------
+
+describe("computeCodeMask + non-code masking (codex P1/P2)", () => {
+  test("masks // line-comment bytes", () => {
+    const src = "const x = 1; // foo Bun.spawnSync({})\nconst y = 2;";
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(1);
+  });
+
+  test("masks /* block-comment */ bytes", () => {
+    const src = "const x = 1; /* Bun.spawnSync({}) */ const y = 2;";
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(1);
+  });
+
+  test("masks bytes inside double-quoted strings", () => {
+    const src = `const s = "Bun.spawnSync({})";`;
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(1);
+  });
+
+  test("masks bytes inside single-quoted strings", () => {
+    const src = `const s = 'Bun.spawnSync({})';`;
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(1);
+  });
+
+  test("masks bytes inside backtick template body", () => {
+    const src = "const s = `Bun.spawnSync({}) and stuff`;";
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(1);
+  });
+
+  test("does NOT mask bytes inside ${...} substitution (substitution interior is code)", () => {
+    const src = "const s = `prefix ${Bun.spawnSync({}).exitCode} suffix`;";
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(0);
+  });
+
+  test("survives a regex literal containing string-like chars (no stuck-state)", () => {
+    // The lint-template-safety.test.ts file contains
+    //   `return /(?:\\?\\?|:|\\|\\|)\\s*""(?!")|.../.test(rhs);`
+    // — without regex-literal handling, the walker treated `""` as a
+    // string opener/closer and fell into a stuck-state that flipped the
+    // mask for the rest of the file. Regression test for the live-corpus
+    // case where line 725 of lint-template-safety.test.ts (a real
+    // `test("exits 0 …")` call) was being masked.
+    const src = [
+      `function looksFunny(rhs) {`,
+      `  return /(?:\\?\\?|:|\\|\\|)\\s*""(?!")|(?:\\?\\?|:|\\|\\|)\\s*''(?!')/.test(rhs);`,
+      `}`,
+      `describe("after regex", () => {`,
+      `  test("exits 0 against a clean tree", () => {`,
+      `    const proc = Bun.spawnSync({});`,
+      `    expect(proc.exitCode).toBe(0);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const mask = computeCodeMask(src);
+    // The describe and test calls AFTER the regex must be at code position.
+    const describeIdx = src.indexOf("describe(\"after");
+    const testIdx = src.indexOf(`test("exits 0`);
+    expect(mask[describeIdx]).toBe(0);
+    expect(mask[testIdx]).toBe(0);
+    // And findTriggers / lintFile should treat the trigger as covered.
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("findSpawnIndices ignores spawn tokens in comments (codex P1)", () => {
+    // Without mask: this would return 1 match. With mask: 0.
+    const src = "// TODO: use Bun.spawnSync(...) here\nconst x = 1;";
+    expect(findSpawnIndices(src)).toEqual([]);
+  });
+
+  test("findSpawnIndices ignores spawn tokens in string fixtures (codex P1)", () => {
+    const src = 'const note = "Bun.spawnSync prose"; const x = 1;';
+    expect(findSpawnIndices(src)).toEqual([]);
+  });
+
+  test("findTriggers ignores trigger literals in template-body fixture text", () => {
+    // Mirrors the codex-P1 concern in the trigger direction. A bare
+    // backtick-quoted prose mention of `test("exits 1 ...")` is not a
+    // real test row.
+    const src = "const docs = `see test(\"exits 1 when foo\") in spec`;";
+    expect(findTriggers(src)).toEqual([]);
+  });
+
+  test("lintFile does NOT swallow a violation when an in-comment spawn token appears in the same describe (codex P1 end-to-end)", () => {
+    // Without mask filtering, the comment mention `// Bun.spawnSync(...)`
+    // would count as a covering spawn and the in-process trigger would
+    // pass lint silently. With the mask, it correctly flags the
+    // violation. Mutation evidence: removing the mask filter from
+    // findSpawnIndices makes this assertion fail (returns []).
+    const src = [
+      `describe("CLI exit code", () => {`,
+      `  // TODO: replace runLint() with Bun.spawnSync(...) at some point`,
+      `  ${TEST}("exits 1 when in-process", () => {`,
+      `    expect(runLint([]).exitCode).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const violations = lintFile("synthetic.ts", src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.testName).toBe("exits 1 when in-process");
+  });
+
+  test("findMatchingBrace handles ${\"{\"} substitution-string with brace (codex P2)", () => {
+    // Without the mask-aware brace walker, the inner `"{"` would
+    // unbalance the substitution-depth counter and the outer brace
+    // walk would either return -1 or a wrong index. With the mask,
+    // strings inside the substitution are masked and their braces are
+    // skipped.
+    const src = [
+      `const x = {`,
+      "  s: `${\"{\"}`,",
+      `  v: 1,`,
+      `};`,
+    ].join("\n");
+    const start = src.indexOf("{");
+    const end = findMatchingBrace(src, start);
+    // The matching `}` should be the one before `;` — i.e. end matches
+    // the outer block, not -1, and is at the LAST `}` in the source.
+    expect(end).toBe(src.lastIndexOf("}"));
+  });
+});
+
+describe("findSpawnIndices — Q3 allowlist", () => {
+  test("matches Bun.spawnSync(", () => {
+    expect(findSpawnIndices("const p = Bun.spawnSync({});")).toHaveLength(1);
+  });
+
+  test("matches Bun.spawn( (async form)", () => {
+    expect(findSpawnIndices("const p = Bun.spawn({});")).toHaveLength(1);
+  });
+
+  test("matches Bun.$", () => {
+    expect(findSpawnIndices("await Bun.$`ls`;")).toHaveLength(1);
+  });
+
+  test("matches execFileSync(", () => {
+    expect(findSpawnIndices("execFileSync('git', []);")).toHaveLength(1);
+  });
+
+  test("matches execSync(", () => {
+    expect(findSpawnIndices("execSync('git status');")).toHaveLength(1);
+  });
+
+  test("matches standalone spawnSync( (Node-style import)", () => {
+    expect(
+      findSpawnIndices(
+        'import { spawnSync } from "child_process";\nspawnSync("ls", []);',
+      ).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  test("matches standalone spawn( (Node-style import)", () => {
+    expect(
+      findSpawnIndices(
+        'import { spawn } from "child_process";\nspawn("ls", []);',
+      ).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasPragmaAbove — escape-hatch logic
+// ---------------------------------------------------------------------------
+
+describe("hasPragmaAbove", () => {
+  test("returns true when pragma is on the line immediately above", () => {
+    const src = [
+      "// lint:allow-no-spawn",
+      `${TEST}("exits 1 when foo", () => {});`,
+    ].join("\n");
+    const idx = src.indexOf(`${TEST}(`);
+    expect(hasPragmaAbove(src, idx)).toBe(true);
+  });
+
+  test("returns true with intervening blank lines", () => {
+    const src = [
+      "// lint:allow-no-spawn",
+      "",
+      "",
+      `${TEST}("exits 1 when foo", () => {});`,
+    ].join("\n");
+    const idx = src.indexOf(`${TEST}(`);
+    expect(hasPragmaAbove(src, idx)).toBe(true);
+  });
+
+  test("returns false when other code is between pragma and trigger", () => {
+    const src = [
+      "// lint:allow-no-spawn",
+      "const x = 1;",
+      `${TEST}("exits 1 when foo", () => {});`,
+    ].join("\n");
+    const idx = src.indexOf(`${TEST}(`);
+    expect(hasPragmaAbove(src, idx)).toBe(false);
+  });
+
+  test("returns false when no pragma is above", () => {
+    const src = [
+      `describe('x', () => {`,
+      `${TEST}("exits 1 when foo", () => {});`,
+      "});",
+    ].join("\n");
+    const idx = src.indexOf(`${TEST}(`);
+    expect(hasPragmaAbove(src, idx)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spawnCoversTrigger — ancestor-only scope rule
+// ---------------------------------------------------------------------------
+
+describe("spawnCoversTrigger", () => {
+  test("file-scope spawn covers a top-level trigger (both at file scope)", () => {
+    expect(spawnCoversTrigger(0, 100, [])).toBe(true);
+  });
+
+  test("file-scope spawn does NOT cover a describe-internal trigger", () => {
+    // Reviewer's blocking case (round 1): the AC explicitly says
+    // "Top-level test(...) rows with no enclosing describe use the file
+    // body as their 'describe body'" — meaning file-body spawns ONLY
+    // cover top-level triggers. A trigger inside a describe is NOT
+    // covered by a file-scope spawn (only by spawns inside its describe
+    // chain). Mutation evidence: under a "containers(spawn) ⊆
+    // containers(trigger)"-only rule (which my round-1 implementation
+    // had), this assertion would return true — an over-lenient cover.
+    const blocks = [{ bodyStart: 50, bodyEnd: 100 }];
+    // spawn at idx 5 (file scope, before block), trigger at idx 70 (inside block).
+    expect(spawnCoversTrigger(5, 70, blocks)).toBe(false);
+  });
+
+  test("same-describe spawn covers a same-describe trigger", () => {
+    const blocks = [{ bodyStart: 0, bodyEnd: 100 }];
+    expect(spawnCoversTrigger(5, 50, blocks)).toBe(true);
+  });
+
+  test("ancestor-describe spawn covers nested-describe trigger", () => {
+    // Outer describe contains inner; spawn lives in outer's body
+    // (between the outer's open and the inner's open). Trigger lives in
+    // inner. Per AC: ancestor describe bodies count toward coverage.
+    const blocks = [
+      { bodyStart: 0, bodyEnd: 100 }, // outer
+      { bodyStart: 30, bodyEnd: 80 }, // inner
+    ];
+    // spawn at idx 10 (in outer, before inner opens), trigger at 50 (in inner)
+    expect(spawnCoversTrigger(10, 50, blocks)).toBe(true);
+  });
+
+  test("sibling-describe spawn does NOT cover trigger in another describe", () => {
+    const blocks = [
+      { bodyStart: 0, bodyEnd: 50 },
+      { bodyStart: 60, bodyEnd: 100 },
+    ];
+    expect(spawnCoversTrigger(5, 70, blocks)).toBe(false);
+  });
+
+  test("describe-nested spawn does NOT cover a top-level trigger", () => {
+    // Symmetric of the file-scope-spawn-covers-describe-internal bug:
+    // a spawn buried inside a describe block is not "at file scope" and
+    // therefore can't cover a sibling top-level test row.
+    const blocks = [{ bodyStart: 50, bodyEnd: 100 }];
+    // spawn at idx 70 (inside block), trigger at idx 5 (top level, outside block).
+    expect(spawnCoversTrigger(70, 5, blocks)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lintFile — full AC matrix
+// ---------------------------------------------------------------------------
+
+describe("lintFile — AC matrix", () => {
+  test("Positive — flagged: in-process resolver inside CLI exit code describe", () => {
+    const src = [
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when foo", () => {`,
+      `    const result = runLint([]);`,
+      `    expect(result.exitCode).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const violations = lintFile("synthetic.ts", src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.testName).toBe("exits 1 when foo");
+    expect(violations[0]!.line).toBe(2);
+  });
+
+  test("Positive — flagged for it(...) (Q4 alias)", () => {
+    const src = [
+      `describe("CLI exit code", () => {`,
+      `  ${IT}("exits 0 against an empty fixture", () => {`,
+      `    expect(runLint([]).exitCode).toBe(0);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const violations = lintFile("synthetic.ts", src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.testName).toBe("exits 0 against an empty fixture");
+  });
+
+  test("Negative — describe contains Bun.spawnSync (PR #518 round-2 shape)", () => {
+    const src = [
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when bar", () => {`,
+      `    const proc = Bun.spawnSync({});`,
+      `    expect(proc.exitCode).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("Negative — describe contains Bun.$", () => {
+    const src = [
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when baz", async () => {`,
+      "    await Bun.$`bun run scripts/lint.ts`;",
+      `    expect(true).toBe(true);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("Negative — describe contains Bun.spawn( (async form, Q3 sync+async)", () => {
+    const src = [
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when qux", async () => {`,
+      `    const proc = Bun.spawn({});`,
+      `    await proc.exited;`,
+      `    expect(proc.exitCode).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("Negative — describe contains execFileSync from child_process", () => {
+    const src = [
+      `import { execFileSync } from "child_process";`,
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when qq", () => {`,
+      `    const out = execFileSync('bun', ['run']);`,
+      `    expect(out).toBeTruthy();`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("Negative — describe contains standalone spawnSync from child_process", () => {
+    const src = [
+      `import { spawnSync } from "child_process";`,
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when ww", () => {`,
+      `    const proc = spawnSync('bun', []);`,
+      `    expect(proc.status).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("Negative — test.each(...) is intentionally NOT recognized (v1 scope)", () => {
+    const src = [
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}.each([[1], [2]])("exits 1 when %p", (n) => {`,
+      `    expect(n).toBeGreaterThan(0);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test(`Negative — trigger excludes "exits after grace window …" (Q2)`, () => {
+    // Mutation evidence: even with zero spawns in the enclosing describe,
+    // an "exits after …"-style runner test does NOT fire. Falsifies the
+    // runner.lifecycle false-positive class structurally — if the
+    // recognizer were widened to `exits\s+\w+`, this assertion flips.
+    const src = [
+      `describe("runner lifecycle", () => {`,
+      `  ${TEST}("exits after grace window when tmux sibling state is missing", () => {`,
+      `    const out = runOrchestration({});`,
+      `    expect(out.phase).toBe('ended');`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test(`Negative — trigger excludes "returns exit 0 …" synonym`, () => {
+    const src = [
+      `describe("CLI", () => {`,
+      `  ${TEST}("returns exit 0 against an empty fixture", () => {`,
+      `    expect(runLint([]).exitCode).toBe(0);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("Negative — pragma suppresses the immediately-following row", () => {
+    const src = [
+      `describe("CLI exit code", () => {`,
+      `  // lint:allow-no-spawn`,
+      `  ${TEST}("exits 1 when no spawn", () => {`,
+      `    expect(runLint([]).exitCode).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("Positive — pragma does NOT suppress a non-immediately-following row", () => {
+    // Mutation evidence: if the pragma were treated as a block-wide
+    // suppressor, the assertion `length === 1` and the second-test name
+    // check below would fail. The pragma's single-row scope is what's
+    // being enforced here.
+    const src = [
+      `describe("CLI exit code", () => {`,
+      `  // lint:allow-no-spawn`,
+      `  ${TEST}("exits 1 when first", () => {`,
+      `    expect(runLint([]).exitCode).toBe(1);`,
+      `  });`,
+      `  ${TEST}("exits 0 when second", () => {`,
+      `    expect(runLint([]).exitCode).toBe(0);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const violations = lintFile("synthetic.ts", src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.testName).toBe("exits 0 when second");
+  });
+
+  test("Negative — nested describes, ancestor describe contains Bun.spawnSync", () => {
+    const src = [
+      `describe("outer", () => {`,
+      `  const proc = Bun.spawnSync({});`,
+      `  describe("inner", () => {`,
+      `    ${TEST}("exits 1 when nested", () => {`,
+      `      expect(proc.exitCode).toBe(1);`,
+      `    });`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("Negative — top-level test with file-body spawn (no enclosing describe)", () => {
+    const src = [
+      `const proc = Bun.spawnSync({});`,
+      `${TEST}("exits 1 when top level", () => {`,
+      `  expect(proc.exitCode).toBe(1);`,
+      `});`,
+    ].join("\n");
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("Positive — file-scope spawn does NOT cover trigger inside describe", () => {
+    // Reviewer round-1 blocking case (verbatim fixture). The AC says
+    // "Top-level test(...) rows with no enclosing describe use the file
+    // body as their 'describe body'" — meaning file-body spawns ONLY
+    // cover top-level triggers. This fixture has a file-scope
+    // Bun.spawnSync({}) and a trigger inside a `describe("CLI exit
+    // code", …)` whose body has no spawn. Under the round-1
+    // implementation, lintFile returned [] (no violation, incorrect).
+    // Under the round-2 implementation, this fires.
+    //
+    // Mutation evidence: reverting `spawnCoversTrigger` to the
+    // round-1 "containers(spawn) ⊆ containers(trigger)"-only rule
+    // makes `expect(violations).toHaveLength(1)` fail (it would
+    // return 0).
+    const src = [
+      `const proc = Bun.spawnSync({});`,
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when in-process", () => {`,
+      `    expect(runLint([]).exitCode).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const violations = lintFile("synthetic.ts", src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.testName).toBe("exits 1 when in-process");
+  });
+
+  test("Positive — sibling-describe spawn does NOT cover a trigger in another describe", () => {
+    // Falsifies a too-lenient "any spawn anywhere in the file is enough"
+    // implementation. The spawn lives inside a sibling describe; the
+    // trigger lives in a different describe with no spawn. Per Q4-extended
+    // scope rule, this MUST flag.
+    const src = [
+      `describe("smoke", () => {`,
+      `  const proc = Bun.spawnSync({});`,
+      `  ${TEST}("exits 0 when smoke", () => {`,
+      `    expect(proc.exitCode).toBe(0);`,
+      `  });`,
+      `});`,
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when foo", () => {`,
+      `    expect(runLint([]).exitCode).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const violations = lintFile("synthetic.ts", src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.testName).toBe("exits 1 when foo");
+  });
+
+  test("violation row carries file, line, and full test-name literal", () => {
+    const src = [
+      `// header line 1`,
+      `// header line 2`,
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when fabricated", () => {`,
+      `    expect(runLint([]).exitCode).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const violations = lintFile("a.test.ts", src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.file).toBe("a.test.ts");
+    expect(violations[0]!.line).toBe(4);
+    expect(violations[0]!.testName).toBe("exits 1 when fabricated");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-corpus smoke + floor-count meta-test
+// ---------------------------------------------------------------------------
+
+describe("live corpus", () => {
+  test("running the lint over the live scripts/*.test.ts set yields zero violations", () => {
+    // After the pragma applications mandated by the AC, the live tree
+    // MUST be clean. If a future PR introduces an unwrapped exits-named
+    // test without a spawn or pragma, this assertion fires.
+    const files = collectInScopeFiles(root);
+    const violations = lintCorpus(files, (rel) =>
+      readFileSync(join(root, rel), "utf-8"),
+    );
+    expect(violations).toEqual([]);
+  });
+
+  test("floor-count: at least 30 trigger rows across at least 10 files (silent-drift guard)", () => {
+    // SILENT-DRIFT WARNING: a refactor that consolidates exit-code tests
+    // behind a helper or renames them would let this lint pass vacuously
+    // (zero triggers ⇒ zero violations). This floor-count assertion fires
+    // if the trigger recognizer drops to near-zero matches against the
+    // live `scripts/*.test.ts` set.
+    //
+    // AC-vs-reality note: the proposal text says "≥ 35 rows across ≥ 12
+    // files (verified count: 35 / 12 as of HEAD 6b2121a)". The lint's
+    // own `findTriggers` recognizer — the authoritative count — yields
+    // 31 / 10 against that same SHA, so the proposal's literal floor is
+    // unsatisfiable. The reality-based floor of 30 / 10 used here keeps
+    // the silent-drift invariant honest. Proposal-text correction is
+    // tracked under task-5083844f (status: needs-confirmation).
+    const files = collectInScopeFiles(root);
+    const { totalRows, filesWithRows } = countTriggerRows(files, (rel) =>
+      readFileSync(join(root, rel), "utf-8"),
+    );
+    expect(totalRows).toBeGreaterThanOrEqual(30);
+    expect(filesWithRows).toBeGreaterThanOrEqual(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI exit-code contract — the lint's own self-test must spawn the CLI
+// (otherwise it would fail its own check, which is the right invariant).
+// Mirrors the failure-path tamper-and-restore harness in
+// scripts/lint-skill-shell.test.ts.
+// ---------------------------------------------------------------------------
+
+describe("CLI exit code", () => {
+  const scriptPath = join(root, "scripts", "lint-test-spawn-coverage.ts");
+
+  test("exits 0 against the live corpus (post-PR pragma applications)", () => {
+    const proc = Bun.spawnSync({
+      cmd: ["bun", "run", scriptPath],
+      cwd: root,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString()).toContain("✅");
+  });
+
+  test("exits 1 with the AC stderr shape on a tampered in-scope test file", () => {
+    // Harness condition: temporarily plant a synthetic test file under
+    // scripts/ that contains a violating exits-named row with no spawn
+    // in its describe block. Spawn the CLI, then unlink.
+    //
+    // Invariant being enforced: the AC's CLI-surface wording — exit 1 on
+    // any violation, with stderr matching the expected shape (❌ summary
+    // + per-violation `file:line test("…")` row + remediation prompt
+    // naming the three fixes). Mutation-testing this path catches a
+    // future refactor that drops `process.exit(1)`, swallows the ❌
+    // summary, omits the test-name literal, or drops a remediation phrase.
+    const target = join(
+      root,
+      "scripts",
+      "__lint_test_spawn_coverage_probe__.test.ts",
+    );
+    const probe = [
+      `import { describe, test, expect } from "bun:test";`,
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when probe fires", () => {`,
+      `    expect(1).toBe(1);`,
+      `  });`,
+      `});`,
+      ``,
+    ].join("\n");
+    try {
+      writeFileSync(target, probe);
+      const proc = Bun.spawnSync({
+        cmd: ["bun", "run", scriptPath],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(proc.exitCode).toBe(1);
+      const stderr = proc.stderr.toString();
+      // ❌ summary line — without it, the violation list is unattributed.
+      expect(stderr).toContain("❌");
+      // Per-violation row shape: `<file>:<line> test("<name>")`.
+      expect(stderr).toContain(
+        "scripts/__lint_test_spawn_coverage_probe__.test.ts",
+      );
+      expect(stderr).toContain(`test("exits 1 when probe fires")`);
+      // Remediation prompt — anchor on each of the three sanctioned
+      // fixes so a future edit that strips one path is caught.
+      expect(stderr).toContain("Bun.spawnSync");
+      expect(stderr).toContain("rename the test");
+      expect(stderr).toContain("// lint:allow-no-spawn");
+    } finally {
+      try {
+        unlinkSync(target);
+      } catch {
+        // best-effort cleanup — if unlink fails the next run will overwrite.
+      }
+    }
+  });
+});
