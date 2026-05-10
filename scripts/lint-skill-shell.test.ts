@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
   HARNESS_INHERITED,
@@ -448,33 +448,75 @@ describe("live corpus", () => {
 // ---------------------------------------------------------------------------
 
 describe("CLI exit code", () => {
-  test("exits 0 on the live corpus", () => {
+  const scriptPath = join(root, "scripts", "lint-skill-shell.ts");
+
+  test("happy path: spawning the script against the real corpus exits 0", () => {
+    // Pre-assertion harness probe: the live tree is the same one the
+    // smoke test in §"live corpus" asserts is clean. Spawning the actual
+    // CLI proves the entrypoint wires lintCorpus → process.exit(0) on
+    // the success branch and prints the ✅ summary.
     const proc = Bun.spawnSync({
-      cmd: ["bun", "run", "scripts/lint-skill-shell.ts"],
+      cmd: ["bun", "run", scriptPath],
       cwd: root,
-      stderr: "pipe",
       stdout: "pipe",
+      stderr: "pipe",
     });
     expect(proc.exitCode).toBe(0);
+    expect(proc.stdout.toString()).toContain("✅");
   });
 
-  test("exits 1 when a synthetic typo is wired into the in-scope set", () => {
-    // We verify the exit-1 contract by lint-running over a fabricated
-    // file via a small shim script. The in-process equivalent above
-    // (`flags fabricated $EVENTS_BASELINE_LINE typo`) already proves the
-    // detection path; here we anchor the CLI's exit code so a future
-    // refactor can't accidentally swallow the failure with a `try/catch
-    // → 0` wrapper.
-    const violations = lintFile(
-      "synthetic.md",
-      ["```bash", 'echo "$DEFINITELY_NOT_DEFINED"', "```"].join("\n"),
-    );
-    expect(violations.length).toBeGreaterThan(0);
-    // The CLI's process.exit(1) path is gated by `violations.length > 0`,
-    // so the in-process test above is the contract guard. (A spawn-based
-    // assertion that injects a typo into the live corpus would require
-    // mutating tracked files; the corpus-clean spawn above plus the
-    // detection assertion together pin both branches of the contract.)
+  test("failure path: a tampered in-scope file causes the CLI to exit 1 with the AC stderr shape", () => {
+    // Harness condition: temporarily inject a known-bogus reference into
+    // an in-scope template file, run the CLI, then restore the file.
+    // The invariant being enforced is the AC's CLI-surface wording —
+    // exit 1 on any violation, with stderr matching the lint-skill-cli-
+    // refs shape: ❌ summary + per-violation `file:line $NAME (snippet)`
+    // row + a brief remediation prompt. Mutation-testing this path
+    // catches a future refactor that drops `process.exit(1)`, swallows
+    // the ❌ summary, or omits the remediation prompt.
+    //
+    // This mirrors the failure-path pattern in
+    // scripts/lint-skill-cli-refs.test.ts ("CLI entrypoint" describe) so
+    // the tamper-and-restore convention stays one shape across the
+    // skill-lint family.
+    const target = join(root, "templates", "harness", "CLAUDE.md");
+    const original = readFileSync(target, "utf-8");
+    const probeName = "LINT_SKILL_SHELL_PROBE_XYZ";
+    const tampered =
+      original +
+      "\n\n" +
+      "```bash\n" +
+      `echo "$${probeName}"\n` +
+      "```\n";
+    try {
+      writeFileSync(target, tampered);
+      const proc = Bun.spawnSync({
+        cmd: ["bun", "run", scriptPath],
+        cwd: root,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(proc.exitCode).toBe(1);
+      const stderr = proc.stderr.toString();
+      // ❌ summary line — without it, the remediation prompt below has
+      // no header and the violation list is unattributed.
+      expect(stderr).toContain("❌");
+      // Per-violation row shape: `<file>:<line> $<NAME> (<snippet>)`.
+      // We assert each piece independently so a partial-shape regression
+      // (e.g. dropping the snippet) is localized.
+      expect(stderr).toContain("templates/harness/CLAUDE.md");
+      expect(stderr).toContain(`$${probeName}`);
+      expect(stderr).toContain(`echo "$${probeName}"`);
+      // Remediation prompt — the AC names "a brief remediation prompt
+      // (define earlier in the file / add to HARNESS_INHERITED / fix
+      // the typo)". We anchor on the three remediation phrasings the
+      // CLI prints so a future edit that strips one path is caught.
+      expect(stderr).toContain("HARNESS_INHERITED");
+      expect(stderr).toContain("fixing the typo");
+      expect(stderr).toContain("defining the variable earlier");
+    } finally {
+      writeFileSync(target, original);
+    }
   });
 });
 
