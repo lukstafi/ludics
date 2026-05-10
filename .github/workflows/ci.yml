@@ -37,6 +37,9 @@ jobs:
       - name: Lint skill body shell variables
         run: bun run lint:skill-shell
 
+      - name: Lint — test spawn coverage
+        run: bun run lint:test-spawn-coverage
+
       - name: Lint config reference drift
         run: bun run lint:config-reference
 

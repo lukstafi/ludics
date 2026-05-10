@@ -12,6 +12,7 @@
     "lint:cli-subcommands": "bun run scripts/lint-cli-subcommands.ts",
     "lint:skill-cli-refs": "bun run scripts/lint-skill-cli-refs.ts",
     "lint:skill-shell": "bun run scripts/lint-skill-shell.ts",
+    "lint:test-spawn-coverage": "bun run scripts/lint-test-spawn-coverage.ts",
     "lint:config-reference": "bun run scripts/lint-config-reference.ts",
     "lint:contracts": "bun run scripts/lint-contracts.ts",
     "lint:hooks": "bun run scripts/lint-hooks.ts",

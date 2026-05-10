@@ -151,10 +151,11 @@ for the test-coverage discipline.
       - **Floor-count meta-test** (SILENT-DRIFT guard, sibling to
         `lint-skill-cli-refs.test.ts`'s pattern): the number of `test|it
         ("exits 0|1|\d+|non-zero …")` rows in the live `scripts/*.test.ts`
-        set is at least the count observed at proposal time (≥ 35 rows
-        across ≥ 12 files — verified count: 35 trigger rows in 12 files
-        as of HEAD `6b2121a`). If a future refactor drops the trigger
-        recognizer to zero matches, this assertion fires.
+        set is at least the count observed at implementation time (≥ 30
+        rows across ≥ 10 files — verified count via the lint's own
+        recognizer at HEAD `ce4b106`: 31 trigger rows in 10 files). If a
+        future refactor drops the trigger recognizer to zero matches,
+        this assertion fires.
 - [ ] `scripts/lint-test-spawn-coverage.test.ts` itself complies with the
       lint's own contract: its `describe("CLI exit code", …)` block (or
       equivalent) MUST contain `Bun.spawnSync` and assert on `proc.exitCode`
@@ -230,13 +231,15 @@ Sibling-shape models (verified on current `main`, HEAD `6b2121a`,
   second-occurrence note and the specific trip-wire grep recipe). This
   proposal mechanizes the grep recipe.
 
-Existing exit-shape test inventory (verified on HEAD `6b2121a`,
-2026-05-10): 35 trigger-matching rows across 12 `scripts/*.test.ts` files.
-All currently comply with the spawn requirement except for the two
-`describe("runCli", …)` rows in `scripts/lint-no-shadow-util.test.ts`
-(lines 198, 233) which use the injectable-IO `runCli({ writeErr, writeOut,
-… })` pattern. Those two rows receive `// lint:allow-no-spawn` pragmas as
-part of this PR (per the AC above).
+Existing exit-shape test inventory (verified at implementation time
+against the lint's own `findTriggers` recognizer, HEAD `ce4b106`): 31
+trigger-matching rows across 10 `scripts/*.test.ts` files. All currently
+comply with the spawn requirement except for the two `describe("runCli",
+…)` rows in `scripts/lint-no-shadow-util.test.ts` which use the
+injectable-IO `runCli({ writeErr, writeOut, … })` pattern. Those two
+rows receive `// lint:allow-no-spawn` pragmas as part of this PR (per
+the AC above). The proposal-time count of "35 rows in 12 files" was an
+agent estimate; the lint's recognizer is authoritative.
 
 The runner.lifecycle false-positive class is structurally avoided by Q1
 (in-scope: `scripts/*.test.ts` only — `src/orchestration/runner.lifecycle.

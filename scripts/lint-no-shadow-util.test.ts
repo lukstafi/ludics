@@ -195,6 +195,7 @@ function writeUtil(srcDir: string): string {
 }
 
 describe("runCli", () => {
+  // lint:allow-no-spawn
   test("exits 0 on a clean tree (only util.ts defines the helpers)", () => {
     const root = makeTempTree();
     try {
@@ -230,6 +231,7 @@ describe("runCli", () => {
     }
   });
 
+  // lint:allow-no-spawn
   test("exits 1 with path:line on a planted shadow", () => {
     const root = makeTempTree();
     try {
