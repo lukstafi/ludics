@@ -92,13 +92,19 @@ Follow the conventions in [worker-conventions.md](worker-conventions.md).
    AC against `~/.claude/projects/-*/memory/`; commit `b4f5a92` reconciled it
    by switching to find/grep evidence with optional secondary harness-side SHA.
 
-   Worked example (memory subtree, `~/.claude/projects/-*/memory/`):
-   - Pre-state: `find ~/.claude/projects/-*/memory -name '<file>'` → expected hits.
+   Worked example (memory subtree, `~/.claude/projects/-*/memory/` — where
+   `-*` is the structural-shape glob; substitute `-<encoded-project>` in
+   actual verification commands so the check stays scoped to the current
+   project rather than aggregating across every project's memory tree):
+   - Pre-state: `find ~/.claude/projects/-<encoded-project>/memory -name '<file>'` → expected hits.
    - Post-state: the same `find` invocation → expected empty.
-   - Index update: `grep -F '<slug>' ~/.claude/projects/-*/memory/MEMORY.md`
-     → expected no match. Target the memory-subtree `MEMORY.md` directly (the
-     `~/.claude/projects/-<encoded-project>/memory/MEMORY.md` path), not a
-     project-local `<project>/memory/MEMORY.md`, which does not exist.
+   - Index update: `grep -F '<slug>' ~/.claude/projects/-<encoded-project>/memory/MEMORY.md`
+     → expected no match. Use the project-scoped path (Claude Code encodes
+     the project root into the directory slug, e.g. `-Users-lukstafi-ludics`);
+     a literal `~/.claude/projects/-*/memory/MEMORY.md` would shell-glob
+     across every project's memory index and produce false positives or
+     negatives from unrelated projects. The project-local
+     `<project>/memory/MEMORY.md` does not exist either, so do not use it.
    - Optional secondary evidence: the harness-side keepalive-commit SHA, only
      if the harness sync has run; not load-bearing. See `CLAUDE.md` /
      `MEMORY.md` for the harness-side tracking detail — do not inline that
