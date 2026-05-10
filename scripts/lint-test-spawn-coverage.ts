@@ -245,21 +245,38 @@ export function hasPragmaAbove(source: string, triggerIdx: number): boolean {
 
 /**
  * For a spawn at `spawnIdx` to count as coverage for a trigger at
- * `triggerIdx`, every describe block whose body contains the spawn must
- * also contain the trigger — i.e. the spawn lives in an ancestor (or the
- * same) describe of the trigger, or at file scope. Sibling/non-ancestor
- * describes' spawns are filtered out.
+ * `triggerIdx`:
+ *   - every describe containing the spawn must also contain the trigger
+ *     (i.e. the spawn lives in the trigger's ancestor chain — sibling
+ *     and unrelated-nested describes are filtered out), AND
+ *   - if the trigger is inside any describe, the spawn must also be
+ *     inside at least one describe (a file-scope spawn does NOT cover a
+ *     describe-internal trigger; this is the AC's "top-level test rows
+ *     use file body as describe body" boundary read in reverse).
+ *
+ * Equivalently: containers(spawn) ⊆ containers(trigger) AND
+ * (containers(trigger) empty implies containers(spawn) empty).
  */
 export function spawnCoversTrigger(
   spawnIdx: number,
   triggerIdx: number,
   blocks: ReadonlyArray<DescribeBlock>,
 ): boolean {
+  const triggerContainers: DescribeBlock[] = [];
+  const spawnContainers: DescribeBlock[] = [];
   for (const b of blocks) {
-    const spawnIn = b.bodyStart < spawnIdx && spawnIdx < b.bodyEnd;
-    if (!spawnIn) continue;
-    const triggerIn = b.bodyStart < triggerIdx && triggerIdx < b.bodyEnd;
-    if (!triggerIn) return false;
+    if (b.bodyStart < triggerIdx && triggerIdx < b.bodyEnd) {
+      triggerContainers.push(b);
+    }
+    if (b.bodyStart < spawnIdx && spawnIdx < b.bodyEnd) {
+      spawnContainers.push(b);
+    }
+  }
+  for (const sb of spawnContainers) {
+    if (!triggerContainers.includes(sb)) return false;
+  }
+  if (triggerContainers.length > 0 && spawnContainers.length === 0) {
+    return false;
   }
   return true;
 }

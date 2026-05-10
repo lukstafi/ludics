@@ -247,13 +247,39 @@ describe("hasPragmaAbove", () => {
 // ---------------------------------------------------------------------------
 
 describe("spawnCoversTrigger", () => {
-  test("file-scope spawn always covers any trigger (no enclosing describe)", () => {
+  test("file-scope spawn covers a top-level trigger (both at file scope)", () => {
     expect(spawnCoversTrigger(0, 100, [])).toBe(true);
   });
 
-  test("ancestor-describe spawn covers nested-describe trigger", () => {
+  test("file-scope spawn does NOT cover a describe-internal trigger", () => {
+    // Reviewer's blocking case (round 1): the AC explicitly says
+    // "Top-level test(...) rows with no enclosing describe use the file
+    // body as their 'describe body'" — meaning file-body spawns ONLY
+    // cover top-level triggers. A trigger inside a describe is NOT
+    // covered by a file-scope spawn (only by spawns inside its describe
+    // chain). Mutation evidence: under a "containers(spawn) ⊆
+    // containers(trigger)"-only rule (which my round-1 implementation
+    // had), this assertion would return true — an over-lenient cover.
+    const blocks = [{ bodyStart: 50, bodyEnd: 100 }];
+    // spawn at idx 5 (file scope, before block), trigger at idx 70 (inside block).
+    expect(spawnCoversTrigger(5, 70, blocks)).toBe(false);
+  });
+
+  test("same-describe spawn covers a same-describe trigger", () => {
     const blocks = [{ bodyStart: 0, bodyEnd: 100 }];
     expect(spawnCoversTrigger(5, 50, blocks)).toBe(true);
+  });
+
+  test("ancestor-describe spawn covers nested-describe trigger", () => {
+    // Outer describe contains inner; spawn lives in outer's body
+    // (between the outer's open and the inner's open). Trigger lives in
+    // inner. Per AC: ancestor describe bodies count toward coverage.
+    const blocks = [
+      { bodyStart: 0, bodyEnd: 100 }, // outer
+      { bodyStart: 30, bodyEnd: 80 }, // inner
+    ];
+    // spawn at idx 10 (in outer, before inner opens), trigger at 50 (in inner)
+    expect(spawnCoversTrigger(10, 50, blocks)).toBe(true);
   });
 
   test("sibling-describe spawn does NOT cover trigger in another describe", () => {
@@ -262,6 +288,15 @@ describe("spawnCoversTrigger", () => {
       { bodyStart: 60, bodyEnd: 100 },
     ];
     expect(spawnCoversTrigger(5, 70, blocks)).toBe(false);
+  });
+
+  test("describe-nested spawn does NOT cover a top-level trigger", () => {
+    // Symmetric of the file-scope-spawn-covers-describe-internal bug:
+    // a spawn buried inside a describe block is not "at file scope" and
+    // therefore can't cover a sibling top-level test row.
+    const blocks = [{ bodyStart: 50, bodyEnd: 100 }];
+    // spawn at idx 70 (inside block), trigger at idx 5 (top level, outside block).
+    expect(spawnCoversTrigger(70, 5, blocks)).toBe(false);
   });
 });
 
@@ -456,6 +491,33 @@ describe("lintFile — AC matrix", () => {
     expect(lintFile("synthetic.ts", src)).toEqual([]);
   });
 
+  test("Positive — file-scope spawn does NOT cover trigger inside describe", () => {
+    // Reviewer round-1 blocking case (verbatim fixture). The AC says
+    // "Top-level test(...) rows with no enclosing describe use the file
+    // body as their 'describe body'" — meaning file-body spawns ONLY
+    // cover top-level triggers. This fixture has a file-scope
+    // Bun.spawnSync({}) and a trigger inside a `describe("CLI exit
+    // code", …)` whose body has no spawn. Under the round-1
+    // implementation, lintFile returned [] (no violation, incorrect).
+    // Under the round-2 implementation, this fires.
+    //
+    // Mutation evidence: reverting `spawnCoversTrigger` to the
+    // round-1 "containers(spawn) ⊆ containers(trigger)"-only rule
+    // makes `expect(violations).toHaveLength(1)` fail (it would
+    // return 0).
+    const src = [
+      `const proc = Bun.spawnSync({});`,
+      `describe("CLI exit code", () => {`,
+      `  ${TEST}("exits 1 when in-process", () => {`,
+      `    expect(runLint([]).exitCode).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const violations = lintFile("synthetic.ts", src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.testName).toBe("exits 1 when in-process");
+  });
+
   test("Positive — sibling-describe spawn does NOT cover a trigger in another describe", () => {
     // Falsifies a too-lenient "any spawn anywhere in the file is enough"
     // implementation. The spawn lives inside a sibling describe; the
@@ -519,6 +581,14 @@ describe("live corpus", () => {
     // (zero triggers ⇒ zero violations). This floor-count assertion fires
     // if the trigger recognizer drops to near-zero matches against the
     // live `scripts/*.test.ts` set.
+    //
+    // AC-vs-reality note: the proposal text says "≥ 35 rows across ≥ 12
+    // files (verified count: 35 / 12 as of HEAD 6b2121a)". The lint's
+    // own `findTriggers` recognizer — the authoritative count — yields
+    // 31 / 10 against that same SHA, so the proposal's literal floor is
+    // unsatisfiable. The reality-based floor of 30 / 10 used here keeps
+    // the silent-drift invariant honest. Proposal-text correction is
+    // tracked under task-5083844f (status: needs-confirmation).
     const files = collectInScopeFiles(root);
     const { totalRows, filesWithRows } = countTriggerRows(files, (rel) =>
       readFileSync(join(root, rel), "utf-8"),
