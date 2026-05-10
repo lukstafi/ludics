@@ -4,6 +4,7 @@ import { join } from "path";
 import {
   IN_SCOPE_GLOBS,
   collectInScopeFiles,
+  computeCodeMask,
   countTriggerRows,
   findDescribeBlocks,
   findMatchingBrace,
@@ -157,6 +158,140 @@ describe("findTriggers — Q2 narrowness", () => {
 // ---------------------------------------------------------------------------
 // findSpawnIndices — Q3 allowlist
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// computeCodeMask + non-code masking — codex P1/P2 regression coverage
+// ---------------------------------------------------------------------------
+
+describe("computeCodeMask + non-code masking (codex P1/P2)", () => {
+  test("masks // line-comment bytes", () => {
+    const src = "const x = 1; // foo Bun.spawnSync({})\nconst y = 2;";
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(1);
+  });
+
+  test("masks /* block-comment */ bytes", () => {
+    const src = "const x = 1; /* Bun.spawnSync({}) */ const y = 2;";
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(1);
+  });
+
+  test("masks bytes inside double-quoted strings", () => {
+    const src = `const s = "Bun.spawnSync({})";`;
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(1);
+  });
+
+  test("masks bytes inside single-quoted strings", () => {
+    const src = `const s = 'Bun.spawnSync({})';`;
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(1);
+  });
+
+  test("masks bytes inside backtick template body", () => {
+    const src = "const s = `Bun.spawnSync({}) and stuff`;";
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(1);
+  });
+
+  test("does NOT mask bytes inside ${...} substitution (substitution interior is code)", () => {
+    const src = "const s = `prefix ${Bun.spawnSync({}).exitCode} suffix`;";
+    const mask = computeCodeMask(src);
+    const idx = src.indexOf("Bun.spawnSync");
+    expect(mask[idx]).toBe(0);
+  });
+
+  test("survives a regex literal containing string-like chars (no stuck-state)", () => {
+    // The lint-template-safety.test.ts file contains
+    //   `return /(?:\\?\\?|:|\\|\\|)\\s*""(?!")|.../.test(rhs);`
+    // — without regex-literal handling, the walker treated `""` as a
+    // string opener/closer and fell into a stuck-state that flipped the
+    // mask for the rest of the file. Regression test for the live-corpus
+    // case where line 725 of lint-template-safety.test.ts (a real
+    // `test("exits 0 …")` call) was being masked.
+    const src = [
+      `function looksFunny(rhs) {`,
+      `  return /(?:\\?\\?|:|\\|\\|)\\s*""(?!")|(?:\\?\\?|:|\\|\\|)\\s*''(?!')/.test(rhs);`,
+      `}`,
+      `describe("after regex", () => {`,
+      `  test("exits 0 against a clean tree", () => {`,
+      `    const proc = Bun.spawnSync({});`,
+      `    expect(proc.exitCode).toBe(0);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const mask = computeCodeMask(src);
+    // The describe and test calls AFTER the regex must be at code position.
+    const describeIdx = src.indexOf("describe(\"after");
+    const testIdx = src.indexOf(`test("exits 0`);
+    expect(mask[describeIdx]).toBe(0);
+    expect(mask[testIdx]).toBe(0);
+    // And findTriggers / lintFile should treat the trigger as covered.
+    expect(lintFile("synthetic.ts", src)).toEqual([]);
+  });
+
+  test("findSpawnIndices ignores spawn tokens in comments (codex P1)", () => {
+    // Without mask: this would return 1 match. With mask: 0.
+    const src = "// TODO: use Bun.spawnSync(...) here\nconst x = 1;";
+    expect(findSpawnIndices(src)).toEqual([]);
+  });
+
+  test("findSpawnIndices ignores spawn tokens in string fixtures (codex P1)", () => {
+    const src = 'const note = "Bun.spawnSync prose"; const x = 1;';
+    expect(findSpawnIndices(src)).toEqual([]);
+  });
+
+  test("findTriggers ignores trigger literals in template-body fixture text", () => {
+    // Mirrors the codex-P1 concern in the trigger direction. A bare
+    // backtick-quoted prose mention of `test("exits 1 ...")` is not a
+    // real test row.
+    const src = "const docs = `see test(\"exits 1 when foo\") in spec`;";
+    expect(findTriggers(src)).toEqual([]);
+  });
+
+  test("lintFile does NOT swallow a violation when an in-comment spawn token appears in the same describe (codex P1 end-to-end)", () => {
+    // Without mask filtering, the comment mention `// Bun.spawnSync(...)`
+    // would count as a covering spawn and the in-process trigger would
+    // pass lint silently. With the mask, it correctly flags the
+    // violation. Mutation evidence: removing the mask filter from
+    // findSpawnIndices makes this assertion fail (returns []).
+    const src = [
+      `describe("CLI exit code", () => {`,
+      `  // TODO: replace runLint() with Bun.spawnSync(...) at some point`,
+      `  ${TEST}("exits 1 when in-process", () => {`,
+      `    expect(runLint([]).exitCode).toBe(1);`,
+      `  });`,
+      `});`,
+    ].join("\n");
+    const violations = lintFile("synthetic.ts", src);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.testName).toBe("exits 1 when in-process");
+  });
+
+  test("findMatchingBrace handles ${\"{\"} substitution-string with brace (codex P2)", () => {
+    // Without the mask-aware brace walker, the inner `"{"` would
+    // unbalance the substitution-depth counter and the outer brace
+    // walk would either return -1 or a wrong index. With the mask,
+    // strings inside the substitution are masked and their braces are
+    // skipped.
+    const src = [
+      `const x = {`,
+      "  s: `${\"{\"}`,",
+      `  v: 1,`,
+      `};`,
+    ].join("\n");
+    const start = src.indexOf("{");
+    const end = findMatchingBrace(src, start);
+    // The matching `}` should be the one before `;` — i.e. end matches
+    // the outer block, not -1, and is at the LAST `}` in the source.
+    expect(end).toBe(src.lastIndexOf("}"));
+  });
+});
 
 describe("findSpawnIndices — Q3 allowlist", () => {
   test("matches Bun.spawnSync(", () => {

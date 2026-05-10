@@ -92,86 +92,250 @@ const DESCRIBE_OPEN_RE =
   /\bdescribe\s*\(\s*(?:"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`|'(?:[^'\\]|\\.)*')\s*,\s*(?:async\s+)?(?:\([^)]*\)|[a-zA-Z_$][\w$]*|function\s*\*?\s*[a-zA-Z_$]?\w*\s*\([^)]*\))\s*(?:=>)?\s*\{/g;
 
 /**
- * Walk balanced braces starting from `startIdx` (which must be a `{`),
- * skipping over string literals (single, double, backtick template),
- * template-substitution `${…}` interiors, and `//` / `/* …`/ comments.
- * Returns the index of the matching `}`, or -1 if not found.
+ * Compute a per-byte mask: 1 = inside a string/template-body/comment,
+ * 0 = code. Template-substitution `${…}` interiors are themselves code
+ * (the substitution expression is JS), but quoted strings and nested
+ * comments inside the substitution are masked. A backtick template
+ * encountered while inside a substitution recurses correctly.
+ *
+ * Used to filter regex matches that fire on raw source bytes
+ * (`findSpawnIndices`, `findTriggers`, `DESCRIBE_OPEN_RE`) so that an
+ * allowlist token in a comment, string literal, or template body does
+ * not get treated as real code (codex review P1). Also reused by
+ * `findMatchingBrace` so a `${"{"}`-style substitution body does not
+ * unbalance its brace counter (codex review P2).
+ *
+ * Implementation: flat state machine over the byte stream, with one
+ * stack slot per open backtick template carrying that template's
+ * substitution-depth. Single-quote / double-quote / line-comment /
+ * block-comment states do not nest with each other; backtick template
+ * does (a `${...}` body can contain another backtick template).
  */
-export function findMatchingBrace(source: string, startIdx: number): number {
-  if (source[startIdx] !== "{") return -1;
-  let depth = 0;
-  let i = startIdx;
+// Punctuation that can precede a regex literal (operator / open-bracket /
+// statement separator). Used by `isRegexAllowed` below.
+const REGEX_PRECEDING_PUNCT = new Set([
+  "=", "(", ",", ";", "{", "}", "[", ":", "?", "!",
+  "&", "|", "+", "-", "*", "<", ">", "~", "^", "%",
+]);
+
+// Keywords that can precede a regex literal (e.g. `return /…/`).
+const REGEX_PRECEDING_KEYWORDS = new Set([
+  "return", "typeof", "in", "of", "instanceof", "delete",
+  "throw", "void", "case", "new", "await", "yield",
+]);
+
+function isRegexAllowed(lastSig: string, lastIdent: string): boolean {
+  if (lastSig === "") return true;
+  if (REGEX_PRECEDING_PUNCT.has(lastSig)) return true;
+  if (lastIdent && REGEX_PRECEDING_KEYWORDS.has(lastIdent)) return true;
+  return false;
+}
+
+const IDENT_HEAD = /[A-Za-z_$]/;
+const IDENT_TAIL = /[A-Za-z0-9_$]/;
+
+export function computeCodeMask(source: string): Uint8Array {
+  const mask = new Uint8Array(source.length);
+  type Tick = { subDepth: number };
+  const ticks: Tick[] = [];
+  let state: "code" | "sq" | "dq" | "lc" | "bc" = "code";
+  let lastSig = "";
+  let lastIdent = "";
+  let i = 0;
+  const inTemplateBody = (): boolean =>
+    ticks.length > 0 && ticks[ticks.length - 1]!.subDepth === 0;
   while (i < source.length) {
     const c = source[i]!;
     const next = source[i + 1];
+    if (state === "lc") {
+      if (c === "\n") {
+        state = "code";
+        i++;
+        continue;
+      }
+      mask[i] = 1;
+      i++;
+      continue;
+    }
+    if (state === "bc") {
+      if (c === "*" && next === "/") {
+        mask[i] = 1;
+        mask[i + 1] = 1;
+        state = "code";
+        i += 2;
+        continue;
+      }
+      mask[i] = 1;
+      i++;
+      continue;
+    }
+    if (state === "sq" || state === "dq") {
+      const q = state === "sq" ? "'" : '"';
+      if (c === "\\") {
+        mask[i] = 1;
+        if (i + 1 < source.length) mask[i + 1] = 1;
+        i += 2;
+        continue;
+      }
+      if (c === q) {
+        state = "code";
+        lastSig = q;
+        lastIdent = "";
+        i++;
+        continue;
+      }
+      mask[i] = 1;
+      i++;
+      continue;
+    }
+    // state === "code" (possibly inside a template substitution).
+    if (inTemplateBody()) {
+      if (c === "\\") {
+        mask[i] = 1;
+        if (i + 1 < source.length) mask[i + 1] = 1;
+        i += 2;
+        continue;
+      }
+      if (c === "`") {
+        ticks.pop();
+        lastSig = "`";
+        lastIdent = "";
+        i++;
+        continue;
+      }
+      if (c === "$" && next === "{") {
+        ticks[ticks.length - 1]!.subDepth = 1;
+        i += 2;
+        continue;
+      }
+      mask[i] = 1;
+      i++;
+      continue;
+    }
+    // Pure code (or inside a substitution expression — same rules).
     if (c === "/" && next === "/") {
-      while (i < source.length && source[i] !== "\n") i++;
+      state = "lc";
+      mask[i] = 1;
+      mask[i + 1] = 1;
+      i += 2;
       continue;
     }
     if (c === "/" && next === "*") {
-      i += 2;
-      while (
-        i < source.length - 1 &&
-        !(source[i] === "*" && source[i + 1] === "/")
-      ) {
-        i++;
-      }
+      state = "bc";
+      mask[i] = 1;
+      mask[i + 1] = 1;
       i += 2;
       continue;
     }
-    if (c === "'" || c === '"') {
-      const q = c;
+    if (c === "/" && isRegexAllowed(lastSig, lastIdent)) {
+      // Regex literal: walk to matching `/`, handling `\` escapes and
+      // `[…]` character classes (in which `/` does NOT terminate the
+      // literal). Mask the body bytes; delimiters are code.
       i++;
-      while (i < source.length && source[i] !== q) {
-        if (source[i] === "\\") {
+      let inClass = false;
+      while (i < source.length) {
+        const cc = source[i]!;
+        if (cc === "\\") {
+          mask[i] = 1;
+          if (i + 1 < source.length) mask[i + 1] = 1;
           i += 2;
           continue;
         }
+        if (cc === "[") inClass = true;
+        else if (cc === "]") inClass = false;
+        if (cc === "/" && !inClass) {
+          // Closing delimiter; consume optional flags
+          i++;
+          while (i < source.length && /[gimsuy]/.test(source[i]!)) i++;
+          break;
+        }
+        if (cc === "\n") break; // unterminated regex; bail
+        mask[i] = 1;
         i++;
       }
+      lastSig = "/";
+      lastIdent = "";
+      continue;
+    }
+    if (c === "'") {
+      state = "sq";
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      state = "dq";
       i++;
       continue;
     }
     if (c === "`") {
-      i++;
-      while (i < source.length && source[i] !== "`") {
-        if (source[i] === "\\") {
-          i += 2;
-          continue;
-        }
-        if (source[i] === "$" && source[i + 1] === "{") {
-          i += 2;
-          let subDepth = 1;
-          while (i < source.length && subDepth > 0) {
-            const cc = source[i]!;
-            if (cc === "{") subDepth++;
-            else if (cc === "}") subDepth--;
-            i++;
-          }
-          continue;
-        }
-        i++;
-      }
+      ticks.push({ subDepth: 0 });
       i++;
       continue;
     }
+    if (ticks.length > 0 && ticks[ticks.length - 1]!.subDepth > 0) {
+      if (c === "{") {
+        ticks[ticks.length - 1]!.subDepth++;
+      } else if (c === "}") {
+        ticks[ticks.length - 1]!.subDepth--;
+      }
+    }
+    // Track lastSig / lastIdent for regex-vs-division disambiguation.
+    if (/\s/.test(c)) {
+      i++;
+      continue;
+    }
+    if (IDENT_HEAD.test(c)) {
+      const start = i;
+      while (i < source.length && IDENT_TAIL.test(source[i]!)) i++;
+      lastIdent = source.slice(start, i);
+      lastSig = source[i - 1]!;
+      continue;
+    }
+    lastSig = c;
+    lastIdent = "";
+    i++;
+  }
+  return mask;
+}
+
+/**
+ * Walk balanced braces starting from `startIdx` (which must be a `{`),
+ * skipping over string literals, comments, and template-substitution
+ * interiors via the same mask `computeCodeMask` produces. Returns the
+ * index of the matching `}`, or -1 if not found.
+ */
+export function findMatchingBrace(
+  source: string,
+  startIdx: number,
+  mask?: Uint8Array,
+): number {
+  if (source[startIdx] !== "{") return -1;
+  const m = mask ?? computeCodeMask(source);
+  let depth = 0;
+  for (let i = startIdx; i < source.length; i++) {
+    if (m[i]) continue;
+    const c = source[i];
     if (c === "{") depth++;
     else if (c === "}") {
       depth--;
       if (depth === 0) return i;
     }
-    i++;
   }
   return -1;
 }
 
-export function findDescribeBlocks(source: string): DescribeBlock[] {
+export function findDescribeBlocks(
+  source: string,
+  mask?: Uint8Array,
+): DescribeBlock[] {
+  const m = mask ?? computeCodeMask(source);
   const out: DescribeBlock[] = [];
   DESCRIBE_OPEN_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = DESCRIBE_OPEN_RE.exec(source)) !== null) {
-    const bodyStart = m.index + m[0].length - 1;
-    const bodyEnd = findMatchingBrace(source, bodyStart);
+  let match: RegExpExecArray | null;
+  while ((match = DESCRIBE_OPEN_RE.exec(source)) !== null) {
+    if (m[match.index]) continue; // describe(...) literal in non-code text
+    const bodyStart = match.index + match[0].length - 1;
+    const bodyEnd = findMatchingBrace(source, bodyStart, m);
     if (bodyEnd === -1) continue;
     out.push({ bodyStart, bodyEnd });
   }
@@ -191,25 +355,31 @@ export interface TriggerMatch {
   readonly testName: string;
 }
 
-export function findTriggers(source: string): TriggerMatch[] {
+export function findTriggers(source: string, mask?: Uint8Array): TriggerMatch[] {
+  const m = mask ?? computeCodeMask(source);
   const out: TriggerMatch[] = [];
   TRIGGER_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = TRIGGER_RE.exec(source)) !== null) {
+  let match: RegExpExecArray | null;
+  while ((match = TRIGGER_RE.exec(source)) !== null) {
+    if (m[match.index]) continue; // trigger literal in non-code (string / comment / template body)
     out.push({
-      idx: m.index,
-      line: lineOf(source, m.index),
-      testName: m[1]!,
+      idx: match.index,
+      line: lineOf(source, match.index),
+      testName: match[1]!,
     });
   }
   return out;
 }
 
-export function findSpawnIndices(source: string): number[] {
+export function findSpawnIndices(source: string, mask?: Uint8Array): number[] {
+  const m = mask ?? computeCodeMask(source);
   const out: number[] = [];
   SPAWN_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = SPAWN_RE.exec(source)) !== null) out.push(m.index);
+  let match: RegExpExecArray | null;
+  while ((match = SPAWN_RE.exec(source)) !== null) {
+    if (m[match.index]) continue; // spawn token in non-code; codex P1
+    out.push(match.index);
+  }
   return out;
 }
 
@@ -292,9 +462,14 @@ export interface Violation {
 }
 
 export function lintFile(file: string, source: string): Violation[] {
-  const blocks = findDescribeBlocks(source);
-  const triggers = findTriggers(source);
-  const spawns = findSpawnIndices(source);
+  // Compute the code mask once and thread it through every consumer so
+  // strings/comments/template bodies are excluded uniformly (codex P1)
+  // and the substitution-interior brace counter stays balanced
+  // (codex P2).
+  const mask = computeCodeMask(source);
+  const blocks = findDescribeBlocks(source, mask);
+  const triggers = findTriggers(source, mask);
+  const spawns = findSpawnIndices(source, mask);
   const out: Violation[] = [];
   for (const t of triggers) {
     if (hasPragmaAbove(source, t.idx)) continue;
