@@ -4,7 +4,7 @@ import { existsSync, readFileSync, appendFileSync, writeFileSync, mkdirSync, sta
 import { basename, join, resolve } from "path";
 import { loadConfigSync, harnessDir, slotsCount } from "./config.ts";
 import { isPlainObject, writeJsonFile, writeJsonFileCompact } from "./json.ts";
-import { safeSyncOutput } from "./spawn.ts";
+import * as spawnModule from "./spawn.ts";
 import { queueRequest } from "./queue.ts";
 import { emitEvent } from "./events.ts";
 import { readAllSlotJson } from "./slots/json.ts";
@@ -32,9 +32,36 @@ function getToken(): string {
   return config.notifications?.token ?? "";
 }
 
+/**
+ * Return true when running under a test runner that should not actually
+ * publish to ntfy.sh. Suppresses the network call but preserves the
+ * upstream `notifyLog` write so test assertions on
+ * `notifications.jsonl` keep working.
+ *
+ * See task-87d4b17e: without this guard, the lifecycle tests on
+ * `slot = 11`/`12` reached `https://ntfy.sh/lukstafi-agents` for real
+ * because `loadConfigSync` resolves the user's real config.yaml even
+ * when `LUDICS_HARNESS_DIR` is a tmp directory.
+ *
+ * Two env vars: `BUN_TEST` (set by `bun test` automatically) is the
+ * primary signal; `NODE_ENV === "test"` is belt-and-braces for any
+ * future migration off the Bun runner or wrapper scripts that set
+ * NODE_ENV explicitly.
+ *
+ * @internal exported for tests only
+ */
+export function shouldSuppressNtfy(): boolean {
+  const bunTest = process.env.BUN_TEST;
+  if (bunTest && bunTest !== "0") return true;
+  if (process.env.NODE_ENV === "test") return true;
+  return false;
+}
+
 function notifySend(topic: string, message: string, priority: number, title: string, tags: string): void {
   if (!topic) throw new Error("notify: topic required");
   if (!message) throw new Error("notify: message required");
+
+  if (shouldSuppressNtfy()) return;
 
   const curlArgs = [
     "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
@@ -48,7 +75,7 @@ function notifySend(topic: string, message: string, priority: number, title: str
   if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
   curlArgs.push(`https://ntfy.sh/${topic}`);
 
-  const result = safeSyncOutput(curlArgs);
+  const result = spawnModule.safeSyncOutput(curlArgs);
   const httpCode = result.stdout;
   if (httpCode !== "200") {
     console.error(`ludics: ntfy.sh notification failed (HTTP ${httpCode}), logged locally`);
@@ -273,7 +300,8 @@ function proposalInlineMessage(summary: string, proposalText: string, attachment
   return `Full proposal attached as ${attachmentName}.`;
 }
 
-function notifyPublishMessage(
+/** @internal exported for tests only */
+export function notifyPublishMessage(
   topic: string,
   message: string,
   token: string,
@@ -282,6 +310,8 @@ function notifyPublishMessage(
   tags: string,
   actions: Array<Record<string, unknown>>,
 ) : { httpCode: string; stderr: string; body: string } {
+  if (shouldSuppressNtfy()) return { httpCode: "200", stderr: "", body: "" };
+
   const curlArgs = [
     "curl", "-sS", "-w", "\n%{http_code}",
     "-X", "POST",
@@ -294,7 +324,7 @@ function notifyPublishMessage(
   if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
   curlArgs.push(`https://ntfy.sh/${topic}`);
 
-  const result = safeSyncOutput(curlArgs, { trim: false });
+  const result = spawnModule.safeSyncOutput(curlArgs, { trim: false });
   const stdout = result.stdout;
   const splitAt = stdout.lastIndexOf("\n");
   const body = splitAt >= 0 ? stdout.slice(0, splitAt).trim() : "";
@@ -306,7 +336,8 @@ function notifyPublishMessage(
   };
 }
 
-function notifyPublishFile(
+/** @internal exported for tests only */
+export function notifyPublishFile(
   topic: string,
   filePath: string,
   filename: string,
@@ -317,6 +348,8 @@ function notifyPublishFile(
   tags: string,
   actions: Array<Record<string, unknown>>,
 ) : { httpCode: string; stderr: string; body: string } {
+  if (shouldSuppressNtfy()) return { httpCode: "200", stderr: "", body: "" };
+
   const curlArgs = [
     "curl", "-sS", "-w", "\n%{http_code}",
     "-X", "PUT",
@@ -331,7 +364,7 @@ function notifyPublishFile(
   if (token) curlArgs.push("-H", `Authorization: Bearer ${token}`);
   curlArgs.push(`https://ntfy.sh/${topic}`);
 
-  const result = safeSyncOutput(curlArgs, { trim: false });
+  const result = spawnModule.safeSyncOutput(curlArgs, { trim: false });
   const stdout = result.stdout;
   const splitAt = stdout.lastIndexOf("\n");
   const body = splitAt >= 0 ? stdout.slice(0, splitAt).trim() : "";
