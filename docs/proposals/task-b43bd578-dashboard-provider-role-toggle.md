@@ -127,6 +127,28 @@ current values to the client.
     in `T3ProviderKind`, the toggle will pick which two providers form the
     duo pair.
 
+13a. **Null role semantics in the N=2 universe (limitation).** With the
+    current `PROVIDERS = {claude-code, codex}` universe, the toggle
+    persists an explicit `coder: null` or `reviewer: null` selection in
+    `config.yaml` and round-trips it through
+    `dashboard/data/orchestration-defaults.json` so the UI remembers the
+    user's choice across reloads (AC 10 + AC 11). However, the existing
+    auto-fill read sites (`selectOrchestrationFlags` in
+    `src/adapters/t3code.ts` and `expandDuoSlots` in
+    `src/slots/duo-expand.ts`) coerce explicit YAML `null` to the
+    hard-coded literal fallback (`claude-code` for coder, `codex` for
+    reviewer), identical to the unset case. Therefore in the N=2
+    universe, picking "none" has no observable effect on which provider
+    auto-fill actually uses. This mirrors AC 13's analogous limitation
+    for duo mode and is deferred to the future N≥3 provider-extension
+    task (the same task that extends `T3ProviderKind`, the shared
+    `PROVIDERS` constant, and the per-provider plumbing in
+    `selectOrchestrationFlags`). A regression test in
+    `src/orchestration-defaults.test.ts` pins `selectOrchestrationFlags`
+    and `expandDuoSlots` returning the literal fallback when
+    `default_coder: null` / `default_reviewer: null` are configured, so a
+    future "make null real" change must update both tests deliberately.
+
 14. **Tests — invariant + cascade.** New unit tests cover the cascade rule
     independently of the UI: extract the pure transformation
     `applyRoleChange(state, provider, role) → state'` into a testable
