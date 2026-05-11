@@ -21,6 +21,7 @@ import { ludicsSelfCommand } from "./orchestration/util.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
 import { clusterIsController, heartbeatIsFresh, clusterCurrentMachineName } from "./cluster.ts";
 import { getIntentForDashboard } from "./cluster-http.ts";
+import { effectiveDefaultsFromConfig } from "./orchestration-defaults.ts";
 
 function readSlotIntentForDashboard(slotNum: number): { action: string } | null {
   return getIntentForDashboard(slotNum);
@@ -835,6 +836,26 @@ function generateAdapter(): Record<string, unknown> {
   return { adapter: "t3code", t3codeAvailable, t3codeWebUrl: webUrl };
 }
 
+// --- Generate orchestration-defaults.json (task-b43bd578) ---
+//
+// Exposes the persisted mag.orchestration.default_coder / default_reviewer
+// to the dashboard role-switcher (AC 8, AC 11, AC 16).
+// Key-presence semantics live in effectiveDefaultsFromConfig:
+//   - key absent           → effective fallback (claude-code / codex)
+//   - key present and null → null (preserves explicit user "none")
+//   - key present + valid  → the configured value
+
+export function generateOrchestrationDefaults(): { coder: string | null; reviewer: string | null } {
+  try {
+    const config = loadConfigSync();
+    const mag = config.mag as Record<string, unknown> | undefined;
+    const orch = mag?.orchestration as Record<string, unknown> | undefined;
+    return effectiveDefaultsFromConfig(orch);
+  } catch {
+    return effectiveDefaultsFromConfig(undefined);
+  }
+}
+
 // --- Generate terminals.json ---
 
 function generateTerminals(): Record<string, unknown> {
@@ -1110,6 +1131,9 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "adapter.json"), JSON.stringify(generateAdapter(), null, 2));
   console.error("  adapter.json");
+
+  writeFileSync(join(dataDir, "orchestration-defaults.json"), JSON.stringify(generateOrchestrationDefaults(), null, 2));
+  console.error("  orchestration-defaults.json");
 
   writeFileSync(join(dataDir, "terminals.json"), JSON.stringify(generateTerminals(), null, 2));
   console.error("  terminals.json");

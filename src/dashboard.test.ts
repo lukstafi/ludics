@@ -1239,3 +1239,244 @@ describe("dashboard HTTP /api/ttyd-reset", () => {
     expect(round!.ttydRestartCounts).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// task-b43bd578 — generateOrchestrationDefaults + dashboardGenerate
+// data-file write coverage.
+// ---------------------------------------------------------------------------
+
+describe("generateOrchestrationDefaults — task-b43bd578", () => {
+  function writeConfigWithMag(magYaml: string): void {
+    const configPath = process.env.LUDICS_CONFIG!;
+    const text = `state_repo: owner/ludics-state\nstate_path: harness\n${magYaml}`;
+    writeFileSync(configPath, text);
+  }
+
+  test("missing mag.orchestration keys → effective fallbacks", async () => {
+    writeConfigWithMag("");
+    const { generateOrchestrationDefaults } = await import("./dashboard.ts");
+    expect(generateOrchestrationDefaults()).toEqual({
+      coder: "claude-code",
+      reviewer: "codex",
+    });
+  });
+
+  test("configured opposite values pass through literally (mutation-test guard)", async () => {
+    writeConfigWithMag("mag:\n  orchestration:\n    default_coder: codex\n    default_reviewer: claude-code\n");
+    const { generateOrchestrationDefaults } = await import("./dashboard.ts");
+    expect(generateOrchestrationDefaults()).toEqual({
+      coder: "codex",
+      reviewer: "claude-code",
+    });
+  });
+
+  test("present-null keys emit `null` in the JSON (AC 10/11 reload contract)", async () => {
+    writeConfigWithMag("mag:\n  orchestration:\n    default_coder: null\n    default_reviewer: codex\n");
+    const { generateOrchestrationDefaults } = await import("./dashboard.ts");
+    expect(generateOrchestrationDefaults()).toEqual({
+      coder: null,
+      reviewer: "codex",
+    });
+  });
+
+  test("present-unknown 'cursor' → effective fallback + console.error warning", async () => {
+    writeConfigWithMag("mag:\n  orchestration:\n    default_coder: cursor\n    default_reviewer: codex\n");
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    let calls: unknown[][] = [];
+    try {
+      const { generateOrchestrationDefaults } = await import("./dashboard.ts");
+      const result = generateOrchestrationDefaults();
+      calls = spy.mock.calls;
+      expect(result).toEqual({ coder: "claude-code", reviewer: "codex" });
+    } finally {
+      spy.mockRestore();
+    }
+    const matched = calls.some((c) => String(c[0]).includes("cursor"));
+    expect(matched).toBe(true);
+  });
+});
+
+describe("dashboardGenerate writes orchestration-defaults.json — task-b43bd578", () => {
+  test("file exists in data dir after dashboardGenerate; content matches generator output", async () => {
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(
+      configPath,
+      "state_repo: owner/ludics-state\nstate_path: harness\nmag:\n  orchestration:\n    default_coder: codex\n    default_reviewer: claude-code\n",
+    );
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    dashboardGenerate();
+    const outFile = join(harnessDir(), "dashboard", "data", "orchestration-defaults.json");
+    expect(existsSync(outFile)).toBe(true);
+    const parsed = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>;
+    expect(parsed).toEqual({ coder: "codex", reviewer: "claude-code" });
+  });
+
+  test("regenerates after writeOrchestrationDefaults (POST-then-regenerate path)", async () => {
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, "state_repo: owner/ludics-state\nstate_path: harness\n");
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    dashboardGenerate();
+    const outFile = join(harnessDir(), "dashboard", "data", "orchestration-defaults.json");
+    const before = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>;
+    expect(before).toEqual({ coder: "claude-code", reviewer: "codex" });
+
+    const { writeOrchestrationDefaults } = await import("./config.ts");
+    writeOrchestrationDefaults({ coder: "codex", reviewer: "claude-code" });
+    dashboardGenerate();
+    const after = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>;
+    expect(after).toEqual({ coder: "codex", reviewer: "claude-code" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-b43bd578 — POST /api/orchestration-defaults endpoint tests.
+// ---------------------------------------------------------------------------
+
+describe("dashboard HTTP /api/orchestration-defaults — task-b43bd578", () => {
+  async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
+    const { buildHandlers } = await import("./dashboard-server.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(dashboardDir, { recursive: true });
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+    return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+  }
+
+  function seedConfig(): void {
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, "state_repo: owner/ludics-state\nstate_path: harness\n");
+  }
+
+  test("valid POST writes YAML and returns echo JSON", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/orchestration-defaults", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ coder: "codex", reviewer: "claude-code" }),
+    }));
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-type")).toContain("application/json");
+    const body = await resp.json() as { coder: string; reviewer: string };
+    expect(body).toEqual({ coder: "codex", reviewer: "claude-code" });
+    const raw = readFileSync(process.env.LUDICS_CONFIG!, "utf-8");
+    expect(raw).toMatch(/default_coder:\s*codex/);
+    expect(raw).toMatch(/default_reviewer:\s*claude-code/);
+  });
+
+  test("missing 'coder' key → 400 + JSON error", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/orchestration-defaults", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reviewer: "codex" }),
+    }));
+    expect(resp.status).toBe(400);
+    const body = await resp.json() as { error: string };
+    expect(body.error).toMatch(/coder/);
+  });
+
+  test("invalid provider 'cursor' → 400", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/orchestration-defaults", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ coder: "cursor", reviewer: "codex" }),
+    }));
+    expect(resp.status).toBe(400);
+    const body = await resp.json() as { error: string };
+    expect(body.error).toMatch(/coder/);
+  });
+
+  test("coder===reviewer (both non-null) → 400", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/orchestration-defaults", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ coder: "codex", reviewer: "codex" }),
+    }));
+    expect(resp.status).toBe(400);
+    const body = await resp.json() as { error: string };
+    expect(body.error).toMatch(/differ/);
+  });
+
+  test("both null accepted → 200; persisted YAML has both keys as null (AC 10)", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/orchestration-defaults", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ coder: null, reviewer: null }),
+    }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { coder: null; reviewer: null };
+    expect(body).toEqual({ coder: null, reviewer: null });
+    const raw = readFileSync(process.env.LUDICS_CONFIG!, "utf-8");
+    expect(raw).toMatch(/default_coder:\s*null/);
+    expect(raw).toMatch(/default_reviewer:\s*null/);
+  });
+
+  test("one null + one provider → 200; dashboard regenerates with null preserved", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/orchestration-defaults", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ coder: null, reviewer: "codex" }),
+    }));
+    expect(resp.status).toBe(200);
+
+    // After POST, the generator must emit `coder: null` (AC 10/11 reload contract).
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    dashboardGenerate();
+    const out = JSON.parse(readFileSync(join(harnessDir(), "dashboard", "data", "orchestration-defaults.json"), "utf-8"));
+    expect(out).toEqual({ coder: null, reviewer: "codex" });
+  });
+
+  test("GET to /api/orchestration-defaults → 405", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/orchestration-defaults", { method: "GET" }));
+    expect(resp.status).toBe(405);
+  });
+
+  test("invalid JSON body → 400", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/orchestration-defaults", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not-json",
+    }));
+    expect(resp.status).toBe(400);
+  });
+
+  test("after POST, lastGenerated cache-bust regenerates orchestration-defaults.json on next data read", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+
+    // Seed an initial data file so the static-serve path has something
+    // to serve cached.
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    dashboardGenerate();
+
+    // POST flips defaults.
+    const post = await handler(new Request("http://x/api/orchestration-defaults", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ coder: "codex", reviewer: "claude-code" }),
+    }));
+    expect(post.status).toBe(200);
+
+    // Next data fetch through the handler must trigger regeneration —
+    // the handler regenerates lazily when lastGenerated < now - ttl OR
+    // when lastGenerated was reset to 0. We verify the second.
+    const dataReq = new Request("http://x/data/orchestration-defaults.json");
+    const dataResp = await handler(dataReq);
+    expect(dataResp.status).toBe(200);
+    const dataBody = await dataResp.json() as { coder: string; reviewer: string };
+    expect(dataBody).toEqual({ coder: "codex", reviewer: "claude-code" });
+  });
+});

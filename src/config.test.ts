@@ -178,3 +178,106 @@ projects:
     expect(_peekPriorityProjectsCache()).toBe(beforeRewrite);
   });
 });
+
+// ---------------------------------------------------------------------------
+// task-b43bd578 — writeOrchestrationDefaults round-trip + null persistence.
+// ---------------------------------------------------------------------------
+
+describe("writeOrchestrationDefaults", () => {
+  test("sets both keys under mag.orchestration", async () => {
+    const { readFileSync } = await import("fs");
+    const { writeOrchestrationDefaults } = await import("./config.ts");
+    // Overwrite the beforeEach config with a minimal fixture that
+    // exercises the round-trip behaviour (already exists at LUDICS_CONFIG).
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, "state_repo: owner/ludics-state\nstate_path: harness\nmag:\n  orchestration:\n    default_mode: pair\n");
+    writeOrchestrationDefaults({ coder: "codex", reviewer: "claude-code" });
+    const raw = readFileSync(configPath, "utf-8");
+    expect(raw).toMatch(/default_coder:\s*codex/);
+    expect(raw).toMatch(/default_reviewer:\s*claude-code/);
+  });
+
+  test("persists null as YAML 'null' (does NOT delete the key)", async () => {
+    const { readFileSync } = await import("fs");
+    const { writeOrchestrationDefaults } = await import("./config.ts");
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, "state_repo: owner/ludics-state\nstate_path: harness\nmag:\n  orchestration:\n    default_mode: pair\n    default_coder: claude-code\n    default_reviewer: codex\n");
+    writeOrchestrationDefaults({ coder: null, reviewer: "codex" });
+    const raw = readFileSync(configPath, "utf-8");
+    // The key is still present (NOT deleted) — explicit YAML null.
+    expect(raw).toMatch(/default_coder:\s*null/);
+    expect(raw).toMatch(/default_reviewer:\s*codex/);
+    // Cross-check via the YAML parser that key-presence holds.
+    const YAML = (await import("yaml")).default;
+    const parsed = YAML.parse(raw) as { mag: { orchestration: Record<string, unknown> } };
+    expect("default_coder" in parsed.mag.orchestration).toBe(true);
+    expect(parsed.mag.orchestration.default_coder).toBeNull();
+  });
+
+  test("preserves adjacent comment + sibling default_mode verbatim", async () => {
+    const { readFileSync } = await import("fs");
+    const { writeOrchestrationDefaults } = await import("./config.ts");
+    const configPath = process.env.LUDICS_CONFIG!;
+    const sentinel = "# DO-NOT-REFLOW sentinel comment task-b43bd578";
+    const original = `state_repo: owner/ludics-state
+state_path: harness
+mag:
+  orchestration:
+    default_mode: pair  ${sentinel}
+    queue_dir: queue
+`;
+    writeFileSync(configPath, original);
+    writeOrchestrationDefaults({ coder: "codex", reviewer: "claude-code" });
+    const after = readFileSync(configPath, "utf-8");
+    // Sentinel comment on the unchanged adjacent key survives.
+    expect(after).toContain(sentinel);
+    // Sibling key default_mode value is preserved.
+    expect(after).toMatch(/default_mode:\s*pair/);
+    // Unrelated sibling `queue_dir` survives.
+    expect(after).toMatch(/queue_dir:\s*queue/);
+  });
+
+  test("uses atomicWriteFileSync (no partial-write window)", async () => {
+    const { spyOn } = await import("bun:test");
+    const jsonMod = await import("./json.ts");
+    const { writeOrchestrationDefaults } = await import("./config.ts");
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, "state_repo: owner/ludics-state\nstate_path: harness\n");
+    const spy = spyOn(jsonMod, "atomicWriteFileSync");
+    let callsForConfig: { path: string; content: string }[] = [];
+    try {
+      writeOrchestrationDefaults({ coder: "codex", reviewer: "claude-code" });
+      // Capture calls BEFORE mockRestore (bun:test mockRestore wipes history).
+      callsForConfig = spy.mock.calls
+        .filter((c) => typeof c[0] === "string" && c[0] === configPath)
+        .map((c) => ({ path: c[0] as string, content: c[1] as string }));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(callsForConfig.length).toBe(1);
+    expect(callsForConfig[0]!.content).toMatch(/default_coder:\s*codex/);
+    expect(callsForConfig[0]!.content).toMatch(/default_reviewer:\s*claude-code/);
+  });
+
+  test("round-trip fidelity: write then re-parse yields exactly the written state", async () => {
+    const { readFileSync } = await import("fs");
+    const { writeOrchestrationDefaults } = await import("./config.ts");
+    const { effectiveDefaultsFromConfig } = await import("./orchestration-defaults.ts");
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, "state_repo: owner/ludics-state\nstate_path: harness\n");
+    for (const state of [
+      { coder: "claude-code" as const, reviewer: "codex" as const },
+      { coder: "codex" as const, reviewer: "claude-code" as const },
+      { coder: null, reviewer: "codex" as const },
+      { coder: "claude-code" as const, reviewer: null },
+      { coder: null, reviewer: null },
+    ]) {
+      writeOrchestrationDefaults(state);
+      const raw = readFileSync(configPath, "utf-8");
+      const YAML = (await import("yaml")).default;
+      const parsed = YAML.parse(raw) as { mag?: { orchestration?: Record<string, unknown> } };
+      const round = effectiveDefaultsFromConfig(parsed.mag?.orchestration);
+      expect(round).toEqual(state);
+    }
+  });
+});
