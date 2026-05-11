@@ -3,8 +3,9 @@
 import { existsSync, readFileSync, statSync } from "fs";
 import { basename, join } from "path";
 import YAML from "yaml";
-import { isPlainObject } from "./json.ts";
+import { atomicWriteFileSync, isPlainObject } from "./json.ts";
 import { PRIORITY_INCREASE, priorityValue } from "./tasks/markdown.ts";
+import type { Provider } from "./orchestration-defaults.ts";
 
 const DEFAULT_STALE_THRESHOLD = 86400; // 24 hours
 
@@ -565,3 +566,28 @@ export function milestoneKey(
   if (enabledProjects.has(project) && milestone) return milestone;
   return "\uFFFF";
 }
+
+// --- Orchestration defaults writer (task-b43bd578) ---
+//
+// Persists the dashboard role-switcher's choice to
+// mag.orchestration.default_coder / default_reviewer in config.yaml.
+//
+// Uses YAML.parseDocument + setIn + toString to preserve unrelated keys,
+// ordering, and comments on the rest of the file. Explicit null values
+// are persisted as YAML `null` (not deleted) so the dashboard can
+// distinguish present-null from absent on reload (AC 9, AC 10, AC 11).
+export function writeOrchestrationDefaults(state: {
+  coder: Provider | null;
+  reviewer: Provider | null;
+}): void {
+  const configPath = resolveConfigPath();
+  if (!existsSync(configPath)) {
+    throw new Error(`config not found: ${configPath} (run: ludics init)`);
+  }
+  const text = readFileSync(configPath, "utf-8");
+  const doc = YAML.parseDocument(text);
+  doc.setIn(["mag", "orchestration", "default_coder"], state.coder);
+  doc.setIn(["mag", "orchestration", "default_reviewer"], state.reviewer);
+  atomicWriteFileSync(configPath, doc.toString());
+}
+
