@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { applyRoleChange, fromWireBody, PROVIDERS } from "./role-switcher.js";
+import { applyRoleChange, createInFlightSequencer, fromWireBody, PROVIDERS } from "./role-switcher.js";
 
 describe("PROVIDERS (browser-side copy)", () => {
   test("lists exactly claude-code and codex (in this order)", () => {
@@ -168,6 +168,60 @@ describe("fromWireBody — null ↔ none mapping", () => {
 // the source-level invariants that the DOM constructor must encode.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// createInFlightSequencer — pins the stale-response guard. Addresses the
+// Codex P2 review on PR #523: without sequencing, an older POST response
+// can resolve after a newer click and overwrite the newer state. The
+// sequencer is per-instance (so multiple role-switcher elements don't
+// share state) and monotonic.
+// ---------------------------------------------------------------------------
+
+describe("createInFlightSequencer — stale-response guard", () => {
+  test("issues monotonically increasing ids", () => {
+    const seq = createInFlightSequencer();
+    expect(seq.begin()).toBe(1);
+    expect(seq.begin()).toBe(2);
+    expect(seq.begin()).toBe(3);
+  });
+
+  test("isLatest is true only for the most recently issued id", () => {
+    const seq = createInFlightSequencer();
+    const a = seq.begin();
+    const b = seq.begin();
+    expect(seq.isLatest(a)).toBe(false);
+    expect(seq.isLatest(b)).toBe(true);
+  });
+
+  test("isLatest of an unissued id is false", () => {
+    const seq = createInFlightSequencer();
+    expect(seq.isLatest(999)).toBe(false);
+    seq.begin();
+    expect(seq.isLatest(999)).toBe(false);
+  });
+
+  test("each instance has its own counter (no shared module-level state)", () => {
+    const a = createInFlightSequencer();
+    const b = createInFlightSequencer();
+    expect(a.begin()).toBe(1);
+    expect(b.begin()).toBe(1);
+    expect(a.begin()).toBe(2);
+    // b's counter unaffected by a's increments.
+    expect(b.begin()).toBe(2);
+  });
+
+  test("out-of-order resolution scenario: older click's response is dropped after newer click started", () => {
+    // Simulates the bug Codex flagged. Two clicks fire in order; their
+    // POST responses resolve out of order (older response arrives last).
+    const seq = createInFlightSequencer();
+    const click1 = seq.begin();        // user clicks button A
+    const click2 = seq.begin();        // user clicks button B before A's POST resolves
+    // POST for click2 resolves first (newer wins).
+    expect(seq.isLatest(click2)).toBe(true);
+    // POST for click1 resolves second — handler must drop it.
+    expect(seq.isLatest(click1)).toBe(false);
+  });
+});
+
 describe("role-switcher.js source-level pins (AC 1, AC 3, AC 12)", () => {
   let source = "";
   test("source file readable", async () => {
@@ -195,5 +249,15 @@ describe("role-switcher.js source-level pins (AC 1, AC 3, AC 12)", () => {
     expect(source).toContain('"coder", "reviewer", "none"');
     expect(source).toMatch(/btn\.className\s*=\s*"role-btn"/);
     expect(source).toMatch(/classList\.toggle\("active",/);
+  });
+
+  test("handleClick guards both success AND failure paths with sequencer.isLatest", () => {
+    // Codex P2 fix: rapid clicks resolve out of order; older responses
+    // (whether success or thrown error) must be dropped. Pin both arms
+    // so a partial revert wouldn't silently regress the failure path.
+    const matches = source.match(/if \(!sequencer\.isLatest\(myId\)\) return;/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(2);
+    // Must obtain its myId BEFORE awaiting onSubmit.
+    expect(source).toMatch(/const myId\s*=\s*sequencer\.begin\(\);\s*\n\s*try\s*\{/);
   });
 });

@@ -118,19 +118,26 @@ export function createRoleSwitcherElement(initialState, onSubmit) {
     root.appendChild(row);
   }
 
+  const sequencer = createInFlightSequencer();
+
   async function handleClick(provider, role) {
     const prev = state;
     const next = applyRoleChange(prev, provider, role);
     state = next;
     syncActive();
     root.removeAttribute("title");
+    const myId = sequencer.begin();
     try {
       const confirmed = await onSubmit(toWireBody(next));
+      // Drop stale responses: if a newer click started after this one,
+      // its response (or its failure) is authoritative — not ours.
+      if (!sequencer.isLatest(myId)) return;
       if (confirmed && typeof confirmed === "object") {
         state = fromWireBody(confirmed);
         syncActive();
       }
     } catch (err) {
+      if (!sequencer.isLatest(myId)) return;
       // Pessimistic rollback: server rejected or network failed.
       state = prev;
       syncActive();
@@ -140,6 +147,26 @@ export function createRoleSwitcherElement(initialState, onSubmit) {
 
   syncActive();
   return root;
+}
+
+/**
+ * Per-instance in-flight request sequencer. Each click obtains a fresh
+ * monotonic id via `begin()`; after the POST resolves the handler checks
+ * `isLatest(id)` and drops stale responses. Without this, rapid clicks
+ * whose responses resolve out of order would let an older response
+ * overwrite a newer state mutation (Codex P2 review on PR #523).
+ */
+export function createInFlightSequencer() {
+  let latest = 0;
+  return {
+    begin() {
+      latest += 1;
+      return latest;
+    },
+    isLatest(id) {
+      return id === latest;
+    },
+  };
 }
 
 /** Map internal `none` ↔ wire-body `null`. */

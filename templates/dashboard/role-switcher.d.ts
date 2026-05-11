@@ -23,3 +23,10 @@ export function createRoleSwitcherElement(
 ): HTMLElement;
 
 export function fromWireBody(body: RoleSwitcherWireBody): RoleSwitcherState;
+
+export interface InFlightSequencer {
+  begin(): number;
+  isLatest(id: number): boolean;
+}
+
+export function createInFlightSequencer(): InFlightSequencer;
