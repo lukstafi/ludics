@@ -317,6 +317,74 @@ header h1 {
     font-weight: 600;
 }
 
+/* ── Role Switcher (task-b43bd578) ─────────────────────────── */
+.role-switcher {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-right: 8px;
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    letter-spacing: 0.02em;
+}
+
+.role-section-label {
+    font-size: 0.55rem;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-right: 4px;
+}
+
+.role-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 2px 4px;
+}
+
+.role-provider-name {
+    font-family: var(--font-mono, var(--font-body));
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    text-transform: lowercase;
+    padding-right: 2px;
+}
+
+.role-btn-group {
+    display: flex;
+    gap: 2px;
+}
+
+.role-btn {
+    font-family: var(--font-body);
+    font-size: 0.55rem;
+    font-weight: 500;
+    padding: 1px 5px;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    line-height: 1.4;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.role-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-panel-hover);
+}
+
+.role-btn.active {
+    color: var(--bg-primary);
+    background: var(--accent);
+    font-weight: 600;
+}
+
 /* ── Main Layout ───────────────────────────────────────────── */
 main {
     padding: 1.25rem 1.5rem;

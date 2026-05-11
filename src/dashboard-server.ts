@@ -19,6 +19,8 @@ import { setQueueHold, maybeFeedMagQueue, clearAutoProposalDebounce } from "./ma
 import { queueList, queueRequest, recentResults, queuePromoteToTop, queueCancel } from "./queue.ts";
 import { resolveSkillCommand } from "./skill-queue-registry.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
+import { validatePayload } from "./orchestration-defaults.ts";
+import { writeOrchestrationDefaults } from "./config.ts";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -682,6 +684,45 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
         });
       } catch (e) {
         return new Response(String(e), { status: 500 });
+      }
+    }
+
+    // API: persist dashboard role-switcher state to config.yaml (task-b43bd578)
+    if (pathname === "/api/orchestration-defaults") {
+      if (req.method !== "POST") {
+        return new Response(
+          JSON.stringify({ error: "method not allowed" }),
+          { status: 405, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return new Response(
+          JSON.stringify({ error: "invalid JSON" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      const result = validatePayload(body);
+      if (!result.ok) {
+        return new Response(
+          JSON.stringify({ error: result.error }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      try {
+        writeOrchestrationDefaults({ coder: result.coder, reviewer: result.reviewer });
+        lastGenerated = 0; // force regeneration on next data request
+        return new Response(
+          JSON.stringify({ coder: result.coder, reviewer: result.reviewer }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      } catch (e) {
+        return new Response(
+          JSON.stringify({ error: e instanceof Error ? e.message : String(e) }),
+          { status: 500, headers: { "Content-Type": "application/json" } },
+        );
       }
     }
 

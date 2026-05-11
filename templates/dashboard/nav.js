@@ -71,6 +71,38 @@
         statusBar.insertBefore(switcher, statusBar.firstChild);
     }
 
+    // ── Role Switcher (task-b43bd578) ────────────────────────
+    // Inject the provider-role toggle to the LEFT of the theme switcher.
+    // Source of truth is server-rendered data/orchestration-defaults.json,
+    // NOT localStorage — the auto-fill code reads the same config keys, so
+    // localStorage would diverge from the path the slot-start code uses.
+    if (statusBar && switcher) {
+        import('./role-switcher.js').then(function (mod) {
+            return fetch('data/orchestration-defaults.json').then(function (r) {
+                return r.ok ? r.json() : null;
+            }).then(function (data) {
+                if (!data) return;
+                var initialState = mod.fromWireBody(data);
+                var roleSwitcher = mod.createRoleSwitcherElement(initialState, function (newState) {
+                    return fetch('/api/orchestration-defaults', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(newState),
+                    }).then(function (resp) {
+                        if (!resp.ok) {
+                            return resp.json().catch(function () { return { error: 'HTTP ' + resp.status }; })
+                                .then(function (e) { throw new Error(e.error || ('HTTP ' + resp.status)); });
+                        }
+                        return resp.json();
+                    });
+                });
+                statusBar.insertBefore(roleSwitcher, switcher);
+            });
+        }).catch(function (e) {
+            console.warn('ludics: role-switcher injection skipped:', e);
+        });
+    }
+
     // ── t3code Link Status ───────────────────────────────────
     var dataPath = 'data/';
     fetch(dataPath + 't3code.json')

@@ -845,7 +845,7 @@ function generateAdapter(): Record<string, unknown> {
 //   - key present and null → null (preserves explicit user "none")
 //   - key present + valid  → the configured value
 
-export function generateOrchestrationDefaults(): Record<string, unknown> {
+export function generateOrchestrationDefaults(): { coder: string | null; reviewer: string | null } {
   try {
     const config = loadConfigSync();
     const mag = config.mag as Record<string, unknown> | undefined;
