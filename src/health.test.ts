@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { _runAllTestHealthDispatch, checkProjectTestHealth, detectTestCommand, runAllTestHealth, shouldRunTestHealth, testHealthStatePath } from "./health.ts";
 import { tmpdir } from "os";
@@ -174,8 +174,6 @@ describe("loadTestHealthState validation", () => {
     expect(parseTestHealthState("not json{{{")).toEqual({});
   });
 });
-
-import { existsSync, mkdtempSync, readFileSync } from "fs";
 
 describe("saveTestHealthState atomic write", () => {
   test("round-trips via loadTestHealthState and leaves no .tmp sibling", async () => {

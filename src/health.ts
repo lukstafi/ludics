@@ -152,11 +152,15 @@ export function runAllTestHealth(options?: { project?: string; force?: boolean }
 
   for (const p of projects) {
     if (options?.project && p.name !== options.project) continue;
-    if (postponedProjectSet().has(p.name.toLowerCase())) {
-      console.error(`[test-health] ${p.name}: skipped (postponed)`);
-      continue;
-    }
     try {
+      // Inside the try block so a malformed entry (e.g. non-string `name`,
+      // which the cast-based config loader does not validate) does not abort
+      // the entire batch — fault isolation matches the existing per-project
+      // try/catch contract.
+      if (postponedProjectSet().has(p.name.toLowerCase())) {
+        console.error(`[test-health] ${p.name}: skipped (postponed)`);
+        continue;
+      }
       const result = _runAllTestHealthDispatch.fn(p, { force: options?.force });
       if (result.skipped) {
         console.error(`[test-health] ${p.name}: skipped (${result.reason})`);
