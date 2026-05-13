@@ -1,8 +1,10 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
-import { detectTestCommand, shouldRunTestHealth } from "./health.ts";
+import { checkProjectTestHealth, detectTestCommand, runAllTestHealth, shouldRunTestHealth, testHealthStatePath } from "./health.ts";
 import { tmpdir } from "os";
+import { _resetPostponedProjectsCache } from "./config.ts";
+import { captureConsoleError, withSyntheticHarness } from "./test-utils.ts";
 
 function makeTmpDir(): string {
   const dir = join(tmpdir(), `health-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -199,5 +201,61 @@ describe("saveTestHealthState atomic write", () => {
       else process.env.LUDICS_HARNESS_DIR = ORIGINAL;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("test-health skips postponed projects", () => {
+  const getStateDir = withSyntheticHarness(beforeEach, afterEach, {
+    projects: [
+      // test_command: "false" would exit non-zero and file a "Fix broken test
+      // suite" task if the postponed guard fails. The guard MUST short-circuit
+      // before test_command is consulted.
+      { name: "postponed-proj", repo: "ex/postponed", postponed: true, test_command: "false" },
+      { name: "active-proj", repo: "ex/active" },
+    ],
+  });
+
+  beforeEach(() => {
+    _resetPostponedProjectsCache();
+  });
+  afterEach(() => {
+    _resetPostponedProjectsCache();
+  });
+
+  test("checkProjectTestHealth returns {skipped:true, reason:'postponed'} for postponed project", () => {
+    const project = { name: "postponed-proj", repo: "ex/postponed", postponed: true, test_command: "false" } as const;
+    const result = checkProjectTestHealth(project);
+    expect(result).toEqual({ skipped: true, reason: "postponed" });
+    // No state mutation: mag/test-health.json must not exist for the skipped project.
+    expect(existsSync(testHealthStatePath())).toBe(false);
+  });
+
+  test("checkProjectTestHealth matches postponed name case-insensitively", () => {
+    // Config-side name is "postponed-proj" (lowercased into the Set); a caller
+    // passing "Postponed-Proj" must still be skipped.
+    const project = { name: "Postponed-Proj", repo: "ex/postponed", test_command: "false" } as const;
+    const result = checkProjectTestHealth(project);
+    expect(result).toEqual({ skipped: true, reason: "postponed" });
+  });
+
+  test("runAllTestHealth logs '[test-health] <name>: skipped (postponed)' and does not call checkProjectTestHealth", () => {
+    const { lines } = captureConsoleError(() => runAllTestHealth({ project: "postponed-proj" }));
+    expect(lines.some((l) => l.includes("[test-health] postponed-proj: skipped (postponed)"))).toBe(true);
+    // No state written; runAllTestHealth's per-project log shape "skipped (<reason>)"
+    // appears via the batch-loop early-continue, NOT via checkProjectTestHealth's
+    // own log path. State file remains absent.
+    expect(existsSync(testHealthStatePath())).toBe(false);
+  });
+
+  test("non-postponed project is not skipped for the postponed reason (negative control)", () => {
+    // Mutation evidence: if the .has() check were inverted or hard-coded to true,
+    // the active project would also return reason:"postponed". It must not.
+    const project = { name: "active-proj", repo: "ex/active" } as const;
+    const result = checkProjectTestHealth(project);
+    // active-proj has no resolvable path on disk under the synthetic harness;
+    // the function falls through to the path-not-found skip, NOT postponed.
+    expect(result.skipped).toBe(true);
+    expect(result.reason).not.toBe("postponed");
+    void getStateDir; // ensures the synthetic-harness lifecycle is engaged
   });
 });

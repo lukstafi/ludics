@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, mkdirSync } from "fs";
 import { writeJsonFile } from "./json.ts";
 import { join } from "path";
-import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath } from "./config.ts";
+import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath, postponedProjectSet } from "./config.ts";
 import { tasksCreate } from "./tasks/index.ts";
 import { safeSyncOutput } from "./spawn.ts";
 
@@ -96,6 +96,9 @@ export function checkProjectTestHealth(
   project: ProjectConfig,
   options?: { force?: boolean },
 ): TestHealthResult {
+  if (postponedProjectSet().has(project.name.toLowerCase())) {
+    return { skipped: true, reason: "postponed" };
+  }
   const projectPath = resolveProjectPath(project.name);
   if (!existsSync(projectPath)) return { skipped: true, reason: "path-not-found" };
 
@@ -140,6 +143,10 @@ export function runAllTestHealth(options?: { project?: string; force?: boolean }
 
   for (const p of projects) {
     if (options?.project && p.name !== options.project) continue;
+    if (postponedProjectSet().has(p.name.toLowerCase())) {
+      console.error(`[test-health] ${p.name}: skipped (postponed)`);
+      continue;
+    }
     try {
       const result = checkProjectTestHealth(p, { force: options?.force });
       if (result.skipped) {
