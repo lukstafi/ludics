@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, mkdirSync } from "fs";
 import { writeJsonFile } from "./json.ts";
 import { join } from "path";
-import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath } from "./config.ts";
+import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath, postponedProjectSet } from "./config.ts";
 import { tasksCreate } from "./tasks/index.ts";
 import { safeSyncOutput } from "./spawn.ts";
 
@@ -96,6 +96,9 @@ export function checkProjectTestHealth(
   project: ProjectConfig,
   options?: { force?: boolean },
 ): TestHealthResult {
+  if (postponedProjectSet().has(project.name.toLowerCase())) {
+    return { skipped: true, reason: "postponed" };
+  }
   const projectPath = resolveProjectPath(project.name);
   if (!existsSync(projectPath)) return { skipped: true, reason: "path-not-found" };
 
@@ -134,6 +137,15 @@ export function checkProjectTestHealth(
 
 // --- Batch ---
 
+// Test seam: runAllTestHealth dispatches through this holder so tests can
+// observe whether checkProjectTestHealth was invoked for a given project
+// (AC1's invariant: the batch-loop postponed guard short-circuits before
+// dispatch). The two guards otherwise produce identical observables.
+/** @internal exported for tests only */
+export const _runAllTestHealthDispatch: { fn: typeof checkProjectTestHealth } = {
+  fn: checkProjectTestHealth,
+};
+
 export function runAllTestHealth(options?: { project?: string; force?: boolean }): void {
   const config = loadConfigSync();
   const projects = config.projects ?? [];
@@ -141,7 +153,15 @@ export function runAllTestHealth(options?: { project?: string; force?: boolean }
   for (const p of projects) {
     if (options?.project && p.name !== options.project) continue;
     try {
-      const result = checkProjectTestHealth(p, { force: options?.force });
+      // Inside the try block so a malformed entry (e.g. non-string `name`,
+      // which the cast-based config loader does not validate) does not abort
+      // the entire batch — fault isolation matches the existing per-project
+      // try/catch contract.
+      if (postponedProjectSet().has(p.name.toLowerCase())) {
+        console.error(`[test-health] ${p.name}: skipped (postponed)`);
+        continue;
+      }
+      const result = _runAllTestHealthDispatch.fn(p, { force: options?.force });
       if (result.skipped) {
         console.error(`[test-health] ${p.name}: skipped (${result.reason})`);
       } else if (result.passed) {
