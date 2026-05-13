@@ -137,6 +137,15 @@ export function checkProjectTestHealth(
 
 // --- Batch ---
 
+// Test seam: runAllTestHealth dispatches through this holder so tests can
+// observe whether checkProjectTestHealth was invoked for a given project
+// (AC1's invariant: the batch-loop postponed guard short-circuits before
+// dispatch). The two guards otherwise produce identical observables.
+/** @internal exported for tests only */
+export const _runAllTestHealthDispatch: { fn: typeof checkProjectTestHealth } = {
+  fn: checkProjectTestHealth,
+};
+
 export function runAllTestHealth(options?: { project?: string; force?: boolean }): void {
   const config = loadConfigSync();
   const projects = config.projects ?? [];
@@ -148,7 +157,7 @@ export function runAllTestHealth(options?: { project?: string; force?: boolean }
       continue;
     }
     try {
-      const result = checkProjectTestHealth(p, { force: options?.force });
+      const result = _runAllTestHealthDispatch.fn(p, { force: options?.force });
       if (result.skipped) {
         console.error(`[test-health] ${p.name}: skipped (${result.reason})`);
       } else if (result.passed) {

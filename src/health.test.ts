@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
-import { checkProjectTestHealth, detectTestCommand, runAllTestHealth, shouldRunTestHealth, testHealthStatePath } from "./health.ts";
+import { _runAllTestHealthDispatch, checkProjectTestHealth, detectTestCommand, runAllTestHealth, shouldRunTestHealth, testHealthStatePath } from "./health.ts";
 import { tmpdir } from "os";
 import { _resetPostponedProjectsCache } from "./config.ts";
 import { captureConsoleError, withSyntheticHarness } from "./test-utils.ts";
@@ -238,13 +238,47 @@ describe("test-health skips postponed projects", () => {
     expect(result).toEqual({ skipped: true, reason: "postponed" });
   });
 
-  test("runAllTestHealth logs '[test-health] <name>: skipped (postponed)' and does not call checkProjectTestHealth", () => {
-    const { lines } = captureConsoleError(() => runAllTestHealth({ project: "postponed-proj" }));
-    expect(lines.some((l) => l.includes("[test-health] postponed-proj: skipped (postponed)"))).toBe(true);
-    // No state written; runAllTestHealth's per-project log shape "skipped (<reason>)"
-    // appears via the batch-loop early-continue, NOT via checkProjectTestHealth's
-    // own log path. State file remains absent.
-    expect(existsSync(testHealthStatePath())).toBe(false);
+  test("runAllTestHealth batch guard short-circuits BEFORE calling checkProjectTestHealth for postponed project", () => {
+    // AC1 invariant: the batch-loop guard MUST prevent dispatch to
+    // checkProjectTestHealth, not merely produce a postponed-looking log via
+    // the direct guard. Both guards otherwise emit identical observables
+    // (same log string, same absent state file), so we observe dispatch
+    // directly via the _runAllTestHealthDispatch seam.
+    const calls: string[] = [];
+    const original = _runAllTestHealthDispatch.fn;
+    _runAllTestHealthDispatch.fn = (p, opts) => {
+      calls.push(p.name);
+      return original(p, opts);
+    };
+    try {
+      const { lines } = captureConsoleError(() => runAllTestHealth({ project: "postponed-proj" }));
+      // Primary AC1 assertion: dispatch did NOT happen for the postponed project.
+      expect(calls).toEqual([]);
+      // Secondary observation: batch-loop emits the postponed skip log.
+      expect(lines.some((l) => l.includes("[test-health] postponed-proj: skipped (postponed)"))).toBe(true);
+      // AC3 cross-check: no state mutation on skip.
+      expect(existsSync(testHealthStatePath())).toBe(false);
+    } finally {
+      _runAllTestHealthDispatch.fn = original;
+    }
+  });
+
+  test("runAllTestHealth seam DOES dispatch for non-postponed projects (positive control)", () => {
+    // Mutation evidence for the previous test: prove the seam fires under
+    // normal conditions, so an empty `calls` array in the postponed case
+    // is meaningful (not vacuous because the seam never fires).
+    const calls: string[] = [];
+    const original = _runAllTestHealthDispatch.fn;
+    _runAllTestHealthDispatch.fn = (p, opts) => {
+      calls.push(p.name);
+      return original(p, opts);
+    };
+    try {
+      captureConsoleError(() => runAllTestHealth({ project: "active-proj" }));
+      expect(calls).toEqual(["active-proj"]);
+    } finally {
+      _runAllTestHealthDispatch.fn = original;
+    }
   });
 
   test("non-postponed project is not skipped for the postponed reason (negative control)", () => {
