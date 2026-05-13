@@ -4,11 +4,17 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { applyRoleChange, createInFlightSequencer, fromWireBody, PROVIDERS } from "./role-switcher.js";
+import { applyRoleChange, createInFlightSequencer, fromWireBody, PROVIDERS, ROLES } from "./role-switcher.js";
 
 describe("PROVIDERS (browser-side copy)", () => {
   test("lists exactly claude-code and codex (in this order)", () => {
     expect([...PROVIDERS]).toEqual(["claude-code", "codex"]);
+  });
+});
+
+describe("ROLES (browser-side copy)", () => {
+  test("lists exactly coder and reviewer (in this order)", () => {
+    expect([...ROLES]).toEqual(["coder", "reviewer"]);
   });
 });
 
@@ -161,11 +167,15 @@ describe("fromWireBody — null ↔ none mapping", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createRoleSwitcherElement source-level pins (AC 1, AC 3, AC 12).
+// createRoleSwitcherElement source-level pins (AC 1, AC 3).
 // Bun's test runtime has no DOM and we don't want to add a polyfill dep
 // just for this test. The live HTTP smoke probe (AC 19) exercises the DOM
 // construction end-to-end against a real browser-like fetcher; here we pin
 // the source-level invariants that the DOM constructor must encode.
+//
+// AC 12 (pre-redesign) pinned a "Defaults for new sessions" label. That label
+// was removed in the per-role-select redesign; the assertion was dropped
+// rather than carried as a stale pin.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -222,7 +232,7 @@ describe("createInFlightSequencer — stale-response guard", () => {
   });
 });
 
-describe("role-switcher.js source-level pins (AC 1, AC 3, AC 12)", () => {
+describe("role-switcher.js source-level pins (AC 1, AC 3)", () => {
   let source = "";
   test("source file readable", async () => {
     const { readFileSync } = await import("fs");
@@ -231,30 +241,30 @@ describe("role-switcher.js source-level pins (AC 1, AC 3, AC 12)", () => {
     expect(source.length).toBeGreaterThan(0);
   });
 
-  test("AC 12: 'Defaults for new sessions' label appears as rendered text and aria-label", () => {
-    // Two distinct uses — aria-label (for screen readers) AND a visible
-    // <span> textContent — both pinned to catch single-source removal.
-    const occurrences = (source.match(/Defaults for new sessions/g) ?? []).length;
-    expect(occurrences).toBeGreaterThanOrEqual(2);
-    expect(source).toContain('setAttribute("aria-label", "Defaults for new sessions")');
-    expect(source).toMatch(/label\.textContent\s*=\s*"Defaults for new sessions"/);
-  });
-
   test("AC 1: element class is 'role-switcher' and built via document.createElement", () => {
     expect(source).toMatch(/className\s*=\s*"role-switcher"/);
     expect(source).toMatch(/document\.createElement\("div"\)/);
   });
 
-  test("AC 3: three buttons per provider with role values coder/reviewer/none, classed .role-btn with .active toggle", () => {
-    expect(source).toContain('"coder", "reviewer", "none"');
-    expect(source).toMatch(/btn\.className\s*=\s*"role-btn"/);
-    expect(source).toMatch(/classList\.toggle\("active",/);
+  test("AC 3 (post-redesign): one <select> per role, classed .role-select, with C:/R: prefixes", () => {
+    // Two selects, one per role, each with three options (— + two providers).
+    expect(source).toMatch(/document\.createElement\("select"\)/);
+    expect(source).toMatch(/sel\.className\s*=\s*"role-select"/);
+    // C: / R: prefixes are the user-visible mnemonic for which dropdown is which.
+    expect(source).toContain('coder: "C"');
+    expect(source).toContain('reviewer: "R"');
+    // The none option uses an em-dash so the prefix still reads naturally.
+    expect(source).toMatch(/`\$\{prefix\}: —`/);
+    // aria-label per select keeps screen-reader semantics after the section
+    // label was dropped.
+    expect(source).toContain('role === "coder" ? "Coder" : "Reviewer"');
   });
 
-  test("handleClick guards both success AND failure paths with sequencer.isLatest", () => {
-    // Codex P2 fix: rapid clicks resolve out of order; older responses
-    // (whether success or thrown error) must be dropped. Pin both arms
-    // so a partial revert wouldn't silently regress the failure path.
+  test("handleChange guards both success AND failure paths with sequencer.isLatest", () => {
+    // Codex P2 fix carried over from the button era: rapid changes resolve
+    // out of order; older responses (success or thrown error) must be
+    // dropped. Pin both arms so a partial revert can't silently regress
+    // the failure path.
     const matches = source.match(/if \(!sequencer\.isLatest\(myId\)\) return;/g) ?? [];
     expect(matches.length).toBeGreaterThanOrEqual(2);
     // Must obtain its myId BEFORE awaiting onSubmit.

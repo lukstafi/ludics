@@ -3,6 +3,7 @@
 // in lockstep with src/orchestration-defaults.ts via a constant-sync test.
 
 export const PROVIDERS: ReadonlyArray<"claude-code" | "codex">;
+export const ROLES: ReadonlyArray<"coder" | "reviewer">;
 
 export type RoleSwitcherRole = "coder" | "reviewer" | "none";
 export type RoleSwitcherState = Record<string, RoleSwitcherRole>;

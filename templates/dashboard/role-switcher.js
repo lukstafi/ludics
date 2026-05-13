@@ -10,6 +10,8 @@
 //                       insertion into `.status-bar`.
 
 export const PROVIDERS = ["claude-code", "codex"];
+export const ROLES = ["coder", "reviewer"];
+const ROLE_PREFIX = { coder: "C", reviewer: "R" };
 
 /**
  * Pure constraint-propagation cascade.
@@ -54,10 +56,15 @@ export function applyRoleChange(state, provider, role) {
 }
 
 /**
- * Construct a `.role-switcher` element with three buttons per provider.
+ * Construct a `.role-switcher` element with one `<select>` per role.
+ *
+ * Each select shows `<prefix>: <provider>` (e.g. "C: claude-code") or
+ * `<prefix>: —` when no provider holds the role. The same cascade
+ * `applyRoleChange` runs whether the user picks a provider (assign) or "—"
+ * (release) — the ≤1-coder / ≤1-reviewer invariant is preserved either way.
  *
  * `initialState` shape: { [provider]: "coder" | "reviewer" | "none" }
- * `onSubmit(newState)` is called after each click; should return a Promise
+ * `onSubmit(newState)` is called after each change; should return a Promise
  * that resolves to the server-confirmed state (or throws on failure).
  * Pessimistic update: on rejection, the local state is restored and a
  * compact error message is surfaced via the element's `title` attribute.
@@ -69,83 +76,81 @@ export function createRoleSwitcherElement(initialState, onSubmit) {
   let state = { ...initialState };
   const root = document.createElement("div");
   root.className = "role-switcher";
-  root.setAttribute("aria-label", "Defaults for new sessions");
 
-  const label = document.createElement("span");
-  label.className = "role-section-label";
-  label.textContent = "Defaults for new sessions";
-  root.appendChild(label);
+  const selects = {}; // role -> <select>
 
-  const buttonRefs = {}; // provider -> { coder, reviewer, none }
-
-  function syncActive() {
+  function holderOf(role, st) {
     for (const p of PROVIDERS) {
-      const refs = buttonRefs[p];
-      if (!refs) continue;
-      const current = state[p] ?? "none";
-      refs.coder.classList.toggle("active", current === "coder");
-      refs.reviewer.classList.toggle("active", current === "reviewer");
-      refs.none.classList.toggle("active", current === "none");
+      if (st[p] === role) return p;
+    }
+    return "";
+  }
+
+  function syncSelects() {
+    for (const r of ROLES) {
+      const sel = selects[r];
+      if (sel) sel.value = holderOf(r, state);
     }
   }
 
-  for (const provider of PROVIDERS) {
-    const row = document.createElement("div");
-    row.className = "role-row";
-    row.dataset.provider = provider;
+  for (const role of ROLES) {
+    const sel = document.createElement("select");
+    sel.className = "role-select";
+    sel.dataset.role = role;
+    sel.setAttribute("aria-label", role === "coder" ? "Coder" : "Reviewer");
+    const prefix = ROLE_PREFIX[role];
 
-    const name = document.createElement("span");
-    name.className = "role-provider-name";
-    name.textContent = provider;
-    row.appendChild(name);
+    const noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.textContent = `${prefix}: —`;
+    sel.appendChild(noneOpt);
 
-    const group = document.createElement("div");
-    group.className = "role-btn-group";
-    const refs = {};
-    for (const r of ["coder", "reviewer", "none"]) {
-      const btn = document.createElement("button");
-      btn.className = "role-btn";
-      btn.dataset.role = r;
-      btn.dataset.provider = provider;
-      btn.textContent = r;
-      btn.title = `Set ${provider} as ${r}`;
-      btn.addEventListener("click", () => handleClick(provider, r));
-      group.appendChild(btn);
-      refs[r] = btn;
+    for (const p of PROVIDERS) {
+      const opt = document.createElement("option");
+      opt.value = p;
+      opt.textContent = `${prefix}: ${p}`;
+      sel.appendChild(opt);
     }
-    buttonRefs[provider] = refs;
-    row.appendChild(group);
-    root.appendChild(row);
+    sel.addEventListener("change", () => handleChange(role, sel.value));
+    selects[role] = sel;
+    root.appendChild(sel);
   }
 
   const sequencer = createInFlightSequencer();
 
-  async function handleClick(provider, role) {
+  async function handleChange(role, chosenProvider) {
     const prev = state;
-    const next = applyRoleChange(prev, provider, role);
+    let next;
+    if (chosenProvider === "") {
+      const holder = holderOf(role, prev);
+      if (!holder) return; // no-op release
+      next = applyRoleChange(prev, holder, "none");
+    } else {
+      next = applyRoleChange(prev, chosenProvider, role);
+    }
     state = next;
-    syncActive();
+    syncSelects();
     root.removeAttribute("title");
     const myId = sequencer.begin();
     try {
       const confirmed = await onSubmit(toWireBody(next));
-      // Drop stale responses: if a newer click started after this one,
+      // Drop stale responses: if a newer change started after this one,
       // its response (or its failure) is authoritative — not ours.
       if (!sequencer.isLatest(myId)) return;
       if (confirmed && typeof confirmed === "object") {
         state = fromWireBody(confirmed);
-        syncActive();
+        syncSelects();
       }
     } catch (err) {
       if (!sequencer.isLatest(myId)) return;
       // Pessimistic rollback: server rejected or network failed.
       state = prev;
-      syncActive();
+      syncSelects();
       root.setAttribute("title", `Failed to save: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  syncActive();
+  syncSelects();
   return root;
 }
 

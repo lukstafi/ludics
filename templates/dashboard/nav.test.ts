@@ -71,15 +71,11 @@ describe("style.css — role-switcher selectors (task-b43bd578)", () => {
     expect(styleCss).toMatch(/\.role-switcher\s*\{/);
   });
 
-  test(".role-btn rule is defined", () => {
-    expect(styleCss).toMatch(/\.role-btn\s*\{/);
+  test(".role-select rule is defined (per-role <select> dropdowns)", () => {
+    expect(styleCss).toMatch(/\.role-select\s*\{/);
   });
 
-  test(".role-btn.active rule (active-state visual marking, AC 3) is defined", () => {
-    expect(styleCss).toMatch(/\.role-btn\.active\s*\{/);
-  });
-
-  test(".role-section-label rule (Defaults for new sessions hint) is defined", () => {
-    expect(styleCss).toMatch(/\.role-section-label\s*\{/);
+  test(".role-select:hover rule is defined", () => {
+    expect(styleCss).toMatch(/\.role-select:hover\s*\{/);
   });
 });
