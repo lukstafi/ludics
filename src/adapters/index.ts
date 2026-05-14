@@ -4,8 +4,6 @@ import type { AdapterContext, Adapter } from "./types.ts";
 
 export type { AdapterContext } from "./types.ts";
 
-import * as agentClaude from "./agent-claude.ts";
-import * as agentCodex from "./agent-codex.ts";
 import * as claudeAi from "./claude-ai.ts";
 import * as chatgptCom from "./chatgpt-com.ts";
 import * as manual from "./manual.ts";
@@ -13,8 +11,6 @@ import * as t3code from "./t3code.ts";
 import * as tmuxAdapter from "./tmux-adapter.ts";
 
 const adapters: Record<string, Adapter> = {
-  "agent-claude": agentClaude,
-  "agent-codex": agentCodex,
   "claude-ai": claudeAi,
   "chatgpt-com": chatgptCom,
   "manual": manual,

@@ -10,11 +10,12 @@ import { isGitWorktree, getMainRepoFromWorktree } from "../adapters/base.ts";
 import { expandHome } from "../git-runner.ts";
 import { isoNow } from "../orchestration/util.ts";
 
-export type SweepMode = "agent-claude" | "agent-codex" | "t3code";
+// Only t3code sessions are swept. The legacy `agent-claude` / `agent-codex`
+// modes were dropped with their adapters (gh-ludics-524); persisted records
+// carrying those modes are filtered out on load by SWEEP_TARGET_MODES.
+export type SweepMode = "t3code";
 
 export const SWEEP_TARGET_MODES = new Set<SweepMode>([
-  "agent-claude",
-  "agent-codex",
   "t3code",
 ]);
 
@@ -60,12 +61,9 @@ export function buildKnownSessionKey(mode: SweepMode, projectDir: string, name: 
   return `${mode}|${normalizeProjectDirForSweep(projectDir)}|${name}`;
 }
 
-export function defaultCleanupCommand(mode: SweepMode, name: string): string[] {
-  if (mode === "t3code") {
-    // name is the threadId for t3code sessions
-    return ["ludics", "t3code", "stop-thread", name];
-  }
-  return [mode, "cleanup", name];
+export function defaultCleanupCommand(_mode: SweepMode, name: string): string[] {
+  // Only t3code is swept; `name` is the threadId for t3code sessions.
+  return ["ludics", "t3code", "stop-thread", name];
 }
 
 export function loadSessionSweepState(): SessionSweepState {

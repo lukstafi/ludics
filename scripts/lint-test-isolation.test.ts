@@ -856,7 +856,9 @@ describe("integration", () => {
       writeOut: () => {},
     });
     expect(result.errorCount).toBe(0);
-    const expectedWarningCount = 20;
+    // 19 after gh-ludics-524 deleted src/adapters/agent-session.test.ts,
+    // which contributed one rule-N warning.
+    const expectedWarningCount = 19;
     if (result.warningCount !== expectedWarningCount) {
       throw new Error(formatWarningCountHeuristic(result.warningCount));
     }
