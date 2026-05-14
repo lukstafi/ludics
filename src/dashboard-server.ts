@@ -15,7 +15,7 @@ import { emitEvent } from "./events.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { readTmuxSlotState, writeTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
-import { setQueueHold, maybeFeedMagQueue, clearAutoProposalDebounce } from "./mag.ts";
+import { setQueueHold, maybeFeedMagQueue, clearAutoProposalDebounce, readInFlightDelivery } from "./mag.ts";
 import { queueList, queueRequest, recentResults, queuePromoteToTop, queueCancel } from "./queue.ts";
 import { resolveSkillCommand } from "./skill-queue-registry.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
@@ -666,7 +666,11 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
           delete d.output; // strip large blobs — UI only needs id/status/timestamp
           return d;
         });
-        return new Response(JSON.stringify({ pending, results }), {
+        // gh-ludics-526: a popped-but-not-completed request is in neither
+        // `pending` nor `results`. Surface the in-flight delivery sentinel
+        // (null when there is none, or once its result JSON exists).
+        const inFlight = readInFlightDelivery();
+        return new Response(JSON.stringify({ pending, results, inFlight }), {
           headers: { "Content-Type": "application/json" },
         });
       } catch (e) {

@@ -100,17 +100,17 @@
                 const response = await fetch('/api/queue');
                 if (!response.ok) return;
                 const data = await response.json();
-                renderQueue(data.pending || [], data.results || []);
+                renderQueue(data.pending || [], data.results || [], data.inFlight || null);
             } catch {
                 // Silently skip — don't break the terminal
             }
         }
 
-        function renderQueue(pending, results) {
+        function renderQueue(pending, results, inFlight) {
             const list = document.getElementById('queue-list');
             if (!list) return;
 
-            if (pending.length === 0 && results.length === 0) {
+            if (pending.length === 0 && results.length === 0 && !inFlight) {
                 list.innerHTML = '<div class="mag-queue-empty">No activity</div>';
                 return;
             }
@@ -135,6 +135,14 @@
                         `</div>` : '';
                     html += `<div class="mag-queue-item"><span class="action">[${action}]</span>${task}${content}${ts}${actions}</div>`;
                 }
+            }
+
+            if (inFlight) {
+                html += '<div class="mag-queue-section-title">In flight</div>';
+                const command = escapeHtml(String(inFlight.command || 'unknown'));
+                const ts = inFlight.deliveredAt
+                    ? `<div class="timestamp">${escapeHtml(String(inFlight.deliveredAt))}</div>` : '';
+                html += `<div class="mag-queue-item"><span class="action">[delivered]</span> ${command}${ts}</div>`;
             }
 
             if (results.length > 0) {

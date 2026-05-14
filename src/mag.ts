@@ -102,6 +102,11 @@ const DEFAULT_STALL_THRESHOLD_MS = 120_000; // 2 minutes
 const DEFAULT_STALL_NUDGE_COOLDOWN_MS = 120_000; // 2 minutes between stall nudges
 const DEFAULT_READY_THRESHOLD_MS = 5_000; // pane must be stable this long to count as ready
 const DEFAULT_MAX_REQUEUE_RETRIES = 3;
+// gh-ludics-526: a skill delivery with no result JSON after this long is
+// treated as lost (compaction/crash/dropped input). Hard-coded, not a config
+// key — comfortably past a compaction and well past any current skill's
+// runtime (briefing/feedback-digest finish in well under a minute).
+const DELIVERY_CONFIRM_TIMEOUT_MS = 10 * 60_000; // 10 minutes
 const DEFAULT_STARTUP_WATCHDOG_SECONDS = 60;
 const DEFAULT_STARTUP_HELPER_STUCK_SECONDS = 45;
 const STARTUP_ALERT_TITLE = "Mag alert";
@@ -309,6 +314,225 @@ export function applyQueueFeedPrefix(rawLine: string, command: string): string {
   return `Ludics: ${command}`;
 }
 
+// --- Delivery-confirmation sentinel (gh-ludics-526) ---
+
+/** Shape of the mag/last-delivered.json sentinel. */
+interface LastDeliveredSentinel {
+  requestId: string;
+  command: string;
+  line: string;
+  deliveredAt: string;
+}
+
+function lastDeliveredFile(): string {
+  return join(magStateDir(), "last-delivered.json");
+}
+
+/** Path of the result JSON a completed skill writes (matches queue.ts writeResult). */
+function magResultFile(requestId: string): string {
+  return join(harnessDir(), "mag", "results", `${requestId}.json`);
+}
+
+function writeLastDelivered(sentinel: LastDeliveredSentinel): void {
+  writeJsonFile(lastDeliveredFile(), sentinel);
+}
+
+/**
+ * Parse a delivery-sentinel JSON file; tolerate a missing or malformed file
+ * by returning null. Shared by readLastDelivered() and the post-claim read in
+ * reconcileLastDelivered().
+ */
+function parseSentinelFile(path: string): LastDeliveredSentinel | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    if (!isPlainObject(parsed)) return null;
+    const requestId = String(parsed.requestId ?? "");
+    const command = String(parsed.command ?? "");
+    const line = String(parsed.line ?? "");
+    const deliveredAt = String(parsed.deliveredAt ?? "");
+    if (!requestId || !line) return null;
+    return { requestId, command, line, deliveredAt };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the delivery sentinel; tolerate a missing or malformed file by
+ * returning null (this runs in the keepalive path and in /api/queue).
+ */
+function readLastDelivered(): LastDeliveredSentinel | null {
+  return parseSentinelFile(lastDeliveredFile());
+}
+
+function clearLastDelivered(): void {
+  try { unlinkSync(lastDeliveredFile()); } catch { /* already gone */ }
+}
+
+/**
+ * Age of a sentinel in ms. A deliveredAt that fails Date.parse is treated as
+ * infinitely old, so a corrupt timestamp re-queues + clears rather than
+ * wedging the delivery gate forever.
+ */
+function deliveredAtAgeMs(sentinel: LastDeliveredSentinel, nowMs: number): number {
+  const delivered = Date.parse(sentinel.deliveredAt);
+  if (Number.isNaN(delivered)) return Number.POSITIVE_INFINITY;
+  return nowMs - delivered;
+}
+
+/**
+ * Shared retry-cap requeue path (gh-ludics-526). Used by both the
+ * triggerSkill send-failure branch and the delivery-confirmation
+ * reconciliation pass. Parses `_retry_count` from `line`, honors
+ * `mag.max_requeue_retries` / `DEFAULT_MAX_REQUEUE_RETRIES`, and either
+ * reinserts the line at the queue head with an incremented `_retry_count`
+ * (`mag_queue_requeued`) or drops it once the cap is reached
+ * (`mag_queue_dropped`). `reason` is folded into the event message only.
+ *
+ * Exported for tests.
+ */
+export function requeueWithRetryCap(line: string, command: string, reason: string): "requeued" | "dropped" {
+  let retryCount = 0;
+  try {
+    const parsed: unknown = JSON.parse(line);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      retryCount = Number((parsed as Record<string, unknown>)._retry_count) || 0;
+    }
+  } catch { /* use 0 */ }
+
+  const config = loadConfigSync();
+  const magCfg = config.mag as Record<string, unknown> | undefined;
+  const configuredRetries = Number(magCfg?.max_requeue_retries);
+  const maxRetries = (Number.isFinite(configuredRetries) && configuredRetries > 0)
+    ? configuredRetries : DEFAULT_MAX_REQUEUE_RETRIES;
+  if (retryCount >= maxRetries) {
+    console.error(`ludics: queue item dropped after ${maxRetries} failed retries`);
+    emitEvent({ event_type: "mag_queue_dropped", source: "keepalive", scope: "mag", status: "dropped", message: `dropped after ${maxRetries} retries (${reason}): ${command}` });
+    return "dropped";
+  }
+  // Increment retry count and reinsert at front of queue
+  let updated: Record<string, unknown>;
+  try {
+    updated = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    updated = { raw: line };
+  }
+  updated._retry_count = retryCount + 1;
+  queueReinsertHead(JSON.stringify(updated));
+  console.error(`ludics: requeued failed delivery (retry ${retryCount + 1}/${maxRetries})`);
+  emitEvent({ event_type: "mag_queue_requeued", source: "keepalive", scope: "mag", message: `retry ${retryCount + 1}/${maxRetries} (${reason}): ${command}` });
+  return "requeued";
+}
+
+/**
+ * Delivery-confirmation reconciliation (gh-ludics-526). Runs each keepalive
+ * tick AND inside maybeFeedMagQueue before any pop, so every delivery path
+ * resolves a stale sentinel before it can deliver the next item.
+ *
+ * - sentinel + matching result JSON → confirmed; clear the sentinel.
+ * - sentinel older than the timeout, no result → delivery lost; re-queue the
+ *   line through the shared retry-cap path and clear the sentinel.
+ * - sentinel present, no result, under the timeout → leave for the next tick.
+ *
+ * Result-existence is checked first: a skill that completed late (within the
+ * timeout window) is cleared as confirmed and never double-queued.
+ *
+ * Concurrency: `maybeFeedMagQueue` runs this from multiple processes (the
+ * keepalive loop and the dashboard server). The re-queue path atomically
+ * claims the sentinel via `renameSync` before re-queuing, so two concurrent
+ * callers that both observe the same expired sentinel cannot both call
+ * `queueReinsertHead` — only the caller that wins the rename re-queues; the
+ * loser's `renameSync` throws (source gone) and it bails.
+ *
+ * Exported for tests; `nowMs` drives the timeout deterministically.
+ */
+export function reconcileLastDelivered(nowMs: number = Date.now()): void {
+  // Cheap peek without claiming — avoids a rename on every quiet tick.
+  const peek = readLastDelivered();
+  if (!peek) return;
+  if (existsSync(magResultFile(peek.requestId))) {
+    // Confirmed. clearLastDelivered() swallows ENOENT, so a concurrent
+    // double-clear is harmless — no claim needed on this branch.
+    clearLastDelivered();
+    return;
+  }
+  if (deliveredAtAgeMs(peek, nowMs) < DELIVERY_CONFIRM_TIMEOUT_MS) return;
+
+  // Past the timeout with no result → delivery lost. Atomically claim the
+  // sentinel before re-queuing so concurrent callers cannot double-enqueue.
+  const claimPath = lastDeliveredFile() + ".reconciling";
+  try {
+    renameSync(lastDeliveredFile(), claimPath);
+  } catch {
+    return; // another caller already claimed (or cleared) it
+  }
+  // Read from the claimed copy — the file content may have been replaced
+  // between the peek and the claim, so trust only what we atomically own.
+  const claimed = parseSentinelFile(claimPath);
+  // Re-check result existence after the claim: a result that landed in the
+  // peek→claim window means the delivery completed late — don't re-queue.
+  if (claimed && !existsSync(magResultFile(claimed.requestId))) {
+    requeueWithRetryCap(claimed.line, claimed.command, "delivery-unconfirmed");
+  }
+  try { unlinkSync(claimPath); } catch { /* ignore */ }
+}
+
+/**
+ * True when a skill delivery is still in flight: the sentinel exists, no
+ * result JSON has appeared, and it is younger than the timeout. While this
+ * holds, maybeFeedMagQueue must not deliver the next skill item (gh-ludics-526
+ * fix part 1b). Exported for tests.
+ */
+export function deliveryGateBlocked(nowMs: number = Date.now()): boolean {
+  const sentinel = readLastDelivered();
+  if (!sentinel) return false;
+  if (existsSync(magResultFile(sentinel.requestId))) return false;
+  return deliveredAtAgeMs(sentinel, nowMs) < DELIVERY_CONFIRM_TIMEOUT_MS;
+}
+
+/**
+ * Dashboard helper (gh-ludics-526 fix part 2): the in-flight delivery
+ * sentinel, or null when there is none or its result JSON already exists.
+ * Age is not considered — an expired-but-not-yet-reconciled sentinel still
+ * reads as in flight until the next keepalive tick clears it.
+ */
+export function readInFlightDelivery(): LastDeliveredSentinel | null {
+  const sentinel = readLastDelivered();
+  if (!sentinel) return null;
+  if (existsSync(magResultFile(sentinel.requestId))) return null;
+  return sentinel;
+}
+
+/**
+ * Deliver one popped skill item into the Mag pane. On a successful send,
+ * record the mag/last-delivered.json sentinel (gh-ludics-526) and emit
+ * `mag_queue_feed`; on a failed send, re-queue through the shared retry-cap
+ * path without writing a sentinel. Returns whether the send succeeded.
+ *
+ * Exported for tests; `send` is injectable to exercise both paths without
+ * tmux, and `nowMs` pins the `deliveredAt` timestamp deterministically.
+ */
+export function deliverPoppedSkill(
+  popped: { requestId: string; command: string; line: string },
+  opts: { send?: (session: string, cmd: string) => boolean; nowMs?: number } = {},
+): boolean {
+  const send = opts.send ?? triggerSkill;
+  const delivered = applyQueueFeedPrefix(popped.line, popped.command);
+  const sent = send(MAG_SESSION_NAME, delivered);
+  if (sent) {
+    writeLastDelivered({
+      requestId: popped.requestId,
+      command: popped.command,
+      line: popped.line,
+      deliveredAt: new Date(opts.nowMs ?? Date.now()).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    });
+    emitEvent({ event_type: "mag_queue_feed", source: "keepalive", scope: "mag", message: `delivered: ${delivered}` });
+  } else {
+    requeueWithRetryCap(popped.line, popped.command, "send-failed");
+  }
+  return sent;
+}
+
 /**
  * When Mag is ready for input and queue has Mag-turn work, pop one item
  * and deliver. "Ready" means either the settled sentinel is set (stop
@@ -318,13 +542,29 @@ export function applyQueueFeedPrefix(rawLine: string, command: string): string {
  * where clearStaleSettled has cleared the sentinel). Returns true if a
  * command was dispatched.
  */
-export async function maybeFeedMagQueue(): Promise<boolean> {
+export async function maybeFeedMagQueue(
+  opts: { send?: (session: string, cmd: string) => boolean } = {},
+): Promise<boolean> {
   if (!isMagSettled() && !isMagReady()) return false;
   if (!queuePending()) return false;
 
   // Drain programmatic entries first (they don't need a Mag turn)
   await drainProgrammaticQueueHead();
   if (!queuePending()) return false;
+
+  // Delivery-confirmation invariant (gh-ludics-526): reconcile a stale
+  // sentinel before any pop, so every caller of maybeFeedMagQueue — the
+  // keepalive tick AND the direct callers (fresh-start ready path, on-stop
+  // hook, dashboard /api/queue-deliver and /api/queue) — clears or re-queues
+  // a resolved/expired sentinel before it can deliver the next item. Without
+  // this, a direct caller could pop B and let deliverPoppedSkill overwrite
+  // the single-valued sentinel for A before A is re-queued.
+  reconcileLastDelivered();
+  // Gate: do not deliver the next skill while a delivery is still in flight
+  // (sentinel present, no result, under the timeout). reconcileLastDelivered
+  // above has already cleared confirmed/expired sentinels, so a block here
+  // means a genuinely in-flight delivery.
+  if (deliveryGateBlocked()) return false;
 
   // Atomic claim: if settled, consume the sentinel so concurrent ticks
   // see !settled. In the ready-only path there's no sentinel to consume;
@@ -343,43 +583,7 @@ export async function maybeFeedMagQueue(): Promise<boolean> {
   const popped = await queuePopSkill();
   if (!popped) return false;
 
-  const delivered = applyQueueFeedPrefix(popped.line, popped.command);
-  const sent = triggerSkill(MAG_SESSION_NAME, delivered);
-  if (sent) {
-    emitEvent({ event_type: "mag_queue_feed", source: "keepalive", scope: "mag", message: `delivered: ${delivered}` });
-  } else {
-    // Requeue the failed item for retry on next keepalive cycle.
-    let retryCount = 0;
-    try {
-      const parsed: unknown = JSON.parse(popped.line);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        retryCount = Number((parsed as Record<string, unknown>)._retry_count) || 0;
-      }
-    } catch { /* use 0 */ }
-
-    const config = loadConfigSync();
-    const magCfg = config.mag as Record<string, unknown> | undefined;
-    const configuredRetries = Number(magCfg?.max_requeue_retries);
-    const maxRetries = (Number.isFinite(configuredRetries) && configuredRetries > 0)
-      ? configuredRetries : DEFAULT_MAX_REQUEUE_RETRIES;
-    if (retryCount >= maxRetries) {
-      console.error(`ludics: queue item dropped after ${maxRetries} failed retries`);
-      emitEvent({ event_type: "mag_queue_dropped", source: "keepalive", scope: "mag", status: "dropped", message: `dropped after ${maxRetries} retries: ${popped.command}` });
-    } else {
-      // Increment retry count and reinsert at front of queue
-      let updated: Record<string, unknown>;
-      try {
-        updated = JSON.parse(popped.line) as Record<string, unknown>;
-      } catch {
-        updated = { raw: popped.line };
-      }
-      updated._retry_count = retryCount + 1;
-      queueReinsertHead(JSON.stringify(updated));
-      console.error(`ludics: requeued failed delivery (retry ${retryCount + 1}/${maxRetries})`);
-      emitEvent({ event_type: "mag_queue_requeued", source: "keepalive", scope: "mag", message: `retry ${retryCount + 1}/${maxRetries}: ${popped.command}` });
-    }
-  }
-  return sent;
+  return deliverPoppedSkill(popped, { send: opts.send });
 }
 
 /**
@@ -1241,7 +1445,9 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
   console.error(`ludics: launched t3code for ${taskId} in slot ${slotNum} (${actionLabel})`);
 }
 
-async function queuePopSkill(): Promise<{ command: string; line: string } | null> {
+/** @internal Exported for tests — pops the queue head, resolves it to a skill
+ *  command, and exposes the request id captured at pop time (gh-ludics-526). */
+export async function queuePopSkill(): Promise<{ requestId: string; command: string; line: string } | null> {
   const popped = queuePopExpected();
   if (popped.status !== "popped") return null;
 
@@ -1260,7 +1466,10 @@ async function queuePopSkill(): Promise<{ command: string; line: string } | null
 
   const command = await resolveQueueRequestCommand(request, true);
   if (!command) return null;
-  return { command, line: popped.line };
+  // requestId is captured here at delivery time — never re-read from
+  // mag/current-request-id later, since the next queuePopSkill overwrites it
+  // (gh-ludics-526).
+  return { requestId, command, line: popped.line };
 }
 
 /** Resolve a queue request to a skill command or execute it programmatically.
@@ -2910,6 +3119,12 @@ export async function magStart(args: string[]): Promise<void> {
 
     // If Mag resumed running (e.g. manual turn) since settling, clear stale sentinel
     clearStaleSettled();
+
+    // Delivery-confirmation reconciliation (gh-ludics-526): confirm or re-queue
+    // a stale delivery sentinel. Kept here in addition to the in-function call
+    // in maybeFeedMagQueue, because maybeFeedMagQueue returns early on an empty
+    // queue and would otherwise never reconcile while the queue is drained.
+    reconcileLastDelivered();
 
     // Settled-aware queue feed: deliver one Mag-turn item if settled
     const fed = await maybeFeedMagQueue();
