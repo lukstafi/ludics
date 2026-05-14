@@ -5,13 +5,9 @@
 // - Unknown sessions are never harvested.
 // - Cleanup runs after 3 consecutive detached sweeps.
 
-import { existsSync, readdirSync } from "fs";
-import { basename, join } from "path";
 import { slotsCount } from "../config.ts";
 import { safeSyncOutput } from "../spawn.ts";
-import { readAllSlotJson, normalizeTaskId } from "../slots/json.ts";
-import { resolveProjectDir } from "../adapters/base.ts";
-import { findSessionByPrefixOrTask } from "../adapters/peer-sync.ts";
+import { readAllSlotJson } from "../slots/json.ts";
 import { readSlotState, serverStatus } from "../t3code/server.ts";
 import type { T3Snapshot } from "../t3code/types.ts";
 import { isoNow } from "../orchestration/util.ts";
@@ -29,29 +25,6 @@ interface SweepOptions {
   dryRun: boolean;
 }
 
-function resolveProjectDirForSlot(mode: SweepMode, slotPath: string, slotSession: string): string {
-  const candidates: string[] = [];
-  if (slotPath && slotPath !== "null") candidates.push(normalizeProjectDirForSweep(slotPath));
-
-  const resolved = resolveProjectDir(slotSession, false);
-  if (resolved) candidates.push(normalizeProjectDirForSweep(resolved));
-
-  const unique = Array.from(new Set(candidates.filter(Boolean)));
-  for (const candidate of unique) {
-    if (existsSync(join(candidate, ".agent-sessions"))) return candidate;
-  }
-  for (const candidate of unique) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return unique[0] ?? process.cwd();
-}
-
-function providerCleanupName(taskId: string | undefined, session: string): string | null {
-  if (taskId) return taskId;
-  if (session && session !== "null" && !/^\d+$/.test(session)) return session;
-  return null;
-}
-
 function collectAttachedKeys(): Set<string> {
   const slots = readAllSlotJson(slotsCount());
   const attached = new Set<string>();
@@ -60,36 +33,19 @@ function collectAttachedKeys(): Set<string> {
     const modeRaw = (data.mode ?? "").trim();
     if (!SWEEP_TARGET_MODES.has(modeRaw as SweepMode)) continue;
     const mode = modeRaw as SweepMode;
-    const taskId = normalizeTaskId(data.task);
-    const slotSession = (data.session ?? "").trim();
     const slotPath = (data.path ?? "").trim();
 
-    // t3code mode: use slot state files for thread tracking
-    if (mode === "t3code") {
-      const slotState = readSlotState(slot);
-      if (slotState) {
-        for (const thread of slotState.threads) {
-          const projectDir = normalizeProjectDirForSweep(thread.worktreePath ?? slotPath);
-          attached.add(buildKnownSessionKey(mode, projectDir, thread.threadId));
-        }
+    // t3code is the only swept mode: use slot state files for thread tracking.
+    const slotState = readSlotState(slot);
+    if (slotState) {
+      for (const thread of slotState.threads) {
+        const projectDir = normalizeProjectDirForSweep(thread.worktreePath ?? slotPath);
+        attached.add(buildKnownSessionKey(mode, projectDir, thread.threadId));
       }
-      continue;
     }
-
-    const projectDir = resolveProjectDirForSlot(mode, slotPath, slotSession);
-
-    const name = providerCleanupName(taskId, slotSession);
-    if (!name) continue;
-    attached.add(buildKnownSessionKey(mode, projectDir, name));
   }
 
   return attached;
-}
-
-function agentPrefixes(mode: SweepMode): string[] {
-  if (mode === "agent-claude") return ["claude-", "agent-claude-"];
-  if (mode === "agent-codex") return ["codex-", "agent-codex-"];
-  return [];
 }
 
 // Lazily cached t3code snapshot for sweep presence checks
@@ -106,34 +62,9 @@ async function getT3codeSnapshotForSweep(): Promise<T3Snapshot | null> {
 }
 
 function knownSessionStillPresent(record: KnownSessionRecord, t3codeSnapshot: T3Snapshot | null): boolean {
-  // t3code mode: check if the thread still exists in the snapshot
-  if (record.mode === "t3code") {
-    if (!t3codeSnapshot) return false;
-    return t3codeSnapshot.threads.some((t) => t.id === record.name && !t.deletedAt);
-  }
-
-  if (!existsSync(record.projectDir)) return false;
-
-  const prefixes = agentPrefixes(record.mode);
-  if (prefixes.length === 0) return false;
-  const byTask = findSessionByPrefixOrTask(record.projectDir, record.name, prefixes);
-  if (byTask) return true;
-
-  // Fallback: exact basename match if task lookup fails.
-  // Also check slot-qualified links (${taskId}-s${slot}.session).
-  const sessionsDir = join(record.projectDir, ".agent-sessions");
-  if (!existsSync(sessionsDir)) return false;
-  if (existsSync(join(sessionsDir, `${record.name}.session`))
-    || existsSync(join(sessionsDir, basename(record.name) + ".session"))) return true;
-  // Check for slot-qualified session links
-  try {
-    const base = basename(record.name);
-    for (const entry of readdirSync(sessionsDir)) {
-      if (entry.startsWith(`${base}-s`) && entry.endsWith(".session")) return true;
-      if (entry.startsWith(`${record.name}-s`) && entry.endsWith(".session")) return true;
-    }
-  } catch { /* ignore */ }
-  return false;
+  // t3code is the only swept mode: check if the thread still exists in the snapshot.
+  if (!t3codeSnapshot) return false;
+  return t3codeSnapshot.threads.some((t) => t.id === record.name && !t.deletedAt);
 }
 
 function runCleanup(record: KnownSessionRecord): { ok: boolean; detail: string } {

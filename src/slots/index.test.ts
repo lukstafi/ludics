@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { hostname as osHostname, tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext } from "./index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS } from "./index.ts";
+import { hasStash, writeStash } from "./preempt.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
 import { getIntentForDashboard, clearIntent } from "../cluster-http.ts";
 import { heartbeatsDir as getHeartbeatsDir } from "../cluster.ts";
-import { writeSlotJson, readSlotJson, emptySlotData } from "./json.ts";
+import { writeSlotJson, readSlotJson, emptySlotData, slotJsonDir } from "./json.ts";
 
 setDefaultTimeout(15_000);
 
@@ -937,6 +938,220 @@ slot: 1
 
     const data = readSlotJson(1, harness);
     expect(data.liveness).toBe("interrupted");
+  });
+});
+
+describe("assign-time adapter validation (gh-ludics-524)", () => {
+  test("validateAssignAdapter rejects a phantom adapter, naming the value and canonical set (AC1)", () => {
+    // Invariant: a mode outside {tmux,t3code,manual} cannot reach slot state.
+    // Would fail if the allow-list widened or the error dropped the set.
+    expect(() => validateAssignAdapter("agent-pair-codex")).toThrow(
+      "invalid adapter: agent-pair-codex (use: tmux, t3code, manual)",
+    );
+    expect(() => validateAssignAdapter("agent-claude")).toThrow("invalid adapter: agent-claude");
+    expect(() => validateAssignAdapter("claude-ai")).toThrow("invalid adapter: claude-ai");
+  });
+
+  test("validateAssignAdapter accepts each canonical adapter (AC3)", () => {
+    // Positive control for the AC1 guard: the three canonical modes must pass.
+    expect(VALID_ASSIGN_ADAPTERS).toEqual(["tmux", "t3code", "manual"]);
+    for (const adapter of VALID_ASSIGN_ADAPTERS) {
+      expect(() => validateAssignAdapter(adapter)).not.toThrow();
+    }
+  });
+
+  test("slotAssign rejects a phantom adapter before any slot write (AC1 + AC2)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-phantom-assign", "Phantom assign");
+
+    const slotFile = join(slotJsonDir(harness), "slot-1.json");
+    const taskFile = join(tasksDir, "task-phantom-assign.md");
+    const slotBefore = readFileSync(slotFile, "utf-8");
+    const taskBefore = readFileSync(taskFile, "utf-8");
+
+    // Invariant: rejection is atomic — slot JSON and task frontmatter are
+    // byte-identical afterwards (no mode write, no status flip).
+    await expect(slotAssign(1, "task-phantom-assign", "agent-pair-codex")).rejects.toThrow(
+      "invalid adapter: agent-pair-codex",
+    );
+    expect(readFileSync(slotFile, "utf-8")).toBe(slotBefore);
+    expect(readFileSync(taskFile, "utf-8")).toBe(taskBefore);
+  });
+
+  test("slotAssign accepts each canonical adapter and writes the expected mode (AC3)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    // Positive control per canonical adapter, plus the no-`-a` default.
+    for (const adapter of ["tmux", "t3code", "manual"] as const) {
+      writeSlotJson(1, emptySlotData(1), harness);
+      writeSlotJson(2, emptySlotData(2), harness);
+      writeTask(tasksDir, `task-ok-${adapter}`, `OK ${adapter}`);
+      await slotAssign(1, `task-ok-${adapter}`, adapter);
+      expect(readSlotJson(1, harness).mode).toBe(adapter);
+    }
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-ok-default", "OK default");
+    await slotAssign(1, "task-ok-default"); // no adapter arg → "manual"
+    expect(readSlotJson(1, harness).mode).toBe("manual");
+  });
+
+  test("runSlot assign rejects a phantom adapter — no interrupted marker created (AC1 end-to-end)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-phantom-cli", "Phantom CLI");
+
+    await expect(runSlot(["1", "assign", "task-phantom-cli", "-a", "agent-claude"])).rejects.toThrow(
+      "invalid adapter: agent-claude",
+    );
+    // Invariant: the slot stays empty — the failed assign never reached
+    // slot start, so no `liveness: interrupted` marker can be left behind.
+    const data = readSlotJson(1, harness);
+    expect(data.process).toBe("(empty)");
+    expect(data.liveness).toBeNull();
+  });
+
+  test("slotPreempt rejects a phantom adapter on a non-empty slot before any side effect (AC2)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-occupant", "Occupant");
+    writeTask(tasksDir, "task-priority", "Priority");
+    // Occupy slot 1 so slotPreempt takes the non-empty (stash) branch.
+    await slotAssign(1, "task-occupant", "manual");
+
+    const slotFile = join(slotJsonDir(harness), "slot-1.json");
+    const occupantFile = join(tasksDir, "task-occupant.md");
+    const slotBefore = readFileSync(slotFile, "utf-8");
+    const occupantBefore = readFileSync(occupantFile, "utf-8");
+
+    // Invariant: on a non-empty slot the validator must fire before
+    // writeStash + the old task's `preempted` flip. If the guard were only
+    // in slotAssign, the stash would already exist and the occupant's
+    // frontmatter would already say `status: preempted`.
+    await expect(slotPreempt(1, "task-priority", "agent-pair-codex")).rejects.toThrow(
+      "invalid adapter: agent-pair-codex",
+    );
+    expect(hasStash(1)).toBe(false);
+    expect(readFileSync(slotFile, "utf-8")).toBe(slotBefore);
+    expect(readFileSync(occupantFile, "utf-8")).toBe(occupantBefore);
+  });
+
+  test("slotRestore coerces a legacy phantom previousMode to manual instead of hard-failing (gh-ludics-524 PR #527 P1)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    // A stash captured before assign-time validation existed, carrying a
+    // now-invalid adapter mode. Without the slotRestore coercion this throws
+    // "invalid adapter: agent-claude" and the stash is unrecoverable.
+    writeStash({
+      slotNum: 1,
+      previousTask: "null",
+      previousProcess: "Stranded work",
+      previousMode: "agent-claude",
+      previousSession: "null",
+      previousPath: "null",
+      previousStarted: "2026-05-14T06:57Z",
+      previousAdapterArgs: "null",
+      preemptedAt: "2026-05-14T07:00Z",
+      preemptingTask: "task-priority",
+    });
+
+    // Invariant: a pre-validation stash with a phantom previousMode still
+    // restores — the restore coerces it to "manual" rather than rejecting.
+    // Would fail with "invalid adapter: agent-claude" if the coercion were absent.
+    await slotRestore(1);
+    const data = readSlotJson(1, harness);
+    expect(data.process).toBe("Stranded work");
+    expect(data.mode).toBe("manual");
+    expect(hasStash(1)).toBe(false); // stash consumed
+  });
+});
+
+describe("slotReset — clear interrupted/escalated liveness (gh-ludics-524 AC7)", () => {
+  test("clears interrupted liveness and sessionStarted, preserving task/process/mode", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-reset-1", "Reset test");
+    void slotAssign(1, "task-reset-1", "tmux");
+    markSlotSetupFailed(1, "tmux session creation failed");
+    expect(readSlotJson(1, harness).liveness).toBe("interrupted");
+
+    slotReset(1);
+
+    // Invariant: liveness/sessionStarted are cleared while the assignment
+    // (task/process/mode) is preserved — would fail if reset cleared the slot.
+    const data = readSlotJson(1, harness);
+    expect(data.liveness).toBeNull();
+    expect(data.sessionStarted).toBeNull();
+    expect(data.task).toBe("task-reset-1");
+    expect(data.process).toBe("Reset test");
+    expect(data.mode).toBe("tmux");
+  });
+
+  test("runSlot reset dispatches to slotReset", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-reset-cli", "Reset CLI");
+    void slotAssign(1, "task-reset-cli", "tmux");
+    markSlotSetupFailed(1, "boom");
+
+    await runSlot(["1", "reset"]);
+    expect(readSlotJson(1, harness).liveness).toBeNull();
+  });
+
+  test("clears escalated liveness and works for a stale phantom mode (no adapter dispatch)", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(2, emptySlotData(2), harness);
+    // Hand-built slot file with a phantom mode and escalated liveness — the
+    // exact stranded state slotReset must recover without touching the
+    // adapter registry (a registry lookup on "agent-pair-codex" would throw).
+    const stranded = emptySlotData(1);
+    stranded.process = "Stranded";
+    stranded.task = "task-stranded";
+    stranded.mode = "agent-pair-codex";
+    stranded.liveness = "escalated";
+    stranded.sessionStarted = "2026-05-14T06:57Z";
+    writeSlotJson(1, stranded, harness);
+
+    expect(() => slotReset(1)).not.toThrow();
+    const data = readSlotJson(1, harness);
+    expect(data.liveness).toBeNull();
+    expect(data.sessionStarted).toBeNull();
+    expect(data.mode).toBe("agent-pair-codex"); // mode is left as-is; only liveness is reset
+  });
+
+  test("is no-op-safe on an already-clean assigned slot", () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-reset-clean", "Clean");
+    void slotAssign(1, "task-reset-clean", "manual");
+
+    expect(() => slotReset(1)).not.toThrow();
+    const data = readSlotJson(1, harness);
+    expect(data.liveness).toBeNull();
+    expect(data.task).toBe("task-reset-clean");
   });
 });
 

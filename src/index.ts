@@ -108,7 +108,7 @@ Commands:
   slots                        Show all slots
   slots refresh                Refresh slot state from adapters
   slot <n>                     Show slot n
-  slot <n> assign <task|desc> [-a adapter] [-s session] [-p path] [-A "adapter args"] [--machine <name>]
+  slot <n> assign <task|desc> [-a tmux|t3code|manual] [-s session] [-p path] [-A "adapter args"] [--machine <name>]
                                Assign a task to slot n. In a federated setup
                                (cluster.machines configured), --machine defaults
                                to the current node (or the leader if the current
@@ -120,9 +120,10 @@ Commands:
   slot <n> stop                Stop agent session
   slot <n> resume              Resume orchestrated session from persisted state (crash recovery)
   slot <n> note "text"         Add runtime note to slot n
-  slot <n> preempt <task-id> [-a adapter] [-s session] [-p path] [-A "adapter args"]
+  slot <n> preempt <task-id> [-a tmux|t3code|manual] [-s session] [-p path] [-A "adapter args"]
                                Preempt slot for priority task (stashes current work)
   slot <n> restore             Restore previously preempted work to slot
+  slot <n> reset               Clear interrupted/escalated liveness (no process kill)
 
   tasks sync                   Aggregate tasks, convert to task files, and refresh existing GitHub task metadata
   tasks list                   Show unified task list

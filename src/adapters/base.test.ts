@@ -18,6 +18,8 @@ import {
   isGitWorktree,
   resolveProjectDir,
 } from "./base.ts";
+import { ADAPTER_NAMES, runAdapterAction, readAdapterState } from "./index.ts";
+import type { AdapterContext } from "./types.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-base");
 
@@ -301,5 +303,45 @@ describe("adapterStateDir (harnessDir parametrization)", () => {
     const dir = ensureAdapterStateDir("manual");
     expect(dir).toBe(join(DECOY, "manual"));
     expect(existsSync(dir)).toBe(true);
+  });
+});
+
+describe("adapter registry — legacy agent adapters removed, bookmarks retained (gh-ludics-524)", () => {
+  function ctxFor(mode: string): AdapterContext {
+    return {
+      slot: 1, mode, session: "", path: TMP, taskId: undefined,
+      adapterArgs: "", process: "test", harnessDir: TMP, stateRepoDir: TMP,
+    };
+  }
+
+  test("agent-claude / agent-codex are de-registered (AC4)", async () => {
+    // Invariant: the dropped adapters are gone from the registry — a start
+    // dispatch hits the unknown-adapter path, not a stale module. Would fail
+    // if the registry entries (or the module files) were left behind.
+    expect(ADAPTER_NAMES).not.toContain("agent-claude");
+    expect(ADAPTER_NAMES).not.toContain("agent-codex");
+    await expect(runAdapterAction("start", ctxFor("agent-claude"))).rejects.toThrow(
+      "adapter not found: agent-claude",
+    );
+    await expect(runAdapterAction("start", ctxFor("agent-codex"))).rejects.toThrow(
+      "adapter not found: agent-codex",
+    );
+  });
+
+  test("claude-ai / chatgpt-com stay registered but start surfaces NOT IMPLEMENTED YET (AC5)", async () => {
+    // Invariant: bookmark adapters remain in the registry (so readAdapterState
+    // does not throw "adapter not found" for legacy bookmark slots), yet their
+    // start is an explicit NOT IMPLEMENTED YET rather than a generic failure.
+    expect(ADAPTER_NAMES).toContain("claude-ai");
+    expect(ADAPTER_NAMES).toContain("chatgpt-com");
+    await expect(runAdapterAction("start", ctxFor("claude-ai"))).rejects.toThrow(
+      "claude-ai: NOT IMPLEMENTED YET",
+    );
+    await expect(runAdapterAction("start", ctxFor("chatgpt-com"))).rejects.toThrow(
+      "chatgpt-com: NOT IMPLEMENTED YET",
+    );
+    // readState still reachable (not "adapter not found") — returns null/"" with no bookmarks.
+    expect(await readAdapterState(ctxFor("claude-ai"))).toBeFalsy();
+    expect(await readAdapterState(ctxFor("chatgpt-com"))).toBeFalsy();
   });
 });
