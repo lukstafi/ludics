@@ -32,6 +32,22 @@ export const VALID_CLEAR_STATUSES = ["ready", "in-progress", "done", "abandoned"
 export const CLEAR_STATUS_READY = "ready" as const;
 export const CLEAR_STATUS_DONE = "done" as const;
 
+/** Canonical public set of adapter modes assignable via `-a` / `slotAssign`.
+ *  Distinct from the adapter *registry* (`ADAPTER_NAMES`): legacy/bookmark
+ *  adapters may stay registered for state reads without being assignable. */
+export const VALID_ASSIGN_ADAPTERS = ["tmux", "t3code", "manual"] as const;
+
+/** Reject any adapter mode outside the canonical assign set. Shared by the
+ *  CLI `assign`/`preempt` parsers and the `slotAssign`/`slotPreempt` funnels
+ *  so every entry point gets the same atomic, pre-side-effect rejection. */
+export function validateAssignAdapter(adapter: string): void {
+  if (!(VALID_ASSIGN_ADAPTERS as readonly string[]).includes(adapter)) {
+    throw new Error(
+      `invalid adapter: ${adapter} (use: ${VALID_ASSIGN_ADAPTERS.join(", ")})`,
+    );
+  }
+}
+
 // Worker-side override: when set, readSlot/readAllSlots uses this data instead of
 // reading from the local harness files. Set by processSlotIntents before executing
 // worker intents so that slot operations use fresh controller-fetched state.
@@ -326,6 +342,9 @@ export async function slotAssign(
   ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
+  // Reject phantom adapters before any side effect (no slot write, no
+  // prior-slot cleanup, no status flip, no interrupted-marker clearing).
+  validateAssignAdapter(adapter);
 
   const started = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
 
@@ -360,14 +379,10 @@ export async function slotAssign(
   // Session handling
   if (!session) {
     switch (adapter) {
-      case "agent-claude":
-      case "agent-codex":
-      case "manual":
-        session = String(slotNum);
-        break;
       case "t3code":
         session = "";
         break;
+      case "manual":
       default:
         session = String(slotNum);
         break;
@@ -610,6 +625,39 @@ export function markSlotSetupFailed(slotNum: number, error: string): void {
 }
 
 /**
+ * Clear a slot's interrupted/escalated liveness marker.
+ *
+ * Recovery verb for slots stranded by a failed setup (`markSlotSetupFailed`)
+ * or an agent hand-raise. Unlike `slotResume`, this performs NO adapter
+ * dispatch, NO process kill, and NO task-status flip — so it works for any
+ * `mode` value, including phantom adapters left in stale slot files. It only
+ * resets `liveness` and `sessionStarted`; the slot stays assigned.
+ */
+export function slotReset(slotNum: number): void {
+  // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
+  ensureSlotsDir();
+  const count = slotsCount();
+  validateRange(slotNum, count);
+
+  const data = readSlot(slotNum);
+  if (data.process === "(empty)") return; // no-op-safe on an unassigned slot
+
+  setSlotLivenessOnData(data, null);
+  data.sessionStarted = null;
+  writeSlotJson(slotNum, data);
+
+  journalAppend("slot", `Slot ${slotNum} reset (liveness cleared)`);
+  emitEvent({
+    event_type: "slot_reset",
+    source: "cli",
+    scope: "slot",
+    slot: slotNum,
+    task: data.task ?? undefined,
+  });
+  stateMarkDirty();
+}
+
+/**
  * Mark a task as done directly (without a slot clear).
  * Used when a task has no slot assignment but needs to be completed,
  * e.g. from `ludics mag completed <proposal-name>`.
@@ -685,6 +733,9 @@ export async function slotPreempt(
   ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
+  // Reject phantom adapters before the stash write / `preempted` status flip
+  // on a non-empty slot — `slotAssign`'s own validator runs too late here.
+  validateAssignAdapter(adapter);
 
   const data = readSlot(slotNum);
   const currentProcess = data.process;
@@ -1500,6 +1551,11 @@ export async function runSlot(args: string[]): Promise<void> {
         }
       }
 
+      // Fast-fail on phantom adapters before the orchestration-flag guard so
+      // `-a agent-pair-codex --pair` gets the precise canonical-adapter error
+      // rather than the less-specific "--pair requires t3code or tmux" one.
+      validateAssignAdapter(adapter);
+
       if (hasDirectOrchFlags && adapter !== "t3code" && adapter !== "tmux") {
         throw new Error(
           `--pair/--solo/--coder/--reviewer/--plan flags require adapter "t3code" or "tmux" (got "${adapter}")`
@@ -1595,6 +1651,10 @@ export async function runSlot(args: string[]): Promise<void> {
       await slotSetMode(slotNum, modeVal);
       break;
     }
+
+    case "reset":
+      slotReset(slotNum);
+      break;
 
     case "preempt": {
       const preemptTask = args[2];
