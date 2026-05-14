@@ -9,7 +9,7 @@ ludics is a lightweight personal AI infrastructure — a harness for humans work
 ## Key Concepts
 
 - **Slots**: Like CPUs, not memory. Each slot runs one process, holds runtime state, has no persistent identity. Supports preemption and mode toggle.
-- **Adapters**: Thin integrations with different agent systems (t3code, Claude Code via tmux, Codex, etc.). The `t3code` adapter supports orchestrated multi-agent workflows; tmux-based adapters (`agent-claude`, `agent-codex`) are currently primary due to t3code stability issues, but t3code remains the target as its stability improves.
+- **Adapters**: Thin integrations with different agent systems. The `t3code` adapter supports orchestrated multi-agent workflows; the `tmux` adapter is currently primary due to t3code stability issues, but t3code remains the target as its stability improves. Assignable adapter modes are `tmux`, `t3code`, and `manual`.
 - **Orchestration**: Phase-driven multi-agent workflow engine (21 phases) — pair mode (coder + reviewer), hierarchical duo mode (two paired slots with swapped roles), cross-slot merge coordination.
 - **Mag**: Persistent Claude Code session (Opus) providing autonomous strategic coordination. Skills use orchestrator/worker pattern for context isolation.
 - **Federation**: Multi-machine coordination with seniority-based leader election. Slot intent files for cross-machine dispatch (replaced SSH).
@@ -91,4 +91,4 @@ When making changes:
 - Never store user data in this repo — all state goes to the user's private repo
 - Keep dependencies minimal
 - Prefer reading state from existing sources (like `.peer-sync/` orchestration data) over creating new state
-- tmux-based adapters (`agent-claude`, `agent-codex`) are currently used for most orchestrated workflows; t3code adapter has richer functionality but is pending stability improvements. Both paths are maintained.
+- the `tmux` adapter is currently used for most orchestrated workflows; the t3code adapter has richer functionality but is pending stability improvements. Both paths are maintained.

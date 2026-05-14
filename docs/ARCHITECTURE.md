@@ -398,7 +398,7 @@ Escalation: Enter key → "Continue." message → full re-dispatch → force-set
 
 ### t3code Integration
 
-t3code is a Web GUI for AI coding agents (Node.js + React + Electron, Effect-TS, event-sourced with SQLite, WebSocket JSON-RPC). ludics integrates with t3code as an alternative runtime layer for spawning and managing AI agent sessions. Currently, tmux-based adapters (`agent-claude`, `agent-codex`) are used for most orchestrated work due to t3code stability issues; t3code remains the target runtime as its stability and observability improve.
+t3code is a Web GUI for AI coding agents (Node.js + React + Electron, Effect-TS, event-sourced with SQLite, WebSocket JSON-RPC). ludics integrates with t3code as an alternative runtime layer for spawning and managing AI agent sessions. Currently, the `tmux` adapter is used for most orchestrated work due to t3code stability issues; t3code remains the target runtime as its stability and observability improve.
 
 **Architecture** (`src/t3code/`, ~1K lines):
 
@@ -463,7 +463,7 @@ ludics defaults to **6 slots** (configurable in config.yaml) based on cognitive 
 ├─────────────────────────────────────────────────────────────┤
 │  Process:     What's currently running (task/project)       │
 │  Task:        Task ID assigned to this slot                 │
-│  Mode:        How it's running (t3code, agent-claude...)    │
+│  Mode:        How it's running (t3code, tmux, manual)       │
 │  Session:     Named session identifier                      │
 │  Path:        Working directory path                        │
 │  Started:     Timestamp when assigned                       │
@@ -669,10 +669,9 @@ interface AdapterContext {
 | Adapter | What it manages | State source |
 |---------|-----------------|--------------|
 | `t3code` | Multi-agent orchestration or single-thread coding via t3code | t3code WebSocket + orchestration state |
-| `agent-claude` | Claude Code (tmux-based, currently primary for orchestrated work) | `.peer-sync/` + tmux |
-| `agent-codex` | Codex (tmux-based, currently primary for orchestrated work) | `.peer-sync/` + tmux |
-| `claude-ai` | Browser Claude conversation | URL bookmark |
-| `chatgpt-com` | Browser ChatGPT conversation | URL bookmark |
+| `tmux` | Agent sessions (solo or orchestrated) managed in tmux, currently primary for orchestrated work | `.peer-sync/` + tmux |
+| `claude-ai` | Browser Claude conversation (state reads only) | URL bookmark |
+| `chatgpt-com` | Browser ChatGPT conversation (state reads only) | URL bookmark |
 | `manual` | Human, no agent | Status file + notes |
 
 **Shared utilities** (`src/adapters/base.ts`):
@@ -759,7 +758,7 @@ projects:
 adapters:
   t3code:
     enabled: true
-  agent-claude:
+  tmux:
     enabled: true
 
 mag:
@@ -899,9 +898,7 @@ ludics/
 │   │   ├── types.ts                  # Adapter interface
 │   │   ├── base.ts                   # Shared utilities (state I/O, git)
 │   │   ├── t3code.ts                 # t3code adapter (~1.1K lines) — orchestrated + single-thread
-│   │   ├── agent-claude.ts           # Claude Code (SSH, tmux)
-│   │   ├── agent-codex.ts            # Codex (SSH, tmux)
-│   │   ├── agent-session.ts          # Shared agent session logic
+│   │   ├── tmux-adapter.ts           # tmux adapter — solo + orchestrated agent sessions
 │   │   ├── peer-sync.ts              # .peer-sync/ file reading
 │   │   ├── task-launch.ts            # Shared task-launch logic
 │   │   ├── claude-ai.ts              # Browser Claude
@@ -1089,15 +1086,16 @@ ludics provides a web dashboard for at-a-glance status monitoring (`src/dashboar
 ludics slots                   # Show all slots
 ludics slots refresh           # Refresh slot state from adapters
 ludics slot <n>                # Show slot n
-ludics slot <n> assign <task|desc> [-a adapter] [-s session] [-p path]
+ludics slot <n> assign <task|desc> [-a tmux|t3code|manual] [-s session] [-p path]
 ludics slot <n> clear [in-progress|done|abandoned]
 ludics slot <n> start          # Start fresh agent session (fails if recoverable state for same task)
 ludics slot <n> stop [--preserve-state]  # Stop agent session (preserve state for mode toggle)
 ludics slot <n> resume         # Resume orchestrated t3code session (crash recovery)
 ludics slot <n> mode <mode>    # Toggle adapter mode (e.g., manual ↔ t3code) with preserveState
 ludics slot <n> note "text"    # Add runtime note
-ludics slot <n> preempt <task-id> [-a adapter] [-s session] [-p path]
+ludics slot <n> preempt <task-id> [-a tmux|t3code|manual] [-s session] [-p path]
 ludics slot <n> restore        # Restore previously preempted work
+ludics slot <n> reset          # Clear interrupted/escalated liveness (no process kill)
 
 # Task management
 ludics tasks sync              # Aggregate tasks, convert files, refresh existing GitHub task metadata

@@ -182,9 +182,9 @@ mag:
   enabled: true
 
 adapters:
-  agent-duo:
+  t3code:
     enabled: true
-  agent-claude:
+  tmux:
     enabled: true
   manual:
     enabled: true
@@ -212,8 +212,9 @@ notifications:
 
 ### Adapter Args Layering
 
-For orchestrated adapters (`agent-duo`, `agent-pair-codex`, `agent-pair-claude`),
-ludics builds final CLI args from multiple sources in this order:
+For orchestrated work (the `t3code` or `tmux` adapter plus orchestration flags
+such as `--pair` / `--duo`), ludics builds final CLI args from multiple sources
+in this order:
 
 1. `adapters.<adapter>.default_args`
 2. `projects[].adapter_profiles.<adapter>`
@@ -222,11 +223,11 @@ ludics builds final CLI args from multiple sources in this order:
 
 Later layers are appended last, so they override earlier options in typical CLI parsing.
 
-#### 1) Global defaults for `agent-duo`
+#### 1) Global defaults for `t3code`
 
 ```yaml
 adapters:
-  agent-duo:
+  t3code:
     enabled: true
     default_args:
       - --clarify
@@ -235,7 +236,7 @@ adapters:
       - "5400"
 ```
 
-#### 2) Per-project profile for `agent-pair-codex`
+#### 2) Per-project profile for `t3code`
 
 ```yaml
 projects:
@@ -243,7 +244,7 @@ projects:
     repo: your-username/my-app
     issues: true
     adapter_profiles:
-      agent-pair-codex:
+      t3code:
         args:
           - --clarify
           - --pushback
@@ -282,7 +283,7 @@ adapter_args: --clarify --plan --work-timeout 7200
 Arg parsing now supports shell-style quotes. This preserves values with spaces:
 
 ```bash
-ludics slot 1 assign task-123 -a agent-duo --adapter-args '--claude-flags "--allowedTools Bash,Read" --codex-flags "--provider openai"'
+ludics slot 1 assign task-123 -a tmux --adapter-args '--claude-flags "--allowedTools Bash,Read" --codex-flags "--provider openai"'
 ```
 
 Tip: for config and task files, prefer array form for maximum clarity and fewer quoting pitfalls.
@@ -331,6 +332,7 @@ ludics slot <n> start          # Start fresh agent session (use 'resume' for cra
 ludics slot <n> stop           # Stop agent session
 ludics slot <n> resume         # Resume crashed orchestrated session from persisted state
 ludics slot <n> note "text"    # Add runtime note to slot n
+ludics slot <n> reset          # Clear interrupted/escalated liveness (no process kill)
 ```
 
 ### Orchestration
@@ -488,15 +490,16 @@ ludics help                    # Show help
 
 Adapters are thin integrations that translate external state into slot format:
 
+Only `tmux`, `t3code`, and `manual` are assignable via `-a` (see `slot <n> assign`).
+`claude-ai` and `chatgpt-com` stay registered for legacy bookmark-slot state reads.
+
 | Adapter | Description |
 |---------|-------------|
-| `agent-duo` | Reads `.peer-sync/` state from agent-duo sessions |
-| `agent-solo` | Single-agent mode for agent-duo |
-| `agent-claude` | Inspects tmux sessions running Claude Code |
-| `claude-ai` | Treats bookmarked claude.ai URLs as sessions |
-| `chatgpt-com` | Tracks ChatGPT browser sessions |
-| `agent-codex` | OpenAI Codex CLI integration |
+| `t3code` | Multi-agent orchestration or single-thread coding via t3code |
+| `tmux` | Agent sessions (solo or orchestrated) managed in tmux |
 | `manual` | Track human work without an agent |
+| `claude-ai` | Treats bookmarked claude.ai URLs as sessions (state reads only) |
+| `chatgpt-com` | Tracks ChatGPT browser sessions (state reads only) |
 
 ## Triggers
 
