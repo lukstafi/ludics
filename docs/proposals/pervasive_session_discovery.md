@@ -1,6 +1,6 @@
 # Pervasive Session Discovery: Implementation Handoff
 
-*Design document, 2026-02-09. See also: [codex_app_ideas.md](codex_app_ideas.md)*
+*Design document, 2026-02-09.*
 
 ## Motivation
 

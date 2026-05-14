@@ -246,7 +246,6 @@ The following files contain `inbox` or `read-inbox` references but do **not** re
   low-priority to update
 - `docs/proposal-dashboard-improvements.md` — mentions "inbox" in a UI filter list; unrelated
   to the inbox.md file; leave as-is
-- `docs/codex_app_ideas.md` — uses "inbox" as a generic UX term; leave as-is
 - `templates/harness/CLAUDE.md` — says `mag/` contains "inbox"; could be updated but is a minor
   cosmetic change; defer
 - `skills/ludics-briefing.md` lines 19 and 72 — mentions "inbox" in context of briefing context
