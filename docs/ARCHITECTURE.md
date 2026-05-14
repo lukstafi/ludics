@@ -1054,7 +1054,7 @@ ludics provides a web dashboard for at-a-glance status monitoring (`src/dashboar
 │   Slot 1     │   Slot 2     │   Slot 3     │  Ready Queue   │
 │  ■ Active    │  □ Empty     │  ■ Active    │  1. task-101   │
 │  task-042    │              │  task-089    │  2. task-067   │
-│  t3code      │              │  agent-claude│                │
+│  t3code      │              │  tmux        │                │
 ├──────────────┼──────────────┼──────────────┤  Project Stats │
 │   Slot 4     │   Slot 5     │   Slot 6     │                │
 │  □ Empty     │  □ Empty     │  □ Empty     │  Notifications │

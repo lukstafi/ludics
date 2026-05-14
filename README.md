@@ -9,7 +9,7 @@ Inspired by Daniel Miessler's Personal AI Infrastructure, by Steve Yegge's Gas T
 - **Slots**: 6 ephemeral "CPUs" for active work, not memory or identity.
 - **Task index**: unified task list from GitHub issues and README TODOs.
 - **Flow engine**: priority/dependency-based views (ready, blocked, critical, impact).
-- **Adapters**: thin integrations with existing agent setups (agent-duo, Claude Code, claude.ai, manual).
+- **Adapters**: thin integrations with existing agent setups (tmux, t3code, claude.ai, manual).
 - **Notifications**: ntfy.sh integration — outgoing (strategic), incoming (from phone), agents (operational).
 - **Triggers**: launchd/systemd automation for briefings and syncs.
 
