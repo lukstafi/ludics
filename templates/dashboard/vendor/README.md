@@ -17,12 +17,12 @@ http://localhost:7678/ and copied verbatim by `dashboardInstall` in
 ## purify.es.js
 
 - **Package**: dompurify
-- **Version**: 3.4.1 (pinned transitively via `isomorphic-dompurify@3.10.0`)
+- **Version**: 3.4.3 (pinned transitively via `isomorphic-dompurify@3.10.0`)
 - **License**: Apache-2.0 OR MPL-2.0 (header preserved at top of file)
 - **Upstream**: https://github.com/cure53/DOMPurify
 - **Source**: copied from `node_modules/dompurify/dist/purify.es.mjs`.
   Equivalent CDN URL:
-  https://cdn.jsdelivr.net/npm/dompurify@3.4.1/dist/purify.es.mjs
+  https://cdn.jsdelivr.net/npm/dompurify@3.4.3/dist/purify.es.mjs
 
 ## To bump
 
