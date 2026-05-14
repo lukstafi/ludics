@@ -121,6 +121,42 @@ describe("deliverPoppedSkill — sentinel write (AC 1)", () => {
   });
 });
 
+// --- Tier-3 fire-and-forget: programmatic items skip the sentinel ---
+//
+// Tier-3 items (action: message, /compact) never write a result JSON, so
+// recording a delivery sentinel for them wedges deliveryGateBlocked for the
+// full timeout and then re-queues a spurious duplicate. queuePopSkill marks
+// them expectsResult=false and deliverPoppedSkill must not write the sentinel.
+
+describe("deliverPoppedSkill — Tier-3 items skip the sentinel", () => {
+  test("expectsResult:false → successful send writes NO sentinel but still emits mag_queue_feed", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    const line = JSON.stringify({ id: "req-MSG", action: "message", content: "hello" });
+
+    const sent = deliverPoppedSkill(
+      { requestId: "req-MSG", command: "hello", line, expectsResult: false },
+      { send: () => true },
+    );
+
+    expect(sent).toBe(true);
+    expect(existsSync(lastDeliveredFile())).toBe(false);
+    expect(readEvents().some((e) => e.event_type === "mag_queue_feed")).toBe(true);
+  });
+
+  test("expectsResult:true → sentinel still written (Tier-2 unchanged)", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    const line = JSON.stringify({ id: "req-SKILL", action: "learn" });
+
+    const sent = deliverPoppedSkill(
+      { requestId: "req-SKILL", command: "/ludics-learn", line, expectsResult: true },
+      { send: () => true },
+    );
+
+    expect(sent).toBe(true);
+    expect(existsSync(lastDeliveredFile())).toBe(true);
+  });
+});
+
 // --- AC 7: queuePopSkill exposes the requestId captured at pop time ---
 
 describe("queuePopSkill — requestId exposure (AC 7)", () => {
@@ -136,6 +172,18 @@ describe("queuePopSkill — requestId exposure (AC 7)", () => {
     // The id must be captured at pop time, not re-read later — it is also the
     // value written to mag/current-request-id.
     expect(readFileSync(currentRequestIdFile(), "utf-8")).toBe("req-POP-1");
+  });
+
+  test("expectsResult is true for a registered skill action, false for a Tier-3 message", async () => {
+    const { queuePopSkill } = await import("./mag.ts");
+
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-POP-SKILL", action: "learn" }) + "\n");
+    const skill = await queuePopSkill();
+    expect(skill!.expectsResult).toBe(true);
+
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-POP-MSG", action: "message", content: "hi" }) + "\n");
+    const msg = await queuePopSkill();
+    expect(msg!.expectsResult).toBe(false);
   });
 });
 

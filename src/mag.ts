@@ -509,23 +509,33 @@ export function readInFlightDelivery(): LastDeliveredSentinel | null {
  * `mag_queue_feed`; on a failed send, re-queue through the shared retry-cap
  * path without writing a sentinel. Returns whether the send succeeded.
  *
+ * Only Tier-2 skill items (`expectsResult`) write the sentinel: they are the
+ * ones that produce a result JSON the reconciliation pass can confirm against.
+ * Tier-3 programmatic items (`action: message`, `/compact`) never write a
+ * result file — recording a sentinel for them wedges `deliveryGateBlocked`
+ * for DELIVERY_CONFIRM_TIMEOUT_MS and then re-queues a spurious duplicate.
+ * `expectsResult` defaults to true when absent so existing callers/tests keep
+ * the confirmed-delivery behavior.
+ *
  * Exported for tests; `send` is injectable to exercise both paths without
  * tmux, and `nowMs` pins the `deliveredAt` timestamp deterministically.
  */
 export function deliverPoppedSkill(
-  popped: { requestId: string; command: string; line: string },
+  popped: { requestId: string; command: string; line: string; expectsResult?: boolean },
   opts: { send?: (session: string, cmd: string) => boolean; nowMs?: number } = {},
 ): boolean {
   const send = opts.send ?? triggerSkill;
   const delivered = applyQueueFeedPrefix(popped.line, popped.command);
   const sent = send(MAG_SESSION_NAME, delivered);
   if (sent) {
-    writeLastDelivered({
-      requestId: popped.requestId,
-      command: popped.command,
-      line: popped.line,
-      deliveredAt: new Date(opts.nowMs ?? Date.now()).toISOString().replace(/\.\d{3}Z$/, "Z"),
-    });
+    if (popped.expectsResult !== false) {
+      writeLastDelivered({
+        requestId: popped.requestId,
+        command: popped.command,
+        line: popped.line,
+        deliveredAt: new Date(opts.nowMs ?? Date.now()).toISOString().replace(/\.\d{3}Z$/, "Z"),
+      });
+    }
     emitEvent({ event_type: "mag_queue_feed", source: "keepalive", scope: "mag", message: `delivered: ${delivered}` });
   } else {
     requeueWithRetryCap(popped.line, popped.command, "send-failed");
@@ -1447,7 +1457,7 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
 
 /** @internal Exported for tests — pops the queue head, resolves it to a skill
  *  command, and exposes the request id captured at pop time (gh-ludics-526). */
-export async function queuePopSkill(): Promise<{ requestId: string; command: string; line: string } | null> {
+export async function queuePopSkill(): Promise<{ requestId: string; command: string; line: string; expectsResult: boolean } | null> {
   const popped = queuePopExpected();
   if (popped.status !== "popped") return null;
 
@@ -1466,10 +1476,14 @@ export async function queuePopSkill(): Promise<{ requestId: string; command: str
 
   const command = await resolveQueueRequestCommand(request, true);
   if (!command) return null;
+  // Tier-2 skill actions write a result JSON; Tier-3 programmatic actions
+  // (message, /compact, ...) do not. Only the former participate in
+  // delivery confirmation — see deliverPoppedSkill.
+  const expectsResult = hasRegisteredAction(String(request.action ?? ""));
   // requestId is captured here at delivery time — never re-read from
   // mag/current-request-id later, since the next queuePopSkill overwrites it
   // (gh-ludics-526).
-  return { requestId, command, line: popped.line };
+  return { requestId, command, line: popped.line, expectsResult };
 }
 
 /** Resolve a queue request to a skill command or execute it programmatically.
