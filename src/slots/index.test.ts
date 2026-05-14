@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { hostname as osHostname, tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, validateAssignAdapter, VALID_ASSIGN_ADAPTERS } from "./index.ts";
-import { hasStash } from "./preempt.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS } from "./index.ts";
+import { hasStash, writeStash } from "./preempt.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
@@ -1045,6 +1045,37 @@ describe("assign-time adapter validation (gh-ludics-524)", () => {
     expect(hasStash(1)).toBe(false);
     expect(readFileSync(slotFile, "utf-8")).toBe(slotBefore);
     expect(readFileSync(occupantFile, "utf-8")).toBe(occupantBefore);
+  });
+
+  test("slotRestore coerces a legacy phantom previousMode to manual instead of hard-failing (gh-ludics-524 PR #527 P1)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    // A stash captured before assign-time validation existed, carrying a
+    // now-invalid adapter mode. Without the slotRestore coercion this throws
+    // "invalid adapter: agent-claude" and the stash is unrecoverable.
+    writeStash({
+      slotNum: 1,
+      previousTask: "null",
+      previousProcess: "Stranded work",
+      previousMode: "agent-claude",
+      previousSession: "null",
+      previousPath: "null",
+      previousStarted: "2026-05-14T06:57Z",
+      previousAdapterArgs: "null",
+      preemptedAt: "2026-05-14T07:00Z",
+      preemptingTask: "task-priority",
+    });
+
+    // Invariant: a pre-validation stash with a phantom previousMode still
+    // restores — the restore coerces it to "manual" rather than rejecting.
+    // Would fail with "invalid adapter: agent-claude" if the coercion were absent.
+    await slotRestore(1);
+    const data = readSlotJson(1, harness);
+    expect(data.process).toBe("Stranded work");
+    expect(data.mode).toBe("manual");
+    expect(hasStash(1)).toBe(false); // stash consumed
   });
 });
 

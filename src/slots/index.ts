@@ -795,8 +795,16 @@ export async function slotRestore(slotNum: number): Promise<void> {
     throw new Error(`slot ${slotNum} has no preempted stash to restore`);
   }
 
-  // Restore previous assignment
-  const prevAdapter = stash.previousMode === "null" ? "manual" : stash.previousMode;
+  // Restore previous assignment.
+  // A stash captured before assign-time adapter validation (gh-ludics-524)
+  // may carry a legacy/phantom previousMode (agent-claude, agent-pair-codex,
+  // ...) that slotAssign now rejects. Coerce anything outside the canonical
+  // set to "manual" rather than hard-failing the restore and stranding the
+  // stash with no recovery path.
+  const rawPrevMode = stash.previousMode === "null" ? "manual" : stash.previousMode;
+  const prevAdapter = (VALID_ASSIGN_ADAPTERS as readonly string[]).includes(rawPrevMode)
+    ? rawPrevMode
+    : "manual";
   const prevSession = stash.previousSession === "null" ? "" : stash.previousSession;
   const prevPath = stash.previousPath === "null" ? "" : stash.previousPath;
   const prevAdapterArgs = !stash.previousAdapterArgs || stash.previousAdapterArgs === "null"
