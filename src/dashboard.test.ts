@@ -749,6 +749,62 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
   });
 });
 
+// gh-ludics-526: a popped-but-not-completed skill request is in neither the
+// `pending` queue nor the `results` tile. GET /api/queue surfaces it via the
+// `inFlight` field, read from mag/last-delivered.json.
+describe("dashboard HTTP GET /api/queue — inFlight sentinel (AC 8)", () => {
+  async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
+    const { buildHandlers } = await import("./dashboard-server.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+    return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+  }
+  function magDir(): string {
+    const dir = join(harnessDir(), "mag");
+    mkdirSync(join(dir, "results"), { recursive: true });
+    return dir;
+  }
+
+  test("includes inFlight when last-delivered.json exists with no matching result", async () => {
+    // Harness condition: an unresolved sentinel — present, no result JSON.
+    writeFileSync(join(magDir(), "last-delivered.json"), JSON.stringify({
+      requestId: "req-IF", command: "/ludics-briefing", line: "{}",
+      deliveredAt: "2026-05-14T08:06:28Z",
+    }));
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue"));
+    const body = await resp.json() as { inFlight: { requestId: string; command: string; deliveredAt: string } | null };
+    // The invariant: a delivered-but-unconfirmed request is visible. If the
+    // handler ignored the sentinel, inFlight would be null here.
+    expect(body.inFlight).not.toBeNull();
+    expect(body.inFlight!.requestId).toBe("req-IF");
+    expect(body.inFlight!.command).toBe("/ludics-briefing");
+    expect(body.inFlight!.deliveredAt).toBe("2026-05-14T08:06:28Z");
+  });
+
+  test("inFlight is null once a matching result JSON exists", async () => {
+    // Harness condition: sentinel present AND its result file written — the
+    // request is no longer in flight.
+    writeFileSync(join(magDir(), "last-delivered.json"), JSON.stringify({
+      requestId: "req-IF", command: "/ludics-briefing", line: "{}",
+      deliveredAt: "2026-05-14T08:06:28Z",
+    }));
+    writeFileSync(join(magDir(), "results", "req-IF.json"), JSON.stringify({ id: "req-IF", status: "ok" }));
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue"));
+    const body = await resp.json() as { inFlight: unknown };
+    expect(body.inFlight).toBeNull();
+  });
+
+  test("inFlight is null when no sentinel exists", async () => {
+    magDir(); // ensure mag/ dir exists, but no sentinel
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue"));
+    const body = await resp.json() as { inFlight: unknown };
+    expect(body.inFlight).toBeNull();
+  });
+});
+
 // task-2db5eca6: priority-bump and queue-promote should clear the
 // auto-proposal debounce so the next keepalive cycle re-evaluates the task.
 // Decreases (slot-postpone) keep the sentinel intact (asymmetric by design).
