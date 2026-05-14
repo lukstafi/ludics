@@ -338,12 +338,13 @@ function writeLastDelivered(sentinel: LastDeliveredSentinel): void {
 }
 
 /**
- * Read the delivery sentinel; tolerate a missing or malformed file by
- * returning null (this runs in the keepalive path and in /api/queue).
+ * Parse a delivery-sentinel JSON file; tolerate a missing or malformed file
+ * by returning null. Shared by readLastDelivered() and the post-claim read in
+ * reconcileLastDelivered().
  */
-function readLastDelivered(): LastDeliveredSentinel | null {
+function parseSentinelFile(path: string): LastDeliveredSentinel | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(lastDeliveredFile(), "utf-8"));
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
     if (!isPlainObject(parsed)) return null;
     const requestId = String(parsed.requestId ?? "");
     const command = String(parsed.command ?? "");
@@ -354,6 +355,14 @@ function readLastDelivered(): LastDeliveredSentinel | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Read the delivery sentinel; tolerate a missing or malformed file by
+ * returning null (this runs in the keepalive path and in /api/queue).
+ */
+function readLastDelivered(): LastDeliveredSentinel | null {
+  return parseSentinelFile(lastDeliveredFile());
 }
 
 function clearLastDelivered(): void {
@@ -428,19 +437,44 @@ export function requeueWithRetryCap(line: string, command: string, reason: strin
  * Result-existence is checked first: a skill that completed late (within the
  * timeout window) is cleared as confirmed and never double-queued.
  *
+ * Concurrency: `maybeFeedMagQueue` runs this from multiple processes (the
+ * keepalive loop and the dashboard server). The re-queue path atomically
+ * claims the sentinel via `renameSync` before re-queuing, so two concurrent
+ * callers that both observe the same expired sentinel cannot both call
+ * `queueReinsertHead` — only the caller that wins the rename re-queues; the
+ * loser's `renameSync` throws (source gone) and it bails.
+ *
  * Exported for tests; `nowMs` drives the timeout deterministically.
  */
 export function reconcileLastDelivered(nowMs: number = Date.now()): void {
-  const sentinel = readLastDelivered();
-  if (!sentinel) return;
-  if (existsSync(magResultFile(sentinel.requestId))) {
+  // Cheap peek without claiming — avoids a rename on every quiet tick.
+  const peek = readLastDelivered();
+  if (!peek) return;
+  if (existsSync(magResultFile(peek.requestId))) {
+    // Confirmed. clearLastDelivered() swallows ENOENT, so a concurrent
+    // double-clear is harmless — no claim needed on this branch.
     clearLastDelivered();
     return;
   }
-  if (deliveredAtAgeMs(sentinel, nowMs) >= DELIVERY_CONFIRM_TIMEOUT_MS) {
-    requeueWithRetryCap(sentinel.line, sentinel.command, "delivery-unconfirmed");
-    clearLastDelivered();
+  if (deliveredAtAgeMs(peek, nowMs) < DELIVERY_CONFIRM_TIMEOUT_MS) return;
+
+  // Past the timeout with no result → delivery lost. Atomically claim the
+  // sentinel before re-queuing so concurrent callers cannot double-enqueue.
+  const claimPath = lastDeliveredFile() + ".reconciling";
+  try {
+    renameSync(lastDeliveredFile(), claimPath);
+  } catch {
+    return; // another caller already claimed (or cleared) it
   }
+  // Read from the claimed copy — the file content may have been replaced
+  // between the peek and the claim, so trust only what we atomically own.
+  const claimed = parseSentinelFile(claimPath);
+  // Re-check result existence after the claim: a result that landed in the
+  // peek→claim window means the delivery completed late — don't re-queue.
+  if (claimed && !existsSync(magResultFile(claimed.requestId))) {
+    requeueWithRetryCap(claimed.line, claimed.command, "delivery-unconfirmed");
+  }
+  try { unlinkSync(claimPath); } catch { /* ignore */ }
 }
 
 /**

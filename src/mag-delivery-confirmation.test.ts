@@ -208,6 +208,65 @@ describe("reconcileLastDelivered (AC 2, AC 3)", () => {
   });
 });
 
+// --- Concurrency: the re-queue path atomically claims the sentinel so two
+// concurrent callers (keepalive loop + dashboard server) cannot both
+// re-queue the same line (codex review, PR #528). ---
+
+describe("reconcileLastDelivered — atomic claim guards against double-requeue", () => {
+  const reconcilingFile = () => lastDeliveredFile() + ".reconciling";
+
+  test("a lost delivery is re-queued exactly once and leaves no .reconciling claim file", async () => {
+    const { reconcileLastDelivered } = await import("./mag.ts");
+    writeFileSync(lastDeliveredFile(), JSON.stringify({
+      requestId: "req-LOST", command: "/ludics-learn",
+      line: JSON.stringify({ id: "req-LOST", action: "learn" }),
+      deliveredAt: "2020-01-01T00:00:00Z",
+    }));
+
+    reconcileLastDelivered();
+
+    // Re-queued exactly once; the claim file is consumed, not left to wedge
+    // or be re-processed.
+    expect(readQueueIds()).toEqual(["req-LOST"]);
+    expect(existsSync(reconcilingFile())).toBe(false);
+    expect(existsSync(lastDeliveredFile())).toBe(false);
+  });
+
+  test("a second reconcile after the sentinel is claimed+cleared is a no-op — no duplicate enqueue", async () => {
+    const { reconcileLastDelivered } = await import("./mag.ts");
+    writeFileSync(lastDeliveredFile(), JSON.stringify({
+      requestId: "req-LOST", command: "/ludics-learn",
+      line: JSON.stringify({ id: "req-LOST", action: "learn" }),
+      deliveredAt: "2020-01-01T00:00:00Z",
+    }));
+
+    // First caller claims, re-queues, clears. Second caller (the concurrent
+    // loser, modelled by a sequential second call) finds nothing to do.
+    reconcileLastDelivered();
+    reconcileLastDelivered();
+
+    // Still exactly one copy — the claim+clear prevents the second pass from
+    // re-queuing the same line.
+    expect(readQueueIds()).toEqual(["req-LOST"]);
+  });
+
+  test("a sentinel already claimed by a concurrent winner (.reconciling staged, last-delivered.json gone) is not re-queued", async () => {
+    const { reconcileLastDelivered } = await import("./mag.ts");
+    // Models the state right after another caller won the renameSync claim:
+    // last-delivered.json no longer exists, the content lives in the claim
+    // file. The losing caller must observe nothing and re-queue nothing.
+    writeFileSync(reconcilingFile(), JSON.stringify({
+      requestId: "req-CLAIMED", command: "/ludics-learn",
+      line: JSON.stringify({ id: "req-CLAIMED", action: "learn" }),
+      deliveredAt: "2020-01-01T00:00:00Z",
+    }));
+
+    reconcileLastDelivered();
+
+    expect(readQueueIds()).toEqual([]); // the winner owns it, not us
+  });
+});
+
 // --- AC 4: delivery gated on the sentinel ---
 
 describe("deliveryGateBlocked (AC 4)", () => {
