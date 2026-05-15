@@ -651,6 +651,180 @@ describe("briefingPrecomputeContext — Upstream vs Staging Lag section", () => 
   });
 });
 
+// gh-ludics-535 A9: briefing-prep absorbs orphan in-flight records (records
+// whose request id is no longer in queue.jsonl and whose result JSON is
+// absent — the post-boot-race shape from the issue body). The orphan stanza
+// is the audit trail; non-orphan records are left untouched. A resolved
+// record (result file exists) is cleared by the leading reconcileInFlight()
+// call, not by the orphan loop.
+describe("briefingPrecomputeContext — orphan absorption (A9)", () => {
+  let tmpHome: string;
+  let tmpConfig: string;
+  let tmpHarness: string;
+  let magDirPath: string;
+  const savedEnv: Record<string, string | undefined> = {};
+
+  function snapshotEnv(keys: string[]) {
+    for (const k of keys) savedEnv[k] = process.env[k];
+  }
+  function restoreEnv() {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), "mag-orphan-home-"));
+    tmpHarness = mkdtempSync(join(tmpdir(), "mag-orphan-harness-"));
+    tmpConfig = join(tmpHome, "config.yaml");
+    snapshotEnv(["LUDICS_CONFIG", "LUDICS_HARNESS_DIR"]);
+    process.env.LUDICS_CONFIG = tmpConfig;
+    process.env.LUDICS_HARNESS_DIR = tmpHarness;
+    magDirPath = join(tmpHarness, "mag");
+    mkdirSync(join(magDirPath, "in-flight"), { recursive: true });
+    mkdirSync(join(magDirPath, "results"), { recursive: true });
+    writeFileSync(tmpConfig, [
+      "state_repo: test/testrepo",
+      "state_path: harness",
+      "mag:",
+      "  ensure_t3code: false",
+      "projects: []",
+    ].join("\n"));
+  });
+
+  afterEach(() => {
+    restoreEnv();
+    rmSync(tmpHome, { recursive: true, force: true });
+    rmSync(tmpHarness, { recursive: true, force: true });
+  });
+
+  function inFlightFile(id: string): string {
+    return join(magDirPath, "in-flight", `${id}.json`);
+  }
+  function resultFile(id: string): string {
+    return join(magDirPath, "results", `${id}.json`);
+  }
+  function queueFile(): string {
+    return join(magDirPath, "queue.jsonl");
+  }
+  function contextFile(): string {
+    return join(magDirPath, "briefing-context.md");
+  }
+  function seedInFlight(id: string, deliveredAt = "2026-05-15T10:00:00Z"): void {
+    writeFileSync(inFlightFile(id), JSON.stringify({
+      requestId: id, command: "/ludics-learn",
+      line: JSON.stringify({ id, action: "learn" }),
+      deliveredAt,
+    }));
+  }
+
+  const noopRunGit: RunGit = () => ({ stdout: "", exitCode: 0 });
+
+  test("orphan record (id absent from queue, no result) is appended to briefing context and unlinked", async () => {
+    seedInFlight("req-ORPHAN");
+    // Queue does not contain req-ORPHAN.
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-OTHER", action: "learn" }) + "\n");
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+
+    const content = readFileSync(contextFile(), "utf-8");
+    expect(content).toContain("## Unresolved Deliveries (orphans)");
+    expect(content).toContain("req-ORPHAN");
+    expect(content).toContain("/ludics-learn");
+    expect(content).toContain("2026-05-15T10:00:00Z");
+    // Orphan record is unlinked so the next briefing doesn't re-list it.
+    expect(existsSync(inFlightFile("req-ORPHAN"))).toBe(false);
+  });
+
+  test("non-orphan (id still in queue) is NOT listed and NOT unlinked", async () => {
+    seedInFlight("req-PENDING");
+    // Queue still has the id — record is still genuinely in flight.
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-PENDING", action: "learn" }) + "\n");
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+
+    const content = readFileSync(contextFile(), "utf-8");
+    // The orphans section reads "(none)" because req-PENDING isn't an orphan.
+    expect(content).toContain("## Unresolved Deliveries (orphans)\n\n(none)");
+    // Non-orphan record is preserved.
+    expect(existsSync(inFlightFile("req-PENDING"))).toBe(true);
+  });
+
+  test("resolved record (result file exists) is cleared by the leading reconcileInFlight call and NOT listed as orphan", async () => {
+    // This is the load-bearing assertion for the explicit reconcileInFlight()
+    // call at the top of the A9 step. If that call were removed, the orphan
+    // filter would still skip req-DONE (it has a result), so the section
+    // would still read "(none)" — but req-DONE's in-flight file would stay
+    // on disk. The unlink assertion is the mutation-test signal.
+    seedInFlight("req-DONE");
+    writeFileSync(resultFile("req-DONE"), JSON.stringify({ id: "req-DONE", status: "ok" }));
+    writeFileSync(queueFile(), "");
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+
+    const content = readFileSync(contextFile(), "utf-8");
+    expect(content).toContain("## Unresolved Deliveries (orphans)\n\n(none)");
+    // Removing the leading reconcileInFlight() makes this fail.
+    expect(existsSync(inFlightFile("req-DONE"))).toBe(false);
+  });
+
+  test("no in-flight records → section reads '(none)' and no directory side effects", async () => {
+    writeFileSync(queueFile(), "");
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+
+    const content = readFileSync(contextFile(), "utf-8");
+    expect(content).toContain("## Unresolved Deliveries (orphans)\n\n(none)");
+  });
+
+  test("mix: one orphan + one pending + one resolved — only the orphan is listed; non-orphan survives; resolved is cleared", async () => {
+    seedInFlight("req-ORPHAN", "2026-05-15T09:00:00Z");
+    seedInFlight("req-PENDING", "2026-05-15T10:00:00Z");
+    seedInFlight("req-DONE", "2026-05-15T11:00:00Z");
+    writeFileSync(resultFile("req-DONE"), JSON.stringify({ id: "req-DONE", status: "ok" }));
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-PENDING", action: "learn" }) + "\n");
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+
+    const content = readFileSync(contextFile(), "utf-8");
+    expect(content).toContain("req-ORPHAN");
+    expect(content).not.toContain("req-PENDING");
+    expect(content).not.toContain("req-DONE");
+    expect(existsSync(inFlightFile("req-ORPHAN"))).toBe(false);
+    expect(existsSync(inFlightFile("req-PENDING"))).toBe(true);
+    expect(existsSync(inFlightFile("req-DONE"))).toBe(false);
+  });
+
+  // Codex review on PR #536: queuePopSkill removes the entry from queue.jsonl
+  // BEFORE deliverPoppedSkill writes the in-flight record. So the
+  // currently-active delivery's requestId is absent from queue.jsonl AND its
+  // result file does not yet exist — the literal orphan filter would
+  // (incorrectly) absorb it. The active id sits in mag/current-request-id;
+  // briefingPrecomputeContext must exclude it from the orphan set.
+  test("ACTIVE delivery (id in mag/current-request-id, absent from queue.jsonl, no result) is NOT absorbed", async () => {
+    // Harness condition reconstructed from queuePopSkill's pop→deliver
+    // sequence: the active id sits in mag/current-request-id, the in-flight
+    // record is on disk, the entry is no longer in queue.jsonl, the result
+    // file is still absent. This is the exact state that
+    // briefingPrecomputeContext sees when invoked from inside a Tier-2
+    // briefing skill (e.g., action: "briefing").
+    seedInFlight("req-ACTIVE", "2026-05-15T10:00:00Z");
+    writeFileSync(join(magDirPath, "current-request-id"), "req-ACTIVE");
+    writeFileSync(queueFile(), "");
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+
+    // The gate invariant: an active delivery must remain on disk so
+    // deliveryGateBlocked() stays true. Without the exclusion, this
+    // assertion fails — the briefing would unlink its own record and
+    // unblock the gate, letting the next pop dispatch prematurely.
+    expect(existsSync(inFlightFile("req-ACTIVE"))).toBe(true);
+    const content = readFileSync(contextFile(), "utf-8");
+    expect(content).toContain("## Unresolved Deliveries (orphans)\n\n(none)");
+  });
+});
+
 describe("stale settled sentinel detection", () => {
   // Migrated to call the production clearStaleSettled() directly (task-1b44d17b).
   // Tests drive the function via injected { nowMs, graceMs, currentHash } and

@@ -919,6 +919,8 @@ describe("CLI integration", () => {
         "import { test } from 'bun:test';\ntest('placeholder', () => {});\n",
       "src/orchestration/deferred-cleanup.ts":
         "export function loadDeferredCleanups() { return []; }\nexport interface CleanupEntry { slot: number; }\n",
+      "src/mag.ts":
+        "export function migrateLastDeliveredFile() {}\nexport interface InFlightDelivery { requestId: string; }\n",
       "src/slots/preempt.ts":
         "export function readStash() { return null; }\nexport interface PreemptStash { slotNum: number; }\n",
       "src/sessions/sweep-state.ts":
@@ -931,6 +933,7 @@ describe("CLI integration", () => {
         OrchestrationState: ["slot"],
         OrchestrationConfig: ["timeouts"],
         CleanupEntry: ["slot"],
+        InFlightDelivery: ["requestId"],
         PreemptStash: ["slotNum"],
         SessionSweepState: ["sessions", "version"],
         SlotData: ["slot"],
@@ -963,6 +966,9 @@ describe("CLI integration", () => {
         cwd: repoRoot, stdout: "pipe", stderr: "pipe",
         env: { ...process.env, GIT_BASE: baseSha },
       });
+      if (result.exitCode !== 0) {
+        console.error("STDERR:", result.stderr.toString());
+      }
       expect(result.exitCode).toBe(0);
     } finally { cleanup(); }
   });
@@ -1077,6 +1083,7 @@ describe("CLI integration", () => {
       OrchestrationState: ["slot"],
       OrchestrationConfig: ["timeouts"],
       CleanupEntry: ["slot"],
+      InFlightDelivery: ["requestId"],
       PreemptStash: ["slotNum"],
       SessionSweepState: ["sessions", "version"],
       SlotData: ["slot"],
@@ -1088,6 +1095,8 @@ describe("CLI integration", () => {
         "import { test } from 'bun:test';\ntest('placeholder', () => {});\n",
       "src/orchestration/deferred-cleanup.ts":
         "export function loadDeferredCleanups() { return []; }\nexport interface CleanupEntry {\n  slot: number;\n}\n",
+      "src/mag.ts":
+        "export function migrateLastDeliveredFile() {}\nexport interface InFlightDelivery {\n  requestId: string;\n}\n",
       "src/slots/preempt.ts":
         "export function readStash() { return null; }\nexport interface PreemptStash {\n  slotNum: number;\n}\n",
       "src/sessions/sweep-state.ts":
@@ -1127,6 +1136,7 @@ describe("CLI integration", () => {
         OrchestrationState: ["newField", "slot"],
         OrchestrationConfig: ["timeouts"],
         CleanupEntry: ["slot"],
+        InFlightDelivery: ["requestId"],
         PreemptStash: ["slotNum"],
         SessionSweepState: ["sessions", "version"],
         SlotData: ["slot"],

@@ -92,11 +92,12 @@ describe("style.css contains pending-action-badge class", () => {
   });
 });
 
-// gh-ludics-526: the Mag queue renderer must surface a popped-but-not-completed
-// skill request as an "In flight" section between Pending and Recent. These
-// tests extract the real renderQueue / escapeHtml from mag.html and drive them
-// against a minimal document stub (the readFileSync + new Function pattern).
-describe("mag.html renderQueue — In flight section (gh-ludics-526)", () => {
+// gh-ludics-535: the Mag queue renderer must surface unresolved deliveries
+// as an "Unresolved deliveries" panel between Pending and Recent. `inFlight`
+// is always an array (possibly empty). These tests extract the real
+// renderQueue / escapeHtml from mag.html and drive them against a minimal
+// document stub.
+describe("mag.html renderQueue — Unresolved deliveries section (gh-ludics-535)", () => {
   const magSrc = readFileSync(join(import.meta.dir, "mag.html"), "utf-8");
   const renderQueueSrc = magSrc.slice(
     magSrc.indexOf("function renderQueue("),
@@ -107,9 +108,11 @@ describe("mag.html renderQueue — In flight section (gh-ludics-526)", () => {
     magSrc.indexOf("function setConnectionStatus"),
   );
 
+  type InFlightRow = { requestId: string; command: string; deliveredAt: string };
+
   // Minimal document stub: getElementById returns the live list element;
   // createElement('div') backs escapeHtml's textContent → innerHTML escaping.
-  function makeRenderQueue(listEl: { innerHTML: string }): (p: unknown[], r: unknown[], i: unknown) => void {
+  function makeRenderQueue(listEl: { innerHTML: string }): (p: unknown[], r: unknown[], i: InFlightRow[]) => void {
     const documentStub = {
       getElementById: () => listEl,
       createElement: () => {
@@ -125,53 +128,94 @@ describe("mag.html renderQueue — In flight section (gh-ludics-526)", () => {
     return new Function(
       "document",
       `${escapeHtmlSrc}\n${renderQueueSrc}\nreturn renderQueue;`,
-    )(documentStub) as (p: unknown[], r: unknown[], i: unknown) => void;
+    )(documentStub) as (p: unknown[], r: unknown[], i: InFlightRow[]) => void;
   }
 
-  test("renders 'In flight' between 'Pending' and 'Recent'", () => {
+  test("renders 'Unresolved deliveries' between 'Pending' and 'Recent'", () => {
     const listEl = { innerHTML: "" };
     const renderQueue = makeRenderQueue(listEl);
     renderQueue(
       [{ id: "req-p", action: "elaborate" }],
       [{ id: "req-r", status: "ok" }],
-      { requestId: "req-if", command: "/ludics-briefing", deliveredAt: "2026-05-14T08:06:28Z" },
+      [{ requestId: "req-if", command: "/ludics-briefing", deliveredAt: "2026-05-14T08:06:28Z" }],
     );
     const html = listEl.innerHTML;
     const pendingIdx = html.indexOf("Pending");
-    const inFlightIdx = html.indexOf("In flight");
+    const unresolvedIdx = html.indexOf("Unresolved deliveries");
     const recentIdx = html.indexOf("Recent");
-    // The invariant: an in-flight request is visible and ordered between the
-    // durable queue and completed results. If the section were missing or
-    // misplaced, this ordering chain would break.
+    // The invariant: an unresolved delivery is visible and ordered between
+    // the durable queue and completed results. If the section were missing
+    // or misplaced, this ordering chain would break.
     expect(pendingIdx).toBeGreaterThanOrEqual(0);
-    expect(inFlightIdx).toBeGreaterThan(pendingIdx);
-    expect(recentIdx).toBeGreaterThan(inFlightIdx);
+    expect(unresolvedIdx).toBeGreaterThan(pendingIdx);
+    expect(recentIdx).toBeGreaterThan(unresolvedIdx);
     expect(html).toContain("/ludics-briefing");
     expect(html).toContain("2026-05-14T08:06:28Z");
   });
 
-  test("escapes the in-flight command", () => {
+  test("escapes the unresolved-delivery command (XSS guard)", () => {
     const listEl = { innerHTML: "" };
     const renderQueue = makeRenderQueue(listEl);
-    renderQueue([], [], { requestId: "x", command: "<script>evil</script>", deliveredAt: "" });
+    renderQueue([], [], [{ requestId: "req-x", command: "<script>evil</script>", deliveredAt: "" }]);
     expect(listEl.innerHTML).toContain("&lt;script&gt;evil&lt;/script&gt;");
     expect(listEl.innerHTML).not.toContain("<script>evil");
   });
 
-  test("suppresses 'No activity' while in-flight data exists", () => {
+  test("suppresses 'No activity' while at least one unresolved delivery exists", () => {
     const listEl = { innerHTML: "" };
     const renderQueue = makeRenderQueue(listEl);
-    // Harness condition: pending AND results empty — only the sentinel is set.
-    // Without inFlight in the empty-state guard, this would render "No activity".
-    renderQueue([], [], { requestId: "x", command: "/ludics-briefing", deliveredAt: "2026-05-14T08:06:28Z" });
+    // Harness condition: pending AND results empty — only the unresolved set
+    // is non-empty. Without inFlight.length === 0 in the empty-state guard,
+    // this would render "No activity".
+    renderQueue([], [], [{ requestId: "req-x", command: "/ludics-briefing", deliveredAt: "2026-05-14T08:06:28Z" }]);
     expect(listEl.innerHTML).not.toContain("No activity");
-    expect(listEl.innerHTML).toContain("In flight");
+    expect(listEl.innerHTML).toContain("Unresolved deliveries");
   });
 
   test("still shows 'No activity' when pending, results, and inFlight are all empty", () => {
     const listEl = { innerHTML: "" };
     const renderQueue = makeRenderQueue(listEl);
-    renderQueue([], [], null);
+    renderQueue([], [], []);
     expect(listEl.innerHTML).toContain("No activity");
+  });
+
+  test("renders multiple unresolved deliveries in server-provided order", () => {
+    const listEl = { innerHTML: "" };
+    const renderQueue = makeRenderQueue(listEl);
+    // Server sorts ascending by deliveredAt; the renderer preserves order.
+    renderQueue([], [], [
+      { requestId: "req-A", command: "/ludics-briefing", deliveredAt: "2026-05-14T08:00:00Z" },
+      { requestId: "req-B", command: "/ludics-learn", deliveredAt: "2026-05-14T09:00:00Z" },
+    ]);
+    const html = listEl.innerHTML;
+    expect(html.indexOf("/ludics-briefing")).toBeLessThan(html.indexOf("/ludics-learn"));
+  });
+
+  test("renders Re-fire and Discard buttons per row", () => {
+    const listEl = { innerHTML: "" };
+    const renderQueue = makeRenderQueue(listEl);
+    renderQueue([], [], [
+      { requestId: "req-A", command: "/ludics-briefing", deliveredAt: "" },
+      { requestId: "req-B", command: "/ludics-learn", deliveredAt: "" },
+    ]);
+    const html = listEl.innerHTML;
+    // Two of each — one per row. The presence of these onclick handlers is
+    // load-bearing: they are the only path to /api/in-flight-{refire,discard}
+    // from the dashboard UI.
+    const refireMatches = html.match(/onclick="refireInFlight\(/g) ?? [];
+    const discardMatches = html.match(/onclick="discardInFlight\(/g) ?? [];
+    expect(refireMatches).toHaveLength(2);
+    expect(discardMatches).toHaveLength(2);
+  });
+
+  test("renders a count badge with the array length", () => {
+    const listEl = { innerHTML: "" };
+    const renderQueue = makeRenderQueue(listEl);
+    renderQueue([], [], [
+      { requestId: "req-A", command: "/x", deliveredAt: "" },
+      { requestId: "req-B", command: "/y", deliveredAt: "" },
+      { requestId: "req-C", command: "/z", deliveredAt: "" },
+    ]);
+    expect(listEl.innerHTML).toContain('<span class="mag-queue-badge">3</span>');
   });
 });

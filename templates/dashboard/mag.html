@@ -100,7 +100,7 @@
                 const response = await fetch('/api/queue');
                 if (!response.ok) return;
                 const data = await response.json();
-                renderQueue(data.pending || [], data.results || [], data.inFlight || null);
+                renderQueue(data.pending || [], data.results || [], data.inFlight || []);
             } catch {
                 // Silently skip — don't break the terminal
             }
@@ -110,7 +110,7 @@
             const list = document.getElementById('queue-list');
             if (!list) return;
 
-            if (pending.length === 0 && results.length === 0 && !inFlight) {
+            if (pending.length === 0 && results.length === 0 && inFlight.length === 0) {
                 list.innerHTML = '<div class="mag-queue-empty">No activity</div>';
                 return;
             }
@@ -137,12 +137,20 @@
                 }
             }
 
-            if (inFlight) {
-                html += '<div class="mag-queue-section-title">In flight</div>';
-                const command = escapeHtml(String(inFlight.command || 'unknown'));
-                const ts = inFlight.deliveredAt
-                    ? `<div class="timestamp">${escapeHtml(String(inFlight.deliveredAt))}</div>` : '';
-                html += `<div class="mag-queue-item"><span class="action">[delivered]</span> ${command}${ts}</div>`;
+            if (inFlight.length > 0) {
+                const badge = `<span class="mag-queue-badge">${inFlight.length}</span>`;
+                html += `<div class="mag-queue-section-title">Unresolved deliveries ${badge}</div>`;
+                for (const item of inFlight) {
+                    const command = escapeHtml(String(item.command || 'unknown'));
+                    const id = item.requestId ? escapeHtml(String(item.requestId)) : '';
+                    const ts = item.deliveredAt
+                        ? `<div class="timestamp">${escapeHtml(String(item.deliveredAt))}</div>` : '';
+                    const actions = id ? `<div class="mag-queue-actions">` +
+                        `<button type="button" class="mag-queue-action refire" title="Re-fire" data-queue-id="${id}" onclick="refireInFlight('${id}')">⟲</button>` +
+                        `<button type="button" class="mag-queue-action discard" title="Discard" data-queue-id="${id}" onclick="discardInFlight('${id}')">✖</button>` +
+                        `</div>` : '';
+                    html += `<div class="mag-queue-item"><span class="action">[delivered]</span> ${command}${ts}${actions}</div>`;
+                }
             }
 
             if (results.length > 0) {
@@ -187,6 +195,24 @@
         async function promoteQueueItem(id) {
             try {
                 await fetch('/api/queue-promote?id=' + encodeURIComponent(id), { method: 'POST' });
+            } catch {
+                // Silently skip — next poll will reconverge
+            }
+            fetchQueue();
+        }
+
+        async function refireInFlight(id) {
+            try {
+                await fetch('/api/in-flight-refire?id=' + encodeURIComponent(id), { method: 'POST' });
+            } catch {
+                // Silently skip — next poll will reconverge
+            }
+            fetchQueue();
+        }
+
+        async function discardInFlight(id) {
+            try {
+                await fetch('/api/in-flight-discard?id=' + encodeURIComponent(id), { method: 'POST' });
             } catch {
                 // Silently skip — next poll will reconverge
             }

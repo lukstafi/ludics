@@ -12,6 +12,12 @@
     "tmuxSessionNames",
     "worktreePaths"
   ],
+  "InFlightDelivery": [
+    "command",
+    "deliveredAt",
+    "line",
+    "requestId"
+  ],
   "OrchestrationConfig": [
     "autoFinish",
     "autoFinishTimeout",
