@@ -69,6 +69,7 @@ export const PERSISTED_TYPES: ReadonlyArray<PersistedType> = [
   { typeName: "OrchestrationConfig", sourcePath: "src/orchestration/state.ts" },
   // Remaining entries alphabetised by typeName.
   { typeName: "CleanupEntry", sourcePath: "src/orchestration/deferred-cleanup.ts" },
+  { typeName: "InFlightDelivery", sourcePath: "src/mag.ts" },
   { typeName: "PreemptStash", sourcePath: "src/slots/preempt.ts" },
   { typeName: "SessionSweepState", sourcePath: "src/sessions/sweep-state.ts" },
   { typeName: "SlotData", sourcePath: "src/slots/types.ts" },
@@ -98,6 +99,7 @@ export const MIGRATOR_SITES: Readonly<Record<string, MigratorSite>> = {
   OrchestrationState: { path: "src/orchestration/state.ts", fnName: "migrateState" },
   OrchestrationConfig: { path: "src/orchestration/state.ts", fnName: "migrateState" },
   CleanupEntry: { path: "src/orchestration/deferred-cleanup.ts", fnName: "loadDeferredCleanups" },
+  InFlightDelivery: { path: "src/mag.ts", fnName: "migrateLastDeliveredFile" },
   PreemptStash: { path: "src/slots/preempt.ts", fnName: "readStash" },
   SessionSweepState: { path: "src/sessions/sweep-state.ts", fnName: "loadSessionSweepState" },
   SlotData: { path: "src/slots/json.ts", fnName: "normalizeTaskId" },

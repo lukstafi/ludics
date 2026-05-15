@@ -1,5 +1,15 @@
 # Queue delivery-confirmation sentinel — stop silently dropping skill items delivered right before auto-compaction
 
+> **Superseded by [`in-flight-deliveries-panel.md`](in-flight-deliveries-panel.md) (gh-ludics-535).**
+> The sentinel + 10-minute timeout + retry-cap loop proposed here was
+> replaced by a passive `mag/in-flight/` directory and an "Unresolved
+> deliveries" dashboard panel. Three live failure modes showed the
+> auto-retry mechanism multiplied non-transient errors rather than
+> recovering from them; see the new proposal for context.
+
+---
+
+
 ## Goal
 
 Queue items delivered into the Mag pane immediately before an auto-compaction

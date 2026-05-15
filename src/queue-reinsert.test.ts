@@ -46,18 +46,6 @@ afterEach(() => {
   rmSync(TMP, { recursive: true, force: true });
 });
 
-function writeConfigWithMag(homeDir: string, magSection: string): string {
-  const configDir = join(homeDir, ".config", "ludics");
-  mkdirSync(configDir, { recursive: true });
-  const configPath = join(configDir, "config.yaml");
-  writeFileSync(configPath, `state_repo: owner/ludics-state
-state_path: harness
-slots:
-  count: 2
-${magSection}`);
-  return configPath;
-}
-
 describe("queueReinsertHead", () => {
   test("prepends line to empty queue", async () => {
     const { queueReinsertHead } = await import("./queue.ts");
@@ -98,75 +86,62 @@ describe("queueReinsertHead", () => {
   });
 });
 
-describe("requeue retry-count simulation", () => {
-  test("retry count increments on each reinsert and item is droppable after max", async () => {
-    const { queueReinsertHead } = await import("./queue.ts");
-    const DEFAULT_MAX = 3;
+// gh-ludics-535: helper used by the dashboard's /api/in-flight-refire to
+// mint a fresh queue id, stamp `re-fired-from` provenance, and reinsert at
+// queue head. Keeps id minting owned by queue.ts (the request-id generator
+// stays file-private).
+describe("queueReinsertHeadWithFreshId", () => {
+  test("mints a fresh req-<epoch>-<counter> id and stamps re-fired-from provenance", async () => {
+    const { queueReinsertHeadWithFreshId } = await import("./queue.ts");
+    // Empty queue → head must be the newly inserted line.
+    writeFileSync(queueFile(), "");
+    const originalId = "req-1778830000-1";
+    const record = { id: originalId, action: "learn" };
 
-    // Simulate the requeue logic from maybeFeedMagQueue
-    const original = { id: "req-99", action: "briefing", timestamp: "2026-04-15T00:00:00Z" };
-    let line = JSON.stringify(original);
+    const newId = queueReinsertHeadWithFreshId(record, originalId);
 
-    for (let attempt = 0; attempt < DEFAULT_MAX; attempt++) {
-      // Parse, increment retry count, reinsert
-      const parsed = JSON.parse(line) as Record<string, unknown>;
-      const retryCount = Number(parsed._retry_count) || 0;
-      expect(retryCount).toBe(attempt);
-
-      parsed._retry_count = retryCount + 1;
-      const updatedLine = JSON.stringify(parsed);
-
-      // Clear queue and reinsert
-      writeFileSync(queueFile(), "");
-      queueReinsertHead(updatedLine);
-
-      // Read it back
-      const content = readFileSync(queueFile(), "utf-8").trim();
-      const readBack = JSON.parse(content);
-      expect(readBack._retry_count).toBe(attempt + 1);
-      expect(readBack.id).toBe("req-99");
-      line = content;
-    }
-
-    // After max retries, should be dropped (retry count >= max)
-    const final = JSON.parse(line) as Record<string, unknown>;
-    expect(Number(final._retry_count)).toBe(DEFAULT_MAX);
-    expect(Number(final._retry_count) >= DEFAULT_MAX).toBe(true);
-  });
-});
-
-describe("configurable max_requeue_retries", () => {
-  test("config value is read when set to a positive number", async () => {
-    process.env.LUDICS_CONFIG = writeConfigWithMag(TMP, `mag:
-  max_requeue_retries: 5
-`);
-    const { loadConfigSync } = await import("./config.ts");
-    const config = loadConfigSync();
-    const mag = config.mag as Record<string, unknown> | undefined;
-    const configured = Number(mag?.max_requeue_retries);
-    expect(configured).toBe(5);
-    expect(Number.isFinite(configured) && configured > 0).toBe(true);
+    // The invariant: a fresh id is minted (not the original), matching the
+    // req-<epoch>-<counter> shape — reusing the original would re-trip the
+    // A6 pre-send result-file dedup check on the next pop.
+    expect(newId).toMatch(/^req-\d+-\d+$/);
+    expect(newId).not.toBe(originalId);
+    const head = JSON.parse(readFileSync(queueFile(), "utf-8").trim());
+    expect(head.id).toBe(newId);
+    expect(head["re-fired-from"]).toBe(originalId);
+    expect(head.action).toBe("learn");
   });
 
-  test("falls back to default when not configured", async () => {
-    // Default config has no mag section
-    const { loadConfigSync } = await import("./config.ts");
-    const config = loadConfigSync();
-    const mag = config.mag as Record<string, unknown> | undefined;
-    const configured = Number(mag?.max_requeue_retries);
-    const maxRetries = (Number.isFinite(configured) && configured > 0) ? configured : 3;
-    expect(maxRetries).toBe(3);
+  test("preserves the original record's other fields through the round-trip", async () => {
+    const { queueReinsertHeadWithFreshId } = await import("./queue.ts");
+    writeFileSync(queueFile(), "");
+    const record = {
+      id: "req-old",
+      action: "elaborate",
+      task: "task-abc",
+      content: "do the thing",
+      timestamp: "2026-05-15T10:00:00Z",
+    };
+
+    queueReinsertHeadWithFreshId(record, "req-old");
+
+    const head = JSON.parse(readFileSync(queueFile(), "utf-8").trim());
+    expect(head.action).toBe("elaborate");
+    expect(head.task).toBe("task-abc");
+    expect(head.content).toBe("do the thing");
+    expect(head.timestamp).toBe("2026-05-15T10:00:00Z");
   });
 
-  test("falls back to default when value is invalid", async () => {
-    process.env.LUDICS_CONFIG = writeConfigWithMag(TMP, `mag:
-  max_requeue_retries: -1
-`);
-    const { loadConfigSync } = await import("./config.ts");
-    const config = loadConfigSync();
-    const mag = config.mag as Record<string, unknown> | undefined;
-    const configured = Number(mag?.max_requeue_retries);
-    const maxRetries = (Number.isFinite(configured) && configured > 0) ? configured : 3;
-    expect(maxRetries).toBe(3);
+  test("inserts at queue head: existing entries remain behind the re-fired line", async () => {
+    const { queueReinsertHeadWithFreshId } = await import("./queue.ts");
+    const existing = JSON.stringify({ id: "req-existing", action: "suggest" });
+    writeFileSync(queueFile(), existing + "\n");
+
+    queueReinsertHeadWithFreshId({ id: "req-old", action: "learn" }, "req-old");
+
+    const lines = readFileSync(queueFile(), "utf-8").trim().split("\n");
+    expect(lines).toHaveLength(2);
+    const head = JSON.parse(lines[0]!);
+    expect(head["re-fired-from"]).toBe("req-old");
+    expect(JSON.parse(lines[1]!).id).toBe("req-existing");
   });
 });

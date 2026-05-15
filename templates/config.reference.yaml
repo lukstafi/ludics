@@ -91,7 +91,6 @@ mag:
                                      # touches slot worktrees, aborts on dirty tree or divergence. Disable with `false`.
   stall_threshold_seconds: 120    # How long pane output must be unchanged before a stall nudge (default: 120)
   stall_nudge_cooldown_seconds: 120  # Minimum gap between stall nudges (default: 120)
-  max_requeue_retries: 3          # Max times a failed queue delivery is retried before dropping (default: 3)
   test_health_night_hours: [0, 6]  # Local-time hour window [start, end) during which test suites
                                    # are eligible to run. Uses local time to match launchd semantics.
                                    # Tests also run if last run was 24+ hours ago (stale fallback).

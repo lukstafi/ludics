@@ -11,7 +11,7 @@ import { atomicWriteFileSync, isPlainObject, writeJsonFile, writeJsonFileCompact
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
-import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, recentResults } from "./queue.ts";
+import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
@@ -1921,6 +1921,29 @@ export async function briefingPrecomputeContext(opts?: { runGit?: RunGit }): Pro
     ? `## Upstream vs Staging Lag\n\n${upstreamLag.trimEnd()}\n\n`
     : "";
 
+  // gh-ludics-535 A9: orphan absorption. First passively reconcile so any
+  // record whose result file has appeared is cleared (without this step, a
+  // record that resolved between the last keepalive tick and the briefing
+  // would still be on disk and the orphan filter would correctly skip it,
+  // but the in-flight directory wouldn't be cleaned up). Then surface every
+  // remaining in-flight record whose id is no longer in queue.jsonl AND
+  // whose result file is still absent — that's the post-boot-race / lost-
+  // delivery shape. Briefing context absorbs the orphan (paper trail) and
+  // unlinks the record so the panel signal stays high.
+  reconcileInFlight();
+  const queueIds = new Set(
+    queueList().map(r => String(r.id ?? "")).filter(Boolean),
+  );
+  const orphans = listInFlight().filter(
+    r => !queueIds.has(r.requestId) && !existsSync(magResultFile(r.requestId)),
+  );
+  const orphanLines = orphans.length === 0
+    ? "(none)"
+    : orphans.map(o =>
+        `- ${o.requestId} (${o.command}) — delivered ${o.deliveredAt}\n  line: ${o.line}`
+      ).join("\n");
+  const orphanSection = `## Unresolved Deliveries (orphans)\n\n${orphanLines}\n\n`;
+
   const contextContent = `# Briefing Context
 
 Generated: ${timestamp}
@@ -1959,10 +1982,16 @@ ${needsElabOutput}
 ## Recent Journal
 
 ${journalOutput}
-`;
+
+${orphanSection}`;
 
   writeFileSync(contextFile + ".tmp", contextContent);
   renameSync(contextFile + ".tmp", contextFile);
+  // After the section is written, unlink each orphan so the next briefing
+  // doesn't re-surface a stanza for the same id. (Idempotent — ENOENT swallow.)
+  for (const o of orphans) {
+    clearInFlight(o.requestId);
+  }
   console.error(`ludics: briefing context written to ${contextFile}`);
 }
 
