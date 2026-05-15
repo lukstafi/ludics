@@ -1,10 +1,12 @@
-// Regression tests for the delivery-confirmation sentinel (gh-ludics-526).
+// Regression tests for the in-flight delivery directory (gh-ludics-535;
+// supersedes the gh-ludics-526 sentinel + timeout + retry-cap suite).
 //
-// maybeFeedMagQueue() used to be fire-and-forget: a skill delivered into the
-// Mag pane right before an auto-compaction (or crash, or dropped input) was
-// silently lost — no result JSON, no retry. These tests pin the sentinel
-// write, the reconciliation pass, the delivery gate, and the shared retry-cap
-// helper that together close that gap.
+// Each test pins one of the proposal's acceptance criteria from
+// docs/proposals/in-flight-deliveries-panel.md. The shared invariant is
+// that the gate stays serializing (≤ 1 unresolved delivery at a time)
+// but recovery is passive: a delivery resolves naturally when its result
+// JSON appears, or by user action via the dashboard panel. Nothing
+// auto-times-out, auto-requeues, or auto-drops.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
@@ -25,7 +27,13 @@ function magDir(): string {
 function queueFile(): string {
   return join(magDir(), "queue.jsonl");
 }
-function lastDeliveredFile(): string {
+function inFlightDirPath(): string {
+  return join(magDir(), "in-flight");
+}
+function inFlightFilePath(id: string): string {
+  return join(inFlightDirPath(), `${id}.json`);
+}
+function legacyLastDeliveredPath(): string {
   return join(magDir(), "last-delivered.json");
 }
 function resultFile(id: string): string {
@@ -35,7 +43,7 @@ function currentRequestIdFile(): string {
   return join(magDir(), "current-request-id");
 }
 
-function writeConfig(homeDir: string, magSection = ""): string {
+function writeConfig(homeDir: string): string {
   const configDir = join(homeDir, ".config", "ludics");
   mkdirSync(configDir, { recursive: true });
   const configPath = join(configDir, "config.yaml");
@@ -43,7 +51,7 @@ function writeConfig(homeDir: string, magSection = ""): string {
 state_path: harness
 slots:
   count: 2
-${magSection}`);
+`);
   return configPath;
 }
 
@@ -81,10 +89,10 @@ afterEach(() => {
   rmSync(TMP, { recursive: true, force: true });
 });
 
-// --- AC 1: sentinel written on the success path, none on send failure ---
+// --- A1: deliverPoppedSkill writes mag/in-flight/<id>.json on Tier-2 send ---
 
-describe("deliverPoppedSkill — sentinel write (AC 1)", () => {
-  test("successful send writes mag/last-delivered.json and emits mag_queue_feed", async () => {
+describe("deliverPoppedSkill — in-flight write (A1)", () => {
+  test("successful Tier-2 send writes mag/in-flight/<id>.json with all fields and emits mag_queue_feed", async () => {
     const { deliverPoppedSkill } = await import("./mag.ts");
     const line = JSON.stringify({ id: "req-A", action: "learn" });
 
@@ -94,16 +102,21 @@ describe("deliverPoppedSkill — sentinel write (AC 1)", () => {
     );
 
     expect(sent).toBe(true);
-    expect(existsSync(lastDeliveredFile())).toBe(true);
-    const sentinel = JSON.parse(readFileSync(lastDeliveredFile(), "utf-8"));
-    expect(sentinel.requestId).toBe("req-A");
-    expect(sentinel.command).toBe("/ludics-learn");
-    expect(sentinel.line).toBe(line);
-    expect(sentinel.deliveredAt).toBe("2026-05-14T08:06:28Z");
+    expect(existsSync(inFlightFilePath("req-A"))).toBe(true);
+    const record = JSON.parse(readFileSync(inFlightFilePath("req-A"), "utf-8"));
+    expect(record.requestId).toBe("req-A");
+    expect(record.command).toBe("/ludics-learn");
+    expect(record.line).toBe(line);
+    // ISO-with-no-ms format is contract — the dashboard renders it raw.
+    expect(record.deliveredAt).toBe("2026-05-14T08:06:28Z");
     expect(readEvents().some((e) => e.event_type === "mag_queue_feed")).toBe(true);
   });
+});
 
-  test("failed send writes NO sentinel and re-queues via the retry-cap path", async () => {
+// --- A5: send-failure rollback — verbatim line, no retry-count, no events ---
+
+describe("deliverPoppedSkill — send-failure rollback (A5)", () => {
+  test("failed send writes NO in-flight record and reinserts the verbatim line at queue head", async () => {
     const { deliverPoppedSkill } = await import("./mag.ts");
     const line = JSON.stringify({ id: "req-A", action: "learn" });
 
@@ -113,23 +126,23 @@ describe("deliverPoppedSkill — sentinel write (AC 1)", () => {
     );
 
     expect(sent).toBe(false);
-    expect(existsSync(lastDeliveredFile())).toBe(false);
-    // re-queued at head with an incremented _retry_count
+    expect(existsSync(inFlightFilePath("req-A"))).toBe(false);
     const content = readFileSync(queueFile(), "utf-8").trim();
-    expect(JSON.parse(content)._retry_count).toBe(1);
-    expect(JSON.parse(content).id).toBe("req-A");
+    const reinserted = JSON.parse(content);
+    expect(reinserted.id).toBe("req-A");
+    // Verbatim: no `_retry_count` key added — the entire retry-cap machinery
+    // (gh-ludics-526) is gone with gh-ludics-535.
+    expect("_retry_count" in reinserted).toBe(false);
+    // No `mag_queue_requeued` / `mag_queue_dropped` events on this path.
+    expect(readEvents().some((e) => e.event_type === "mag_queue_requeued")).toBe(false);
+    expect(readEvents().some((e) => e.event_type === "mag_queue_dropped")).toBe(false);
   });
 });
 
-// --- Tier-3 fire-and-forget: programmatic items skip the sentinel ---
-//
-// Tier-3 items (action: message, /compact) never write a result JSON, so
-// recording a delivery sentinel for them wedges deliveryGateBlocked for the
-// full timeout and then re-queues a spurious duplicate. queuePopSkill marks
-// them expectsResult=false and deliverPoppedSkill must not write the sentinel.
+// --- A1 (Tier-3 control): expectsResult:false skips the in-flight write ---
 
-describe("deliverPoppedSkill — Tier-3 items skip the sentinel", () => {
-  test("expectsResult:false → successful send writes NO sentinel but still emits mag_queue_feed", async () => {
+describe("deliverPoppedSkill — Tier-3 items skip the in-flight write", () => {
+  test("expectsResult:false → successful send writes NO in-flight record but still emits mag_queue_feed", async () => {
     const { deliverPoppedSkill } = await import("./mag.ts");
     const line = JSON.stringify({ id: "req-MSG", action: "message", content: "hello" });
 
@@ -139,11 +152,11 @@ describe("deliverPoppedSkill — Tier-3 items skip the sentinel", () => {
     );
 
     expect(sent).toBe(true);
-    expect(existsSync(lastDeliveredFile())).toBe(false);
+    expect(existsSync(inFlightFilePath("req-MSG"))).toBe(false);
     expect(readEvents().some((e) => e.event_type === "mag_queue_feed")).toBe(true);
   });
 
-  test("expectsResult:true → sentinel still written (Tier-2 unchanged)", async () => {
+  test("expectsResult:true → in-flight record still written (Tier-2 unchanged)", async () => {
     const { deliverPoppedSkill } = await import("./mag.ts");
     const line = JSON.stringify({ id: "req-SKILL", action: "learn" });
 
@@ -153,7 +166,7 @@ describe("deliverPoppedSkill — Tier-3 items skip the sentinel", () => {
     );
 
     expect(sent).toBe(true);
-    expect(existsSync(lastDeliveredFile())).toBe(true);
+    expect(existsSync(inFlightFilePath("req-SKILL"))).toBe(true);
   });
 });
 
@@ -187,280 +200,336 @@ describe("queuePopSkill — requestId exposure (AC 7)", () => {
   });
 });
 
-// --- AC 2 / AC 3: reconciliation confirms, re-queues, or drops ---
+// --- A2: reconcileInFlight is passive — delete on result-exists, nothing else ---
 
-describe("reconcileLastDelivered (AC 2, AC 3)", () => {
-  test("result JSON present → sentinel cleared, queue untouched (result checked before timeout)", async () => {
-    const { reconcileLastDelivered } = await import("./mag.ts");
-    // Harness condition: an OLD deliveredAt (well past the timeout) AND a
-    // present result file — the confirmed branch must win over the timeout
-    // branch, so the line is never re-queued.
-    writeFileSync(lastDeliveredFile(), JSON.stringify({
-      requestId: "req-DONE", command: "/ludics-learn",
-      line: JSON.stringify({ id: "req-DONE", action: "learn" }),
+describe("reconcileInFlight (A2)", () => {
+  function seedInFlight(id: string): void {
+    mkdirSync(inFlightDirPath(), { recursive: true });
+    writeFileSync(inFlightFilePath(id), JSON.stringify({
+      requestId: id,
+      command: "/ludics-learn",
+      line: JSON.stringify({ id, action: "learn" }),
       deliveredAt: "2020-01-01T00:00:00Z",
     }));
+  }
+
+  test("result JSON present → record deleted, queue untouched (no re-queue)", async () => {
+    const { reconcileInFlight } = await import("./mag.ts");
+    seedInFlight("req-DONE");
     writeFileSync(resultFile("req-DONE"), JSON.stringify({ id: "req-DONE", status: "ok" }));
 
-    reconcileLastDelivered();
+    reconcileInFlight();
 
-    expect(existsSync(lastDeliveredFile())).toBe(false);
-    expect(readQueueIds()).toEqual([]); // not double-queued
+    // The invariant: a resolved record is cleared, never re-queued — A2
+    // (passive deletion). If reconcileInFlight had carried forward the
+    // gh-ludics-526 timeout branch this would also append to queue.jsonl.
+    expect(existsSync(inFlightFilePath("req-DONE"))).toBe(false);
+    expect(readQueueIds()).toEqual([]);
   });
 
-  test("past threshold, no result → line re-queued at head with _retry_count++, sentinel cleared, mag_queue_requeued emitted", async () => {
-    const { reconcileLastDelivered } = await import("./mag.ts");
-    const line = JSON.stringify({ id: "req-LOST", action: "learn" });
-    writeFileSync(lastDeliveredFile(), JSON.stringify({
-      requestId: "req-LOST", command: "/ludics-learn", line,
-      deliveredAt: "2020-01-01T00:00:00Z",
-    }));
+  test("no result, old deliveredAt → record left alone (no auto-requeue, no auto-drop)", async () => {
+    const { reconcileInFlight } = await import("./mag.ts");
+    seedInFlight("req-OLD");
 
-    reconcileLastDelivered();
+    reconcileInFlight();
 
-    expect(existsSync(lastDeliveredFile())).toBe(false);
-    const content = readFileSync(queueFile(), "utf-8").trim();
-    expect(JSON.parse(content).id).toBe("req-LOST");
-    expect(JSON.parse(content)._retry_count).toBe(1);
-    expect(readEvents().some((e) => e.event_type === "mag_queue_requeued")).toBe(true);
+    // The A2 invariant: age does NOT trigger requeue/drop. Under
+    // gh-ludics-526 this would have re-queued at the 10-min timeout — A4
+    // removes that branch.
+    expect(existsSync(inFlightFilePath("req-OLD"))).toBe(true);
+    expect(readQueueIds()).toEqual([]);
+    expect(readEvents().some((e) => e.event_type === "mag_queue_requeued")).toBe(false);
+    expect(readEvents().some((e) => e.event_type === "mag_queue_dropped")).toBe(false);
   });
 
-  test("past threshold, _retry_count at the cap → item dropped, not reinserted, sentinel cleared, mag_queue_dropped emitted", async () => {
-    const { reconcileLastDelivered } = await import("./mag.ts");
-    // Harness condition: _retry_count already at DEFAULT_MAX_REQUEUE_RETRIES (3).
-    const line = JSON.stringify({ id: "req-POISON", action: "learn", _retry_count: 3 });
-    writeFileSync(lastDeliveredFile(), JSON.stringify({
-      requestId: "req-POISON", command: "/ludics-learn", line,
-      deliveredAt: "2020-01-01T00:00:00Z",
-    }));
+  test("idempotent — second reconcile is a no-op after the first cleared the record", async () => {
+    const { reconcileInFlight } = await import("./mag.ts");
+    seedInFlight("req-DONE");
+    writeFileSync(resultFile("req-DONE"), JSON.stringify({ id: "req-DONE", status: "ok" }));
 
-    reconcileLastDelivered();
+    reconcileInFlight();
+    reconcileInFlight(); // double-clear path — unlinkSync ENOENT swallow
 
-    expect(existsSync(lastDeliveredFile())).toBe(false);
-    expect(readQueueIds()).toEqual([]); // dropped, not reinserted
-    expect(readEvents().some((e) => e.event_type === "mag_queue_dropped")).toBe(true);
-  });
-
-  test("under threshold, no result → sentinel left untouched for the next tick", async () => {
-    const { reconcileLastDelivered } = await import("./mag.ts");
-    writeFileSync(lastDeliveredFile(), JSON.stringify({
-      requestId: "req-FRESH", command: "/ludics-learn",
-      line: JSON.stringify({ id: "req-FRESH", action: "learn" }),
-      deliveredAt: new Date().toISOString(),
-    }));
-
-    reconcileLastDelivered();
-
-    expect(existsSync(lastDeliveredFile())).toBe(true);
+    expect(existsSync(inFlightFilePath("req-DONE"))).toBe(false);
     expect(readQueueIds()).toEqual([]);
   });
 });
 
-// --- Concurrency: the re-queue path atomically claims the sentinel so two
-// concurrent callers (keepalive loop + dashboard server) cannot both
-// re-queue the same line (codex review, PR #528). ---
+// --- A3: deliveryGateBlocked is true iff any record lacks a matching result ---
 
-describe("reconcileLastDelivered — atomic claim guards against double-requeue", () => {
-  const reconcilingFile = () => lastDeliveredFile() + ".reconciling";
-
-  test("a lost delivery is re-queued exactly once and leaves no .reconciling claim file", async () => {
-    const { reconcileLastDelivered } = await import("./mag.ts");
-    writeFileSync(lastDeliveredFile(), JSON.stringify({
-      requestId: "req-LOST", command: "/ludics-learn",
-      line: JSON.stringify({ id: "req-LOST", action: "learn" }),
-      deliveredAt: "2020-01-01T00:00:00Z",
-    }));
-
-    reconcileLastDelivered();
-
-    // Re-queued exactly once; the claim file is consumed, not left to wedge
-    // or be re-processed.
-    expect(readQueueIds()).toEqual(["req-LOST"]);
-    expect(existsSync(reconcilingFile())).toBe(false);
-    expect(existsSync(lastDeliveredFile())).toBe(false);
-  });
-
-  test("a second reconcile after the sentinel is claimed+cleared is a no-op — no duplicate enqueue", async () => {
-    const { reconcileLastDelivered } = await import("./mag.ts");
-    writeFileSync(lastDeliveredFile(), JSON.stringify({
-      requestId: "req-LOST", command: "/ludics-learn",
-      line: JSON.stringify({ id: "req-LOST", action: "learn" }),
-      deliveredAt: "2020-01-01T00:00:00Z",
-    }));
-
-    // First caller claims, re-queues, clears. Second caller (the concurrent
-    // loser, modelled by a sequential second call) finds nothing to do.
-    reconcileLastDelivered();
-    reconcileLastDelivered();
-
-    // Still exactly one copy — the claim+clear prevents the second pass from
-    // re-queuing the same line.
-    expect(readQueueIds()).toEqual(["req-LOST"]);
-  });
-
-  test("a sentinel already claimed by a concurrent winner (.reconciling staged, last-delivered.json gone) is not re-queued", async () => {
-    const { reconcileLastDelivered } = await import("./mag.ts");
-    // Models the state right after another caller won the renameSync claim:
-    // last-delivered.json no longer exists, the content lives in the claim
-    // file. The losing caller must observe nothing and re-queue nothing.
-    writeFileSync(reconcilingFile(), JSON.stringify({
-      requestId: "req-CLAIMED", command: "/ludics-learn",
-      line: JSON.stringify({ id: "req-CLAIMED", action: "learn" }),
-      deliveredAt: "2020-01-01T00:00:00Z",
-    }));
-
-    reconcileLastDelivered();
-
-    expect(readQueueIds()).toEqual([]); // the winner owns it, not us
-  });
-});
-
-// --- AC 4: delivery gated on the sentinel ---
-
-describe("deliveryGateBlocked (AC 4)", () => {
-  function writeSentinel(deliveredAt: string): void {
-    writeFileSync(lastDeliveredFile(), JSON.stringify({
-      requestId: "req-INFLIGHT", command: "/ludics-learn",
-      line: JSON.stringify({ id: "req-INFLIGHT", action: "learn" }),
+describe("deliveryGateBlocked (A3)", () => {
+  function writeRecord(id: string, deliveredAt: string = new Date().toISOString()): void {
+    mkdirSync(inFlightDirPath(), { recursive: true });
+    writeFileSync(inFlightFilePath(id), JSON.stringify({
+      requestId: id, command: "/ludics-learn",
+      line: JSON.stringify({ id, action: "learn" }),
       deliveredAt,
     }));
   }
 
-  test("unresolved sentinel under threshold → blocked", async () => {
+  test("unresolved record present → blocked", async () => {
     const { deliveryGateBlocked } = await import("./mag.ts");
-    writeSentinel(new Date().toISOString());
+    writeRecord("req-INFLIGHT");
     expect(deliveryGateBlocked()).toBe(true);
   });
 
-  test("matching result JSON exists → not blocked", async () => {
+  test("record present AND matching result JSON exists → not blocked", async () => {
     const { deliveryGateBlocked } = await import("./mag.ts");
-    writeSentinel(new Date().toISOString());
+    writeRecord("req-INFLIGHT");
     writeFileSync(resultFile("req-INFLIGHT"), JSON.stringify({ id: "req-INFLIGHT", status: "ok" }));
     expect(deliveryGateBlocked()).toBe(false);
   });
 
-  test("sentinel past threshold → not blocked", async () => {
+  test("no records → not blocked", async () => {
     const { deliveryGateBlocked } = await import("./mag.ts");
-    writeSentinel("2020-01-01T00:00:00Z");
     expect(deliveryGateBlocked()).toBe(false);
   });
 
-  test("no sentinel → not blocked", async () => {
+  test("record with an ancient deliveredAt is STILL blocking — no age cutoff (A4)", async () => {
     const { deliveryGateBlocked } = await import("./mag.ts");
-    expect(deliveryGateBlocked()).toBe(false);
+    // Mutation-test the gate against the removed age branch: under
+    // gh-ludics-526 this returned false at age > 10 min; under A3 the gate
+    // is purely "record exists without result".
+    writeRecord("req-OLD", "2020-01-01T00:00:00Z");
+    expect(deliveryGateBlocked()).toBe(true);
   });
 });
 
 // --- AC 4: direct (non-keepalive) callers also reconcile before popping ---
 
 describe("maybeFeedMagQueue — reconcile-as-invariant for direct callers (AC 4)", () => {
-  test("a direct call with an expired sentinel for A re-queues A and clears the sentinel before B can be delivered", async () => {
+  test("a resolved in-flight record is cleared before any pop", async () => {
     const { maybeFeedMagQueue } = await import("./mag.ts");
     const { touchSentinel } = await import("./sentinel.ts");
 
-    // A was delivered long ago and never confirmed (compaction lost it).
+    // A was delivered and its result has landed but reconcile hasn't run yet.
+    mkdirSync(inFlightDirPath(), { recursive: true });
     const lineA = JSON.stringify({ id: "req-A", action: "learn" });
-    writeFileSync(lastDeliveredFile(), JSON.stringify({
+    writeFileSync(inFlightFilePath("req-A"), JSON.stringify({
       requestId: "req-A", command: "/ludics-learn", line: lineA,
       deliveredAt: "2020-01-01T00:00:00Z",
     }));
+    writeFileSync(resultFile("req-A"), JSON.stringify({ id: "req-A", status: "ok" }));
     // B is queued behind it.
     writeFileSync(queueFile(), JSON.stringify({ id: "req-B", action: "learn" }) + "\n");
     // Mag is settled so maybeFeedMagQueue proceeds past the readiness guard.
     touchSentinel(join(magDir(), "settled"));
 
-    // Inject a failing send so the test never touches a real tmux pane; the
-    // reconcile/gate logic under test runs identically regardless of send.
+    // Inject a failing send so the test never touches a real tmux pane.
     await maybeFeedMagQueue({ send: () => false });
 
-    // The in-function reconcileLastDelivered() must have run BEFORE any pop:
-    // A's sentinel is cleared (not overwritten by a B sentinel) and A's line
-    // is back in the durable queue — never silently lost.
-    expect(existsSync(lastDeliveredFile())).toBe(false);
-    const ids = readQueueIds();
-    expect(ids).toContain("req-A");
-    expect(ids).toContain("req-B");
+    // The in-function reconcileInFlight() must have run BEFORE any pop —
+    // A's record is gone (result landed) and B's verbatim line is back in
+    // the durable queue (the failed-send rollback never overwrote anything).
+    expect(existsSync(inFlightFilePath("req-A"))).toBe(false);
+    expect(readQueueIds()).toContain("req-B");
   });
 });
 
-// --- AC 6: shared retry-cap helper ---
+// --- A6: pre-send result-file dedup (Tier-2 only) ---
 
-describe("requeueWithRetryCap — shared retry-cap logic (AC 6)", () => {
-  test("under the cap → reinserts at head with _retry_count++ and returns 'requeued'", async () => {
-    const { requeueWithRetryCap } = await import("./mag.ts");
-    const line = JSON.stringify({ id: "req-1", action: "learn", _retry_count: 1 });
+describe("deliverPoppedSkill — pre-send dedup (A6)", () => {
+  test("Tier-2 + pre-existing result file → no send, no in-flight write, mag_queue_already_resolved emitted, pop consumed", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    const line = JSON.stringify({ id: "req-X", action: "learn" });
+    // Pre-write the result before the pop is delivered (the manual-bypass
+    // pattern Mag uses, A10).
+    writeFileSync(resultFile("req-X"), JSON.stringify({ id: "req-X", status: "ok" }));
+    let called = 0;
+    const sendSpy = (_s: string, _cmd: string): boolean => { called++; return true; };
 
-    const outcome = requeueWithRetryCap(line, "/ludics-learn", "send-failed");
+    const sent = deliverPoppedSkill(
+      { requestId: "req-X", command: "/ludics-learn", line },
+      { send: sendSpy },
+    );
 
-    expect(outcome).toBe("requeued");
-    const content = readFileSync(queueFile(), "utf-8").trim();
-    expect(JSON.parse(content)._retry_count).toBe(2);
+    // The A6 invariant — send must not run, pop is consumed (return true so
+    // the caller knows not to reinsert), no in-flight record written.
+    expect(called).toBe(0);
+    expect(sent).toBe(true);
+    expect(existsSync(inFlightFilePath("req-X"))).toBe(false);
+    expect(readEvents().some((e) => e.event_type === "mag_queue_already_resolved")).toBe(true);
   });
 
-  test("at the cap → drops the item, returns 'dropped', does not reinsert", async () => {
-    const { requeueWithRetryCap } = await import("./mag.ts");
-    const line = JSON.stringify({ id: "req-1", action: "learn", _retry_count: 3 });
+  test("Tier-2 + no result file → normal delivery path (send called, in-flight written)", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    const line = JSON.stringify({ id: "req-X", action: "learn" });
+    let called = 0;
+    const sendSpy = (_s: string, _cmd: string): boolean => { called++; return true; };
 
-    const outcome = requeueWithRetryCap(line, "/ludics-learn", "delivery-unconfirmed");
+    const sent = deliverPoppedSkill(
+      { requestId: "req-X", command: "/ludics-learn", line },
+      { send: sendSpy },
+    );
 
-    expect(outcome).toBe("dropped");
-    expect(readQueueIds()).toEqual([]);
+    expect(called).toBe(1);
+    expect(sent).toBe(true);
+    expect(existsSync(inFlightFilePath("req-X"))).toBe(true);
+    expect(readEvents().some((e) => e.event_type === "mag_queue_already_resolved")).toBe(false);
   });
 
-  test("honors a configured mag.max_requeue_retries", async () => {
-    process.env.LUDICS_CONFIG = writeConfig(TMP, "mag:\n  max_requeue_retries: 5\n");
-    const { requeueWithRetryCap } = await import("./mag.ts");
-    // _retry_count 3 is under a configured cap of 5 → still requeued.
-    const line = JSON.stringify({ id: "req-1", action: "learn", _retry_count: 3 });
+  test("Tier-3 + pre-existing result file → send STILL runs (dedup gated off, no in-flight write)", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    const line = JSON.stringify({ id: "req-MSG", action: "message", content: "hi" });
+    // Tier-3 items never expect a result file — even if one happens to
+    // exist with a matching id, dedup must skip the check.
+    writeFileSync(resultFile("req-MSG"), JSON.stringify({ id: "req-MSG", status: "ok" }));
+    let called = 0;
+    const sendSpy = (_s: string, _cmd: string): boolean => { called++; return true; };
 
-    const outcome = requeueWithRetryCap(line, "/ludics-learn", "send-failed");
+    const sent = deliverPoppedSkill(
+      { requestId: "req-MSG", command: "hi", line, expectsResult: false },
+      { send: sendSpy },
+    );
 
-    expect(outcome).toBe("requeued");
-    expect(JSON.parse(readFileSync(queueFile(), "utf-8").trim())._retry_count).toBe(4);
+    expect(called).toBe(1);
+    expect(sent).toBe(true);
+    expect(existsSync(inFlightFilePath("req-MSG"))).toBe(false);
+    expect(readEvents().some((e) => e.event_type === "mag_queue_already_resolved")).toBe(false);
   });
+
+  // A10: manual bypass — Mag pre-writes a result with a skip-marker status
+  // and the A6 dedup check honours it by construction. Three documented
+  // status conventions exercised separately.
+  for (const status of ["skipped-duplicate", "skipped-superseded", "preempted"] as const) {
+    test(`A10 manual bypass: pre-written result status "${status}" suppresses delivery`, async () => {
+      const { deliverPoppedSkill } = await import("./mag.ts");
+      const line = JSON.stringify({ id: "req-SKIP", action: "learn" });
+      // Synthetic result with the skip-marker status — same result-file
+      // machinery the worker uses, distinguished only by `status` string.
+      writeFileSync(resultFile("req-SKIP"), JSON.stringify({
+        id: "req-SKIP", status, timestamp: "2026-05-15T10:00:00Z",
+      }));
+      let called = 0;
+      const sendSpy = (_s: string, _cmd: string): boolean => { called++; return true; };
+
+      const sent = deliverPoppedSkill(
+        { requestId: "req-SKIP", command: "/ludics-learn", line },
+        { send: sendSpy },
+      );
+
+      expect(called).toBe(0);
+      expect(sent).toBe(true);
+      expect(existsSync(inFlightFilePath("req-SKIP"))).toBe(false);
+    });
+  }
 });
 
-// --- AC 8: dashboard in-flight sentinel exposure (server contract) ---
+// --- A8: listInFlightDeliveries returns sorted array, filters resolved ---
 
-describe("readInFlightDelivery (AC 8)", () => {
-  test("returns the sentinel payload when unresolved", async () => {
-    const { readInFlightDelivery } = await import("./mag.ts");
-    writeFileSync(lastDeliveredFile(), JSON.stringify({
-      requestId: "req-IF", command: "/ludics-learn",
-      line: JSON.stringify({ id: "req-IF", action: "learn" }),
-      deliveredAt: "2026-05-14T08:06:28Z",
+describe("listInFlightDeliveries (A8)", () => {
+  function seed(id: string, deliveredAt: string): void {
+    mkdirSync(inFlightDirPath(), { recursive: true });
+    writeFileSync(inFlightFilePath(id), JSON.stringify({
+      requestId: id, command: "/ludics-learn",
+      line: JSON.stringify({ id, action: "learn" }),
+      deliveredAt,
     }));
+  }
 
-    const inFlight = readInFlightDelivery();
-    expect(inFlight).not.toBeNull();
-    expect(inFlight!.requestId).toBe("req-IF");
-    expect(inFlight!.command).toBe("/ludics-learn");
-    expect(inFlight!.deliveredAt).toBe("2026-05-14T08:06:28Z");
+  test("returns records sorted by deliveredAt ascending (oldest first)", async () => {
+    const { listInFlightDeliveries } = await import("./mag.ts");
+    seed("req-NEW", "2026-05-15T12:00:00Z");
+    seed("req-OLD", "2026-05-14T08:00:00Z");
+    seed("req-MID", "2026-05-15T08:00:00Z");
+
+    const got = listInFlightDeliveries();
+    expect(got.map(r => r.requestId)).toEqual(["req-OLD", "req-MID", "req-NEW"]);
   });
 
-  test("returns null once a matching result JSON exists", async () => {
-    const { readInFlightDelivery } = await import("./mag.ts");
-    writeFileSync(lastDeliveredFile(), JSON.stringify({
-      requestId: "req-IF", command: "/ludics-learn",
-      line: JSON.stringify({ id: "req-IF", action: "learn" }),
-      deliveredAt: "2026-05-14T08:06:28Z",
-    }));
-    writeFileSync(resultFile("req-IF"), JSON.stringify({ id: "req-IF", status: "ok" }));
+  test("filters out records whose result JSON has appeared", async () => {
+    const { listInFlightDeliveries } = await import("./mag.ts");
+    seed("req-PENDING", "2026-05-15T10:00:00Z");
+    seed("req-DONE", "2026-05-15T11:00:00Z");
+    writeFileSync(resultFile("req-DONE"), JSON.stringify({ id: "req-DONE", status: "ok" }));
 
-    expect(readInFlightDelivery()).toBeNull();
+    const got = listInFlightDeliveries();
+    expect(got.map(r => r.requestId)).toEqual(["req-PENDING"]);
   });
 
-  test("returns null when there is no sentinel", async () => {
-    const { readInFlightDelivery } = await import("./mag.ts");
-    expect(readInFlightDelivery()).toBeNull();
+  test("returns [] when directory is absent", async () => {
+    const { listInFlightDeliveries } = await import("./mag.ts");
+    expect(listInFlightDeliveries()).toEqual([]);
   });
 });
 
-// --- Round-trip fidelity: sentinel survives write → read ---
+// --- A11: state-migration triple ---
+// (1) positive backfill from legacy mag/last-delivered.json
+// (2) negative control — no inputs, no directory created
+// (3) JSON round-trip fidelity via writeInFlight/readInFlight
+// Plus: malformed record is skipped without crashing the keepalive.
 
-describe("last-delivered sentinel round-trip fidelity", () => {
-  test("deliverPoppedSkill write → readInFlightDelivery preserves every field", async () => {
-    const { deliverPoppedSkill, readInFlightDelivery } = await import("./mag.ts");
+describe("migrateLastDeliveredFile (A11 positive backfill)", () => {
+  test("legacy mag/last-delivered.json is migrated to mag/in-flight/<id>.json and the old file is unlinked", async () => {
+    const { migrateLastDeliveredFile, readInFlight } = await import("./mag.ts");
+    // Harness condition: a valid legacy sentinel from gh-ludics-526's regime.
+    const legacyRecord = {
+      requestId: "req-LEG",
+      command: "/ludics-briefing",
+      line: JSON.stringify({ id: "req-LEG", action: "briefing" }),
+      deliveredAt: "2026-05-15T07:40:12Z",
+    };
+    writeFileSync(legacyLastDeliveredPath(), JSON.stringify(legacyRecord));
+
+    migrateLastDeliveredFile();
+
+    expect(existsSync(inFlightFilePath("req-LEG"))).toBe(true);
+    expect(existsSync(legacyLastDeliveredPath())).toBe(false);
+    const got = readInFlight("req-LEG");
+    expect(got).toEqual(legacyRecord);
+  });
+
+  test("idempotent — re-running on a worktree with no legacy file is a no-op", async () => {
+    const { migrateLastDeliveredFile } = await import("./mag.ts");
+    const legacyRecord = {
+      requestId: "req-LEG",
+      command: "/ludics-briefing",
+      line: JSON.stringify({ id: "req-LEG", action: "briefing" }),
+      deliveredAt: "2026-05-15T07:40:12Z",
+    };
+    writeFileSync(legacyLastDeliveredPath(), JSON.stringify(legacyRecord));
+
+    migrateLastDeliveredFile();
+    // Second run: legacy file is gone — must not throw, must not unwrite.
+    migrateLastDeliveredFile();
+
+    expect(existsSync(inFlightFilePath("req-LEG"))).toBe(true);
+  });
+});
+
+describe("migrateLastDeliveredFile (A11 negative control)", () => {
+  test("no legacy file and no in-flight dir → migrator creates no directory and writes no record", async () => {
+    const { migrateLastDeliveredFile, listInFlight } = await import("./mag.ts");
+
+    migrateLastDeliveredFile();
+
+    // The A11 negative-control invariant: idempotent means no side effects,
+    // not "equivalent output after a terminate-and-restart". Asserting
+    // `existsSync(inFlightDirPath())` is false catches a migrator that
+    // unconditionally mkdirs.
+    expect(existsSync(inFlightDirPath())).toBe(false);
+    expect(listInFlight()).toEqual([]);
+  });
+});
+
+describe("in-flight record round-trip fidelity (A11 JSON round-trip leg)", () => {
+  test("writeInFlight → readInFlight preserves every field byte-equal", async () => {
+    const { writeInFlight, readInFlight } = await import("./mag.ts");
+    const record = {
+      requestId: "req-RT",
+      command: "/ludics-learn",
+      line: JSON.stringify({ id: "req-RT", action: "learn", _retry_count: 2 }),
+      deliveredAt: "2026-05-14T09:00:00Z",
+    };
+
+    writeInFlight(record);
+    const got = readInFlight("req-RT");
+
+    expect(got).toEqual(record);
+  });
+
+  test("deliverPoppedSkill write → readInFlight preserves every field", async () => {
+    const { deliverPoppedSkill, readInFlight } = await import("./mag.ts");
     const line = JSON.stringify({ id: "req-RT", action: "learn", _retry_count: 2 });
 
     deliverPoppedSkill(
@@ -468,12 +537,42 @@ describe("last-delivered sentinel round-trip fidelity", () => {
       { send: () => true, nowMs: Date.parse("2026-05-14T09:00:00Z") },
     );
 
-    const got = readInFlightDelivery();
-    expect(got).toEqual({
+    expect(readInFlight("req-RT")).toEqual({
       requestId: "req-RT",
       command: "/ludics-learn",
       line,
       deliveredAt: "2026-05-14T09:00:00Z",
     });
+  });
+});
+
+describe("listInFlight — skips malformed records (A11 robustness)", () => {
+  test("malformed JSON in the directory is skipped; valid records still surface", async () => {
+    const { listInFlight, reconcileInFlight } = await import("./mag.ts");
+    mkdirSync(inFlightDirPath(), { recursive: true });
+    writeFileSync(join(inFlightDirPath(), "req-BAD.json"), "{not valid json");
+    writeFileSync(inFlightFilePath("req-OK"), JSON.stringify({
+      requestId: "req-OK", command: "/ludics-learn",
+      line: JSON.stringify({ id: "req-OK", action: "learn" }),
+      deliveredAt: "2026-05-15T10:00:00Z",
+    }));
+
+    // The list helper must filter the malformed entry, not throw.
+    const got = listInFlight();
+    expect(got.map(r => r.requestId)).toEqual(["req-OK"]);
+    // reconcileInFlight iterates listInFlight — also must not throw.
+    reconcileInFlight();
+    expect(existsSync(inFlightFilePath("req-OK"))).toBe(true);
+  });
+
+  test("record missing requestId / line is rejected as malformed", async () => {
+    const { readInFlight } = await import("./mag.ts");
+    mkdirSync(inFlightDirPath(), { recursive: true });
+    // Missing `line` — required field.
+    writeFileSync(inFlightFilePath("req-MISSING"), JSON.stringify({
+      requestId: "req-MISSING", command: "/ludics-learn", deliveredAt: "2026-05-15T10:00:00Z",
+    }));
+
+    expect(readInFlight("req-MISSING")).toBeNull();
   });
 });

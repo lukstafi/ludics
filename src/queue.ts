@@ -176,6 +176,24 @@ export function queueReinsertHead(line: string): void {
   });
 }
 
+/**
+ * Re-fire helper (gh-ludics-535): mint a fresh request id (same shape as
+ * queueRequest's `req-<epoch>-<counter>`), stamp the original id as
+ * `re-fired-from` provenance, and reinsert at the queue head. Returns the
+ * new id. Used by the dashboard's `/api/in-flight-refire` endpoint to
+ * avoid duplicate-fire when the pre-send dedup check sees the original
+ * result file.
+ */
+export function queueReinsertHeadWithFreshId(
+  record: Record<string, unknown>,
+  originalId: string,
+): string {
+  const newId = nextRequestId();
+  const updated = { ...record, id: newId, "re-fired-from": originalId };
+  queueReinsertHead(JSON.stringify(updated));
+  return newId;
+}
+
 export function queuePopOne(): string | null {
   const result = withQueueLock(() => {
     const lines = readQueueLines();

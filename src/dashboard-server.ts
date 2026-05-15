@@ -15,8 +15,8 @@ import { emitEvent } from "./events.ts";
 import { ADAPTER_NAMES } from "./adapters/index.ts";
 import { readTmuxSlotState, writeTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { tasksAbandon, tasksCreate } from "./tasks/index.ts";
-import { setQueueHold, maybeFeedMagQueue, clearAutoProposalDebounce, readInFlightDelivery } from "./mag.ts";
-import { queueList, queueRequest, recentResults, queuePromoteToTop, queueCancel } from "./queue.ts";
+import { setQueueHold, maybeFeedMagQueue, clearAutoProposalDebounce, listInFlightDeliveries, readInFlight, clearInFlight, magResultFile, type InFlightDelivery } from "./mag.ts";
+import { queueList, queueRequest, recentResults, queuePromoteToTop, queueCancel, queueReinsertHeadWithFreshId } from "./queue.ts";
 import { resolveSkillCommand } from "./skill-queue-registry.ts";
 import { handleClusterRequest } from "./cluster-http.ts";
 import { validatePayload } from "./orchestration-defaults.ts";
@@ -666,11 +666,85 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
           delete d.output; // strip large blobs — UI only needs id/status/timestamp
           return d;
         });
-        // gh-ludics-526: a popped-but-not-completed request is in neither
-        // `pending` nor `results`. Surface the in-flight delivery sentinel
-        // (null when there is none, or once its result JSON exists).
-        const inFlight = readInFlightDelivery();
+        // gh-ludics-535: a popped-but-not-completed request is in neither
+        // `pending` nor `results`. Surface every unresolved in-flight record
+        // (one file per delivery under mag/in-flight/, sorted by deliveredAt
+        // ascending). Always an array — `[]` when there are none.
+        const inFlight: InFlightDelivery[] = listInFlightDeliveries();
         return new Response(JSON.stringify({ pending, results, inFlight }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(String(e), { status: 500 });
+      }
+    }
+
+    // API: re-fire an in-flight delivery (gh-ludics-535 A8). Mints a fresh
+    // queue id, sets `re-fired-from: <original>` provenance, reinserts at
+    // queue head, and clears the original in-flight record. Short-circuits
+    // to `already-completed` when the original result file has appeared
+    // since the dashboard last fetched.
+    if (pathname === "/api/in-flight-refire" && req.method === "POST") {
+      const idParam = url.searchParams.get("id");
+      if (!idParam || !QUEUE_ID_RE.test(idParam)) {
+        return new Response("Bad Request: invalid queue id", { status: 400 });
+      }
+      try {
+        const record = readInFlight(idParam);
+        if (!record) {
+          return new Response(JSON.stringify({ status: "not-found" }), {
+            status: 404, headers: { "Content-Type": "application/json" },
+          });
+        }
+        // Race: result landed in the dashboard-read → click window. Clear
+        // the in-flight record and tell the client; do not re-queue.
+        if (existsSync(magResultFile(idParam))) {
+          clearInFlight(idParam);
+          return new Response(JSON.stringify({ status: "already-completed" }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        // Parse the original line tolerantly. A malformed line still gets
+        // wrapped into `{ raw }` so provenance is preserved.
+        let parsed: Record<string, unknown>;
+        try {
+          const maybeObj: unknown = JSON.parse(record.line);
+          parsed = (maybeObj && typeof maybeObj === "object" && !Array.isArray(maybeObj))
+            ? (maybeObj as Record<string, unknown>) : { raw: record.line };
+        } catch {
+          parsed = { raw: record.line };
+        }
+        const newId = queueReinsertHeadWithFreshId(parsed, idParam);
+        clearInFlight(idParam);
+        emitEvent({
+          event_type: "mag_in_flight_refired", source: "dashboard", scope: "mag",
+          message: `re-fired ${idParam} as ${newId}`,
+        });
+        lastGenerated = 0;
+        return new Response(JSON.stringify({ status: "refired", newId }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(String(e), { status: 500 });
+      }
+    }
+
+    // API: discard an in-flight delivery (gh-ludics-535 A8). Idempotent —
+    // ENOENT is a no-op. No archive directory; the briefing-prep step
+    // absorbs orphans (A9) as the audit trail.
+    if (pathname === "/api/in-flight-discard" && req.method === "POST") {
+      const idParam = url.searchParams.get("id");
+      if (!idParam || !QUEUE_ID_RE.test(idParam)) {
+        return new Response("Bad Request: invalid queue id", { status: 400 });
+      }
+      try {
+        clearInFlight(idParam);
+        emitEvent({
+          event_type: "mag_in_flight_discarded", source: "dashboard", scope: "mag",
+          message: `discarded ${idParam}`,
+        });
+        lastGenerated = 0;
+        return new Response(JSON.stringify({ status: "discarded" }), {
           headers: { "Content-Type": "application/json" },
         });
       } catch (e) {

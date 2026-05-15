@@ -749,10 +749,11 @@ describe("dashboard HTTP /api/queue-promote and /api/queue-cancel", () => {
   });
 });
 
-// gh-ludics-526: a popped-but-not-completed skill request is in neither the
-// `pending` queue nor the `results` tile. GET /api/queue surfaces it via the
-// `inFlight` field, read from mag/last-delivered.json.
-describe("dashboard HTTP GET /api/queue — inFlight sentinel (AC 8)", () => {
+// gh-ludics-535: a popped-but-not-completed skill request is in neither the
+// `pending` queue nor the `results` tile. GET /api/queue surfaces every
+// unresolved record via the `inFlight` field — always an InFlightDelivery[],
+// sorted by deliveredAt ascending.
+describe("dashboard HTTP GET /api/queue — inFlight array (AC 8)", () => {
   async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
     const { buildHandlers } = await import("./dashboard-server.ts");
     const dashboardDir = join(harnessDir(), "dashboard");
@@ -762,46 +763,207 @@ describe("dashboard HTTP GET /api/queue — inFlight sentinel (AC 8)", () => {
   function magDir(): string {
     const dir = join(harnessDir(), "mag");
     mkdirSync(join(dir, "results"), { recursive: true });
+    mkdirSync(join(dir, "in-flight"), { recursive: true });
     return dir;
   }
-
-  test("includes inFlight when last-delivered.json exists with no matching result", async () => {
-    // Harness condition: an unresolved sentinel — present, no result JSON.
-    writeFileSync(join(magDir(), "last-delivered.json"), JSON.stringify({
-      requestId: "req-IF", command: "/ludics-briefing", line: "{}",
-      deliveredAt: "2026-05-14T08:06:28Z",
+  function seedInFlight(dir: string, id: string, deliveredAt: string, command = "/ludics-briefing"): void {
+    writeFileSync(join(dir, "in-flight", `${id}.json`), JSON.stringify({
+      requestId: id, command, line: JSON.stringify({ id, action: "briefing" }),
+      deliveredAt,
     }));
+  }
+  type InFlight = { requestId: string; command: string; deliveredAt: string };
+
+  test("includes a record when its in-flight file exists with no matching result", async () => {
+    const dir = magDir();
+    seedInFlight(dir, "req-IF", "2026-05-14T08:06:28Z");
     const handler = await makeHandler();
     const resp = await handler(new Request("http://x/api/queue"));
-    const body = await resp.json() as { inFlight: { requestId: string; command: string; deliveredAt: string } | null };
+    const body = await resp.json() as { inFlight: InFlight[] };
     // The invariant: a delivered-but-unconfirmed request is visible. If the
-    // handler ignored the sentinel, inFlight would be null here.
-    expect(body.inFlight).not.toBeNull();
-    expect(body.inFlight!.requestId).toBe("req-IF");
-    expect(body.inFlight!.command).toBe("/ludics-briefing");
-    expect(body.inFlight!.deliveredAt).toBe("2026-05-14T08:06:28Z");
+    // handler returned [] here, the dashboard would never surface the row.
+    expect(body.inFlight).toHaveLength(1);
+    expect(body.inFlight[0]!.requestId).toBe("req-IF");
+    expect(body.inFlight[0]!.command).toBe("/ludics-briefing");
+    expect(body.inFlight[0]!.deliveredAt).toBe("2026-05-14T08:06:28Z");
   });
 
-  test("inFlight is null once a matching result JSON exists", async () => {
-    // Harness condition: sentinel present AND its result file written — the
-    // request is no longer in flight.
-    writeFileSync(join(magDir(), "last-delivered.json"), JSON.stringify({
-      requestId: "req-IF", command: "/ludics-briefing", line: "{}",
-      deliveredAt: "2026-05-14T08:06:28Z",
+  test("filters out records whose matching result JSON exists", async () => {
+    const dir = magDir();
+    seedInFlight(dir, "req-IF", "2026-05-14T08:06:28Z");
+    writeFileSync(join(dir, "results", "req-IF.json"), JSON.stringify({ id: "req-IF", status: "ok" }));
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue"));
+    const body = await resp.json() as { inFlight: InFlight[] };
+    expect(body.inFlight).toEqual([]);
+  });
+
+  test("returns an empty array when no in-flight records exist", async () => {
+    magDir();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue"));
+    const body = await resp.json() as { inFlight: InFlight[] };
+    // Array, never null — this is the wire-shape contract change vs
+    // gh-ludics-526.
+    expect(Array.isArray(body.inFlight)).toBe(true);
+    expect(body.inFlight).toEqual([]);
+  });
+
+  test("multiple records are sorted by deliveredAt ascending (oldest first)", async () => {
+    const dir = magDir();
+    seedInFlight(dir, "req-NEW", "2026-05-15T12:00:00Z", "/ludics-learn");
+    seedInFlight(dir, "req-OLD", "2026-05-14T08:00:00Z", "/ludics-briefing");
+    seedInFlight(dir, "req-MID", "2026-05-15T08:00:00Z", "/ludics-feedback-digest");
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/queue"));
+    const body = await resp.json() as { inFlight: InFlight[] };
+    // Predictable order matters for the dashboard's Re-fire / Discard
+    // per-row choice — the user picks the oldest unresolved item first.
+    expect(body.inFlight.map(r => r.requestId)).toEqual(["req-OLD", "req-MID", "req-NEW"]);
+  });
+});
+
+// gh-ludics-535 A8: /api/in-flight-refire mints a fresh queue id, stamps
+// `re-fired-from: <original>` provenance, reinserts at queue head, and
+// clears the original record. Short-circuits to `already-completed` when
+// the original result file appeared in the dashboard-read → click window.
+describe("dashboard HTTP POST /api/in-flight-refire", () => {
+  async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
+    const { buildHandlers } = await import("./dashboard-server.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+    return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+  }
+  function magDir(): string {
+    const dir = join(harnessDir(), "mag");
+    mkdirSync(join(dir, "results"), { recursive: true });
+    mkdirSync(join(dir, "in-flight"), { recursive: true });
+    return dir;
+  }
+  function seedInFlight(dir: string, id: string, payload?: Record<string, unknown>): void {
+    const line = JSON.stringify(payload ?? { id, action: "learn" });
+    writeFileSync(join(dir, "in-flight", `${id}.json`), JSON.stringify({
+      requestId: id, command: "/ludics-learn", line,
+      deliveredAt: "2026-05-15T10:00:00Z",
     }));
-    writeFileSync(join(magDir(), "results", "req-IF.json"), JSON.stringify({ id: "req-IF", status: "ok" }));
+  }
+  function readEvents(): Record<string, unknown>[] {
+    const file = join(harnessDir(), "journal", "events.jsonl");
+    if (!existsSync(file)) return [];
+    const content = readFileSync(file, "utf-8").trim();
+    if (!content) return [];
+    return content.split("\n").map(l => JSON.parse(l) as Record<string, unknown>);
+  }
+
+  test("happy path: mints fresh id, stamps re-fired-from, clears original record, emits mag_in_flight_refired", async () => {
+    const dir = magDir();
+    seedInFlight(dir, "req-1778832000-1");
     const handler = await makeHandler();
-    const resp = await handler(new Request("http://x/api/queue"));
-    const body = await resp.json() as { inFlight: unknown };
-    expect(body.inFlight).toBeNull();
+
+    const resp = await handler(new Request("http://x/api/in-flight-refire?id=req-1778832000-1", { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string; newId?: string };
+    expect(body.status).toBe("refired");
+    expect(body.newId).toBeDefined();
+    expect(body.newId).toMatch(/^req-\d+-\d+$/);
+
+    // Original in-flight file is unlinked.
+    expect(existsSync(join(dir, "in-flight", "req-1778832000-1.json"))).toBe(false);
+    // Queue head carries the new id and the re-fired-from provenance.
+    const queueContent = readFileSync(join(dir, "queue.jsonl"), "utf-8").trim();
+    const head = JSON.parse(queueContent.split("\n")[0]!);
+    expect(head.id).toBe(body.newId);
+    expect(head["re-fired-from"]).toBe("req-1778832000-1");
+    expect(head.action).toBe("learn");
+    // Event emitted.
+    expect(readEvents().some(e => e.event_type === "mag_in_flight_refired")).toBe(true);
   });
 
-  test("inFlight is null when no sentinel exists", async () => {
-    magDir(); // ensure mag/ dir exists, but no sentinel
+  test("already-completed: result file present → clears record, returns 'already-completed', does NOT enqueue", async () => {
+    const dir = magDir();
+    seedInFlight(dir, "req-1778832000-2");
+    writeFileSync(join(dir, "results", "req-1778832000-2.json"), JSON.stringify({ id: "req-1778832000-2", status: "ok" }));
     const handler = await makeHandler();
-    const resp = await handler(new Request("http://x/api/queue"));
-    const body = await resp.json() as { inFlight: unknown };
-    expect(body.inFlight).toBeNull();
+
+    const resp = await handler(new Request("http://x/api/in-flight-refire?id=req-1778832000-2", { method: "POST" }));
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("already-completed");
+    // In-flight file is unlinked.
+    expect(existsSync(join(dir, "in-flight", "req-1778832000-2.json"))).toBe(false);
+    // Queue is empty — the race must NOT cause a duplicate enqueue.
+    expect(existsSync(join(dir, "queue.jsonl")) ? readFileSync(join(dir, "queue.jsonl"), "utf-8").trim() : "").toBe("");
+    // The refired event must NOT have been emitted on the already-completed branch.
+    expect(readEvents().some(e => e.event_type === "mag_in_flight_refired")).toBe(false);
+  });
+
+  test("missing record → 404", async () => {
+    magDir();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/in-flight-refire?id=req-9999999999-1", { method: "POST" }));
+    expect(resp.status).toBe(404);
+  });
+
+  test("malformed id → 400 (does not pass QUEUE_ID_RE)", async () => {
+    magDir();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/in-flight-refire?id=not-a-queue-id", { method: "POST" }));
+    expect(resp.status).toBe(400);
+  });
+});
+
+// gh-ludics-535 A8: /api/in-flight-discard unlinks the record idempotently.
+describe("dashboard HTTP POST /api/in-flight-discard", () => {
+  async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
+    const { buildHandlers } = await import("./dashboard-server.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+    return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+  }
+  function magDir(): string {
+    const dir = join(harnessDir(), "mag");
+    mkdirSync(join(dir, "results"), { recursive: true });
+    mkdirSync(join(dir, "in-flight"), { recursive: true });
+    return dir;
+  }
+  function readEvents(): Record<string, unknown>[] {
+    const file = join(harnessDir(), "journal", "events.jsonl");
+    if (!existsSync(file)) return [];
+    const content = readFileSync(file, "utf-8").trim();
+    if (!content) return [];
+    return content.split("\n").map(l => JSON.parse(l) as Record<string, unknown>);
+  }
+
+  test("happy path: unlinks the in-flight file, returns 'discarded', emits mag_in_flight_discarded", async () => {
+    const dir = magDir();
+    writeFileSync(join(dir, "in-flight", "req-1778832000-3.json"), JSON.stringify({
+      requestId: "req-1778832000-3", command: "/ludics-learn", line: "{}",
+      deliveredAt: "2026-05-15T10:00:00Z",
+    }));
+    const handler = await makeHandler();
+
+    const resp = await handler(new Request("http://x/api/in-flight-discard?id=req-1778832000-3", { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("discarded");
+    expect(existsSync(join(dir, "in-flight", "req-1778832000-3.json"))).toBe(false);
+    expect(readEvents().some(e => e.event_type === "mag_in_flight_discarded")).toBe(true);
+  });
+
+  test("idempotent: discard against a non-existent id is still 'discarded' (ENOENT swallowed)", async () => {
+    magDir();
+    const handler = await makeHandler();
+    // Well-formed id, but no file on disk.
+    const resp = await handler(new Request("http://x/api/in-flight-discard?id=req-9999999999-9", { method: "POST" }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string };
+    expect(body.status).toBe("discarded");
+  });
+
+  test("malformed id → 400", async () => {
+    magDir();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/in-flight-discard?id=not-a-queue-id", { method: "POST" }));
+    expect(resp.status).toBe(400);
   });
 });
 
