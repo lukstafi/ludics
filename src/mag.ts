@@ -1930,12 +1930,29 @@ export async function briefingPrecomputeContext(opts?: { runGit?: RunGit }): Pro
   // whose result file is still absent — that's the post-boot-race / lost-
   // delivery shape. Briefing context absorbs the orphan (paper trail) and
   // unlinks the record so the panel signal stays high.
+  //
+  // Exclude the currently-active delivery (the request whose id sits in
+  // `mag/current-request-id`) from the orphan set. queuePopSkill removes
+  // the entry from queue.jsonl BEFORE deliverPoppedSkill writes the
+  // in-flight record, so during a Mag-turn delivery (including this
+  // briefing's own delivery when it was popped as action: "briefing") the
+  // record's id is absent from queue.jsonl but the delivery is still
+  // genuinely active. Without this exclusion, briefing-prep would
+  // unlink its own in-flight record and unblock deliveryGateBlocked(),
+  // letting the next pop dispatch before the current delivery completes —
+  // a load-bearing violation of the A3 gate invariant.
   reconcileInFlight();
   const queueIds = new Set(
     queueList().map(r => String(r.id ?? "")).filter(Boolean),
   );
+  let activeRequestId = "";
+  try {
+    activeRequestId = readFileSync(join(harnessDir(), "mag", "current-request-id"), "utf-8").trim();
+  } catch { /* file absent on fresh boot — no active delivery to exclude */ }
   const orphans = listInFlight().filter(
-    r => !queueIds.has(r.requestId) && !existsSync(magResultFile(r.requestId)),
+    r => r.requestId !== activeRequestId
+      && !queueIds.has(r.requestId)
+      && !existsSync(magResultFile(r.requestId)),
   );
   const orphanLines = orphans.length === 0
     ? "(none)"

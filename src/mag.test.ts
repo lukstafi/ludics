@@ -795,6 +795,34 @@ describe("briefingPrecomputeContext — orphan absorption (A9)", () => {
     expect(existsSync(inFlightFile("req-PENDING"))).toBe(true);
     expect(existsSync(inFlightFile("req-DONE"))).toBe(false);
   });
+
+  // Codex review on PR #536: queuePopSkill removes the entry from queue.jsonl
+  // BEFORE deliverPoppedSkill writes the in-flight record. So the
+  // currently-active delivery's requestId is absent from queue.jsonl AND its
+  // result file does not yet exist — the literal orphan filter would
+  // (incorrectly) absorb it. The active id sits in mag/current-request-id;
+  // briefingPrecomputeContext must exclude it from the orphan set.
+  test("ACTIVE delivery (id in mag/current-request-id, absent from queue.jsonl, no result) is NOT absorbed", async () => {
+    // Harness condition reconstructed from queuePopSkill's pop→deliver
+    // sequence: the active id sits in mag/current-request-id, the in-flight
+    // record is on disk, the entry is no longer in queue.jsonl, the result
+    // file is still absent. This is the exact state that
+    // briefingPrecomputeContext sees when invoked from inside a Tier-2
+    // briefing skill (e.g., action: "briefing").
+    seedInFlight("req-ACTIVE", "2026-05-15T10:00:00Z");
+    writeFileSync(join(magDirPath, "current-request-id"), "req-ACTIVE");
+    writeFileSync(queueFile(), "");
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+
+    // The gate invariant: an active delivery must remain on disk so
+    // deliveryGateBlocked() stays true. Without the exclusion, this
+    // assertion fails — the briefing would unlink its own record and
+    // unblock the gate, letting the next pop dispatch prematurely.
+    expect(existsSync(inFlightFile("req-ACTIVE"))).toBe(true);
+    const content = readFileSync(contextFile(), "utf-8");
+    expect(content).toContain("## Unresolved Deliveries (orphans)\n\n(none)");
+  });
 });
 
 describe("stale settled sentinel detection", () => {
