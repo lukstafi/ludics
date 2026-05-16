@@ -1524,6 +1524,11 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       } catch (err) {
         console.error("ludics: test health check failed:", err);
       }
+      // Auto-compact after health-check — checkpoint compaction (task-a00fc0d9 /
+      // docs/proposals/auto-compact-after-checkpoints.md). Coupled to the gate
+      // here so idle ticks that skip the health-check do not also fire a
+      // no-op /compact.
+      queueRequest({ action: "message", content: "/compact" });
     }
   }
 
@@ -3890,10 +3895,9 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
       return;
     }
     queueRequest({ action: "health-check" });
-    // Auto-compact after health-check — checkpoint compaction (task-a00fc0d9 /
-    // docs/proposals/auto-compact-after-checkpoints.md). Enqueued unconditionally;
-    // a no-op /compact on a small context is acceptable.
-    queueRequest({ action: "message", content: "/compact" });
+    // /compact is enqueued by the gate-check path in resolveQueueRequestCommand
+    // only when the health-check actually runs (gate did not skip). Coupling
+    // /compact to a real checkpoint avoids spurious compactions on idle ticks.
     console.log("Queued health-check request");
   }],
   ["message", (args) => {

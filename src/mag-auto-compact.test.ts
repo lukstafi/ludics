@@ -116,15 +116,57 @@ describe("magBriefing auto-compact follow-up", () => {
 });
 
 describe("runMag health-check auto-compact follow-up", () => {
-  test("enqueues /compact directly behind the health-check entry", async () => {
+  test("CLI enqueues only health-check; /compact is appended later by the gate-check path on a non-skipped delivery", async () => {
     const { runMag } = await import("./mag.ts");
     await runMag(["health-check"]);
+
+    // /compact is no longer enqueued at CLI time — it's coupled to the gate
+    // and appended by resolveQueueRequestCommand only when the gate does not
+    // skip the delivery. This avoids spurious /compact on idle ticks.
+    const items = readQueue();
+    expect(items).toHaveLength(1);
+    expect(items[0]!.action).toBe("health-check");
+  });
+
+  test("non-skipped delivery appends /compact to the queue", async () => {
+    const { runMag, resolveQueueRequestCommand } = await import("./mag.ts");
+    await runMag(["health-check"]);
+
+    // Resolve with executeProgrammatic: true so the gate-check branch runs.
+    // With no prior snapshot the gate fails open (first-run reason), so the
+    // health-check resolves to its skill command and the auto-compact
+    // follow-up is appended.
+    const command = await resolveQueueRequestCommand({ action: "health-check" }, true);
+    expect(command).toBe("/ludics-health-check");
 
     const items = readQueue();
     expect(items).toHaveLength(2);
     expect(items[0]!.action).toBe("health-check");
     expect(items[1]!.action).toBe("message");
     expect(items[1]!.content).toBe("/compact");
+  });
+
+  test("gate-skipped delivery does not append /compact", async () => {
+    const { runMag, resolveQueueRequestCommand } = await import("./mag.ts");
+
+    // Seed a prior snapshot so the gate has an anchor to compare against.
+    // With currentLines == priorLines (delta 0), the gate skips.
+    const eventsFile = join(getTmpDir(), "journal", "events.jsonl");
+    mkdirSync(join(getTmpDir(), "journal"), { recursive: true });
+    writeFileSync(eventsFile, '{"event_type":"placeholder"}\n');
+    const snapPath = join(getTmpDir(), "mag", "health-last.json");
+    writeFileSync(snapPath, JSON.stringify({ eventsJsonlLines: 1 }));
+
+    await runMag(["health-check"]);
+    const before = readQueue();
+    expect(before).toHaveLength(1);
+
+    const command = await resolveQueueRequestCommand({ action: "health-check" }, true);
+    expect(command).toBeNull();
+
+    const after = readQueue();
+    expect(after).toHaveLength(1);
+    expect(after[0]!.action).toBe("health-check");
   });
 });
 
