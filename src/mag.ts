@@ -11,7 +11,7 @@ import { atomicWriteFileSync, isPlainObject, writeJsonFile, writeJsonFileCompact
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
-import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults } from "./queue.ts";
+import { queueRequest, queueRequestAtHead, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
@@ -1527,8 +1527,10 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       // Auto-compact after health-check — checkpoint compaction (task-a00fc0d9 /
       // docs/proposals/auto-compact-after-checkpoints.md). Coupled to the gate
       // here so idle ticks that skip the health-check do not also fire a
-      // no-op /compact.
-      queueRequest({ action: "message", content: "/compact" });
+      // no-op /compact. Head-insert (not tail-append) preserves the
+      // health-check → /compact → next ordering even when other requests
+      // landed on the queue tail between health-check enqueue and dispatch.
+      queueRequestAtHead({ action: "message", content: "/compact" });
     }
   }
 

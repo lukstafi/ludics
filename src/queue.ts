@@ -177,6 +177,22 @@ export function queueReinsertHead(line: string): void {
 }
 
 /**
+ * Like queueRequest, but prepends to the queue head instead of appending to
+ * the tail. Used to enforce ordering when one dispatched request must enqueue
+ * a follow-up that runs *before* anything that landed in the tail meanwhile
+ * (e.g., health-check coupling /compact directly behind itself — see
+ * docs/proposals/auto-compact-after-checkpoints.md).
+ */
+export function queueRequestAtHead(req: QueueAction): string {
+  const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const requestId = nextRequestId();
+  const record = { id: requestId, ...req, timestamp };
+  queueReinsertHead(JSON.stringify(record));
+  emitEvent({ event_type: "queue_request", source: "cli", scope: "queue", action: req.action, message: requestId });
+  return requestId;
+}
+
+/**
  * Re-fire helper (gh-ludics-535): mint a fresh request id (same shape as
  * queueRequest's `req-<epoch>-<counter>`), stamp the original id as
  * `re-fired-from` provenance, and reinsert at the queue head. Returns the
