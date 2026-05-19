@@ -13,6 +13,29 @@ function parsePrUrl(prUrl: string): { repo: string; prNumber: string } | null {
   return { repo: match[1], prNumber: match[2] };
 }
 
+/** Normalize an `owner/repo` slug for comparison: lowercase, trim, strip one trailing `.git`. */
+function normalizeRepoSlug(slug: string): string {
+  return slug.trim().toLowerCase().replace(/\.git$/, "");
+}
+
+/** Returns the `owner/repo` slug from a GitHub PR URL, or null if malformed. */
+export function repoSlugFromPrUrl(prUrl: string): string | null {
+  const parsed = parsePrUrl(prUrl);
+  return parsed ? parsed.repo : null;
+}
+
+/**
+ * Returns true iff `prUrl` is a GitHub PR URL whose `owner/repo` slug matches
+ * `repo` after slug normalization (case-insensitive, trimmed, trailing `.git`
+ * stripped). Returns false for malformed URLs and for missing/blank `repo`.
+ */
+export function prUrlBelongsToRepo(prUrl: string, repo?: string | null): boolean {
+  if (!repo || !repo.trim()) return false;
+  const parsed = parsePrUrl(prUrl);
+  if (!parsed) return false;
+  return normalizeRepoSlug(parsed.repo) === normalizeRepoSlug(repo);
+}
+
 /**
  * Run `gh api --paginate <endpoint> --jq <jqFilter>`, sum the per-page
  * integers from stdout, and return the total.  Returns 0 on any error.

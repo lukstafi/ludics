@@ -18,7 +18,7 @@ import {
   type AgentConfig, type OrchestrationState,
 } from "./state.ts";
 import { isoNow, makeId, nowEpoch, sleepMs } from "./util.ts";
-import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, postPrDriftComment, validateAndFixPrFile, type PrVerification } from "./github.ts";
+import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, postPrDriftComment, prUrlBelongsToRepo, repoSlugFromPrUrl, validateAndFixPrFile, type PrVerification } from "./github.ts";
 import { updateFrontmatterField, addFrontmatterField, appendToSection } from "../tasks/markdown.ts";
 import { findProjectConfig, globalAdapter, harnessDir as defaultHarnessDir, ludicsRoot } from "../config.ts";
 import { taskFilePath } from "./paths.ts";
@@ -336,6 +336,34 @@ const FINAL_MERGE_GATE: VerificationGateConfig = {
  * hold (max retries), skip (not applicable).
  */
 export { PR_CREATE_GATE, FINAL_MERGE_GATE };
+
+/**
+ * Build a wrong-base-repo failure message used by both the gate-level
+ * catch-all and the early catch inside `validateAgentPrFiles`. Names the
+ * wrong slug, the expected project repo, the recreate-with-`--repo`
+ * instruction, the overwrite-`.peer-sync/<agent>.pr` instruction, and when
+ * the wrong slug matches `upstream_repo` calls out the fork-parent default
+ * of an omitted `--repo`.
+ */
+export function buildWrongRepoReason(
+  prUrl: string,
+  expectedRepo: string,
+  upstreamRepo?: string | null,
+): string {
+  const wrongSlug = repoSlugFromPrUrl(prUrl) ?? "unknown";
+  const isUpstream = !!upstreamRepo && prUrlBelongsToRepo(prUrl, upstreamRepo);
+  const upstreamHint = isUpstream
+    ? ` (this is the project's upstream/fork-parent — \`gh pr create\` without \`--repo\` defaults the base repo to the fork parent)`
+    : "";
+  return (
+    `PR base repo mismatch: ${prUrl} targets ${wrongSlug}, ` +
+    `expected ${expectedRepo}${upstreamHint}. ` +
+    `Recreate the PR with \`gh pr create --repo ${expectedRepo}\` ` +
+    `(close the wrong PR on GitHub first), then overwrite ` +
+    `\`.peer-sync/<agent>.pr\` with the corrected URL.`
+  );
+}
+
 export function verifyPhaseOutcome(state: OrchestrationState, config: VerificationGateConfig): VerificationDecision {
   if (state.phase !== config.phase) return "skip";
   if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return "skip";
@@ -347,7 +375,19 @@ export function verifyPhaseOutcome(state: OrchestrationState, config: Verificati
   }
 
   const v = getPrVerification(prUrl);
-  if (config.checkSuccess(v)) {
+
+  // Wrong-base-repo catch-all for the pr-create gate: an existing PR that
+  // belongs to the wrong owner/repo must not be allowed to advance. Gated on
+  // `prCreate` so FINAL_MERGE_GATE is unaffected. AC5: when projectRepo is
+  // unset/blank, prUrlBelongsToRepo returns false; we treat that as "skip the
+  // assertion" via the explicit `projectRepo` check below.
+  const projectEntry = config.gate === "prCreate"
+    ? findProjectConfig(state.projectDir)
+    : null;
+  const projectRepo = projectEntry?.repo;
+  const wrongRepo = !!(projectRepo && !prUrlBelongsToRepo(prUrl, projectRepo));
+
+  if (config.checkSuccess(v) && !wrongRepo) {
     emitEvent({
       event_type: config.successEvent,
       source: "orchestration", scope: "slot",
@@ -357,6 +397,13 @@ export function verifyPhaseOutcome(state: OrchestrationState, config: Verificati
     });
     state.phaseRetryContext = null;
     return "advance";
+  }
+
+  if (wrongRepo) {
+    return handleVerifyFailure(
+      state, config.gate,
+      buildWrongRepoReason(prUrl, projectRepo!, projectEntry?.upstream_repo),
+    );
   }
 
   return handleVerifyFailure(state, config.gate, config.formatFailure(prUrl, v));
@@ -1670,7 +1717,8 @@ export function checkAndAnnotatePrBodyDrift(state: OrchestrationState): void {
  * Settled-mode repair: existing behavior for when .pr doesn't exist yet.
  */
 export function validateAgentPrFiles(state: OrchestrationState): void {
-  const projectRepo = findProjectConfig(state.projectDir)?.repo;
+  const projectEntry = findProjectConfig(state.projectDir);
+  const projectRepo = projectEntry?.repo;
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
     const runtime = state.agentStates[agent.name];
@@ -1684,15 +1732,7 @@ export function validateAgentPrFiles(state: OrchestrationState): void {
         const content = readFileSync(prFile, "utf-8").trim();
         if (content && !isPrUrl(content)) {
           const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch, projectRepo);
-          if (fixedUrl && !runtime.prUrl) {
-            runtime.prUrl = fixedUrl;
-            notifyAgents(
-              `Slot ${state.slot} [${state.taskId}]: PR created by ${agent.name}: ${fixedUrl}`,
-              3,
-              `Slot ${state.slot}: PR created`,
-            );
-          }
-          capturePrBodyBaseline(state, agent, runtime);
+          promoteOrRejectPrUrl(state, agent, runtime, fixedUrl, projectRepo, projectEntry?.upstream_repo);
           continue; // Attempted repair — skip settled-mode path for this agent
         }
       } catch {
@@ -1706,16 +1746,67 @@ export function validateAgentPrFiles(state: OrchestrationState): void {
     const statusDone = DONE_STATUSES.has(runtime.status);
     if (!turnSettled && !statusDone && !runtime.interrupted) continue;
     const fixedUrl = validateAndFixPrFile(prFile, agent.worktreePath, agent.branch, projectRepo);
-    if (fixedUrl && !runtime.prUrl) {
-      runtime.prUrl = fixedUrl;
+    promoteOrRejectPrUrl(state, agent, runtime, fixedUrl, projectRepo, projectEntry?.upstream_repo);
+  }
+}
+
+/**
+ * Wrap the `runtime.prUrl` promotion step with the wrong-base-repo early
+ * catch. When the URL belongs to the project's `repo` (or `projectRepo` is
+ * unset — AC5), the existing promotion + notify + baseline-capture path
+ * runs unchanged. When it belongs to a different repo, we emit a visible
+ * warning and refuse to promote — the gate-level catch-all in
+ * `verifyPhaseOutcome` then surfaces a verification failure that routes
+ * through `handleVerifyFailure` with retry context.
+ */
+function promoteOrRejectPrUrl(
+  state: OrchestrationState,
+  agent: AgentConfig,
+  runtime: OrchestrationState["agentStates"][string],
+  fixedUrl: string | null,
+  projectRepo: string | undefined,
+  upstreamRepo: string | undefined,
+): void {
+  if (!fixedUrl) {
+    capturePrBodyBaseline(state, agent, runtime);
+    return;
+  }
+  if (projectRepo && !prUrlBelongsToRepo(fixedUrl, projectRepo)) {
+    emitEvent({
+      event_type: "orchestration_warning",
+      source: "orchestration", scope: "slot",
+      slot: state.slot, task: state.taskId,
+      action: "pr-create base repo validation", status: "failed",
+      message: buildWrongRepoReason(fixedUrl, projectRepo, upstreamRepo),
+    });
+    // Do not promote to runtime.prUrl, do not notify, do not baseline.
+    // Also evict any stale wrong-repo URL already in runtime.prUrl — it was
+    // copied there by `refreshAgentStatuses` → `resolvePrUrl` before this
+    // assertion ran, and `getFirstPrUrl` would otherwise keep surfacing the
+    // wrong URL even after the coder repairs `.pr` on retry.
+    if (runtime.prUrl && !prUrlBelongsToRepo(runtime.prUrl, projectRepo)) {
+      runtime.prUrl = null;
+    }
+    // The gate-level catch-all routes through handleVerifyFailure → redispatch.
+    return;
+  }
+  // Promote when the URL changed. The previous `!runtime.prUrl` guard was a
+  // first-time-only gate intended to suppress repeat notifications; under
+  // retry semantics it also prevented overwriting a stale wrong-repo URL
+  // (copied in by `resolvePrUrl`) with the freshly repaired correct-repo
+  // URL. Notification fires only on actual transitions.
+  if (runtime.prUrl !== fixedUrl) {
+    const isFirstAssignment = !runtime.prUrl;
+    runtime.prUrl = fixedUrl;
+    if (isFirstAssignment) {
       notifyAgents(
         `Slot ${state.slot} [${state.taskId}]: PR created by ${agent.name}: ${fixedUrl}`,
         3,
         `Slot ${state.slot}: PR created`,
       );
     }
-    capturePrBodyBaseline(state, agent, runtime);
   }
+  capturePrBodyBaseline(state, agent, runtime);
 }
 
 /**
