@@ -1,6 +1,8 @@
 import { describe, test, expect } from "bun:test";
+import { mkdtempSync } from "fs";
 import { resolve } from "path";
 import {
+  defaultRunGit,
   detectDefaultBranches,
   expandHome,
   hasRemote,
@@ -362,5 +364,19 @@ describe("withCheckout", () => {
     expect(invoked).toBe(false);
     // No restore call recorded, because we never swapped away.
     expect(calls.filter((c) => c[0] === "checkout")).toHaveLength(1);
+  });
+});
+
+describe("defaultRunGit", () => {
+  // Regression for gh-ludics-540: the outbound push classifier reads
+  // stderr to distinguish auth failures (Permission denied / could not
+  // read Username / Authentication failed) from transient network
+  // errors. defaultRunGit previously discarded stderr; this test pins
+  // that contract.
+  test("preserves stderr alongside stdout and exitCode", () => {
+    const tmp = mkdtempSync("/tmp/git-runner-stderr-");
+    const result = defaultRunGit(["rev-parse", "--git-dir"], tmp);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr ?? "").toMatch(/not a git repository/i);
   });
 });
