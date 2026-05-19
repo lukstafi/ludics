@@ -19,8 +19,9 @@ export interface ProjectConfig {
   name: string;
   repo: string;
   /** Optional upstream repo used for GitHub issue sync, briefing staging-vs-upstream
-   *  lag reporting, and the once-daily keepalive fast-forward job. PR creation targets
-   *  `repo` (the working/staging fork); forwarding staging commits upstream is manual. */
+   *  lag reporting, and the once-daily keepalive fast-forward jobs (inbound always;
+   *  outbound when `outbound_sync_enabled` is true). PR creation targets `repo`
+   *  (the working/staging fork). */
   upstream_repo?: string;
   path?: string;
   issues?: boolean;
@@ -57,6 +58,16 @@ export interface ProjectConfig {
    *  Tasks in this project only auto-assign to machines satisfying all specified requirements.
    *  Task-level requirements override project-level values for the same key. */
   requirements?: { os?: string; gpu?: string };
+  /** When true and `upstream_repo` is set, the once-daily keepalive tick attempts
+   *  a `git push upstream origin/<default>:<default>` from the staging checkout
+   *  whenever origin is strictly ahead of upstream. Fast-forward-only by
+   *  construction: a `git merge-base --is-ancestor upstream/<u> origin/<o>`
+   *  pre-check plus git's server-side non-ff rejection guarantee the push is
+   *  fast-forward (no `--force` / `--force-with-lease` is ever used).
+   *  Throttled via `mag/last-outbound-fast-forward-<project>.epoch`.
+   *  Default `false` — absent fields are treated as not enabled. See
+   *  docs/proposals/gh-ludics-540-outbound-staging-ff.md. */
+  outbound_sync_enabled?: boolean;
 }
 
 export type GlobalAdapterMode = "t3code" | "tmux";
