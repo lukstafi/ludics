@@ -138,16 +138,27 @@ export type QueueAction =
   | { action: "message"; content: string }
   | { action: "adapter-followup"; task: string; adapter: string; followup_msg?: string };
 
-export function queueRequest(req: QueueAction): string {
+/** Optional side-band fields stored on the queue record alongside the
+ *  discriminated-union `QueueAction`. Kept separate from `QueueAction` so the
+ *  action types stay tight; `bypassGate` is provenance metadata, not a new
+ *  action variant. Set by manual CLI handlers in `src/mag.ts` so a queued
+ *  request from `ludics mag <skill>` skips the dispatch-time activity gate
+ *  even when the snapshot would otherwise suppress it (gh-ludics-538 AC 11). */
+export interface QueueRequestExtras {
+  bypassGate?: boolean;
+}
+
+export function queueRequest(req: QueueAction, extras?: QueueRequestExtras): string {
   const file = queueFile();
   mkdirSync(dirname(file), { recursive: true });
 
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const requestId = nextRequestId();
 
-  const record = { id: requestId, ...req, timestamp };
+  const baseRecord: Record<string, unknown> = { id: requestId, ...req, timestamp };
+  if (extras?.bypassGate === true) baseRecord.bypassGate = true;
   withQueueLock(() => {
-    appendFileSync(file, JSON.stringify(record) + "\n");
+    appendFileSync(file, JSON.stringify(baseRecord) + "\n");
   });
   emitEvent(buildQueueRequestEvent(req, requestId));
   return requestId;
@@ -198,11 +209,12 @@ export function queueReinsertHead(line: string): void {
  * (e.g., health-check coupling /compact directly behind itself — see
  * docs/proposals/auto-compact-after-checkpoints.md).
  */
-export function queueRequestAtHead(req: QueueAction): string {
+export function queueRequestAtHead(req: QueueAction, extras?: QueueRequestExtras): string {
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const requestId = nextRequestId();
-  const record = { id: requestId, ...req, timestamp };
-  queueReinsertHead(JSON.stringify(record));
+  const baseRecord: Record<string, unknown> = { id: requestId, ...req, timestamp };
+  if (extras?.bypassGate === true) baseRecord.bypassGate = true;
+  queueReinsertHead(JSON.stringify(baseRecord));
   emitEvent(buildQueueRequestEvent(req, requestId));
   return requestId;
 }

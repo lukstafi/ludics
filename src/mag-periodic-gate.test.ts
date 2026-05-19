@@ -79,7 +79,8 @@ describe("briefing Tier-1 arm — activity-window gate (gh-ludics-538 AC 3)", ()
     expect(last).toBeNull();
     // Snapshot was refreshed on the RUN arm.
     expect(existsSync(join(stateDir, "mag", "briefing-last.json"))).toBe(true);
-  });
+  }, 20_000); // briefing RUN arm awaits briefingPrecomputeContext, which spawns
+  // `ludics` subprocesses; the 5s default times out under full-suite load.
 
   test("fresh notify_incoming → run, briefing_skipped NOT emitted, snapshot refreshed", async () => {
     const stateDir = getStateDir();
@@ -96,7 +97,7 @@ describe("briefing Tier-1 arm — activity-window gate (gh-ludics-538 AC 3)", ()
 
     const last = findLastEvent(stateDir, "briefing_skipped");
     expect(last).toBeNull();
-  });
+  }, 20_000); // briefing RUN arm awaits briefingPrecomputeContext — see above.
 
   test("peek path (executeProgrammatic=false) bypasses gate (AC 11)", async () => {
     const stateDir = getStateDir();
@@ -112,6 +113,60 @@ describe("briefing Tier-1 arm — activity-window gate (gh-ludics-538 AC 3)", ()
 
     // No skip event — gate did not run.
     expect(findLastEvent(stateDir, "briefing_skipped")).toBeNull();
+  });
+
+  test("manual CLI `ludics mag briefing` bypasses the gate — tagged record runs the skill despite a would-skip snapshot (AC 11/15)", async () => {
+    const stateDir = getStateDir();
+    makeJournal(stateDir);
+    // Would-skip world: idle (empty events → latestUserActionEpoch===0) with a
+    // prior snapshot present → activity-window gate would skip a gated request.
+    writeFileSync(join(stateDir, "mag", "briefing-last.json"),
+      JSON.stringify({ timestamp: "2026-04-01T00:00:00Z", signal: 1_000_000_000 }));
+    writeFileSync(join(stateDir, "journal", "events.jsonl"), "");
+
+    // CLI path: `ludics mag briefing` dispatches to magBriefing(true,300,{}) —
+    // opts.auto is falsy → manual invocation.
+    const { magBriefing, resolveQueueRequestCommand } = await import("./mag.ts");
+    magBriefing(false);
+
+    // The CLI handler tagged the enqueued briefing record with bypassGate.
+    const qLines = readFileSync(join(stateDir, "mag", "queue.jsonl"), "utf8")
+      .trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const briefingRec = qLines.find((r) => r.action === "briefing");
+    expect(briefingRec).toBeDefined();
+    expect(briefingRec!.bypassGate).toBe(true);
+
+    // Dispatch that exact record: the gate is bypassed, so NO briefing_skipped
+    // event is emitted despite the would-skip snapshot. (Precompute may throw
+    // in the synthetic harness — the skip decision is already made before it,
+    // and the negative-control test below proves this same world DOES skip a
+    // non-bypass record, so "no event" here can only mean the gate was skipped.)
+    try { await resolveQueueRequestCommand(briefingRec!, true); }
+    catch { /* precompute may fail in synthetic harness */ }
+    expect(findLastEvent(stateDir, "briefing_skipped")).toBeNull();
+  }, 20_000); // briefing RUN arm awaits briefingPrecomputeContext — see above.
+
+  test("auto trigger briefing does NOT bypass the gate — auto record stays gated and skips (AC 11 negative control)", async () => {
+    const stateDir = getStateDir();
+    makeJournal(stateDir);
+    writeFileSync(join(stateDir, "mag", "briefing-last.json"),
+      JSON.stringify({ timestamp: "2026-04-01T00:00:00Z", signal: 1_000_000_000 }));
+    writeFileSync(join(stateDir, "journal", "events.jsonl"), "");
+
+    // Auto path: magBriefing(...,{ auto: true }) — the launchd-trigger shape.
+    const { magBriefing, resolveQueueRequestCommand } = await import("./mag.ts");
+    magBriefing(false, 300, { auto: true });
+
+    const qLines = readFileSync(join(stateDir, "mag", "queue.jsonl"), "utf8")
+      .trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const briefingRec = qLines.find((r) => r.action === "briefing");
+    expect(briefingRec).toBeDefined();
+    // Auto record carries NO bypassGate → still subject to the gate.
+    expect("bypassGate" in briefingRec!).toBe(false);
+
+    const result = await resolveQueueRequestCommand(briefingRec!, true);
+    expect(result).toBeNull();
+    expect(findLastEvent(stateDir, "briefing_skipped")).not.toBeNull();
   });
 
   test("Mag-auto briefing queue_request does NOT advance the signal (denylist active)", async () => {
@@ -155,6 +210,12 @@ describe("adopt-sessions Tier-1 arm — fingerprint gate (gh-ludics-538 AC 9)", 
     const last = findLastEvent(stateDir, "adopt_sessions_skipped");
     expect(last).not.toBeNull();
     expect((last!.meta as Record<string, unknown>).gateSkip).toBe(true);
+    // AC 3/12: signal pair on the skip event mirrors the health_check shape.
+    // For fingerprint gates, current === prior on the skip arm (that's why it
+    // skipped); both must be strings, not null.
+    expect(typeof last!.current).toBe("string");
+    expect(typeof last!.prior).toBe("string");
+    expect(last!.current).toBe(last!.prior);
   });
 
   test("fingerprint changed → run + snapshot refreshed", async () => {
@@ -212,6 +273,11 @@ describe("verify-completion Tier-1 arm — epoch-unchanged gate (gh-ludics-538 A
     expect(last).not.toBeNull();
     expect(last!.task).toBe("task-foo");
     expect((last!.meta as Record<string, unknown>).gateSkip).toBe(true);
+    // AC 3/12: signal pair on the skip event. epoch-unchanged carries number
+    // epochs for current and prior. Both must be numbers, not null.
+    expect(typeof last!.current).toBe("number");
+    expect(typeof last!.prior).toBe("number");
+    expect(last!.prior).toBe(knownEpoch);
   });
 
   test("task with newer event → run + snapshot refreshed", async () => {

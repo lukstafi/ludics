@@ -286,14 +286,19 @@ describe("dashboard HTTP /api/gate-skips", () => {
     return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
   }
 
-  test("GET /api/gate-skips returns 200, application/json, and the grouped aggregator payload", async () => {
+  test("GET /api/gate-skips covers all 5 committed gate names + asserts current/prior signal pair (AC 12/16/17)", async () => {
     const journal = join(harnessDir(), "journal");
     mkdirSync(journal, { recursive: true });
+    // One skip event per AC-17 committed gate name + a non-marker control.
+    // Each carries `current`/`prior` per AC 3/12 minimum diagnostic shape.
     const lines = [
-      JSON.stringify({ ts: "2026-05-02T00:00:00Z", epoch: 1700100000, event_type: "health_check_skipped", source: "k", scope: "m", message: "old health skip", meta: { gateSkip: true }, currentLines: 10, priorLines: 5 }),
+      JSON.stringify({ ts: "2026-05-02T00:00:00Z", epoch: 1700100000, event_type: "health_check_skipped", source: "k", scope: "m", message: "old health skip", meta: { gateSkip: true }, current: 10, prior: 5, currentLines: 10, priorLines: 5 }),
       JSON.stringify({ ts: "2026-05-02T00:01:00Z", epoch: 1700100060, event_type: "briefing_skipped", source: "m", scope: "m", message: "briefing idle", meta: { gateSkip: true }, current: 1700000000, prior: 1700000000 }),
+      JSON.stringify({ ts: "2026-05-02T00:02:00Z", epoch: 1700100120, event_type: "feedback_digest_skipped", source: "m", scope: "m", message: "no feedback files", meta: { gateSkip: true }, current: 0, prior: 0 }),
+      JSON.stringify({ ts: "2026-05-02T00:03:00Z", epoch: 1700100180, event_type: "adopt_sessions_skipped", source: "m", scope: "m", message: "fingerprint unchanged", meta: { gateSkip: true }, current: "hashA", prior: "hashA" }),
+      JSON.stringify({ ts: "2026-05-02T00:04:00Z", epoch: 1700100240, event_type: "verify_completion_skipped", source: "m", scope: "m", message: "epoch unchanged", meta: { gateSkip: true }, current: 1700050000, prior: 1700050000, task: "task-zzz" }),
       // Non-marker event — must not pollute the response.
-      JSON.stringify({ ts: "2026-05-02T00:02:00Z", epoch: 1700100120, event_type: "queue_request", source: "cli", scope: "queue", action: "elaborate", message: "req-x" }),
+      JSON.stringify({ ts: "2026-05-02T00:05:00Z", epoch: 1700100300, event_type: "queue_request", source: "cli", scope: "queue", action: "elaborate", message: "req-x" }),
     ];
     writeFileSync(join(journal, "events.jsonl"), lines.join("\n") + "\n");
 
@@ -301,9 +306,22 @@ describe("dashboard HTTP /api/gate-skips", () => {
     const resp = await handler(new Request("http://x/api/gate-skips"));
     expect(resp.status).toBe(200);
     expect(resp.headers.get("content-type")).toContain("application/json");
-    const body = await resp.json() as Record<string, { gate: string; reason: string; timestamp: string }>;
+    const body = await resp.json() as Record<string, { gate?: string; reason?: string; timestamp?: string; current?: unknown; prior?: unknown }>;
+
+    // All 5 committed gate names present.
     expect(body.health_check_skipped?.reason).toBe("old health skip");
     expect(body.briefing_skipped?.reason).toBe("briefing idle");
+    expect(body.feedback_digest_skipped?.reason).toBe("no feedback files");
+    expect(body.adopt_sessions_skipped?.reason).toBe("fingerprint unchanged");
+    expect(body.verify_completion_skipped?.reason).toBe("epoch unchanged");
+    // Signal pair surfaces at the HTTP boundary (AC 12 minimum diagnostic shape).
+    expect(body.health_check_skipped?.current).toBe(10);
+    expect(body.health_check_skipped?.prior).toBe(5);
+    expect(body.briefing_skipped?.current).toBe(1700000000);
+    expect(body.adopt_sessions_skipped?.current).toBe("hashA");
+    expect(body.adopt_sessions_skipped?.prior).toBe("hashA");
+    expect(body.verify_completion_skipped?.current).toBe(1700050000);
+    // Non-marker event excluded.
     expect(body.queue_request).toBeUndefined();
   });
 

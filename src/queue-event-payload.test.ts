@@ -11,6 +11,20 @@ function readLastEvent(stateDir: string): Record<string, unknown> {
   return JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>;
 }
 
+function readLastQueueRecord(stateDir: string): Record<string, unknown> {
+  const qPath = join(stateDir, "mag", "queue.jsonl");
+  expect(existsSync(qPath)).toBe(true);
+  const lines = readFileSync(qPath, "utf8").trim().split("\n");
+  return JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>;
+}
+
+function readFirstQueueRecord(stateDir: string): Record<string, unknown> {
+  const qPath = join(stateDir, "mag", "queue.jsonl");
+  expect(existsSync(qPath)).toBe(true);
+  const lines = readFileSync(qPath, "utf8").trim().split("\n");
+  return JSON.parse(lines[0]!) as Record<string, unknown>;
+}
+
 describe("queue_request event payload — messageContent field (gh-ludics-538)", () => {
   const getStateDir = withSyntheticHarness(beforeEach, afterEach);
 
@@ -50,5 +64,57 @@ describe("queue_request event payload — messageContent field (gh-ludics-538)",
     const ev = readLastEvent(getStateDir());
     expect(ev.action).toBe("feedback-digest");
     expect("messageContent" in ev).toBe(false);
+  });
+});
+
+// gh-ludics-538 AC 11: the additive `bypassGate` field on the queue RECORD
+// (not the event) carries CLI-bypass provenance to the dispatch-time gate.
+describe("queue record — bypassGate field (gh-ludics-538 AC 11)", () => {
+  const getStateDir = withSyntheticHarness(beforeEach, afterEach);
+
+  test("queueRequest with extras.bypassGate=true persists bypassGate on the record", () => {
+    queueRequest({ action: "briefing" }, { bypassGate: true });
+    const rec = readLastQueueRecord(getStateDir());
+    expect(rec.action).toBe("briefing");
+    expect(rec.bypassGate).toBe(true);
+  });
+
+  test("queueRequest without extras omits bypassGate (gated path stays default)", () => {
+    queueRequest({ action: "briefing" });
+    const rec = readLastQueueRecord(getStateDir());
+    expect(rec.action).toBe("briefing");
+    expect("bypassGate" in rec).toBe(false);
+  });
+
+  test("queueRequest with extras.bypassGate=false omits the field (only true is persisted)", () => {
+    queueRequest({ action: "briefing" }, { bypassGate: false });
+    const rec = readLastQueueRecord(getStateDir());
+    expect("bypassGate" in rec).toBe(false);
+  });
+
+  test("queueRequestAtHead with extras.bypassGate=true persists bypassGate", () => {
+    queueRequestAtHead({ action: "health-check" }, { bypassGate: true });
+    const rec = readFirstQueueRecord(getStateDir());
+    expect(rec.action).toBe("health-check");
+    expect(rec.bypassGate).toBe(true);
+  });
+
+  test("bypassGate survives a JSON round-trip on the queue record", () => {
+    queueRequest({ action: "verify-completion", task: "task-rt" }, { bypassGate: true });
+    const rec = readLastQueueRecord(getStateDir());
+    // Re-serialize and re-parse to prove the field is not dropped by the
+    // record's own JSON encoding (the dispatch path re-parses the record).
+    const roundTripped = JSON.parse(JSON.stringify(rec)) as Record<string, unknown>;
+    expect(roundTripped.action).toBe("verify-completion");
+    expect(roundTripped.task).toBe("task-rt");
+    expect(roundTripped.bypassGate).toBe(true);
+  });
+
+  test("bypassGate is NOT mirrored onto the queue_request event payload", () => {
+    queueRequest({ action: "briefing" }, { bypassGate: true });
+    const ev = readLastEvent(getStateDir());
+    expect(ev.event_type).toBe("queue_request");
+    // bypassGate is record-only provenance — the event stays unchanged.
+    expect("bypassGate" in ev).toBe(false);
   });
 });
