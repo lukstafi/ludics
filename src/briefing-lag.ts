@@ -20,6 +20,16 @@ export interface FormatLagOptions {
   runGit: RunGit;
   /** If set, treat `.git/FETCH_HEAD` mtime older than this many seconds as stale. Default 6h. */
   fetchStaleSeconds?: number;
+  /**
+   * Directory holding the outbound staging-ff sentinel files
+   * (`last-outbound-fast-forward-<project>.epoch`). When omitted, the
+   * outbound-stale annotation is suppressed — backward-compatible
+   * with callers/tests that don't surface the outbound sentinel.
+   * gh-ludics-540.
+   */
+  sentinelDir?: string;
+  /** Outbound sentinel age threshold for the stale annotation. Default 48h. gh-ludics-540. */
+  outboundSentinelStaleSeconds?: number;
 }
 
 /**
@@ -53,6 +63,31 @@ function fetchFreshnessNote(cwd: string, now: Date, stale: number): string | nul
     if (ageSec < stale) return null;
     const hours = Math.round(ageSec / 3600);
     return `(upstream fetch data is ~${hours}h old; keepalive fast-forward may be overdue)`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * gh-ludics-540: annotation for the outbound staging→upstream push
+ * sentinel. Reads the same file that `src/staging-ff.ts` writes and
+ * `skills/ludics-health-check.md` reads — so a stale sentinel here
+ * matches the stale-sentinel finding in the health-check skill.
+ */
+function outboundSentinelStaleNote(
+  sentinelDir: string,
+  project: string,
+  now: Date,
+  stale: number,
+): string | null {
+  const sentinel = join(sentinelDir, `last-outbound-fast-forward-${project}.epoch`);
+  if (!existsSync(sentinel)) return null;
+  try {
+    const mtime = statSync(sentinel).mtimeMs;
+    const ageSec = Math.max(0, Math.floor((now.getTime() - mtime) / 1000));
+    if (ageSec < stale) return null;
+    const hours = Math.round(ageSec / 3600);
+    return `(outbound sentinel is ~${hours}h old; upstream push may be overdue)`;
   } catch {
     return null;
   }
@@ -115,6 +150,15 @@ export function formatUpstreamLagSection(
     if (stagingLast) lines.push(`- last staging merge: ${stagingLast}`);
     if (upstreamLast) lines.push(`- last upstream merge: ${upstreamLast}`);
     if (freshnessNote) lines.push(`- ${freshnessNote}`);
+    // gh-ludics-540: outbound sentinel stale annotation. Only fires
+    // when the caller passed a sentinelDir AND the project has the
+    // sentinel file (writer in src/staging-ff.ts:syncUpstreamMainFromStaging
+    // only creates it for opt-in projects).
+    if (opts.sentinelDir) {
+      const outboundStale = opts.outboundSentinelStaleSeconds ?? 48 * 3600;
+      const outboundNote = outboundSentinelStaleNote(opts.sentinelDir, name, opts.now, outboundStale);
+      if (outboundNote) lines.push(`- ${outboundNote}`);
+    }
     lines.push("");
     blocks.push(lines.join("\n"));
   }

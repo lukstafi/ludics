@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile, runStagingOutboundPushTick } from "./mag.ts";
 import type { RunGit } from "./git-runner.ts";
+import type { LudicsFullConfig, ProjectConfig } from "./config.ts";
 
 describe("normalizeLaunchAdapter", () => {
   test("t3code passes through unchanged", () => {
@@ -1117,5 +1118,135 @@ describe("runMag unknown-command listing (gh-ludics-438)", () => {
     // Sanity: the public commands are still present.
     expect(useEntries).toContain("start");
     expect(useEntries).toContain("completed");
+  });
+});
+
+// =============================================================================
+// gh-ludics-540: runStagingOutboundPushTick wrapper gates.
+// AC 14 (controller-gate) + AC 7 (per-project opt-in: missing/false → off).
+// All four tests use a recording RunGit and assert `calls.length === 0`
+// (or specific outcomes when the wrapper passes through).
+// =============================================================================
+
+function recordingRunGit(): { run: RunGit; calls: string[][] } {
+  const calls: string[][] = [];
+  return {
+    calls,
+    run: (args) => {
+      calls.push(args.slice());
+      return { stdout: "", exitCode: 0 };
+    },
+  };
+}
+
+function ocannlProject(opts: { enabled?: boolean | undefined; path?: string }): ProjectConfig {
+  const base: ProjectConfig = {
+    name: "ocannl",
+    repo: "lukstafi/ocannl-staging",
+    upstream_repo: "ahrefs/ocannl",
+    path: opts.path ?? "/does/not/exist-ludics-540-test",
+  };
+  // Only set the field when the caller wants it set — preserves the
+  // "absent" distinction from explicit false.
+  if (opts.enabled !== undefined) {
+    base.outbound_sync_enabled = opts.enabled;
+  }
+  return base;
+}
+
+describe("runStagingOutboundPushTick", () => {
+  test("controller-gate: short-circuits with zero git invocations when isController() returns false", () => {
+    const { run, calls } = recordingRunGit();
+    const sentinelDir = mkdtempSync("/tmp/outbound-gate-");
+    const cfg = {
+      projects: [ocannlProject({ enabled: true })],
+    } as unknown as LudicsFullConfig;
+    const results = runStagingOutboundPushTick({
+      isController: () => false,
+      runGit: run,
+      sentinelDir,
+      config: cfg,
+      now: new Date(),
+    });
+    expect(results).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("opt-in absent: project with no outbound_sync_enabled is filtered out", () => {
+    // Closes the absent-field regression (reviewer finding 3 on v1).
+    // A legacy config with no outbound_sync_enabled must behave as off.
+    const { run, calls } = recordingRunGit();
+    const sentinelDir = mkdtempSync("/tmp/outbound-flag-absent-");
+    const cfg = {
+      projects: [ocannlProject({ enabled: undefined })],
+    } as unknown as LudicsFullConfig;
+    const results = runStagingOutboundPushTick({
+      isController: () => true,
+      runGit: run,
+      sentinelDir,
+      config: cfg,
+      now: new Date(),
+    });
+    expect(results).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("opt-in false: project with outbound_sync_enabled: false is filtered out", () => {
+    const { run, calls } = recordingRunGit();
+    const sentinelDir = mkdtempSync("/tmp/outbound-flag-false-");
+    const cfg = {
+      projects: [ocannlProject({ enabled: false })],
+    } as unknown as LudicsFullConfig;
+    const results = runStagingOutboundPushTick({
+      isController: () => true,
+      runGit: run,
+      sentinelDir,
+      config: cfg,
+      now: new Date(),
+    });
+    expect(results).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("opt-in true: project reaches the core syncUpstreamMainFromStaging", () => {
+    // Positive-control sibling for the two negative tests above — without
+    // this assertion the wrapper could silently filter EVERY project and
+    // both negative tests would still pass under a broken filter.
+    // The cheap reach-the-core observation: path points to a non-existent
+    // directory so the core returns skipped-no-path (length 1).
+    const { run } = recordingRunGit();
+    const sentinelDir = mkdtempSync("/tmp/outbound-flag-true-");
+    const cfg = {
+      projects: [ocannlProject({ enabled: true })],
+    } as unknown as LudicsFullConfig;
+    const results = runStagingOutboundPushTick({
+      isController: () => true,
+      runGit: run,
+      sentinelDir,
+      config: cfg,
+      now: new Date(),
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]!.outcome).toBe("skipped-no-path");
+  });
+
+  test("global enable_staging_fast_forward=false: outbound tick short-circuits like inbound", () => {
+    // Operator escape hatch — disabling inbound also kills outbound,
+    // matching the runStagingFastForwardTick gate.
+    const { run, calls } = recordingRunGit();
+    const sentinelDir = mkdtempSync("/tmp/outbound-global-off-");
+    const cfg = {
+      mag: { enable_staging_fast_forward: false },
+      projects: [ocannlProject({ enabled: true })],
+    } as unknown as LudicsFullConfig;
+    const results = runStagingOutboundPushTick({
+      isController: () => true,
+      runGit: run,
+      sentinelDir,
+      config: cfg,
+      now: new Date(),
+    });
+    expect(results).toEqual([]);
+    expect(calls).toHaveLength(0);
   });
 });
