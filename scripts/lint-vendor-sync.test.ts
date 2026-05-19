@@ -1,9 +1,9 @@
 import { describe, test, expect } from "bun:test";
 import { spawnSync } from "bun";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkPairs, formatViolation, PAIRS, type Pair } from "./lint-vendor-sync.ts";
+import { checkPairs, formatViolation, PAIRS, DEFAULT_FRESHEN_CMD, type Pair } from "./lint-vendor-sync.ts";
 
 /** Build a tmp repo-root layout with the listed files (parent dirs auto-created).
  *  Hermetic: nothing in `node_modules/` of the real repo is read. */
@@ -265,6 +265,166 @@ describe("CLI integration", () => {
     } finally {
       cleanup();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // gh-ludics-531: freshen step (`bun install --frozen-lockfile`) before lint
+  // runs. Three cases pinned here:
+  //   (1) The spawn fires when neither argRoot nor CI are set and the test
+  //       seam forces the spawn with a fake install command.
+  //   (2) A failing freshen is a HARD error: non-zero exit + the diagnostic
+  //       sentence the AC mandates + the captured stderr.
+  //   (3) argRoot WITHOUT the test-seam env var does NOT spawn — the gate
+  //       that protects existing hermetic tests stays intact.
+  // -------------------------------------------------------------------------
+  test("freshen step runs `bun install --frozen-lockfile` before checkPairs (LUDICS_VENDOR_SYNC_INSTALL_CMD seam pins existence)", () => {
+    const { root, cleanup } = makeFixture({
+      "templates/dashboard/vendor/marked.esm.js": "MARKED\n",
+      "node_modules/marked/lib/marked.esm.js": "MARKED\n",
+      "templates/dashboard/vendor/purify.es.js": "PURIFY\n",
+      "node_modules/dompurify/dist/purify.es.mjs": "PURIFY\n",
+    });
+    const sentinel = join(root, "FRESHEN_INVOKED");
+    try {
+      // Fake `bun install --frozen-lockfile`: records its argv into a file so
+      // the test can assert the freshen step ran with the AC-mandated flag.
+      const installCmd = JSON.stringify([
+        "sh",
+        "-c",
+        `printf '%s %s %s' "$0" "$1" "$2" > "${sentinel}"`,
+        "bun",
+        "install",
+        "--frozen-lockfile",
+      ]);
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-vendor-sync.ts"), root],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, LUDICS_VENDOR_SYNC_INSTALL_CMD: installCmd },
+      });
+      if (result.exitCode !== 0) {
+        console.error(result.stderr.toString());
+        console.error(result.stdout.toString());
+      }
+      expect(result.exitCode).toBe(0);
+      // The freshen step actually executed: the fake install wrote the sentinel.
+      // If a future refactor removes the spawn, the sentinel won't appear and
+      // this assertion fails — that's the invariant the AC names.
+      expect(existsSync(sentinel)).toBe(true);
+      expect(readFileSync(sentinel, "utf8")).toBe(
+        "bun install --frozen-lockfile",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("offline / failed install is a HARD error: non-zero exit + 'vendor sync indeterminate' diagnostic + captured stderr", () => {
+    const { root, cleanup } = makeFixture({
+      "templates/dashboard/vendor/marked.esm.js": "MARKED\n",
+      "node_modules/marked/lib/marked.esm.js": "MARKED\n",
+      "templates/dashboard/vendor/purify.es.js": "PURIFY\n",
+      "node_modules/dompurify/dist/purify.es.mjs": "PURIFY\n",
+    });
+    try {
+      // Simulate offline / registry-unreachable by making the install command
+      // print to stderr and exit non-zero.
+      const installCmd = JSON.stringify([
+        "sh",
+        "-c",
+        "printf 'fake registry unreachable\\n' >&2; exit 1",
+      ]);
+      const result = spawnSync({
+        cmd: ["bun", "run", join(import.meta.dir, "lint-vendor-sync.ts"), root],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, LUDICS_VENDOR_SYNC_INSTALL_CMD: installCmd },
+      });
+      // Hard fail: exit non-zero. A silent skip would have let checkPairs run
+      // and (since fixtures match) returned 0 — that's the failure mode the
+      // AC excludes.
+      expect(result.exitCode).not.toBe(0);
+      const stderr = result.stderr.toString();
+      expect(stderr).toContain(
+        "could not refresh node_modules; vendor sync indeterminate",
+      );
+      // Captured stderr from the failing install propagates so the developer
+      // can act on the underlying error.
+      expect(stderr).toContain("fake registry unreachable");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("argRoot without test-seam env var does NOT spawn — hermetic-test gate intact", () => {
+    // If a future refactor breaks the `argRoot` gate, the freshen step would
+    // run with the real `bun install --frozen-lockfile` against the host's
+    // node_modules — the exact non-hermetic behaviour the AC forbids. Using
+    // a fake install via the env-var seam would mask the regression, so this
+    // test must NOT set LUDICS_VENDOR_SYNC_INSTALL_CMD. Instead, we install
+    // a poisoned `bun` on PATH that exits non-zero with a known stderr
+    // sentinel: if the freshen runs, the lint exits non-zero AND prints the
+    // sentinel; if the gate holds, neither happens.
+    const { root, cleanup } = makeFixture({
+      "templates/dashboard/vendor/marked.esm.js": "M\n",
+      "node_modules/marked/lib/marked.esm.js": "M\n",
+      "templates/dashboard/vendor/purify.es.js": "P\n",
+      "node_modules/dompurify/dist/purify.es.mjs": "P\n",
+    });
+    const fakeBinDir = mkdtempSync(join(tmpdir(), "lint-vendor-sync-fakebin-"));
+    const fakeBunPath = join(fakeBinDir, "bun");
+    const realBunPath = process.execPath;
+    // Fake bun: if invoked with `install` as first arg, exit non-zero with a
+    // sentinel stderr. Otherwise delegate to real bun (so `bun run script.ts`
+    // still works for the lint itself).
+    writeFileSync(
+      fakeBunPath,
+      `#!/bin/sh
+if [ "$1" = "install" ]; then
+  printf 'POISONED_BUN_INSTALL_RAN_UNEXPECTEDLY\\n' >&2
+  exit 99
+fi
+exec ${JSON.stringify(realBunPath)} "$@"
+`,
+      { mode: 0o755 },
+    );
+    try {
+      const result = spawnSync({
+        cmd: [
+          realBunPath,
+          "run",
+          join(import.meta.dir, "lint-vendor-sync.ts"),
+          root,
+        ],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
+          // No LUDICS_VENDOR_SYNC_INSTALL_CMD, no CI: the gate must rely
+          // solely on argRoot to skip the freshen.
+          CI: "",
+          LUDICS_VENDOR_SYNC_INSTALL_CMD: "",
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr.toString()).not.toContain(
+        "POISONED_BUN_INSTALL_RAN_UNEXPECTEDLY",
+      );
+    } finally {
+      cleanup();
+      rmSync(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  test("DEFAULT_FRESHEN_CMD carries the AC-mandated `--frozen-lockfile` flag", () => {
+    // Pins the production install command's shape: any future refactor that
+    // drops `--frozen-lockfile` from the default would let `bun install`
+    // rewrite the lockfile (one of the failure modes the AC closes).
+    expect(DEFAULT_FRESHEN_CMD).toEqual(["bun", "install", "--frozen-lockfile"]);
   });
 
   test("exits non-zero with bun-install hint when upstream is missing", () => {

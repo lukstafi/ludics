@@ -17,12 +17,12 @@ http://localhost:7678/ and copied verbatim by `dashboardInstall` in
 ## purify.es.js
 
 - **Package**: dompurify
-- **Version**: 3.4.3 (pinned transitively via `isomorphic-dompurify@3.10.0`)
+- **Version**: 3.4.5 (pinned transitively via `isomorphic-dompurify@3.10.0`)
 - **License**: Apache-2.0 OR MPL-2.0 (header preserved at top of file)
 - **Upstream**: https://github.com/cure53/DOMPurify
 - **Source**: copied from `node_modules/dompurify/dist/purify.es.mjs`.
   Equivalent CDN URL:
-  https://cdn.jsdelivr.net/npm/dompurify@3.4.3/dist/purify.es.mjs
+  https://cdn.jsdelivr.net/npm/dompurify@3.4.5/dist/purify.es.mjs
 
 ## To bump
 
@@ -31,8 +31,10 @@ http://localhost:7678/ and copied verbatim by `dashboardInstall` in
 3. `cp node_modules/dompurify/dist/purify.es.mjs templates/dashboard/vendor/purify.es.js`.
 4. Update the version numbers above to match.
 5. Run `bun run lint:vendor-sync` to verify the vendored copies match
-   the freshly installed npm copies byte-for-byte. CI runs the same
-   lint, so any skew will fail loudly.
+   the locked npm copies byte-for-byte. The lint refreshes
+   `node_modules/` itself via `bun install --frozen-lockfile`, so it
+   catches drift even on a stale checkout. CI runs the same lint, so
+   any skew will fail loudly.
 6. Re-run `bun test templates/dashboard/markdown.test.ts` to confirm
    the fixture set still passes against the new versions.
 
