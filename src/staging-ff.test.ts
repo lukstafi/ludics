@@ -523,7 +523,12 @@ describe("syncUpstreamMainFromStaging", () => {
   test("(c) ancestry check fails: skipped-not-fast-forward, divergedBy populated, no push, sentinel NOT touched", () => {
     const dir = mkdtempSync("/tmp/outbound-checkout-");
     const sentinelDir = mkdtempSync("/tmp/outbound-sentinel-");
-    const events: Array<{ type: string }> = [];
+    // AC 4: capture the FULL event object (not just { type }) so the
+    // regression catches a future edit that drops the structured
+    // divergence count from the payload. Reviewer round-2 (2026-05-19):
+    // the prior `{ type }`-only capture would have let the count
+    // disappear silently.
+    const events: Array<{ type: string; project: string; message: string; extra?: Record<string, unknown> }> = [];
     const { run, calls } = outboundFakeGit({
       ancestry: { exitCode: 1 },
       revListLeftRight: { stdout: "3\t5\n" },
@@ -534,7 +539,12 @@ describe("syncUpstreamMainFromStaging", () => {
         now: new Date(),
         runGit: run,
         sentinelDir,
-        emitEvent: (ev) => events.push({ type: ev.type }),
+        emitEvent: (ev) => events.push({
+          type: ev.type,
+          project: ev.project,
+          message: ev.message,
+          extra: ev.extra,
+        }),
       },
     );
     expect(res[0]!.outcome).toBe("skipped-not-fast-forward");
@@ -542,7 +552,19 @@ describe("syncUpstreamMainFromStaging", () => {
     expect(calls.some((c) => c[0] === "push")).toBe(false);
     // Sentinel NOT touched — divergence must stay visible.
     expect(existsSync(join(sentinelDir, "last-outbound-fast-forward-ocannl.epoch"))).toBe(false);
-    expect(events).toContainEqual({ type: "staging_outbound_fast_forward_diverged" });
+    // AC 4: the structured divergence count is in the event PAYLOAD,
+    // not only the formatted message or the result. The reviewer
+    // round-2 invariant: a future edit that drops `extra.divergedBy`
+    // from the event must fail this assertion. Mutation test: replace
+    // `extra: parsed ? { divergedBy: parsed.behind, ... } : {...}`
+    // with `extra: {}` in src/staging-ff.ts and this assertion fails.
+    const divergedEvent = events.find((e) => e.type === "staging_outbound_fast_forward_diverged");
+    expect(divergedEvent).toBeDefined();
+    expect(divergedEvent!.extra).toBeDefined();
+    expect(divergedEvent!.extra!.divergedBy).toBe(3);
+    expect(divergedEvent!.extra!.aheadBy).toBe(5);
+    // Message also includes the count for human-readable surfaces.
+    expect(divergedEvent!.message).toContain("3 commits");
   });
 
   // (d) Credentials-missing on push — three sub-tests through stderr,

@@ -45,8 +45,17 @@ export interface FastForwardOptions {
   sentinelDir: string;
   /** Throttle window in seconds. Default 24h. */
   throttleSeconds?: number;
-  /** Callback for emitting events (decoupled from ./events.ts to keep this module pure). */
-  emitEvent?: (ev: { type: string; project: string; message: string }) => void;
+  /** Callback for emitting events (decoupled from ./events.ts to keep this module pure).
+   *
+   *  `extra` carries structured payload fields the caller should forward
+   *  verbatim into the harness event record (e.g. `divergedBy` on
+   *  `staging_outbound_fast_forward_diverged`). Per AC 4, these extra
+   *  fields are part of the event payload contract, not just the
+   *  human-readable `message`. The Mag wrapper in `runStagingOutboundPushTick`
+   *  spreads `extra` into the `emitEvent` call from `./events.ts`,
+   *  whose `LudicsEvent` shape already allows arbitrary string-keyed
+   *  payload (`[key: string]: unknown`). */
+  emitEvent?: (ev: { type: string; project: string; message: string; extra?: Record<string, unknown> }) => void;
 }
 
 function sentinelFile(dir: string, project: string): string {
@@ -434,12 +443,19 @@ export function syncUpstreamMainFromStaging(
               : undefined,
             divergedBy: parsed?.behind,
           });
+          // AC 4: the divergence count must be in the event PAYLOAD,
+          // not just the formatted message. `extra` is forwarded
+          // verbatim by `runStagingOutboundPushTick` into LudicsEvent's
+          // open-shape `[key: string]: unknown` slot.
           opts.emitEvent?.({
             type: "staging_outbound_fast_forward_diverged",
             project,
             message: parsed
               ? `${project}: upstream has ${parsed.behind} commits not in staging — manual reconciliation needed`
               : `${project}: upstream not an ancestor of staging — manual reconciliation needed`,
+            extra: parsed
+              ? { divergedBy: parsed.behind, aheadBy: parsed.ahead }
+              : { divergedBy: undefined },
           });
           // NO sentinel touch — divergence must stay visible to next tick + briefing-lag.
           return;

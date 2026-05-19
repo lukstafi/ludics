@@ -1808,11 +1808,15 @@ function runStagingFastForwardTick(): void {
       runGit: defaultRunGit,
       sentinelDir,
       emitEvent: (ev) => {
+        // Same `extra` forwarding as outbound — keeps the inbound and
+        // outbound adapter paths symmetric so future structured fields
+        // on the inbound flow (none today) don't get silently dropped.
         emitEvent({
           event_type: ev.type,
           source: "mag",
           scope: "project",
           message: ev.message,
+          ...(ev.extra ?? {}),
         });
       },
     });
@@ -1862,11 +1866,17 @@ export function runStagingOutboundPushTick(opts?: {
       runGit: opts?.runGit ?? defaultRunGit,
       sentinelDir,
       emitEvent: (ev) => {
+        // AC 4: forward `ev.extra` verbatim into the LudicsEvent
+        // record so structured payload fields (e.g. `divergedBy` on
+        // `staging_outbound_fast_forward_diverged`) survive the
+        // adapter boundary instead of being dropped. LudicsEvent's
+        // open shape (`[key: string]: unknown`) accepts the spread.
         emitEvent({
           event_type: ev.type,
           source: "mag",
           scope: "project",
           message: ev.message,
+          ...(ev.extra ?? {}),
         });
       },
     });
