@@ -31,8 +31,10 @@ http://localhost:7678/ and copied verbatim by `dashboardInstall` in
 3. `cp node_modules/dompurify/dist/purify.es.mjs templates/dashboard/vendor/purify.es.js`.
 4. Update the version numbers above to match.
 5. Run `bun run lint:vendor-sync` to verify the vendored copies match
-   the freshly installed npm copies byte-for-byte. CI runs the same
-   lint, so any skew will fail loudly.
+   the locked npm copies byte-for-byte. The lint refreshes
+   `node_modules/` itself via `bun install --frozen-lockfile`, so it
+   catches drift even on a stale checkout. CI runs the same lint, so
+   any skew will fail loudly.
 6. Re-run `bun test templates/dashboard/markdown.test.ts` to confirm
    the fixture set still passes against the new versions.
 

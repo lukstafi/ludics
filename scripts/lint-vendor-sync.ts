@@ -134,13 +134,81 @@ export function formatViolation(v: Violation): string {
   }
 }
 
+/** Default install command run by `freshenNodeModules`. `--frozen-lockfile` is
+ *  mandatory: this command must never mutate `bun.lock`, only resolve it. */
+export const DEFAULT_FRESHEN_CMD: ReadonlyArray<string> = [
+  "bun",
+  "install",
+  "--frozen-lockfile",
+];
+
+/** Spawns `bun install --frozen-lockfile` to bring `node_modules/` in line with
+ *  the locked resolution before `checkPairs` runs. The drift this closes is
+ *  documented in gh-ludics-531: stale local `node_modules/` masks vendored-vs-
+ *  upstream skew because the byte compare passes against the leftover install,
+ *  while CI starts cold and surfaces the failure on an unrelated PR.
+ *
+ *  This function has no test-seam env vars: tests drive the spawn path by
+ *  `PATH`-shimming a fake `bun` that intercepts `install --frozen-lockfile`.
+ *  Keeping the seam out of production code preserves the AC1 gate — only
+ *  `!argRoot && !process.env.CI` decides whether the freshen runs. */
+export function freshenNodeModules(
+  cwd: string,
+): { ok: true } | { ok: false; stderr: string } {
+  try {
+    const result = Bun.spawnSync({
+      cmd: [...DEFAULT_FRESHEN_CMD],
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (result.exitCode !== 0) {
+      return { ok: false, stderr: result.stderr?.toString() ?? "" };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, stderr: String(e) };
+  }
+}
+
 if (import.meta.main) {
   // Optional first positional arg overrides the repo root, which lets tests
   // exercise the real CLI exit-code paths against a temp directory built with
   // the same `templates/dashboard/vendor/...` + `node_modules/...` shape that
   // PAIRS expects. Mirrors `lint-template-safety.ts`'s argv override.
   const argRoot = process.argv[2];
-  const root = argRoot ? argRoot : join(import.meta.dir, "..");
+  const repoRoot = join(import.meta.dir, "..");
+  const root = argRoot ? argRoot : repoRoot;
+  // Freshen `node_modules/` before comparing so a stale local install can't
+  // mask drift between the vendored copies and the actually-locked resolution
+  // (gh-ludics-531). The gate skips the freshen when:
+  //   - `process.env.CI` is set: CI's `Install dependencies` step already
+  //     produced a fresh, frozen-lockfile install, so a second spawn is pure
+  //     overhead on the critical path.
+  //   - `argRoot` is provided: hermetic tests drive a tmp fixture root and
+  //     must not mutate the host's `node_modules/`.
+  // These are strict skips — there is no production knob that forces the
+  // freshen when either gate fires. Tests that exercise this branch do so
+  // by `PATH`-shimming a fake `bun` while leaving `argRoot` and `CI` unset.
+  const shouldFreshen = !argRoot && !process.env.CI;
+  if (shouldFreshen) {
+    const freshen = freshenNodeModules(repoRoot);
+    if (!freshen.ok) {
+      console.error(
+        "❌  could not refresh node_modules; vendor sync indeterminate",
+      );
+      if (freshen.stderr) {
+        console.error(freshen.stderr);
+      }
+      console.error(
+        "\n     `bun install --frozen-lockfile` failed before the lint could run.\n" +
+        "     This usually means: offline / no registry access, a broken bun\n" +
+        "     install, or a lockfile that doesn't match `package.json`.\n" +
+        "     Fix the install error above, then re-run `bun run lint:vendor-sync`.\n",
+      );
+      process.exit(1);
+    }
+  }
   const violations = checkPairs(root);
   if (violations.length === 0) {
     console.log(
