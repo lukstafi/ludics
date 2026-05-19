@@ -6,7 +6,7 @@ import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, effectiv
 import { formatUpstreamLagSection } from "./briefing-lag.ts";
 import { defaultRunGit, type RunGit } from "./git-runner.ts";
 import { clearSentinel, readSentinelEpoch, sentinelExists, sentinelFresh, touchSentinel } from "./sentinel.ts";
-import { syncStagingMainWithUpstream } from "./staging-ff.ts";
+import { syncStagingMainWithUpstream, syncUpstreamMainFromStaging, type OutboundPushProjectResult } from "./staging-ff.ts";
 import { atomicWriteFileSync, isPlainObject, writeJsonFile, writeJsonFileCompact } from "./json.ts";
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
@@ -1808,11 +1808,15 @@ function runStagingFastForwardTick(): void {
       runGit: defaultRunGit,
       sentinelDir,
       emitEvent: (ev) => {
+        // Same `extra` forwarding as outbound — keeps the inbound and
+        // outbound adapter paths symmetric so future structured fields
+        // on the inbound flow (none today) don't get silently dropped.
         emitEvent({
           event_type: ev.type,
           source: "mag",
           scope: "project",
           message: ev.message,
+          ...(ev.extra ?? {}),
         });
       },
     });
@@ -1823,6 +1827,78 @@ function runStagingFastForwardTick(): void {
     }
   } catch (err) {
     console.error(`ludics: staging-ff tick failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * gh-ludics-540: outbound staging→upstream fast-forward push tick.
+ *
+ * Sibling of `runStagingFastForwardTick`. Gated by:
+ *   1. `clusterIsController()` — federation invariant; controller-only writes.
+ *   2. `cfg.mag.enable_staging_fast_forward !== false` — same operator
+ *      escape hatch as inbound (kills both directions in one switch).
+ *   3. Per-project `outbound_sync_enabled === true` filter — the
+ *      proposal's conservative opt-in. Absent / `false` → off.
+ *
+ * Optional injectable deps make this testable from `src/mag.test.ts`
+ * without writing config to disk or being on a real controller node.
+ */
+export function runStagingOutboundPushTick(opts?: {
+  runGit?: RunGit;
+  isController?: () => boolean;
+  config?: LudicsFullConfig;
+  sentinelDir?: string;
+  now?: Date;
+}): OutboundPushProjectResult[] {
+  try {
+    const isCtrl = opts?.isController ?? clusterIsController;
+    if (!isCtrl()) return [];
+    const cfg = opts?.config ?? loadConfigSync();
+    if ((cfg.mag as { enable_staging_fast_forward?: boolean } | undefined)?.enable_staging_fast_forward === false) return [];
+    const projects = (cfg.projects ?? []).filter(
+      (p) => !!p.upstream_repo && p.outbound_sync_enabled === true,
+    );
+    if (projects.length === 0) return [];
+    const sentinelDir = opts?.sentinelDir ?? join(harnessDir(), "mag");
+    mkdirSync(sentinelDir, { recursive: true });
+    const results = syncUpstreamMainFromStaging(projects, {
+      now: opts?.now ?? new Date(),
+      runGit: opts?.runGit ?? defaultRunGit,
+      sentinelDir,
+      emitEvent: (ev) => {
+        // AC 4: forward `ev.extra` verbatim into the LudicsEvent
+        // record so structured payload fields (e.g. `divergedBy` on
+        // `staging_outbound_fast_forward_diverged`) survive the
+        // adapter boundary instead of being dropped. LudicsEvent's
+        // open shape (`[key: string]: unknown`) accepts the spread.
+        emitEvent({
+          event_type: ev.type,
+          source: "mag",
+          scope: "project",
+          message: ev.message,
+          ...(ev.extra ?? {}),
+        });
+      },
+    });
+    for (const r of results) {
+      if (
+        r.outcome === "pushed" ||
+        r.outcome === "skipped-not-fast-forward" ||
+        r.outcome === "skipped-no-push-credentials" ||
+        r.outcome === "skipped-local-staging-behind" ||
+        r.outcome === "error"
+      ) {
+        console.error(
+          `ludics: outbound-staging-ff ${r.project}: ${r.outcome}${r.detail ? ` — ${r.detail}` : ""}`,
+        );
+      }
+    }
+    return results;
+  } catch (err) {
+    console.error(
+      `ludics: outbound-staging-ff tick failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
   }
 }
 
@@ -1916,6 +1992,10 @@ export async function briefingPrecomputeContext(opts?: { runGit?: RunGit }): Pro
   const upstreamLag = formatUpstreamLagSection(configForLag.projects ?? [], {
     now: new Date(),
     runGit: opts?.runGit ?? defaultRunGit,
+    // gh-ludics-540: lets formatUpstreamLagSection emit an
+    // "outbound sentinel stale > 48h" annotation alongside the
+    // existing FETCH_HEAD freshness note.
+    sentinelDir: join(harnessDir(), "mag"),
   });
   const upstreamLagSection = upstreamLag
     ? `## Upstream vs Staging Lag\n\n${upstreamLag.trimEnd()}\n\n`
@@ -3165,6 +3245,12 @@ export async function magStart(args: string[]): Promise<void> {
     // Once-daily staging fast-forward from upstream for projects with `upstream_repo`.
     // Never pushes, never touches slot worktrees, aborts on dirty worktree or divergence.
     runStagingFastForwardTick();
+
+    // Once-daily outbound staging→upstream push for projects with
+    // `outbound_sync_enabled: true`. Fast-forward-only by construction
+    // (ancestry pre-check + git's server-side non-ff rejection; never
+    // uses --force / --force-with-lease). gh-ludics-540.
+    runStagingOutboundPushTick();
 
     // Auto-fill empty slots with ready elaborated tasks
     await maybeFillEmptySlots(keepaliveCfg);

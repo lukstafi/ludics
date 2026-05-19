@@ -97,3 +97,50 @@ describe("ludics-health-check skill content (task-a670cdbf)", () => {
     expect(/critical\s+on\s+`agent_hung_force_settle`/.test(hungSection)).toBe(true);
   });
 });
+
+// gh-ludics-540: outbound staging-ff sentinel staleness skill content.
+// The skill markdown is the executable spec — if a future edit drops
+// the stable key, the threshold, the sentinel filename, or the
+// no-notification clause, the documented surface gets out of sync with
+// what `runStagingOutboundPushTick` and the health check actually do.
+describe("ludics-health-check skill content (gh-ludics-540)", () => {
+  const body = readFileSync(SKILL_PATH, "utf-8");
+
+  test("references the outbound staging-ff sentinel filename verbatim", () => {
+    // Invariant: the skill names the same sentinel file that
+    // src/staging-ff.ts:outboundSentinelFile() writes and
+    // src/briefing-lag.ts:outboundSentinelStaleNote() reads. Drift here
+    // means the operator runs the documented check against a missing
+    // file path and silently sees no findings.
+    expect(body).toContain("last-outbound-fast-forward-");
+  });
+
+  test("documents the 48h warning / 72h critical thresholds", () => {
+    // Mutation-test: bumping either threshold in code without updating
+    // the skill drops one of these literals.
+    expect(body).toContain("48h");
+    expect(body).toContain("72h");
+  });
+
+  test("includes the stable issue key outbound-staging-ff-stale:<project>", () => {
+    // Stable issue keys are how findings dedupe across ticks (see
+    // health-last.json delta tracking). Without the literal in the
+    // skill, two ticks would file the same finding as `new` each time.
+    expect(body).toContain("outbound-staging-ff-stale:<project>");
+  });
+
+  test("documents the no-notification rule for outbound auth failures", () => {
+    // AC 9: "no `ludics notify outgoing` call from the push function
+    // or its caller". The skill must state this explicitly so future
+    // editors don't add a notify call to "improve" the UX.
+    expect(body).toMatch(/does NOT raise.*ludics notify outgoing|ludics notify outgoing.*not|No notification/i);
+  });
+
+  test("opt-in gate: skill scopes the check to projects with outbound_sync_enabled: true", () => {
+    // Without this guard, the skill would file `outbound-staging-ff-stale`
+    // for every upstream-aware project — but only opt-in projects ever
+    // write the sentinel, so non-opt-in projects would erroneously be
+    // flagged as critical (missing sentinel).
+    expect(body).toContain("outbound_sync_enabled");
+  });
+});

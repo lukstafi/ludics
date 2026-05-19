@@ -92,3 +92,4 @@ When making changes:
 - Keep dependencies minimal
 - Prefer reading state from existing sources (like `.peer-sync/` orchestration data) over creating new state
 - the `tmux` adapter is currently used for most orchestrated workflows; the t3code adapter has richer functionality but is pending stability improvements. Both paths are maintained.
+- Staging fast-forward sentinels live in `mag/`: `last-fast-forward-<project>.epoch` (inbound — upstream → staging) and `last-outbound-fast-forward-<project>.epoch` (outbound — staging → upstream, gated by per-project `outbound_sync_enabled: true`). The outbound push is fast-forward-only by construction: a client-side `git merge-base --is-ancestor` pre-check plus git's server-side non-ff rejection (no `--force` / `--force-with-lease` ever used). Auth failures surface via the health-check `outbound-staging-ff-stale:<project>` stable key (warning 48h / critical 72h); no notifications.

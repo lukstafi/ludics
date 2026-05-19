@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile, runStagingOutboundPushTick } from "./mag.ts";
 import type { RunGit } from "./git-runner.ts";
+import type { LudicsFullConfig, ProjectConfig } from "./config.ts";
 
 describe("normalizeLaunchAdapter", () => {
   test("t3code passes through unchanged", () => {
@@ -1117,5 +1118,233 @@ describe("runMag unknown-command listing (gh-ludics-438)", () => {
     // Sanity: the public commands are still present.
     expect(useEntries).toContain("start");
     expect(useEntries).toContain("completed");
+  });
+});
+
+// =============================================================================
+// gh-ludics-540: runStagingOutboundPushTick wrapper gates.
+// AC 14 (controller-gate) + AC 7 (per-project opt-in: missing/false → off).
+// All four tests use a recording RunGit and assert `calls.length === 0`
+// (or specific outcomes when the wrapper passes through).
+// =============================================================================
+
+function recordingRunGit(): { run: RunGit; calls: string[][] } {
+  const calls: string[][] = [];
+  return {
+    calls,
+    run: (args) => {
+      calls.push(args.slice());
+      return { stdout: "", exitCode: 0 };
+    },
+  };
+}
+
+function ocannlProject(opts: { enabled?: boolean | undefined; path?: string }): ProjectConfig {
+  const base: ProjectConfig = {
+    name: "ocannl",
+    repo: "lukstafi/ocannl-staging",
+    upstream_repo: "ahrefs/ocannl",
+    path: opts.path ?? "/does/not/exist-ludics-540-test",
+  };
+  // Only set the field when the caller wants it set — preserves the
+  // "absent" distinction from explicit false.
+  if (opts.enabled !== undefined) {
+    base.outbound_sync_enabled = opts.enabled;
+  }
+  return base;
+}
+
+describe("runStagingOutboundPushTick", () => {
+  test("controller-gate: short-circuits with zero git invocations when isController() returns false", () => {
+    const { run, calls } = recordingRunGit();
+    const sentinelDir = mkdtempSync("/tmp/outbound-gate-");
+    const cfg = {
+      projects: [ocannlProject({ enabled: true })],
+    } as unknown as LudicsFullConfig;
+    const results = runStagingOutboundPushTick({
+      isController: () => false,
+      runGit: run,
+      sentinelDir,
+      config: cfg,
+      now: new Date(),
+    });
+    expect(results).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("opt-in absent: project with no outbound_sync_enabled is filtered out", () => {
+    // Closes the absent-field regression (reviewer finding 3 on v1).
+    // A legacy config with no outbound_sync_enabled must behave as off.
+    const { run, calls } = recordingRunGit();
+    const sentinelDir = mkdtempSync("/tmp/outbound-flag-absent-");
+    const cfg = {
+      projects: [ocannlProject({ enabled: undefined })],
+    } as unknown as LudicsFullConfig;
+    const results = runStagingOutboundPushTick({
+      isController: () => true,
+      runGit: run,
+      sentinelDir,
+      config: cfg,
+      now: new Date(),
+    });
+    expect(results).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("opt-in false: project with outbound_sync_enabled: false is filtered out", () => {
+    const { run, calls } = recordingRunGit();
+    const sentinelDir = mkdtempSync("/tmp/outbound-flag-false-");
+    const cfg = {
+      projects: [ocannlProject({ enabled: false })],
+    } as unknown as LudicsFullConfig;
+    const results = runStagingOutboundPushTick({
+      isController: () => true,
+      runGit: run,
+      sentinelDir,
+      config: cfg,
+      now: new Date(),
+    });
+    expect(results).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("opt-in true: project reaches the core syncUpstreamMainFromStaging", () => {
+    // Positive-control sibling for the two negative tests above — without
+    // this assertion the wrapper could silently filter EVERY project and
+    // both negative tests would still pass under a broken filter.
+    // The cheap reach-the-core observation: path points to a non-existent
+    // directory so the core returns skipped-no-path (length 1).
+    const { run } = recordingRunGit();
+    const sentinelDir = mkdtempSync("/tmp/outbound-flag-true-");
+    const cfg = {
+      projects: [ocannlProject({ enabled: true })],
+    } as unknown as LudicsFullConfig;
+    const results = runStagingOutboundPushTick({
+      isController: () => true,
+      runGit: run,
+      sentinelDir,
+      config: cfg,
+      now: new Date(),
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]!.outcome).toBe("skipped-no-path");
+  });
+
+  test("AC 4: divergence event payload survives the Mag adapter (divergedBy reaches journal/events.jsonl)", () => {
+    // Reviewer round-2 invariant: the wrapper must NOT drop the
+    // structured divergence count from `ev.extra` when forwarding to
+    // events.emitEvent. Mutation test: replace `...(ev.extra ?? {})`
+    // with `{}` in src/mag.ts and this assertion fails.
+    //
+    // End-to-end path:
+    //   syncUpstreamMainFromStaging emits divergedBy in ev.extra
+    //   → runStagingOutboundPushTick spreads ev.extra into emitEvent()
+    //   → emitEvent (./events.ts) appends to journal/events.jsonl
+    //     with LudicsEvent's open `[key: string]: unknown` shape.
+    const harnessRoot = mkdtempSync("/tmp/mag-outbound-event-harness-");
+    const checkoutDir = mkdtempSync("/tmp/mag-outbound-event-checkout-");
+    const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = harnessRoot;
+    try {
+      // Custom RunGit that drives the divergence path:
+      //   remote → origin\nupstream\n
+      //   status → clean
+      //   rev-parse --abbrev-ref HEAD → master
+      //   symbolic-ref / ls-remote → master defaults
+      //   fetch upstream → 0
+      //   fetch origin master → 0
+      //   merge --ff-only origin/master → 0 (local-ff OK)
+      //   rev-list --count upstream/master..origin/master → 5
+      //   merge-base --is-ancestor upstream/master origin/master → 1 (NOT ancestor)
+      //   rev-list --left-right --count upstream/master...origin/master → "3\t5\n"
+      const run: RunGit = (args) => {
+        const key = args[0] ?? "";
+        if (key === "remote") return { stdout: "origin\nupstream\n", exitCode: 0 };
+        if (key === "status") return { stdout: "", exitCode: 0 };
+        if (key === "symbolic-ref") {
+          const ref = args[1] ?? "";
+          if (ref.endsWith("/origin/HEAD")) return { stdout: "refs/remotes/origin/master\n", exitCode: 0 };
+          if (ref.endsWith("/upstream/HEAD")) return { stdout: "refs/remotes/upstream/master\n", exitCode: 0 };
+          return { stdout: "", exitCode: 128 };
+        }
+        if (key === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "master\n", exitCode: 0 };
+        if (key === "checkout") return { stdout: "", exitCode: 0 };
+        if (key === "fetch") return { stdout: "", exitCode: 0 };
+        if (key === "merge" && args[1] === "--ff-only") return { stdout: "Already up to date.\n", exitCode: 0 };
+        if (key === "rev-list" && args[1] === "--count") return { stdout: "5\n", exitCode: 0 };
+        if (key === "rev-list" && args[1] === "--left-right") return { stdout: "3\t5\n", exitCode: 0 };
+        // Non-ancestor: exit 1.
+        if (key === "merge-base" && args[1] === "--is-ancestor") return { stdout: "", exitCode: 1 };
+        return { stdout: "", exitCode: 0 };
+      };
+      const cfg = {
+        projects: [{
+          name: "ocannl",
+          repo: "lukstafi/ocannl-staging",
+          upstream_repo: "ahrefs/ocannl",
+          outbound_sync_enabled: true,
+          path: checkoutDir,
+        }],
+      } as unknown as LudicsFullConfig;
+      const results = runStagingOutboundPushTick({
+        isController: () => true,
+        runGit: run,
+        config: cfg,
+        now: new Date(),
+        // sentinelDir omitted on purpose so emitEvent writes under the
+        // env-overridden harnessRoot/journal/events.jsonl, exercising
+        // the production code path end-to-end.
+      });
+      expect(results).toHaveLength(1);
+      expect(results[0]!.outcome).toBe("skipped-not-fast-forward");
+
+      const eventsFile = join(harnessRoot, "journal", "events.jsonl");
+      expect(existsSync(eventsFile)).toBe(true);
+      const lines = readFileSync(eventsFile, "utf-8").trim().split("\n").filter(Boolean);
+      const divergedLines = lines
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((e) => e.event_type === "staging_outbound_fast_forward_diverged");
+      expect(divergedLines).toHaveLength(1);
+      const divergedEvent = divergedLines[0]!;
+      // AC 4: the structured count made it all the way through:
+      //   core → ev.extra.divergedBy
+      //   → wrapper's spread (...(ev.extra ?? {}))
+      //   → emitEvent() persists under LudicsEvent's open shape.
+      expect(divergedEvent.divergedBy).toBe(3);
+      expect(divergedEvent.aheadBy).toBe(5);
+      expect(divergedEvent.source).toBe("mag");
+      expect(typeof divergedEvent.message).toBe("string");
+      // The human-readable message already includes the count (the
+      // project name is part of the message rather than a structured
+      // LudicsEvent field; LudicsEvent.task is unused for project
+      // scope, see src/events.ts:LudicsEvent for the structured shape).
+      expect(String(divergedEvent.message)).toContain("ocannl");
+      expect(String(divergedEvent.message)).toContain("3 commits");
+    } finally {
+      if (ORIGINAL_HARNESS_DIR === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
+      rmSync(harnessRoot, { recursive: true, force: true });
+      rmSync(checkoutDir, { recursive: true, force: true });
+    }
+  });
+
+  test("global enable_staging_fast_forward=false: outbound tick short-circuits like inbound", () => {
+    // Operator escape hatch — disabling inbound also kills outbound,
+    // matching the runStagingFastForwardTick gate.
+    const { run, calls } = recordingRunGit();
+    const sentinelDir = mkdtempSync("/tmp/outbound-global-off-");
+    const cfg = {
+      mag: { enable_staging_fast_forward: false },
+      projects: [ocannlProject({ enabled: true })],
+    } as unknown as LudicsFullConfig;
+    const results = runStagingOutboundPushTick({
+      isController: () => true,
+      runGit: run,
+      sentinelDir,
+      config: cfg,
+      now: new Date(),
+    });
+    expect(results).toEqual([]);
+    expect(calls).toHaveLength(0);
   });
 });

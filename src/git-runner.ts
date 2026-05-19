@@ -9,10 +9,18 @@ import { safeSyncOutput } from "./spawn.ts";
 
 export interface RunGitResult {
   stdout: string;
+  /**
+   * stderr from the spawn. Optional so existing fake runners that
+   * return only { stdout, exitCode } keep compiling. Production
+   * runners (defaultRunGit) populate this; gh-ludics-540's outbound
+   * push classifier consumes it to distinguish auth failures from
+   * transient network errors.
+   */
+  stderr?: string;
   exitCode: number;
 }
 
-/** A minimal git runner: takes argv and a cwd, returns stdout + exit code. */
+/** A minimal git runner: takes argv and a cwd, returns stdout + exit code (and optional stderr). */
 export type RunGit = (args: string[], cwd: string) => RunGitResult;
 
 export interface DetectedBranches {
@@ -232,5 +240,5 @@ export function withCheckout<T>(
  */
 export const defaultRunGit: RunGit = (args, cwd) => {
   const res = safeSyncOutput(["git", "-C", cwd, ...args], { trim: false });
-  return { stdout: res.stdout, exitCode: res.exitCode };
+  return { stdout: res.stdout, stderr: res.stderr, exitCode: res.exitCode };
 };

@@ -21,9 +21,16 @@ projects:
   - name: my-project
     repo: your-username/my-project
     upstream_repo: ""      # Optional: upstream repo for issue sync and staging-vs-upstream lag reporting.
-                          # PR creation targets the working (staging) repo; forwarding to upstream is a manual user step.
-                          # Also triggers a once-daily fast-forward-only pull from upstream/<default> into origin/<default>
-                          # on the canonical checkout (see mag.enable_staging_fast_forward below).
+                          # PR creation targets the working (staging) repo. Triggers a once-daily fast-forward-only
+                          # pull from upstream/<default> into origin/<default> on the canonical checkout
+                          # (see mag.enable_staging_fast_forward below). For outbound staging→upstream push,
+                          # see outbound_sync_enabled below.
+    outbound_sync_enabled: false  # Optional, default false. When true AND upstream_repo is set, the once-daily
+                          # keepalive tick attempts `git push upstream origin/<default>:<default>` from the
+                          # staging checkout when origin is strictly ahead of upstream. Fast-forward-only by
+                          # construction: client-side `git merge-base --is-ancestor` pre-check plus server-side
+                          # non-ff rejection (no --force / --force-with-lease). Throttled via
+                          # mag/last-outbound-fast-forward-<project>.epoch. Absent → off (legacy configs stay off).
     path: ~/my-project    # Local checkout path (used for slot start, worktree creation)
     issues: true          # Include GitHub issues as tasks
     priority: false       # Priority project: preempt slots when tasks arrive

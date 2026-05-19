@@ -141,6 +141,29 @@ This skill is invoked when:
    - Read `mag/queue.jsonl`
    - Flag if requests have been pending > 1h
 
+<!-- section:check-outbound-staging-ff -->
+3b. **Check outbound staging-ff sentinel staleness** (gh-ludics-540):
+   - For each project in `config.yaml` with `outbound_sync_enabled: true`,
+     read the mtime of
+     `$LUDICS_STATE_PATH/mag/last-outbound-fast-forward-<project>.epoch`.
+   - Compute age in seconds. Classify:
+     - missing sentinel OR age >= 72h → **critical**
+     - age >= 48h                     → **warning**
+     - else                            → no finding
+   - Build stable issue key: `outbound-staging-ff-stale:<project>`
+     (delta-tracked against `mag/health-last.json` so the same staleness
+     counts as `ongoing` after the first detection, not `new`).
+   - **No notification**: `git push` auth failure does NOT raise a
+     `ludics notify outgoing` from the push function or from this
+     check. This stable-key entry is the only surfacing path for
+     outbound credential gaps; the briefing-lag section also shows the
+     annotation alongside `upstream fetch data is ~Nh old`.
+   - Example yq lookup of opted-in projects:
+     ```bash
+     yq eval '.projects[] | select(.outbound_sync_enabled == true) | .name' \
+       "$LUDICS_STATE_PATH/config.yaml"
+     ```
+
 <!-- section:check-tests -->
 4. **Check test suite health**:
    - Read `$LUDICS_STATE_PATH/mag/test-health.json` for the latest test run
@@ -162,7 +185,8 @@ This skill is invoked when:
    - Prefer git diff in state repo for scope awareness:
      `git -C "$LUDICS_STATE_PATH" diff --name-only HEAD~1..HEAD -- tasks/ sessions.md mag/queue.jsonl journal/notifications.jsonl 2>/dev/null || true`
    - Build stable issue keys for all findings (examples:
-     `deadline:<task-id>`, `slot-stale:<slot>`, `queue-stuck:<request-id>`)
+     `deadline:<task-id>`, `slot-stale:<slot>`, `queue-stuck:<request-id>`,
+     `outbound-staging-ff-stale:<project>`)
    - Read previous snapshot from `$LUDICS_STATE_PATH/mag/health-last.json` if it exists
    - Mark each finding as `new`, `ongoing`, or `resolved`
 

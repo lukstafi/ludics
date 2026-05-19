@@ -281,3 +281,63 @@ mag:
     }
   });
 });
+
+describe("ProjectConfig.outbound_sync_enabled (gh-ludics-540)", () => {
+  // The outbound staging→upstream push tick reads this opt-in via
+  // `p.outbound_sync_enabled === true` — absent and false both map to
+  // "off". These tests pin both arms of that read boundary.
+
+  test("accepts outbound_sync_enabled: true from YAML and round-trips through loadConfigSync", async () => {
+    const { loadConfigSync, findProjectConfigByName } = await import("./config.ts");
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+    upstream_repo: ahrefs/ocannl
+    outbound_sync_enabled: true
+`);
+    const cfg = loadConfigSync();
+    const proj = findProjectConfigByName("ocannl", cfg);
+    expect(proj).toBeDefined();
+    expect(proj!.outbound_sync_enabled).toBe(true);
+  });
+
+  test("absent outbound_sync_enabled parses as undefined (so === true filter treats it as off)", async () => {
+    const { loadConfigSync, findProjectConfigByName } = await import("./config.ts");
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+    upstream_repo: ahrefs/ocannl
+`);
+    const cfg = loadConfigSync();
+    const proj = findProjectConfigByName("ocannl", cfg);
+    expect(proj).toBeDefined();
+    expect(proj!.outbound_sync_enabled).toBeUndefined();
+    // The wrapper's filter is `p.outbound_sync_enabled === true`, so
+    // undefined must not be coerced to a truthy value upstream.
+    expect(proj!.outbound_sync_enabled === true).toBe(false);
+  });
+
+  test("explicit outbound_sync_enabled: false also short-circuits the === true filter", async () => {
+    const { loadConfigSync, findProjectConfigByName } = await import("./config.ts");
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+    upstream_repo: ahrefs/ocannl
+    outbound_sync_enabled: false
+`);
+    const cfg = loadConfigSync();
+    const proj = findProjectConfigByName("ocannl", cfg);
+    expect(proj).toBeDefined();
+    expect(proj!.outbound_sync_enabled).toBe(false);
+    expect(proj!.outbound_sync_enabled === true).toBe(false);
+  });
+});

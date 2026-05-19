@@ -11,7 +11,17 @@ slots:
 projects:
   - name: ocannl
     repo: lukstafi/ocannl-staging      # working repo — where agents create PRs
-    upstream_repo: ahrefs/ocannl       # upstream — issues synced from here; staging-vs-upstream lag reported in briefing; PR forwarding is manual
+    upstream_repo: ahrefs/ocannl       # upstream — issues synced from here; staging-vs-upstream lag reported in briefing
+    # When true, keepalive's outbound-fast-forward tick runs
+    # `git push upstream origin/<default>:<default>` from the staging
+    # checkout when origin is strictly ahead of upstream. Fast-forward-only
+    # by construction: `git merge-base --is-ancestor` client-side pre-check
+    # plus git's server-side non-ff rejection (no --force / --force-with-lease).
+    # Throttled via mag/last-outbound-fast-forward-<project>.epoch at 24h
+    # cadence. Auth failures surface via health-check's
+    # outbound-staging-ff-stale:<project> stable key (no notification).
+    # See docs/proposals/gh-ludics-540-outbound-staging-ff.md.
+    outbound_sync_enabled: true
     issues: true
 
   - name: ppx-minidebug
