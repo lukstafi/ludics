@@ -52,8 +52,13 @@ Issue: https://github.com/lukstafi/ludics/issues/538
 3. In `src/mag.ts` `resolveQueueRequestCommand` (the `executeProgrammatic`
    branch), each of the three new gated actions has an arm parallel to the
    existing `health-check` arm:
-   - `briefing` — gate signal `lastUserActionEpoch`, threshold = 18h
-     (skip when `(now - lastUserActionEpoch) < 18h`).
+   - `briefing` — gate signal `lastUserActionEpoch`, threshold = 18h.
+     Skip when no qualifying user action has advanced since the prior
+     briefing snapshot AND the latest qualifying user action is older
+     than `(now - 18h)`. The "no progress since prior snapshot" arm is
+     the proposal's core skip case; the 18h staleness arm is the
+     slow-decay safeguard so we never permanently suppress a briefing
+     on a repo whose user-action clock barely moves.
    - `adopt-sessions` — gate signal `unclassifiedFingerprint`, skip when
      unchanged since the last run.
    - On skip, emit `<gate>_skipped` (`briefing_skipped`,
@@ -88,9 +93,11 @@ Issue: https://github.com/lukstafi/ludics/issues/538
 
 6. The `lastUserActionEpoch` signal is the maximum of:
    - `notify_incoming` event timestamps from `journal/events.jsonl`.
-   - Non-Mag-authored commits touching task frontmatter (i.e., commits to
-     `tasks/*.md` whose author is not the Mag identity — file mtime + git
-     blame on the modified frontmatter line range), with a bounded look-back
+   - Non-Mag-authored commits touching task frontmatter — commits to
+     `tasks/*.md` whose author is not the Mag identity (recognized by a
+     `Co-Authored-By: Claude` trailer) AND at least one of whose diff hunks
+     overlaps the file's YAML frontmatter line range at that commit. A
+     body-only edit does not advance the signal. Bounded by a look-back
      window appropriate to the 18h threshold.
    - Queue request entries whose `action` is NOT in `MAG_AUTO_ACTIONS`.
 
@@ -226,12 +233,12 @@ Issue: https://github.com/lukstafi/ludics/issues/538
 
 ### Event-type stability
 
-17. The four gate-skip event types — `health_check_skipped`,
-    `briefing_skipped`, `feedback_digest_skipped`, `adopt_sessions_skipped` —
-    are committed names. Existing readers of `health_check_skipped`
-    continue to work unchanged. (The unified `meta.gateSkip: true` marker
-    is additive — it sits alongside the per-event-type name, not in place
-    of it.)
+17. The five gate-skip event types — `health_check_skipped`,
+    `briefing_skipped`, `feedback_digest_skipped`, `adopt_sessions_skipped`,
+    and `verify_completion_skipped` — are committed names. Existing
+    readers of `health_check_skipped` continue to work unchanged. (The
+    unified `meta.gateSkip: true` marker is additive — it sits alongside
+    the per-event-type name, not in place of it.)
 
 ## Context
 

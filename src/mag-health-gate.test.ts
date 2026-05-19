@@ -12,7 +12,7 @@ describe("resolveQueueRequestCommand — health-check activity gate", () => {
     mkdirSync(join(getStateDir(), "mag"), { recursive: true });
   });
 
-  test("returns null and emits health_check_skipped when delta < 50", async () => {
+  test("returns null and emits health_check_skipped when delta < threshold", async () => {
     const stateDir = getStateDir();
     const lines = Array.from({ length: 1030 }, (_, i) => `{"n":${i}}`).join("\n") + "\n";
     writeFileSync(join(stateDir, "journal", "events.jsonl"), lines);
@@ -34,6 +34,8 @@ describe("resolveQueueRequestCommand — health-check activity gate", () => {
     expect(last.currentLines).toBe(1030);
     expect(last.priorLines).toBe(1000);
     expect(last.delta).toBe(30);
+    // gh-ludics-538: unified gate-skip marker.
+    expect(last.meta?.gateSkip).toBe(true);
   });
 
   test("peek path (executeProgrammatic=false) returns skill command regardless of gate", async () => {
@@ -60,7 +62,10 @@ describe("resolveQueueRequestCommand — health-check activity gate", () => {
 
   test("delta over threshold returns skill command", async () => {
     const stateDir = getStateDir();
-    const lines = Array.from({ length: 1200 }, (_, i) => `{"n":${i}}`).join("\n") + "\n";
+    // Threshold bumped 50 → 300 (gh-ludics-538). Use delta=400 to stay
+    // unambiguously over the new threshold while continuing to assert
+    // "delta exceeds gate" semantics.
+    const lines = Array.from({ length: 1400 }, (_, i) => `{"n":${i}}`).join("\n") + "\n";
     writeFileSync(join(stateDir, "journal", "events.jsonl"), lines);
     writeFileSync(
       join(stateDir, "mag", "health-last.json"),

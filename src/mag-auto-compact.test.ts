@@ -15,6 +15,13 @@ beforeEach(() => {
   // is what lets these branches reach the queueRequest calls; if it stops
   // holding, both tests fail because the queue stays empty.
   mkdirSync(join(getTmpDir(), "mag"), { recursive: true });
+  // gh-ludics-538: tryQueueFeedbackDigest now skips when feedback/ is empty.
+  // Seed a single file so the feedback-digest follow-up actually enqueues in
+  // the tests that exercise the briefing trio (briefing → feedback-digest →
+  // /compact). Tests asserting the gated-feedback-digest path can clear or
+  // ignore this seed; see the per-test setup.
+  mkdirSync(join(getTmpDir(), "feedback"), { recursive: true });
+  writeFileSync(join(getTmpDir(), "feedback", "seed.md"), "x");
 });
 
 function readQueue(): Record<string, unknown>[] {

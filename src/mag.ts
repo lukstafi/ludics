@@ -909,9 +909,36 @@ function tryQueueFeedbackDigest(repo: string): { queued: boolean; reason?: strin
   if (remaining > 0) {
     return { queued: false, reason: `cooldown active (${remaining}s remaining)` };
   }
+  // gh-ludics-538 AC 5: empty-feedback skip. Worker is never even forked
+  // when the top-level feedback/ surface is empty. The skip MUST NOT
+  // refresh the cooldown anchor (so the next non-empty feedback is queued
+  // immediately, not after the cooldown).
+  if (feedbackDirIsEmpty()) {
+    emitEvent({
+      event_type: "feedback_digest_skipped",
+      source: "mag",
+      scope: "mag",
+      message: "no feedback files",
+      repo,
+      meta: { gateSkip: true },
+    });
+    return { queued: false, reason: "no feedback files" };
+  }
   queueRequest({ action: "feedback-digest", repo });
   markFeedbackDigestQueued(repo);
   return { queued: true };
+}
+
+function feedbackDirIsEmpty(): boolean {
+  const feedbackDir = join(harnessDir(), "feedback");
+  if (!existsSync(feedbackDir)) return true;
+  try {
+    const entries = readdirSync(feedbackDir, { withFileTypes: true });
+    return !entries.some((d) => d.isFile());
+  } catch {
+    // Read error → fail open (treat as non-empty so worker still runs).
+    return false;
+  }
 }
 
 function lastCaptureHashFile(): string {
@@ -1498,25 +1525,132 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
 
   // Tier 1: Pre-hooks for skill actions that require context pre-computation.
   // Only precompute when actually dispatching, not during a peek.
+  // gh-ludics-538 AC 11: a queued request marked `bypassGate: true` (set by
+  // manual CLI handlers like `ludics mag briefing` — distinct from auto
+  // triggers which call magBriefing with `{ auto: true }`) skips the
+  // activity-gate checks below while still running precompute, ensuring a
+  // manual CLI invocation runs the skill regardless of the snapshot.
+  const bypassGate = request.bypassGate === true;
   if (executeProgrammatic) {
     if (action === "briefing") {
+      if (!bypassGate) {
+        // gh-ludics-538: activity gate. Run BEFORE the precompute so an
+        // idle-day skip avoids the t3code / cleanup / merge-base work too.
+        const { shouldSkipPeriodic, latestUserActionEpoch, writeGateSnapshot } = await import("./health-gate.ts");
+        const stateDir = harnessDir();
+        const now = new Date();
+        const signal = latestUserActionEpoch({ stateDir, now, lookbackHours: 48 });
+        const snapPath = briefingGateSnapshotPath();
+        const gate = shouldSkipPeriodic({
+          gateName: "briefing",
+          snapshotPath: snapPath,
+          signal,
+          threshold: 18 * 3600,
+          mode: "activity-window",
+          now,
+        });
+        if (gate.skip) {
+          emitEvent({
+            event_type: "briefing_skipped",
+            source: "mag",
+            scope: "mag",
+            message: gate.reason,
+            current: gate.current as number | null,
+            prior: gate.prior as number | null,
+            meta: { gateSkip: true },
+          });
+          return null;
+        }
+        // Gate decided RUN — refresh snapshot at point of dispatch (matches
+        // existing markBriefingQueued() semantics for cooldown anchors).
+        try { writeGateSnapshot(snapPath, signal); } catch { /* best-effort */ }
+      }
       await briefingPrecomputeContext();
     } else if (action === "adopt-sessions") {
+      if (!bypassGate) {
+        // gh-ludics-538: fingerprint gate. Skip when the unclassified-sessions
+        // hash is unchanged since the last run.
+        const { shouldSkipPeriodic, writeGateSnapshot } = await import("./health-gate.ts");
+        const sessionsFile = join(harnessDir(), "sessions.json");
+        const fingerprint = adoptSessionsFingerprintData(sessionsFile);
+        if (fingerprint !== null) {
+          const snapPath = adoptSessionsGateSnapshotPath();
+          const gate = shouldSkipPeriodic({
+            gateName: "adopt-sessions",
+            snapshotPath: snapPath,
+            signal: fingerprint.hash,
+            threshold: 0,
+            mode: "fingerprint",
+          });
+          if (gate.skip) {
+            // AC 3/12: emit the same diagnostic minimum as health_check_skipped —
+            // `current`/`prior` carry the signal pair (fingerprint strings for
+            // adopt-sessions) so dashboard /api/gate-skips can surface them.
+            emitEvent({
+              event_type: "adopt_sessions_skipped",
+              source: "mag",
+              scope: "mag",
+              message: gate.reason,
+              current: gate.current as string | null,
+              prior: gate.prior as string | null,
+              meta: { gateSkip: true },
+            });
+            return null;
+          }
+          try { writeGateSnapshot(snapPath, fingerprint.hash); } catch { /* best-effort */ }
+        }
+      }
       adoptSessionsPrecomputeContext();
-    } else if (action === "health-check") {
-      const { shouldSkipHealthCheck } = await import("./health-gate.ts");
-      const gate = shouldSkipHealthCheck();
-      if (gate.skip) {
-        emitEvent({
-          event_type: "health_check_skipped",
-          source: "keepalive",
-          scope: "mag",
-          message: gate.reason,
-          currentLines: gate.currentLines,
-          priorLines: gate.priorLines,
-          delta: gate.currentLines - gate.priorLines,
+    } else if (action === "verify-completion") {
+      // gh-ludics-538 AC 10: per-task epoch-unchanged gate.
+      const taskId = String(request.task ?? "");
+      if (taskId && !bypassGate) {
+        const { shouldSkipPeriodic, writeGateSnapshot } = await import("./health-gate.ts");
+        const epoch = computeTaskLastActivityEpoch(taskId);
+        const snapPath = verifyCompletionGateSnapshotPath(taskId);
+        const gate = shouldSkipPeriodic({
+          gateName: "verify-completion",
+          snapshotPath: snapPath,
+          signal: epoch,
+          threshold: 0,
+          mode: "epoch-unchanged",
         });
-        return null;
+        if (gate.skip) {
+          // AC 3/12: emit `current`/`prior` epoch pair so dashboard
+          // /api/gate-skips surfaces the diagnostic signal pair.
+          emitEvent({
+            event_type: "verify_completion_skipped",
+            source: "mag",
+            scope: "mag",
+            message: gate.reason,
+            current: gate.current as number | null,
+            prior: gate.prior as number | null,
+            task: taskId,
+            meta: { gateSkip: true },
+          });
+          return null;
+        }
+        if (epoch !== null && epoch > 0) {
+          try { writeGateSnapshot(snapPath, epoch); } catch { /* best-effort */ }
+        }
+      }
+    } else if (action === "health-check") {
+      if (!bypassGate) {
+        const { shouldSkipHealthCheck } = await import("./health-gate.ts");
+        const gate = shouldSkipHealthCheck();
+        if (gate.skip) {
+          emitEvent({
+            event_type: "health_check_skipped",
+            source: "keepalive",
+            scope: "mag",
+            message: gate.reason,
+            currentLines: gate.currentLines,
+            priorLines: gate.priorLines,
+            delta: gate.currentLines - gate.priorLines,
+            meta: { gateSkip: true },
+          });
+          return null;
+        }
       }
       try {
         const { runAllTestHealth } = await import("./health.ts");
@@ -2377,6 +2511,89 @@ ${matches}
   writeFileSync(contextFile + ".tmp", content);
   renameSync(contextFile + ".tmp", contextFile);
   console.error(`ludics: adopt-sessions context written to ${contextFile}`);
+}
+
+// --- gh-ludics-538: Tier-1 periodic gate helpers ----------------------------
+
+export function briefingGateSnapshotPath(): string {
+  return join(magStateDir(), "briefing-last.json");
+}
+
+export function adoptSessionsGateSnapshotPath(): string {
+  return join(magStateDir(), "adopt-sessions-last.json");
+}
+
+export function verifyCompletionGateSnapshotPath(taskId: string): string {
+  return join(magStateDir(), "verify-completion-last", `${encodeURIComponent(taskId)}.json`);
+}
+
+/** Compute the latest activity epoch for a verify-completion target task.
+ *  Combines:
+ *    - git HEAD commit time on the task's project worktree (resolved via
+ *      task frontmatter `project` → findProjectConfigByName.path).
+ *    - slot_resume / slot_assign event epochs scoped to this task.
+ *  Returns 0 when no activity is resolvable (the gate then fails open).
+ *  Returns null on read error (the gate also fails open).
+ *
+ *  Per docs/proposals/activity-gate-periodic-skills.md AC 10 / Gap C —
+ *  `.peer-sync/` mtime is intentionally NOT included in this PR. */
+export function computeTaskLastActivityEpoch(taskId: string): number | null {
+  if (!taskId) return null;
+  let best = 0;
+  let sawError = false;
+
+  // Source 1: project worktree git HEAD commit time.
+  try {
+    const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
+    if (existsSync(taskFile)) {
+      const fm = parseTaskFrontmatter(readFileSync(taskFile, "utf-8"));
+      const projectName = String(fm.project ?? "");
+      if (projectName) {
+        const proj = findProjectConfigByName(projectName);
+        const projPath = proj?.path
+          ? (proj.path.startsWith("~/") ? join(process.env.HOME ?? "~", proj.path.slice(2)) : proj.path)
+          : null;
+        if (projPath && existsSync(projPath)) {
+          const r = Bun.spawnSync(["git", "log", "-1", "--format=%ct", "HEAD"], { cwd: projPath });
+          if (r.exitCode === 0) {
+            const out = new TextDecoder().decode(r.stdout).trim();
+            const epoch = Number.parseInt(out, 10);
+            if (Number.isFinite(epoch) && epoch > best) best = epoch;
+          }
+        }
+      }
+    }
+  } catch {
+    sawError = true;
+  }
+
+  // Source 2: slot_resume / slot_assign events scoped to taskId.
+  try {
+    const eventsFile = join(harnessDir(), "journal", "events.jsonl");
+    if (existsSync(eventsFile)) {
+      const buf = readFileSync(eventsFile, "utf8");
+      const lines = buf.length > 0 ? buf.split("\n") : [];
+      for (const line of lines) {
+        if (!line) continue;
+        try {
+          const raw = JSON.parse(line) as unknown;
+          if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+          const parsed = raw as Record<string, unknown>;
+          if (parsed.task !== taskId) continue;
+          const et = typeof parsed.event_type === "string" ? parsed.event_type : "";
+          if (et !== "slot_resume" && et !== "slot_assign") continue;
+          const epoch = typeof parsed.epoch === "number" ? parsed.epoch : null;
+          if (epoch !== null && epoch > best) best = epoch;
+        } catch { /* skip malformed */ }
+      }
+    }
+  } catch {
+    sawError = true;
+  }
+
+  if (best > 0) return best;
+  if (sawError) return null;
+  return 0;
 }
 
 // --- Auto-queue proposals ---
@@ -3716,7 +3933,10 @@ export function magBriefing(
       }
     }
   }
-  const requestId = queueRequest({ action: "briefing" });
+  // gh-ludics-538 AC 11: a manual `ludics mag briefing` (opts.auto falsy)
+  // bypasses the dispatch-time activity gate; an auto trigger (opts.auto)
+  // stays gated so idle days still skip.
+  const requestId = queueRequest({ action: "briefing" }, { bypassGate: !opts.auto });
   console.log(`Queued briefing request: ${requestId}`);
 
   // Auto-queue feedback-digest once daily alongside the briefing trigger.
@@ -3896,7 +4116,8 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
       console.error("ludics: mag health-check skipped — not the cluster controller");
       return;
     }
-    queueRequest({ action: "health-check" });
+    // gh-ludics-538 AC 11: manual CLI invocation bypasses the dispatch gate.
+    queueRequest({ action: "health-check" }, { bypassGate: true });
     // /compact is enqueued by the gate-check path in resolveQueueRequestCommand
     // only when the health-check actually runs (gate did not skip). Coupling
     // /compact to a real checkpoint avoids spurious compactions on idle ticks.
@@ -4040,7 +4261,8 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
   ["verify-completion", (args) => {
     const taskId = args[0];
     if (!taskId) throw new Error("task id required");
-    queueRequest({ action: "verify-completion", task: taskId });
+    // gh-ludics-538 AC 11: manual CLI invocation bypasses the dispatch gate.
+    queueRequest({ action: "verify-completion", task: taskId }, { bypassGate: true });
     console.log(`Queued verify-completion request for ${taskId}`);
   }],
   ["verify-container-completion", (args) => {
@@ -4095,7 +4317,8 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
       return;
     }
 
-    queueRequest({ action: "adopt-sessions" });
+    // gh-ludics-538 AC 11: manual CLI invocation bypasses the dispatch gate.
+    queueRequest({ action: "adopt-sessions" }, { bypassGate: true });
     console.log(`Queued adopt-sessions request (${fingerprint.unclassifiedCount} unclassified session(s))`);
   }],
   ["process-suggestions", (args) => {
