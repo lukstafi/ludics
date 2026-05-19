@@ -138,7 +138,7 @@ describe("runMag health-check auto-compact follow-up", () => {
     // health-check resolves to its skill command and the auto-compact
     // follow-up is enqueued.
     const popped = queuePopExpected();
-    expect(popped.status).toBe("popped");
+    if (popped.status !== "popped") throw new Error(`expected popped, got ${popped.status}`);
     const command = await resolveQueueRequestCommand(popped.request!, true);
     expect(command).toBe("/ludics-health-check");
 
@@ -163,7 +163,7 @@ describe("runMag health-check auto-compact follow-up", () => {
 
     // Pop the head (health-check) as production does, then resolve.
     const popped = queuePopExpected();
-    expect(popped.status).toBe("popped");
+    if (popped.status !== "popped") throw new Error(`expected popped, got ${popped.status}`);
     expect((popped.request as { action: string }).action).toBe("health-check");
 
     const command = await resolveQueueRequestCommand(popped.request!, true);
