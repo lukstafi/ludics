@@ -846,6 +846,94 @@ describe("verifyPhaseOutcome (PR_CREATE_GATE)", () => {
     expect(verifyPhaseOutcome(state, PR_CREATE_GATE)).toBe("hold");
     expect(state.prCreateVerifyAttempts).toBe(MAX_VERIFY_ATTEMPTS);
   });
+
+  // gh-ludics-529: wrong-base-repo gate-level catch-all.
+  // Harness: findProjectConfig is mocked to return a repo whose slug differs
+  // from the PR URL's slug. Invariant: even with v.exists === true, the gate
+  // returns "redispatch" via handleVerifyFailure, prCreateVerifyAttempts
+  // increments, and phaseRetryContext is populated with the wrong-repo reason.
+  // Mutation evidence: flipping the mocked repo to match (positive control
+  // below) makes the same call return "advance" — confirms the assertion is
+  // what's driving the redispatch, not some unrelated `v.exists` failure.
+  describe("wrong-base-repo assertion (gh-ludics-529)", () => {
+    let configSpy: ReturnType<typeof spyOn>;
+    beforeEach(() => {
+      configSpy = spyOn(config, "findProjectConfig").mockReturnValue(
+        { repo: "lukstafi/ocannl-staging", upstream_repo: "ahrefs/ocannl", name: "ocannl" } as any,
+      );
+    });
+    afterEach(() => { configSpy.mockRestore(); });
+
+    function makeWrongRepoState(overrides: Partial<OrchestrationState> = {}) {
+      const dir = makeTmpDir();
+      const wrongUrl = "https://github.com/ahrefs/ocannl/pull/457";
+      writeFileSync(join(dir, "coder.pr"), wrongUrl);
+      const state = makeState({ phase: "pr-create", ...overrides }, dir);
+      state.agentStates.coder!.status = "done";
+      state.agentStates.coder!.prUrl = wrongUrl;
+      state.agentStates.coder!.turnLifecycle = makeLifecycle({ state: "settled" });
+      return state;
+    }
+
+    test("returns redispatch when verified PR URL points at upstream/fork-parent, populates retry context", () => {
+      const state = makeWrongRepoState({ prCreateVerifyAttempts: 0 });
+      verificationSpy.mockReturnValue({ exists: true, state: "open" });
+
+      expect(verifyPhaseOutcome(state, PR_CREATE_GATE)).toBe("redispatch");
+      expect(state.prCreateVerifyAttempts).toBe(1);
+      expect(state.phaseRetryContext).toBeTruthy();
+      const reason = state.phaseRetryContext!;
+      expect(reason).toContain("ahrefs/ocannl");
+      expect(reason).toContain("lukstafi/ocannl-staging");
+      expect(reason).toContain("gh pr create --repo lukstafi/ocannl-staging");
+      expect(reason).toContain(".peer-sync/<agent>.pr");
+      // Fork-parent explanation present because wrong slug == upstream_repo.
+      expect(reason).toContain("upstream/fork-parent");
+      // pr_verified MUST NOT have been emitted — wrong-repo branch suppresses
+      // success even though v.exists === true.
+      expect(eventSpy.mock.calls.some((c: any[]) => c[0].event_type === "pr_verified")).toBe(false);
+      // pr_missing event emitted via handleVerifyFailure.
+      expect(eventSpy.mock.calls.some((c: any[]) => c[0].event_type === "pr_missing")).toBe(true);
+    });
+
+    test("retry-context omits fork-parent hint when wrong slug does NOT match upstream_repo", () => {
+      configSpy.mockReturnValue({ repo: "lukstafi/ocannl-staging", upstream_repo: "ahrefs/ocannl", name: "ocannl" } as any);
+      const dir = makeTmpDir();
+      // Wrong repo, but NOT the upstream — e.g. coder typo'd a totally
+      // unrelated repo.
+      const wrongUrl = "https://github.com/someone/elsewhere/pull/9";
+      writeFileSync(join(dir, "coder.pr"), wrongUrl);
+      const state = makeState({ phase: "pr-create", prCreateVerifyAttempts: 0 }, dir);
+      state.agentStates.coder!.status = "done";
+      state.agentStates.coder!.prUrl = wrongUrl;
+      state.agentStates.coder!.turnLifecycle = makeLifecycle({ state: "settled" });
+      verificationSpy.mockReturnValue({ exists: true, state: "open" });
+
+      expect(verifyPhaseOutcome(state, PR_CREATE_GATE)).toBe("redispatch");
+      const reason = state.phaseRetryContext!;
+      expect(reason).toContain("someone/elsewhere");
+      expect(reason).toContain("lukstafi/ocannl-staging");
+      // No upstream/fork-parent explanation because wrong slug != upstream_repo.
+      expect(reason).not.toContain("upstream/fork-parent");
+    });
+
+    test("returns advance when the PR URL slug matches projectRepo (positive control)", () => {
+      configSpy.mockReturnValue({ repo: "org/repo", name: "test" } as any);
+      const state = makePrCreateDoneState();
+      verificationSpy.mockReturnValue({ exists: true, state: "open" });
+      expect(verifyPhaseOutcome(state, PR_CREATE_GATE)).toBe("advance");
+      expect(eventSpy.mock.calls.some((c: any[]) => c[0].event_type === "pr_verified")).toBe(true);
+    });
+
+    test("AC5 skip: when findProjectConfig returns no repo, mismatched URL still advances", () => {
+      // No project repo configured — the wrong-repo branch must no-op.
+      configSpy.mockReturnValue({ name: "ad-hoc" } as any);
+      const state = makeWrongRepoState();
+      verificationSpy.mockReturnValue({ exists: true, state: "open" });
+      expect(verifyPhaseOutcome(state, PR_CREATE_GATE)).toBe("advance");
+      expect(eventSpy.mock.calls.some((c: any[]) => c[0].event_type === "pr_verified")).toBe(true);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -912,6 +1000,23 @@ describe("verifyPhaseOutcome (FINAL_MERGE_GATE)", () => {
 
     expect(verifyPhaseOutcome(state, FINAL_MERGE_GATE)).toBe("hold");
     expect(state.finalMergeVerifyAttempts).toBe(MAX_VERIFY_ATTEMPTS);
+  });
+
+  // gh-ludics-529: confirm the wrong-base-repo assertion does NOT leak into
+  // FINAL_MERGE_GATE. Harness: even if findProjectConfig returns a repo that
+  // doesn't match the PR URL, the final-merge gate advances on a merged PR.
+  test("FINAL_MERGE_GATE is unaffected by the prCreate-gated wrong-base-repo assertion", () => {
+    const configSpy = spyOn(config, "findProjectConfig").mockReturnValue(
+      { repo: "would/not/match", name: "test" } as any,
+    );
+    try {
+      const state = makeFinalMergeDoneState();
+      verificationSpy.mockReturnValue({ exists: true, merged: true, state: "closed" });
+      expect(verifyPhaseOutcome(state, FINAL_MERGE_GATE)).toBe("advance");
+      expect(eventSpy.mock.calls.some((c: any[]) => c[0].event_type === "merge_verified")).toBe(true);
+    } finally {
+      configSpy.mockRestore();
+    }
   });
 });
 
@@ -1013,17 +1118,20 @@ describe("validateAgentPrFiles (eager repair)", () => {
   let fixSpy: ReturnType<typeof spyOn>;
   let notifySpy: ReturnType<typeof spyOn>;
   let configSpy: ReturnType<typeof spyOn>;
+  let eventSpy: ReturnType<typeof spyOn>;
   let dir: string;
 
   beforeEach(() => {
     dir = makeTmpDir();
     notifySpy = spyOn(notify, "notifyAgents").mockImplementation(() => {});
-    configSpy = spyOn(config, "findProjectConfig").mockReturnValue({ repo: "org/test-repo", name: "test" } as any);
+    configSpy = spyOn(config, "findProjectConfig").mockReturnValue({ repo: "org/repo", name: "test" } as any);
+    eventSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
   });
   afterEach(() => {
     fixSpy?.mockRestore();
     notifySpy.mockRestore();
     configSpy.mockRestore();
+    eventSpy.mockRestore();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -1037,7 +1145,7 @@ describe("validateAgentPrFiles (eager repair)", () => {
     validateAgentPrFiles(state);
     expect(fixSpy).toHaveBeenCalled();
     expect(fixSpy).toHaveBeenCalledWith(
-      expect.any(String), expect.any(String), expect.any(String), "org/test-repo"
+      expect.any(String), expect.any(String), expect.any(String), "org/repo"
     );
     expect(state.agentStates.coder.prUrl).toBe("https://github.com/org/repo/pull/1");
   });
@@ -1071,7 +1179,7 @@ describe("validateAgentPrFiles (eager repair)", () => {
     validateAgentPrFiles(state);
     expect(fixSpy).toHaveBeenCalled();
     expect(fixSpy).toHaveBeenCalledWith(
-      expect.any(String), expect.any(String), expect.any(String), "org/test-repo"
+      expect.any(String), expect.any(String), expect.any(String), "org/repo"
     );
   });
 
@@ -1095,10 +1203,95 @@ describe("validateAgentPrFiles (eager repair)", () => {
     validateAgentPrFiles(state);
     expect(fixSpy).toHaveBeenCalled();
     expect(fixSpy).toHaveBeenCalledWith(
-      expect.any(String), expect.any(String), expect.any(String), "org/test-repo"
+      expect.any(String), expect.any(String), expect.any(String), "org/repo"
     );
     expect(state.agentStates.coder.prUrl).toBeFalsy();
     expect(notifySpy).not.toHaveBeenCalled();
+  });
+
+  // gh-ludics-529: wrong-base-repo early catch.
+  // Harness: validateAndFixPrFile returns a URL whose slug differs from the
+  // mocked findProjectConfig().repo. Invariant: runtime.prUrl stays unset,
+  // notifyAgents is never called, and an orchestration_warning event with the
+  // pr-create base repo validation action is emitted.
+
+  test("rejects a wrong-repo URL returned from eager repair (does not promote, does not notify, emits warning)", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue("https://github.com/ahrefs/ocannl/pull/457");
+    configSpy.mockReturnValue({ repo: "lukstafi/ocannl-staging", upstream_repo: "ahrefs/ocannl", name: "ocannl" } as any);
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    state.agentStates.coder.turnLifecycle = null;
+    state.agentStates.coder.status = "pr-create-active";
+    writeFileSync(join(dir, "coder.pr"), "# My PR\nbody\n");
+    validateAgentPrFiles(state);
+    expect(fixSpy).toHaveBeenCalled();
+    expect(state.agentStates.coder.prUrl).toBeFalsy();
+    expect(notifySpy).not.toHaveBeenCalled();
+    const warning = eventSpy.mock.calls.find(
+      (c: any[]) => c[0]?.event_type === "orchestration_warning"
+        && c[0]?.action === "pr-create base repo validation",
+    );
+    expect(warning).toBeDefined();
+    // Message must name the wrong repo, the expected repo, recreate-with-
+    // `--repo` instruction, the overwrite-`.peer-sync/<agent>.pr` instruction,
+    // and the fork-parent explanation (wrong slug == upstream_repo here).
+    const msg = (warning![0] as { message: string }).message;
+    expect(msg).toContain("ahrefs/ocannl");
+    expect(msg).toContain("lukstafi/ocannl-staging");
+    expect(msg).toContain("gh pr create --repo lukstafi/ocannl-staging");
+    expect(msg).toContain(".peer-sync/<agent>.pr");
+    expect(msg).toContain("upstream/fork-parent");
+  });
+
+  test("rejects a wrong-repo URL discovered via the settled-mode branch (already-a-URL .pr)", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue("https://github.com/ahrefs/ocannl/pull/457");
+    configSpy.mockReturnValue({ repo: "lukstafi/ocannl-staging", upstream_repo: "ahrefs/ocannl", name: "ocannl" } as any);
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    // Settled lifecycle so the settled-mode branch is the one that fires.
+    state.agentStates.coder.turnLifecycle = makeLifecycle({ state: "settled" });
+    state.agentStates.coder.status = "pr-create-done";
+    // .pr already contains a wrong-repo URL — eager-repair branch skips
+    // (`!isPrUrl(content)` is false), settled-mode calls validateAndFixPrFile
+    // which returns the URL untouched (mocked here as the wrong-repo URL).
+    writeFileSync(join(dir, "coder.pr"), "https://github.com/ahrefs/ocannl/pull/457\n");
+    validateAgentPrFiles(state);
+    expect(state.agentStates.coder.prUrl).toBeFalsy();
+    expect(notifySpy).not.toHaveBeenCalled();
+    expect(eventSpy.mock.calls.some(
+      (c: any[]) => c[0]?.event_type === "orchestration_warning"
+        && c[0]?.action === "pr-create base repo validation",
+    )).toBe(true);
+  });
+
+  test("positive control: a matching-repo URL still promotes + notifies (no behaviour change for the happy path)", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue("https://github.com/org/repo/pull/7");
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    state.agentStates.coder.turnLifecycle = null;
+    state.agentStates.coder.status = "pr-create-active";
+    writeFileSync(join(dir, "coder.pr"), "# My PR\nbody\n");
+    validateAgentPrFiles(state);
+    expect(state.agentStates.coder.prUrl).toBe("https://github.com/org/repo/pull/7");
+    expect(notifySpy).toHaveBeenCalled();
+    expect(eventSpy.mock.calls.some(
+      (c: any[]) => c[0]?.event_type === "orchestration_warning"
+        && c[0]?.action === "pr-create base repo validation",
+    )).toBe(false);
+  });
+
+  test("AC5 skip: when project config has no repo, a non-matching URL still promotes (existing behaviour preserved)", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue("https://github.com/some/other/pull/1");
+    // No repo on the project config → assertion no-ops.
+    configSpy.mockReturnValue({ name: "ad-hoc" } as any);
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    state.agentStates.coder.turnLifecycle = null;
+    state.agentStates.coder.status = "pr-create-active";
+    writeFileSync(join(dir, "coder.pr"), "# My PR\nbody\n");
+    validateAgentPrFiles(state);
+    expect(state.agentStates.coder.prUrl).toBe("https://github.com/some/other/pull/1");
+    expect(notifySpy).toHaveBeenCalled();
+    expect(eventSpy.mock.calls.some(
+      (c: any[]) => c[0]?.event_type === "orchestration_warning"
+        && c[0]?.action === "pr-create base repo validation",
+    )).toBe(false);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { DEFAULT_CODEX_REVIEW_PROMPT, hasCodexSubmittedReview, postCodexReviewComment } from "./github.ts";
+import { DEFAULT_CODEX_REVIEW_PROMPT, hasCodexSubmittedReview, postCodexReviewComment, prUrlBelongsToRepo, repoSlugFromPrUrl } from "./github.ts";
 
 setDefaultTimeout(20_000);
 
@@ -60,5 +60,89 @@ describe("hasCodexSubmittedReview", () => {
       "https://github.com/nonexistent-owner-zzz/nonexistent-repo-zzz/pull/1"
     );
     expect(result).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prUrlBelongsToRepo / repoSlugFromPrUrl — base-repo assertion helpers
+// (gh-ludics-529: prevent coder PRs from targeting the upstream fork-parent)
+// ---------------------------------------------------------------------------
+
+describe("repoSlugFromPrUrl", () => {
+  test("extracts owner/repo from a canonical PR URL", () => {
+    expect(repoSlugFromPrUrl("https://github.com/org/repo/pull/42")).toBe("org/repo");
+  });
+
+  test("returns null for malformed input", () => {
+    expect(repoSlugFromPrUrl("")).toBeNull();
+    expect(repoSlugFromPrUrl("not a url")).toBeNull();
+    expect(repoSlugFromPrUrl("https://example.com/foo/bar/pull/1")).toBeNull();
+    expect(repoSlugFromPrUrl("https://github.com/org/repo/issues/1")).toBeNull();
+  });
+});
+
+describe("prUrlBelongsToRepo", () => {
+  test("returns true for an exact slug match", () => {
+    expect(prUrlBelongsToRepo("https://github.com/org/repo/pull/1", "org/repo")).toBe(true);
+  });
+
+  test("returns true for a case-insensitive match", () => {
+    expect(prUrlBelongsToRepo(
+      "https://github.com/Lukstafi/Ocannl-Staging/pull/5",
+      "lukstafi/ocannl-staging",
+    )).toBe(true);
+  });
+
+  test("returns true when expected repo has trailing whitespace", () => {
+    expect(prUrlBelongsToRepo(
+      "https://github.com/org/repo/pull/1",
+      "  org/repo  ",
+    )).toBe(true);
+  });
+
+  test("returns true when URL slug carries a trailing .git", () => {
+    expect(prUrlBelongsToRepo(
+      "https://github.com/org/repo.git/pull/1",
+      "org/repo",
+    )).toBe(true);
+  });
+
+  test("returns true when expected repo carries a trailing .git", () => {
+    expect(prUrlBelongsToRepo(
+      "https://github.com/org/repo/pull/1",
+      "org/repo.git",
+    )).toBe(true);
+  });
+
+  test("returns true for a combined case + .GIT suffix mismatch (the OCANNL incident shape)", () => {
+    // Mirrors the incident: PR URL targets a fork-parent rendering with weird casing.
+    expect(prUrlBelongsToRepo(
+      "https://github.com/Lukstafi/Ocannl-Staging.GIT/pull/5",
+      "lukstafi/ocannl-staging",
+    )).toBe(true);
+  });
+
+  test("returns false for a slug mismatch (the wrong-base-repo case)", () => {
+    // The OCANNL incident: PR landed on the upstream fork-parent instead of the working repo.
+    expect(prUrlBelongsToRepo(
+      "https://github.com/ahrefs/ocannl/pull/457",
+      "lukstafi/ocannl-staging",
+    )).toBe(false);
+  });
+
+  test("returns false for a malformed PR URL", () => {
+    expect(prUrlBelongsToRepo("not a url", "org/repo")).toBe(false);
+    expect(prUrlBelongsToRepo("", "org/repo")).toBe(false);
+    expect(prUrlBelongsToRepo("https://example.com/foo/bar/pull/1", "org/repo")).toBe(false);
+  });
+
+  test("returns false when expected repo is missing or blank", () => {
+    // The helper itself rejects missing/blank repo — defence in depth.
+    // Call sites still gate on `if (projectRepo) ...` so AC5 skip is also
+    // enforced at the call boundary; this is the redundant guard.
+    expect(prUrlBelongsToRepo("https://github.com/org/repo/pull/1", undefined)).toBe(false);
+    expect(prUrlBelongsToRepo("https://github.com/org/repo/pull/1", null)).toBe(false);
+    expect(prUrlBelongsToRepo("https://github.com/org/repo/pull/1", "")).toBe(false);
+    expect(prUrlBelongsToRepo("https://github.com/org/repo/pull/1", "   ")).toBe(false);
   });
 });
