@@ -463,6 +463,81 @@ describe("classifyPushFailure", () => {
   test("returns 'other' for unrecognized failure shapes", () => {
     expect(classifyPushFailure("", "remote: error: server-side hook failure")).toBe("other");
   });
+
+  // Codex PR #544 review: GitHub-style 403/401 push denials must
+  // classify as credentials, not as network. Real GitHub stderr for a
+  // 403 push denial is a TWO-LINE blob — the first line names the
+  // permission gap, the second includes "unable to access ... error: 403"
+  // which previously matched the network clause. Without the credentials
+  // classifier winning, the sentinel would be touched and the stale-
+  // sentinel signal that AC 9 relies on would be suppressed.
+  test("classifies GitHub 403 push-denial stderr as credentials, not network", () => {
+    const real403Stderr = [
+      "remote: Permission to lukstafi/ocannl-staging.git denied to someuser.",
+      "fatal: unable to access 'https://github.com/lukstafi/ocannl-staging.git/': The requested URL returned error: 403",
+    ].join("\n");
+    expect(classifyPushFailure("", real403Stderr)).toBe("credentials");
+  });
+
+  test("classifies bare 'permission to <repo> denied to <user>' line as credentials", () => {
+    expect(classifyPushFailure("", "remote: Permission to org/repo.git denied to bot."))
+      .toBe("credentials");
+  });
+
+  test("classifies 'error: 403' (without the matching first line) as credentials", () => {
+    // Belt-and-suspenders: even when only the trailing fatal line is
+    // captured (e.g. truncated detail blob), the 403 itself routes to
+    // credentials so the sentinel-touch policy fires correctly.
+    expect(classifyPushFailure("", "fatal: unable to access '...': The requested URL returned error: 403"))
+      .toBe("credentials");
+  });
+
+  test("classifies 'error: 401' as credentials", () => {
+    expect(classifyPushFailure("", "fatal: unable to access '...': The requested URL returned error: 401"))
+      .toBe("credentials");
+  });
+
+  test("classifies 'Write access to repository not granted' as credentials", () => {
+    expect(classifyPushFailure("", "remote: Write access to repository not granted."))
+      .toBe("credentials");
+  });
+
+  test("network classifier still wins for legitimate transient shapes (no 403 / no denial)", () => {
+    // Negative control: a generic 'unable to access' WITHOUT any
+    // credentials marker (no 403, no denial, no Write access line) must
+    // still classify as network — touching the sentinel here is the
+    // correct policy because there's no auth-gap signal to surface.
+    expect(classifyPushFailure("", "fatal: unable to access 'https://github.com/...': Could not resolve host: github.com"))
+      .toBe("network");
+  });
+});
+
+describe("classifyPushFailure end-to-end (Codex PR #544 review)", () => {
+  // Wire the 403-stderr through syncUpstreamMainFromStaging to prove
+  // the outcome and sentinel-touch policy match the AC, not just the
+  // classifier's return value.
+  test("403 push failure → skipped-no-push-credentials, sentinel NOT touched", () => {
+    const dir = mkdtempSync("/tmp/outbound-checkout-403-");
+    const sentinelDir = mkdtempSync("/tmp/outbound-sentinel-403-");
+    const real403Stderr = [
+      "remote: Permission to lukstafi/ocannl-staging.git denied to someuser.",
+      "fatal: unable to access 'https://github.com/lukstafi/ocannl-staging.git/': The requested URL returned error: 403",
+    ].join("\n");
+    const { run, calls } = outboundFakeGit({
+      ancestry: { exitCode: 0 },
+      revListCount: { stdout: "5\n" },
+      push: { stdout: "", stderr: real403Stderr, exitCode: 128 },
+    });
+    const res = syncUpstreamMainFromStaging(
+      [project("ocannl", dir)],
+      { now: new Date(), runGit: run, sentinelDir },
+    );
+    expect(res[0]!.outcome).toBe("skipped-no-push-credentials");
+    expect(calls.some((c) => c[0] === "push")).toBe(true);
+    // The key invariant Codex flagged: sentinel must NOT exist so the
+    // stale-sentinel signal fires fast.
+    expect(existsSync(join(sentinelDir, "last-outbound-fast-forward-ocannl.epoch"))).toBe(false);
+  });
 });
 
 describe("syncUpstreamMainFromStaging", () => {

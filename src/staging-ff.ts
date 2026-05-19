@@ -247,7 +247,20 @@ export function classifyPushFailure(
   stderr?: string,
 ): "credentials" | "network" | "other" {
   const blob = `${stdout}\n${stderr ?? ""}`.toLowerCase();
-  if (/permission denied|could not read username|authentication failed/.test(blob)) {
+  // Credentials patterns. The first three are the AC-named SSH /
+  // HTTPS-credential shapes. The remaining four catch GitHub's
+  // 403/401 push-denial shapes — which would otherwise fall through to
+  // the `unable to access` clause of the network classifier below and
+  // suppress the stale-sentinel signal:
+  //   remote: Permission to <repo>.git denied to <user>.
+  //   fatal: unable to access '<url>': The requested URL returned error: 403
+  //   remote: Write access to repository not granted.
+  // The check runs before the network classifier so a stderr blob
+  // that matches BOTH (typical GitHub 403 — two-line stderr) is
+  // classified as credentials.
+  if (
+    /permission denied|could not read username|authentication failed|permission to .*denied|\berror: 40[13]\b|write access (to repository )?not granted/.test(blob)
+  ) {
     return "credentials";
   }
   if (/could not resolve|network is unreachable|timed out|connection refused|temporary failure|unable to access/.test(blob)) {
