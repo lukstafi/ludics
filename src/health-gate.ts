@@ -298,6 +298,22 @@ export interface UserActionSignalOptions {
   lookbackHours: number;
 }
 
+/** Predicate that recognizes a Mag-authored commit by its `Co-Authored-By:`
+ *  trailer referencing Claude (case-insensitive). Mag runs Claude in tmux
+ *  and shares the user's local git identity, so the trailer is the only
+ *  durable in-band marker that distinguishes Mag commits from human
+ *  commits in the state repo. Used to exclude Mag's own task-frontmatter
+ *  edits from the briefing user-action signal (AC 6). Exported for tests. */
+export function isMagAuthoredCommit(commitBody: string): boolean {
+  if (!commitBody) return false;
+  for (const rawLine of commitBody.split("\n")) {
+    const line = rawLine.trim();
+    if (!line.toLowerCase().startsWith("co-authored-by:")) continue;
+    if (/claude/i.test(line)) return true;
+  }
+  return false;
+}
+
 /** Compute the max epoch across qualifying user activity sources in the
  *  look-back window. Three-valued return:
  *    number  — Unix epoch of the latest qualifying activity.
@@ -343,26 +359,38 @@ export function latestUserActionEpoch(opts: UserActionSignalOptions): number | n
   }
   // If the events file is absent, treat as "clean empty scan" (not error).
 
-  // Source 3: non-Mag-authored commits to tasks/*.md. Conservative proxy
-  // per docs/proposals/activity-gate-periodic-skills.md Gap C — every
-  // commit touching tasks/ counts (no author filter), since the state-repo's
-  // task frontmatter is user-edited in practice.
+  // Source 3: non-Mag-authored commits to tasks/*.md. Per AC 6, commits
+  // authored by Mag (recognized by a `Co-Authored-By:` trailer referencing
+  // Claude — see isMagAuthoredCommit) MUST NOT advance the signal. The
+  // strict frontmatter-line-range proposal text was relaxed to "any
+  // non-Mag-authored commit touching tasks/*.md" per Gap C in the merged
+  // plan, but the non-Mag-author predicate stands.
   const tasksDir = join(opts.stateDir, "tasks");
   if (existsSync(tasksDir)) {
     try {
+      // %at = author epoch; the body follows; we delimit records with an
+      // ASCII sentinel ("---END-OF-COMMIT---") that cannot collide with a
+      // commit message line (no embedded control bytes — lint:no-nul-bytes
+      // safe). The delimiter is anchored by surrounding newlines on split.
       const res = spawnSync("git", [
         "log",
         `--since=${opts.lookbackHours} hours ago`,
-        "--format=%at",
+        "--format=%at%n%B%n---END-OF-COMMIT---",
         "--",
         "tasks/",
       ], { cwd: opts.stateDir, encoding: "utf8", timeout: 5000 });
       if (res.status === 0 && typeof res.stdout === "string") {
-        for (const line of res.stdout.trim().split("\n")) {
-          const epoch = Number.parseInt(line, 10);
-          if (Number.isFinite(epoch) && epoch >= horizon && epoch > best) {
-            best = epoch;
-          }
+        const records = res.stdout.split("\n---END-OF-COMMIT---\n");
+        for (const rec of records) {
+          if (!rec.trim()) continue;
+          const newlineIdx = rec.indexOf("\n");
+          if (newlineIdx < 0) continue;
+          const epochStr = rec.slice(0, newlineIdx);
+          const body = rec.slice(newlineIdx + 1);
+          const epoch = Number.parseInt(epochStr, 10);
+          if (!Number.isFinite(epoch) || epoch < horizon) continue;
+          if (isMagAuthoredCommit(body)) continue;
+          if (epoch > best) best = epoch;
         }
       } else if (res.status !== null && res.status !== 0) {
         // git ran but returned non-zero (not a repo / bad ref) — count as error.

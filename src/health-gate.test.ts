@@ -9,6 +9,7 @@ import {
   HEALTH_GATE_THRESHOLD,
   MAG_AUTO_ACTIONS,
   isMagAutoAction,
+  isMagAuthoredCommit,
   latestUserActionEpoch,
   writeGateSnapshot,
   countGateEligibleLines,
@@ -470,6 +471,82 @@ describe("latestUserActionEpoch", () => {
     expect(got).toBeGreaterThan(0);
     rmSync(dir, { recursive: true });
   });
+
+  test("Mag-authored task commit does NOT advance signal (AC 6 author predicate)", () => {
+    const dir = makeTmpDir();
+    const r = (args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    r(["init", "-q"]);
+    r(["config", "user.email", "test@example.com"]);
+    r(["config", "user.name", "Test User"]);
+    r(["config", "commit.gpgsign", "false"]);
+    mkdirSync(join(dir, "tasks"));
+    writeFileSync(join(dir, "tasks", "test.md"), "---\nstatus: ready\n---\nhi\n");
+    r(["add", "tasks/test.md"]);
+    // Commit with a Co-Authored-By: Claude trailer. Same git author as the
+    // user-task test above — the predicate must NOT depend on `%an` alone.
+    r(["commit", "-q", "-m", "mag-touched task\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"]);
+    const now = new Date();
+    const got = latestUserActionEpoch({ stateDir: dir, now, lookbackHours: 48 });
+    // Clean scan, all candidate commits filtered by the Mag-author trailer.
+    expect(got).toBe(0);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("mixed authorship: only non-Mag commits advance the signal", () => {
+    const dir = makeTmpDir();
+    const r = (args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    r(["init", "-q"]);
+    r(["config", "user.email", "test@example.com"]);
+    r(["config", "user.name", "Test User"]);
+    r(["config", "commit.gpgsign", "false"]);
+    mkdirSync(join(dir, "tasks"));
+    // First commit: Mag-authored (older).
+    writeFileSync(join(dir, "tasks", "a.md"), "a\n");
+    r(["add", "tasks/a.md"]);
+    r(["commit", "-q", "--date=2026-04-01T12:00:00Z", "-m", "mag commit\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"]);
+    const magEpoch = Number.parseInt(spawnSync("git", ["log", "-1", "--format=%at"], { cwd: dir, encoding: "utf8" }).stdout.trim(), 10);
+    // Second commit: user-authored (newer in repo order but older epoch).
+    writeFileSync(join(dir, "tasks", "b.md"), "b\n");
+    r(["add", "tasks/b.md"]);
+    r(["commit", "-q", "--date=2026-04-02T12:00:00Z", "-m", "user commit"]);
+    const userEpoch = Number.parseInt(spawnSync("git", ["log", "-1", "--format=%at"], { cwd: dir, encoding: "utf8" }).stdout.trim(), 10);
+
+    const now = new Date((userEpoch + 3600) * 1000);
+    const got = latestUserActionEpoch({ stateDir: dir, now, lookbackHours: 24 * 365 });
+    // Must be the user epoch, not max(magEpoch, userEpoch). magEpoch is
+    // older here but the predicate must reject it regardless of relative age.
+    expect(got).toBe(userEpoch);
+    expect(got).not.toBe(magEpoch);
+    rmSync(dir, { recursive: true });
+  });
+});
+
+describe("isMagAuthoredCommit", () => {
+  test("recognizes Co-Authored-By: Claude trailer", () => {
+    expect(isMagAuthoredCommit("foo\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>")).toBe(true);
+  });
+
+  test("recognizes lowercase + spacing variants", () => {
+    expect(isMagAuthoredCommit("foo\n\nco-authored-by:   claude  <x@y>")).toBe(true);
+  });
+
+  test("does not match Co-Authored-By trailer with a non-Claude collaborator", () => {
+    expect(isMagAuthoredCommit("foo\n\nCo-Authored-By: Alice Smith <alice@example.com>")).toBe(false);
+  });
+
+  test("does not match a body that merely mentions Claude in prose", () => {
+    expect(isMagAuthoredCommit("ran the claude API once\n\nCo-Authored-By: Alice <a@b>")).toBe(false);
+  });
+
+  test("empty body → false", () => {
+    expect(isMagAuthoredCommit("")).toBe(false);
+  });
+});
+
+describe("latestUserActionEpoch look-back window", () => {
+  function ev(epoch: number, extra: Record<string, unknown>): string {
+    return JSON.stringify({ ts: new Date(epoch * 1000).toISOString(), epoch, source: "test", scope: "test", ...extra });
+  }
 
   test("look-back window bounds activity (very old activity excluded)", () => {
     const dir = makeTmpDir();

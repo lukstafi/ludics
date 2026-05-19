@@ -271,6 +271,54 @@ describe("generateGateSkips read-side aggregator", () => {
     const out = generateGateSkips();
     expect(out.feedback_digest_skipped?.reason).toBe("no feedback files");
   });
+});
+
+// gh-ludics-538 AC 16: assert the route handler itself — not just the
+// underlying aggregator — returns 200 + application/json + the grouped
+// payload. Catches misspelled routes, missing handlers, wrong content
+// types, and serialization failures that the data-layer tests miss.
+describe("dashboard HTTP /api/gate-skips", () => {
+  async function makeHandler(): Promise<(req: Request) => Promise<Response>> {
+    const { buildHandlers } = await import("./dashboard-server.ts");
+    const dashboardDir = join(harnessDir(), "dashboard");
+    mkdirSync(dashboardDir, { recursive: true });
+    mkdirSync(join(dashboardDir, "data"), { recursive: true });
+    return buildHandlers({ dashboardDir, ttlSeconds: 3600 });
+  }
+
+  test("GET /api/gate-skips returns 200, application/json, and the grouped aggregator payload", async () => {
+    const journal = join(harnessDir(), "journal");
+    mkdirSync(journal, { recursive: true });
+    const lines = [
+      JSON.stringify({ ts: "2026-05-02T00:00:00Z", epoch: 1700100000, event_type: "health_check_skipped", source: "k", scope: "m", message: "old health skip", meta: { gateSkip: true }, currentLines: 10, priorLines: 5 }),
+      JSON.stringify({ ts: "2026-05-02T00:01:00Z", epoch: 1700100060, event_type: "briefing_skipped", source: "m", scope: "m", message: "briefing idle", meta: { gateSkip: true }, current: 1700000000, prior: 1700000000 }),
+      // Non-marker event — must not pollute the response.
+      JSON.stringify({ ts: "2026-05-02T00:02:00Z", epoch: 1700100120, event_type: "queue_request", source: "cli", scope: "queue", action: "elaborate", message: "req-x" }),
+    ];
+    writeFileSync(join(journal, "events.jsonl"), lines.join("\n") + "\n");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/gate-skips"));
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-type")).toContain("application/json");
+    const body = await resp.json() as Record<string, { gate: string; reason: string; timestamp: string }>;
+    expect(body.health_check_skipped?.reason).toBe("old health skip");
+    expect(body.briefing_skipped?.reason).toBe("briefing idle");
+    expect(body.queue_request).toBeUndefined();
+  });
+
+  test("GET /api/gate-skips returns 200 + empty JSON object when no skip events exist", async () => {
+    const journal = join(harnessDir(), "journal");
+    mkdirSync(journal, { recursive: true });
+    writeFileSync(join(journal, "events.jsonl"), "");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/gate-skips"));
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-type")).toContain("application/json");
+    const body = await resp.json() as Record<string, unknown>;
+    expect(body).toEqual({});
+  });
 
   test("doctor cache TTL eviction replaces the returned doctor.timestamp across the boundary", async () => {
     const {
