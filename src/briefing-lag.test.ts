@@ -188,4 +188,85 @@ describe("briefing-lag", () => {
     expect(out).toContain("upstream fetch data is");
     expect(out).toContain("h old");
   });
+
+  // gh-ludics-540: outbound sentinel staleness annotation.
+  // formatUpstreamLagSection reads
+  // `<sentinelDir>/last-outbound-fast-forward-<project>.epoch` (same
+  // file the staging-ff writer touches and the health-check skill
+  // reads). The annotation surfaces when age >= outboundSentinelStaleSeconds.
+  test("formatUpstreamLagSection: emits outbound-stale note when sentinel > 48h", () => {
+    const dir = tmp();
+    const sentinelDir = mkdtempSync("/tmp/outbound-sentinel-");
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    // Create the outbound sentinel and age it 50h.
+    const sentinel = join(sentinelDir, "last-outbound-fast-forward-ocannl.epoch");
+    writeFileSync(sentinel, "");
+    const fiftyHoursAgo = new Date(Date.now() - 50 * 3600 * 1000);
+    utimesSync(sentinel, fiftyHoursAgo, fiftyHoursAgo);
+
+    const rg = fakeGit([
+      { match: ["remote"], stdout: "origin\nupstream\n" },
+      { match: ["symbolic-ref", "refs/remotes/origin/HEAD"], stdout: "refs/remotes/origin/master\n" },
+      { match: ["symbolic-ref", "refs/remotes/upstream/HEAD"], stdout: "refs/remotes/upstream/master\n" },
+      { match: ["rev-list"], stdout: "0\t0\n" },
+      { match: ["log"], stdout: "abc 2026-01-01 hi\n" },
+    ]);
+    const out = formatUpstreamLagSection(
+      [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: dir } as ProjectConfig],
+      { now: new Date(), runGit: rg, sentinelDir },
+    );
+    expect(out).toContain("outbound sentinel is");
+    expect(out).toMatch(/outbound sentinel is ~5[0-1]h old/);
+    expect(out).toContain("upstream push may be overdue");
+  });
+
+  test("formatUpstreamLagSection: omits outbound-stale note when sentinel is fresh (< 48h)", () => {
+    const dir = tmp();
+    const sentinelDir = mkdtempSync("/tmp/outbound-sentinel-");
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    const sentinel = join(sentinelDir, "last-outbound-fast-forward-ocannl.epoch");
+    writeFileSync(sentinel, "");
+    const oneHourAgo = new Date(Date.now() - 1 * 3600 * 1000);
+    utimesSync(sentinel, oneHourAgo, oneHourAgo);
+
+    const rg = fakeGit([
+      { match: ["remote"], stdout: "origin\nupstream\n" },
+      { match: ["symbolic-ref", "refs/remotes/origin/HEAD"], stdout: "refs/remotes/origin/master\n" },
+      { match: ["symbolic-ref", "refs/remotes/upstream/HEAD"], stdout: "refs/remotes/upstream/master\n" },
+      { match: ["rev-list"], stdout: "0\t0\n" },
+      { match: ["log"], stdout: "abc 2026-01-01 hi\n" },
+    ]);
+    const out = formatUpstreamLagSection(
+      [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: dir } as ProjectConfig],
+      { now: new Date(), runGit: rg, sentinelDir },
+    );
+    expect(out).not.toContain("outbound sentinel is");
+  });
+
+  test("formatUpstreamLagSection: omits outbound-stale note when sentinelDir is missing or sentinel absent", () => {
+    // Two arms in one test: (1) caller omits sentinelDir entirely
+    // (back-compat with existing callers), (2) caller passes
+    // sentinelDir but the project has no sentinel file (opted out).
+    const dir = tmp();
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    const rg = fakeGit([
+      { match: ["remote"], stdout: "origin\nupstream\n" },
+      { match: ["symbolic-ref", "refs/remotes/origin/HEAD"], stdout: "refs/remotes/origin/master\n" },
+      { match: ["symbolic-ref", "refs/remotes/upstream/HEAD"], stdout: "refs/remotes/upstream/master\n" },
+      { match: ["rev-list"], stdout: "0\t0\n" },
+      { match: ["log"], stdout: "abc 2026-01-01 hi\n" },
+    ]);
+    const noSentinelDir = formatUpstreamLagSection(
+      [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: dir } as ProjectConfig],
+      { now: new Date(), runGit: rg },
+    );
+    expect(noSentinelDir).not.toContain("outbound sentinel is");
+
+    const emptySentinelDir = mkdtempSync("/tmp/outbound-sentinel-empty-");
+    const sentinelDirNoFile = formatUpstreamLagSection(
+      [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: dir } as ProjectConfig],
+      { now: new Date(), runGit: rg, sentinelDir: emptySentinelDir },
+    );
+    expect(sentinelDirNoFile).not.toContain("outbound sentinel is");
+  });
 });
