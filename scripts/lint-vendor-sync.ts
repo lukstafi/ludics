@@ -148,32 +148,20 @@ export const DEFAULT_FRESHEN_CMD: ReadonlyArray<string> = [
  *  upstream skew because the byte compare passes against the leftover install,
  *  while CI starts cold and surfaces the failure on an unrelated PR.
  *
- *  Test seam: `LUDICS_VENDOR_SYNC_INSTALL_CMD` (a JSON-encoded string array)
- *  swaps the spawned argv. Only used by `lint-vendor-sync.test.ts` to drive
- *  this code path without invoking the real `bun install` against the host. */
+ *  This function has no test-seam env vars: tests drive the spawn path by
+ *  `PATH`-shimming a fake `bun` that intercepts `install --frozen-lockfile`.
+ *  Keeping the seam out of production code preserves the AC1 gate — only
+ *  `!argRoot && !process.env.CI` decides whether the freshen runs. */
 export function freshenNodeModules(
   cwd: string,
 ): { ok: true } | { ok: false; stderr: string } {
-  const override = process.env.LUDICS_VENDOR_SYNC_INSTALL_CMD;
-  let cmd: string[];
-  if (override) {
-    try {
-      const parsed = JSON.parse(override);
-      if (!Array.isArray(parsed) || parsed.some((s) => typeof s !== "string")) {
-        return {
-          ok: false,
-          stderr: `LUDICS_VENDOR_SYNC_INSTALL_CMD must be a JSON array of strings, got: ${override}`,
-        };
-      }
-      cmd = parsed;
-    } catch (e) {
-      return { ok: false, stderr: `LUDICS_VENDOR_SYNC_INSTALL_CMD JSON parse error: ${String(e)}` };
-    }
-  } else {
-    cmd = [...DEFAULT_FRESHEN_CMD];
-  }
   try {
-    const result = Bun.spawnSync({ cmd, cwd, stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync({
+      cmd: [...DEFAULT_FRESHEN_CMD],
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     if (result.exitCode !== 0) {
       return { ok: false, stderr: result.stderr?.toString() ?? "" };
     }
@@ -199,13 +187,12 @@ if (import.meta.main) {
   //     overhead on the critical path.
   //   - `argRoot` is provided: hermetic tests drive a tmp fixture root and
   //     must not mutate the host's `node_modules/`.
-  // The `LUDICS_VENDOR_SYNC_INSTALL_CMD` env var force-enables the freshen
-  // step with a swapped command — the test seam that drives this branch
-  // without invoking real `bun install`.
-  const forceFreshen = !!process.env.LUDICS_VENDOR_SYNC_INSTALL_CMD;
-  const shouldFreshen = forceFreshen || (!argRoot && !process.env.CI);
+  // These are strict skips — there is no production knob that forces the
+  // freshen when either gate fires. Tests that exercise this branch do so
+  // by `PATH`-shimming a fake `bun` while leaving `argRoot` and `CI` unset.
+  const shouldFreshen = !argRoot && !process.env.CI;
   if (shouldFreshen) {
-    const freshen = freshenNodeModules(argRoot ?? repoRoot);
+    const freshen = freshenNodeModules(repoRoot);
     if (!freshen.ok) {
       console.error(
         "❌  could not refresh node_modules; vendor sync indeterminate",

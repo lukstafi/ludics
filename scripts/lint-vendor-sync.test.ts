@@ -269,134 +269,182 @@ describe("CLI integration", () => {
 
   // -------------------------------------------------------------------------
   // gh-ludics-531: freshen step (`bun install --frozen-lockfile`) before lint
-  // runs. Three cases pinned here:
-  //   (1) The spawn fires when neither argRoot nor CI are set and the test
-  //       seam forces the spawn with a fake install command.
-  //   (2) A failing freshen is a HARD error: non-zero exit + the diagnostic
-  //       sentence the AC mandates + the captured stderr.
-  //   (3) argRoot WITHOUT the test-seam env var does NOT spawn — the gate
-  //       that protects existing hermetic tests stays intact.
+  // runs. The production gate is strict — `argRoot` OR `CI` skip the freshen,
+  // unconditionally — so these tests drive the bare no-arg CLI path via a
+  // `PATH`-shimmed fake `bun`. The fake intercepts `install --frozen-lockfile`
+  // and either succeeds (positive case) or fails with a sentinel stderr
+  // (hard-fail case), without touching the host's real `node_modules/`.
+  //
+  // Three cases pinned here:
+  //   (1) Bare no-argRoot CLI invocation freshens before checkPairs (fake
+  //       install records its argv to a sentinel + exits 0).
+  //   (2) Failed freshen is a HARD error: non-zero exit + diagnostic +
+  //       captured stderr, and checkPairs is NEVER reached (ordering pin).
+  //   (3) argRoot DOES skip the freshen (poisoned-bun gate proof).
+  //   (4) CI=1 DOES skip the freshen (gate symmetry).
   // -------------------------------------------------------------------------
-  test("freshen step runs `bun install --frozen-lockfile` before checkPairs (LUDICS_VENDOR_SYNC_INSTALL_CMD seam pins existence)", () => {
-    const { root, cleanup } = makeFixture({
-      "templates/dashboard/vendor/marked.esm.js": "MARKED\n",
-      "node_modules/marked/lib/marked.esm.js": "MARKED\n",
-      "templates/dashboard/vendor/purify.es.js": "PURIFY\n",
-      "node_modules/dompurify/dist/purify.es.mjs": "PURIFY\n",
+
+  /** Build a tmp PATH-shim directory containing a fake `bun` script that
+   *  intercepts `install --frozen-lockfile` per `behaviour`, and delegates
+   *  anything else to the real bun (so `realBunPath run script.ts` continues
+   *  to work). Returns the dir + a cleanup hook. */
+  function makeFakeBun(behaviour: { kind: "ok"; sentinelPath: string } | { kind: "fail"; stderr: string }): {
+    fakeBinDir: string;
+    cleanup: () => void;
+  } {
+    const fakeBinDir = mkdtempSync(join(tmpdir(), "lint-vendor-sync-fakebun-"));
+    const fakeBunPath = join(fakeBinDir, "bun");
+    const realBunPath = process.execPath;
+    let body: string;
+    if (behaviour.kind === "ok") {
+      // Record the argv so the test can assert the spawned command was
+      // exactly `bun install --frozen-lockfile`.
+      body = `#!/bin/sh
+if [ "$1" = "install" ] && [ "$2" = "--frozen-lockfile" ]; then
+  printf 'bun %s %s\\n' "$1" "$2" > ${JSON.stringify(behaviour.sentinelPath)}
+  exit 0
+fi
+# Any other invocation: passthrough so \`bun run ...\` still works for the lint
+# script itself when the parent invokes us by absolute path is unaffected.
+exec ${JSON.stringify(realBunPath)} "$@"
+`;
+    } else {
+      body = `#!/bin/sh
+if [ "$1" = "install" ]; then
+  printf '%s\\n' ${JSON.stringify(behaviour.stderr)} >&2
+  exit 1
+fi
+exec ${JSON.stringify(realBunPath)} "$@"
+`;
+    }
+    writeFileSync(fakeBunPath, body, { mode: 0o755 });
+    return {
+      fakeBinDir,
+      cleanup: () => rmSync(fakeBinDir, { recursive: true, force: true }),
+    };
+  }
+
+  test("bare no-argRoot CLI freshens with `bun install --frozen-lockfile` before checkPairs (PATH-shim pins existence)", () => {
+    // This is the AC4 positive regression: invoke the script with NO
+    // positional arg (so production gate evaluates `!argRoot && !CI` → true),
+    // and prove the spawn fires with the AC-mandated flag. The PATH-shimmed
+    // fake bun records the argv to a sentinel file; removing the freshen
+    // call from `import.meta.main` would leave the sentinel unwritten and
+    // this assertion would fail.
+    const sentinelDir = mkdtempSync(join(tmpdir(), "lint-vendor-sync-sentinel-"));
+    const sentinel = join(sentinelDir, "FRESHEN_INVOKED");
+    const { fakeBinDir, cleanup: cleanupBin } = makeFakeBun({
+      kind: "ok",
+      sentinelPath: sentinel,
     });
-    const sentinel = join(root, "FRESHEN_INVOKED");
+    const realBunPath = process.execPath;
     try {
-      // Fake `bun install --frozen-lockfile`: records its argv into a file so
-      // the test can assert the freshen step ran with the AC-mandated flag.
-      const installCmd = JSON.stringify([
-        "sh",
-        "-c",
-        `printf '%s %s %s' "$0" "$1" "$2" > "${sentinel}"`,
-        "bun",
-        "install",
-        "--frozen-lockfile",
-      ]);
       const result = spawnSync({
-        cmd: ["bun", "run", join(import.meta.dir, "lint-vendor-sync.ts"), root],
+        // NO third arg → argRoot undefined → freshen gate fires.
+        cmd: [realBunPath, "run", join(import.meta.dir, "lint-vendor-sync.ts")],
         cwd: join(import.meta.dir, ".."),
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, LUDICS_VENDOR_SYNC_INSTALL_CMD: installCmd },
+        env: {
+          ...process.env,
+          // PATH-shim: fake bun shadows the real one for the child process
+          // (and any subprocess it spawns by bare name `bun`). The outer
+          // realBunPath invocation is absolute so it bypasses PATH lookup.
+          PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
+          // Explicitly unset CI so the gate has nothing else to skip on.
+          CI: "",
+        },
       });
       if (result.exitCode !== 0) {
         console.error(result.stderr.toString());
         console.error(result.stdout.toString());
       }
       expect(result.exitCode).toBe(0);
-      // The freshen step actually executed: the fake install wrote the sentinel.
-      // If a future refactor removes the spawn, the sentinel won't appear and
-      // this assertion fails — that's the invariant the AC names.
+      // The freshen step actually executed: the fake install wrote the
+      // sentinel. If a future refactor removes the spawn (or moves it after
+      // an early-exit path), the sentinel won't appear.
       expect(existsSync(sentinel)).toBe(true);
+      // Byte-exact argv recorded by the fake: any drift in the default
+      // install command (e.g. dropping `--frozen-lockfile`) flips this.
       expect(readFileSync(sentinel, "utf8")).toBe(
-        "bun install --frozen-lockfile",
+        "bun install --frozen-lockfile\n",
       );
+      // checkPairs also ran (after the freshen): the success message in
+      // stdout proves we reached the post-freshen branch.
+      expect(result.stdout.toString()).toContain("byte-for-byte");
     } finally {
-      cleanup();
+      cleanupBin();
+      rmSync(sentinelDir, { recursive: true, force: true });
     }
   });
 
-  test("offline / failed install is a HARD error: non-zero exit + 'vendor sync indeterminate' diagnostic + captured stderr", () => {
-    const { root, cleanup } = makeFixture({
-      "templates/dashboard/vendor/marked.esm.js": "MARKED\n",
-      "node_modules/marked/lib/marked.esm.js": "MARKED\n",
-      "templates/dashboard/vendor/purify.es.js": "PURIFY\n",
-      "node_modules/dompurify/dist/purify.es.mjs": "PURIFY\n",
+  test("failed freshen is a HARD error: non-zero exit + 'vendor sync indeterminate' diagnostic + captured stderr + checkPairs NEVER runs", () => {
+    // AC2: when `bun install --frozen-lockfile` fails (offline / broken
+    // install / lockfile mismatch), the lint exits non-zero with the AC's
+    // exact diagnostic sentence, propagates the install stderr, and
+    // critically does NOT fall through to checkPairs — so the developer
+    // can't be misled by a passing byte-compare against a stale install.
+    const { fakeBinDir, cleanup: cleanupBin } = makeFakeBun({
+      kind: "fail",
+      stderr: "fake registry unreachable",
     });
+    const realBunPath = process.execPath;
     try {
-      // Simulate offline / registry-unreachable by making the install command
-      // print to stderr and exit non-zero.
-      const installCmd = JSON.stringify([
-        "sh",
-        "-c",
-        "printf 'fake registry unreachable\\n' >&2; exit 1",
-      ]);
       const result = spawnSync({
-        cmd: ["bun", "run", join(import.meta.dir, "lint-vendor-sync.ts"), root],
+        cmd: [realBunPath, "run", join(import.meta.dir, "lint-vendor-sync.ts")],
         cwd: join(import.meta.dir, ".."),
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, LUDICS_VENDOR_SYNC_INSTALL_CMD: installCmd },
+        env: {
+          ...process.env,
+          PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
+          CI: "",
+        },
       });
-      // Hard fail: exit non-zero. A silent skip would have let checkPairs run
-      // and (since fixtures match) returned 0 — that's the failure mode the
-      // AC excludes.
       expect(result.exitCode).not.toBe(0);
       const stderr = result.stderr.toString();
+      // The exact AC2 diagnostic sentence.
       expect(stderr).toContain(
         "could not refresh node_modules; vendor sync indeterminate",
       );
-      // Captured stderr from the failing install propagates so the developer
-      // can act on the underlying error.
+      // Captured `bun install` stderr propagates.
       expect(stderr).toContain("fake registry unreachable");
+      // Ordering pin: checkPairs did NOT run. Its success message
+      // ("byte-for-byte") and its violation banner ("vendor-sync violation")
+      // are both absent — proving the freshen-failure short-circuits BEFORE
+      // any byte compare.
+      expect(stderr).not.toContain("vendor-sync violation");
+      expect(result.stdout.toString()).not.toContain("byte-for-byte");
     } finally {
-      cleanup();
+      cleanupBin();
     }
   });
 
-  test("argRoot without test-seam env var does NOT spawn — hermetic-test gate intact", () => {
-    // If a future refactor breaks the `argRoot` gate, the freshen step would
-    // run with the real `bun install --frozen-lockfile` against the host's
-    // node_modules — the exact non-hermetic behaviour the AC forbids. Using
-    // a fake install via the env-var seam would mask the regression, so this
-    // test must NOT set LUDICS_VENDOR_SYNC_INSTALL_CMD. Instead, we install
-    // a poisoned `bun` on PATH that exits non-zero with a known stderr
-    // sentinel: if the freshen runs, the lint exits non-zero AND prints the
-    // sentinel; if the gate holds, neither happens.
+  test("argRoot skips the freshen (gate proof via PATH-shimmed poisoned `bun`)", () => {
+    // If a future refactor breaks the `argRoot` gate, the freshen step
+    // would run against the host's real `node_modules/` — the exact
+    // non-hermetic behaviour the AC forbids. Use a poisoned fake bun that
+    // exits non-zero with a sentinel stderr: if the freshen runs, the lint
+    // exits non-zero AND prints the sentinel; if the gate holds, the lint
+    // skips the freshen and exits 0 against the tmp fixture.
     const { root, cleanup } = makeFixture({
       "templates/dashboard/vendor/marked.esm.js": "M\n",
       "node_modules/marked/lib/marked.esm.js": "M\n",
       "templates/dashboard/vendor/purify.es.js": "P\n",
       "node_modules/dompurify/dist/purify.es.mjs": "P\n",
     });
-    const fakeBinDir = mkdtempSync(join(tmpdir(), "lint-vendor-sync-fakebin-"));
-    const fakeBunPath = join(fakeBinDir, "bun");
+    const { fakeBinDir, cleanup: cleanupBin } = makeFakeBun({
+      kind: "fail",
+      stderr: "POISONED_BUN_INSTALL_RAN_UNEXPECTEDLY",
+    });
     const realBunPath = process.execPath;
-    // Fake bun: if invoked with `install` as first arg, exit non-zero with a
-    // sentinel stderr. Otherwise delegate to real bun (so `bun run script.ts`
-    // still works for the lint itself).
-    writeFileSync(
-      fakeBunPath,
-      `#!/bin/sh
-if [ "$1" = "install" ]; then
-  printf 'POISONED_BUN_INSTALL_RAN_UNEXPECTEDLY\\n' >&2
-  exit 99
-fi
-exec ${JSON.stringify(realBunPath)} "$@"
-`,
-      { mode: 0o755 },
-    );
     try {
       const result = spawnSync({
         cmd: [
           realBunPath,
           "run",
           join(import.meta.dir, "lint-vendor-sync.ts"),
-          root,
+          root, // argRoot present → gate should skip freshen
         ],
         cwd: join(import.meta.dir, ".."),
         stdout: "pipe",
@@ -404,10 +452,7 @@ exec ${JSON.stringify(realBunPath)} "$@"
         env: {
           ...process.env,
           PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
-          // No LUDICS_VENDOR_SYNC_INSTALL_CMD, no CI: the gate must rely
-          // solely on argRoot to skip the freshen.
           CI: "",
-          LUDICS_VENDOR_SYNC_INSTALL_CMD: "",
         },
       });
       expect(result.exitCode).toBe(0);
@@ -416,7 +461,39 @@ exec ${JSON.stringify(realBunPath)} "$@"
       );
     } finally {
       cleanup();
-      rmSync(fakeBinDir, { recursive: true, force: true });
+      cleanupBin();
+    }
+  });
+
+  test("CI=1 skips the freshen (gate symmetry, also pins production behaviour on CI)", () => {
+    // The other half of the AC1 gate: when `process.env.CI` is set, the
+    // freshen MUST be skipped (CI's own `Install dependencies` step is
+    // authoritative; a second spawn is pure overhead). Same poisoned-bun
+    // mechanism as the argRoot test, but here we drive the no-argRoot
+    // path with CI=1 instead.
+    const { fakeBinDir, cleanup: cleanupBin } = makeFakeBun({
+      kind: "fail",
+      stderr: "POISONED_BUN_INSTALL_RAN_UNEXPECTEDLY",
+    });
+    const realBunPath = process.execPath;
+    try {
+      const result = spawnSync({
+        cmd: [realBunPath, "run", join(import.meta.dir, "lint-vendor-sync.ts")],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
+          CI: "1", // CI gate fires → freshen skipped
+        },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr.toString()).not.toContain(
+        "POISONED_BUN_INSTALL_RAN_UNEXPECTEDLY",
+      );
+    } finally {
+      cleanupBin();
     }
   });
 
