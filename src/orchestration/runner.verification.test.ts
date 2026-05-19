@@ -1277,6 +1277,55 @@ describe("validateAgentPrFiles (eager repair)", () => {
     )).toBe(false);
   });
 
+  // Codex review (PR #543): when refreshAgentStatuses already copied a
+  // wrong-repo URL into runtime.prUrl, two follow-on hazards bite:
+  //   (a) the wrong URL keeps surfacing via getFirstPrUrl even after `.pr`
+  //       is repaired by the coder on retry;
+  //   (b) the first-time-only `!runtime.prUrl` promotion guard refuses to
+  //       overwrite the stale wrong URL when validateAndFixPrFile creates
+  //       the corrected PR.
+  // Two tests below cover both arms.
+
+  test("clears a stale wrong-repo runtime.prUrl when rejecting a wrong-repo eager-repair URL", () => {
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue("https://github.com/ahrefs/ocannl/pull/457");
+    configSpy.mockReturnValue({ repo: "lukstafi/ocannl-staging", upstream_repo: "ahrefs/ocannl", name: "ocannl" } as any);
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    // Simulate `refreshAgentStatuses → resolvePrUrl` having already copied
+    // the wrong-repo URL from `.pr` into runtime.prUrl on a prior tick.
+    state.agentStates.coder.prUrl = "https://github.com/ahrefs/ocannl/pull/457";
+    state.agentStates.coder.turnLifecycle = null;
+    state.agentStates.coder.status = "pr-create-active";
+    writeFileSync(join(dir, "coder.pr"), "# Bad PR\nbody\n");
+    validateAgentPrFiles(state);
+    // Wrong-repo branch must evict the stale runtime URL so getFirstPrUrl
+    // falls back to the (now-being-repaired) `.pr` file on the next tick.
+    expect(state.agentStates.coder.prUrl).toBeNull();
+    expect(notifySpy).not.toHaveBeenCalled();
+  });
+
+  test("overwrites a stale wrong-repo runtime.prUrl when the repaired URL belongs to the project repo (no spurious notify)", () => {
+    const goodUrl = "https://github.com/lukstafi/ocannl-staging/pull/25";
+    fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue(goodUrl);
+    configSpy.mockReturnValue({ repo: "lukstafi/ocannl-staging", upstream_repo: "ahrefs/ocannl", name: "ocannl" } as any);
+    const state = makeState({ phase: "pr-create", round: 1 }, dir);
+    // Stale wrong-repo URL from a prior tick's resolvePrUrl fast-path.
+    state.agentStates.coder.prUrl = "https://github.com/ahrefs/ocannl/pull/457";
+    state.agentStates.coder.turnLifecycle = null;
+    state.agentStates.coder.status = "pr-create-active";
+    // Coder has overwritten `.pr` with a fresh markdown body on retry;
+    // eager-repair fires and validateAndFixPrFile (mocked) creates the
+    // corrected staging PR.
+    writeFileSync(join(dir, "coder.pr"), "# Corrected PR\nbody\n");
+    validateAgentPrFiles(state);
+    // Promotion must overwrite the stale URL — getFirstPrUrl would otherwise
+    // keep redispatching against the wrong PR.
+    expect(state.agentStates.coder.prUrl).toBe(goodUrl);
+    // Renotification suppressed: the first-time-only `notifyAgents` was
+    // already fired when the (wrong) URL was first surfaced; a second
+    // "PR created" ping for the corrected URL would be noise.
+    expect(notifySpy).not.toHaveBeenCalled();
+  });
+
   test("AC5 skip: when project config has no repo, a non-matching URL still promotes (existing behaviour preserved)", () => {
     fixSpy = spyOn(github, "validateAndFixPrFile").mockReturnValue("https://github.com/some/other/pull/1");
     // No repo on the project config → assertion no-ops.

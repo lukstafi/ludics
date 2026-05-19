@@ -1780,16 +1780,31 @@ function promoteOrRejectPrUrl(
       message: buildWrongRepoReason(fixedUrl, projectRepo, upstreamRepo),
     });
     // Do not promote to runtime.prUrl, do not notify, do not baseline.
+    // Also evict any stale wrong-repo URL already in runtime.prUrl — it was
+    // copied there by `refreshAgentStatuses` → `resolvePrUrl` before this
+    // assertion ran, and `getFirstPrUrl` would otherwise keep surfacing the
+    // wrong URL even after the coder repairs `.pr` on retry.
+    if (runtime.prUrl && !prUrlBelongsToRepo(runtime.prUrl, projectRepo)) {
+      runtime.prUrl = null;
+    }
     // The gate-level catch-all routes through handleVerifyFailure → redispatch.
     return;
   }
-  if (!runtime.prUrl) {
+  // Promote when the URL changed. The previous `!runtime.prUrl` guard was a
+  // first-time-only gate intended to suppress repeat notifications; under
+  // retry semantics it also prevented overwriting a stale wrong-repo URL
+  // (copied in by `resolvePrUrl`) with the freshly repaired correct-repo
+  // URL. Notification fires only on actual transitions.
+  if (runtime.prUrl !== fixedUrl) {
+    const isFirstAssignment = !runtime.prUrl;
     runtime.prUrl = fixedUrl;
-    notifyAgents(
-      `Slot ${state.slot} [${state.taskId}]: PR created by ${agent.name}: ${fixedUrl}`,
-      3,
-      `Slot ${state.slot}: PR created`,
-    );
+    if (isFirstAssignment) {
+      notifyAgents(
+        `Slot ${state.slot} [${state.taskId}]: PR created by ${agent.name}: ${fixedUrl}`,
+        3,
+        `Slot ${state.slot}: PR created`,
+      );
+    }
   }
   capturePrBodyBaseline(state, agent, runtime);
 }
