@@ -93,9 +93,11 @@ Issue: https://github.com/lukstafi/ludics/issues/538
 
 6. The `lastUserActionEpoch` signal is the maximum of:
    - `notify_incoming` event timestamps from `journal/events.jsonl`.
-   - Non-Mag-authored commits touching task frontmatter (i.e., commits to
-     `tasks/*.md` whose author is not the Mag identity — file mtime + git
-     blame on the modified frontmatter line range), with a bounded look-back
+   - Non-Mag-authored commits touching task frontmatter — commits to
+     `tasks/*.md` whose author is not the Mag identity (recognized by a
+     `Co-Authored-By: Claude` trailer) AND at least one of whose diff hunks
+     overlaps the file's YAML frontmatter line range at that commit. A
+     body-only edit does not advance the signal. Bounded by a look-back
      window appropriate to the 18h threshold.
    - Queue request entries whose `action` is NOT in `MAG_AUTO_ACTIONS`.
 

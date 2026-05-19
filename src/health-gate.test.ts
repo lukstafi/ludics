@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { spawnSync } from "child_process";
@@ -322,6 +322,22 @@ describe("shouldSkipPeriodic — mode dispatch", () => {
     rmSync(dir, { recursive: true });
   });
 
+  test("epoch-unchanged: prior > now (clock skew) → run (fail open, AC 1)", () => {
+    const dir = makeTmpDir();
+    const snap = join(dir, "mag", "v.json");
+    // Pin `now` and stamp the prior signal one hour AFTER `now`. Without the
+    // future-prior guard the gate would take the `cur <= prior` branch and
+    // skip — that would let a clock skew permanently suppress verify-completion.
+    const now = new Date(1_700_000_000 * 1000);
+    const futurePrior = 1_700_003_600; // now + 1h
+    writeGateSnapshot(snap, futurePrior);
+    const dec = shouldSkipPeriodic({ gateName: "t", snapshotPath: snap, signal: 1_700_000_000, threshold: 0, mode: "epoch-unchanged", now });
+    expect(dec.skip).toBe(false);
+    expect(dec.reason).toContain("clock skew");
+    expect(dec.reason).toContain("fail open");
+    rmSync(dir, { recursive: true });
+  });
+
   test("epoch-unchanged: current=0 + first run → run (fail open via first-run arm)", () => {
     const dir = makeTmpDir();
     const snap = join(dir, "mag", "missing.json");
@@ -453,7 +469,7 @@ describe("latestUserActionEpoch", () => {
     rmSync(dir, { recursive: true });
   });
 
-  test("non-Mag task commit advances signal (Gap C — conservative proxy)", () => {
+  test("non-Mag commit creating a task with frontmatter advances signal (AC 6 strict — initial-add hunk covers frontmatter)", () => {
     const dir = makeTmpDir();
     // Init a real git repo so `git log -- tasks/` returns commits.
     const r = (args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
@@ -469,6 +485,58 @@ describe("latestUserActionEpoch", () => {
     const got = latestUserActionEpoch({ stateDir: dir, now, lookbackHours: 48 });
     expect(typeof got).toBe("number");
     expect(got).toBeGreaterThan(0);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("non-Mag commit touching only task BODY does NOT advance signal (AC 6 strict — frontmatter-bounded)", () => {
+    const dir = makeTmpDir();
+    const r = (args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    r(["init", "-q"]);
+    r(["config", "user.email", "test@example.com"]);
+    r(["config", "user.name", "Test User"]);
+    r(["config", "commit.gpgsign", "false"]);
+    mkdirSync(join(dir, "tasks"));
+    // Seed with Mag-authored initial commit so the file exists. Mag-authored
+    // → ignored upstream so it doesn't pollute the signal we're measuring.
+    writeFileSync(join(dir, "tasks", "test.md"), "---\nstatus: ready\n---\nbody-v1\n");
+    r(["add", "tasks/test.md"]);
+    r(["commit", "-q", "--date=2026-04-01T12:00:00Z", "-m", "seed task\n\nCo-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"]);
+    // Non-Mag commit that edits ONLY the body (line 4), frontmatter (lines 1-3) untouched.
+    writeFileSync(join(dir, "tasks", "test.md"), "---\nstatus: ready\n---\nbody-v2\n");
+    r(["add", "tasks/test.md"]);
+    r(["commit", "-q", "--date=2026-04-02T12:00:00Z", "-m", "tweak body"]);
+
+    const userBodyEpoch = Number.parseInt(spawnSync("git", ["log", "-1", "--format=%at"], { cwd: dir, encoding: "utf8" }).stdout.trim(), 10);
+    const now = new Date((userBodyEpoch + 3600) * 1000);
+    const got = latestUserActionEpoch({ stateDir: dir, now, lookbackHours: 24 * 365 });
+    // Body-only change → frontmatter predicate rejects this commit. The seed
+    // commit was Mag-authored → also rejected. Clean scan → 0.
+    expect(got).toBe(0);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("non-Mag commit touching task FRONTMATTER advances signal (AC 6 strict — frontmatter-only hunk)", () => {
+    const dir = makeTmpDir();
+    const r = (args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    r(["init", "-q"]);
+    r(["config", "user.email", "test@example.com"]);
+    r(["config", "user.name", "Test User"]);
+    r(["config", "commit.gpgsign", "false"]);
+    mkdirSync(join(dir, "tasks"));
+    // Seed with a Mag-authored commit so file exists.
+    writeFileSync(join(dir, "tasks", "t.md"), "---\nstatus: ready\nproject: ludics\n---\nbody\n");
+    r(["add", "tasks/t.md"]);
+    r(["commit", "-q", "--date=2026-04-01T12:00:00Z", "-m", "seed\n\nCo-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"]);
+    // Non-Mag commit edits ONLY line 2 (frontmatter, `status:`); body untouched.
+    writeFileSync(join(dir, "tasks", "t.md"), "---\nstatus: done\nproject: ludics\n---\nbody\n");
+    r(["add", "tasks/t.md"]);
+    r(["commit", "-q", "--date=2026-04-02T12:00:00Z", "-m", "mark done"]);
+
+    const userFmEpoch = Number.parseInt(spawnSync("git", ["log", "-1", "--format=%at"], { cwd: dir, encoding: "utf8" }).stdout.trim(), 10);
+    const now = new Date((userFmEpoch + 3600) * 1000);
+    const got = latestUserActionEpoch({ stateDir: dir, now, lookbackHours: 24 * 365 });
+    // Frontmatter edit by non-Mag author → advance.
+    expect(got).toBe(userFmEpoch);
     rmSync(dir, { recursive: true });
   });
 
@@ -500,13 +568,14 @@ describe("latestUserActionEpoch", () => {
     r(["config", "user.name", "Test User"]);
     r(["config", "commit.gpgsign", "false"]);
     mkdirSync(join(dir, "tasks"));
-    // First commit: Mag-authored (older).
-    writeFileSync(join(dir, "tasks", "a.md"), "a\n");
+    // First commit: Mag-authored (older). Includes frontmatter so the AC 6
+    // strict frontmatter predicate would otherwise count it.
+    writeFileSync(join(dir, "tasks", "a.md"), "---\nstatus: ready\n---\na\n");
     r(["add", "tasks/a.md"]);
     r(["commit", "-q", "--date=2026-04-01T12:00:00Z", "-m", "mag commit\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"]);
     const magEpoch = Number.parseInt(spawnSync("git", ["log", "-1", "--format=%at"], { cwd: dir, encoding: "utf8" }).stdout.trim(), 10);
-    // Second commit: user-authored (newer in repo order but older epoch).
-    writeFileSync(join(dir, "tasks", "b.md"), "b\n");
+    // Second commit: user-authored, also touches frontmatter on a new task.
+    writeFileSync(join(dir, "tasks", "b.md"), "---\nstatus: ready\n---\nb\n");
     r(["add", "tasks/b.md"]);
     r(["commit", "-q", "--date=2026-04-02T12:00:00Z", "-m", "user commit"]);
     const userEpoch = Number.parseInt(spawnSync("git", ["log", "-1", "--format=%at"], { cwd: dir, encoding: "utf8" }).stdout.trim(), 10);
@@ -577,7 +646,7 @@ describe("writeGateSnapshot round-trip", () => {
     const dir = makeTmpDir();
     const path = join(dir, "mag", "test-last.json");
     writeGateSnapshot(path, 12345);
-    const parsed = JSON.parse(require("fs").readFileSync(path, "utf8"));
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
     expect(parsed.signal).toBe(12345);
     expect(parsed.eventsJsonlLines).toBe(12345);
     expect(typeof parsed.timestamp).toBe("string");
@@ -588,7 +657,7 @@ describe("writeGateSnapshot round-trip", () => {
     const dir = makeTmpDir();
     const path = join(dir, "mag", "fp-last.json");
     writeGateSnapshot(path, "abc123");
-    const parsed = JSON.parse(require("fs").readFileSync(path, "utf8"));
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
     expect(parsed.signal).toBe("abc123");
     expect("eventsJsonlLines" in parsed).toBe(false);
     rmSync(dir, { recursive: true });

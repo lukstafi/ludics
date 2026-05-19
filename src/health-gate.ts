@@ -158,7 +158,9 @@ export type GateMode = "count" | "fingerprint" | "activity-window" | "epoch-unch
 export interface PeriodicGateOptions {
   gateName: string;
   snapshotPath: string;        // absolute path to JSON snapshot file
-  signal: unknown | (() => unknown);
+  // A comparable value or a thunk producing one. `unknown` already subsumes
+  // the function form; the thunk is unwrapped at the top of shouldSkipPeriodic.
+  signal: unknown;
   threshold: number;           // count: line delta; window: seconds; others: ignored
   mode: GateMode;
   now?: Date;
@@ -239,6 +241,12 @@ export function shouldSkipPeriodic(opts: PeriodicGateOptions): PeriodicGateDecis
       // so skip. (Read-error returns null, which fails open above.)
       const cur = (current as number) | 0;
       const prior = snap.signal as number;
+      // AC 1 clock-skew defence: a future stored epoch fails open (run), so a
+      // clock skew can't permanently suppress verify-completion via a snapshot
+      // that's "ahead" of the wall clock. Mirrors the activity-window arm.
+      if (prior > nowEpoch) {
+        return { skip: false, reason: "prior snapshot epoch in future — clock skew, fail open", current: cur, prior };
+      }
       if (cur === 0) {
         return { skip: true, reason: "no activity epoch resolvable for this target since prior snapshot", current: 0, prior };
       }
@@ -359,23 +367,21 @@ export function latestUserActionEpoch(opts: UserActionSignalOptions): number | n
   }
   // If the events file is absent, treat as "clean empty scan" (not error).
 
-  // Source 3: non-Mag-authored commits to tasks/*.md. Per AC 6, commits
-  // authored by Mag (recognized by a `Co-Authored-By:` trailer referencing
-  // Claude — see isMagAuthoredCommit) MUST NOT advance the signal. The
-  // strict frontmatter-line-range proposal text was relaxed to "any
-  // non-Mag-authored commit touching tasks/*.md" per Gap C in the merged
-  // plan, but the non-Mag-author predicate stands.
+  // Source 3: non-Mag-authored commits that modified task frontmatter (per
+  // AC 6 strict reading). Mechanism: enumerate commits in the look-back, drop
+  // Mag-authored ones (Co-Authored-By: Claude trailer — see
+  // isMagAuthoredCommit), then for each remaining commit check whether any of
+  // its hunks fall inside a task file's frontmatter line range AT THAT COMMIT.
+  // Body-only edits to tasks/foo.md do NOT advance the signal.
   const tasksDir = join(opts.stateDir, "tasks");
   if (existsSync(tasksDir)) {
     try {
-      // %at = author epoch; the body follows; we delimit records with an
-      // ASCII sentinel ("---END-OF-COMMIT---") that cannot collide with a
-      // commit message line (no embedded control bytes — lint:no-nul-bytes
-      // safe). The delimiter is anchored by surrounding newlines on split.
+      // %H = sha, %at = author epoch, %B = body; sentinel split. Bare ASCII
+      // tokens — no embedded control bytes (lint:no-nul-bytes safe).
       const res = spawnSync("git", [
         "log",
         `--since=${opts.lookbackHours} hours ago`,
-        "--format=%at%n%B%n---END-OF-COMMIT---",
+        "--format=%H%n%at%n%B%n---END-OF-COMMIT---",
         "--",
         "tasks/",
       ], { cwd: opts.stateDir, encoding: "utf8", timeout: 5000 });
@@ -383,13 +389,17 @@ export function latestUserActionEpoch(opts: UserActionSignalOptions): number | n
         const records = res.stdout.split("\n---END-OF-COMMIT---\n");
         for (const rec of records) {
           if (!rec.trim()) continue;
-          const newlineIdx = rec.indexOf("\n");
-          if (newlineIdx < 0) continue;
-          const epochStr = rec.slice(0, newlineIdx);
-          const body = rec.slice(newlineIdx + 1);
+          const firstNL = rec.indexOf("\n");
+          if (firstNL < 0) continue;
+          const secondNL = rec.indexOf("\n", firstNL + 1);
+          if (secondNL < 0) continue;
+          const sha = rec.slice(0, firstNL).trim();
+          const epochStr = rec.slice(firstNL + 1, secondNL);
+          const body = rec.slice(secondNL + 1);
           const epoch = Number.parseInt(epochStr, 10);
           if (!Number.isFinite(epoch) || epoch < horizon) continue;
           if (isMagAuthoredCommit(body)) continue;
+          if (!commitTouchedTaskFrontmatter(sha, opts.stateDir)) continue;
           if (epoch > best) best = epoch;
         }
       } else if (res.status !== null && res.status !== 0) {
@@ -404,6 +414,79 @@ export function latestUserActionEpoch(opts: UserActionSignalOptions): number | n
   if (best > 0) return best;
   if (sawError) return null;
   return 0;
+}
+
+/** Return the inclusive [1..N] line range of the YAML frontmatter block of
+ *  `content`, or null if no frontmatter delimiter pair is present. Exported
+ *  for tests — used as the boundary against which commit hunks are tested
+ *  for overlap in the AC 6 frontmatter predicate. */
+export function frontmatterRange(content: string): { start: number; end: number } | null {
+  if (!content) return null;
+  const lines = content.split("\n");
+  if (lines[0] !== "---") return null;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === "---") return { start: 1, end: i + 1 };
+  }
+  return null;
+}
+
+/** AC 6 strict predicate: did this commit modify the frontmatter region of
+ *  any `tasks/*.md` file? Returns false on read error (treats unreadable
+ *  commits as "did not touch frontmatter" — the wider non-Mag predicate
+ *  upstream already filtered to commits touching tasks/, so a read failure
+ *  here only means we conservatively drop one commit, not the whole signal).
+ *
+ *  Mechanism: for each task file the commit modified, fetch the file content
+ *  AT THAT COMMIT (`git show <sha>:<file>`), locate its frontmatter range,
+ *  then walk the commit's unified=0 hunk headers and test for overlap. */
+export function commitTouchedTaskFrontmatter(sha: string, cwd: string): boolean {
+  if (!sha) return false;
+  // List task files this commit touched. `git show --name-only` with an empty
+  // format prints just the touched paths; the `-- tasks/` pathspec limits to
+  // task files. Bare paths in output, one per line.
+  const filesRes = spawnSync("git", [
+    "show", "--name-only", "--format=", sha, "--", "tasks/",
+  ], { cwd, encoding: "utf8", timeout: 3000 });
+  if (filesRes.status !== 0 || typeof filesRes.stdout !== "string") return false;
+  const taskFiles = filesRes.stdout
+    .split("\n")
+    .map(s => s.trim())
+    .filter(f => f && f.startsWith("tasks/") && f.endsWith(".md"));
+  if (taskFiles.length === 0) return false;
+
+  for (const file of taskFiles) {
+    // File content at this commit — gives us the frontmatter range as it
+    // existed at the commit (which may differ from the working tree).
+    const contentRes = spawnSync("git", [
+      "show", `${sha}:${file}`,
+    ], { cwd, encoding: "utf8", timeout: 3000 });
+    if (contentRes.status !== 0 || typeof contentRes.stdout !== "string") continue;
+    const range = frontmatterRange(contentRes.stdout);
+    if (!range) continue;
+
+    // Unified=0 diff for this single file at this commit. Hunk headers have
+    // the shape `@@ -<old_start>[,<old_count>] +<new_start>[,<new_count>] @@`.
+    const diffRes = spawnSync("git", [
+      "show", "--unified=0", "--no-color", "--format=", sha, "--", file,
+    ], { cwd, encoding: "utf8", timeout: 3000 });
+    if (diffRes.status !== 0 || typeof diffRes.stdout !== "string") continue;
+    const hunkRe = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+    let match: RegExpExecArray | null;
+    while ((match = hunkRe.exec(diffRes.stdout)) !== null) {
+      const newStart = Number.parseInt(match[1], 10);
+      const newCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
+      if (!Number.isFinite(newStart)) continue;
+      if (newCount === 0) {
+        // Deletion-only hunk: new_start is the line preceding the deletion.
+        // If that line is within frontmatter, the deletion modified frontmatter.
+        if (newStart >= range.start && newStart <= range.end) return true;
+        continue;
+      }
+      const newEnd = newStart + newCount - 1;
+      if (newStart <= range.end && newEnd >= range.start) return true;
+    }
+  }
+  return false;
 }
 
 function readEventEpoch(parsed: Record<string, unknown>): number | null {
