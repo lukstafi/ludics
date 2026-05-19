@@ -62,8 +62,9 @@ export function isMagAutoAction(eventRecord: Record<string, unknown>): boolean {
   return false;
 }
 
-function lineIsGateSkip(parsed: Record<string, unknown>): boolean {
-  const meta = parsed.meta;
+function lineIsGateSkip(parsed: unknown): boolean {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const meta = (parsed as Record<string, unknown>).meta;
   if (meta && typeof meta === "object" && (meta as Record<string, unknown>).gateSkip === true) {
     return true;
   }
@@ -322,7 +323,9 @@ export function latestUserActionEpoch(opts: UserActionSignalOptions): number | n
         if (!line) continue;
         let parsed: Record<string, unknown>;
         try {
-          parsed = JSON.parse(line) as Record<string, unknown>;
+          const raw = JSON.parse(line) as unknown;
+          if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+          parsed = raw as Record<string, unknown>;
         } catch { continue; }
         if (lineIsGateSkip(parsed)) continue;
         const epoch = readEventEpoch(parsed);

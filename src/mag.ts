@@ -2555,7 +2555,9 @@ export function computeTaskLastActivityEpoch(taskId: string): number | null {
       for (const line of lines) {
         if (!line) continue;
         try {
-          const parsed = JSON.parse(line) as Record<string, unknown>;
+          const raw = JSON.parse(line) as unknown;
+          if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+          const parsed = raw as Record<string, unknown>;
           if (parsed.task !== taskId) continue;
           const et = typeof parsed.event_type === "string" ? parsed.event_type : "";
           if (et !== "slot_resume" && et !== "slot_assign") continue;

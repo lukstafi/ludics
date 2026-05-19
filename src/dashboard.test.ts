@@ -221,6 +221,57 @@ describe("generateHealthData", () => {
     expect(second.doctor.timestamp).toBe(first.doctor.timestamp);
   });
 
+  // gh-ludics-538 AC 13: gateSkips aggregate is attached to health.json.
+  test("gateSkips is a present object on the health surface (default empty)", async () => {
+    const data = await getHealthData() as any;
+    expect(typeof data.gateSkips).toBe("object");
+    expect(data.gateSkips).not.toBeNull();
+  });
+
+  test("gateSkips surfaces latest skip per gate from events.jsonl", async () => {
+    const journal = join(harnessDir(), "journal");
+    mkdirSync(journal, { recursive: true });
+    const lines = [
+      JSON.stringify({ ts: "2026-05-01T00:00:00Z", epoch: 1700000000, event_type: "health_check_skipped", source: "k", scope: "m", message: "old health skip", meta: { gateSkip: true }, currentLines: 10, priorLines: 5 }),
+      JSON.stringify({ ts: "2026-05-02T00:00:00Z", epoch: 1700100000, event_type: "health_check_skipped", source: "k", scope: "m", message: "newer health skip", meta: { gateSkip: true }, currentLines: 20, priorLines: 15 }),
+      JSON.stringify({ ts: "2026-05-02T00:01:00Z", epoch: 1700100060, event_type: "briefing_skipped", source: "m", scope: "m", message: "briefing idle", meta: { gateSkip: true }, current: 1700000000, prior: 1700000000 }),
+      // Non-marker line (real event) — must NOT appear in the aggregate.
+      JSON.stringify({ ts: "2026-05-02T00:02:00Z", epoch: 1700100120, event_type: "queue_request", source: "cli", scope: "queue", action: "elaborate", message: "req-x" }),
+      // Malformed line — must be ignored.
+      "not json",
+    ];
+    writeFileSync(join(journal, "events.jsonl"), lines.join("\n") + "\n");
+
+    const data = await getHealthData() as any;
+    expect(data.gateSkips.health_check_skipped.reason).toBe("newer health skip");
+    expect(data.gateSkips.briefing_skipped.reason).toBe("briefing idle");
+    expect(data.gateSkips.queue_request).toBeUndefined();
+  });
+});
+
+// gh-ludics-538 AC 16: GET /api/gate-skips serves the aggregation.
+describe("generateGateSkips read-side aggregator", () => {
+  test("empty events.jsonl → empty object", async () => {
+    const journal = join(harnessDir(), "journal");
+    mkdirSync(journal, { recursive: true });
+    writeFileSync(join(journal, "events.jsonl"), "");
+    const { generateGateSkips } = await import("./dashboard.ts");
+    expect(generateGateSkips()).toEqual({});
+  });
+
+  test("only meta.gateSkip records pass through", async () => {
+    const journal = join(harnessDir(), "journal");
+    mkdirSync(journal, { recursive: true });
+    const lines = [
+      JSON.stringify({ ts: "2026-05-02T00:00:00Z", epoch: 1700100000, event_type: "feedback_digest_skipped", source: "m", scope: "m", message: "no feedback files", meta: { gateSkip: true } }),
+      JSON.stringify({ ts: "2026-05-02T00:00:01Z", epoch: 1700100001, event_type: "feedback_digest_skipped", source: "m", scope: "m", message: "still no files" }), // no marker
+    ];
+    writeFileSync(join(journal, "events.jsonl"), lines.join("\n") + "\n");
+    const { generateGateSkips } = await import("./dashboard.ts");
+    const out = generateGateSkips();
+    expect(out.feedback_digest_skipped?.reason).toBe("no feedback files");
+  });
+
   test("doctor cache TTL eviction replaces the returned doctor.timestamp across the boundary", async () => {
     const {
       generateHealthData,

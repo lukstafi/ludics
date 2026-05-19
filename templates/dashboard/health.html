@@ -49,6 +49,13 @@
             <div class="doctor-meta" id="doctor-timestamp"></div>
             <pre id="doctor-output">Loading...</pre>
         </div>
+
+        <h2 class="health-section-title">Skipped Periodic Skills</h2>
+        <div class="gate-skips-section" id="gate-skips">
+            <div class="content-placeholder">
+                <span class="text">No recent gate skips</span>
+            </div>
+        </div>
     </main>
 
     <footer>
@@ -80,6 +87,7 @@
                 const data = await response.json();
                 renderHealthReport(data.healthReport);
                 renderDoctor(data.doctor);
+                renderGateSkips(data.gateSkips);
                 updateTimestamp();
                 setConnectionStatus(true);
             } catch (error) {
@@ -121,6 +129,36 @@
                 const d = new Date(doctor.timestamp);
                 timestamp.textContent = 'Last run: ' + d.toLocaleString();
             }
+        }
+
+        // gh-ludics-538: render the "Skipped because X" surface (AC 13).
+        // Degrades silently when gateSkips is absent or empty.
+        function renderGateSkips(gateSkips) {
+            const container = document.getElementById('gate-skips');
+            if (!container) return;
+            const entries = gateSkips && typeof gateSkips === 'object'
+                ? Object.entries(gateSkips)
+                : [];
+            if (entries.length === 0) {
+                container.innerHTML = `
+                    <div class="content-placeholder">
+                        <span class="text">No recent gate skips</span>
+                    </div>
+                `;
+                return;
+            }
+            const rows = entries.map(([gate, info]) => {
+                const ts = info && info.timestamp ? new Date(info.timestamp).toLocaleString() : '';
+                const reason = info && info.reason ? String(info.reason) : '';
+                const safeGate = String(gate)
+                    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const safeReason = reason
+                    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const safeTs = String(ts)
+                    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                return `<li><strong>${safeGate}</strong> <span class="timestamp">${safeTs}</span> — ${safeReason}</li>`;
+            }).join('');
+            container.innerHTML = `<ul class="gate-skips-list">${rows}</ul>`;
         }
 
         function updateTimestamp() {

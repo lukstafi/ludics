@@ -1077,7 +1077,61 @@ export function generateHealthData(): Record<string, unknown> {
   return {
     healthReport,
     doctor: { output: doctorCache.output, timestamp: doctorCache.timestamp },
+    gateSkips: generateGateSkips(),
   };
+}
+
+/** Gate-skip surface for the dashboard health card (gh-ludics-538 AC 12 / 13).
+ *
+ *  Reads journal/events.jsonl directly — no new persistent state file. The
+ *  aggregator filters TO records bearing meta.gateSkip === true, groups by
+ *  event_type, and retains the latest record per group. Each summary
+ *  includes the gate name, ISO timestamp, the gate's reason string, and the
+ *  current/prior signal pair when present. */
+export interface GateSkipSummary {
+  gate: string;
+  timestamp: string;
+  reason: string;
+  current: unknown;
+  prior: unknown;
+}
+
+export function generateGateSkips(eventsFile?: string): Record<string, GateSkipSummary> {
+  const path = eventsFile ?? join(harnessDir(), "journal", "events.jsonl");
+  if (!existsSync(path)) return {};
+  let buf: string;
+  try { buf = readFileSync(path, "utf-8"); } catch { return {}; }
+  if (!buf) return {};
+  const out: Record<string, GateSkipSummary> = {};
+  for (const line of buf.split("\n")) {
+    if (!line) continue;
+    let parsed: Record<string, unknown>;
+    try {
+      const raw = JSON.parse(line) as unknown;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      parsed = raw as Record<string, unknown>;
+    } catch { continue; }
+    const meta = parsed.meta;
+    if (!meta || typeof meta !== "object" || (meta as Record<string, unknown>).gateSkip !== true) continue;
+    const eventType = typeof parsed.event_type === "string" ? parsed.event_type : "";
+    if (!eventType) continue;
+    const ts = typeof parsed.ts === "string" ? parsed.ts : "";
+    const reason = typeof parsed.message === "string" ? parsed.message : "";
+    const summary: GateSkipSummary = {
+      gate: eventType,
+      timestamp: ts,
+      reason,
+      current: parsed.current ?? parsed.currentLines ?? null,
+      prior: parsed.prior ?? parsed.priorLines ?? null,
+    };
+    const existing = out[eventType];
+    if (!existing || (existing.timestamp && summary.timestamp && summary.timestamp >= existing.timestamp)) {
+      out[eventType] = summary;
+    } else if (!existing.timestamp) {
+      out[eventType] = summary;
+    }
+  }
+  return out;
 }
 
 // --- Generate all ---

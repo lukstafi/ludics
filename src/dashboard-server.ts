@@ -6,7 +6,7 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
 import { resolve, extname, join } from "path";
 import YAML from "yaml";
-import { dashboardGenerate } from "./dashboard.ts";
+import { dashboardGenerate, generateGateSkips } from "./dashboard.ts";
 import { harnessDir, loadConfigSync } from "./config.ts";
 import { readSlotJson, normalizeTaskId } from "./slots/json.ts";
 import { slotClear, slotSetMode, slotStart, slotResume, findSlotForTask, VALID_CLEAR_STATUSES, CLEAR_STATUS_READY, CLEAR_STATUS_DONE } from "./slots/index.ts";
@@ -758,6 +758,18 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
         const config = loadConfigSync();
         const projects = (config.projects ?? []).map((p: { name?: string }) => String(p.name ?? "")).filter(Boolean);
         return new Response(JSON.stringify({ projects }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(String(e), { status: 500 });
+      }
+    }
+
+    // gh-ludics-538 AC 12: read-only "Skipped because X" surface. Reads
+    // journal/events.jsonl directly — no new persistent state.
+    if (pathname === "/api/gate-skips") {
+      try {
+        return new Response(JSON.stringify(generateGateSkips()), {
           headers: { "Content-Type": "application/json" },
         });
       } catch (e) {
