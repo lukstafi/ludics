@@ -339,6 +339,55 @@ describe("verify-completion Tier-1 arm — epoch-unchanged gate (gh-ludics-538 A
     // Snapshot now exists.
     expect(existsSync(join(stateDir, "mag", "verify-completion-last", "task-new.json"))).toBe(true);
   });
+
+  test("manual CLI `ludics mag verify-completion <task>` bypasses the gate — the AC-15 peer (AC 11/15)", async () => {
+    const stateDir = getStateDir();
+    makeJournal(stateDir);
+    // Would-skip world: a prior per-task snapshot exists and there is no newer
+    // activity for the task → computeTaskLastActivityEpoch returns 0 →
+    // epoch-unchanged gate would skip a gated (non-bypass) request.
+    mkdirSync(join(stateDir, "mag", "verify-completion-last"), { recursive: true });
+    writeFileSync(join(stateDir, "mag", "verify-completion-last", "task-peer.json"),
+      JSON.stringify({ timestamp: "2026-05-01T00:00:00Z", signal: 1_700_000_000 }));
+
+    // CLI path: `ludics mag verify-completion task-peer` dispatches through
+    // runMag to the verify-completion subcommand handler.
+    const { runMag, resolveQueueRequestCommand } = await import("./mag.ts");
+    await runMag(["verify-completion", "task-peer"]);
+
+    // The CLI handler tagged the enqueued record with bypassGate.
+    const qLines = readFileSync(join(stateDir, "mag", "queue.jsonl"), "utf8")
+      .trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const vcRec = qLines.find((r) => r.action === "verify-completion");
+    expect(vcRec).toBeDefined();
+    expect(vcRec!.task).toBe("task-peer");
+    expect(vcRec!.bypassGate).toBe(true);
+
+    // Dispatch that exact record under the would-skip snapshot: the gate is
+    // bypassed → the verify-completion skill command is returned and NO
+    // verify_completion_skipped event is emitted.
+    const result = await resolveQueueRequestCommand(vcRec!, true);
+    expect(typeof result).toBe("string");
+    expect(findLastEvent(stateDir, "verify_completion_skipped")).toBeNull();
+  });
+
+  test("auto-created verify-completion record (no bypassGate) stays gated and skips (AC 11 peer negative control)", async () => {
+    const stateDir = getStateDir();
+    makeJournal(stateDir);
+    // Same would-skip world as the bypass test above.
+    mkdirSync(join(stateDir, "mag", "verify-completion-last"), { recursive: true });
+    writeFileSync(join(stateDir, "mag", "verify-completion-last", "task-peer.json"),
+      JSON.stringify({ timestamp: "2026-05-01T00:00:00Z", signal: 1_700_000_000 }));
+
+    // A record WITHOUT bypassGate — the shape an auto-enqueued verify-completion
+    // request has. Same world, only the tag differs → clean mutation pair.
+    const { resolveQueueRequestCommand } = await import("./mag.ts");
+    const result = await resolveQueueRequestCommand({ action: "verify-completion", task: "task-peer" }, true);
+    expect(result).toBeNull();
+    const last = findLastEvent(stateDir, "verify_completion_skipped");
+    expect(last).not.toBeNull();
+    expect(last!.task).toBe("task-peer");
+  });
 });
 
 // --- Feedback-digest empty-skip via briefing's auto-followup path -------
