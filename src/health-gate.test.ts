@@ -284,6 +284,22 @@ describe("shouldSkipPeriodic — mode dispatch", () => {
     rmSync(dir, { recursive: true });
   });
 
+  test("activity-window: current=0 AND prior in the future → run (clock-skew beats the zero-activity fast path, codex P1)", () => {
+    const dir = makeTmpDir();
+    const snap = join(dir, "mag", "br.json");
+    const now = new Date(2_000_000_000 * 1000);
+    const futurePrior = Math.floor(now.getTime() / 1000) + 1_000_000;
+    writeGateSnapshot(snap, futurePrior);
+    // current === 0 (idle look-back) WITH a future prior snapshot. Before the
+    // P1 fix the `current === 0` fast path returned skip:true ahead of the
+    // clock-skew guard, suppressing briefing indefinitely. The guard must win.
+    const dec = shouldSkipPeriodic({ gateName: "t", snapshotPath: snap, signal: 0, threshold: 3600, mode: "activity-window", now });
+    expect(dec.skip).toBe(false);
+    expect(dec.reason).toContain("clock skew");
+    expect(dec.reason).toContain("fail open");
+    rmSync(dir, { recursive: true });
+  });
+
   test("epoch-unchanged: current <= prior → skip", () => {
     const dir = makeTmpDir();
     const snap = join(dir, "mag", "v.json");
@@ -537,6 +553,33 @@ describe("latestUserActionEpoch", () => {
     const got = latestUserActionEpoch({ stateDir: dir, now, lookbackHours: 24 * 365 });
     // Frontmatter edit by non-Mag author → advance.
     expect(got).toBe(userFmEpoch);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("non-Mag commit REMOVING task frontmatter advances signal (codex P2 — pre-image range)", () => {
+    const dir = makeTmpDir();
+    const r = (args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    r(["init", "-q"]);
+    r(["config", "user.email", "test@example.com"]);
+    r(["config", "user.name", "Test User"]);
+    r(["config", "commit.gpgsign", "false"]);
+    mkdirSync(join(dir, "tasks"));
+    // Mag-authored seed with frontmatter (lines 1-3) + body (line 4).
+    writeFileSync(join(dir, "tasks", "t.md"), "---\nstatus: ready\n---\nbody\n");
+    r(["add", "tasks/t.md"]);
+    r(["commit", "-q", "--date=2026-04-01T12:00:00Z", "-m", "seed\n\nCo-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"]);
+    // Non-Mag commit DELETES the frontmatter delimiters entirely — the
+    // post-image has no parseable frontmatter, so the post-only check would
+    // miss it; the pre-image range (1-3) + the deletion hunk's OLD side catch it.
+    writeFileSync(join(dir, "tasks", "t.md"), "body\n");
+    r(["add", "tasks/t.md"]);
+    r(["commit", "-q", "--date=2026-04-02T12:00:00Z", "-m", "drop frontmatter"]);
+
+    const removalEpoch = Number.parseInt(spawnSync("git", ["log", "-1", "--format=%at"], { cwd: dir, encoding: "utf8" }).stdout.trim(), 10);
+    const now = new Date((removalEpoch + 3600) * 1000);
+    const got = latestUserActionEpoch({ stateDir: dir, now, lookbackHours: 24 * 365 });
+    // Removing frontmatter IS a frontmatter modification → advance.
+    expect(got).toBe(removalEpoch);
     rmSync(dir, { recursive: true });
   });
 

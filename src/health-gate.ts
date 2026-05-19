@@ -215,16 +215,21 @@ export function shouldSkipPeriodic(opts: PeriodicGateOptions): PeriodicGateDecis
       return { skip: false, reason: "fingerprint changed", current: cur, prior };
     }
     case "activity-window": {
+      const prior = snap.signal as number;
+      // Clock-skew defence FIRST: a future stored epoch fails open (run)
+      // regardless of the current signal — including the zero-activity fast
+      // path below. If this ran after the `current === 0` check, a future
+      // snapshot + an idle look-back would skip indefinitely until fresh
+      // activity appeared, instead of failing open. (codex P1)
+      if (prior > nowEpoch) {
+        return { skip: false, reason: "prior snapshot epoch in future — clock skew, fail open", current, prior };
+      }
       // current === 0: clean scan, no qualifying activity in the look-back.
       // With a prior snapshot present, this is the proposal's core skip case.
       if (current === 0) {
-        return { skip: true, reason: "no qualifying user activity since prior snapshot", current: 0, prior: snap.signal };
+        return { skip: true, reason: "no qualifying user activity since prior snapshot", current: 0, prior };
       }
       const cur = current as number;
-      const prior = snap.signal as number;
-      if (prior > nowEpoch) {
-        return { skip: false, reason: "prior snapshot epoch in future — clock skew, fail open", current: cur, prior };
-      }
       if (cur > prior) {
         return { skip: false, reason: "new user activity since prior snapshot", current: cur, prior };
       }
@@ -430,15 +435,31 @@ export function frontmatterRange(content: string): { start: number; end: number 
   return null;
 }
 
+/** True if one side of a unified=0 hunk (start line + line count) overlaps
+ *  the inclusive [start,end] frontmatter range. A zero-count side is a pure
+ *  insertion/deletion boundary — git reports `start` as the line it sits
+ *  against, so we test that single line for membership. */
+function hunkSideOverlaps(start: number, count: number, range: { start: number; end: number }): boolean {
+  if (!Number.isFinite(start)) return false;
+  if (count === 0) return start >= range.start && start <= range.end;
+  const end = start + count - 1;
+  return start <= range.end && end >= range.start;
+}
+
 /** AC 6 strict predicate: did this commit modify the frontmatter region of
  *  any `tasks/*.md` file? Returns false on read error (treats unreadable
  *  commits as "did not touch frontmatter" — the wider non-Mag predicate
  *  upstream already filtered to commits touching tasks/, so a read failure
  *  here only means we conservatively drop one commit, not the whole signal).
  *
- *  Mechanism: for each task file the commit modified, fetch the file content
- *  AT THAT COMMIT (`git show <sha>:<file>`), locate its frontmatter range,
- *  then walk the commit's unified=0 hunk headers and test for overlap. */
+ *  Mechanism: for each task file the commit modified, locate the YAML
+ *  frontmatter range in BOTH the post-commit content (`git show <sha>:<file>`)
+ *  and the pre-commit content (`git show <sha>^:<file>`), then walk the
+ *  commit's unified=0 hunk headers. A hunk's NEW range is tested against the
+ *  post-image frontmatter, its OLD range against the pre-image frontmatter.
+ *  Checking the pre-image is what catches a commit that *removes* or breaks
+ *  the frontmatter delimiters — the post-image then has no parseable block,
+ *  yet the deletion still modified real frontmatter (codex P2). */
 export function commitTouchedTaskFrontmatter(sha: string, cwd: string): boolean {
   if (!sha) return false;
   // List task files this commit touched. `git show --name-only` with an empty
@@ -455,14 +476,17 @@ export function commitTouchedTaskFrontmatter(sha: string, cwd: string): boolean 
   if (taskFiles.length === 0) return false;
 
   for (const file of taskFiles) {
-    // File content at this commit — gives us the frontmatter range as it
-    // existed at the commit (which may differ from the working tree).
-    const contentRes = spawnSync("git", [
-      "show", `${sha}:${file}`,
-    ], { cwd, encoding: "utf8", timeout: 3000 });
-    if (contentRes.status !== 0 || typeof contentRes.stdout !== "string") continue;
-    const range = frontmatterRange(contentRes.stdout);
-    if (!range) continue;
+    // Post-commit content → post-image frontmatter range.
+    const postRes = spawnSync("git", ["show", `${sha}:${file}`], { cwd, encoding: "utf8", timeout: 3000 });
+    const postRange = (postRes.status === 0 && typeof postRes.stdout === "string")
+      ? frontmatterRange(postRes.stdout) : null;
+    // Parent content → pre-image frontmatter range. Absent for an initial-add
+    // or root commit (`git show <sha>^:<file>` fails) — fine, the post-image
+    // range covers initial-add.
+    const preRes = spawnSync("git", ["show", `${sha}^:${file}`], { cwd, encoding: "utf8", timeout: 3000 });
+    const preRange = (preRes.status === 0 && typeof preRes.stdout === "string")
+      ? frontmatterRange(preRes.stdout) : null;
+    if (!postRange && !preRange) continue;
 
     // Unified=0 diff for this single file at this commit. Hunk headers have
     // the shape `@@ -<old_start>[,<old_count>] +<new_start>[,<new_count>] @@`.
@@ -470,20 +494,15 @@ export function commitTouchedTaskFrontmatter(sha: string, cwd: string): boolean 
       "show", "--unified=0", "--no-color", "--format=", sha, "--", file,
     ], { cwd, encoding: "utf8", timeout: 3000 });
     if (diffRes.status !== 0 || typeof diffRes.stdout !== "string") continue;
-    const hunkRe = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+    const hunkRe = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm;
     let match: RegExpExecArray | null;
     while ((match = hunkRe.exec(diffRes.stdout)) !== null) {
-      const newStart = Number.parseInt(match[1], 10);
-      const newCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
-      if (!Number.isFinite(newStart)) continue;
-      if (newCount === 0) {
-        // Deletion-only hunk: new_start is the line preceding the deletion.
-        // If that line is within frontmatter, the deletion modified frontmatter.
-        if (newStart >= range.start && newStart <= range.end) return true;
-        continue;
-      }
-      const newEnd = newStart + newCount - 1;
-      if (newStart <= range.end && newEnd >= range.start) return true;
+      const oldStart = Number.parseInt(match[1], 10);
+      const oldCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
+      const newStart = Number.parseInt(match[3], 10);
+      const newCount = match[4] !== undefined ? Number.parseInt(match[4], 10) : 1;
+      if (postRange && hunkSideOverlaps(newStart, newCount, postRange)) return true;
+      if (preRange && hunkSideOverlaps(oldStart, oldCount, preRange)) return true;
     }
   }
   return false;
