@@ -13,6 +13,11 @@ const getTmpDir = withSyntheticHarness(beforeEach, afterEach);
 
 beforeEach(() => {
   mkdirSync(join(getTmpDir(), "mag"), { recursive: true });
+  // gh-ludics-538: seed feedback/ so the briefing → feedback-digest →
+  // /compact trio still produces 3 queue entries. Without this seed, the
+  // new empty-feedback gate causes the digest follow-up to no-op.
+  mkdirSync(join(getTmpDir(), "feedback"), { recursive: true });
+  writeFileSync(join(getTmpDir(), "feedback", "seed.md"), "x");
 });
 
 function readQueue(): Record<string, unknown>[] {

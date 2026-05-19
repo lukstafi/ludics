@@ -233,13 +233,14 @@ export function shouldSkipPeriodic(opts: PeriodicGateOptions): PeriodicGateDecis
       return { skip: true, reason: `no progress since prior snapshot and latest activity ${age}s ago >= ${opts.threshold}s threshold`, current: cur, prior };
     }
     case "epoch-unchanged": {
-      // current === 0: no activity epoch resolvable for this target — run
-      // (per-target epochs should always reach something on a real task).
-      if (current === 0) {
-        return { skip: false, reason: "no resolvable activity epoch — fail open", current: 0, prior: snap.signal };
-      }
-      const cur = current as number;
+      // current === 0 with prior snapshot present: clean sources returned no
+      // activity for this target since we last checked — that IS "no advance",
+      // so skip. (Read-error returns null, which fails open above.)
+      const cur = (current as number) | 0;
       const prior = snap.signal as number;
+      if (cur === 0) {
+        return { skip: true, reason: "no activity epoch resolvable for this target since prior snapshot", current: 0, prior };
+      }
       if (cur <= prior) {
         return { skip: true, reason: `epoch ${cur} <= prior ${prior} — unchanged`, current: cur, prior };
       }

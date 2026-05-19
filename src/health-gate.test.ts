@@ -301,13 +301,32 @@ describe("shouldSkipPeriodic — mode dispatch", () => {
     rmSync(dir, { recursive: true });
   });
 
-  test("epoch-unchanged: current=0 (unresolvable) → run (fail open)", () => {
+  test("epoch-unchanged: current=0 with prior snapshot → skip (no advance)", () => {
     const dir = makeTmpDir();
     const snap = join(dir, "mag", "v.json");
     writeGateSnapshot(snap, 1_000_000_000);
     const dec = shouldSkipPeriodic({ gateName: "t", snapshotPath: snap, signal: 0, threshold: 0, mode: "epoch-unchanged" });
+    expect(dec.skip).toBe(true);
+    expect(dec.reason).toContain("no activity epoch resolvable");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("epoch-unchanged: current=null (read error) → run (fail open)", () => {
+    const dir = makeTmpDir();
+    const snap = join(dir, "mag", "v.json");
+    writeGateSnapshot(snap, 1_000_000_000);
+    const dec = shouldSkipPeriodic({ gateName: "t", snapshotPath: snap, signal: null, threshold: 0, mode: "epoch-unchanged" });
     expect(dec.skip).toBe(false);
-    expect(dec.reason).toContain("no resolvable activity epoch");
+    expect(dec.reason).toContain("unreadable");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("epoch-unchanged: current=0 + first run → run (fail open via first-run arm)", () => {
+    const dir = makeTmpDir();
+    const snap = join(dir, "mag", "missing.json");
+    const dec = shouldSkipPeriodic({ gateName: "t", snapshotPath: snap, signal: 0, threshold: 0, mode: "epoch-unchanged" });
+    expect(dec.skip).toBe(false);
+    expect(dec.reason).toContain("first run");
     rmSync(dir, { recursive: true });
   });
 });
