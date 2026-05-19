@@ -116,15 +116,89 @@ describe("magBriefing auto-compact follow-up", () => {
 });
 
 describe("runMag health-check auto-compact follow-up", () => {
-  test("enqueues /compact directly behind the health-check entry", async () => {
+  test("CLI enqueues only health-check; /compact is appended later by the gate-check path on a non-skipped delivery", async () => {
     const { runMag } = await import("./mag.ts");
     await runMag(["health-check"]);
 
+    // /compact is no longer enqueued at CLI time — it's coupled to the gate
+    // and appended by resolveQueueRequestCommand only when the gate does not
+    // skip the delivery. This avoids spurious /compact on idle ticks.
+    const items = readQueue();
+    expect(items).toHaveLength(1);
+    expect(items[0]!.action).toBe("health-check");
+  });
+
+  test("non-skipped delivery enqueues /compact at the queue head", async () => {
+    const { runMag, resolveQueueRequestCommand } = await import("./mag.ts");
+    const { queuePopExpected } = await import("./queue.ts");
+    await runMag(["health-check"]);
+
+    // Model the production flow: pop health-check first, then resolve.
+    // With no prior snapshot the gate fails open (first-run reason), so the
+    // health-check resolves to its skill command and the auto-compact
+    // follow-up is enqueued.
+    const popped = queuePopExpected();
+    if (popped.status !== "popped") throw new Error(`expected popped, got ${popped.status}`);
+    const command = await resolveQueueRequestCommand(popped.request!, true);
+    expect(command).toBe("/ludics-health-check");
+
+    const items = readQueue();
+    expect(items).toHaveLength(1);
+    expect(items[0]!.action).toBe("message");
+    expect(items[0]!.content).toBe("/compact");
+  });
+
+  test("intervening enqueues don't slip in front of /compact (Codex P2 regression)", async () => {
+    // Models the race: another request lands on the queue tail between
+    // `mag health-check` enqueue and the moment health-check is popped for
+    // dispatch. The /compact follow-up must still run *immediately after*
+    // the triggering health-check, not after the intervening tail item —
+    // otherwise the "trim context before next heavy action" guarantee from
+    // task-a00fc0d9 breaks.
+    const { runMag, resolveQueueRequestCommand } = await import("./mag.ts");
+    const { queuePopExpected } = await import("./queue.ts");
+
+    await runMag(["health-check"]);            // queue: [health-check]
+    await runMag(["elaborate", "task-x"]);     // queue: [health-check, elaborate]
+
+    // Pop the head (health-check) as production does, then resolve.
+    const popped = queuePopExpected();
+    if (popped.status !== "popped") throw new Error(`expected popped, got ${popped.status}`);
+    expect((popped.request as { action: string }).action).toBe("health-check");
+
+    const command = await resolveQueueRequestCommand(popped.request!, true);
+    expect(command).toBe("/ludics-health-check");
+
+    // /compact must be at queue head (the position the popped health-check
+    // vacated), ahead of the intervening elaborate.
     const items = readQueue();
     expect(items).toHaveLength(2);
-    expect(items[0]!.action).toBe("health-check");
-    expect(items[1]!.action).toBe("message");
-    expect(items[1]!.content).toBe("/compact");
+    expect(items[0]!.action).toBe("message");
+    expect(items[0]!.content).toBe("/compact");
+    expect(items[1]!.action).toBe("elaborate");
+  });
+
+  test("gate-skipped delivery does not append /compact", async () => {
+    const { runMag, resolveQueueRequestCommand } = await import("./mag.ts");
+
+    // Seed a prior snapshot so the gate has an anchor to compare against.
+    // With currentLines == priorLines (delta 0), the gate skips.
+    const eventsFile = join(getTmpDir(), "journal", "events.jsonl");
+    mkdirSync(join(getTmpDir(), "journal"), { recursive: true });
+    writeFileSync(eventsFile, '{"event_type":"placeholder"}\n');
+    const snapPath = join(getTmpDir(), "mag", "health-last.json");
+    writeFileSync(snapPath, JSON.stringify({ eventsJsonlLines: 1 }));
+
+    await runMag(["health-check"]);
+    const before = readQueue();
+    expect(before).toHaveLength(1);
+
+    const command = await resolveQueueRequestCommand({ action: "health-check" }, true);
+    expect(command).toBeNull();
+
+    const after = readQueue();
+    expect(after).toHaveLength(1);
+    expect(after[0]!.action).toBe("health-check");
   });
 });
 

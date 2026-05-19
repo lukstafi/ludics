@@ -11,7 +11,7 @@ import { atomicWriteFileSync, isPlainObject, writeJsonFile, writeJsonFileCompact
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
-import { queueRequest, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults } from "./queue.ts";
+import { queueRequest, queueRequestAtHead, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
@@ -1524,6 +1524,13 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       } catch (err) {
         console.error("ludics: test health check failed:", err);
       }
+      // Auto-compact after health-check — checkpoint compaction (task-a00fc0d9 /
+      // docs/proposals/auto-compact-after-checkpoints.md). Coupled to the gate
+      // here so idle ticks that skip the health-check do not also fire a
+      // no-op /compact. Head-insert (not tail-append) preserves the
+      // health-check → /compact → next ordering even when other requests
+      // landed on the queue tail between health-check enqueue and dispatch.
+      queueRequestAtHead({ action: "message", content: "/compact" });
     }
   }
 
@@ -3890,10 +3897,9 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
       return;
     }
     queueRequest({ action: "health-check" });
-    // Auto-compact after health-check — checkpoint compaction (task-a00fc0d9 /
-    // docs/proposals/auto-compact-after-checkpoints.md). Enqueued unconditionally;
-    // a no-op /compact on a small context is acceptable.
-    queueRequest({ action: "message", content: "/compact" });
+    // /compact is enqueued by the gate-check path in resolveQueueRequestCommand
+    // only when the health-check actually runs (gate did not skip). Coupling
+    // /compact to a real checkpoint avoids spurious compactions on idle ticks.
     console.log("Queued health-check request");
   }],
   ["message", (args) => {
