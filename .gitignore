@@ -1,7 +1,10 @@
 node_modules/
 ludics-ts
 bin/
-bun.lock
+# bun.lock is tracked: `bun install --frozen-lockfile` (used by CI and the
+# lint:vendor-sync freshen step) is a silent no-op without a lockfile to
+# freeze, which would let transitive resolution drift on every CI run.
+# See gh-ludics-531 for the failure mode.
 dist/
 *.tsbuildinfo
 .test-tmp-*
