@@ -149,8 +149,23 @@ export function queueRequest(req: QueueAction): string {
   withQueueLock(() => {
     appendFileSync(file, JSON.stringify(record) + "\n");
   });
-  emitEvent({ event_type: "queue_request", source: "cli", scope: "queue", action: req.action, message: requestId });
+  emitEvent(buildQueueRequestEvent(req, requestId));
   return requestId;
+}
+
+/** Build the queue_request event payload. For action="message", attach a
+ *  truncated `messageContent` so the briefing user-action signal can
+ *  distinguish auto-/compact (Mag-internal) from a user message after the
+ *  queue record itself has been popped (gh-ludics-538). */
+function buildQueueRequestEvent(req: QueueAction, requestId: string): {
+  event_type: "queue_request"; source: string; scope: string;
+  action: string; message: string; messageContent?: string;
+} {
+  const base = { event_type: "queue_request" as const, source: "cli", scope: "queue", action: req.action, message: requestId };
+  if (req.action === "message") {
+    return { ...base, messageContent: String(req.content ?? "").slice(0, 200) };
+  }
+  return base;
 }
 
 function readQueueLines(): string[] {
@@ -188,7 +203,7 @@ export function queueRequestAtHead(req: QueueAction): string {
   const requestId = nextRequestId();
   const record = { id: requestId, ...req, timestamp };
   queueReinsertHead(JSON.stringify(record));
-  emitEvent({ event_type: "queue_request", source: "cli", scope: "queue", action: req.action, message: requestId });
+  emitEvent(buildQueueRequestEvent(req, requestId));
   return requestId;
 }
 
