@@ -144,3 +144,23 @@ describe("ludics-health-check skill content (gh-ludics-540)", () => {
     expect(body).toContain("outbound_sync_enabled");
   });
 });
+
+describe("ludics-health-check skill content (gh-ludics-539)", () => {
+  const body = readFileSync(SKILL_PATH, "utf-8");
+
+  test("instructs the skill to probe the t3code integration flag via the CLI", () => {
+    // Invariant: the skill runs `ludics t3code integration-status` (a real
+    // subcommand — see src/t3code/index.ts) and binds its output. Drift here
+    // means the skill cannot tell paused from broken and keeps emitting noise.
+    expect(body).toContain("ludics t3code integration-status");
+    expect(body).toContain("T3CODE_INTEGRATION_STATUS");
+  });
+
+  test("documents the paused branch that suppresses the t3code findings", () => {
+    // AC 9: when the probe reads `paused`, the skill must not emit the noisy
+    // t3code findings. The literals here are the keys the gate replaces.
+    expect(body).toContain("paused");
+    expect(body).toContain("t3code-server-down");
+    expect(body).toContain("test-health:t3code-ludics");
+  });
+});
