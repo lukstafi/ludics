@@ -110,21 +110,45 @@ describe("tasksNeedsConfirmationList (gh-ludics-547)", () => {
     expect(lines).toEqual(['task-proj (A) [ocannl] "Confirm the tensor refactor"']);
   });
 
-  test("orders deterministically by priority, then project, then id", () => {
-    // Harness condition: three needs-confirmation tasks whose insertion order
-    // (alphabetical id) differs from the expected priority order. Invariant:
-    // a regression test can assert on the section stably (AC 6). Mutation —
-    // removing the sort yields readdir order, failing this exact equality.
-    writeTask("task-c", "needs-confirmation", { priority: "C" });
-    writeTask("task-a", "needs-confirmation", { priority: "A" });
-    writeTask("task-b", "needs-confirmation", { priority: "B" });
+  test("orders by priority — expected order is the inverse of alphabetical/readdir order", () => {
+    // Harness condition: IDs whose alphabetical order is the *inverse* of
+    // their priority order — `task-a-low` (priority C) sorts alphabetically
+    // first but must render last; `task-z-high` (priority A) sorts
+    // alphabetically last but must render first. Invariant: output order is
+    // priority-driven, not readdir order (AC 6). Mutation — removing the
+    // production sort yields alphabetical readdir order
+    // [task-a-low, task-m-mid, task-z-high], the exact reverse of this
+    // expected array, so the assertion flips even on an alphabetical-readdir
+    // filesystem.
+    writeTask("task-a-low", "needs-confirmation", { priority: "C" });
+    writeTask("task-m-mid", "needs-confirmation", { priority: "B" });
+    writeTask("task-z-high", "needs-confirmation", { priority: "A" });
 
     const lines = tasksNeedsConfirmationList(tasksDir());
 
     expect(lines).toEqual([
-      'task-a (A) [ludics] "task-a"',
-      'task-b (B) [ludics] "task-b"',
-      'task-c (C) [ludics] "task-c"',
+      'task-z-high (A) [ludics] "task-z-high"',
+      'task-m-mid (B) [ludics] "task-m-mid"',
+      'task-a-low (C) [ludics] "task-a-low"',
+    ]);
+  });
+
+  test("breaks a priority tie by project, then id", () => {
+    // Harness condition: three tasks all at priority B. Alphabetical id order
+    // is [task-p1, task-p2, task-p3]; the project tiebreaker must instead
+    // group `alpha` before `beta`, putting task-p1 (project beta) last.
+    // Mutation — dropping the project tiebreaker leaves [task-p1, task-p2,
+    // task-p3] (id-only order), which differs from this expected array.
+    writeTask("task-p1", "needs-confirmation", { priority: "B", project: "beta" });
+    writeTask("task-p2", "needs-confirmation", { priority: "B", project: "alpha" });
+    writeTask("task-p3", "needs-confirmation", { priority: "B", project: "alpha" });
+
+    const lines = tasksNeedsConfirmationList(tasksDir());
+
+    expect(lines).toEqual([
+      'task-p2 (B) [alpha] "task-p2"',
+      'task-p3 (B) [alpha] "task-p3"',
+      'task-p1 (B) [beta] "task-p1"',
     ]);
   });
 

@@ -936,19 +936,27 @@ describe("briefingPrecomputeContext — Needs Confirmation section (gh-ludics-54
   });
 
   test("projects id, priority, project, title — deterministically ordered by priority", async () => {
-    // Harness condition: two needs-confirmation tasks whose insertion order
-    // (alphabetical id) is the inverse of their priority order. Invariant:
-    // the section is stably ordered (AC 6) and carries all four projected
-    // fields (AC 3).
-    writeTask("task-zlow", "needs-confirmation", { priority: "C", project: "ocannl", title: "Low priority confirm" });
-    writeTask("task-ahigh", "needs-confirmation", { priority: "A", project: "ludics", title: "High priority confirm" });
+    // Harness condition: three tasks whose id alphabetical order AND their
+    // creation order are both the *inverse* of their priority order —
+    // `task-a-low` (priority C) is created first / sorts alphabetically first
+    // but must render last; `task-z-high` (priority A) is created last but
+    // must render first. Invariant: the section is stably priority-ordered
+    // (AC 6), not readdir/creation-ordered, and carries all four projected
+    // fields (AC 3). Mutation — removing the production sort yields
+    // readdir order, which on an alphabetical-readdir or insertion-order
+    // (tmpfs) filesystem is [task-a-low, task-m-mid, task-z-high], the exact
+    // reverse of this expected body.
+    writeTask("task-a-low", "needs-confirmation", { priority: "C", project: "ocannl", title: "Low priority confirm" });
+    writeTask("task-m-mid", "needs-confirmation", { priority: "B", project: "ludics", title: "Mid priority confirm" });
+    writeTask("task-z-high", "needs-confirmation", { priority: "A", project: "ludics", title: "High priority confirm" });
 
     await briefingPrecomputeContext({ runGit: noopRunGit });
     const body = needsConfirmationBody(readFileSync(contextFile(), "utf-8"));
 
     expect(body).toBe(
-      'task-ahigh (A) [ludics] "High priority confirm"\n'
-      + 'task-zlow (C) [ocannl] "Low priority confirm"',
+      'task-z-high (A) [ludics] "High priority confirm"\n'
+      + 'task-m-mid (B) [ludics] "Mid priority confirm"\n'
+      + 'task-a-low (C) [ocannl] "Low priority confirm"',
     );
   });
 
