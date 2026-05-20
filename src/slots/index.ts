@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
-import { globalAdapter, harnessDir, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
+import { globalAdapter, harnessDir, slotsCount, stateRepoDir, resolveProjectPath, t3codeIntegrationEnabled } from "../config.ts";
 import { atomicWriteFileSync } from "../json.ts";
 import { mergeAdapterState, addNoteToSlotData } from "./markdown.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, emptySlotData, slotJsonDir, slotDataToMarkdown, normalizeTaskId } from "./json.ts";
@@ -21,7 +21,7 @@ import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState, processAlive } from "../t3code/server.ts";
 import { agentCliCommand, isAgentAlive, readTmuxSlotState, startTtyd, tmuxSessionName, ttydPort, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { tmuxHasSession, tmuxNewSession, tmuxSendCommand, tmuxSendKeys } from "../adapters/tmux.ts";
-import { selectOrchestrationFlagsForTask } from "../adapters/t3code.ts";
+import { selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError } from "../adapters/t3code.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
@@ -44,6 +44,15 @@ export function validateAssignAdapter(adapter: string): void {
   if (!(VALID_ASSIGN_ADAPTERS as readonly string[]).includes(adapter)) {
     throw new Error(
       `invalid adapter: ${adapter} (use: ${VALID_ASSIGN_ADAPTERS.join(", ")})`,
+    );
+  }
+  // gh-ludics-539: t3code stays in VALID_ASSIGN_ADAPTERS (re-enabling is purely
+  // runtime), but new assign/preempt of a t3code slot is refused while the
+  // integration is paused. Only `t3code` is gated — `tmux`/`manual` validate
+  // unchanged.
+  if (adapter === "t3code" && !t3codeIntegrationEnabled()) {
+    throw new Error(
+      "t3code integration is currently paused; enable mag.t3code_integration_enabled in config.yaml to re-engage",
     );
   }
 }
@@ -1002,7 +1011,18 @@ export async function autoFillAdapterArgs(
   // consulting the raw frontmatter block before falling back on the parser's
   // normalized value.
   const effort = readRawEffortField(content) ?? "small";
-  const { args: autoArgs } = selectOrchestrationFlagsForTask(content, effort);
+  let autoArgs: string;
+  try {
+    ({ args: autoArgs } = selectOrchestrationFlagsForTask(content, effort));
+  } catch (e) {
+    // gh-ludics-539: t3code integration paused — treat the slot as not
+    // auto-fillable rather than silently falling back to a stale default.
+    if (isT3codeIntegrationPausedError(e)) {
+      console.error(`ludics: slot ${ctx.slot}: auto-fill skipped: t3code integration paused`);
+      return null;
+    }
+    throw e;
+  }
   if (!autoArgs.trim()) {
     throw new Error(`slot ${ctx.slot}: selectOrchestrationFlagsForTask returned empty args for effort="${effort}"`);
   }
