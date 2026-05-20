@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, mkdirSync } from "fs";
 import { writeJsonFile } from "./json.ts";
 import { join } from "path";
-import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath, postponedProjectSet } from "./config.ts";
+import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath, postponedProjectSet, t3codeIntegrationEnabled } from "./config.ts";
 import { tasksCreate } from "./tasks/index.ts";
 import { safeSyncOutput } from "./spawn.ts";
 
@@ -92,12 +92,26 @@ export function saveTestHealthState(state: TestHealthState): void {
 
 // --- Execution ---
 
+/** gh-ludics-539: a project's test-health run depends on the t3code integration
+ *  when it carries `requires_t3code: true` or is the `t3code-ludics` project
+ *  (name fallback — zero-migration before the per-project annotation lands). */
+export function projectRequiresT3code(project: ProjectConfig): boolean {
+  return project.requires_t3code === true
+    || project.name.toLowerCase() === "t3code-ludics";
+}
+
 export function checkProjectTestHealth(
   project: ProjectConfig,
   options?: { force?: boolean },
 ): TestHealthResult {
   if (postponedProjectSet().has(project.name.toLowerCase())) {
     return { skipped: true, reason: "postponed" };
+  }
+  // gh-ludics-539: skip t3code-dependent projects while the integration is
+  // paused. Returns before path/test-command resolution and execution — no
+  // 300s timeout run, no test-health.json entry, no fix-task.
+  if (projectRequiresT3code(project) && !t3codeIntegrationEnabled()) {
+    return { skipped: true, reason: "t3code-integration-paused" };
   }
   const projectPath = resolveProjectPath(project.name);
   if (!existsSync(projectPath)) return { skipped: true, reason: "path-not-found" };
@@ -159,6 +173,13 @@ export function runAllTestHealth(options?: { project?: string; force?: boolean }
       // try/catch contract.
       if (postponedProjectSet().has(p.name.toLowerCase())) {
         console.error(`[test-health] ${p.name}: skipped (postponed)`);
+        continue;
+      }
+      // gh-ludics-539: batch-loop skip mirroring the postponed short-circuit —
+      // surfaces the visible skip line and avoids dispatch (no command
+      // detection, no 300s run) for t3code-dependent projects while paused.
+      if (projectRequiresT3code(p) && !t3codeIntegrationEnabled()) {
+        console.error(`[test-health] ${p.name}: skipped (t3code-integration-paused)`);
         continue;
       }
       const result = _runAllTestHealthDispatch.fn(p, { force: options?.force });
