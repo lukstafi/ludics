@@ -72,11 +72,17 @@ re-engagement step.
    gate that subsumes it. Briefing precompute, keepalive, and fresh-start
    call-sites all benefit transitively.
 
-7. **`cleanupDoneTaskThreads` is gated.** The call to
-   `cleanupDoneTaskThreads()` in `briefingPrecomputeContext()`
-   short-circuits when the flag is off (skipping the t3code import and
-   status probe entirely). The function itself may also early-return
-   when the flag is off.
+7. **`cleanupDoneTaskThreads` is gated.** `cleanupDoneTaskThreads()`
+   short-circuits its **t3code thread-deletion block** (server import,
+   `serverStatus()` probe, thread delete) when the flag is off. The
+   retrospective-fallback collection loop in the same function is
+   unaffected — it is not t3code-related and must keep running.
+   *(Revised during gh-ludics-539 implementation: the original wording
+   guarded the whole function / the `briefingPrecomputeContext()` call
+   site, but `cleanupDoneTaskThreads()` was refactored to fold in a
+   non-t3code retrospective-fallback loop, so a whole-function gate would
+   silently disable retro fallback. The gate is narrowed to the t3code
+   block only.)*
 
 8. **`test-health:t3code-ludics` skip is visible.** When the flag is
    off, `checkProjectTestHealth()` in `src/health.ts` returns

@@ -19,7 +19,7 @@ import {
   serverStatus,
   writeSlotState,
 } from "../t3code/server.ts";
-import { globalAdapter, loadConfigSync, type LudicsFullConfig } from "../config.ts";
+import { globalAdapter, loadConfigSync, t3codeIntegrationEnabled, type LudicsFullConfig } from "../config.ts";
 import {
   toWireProvider,
   type T3CodeServerRecord,
@@ -733,7 +733,34 @@ function loadConfigOrchestration(config?: LudicsFullConfig): Record<string, unkn
 const CLAUDE_OPUS_MODEL = "claude-opus-4-6";
 
 /**
+ * Thrown by `selectOrchestrationFlags()` when the t3code integration is paused
+ * (`mag.t3code_integration_enabled` is false) and the resolved orchestration
+ * adapter would be `t3code`. Callers that auto-fill slots
+ * (`autoFillAdapterArgs`, `maybeFillEmptySlots`) catch this and skip the slot
+ * with a clear log rather than silently falling back to a stale default.
+ * See docs/proposals/t3code-integration-feature-flag.md (gh-ludics-539).
+ */
+export class T3codeIntegrationPausedError extends Error {
+  constructor() {
+    super("t3code integration is paused (mag.t3code_integration_enabled)");
+    this.name = "T3codeIntegrationPausedError";
+  }
+}
+
+/** Type guard for {@link T3codeIntegrationPausedError} — lets catch sites
+ *  distinguish the paused signal from other thrown errors and rethrow the rest. */
+export function isT3codeIntegrationPausedError(e: unknown): e is T3codeIntegrationPausedError {
+  return e instanceof T3codeIntegrationPausedError;
+}
+
+/**
  * Auto-select orchestration flags for the t3code adapter based on task effort.
+ *
+ * Gated by the t3code integration feature flag (gh-ludics-539): when
+ * `mag.t3code_integration_enabled` is off AND the resolved adapter
+ * (`globalAdapter()`) is `t3code`, this throws {@link T3codeIntegrationPausedError}
+ * instead of returning a selection. When `globalAdapter()` is `tmux`, the flag
+ * has no effect — tmux orchestration auto-fill is unaffected.
  *
  * Effort-based selection (when coder is claude-code):
  * - tiny:   solo mode, no pre-work phases, Claude coder model = Sonnet (no reviewer). skip_plan is ignored.
@@ -762,6 +789,15 @@ export function selectOrchestrationFlags(
   config?: LudicsFullConfig,
   options?: { skipPlan?: boolean },
 ): { adapter: string; args: string; isDuo: boolean } {
+  // gh-ludics-539: refuse a t3code adapter selection while the integration is
+  // paused. Resolved once here so both the `tiny` early-return and the main
+  // return use the same value; the gate fires only when the selection would
+  // be `t3code` (tmux orchestration is unaffected).
+  const resolvedAdapter = globalAdapter();
+  if (resolvedAdapter === "t3code" && !t3codeIntegrationEnabled()) {
+    throw new T3codeIntegrationPausedError();
+  }
+
   const orchCfg = loadConfigOrchestration(config);
   const mode = (orchCfg?.default_mode as string | undefined)?.trim() || "pair";
   const coder = (orchCfg?.default_coder as string | undefined)?.trim() || "claude-code";
@@ -775,7 +811,7 @@ export function selectOrchestrationFlags(
   if (norm === "tiny") {
     const modelSuffix = coder === "claude-code" ? `:${DEFAULT_CLAUDE_MODEL}` : "";
     const args = `--solo --coder ${coder}${modelSuffix}`;
-    return { adapter: globalAdapter(), args, isDuo: false };
+    return { adapter: resolvedAdapter, args, isDuo: false };
   }
 
   const phaseFlags: string[] = [];
@@ -812,13 +848,16 @@ export function selectOrchestrationFlags(
 
   const args = [...modeArgs, ...phaseFlags].join(" ");
   // Use the global adapter setting so orchestration flags work with either backend
-  return { adapter: globalAdapter(), args, isDuo };
+  return { adapter: resolvedAdapter, args, isDuo };
 }
 
 /**
  * Convenience wrapper: reads skip_plan from task file content and
  * delegates to selectOrchestrationFlags(). Used by both slotStart()
  * auto-fill and maybeFillEmptySlots() keepalive assignment.
+ *
+ * Inherits the gh-ludics-539 gate: throws {@link T3codeIntegrationPausedError}
+ * when the t3code integration is paused and the resolved adapter is `t3code`.
  */
 export function selectOrchestrationFlagsForTask(
   taskContent: string,

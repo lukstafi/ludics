@@ -3,6 +3,7 @@
 // Falls back gracefully (returns []) if the t3code server is not running.
 
 import type { DiscoveredSession } from "../types.ts";
+import { t3codeIntegrationEnabled } from "../config.ts";
 import { serverStatus } from "../t3code/server.ts";
 import { threadModel, type T3Project, type T3Snapshot, type T3Thread } from "../t3code/types.ts";
 
@@ -80,6 +81,10 @@ function snapshotToSessions(snapshot: T3Snapshot): DiscoveredSession[] {
  * Returns an empty array with a console warning if the server is not running.
  */
 export async function discoverT3code(): Promise<DiscoveredSession[]> {
+  // t3code integration paused (gh-ludics-539): defense-in-depth — return before
+  // the server probe and before any console.error so no caller probes the
+  // deliberately-down server.
+  if (!t3codeIntegrationEnabled()) return [];
   try {
     const status = await serverStatus();
     if (!status.running || !status.snapshot) {

@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, effectivePriorityValue, milestonesEnabledProjects, resolveProjectPath, postponedProjectSet, findProjectConfigByName, type LudicsFullConfig } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, effectivePriorityValue, milestonesEnabledProjects, resolveProjectPath, postponedProjectSet, findProjectConfigByName, t3codeIntegrationEnabled, type LudicsFullConfig } from "./config.ts";
 import { formatUpstreamLagSection } from "./briefing-lag.ts";
 import { defaultRunGit, type RunGit } from "./git-runner.ts";
 import { clearSentinel, readSentinelEpoch, sentinelExists, sentinelFresh, touchSentinel } from "./sentinel.ts";
@@ -35,7 +35,7 @@ import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
 import { captureLastMessage, captureLastMessageHash, readTmuxSlotState } from "./adapters/tmux-adapter.ts";
 import { resolveSkillCommand, hasRegisteredAction } from "./skill-queue-registry.ts";
-import { selectOrchestrationFlagsForTask } from "./adapters/t3code.ts";
+import { selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError } from "./adapters/t3code.ts";
 import YAML from "yaml";
 import {
   tmuxAvailable,
@@ -1836,7 +1836,8 @@ async function drainProgrammaticQueueHead(): Promise<boolean> {
  * thread IDs in their `t3code_threads` frontmatter field.
  * This is idempotent: threads already absent from the server are skipped.
  */
-async function cleanupDoneTaskThreads(): Promise<void> {
+/** @internal exported for tests */
+export async function cleanupDoneTaskThreads(): Promise<void> {
   const harness = harnessDir();
   const tasksDir = join(harness, "tasks");
   if (!existsSync(tasksDir)) return;
@@ -1877,7 +1878,10 @@ async function cleanupDoneTaskThreads(): Promise<void> {
     } catch { /* ignore module load failure */ }
   }
 
-  if (threadIdsToDelete.length === 0) return;
+  // gh-ludics-539: skip the t3code thread-deletion block (server import +
+  // status probe + delete) while the integration is paused. The retrospective-
+  // fallback collection above is NOT t3code-related and has already run.
+  if (threadIdsToDelete.length === 0 || !t3codeIntegrationEnabled()) return;
 
   // Delete threads from t3code server (idempotent — skip if not on server)
   try {
@@ -2043,9 +2047,13 @@ export function runStagingOutboundPushTick(opts?: {
   }
 }
 
-async function ensureT3codeIfEnabled(context: string): Promise<void> {
+/** @internal exported for tests */
+export async function ensureT3codeIfEnabled(context: string): Promise<void> {
   const magConfig = loadConfigSync().mag as Record<string, unknown> | undefined;
-  if (magConfig?.ensure_t3code === false) return;
+  // gh-ludics-539: short-circuit when t3code integration is paused. The
+  // pre-existing `mag.ensure_t3code === false` switch still works independently
+  // — either being off skips the server nudge.
+  if (magConfig?.ensure_t3code === false || !t3codeIntegrationEnabled()) return;
   console.error(`ludics: ensureServer (${context}): ensuring t3code server...`);
   try {
     const { ensureServer } = await import("./t3code/server.ts");
@@ -3038,7 +3046,8 @@ export function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandid
 
 // --- Auto-fill empty slots ---
 
-async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<void> {
+/** @internal exported for tests */
+export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
   if (isQueueHeld()) return;
 
@@ -3113,7 +3122,18 @@ async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<void> {
   const taskContent = existsSync(taskFile) ? readFileSync(taskFile, "utf-8") : "";
 
   // Auto-select orchestration flags based on task effort and skip_plan
-  const { adapter: autoAdapter, args: autoArgs, isDuo } = selectOrchestrationFlagsForTask(taskContent, task.effort, config);
+  let autoAdapter: string, autoArgs: string, isDuo: boolean;
+  try {
+    ({ adapter: autoAdapter, args: autoArgs, isDuo } = selectOrchestrationFlagsForTask(taskContent, task.effort, config));
+  } catch (e) {
+    // gh-ludics-539: t3code integration paused — skip auto-fill with a clear
+    // log rather than silently falling back to a stale default.
+    if (isT3codeIntegrationPausedError(e)) {
+      console.error(`ludics: auto-fill skipped: t3code integration paused (task ${task.id})`);
+      return;
+    }
+    throw e;
+  }
 
   // Hierarchical duo: need 2 empty slots; assign both with swapped coder/reviewer
   if (isDuo) {

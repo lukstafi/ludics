@@ -2,13 +2,48 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { buildOrchestratedDesiredThreadConfig, canReuseSlotThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask } from "./t3code.ts";
+import { buildOrchestratedDesiredThreadConfig, canReuseSlotThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 import { mergeAdapterState } from "../slots/markdown.ts";
 import { emptySlotData } from "../slots/json.ts";
 import type { SlotData } from "../slots/types.ts";
 import type { AdapterContext } from "./types.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState } from "../orchestration/state.ts";
+
+// gh-ludics-539: selectOrchestrationFlags() throws T3codeIntegrationPausedError
+// when the t3code integration is paused and the resolved adapter is `t3code`.
+// Harness that writes a temp config.yaml + isolates HOME / LUDICS_CONFIG so
+// globalAdapter() and t3codeIntegrationEnabled() resolve deterministically.
+function installT3codeConfigHarness(): {
+  write: (opts: { t3codeEnabled: boolean; adapter?: "t3code" | "tmux" }) => void;
+} {
+  let tmpDir = "";
+  const orig = { HOME: process.env.HOME, CONFIG: process.env.LUDICS_CONFIG };
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "ludics-t3code-flag-"));
+    process.env.HOME = tmpDir;
+  });
+  afterEach(() => {
+    if (orig.HOME === undefined) delete process.env.HOME;
+    else process.env.HOME = orig.HOME;
+    if (orig.CONFIG === undefined) delete process.env.LUDICS_CONFIG;
+    else process.env.LUDICS_CONFIG = orig.CONFIG;
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+  return {
+    write({ t3codeEnabled, adapter = "t3code" }) {
+      const dir = join(tmpDir, ".config", "ludics");
+      mkdirSync(dir, { recursive: true });
+      const cfgPath = join(dir, "config.yaml");
+      writeFileSync(
+        cfgPath,
+        `state_repo: owner/ludics-state\nstate_path: harness\nadapter: ${adapter}\n`
+          + `mag:\n  t3code_integration_enabled: ${t3codeEnabled}\n`,
+      );
+      process.env.LUDICS_CONFIG = cfgPath;
+    },
+  };
+}
 
 function makeThread(overrides: Partial<T3CodeThreadRecord> = {}): T3CodeThreadRecord {
   return {
@@ -324,6 +359,10 @@ describe("t3code adapter stop — preserveState", () => {
 });
 
 describe("selectOrchestrationFlags — skip_plan", () => {
+  // gh-ludics-539: flag on so the t3code-adapter gate does not throw.
+  const cfg = installT3codeConfigHarness();
+  beforeEach(() => cfg.write({ t3codeEnabled: true }));
+
   test("medium effort without skipPlan includes --plan", () => {
     const { args } = selectOrchestrationFlags("medium");
     expect(args).toContain("--plan");
@@ -366,6 +405,10 @@ describe("selectOrchestrationFlags — skip_plan", () => {
 });
 
 describe("selectOrchestrationFlagsForTask — skip_plan from frontmatter", () => {
+  // gh-ludics-539: flag on so the t3code-adapter gate does not throw.
+  const cfg = installT3codeConfigHarness();
+  beforeEach(() => cfg.write({ t3codeEnabled: true }));
+
   test("medium task with skip_plan: true omits --plan", () => {
     const content = "---\nid: test\ntitle: test\neffort: medium\nskip_plan: true\n---\n";
     const { args } = selectOrchestrationFlagsForTask(content, "medium");
@@ -480,6 +523,10 @@ describe("parseOrchestrationAdapterArgs — --solo", () => {
 });
 
 describe("selectOrchestrationFlags — tiny effort", () => {
+  // gh-ludics-539: flag on so the t3code-adapter gate does not throw.
+  const cfg = installT3codeConfigHarness();
+  beforeEach(() => cfg.write({ t3codeEnabled: true }));
+
   test("tiny effort emits --solo with Sonnet for claude-code default", () => {
     const { adapter, args, isDuo } = selectOrchestrationFlags("tiny");
     expect(args).toContain("--solo");
@@ -510,6 +557,52 @@ describe("selectOrchestrationFlags — tiny effort", () => {
     const { args } = selectOrchestrationFlags("tiny", fakeConfig);
     expect(args).toContain("--solo --coder codex");
     expect(args).not.toContain(":claude-sonnet");
+  });
+});
+
+describe("selectOrchestrationFlags — t3code integration gate (gh-ludics-539)", () => {
+  const cfg = installT3codeConfigHarness();
+
+  test("flag off + adapter t3code: throws T3codeIntegrationPausedError", () => {
+    cfg.write({ t3codeEnabled: false, adapter: "t3code" });
+    // Invariant: while paused, the function refuses a t3code adapter selection
+    // rather than returning stale flags that would set up a broken t3code slot.
+    let caught: unknown;
+    try {
+      selectOrchestrationFlags("medium");
+    } catch (e) {
+      caught = e;
+    }
+    expect(isT3codeIntegrationPausedError(caught)).toBe(true);
+  });
+
+  test("flag off + adapter t3code: selectOrchestrationFlagsForTask inherits the throw", () => {
+    cfg.write({ t3codeEnabled: false, adapter: "t3code" });
+    const content = "---\nid: test\ntitle: test\neffort: medium\n---\n";
+    let caught: unknown;
+    try {
+      selectOrchestrationFlagsForTask(content, "medium");
+    } catch (e) {
+      caught = e;
+    }
+    expect(isT3codeIntegrationPausedError(caught)).toBe(true);
+  });
+
+  test("flag off + adapter tmux: does NOT throw (negative control — tmux orchestration unaffected)", () => {
+    // Mutation evidence: the gate keys on the *resolved* adapter being t3code.
+    // With globalAdapter() == tmux, the paused flag must not block tmux auto-fill.
+    cfg.write({ t3codeEnabled: false, adapter: "tmux" });
+    const result = selectOrchestrationFlags("medium");
+    expect(result.adapter).toBe("tmux");
+    expect(result.args).toContain("--pair");
+  });
+
+  test("flag on + adapter t3code: returns a normal selection", () => {
+    cfg.write({ t3codeEnabled: true, adapter: "t3code" });
+    const result = selectOrchestrationFlags("medium");
+    expect(result.adapter).toBe("t3code");
+    expect(result.args).toContain("--pair");
+    expect(result.args).toContain("--plan");
   });
 });
 

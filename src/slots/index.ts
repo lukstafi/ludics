@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
-import { globalAdapter, harnessDir, slotsCount, stateRepoDir, resolveProjectPath } from "../config.ts";
+import { globalAdapter, harnessDir, slotsCount, stateRepoDir, resolveProjectPath, t3codeIntegrationEnabled } from "../config.ts";
 import { atomicWriteFileSync } from "../json.ts";
 import { mergeAdapterState, addNoteToSlotData } from "./markdown.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, emptySlotData, slotJsonDir, slotDataToMarkdown, normalizeTaskId } from "./json.ts";
@@ -21,7 +21,7 @@ import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState, processAlive } from "../t3code/server.ts";
 import { agentCliCommand, isAgentAlive, readTmuxSlotState, startTtyd, tmuxSessionName, ttydPort, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { tmuxHasSession, tmuxNewSession, tmuxSendCommand, tmuxSendKeys } from "../adapters/tmux.ts";
-import { selectOrchestrationFlagsForTask } from "../adapters/t3code.ts";
+import { selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError } from "../adapters/t3code.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
@@ -40,10 +40,24 @@ export const VALID_ASSIGN_ADAPTERS = ["tmux", "t3code", "manual"] as const;
 /** Reject any adapter mode outside the canonical assign set. Shared by the
  *  CLI `assign`/`preempt` parsers and the `slotAssign`/`slotPreempt` funnels
  *  so every entry point gets the same atomic, pre-side-effect rejection. */
-export function validateAssignAdapter(adapter: string): void {
+export function validateAssignAdapter(
+  adapter: string,
+  opts?: { allowPausedT3code?: boolean },
+): void {
   if (!(VALID_ASSIGN_ADAPTERS as readonly string[]).includes(adapter)) {
     throw new Error(
       `invalid adapter: ${adapter} (use: ${VALID_ASSIGN_ADAPTERS.join(", ")})`,
+    );
+  }
+  // gh-ludics-539: t3code stays in VALID_ASSIGN_ADAPTERS (re-enabling is purely
+  // runtime), but new assign/preempt of a t3code slot is refused while the
+  // integration is paused. Only `t3code` is gated — `tmux`/`manual` validate
+  // unchanged. `allowPausedT3code` exempts the preempt-stash restore path
+  // (slotRestore): restoring an already-preempted t3code slot must not be
+  // blocked — that is option (c), recovery of existing slots continues.
+  if (adapter === "t3code" && !opts?.allowPausedT3code && !t3codeIntegrationEnabled()) {
+    throw new Error(
+      "t3code integration is currently paused; enable mag.t3code_integration_enabled in config.yaml to re-engage",
     );
   }
 }
@@ -337,6 +351,7 @@ export async function slotAssign(
   path: string = "",
   adapterArgs: string = "",
   machine: string = "",
+  opts?: { allowPausedT3code?: boolean },
 ): Promise<void> {
   // CONTROLLER-ONLY: runs locally; no remote-dispatch guard needed
   ensureSlotsDir();
@@ -344,7 +359,9 @@ export async function slotAssign(
   validateRange(slotNum, count);
   // Reject phantom adapters before any side effect (no slot write, no
   // prior-slot cleanup, no status flip, no interrupted-marker clearing).
-  validateAssignAdapter(adapter);
+  // `allowPausedT3code` is set by slotRestore so restoring a preempted t3code
+  // slot is not blocked by the gh-ludics-539 pause gate (option (c)).
+  validateAssignAdapter(adapter, { allowPausedT3code: opts?.allowPausedT3code });
 
   const started = new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:\d{2}Z$/, "Z");
 
@@ -812,8 +829,14 @@ export async function slotRestore(slotNum: number): Promise<void> {
     : stash.previousAdapterArgs;
   const prevTask = stash.previousTask === "null" ? stash.previousProcess : stash.previousTask;
 
-  // slotAssign handles preempted→in-progress via taskUpdateForSlotAssign
-  await slotAssign(slotNum, prevTask, prevAdapter, prevSession, prevPath, prevAdapterArgs);
+  // slotAssign handles preempted→in-progress via taskUpdateForSlotAssign.
+  // gh-ludics-539: restoring a previously-preempted t3code slot must not be
+  // blocked by the paused-integration gate — this is recovery of existing
+  // work, not a new assignment (option (c)). Phantom-adapter rejection still
+  // applies (prevAdapter was already coerced to the canonical set above).
+  await slotAssign(slotNum, prevTask, prevAdapter, prevSession, prevPath, prevAdapterArgs, "", {
+    allowPausedT3code: true,
+  });
 
   removeStash(slotNum);
 
@@ -839,6 +862,11 @@ export async function slotSetMode(slotNum: number, mode: string): Promise<void> 
   ensureSlotsDir();
   const count = slotsCount();
   validateRange(slotNum, count);
+  // gh-ludics-539: `slot mode <N> t3code` updates data.mode directly without
+  // going through slotAssign, so it must enforce the same paused-integration
+  // gate — otherwise a user could create a t3code slot while paused by
+  // assigning tmux/manual then toggling mode. Also rejects phantom modes.
+  validateAssignAdapter(mode);
 
   let data = readSlot(slotNum);
   if (data.process === "(empty)") {
@@ -1002,7 +1030,18 @@ export async function autoFillAdapterArgs(
   // consulting the raw frontmatter block before falling back on the parser's
   // normalized value.
   const effort = readRawEffortField(content) ?? "small";
-  const { args: autoArgs } = selectOrchestrationFlagsForTask(content, effort);
+  let autoArgs: string;
+  try {
+    ({ args: autoArgs } = selectOrchestrationFlagsForTask(content, effort));
+  } catch (e) {
+    // gh-ludics-539: t3code integration paused — treat the slot as not
+    // auto-fillable rather than silently falling back to a stale default.
+    if (isT3codeIntegrationPausedError(e)) {
+      console.error(`ludics: slot ${ctx.slot}: auto-fill skipped: t3code integration paused`);
+      return null;
+    }
+    throw e;
+  }
   if (!autoArgs.trim()) {
     throw new Error(`slot ${ctx.slot}: selectOrchestrationFlagsForTask returned empty args for effort="${effort}"`);
   }

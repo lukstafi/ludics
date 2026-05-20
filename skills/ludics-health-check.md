@@ -72,6 +72,17 @@ This skill is invoked when:
      flag as warning: "Active [agent] session on [project] has no slot (all slots occupied)"
    - If unmatched sessions exist:
      flag as info: "Unrecognized session at [cwd] — not matched to any configured project"
+   - **t3code integration gate** (gh-ludics-539): before emitting any
+     t3code-related finding, probe the feature flag:
+     ```bash
+     T3CODE_INTEGRATION_STATUS=$(ludics t3code integration-status 2>/dev/null || echo enabled)
+     ```
+     When `T3CODE_INTEGRATION_STATUS` is `paused`, the t3code integration is
+     intentionally disabled — **do not** emit `t3code-server-down`, t3code
+     discovery-server noise, or `test-health:t3code-ludics` findings as
+     warnings or critical issues. You may note the paused state once as
+     low-priority Info ("t3code integration paused — surfaces gated").
+     All non-t3code checks continue normally.
    - For each active `Mode=t3code` slot, read orchestration state:
      `cat "$LUDICS_STATE_PATH/orchestration/slot-<N>.json" 2>/dev/null`
      - Check each agent's `turnLifecycle.settledNoSignalDetectedAt`

@@ -52,6 +52,8 @@ projects:
       gpu: ""                  # Target machine GPU: apple-silicon | nvidia | amd
                                # Tasks in this project only auto-assign to matching machines.
                                # Task frontmatter requirements override project-level values.
+    requires_t3code: false     # Optional, default false. When true, test-health skips this project
+                               # while mag.t3code_integration_enabled is false (gh-ludics-539).
     # Per-project adapter args profile (optional).
     # Later layers override earlier: adapter default → project profile → slot args → task frontmatter
     adapter_profiles: {}
@@ -93,6 +95,10 @@ mag:
   ttyd_port: 7679            # Web terminal port (tmux-ttyd backend only)
   keepalive_interval: 60      # Keepalive trigger interval in seconds (default: 60)
   ensure_t3code: true         # Auto-start shared t3code server on keepalive (default: true)
+  t3code_integration_enabled: false  # Gate t3code integration surfaces (session discovery, adapter
+                                     # assignment, orchestration auto-flag selection, health-check
+                                     # findings). Default false — integration is paused (gh-ludics-539).
+                                     # Re-engage by setting true and committing.
   enable_staging_fast_forward: true  # Once-daily fast-forward of each upstream-aware project's staging default branch
                                      # from upstream/<default> (default: true). Fast-forward-only, never pushes, never
                                      # touches slot worktrees, aborts on dirty tree or divergence. Disable with `false`.

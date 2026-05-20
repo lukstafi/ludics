@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
-import { harnessDir } from "../config.ts";
+import { harnessDir, t3codeIntegrationEnabled } from "../config.ts";
 import { readOrchestrationState } from "../orchestration/state.ts";
 import type { AgentConfig } from "../orchestration/state.ts";
 import { T3CodeClient, waitForNewTurn } from "./client.ts";
@@ -486,6 +486,13 @@ export async function runT3Code(args: string[]): Promise<void> {
       return;
     }
 
+    case "integration-status": {
+      // gh-ludics-539: cheap probe for the ludics-health-check skill — prints
+      // the t3code feature-flag state without touching the server.
+      console.log(t3codeIntegrationEnabled() ? "enabled" : "paused");
+      return;
+    }
+
     case "doctor": {
       const result = await doctorServer({ harnessDir: harness });
       console.log(result.ok ? "t3code: healthy" : "t3code: unhealthy");
@@ -604,7 +611,7 @@ export async function runT3Code(args: string[]): Promise<void> {
 
     default:
       throw new Error(
-        `unknown t3code subcommand: ${sub} (use: status, start, stop, doctor, thread, slot, cleanup)`,
+        `unknown t3code subcommand: ${sub} (use: status, start, stop, doctor, integration-status, thread, slot, cleanup)`,
       );
   }
 }

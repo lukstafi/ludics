@@ -291,3 +291,102 @@ describe("test-health skips postponed projects", () => {
     void getStateDir; // ensures the synthetic-harness lifecycle is engaged
   });
 });
+
+describe("test-health t3code integration gate (gh-ludics-539)", () => {
+  // checkProjectTestHealth / runAllTestHealth skip t3code-dependent projects
+  // while mag.t3code_integration_enabled is off. Two triggers: an explicit
+  // requires_t3code: true, OR the t3code-ludics name fallback.
+  let TMP = "";
+  const ORIG = {
+    HOME: process.env.HOME,
+    CONFIG: process.env.LUDICS_CONFIG,
+    HARNESS: process.env.LUDICS_HARNESS_DIR,
+  };
+
+  /** Write config.yaml controlling the t3code flag and optional projects block. */
+  function writeConfig(opts: { t3codeEnabled: boolean; projectsBlock?: string }): void {
+    const cfgPath = join(TMP, "config.yaml");
+    const mag = opts.t3codeEnabled ? "mag:\n  t3code_integration_enabled: true\n" : "";
+    writeFileSync(cfgPath, `state_repo: test/state\nstate_path: harness\n${mag}${opts.projectsBlock ?? ""}`);
+    process.env.LUDICS_CONFIG = cfgPath;
+  }
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-health-t3code-"));
+    process.env.HOME = TMP;
+    process.env.LUDICS_HARNESS_DIR = TMP;
+    _resetPostponedProjectsCache();
+  });
+
+  afterEach(() => {
+    if (ORIG.HOME === undefined) delete process.env.HOME;
+    else process.env.HOME = ORIG.HOME;
+    if (ORIG.CONFIG === undefined) delete process.env.LUDICS_CONFIG;
+    else process.env.LUDICS_CONFIG = ORIG.CONFIG;
+    if (ORIG.HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR;
+    else process.env.LUDICS_HARNESS_DIR = ORIG.HARNESS;
+    _resetPostponedProjectsCache();
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  test("checkProjectTestHealth skips a requires_t3code: true project when flag off", () => {
+    writeConfig({ t3codeEnabled: false });
+    // Trigger 1: explicit per-project opt-in (name is NOT t3code-ludics, so the
+    // name fallback is not what fires here).
+    const project = { name: "some-t3code-dep", repo: "ex/dep", requires_t3code: true } as const;
+    const result = checkProjectTestHealth(project);
+    expect(result).toEqual({ skipped: true, reason: "t3code-integration-paused" });
+    // Skip returns before resolveProjectPath / state write: no test-health.json.
+    expect(existsSync(testHealthStatePath())).toBe(false);
+  });
+
+  test("checkProjectTestHealth skips the t3code-ludics project by name when flag off", () => {
+    writeConfig({ t3codeEnabled: false });
+    // Trigger 2: name fallback — no requires_t3code annotation present.
+    const project = { name: "t3code-ludics", repo: "lukstafi/t3code-ludics" } as const;
+    const result = checkProjectTestHealth(project);
+    expect(result).toEqual({ skipped: true, reason: "t3code-integration-paused" });
+  });
+
+  test("checkProjectTestHealth does NOT skip an ordinary project for this reason (negative control)", () => {
+    writeConfig({ t3codeEnabled: false });
+    // Mutation evidence: a project with neither trigger must not get the paused
+    // skip — if the guard were unconditional it would. It falls through to the
+    // path-not-found skip instead.
+    const project = { name: "ordinary-proj", repo: "ex/ordinary" } as const;
+    const result = checkProjectTestHealth(project);
+    expect(result.reason).not.toBe("t3code-integration-paused");
+  });
+
+  test("checkProjectTestHealth does NOT skip a requires_t3code project when flag ON (positive control)", () => {
+    writeConfig({ t3codeEnabled: true });
+    // With the integration enabled, the requires_t3code project runs normally —
+    // falls through to the path-not-found skip (no path on disk), not paused.
+    const project = { name: "some-t3code-dep", repo: "ex/dep", requires_t3code: true } as const;
+    const result = checkProjectTestHealth(project);
+    expect(result.reason).not.toBe("t3code-integration-paused");
+  });
+
+  test("runAllTestHealth emits the visible skip line and does NOT dispatch for a paused t3code project", () => {
+    writeConfig({
+      t3codeEnabled: false,
+      projectsBlock: "projects:\n  - name: t3code-ludics\n    repo: lukstafi/t3code-ludics\n",
+    });
+    const calls: string[] = [];
+    const original = _runAllTestHealthDispatch.fn;
+    _runAllTestHealthDispatch.fn = (p, opts) => {
+      calls.push(p.name);
+      return original(p, opts);
+    };
+    try {
+      const { lines } = captureConsoleError(() => runAllTestHealth({ project: "t3code-ludics" }));
+      // Invariant: the batch-loop guard short-circuits BEFORE dispatch — the
+      // skip is visible (mirrors postponed) and checkProjectTestHealth is not
+      // even called for the paused project.
+      expect(calls).toEqual([]);
+      expect(lines.some((l) => l.includes("[test-health] t3code-ludics: skipped (t3code-integration-paused)"))).toBe(true);
+    } finally {
+      _runAllTestHealthDispatch.fn = original;
+    }
+  });
+});

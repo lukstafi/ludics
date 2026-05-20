@@ -20,7 +20,13 @@ let TMP = "";
 
 function writeConfig(
   homeDir: string,
-  { cluster, includeSelf }: { cluster?: boolean; includeSelf?: boolean } = {},
+  { cluster, includeSelf, t3codeEnabled = true }: {
+    cluster?: boolean;
+    includeSelf?: boolean;
+    // gh-ludics-539: defaults true so existing -a t3code tests keep their
+    // pre-gate behaviour. Flag-off tests pass `t3codeEnabled: false`.
+    t3codeEnabled?: boolean;
+  } = {},
 ): string {
   const configDir = join(homeDir, ".config", "ludics");
   mkdirSync(configDir, { recursive: true });
@@ -30,6 +36,11 @@ state_path: harness
 slots:
   count: 2
 `;
+  if (t3codeEnabled) {
+    yaml += `mag:
+  t3code_integration_enabled: true
+`;
+  }
   if (cluster) {
     yaml += `cluster:
   transport: http
@@ -1076,6 +1087,171 @@ describe("assign-time adapter validation (gh-ludics-524)", () => {
     expect(data.process).toBe("Stranded work");
     expect(data.mode).toBe("manual");
     expect(hasStash(1)).toBe(false); // stash consumed
+  });
+});
+
+describe("t3code integration gate (gh-ludics-539)", () => {
+  // The default writeConfig() (beforeEach) writes the flag ON. Flag-off tests
+  // rewrite the same config.yaml via writeConfig(TMP, { t3codeEnabled: false }).
+
+  test("validateAssignAdapter('t3code') throws the exact paused message when flag off", () => {
+    writeConfig(TMP, { t3codeEnabled: false });
+    // Invariant: while paused, t3code cannot be assigned — the precise re-engagement
+    // message must surface. Would fail if the gate were dropped or the wording drifted.
+    expect(() => validateAssignAdapter("t3code")).toThrow(
+      "t3code integration is currently paused; enable mag.t3code_integration_enabled in config.yaml to re-engage",
+    );
+  });
+
+  test("validateAssignAdapter('tmux') and ('manual') are unaffected by the flag-off state", () => {
+    writeConfig(TMP, { t3codeEnabled: false });
+    // Mutation evidence: the gate keys on adapter === "t3code" only; a gate that
+    // rejected all adapters while paused would break tmux/manual assignment.
+    expect(() => validateAssignAdapter("tmux")).not.toThrow();
+    expect(() => validateAssignAdapter("manual")).not.toThrow();
+  });
+
+  test("validateAssignAdapter('t3code') passes when flag on (positive control)", () => {
+    // beforeEach already wrote the flag ON; re-engagement restores t3code assign.
+    expect(() => validateAssignAdapter("t3code")).not.toThrow();
+  });
+
+  test("slotAssign(-a t3code) rejects with the paused message, leaving slot/task files unchanged", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeTask(tasksDir, "task-t3code-paused", "Paused assign");
+    writeConfig(TMP, { t3codeEnabled: false });
+
+    const slotFile = join(slotJsonDir(harness), "slot-1.json");
+    const taskFile = join(tasksDir, "task-t3code-paused.md");
+    const slotBefore = readFileSync(slotFile, "utf-8");
+    const taskBefore = readFileSync(taskFile, "utf-8");
+
+    // Invariant: rejection is atomic — validateAssignAdapter runs before any
+    // slot write or status flip, so both files are byte-identical afterwards.
+    await expect(slotAssign(1, "task-t3code-paused", "t3code")).rejects.toThrow(
+      "t3code integration is currently paused",
+    );
+    expect(readFileSync(slotFile, "utf-8")).toBe(slotBefore);
+    expect(readFileSync(taskFile, "utf-8")).toBe(taskBefore);
+  });
+
+  test("autoFillAdapterArgs returns null and logs 'auto-fill skipped' when flag off", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-autofill-paused", "Auto-fill paused");
+    // Assign the t3code slot (empty adapterArgs) while the flag is still ON.
+    void slotAssign(1, "task-autofill-paused", "t3code");
+    const data = readSlotJson(1, harness);
+    const ctx = makeAdapterContext(1, data);
+
+    // Now pause the integration: a pre-existing t3code slot started after the
+    // flip must surface a clear "skipped" log, not silently fall back.
+    writeConfig(TMP, { t3codeEnabled: false });
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await autoFillAdapterArgs(ctx, data);
+      const calls = errSpy.mock.calls.map((c) => String(c[0]));
+      // Invariant: the typed paused error is caught → slot treated as not
+      // auto-fillable (null) with a single clear log line.
+      expect(result).toBeNull();
+      expect(calls.some((l) => l.includes("auto-fill skipped: t3code integration paused"))).toBe(true);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("slotRestore of a preempted t3code slot succeeds when flag off (option (c) — codex P1)", async () => {
+    // Regression for codex review P1: slotRestore funnels through slotAssign;
+    // without the allowPausedT3code exemption the paused gate would throw and
+    // strand preempted t3code work. Option (c): recovery of existing slots must
+    // keep working while only NEW assign/preempt is blocked.
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeStash({
+      slotNum: 1,
+      previousTask: "null",
+      previousProcess: "Preempted t3code work",
+      previousMode: "t3code",
+      previousSession: "null",
+      previousPath: "null",
+      previousStarted: "2026-05-14T06:57Z",
+      previousAdapterArgs: "--pair --coder claude-code",
+      preemptedAt: "2026-05-14T07:00Z",
+      preemptingTask: "task-priority",
+    });
+    writeConfig(TMP, { t3codeEnabled: false });
+
+    // Invariant: restore completes — the slot is recovered with mode t3code and
+    // the stash is consumed. Would throw the paused message without the exemption.
+    await slotRestore(1);
+    const data = readSlotJson(1, harness);
+    expect(data.process).toBe("Preempted t3code work");
+    expect(data.mode).toBe("t3code");
+    expect(hasStash(1)).toBe(false);
+  });
+
+  test("slotClear(done) auto-restore of a preempted t3code slot succeeds when flag off (codex P1)", async () => {
+    // The auto-restore path in slotClear() also routes through slotRestore →
+    // slotAssign; the exemption must cover it too.
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(2, emptySlotData(2), harness);
+    void slotAssign(1, "Urgent preempting work", "manual");
+    writeStash({
+      slotNum: 1,
+      previousTask: "null",
+      previousProcess: "Preempted t3code work",
+      previousMode: "t3code",
+      previousSession: "null",
+      previousPath: "null",
+      previousStarted: "2026-05-14T06:57Z",
+      previousAdapterArgs: "--pair --coder claude-code",
+      preemptedAt: "2026-05-14T07:00Z",
+      preemptingTask: "task-priority",
+    });
+    writeConfig(TMP, { t3codeEnabled: false });
+
+    await slotClear(1, "done");
+    const data = readSlotJson(1, harness);
+    expect(data.process).toBe("Preempted t3code work");
+    expect(data.mode).toBe("t3code");
+    expect(hasStash(1)).toBe(false);
+  });
+
+  test("slotSetMode rejects switching to t3code while paused, but allows tmux (codex P1)", async () => {
+    // Regression for codex review P1: `slot mode <N> t3code` updates data.mode
+    // directly, bypassing slotAssign — it must enforce the same paused gate.
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(2, emptySlotData(2), harness);
+    void slotAssign(1, "Mode toggle work", "manual");
+    writeConfig(TMP, { t3codeEnabled: false });
+
+    // Invariant: the mode toggle cannot create a t3code slot while paused.
+    await expect(slotSetMode(1, "t3code")).rejects.toThrow(
+      "t3code integration is currently paused",
+    );
+    // tmux toggle is unaffected by the flag.
+    await slotSetMode(1, "tmux");
+    expect(readSlotJson(1, harness).mode).toBe("tmux");
+  });
+
+  test("slotSetMode allows switching to t3code when flag on (positive control)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(2, emptySlotData(2), harness);
+    void slotAssign(1, "Mode toggle work", "manual");
+    // beforeEach wrote the flag ON.
+    await slotSetMode(1, "t3code");
+    expect(readSlotJson(1, harness).mode).toBe("t3code");
   });
 });
 

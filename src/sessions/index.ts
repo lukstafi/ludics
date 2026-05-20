@@ -1,7 +1,7 @@
 // Sessions module — pipeline orchestration and CLI handlers
 
 import { join } from "path";
-import { loadConfig, harnessDir } from "../config.ts";
+import { loadConfig, harnessDir, t3codeIntegrationEnabled } from "../config.ts";
 import { extractSlotPaths } from "../slots/paths.ts";
 import { discoverT3code } from "./discover-t3code.ts";
 import { discoverCodex } from "./discover-codex.ts";
@@ -14,7 +14,18 @@ import { runSessionSweep } from "./sweep.ts";
 import type { DiscoveredSession, DiscoveryResult, MergedSession } from "../types.ts";
 import { emitEvent } from "../events.ts";
 
-async function discoverAll(staleThreshold: number): Promise<DiscoveredSession[]> {
+/** @internal exported for tests */
+export async function discoverAll(staleThreshold: number): Promise<DiscoveredSession[]> {
+  // t3code integration paused (gh-ludics-539): skip t3code discovery entirely —
+  // no server probe, no primary/fallback log line. Legacy scanners run directly.
+  if (!t3codeIntegrationEnabled()) {
+    const [codex, claude] = await Promise.all([
+      discoverCodex(staleThreshold),
+      discoverClaudeCode(staleThreshold),
+    ]);
+    return [...codex, ...claude];
+  }
+
   // Run t3code discovery as primary source.
   // Legacy codex/claude scanners are used as fallback only when t3code returns nothing.
   const t3code = await discoverT3code();
