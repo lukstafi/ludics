@@ -22,7 +22,7 @@ import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
 import { readOrchestrationState } from "./orchestration/state.ts";
 import { isElaborated } from "./tasks/elaboration.ts";
-import { tasksAbandon } from "./tasks/index.ts";
+import { tasksAbandon, tasksNeedsConfirmationList } from "./tasks/index.ts";
 import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
 import {
   notifyOutgoing,
@@ -2108,6 +2108,18 @@ export async function briefingPrecomputeContext(opts?: { runGit?: RunGit }): Pro
   const needsElabR = safeSyncOutput(ludicsSelfCommand(["tasks", "needs-elaboration"]));
   const needsElabOutput = needsElabR.ok && needsElabR.stdout ? needsElabR.stdout : "None";
 
+  // Needs Confirmation — precomputed, status-verified projection of tasks
+  // whose frontmatter status is exactly `needs-confirmation` (gh-ludics-547).
+  // Calls tasksNeedsConfirmationList directly in-process rather than via a
+  // `ludics tasks needs-confirmation` sub-invocation: under `bun test` a
+  // ludicsSelfCommand sub-invocation re-runs the test file (process.argv[1])
+  // and yields no output, which would make the section untestable. The CLI
+  // sub-command and this section share the same helper, so they stay in sync.
+  const needsConfirmationLines = tasksNeedsConfirmationList(join(harness, "tasks"));
+  const needsConfirmationOutput = needsConfirmationLines.length
+    ? needsConfirmationLines.join("\n")
+    : "None";
+
   // Recent journal
   const journalR = safeSyncOutput(ludicsSelfCommand(["journal", "recent", "20"]));
   const journalOutput = journalR.ok ? journalR.stdout : "(no journal entries)";
@@ -2224,6 +2236,10 @@ ${flowCriticalOutput}
 ## Tasks Needing Elaboration
 
 ${needsElabOutput}
+
+## Needs Confirmation
+
+${needsConfirmationOutput}
 
 ## Recent Journal
 

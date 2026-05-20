@@ -135,6 +135,7 @@ Commands:
   tasks files                  List individual task files
   tasks samples                Create sample tasks for testing
   tasks needs-elaboration      List tasks needing elaboration
+  tasks needs-confirmation     List tasks awaiting confirmation
   tasks queue-elaborations     Queue elaboration for unprocessed ready tasks
   tasks check <id>             Check if task needs elaboration
   tasks merge <target> <src..> Merge source task(s) into target

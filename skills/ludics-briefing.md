@@ -48,6 +48,7 @@ The context file contains these sections:
 - **Flow: Ready Queue**: Priority-sorted ready tasks
 - **Flow: Critical Items**: Deadlines, high-priority ready
 - **Tasks Needing Elaboration**: Task IDs that lack elaboration
+- **Needs Confirmation**: Tasks with `status: needs-confirmation`, projected as `<id> (<priority>) [<project>] "<title>"` (or `None` when there are none)
 - **Recent Journal**: Last 20 journal entries
 
 Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
@@ -82,9 +83,16 @@ Also read `$LUDICS_STATE_PATH/tasks/*.md` for full task details.
      - Use the Task tool to invoke `/ludics-elaborate <task-id>` (parallel)
 
 <!-- section:scan-needs-confirmation -->
-4. **Scan for needs-confirmation tasks**:
-   - Check task files for `status: needs-confirmation`
-   - For each, note the task ID, title, priority, and `relates_to` source task
+4. **Collect needs-confirmation tasks**:
+   - Read the precomputed `## Needs Confirmation` section of
+     `$LUDICS_STATE_PATH/mag/briefing-context.md`. Do **not** hand-scan
+     `tasks/*.md` for this list — the precomputed section is status-verified,
+     so long-done tasks can't carry over from a prior `briefing.md`.
+   - A body of `None` means there are no needs-confirmation tasks; in that
+     case omit the briefing's "Needs Confirmation" output section entirely.
+   - Otherwise each line is `<id> (<priority>) [<project>] "<title>"`.
+   - For the `-- from <source>` attribution, read `relates_to` from each
+     listed task's file — only for the IDs in the precomputed section.
    - These will be included in a dedicated "Needs Confirmation" section
 
 <!-- section:analyze-work -->

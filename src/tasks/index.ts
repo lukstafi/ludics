@@ -231,6 +231,53 @@ function tasksNeedsElaboration(): void {
   }
 }
 
+/**
+ * Projected lines for every task whose frontmatter status is exactly
+ * `needs-confirmation`: `<id> (<priority>) [<project>] "<title>"`.
+ * Deterministically sorted by priority, then project, then id. Returns `[]`
+ * when the tasks directory is absent or no task matches.
+ *
+ * Shared by the `tasks needs-confirmation` CLI sub-command and the
+ * briefing-context generator (`briefingPrecomputeContext` in `src/mag.ts`),
+ * so both surfaces project an identical, status-verified list. (gh-ludics-547)
+ *
+ * The predicate is exact-match `status === "needs-confirmation"` (mirrors
+ * `needsConfirmationConfig` in `src/dashboard.ts`). It must NOT be expressed
+ * as an "exclude TERMINAL_STATUSES" inverse filter: `needs-confirmation` is
+ * itself a non-terminal status, and an inverse filter would wrongly admit
+ * `ready` / `in-progress` / etc. Exact-match also excludes `merged` tasks and
+ * any task carrying `merged_into` (their status is `merged`, not
+ * `needs-confirmation`).
+ */
+export function tasksNeedsConfirmationList(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const rows: Array<{ id: string; priority: string; project: string; title: string }> = [];
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".md")) continue;
+    const fm = parseTaskFrontmatter(readFileSync(join(dir, f), "utf-8"));
+    if ((fm.status ?? "") !== "needs-confirmation") continue;
+    if (!fm.id) continue; // skip malformed files (matches tasksDuplicates / tasksNeedsElaborationList)
+    rows.push({
+      id: fm.id,
+      priority: fm.priority || "B",
+      project: fm.project || "unknown",
+      title: fm.title || "(untitled)",
+    });
+  }
+  rows.sort((a, b) =>
+    priorityValue(a.priority) - priorityValue(b.priority)
+    || a.project.localeCompare(b.project)
+    || a.id.localeCompare(b.id),
+  );
+  return rows.map((r) => `${r.id} (${r.priority}) [${r.project}] "${r.title}"`);
+}
+
+function tasksNeedsConfirmation(): void {
+  for (const line of tasksNeedsConfirmationList(tasksDir())) {
+    console.log(line);
+  }
+}
+
 function tasksCheckElaboration(taskId: string): void {
   const dir = tasksDir();
   const file = join(dir, `${taskId}.md`);
@@ -747,6 +794,9 @@ export async function runTasks(args: string[]): Promise<void> {
     case "needs-elaboration":
       tasksNeedsElaboration();
       break;
+    case "needs-confirmation":
+      tasksNeedsConfirmation();
+      break;
     case "queue-elaborations":
       tasksQueueElaborations();
       break;
@@ -866,7 +916,7 @@ export async function runTasks(args: string[]): Promise<void> {
     }
     default:
       throw new Error(
-        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, queue-elaborations, check, merge, unmerge, duplicates, abandon, priority, status, migrate-refs, migrate-deferred)`,
+        `unknown tasks subcommand: ${sub} (use: sync, list, show, convert, update, create, files, samples, needs-elaboration, needs-confirmation, queue-elaborations, check, merge, unmerge, duplicates, abandon, priority, status, migrate-refs, migrate-deferred)`,
       );
   }
 }
