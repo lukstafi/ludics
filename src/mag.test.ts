@@ -826,6 +826,154 @@ describe("briefingPrecomputeContext — orphan absorption (A9)", () => {
   });
 });
 
+// gh-ludics-547: the briefing-context generator emits a precomputed
+// `## Needs Confirmation` section so the briefing skill reads a
+// status-verified list instead of hand-scanning tasks/*.md (which let three
+// long-`done` tasks carry over into the 2026-05-20 briefing).
+describe("briefingPrecomputeContext — Needs Confirmation section (gh-ludics-547)", () => {
+  let tmpHome: string;
+  let tmpConfig: string;
+  let tmpHarness: string;
+  const savedEnv: Record<string, string | undefined> = {};
+
+  function snapshotEnv(keys: string[]) {
+    for (const k of keys) savedEnv[k] = process.env[k];
+  }
+  function restoreEnv() {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), "mag-needsconf-home-"));
+    tmpHarness = mkdtempSync(join(tmpdir(), "mag-needsconf-harness-"));
+    tmpConfig = join(tmpHome, "config.yaml");
+    snapshotEnv(["LUDICS_CONFIG", "LUDICS_HARNESS_DIR"]);
+    process.env.LUDICS_CONFIG = tmpConfig;
+    process.env.LUDICS_HARNESS_DIR = tmpHarness;
+    mkdirSync(join(tmpHarness, "tasks"), { recursive: true });
+    writeFileSync(tmpConfig, [
+      "state_repo: test/testrepo",
+      "state_path: harness",
+      "mag:",
+      "  ensure_t3code: false",
+      "projects: []",
+    ].join("\n"));
+  });
+
+  afterEach(() => {
+    restoreEnv();
+    rmSync(tmpHome, { recursive: true, force: true });
+    rmSync(tmpHarness, { recursive: true, force: true });
+  });
+
+  const noopRunGit: RunGit = () => ({ stdout: "", exitCode: 0 });
+
+  function contextFile(): string {
+    return join(tmpHarness, "mag", "briefing-context.md");
+  }
+
+  function writeTask(
+    id: string,
+    status: string,
+    opts: { priority?: string; project?: string; title?: string } = {},
+  ): void {
+    const { priority = "B", project = "ludics", title = id } = opts;
+    writeFileSync(
+      join(tmpHarness, "tasks", `${id}.md`),
+      `---\nid: ${id}\ntitle: "${title}"\nproject: ${project}\nstatus: ${status}\npriority: ${priority}\n---\n\n# ${title}\n`,
+    );
+  }
+
+  /** The trimmed body between `## Needs Confirmation` and the next `## ` header. */
+  function needsConfirmationBody(content: string): string {
+    const header = "## Needs Confirmation";
+    const start = content.indexOf(header);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const after = content.slice(start + header.length);
+    const next = after.indexOf("\n## ");
+    return (next >= 0 ? after.slice(0, next) : after).trim();
+  }
+
+  test("#547 regression: lists the needs-confirmation task, excludes done/abandoned/merged", async () => {
+    // Harness condition: a needs-confirmation task coexists with one task in
+    // each terminal status. Pre-fix, step 4 hand-scanned tasks/*.md and
+    // carried long-`done` tasks forward. Invariant: the precomputed section
+    // is populated by exact status-match. Mutation — relaxing the predicate
+    // to a non-terminal inverse filter readmits the terminal-status ids and
+    // the three `not.toContain` assertions below fail.
+    writeTask("task-nc-live", "needs-confirmation");
+    writeTask("task-done-stale", "done");
+    writeTask("task-abandoned-stale", "abandoned");
+    writeTask("task-merged-stale", "merged");
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+    const content = readFileSync(contextFile(), "utf-8");
+    const body = needsConfirmationBody(content);
+
+    expect(body).toContain("task-nc-live");
+    expect(body).not.toContain("task-done-stale");
+    expect(body).not.toContain("task-abandoned-stale");
+    expect(body).not.toContain("task-merged-stale");
+  });
+
+  test("section sits between Tasks Needing Elaboration and Recent Journal", async () => {
+    writeTask("task-nc-pos", "needs-confirmation");
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+    const content = readFileSync(contextFile(), "utf-8");
+
+    const elabIdx = content.indexOf("## Tasks Needing Elaboration");
+    const ncIdx = content.indexOf("## Needs Confirmation");
+    const journalIdx = content.indexOf("## Recent Journal");
+    expect(elabIdx).toBeGreaterThan(0);
+    expect(ncIdx).toBeGreaterThan(elabIdx);
+    expect(journalIdx).toBeGreaterThan(ncIdx);
+    // Exactly one occurrence of the header.
+    expect(content.split("## Needs Confirmation").length).toBe(2);
+  });
+
+  test("projects id, priority, project, title — deterministically ordered by priority", async () => {
+    // Harness condition: three tasks whose id alphabetical order AND their
+    // creation order are both the *inverse* of their priority order —
+    // `task-a-low` (priority C) is created first / sorts alphabetically first
+    // but must render last; `task-z-high` (priority A) is created last but
+    // must render first. Invariant: the section is stably priority-ordered
+    // (AC 6), not readdir/creation-ordered, and carries all four projected
+    // fields (AC 3). Mutation — removing the production sort yields
+    // readdir order, which on an alphabetical-readdir or insertion-order
+    // (tmpfs) filesystem is [task-a-low, task-m-mid, task-z-high], the exact
+    // reverse of this expected body.
+    writeTask("task-a-low", "needs-confirmation", { priority: "C", project: "ocannl", title: "Low priority confirm" });
+    writeTask("task-m-mid", "needs-confirmation", { priority: "B", project: "ludics", title: "Mid priority confirm" });
+    writeTask("task-z-high", "needs-confirmation", { priority: "A", project: "ludics", title: "High priority confirm" });
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+    const body = needsConfirmationBody(readFileSync(contextFile(), "utf-8"));
+
+    expect(body).toBe(
+      'task-z-high (A) [ludics] "High priority confirm"\n'
+      + 'task-m-mid (B) [ludics] "Mid priority confirm"\n'
+      + 'task-a-low (C) [ocannl] "Low priority confirm"',
+    );
+  });
+
+  test("renders the empty marker `None` when no task is in needs-confirmation status", async () => {
+    // Harness condition: only a done task exists. Invariant: the section is
+    // still present with an explicit empty marker (AC 4) so the briefing
+    // skill can tell "no such tasks" from "section missing".
+    writeTask("task-done-only", "done");
+
+    await briefingPrecomputeContext({ runGit: noopRunGit });
+    const content = readFileSync(contextFile(), "utf-8");
+
+    expect(content).toContain("## Needs Confirmation");
+    expect(needsConfirmationBody(content)).toBe("None");
+  });
+});
+
 describe("stale settled sentinel detection", () => {
   // Migrated to call the production clearStaleSettled() directly (task-1b44d17b).
   // Tests drive the function via injected { nowMs, graceMs, currentHash } and
