@@ -1165,6 +1165,94 @@ describe("t3code integration gate (gh-ludics-539)", () => {
       errSpy.mockRestore();
     }
   });
+
+  test("slotRestore of a preempted t3code slot succeeds when flag off (option (c) — codex P1)", async () => {
+    // Regression for codex review P1: slotRestore funnels through slotAssign;
+    // without the allowPausedT3code exemption the paused gate would throw and
+    // strand preempted t3code work. Option (c): recovery of existing slots must
+    // keep working while only NEW assign/preempt is blocked.
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeStash({
+      slotNum: 1,
+      previousTask: "null",
+      previousProcess: "Preempted t3code work",
+      previousMode: "t3code",
+      previousSession: "null",
+      previousPath: "null",
+      previousStarted: "2026-05-14T06:57Z",
+      previousAdapterArgs: "--pair --coder claude-code",
+      preemptedAt: "2026-05-14T07:00Z",
+      preemptingTask: "task-priority",
+    });
+    writeConfig(TMP, { t3codeEnabled: false });
+
+    // Invariant: restore completes — the slot is recovered with mode t3code and
+    // the stash is consumed. Would throw the paused message without the exemption.
+    await slotRestore(1);
+    const data = readSlotJson(1, harness);
+    expect(data.process).toBe("Preempted t3code work");
+    expect(data.mode).toBe("t3code");
+    expect(hasStash(1)).toBe(false);
+  });
+
+  test("slotClear(done) auto-restore of a preempted t3code slot succeeds when flag off (codex P1)", async () => {
+    // The auto-restore path in slotClear() also routes through slotRestore →
+    // slotAssign; the exemption must cover it too.
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(2, emptySlotData(2), harness);
+    void slotAssign(1, "Urgent preempting work", "manual");
+    writeStash({
+      slotNum: 1,
+      previousTask: "null",
+      previousProcess: "Preempted t3code work",
+      previousMode: "t3code",
+      previousSession: "null",
+      previousPath: "null",
+      previousStarted: "2026-05-14T06:57Z",
+      previousAdapterArgs: "--pair --coder claude-code",
+      preemptedAt: "2026-05-14T07:00Z",
+      preemptingTask: "task-priority",
+    });
+    writeConfig(TMP, { t3codeEnabled: false });
+
+    await slotClear(1, "done");
+    const data = readSlotJson(1, harness);
+    expect(data.process).toBe("Preempted t3code work");
+    expect(data.mode).toBe("t3code");
+    expect(hasStash(1)).toBe(false);
+  });
+
+  test("slotSetMode rejects switching to t3code while paused, but allows tmux (codex P1)", async () => {
+    // Regression for codex review P1: `slot mode <N> t3code` updates data.mode
+    // directly, bypassing slotAssign — it must enforce the same paused gate.
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(2, emptySlotData(2), harness);
+    void slotAssign(1, "Mode toggle work", "manual");
+    writeConfig(TMP, { t3codeEnabled: false });
+
+    // Invariant: the mode toggle cannot create a t3code slot while paused.
+    await expect(slotSetMode(1, "t3code")).rejects.toThrow(
+      "t3code integration is currently paused",
+    );
+    // tmux toggle is unaffected by the flag.
+    await slotSetMode(1, "tmux");
+    expect(readSlotJson(1, harness).mode).toBe("tmux");
+  });
+
+  test("slotSetMode allows switching to t3code when flag on (positive control)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(2, emptySlotData(2), harness);
+    void slotAssign(1, "Mode toggle work", "manual");
+    // beforeEach wrote the flag ON.
+    await slotSetMode(1, "t3code");
+    expect(readSlotJson(1, harness).mode).toBe("t3code");
+  });
 });
 
 describe("slotReset — clear interrupted/escalated liveness (gh-ludics-524 AC7)", () => {
