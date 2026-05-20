@@ -341,3 +341,84 @@ projects:
     expect(proj!.outbound_sync_enabled === true).toBe(false);
   });
 });
+
+describe("t3codeIntegrationEnabled (gh-ludics-539)", () => {
+  // The gate helper is strict opt-in: `mag.t3code_integration_enabled === true`.
+  // Every non-`true` value (absent, false, string, truthy number) must read as
+  // paused, so the default-off / zero-migration invariant (AC 1, AC 10) holds.
+
+  function writeMagConfig(flagLine: string): void {
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+mag:
+${flagLine}
+`);
+  }
+
+  test("absent key reads as false (zero-migration default)", async () => {
+    const { t3codeIntegrationEnabled } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+`);
+    expect(t3codeIntegrationEnabled()).toBe(false);
+  });
+
+  test("literal true reads as true (re-engagement)", async () => {
+    const { t3codeIntegrationEnabled } = await import("./config.ts");
+    writeMagConfig("  t3code_integration_enabled: true");
+    expect(t3codeIntegrationEnabled()).toBe(true);
+  });
+
+  test("literal false reads as false", async () => {
+    const { t3codeIntegrationEnabled } = await import("./config.ts");
+    writeMagConfig("  t3code_integration_enabled: false");
+    expect(t3codeIntegrationEnabled()).toBe(false);
+  });
+
+  test("non-true value (string) reads as false — strict === true", async () => {
+    const { t3codeIntegrationEnabled } = await import("./config.ts");
+    // YAML-quoted string "true" is NOT the boolean true; strict === must reject it.
+    writeMagConfig('  t3code_integration_enabled: "yes"');
+    expect(t3codeIntegrationEnabled()).toBe(false);
+  });
+
+  test("truthy non-boolean (number 1) reads as false — strict === true", async () => {
+    const { t3codeIntegrationEnabled } = await import("./config.ts");
+    writeMagConfig("  t3code_integration_enabled: 1");
+    expect(t3codeIntegrationEnabled()).toBe(false);
+  });
+});
+
+describe("ProjectConfig.requires_t3code (gh-ludics-539)", () => {
+  // checkProjectTestHealth reads `project.requires_t3code === true`; absent and
+  // false must both map to "not a t3code-dependent project" so only the
+  // explicit opt-in (or the t3code-ludics name fallback) triggers the skip.
+
+  test("requires_t3code: true round-trips through loadConfigSync", async () => {
+    const { loadConfigSync, findProjectConfigByName } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: t3code-ludics
+    repo: lukstafi/t3code-ludics
+    requires_t3code: true
+`);
+    const proj = findProjectConfigByName("t3code-ludics", loadConfigSync());
+    expect(proj).toBeDefined();
+    expect(proj!.requires_t3code).toBe(true);
+  });
+
+  test("absent requires_t3code parses as undefined (=== true filter treats it as off)", async () => {
+    const { loadConfigSync, findProjectConfigByName } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: alpha
+    repo: owner/alpha
+`);
+    const proj = findProjectConfigByName("alpha", loadConfigSync());
+    expect(proj).toBeDefined();
+    expect(proj!.requires_t3code).toBeUndefined();
+    expect(proj!.requires_t3code === true).toBe(false);
+  });
+});

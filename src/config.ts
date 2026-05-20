@@ -68,6 +68,12 @@ export interface ProjectConfig {
    *  Default `false` — absent fields are treated as not enabled. See
    *  docs/proposals/gh-ludics-540-outbound-staging-ff.md. */
   outbound_sync_enabled?: boolean;
+  /** When true, `checkProjectTestHealth` / `runAllTestHealth` skip this
+   *  project's test-health run while t3code integration is paused
+   *  (`mag.t3code_integration_enabled` is false). Forward-compatible
+   *  per-project flag; the `t3code-ludics` project is also matched by name as
+   *  a fallback. Default `false`. See docs/proposals/t3code-integration-feature-flag.md. */
+  requires_t3code?: boolean;
 }
 
 export type GlobalAdapterMode = "t3code" | "tmux";
@@ -428,6 +434,20 @@ export function startSessionsAutonomy(): "auto" | "suggest" | "manual" {
   if (val === "auto") return "auto";
   if (val === "suggest") return "suggest";
   return "manual";
+}
+
+/**
+ * Whether the t3code integration is enabled. Default `false` — the integration
+ * is paused (see docs/proposals/t3code-integration-feature-flag.md). Gates
+ * session discovery, adapter assignment, orchestration auto-flag selection,
+ * the t3code server nudge, and test-health for t3code-dependent projects.
+ * Strict opt-in: only literal `true` enables; absent / `false` / strings /
+ * truthy non-booleans all return `false`.
+ */
+export function t3codeIntegrationEnabled(): boolean {
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+  return mag?.t3code_integration_enabled === true;
 }
 
 /**
