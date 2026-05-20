@@ -171,6 +171,34 @@ describe("effectiveDefaultsFromConfig", () => {
 // ---------------------------------------------------------------------------
 
 describe("AC 13a asymmetry pin — selectOrchestrationFlags coerces explicit null", () => {
+  // gh-ludics-539: selectOrchestrationFlags reads the real config via
+  // globalAdapter()/t3codeIntegrationEnabled(); write a temp config with the
+  // t3code flag ON so the integration gate does not throw under these tests.
+  let TMP = "";
+  const ORIGINAL_HOME = process.env.HOME;
+  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-asym-flags-"));
+    process.env.HOME = TMP;
+    const configDir = join(TMP, ".config", "ludics");
+    mkdirSync(configDir, { recursive: true });
+    const configPath = join(configDir, "config.yaml");
+    writeFileSync(
+      configPath,
+      "state_repo: owner/ludics-state\nstate_path: harness\nmag:\n  t3code_integration_enabled: true\n",
+    );
+    process.env.LUDICS_CONFIG = configPath;
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HOME === undefined) delete process.env.HOME;
+    else process.env.HOME = ORIGINAL_HOME;
+    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG;
+    else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
   test("default_coder: null in fake config → --coder claude-code", async () => {
     const { selectOrchestrationFlags } = await import("./adapters/t3code.ts");
     const fakeConfig = {
