@@ -202,6 +202,7 @@ Commands:
   t3code start                Start the shared t3code server
   t3code stop                 Stop the shared t3code server
   t3code doctor               Verify t3code binary, process, HTTP reachability, and WebSocket
+  t3code integration-status   Print "enabled" or "paused" for the t3code feature flag
   t3code thread <id> log [--last N]
                               Show message history for a thread
   t3code thread <id> send [--wait] "<msg>"

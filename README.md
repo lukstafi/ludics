@@ -388,6 +388,7 @@ ludics t3code [status]                    # Show shared t3code server status
 ludics t3code start                       # Start the shared t3code server
 ludics t3code stop                        # Stop the shared t3code server
 ludics t3code doctor                      # Verify binary, process, HTTP, and WebSocket
+ludics t3code integration-status          # Print "enabled" or "paused" (t3code feature flag)
 ludics t3code thread <id> log [--last N]  # Show message history for a thread
 ludics t3code thread <id> send [--wait] "<msg>"
                                           # Send a user message to a thread
