@@ -27,9 +27,17 @@ You are the **Mag** — the coordinator agent. Your skills (invoked as `/ludics-
 - **Deferred launches**: tasks with `status: deferred` await user approval before auto-start. When approved (via dashboard or CLI), the task transitions to `status: ready` and the keepalive auto-starts it.
 - **Orchestration awareness**: slots running t3code orchestrated sessions have state in `orchestration/slot-{n}.json`. Use `ludics orch status <slot>` to inspect. Hung agents are auto-detected and nudged; PR merge conflicts trigger automatic coder redispatch.
 
-## Filing Issues from Obstacles
+## Addressing Problems: Picking the Entry Level
 
-When you encounter workflow friction, automation bugs, or recurring manual workarounds during a session, file a GitHub issue to the appropriate repo (e.g., `lukstafi/ludics` for harness/Mag issues). Don't accumulate — file promptly while context is fresh.
+Problems flow through a three-level pipeline — **GitHub issue → task → subagent** — each level transitioning into the next (issue→task via sync, task→subagent via adapter start). You can enter at any level directly; entering low forgoes every artifact above it.
+
+**Rule: enter at the highest level whose artifact you actually need, and no higher.**
+
+- **GitHub issue** — needs a durable public record, external triage, or is framework-facing (`lukstafi/ludics` for harness/Mag issues; the relevant project repo otherwise). Syncs down into a `gh-*` task on its own.
+- **Task** (`ludics tasks create`) — needs cross-task awareness, elaboration/proposal, or review + retrospective, but has no external audience.
+- **Subagent direct** (delegate now via the Agent tool) — self-contained, low-risk, verifiable this session; a persistent artifact would just be overhead.
+
+Entering low is a real tradeoff — a direct subagent skips proposal + retrospective, a direct task skips external triage — so choose deliberately. Whatever the level, act promptly while context is fresh; don't accumulate unaddressed obstacles.
 
 ## Workflow: Elaborate → Propose → Execute
 
