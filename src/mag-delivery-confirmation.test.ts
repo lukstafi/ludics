@@ -526,6 +526,109 @@ describe("maybeFeedMagQueue — orphan-pop replaces the delivery-gate pause", ()
   });
 });
 
+// --- Codex P1 follow-up: orphan-pop is gated to a CONFIRMED settled turn.
+// `isMagSettled()` (the stop-hook sentinel) is proof the turn ended;
+// `isMagReady()` (pane quiet >5s) is only a heuristic — a Tier-2 skill can
+// legitimately still be running while its pane is quiet (waiting on a subagent
+// or a long Bash call). On the ready-only path an in-flight record must NOT be
+// reclassified as an orphan: clearing it + delivering the next skill would
+// break the one-in-flight serialization invariant. Instead maybeFeedMagQueue
+// returns false — a bounded pause resolved by the next stop-hook settle. ---
+
+describe("maybeFeedMagQueue — orphan-pop gated to a confirmed settled turn (Codex P1)", () => {
+  function seedInFlight(id: string, deliveredAt: string): void {
+    mkdirSync(inFlightDirPath(), { recursive: true });
+    writeFileSync(inFlightFilePath(id), JSON.stringify({
+      requestId: id, command: "/ludics-learn",
+      line: JSON.stringify({ id, action: "learn" }),
+      deliveredAt,
+    }));
+  }
+
+  test("ready-only path + unresolved in-flight record → returns false, record kept, NO nudge, NO orphan event, NO delivery", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+
+    // Mag is NOT settled (no stop-hook sentinel) but the pane is quiet
+    // (isReady() true). The in-flight skill may still be running — its result
+    // JSON is legitimately absent. A queued skill sits behind it.
+    seedInFlight("req-INFLIGHT", "2026-05-15T08:00:00Z");
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-QUEUED", action: "learn" }) + "\n");
+
+    const sends: string[] = [];
+    const result = await maybeFeedMagQueue({
+      send: (_s, cmd) => { sends.push(cmd); return true; },
+      isReady: () => true,
+    });
+
+    // Bounded pause: false, and nothing was touched.
+    expect(result).toBe(false);
+    // The in-flight record is NOT cleared — it may still be a running skill.
+    expect(existsSync(inFlightFilePath("req-INFLIGHT"))).toBe(true);
+    // No nudge sent, no skill delivered (the one-in-flight invariant holds).
+    expect(sends.length).toBe(0);
+    // The queued skill stays put — not popped, no in-flight record for it.
+    expect(readQueueIds()).toEqual(["req-QUEUED"]);
+    expect(existsSync(inFlightFilePath("req-QUEUED"))).toBe(false);
+    // No orphan-classification event — orphan-pop requires a settled turn.
+    expect(readEvents().some((e) => e.event_type === "mag_in_flight_orphan_cleared")).toBe(false);
+  });
+
+  test("ready-only path + NO in-flight record → normal pop + deliver still works", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+
+    // Ready-only path, nothing in flight: delivering is always safe because an
+    // in-flight record is written for every Tier-2 delivery, so "no record"
+    // means "no Tier-2 skill running".
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-NORMAL", action: "learn" }) + "\n");
+
+    const sends: string[] = [];
+    const result = await maybeFeedMagQueue({
+      send: (_s, cmd) => { sends.push(cmd); return true; },
+      isReady: () => true,
+    });
+
+    expect(result).toBe(true);
+    expect(sends.length).toBe(1);
+    expect(readQueueIds()).toEqual([]);
+    expect(existsSync(inFlightFilePath("req-NORMAL"))).toBe(true);
+    expect(readEvents().some((e) => e.event_type === "mag_queue_feed")).toBe(true);
+  });
+
+  test("bounded pause resolves: a later settled event with the same record still unresolved runs the orphan-pop", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+    const { touchSentinel } = await import("./sentinel.ts");
+
+    seedInFlight("req-INFLIGHT", "2026-05-15T08:00:00Z");
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-QUEUED", action: "learn" }) + "\n");
+
+    // Event 1 — ready-only path: bounded pause, record untouched.
+    const sends: string[] = [];
+    const r1 = await maybeFeedMagQueue({
+      send: (_s, cmd) => { sends.push(cmd); return true; },
+      isReady: () => true,
+    });
+    expect(r1).toBe(false);
+    expect(existsSync(inFlightFilePath("req-INFLIGHT"))).toBe(true);
+    expect(sends.length).toBe(0);
+
+    // Event 2 — the stop hook now fires (settled). The same record is still
+    // unresolved → confirmed turn-end proves it is a genuine orphan, so the
+    // orphan-pop runs and clears it. This proves the pause is bounded.
+    touchSentinel(join(magDir(), "settled"));
+    const r2 = await maybeFeedMagQueue({
+      send: (_s, cmd) => { sends.push(cmd); return true; },
+    });
+    expect(r2).toBe(true);
+    expect(existsSync(inFlightFilePath("req-INFLIGHT"))).toBe(false);
+    expect(sends.length).toBe(1);
+    expect(sends[0]).toContain("req-INFLIGHT");
+    expect(sends[0]).toContain("no matching result log");
+    expect(readEvents().some((e) => e.event_type === "mag_in_flight_orphan_cleared")).toBe(true);
+    // The queued skill was NOT delivered on the orphan-pop event.
+    expect(readQueueIds()).toEqual(["req-QUEUED"]);
+  });
+});
+
 // --- A6: pre-send result-file dedup (Tier-2 only) ---
 
 describe("deliverPoppedSkill — pre-send dedup (A6)", () => {
