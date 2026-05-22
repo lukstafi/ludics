@@ -469,10 +469,12 @@ export function reconcileInFlight(): void {
 }
 
 /** True when at least one in-flight record exists with no matching result
- *  JSON — i.e. a Tier-2 delivery is still genuinely in flight. While this
- *  holds, `maybeFeedMagQueue` must not deliver the next skill (gh-ludics-535
- *  A3 — same serialization invariant as gh-ludics-526's gate, minus the
- *  age check that fed the now-removed auto-retry loop). */
+ *  JSON — i.e. a Tier-2 delivery is still genuinely in flight. Retained as a
+ *  read-only status helper for the dashboard's "Unresolved deliveries" panel.
+ *  It no longer gates `maybeFeedMagQueue`: the gh-ludics-535 follow-up
+ *  replaced the pause with a per-event orphan-pop, because an orphaned record
+ *  (result JSON never written) made this predicate true forever and
+ *  permanently wedged the queue. */
 export function deliveryGateBlocked(): boolean {
   return listInFlight().some(r => !existsSync(magResultFile(r.requestId)));
 }
@@ -548,31 +550,69 @@ export function deliverPoppedSkill(
  * to have fired, e.g. for queue requests arriving during idle periods
  * where clearStaleSettled has cleared the sentinel). Returns true if a
  * command was dispatched.
+ *
+ * Forward-progress invariant (gh-ludics-535 follow-up): on every queue
+ * event where Mag is available this function makes progress — it clears a
+ * resolved record, clears+nudges an orphan, drains a programmatic item, or
+ * delivers a queued skill. The old `deliveryGateBlocked()` pause could wedge
+ * the queue permanently when an in-flight record's result JSON never
+ * appeared (Mag mishandled the request); gh-ludics-535 deliberately removed
+ * timeout/auto-retry so there was no self-healing. The Mag-idle precondition
+ * (`!isMagSettled() && !isMagReady()`) is now the sole discriminator: an
+ * unresolved in-flight record observed while Mag is idle is a genuine orphan
+ * (Mag finished its turn yet produced no result), so it is safe to pop one
+ * orphan per event instead of stalling.
  */
 export async function maybeFeedMagQueue(
   opts: { send?: (session: string, cmd: string) => boolean } = {},
 ): Promise<boolean> {
+  // Mag-idle precondition — the discriminator. Only act when Mag has no
+  // turn in progress, so we never pop a record for a skill Mag is actively
+  // running (its result JSON would still be legitimately absent mid-turn).
   if (!isMagSettled() && !isMagReady()) return false;
+
+  const send = opts.send ?? triggerSkill;
+
+  // Passively reconcile every in-flight record: clear the ones whose result
+  // JSON has appeared (the normal happy path). Nothing auto-times-out,
+  // nothing auto-requeues.
+  reconcileInFlight();
+
+  // Orphan-pop step. After reconciliation, any remaining unresolved in-flight
+  // record is a genuine orphan: Mag is idle (precondition above) yet produced
+  // no result JSON. Pop exactly ONE — the oldest (listInFlightDeliveries is
+  // sorted oldest-first) — clear its record, and send a one-time nudge. The
+  // record is cleared first, so the nudge fires exactly once per orphan. The
+  // orphaned request is NOT re-enqueued. This step runs BEFORE any
+  // queue-empty early return: a lingering orphan must clear even on a
+  // keepalive tick with an empty request queue.
+  const orphans = listInFlightDeliveries();
+  if (orphans.length > 0) {
+    const orphan = orphans[0]!;
+    clearInFlight(orphan.requestId);
+    send(
+      MAG_SESSION_NAME,
+      `Queue note: request ${orphan.requestId} (${orphan.command}, delivered ${orphan.deliveredAt}) `
+        + `has no matching result log. Its in-flight record has been cleared so the queue can resume; `
+        + `the request was NOT re-enqueued. If it still needs handling, re-fire it from the dashboard.`,
+    );
+    emitEvent({
+      event_type: "mag_in_flight_orphan_cleared",
+      source: "keepalive",
+      scope: "mag",
+      status: "warning",
+      message: `cleared orphan ${orphan.requestId} (${orphan.command}, delivered ${orphan.deliveredAt})`,
+    });
+    // This event's action was the orphan-pop; do not also deliver a queued
+    // skill on the same event.
+    return true;
+  }
+
   if (!queuePending()) return false;
 
-  // Drain programmatic entries first (they don't need a Mag turn)
+  // Drain programmatic entries first (they don't need a Mag turn).
   await drainProgrammaticQueueHead();
   if (!queuePending()) return false;
-
-  // Delivery-gate invariant (gh-ludics-526 + gh-ludics-535): passively
-  // reconcile every in-flight record before any pop, so every caller of
-  // maybeFeedMagQueue — the keepalive tick AND the direct callers
-  // (fresh-start ready path, on-stop hook, dashboard /api/queue-deliver
-  // and /api/queue) — clears records whose result JSON has appeared before
-  // it can deliver the next item. Passive only: nothing auto-times-out,
-  // nothing auto-requeues. The dashboard's "Unresolved deliveries" panel
-  // is the user's recovery path for records that never resolve.
-  reconcileInFlight();
-  // Gate: do not deliver the next skill while a delivery is still in flight
-  // (any record present without a matching result JSON). reconcileInFlight
-  // above has already cleared resolved records, so a block here means a
-  // genuinely unresolved delivery.
-  if (deliveryGateBlocked()) return false;
 
   // Atomic claim: if settled, consume the sentinel so concurrent ticks
   // see !settled. In the ready-only path there's no sentinel to consume;

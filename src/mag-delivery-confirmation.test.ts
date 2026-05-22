@@ -326,6 +326,160 @@ describe("maybeFeedMagQueue — reconcile-as-invariant for direct callers (AC 4)
   });
 });
 
+// --- gh-ludics-535 follow-up: maybeFeedMagQueue orphan-pop (no permanent
+// wedge) — the deliveryGateBlocked() pause is gone. An unresolved in-flight
+// record observed while Mag is idle is a genuine orphan; each queue event
+// pops exactly one orphan and nudges, so the queue always drains. ---
+
+describe("maybeFeedMagQueue — orphan-pop replaces the delivery-gate pause", () => {
+  function seedInFlight(id: string, deliveredAt: string): void {
+    mkdirSync(inFlightDirPath(), { recursive: true });
+    writeFileSync(inFlightFilePath(id), JSON.stringify({
+      requestId: id, command: "/ludics-learn",
+      line: JSON.stringify({ id, action: "learn" }),
+      deliveredAt,
+    }));
+  }
+
+  test("one unresolved orphan + Mag idle → clears that record, sends one nudge, returns true, delivers NO queued skill", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+    const { touchSentinel } = await import("./sentinel.ts");
+
+    seedInFlight("req-ORPHAN", "2026-05-15T08:00:00Z");
+    // A queued skill sits behind the orphan — it must NOT be delivered this tick.
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-QUEUED", action: "learn" }) + "\n");
+    touchSentinel(join(magDir(), "settled"));
+
+    const sends: string[] = [];
+    const result = await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
+
+    expect(result).toBe(true);
+    // Orphan record cleared.
+    expect(existsSync(inFlightFilePath("req-ORPHAN"))).toBe(false);
+    // Exactly one send — the nudge — and it is NOT a skill delivery.
+    expect(sends.length).toBe(1);
+    expect(sends[0]).toContain("req-ORPHAN");
+    expect(sends[0]).toContain("no matching result log");
+    // The queued skill is untouched (not popped, no in-flight record).
+    expect(readQueueIds()).toEqual(["req-QUEUED"]);
+    expect(existsSync(inFlightFilePath("req-QUEUED"))).toBe(false);
+    // Observability event emitted.
+    expect(readEvents().some((e) => e.event_type === "mag_in_flight_orphan_cleared")).toBe(true);
+  });
+
+  test("two orphans → one cleared per call; two calls clear both", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+    const { touchSentinel } = await import("./sentinel.ts");
+
+    seedInFlight("req-OLD", "2026-05-15T08:00:00Z");
+    seedInFlight("req-NEW", "2026-05-15T09:00:00Z");
+
+    // First call: oldest orphan cleared.
+    touchSentinel(join(magDir(), "settled"));
+    const r1 = await maybeFeedMagQueue({ send: () => true });
+    expect(r1).toBe(true);
+    expect(existsSync(inFlightFilePath("req-OLD"))).toBe(false);
+    expect(existsSync(inFlightFilePath("req-NEW"))).toBe(true);
+
+    // Second call: remaining orphan cleared.
+    touchSentinel(join(magDir(), "settled"));
+    const r2 = await maybeFeedMagQueue({ send: () => true });
+    expect(r2).toBe(true);
+    expect(existsSync(inFlightFilePath("req-NEW"))).toBe(false);
+  });
+
+  test("orphan present but request queue empty → orphan still cleared (runs before the queue-empty early return)", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+    const { touchSentinel } = await import("./sentinel.ts");
+
+    seedInFlight("req-ORPHAN", "2026-05-15T08:00:00Z");
+    // No queue file at all — a bare keepalive tick.
+    touchSentinel(join(magDir(), "settled"));
+
+    const sends: string[] = [];
+    const result = await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
+
+    expect(result).toBe(true);
+    expect(existsSync(inFlightFilePath("req-ORPHAN"))).toBe(false);
+    expect(sends.length).toBe(1);
+  });
+
+  test("nudge is sent exactly once per orphan — a follow-up call finds no record and does not re-nudge", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+    const { touchSentinel } = await import("./sentinel.ts");
+
+    seedInFlight("req-ORPHAN", "2026-05-15T08:00:00Z");
+
+    const sends: string[] = [];
+    touchSentinel(join(magDir(), "settled"));
+    await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
+    // Record gone — a second tick must not re-nudge the same orphan.
+    touchSentinel(join(magDir(), "settled"));
+    await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
+
+    expect(sends.length).toBe(1);
+    expect(sends[0]).toContain("req-ORPHAN");
+  });
+
+  test("no orphans → normal pop+deliver still works (regression check)", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+    const { touchSentinel } = await import("./sentinel.ts");
+
+    // No in-flight records. One queued skill.
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-NORMAL", action: "learn" }) + "\n");
+    touchSentinel(join(magDir(), "settled"));
+
+    const sends: string[] = [];
+    const result = await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
+
+    expect(result).toBe(true);
+    // The queued skill was delivered: sent once, popped from the queue, and
+    // an in-flight record written for it (Tier-2 contract).
+    expect(sends.length).toBe(1);
+    expect(readQueueIds()).toEqual([]);
+    expect(existsSync(inFlightFilePath("req-NORMAL"))).toBe(true);
+    expect(readEvents().some((e) => e.event_type === "mag_queue_feed")).toBe(true);
+  });
+
+  test("resolved record is reconciled away, then normal delivery proceeds (no false orphan-pop)", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+    const { touchSentinel } = await import("./sentinel.ts");
+
+    // A delivered skill whose result JSON has landed — must be reconciled,
+    // NOT treated as an orphan.
+    seedInFlight("req-DONE", "2026-05-15T08:00:00Z");
+    writeFileSync(resultFile("req-DONE"), JSON.stringify({ id: "req-DONE", status: "ok" }));
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-NEXT", action: "learn" }) + "\n");
+    touchSentinel(join(magDir(), "settled"));
+
+    const sends: string[] = [];
+    const result = await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
+
+    expect(result).toBe(true);
+    expect(existsSync(inFlightFilePath("req-DONE"))).toBe(false);
+    // The resolved record was not an orphan — normal delivery happened.
+    expect(readQueueIds()).toEqual([]);
+    expect(existsSync(inFlightFilePath("req-NEXT"))).toBe(true);
+    expect(readEvents().some((e) => e.event_type === "mag_in_flight_orphan_cleared")).toBe(false);
+  });
+
+  test("Mag not idle → no orphan-pop (genuinely in-flight delivery is left alone)", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+
+    // An in-flight record but NO settled sentinel — Mag may be mid-turn, so
+    // its result JSON is legitimately absent. maybeFeedMagQueue must bail at
+    // the idle precondition without touching the record.
+    seedInFlight("req-INFLIGHT", "2026-05-15T08:00:00Z");
+
+    const sends: string[] = [];
+    const result = await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
+
+    expect(result).toBe(false);
+    expect(existsSync(inFlightFilePath("req-INFLIGHT"))).toBe(true);
+    expect(sends.length).toBe(0);
+  });
+});
+
 // --- A6: pre-send result-file dedup (Tier-2 only) ---
 
 describe("deliverPoppedSkill — pre-send dedup (A6)", () => {
