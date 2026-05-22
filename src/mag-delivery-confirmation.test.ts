@@ -327,9 +327,13 @@ describe("maybeFeedMagQueue — reconcile-as-invariant for direct callers (AC 4)
 });
 
 // --- gh-ludics-535 follow-up: maybeFeedMagQueue orphan-pop (no permanent
-// wedge) — the deliveryGateBlocked() pause is gone. An unresolved in-flight
-// record observed while Mag is idle is a genuine orphan; each queue event
-// pops exactly one orphan and nudges, so the queue always drains. ---
+// wedge) — the deliveryGateBlocked() pause is gone. The orphan-pop fires at
+// the pop site only: when Mag is idle AND a pending skill item would
+// otherwise be popped. An unresolved in-flight record observed at that point
+// is a genuine orphan; that event pops exactly one orphan and nudges instead
+// of delivering, so the queue always drains. With an empty queue there is no
+// pop opportunity, so a lingering orphan is left untouched (it wedges
+// nothing) and cleared lazily on the next event with a real pending item. ---
 
 describe("maybeFeedMagQueue — orphan-pop replaces the delivery-gate pause", () => {
   function seedInFlight(id: string, deliveredAt: string): void {
@@ -367,41 +371,73 @@ describe("maybeFeedMagQueue — orphan-pop replaces the delivery-gate pause", ()
     expect(readEvents().some((e) => e.event_type === "mag_in_flight_orphan_cleared")).toBe(true);
   });
 
-  test("two orphans → one cleared per call; two calls clear both", async () => {
+  test("two orphans → one cleared per call; two calls clear both (each call needs a pending queue item)", async () => {
     const { maybeFeedMagQueue } = await import("./mag.ts");
     const { touchSentinel } = await import("./sentinel.ts");
 
     seedInFlight("req-OLD", "2026-05-15T08:00:00Z");
     seedInFlight("req-NEW", "2026-05-15T09:00:00Z");
+    // A pending skill item must be present for the pop site to be reached;
+    // it stays unpopped while an orphan is cleared instead.
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-QUEUED", action: "learn" }) + "\n");
 
-    // First call: oldest orphan cleared.
+    // First call: oldest orphan cleared, queued item untouched.
     touchSentinel(join(magDir(), "settled"));
     const r1 = await maybeFeedMagQueue({ send: () => true });
     expect(r1).toBe(true);
     expect(existsSync(inFlightFilePath("req-OLD"))).toBe(false);
     expect(existsSync(inFlightFilePath("req-NEW"))).toBe(true);
+    expect(readQueueIds()).toEqual(["req-QUEUED"]);
 
-    // Second call: remaining orphan cleared.
+    // Second call: remaining orphan cleared, queued item still untouched.
     touchSentinel(join(magDir(), "settled"));
     const r2 = await maybeFeedMagQueue({ send: () => true });
     expect(r2).toBe(true);
     expect(existsSync(inFlightFilePath("req-NEW"))).toBe(false);
+    expect(readQueueIds()).toEqual(["req-QUEUED"]);
   });
 
-  test("orphan present but request queue empty → orphan still cleared (runs before the queue-empty early return)", async () => {
+  test("orphan present but request queue EMPTY → in-flight record untouched, no nudge, returns false (no pop opportunity)", async () => {
     const { maybeFeedMagQueue } = await import("./mag.ts");
     const { touchSentinel } = await import("./sentinel.ts");
 
     seedInFlight("req-ORPHAN", "2026-05-15T08:00:00Z");
-    // No queue file at all — a bare keepalive tick.
+    // No queue file at all — a bare keepalive tick. With nothing to pop there
+    // is no pop site, so the orphan-pop must NOT run; the orphan is left for a
+    // later event where a real pending item is waiting (it wedges nothing).
     touchSentinel(join(magDir(), "settled"));
 
     const sends: string[] = [];
     const result = await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
 
-    expect(result).toBe(true);
+    expect(result).toBe(false);
+    expect(existsSync(inFlightFilePath("req-ORPHAN"))).toBe(true);
+    expect(sends.length).toBe(0);
+    expect(readEvents().some((e) => e.event_type === "mag_in_flight_orphan_cleared")).toBe(false);
+  });
+
+  test("orphan lingering with an empty queue is cleared lazily on the next event that has a pending item", async () => {
+    const { maybeFeedMagQueue } = await import("./mag.ts");
+    const { touchSentinel } = await import("./sentinel.ts");
+
+    seedInFlight("req-ORPHAN", "2026-05-15T08:00:00Z");
+
+    // First event: empty queue → orphan untouched.
+    touchSentinel(join(magDir(), "settled"));
+    const sends: string[] = [];
+    const r1 = await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
+    expect(r1).toBe(false);
+    expect(existsSync(inFlightFilePath("req-ORPHAN"))).toBe(true);
+    expect(sends.length).toBe(0);
+
+    // Second event: a real pending item arrives → orphan-pop fires now.
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-QUEUED", action: "learn" }) + "\n");
+    touchSentinel(join(magDir(), "settled"));
+    const r2 = await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
+    expect(r2).toBe(true);
     expect(existsSync(inFlightFilePath("req-ORPHAN"))).toBe(false);
     expect(sends.length).toBe(1);
+    expect(readQueueIds()).toEqual(["req-QUEUED"]);
   });
 
   test("nudge is sent exactly once per orphan — a follow-up call finds no record and does not re-nudge", async () => {
@@ -409,6 +445,9 @@ describe("maybeFeedMagQueue — orphan-pop replaces the delivery-gate pause", ()
     const { touchSentinel } = await import("./sentinel.ts");
 
     seedInFlight("req-ORPHAN", "2026-05-15T08:00:00Z");
+    // A pending item is required for the pop site (and thus the orphan-pop)
+    // to be reached.
+    writeFileSync(queueFile(), JSON.stringify({ id: "req-QUEUED", action: "learn" }) + "\n");
 
     const sends: string[] = [];
     touchSentinel(join(magDir(), "settled"));
@@ -417,8 +456,10 @@ describe("maybeFeedMagQueue — orphan-pop replaces the delivery-gate pause", ()
     touchSentinel(join(magDir(), "settled"));
     await maybeFeedMagQueue({ send: (_s, cmd) => { sends.push(cmd); return true; } });
 
-    expect(sends.length).toBe(1);
-    expect(sends[0]).toContain("req-ORPHAN");
+    // Two sends total: the one-time orphan nudge, then the normal delivery of
+    // the queued item once the orphan is gone. The nudge text appears once.
+    expect(sends.filter((c) => c.includes("no matching result log")).length).toBe(1);
+    expect(sends.filter((c) => c.includes("req-ORPHAN")).length).toBe(1);
   });
 
   test("no orphans → normal pop+deliver still works (regression check)", async () => {

@@ -551,17 +551,22 @@ export function deliverPoppedSkill(
  * where clearStaleSettled has cleared the sentinel). Returns true if a
  * command was dispatched.
  *
- * Forward-progress invariant (gh-ludics-535 follow-up): on every queue
- * event where Mag is available this function makes progress — it clears a
- * resolved record, clears+nudges an orphan, drains a programmatic item, or
- * delivers a queued skill. The old `deliveryGateBlocked()` pause could wedge
- * the queue permanently when an in-flight record's result JSON never
- * appeared (Mag mishandled the request); gh-ludics-535 deliberately removed
- * timeout/auto-retry so there was no self-healing. The Mag-idle precondition
- * (`!isMagSettled() && !isMagReady()`) is now the sole discriminator: an
- * unresolved in-flight record observed while Mag is idle is a genuine orphan
- * (Mag finished its turn yet produced no result), so it is safe to pop one
- * orphan per event instead of stalling.
+ * Forward-progress invariant (gh-ludics-535 follow-up): whenever the request
+ * queue would otherwise be popped — Mag is idle and a pending skill item is
+ * waiting — this function makes progress: it delivers the queued skill, or, if
+ * an unresolved in-flight record remains, pops ONE orphan + nudges instead.
+ * The old `deliveryGateBlocked()` pause could wedge the queue permanently when
+ * an in-flight record's result JSON never appeared (Mag mishandled the
+ * request); gh-ludics-535 deliberately removed timeout/auto-retry so there was
+ * no self-healing. The orphan-pop is the in-place replacement of that pause: it
+ * runs only at the pop site (after the `queuePending()` early-returns and
+ * `drainProgrammaticQueueHead()`), so an orphan lingering with an empty queue
+ * is left untouched — it wedges nothing — and is cleared lazily on the next
+ * event where a real pending item is waiting. The Mag-idle precondition
+ * (`!isMagSettled() && !isMagReady()`) is the discriminator: an unresolved
+ * in-flight record observed while Mag is idle is a genuine orphan (Mag finished
+ * its turn yet produced no result), so it is safe to pop one orphan per event
+ * instead of stalling.
  */
 export async function maybeFeedMagQueue(
   opts: { send?: (session: string, cmd: string) => boolean } = {},
@@ -573,19 +578,29 @@ export async function maybeFeedMagQueue(
 
   const send = opts.send ?? triggerSkill;
 
+  if (!queuePending()) return false;
+
+  // Drain programmatic entries first (they don't need a Mag turn).
+  await drainProgrammaticQueueHead();
+  if (!queuePending()) return false;
+
   // Passively reconcile every in-flight record: clear the ones whose result
   // JSON has appeared (the normal happy path). Nothing auto-times-out,
   // nothing auto-requeues.
   reconcileInFlight();
 
-  // Orphan-pop step. After reconciliation, any remaining unresolved in-flight
-  // record is a genuine orphan: Mag is idle (precondition above) yet produced
-  // no result JSON. Pop exactly ONE — the oldest (listInFlightDeliveries is
-  // sorted oldest-first) — clear its record, and send a one-time nudge. The
-  // record is cleared first, so the nudge fires exactly once per orphan. The
-  // orphaned request is NOT re-enqueued. This step runs BEFORE any
-  // queue-empty early return: a lingering orphan must clear even on a
-  // keepalive tick with an empty request queue.
+  // Orphan-pop step — the in-place replacement of the old
+  // `if (deliveryGateBlocked()) return false;` pause. We have reached the
+  // exact point where the request queue would otherwise be popped: Mag is
+  // idle (precondition above) and a pending skill item is waiting. After
+  // reconciliation, any remaining unresolved in-flight record is a genuine
+  // orphan — Mag finished its turn yet produced no result JSON. Pop exactly
+  // ONE — the oldest (listInFlightDeliveries is sorted oldest-first) — clear
+  // its record, and send a one-time nudge instead of delivering the queued
+  // item this event. The record is cleared first, so the nudge fires exactly
+  // once per orphan; the orphaned request is NOT re-enqueued. When the queue
+  // is empty there is no pop opportunity, so a lingering orphan is left
+  // untouched and cleared lazily on the next event with a real pending item.
   const orphans = listInFlightDeliveries();
   if (orphans.length > 0) {
     const orphan = orphans[0]!;
@@ -607,12 +622,6 @@ export async function maybeFeedMagQueue(
     // skill on the same event.
     return true;
   }
-
-  if (!queuePending()) return false;
-
-  // Drain programmatic entries first (they don't need a Mag turn).
-  await drainProgrammaticQueueHead();
-  if (!queuePending()) return false;
 
   // Atomic claim: if settled, consume the sentinel so concurrent ticks
   // see !settled. In the ready-only path there's no sentinel to consume;
