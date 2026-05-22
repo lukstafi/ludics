@@ -469,10 +469,12 @@ export function reconcileInFlight(): void {
 }
 
 /** True when at least one in-flight record exists with no matching result
- *  JSON — i.e. a Tier-2 delivery is still genuinely in flight. While this
- *  holds, `maybeFeedMagQueue` must not deliver the next skill (gh-ludics-535
- *  A3 — same serialization invariant as gh-ludics-526's gate, minus the
- *  age check that fed the now-removed auto-retry loop). */
+ *  JSON — i.e. a Tier-2 delivery is still genuinely in flight. Retained as a
+ *  read-only status helper for the dashboard's "Unresolved deliveries" panel.
+ *  It no longer gates `maybeFeedMagQueue`: the gh-ludics-535 follow-up
+ *  replaced the pause with a per-event orphan-pop, because an orphaned record
+ *  (result JSON never written) made this predicate true forever and
+ *  permanently wedged the queue. */
 export function deliveryGateBlocked(): boolean {
   return listInFlight().some(r => !existsSync(magResultFile(r.requestId)));
 }
@@ -548,37 +550,84 @@ export function deliverPoppedSkill(
  * to have fired, e.g. for queue requests arriving during idle periods
  * where clearStaleSettled has cleared the sentinel). Returns true if a
  * command was dispatched.
+ *
+ * Forward-progress invariant (gh-ludics-535 follow-up): whenever the request
+ * queue would otherwise be popped — Mag is idle and a pending skill item is
+ * waiting — this function makes progress: it delivers the queued skill, or, if
+ * an unresolved in-flight record remains, pops ONE orphan + nudges instead.
+ * The old `deliveryGateBlocked()` pause could wedge the queue permanently when
+ * an in-flight record's result JSON never appeared (Mag mishandled the
+ * request); gh-ludics-535 deliberately removed timeout/auto-retry so there was
+ * no self-healing. The orphan-pop is the in-place replacement of that pause: it
+ * runs only at the pop site (after the `queuePending()` early-returns and
+ * `drainProgrammaticQueueHead()`), so an orphan lingering with an empty queue
+ * is left untouched — it wedges nothing — and is cleared lazily on the next
+ * event where a real pending item is waiting.
+ *
+ * Orphan classification requires a CONFIRMED settled turn. An in-flight record
+ * may only be reclassified as a genuine orphan when `isMagSettled()` is true —
+ * the stop hook fired, so Mag's turn definitely ended yet it produced no result
+ * JSON. `isMagReady()` is only a heuristic (pane quiet >5s); a Tier-2 skill can
+ * legitimately still be running while its pane is quiet (waiting on a subagent
+ * or a long Bash call). On that ready-only path (`isMagReady()` true,
+ * `isMagSettled()` false) an in-flight record must NOT be cleared and NO other
+ * skill may be delivered — doing so would break the one-in-flight
+ * serialization invariant. Instead the function returns false: a BOUNDED pause,
+ * not the old permanent wedge — every Mag turn ends with a stop hook → a
+ * settled state, at which point this same code path runs the orphan-pop and
+ * resolves it. When there is NO in-flight record, normal pop + deliver proceeds
+ * on both paths: an in-flight record is written for every Tier-2 delivery, so
+ * "no record" reliably means "no Tier-2 skill running" and delivering is safe.
  */
 export async function maybeFeedMagQueue(
-  opts: { send?: (session: string, cmd: string) => boolean } = {},
+  opts: {
+    send?: (session: string, cmd: string) => boolean;
+    /**
+     * @internal Test-only override for the `isMagReady()` heuristic. The
+     * heuristic reads a real tmux pane, which is absent under `bun test`;
+     * supplying this lets a test exercise the ready-only path (Mag NOT
+     * settled but pane-quiet) deterministically. Production callers omit it.
+     */
+    isReady?: () => boolean;
+  } = {},
 ): Promise<boolean> {
-  if (!isMagSettled() && !isMagReady()) return false;
+  const ready = opts.isReady ?? isMagReady;
+  // Mag-idle precondition — the discriminator. Only act when Mag has no
+  // turn in progress, so we never pop a record for a skill Mag is actively
+  // running (its result JSON would still be legitimately absent mid-turn).
+  if (!isMagSettled() && !ready()) return false;
+
+  const send = opts.send ?? triggerSkill;
+
   if (!queuePending()) return false;
 
-  // Drain programmatic entries first (they don't need a Mag turn)
+  // Drain programmatic entries first (they don't need a Mag turn).
   await drainProgrammaticQueueHead();
   if (!queuePending()) return false;
 
-  // Delivery-gate invariant (gh-ludics-526 + gh-ludics-535): passively
-  // reconcile every in-flight record before any pop, so every caller of
-  // maybeFeedMagQueue — the keepalive tick AND the direct callers
-  // (fresh-start ready path, on-stop hook, dashboard /api/queue-deliver
-  // and /api/queue) — clears records whose result JSON has appeared before
-  // it can deliver the next item. Passive only: nothing auto-times-out,
-  // nothing auto-requeues. The dashboard's "Unresolved deliveries" panel
-  // is the user's recovery path for records that never resolve.
+  // Passively reconcile every in-flight record: clear the ones whose result
+  // JSON has appeared (the normal happy path). Nothing auto-times-out,
+  // nothing auto-requeues.
   reconcileInFlight();
-  // Gate: do not deliver the next skill while a delivery is still in flight
-  // (any record present without a matching result JSON). reconcileInFlight
-  // above has already cleared resolved records, so a block here means a
-  // genuinely unresolved delivery.
-  if (deliveryGateBlocked()) return false;
 
-  // Atomic claim: if settled, consume the sentinel so concurrent ticks
-  // see !settled. In the ready-only path there's no sentinel to consume;
-  // we rely on queuePopSkill's atomic dequeue below (and on the harness'
-  // single-writer invariant under federation v2).
-  if (isMagSettled()) {
+  // Capture the confirmed-settled state once. `settled` gates both the atomic
+  // claim and the orphan-pop classification below — they must agree on a
+  // single observation of the sentinel for the turn to be claimed coherently.
+  const settled = isMagSettled();
+
+  // Atomic claim — must run BEFORE the orphan-pop. Consuming the settled
+  // sentinel here makes BOTH the orphan-pop and the normal delivery
+  // downstream run as a single claimed turn. If it ran only on the delivery
+  // path, an orphan-pop would `return true` (nudging Mag, making it busy)
+  // while leaving a stale sentinel on disk; the next keepalive tick's
+  // `!isMagSettled()` precondition would still see settled=true and deliver
+  // a skill into a mid-turn Mag. With the claim first, the sentinel is gone
+  // after an orphan-pop, so the next tick falls through to isMagReady(),
+  // which observes the busy pane and correctly declines. In the ready-only
+  // path there's no sentinel to consume (the `if (settled)` guard skips the
+  // claim); we rely on queuePopSkill's atomic dequeue below (and on the
+  // harness' single-writer invariant under federation v2).
+  if (settled) {
     const claimPath = settledSentinelFile() + ".claiming";
     try {
       renameSync(settledSentinelFile(), claimPath);
@@ -586,6 +635,49 @@ export async function maybeFeedMagQueue(
       return false; // another tick already claimed
     }
     try { unlinkSync(claimPath); } catch { /* ignore */ }
+  }
+
+  // Orphan-pop step — the in-place replacement of the old
+  // `if (deliveryGateBlocked()) return false;` pause. We have reached the
+  // exact point where the request queue would otherwise be popped: Mag is
+  // idle (precondition above) and a pending skill item is waiting. After
+  // reconciliation, any remaining unresolved in-flight record may be a genuine
+  // orphan — but ONLY a confirmed settled turn proves it. Two sub-cases:
+  //  - `!settled` (ready-only path: pane quiet >5s but no stop hook): the
+  //    skill may still be running. Do NOT clear its record and do NOT deliver
+  //    another skill — that would break the one-in-flight serialization
+  //    invariant. Return false: a bounded pause resolved by the next stop-hook
+  //    settle, when this same path runs the orphan-pop with `settled` true.
+  //  - `settled` (stop hook fired — turn definitely ended yet no result JSON):
+  //    a genuine orphan. Pop exactly ONE — the oldest (listInFlightDeliveries
+  //    is sorted oldest-first) — clear its record, send a one-time nudge. The
+  //    record is cleared first, so the nudge fires exactly once per orphan;
+  //    the orphaned request is NOT re-enqueued. When the queue is empty there
+  //    is no pop opportunity, so a lingering orphan is left untouched and
+  //    cleared lazily on the next event with a real pending item.
+  const orphans = listInFlightDeliveries();
+  if (orphans.length > 0) {
+    if (!settled) return false; // ready-only + skill in flight → bounded pause
+    const orphan = orphans[0]!;
+    clearInFlight(orphan.requestId);
+    send(
+      MAG_SESSION_NAME,
+      `Queue note: request ${orphan.requestId} (${orphan.command}, delivered ${orphan.deliveredAt}) `
+        + `has no matching result log. Its in-flight record has been cleared so the queue can resume; `
+        + `the request was NOT re-enqueued. If it still needs handling, re-fire it from the dashboard.`,
+    );
+    emitEvent({
+      event_type: "mag_in_flight_orphan_cleared",
+      source: "keepalive",
+      scope: "mag",
+      status: "warning",
+      message: `cleared orphan ${orphan.requestId} (${orphan.command}, delivered ${orphan.deliveredAt})`,
+    });
+    // This event's action was the orphan-pop; do not also deliver a queued
+    // skill on the same event. The settled sentinel was already consumed by
+    // the atomic claim above, so the next tick won't see a stale settled
+    // state and deliver into the now-busy (nudged) Mag pane.
+    return true;
   }
 
   const popped = await queuePopSkill();
