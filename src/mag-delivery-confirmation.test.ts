@@ -369,6 +369,11 @@ describe("maybeFeedMagQueue — orphan-pop replaces the delivery-gate pause", ()
     expect(existsSync(inFlightFilePath("req-QUEUED"))).toBe(false);
     // Observability event emitted.
     expect(readEvents().some((e) => e.event_type === "mag_in_flight_orphan_cleared")).toBe(true);
+    // The atomic claim ran before the orphan-pop, so the settled sentinel is
+    // consumed even on the orphan-pop path. The next keepalive tick will not
+    // see a stale settled state and deliver a skill into the now-busy (just
+    // nudged) Mag pane — it falls through to the isMagReady() pane check.
+    expect(existsSync(join(magDir(), "settled"))).toBe(false);
   });
 
   test("two orphans → one cleared per call; two calls clear both (each call needs a pending queue item)", async () => {

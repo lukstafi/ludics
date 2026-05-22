@@ -589,6 +589,28 @@ export async function maybeFeedMagQueue(
   // nothing auto-requeues.
   reconcileInFlight();
 
+  // Atomic claim — must run BEFORE the orphan-pop. Consuming the settled
+  // sentinel here makes BOTH the orphan-pop and the normal delivery
+  // downstream run as a single claimed turn. If it ran only on the delivery
+  // path, an orphan-pop would `return true` (nudging Mag, making it busy)
+  // while leaving a stale sentinel on disk; the next keepalive tick's
+  // `!isMagSettled()` precondition would still see settled=true and deliver
+  // a skill into a mid-turn Mag. With the claim first, the sentinel is gone
+  // after an orphan-pop, so the next tick falls through to isMagReady(),
+  // which observes the busy pane and correctly declines. In the ready-only
+  // path there's no sentinel to consume (the `if (isMagSettled())` guard
+  // skips the claim); we rely on queuePopSkill's atomic dequeue below (and
+  // on the harness' single-writer invariant under federation v2).
+  if (isMagSettled()) {
+    const claimPath = settledSentinelFile() + ".claiming";
+    try {
+      renameSync(settledSentinelFile(), claimPath);
+    } catch {
+      return false; // another tick already claimed
+    }
+    try { unlinkSync(claimPath); } catch { /* ignore */ }
+  }
+
   // Orphan-pop step — the in-place replacement of the old
   // `if (deliveryGateBlocked()) return false;` pause. We have reached the
   // exact point where the request queue would otherwise be popped: Mag is
@@ -619,22 +641,10 @@ export async function maybeFeedMagQueue(
       message: `cleared orphan ${orphan.requestId} (${orphan.command}, delivered ${orphan.deliveredAt})`,
     });
     // This event's action was the orphan-pop; do not also deliver a queued
-    // skill on the same event.
+    // skill on the same event. The settled sentinel was already consumed by
+    // the atomic claim above, so the next tick won't see a stale settled
+    // state and deliver into the now-busy (nudged) Mag pane.
     return true;
-  }
-
-  // Atomic claim: if settled, consume the sentinel so concurrent ticks
-  // see !settled. In the ready-only path there's no sentinel to consume;
-  // we rely on queuePopSkill's atomic dequeue below (and on the harness'
-  // single-writer invariant under federation v2).
-  if (isMagSettled()) {
-    const claimPath = settledSentinelFile() + ".claiming";
-    try {
-      renameSync(settledSentinelFile(), claimPath);
-    } catch {
-      return false; // another tick already claimed
-    }
-    try { unlinkSync(claimPath); } catch { /* ignore */ }
   }
 
   const popped = await queuePopSkill();
