@@ -169,6 +169,59 @@ describe("briefing Tier-1 arm — activity-window gate (gh-ludics-538 AC 3)", ()
     expect(findLastEvent(stateDir, "briefing_skipped")).not.toBeNull();
   });
 
+  test("manual CLI `ludics mag health-check` bypasses the gate — enqueued record carries bypassGate:true (AC 11)", async () => {
+    const stateDir = getStateDir();
+    makeJournal(stateDir);
+    // Would-skip world: delta below HEALTH_GATE_THRESHOLD (300). A gated record
+    // dispatched here would skip; the bypass flag overrides that.
+    const lines = Array.from({ length: 1010 }, (_, i) => `{"n":${i}}`).join("\n") + "\n";
+    writeFileSync(join(stateDir, "journal", "events.jsonl"), lines);
+    writeFileSync(join(stateDir, "mag", "health-last.json"),
+      JSON.stringify({ timestamp: "2026-04-24T00:00:00Z", eventsJsonlLines: 1000, findings: [] }));
+
+    // CLI path: `ludics mag health-check` (no --auto) — manual invocation.
+    const { runMag, resolveQueueRequestCommand } = await import("./mag.ts");
+    await runMag(["health-check"]);
+
+    // The CLI handler tagged the enqueued health-check record with bypassGate.
+    const qLines = readFileSync(join(stateDir, "mag", "queue.jsonl"), "utf8")
+      .trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const hcRec = qLines.find((r) => r.action === "health-check");
+    expect(hcRec).toBeDefined();
+    expect(hcRec!.bypassGate).toBe(true);
+
+    // Dispatch that exact record: the gate is bypassed despite the would-skip
+    // delta, so the skill command is returned and no skip event is emitted.
+    const result = await resolveQueueRequestCommand(hcRec!, true);
+    expect(result).toBe("/ludics-health-check");
+    expect(findLastEvent(stateDir, "health_check_skipped")).toBeNull();
+  });
+
+  test("auto trigger `ludics mag health-check --auto` does NOT bypass the gate — record stays gated and skips (AC 11 negative control)", async () => {
+    const stateDir = getStateDir();
+    makeJournal(stateDir);
+    // Same would-skip world as the bypass test above.
+    const lines = Array.from({ length: 1010 }, (_, i) => `{"n":${i}}`).join("\n") + "\n";
+    writeFileSync(join(stateDir, "journal", "events.jsonl"), lines);
+    writeFileSync(join(stateDir, "mag", "health-last.json"),
+      JSON.stringify({ timestamp: "2026-04-24T00:00:00Z", eventsJsonlLines: 1000, findings: [] }));
+
+    // Auto path: the launchd-trigger shape — `mag health-check --auto`.
+    const { runMag, resolveQueueRequestCommand } = await import("./mag.ts");
+    await runMag(["health-check", "--auto"]);
+
+    const qLines = readFileSync(join(stateDir, "mag", "queue.jsonl"), "utf8")
+      .trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const hcRec = qLines.find((r) => r.action === "health-check");
+    expect(hcRec).toBeDefined();
+    // Auto record carries bypassGate:false → still subject to the gate.
+    expect(hcRec!.bypassGate).toBeFalsy();
+
+    const result = await resolveQueueRequestCommand(hcRec!, true);
+    expect(result).toBeNull();
+    expect(findLastEvent(stateDir, "health_check_skipped")).not.toBeNull();
+  });
+
   test("Mag-auto briefing queue_request does NOT advance the signal (denylist active)", async () => {
     const stateDir = getStateDir();
     makeJournal(stateDir);
