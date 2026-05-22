@@ -4147,13 +4147,15 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
     queueRequest({ action: "sync-learnings" });
     console.log("Queued sync-learnings request");
   }],
-  ["health-check", () => {
+  ["health-check", (args) => {
     if (!clusterIsController()) {
       console.error("ludics: mag health-check skipped — not the cluster controller");
       return;
     }
-    // gh-ludics-538 AC 11: manual CLI invocation bypasses the dispatch gate.
-    queueRequest({ action: "health-check" }, { bypassGate: true });
+    // gh-ludics-538 AC 11: a manual `ludics mag health-check` (no --auto)
+    // bypasses the dispatch-time activity gate; an automated trigger
+    // (`mag health-check --auto`) stays gated so quiet 4-hour windows skip.
+    queueRequest({ action: "health-check" }, { bypassGate: !args.includes("--auto") });
     // /compact is enqueued by the gate-check path in resolveQueueRequestCommand
     // only when the health-check actually runs (gate did not skip). Coupling
     // /compact to a real checkpoint avoids spurious compactions on idle ticks.
