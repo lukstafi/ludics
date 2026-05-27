@@ -143,9 +143,14 @@ export type QueueAction =
  *  action types stay tight; `bypassGate` is provenance metadata, not a new
  *  action variant. Set by manual CLI handlers in `src/mag.ts` so a queued
  *  request from `ludics mag <skill>` skips the dispatch-time activity gate
- *  even when the snapshot would otherwise suppress it (gh-ludics-538 AC 11). */
+ *  even when the snapshot would otherwise suppress it (gh-ludics-538 AC 11).
+ *  `triggeredBy` records the request id that caused a follow-up enqueue
+ *  (e.g. the briefing/health-check that gated a /compact) so retried
+ *  dispatches can dedup against an already-queued follow-up (PR #552 review
+ *  by Codex: send-failure rollback used to double-queue /compact). */
 export interface QueueRequestExtras {
   bypassGate?: boolean;
+  triggeredBy?: string;
 }
 
 export function queueRequest(req: QueueAction, extras?: QueueRequestExtras): string {
@@ -157,6 +162,9 @@ export function queueRequest(req: QueueAction, extras?: QueueRequestExtras): str
 
   const baseRecord: Record<string, unknown> = { id: requestId, ...req, timestamp };
   if (extras?.bypassGate === true) baseRecord.bypassGate = true;
+  if (typeof extras?.triggeredBy === "string" && extras.triggeredBy.length > 0) {
+    baseRecord.triggeredBy = extras.triggeredBy;
+  }
   withQueueLock(() => {
     appendFileSync(file, JSON.stringify(baseRecord) + "\n");
   });
@@ -214,9 +222,36 @@ export function queueRequestAtHead(req: QueueAction, extras?: QueueRequestExtras
   const requestId = nextRequestId();
   const baseRecord: Record<string, unknown> = { id: requestId, ...req, timestamp };
   if (extras?.bypassGate === true) baseRecord.bypassGate = true;
+  if (typeof extras?.triggeredBy === "string" && extras.triggeredBy.length > 0) {
+    baseRecord.triggeredBy = extras.triggeredBy;
+  }
   queueReinsertHead(JSON.stringify(baseRecord));
   emitEvent(buildQueueRequestEvent(req, requestId));
   return requestId;
+}
+
+/** True iff the queue already contains a `/compact` follow-up tagged with
+ *  the given `triggeredBy` request id. Used by the briefing/health-check
+ *  dispatch branches to dedup their `/compact` enqueue on send-failure
+ *  rollback retries (PR #552 review by Codex). */
+export function queueHasCompactForTrigger(triggerId: string): boolean {
+  if (!triggerId) return false;
+  for (const line of readQueueLines()) {
+    let rec: Record<string, unknown>;
+    try {
+      rec = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (
+      rec.action === "message" &&
+      rec.content === "/compact" &&
+      rec.triggeredBy === triggerId
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
