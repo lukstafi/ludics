@@ -144,6 +144,46 @@ describe("magBriefing auto-compact follow-up", () => {
     expect(items[1]!.content).toBe("/compact");
   });
 
+  test("repeated dispatch of the same briefing request does not double-queue /compact (Codex PR #552 review)", async () => {
+    // Models deliverPoppedSkill's send-failure rollback loop: when the Mag
+    // pane is unreachable, the popped briefing is reinserted at the queue
+    // head and the next keepalive tick pops the same request id again. The
+    // /compact follow-up must dedup on the second resolve, otherwise each
+    // failed delivery attempt leaves an extra /compact tagged with the same
+    // triggeredBy on the tail.
+    const { magBriefing, resolveQueueRequestCommand } = await import("./mag.ts");
+    const { queuePopExpected, queueReinsertHead } = await import("./queue.ts");
+    magBriefing(false);
+
+    // First pop + resolve — /compact gets appended.
+    const popped1 = queuePopExpected();
+    if (popped1.status !== "popped") throw new Error(`expected popped, got ${popped1.status}`);
+    try {
+      await resolveQueueRequestCommand(popped1.request!, true);
+    } catch { /* precompute may throw in synthetic harness */ }
+
+    // Simulate send-failure rollback: put the briefing back at the head with
+    // the verbatim line (same id). deliverPoppedSkill does exactly this via
+    // queueReinsertHead(popped.line).
+    queueReinsertHead(popped1.line);
+
+    // Second pop + resolve — must NOT add a second /compact for this trigger.
+    const popped2 = queuePopExpected();
+    if (popped2.status !== "popped") throw new Error(`expected popped, got ${popped2.status}`);
+    expect((popped2.request as { id: string }).id).toBe((popped1.request as { id: string }).id);
+    try {
+      await resolveQueueRequestCommand(popped2.request!, true);
+    } catch { /* precompute may throw in synthetic harness */ }
+
+    const items = readQueue();
+    const compactItems = items.filter(
+      (r) => r.action === "message" && r.content === "/compact",
+    );
+    // Exactly one /compact across both dispatch attempts.
+    expect(compactItems).toHaveLength(1);
+    expect(compactItems[0]!.triggeredBy).toBe((popped1.request as { id: string }).id);
+  });
+
   test("gate-skipped briefing delivery does not append /compact", async () => {
     // Idle world with a prior briefing snapshot → activity-window gate
     // skips the dispatched briefing record. The /compact enqueue lives
@@ -235,6 +275,35 @@ describe("runMag health-check auto-compact follow-up", () => {
     expect(items[0]!.action).toBe("message");
     expect(items[0]!.content).toBe("/compact");
     expect(items[1]!.action).toBe("elaborate");
+  });
+
+  test("repeated dispatch of the same health-check request does not double-queue /compact (Codex PR #552 review)", async () => {
+    // Symmetric to the briefing case: deliverPoppedSkill's send-failure
+    // rollback reinserts the popped health-check at the queue head with the
+    // verbatim line; the next dispatch resolves the same request id again.
+    // The /compact follow-up must dedup on the second resolve.
+    const { runMag, resolveQueueRequestCommand } = await import("./mag.ts");
+    const { queuePopExpected, queueReinsertHead } = await import("./queue.ts");
+    await runMag(["health-check"]);
+
+    const popped1 = queuePopExpected();
+    if (popped1.status !== "popped") throw new Error(`expected popped, got ${popped1.status}`);
+    await resolveQueueRequestCommand(popped1.request!, true);
+
+    // Simulate the rollback that deliverPoppedSkill performs on send failure.
+    queueReinsertHead(popped1.line);
+
+    const popped2 = queuePopExpected();
+    if (popped2.status !== "popped") throw new Error(`expected popped, got ${popped2.status}`);
+    expect((popped2.request as { id: string }).id).toBe((popped1.request as { id: string }).id);
+    await resolveQueueRequestCommand(popped2.request!, true);
+
+    const items = readQueue();
+    const compactItems = items.filter(
+      (r) => r.action === "message" && r.content === "/compact",
+    );
+    expect(compactItems).toHaveLength(1);
+    expect(compactItems[0]!.triggeredBy).toBe((popped1.request as { id: string }).id);
   });
 
   test("gate-skipped delivery does not append /compact", async () => {

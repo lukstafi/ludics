@@ -11,7 +11,7 @@ import { atomicWriteFileSync, isPlainObject, writeJsonFile, writeJsonFileCompact
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
-import { queueRequest, queueRequestAtHead, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults } from "./queue.ts";
+import { queueRequest, queueRequestAtHead, queueHasCompactForTrigger, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
@@ -1666,7 +1666,17 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       // briefing → feedback-digest → /compact ordering — feedback-digest must
       // run before /compact so the digest can consume the briefing's
       // in-flight context (task-304a02a6).
-      queueRequest({ action: "message", content: "/compact" });
+      // Tag with `triggeredBy: <briefing-id>` and dedup on retry: when
+      // deliverPoppedSkill's send fails it reinserts the briefing at the
+      // queue head, and the next dispatch resolves the same request id; the
+      // dedup check stops the second /compact from landing on the tail
+      // (PR #552 review by Codex).
+      const briefingId = String(request.id ?? "");
+      if (briefingId && !queueHasCompactForTrigger(briefingId)) {
+        queueRequest({ action: "message", content: "/compact" }, { triggeredBy: briefingId });
+      } else if (!briefingId) {
+        queueRequest({ action: "message", content: "/compact" });
+      }
     } else if (action === "adopt-sessions") {
       if (!bypassGate) {
         // gh-ludics-538: fingerprint gate. Skip when the unclassified-sessions
@@ -1765,7 +1775,14 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       // no-op /compact. Head-insert (not tail-append) preserves the
       // health-check → /compact → next ordering even when other requests
       // landed on the queue tail between health-check enqueue and dispatch.
-      queueRequestAtHead({ action: "message", content: "/compact" });
+      // Tag with `triggeredBy: <health-check-id>` and dedup on retry: same
+      // shape as the briefing branch above (PR #552 review by Codex).
+      const healthCheckId = String(request.id ?? "");
+      if (healthCheckId && !queueHasCompactForTrigger(healthCheckId)) {
+        queueRequestAtHead({ action: "message", content: "/compact" }, { triggeredBy: healthCheckId });
+      } else if (!healthCheckId) {
+        queueRequestAtHead({ action: "message", content: "/compact" });
+      }
     }
   }
 
