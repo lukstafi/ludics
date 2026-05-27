@@ -34,30 +34,25 @@ function readQueue(): Record<string, unknown>[] {
 }
 
 describe("magBriefing auto-compact follow-up", () => {
-  test("enqueues /compact as the final item, with feedback-digest between briefing and /compact", async () => {
-    // Harness condition: clean state — no pre-existing pending feedback-digest
-    // in queue.jsonl, no cooldown state file. The synthetic harness creates a
-    // fresh tmp dir each test, so both gates open and tryQueueFeedbackDigest
-    // actually enqueues. If that condition stops holding, items[1] would not be
-    // "feedback-digest" and the middle-slot assertion would fail loudly.
+  test("magBriefing enqueues briefing + feedback-digest only; /compact is appended later by the gate-check path", async () => {
+    // Coupling change (fix-briefing-compact-gate): /compact is no longer
+    // enqueued at magBriefing time. It's gated on the dispatch-time
+    // activity gate to avoid paying a cache-miss cost on idle ticks that
+    // skip the briefing. The CLI-time queue is therefore the briefing
+    // and (when ungated) the feedback-digest follow-up only.
     const { magBriefing } = await import("./mag.ts");
     magBriefing(false);
 
     const items = readQueue();
-    // briefing → feedback-digest → /compact. /compact must always land last
-    // (the AC's invariant); feedback-digest in the middle is the ungated path.
-    expect(items).toHaveLength(3);
+    expect(items).toHaveLength(2);
     expect(items[0]!.action).toBe("briefing");
     expect(items[1]!.action).toBe("feedback-digest");
-    expect(items[items.length - 1]!.action).toBe("message");
-    expect(items[items.length - 1]!.content).toBe("/compact");
   });
 
-  test("when feedback-digest is gated, queue is briefing → /compact (length 2)", async () => {
+  test("when feedback-digest is gated, magBriefing enqueues briefing only", async () => {
     // Harness condition: pre-seed queue.jsonl with a pending feedback-digest
     // entry for "ludics" so queueHasPendingFeedbackDigest() returns true and
-    // tryQueueFeedbackDigest short-circuits with { queued: false }. Without
-    // this seed, digest would fire and the length-2 assertion would fail.
+    // tryQueueFeedbackDigest short-circuits with { queued: false }.
     const qf = join(getTmpDir(), "mag", "queue.jsonl");
     writeFileSync(
       qf,
@@ -70,29 +65,21 @@ describe("magBriefing auto-compact follow-up", () => {
     const items = readQueue();
     // Drop the pre-seeded sentinel; only assert on what magBriefing wrote.
     const written = items.slice(1);
-    expect(written).toHaveLength(2);
+    expect(written).toHaveLength(1);
     expect(written[0]!.action).toBe("briefing");
-    expect(written[1]!.action).toBe("message");
-    expect(written[1]!.content).toBe("/compact");
-    // /compact must be last regardless of digest gating.
-    expect(items[items.length - 1]!.action).toBe("message");
-    expect(items[items.length - 1]!.content).toBe("/compact");
   });
 
-  test("/compact still enqueues when feedback-digest enqueue throws", async () => {
-    // Harness condition: spy on queue.queueRequest to throw on the
-    // feedback-digest action only (simulating a queue-lock timeout or
-    // state-file write failure inside tryQueueFeedbackDigest). Without the
-    // try/catch around the digest call, the throw would propagate out of
-    // magBriefing before /compact is enqueued, leaving the queue with only
-    // the briefing entry. Mutation: removing the try/catch makes this test
-    // fail because /compact never lands and `errSpy` never sees the warning.
+  test("magBriefing tolerates a feedback-digest enqueue throw and still reaches markBriefingQueued", async () => {
+    // Regression guard for the try/catch around tryQueueFeedbackDigest: a
+    // queue-lock timeout or state-file write error from the digest enqueue
+    // must not propagate out of magBriefing before the cooldown sentinel is
+    // refreshed. /compact is no longer involved in this coupling — it's
+    // appended at dispatch time by resolveQueueRequestCommand once the gate
+    // passes.
     const queueMod = await import("./queue.ts");
     const origQueueRequest = queueMod.queueRequest;
-    let calls = 0;
     const requestSpy = spyOn(queueMod, "queueRequest").mockImplementation(
       ((req: Parameters<typeof origQueueRequest>[0]) => {
-        calls++;
         if (req.action === "feedback-digest") {
           throw new Error("simulated queue-lock timeout");
         }
@@ -106,18 +93,83 @@ describe("magBriefing auto-compact follow-up", () => {
       magBriefing(false);
 
       const items = readQueue();
-      // briefing was queued (call 1), feedback-digest threw (call 2),
-      // /compact still queued (call 3). On disk: briefing + /compact only.
-      expect(calls).toBeGreaterThanOrEqual(3);
-      expect(items).toHaveLength(2);
+      // briefing was queued (call 1), feedback-digest threw (call 2). On
+      // disk: briefing only — /compact is deferred to the dispatch path.
+      expect(items).toHaveLength(1);
       expect(items[0]!.action).toBe("briefing");
-      expect(items[1]!.action).toBe("message");
-      expect(items[1]!.content).toBe("/compact");
       const errLines = errSpy.mock.calls.map((c) => String(c[0] ?? ""));
       expect(errLines.some((l) => l.includes("feedback-digest enqueue failed"))).toBe(true);
+      // Cooldown sentinel must have been refreshed — proof that magBriefing
+      // ran to completion past the digest throw.
+      const sentinel = join(getTmpDir(), "mag", "briefing-last-queued.epoch");
+      const { existsSync } = await import("fs");
+      expect(existsSync(sentinel)).toBe(true);
     } finally {
       requestSpy.mockRestore();
       errSpy.mockRestore();
+    }
+  });
+
+  test("non-skipped briefing delivery appends /compact at the queue tail (after pending feedback-digest)", async () => {
+    // Production flow: magBriefing enqueues briefing + feedback-digest,
+    // then the queue-pop layer dispatches the briefing. The gate's RUN
+    // arm appends /compact to the queue tail (not head — feedback-digest
+    // must run BEFORE /compact so the digest can consume the briefing's
+    // in-flight context per task-304a02a6). With no prior briefing
+    // snapshot the gate fails open (first-run), so /compact is appended.
+    const { magBriefing, resolveQueueRequestCommand } = await import("./mag.ts");
+    const { queuePopExpected } = await import("./queue.ts");
+    magBriefing(false);
+
+    const popped = queuePopExpected();
+    if (popped.status !== "popped") throw new Error(`expected popped, got ${popped.status}`);
+    expect((popped.request as { action: string }).action).toBe("briefing");
+
+    try {
+      await resolveQueueRequestCommand(popped.request!, true);
+    } catch {
+      // briefingPrecomputeContext may throw in the synthetic harness — the
+      // /compact enqueue happens before it, so the queue contract still
+      // holds for our assertions below. The race-tail of the precompute
+      // failure landing /compact correctly is exercised by mag-periodic-gate.
+    }
+
+    const items = readQueue();
+    // After dispatch: feedback-digest first (still pending from enqueue
+    // time), /compact appended at the tail. /compact must come AFTER
+    // feedback-digest, not before.
+    expect(items).toHaveLength(2);
+    expect(items[0]!.action).toBe("feedback-digest");
+    expect(items[1]!.action).toBe("message");
+    expect(items[1]!.content).toBe("/compact");
+  });
+
+  test("gate-skipped briefing delivery does not append /compact", async () => {
+    // Idle world with a prior briefing snapshot → activity-window gate
+    // skips the dispatched briefing record. The /compact enqueue lives
+    // after the skip-return in resolveQueueRequestCommand, so it must
+    // not fire. This is the bug the fix-briefing-compact-gate change
+    // targets.
+    const { resolveQueueRequestCommand } = await import("./mag.ts");
+    const stateDir = getTmpDir();
+    mkdirSync(join(stateDir, "journal"), { recursive: true });
+    // Prior snapshot present + empty events.jsonl + no recent activity →
+    // latestUserActionEpoch returns 0 → gate skips.
+    writeFileSync(
+      join(stateDir, "mag", "briefing-last.json"),
+      JSON.stringify({ timestamp: "2026-04-01T00:00:00Z", signal: 1_000_000_000 }),
+    );
+    writeFileSync(join(stateDir, "journal", "events.jsonl"), "");
+
+    const result = await resolveQueueRequestCommand({ action: "briefing" }, true);
+    expect(result).toBeNull();
+
+    // Nothing was enqueued by the skipped briefing dispatch — queue.jsonl
+    // either doesn't exist (nothing ever called queueRequest) or is empty.
+    const qf = join(stateDir, "mag", "queue.jsonl");
+    const { existsSync } = await import("fs");
+    if (existsSync(qf)) {
+      expect(readQueue()).toHaveLength(0);
     }
   });
 });

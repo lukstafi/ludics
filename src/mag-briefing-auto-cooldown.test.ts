@@ -4,18 +4,20 @@ import { join } from "path";
 import { withSyntheticHarness } from "./test-utils.ts";
 
 // Regression test: when invoked with { auto: true }, magBriefing skips the
-// briefing → feedback-digest → /compact sequence if the previous sequence
-// was queued less than 90 minutes ago. Manual (auto: false / undefined)
-// invocations always queue and reset the cooldown timestamp.
+// briefing + feedback-digest enqueue if the previous sequence was queued
+// less than 90 minutes ago. Manual (auto: false / undefined) invocations
+// always queue and reset the cooldown timestamp. /compact is no longer
+// enqueued at magBriefing time — it's coupled to the dispatch-time
+// activity gate (see fix-briefing-compact-gate / mag-auto-compact.test.ts).
 
 const COOLDOWN_SECONDS = 90 * 60;
 const getTmpDir = withSyntheticHarness(beforeEach, afterEach);
 
 beforeEach(() => {
   mkdirSync(join(getTmpDir(), "mag"), { recursive: true });
-  // gh-ludics-538: seed feedback/ so the briefing → feedback-digest →
-  // /compact trio still produces 3 queue entries. Without this seed, the
-  // new empty-feedback gate causes the digest follow-up to no-op.
+  // gh-ludics-538: seed feedback/ so the briefing + feedback-digest pair
+  // still produces 2 queue entries. Without this seed, the
+  // empty-feedback gate causes the digest follow-up to no-op.
   mkdirSync(join(getTmpDir(), "feedback"), { recursive: true });
   writeFileSync(join(getTmpDir(), "feedback", "seed.md"), "x");
 });
@@ -66,11 +68,11 @@ describe("magBriefing auto-cooldown gate", () => {
     magBriefing(false, 300, { auto: true });
 
     const items = readQueue();
-    // Full trio queued; mirrors the contract from mag-auto-compact.test.ts.
-    expect(items).toHaveLength(3);
+    // Briefing + feedback-digest pair; /compact is appended later at
+    // dispatch time by the gate-pass branch in resolveQueueRequestCommand.
+    expect(items).toHaveLength(2);
     expect(items[0]!.action).toBe("briefing");
-    expect(items[items.length - 1]!.action).toBe("message");
-    expect(items[items.length - 1]!.content).toBe("/compact");
+    expect(items[1]!.action).toBe("feedback-digest");
 
     // Cooldown sentinel was advanced.
     const after = Number.parseInt(readFileSync(epochFile(), "utf-8").trim(), 10);
@@ -84,7 +86,7 @@ describe("magBriefing auto-cooldown gate", () => {
     const { magBriefing } = await import("./mag.ts");
     magBriefing(false, 300, { auto: true });
 
-    expect(readQueue()).toHaveLength(3);
+    expect(readQueue()).toHaveLength(2);
     expect(existsSync(epochFile())).toBe(true);
   });
 
@@ -96,7 +98,7 @@ describe("magBriefing auto-cooldown gate", () => {
     const { magBriefing } = await import("./mag.ts");
     magBriefing(false); // no opts → auto: undefined → not auto
 
-    expect(readQueue()).toHaveLength(3);
+    expect(readQueue()).toHaveLength(2);
     const after = Number.parseInt(readFileSync(epochFile(), "utf-8").trim(), 10);
     // Manual run also resets the timer so a follow-up auto trigger waits its full window.
     expect(after).toBeGreaterThan(recent);

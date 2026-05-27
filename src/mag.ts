@@ -1658,6 +1658,15 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
         try { writeGateSnapshot(snapPath, signal); } catch { /* best-effort */ }
       }
       await briefingPrecomputeContext();
+      // Auto-compact after briefing — checkpoint compaction (task-a00fc0d9 /
+      // docs/proposals/auto-compact-after-checkpoints.md). Coupled to the
+      // gate here so idle ticks that skip the briefing do not also fire a
+      // no-op /compact paying a cache-miss cost. Tail-append (not head-insert
+      // as in the health-check path) preserves the
+      // briefing → feedback-digest → /compact ordering — feedback-digest must
+      // run before /compact so the digest can consume the briefing's
+      // in-flight context (task-304a02a6).
+      queueRequest({ action: "message", content: "/compact" });
     } else if (action === "adopt-sessions") {
       if (!bypassGate) {
         // gh-ludics-538: fingerprint gate. Skip when the unclassified-sessions
@@ -4070,9 +4079,6 @@ export function magBriefing(
   // Auto-queue feedback-digest once daily alongside the briefing trigger.
   // Lands before /compact so digest can consume the briefing's in-flight
   // context (task-304a02a6 / docs/proposals/task-304a02a6-reorder-briefing-auto-queue.md).
-  // Wrapped so a digest enqueue failure (queue-lock timeout, state-file write
-  // error) cannot suppress the unconditional /compact below — the auto-compact
-  // contract (task-a00fc0d9) requires /compact after every briefing.
   try {
     const fdResult = tryQueueFeedbackDigest("ludics");
     if (fdResult.queued) {
@@ -4083,11 +4089,11 @@ export function magBriefing(
     console.error(`ludics: feedback-digest enqueue failed: ${msg}`);
   }
 
-  // Auto-compact after briefing — checkpoint compaction (task-a00fc0d9 /
-  // docs/proposals/auto-compact-after-checkpoints.md). Enqueued unconditionally
-  // as the LAST follow-up so the next session starts fresh, after
-  // feedback-digest has had a chance to consume the briefing context.
-  queueRequest({ action: "message", content: "/compact" });
+  // /compact is appended at dispatch time by resolveQueueRequestCommand's
+  // briefing branch once the activity gate decides to RUN. That coupling
+  // avoids the cache-miss cost of a /compact on idle ticks where the
+  // briefing itself was skipped (mirrors the health-check path established
+  // in PR #550 / fix-health-compact-couple).
 
   markBriefingQueued();
 
