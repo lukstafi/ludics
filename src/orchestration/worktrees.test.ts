@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, parseRegisteredWorktreeMatches, purgeOrphanDirIfRecoverable, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
+import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, GIT_EXCLUDE_ENTRIES, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, parseRegisteredWorktreeMatches, purgeOrphanDirIfRecoverable, refreshMainBranchFromRemote, removeWorktreeByPath, symlinkPeerSync } from "./worktrees.ts";
 import { captureConsoleError } from "../test-utils.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
@@ -1362,3 +1362,136 @@ function safeRun(cmd: string[], cwd: string): void {
     env: process.env as Record<string, string>,
   });
 }
+
+/** Set up an origin/clone pair with one commit on `main`, then add one commit
+ *  on `origin/main` so the clone is exactly one commit behind. Returns the
+ *  clone path (the "project repo") and the resolved upstream HEAD sha. */
+function setupOriginAhead(rootDir: string): { repo: string; upstreamSha: string } {
+  const origin = join(rootDir, "origin.git");
+  const repo = join(rootDir, "repo");
+  // Bare origin
+  run(["git", "init", "--bare", "-b", "main", origin], rootDir);
+  // Seed via a throwaway working clone so origin has a starting commit on main.
+  const seed = join(rootDir, "seed");
+  run(["git", "clone", origin, seed], rootDir);
+  run(["git", "config", "user.email", "test@example.com"], seed);
+  run(["git", "config", "user.name", "Test User"], seed);
+  writeFileSync(join(seed, "README.md"), "seed\n");
+  run(["git", "add", "README.md"], seed);
+  run(["git", "commit", "-m", "seed"], seed);
+  run(["git", "push", "origin", "main"], seed);
+  // Project repo — clone of origin, will lag.
+  run(["git", "clone", origin, repo], rootDir);
+  run(["git", "config", "user.email", "test@example.com"], repo);
+  run(["git", "config", "user.name", "Test User"], repo);
+  // Advance origin past the project repo.
+  writeFileSync(join(seed, "added.txt"), "from upstream\n");
+  run(["git", "add", "added.txt"], seed);
+  run(["git", "commit", "-m", "upstream advance"], seed);
+  run(["git", "push", "origin", "main"], seed);
+  const upstreamSha = Bun.spawnSync(["git", "rev-parse", "main"], { cwd: seed }).stdout.toString().trim();
+  return { repo, upstreamSha };
+}
+
+function headSha(repo: string): string {
+  return Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repo }).stdout.toString().trim();
+}
+
+describe("refreshMainBranchFromRemote", () => {
+  test("fast-forwards local main when origin is ahead", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo, upstreamSha } = setupOriginAhead(TMP);
+    // Sanity: clone HEAD is behind origin/main.
+    expect(headSha(repo)).not.toBe(upstreamSha);
+    refreshMainBranchFromRemote(repo, "main");
+    expect(headSha(repo)).toBe(upstreamSha);
+    // The new file from origin is visible.
+    expect(existsSync(join(repo, "added.txt"))).toBe(true);
+  });
+
+  test("skips silently when no origin remote exists", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const repo = join(TMP, "repo-no-origin");
+    mkdirSync(repo, { recursive: true });
+    run(["git", "init", "-b", "main"], repo);
+    run(["git", "config", "user.email", "test@example.com"], repo);
+    run(["git", "config", "user.name", "Test User"], repo);
+    writeFileSync(join(repo, "README.md"), "hi\n");
+    run(["git", "add", "README.md"], repo);
+    run(["git", "commit", "-m", "init"], repo);
+    const beforeSha = headSha(repo);
+    const { lines: captured } = captureConsoleError(() => {
+      refreshMainBranchFromRemote(repo, "main");
+    });
+    expect(headSha(repo)).toBe(beforeSha);
+    // Skip is silent — no warning when origin is simply absent.
+    expect(captured.find((l) => l.includes("refreshMainBranchFromRemote"))).toBeUndefined();
+  });
+
+  test("skips when working tree is on a different branch", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo, upstreamSha } = setupOriginAhead(TMP);
+    run(["git", "checkout", "-b", "feature"], repo);
+    const beforeSha = headSha(repo);
+    expect(beforeSha).not.toBe(upstreamSha);
+    refreshMainBranchFromRemote(repo, "main");
+    // main was not touched (we're on feature) — main ref should still lag origin.
+    const mainSha = Bun.spawnSync(["git", "rev-parse", "main"], { cwd: repo }).stdout.toString().trim();
+    expect(mainSha).not.toBe(upstreamSha);
+    expect(headSha(repo)).toBe(beforeSha);
+  });
+
+  test("skips when working tree has uncommitted changes", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo, upstreamSha } = setupOriginAhead(TMP);
+    writeFileSync(join(repo, "dirty.txt"), "uncommitted\n");
+    const beforeSha = headSha(repo);
+    refreshMainBranchFromRemote(repo, "main");
+    expect(headSha(repo)).toBe(beforeSha);
+    expect(headSha(repo)).not.toBe(upstreamSha);
+    // The dirty file is preserved.
+    expect(readFileSync(join(repo, "dirty.txt"), "utf8")).toBe("uncommitted\n");
+  });
+
+  test("warns and skips when local has diverged from origin (non-ff)", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginAhead(TMP);
+    // Diverge: commit on local main without pulling.
+    writeFileSync(join(repo, "local.txt"), "local-only\n");
+    run(["git", "add", "local.txt"], repo);
+    run(["git", "commit", "-m", "local divergence"], repo);
+    const beforeSha = headSha(repo);
+    const { lines: captured } = captureConsoleError(() => {
+      refreshMainBranchFromRemote(repo, "main");
+    });
+    // Local commit preserved — no force, no reset.
+    expect(headSha(repo)).toBe(beforeSha);
+    expect(existsSync(join(repo, "local.txt"))).toBe(true);
+    // Warning was emitted so the operator can see why ff failed.
+    expect(captured.some((l) => l.includes("ff-only merge") && l.includes("diverged"))).toBe(true);
+  });
+});
+
+describe("createWorktrees refreshes main before forking", () => {
+  test("integration: stale local main is advanced before worktree branches off", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo, upstreamSha } = setupOriginAhead(TMP);
+    // Confirm precondition: local main is behind.
+    expect(headSha(repo)).not.toBe(upstreamSha);
+    const setup = createWorktrees(repo, "feat", [{ name: "agent1" }], "main", 7);
+    // After createWorktrees, local main has advanced to upstream …
+    const mainSha = Bun.spawnSync(["git", "rev-parse", "main"], { cwd: repo }).stdout.toString().trim();
+    expect(mainSha).toBe(upstreamSha);
+    // … and the new worktree carries the upstream commit.
+    const worktreeSha = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: setup.rootWorktree }).stdout.toString().trim();
+    expect(worktreeSha).toBe(upstreamSha);
+    expect(existsSync(join(setup.rootWorktree, "added.txt"))).toBe(true);
+    cleanupWorktrees(repo, "feat", [{ name: "agent1" }], 7);
+  });
+});

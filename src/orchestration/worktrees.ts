@@ -443,6 +443,51 @@ export function defaultMainBranch(projectDir: string): string {
 }
 
 /**
+ * Fast-forward the project's main branch from `origin/<mainBranch>` so that
+ * worktrees forked from it inherit fresh upstream state instead of whatever
+ * the local checkout happened to point at. Without this, a stale local main
+ * (e.g. user has not pulled in a while) silently propagates into every new
+ * orchestration worktree.
+ *
+ * Best-effort and silent on graceful skip:
+ * - No `origin` remote (e.g. local-only test repos): skip.
+ * - Working tree is checked out to a different branch than `mainBranch`: skip
+ *   (we don't switch branches under the user).
+ * - Working tree has uncommitted changes: skip (we don't risk perturbing
+ *   in-flight work, even though merge --ff-only would normally be safe).
+ * - `git fetch` fails (network outage etc.): warn, skip — slot startup must
+ *   not block on remote reachability.
+ * - `git merge --ff-only` fails because local diverged from origin: warn,
+ *   skip. We never force; divergence means the user has committed work
+ *   directly on main and that work must be preserved.
+ *
+ * Never throws.
+ */
+export function refreshMainBranchFromRemote(projectDir: string, mainBranch: string): void {
+  const dir = resolve(projectDir);
+  // `git remote` may list a name purely from leftover `remote.<name>.*`
+  // config keys even when no URL is set; require `remote.origin.url` so we
+  // never try to fetch a phantom remote (this would otherwise produce a
+  // noisy warning in test repos that set `remote.origin.gh-resolved` without
+  // a real remote URL).
+  const originUrl = safeSyncOutput(["git", "config", "--get", "remote.origin.url"], { cwd: dir });
+  if (!originUrl.ok || originUrl.stdout.trim().length === 0) return;
+  const current = maybeGit(dir, ["branch", "--show-current"]).trim();
+  if (current !== mainBranch) return;
+  const dirty = maybeGit(dir, ["status", "--porcelain"]).trim();
+  if (dirty.length > 0) return;
+  const fetchResult = safeSyncOutput(["git", "fetch", "origin", mainBranch], { cwd: dir });
+  if (!fetchResult.ok) {
+    console.error(`ludics: refreshMainBranchFromRemote: git fetch origin ${mainBranch} failed in ${dir} — continuing with stale local state`);
+    return;
+  }
+  const mergeResult = safeSyncOutput(["git", "merge", "--ff-only", `origin/${mainBranch}`], { cwd: dir });
+  if (!mergeResult.ok) {
+    console.error(`ludics: refreshMainBranchFromRemote: ff-only merge of origin/${mainBranch} failed in ${dir} — local branch has diverged from origin, continuing with stale local state`);
+  }
+}
+
+/**
  * Count commits on the worktree's HEAD ahead of `origin/<base>` where base is
  * resolved from `projectDir` (shared remote refs). Returns `null` on any git
  * error — callers should treat this as "cannot compare" and skip, not as zero.
@@ -484,6 +529,13 @@ export function createWorktrees(
   slot?: number,
   mode: "duo" | "pair" | "solo" = "duo",
 ): WorktreeSetup {
+  // Refresh the project's main branch from origin so new worktrees fork from
+  // current upstream rather than whatever the local checkout last pointed at.
+  // Best-effort: any reason this can't proceed (no origin, wrong branch
+  // checked out, dirty working tree, network failure, or local divergence) is
+  // logged and skipped — see refreshMainBranchFromRemote for details.
+  refreshMainBranchFromRemote(projectDir, mainBranch);
+
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));
   const stem = orchWorktreeStem(repoName, taskId, slot);
