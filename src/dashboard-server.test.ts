@@ -15,18 +15,19 @@ const TTL = 3600;
 describe("startDashboardServer port validation", () => {
   withSyntheticHarness(beforeEach, afterEach);
   const servers: Array<ReturnType<typeof startDashboardServer>> = [];
-  let dir = "";
+  const dirs: string[] = [];
 
   afterEach(() => {
     for (const s of servers.splice(0)) void s.stop(true);
-    if (dir) {
-      rmSync(dir, { recursive: true, force: true });
-      dir = "";
-    }
+    // Tests may call makeDir() more than once (e.g. the boundary test creates
+    // one dir per startDashboardServer call), so clean up every created dir,
+    // not just the latest.
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
   function makeDir(): string {
-    dir = mkdtempSync("/tmp/ludics-dashsrv-test-");
+    const dir = mkdtempSync("/tmp/ludics-dashsrv-test-");
+    dirs.push(dir);
     return dir;
   }
 
