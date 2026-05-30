@@ -62,10 +62,15 @@ describe("dev-dashboard-mirror.ts CLI argument validation", () => {
 describe("dev-dashboard-mirror.ts startup-failure cleanup", () => {
   // Codex P3 review (PR #452): if startDashboardServer throws before
   // SIGINT/SIGTERM handlers are registered/run, the mirror dir leaks.
-  // We force a startup failure by invoking the script with an invalid
-  // numeric port literal that Bun.serve rejects ("99999" is out of range
-  // for TCP). The argv validator above only catches non-finite Number();
-  // 99999 is finite, so it reaches startDashboardServer and throws.
+  // We force a startup failure by invoking the script with an out-of-range
+  // numeric port literal ("99999"). The throw comes from startDashboardServer's
+  // explicit range guard (!Number.isInteger(port) || port < 0 || port > 65535),
+  // NOT from Bun.serve / the OS — on Bun 1.3.11 / macOS Bun.serve silently
+  // coerces 99999 to 65535 and would listen forever (the hang this test once
+  // suffered). The argv validator above only catches non-finite Number(); 99999
+  // is finite, so it reaches startDashboardServer, the guard throws, and the
+  // script's catch block rmSync's the temp dir and re-throws before any
+  // listener is bound.
   test("removes mirror dir when server start throws", () => {
     const before = existsSync("/tmp")
       ? new Set(readdirSync("/tmp").filter((n) => n.startsWith("ludics-dash-mirror-")))
