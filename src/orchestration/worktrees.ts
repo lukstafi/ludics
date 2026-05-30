@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve } from "path";
 import { PEER_SYNC_DIRNAME, peerSyncPath } from "./peer-sync.ts";
 import { slugify } from "./util.ts";
 import { safeSyncOutput } from "../spawn.ts";
+import { findProjectConfig, type ProjectConfig } from "../config.ts";
 
 export interface WorktreeSetup {
   rootWorktree: string;
@@ -598,7 +599,30 @@ export function createWorktrees(
     ensureGitExcludes(wt);
   }
 
+  // Order is load-bearing (clear-then-set, set last): the clear `--unset-all`s
+  // any stale/wrong gh-resolved value on BOTH origin and upstream; the seed
+  // then re-installs the known-good `origin.gh-resolved=base` so a no-`--repo`
+  // `gh pr create` resolves the PR base to origin (staging), not the fork
+  // parent. See seedGhResolvedToOrigin for the full rationale.
   clearGhResolvedMarkers(resolve(projectDir));
+  seedGhResolvedToOrigin(resolve(projectDir));
+
+  // Best-effort: provision an `upstream` remote for fork projects (those whose
+  // config carries `upstream_repo`). The config lookup MUST NOT throw —
+  // `findProjectConfig` calls `loadConfigSync`, which throws when no config
+  // file exists, and `createWorktrees` is otherwise config-independent (ad-hoc
+  // test repos, local-only worktrees, and CI without a config file must all
+  // still succeed). On any config-load failure we fall back to null and skip
+  // upstream provisioning; the origin pin above always runs.
+  let projectConfig: ProjectConfig | null = null;
+  try {
+    projectConfig = findProjectConfig(resolve(projectDir));
+  } catch {
+    projectConfig = null;
+  }
+  if (projectConfig?.upstream_repo) {
+    ensureUpstreamRemote(resolve(projectDir), projectConfig.upstream_repo);
+  }
 
   return { rootWorktree, peerSyncDir, agentWorktrees, branches };
 }
@@ -624,6 +648,95 @@ export function clearGhResolvedMarkers(projectDir: string): void {
     safeSyncOutput(
       ["git", "config", "--unset-all", `remote.${remote}.gh-resolved`],
       { cwd: projectDir },
+    );
+  }
+}
+
+/**
+ * Pre-create defense (layer 2 of gh-staging-fork hardening, companion to PR
+ * #554): pin `gh pr create`'s base-repo resolution to `origin` by writing
+ * `remote.origin.gh-resolved=base` on the parent repo. Worktrees share
+ * `.git/config` with the parent, so a single write covers all worktrees.
+ *
+ * `gh-resolved=base` on a remote means "this remote IS the base repo," so a
+ * no-`--repo` `gh pr create` resolves the PR base to **origin**, overriding
+ * gh's default of targeting the fork parent for a fork-of-upstream clone. This
+ * fixes the `ahrefs/ocannl#458` class of bug: after {@link clearGhResolvedMarkers}
+ * wipes any stored resolution, gh would otherwise fall back to its
+ * parent-targeting default on a fork — re-creating the wrong-repo PR.
+ *
+ * MUST run AFTER {@link clearGhResolvedMarkers} (the clear `--unset-all`s both
+ * origin and upstream; this re-installs ONLY the origin marker). Pinning is set
+ * only on origin — an `upstream.gh-resolved=base` would say "upstream is the
+ * base" and re-create the very bug we are preventing.
+ *
+ * Uses `--replace-all` so a pre-existing multi-valued key collapses to exactly
+ * one `base` value even if this helper is ever called without the preceding
+ * clear. Best-effort via `safeSyncOutput` (never throws), matching the
+ * surrounding hardening helpers — local-only or unusual repos must not abort
+ * orchestration startup.
+ *
+ * Gated on `remote.origin.url` being present (same guard as
+ * {@link refreshMainBranchFromRemote}): writing `remote.origin.gh-resolved`
+ * on a repo with no origin URL would CREATE a phantom `[remote "origin"]`
+ * section, after which `git remote add origin <url>` fails with "remote origin
+ * already exists" — blocking a later real-origin setup on local-only repos.
+ * Skipping when origin has no URL loses nothing: `gh pr create` cannot target a
+ * URL-less origin anyway, so there is no resolution to pin. In production the
+ * project repo is a real clone, so origin.url is always present and the seed
+ * always runs.
+ *
+ * Base-for-all-projects assumption: no currently configured project wants
+ * orchestration PRs to land on the upstream parent it forked from. Fork
+ * projects (ocannl-staging) want PRs on the staging fork; all others are
+ * non-fork, where origin is already canonical and `=base` is what gh does
+ * anyway (redundant, harmless). If a future project genuinely wants
+ * upstream-targeted PRs, it must opt out deliberately (a per-project setting) —
+ * otherwise this seed silently retargets its PRs to origin. Such a project must
+ * surface as a deliberate opt-out rather than relying on gh's default fork
+ * resolution.
+ */
+export function seedGhResolvedToOrigin(projectDir: string): void {
+  const originUrl = safeSyncOutput(["git", "config", "--get", "remote.origin.url"], { cwd: projectDir });
+  if (!originUrl.ok || originUrl.stdout.trim().length === 0) return;
+  safeSyncOutput(
+    ["git", "config", "--replace-all", "remote.origin.gh-resolved", "base"],
+    { cwd: projectDir },
+  );
+}
+
+/**
+ * Idempotently provision an `upstream` remote on the parent repo for fork
+ * projects (those whose config carries `upstream_repo`), so coders can pull
+ * from upstream during the work phase without manual setup. Worktrees inherit
+ * the parent's `.git/config`, so a single add covers all worktrees.
+ *
+ * No-op when `upstreamRepo` is blank or an `upstream` remote URL already exists
+ * — an operator's existing `upstream` URL is never rewritten or duplicated.
+ * Idempotency keys on `remote.upstream.url` (the URL), NOT a bare `git remote`
+ * listing: a leftover `remote.upstream.gh-resolved` key with no URL must not
+ * count as "remote exists."
+ *
+ * The upstream URL is minted in SSH form (`git@github.com:<owner>/<repo>.git`),
+ * matching how state repos are cloned elsewhere (`src/init.ts`) and the current
+ * OCANNL setup. Best-effort via `safeSyncOutput` (never throws) — a missing
+ * upstream remote is a convenience gap, not a reason to abort worktree startup.
+ * Safe alongside {@link seedGhResolvedToOrigin}: the origin pin keeps PR
+ * resolution on origin regardless of the upstream remote's presence, and
+ * {@link clearGhResolvedMarkers} has already wiped any `upstream.gh-resolved`.
+ */
+export function ensureUpstreamRemote(projectDir: string, upstreamRepo: string): void {
+  if (!upstreamRepo) return;
+  const existing = safeSyncOutput(
+    ["git", "config", "--get", "remote.upstream.url"],
+    { cwd: projectDir },
+  );
+  if (existing.ok && existing.stdout.trim().length > 0) return;
+  const url = `git@github.com:${upstreamRepo}.git`;
+  const added = safeSyncOutput(["git", "remote", "add", "upstream", url], { cwd: projectDir });
+  if (!added.ok) {
+    console.error(
+      `ludics: failed to add upstream remote (${url}) in ${projectDir}: ${added.stderr || "unknown error"}`,
     );
   }
 }
