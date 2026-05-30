@@ -946,6 +946,17 @@ export function startDashboardServer(
   dashboardDir: string,
   ttlSeconds: number,
 ): ReturnType<typeof Bun.serve> {
+  // Validate the port before handing it to Bun.serve. On Bun 1.3.11 / macOS
+  // Bun.serve silently coerces out-of-range / non-integer ports to a
+  // listenable one (99999 → 65535, -1/NaN → a random free port, 1.5 → 1)
+  // instead of rejecting, so without this guard the server would listen on a
+  // port *different* from the one requested. port === 0 stays valid: it is the
+  // documented "auto-select a free port" request.
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new RangeError(
+      `dashboard server port ${port} is invalid: expected an integer in [0, 65535] (0 auto-selects a free port)`,
+    );
+  }
   const server = Bun.serve({
     port,
     fetch: buildHandlers({ dashboardDir, ttlSeconds }),
