@@ -22,6 +22,19 @@ afterEach(() => {
   rmSync(TMP, { recursive: true, force: true });
 });
 
+/** Give `repo` a real (local, file://) `origin` remote with `main` pushed, so
+ *  `remote.origin.url` is present — required for `seedGhResolvedToOrigin` to run
+ *  (it skips repos with no origin URL to avoid fabricating a phantom origin) —
+ *  and so `refreshMainBranchFromRemote`'s `git fetch origin main` succeeds
+ *  locally without network. Returns the bare repo path. */
+function addLocalOrigin(repo: string): string {
+  const originBare = `${repo}.origin.git`;
+  run(["git", "init", "--bare", "-b", "main", originBare], TMP);
+  run(["git", "remote", "add", "origin", originBare], repo);
+  run(["git", "push", "-u", "origin", "main"], repo);
+  return originBare;
+}
+
 describe("worktrees", () => {
   test("creates and links orchestration worktrees", () => {
     if (!Bun.which("git")) return;
@@ -90,9 +103,14 @@ describe("worktrees", () => {
     run(["git", "add", "README.md"], repo);
     run(["git", "commit", "-m", "init"], repo);
 
-    // Start with markers on both origin and upstream. The remotes themselves
-    // don't need to exist; gh-resolved lives under `remote.<name>.gh-resolved`
-    // in .git/config regardless of remote presence.
+    // A real (local) origin so the re-seed runs (the seed skips repos with no
+    // origin.url to avoid fabricating a phantom origin — see the no-origin
+    // regression test below).
+    addLocalOrigin(repo);
+
+    // Start with markers on both origin and upstream. The upstream marker
+    // doesn't need a real remote; gh-resolved lives under
+    // `remote.<name>.gh-resolved` in .git/config regardless of remote presence.
     run(["git", "config", "remote.origin.gh-resolved", "base"], repo);
     run(["git", "config", "remote.upstream.gh-resolved", "base"], repo);
     expect(Bun.spawnSync(["git", "config", "--get", "remote.origin.gh-resolved"], { cwd: repo }).stdout.toString().trim()).toBe("base");
@@ -168,6 +186,7 @@ describe("createWorktrees seeds origin.gh-resolved=base (config-independent)", (
     if (!Bun.which("git")) return;
     const repo = join(TMP, "repo-seed-fresh");
     initRepo(repo);
+    addLocalOrigin(repo);
 
     // No gh-resolved marker exists before; the seed must create it. Without
     // the seedGhResolvedToOrigin call this assertion fails (key absent after
@@ -185,6 +204,7 @@ describe("createWorktrees seeds origin.gh-resolved=base (config-independent)", (
     if (!Bun.which("git")) return;
     const repo = join(TMP, "repo-seed-stale");
     initRepo(repo);
+    addLocalOrigin(repo);
 
     // A stale/wrong value (a leftover `head`) must be replaced, not kept.
     run(["git", "config", "remote.origin.gh-resolved", "head"], repo);
@@ -202,6 +222,7 @@ describe("createWorktrees seeds origin.gh-resolved=base (config-independent)", (
     if (!Bun.which("git")) return;
     const repo = join(TMP, "repo-seed-multi");
     initRepo(repo);
+    addLocalOrigin(repo);
 
     run(["git", "config", "--add", "remote.origin.gh-resolved", "base"], repo);
     run(["git", "config", "--add", "remote.origin.gh-resolved", "head"], repo);
@@ -223,6 +244,7 @@ describe("createWorktrees seeds origin.gh-resolved=base (config-independent)", (
     if (!Bun.which("git")) return;
     const repo = join(TMP, "repo-upstream-ghr");
     initRepo(repo);
+    addLocalOrigin(repo);
 
     // A real upstream remote carrying a poisoning gh-resolved=base marker.
     run(["git", "remote", "add", "upstream", "git@github.com:ahrefs/ocannl.git"], repo);
@@ -239,6 +261,23 @@ describe("createWorktrees seeds origin.gh-resolved=base (config-independent)", (
 
     cleanupWorktrees(repo, "seed-feat", [{ name: "coder" }], 1, "solo");
   });
+
+  test("does NOT fabricate a phantom origin when the repo has no origin.url (P2 Codex)", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "repo-no-origin-url");
+    initRepo(repo); // local-only repo, NO origin remote
+
+    createWorktrees(repo, "seed-feat", [{ name: "coder" }], "main", 1, "solo");
+
+    // The seed must be skipped: no `[remote "origin"]` section is created, so a
+    // later `git remote add origin <url>` still succeeds (would fail with
+    // "remote origin already exists" if the seed had fabricated the section).
+    expect(Bun.spawnSync(["git", "config", "--get", "remote.origin.gh-resolved"], { cwd: repo }).exitCode).not.toBe(0);
+    expect(Bun.spawnSync(["git", "remote"], { cwd: repo }).stdout.toString().split(/\s+/)).not.toContain("origin");
+    expect(Bun.spawnSync(["git", "remote", "add", "origin", "git@github.com:foo/bar.git"], { cwd: repo }).exitCode).toBe(0);
+
+    cleanupWorktrees(repo, "seed-feat", [{ name: "coder" }], 1, "solo");
+  });
 });
 
 describe("createWorktrees best-effort config lookup (no loadable config)", () => {
@@ -246,6 +285,7 @@ describe("createWorktrees best-effort config lookup (no loadable config)", () =>
     if (!Bun.which("git")) return;
     const repo = join(TMP, "repo-noconfig");
     initRepo(repo);
+    addLocalOrigin(repo);
 
     // Point LUDICS_CONFIG at a missing path so loadConfigSync() throws inside
     // findProjectConfig. The best-effort try/catch must swallow it; without
@@ -309,6 +349,7 @@ describe("createWorktrees provisions upstream remote for upstream_repo projects"
     if (!Bun.which("git")) return;
     const repo = REPO_NO_UPSTREAM_FIELD;
     initRepo(repo);
+    addLocalOrigin(repo);
 
     createWorktrees(repo, "cfg-feat2", [{ name: "coder" }], "main", 1, "solo");
 
@@ -349,16 +390,32 @@ describe("seedGhResolvedToOrigin", () => {
     if (!Bun.which("git")) return;
     const repo = join(TMP, "seed-helper-fresh");
     initRepo(repo);
+    addLocalOrigin(repo);
 
     seedGhResolvedToOrigin(repo);
 
     expect(Bun.spawnSync(["git", "config", "--get", "remote.origin.gh-resolved"], { cwd: repo }).stdout.toString().trim()).toBe("base");
   });
 
+  test("no-ops when the repo has no origin.url (no phantom origin section) — P2 Codex", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "seed-helper-no-origin");
+    initRepo(repo); // deliberately NO origin remote
+
+    seedGhResolvedToOrigin(repo);
+
+    // The seed is skipped: no `remote.origin.*` section is fabricated, so a
+    // later real-origin setup is not blocked.
+    expect(Bun.spawnSync(["git", "config", "--get", "remote.origin.gh-resolved"], { cwd: repo }).exitCode).not.toBe(0);
+    expect(Bun.spawnSync(["git", "remote"], { cwd: repo }).stdout.toString().trim()).toBe("");
+    expect(Bun.spawnSync(["git", "remote", "add", "origin", "git@github.com:foo/bar.git"], { cwd: repo }).exitCode).toBe(0);
+  });
+
   test("collapses a pre-existing multi-valued key to a single base (--replace-all)", () => {
     if (!Bun.which("git")) return;
     const repo = join(TMP, "seed-helper-multi");
     initRepo(repo);
+    addLocalOrigin(repo);
     run(["git", "config", "--add", "remote.origin.gh-resolved", "head"], repo);
     run(["git", "config", "--add", "remote.origin.gh-resolved", "base"], repo);
 

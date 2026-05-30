@@ -676,6 +676,16 @@ export function clearGhResolvedMarkers(projectDir: string): void {
  * surrounding hardening helpers — local-only or unusual repos must not abort
  * orchestration startup.
  *
+ * Gated on `remote.origin.url` being present (same guard as
+ * {@link refreshMainBranchFromRemote}): writing `remote.origin.gh-resolved`
+ * on a repo with no origin URL would CREATE a phantom `[remote "origin"]`
+ * section, after which `git remote add origin <url>` fails with "remote origin
+ * already exists" — blocking a later real-origin setup on local-only repos.
+ * Skipping when origin has no URL loses nothing: `gh pr create` cannot target a
+ * URL-less origin anyway, so there is no resolution to pin. In production the
+ * project repo is a real clone, so origin.url is always present and the seed
+ * always runs.
+ *
  * Base-for-all-projects assumption: no currently configured project wants
  * orchestration PRs to land on the upstream parent it forked from. Fork
  * projects (ocannl-staging) want PRs on the staging fork; all others are
@@ -687,6 +697,8 @@ export function clearGhResolvedMarkers(projectDir: string): void {
  * resolution.
  */
 export function seedGhResolvedToOrigin(projectDir: string): void {
+  const originUrl = safeSyncOutput(["git", "config", "--get", "remote.origin.url"], { cwd: projectDir });
+  if (!originUrl.ok || originUrl.stdout.trim().length === 0) return;
   safeSyncOutput(
     ["git", "config", "--replace-all", "remote.origin.gh-resolved", "base"],
     { cwd: projectDir },
