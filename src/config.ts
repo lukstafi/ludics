@@ -1,7 +1,7 @@
 // Config reading for ludics (Phase 2: native YAML parsing)
 
 import { existsSync, readFileSync, statSync } from "fs";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 import YAML from "yaml";
 import { atomicWriteFileSync, isPlainObject } from "./json.ts";
 import { PRIORITY_INCREASE, priorityValue } from "./tasks/markdown.ts";
@@ -295,22 +295,46 @@ export function globalAdapter(): GlobalAdapterMode {
 
 /**
  * Find the ProjectConfig entry matching a given project directory.
- * Match semantics: explicit `path` match (with ~/… expansion and worktree prefix),
- * then fallback to basename match against project name or repo tail.
+ * Match semantics, tried in order against each configured project's `path`:
+ * - Exact match against the configured path (with `~/` expansion).
+ * - The directory is a subdirectory of the configured path (`<path>/...`).
+ * - The directory is an orchestration worktree sibling of the configured
+ *   path: same parent directory, basename prefixed with the project's
+ *   directory basename plus `-` (e.g. `~/ocannl-staging` matches
+ *   `~/ocannl-staging-task-71e28eb1-s1`). Without this branch the
+ *   wrong-base-repo gate in `verifyPhaseOutcome` silently no-ops for every
+ *   orchestration slot, because slots always run inside such worktrees.
+ *
+ * Falls back to basename match against project name or repo tail when no
+ * `path` is configured (or none of the path branches match).
  */
 export function findProjectConfig(
   projectDir: string,
   config?: LudicsFullConfig,
 ): ProjectConfig | null {
   const cfg = config ?? loadConfigSync();
+  const normalized = projectDir.replace(/\/+$/, "");
   return (cfg.projects ?? []).find((p) => {
     if (p.path) {
       const expanded = (String(p.path).startsWith("~/")
         ? join(process.env.HOME ?? "~", String(p.path).slice(2))
         : String(p.path)).replace(/\/+$/, "");
-      if (projectDir === expanded || projectDir.startsWith(expanded + "/")) return true;
+      if (normalized === expanded || normalized.startsWith(expanded + "/")) return true;
+      // Orchestration worktree sibling: same parent, basename prefixed with
+      // the configured project's basename + "-". The "-" separator anchors
+      // the match so a sibling project literally named `<base>extra/` (no
+      // dash) does not false-positive.
+      const expandedParent = dirname(expanded);
+      const expandedBase = basename(expanded);
+      if (
+        expandedBase.length > 0 &&
+        dirname(normalized) === expandedParent &&
+        basename(normalized).startsWith(expandedBase + "-")
+      ) {
+        return true;
+      }
     }
-    const dir = basename(projectDir).toLowerCase();
+    const dir = basename(normalized).toLowerCase();
     const repoTail = String(p.repo ?? "").split("/").pop()?.toLowerCase() ?? "";
     return dir === String(p.name ?? "").toLowerCase() || dir === repoTail;
   }) ?? null;

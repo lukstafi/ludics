@@ -422,3 +422,135 @@ projects:
     expect(proj!.requires_t3code === true).toBe(false);
   });
 });
+
+describe("findProjectConfig: orchestration worktree resolution", () => {
+  // Regression: orchestration slots run inside per-task worktrees named
+  // `<projectBasename>-<feature-slug>[-s<N>]` as siblings of the configured
+  // project path. Without explicit sibling matching, findProjectConfig
+  // returned null for these paths, silently disabling the wrong-base-repo
+  // gate in `runner.verifyPhaseOutcome` (no projectRepo → guarded skip).
+  // PR #458 to ahrefs/ocannl from an `ocannl-staging-task-...-s1` worktree
+  // landed on upstream instead of the fork because of this.
+
+  test("matches the exact configured path", async () => {
+    const { loadConfigSync, findProjectConfig } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+    path: ~/ocannl-staging
+`);
+    const proj = findProjectConfig(join(TMP, "ocannl-staging"), loadConfigSync());
+    expect(proj?.name).toBe("ocannl");
+  });
+
+  test("matches a subdirectory of the configured path", async () => {
+    const { loadConfigSync, findProjectConfig } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+    path: ~/ocannl-staging
+`);
+    const proj = findProjectConfig(join(TMP, "ocannl-staging", "tensor"), loadConfigSync());
+    expect(proj?.name).toBe("ocannl");
+  });
+
+  test("matches an orchestration worktree sibling (the regression)", async () => {
+    const { loadConfigSync, findProjectConfig } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+    path: ~/ocannl-staging
+`);
+    const proj = findProjectConfig(join(TMP, "ocannl-staging-task-71e28eb1-s1"), loadConfigSync());
+    expect(proj?.name).toBe("ocannl");
+    expect(proj?.repo).toBe("lukstafi/ocannl-staging");
+  });
+
+  test("matches per-agent worktree sibling (duo mode: `<base>-<task>-s<N>-coder`)", async () => {
+    const { loadConfigSync, findProjectConfig } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: alpha
+    repo: owner/alpha
+    path: ~/alpha
+`);
+    const proj = findProjectConfig(join(TMP, "alpha-task-deadbeef-s2-coder"), loadConfigSync());
+    expect(proj?.name).toBe("alpha");
+  });
+
+  test("tolerates trailing slash on the projectDir argument", async () => {
+    const { loadConfigSync, findProjectConfig } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+    path: ~/ocannl-staging
+`);
+    const proj = findProjectConfig(join(TMP, "ocannl-staging-task-abc-s1") + "/", loadConfigSync());
+    expect(proj?.name).toBe("ocannl");
+  });
+
+  test("does NOT match a sibling that shares a prefix without the dash separator", async () => {
+    const { loadConfigSync, findProjectConfig } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+    path: ~/ocannl-staging
+`);
+    // No `-` between "ocannl-staging" and the suffix — must not match.
+    const proj = findProjectConfig(join(TMP, "ocannl-stagingextra"), loadConfigSync());
+    expect(proj).toBeNull();
+  });
+
+  test("does NOT match a directory in a different parent", async () => {
+    const { loadConfigSync, findProjectConfig } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+    path: ~/ocannl-staging
+`);
+    // Different parent directory — sibling-match guard requires identical parents.
+    mkdirSync(join(TMP, "elsewhere"), { recursive: true });
+    const proj = findProjectConfig(join(TMP, "elsewhere", "ocannl-staging-task-abc-s1"), loadConfigSync());
+    expect(proj).toBeNull();
+  });
+
+  test("falls back to basename match when no path is configured", async () => {
+    const { loadConfigSync, findProjectConfig } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+`);
+    const proj = findProjectConfig("/tmp/ocannl-staging", loadConfigSync());
+    expect(proj?.name).toBe("ocannl");
+  });
+
+  test("worktree-sibling match does not depend on the configured path existing on disk", async () => {
+    // Defensive: lookup should be purely lexical so that lookups in tests
+    // and in production environments without checkouts still resolve.
+    const { loadConfigSync, findProjectConfig } = await import("./config.ts");
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+projects:
+  - name: ocannl
+    repo: lukstafi/ocannl-staging
+    path: /nonexistent/ocannl-staging
+`);
+    const proj = findProjectConfig("/nonexistent/ocannl-staging-task-71e28eb1-s1", loadConfigSync());
+    expect(proj?.name).toBe("ocannl");
+  });
+});
