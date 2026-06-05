@@ -17,6 +17,7 @@ import {
   type RunGit,
 } from "./git-runner.ts";
 import { parseLeftRightCount } from "./briefing-lag.ts";
+import { OUTBOUND_EVENT_CAUSE_REMEDY } from "./staging-event-meta.ts";
 import { sentinelFresh, touchSentinel } from "./sentinel.ts";
 import type { ProjectConfig } from "./config.ts";
 
@@ -215,6 +216,7 @@ export type OutboundPushOutcome =
   | "skipped-no-staging-commits"
   | "skipped-not-fast-forward"
   | "skipped-no-push-credentials"
+  | "skipped-no-workflow-scope"
   | "skipped-local-staging-behind"
   | "pushed"
   | "error";
@@ -245,8 +247,23 @@ export function outboundSentinelFile(dir: string, project: string): string {
 export function classifyPushFailure(
   stdout: string,
   stderr?: string,
-): "credentials" | "network" | "other" {
+): "workflow-scope" | "credentials" | "network" | "other" {
   const blob = `${stdout}\n${stderr ?? ""}`.toLowerCase();
+  // Workflow-scope rejection MUST be checked before credentials: GitHub's
+  // refusal is technically a 403/permission event and could partially match
+  // the credentials regex below, but this class is more specific and more
+  // actionable (the remedy is `gh auth refresh -s workflow`, not a full
+  // credential reset). The literal is:
+  //   ! [remote rejected] origin/master -> master (refusing to allow an
+  //   OAuth App to create or update workflow `…` without `workflow` scope)
+  // Lowercasing handles case; the char class tolerates ASCII single-quote vs
+  // backtick around `workflow`; `create or update workflow` is a
+  // quote-agnostic anchor that also covers the fine-grained-PAT phrasing.
+  // The bare word `workflow` alone is deliberately NOT matched (too broad —
+  // a generic remote hook failure mentioning "workflow" must stay `other`).
+  if (/create or update workflow|without ['`]?workflow['`]? scope/.test(blob)) {
+    return "workflow-scope";
+  }
   // Credentials patterns. The first three are the AC-named SSH /
   // HTTPS-credential shapes. The remaining four catch GitHub's
   // 403/401 push-denial shapes — which would otherwise fall through to
@@ -503,7 +520,23 @@ export function syncUpstreamMainFromStaging(
 
         const kind = classifyPushFailure(pushed.stdout, pushed.stderr);
         const detailBlob = `push: ${(pushed.stderr ?? pushed.stdout).trim().slice(0, 200)}`;
-        if (kind === "credentials") {
+        if (kind === "workflow-scope") {
+          // Workflow-scope rejection: a commit in the FF range edited a
+          // .github/workflows/ file and the push token lacks the `workflow`
+          // scope. Fixable in seconds (gh auth refresh -s workflow), so we do
+          // NOT touch the sentinel — the next tick retries and the
+          // stale-sentinel health signal stays armed. The event message names
+          // the cause + remedy so the events log / briefing surfaces carry the
+          // copy-pasteable fix.
+          const meta = OUTBOUND_EVENT_CAUSE_REMEDY.staging_outbound_workflow_scope_missing!;
+          out.push({ project, outcome: "skipped-no-workflow-scope", detail: detailBlob });
+          opts.emitEvent?.({
+            type: "staging_outbound_workflow_scope_missing",
+            project,
+            message: `${project}: outbound push failed — ${meta.cause}; remedy: ${meta.remedy}`,
+          });
+          // NO sentinel touch.
+        } else if (kind === "credentials") {
           out.push({ project, outcome: "skipped-no-push-credentials", detail: detailBlob });
           opts.emitEvent?.({
             type: "staging_outbound_credentials_missing",
