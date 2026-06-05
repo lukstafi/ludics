@@ -14,6 +14,7 @@ import { existsSync, statSync } from "fs";
 import { join } from "path";
 import type { ProjectConfig } from "./config.ts";
 import { detectDefaultBranches, expandHome, hasRemote, type RunGit } from "./git-runner.ts";
+import { latestOutboundCauseRemedy } from "./staging-event-meta.ts";
 
 export interface FormatLagOptions {
   now: Date;
@@ -30,6 +31,15 @@ export interface FormatLagOptions {
   sentinelDir?: string;
   /** Outbound sentinel age threshold for the stale annotation. Default 48h. gh-ludics-540. */
   outboundSentinelStaleSeconds?: number;
+  /**
+   * Path to the JSONL events file (`journal/events.jsonl`). When set, a stale
+   * outbound-sentinel note is annotated with the cause + remedy of the most
+   * recent outbound push-auth event for the project (workflow-scope /
+   * credentials). When omitted, the note is emitted without the annotation —
+   * backward-compatible with callers/tests that don't surface event data.
+   * task-35e74651.
+   */
+  eventsFile?: string;
 }
 
 /**
@@ -79,6 +89,7 @@ function outboundSentinelStaleNote(
   project: string,
   now: Date,
   stale: number,
+  eventsFile?: string,
 ): string | null {
   const sentinel = join(sentinelDir, `last-outbound-fast-forward-${project}.epoch`);
   if (!existsSync(sentinel)) return null;
@@ -87,7 +98,17 @@ function outboundSentinelStaleNote(
     const ageSec = Math.max(0, Math.floor((now.getTime() - mtime) / 1000));
     if (ageSec < stale) return null;
     const hours = Math.round(ageSec / 3600);
-    return `(outbound sentinel is ~${hours}h old; upstream push may be overdue)`;
+    let note = `(outbound sentinel is ~${hours}h old; upstream push may be overdue)`;
+    // task-35e74651: when the latest outbound push-auth event names a cause +
+    // remedy (workflow-scope / credentials), append it so the operator sees
+    // the copy-pasteable fix next to the stale-sentinel warning.
+    if (eventsFile) {
+      const annotation = latestOutboundCauseRemedy(eventsFile, project);
+      if (annotation) {
+        note += ` — cause: ${annotation.cause}; remedy: ${annotation.remedy}`;
+      }
+    }
+    return note;
   } catch {
     return null;
   }
@@ -156,7 +177,7 @@ export function formatUpstreamLagSection(
     // only creates it for opt-in projects).
     if (opts.sentinelDir) {
       const outboundStale = opts.outboundSentinelStaleSeconds ?? 48 * 3600;
-      const outboundNote = outboundSentinelStaleNote(opts.sentinelDir, name, opts.now, outboundStale);
+      const outboundNote = outboundSentinelStaleNote(opts.sentinelDir, name, opts.now, outboundStale, opts.eventsFile);
       if (outboundNote) lines.push(`- ${outboundNote}`);
     }
     lines.push("");

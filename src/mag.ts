@@ -2071,13 +2071,14 @@ function runStagingFastForwardTick(): void {
       runGit: defaultRunGit,
       sentinelDir,
       emitEvent: (ev) => {
-        // Same `extra` forwarding as outbound — keeps the inbound and
-        // outbound adapter paths symmetric so future structured fields
-        // on the inbound flow (none today) don't get silently dropped.
+        // Same `extra` + `project` forwarding as outbound — keeps the inbound
+        // and outbound adapter paths symmetric so structured fields don't get
+        // silently dropped.
         emitEvent({
           event_type: ev.type,
           source: "mag",
           scope: "project",
+          project: ev.project,
           message: ev.message,
           ...(ev.extra ?? {}),
         });
@@ -2138,6 +2139,10 @@ export function runStagingOutboundPushTick(opts?: {
           event_type: ev.type,
           source: "mag",
           scope: "project",
+          // task-35e74651: persist the structured project so the briefing-lag
+          // cause/remedy annotation can match the latest outbound auth event
+          // by field instead of parsing the `${project}:` message prefix.
+          project: ev.project,
           message: ev.message,
           ...(ev.extra ?? {}),
         });
@@ -2148,6 +2153,7 @@ export function runStagingOutboundPushTick(opts?: {
         r.outcome === "pushed" ||
         r.outcome === "skipped-not-fast-forward" ||
         r.outcome === "skipped-no-push-credentials" ||
+        r.outcome === "skipped-no-workflow-scope" ||
         r.outcome === "skipped-local-staging-behind" ||
         r.outcome === "error"
       ) {
@@ -2275,6 +2281,10 @@ export async function briefingPrecomputeContext(opts?: { runGit?: RunGit }): Pro
     // "outbound sentinel stale > 48h" annotation alongside the
     // existing FETCH_HEAD freshness note.
     sentinelDir: join(harnessDir(), "mag"),
+    // task-35e74651: source for the cause/remedy annotation appended to a
+    // stale outbound-sentinel note (latest workflow-scope / credentials
+    // outbound event for the project).
+    eventsFile: join(harnessDir(), "journal", "events.jsonl"),
   });
   const upstreamLagSection = upstreamLag
     ? `## Upstream vs Staging Lag\n\n${upstreamLag.trimEnd()}\n\n`

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -1302,7 +1302,114 @@ function ocannlProject(opts: { enabled?: boolean | undefined; path?: string }): 
   return base;
 }
 
+// task-35e74651: RunGit driver that reaches step (E)'s push and returns a
+// given push result. remote/status/branch-detect/fetch/local-ff/ancestry all
+// succeed so the push is the only failure point.
+function pushPathRunGit(push: { stdout?: string; stderr?: string; exitCode?: number }): RunGit {
+  return (args) => {
+    const key = args[0] ?? "";
+    if (key === "remote") return { stdout: "origin\nupstream\n", exitCode: 0 };
+    if (key === "status") return { stdout: "", exitCode: 0 };
+    if (key === "symbolic-ref") {
+      const ref = args[1] ?? "";
+      if (ref.endsWith("/origin/HEAD")) return { stdout: "refs/remotes/origin/master\n", exitCode: 0 };
+      if (ref.endsWith("/upstream/HEAD")) return { stdout: "refs/remotes/upstream/master\n", exitCode: 0 };
+      return { stdout: "", exitCode: 128 };
+    }
+    if (key === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "master\n", exitCode: 0 };
+    if (key === "checkout") return { stdout: "", exitCode: 0 };
+    if (key === "fetch") return { stdout: "", exitCode: 0 };
+    if (key === "merge" && args[1] === "--ff-only") return { stdout: "Already up to date.\n", exitCode: 0 };
+    if (key === "rev-list" && args[1] === "--count") return { stdout: "5\n", exitCode: 0 };
+    if (key === "merge-base" && args[1] === "--is-ancestor") return { stdout: "", exitCode: 0 };
+    if (key === "push") return { stdout: push.stdout ?? "", stderr: push.stderr, exitCode: push.exitCode ?? 0 };
+    return { stdout: "", exitCode: 0 };
+  };
+}
+
+const WORKFLOW_SCOPE_STDERR =
+  "! [remote rejected] origin/master -> master (refusing to allow an OAuth App to create or update workflow `.github/workflows/gh-pages-docs.yml` without `workflow` scope)";
+
 describe("runStagingOutboundPushTick", () => {
+  test("task-35e74651: workflow-scope push rejection persists event with structured project + remedy", () => {
+    const harnessRoot = mkdtempSync("/tmp/mag-outbound-wfscope-harness-");
+    const checkoutDir = mkdtempSync("/tmp/mag-outbound-wfscope-checkout-");
+    const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
+    process.env.LUDICS_HARNESS_DIR = harnessRoot;
+    try {
+      const cfg = {
+        projects: [{
+          name: "ocannl",
+          repo: "lukstafi/ocannl-staging",
+          upstream_repo: "ahrefs/ocannl",
+          outbound_sync_enabled: true,
+          path: checkoutDir,
+        }],
+      } as unknown as LudicsFullConfig;
+      const results = runStagingOutboundPushTick({
+        isController: () => true,
+        runGit: pushPathRunGit({ stderr: WORKFLOW_SCOPE_STDERR, exitCode: 128 }),
+        config: cfg,
+        now: new Date(),
+        // sentinelDir omitted → emitEvent writes under env-overridden harnessRoot.
+      });
+      expect(results).toHaveLength(1);
+      expect(results[0]!.outcome).toBe("skipped-no-workflow-scope");
+
+      const eventsFile = join(harnessRoot, "journal", "events.jsonl");
+      expect(existsSync(eventsFile)).toBe(true);
+      const lines = readFileSync(eventsFile, "utf-8").trim().split("\n").filter(Boolean);
+      const wf = lines
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((e) => e.event_type === "staging_outbound_workflow_scope_missing");
+      expect(wf).toHaveLength(1);
+      // Mutation guard for the new `project: ev.project` adapter line: drop it
+      // and this assertion fails (the annotation lookup would then have to
+      // parse the message prefix).
+      expect(wf[0]!.project).toBe("ocannl");
+      expect(String(wf[0]!.message)).toContain("gh auth refresh -h github.com -s workflow");
+    } finally {
+      if (ORIGINAL_HARNESS_DIR === undefined) delete process.env.LUDICS_HARNESS_DIR;
+      else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
+      rmSync(harnessRoot, { recursive: true, force: true });
+      rmSync(checkoutDir, { recursive: true, force: true });
+    }
+  });
+
+  test("task-35e74651: skipped-no-workflow-scope outcome is logged to stderr", () => {
+    const sentinelDir = mkdtempSync("/tmp/outbound-wfscope-stderr-");
+    const checkoutDir = mkdtempSync("/tmp/outbound-wfscope-stderr-checkout-");
+    const cfg = {
+      projects: [{
+        name: "ocannl",
+        repo: "lukstafi/ocannl-staging",
+        upstream_repo: "ahrefs/ocannl",
+        outbound_sync_enabled: true,
+        path: checkoutDir,
+      }],
+    } as unknown as LudicsFullConfig;
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    let logged: string[];
+    try {
+      const results = runStagingOutboundPushTick({
+        isController: () => true,
+        runGit: pushPathRunGit({ stderr: WORKFLOW_SCOPE_STDERR, exitCode: 128 }),
+        config: cfg,
+        sentinelDir,
+        now: new Date(),
+      });
+      expect(results[0]!.outcome).toBe("skipped-no-workflow-scope");
+      // Capture before restore (bun:test mockRestore wipes call history).
+      logged = spy.mock.calls.map((c) => String(c[0]));
+    } finally {
+      spy.mockRestore();
+      rmSync(sentinelDir, { recursive: true, force: true });
+      rmSync(checkoutDir, { recursive: true, force: true });
+    }
+    expect(logged.some((l) => l.includes("outbound-staging-ff ocannl: skipped-no-workflow-scope"))).toBe(true);
+  });
+
+
   test("controller-gate: short-circuits with zero git invocations when isController() returns false", () => {
     const { run, calls } = recordingRunGit();
     const sentinelDir = mkdtempSync("/tmp/outbound-gate-");

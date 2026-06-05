@@ -502,6 +502,41 @@ describe("classifyPushFailure", () => {
       .toBe("credentials");
   });
 
+  // task-35e74651: workflow-scope rejection is its own class, matched BEFORE
+  // credentials so the more specific/actionable class wins.
+  test("classifies OAuth-App workflow-scope rejection as workflow-scope", () => {
+    const oauthStderr =
+      "! [remote rejected] origin/master -> master (refusing to allow an OAuth App to create or update workflow `.github/workflows/gh-pages-docs.yml` without `workflow` scope)";
+    expect(classifyPushFailure("", oauthStderr)).toBe("workflow-scope");
+  });
+
+  test("classifies ASCII-quote PAT variant `without 'workflow' scope` as workflow-scope", () => {
+    expect(classifyPushFailure("", "remote: refusing to update workflow without 'workflow' scope"))
+      .toBe("workflow-scope");
+  });
+
+  test("classifies backtick-quote variant ``without `workflow` scope`` as workflow-scope", () => {
+    expect(classifyPushFailure("", "remote: refusing to update workflow without `workflow` scope"))
+      .toBe("workflow-scope");
+  });
+
+  test("workflow-scope wins even when the blob also contains error: 403", () => {
+    // Ordering invariant: a workflow-scope rejection that ALSO carries an
+    // `error: 403` token (which the credentials regex matches) must still
+    // classify as workflow-scope, not credentials. This assertion fails if
+    // the workflow-scope check is moved below the credentials check.
+    const mixed = [
+      "remote: refusing to allow an OAuth App to create or update workflow `f.yml` without `workflow` scope",
+      "fatal: unable to access '...': The requested URL returned error: 403",
+    ].join("\n");
+    expect(classifyPushFailure("", mixed)).toBe("workflow-scope");
+  });
+
+  test("generic non-fast-forward remote rejection stays 'other' (workflow matcher is narrow)", () => {
+    expect(classifyPushFailure("", "! [remote rejected] origin/master -> master (non-fast-forward)"))
+      .toBe("other");
+  });
+
   test("network classifier still wins for legitimate transient shapes (no 403 / no denial)", () => {
     // Negative control: a generic 'unable to access' WITHOUT any
     // credentials marker (no 403, no denial, no Write access line) must
@@ -537,6 +572,64 @@ describe("classifyPushFailure end-to-end (Codex PR #544 review)", () => {
     // The key invariant Codex flagged: sentinel must NOT exist so the
     // stale-sentinel signal fires fast.
     expect(existsSync(join(sentinelDir, "last-outbound-fast-forward-ocannl.epoch"))).toBe(false);
+  });
+});
+
+describe("workflow-scope push rejection end-to-end (task-35e74651)", () => {
+  test("positive: workflow-scope rejection → skipped-no-workflow-scope, event with remedy, sentinel NOT touched", () => {
+    const dir = mkdtempSync("/tmp/outbound-checkout-wfscope-");
+    const sentinelDir = mkdtempSync("/tmp/outbound-sentinel-wfscope-");
+    const wfStderr =
+      "! [remote rejected] origin/master -> master (refusing to allow an OAuth App to create or update workflow `.github/workflows/gh-pages-docs.yml` without `workflow` scope)";
+    const events: Array<{ type: string; project: string; message: string }> = [];
+    const { run, calls } = outboundFakeGit({
+      ancestry: { exitCode: 0 },
+      revListCount: { stdout: "5\n" },
+      push: { stdout: "", stderr: wfStderr, exitCode: 128 },
+    });
+    const res = syncUpstreamMainFromStaging(
+      [project("ocannl", dir)],
+      {
+        now: new Date(),
+        runGit: run,
+        sentinelDir,
+        emitEvent: (ev) => events.push({ type: ev.type, project: ev.project, message: ev.message }),
+      },
+    );
+    expect(res[0]!.outcome).toBe("skipped-no-workflow-scope");
+    expect(calls.some((c) => c[0] === "push")).toBe(true);
+    // Event emitted, names the cause + copy-pasteable remedy.
+    const ev = events.find((e) => e.type === "staging_outbound_workflow_scope_missing");
+    expect(ev).toBeDefined();
+    expect(ev!.project).toBe("ocannl");
+    expect(ev!.message).toContain("gh auth refresh -h github.com -s workflow");
+    // Core invariant: sentinel NOT touched → next tick retries + stale signal stays armed.
+    expect(existsSync(join(sentinelDir, "last-outbound-fast-forward-ocannl.epoch"))).toBe(false);
+  });
+
+  test("negative control: plain non-fast-forward rejection → error, generic event, sentinel TOUCHED", () => {
+    const dir = mkdtempSync("/tmp/outbound-checkout-nff-");
+    const sentinelDir = mkdtempSync("/tmp/outbound-sentinel-nff-");
+    const nffStderr = "! [remote rejected] origin/master -> master (non-fast-forward)";
+    const events: Array<{ type: string; project: string }> = [];
+    const { run } = outboundFakeGit({
+      ancestry: { exitCode: 0 },
+      revListCount: { stdout: "5\n" },
+      push: { stdout: "", stderr: nffStderr, exitCode: 128 },
+    });
+    const res = syncUpstreamMainFromStaging(
+      [project("ocannl", dir)],
+      {
+        now: new Date(),
+        runGit: run,
+        sentinelDir,
+        emitEvent: (ev) => events.push({ type: ev.type, project: ev.project }),
+      },
+    );
+    expect(res[0]!.outcome).toBe("error");
+    expect(events).toContainEqual({ type: "staging_outbound_error", project: "ocannl" });
+    // Genuinely-stuck case keeps the 24h throttle: sentinel DOES exist.
+    expect(existsSync(join(sentinelDir, "last-outbound-fast-forward-ocannl.epoch"))).toBe(true);
   });
 });
 

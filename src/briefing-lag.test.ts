@@ -269,4 +269,82 @@ describe("briefing-lag", () => {
     );
     expect(sentinelDirNoFile).not.toContain("outbound sentinel is");
   });
+
+  // task-35e74651: stale outbound-sentinel note carries a cause + remedy
+  // annotation read from the latest outbound push-auth event for the project.
+  function staleOutboundSetup(): { dir: string; sentinelDir: string; rg: RunGit } {
+    const dir = tmp();
+    const sentinelDir = mkdtempSync("/tmp/outbound-sentinel-");
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    const sentinel = join(sentinelDir, "last-outbound-fast-forward-ocannl.epoch");
+    writeFileSync(sentinel, "");
+    const fiftyHoursAgo = new Date(Date.now() - 50 * 3600 * 1000);
+    utimesSync(sentinel, fiftyHoursAgo, fiftyHoursAgo);
+    const rg = fakeGit([
+      { match: ["remote"], stdout: "origin\nupstream\n" },
+      { match: ["symbolic-ref", "refs/remotes/origin/HEAD"], stdout: "refs/remotes/origin/master\n" },
+      { match: ["symbolic-ref", "refs/remotes/upstream/HEAD"], stdout: "refs/remotes/upstream/master\n" },
+      { match: ["rev-list"], stdout: "0\t0\n" },
+      { match: ["log"], stdout: "abc 2026-01-01 hi\n" },
+    ]);
+    return { dir, sentinelDir, rg };
+  }
+
+  function writeEvents(lines: Record<string, unknown>[]): string {
+    const evDir = mkdtempSync("/tmp/outbound-events-");
+    const file = join(evDir, "events.jsonl");
+    writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    return file;
+  }
+
+  test("formatUpstreamLagSection: stale outbound note includes workflow-scope cause/remedy", () => {
+    const { dir, sentinelDir, rg } = staleOutboundSetup();
+    const eventsFile = writeEvents([
+      { event_type: "staging_outbound_workflow_scope_missing", project: "ocannl", epoch: 100, message: "ocannl: x" },
+    ]);
+    const out = formatUpstreamLagSection(
+      [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: dir } as ProjectConfig],
+      { now: new Date(), runGit: rg, sentinelDir, eventsFile },
+    );
+    expect(out).toContain("outbound sentinel is");
+    expect(out).toContain("cause: push token lacks `workflow` scope");
+    expect(out).toContain("remedy: gh auth refresh -h github.com -s workflow");
+  });
+
+  test("formatUpstreamLagSection: stale outbound note includes credentials cause/remedy", () => {
+    const { dir, sentinelDir, rg } = staleOutboundSetup();
+    const eventsFile = writeEvents([
+      { event_type: "staging_outbound_credentials_missing", project: "ocannl", epoch: 100, message: "ocannl: x" },
+    ]);
+    const out = formatUpstreamLagSection(
+      [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: dir } as ProjectConfig],
+      { now: new Date(), runGit: rg, sentinelDir, eventsFile },
+    );
+    expect(out).toContain("cause: missing/invalid push credentials");
+    expect(out).toContain("remedy:");
+  });
+
+  test("formatUpstreamLagSection: stale outbound note is unannotated when no relevant event / no eventsFile", () => {
+    // Arm 1: eventsFile present but no matching event → base note only.
+    const a = staleOutboundSetup();
+    const eventsFile = writeEvents([
+      { event_type: "staging_outbound_fast_forwarded", project: "ocannl", epoch: 100, message: "ocannl: pushed" },
+    ]);
+    const out1 = formatUpstreamLagSection(
+      [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: a.dir } as ProjectConfig],
+      { now: new Date(), runGit: a.rg, sentinelDir: a.sentinelDir, eventsFile },
+    );
+    expect(out1).toContain("outbound sentinel is");
+    expect(out1).not.toContain("cause:");
+    expect(out1).not.toContain("remedy:");
+
+    // Arm 2: eventsFile omitted entirely → base note only (back-compat).
+    const b = staleOutboundSetup();
+    const out2 = formatUpstreamLagSection(
+      [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: b.dir } as ProjectConfig],
+      { now: new Date(), runGit: b.rg, sentinelDir: b.sentinelDir },
+    );
+    expect(out2).toContain("outbound sentinel is");
+    expect(out2).not.toContain("cause:");
+  });
 });
