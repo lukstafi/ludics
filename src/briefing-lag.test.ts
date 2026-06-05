@@ -297,10 +297,15 @@ describe("briefing-lag", () => {
     return file;
   }
 
+  // Event epoch must be NEWER than the sentinel mtime (the stale sentinel is
+  // ~50h old) for the annotation to apply — see the obsolete-event control
+  // below. Use ~1h ago.
+  const recentEpoch = () => Math.floor((Date.now() - 1 * 3600 * 1000) / 1000);
+
   test("formatUpstreamLagSection: stale outbound note includes workflow-scope cause/remedy", () => {
     const { dir, sentinelDir, rg } = staleOutboundSetup();
     const eventsFile = writeEvents([
-      { event_type: "staging_outbound_workflow_scope_missing", project: "ocannl", epoch: 100, message: "ocannl: x" },
+      { event_type: "staging_outbound_workflow_scope_missing", project: "ocannl", epoch: recentEpoch(), message: "ocannl: x" },
     ]);
     const out = formatUpstreamLagSection(
       [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: dir } as ProjectConfig],
@@ -314,7 +319,7 @@ describe("briefing-lag", () => {
   test("formatUpstreamLagSection: stale outbound note includes credentials cause/remedy", () => {
     const { dir, sentinelDir, rg } = staleOutboundSetup();
     const eventsFile = writeEvents([
-      { event_type: "staging_outbound_credentials_missing", project: "ocannl", epoch: 100, message: "ocannl: x" },
+      { event_type: "staging_outbound_credentials_missing", project: "ocannl", epoch: recentEpoch(), message: "ocannl: x" },
     ]);
     const out = formatUpstreamLagSection(
       [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: dir } as ProjectConfig],
@@ -346,5 +351,27 @@ describe("briefing-lag", () => {
     );
     expect(out2).toContain("outbound sentinel is");
     expect(out2).not.toContain("cause:");
+  });
+
+  test("formatUpstreamLagSection: obsolete auth event predating the sentinel is NOT annotated (Codex PR #557 P2)", () => {
+    // The reviewer scenario: a workflow-scope failure was fixed (a later
+    // success touched the sentinel), then the sentinel went stale for an
+    // unrelated reason (missed keepalive ticks). The old auth event still sits
+    // in events.jsonl but predates the sentinel mtime, so it must NOT surface
+    // an obsolete remedy. The sentinel here is ~50h old; the event is ~100h
+    // old (older than the sentinel mtime). Mutation: drop the `sinceEpoch`
+    // filter and this annotation reappears, failing the assertion.
+    const { dir, sentinelDir, rg } = staleOutboundSetup();
+    const hundredHoursAgo = Math.floor((Date.now() - 100 * 3600 * 1000) / 1000);
+    const eventsFile = writeEvents([
+      { event_type: "staging_outbound_workflow_scope_missing", project: "ocannl", epoch: hundredHoursAgo, message: "ocannl: x" },
+    ]);
+    const out = formatUpstreamLagSection(
+      [{ name: "ocannl", repo: "o/r", upstream_repo: "u/r", path: dir } as ProjectConfig],
+      { now: new Date(), runGit: rg, sentinelDir, eventsFile },
+    );
+    expect(out).toContain("outbound sentinel is");
+    expect(out).not.toContain("cause:");
+    expect(out).not.toContain("remedy:");
   });
 });

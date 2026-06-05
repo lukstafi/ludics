@@ -47,13 +47,24 @@ export const OUTBOUND_EVENT_CAUSE_REMEDY: Record<string, OutboundCauseRemedy> = 
  * The newest qualifying event wins (max numeric `epoch`; later line breaks
  * ties / missing epochs).
  *
+ * `opts.sinceEpoch`: when set, events with `epoch < sinceEpoch` are ignored.
+ * Callers pass the outbound sentinel mtime here so a stale sentinel is only
+ * annotated with an auth failure that occurred *after* the last successful /
+ * error tick — an obsolete failure that predates a later success (and a
+ * sentinel that went stale for an unrelated reason, e.g. missed keepalive
+ * ticks) must not surface a no-longer-applicable remedy. An event with no
+ * usable `epoch` (treated as 0) is dropped under a positive `sinceEpoch`,
+ * since it cannot be proven newer than the boundary.
+ *
  * Best-effort: a missing/empty/unparseable file yields `null` rather than
  * throwing — this feeds an informational briefing annotation, never a gate.
  */
 export function latestOutboundCauseRemedy(
   eventsFile: string,
   project: string,
+  opts?: { sinceEpoch?: number },
 ): OutboundCauseRemedy | null {
+  const sinceEpoch = opts?.sinceEpoch;
   let content: string;
   try {
     if (!existsSync(eventsFile)) return null;
@@ -83,6 +94,10 @@ export function latestOutboundCauseRemedy(
     const matches = structured === project || message.startsWith(`${project}:`);
     if (!matches) continue;
     const epoch = typeof parsed.epoch === "number" && Number.isFinite(parsed.epoch) ? parsed.epoch : 0;
+    // Drop failures that predate the sentinel boundary (last successful/error
+    // tick) — they're obsolete once a later success or unrelated staleness
+    // occurred. `order++` still advances so tie-break ordering is unaffected.
+    if (sinceEpoch !== undefined && epoch < sinceEpoch) { order++; continue; }
     const cur = { epoch, order: order++, type };
     if (
       best === null ||

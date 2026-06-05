@@ -101,9 +101,15 @@ function outboundSentinelStaleNote(
     let note = `(outbound sentinel is ~${hours}h old; upstream push may be overdue)`;
     // task-35e74651: when the latest outbound push-auth event names a cause +
     // remedy (workflow-scope / credentials), append it so the operator sees
-    // the copy-pasteable fix next to the stale-sentinel warning.
+    // the copy-pasteable fix next to the stale-sentinel warning. Only consider
+    // events newer than the sentinel mtime (the last successful/error tick):
+    // an auth failure that predates a later success — or a sentinel that went
+    // stale for an unrelated reason such as missed keepalive ticks — must not
+    // surface an obsolete remedy (Codex PR #557 P2).
     if (eventsFile) {
-      const annotation = latestOutboundCauseRemedy(eventsFile, project);
+      const annotation = latestOutboundCauseRemedy(eventsFile, project, {
+        sinceEpoch: Math.floor(mtime / 1000),
+      });
       if (annotation) {
         note += ` — cause: ${annotation.cause}; remedy: ${annotation.remedy}`;
       }

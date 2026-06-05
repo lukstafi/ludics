@@ -80,6 +80,29 @@ describe("latestOutboundCauseRemedy", () => {
     expect(got).toEqual(OUTBOUND_EVENT_CAUSE_REMEDY.staging_outbound_credentials_missing!);
   });
 
+  test("sinceEpoch: events older than the boundary are ignored (Codex PR #557 P2)", () => {
+    const file = tmpEvents([
+      { event_type: "staging_outbound_workflow_scope_missing", project: "ocannl", epoch: 100, message: "ocannl: x" },
+    ]);
+    // Boundary above the event → dropped.
+    expect(latestOutboundCauseRemedy(file, "ocannl", { sinceEpoch: 200 })).toBeNull();
+    // Boundary at/below the event → kept.
+    expect(latestOutboundCauseRemedy(file, "ocannl", { sinceEpoch: 100 }))
+      .toEqual(OUTBOUND_EVENT_CAUSE_REMEDY.staging_outbound_workflow_scope_missing!);
+    expect(latestOutboundCauseRemedy(file, "ocannl", { sinceEpoch: 50 }))
+      .toEqual(OUTBOUND_EVENT_CAUSE_REMEDY.staging_outbound_workflow_scope_missing!);
+  });
+
+  test("sinceEpoch: a newer matching event wins even when an older one predates the boundary", () => {
+    const file = tmpEvents([
+      { event_type: "staging_outbound_credentials_missing", project: "ocannl", epoch: 100, message: "ocannl: old" },
+      { event_type: "staging_outbound_workflow_scope_missing", project: "ocannl", epoch: 300, message: "ocannl: new" },
+    ]);
+    // Boundary 200 drops the credentials event but keeps the workflow one.
+    expect(latestOutboundCauseRemedy(file, "ocannl", { sinceEpoch: 200 }))
+      .toEqual(OUTBOUND_EVENT_CAUSE_REMEDY.staging_outbound_workflow_scope_missing!);
+  });
+
   test("control: no matching event → null", () => {
     const file = tmpEvents([
       { event_type: "staging_outbound_fast_forwarded", project: "ocannl", epoch: 100, message: "ocannl: pushed" },
