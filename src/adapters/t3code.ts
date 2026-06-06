@@ -115,6 +115,23 @@ export function providerDefaultModel(provider: string, orchCfg: Record<string, u
   return classModel(classForProvider(provider), orchCfg);
 }
 
+/**
+ * Codex-class default for the NON-orchestration single-thread t3code path.
+ * Unlike `classModel()`, this never throws: a plain `slot start` against a
+ * minimal/legacy config that lacks the orchestration-only `model_classes`
+ * table must still open (it previously used a built-in codex default), so an
+ * absent table degrades to "" — letting the provider/codex CLI pick its own
+ * default rather than failing the start. The loud missing-table throw is
+ * reserved for orchestration default resolution (`resolveAgentModel` /
+ * `selectOrchestrationFlags`), where the table is the documented source of
+ * truth. Exported as a test seam.
+ */
+export function singleThreadCodexModel(orchCfg: Record<string, unknown> | undefined): string {
+  const table = orchCfg?.model_classes as Record<string, unknown> | undefined;
+  const v = table?.codex;
+  return typeof v === "string" && v.trim() ? v.trim() : "";
+}
+
 function normalizeWorkspacePath(ctx: AdapterContext): string {
   const raw = ctx.path && ctx.path !== "null"
     ? ctx.path
@@ -586,7 +603,7 @@ async function ensureThread(
   desired: DesiredThreadConfig,
   existingRecord: T3CodeThreadRecord | null | undefined,
 ): Promise<T3CodeThreadRecord> {
-  const model = desired.model || classModel("codex", loadConfigOrchestration());
+  const model = desired.model || singleThreadCodexModel(loadConfigOrchestration());
   const createdAt = isoNow();
 
   const existingThread = existingRecord ? findThread(snapshot, existingRecord.threadId) : null;
@@ -727,7 +744,7 @@ async function startSingleThread(
 
   return await withClient(record, async (client) => {
     const snapshot = await client.getSnapshot();
-    const defaultModelSelection: T3ModelSelection = { provider: "codex", model: options.model || classModel("codex", loadConfigOrchestration()) };
+    const defaultModelSelection: T3ModelSelection = { provider: "codex", model: options.model || singleThreadCodexModel(loadConfigOrchestration()) };
     const projectId = await ensureProject(client, snapshot, workspaceRoot, defaultModelSelection);
     const threadRecord = await ensureThread(
       client,

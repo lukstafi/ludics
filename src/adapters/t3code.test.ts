@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { buildOrchestratedDesiredThreadConfig, canReuseSlotThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError, resolveAgentModel, classModel, providerDefaultModel } from "./t3code.ts";
+import { buildOrchestratedDesiredThreadConfig, canReuseSlotThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError, resolveAgentModel, classModel, providerDefaultModel, singleThreadCodexModel } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 import { mergeAdapterState } from "../slots/markdown.ts";
 import { emptySlotData } from "../slots/json.ts";
@@ -741,6 +741,30 @@ describe("resolveAgentModel — runtime-path fails loudly when the class table i
   test("classModel / providerDefaultModel throw on a missing class too", () => {
     expect(() => classModel("claude-opus", {})).toThrow(/model_classes\.claude-opus is required/);
     expect(() => providerDefaultModel("claude-code", {})).toThrow(/model_classes\.claude-sonnet is required/);
+  });
+});
+
+describe("singleThreadCodexModel — non-orchestration path degrades, never throws (PR #561 codex P2)", () => {
+  // Regression: the non-orchestration single-thread t3code start (startSingleThread /
+  // ensureThread fallback) must NOT hard-require the orchestration-only model_classes
+  // table — a plain `slot start` against a minimal/legacy config previously opened
+  // with the built-in codex default. Harness: an orchCfg with NO model_classes table.
+  // Mutation: routing the single-thread fallback back through classModel() (which
+  // throws) flips the first two assertions to a thrown error.
+  test("absent table → '' (provider/CLI default), does not throw", () => {
+    expect(singleThreadCodexModel(undefined)).toBe("");
+    expect(singleThreadCodexModel({})).toBe("");
+    expect(singleThreadCodexModel({ model_classes: {} })).toBe("");
+  });
+
+  test("present codex class → the configured value (table still preferred)", () => {
+    expect(singleThreadCodexModel({ model_classes: { codex: "gpt-5.5" } })).toBe("gpt-5.5");
+    expect(singleThreadCodexModel({ model_classes: { codex: "  gpt-5.5  " } })).toBe("gpt-5.5");
+  });
+
+  test("contrast: orchestration resolution still throws on the same table-less config", () => {
+    // The loud failure is reserved for orchestration defaults — same input, opposite contract.
+    expect(() => classModel("codex", {})).toThrow(/model_classes\.codex is required/);
   });
 });
 
