@@ -37,8 +37,16 @@ slots:
   count: 2
 `;
   if (t3codeEnabled) {
+    // task-c48b7beb: selectOrchestrationFlags resolves the claude-code coder
+    // model through mag.orchestration.model_classes and throws when a tracked
+    // class is absent, so the auto-fill config must carry the table.
     yaml += `mag:
   t3code_integration_enabled: true
+  orchestration:
+    model_classes:
+      codex: gpt-5.5
+      claude-opus: claude-opus-4-8
+      claude-sonnet: claude-sonnet-4-6
 `;
   }
   if (cluster) {
