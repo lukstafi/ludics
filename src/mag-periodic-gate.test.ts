@@ -1,7 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "fs";
 import { join } from "path";
 import { withSyntheticHarness } from "./test-utils.ts";
+import * as deferredCleanup from "./orchestration/deferred-cleanup.ts";
+import * as health from "./health.ts";
 
 // Note: resolveQueueRequestCommand is async-imported per-test to avoid loading
 // mag.ts side-effects until the synthetic harness is wired.
@@ -236,6 +238,90 @@ describe("briefing Tier-1 arm — activity-window gate (gh-ludics-538 AC 3)", ()
     expect(result).toBeNull();
     const last = findLastEvent(stateDir, "briefing_skipped");
     expect(last).not.toBeNull();
+  });
+});
+
+// --- health-check reaper cadence (task-703d0553 AC c) ---
+
+describe("health-check cadence drives the deferred-cleanup reaper (task-703d0553)", () => {
+  const getStateDir = withSyntheticHarness(beforeEach, afterEach);
+
+  // Would-skip world reused from the AC-11 health-check tests above: delta below
+  // HEALTH_GATE_THRESHOLD (300). The gate skips a non-bypass record here, so the
+  // positive case below MUST bypass to instantiate the executed path, and the
+  // negative case uses the same world to instantiate the gate-skip path.
+  function seedWouldSkipWorld(stateDir: string): void {
+    const lines = Array.from({ length: 1010 }, (_, i) => `{"n":${i}}`).join("\n") + "\n";
+    writeFileSync(join(stateDir, "journal", "events.jsonl"), lines);
+    writeFileSync(join(stateDir, "mag", "health-last.json"),
+      JSON.stringify({ timestamp: "2026-04-24T00:00:00Z", eventsJsonlLines: 1000, findings: [] }));
+  }
+
+  test("AC(c): executed health-check (gate allowed via bypassGate) invokes processDeferredCleanups exactly once", async () => {
+    const stateDir = getStateDir();
+    makeJournal(stateDir);
+    seedWouldSkipWorld(stateDir);
+
+    // Spy the reaper (asserts the wiring) and stub runAllTestHealth so the test
+    // does not run real test-health work in the synthetic harness. The spies sit
+    // on the same module objects mag.ts dynamically imports at dispatch time.
+    const reaperSpy = spyOn(deferredCleanup, "processDeferredCleanups").mockResolvedValue(undefined);
+    const healthSpy = spyOn(health, "runAllTestHealth").mockImplementation(() => {});
+    try {
+      const { resolveQueueRequestCommand } = await import("./mag.ts");
+      const result = await resolveQueueRequestCommand(
+        { action: "health-check", bypassGate: true, id: "hc-test-1" }, true,
+      );
+      // Sanity: the executed path returns the skill command (not a gate-skip null).
+      expect(result).toBe("/ludics-health-check");
+      // Invariant: an executed 4h health-check ticks the reaper. If the wiring
+      // were removed, this call count would drop to 0.
+      expect(reaperSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      reaperSpy.mockRestore();
+      healthSpy.mockRestore();
+    }
+  });
+
+  test("AC(c) negative control: a gate-SKIPPED health-check does NOT invoke the reaper", async () => {
+    const stateDir = getStateDir();
+    makeJournal(stateDir);
+    seedWouldSkipWorld(stateDir);
+
+    const reaperSpy = spyOn(deferredCleanup, "processDeferredCleanups").mockResolvedValue(undefined);
+    const healthSpy = spyOn(health, "runAllTestHealth").mockImplementation(() => {});
+    try {
+      const { resolveQueueRequestCommand } = await import("./mag.ts");
+      // Non-bypass record in the would-skip world → the gate skips before the
+      // reaper line is reached (it returns null on the skip arm).
+      const result = await resolveQueueRequestCommand({ action: "health-check" }, true);
+      expect(result).toBeNull();
+      // Invariant: reaping rides the EXECUTED cadence only — a skipped tick must
+      // not reap. A reaper call hoisted above the gate would fail this.
+      expect(reaperSpy).not.toHaveBeenCalled();
+    } finally {
+      reaperSpy.mockRestore();
+      healthSpy.mockRestore();
+    }
+  });
+
+  test("AC(c) negative control: the peek path (executeProgrammatic=false) does NOT invoke the reaper", async () => {
+    const stateDir = getStateDir();
+    makeJournal(stateDir);
+    seedWouldSkipWorld(stateDir);
+
+    const reaperSpy = spyOn(deferredCleanup, "processDeferredCleanups").mockResolvedValue(undefined);
+    const healthSpy = spyOn(health, "runAllTestHealth").mockImplementation(() => {});
+    try {
+      const { resolveQueueRequestCommand } = await import("./mag.ts");
+      const result = await resolveQueueRequestCommand({ action: "health-check" }, false);
+      // Peek returns the skill command for inspection without executing the body.
+      expect(result).toBe("/ludics-health-check");
+      expect(reaperSpy).not.toHaveBeenCalled();
+    } finally {
+      reaperSpy.mockRestore();
+      healthSpy.mockRestore();
+    }
   });
 });
 

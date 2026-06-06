@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 import { harnessDir as defaultHarnessDir, cleanupDelayHours } from "../config.ts";
-import { safeSyncOutput } from "../spawn.ts";
+import * as spawn from "../spawn.ts";
 import type { OrchestrationState } from "./state.ts";
 import { removeWorktreeByPath, deleteBranches, orchBranchName, purgeOrphanDirIfRecoverable } from "./worktrees.ts";
 import { removePeerSyncLink } from "./peer-sync.ts";
@@ -25,6 +25,33 @@ export interface CleanupEntry {
 
 export function cleanupPendingPath(harnessDir: string = defaultHarnessDir()): string {
   return join(harnessDir, "mag", "cleanup-pending.json");
+}
+
+/**
+ * Whether a non-zero `tmux kill-session` exit is a *benign* "the session is
+ * already gone" outcome — i.e. cleanup succeeded by virtue of the target not
+ * existing, and the entry must NOT be retained as a retryable failure.
+ *
+ * tmux reports an absent session three different ways depending on server
+ * state and version, so all three must be tolerated as a class (not just the
+ * one a given host happens to emit):
+ *   - `no server running on /tmp/tmux-.../default` — no tmux server at all
+ *     (the shape CI sees, since CI has no running server).
+ *   - `session not found: <name>`                 — some tmux builds.
+ *   - `can't find session: <name>`                — server up, session gone
+ *     (the shape a dev box with a live tmux server emits — previously NOT
+ *     tolerated, which pinned otherwise-complete entries in the queue forever).
+ *
+ * Any other stderr (permission errors, malformed args, unexpected failures)
+ * is a genuine failure worth retaining for a future tick.
+ */
+export function isBenignTmuxKillStderr(stderr: string | undefined): boolean {
+  if (!stderr) return false;
+  return (
+    stderr.includes("no server running") ||
+    stderr.includes("session not found") ||
+    stderr.includes("can't find session")
+  );
 }
 
 export function loadDeferredCleanups(harnessDir: string = defaultHarnessDir()): CleanupEntry[] {
@@ -151,7 +178,12 @@ export async function processDeferredCleanups(
       continue;
     }
 
-    let failed = false;
+    // Retain the entry for a future tick ONLY when a genuinely retryable
+    // cleanup step failed (transient, worth another attempt). Benign no-ops
+    // (already-gone worktree/branch, missing tmux session) and the paused-t3code
+    // skip do NOT set this — so an entry drains once nothing reapable remains,
+    // instead of being held hostage by an un-completable sub-step forever.
+    let retryableFailure = false;
 
     // 1. Remove worktrees
     for (const path of entry.worktreePaths) {
@@ -159,7 +191,7 @@ export async function processDeferredCleanups(
         removeWorktreeByPath(entry.projectDir, path);
       } catch (err) {
         console.error(`ludics: deferred worktree removal failed for ${path}:`, err);
-        failed = true;
+        retryableFailure = true;
       }
       // Defense-in-depth: if `removeWorktreeByPath` no-op'd because git no longer
       // registered the path (e.g. a prior `git worktree prune` swept the admin
@@ -179,15 +211,15 @@ export async function processDeferredCleanups(
       deleteBranches(entry.projectDir, entry.branches);
     } catch (err) {
       console.error(`ludics: deferred branch deletion failed:`, err);
-      failed = true;
+      retryableFailure = true;
     }
 
     // 3. Kill tmux sessions
     for (const name of entry.tmuxSessionNames) {
-      const result = safeSyncOutput(["tmux", "kill-session", "-t", name]);
-      if (!result.ok && !result.stderr?.includes("no server running") && !result.stderr?.includes("session not found")) {
+      const result = spawn.safeSyncOutput(["tmux", "kill-session", "-t", name]);
+      if (!result.ok && !isBenignTmuxKillStderr(result.stderr)) {
         console.error(`ludics: deferred tmux kill-session failed for ${name}: ${result.stderr ?? "unknown"}`);
-        failed = true;
+        retryableFailure = true;
       }
     }
 
@@ -197,54 +229,66 @@ export async function processDeferredCleanups(
         removePeerSyncLink(entry.peerSyncLink);
       } catch (err) {
         console.error(`ludics: deferred peer-sync removal failed:`, err);
-        failed = true;
+        retryableFailure = true;
       }
     }
 
     // 5. Delete t3code threads
     if (entry.t3codeThreadIds && entry.t3codeThreadIds.length > 0) {
-      try {
-        const { serverStatus } = await import("../t3code/server.ts");
-        const { T3CodeClient } = await import("../t3code/client.ts");
-        const { makeId, isoNow } = await import("./util.ts");
-        const status = await serverStatus({ harnessDir });
-        if (!status.running || !status.record) {
-          console.error("ludics: deferred t3code cleanup: server not running, will retry");
-          failed = true;
-        } else {
-          const client = new T3CodeClient({ url: status.record.wsUrl, token: status.record.authToken });
-          try {
-            for (const threadId of entry.t3codeThreadIds) {
-              try {
-                await client.dispatchCommand({
-                  type: "thread.session.stop",
-                  commandId: makeId("cmd"),
-                  threadId,
-                  createdAt: isoNow(),
-                });
-              } catch { /* session may already be stopped */ }
-              try {
-                await client.dispatchCommand({
-                  type: "thread.delete",
-                  commandId: makeId("cmd"),
-                  threadId,
-                });
-              } catch (err) {
-                console.error(`ludics: deferred t3code thread.delete failed for ${threadId}:`, err);
-                failed = true;
+      // gh-ludics-539: when t3code integration is paused, the server is down by
+      // design and the threads die with it — so thread deletion is a SKIP, not a
+      // failure. Explicitly consult the gate BEFORE probing the server: do not
+      // import serverStatus, do not construct a client, and do not mark a retry.
+      // This is the dominant backlog driver — entries carrying t3codeThreadIds
+      // previously re-queued forever because the (intentionally-down) server set
+      // failed=true on every tick.
+      const { t3codeIntegrationEnabled } = await import("../config.ts");
+      if (!t3codeIntegrationEnabled()) {
+        console.error(`ludics: deferred t3code cleanup skipped (integration paused) for task ${entry.taskId} slot ${entry.slot}`);
+      } else {
+        try {
+          const { serverStatus } = await import("../t3code/server.ts");
+          const { T3CodeClient } = await import("../t3code/client.ts");
+          const { makeId, isoNow } = await import("./util.ts");
+          const status = await serverStatus({ harnessDir });
+          if (!status.running || !status.record) {
+            console.error("ludics: deferred t3code cleanup: server not running, will retry");
+            retryableFailure = true;
+          } else {
+            const client = new T3CodeClient({ url: status.record.wsUrl, token: status.record.authToken });
+            try {
+              for (const threadId of entry.t3codeThreadIds) {
+                try {
+                  await client.dispatchCommand({
+                    type: "thread.session.stop",
+                    commandId: makeId("cmd"),
+                    threadId,
+                    createdAt: isoNow(),
+                  });
+                } catch { /* session may already be stopped */ }
+                try {
+                  await client.dispatchCommand({
+                    type: "thread.delete",
+                    commandId: makeId("cmd"),
+                    threadId,
+                  });
+                } catch (err) {
+                  console.error(`ludics: deferred t3code thread.delete failed for ${threadId}:`, err);
+                  retryableFailure = true;
+                }
               }
+            } finally {
+              client.close();
             }
-          } finally {
-            client.close();
           }
+        } catch (err) {
+          console.error(`ludics: deferred t3code thread deletion failed:`, err);
+          retryableFailure = true;
         }
-      } catch (err) {
-        console.error(`ludics: deferred t3code thread deletion failed:`, err);
-        failed = true;
       }
     }
 
-    if (failed) {
+    if (retryableFailure) {
       remaining.push(entry);
     } else {
       console.error(`ludics: deferred cleanup completed for task ${entry.taskId} slot ${entry.slot}`);
