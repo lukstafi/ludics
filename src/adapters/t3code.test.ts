@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { buildOrchestratedDesiredThreadConfig, canReuseSlotThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError } from "./t3code.ts";
+import { buildOrchestratedDesiredThreadConfig, canReuseSlotThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError, resolveAgentModel, classModel, providerDefaultModel } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 import { mergeAdapterState } from "../slots/markdown.ts";
 import { emptySlotData } from "../slots/json.ts";
@@ -38,7 +38,16 @@ function installT3codeConfigHarness(): {
       writeFileSync(
         cfgPath,
         `state_repo: owner/ludics-state\nstate_path: harness\nadapter: ${adapter}\n`
-          + `mag:\n  t3code_integration_enabled: ${t3codeEnabled}\n`,
+          + `mag:\n  t3code_integration_enabled: ${t3codeEnabled}\n`
+          // task-c48b7beb: latest-within-class table is the single source of
+          // truth; selectOrchestrationFlags / resolveAgentModel now resolve
+          // through it and throw when a tracked class is absent, so the test
+          // harness must populate it (mirrors a real config.yaml).
+          + `  orchestration:\n`
+          + `    model_classes:\n`
+          + `      codex: gpt-5.5\n`
+          + `      claude-opus: claude-opus-4-8\n`
+          + `      claude-sonnet: claude-sonnet-4-6\n`,
       );
       process.env.LUDICS_CONFIG = cfgPath;
     },
@@ -542,7 +551,7 @@ describe("selectOrchestrationFlags — tiny effort", () => {
 
   test("tiny effort ignores orchCfg.default_mode (forces solo)", () => {
     const fakeConfig = {
-      mag: { orchestration: { default_mode: "pair", default_coder: "claude-code", default_reviewer: "codex" } },
+      mag: { orchestration: { default_mode: "pair", default_coder: "claude-code", default_reviewer: "codex", model_classes: { codex: "gpt-5.5", "claude-opus": "claude-opus-4-8", "claude-sonnet": "claude-sonnet-4-6" } } },
     } as unknown as Parameters<typeof selectOrchestrationFlags>[1];
     const { args, isDuo } = selectOrchestrationFlags("tiny", fakeConfig);
     expect(args).toContain("--solo");
@@ -665,5 +674,123 @@ describe("t3code adapter cold-start DesiredThreadConfig", () => {
     expect(desiredReviewer.branch).toBe("ludics/task-cs/reviewer");
     expect(desiredCoder.provider).toBe("claude-code");
     expect(desiredReviewer.provider).toBe("codex");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-c48b7beb — latest-within-class default model resolution.
+// ---------------------------------------------------------------------------
+
+describe("resolveAgentModel — override precedence ladder (AC4)", () => {
+  // Invariant: the unspecified-default tier (latest-within-class table) sits
+  // BELOW every task-1fbd4edf override and ABOVE the provider's own default.
+  // Each test sets up exactly the state that makes one tier win and asserts the
+  // tiers below it do NOT leak through. The new (lowest) tier is the table.
+  const TABLE = { codex: "gpt-5.5", "claude-opus": "claude-opus-4-8", "claude-sonnet": "claude-sonnet-4-6" };
+  const bareCodex = { name: "reviewer", provider: "codex" as const, model: "", modelExplicit: false, role: "reviewer" as const };
+
+  test("tier 1 — --reviewer-model flag wins over everything below", () => {
+    const orchCfg = { reviewer_model: "cfg-rev", model_classes: TABLE };
+    expect(resolveAgentModel(bareCodex, 1, orchCfg, undefined, "flag-rev")).toBe("flag-rev");
+  });
+
+  test("tier 2 — explicit token model wins over config + table", () => {
+    const explicit = { ...bareCodex, model: "tok-model", modelExplicit: true };
+    const orchCfg = { reviewer_model: "cfg-rev", model_classes: TABLE };
+    expect(resolveAgentModel(explicit, 1, orchCfg, undefined, undefined)).toBe("tok-model");
+  });
+
+  test("tier 3 — reviewer_model config wins over the table", () => {
+    const orchCfg = { reviewer_model: "cfg-rev", model_classes: TABLE };
+    expect(resolveAgentModel(bareCodex, 1, orchCfg, undefined, undefined)).toBe("cfg-rev");
+  });
+
+  test("tier 4 — class table resolves the latest codex when nothing above is set", () => {
+    // Harness: bare codex token, no flag, no reviewer_model — only the table.
+    // Mutation: re-pinning DEFAULT_MODEL would make this a literal, not gpt-5.5.
+    const orchCfg = { model_classes: TABLE };
+    expect(resolveAgentModel(bareCodex, 1, orchCfg, undefined, undefined)).toBe("gpt-5.5");
+  });
+
+  test("class table picks the configured value, not a hardcoded string", () => {
+    const orchCfg = { model_classes: { ...TABLE, codex: "gpt-9.9-custom" } };
+    expect(resolveAgentModel(bareCodex, 1, orchCfg, undefined, undefined)).toBe("gpt-9.9-custom");
+  });
+});
+
+describe("resolveAgentModel — runtime-path fails loudly when the class table is unset (AC3)", () => {
+  // Runtime path (not the pure helper): resolveAgentModel is the function that
+  // start() calls per agent BEFORE createWorktrees. Harness: a bare codex agent
+  // with an orchCfg whose model_classes omits "codex" → the resolver throws,
+  // so a misconfigured slot never silently runs a stale default.
+  const bareCodex = { name: "reviewer", provider: "codex" as const, model: "", modelExplicit: false, role: "reviewer" as const };
+
+  test("throws when model_classes is entirely absent", () => {
+    expect(() => resolveAgentModel(bareCodex, 1, {}, undefined, undefined)).toThrow(
+      /mag\.orchestration\.model_classes\.codex is required/,
+    );
+  });
+
+  test("throws when the codex class is missing from the table", () => {
+    const orchCfg = { model_classes: { "claude-opus": "claude-opus-4-8" } };
+    expect(() => resolveAgentModel(bareCodex, 1, orchCfg, undefined, undefined)).toThrow(
+      /mag\.orchestration\.model_classes\.codex is required/,
+    );
+  });
+
+  test("classModel / providerDefaultModel throw on a missing class too", () => {
+    expect(() => classModel("claude-opus", {})).toThrow(/model_classes\.claude-opus is required/);
+    expect(() => providerDefaultModel("claude-code", {})).toThrow(/model_classes\.claude-sonnet is required/);
+  });
+});
+
+describe("parseOrchestrationAdapterArgs — pair fallback tokens carry no baked version", () => {
+  test("--pair with no --coder/--reviewer yields empty, non-explicit models", () => {
+    // Mutation: re-introducing "coder:codex:gpt-5.4" sets a non-empty model and
+    // flips these assertions; the empty model is what defers resolution to the
+    // config table so role config overrides can still win (edge case 4).
+    const parsed = parseOrchestrationAdapterArgs("--pair");
+    expect(parsed.orchestration!.agents).toHaveLength(2);
+    for (const agent of parsed.orchestration!.agents) {
+      expect(agent.provider).toBe("codex");
+      expect(agent.model).toBe("");
+      expect(agent.modelExplicit).toBe(false);
+    }
+  });
+});
+
+describe("selectOrchestrationFlags — coder model suffix sourced from the config table (AC1)", () => {
+  // gh-ludics-539 gate: flag on so the t3code-adapter selection does not throw.
+  // The harness config carries model_classes, so the claude-code coder suffix
+  // is the table value — not a hardcoded constant.
+  const cfg = installT3codeConfigHarness();
+  beforeEach(() => cfg.write({ t3codeEnabled: true }));
+
+  test("medium effort claude-code coder emits the opus class suffix", () => {
+    const { args } = selectOrchestrationFlags("medium");
+    expect(args).toContain(":claude-opus-4-8");
+  });
+
+  test("tiny effort claude-code coder emits the sonnet class suffix", () => {
+    const { args } = selectOrchestrationFlags("tiny");
+    expect(args).toContain(":claude-sonnet-4-6");
+  });
+
+  test("a config override of model_classes.claude-opus flows into the medium suffix", () => {
+    // Gate reads the real (harness) config; orchCfg reads the passed fakeConfig.
+    const fakeConfig = {
+      mag: { orchestration: { default_coder: "claude-code", default_reviewer: "codex", model_classes: { codex: "gpt-5.5", "claude-opus": "opus-test-override", "claude-sonnet": "claude-sonnet-4-6" } } },
+    } as unknown as Parameters<typeof selectOrchestrationFlags>[1];
+    const { args } = selectOrchestrationFlags("medium", fakeConfig);
+    expect(args).toContain(":opus-test-override");
+  });
+
+  test("missing model_classes makes selection throw before any side effect", () => {
+    const fakeConfig = {
+      mag: { orchestration: { default_coder: "claude-code", default_reviewer: "codex" } },
+    } as unknown as Parameters<typeof selectOrchestrationFlags>[1];
+    expect(() => selectOrchestrationFlags("medium", fakeConfig)).toThrow(
+      /mag\.orchestration\.model_classes\.claude-opus is required/,
+    );
   });
 });

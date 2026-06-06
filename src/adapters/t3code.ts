@@ -49,6 +49,11 @@ import { initPeerSync, writeAgentMarkerFiles } from "../orchestration/peer-sync.
 import { createWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
 import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/deferred-cleanup.ts";
 import { isoNow, makeId, nowEpoch } from "../orchestration/util.ts";
+import {
+  classForProvider,
+  resolveModelClass,
+  type ModelClass,
+} from "../orchestration/model-defaults.ts";
 
 interface ParsedAgentToken {
   name: string;
@@ -93,8 +98,22 @@ export interface DesiredThreadConfig {
   branch?: string | null;
 }
 
-const DEFAULT_MODEL = "gpt-5.4";
-const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6";
+/**
+ * Resolve a model class from a parsed `mag.orchestration` config block. The
+ * literal `orchCfg?.model_classes` read lives here (in an adapter file) so the
+ * config-reference lint's adapter-read scan (Direction 4) sees `model_classes`
+ * as covered; the throw-on-unset logic is centralized in `resolveModelClass`.
+ */
+export function classModel(cls: ModelClass, orchCfg: Record<string, unknown> | undefined): string {
+  return resolveModelClass(orchCfg?.model_classes as Record<string, unknown> | undefined, cls);
+}
+
+/** Latest-within-class default model for a provider when no explicit model was
+ *  given (codex → codex class; claude-code → claude-sonnet). Throws when the
+ *  resolved class has no entry in the config table. */
+export function providerDefaultModel(provider: string, orchCfg: Record<string, unknown> | undefined): string {
+  return classModel(classForProvider(provider), orchCfg);
+}
 
 function normalizeWorkspacePath(ctx: AdapterContext): string {
   const raw = ctx.path && ctx.path !== "null"
@@ -217,8 +236,11 @@ function parseProviderToken(raw: string, defaultName: string, defaultModel: stri
     if (provider !== "codex" && provider !== "claude-code") {
       throw new Error(`orchestration adapter args: unsupported provider ${provider}`);
     }
-    const model = provider === "claude-code" ? DEFAULT_CLAUDE_MODEL : defaultModel;
-    return { name: defaultName, provider, model, modelExplicit: false };
+    // No concrete default baked here — bare provider tokens carry an empty
+    // model and resolve through the latest-within-class table later, in
+    // resolveAgentModel (task-c48b7beb). `defaultModel` (now "" by default) is
+    // honoured if a caller passes an explicit one.
+    return { name: defaultName, provider, model: defaultModel, modelExplicit: false };
   }
 
   if (parts.length === 2) {
@@ -239,7 +261,7 @@ function parseProviderToken(raw: string, defaultName: string, defaultModel: stri
 export function parseOrchestrationAdapterArgs(raw: string): ParsedAdapterArgs {
   const args = parseArgs(raw);
   const parsed: ParsedAdapterArgs = {
-    model: DEFAULT_MODEL,
+    model: "",
     runtimeMode: "full-access",
     interactionMode: "default",
     orchestration: null,
@@ -468,8 +490,15 @@ export function parseOrchestrationAdapterArgs(raw: string): ParsedAdapterArgs {
 
   // For pair mode: modelExplicit is only true when the user explicitly provided the token
   // (i.e. --coder/--reviewer flag was given) AND that token included an explicit model.
-  const coderParsed = parseProviderToken(coderToken ?? "coder:codex:gpt-5.4", "coder", parsed.model);
-  const reviewerParsed = parseProviderToken(reviewerToken ?? "reviewer:codex:gpt-5.4", "reviewer", parsed.model);
+  // When a role token is absent, the default agent is codex with an empty model
+  // (resolved through the latest-within-class table in resolveAgentModel) — no
+  // concrete version is baked into the fallback (task-c48b7beb).
+  const coderParsed = coderToken
+    ? parseProviderToken(coderToken, "coder", parsed.model)
+    : { name: "coder", provider: "codex" as T3ProviderKind, model: "", modelExplicit: false };
+  const reviewerParsed = reviewerToken
+    ? parseProviderToken(reviewerToken, "reviewer", parsed.model)
+    : { name: "reviewer", provider: "codex" as T3ProviderKind, model: "", modelExplicit: false };
   parsed.orchestration = {
     mode,
     config: orchestrationConfig,
@@ -557,7 +586,7 @@ async function ensureThread(
   desired: DesiredThreadConfig,
   existingRecord: T3CodeThreadRecord | null | undefined,
 ): Promise<T3CodeThreadRecord> {
-  const model = desired.model || DEFAULT_MODEL;
+  const model = desired.model || classModel("codex", loadConfigOrchestration());
   const createdAt = isoNow();
 
   const existingThread = existingRecord ? findThread(snapshot, existingRecord.threadId) : null;
@@ -698,7 +727,7 @@ async function startSingleThread(
 
   return await withClient(record, async (client) => {
     const snapshot = await client.getSnapshot();
-    const defaultModelSelection: T3ModelSelection = { provider: "codex", model: options.model || DEFAULT_MODEL };
+    const defaultModelSelection: T3ModelSelection = { provider: "codex", model: options.model || classModel("codex", loadConfigOrchestration()) };
     const projectId = await ensureProject(client, snapshot, workspaceRoot, defaultModelSelection);
     const threadRecord = await ensureThread(
       client,
@@ -729,8 +758,6 @@ function loadConfigOrchestration(config?: LudicsFullConfig): Record<string, unkn
     return undefined;
   }
 }
-
-const CLAUDE_OPUS_MODEL = "claude-opus-4-6";
 
 /**
  * Thrown by `selectOrchestrationFlags()` when the t3code integration is paused
@@ -809,7 +836,7 @@ export function selectOrchestrationFlags(
   // `tiny` effort implies solo mode unconditionally (ignores orchCfg.default_mode).
   // Single coder, no pre-work phases, Sonnet for claude-code providers.
   if (norm === "tiny") {
-    const modelSuffix = coder === "claude-code" ? `:${DEFAULT_CLAUDE_MODEL}` : "";
+    const modelSuffix = coder === "claude-code" ? `:${classModel("claude-sonnet", orchCfg)}` : "";
     const args = `--solo --coder ${coder}${modelSuffix}`;
     return { adapter: resolvedAdapter, args, isDuo: false };
   }
@@ -817,13 +844,15 @@ export function selectOrchestrationFlags(
   const phaseFlags: string[] = [];
 
   // Only apply effort-based model selection for Claude providers; other providers
-  // use their own defaults (Codex picks gpt-5.4, etc.).
+  // (codex) carry no suffix and resolve their latest-within-class default later
+  // in resolveAgentModel. claude-code coders resolve to the opus class for
+  // medium/large effort, the sonnet class otherwise (task-c48b7beb).
   let coderModelSuffix = "";
   if (coder === "claude-code") {
     if (norm === "large" || norm === "medium") {
-      coderModelSuffix = `:${CLAUDE_OPUS_MODEL}`;
+      coderModelSuffix = `:${classModel("claude-opus", orchCfg)}`;
     } else {
-      coderModelSuffix = `:${DEFAULT_CLAUDE_MODEL}`;
+      coderModelSuffix = `:${classModel("claude-sonnet", orchCfg)}`;
     }
   }
 
@@ -868,8 +897,10 @@ export function selectOrchestrationFlagsForTask(
   return selectOrchestrationFlags(effort, config, { skipPlan });
 }
 
-/** Resolve the final model for an agent, applying config and adapter arg overrides. */
-function resolveAgentModel(
+/** Resolve the final model for an agent, applying config and adapter arg overrides.
+ *  Exported as a test seam: the latest-within-class fallback tier is the runtime
+ *  path that must throw loudly when the config table is missing a tracked class. */
+export function resolveAgentModel(
   agent: ParsedAgentToken,
   index: number,
   orchCfg: Record<string, unknown> | undefined,
@@ -896,8 +927,14 @@ function resolveAgentModel(
     if (cfgModel?.trim()) return cfgModel.trim();
   }
 
-  // Fallback: provider default from --coder / --reviewer token
-  return agent.model;
+  // Explicit-but-unflagged token model (e.g. `--coder claude-code:some-model`
+  // already handled above via modelExplicit; this guards any non-empty model).
+  if (agent.model.trim()) return agent.model;
+
+  // Lowest tier: latest-within-class default from the config table. Throws
+  // loudly when the resolved class is unset (task-c48b7beb) — replaces the old
+  // pinned DEFAULT_MODEL / DEFAULT_CLAUDE_MODEL constants.
+  return providerDefaultModel(agent.provider, orchCfg);
 }
 
 /** Resolve effort level for an agent, applying config and adapter arg overrides. Defaults to "high". */
@@ -969,6 +1006,19 @@ async function startOrchestratedThreads(
     };
   }
 
+  // Resolve models up-front, BEFORE createWorktrees, so a missing/blank
+  // model_classes entry throws loudly before any worktree / thread / runner
+  // side effect is created (task-c48b7beb).
+  const resolvedModels = orchestration.agents.map((agent, index) =>
+    resolveAgentModel(
+      agent,
+      index,
+      orchCfg,
+      orchestration.coderModelOverride,
+      orchestration.reviewerModelOverride,
+    ),
+  );
+
   const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode);
   symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);
 
@@ -976,13 +1026,7 @@ async function startOrchestratedThreads(
     name: agent.name,
     provider: agent.provider,
     role: agent.role,
-    model: resolveAgentModel(
-      agent,
-      index,
-      orchCfg,
-      orchestration.coderModelOverride,
-      orchestration.reviewerModelOverride,
-    ),
+    model: resolvedModels[index]!,
     thinkingEffort: resolveAgentThinkingEffort(
       agent,
       index,
@@ -1011,10 +1055,10 @@ async function startOrchestratedThreads(
 
   const slotThreads = await withClient(record, async (client) => {
     const snapshot = await client.getSnapshot();
-    const firstAgent = orchestration.agents[0];
+    const firstAgent = agents[0];
     const defaultModelSelection: T3ModelSelection = {
       provider: firstAgent?.provider ? toWireProvider(firstAgent.provider) : "codex",
-      model: firstAgent?.model ?? options.model ?? DEFAULT_MODEL,
+      model: firstAgent?.model ?? options.model ?? classModel("codex", orchCfg),
     };
     const projectId = await ensureProject(client, snapshot, projectDir, defaultModelSelection);
     const created: T3CodeThreadRecord[] = [];
