@@ -44,6 +44,14 @@ mag:
   session: ludics-mag
   ttyd_port: 7679
 
+  # Orchestration default models — bump a value when a new minor ships (config
+  # edit, not a code change). A missing/blank class fails loudly at session start.
+  orchestration:
+    model_classes:
+      codex: gpt-5.5
+      claude-opus: claude-opus-4-8
+      claude-sonnet: claude-sonnet-4-6
+
   autonomy_level:
     elaborate_tasks: auto
     infer_dependencies: auto

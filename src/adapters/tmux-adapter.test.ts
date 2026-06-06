@@ -603,3 +603,34 @@ describe("tmux adapter cold-start CWD", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// task-c48b7beb — tmux resolveAgentModel resolves the latest-within-class
+// default via the shared providerDefaultModel, with the same override
+// precedence and the same loud failure as the t3code adapter.
+// ---------------------------------------------------------------------------
+describe("tmux resolveAgentModel — latest-within-class default", () => {
+  const TABLE = { codex: "gpt-5.5", "claude-opus": "claude-opus-4-8", "claude-sonnet": "claude-sonnet-4-6" };
+  const bareCodex = { name: "reviewer", provider: "codex", model: "", modelExplicit: false, role: "reviewer" as const };
+
+  test("bare codex agent with no overrides resolves to the table's codex value", async () => {
+    const { resolveAgentModel } = await import("./tmux-adapter.ts");
+    // Harness: no flag override, no reviewer_model config — only the table.
+    // Mutation: dropping the providerDefaultModel tier returns "" instead.
+    expect(resolveAgentModel(bareCodex, 1, { model_classes: TABLE }, undefined, undefined)).toBe("gpt-5.5");
+  });
+
+  test("non-blank reviewer_model config still wins over the class default", async () => {
+    const { resolveAgentModel } = await import("./tmux-adapter.ts");
+    expect(
+      resolveAgentModel(bareCodex, 1, { reviewer_model: "cfg-rev", model_classes: TABLE }, undefined, undefined),
+    ).toBe("cfg-rev");
+  });
+
+  test("throws loudly when the resolved class is absent from the table", async () => {
+    const { resolveAgentModel } = await import("./tmux-adapter.ts");
+    expect(() => resolveAgentModel(bareCodex, 1, { model_classes: {} }, undefined, undefined)).toThrow(
+      /mag\.orchestration\.model_classes\.codex is required/,
+    );
+  });
+});

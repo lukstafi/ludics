@@ -116,10 +116,22 @@ mag:
     default_mode: pair           # pair = one slot per task; duo = hierarchical duo (two pair slots per task with swapped roles)
     default_coder: claude-code   # Default coder provider for auto-selected sessions: claude-code | codex
     default_reviewer: codex      # Default reviewer provider for auto-selected sessions: codex | claude-code
-    coder_model: ""              # Model ID for the coder agent (e.g. claude-opus-4-6); empty = provider default
+    coder_model: ""              # Model ID for the coder agent (e.g. claude-opus-4-8); empty = provider default
     reviewer_model: ""           # Model ID for the reviewer agent; empty = provider default
     coder_effort: "high"         # Effort level for the coder: low | medium | high | xhigh | max; default: high
     reviewer_effort: "high"      # Effort level for the reviewer: low | medium | high | xhigh | max; default: high
+    # Latest-within-class default models — the SINGLE SOURCE OF TRUTH for the
+    # model an unspecified orchestration session runs. HOW TO BUMP: when a new
+    # minor ships, change the value here — this is a config edit, NOT a code
+    # change. A missing/blank tracked class FAILS LOUDLY at session start,
+    # before any worktree/session is created (resolveModelClass in
+    # src/orchestration/model-defaults.ts). Provider is not class: a
+    # claude-code coder resolves to claude-opus for medium/large effort and
+    # claude-sonnet otherwise; codex coder/reviewer resolve to the codex class.
+    model_classes:
+      codex: gpt-5.5                    # latest GPT-5 (codex coder/reviewer default)
+      claude-opus: claude-opus-4-8      # latest Opus 4 (medium/large claude-code coder)
+      claude-sonnet: claude-sonnet-4-6  # latest Sonnet 4 (tiny/small coder + claude-code default)
     # Unified ladder — same rung means same relative budget across providers.
     # Per-provider CLI/wire mapping:
     #   unified  | claude-code --effort | codex model_reasoning_effort
