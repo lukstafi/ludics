@@ -932,8 +932,8 @@ export function resolveAgentModel(
   if (agent.model.trim()) return agent.model;
 
   // Lowest tier: latest-within-class default from the config table. Throws
-  // loudly when the resolved class is unset (task-c48b7beb) — replaces the old
-  // pinned DEFAULT_MODEL / DEFAULT_CLAUDE_MODEL constants.
+  // loudly when the resolved class is unset (task-c48b7beb) — replaces the
+  // pinned per-class default constants removed in this task.
   return providerDefaultModel(agent.provider, orchCfg);
 }
 
