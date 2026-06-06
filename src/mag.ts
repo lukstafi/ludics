@@ -11,7 +11,7 @@ import { atomicWriteFileSync, isPlainObject, writeJsonFile, writeJsonFileCompact
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
-import { queueRequest, queueRequestAtHead, queueHasCompactForTrigger, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults } from "./queue.ts";
+import { queueRequest, queueRequestAtHead, queueHasCompactForTrigger, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults, parseQueueLines } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
@@ -447,6 +447,33 @@ export function listInFlight(): InFlightDelivery[] {
  *  JSON has not yet appeared, sorted by `deliveredAt` ascending. */
 export function listInFlightDeliveries(): InFlightDelivery[] {
   return listInFlight().filter(r => !existsSync(magResultFile(r.requestId)));
+}
+
+/** True iff the in-flight record's stored queue `line` parses to a request
+ *  whose action and task match. Reuses the queue module's line parser
+ *  (`parseQueueLines`) so the match stays consistent with how the queue itself
+ *  reads records — not a substring scan on the `command` text. A single line
+ *  yields a one-element array, so `[0]` is the parsed record (or `undefined` on
+ *  malformed input → `false`, never throws). */
+function inFlightRecordTargets(record: InFlightDelivery, action: string, taskId: string): boolean {
+  const parsed = parseQueueLines(record.line)[0];
+  if (!parsed) return false;
+  return parsed.action === action && String(parsed.task ?? "") === taskId;
+}
+
+/** Single source of truth for "is a draft-proposal already pending OR in-flight
+ *  for this task?" (task-0d1f8d76). Both the manual `mag draft-proposal` CLI
+ *  handler and every keepalive draft-proposal enqueue site call this, so they
+ *  cannot drift apart.
+ *
+ *  Queue arm: a pending request in `mag/queue.jsonl`.
+ *  In-flight arm: a popped-but-unresolved record whose stored queue `line`
+ *  targets this task's draft-proposal. `listInFlightDeliveries()` already
+ *  filters to records whose result JSON does not yet exist, so a
+ *  resolved/reconciled record (result JSON present) never counts as in-flight. */
+export function draftProposalAlreadyPendingOrInFlight(taskId: string): boolean {
+  if (queueHasPendingActionForTask("draft-proposal", taskId)) return true;
+  return listInFlightDeliveries().some(r => inFlightRecordTargets(r, "draft-proposal", taskId));
 }
 
 /** Unlink a single in-flight record. ENOENT is a no-op (idempotent —
@@ -2950,7 +2977,7 @@ function maybeUnstickAssignedSlots(): void {
     // Elaborated, no questions, no proposal — re-queue draft-proposal
     // Skip if already queued for this specific task (prevents spam when
     // the orchestrator skips in-progress tasks without writing a proposal)
-    if (!autoProposalDebounced(taskId) && !queueHasPendingActionForTask("draft-proposal", taskId)) {
+    if (!autoProposalDebounced(taskId) && !draftProposalAlreadyPendingOrInFlight(taskId)) {
       queueRequest({ action: "draft-proposal", task: taskId });
       markAutoProposalQueued(taskId);
       emitEvent({ event_type: "slot_unstick", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `re-queued draft-proposal for stuck slot ${slotNum}` });
@@ -2961,8 +2988,9 @@ function maybeUnstickAssignedSlots(): void {
 
 /** Queue draft-proposals for the top ready queue tasks that are
  *  elaborated, have no unanswered questions, and have no proposal yet.
- *  Uses the same sorted candidate list as maybeFillEmptySlots. */
-function maybeQueueProposals(config?: LudicsFullConfig): void {
+ *  Uses the same sorted candidate list as maybeFillEmptySlots.
+ *  @internal exported for tests (task-0d1f8d76). */
+export function maybeQueueProposals(config?: LudicsFullConfig): void {
   if (startSessionsAutonomy() === "manual") return;
   if (isQueueHeld()) return; // hold suppresses proposals too
 
@@ -2991,6 +3019,10 @@ function maybeQueueProposals(config?: LudicsFullConfig): void {
     if (content.includes("\nhas_questions:")) continue;
     if (content.includes("\nproposal:")) continue;
     if (autoProposalDebounced(task.id)) continue;
+    // Per-candidate in-flight guard: the coarse queue fast-path above covers the
+    // queue arm, but a popped-but-unresolved draft-proposal for this candidate is
+    // invisible to it — share the predicate so the in-flight arm is authoritative.
+    if (draftProposalAlreadyPendingOrInFlight(task.id)) continue;
 
     queueRequest({ action: "draft-proposal", task: task.id });
     markAutoProposalQueued(task.id);
@@ -3240,7 +3272,7 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
     const topContent = existsSync(topTaskFile) ? readFileSync(topTaskFile, "utf-8") : "";
     if (!topContent.includes("\nproposal:")) {
       // Don't assign — queue proposal generation instead
-      if (!autoProposalDebounced(topTask.id) && !queueHasPendingActionForTask("draft-proposal", topTask.id)) {
+      if (!autoProposalDebounced(topTask.id) && !draftProposalAlreadyPendingOrInFlight(topTask.id)) {
         if (topContent.includes("\nhas_questions:")) {
           // Can't generate proposal yet — skip this candidate entirely
         } else {
@@ -4384,6 +4416,10 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
   ["draft-proposal", (args) => {
     const taskId = args[0];
     if (!taskId) throw new Error("task id required");
+    if (draftProposalAlreadyPendingOrInFlight(taskId)) {
+      console.log(`Skipped draft-proposal request for ${taskId}: already pending or in-flight`);
+      return;
+    }
     queueRequest({ action: "draft-proposal", task: taskId });
     console.log(`Queued draft-proposal request for ${taskId}`);
   }],
