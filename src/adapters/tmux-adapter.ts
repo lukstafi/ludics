@@ -36,7 +36,7 @@ import { createWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts"
 import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/deferred-cleanup.ts";
 import { isoNow, nowEpoch } from "../orchestration/util.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
-import { parseOrchestrationAdapterArgs } from "./t3code.ts";
+import { parseOrchestrationAdapterArgs, providerDefaultModel } from "./t3code.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -201,7 +201,7 @@ interface ParsedAgentToken {
   role?: "coder" | "reviewer";
 }
 
-function resolveAgentModel(
+export function resolveAgentModel(
   agent: ParsedAgentToken,
   index: number,
   orchCfg: Record<string, unknown> | undefined,
@@ -221,7 +221,10 @@ function resolveAgentModel(
     const cfgModel = orchCfg?.reviewer_model as string | undefined;
     if (cfgModel?.trim()) return cfgModel.trim();
   }
-  return agent.model;
+  if (agent.model.trim()) return agent.model;
+  // Lowest tier: latest-within-class default from the config table (shared with
+  // t3code). Throws loudly when the resolved class is unset (task-c48b7beb).
+  return providerDefaultModel(agent.provider, orchCfg);
 }
 
 function resolveAgentThinkingEffort(
@@ -591,6 +594,18 @@ async function start(ctx: AdapterContext): Promise<string> {
     };
   }
 
+  // Resolve models up-front, BEFORE createWorktrees / tmux sessions, so a
+  // missing/blank model_classes entry throws before any side effect (task-c48b7beb).
+  const resolvedModels = orchestration.agents.map((agent, index) =>
+    resolveAgentModel(
+      agent as ParsedAgentToken,
+      index,
+      orchCfg,
+      orchestration.coderModelOverride,
+      orchestration.reviewerModelOverride,
+    ),
+  );
+
   const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode);
   symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);
 
@@ -598,13 +613,7 @@ async function start(ctx: AdapterContext): Promise<string> {
     name: agent.name,
     provider: agent.provider,
     role: agent.role,
-    model: resolveAgentModel(
-      agent as ParsedAgentToken,
-      index,
-      orchCfg,
-      orchestration.coderModelOverride,
-      orchestration.reviewerModelOverride,
-    ),
+    model: resolvedModels[index]!,
     thinkingEffort: resolveAgentThinkingEffort(
       agent as ParsedAgentToken,
       index,

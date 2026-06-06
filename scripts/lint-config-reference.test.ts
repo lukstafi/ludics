@@ -296,6 +296,18 @@ describe("runLint — adapter-call-site direction (gh-ludics-496)", () => {
     }
   });
 
+  test("task-c48b7beb — real repo: model_classes is covered (not inert), lint exits 0", () => {
+    // World-sanity probe against the live repo: the new mag.orchestration.model_classes
+    // leaf must be documented in templates/config.reference.yaml AND read via a
+    // literal orchCfg?.model_classes in an adapter source. If the read seam is
+    // ever DRY-refactored out of t3code.ts, model_classes turns inert and this
+    // assertion (plus lint:config-reference) fails.
+    const root = join(import.meta.dir, "..");
+    const result = runLint(root);
+    expect(result.inertYamlKeys).not.toContain("model_classes");
+    expect(result.exitCode).toBe(0);
+  });
+
   test("AC8 inert key — documented key not read by either adapter → exit 1", () => {
     const { root, cleanup } = makeFixture({
       "src/config.ts": TS_INTERFACE_WITH_ORCH,

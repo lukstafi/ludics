@@ -202,7 +202,8 @@ describe("AC 13a asymmetry pin — selectOrchestrationFlags coerces explicit nul
   test("default_coder: null in fake config → --coder claude-code", async () => {
     const { selectOrchestrationFlags } = await import("./adapters/t3code.ts");
     const fakeConfig = {
-      mag: { orchestration: { default_coder: null, default_reviewer: null } },
+      // task-c48b7beb: claude-code coder resolution now reads the class table.
+      mag: { orchestration: { default_coder: null, default_reviewer: null, model_classes: { codex: "gpt-5.5", "claude-opus": "claude-opus-4-8", "claude-sonnet": "claude-sonnet-4-6" } } },
     } as unknown as Parameters<typeof selectOrchestrationFlags>[1];
     const { args } = selectOrchestrationFlags("tiny", fakeConfig);
     // Asymmetry: null at the YAML layer collapses to the hard-coded literal.
@@ -213,7 +214,7 @@ describe("AC 13a asymmetry pin — selectOrchestrationFlags coerces explicit nul
   test("default_reviewer: null in fake config → --reviewer codex on non-tiny effort", async () => {
     const { selectOrchestrationFlags } = await import("./adapters/t3code.ts");
     const fakeConfig = {
-      mag: { orchestration: { default_coder: null, default_reviewer: null, default_mode: "pair" } },
+      mag: { orchestration: { default_coder: null, default_reviewer: null, default_mode: "pair", model_classes: { codex: "gpt-5.5", "claude-opus": "claude-opus-4-8", "claude-sonnet": "claude-sonnet-4-6" } } },
     } as unknown as Parameters<typeof selectOrchestrationFlags>[1];
     const { args } = selectOrchestrationFlags("medium", fakeConfig);
     expect(args).toContain("--reviewer codex");
