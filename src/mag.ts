@@ -1796,6 +1796,17 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       } catch (err) {
         console.error("ludics: test health check failed:", err);
       }
+      // Process deferred artifact cleanup on the 4h health-check cadence so
+      // reaping is evenly spaced (~6×/day) rather than once/day at briefing
+      // precompute (task-703d0553). Only runs on executed, non-gate-skipped
+      // health checks — peek (executeProgrammatic=false) and gate-skip both
+      // return before reaching here. Briefing precompute keeps its own call.
+      try {
+        const { processDeferredCleanups } = await import("./orchestration/deferred-cleanup.ts");
+        await processDeferredCleanups();
+      } catch (err) {
+        console.error("ludics: deferred cleanup failed:", err);
+      }
       // Auto-compact after health-check — checkpoint compaction (task-a00fc0d9 /
       // docs/proposals/auto-compact-after-checkpoints.md). Coupled to the gate
       // here so idle ticks that skip the health-check do not also fire a

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { cleanupDelayHours } from "../config.ts";
+import * as config from "../config.ts";
 import * as t3codeServer from "../t3code/server.ts";
 
 // Redirect harnessDir() to a temp directory via env var
@@ -143,6 +144,151 @@ describe("processDeferredCleanups", () => {
     await processDeferredCleanups(25);
     // No error, manifest stays empty
     expect(loadDeferredCleanups()).toEqual([]);
+  });
+});
+
+// task-703d0553: drain resilience. The old all-or-nothing `failed` flag re-queued
+// an entire entry whenever ANY sub-step failed — overwhelmingly the t3code arm,
+// which set failed=true on every tick while t3code integration is paused (server
+// down by design, gh-ludics-539). Now an entry is retained ONLY when a genuinely
+// retryable step failed; the paused-t3code arm is a skip, and benign no-ops drain.
+describe("processDeferredCleanups drain resilience (task-703d0553)", () => {
+  test("AC(a): paused-t3code entry drains, does NOT call serverStatus, and still reaps peer-sync", async () => {
+    // Harness condition: integration PAUSED + an entry whose only un-completable
+    // step is t3code thread deletion, carrying a real reapable peer-sync link.
+    const enabledSpy = spyOn(config, "t3codeIntegrationEnabled").mockReturnValue(false);
+    let serverStatusCalls = 0;
+    const serverStatusSpy = spyOn(t3codeServer, "serverStatus").mockImplementation(async () => {
+      serverStatusCalls++;
+      return { running: false, record: null, snapshot: null, reason: "should-not-be-called" };
+    });
+
+    // Concrete reapable resource: a real file at peerSyncLink. removePeerSyncLink
+    // unlinks it — its disappearance proves reapable cleanup actually ran (guards
+    // against an implementation that skips ALL cleanup when t3code is paused).
+    const peerSyncLink = join(tmpDir, ".agent-sessions", "test-task-drain-s1.session");
+    mkdirSync(dirname(peerSyncLink), { recursive: true });
+    writeFileSync(peerSyncLink, "session-link\n");
+    expect(existsSync(peerSyncLink)).toBe(true);
+
+    try {
+      recordDeferredCleanup(makeEntry({
+        taskId: "test-task-drain",
+        timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+        worktreePaths: [], branches: [], tmuxSessionNames: [],
+        peerSyncLink,
+        t3codeThreadIds: ["t-1"],
+      }));
+
+      await processDeferredCleanups(25);
+
+      // (i) entry drained — not held hostage by the paused t3code arm.
+      expect(loadDeferredCleanups()).toHaveLength(0);
+      // (ii) the gate short-circuited BEFORE any server probe.
+      expect(serverStatusCalls).toBe(0);
+      // (iii) reapable work actually happened — the peer-sync link is gone.
+      expect(existsSync(peerSyncLink)).toBe(false);
+    } finally {
+      enabledSpy.mockRestore();
+      serverStatusSpy.mockRestore();
+    }
+  });
+
+  test("AC(b): t3code ENABLED + server unreachable retains the entry for a future tick", async () => {
+    // Positive control for AC(a): the SAME not-running server is a genuinely
+    // retryable failure when integration is enabled, so the entry must stay.
+    const enabledSpy = spyOn(config, "t3codeIntegrationEnabled").mockReturnValue(true);
+    const serverStatusSpy = spyOn(t3codeServer, "serverStatus").mockResolvedValue(
+      { running: false, record: null, snapshot: null, reason: "transiently-down" },
+    );
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      recordDeferredCleanup(makeEntry({
+        taskId: "test-task-enabled-down",
+        timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+        worktreePaths: [], branches: [], tmuxSessionNames: [], peerSyncLink: null,
+        t3codeThreadIds: ["t-1"],
+      }));
+
+      await processDeferredCleanups(25);
+
+      const remaining = loadDeferredCleanups();
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]!.t3codeThreadIds).toEqual(["t-1"]);
+    } finally {
+      enabledSpy.mockRestore();
+      serverStatusSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
+  test("benign worktree/branch/tmux no-ops do not pin an otherwise-complete entry", async () => {
+    if (!Bun.which("git")) return;
+    // Real repo; entry names a ludics/-branch that was never created (deleteBranches
+    // is a safeSyncOutput no-op), an already-absent orchestration worktree path
+    // (removeWorktreeByPath no-ops), and a tmux session name (no server running).
+    // None of these throw → none are retryable → the entry must drain.
+    const projectDir = join(tmpDir, "proj-benign-noop");
+    mkdirSync(projectDir, { recursive: true });
+    Bun.spawnSync(["git", "init", "-b", "main"], { cwd: projectDir });
+    Bun.spawnSync(["git", "config", "user.email", "test@example.com"], { cwd: projectDir });
+    Bun.spawnSync(["git", "config", "user.name", "Test User"], { cwd: projectDir });
+    writeFileSync(join(projectDir, "README.md"), "init\n");
+    Bun.spawnSync(["git", "add", "README.md"], { cwd: projectDir });
+    Bun.spawnSync(["git", "commit", "-m", "init"], { cwd: projectDir });
+
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      recordDeferredCleanup(makeEntry({
+        taskId: "task-benign-noop",
+        timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+        projectDir,
+        worktreePaths: [join(dirname(projectDir), "proj-benign-noop-task-benign-noop-s1")],
+        branches: ["ludics/task-benign-noop-s1/root"],
+        tmuxSessionNames: ["ludics-task-benign-noop-s1"],
+        peerSyncLink: null,
+        t3codeThreadIds: [],
+      }));
+
+      await processDeferredCleanups(25);
+
+      expect(loadDeferredCleanups()).toHaveLength(0);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("AC(d) negative control: within-grace entry with t3codeThreadIds is NOT reaped early", async () => {
+    // The cutoff partition must run BEFORE any cleanup/gate work: a fresh entry
+    // (timestamp=now) is retained untouched and never probes the server.
+    let serverStatusCalls = 0;
+    const serverStatusSpy = spyOn(t3codeServer, "serverStatus").mockImplementation(async () => {
+      serverStatusCalls++;
+      return { running: true, record: null, snapshot: null, reason: "should-not-be-called" };
+    });
+    // Spy the gate too — a within-grace entry must not even reach the t3code arm.
+    const enabledSpy = spyOn(config, "t3codeIntegrationEnabled").mockReturnValue(true);
+    try {
+      recordDeferredCleanup(makeEntry({
+        taskId: "test-task-within-grace",
+        timestamp: new Date().toISOString(), // now → within grace
+        worktreePaths: [], branches: [], tmuxSessionNames: ["ludics-fresh-s1"],
+        peerSyncLink: null,
+        t3codeThreadIds: ["t-1"],
+      }));
+
+      await processDeferredCleanups(25);
+
+      const remaining = loadDeferredCleanups();
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]!.taskId).toBe("test-task-within-grace");
+      // No reapable work was attempted early.
+      expect(serverStatusCalls).toBe(0);
+    } finally {
+      serverStatusSpy.mockRestore();
+      enabledSpy.mockRestore();
+    }
   });
 });
 
@@ -462,6 +608,10 @@ describe("explicit harnessDir argument (isolation)", () => {
   // Uses the spyOn() pattern (see docs/testing-patterns.md) so the
   // replacement does not leak across test files in the Bun runner.
   test("processDeferredCleanups(_, ISO) passes ISO to serverStatus({ harnessDir }) in the t3codeThreadIds branch", async () => {
+    // task-703d0553: under the paused-skip gate, serverStatus is only reached when
+    // integration is ENABLED. Enable it so this test exercises the harnessDir
+    // threading + retain-on-not-running path it was written to cover.
+    const enabledSpy = spyOn(config, "t3codeIntegrationEnabled").mockReturnValue(true);
     const capturedHarnessDirs: string[] = [];
     const serverStatusSpy = spyOn(t3codeServer, "serverStatus").mockImplementation(
       async (options: { harnessDir?: string } = {}) => {
@@ -488,13 +638,15 @@ describe("explicit harnessDir argument (isolation)", () => {
       expect(capturedHarnessDirs[0]).toBe(ISO);
       expect(capturedHarnessDirs[0]).not.toBe(tmpDir);
 
-      // Because the stub returned {running: false}, the branch marks failed=true and the
-      // entry remains in the ISO manifest (proves the path-handling also threaded ISO).
+      // Because the stub returned {running: false} with integration enabled, the
+      // branch marks retryableFailure=true and the entry remains in the ISO manifest
+      // (proves the path-handling also threaded ISO).
       const remaining = loadDeferredCleanups(ISO);
       expect(remaining).toHaveLength(1);
       expect(remaining[0]!.t3codeThreadIds).toEqual(["thread-abc", "thread-def"]);
     } finally {
       serverStatusSpy.mockRestore();
+      enabledSpy.mockRestore();
     }
   });
 });
