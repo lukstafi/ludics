@@ -4,6 +4,7 @@ import { dirname, join } from "path";
 import { cleanupDelayHours } from "../config.ts";
 import * as config from "../config.ts";
 import * as t3codeServer from "../t3code/server.ts";
+import * as spawn from "../spawn.ts";
 
 // Redirect harnessDir() to a temp directory via env var
 const tmpDir = join(import.meta.dir, ".test-tmp-deferred-cleanup");
@@ -26,6 +27,7 @@ import {
   buildCleanupEntry,
   cancelDeferredCleanup,
   cleanupPendingPath,
+  isBenignTmuxKillStderr,
   loadDeferredCleanups,
   processDeferredCleanups,
   recordDeferredCleanup,
@@ -289,6 +291,88 @@ describe("processDeferredCleanups drain resilience (task-703d0553)", () => {
       serverStatusSpy.mockRestore();
       enabledSpy.mockRestore();
     }
+  });
+
+  test("a NON-benign tmux kill failure retains the entry for a future tick", async () => {
+    // Positive control for the benign-no-op drain: the tmux step must still
+    // pin an entry when the kill fails for a reason that is NOT "session
+    // already gone" (e.g. a permission error). Forcing safeSyncOutput to a
+    // non-benign stderr is the only way to instantiate this deterministically
+    // — a real `tmux kill-session` against a host can only produce the benign
+    // shapes. Without this control, isBenignTmuxKillStderr could be loosened
+    // to a blanket pass and every drain test would still go green.
+    const killSpy = spyOn(spawn, "safeSyncOutput").mockReturnValue({
+      ok: false, exitCode: 1, stdout: "", stderr: "some other tmux error", timedOut: false,
+    });
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      recordDeferredCleanup(makeEntry({
+        taskId: "task-nonbenign-tmux",
+        timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+        worktreePaths: [], branches: [], peerSyncLink: null,
+        tmuxSessionNames: ["ludics-task-nonbenign-tmux-s1"],
+        t3codeThreadIds: [],
+      }));
+
+      await processDeferredCleanups(25);
+
+      const remaining = loadDeferredCleanups();
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]!.taskId).toBe("task-nonbenign-tmux");
+    } finally {
+      killSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
+  test("explicit harnessDir flows into serverStatus({ harnessDir }) when t3code is enabled", async () => {
+    // Guards the harness-dir threading: processDeferredCleanups(thresholdHours,
+    // harnessDir) must hand the SAME harnessDir to the t3code server probe, not
+    // fall back to the default. If the threading regressed, serverStatus would
+    // receive the process-default dir and this assertion would fail.
+    const customHarness = join(tmpDir, "custom-harness");
+    mkdirSync(join(customHarness, "mag"), { recursive: true });
+
+    const enabledSpy = spyOn(config, "t3codeIntegrationEnabled").mockReturnValue(true);
+    let observedHarnessDir: string | undefined;
+    const serverStatusSpy = spyOn(t3codeServer, "serverStatus").mockImplementation(async (opts) => {
+      observedHarnessDir = opts?.harnessDir;
+      // Return not-running so no real client is constructed; entry is retained.
+      return { running: false, record: null, snapshot: null, reason: "probe-only" };
+    });
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      recordDeferredCleanup(makeEntry({
+        taskId: "task-harnessdir-thread",
+        timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
+        worktreePaths: [], branches: [], tmuxSessionNames: [], peerSyncLink: null,
+        t3codeThreadIds: ["t-1"],
+      }), customHarness);
+
+      await processDeferredCleanups(25, customHarness);
+
+      expect(observedHarnessDir).toBe(customHarness);
+    } finally {
+      enabledSpy.mockRestore();
+      serverStatusSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+});
+
+describe("isBenignTmuxKillStderr", () => {
+  test("tolerates all three 'session already gone' shapes", () => {
+    expect(isBenignTmuxKillStderr("no server running on /tmp/tmux-501/default")).toBe(true);
+    expect(isBenignTmuxKillStderr("session not found: ludics-task-x-s1")).toBe(true);
+    // The dev-box-with-live-server shape that previously pinned entries forever.
+    expect(isBenignTmuxKillStderr("can't find session: ludics-task-x-s1")).toBe(true);
+  });
+
+  test("does NOT tolerate non-benign failures or empty stderr", () => {
+    expect(isBenignTmuxKillStderr("permission denied")).toBe(false);
+    expect(isBenignTmuxKillStderr("some other tmux error")).toBe(false);
+    expect(isBenignTmuxKillStderr("")).toBe(false);
+    expect(isBenignTmuxKillStderr(undefined)).toBe(false);
   });
 });
 

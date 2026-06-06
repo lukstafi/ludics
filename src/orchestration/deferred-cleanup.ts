@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 import { harnessDir as defaultHarnessDir, cleanupDelayHours } from "../config.ts";
-import { safeSyncOutput } from "../spawn.ts";
+import * as spawn from "../spawn.ts";
 import type { OrchestrationState } from "./state.ts";
 import { removeWorktreeByPath, deleteBranches, orchBranchName, purgeOrphanDirIfRecoverable } from "./worktrees.ts";
 import { removePeerSyncLink } from "./peer-sync.ts";
@@ -25,6 +25,33 @@ export interface CleanupEntry {
 
 export function cleanupPendingPath(harnessDir: string = defaultHarnessDir()): string {
   return join(harnessDir, "mag", "cleanup-pending.json");
+}
+
+/**
+ * Whether a non-zero `tmux kill-session` exit is a *benign* "the session is
+ * already gone" outcome — i.e. cleanup succeeded by virtue of the target not
+ * existing, and the entry must NOT be retained as a retryable failure.
+ *
+ * tmux reports an absent session three different ways depending on server
+ * state and version, so all three must be tolerated as a class (not just the
+ * one a given host happens to emit):
+ *   - `no server running on /tmp/tmux-.../default` — no tmux server at all
+ *     (the shape CI sees, since CI has no running server).
+ *   - `session not found: <name>`                 — some tmux builds.
+ *   - `can't find session: <name>`                — server up, session gone
+ *     (the shape a dev box with a live tmux server emits — previously NOT
+ *     tolerated, which pinned otherwise-complete entries in the queue forever).
+ *
+ * Any other stderr (permission errors, malformed args, unexpected failures)
+ * is a genuine failure worth retaining for a future tick.
+ */
+export function isBenignTmuxKillStderr(stderr: string | undefined): boolean {
+  if (!stderr) return false;
+  return (
+    stderr.includes("no server running") ||
+    stderr.includes("session not found") ||
+    stderr.includes("can't find session")
+  );
 }
 
 export function loadDeferredCleanups(harnessDir: string = defaultHarnessDir()): CleanupEntry[] {
@@ -189,8 +216,8 @@ export async function processDeferredCleanups(
 
     // 3. Kill tmux sessions
     for (const name of entry.tmuxSessionNames) {
-      const result = safeSyncOutput(["tmux", "kill-session", "-t", name]);
-      if (!result.ok && !result.stderr?.includes("no server running") && !result.stderr?.includes("session not found")) {
+      const result = spawn.safeSyncOutput(["tmux", "kill-session", "-t", name]);
+      if (!result.ok && !isBenignTmuxKillStderr(result.stderr)) {
         console.error(`ludics: deferred tmux kill-session failed for ${name}: ${result.stderr ?? "unknown"}`);
         retryableFailure = true;
       }
