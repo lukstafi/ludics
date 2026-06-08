@@ -106,7 +106,7 @@ describe("cancelDeferredCleanup", () => {
 
 describe("processDeferredCleanups", () => {
   test("processes entries older than threshold and removes them", async () => {
-    // Entry is 30h old, threshold is 25h → should be processed
+    // Entry is 30h old, threshold is 21h → should be processed
     recordDeferredCleanup(makeEntry({
       timestamp: new Date(Date.now() - 30 * 3600000).toISOString(),
       worktreePaths: [],   // empty so cleanup helpers are no-ops
@@ -626,8 +626,8 @@ describe("processDeferredCleanups orphan-dir hardening (task-d2a16a60)", () => {
 });
 
 describe("config cleanupDelayHours", () => {
-  test("returns 25 by default (no config file)", () => {
-    expect(cleanupDelayHours()).toBe(25);
+  test("returns 21 by default (no config file)", () => {
+    expect(cleanupDelayHours()).toBe(21);
   });
 });
 

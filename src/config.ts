@@ -447,7 +447,10 @@ export function cleanupDelayHours(): number {
   const mag = config.mag as Record<string, unknown> | undefined;
   const val = mag?.cleanup_delay_hours;
   if (typeof val === "number" && val > 0) return Math.min(val, 72);
-  return 25;
+  // Default just under a day so that an entry recorded at time T, plus the next
+  // ~6h reaping tick after the window elapses, lands the reap "next day" rather
+  // than next-day-plus. Keeps a full overnight re-attach window for inspection.
+  return 21;
 }
 
 export function startSessionsAutonomy(): "auto" | "suggest" | "manual" {

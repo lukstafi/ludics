@@ -1796,11 +1796,13 @@ export async function resolveQueueRequestCommand(request: Record<string, unknown
       } catch (err) {
         console.error("ludics: test health check failed:", err);
       }
-      // Process deferred artifact cleanup on the 4h health-check cadence so
-      // reaping is evenly spaced (~6×/day) rather than once/day at briefing
-      // precompute (task-703d0553). Only runs on executed, non-gate-skipped
-      // health checks — peek (executeProgrammatic=false) and gate-skip both
-      // return before reaching here. Briefing precompute keeps its own call.
+      // Process deferred artifact cleanup on the health-check cadence so reaping
+      // is evenly spaced (3 health checks/day + the briefing as a 4th ≈ every 6h)
+      // rather than once/day at briefing precompute (task-703d0553). Only runs on
+      // executed, non-gate-skipped health checks — peek (executeProgrammatic=false)
+      // and gate-skip both return before reaching here, so a quiet stretch of
+      // gate-skips lengthens the effective reaping interval. Briefing precompute
+      // keeps its own call.
       try {
         const { processDeferredCleanups } = await import("./orchestration/deferred-cleanup.ts");
         await processDeferredCleanups();
