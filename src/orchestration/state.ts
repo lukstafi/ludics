@@ -7,7 +7,7 @@ import type { Phase } from "./phases.ts";
 
 export interface OrchestrationRef {
   stateFile: string;
-  mode: "duo" | "pair" | "solo";
+  mode: "duo" | "pair" | "solo" | "pilot";
   pid?: number;
 }
 
@@ -223,7 +223,7 @@ export function parseSubstantiveStallOverrides(
 export interface OrchestrationState {
   slot: number;
   taskId: string;
-  mode: "duo" | "pair" | "solo";
+  mode: "duo" | "pair" | "solo" | "pilot";
   phase: Phase;
   round: number;
   mergeRound: number;
@@ -461,8 +461,8 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
 
   // --- AC 3 boundary validators (string unions read from disk JSON) -------
   state.mode = validateAndCoerce(
-    state.mode, ["duo", "pair", "solo"] as const, "throw", null, "mode", slot,
-  ) as "duo" | "pair" | "solo";
+    state.mode, ["duo", "pair", "solo", "pilot"] as const, "throw", null, "mode", slot,
+  ) as "duo" | "pair" | "solo" | "pilot";
 
   if (state.backend !== undefined) {
     const validated = validateAndCoerce(
@@ -554,12 +554,12 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
   if (state.mode === "duo" && state.duoPeerSlot == null) {
     console.error(`ludics: slot ${slot} has legacy mode="duo" without duoPeerSlot — should be cleared and re-assigned`);
   }
-  if (state.mode === "solo") {
+  if (state.mode === "solo" || state.mode === "pilot") {
     if (state.duoPeerSlot != null) {
-      console.error(`ludics: slot ${slot} has mode="solo" with duoPeerSlot=${state.duoPeerSlot} — invariant violation (solo must be single-slot)`);
+      console.error(`ludics: slot ${slot} has mode="${state.mode}" with duoPeerSlot=${state.duoPeerSlot} — invariant violation (${state.mode} must be single-slot)`);
     }
     if (state.agents && state.agents.length !== 1) {
-      console.error(`ludics: slot ${slot} has mode="solo" with ${state.agents.length} agents — invariant violation (solo must have exactly one agent)`);
+      console.error(`ludics: slot ${slot} has mode="${state.mode}" with ${state.agents.length} agents — invariant violation (${state.mode} must have exactly one agent)`);
     }
   }
   // Fill in fields added after the on-disk schema was first written so reads

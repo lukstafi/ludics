@@ -5,6 +5,7 @@ import { join } from "path";
 import {
   defaultOrchestrationConfig,
   initAgentRuntimeState,
+  migrateState,
   persistState,
   readOrchestrationState,
   type AgentTurnLifecycle,
@@ -168,6 +169,47 @@ describe("readOrchestrationState — boundary validators (gh-ludics-411 AC 3)", 
   test("throws when slot JSON has corrupt mode (\"throw\" policy at read boundary)", () => {
     writeSlot(7, (s) => { (s as { mode: string }).mode = "weird"; });
     expect(() => readOrchestrationState(7, REAL)).toThrow(/mode.*weird/);
+  });
+
+  // --- Pilot mode migration triple (state-migration convention) ---
+
+  // (1) Positive backfill: mode "pilot" is a legal value and survives the
+  // read-boundary / migrateState validator unchanged (no coercion, no throw).
+  test("accepts mode \"pilot\" through readOrchestrationState (positive)", () => {
+    writeSlot(20, (s) => { (s as { mode: string }).mode = "pilot"; });
+    let calls: unknown[][] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { calls.push(args); });
+    try {
+      const loaded = readOrchestrationState(20, REAL);
+      calls = [...spy.mock.calls];
+      expect(loaded).not.toBeNull();
+      expect(loaded!.mode).toBe("pilot");
+      const modeLogs = calls.filter((c) => String(c[0] ?? "").includes("OrchestrationState.mode"));
+      expect(modeLogs).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // (2) Negative control: an out-of-union mode value still triggers the
+  // "throw" policy even with pilot now in the allowlist.
+  test("still throws on a non-pilot invalid mode (negative control)", () => {
+    writeSlot(21, (s) => { (s as { mode: string }).mode = "copilot"; });
+    expect(() => readOrchestrationState(21, REAL)).toThrow(/mode.*copilot/);
+  });
+
+  // (3) JSON round-trip: a pilot state serializes and deserializes through
+  // migrateState with mode preserved.
+  test("pilot state survives a JSON round-trip through migrateState", () => {
+    const state = baseState(22, REAL);
+    state.mode = "pilot";
+    state.agents = [
+      { name: "coder", provider: "claude-code", role: "coder", model: "claude-sonnet-4-6", branch: "a", worktreePath: "/tmp/a" },
+    ];
+    state.agentStates = initAgentRuntimeState(["coder"]);
+    const reparsed = JSON.parse(JSON.stringify(state)) as OrchestrationState;
+    const migrated = migrateState(reparsed, 22);
+    expect(migrated.mode).toBe("pilot");
   });
 
   test("coerces invalid backend to globalAdapter() and logs once at read boundary", async () => {

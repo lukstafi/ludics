@@ -16,6 +16,11 @@ export interface TaskFrontmatter {
   /** tiny, small, medium, large — see docs/task-frontmatter-reference.md#effort-levels */
   effort: string;
   skip_plan?: boolean;
+  /** Forces a specific orchestration workflow mode at auto-start, overriding
+   *  effort-based mode selection. Currently only `"pilot"` is honored — a
+   *  user-piloted solo session (single coder, no reviewer, work phase waits for
+   *  the user). Set by the dashboard "Pilot" deferred-launch button. */
+  orchestration_mode?: string;
   /** When `false`, this task is a container — its work is split across children
    *  via `subtask_of`. Container tasks are excluded from auto-queue, preempt,
    *  elaboration auto-queue, and slotAssign. Set by `/ludics-split-task`. */

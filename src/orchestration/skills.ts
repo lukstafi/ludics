@@ -216,11 +216,25 @@ function templateRoot(): string {
 
 export function resolveTemplatePath(
   phase: Phase,
-  mode: "duo" | "pair" | "solo",
+  mode: "duo" | "pair" | "solo" | "pilot",
   role?: "coder" | "reviewer",
   hasUpstream?: boolean,
 ): string {
   const root = templateRoot();
+  // Pilot resolution: pilot-<phase>.md > (solo chain).
+  // Pilot only needs ONE bespoke template (pilot-work.md); every other phase
+  // falls through to the identical solo chain below.
+  if (mode === "pilot") {
+    const pilotPath = join(root, `pilot-${phase}.md`);
+    if (existsSync(pilotPath)) return pilotPath;
+    const soloPath = join(root, `solo-${phase}.md`);
+    if (existsSync(soloPath)) return soloPath;
+    const pairCoderPath = join(root, `pair-coder-${phase}.md`);
+    if (existsSync(pairCoderPath)) return pairCoderPath;
+    const genericPath = join(root, `${phase}.md`);
+    if (existsSync(genericPath)) return genericPath;
+    throw new Error(`missing orchestration template for pilot:${phase}`);
+  }
   // Solo resolution: solo-<phase>.md > pair-coder-<phase>.md > <phase>.md
   //
   // Solo intentionally ignores `hasUpstream`. The upstream-* templates assume

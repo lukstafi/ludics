@@ -238,7 +238,7 @@ export interface T3CodeThreadRecord {
 
 export interface T3CodeOrchestrationRef {
   stateFile: string;
-  mode: "duo" | "pair" | "solo";
+  mode: "duo" | "pair" | "solo" | "pilot";
   pid?: number;
 }
 

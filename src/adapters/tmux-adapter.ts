@@ -72,7 +72,7 @@ interface TmuxSlotState {
   ttydRestartCounts?: Record<string, TtydRestartRecord>;
   orchestration?: {
     stateFile: string;
-    mode: "duo" | "pair" | "solo";
+    mode: "duo" | "pair" | "solo" | "pilot";
     pid?: number;
   };
 }

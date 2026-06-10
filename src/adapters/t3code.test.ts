@@ -452,6 +452,62 @@ describe("selectOrchestrationFlagsForTask — skip_plan from frontmatter", () =>
   });
 });
 
+describe("selectOrchestrationFlagsForTask — orchestration_mode: pilot override", () => {
+  // gh-ludics-539: flag on so the t3code-adapter gate does not throw.
+  const cfg = installT3codeConfigHarness();
+  beforeEach(() => cfg.write({ t3codeEnabled: true }));
+
+  test("orchestration_mode: pilot yields --pilot args with a coder, isDuo false", () => {
+    const content = "---\nid: test\ntitle: test\neffort: medium\norchestration_mode: pilot\n---\n";
+    const { args, isDuo } = selectOrchestrationFlagsForTask(content, "medium");
+    expect(args).toContain("--pilot");
+    expect(args).toContain("--coder");
+    expect(args).not.toContain("--solo");
+    expect(args).not.toContain("--pair");
+    expect(args).not.toContain("--reviewer");
+    expect(args).not.toContain("--plan");
+    expect(args).not.toContain("--gather");
+    expect(isDuo).toBe(false);
+  });
+
+  test("pilot override ignores effort (large still produces --pilot, no pre-work phases)", () => {
+    const content = "---\nid: test\ntitle: test\neffort: large\norchestration_mode: pilot\n---\n";
+    const { args, isDuo } = selectOrchestrationFlagsForTask(content, "large");
+    expect(args).toContain("--pilot");
+    expect(args).not.toContain("--plan");
+    expect(args).not.toContain("--gather");
+    expect(isDuo).toBe(false);
+  });
+
+  test("absent orchestration_mode falls through to normal effort-based selection", () => {
+    const content = "---\nid: test\ntitle: test\neffort: medium\n---\n";
+    const { args } = selectOrchestrationFlagsForTask(content, "medium");
+    expect(args).not.toContain("--pilot");
+    expect(args).toContain("--pair");
+  });
+});
+
+describe("parseOrchestrationAdapterArgs — --pilot", () => {
+  test("parses --pilot with --coder into a single-agent pilot orchestration", () => {
+    const parsed = parseOrchestrationAdapterArgs("--pilot --coder coder:claude-code:claude-sonnet-4-6");
+    expect(parsed.orchestration).not.toBeNull();
+    expect(parsed.orchestration!.mode).toBe("pilot");
+    expect(parsed.orchestration!.agents).toHaveLength(1);
+    expect(parsed.orchestration!.agents[0]!.role).toBe("coder");
+    expect(parsed.orchestration!.agents[0]!.provider).toBe("claude-code");
+  });
+
+  test("--pilot without --coder throws", () => {
+    expect(() => parseOrchestrationAdapterArgs("--pilot")).toThrow(/--pilot requires --coder/);
+  });
+
+  test("--pilot combined with --reviewer throws", () => {
+    expect(() =>
+      parseOrchestrationAdapterArgs("--pilot --coder claude-code --reviewer codex")
+    ).toThrow(/--pilot is incompatible with --reviewer/);
+  });
+});
+
 describe("parseOrchestrationAdapterArgs — --solo", () => {
   test("parses --solo with --coder into a single-agent orchestration", () => {
     // Token format: name:provider:model

@@ -184,7 +184,7 @@ function staleBaseCategoryOf(state: OrchestrationState): "coder" | "reviewer" | 
   const phase = state.phase;
   if (phase === "plan" || phase === "work") return "coder";
   if (phase === "plan-review" || phase === "review") {
-    return state.mode === "solo" ? "coder" : "reviewer";
+    return (state.mode === "solo" || state.mode === "pilot") ? "coder" : "reviewer";
   }
   return null;
 }
@@ -670,6 +670,11 @@ export async function detectAndNudgeSettledNoSignal(
   state: OrchestrationState,
   transport: OrchestrationTransport,
 ): Promise<void> {
+  // Pilot work phase is user-driven: the coder legitimately sits idle waiting
+  // for the user to attach and chat. Suppress the settled-no-signal auto-nudge
+  // so the harness never nags or force-settles it. Other pilot phases keep
+  // normal behavior.
+  if (state.mode === "pilot" && state.phase === "work") return;
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
     const runtime = state.agentStates[agent.name]!;
@@ -867,6 +872,9 @@ export async function detectAndNudgeHungAgents(
   transport: OrchestrationTransport,
 ): Promise<void> {
   if (state.backend !== "tmux") return;
+  // Pilot work phase is user-driven: suppress hung-agent detection so the
+  // coder's legitimate idle wait for the user is never force-settled.
+  if (state.mode === "pilot" && state.phase === "work") return;
 
   const cfg = state.config.substantiveStall;
   for (const agent of state.agents) {
@@ -1996,6 +2004,16 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
   const deadline = state.phaseStartedAt + timeout;
   const interval = state.config.pollInterval * 1000;
 
+  // Pilot work phase is user-driven: the coder reads the proposal and then
+  // sits idle (a settled, not-done lifecycle) until the user attaches, chats,
+  // and confirms completion. Every path in this loop that would otherwise
+  // poke or interrupt such an agent must be exempted so the "wait indefinitely
+  // for the user-written done-signal" contract holds: the settled-no-signal
+  // and hung detectors above already early-return on this predicate; here it
+  // also gates the interrupted-agent "Continue." nudge and the poll deadline's
+  // handleTimeout. `state.phase`/`state.mode` are stable for one pollUntilDone.
+  const pilotIdleWait = state.mode === "pilot" && state.phase === "work";
+
   // Subscribe to transport events for early wakeup (optional; falls back to pure polling).
   let wakeResolve: (() => void) | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -2059,8 +2077,12 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
       if (allAgentsDone(state)) return;
 
       // Nudge interrupted agents: turn settled (stop hook fired) but no done
-      // status — cut short by provider error, capacity limit, etc.
+      // status — cut short by provider error, capacity limit, etc. Skipped
+      // entirely in a pilot work phase, where a settled idle prompt is the
+      // expected state while the coder waits for the user (not an interruption
+      // to recover from).
       for (const agent of state.agents) {
+        if (pilotIdleWait) break;
         if (!agentParticipatesInPhase(state, agent)) continue;
         const rt = state.agentStates[agent.name]!;
         const alc = rt.turnLifecycle;
@@ -2112,7 +2134,10 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
         persistState(state, state.harnessDir ?? defaultHarnessDir());
       }
 
-      if (nowEpoch() >= deadline) {
+      // Pilot work waits indefinitely: never trip the poll deadline (which
+      // would handleTimeout → interrupt the coder). The phase ends only when
+      // the user-confirmed done-signal lands and allAgentsDone returns above.
+      if (!pilotIdleWait && nowEpoch() >= deadline) {
         await handleTimeout(state, transport);
         return;
       }
@@ -2146,7 +2171,7 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
   // work → update-docs instead of review → update-docs.
   if (
     next === "update-docs"
-    && (state.phase === "review" || (state.mode === "solo" && state.phase === "work"))
+    && (state.phase === "review" || (((state.mode === "solo" || state.mode === "pilot")) && state.phase === "work"))
     && !shouldRunUpdateDocs(state)
   ) {
     state.lastLearningAt = state.lastLearningAt ?? 0;
@@ -2258,7 +2283,7 @@ function maybeOverrideTransition(state: OrchestrationState, next: OrchestrationS
   // Solo skips review: the work→update-docs override mirrors pair's review→update-docs.
   if (
     next === "update-docs"
-    && (state.phase === "review" || (state.mode === "solo" && state.phase === "work"))
+    && (state.phase === "review" || (((state.mode === "solo" || state.mode === "pilot")) && state.phase === "work"))
     && !shouldRunUpdateDocs(state)
   ) {
     return state.agents.some((agent) => !!state.agentStates[agent.name]?.prUrl)

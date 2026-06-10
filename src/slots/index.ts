@@ -1574,6 +1574,10 @@ export async function runSlot(args: string[]): Promise<void> {
             hasDirectOrchFlags = true;
             adapterArgFragments.push("--solo");
             break;
+          case "--pilot":
+            hasDirectOrchFlags = true;
+            adapterArgFragments.push("--pilot");
+            break;
           case "--coder": {
             const val = args[++i];
             if (!val || val.startsWith("-")) throw new Error("--coder requires a provider value (got a flag instead)");
@@ -1605,11 +1609,11 @@ export async function runSlot(args: string[]): Promise<void> {
 
       if (hasDirectOrchFlags && adapter !== "t3code" && adapter !== "tmux") {
         throw new Error(
-          `--pair/--solo/--coder/--reviewer/--plan flags require adapter "t3code" or "tmux" (got "${adapter}")`
+          `--pair/--solo/--pilot/--coder/--reviewer/--plan flags require adapter "t3code" or "tmux" (got "${adapter}")`
         );
       }
 
-      if (hasDirectOrchFlags || adapterArgFragments.some(f => /--(?:pair|duo|solo)/.test(f))) {
+      if (hasDirectOrchFlags || adapterArgFragments.some(f => /--(?:pair|duo|solo|pilot)/.test(f))) {
         const expected = globalAdapter();
         if ((adapter === "t3code" || adapter === "tmux") && adapter !== expected) {
           throw new Error(
@@ -1647,9 +1651,9 @@ export async function runSlot(args: string[]): Promise<void> {
         await slotAssign(secondSlot, taskOrDesc, adapter, "", path, expansion.slotB.args, machine);
         console.error(`ludics: duo assign → slots ${slotNum}+${secondSlot}`);
       } else {
-        const hasModeDirectFlag = adapterArgFragments.includes("--pair") || adapterArgFragments.includes("--solo");
+        const hasModeDirectFlag = adapterArgFragments.includes("--pair") || adapterArgFragments.includes("--solo") || adapterArgFragments.includes("--pilot");
         const hasModeInRawFragments = adapterArgFragments.some(
-          f => /(?:^|\s)--(?:pair|duo|solo)(?:\s|$)/.test(f)
+          f => /(?:^|\s)--(?:pair|duo|solo|pilot)(?:\s|$)/.test(f)
         );
         if (hasDirectOrchFlags && !hasModeDirectFlag && !hasModeInRawFragments && firstDirectOrchFlagIdx !== -1) {
           adapterArgFragments.splice(firstDirectOrchFlagIdx, 0, "--pair");

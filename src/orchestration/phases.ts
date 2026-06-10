@@ -154,7 +154,7 @@ export function agentParticipatesInPhase(
   if (state.phase === "setup" || state.phase === "done") return false;
   // Solo mode: only the coder participates, in every non-setup/done phase.
   // No reviewer agent exists; reviewer-keyed role checks must return false.
-  if (state.mode === "solo") return agent.role === "coder";
+  if (state.mode === "solo" || state.mode === "pilot") return agent.role === "coder";
   // Strict role separation for all slots (pair and hierarchical-duo)
   switch (state.phase) {
     case "gather":
@@ -358,10 +358,10 @@ export function isPairBailedOut(state: OrchestrationState): boolean {
   return cs === "bail-out" && rs === "bail-out-confirmed";
 }
 
-/** True when a solo-mode slot's coder has signaled bail-out. Solo has no reviewer,
- * so a lone "bail-out" is the terminal signal (no bail-out-confirmed partner). */
+/** True when a solo- or pilot-mode slot's coder has signaled bail-out. Neither has
+ * a reviewer, so a lone "bail-out" is the terminal signal (no bail-out-confirmed partner). */
 export function isSoloBailedOut(state: OrchestrationState): boolean {
-  if (state.mode !== "solo") return false;
+  if (state.mode !== "solo" && state.mode !== "pilot") return false;
   const coder = state.agents.find(a => a.role === "coder");
   if (!coder) return false;
   return (state.agentStates[coder.name]?.status ?? "") === "bail-out";
@@ -533,7 +533,9 @@ function evaluateTransitionSolo(state: OrchestrationState): Phase | null {
       return "work";
 
     case "work":
-      if (!(allAgentsDone(state) || phaseTimeoutExpired(state))) return null;
+      // Pilot work phase waits indefinitely for the user-driven done-signal:
+      // it advances ONLY on allAgentsDone, never on phaseTimeoutExpired.
+      if (!(allAgentsDone(state) || (state.mode !== "pilot" && phaseTimeoutExpired(state)))) return null;
       if (hasAnyPr(state)) return "pr-comments";
       return "update-docs";
 
@@ -579,7 +581,7 @@ const PAIR_BAIL_OUT_PHASES: ReadonlySet<Phase> = new Set<Phase>([
 ]);
 
 export function evaluateTransition(state: OrchestrationState): Phase | null {
-  if (state.mode === "solo") return evaluateTransitionSolo(state);
+  if (state.mode === "solo" || state.mode === "pilot") return evaluateTransitionSolo(state);
 
   // Cache readiness once. `phaseTimeoutExpired` reads `nowEpoch()`, so
   // evaluating it separately in the hoisted check and in each allowlisted

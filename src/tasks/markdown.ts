@@ -146,6 +146,7 @@ function parseTaskFrontmatterUncached(content: string): ParsedTaskFrontmatter {
     },
     effort: String(d.effort ?? "medium"),
     skip_plan: asBoolean(d.skip_plan),
+    orchestration_mode: normalizeOptionalString(d.orchestration_mode),
     leaf: d.leaf !== undefined ? asBoolean(d.leaf) : undefined,
     requirements: d.requirements ? d.requirements as { os?: string; gpu?: string } : undefined,
     context: String(d.context ?? ""),
@@ -224,6 +225,7 @@ function parseTaskFrontmatterLineFallback(fmBlock: string): ParsedTaskFrontmatte
   if (out.elaborated !== undefined) fm.elaborated = out.elaborated;
   if (out.merged_into !== undefined) fm.merged_into = out.merged_into;
   if (out.skip_plan !== undefined) fm.skip_plan = asBoolean(out.skip_plan);
+  if (out.orchestration_mode !== undefined) fm.orchestration_mode = out.orchestration_mode;
   if (out.leaf !== undefined) fm.leaf = asBoolean(out.leaf);
   if (out.uses_browser !== undefined) fm.uses_browser = asBoolean(out.uses_browser);
   if (out.started !== undefined) fm.started = out.started;
