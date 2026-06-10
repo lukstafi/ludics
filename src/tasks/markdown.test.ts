@@ -342,6 +342,30 @@ describe("parseTaskFrontmatter field reads", () => {
     expect(parseTaskFrontmatter(content).project).toBe("real");
   });
 
+  test("reads orchestration_mode scalar", () => {
+    const content = "---\nid: task-1\norchestration_mode: pilot\n---\n";
+    expect(parseTaskFrontmatter(content).orchestration_mode).toBe("pilot");
+  });
+
+  test("returns undefined for missing orchestration_mode", () => {
+    const content = "---\nid: task-1\nstatus: ready\n---\n";
+    expect(parseTaskFrontmatter(content).orchestration_mode).toBeUndefined();
+  });
+
+  test("orchestration_mode round-trips through addFrontmatterField → parseTaskFrontmatter", () => {
+    const f = tmpFile("orch-mode-roundtrip.md", [
+      "---",
+      "id: task-1",
+      "status: deferred",
+      "---",
+      "",
+      "# Body",
+    ].join("\n"));
+    addFrontmatterField(f, "orchestration_mode", "pilot");
+    const content = readFileSync(f, "utf-8");
+    expect(parseTaskFrontmatter(content).orchestration_mode).toBe("pilot");
+  });
+
   test("body code-block shadowing: frontmatter status wins (task-485dcb6a)", () => {
     // Regression guard for the body-scope vulnerability closed by the original
     // regex → readFrontmatterField migration (task-485dcb6a / task-808ee2c7).
@@ -474,6 +498,20 @@ describe("parseTaskFrontmatter field reads", () => {
     ].join("\n");
     const fm = parseTaskFrontmatter(content);
     expect(fm.leaf).toBe(false);
+    expect(fm.id).toBe("task-fb");
+  });
+
+  test("orchestration_mode survives malformed-YAML line fallback path", () => {
+    const content = [
+      "---",
+      "id: task-fb",
+      "status: deferred",
+      "orchestration_mode: pilot",
+      "dependencies: [unclosed",
+      "---",
+    ].join("\n");
+    const fm = parseTaskFrontmatter(content);
+    expect(fm.orchestration_mode).toBe("pilot");
     expect(fm.id).toBe("task-fb");
   });
 });

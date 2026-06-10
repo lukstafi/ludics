@@ -426,6 +426,38 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
       }
     }
 
+    // API: approve a deferred task in PILOT mode. Forces orchestration_mode:
+    // pilot (a user-piloted solo session) regardless of effort-based selection,
+    // then sets status: ready so the keepalive auto-start picks it up and
+    // selectOrchestrationFlagsForTask emits --pilot.
+    if (pathname === "/api/deferred-pilot") {
+      const taskParam = url.searchParams.get("task");
+      if (!taskParam || !TASK_ID_RE.test(taskParam)) {
+        return new Response("Bad Request: invalid task id", { status: 400 });
+      }
+      try {
+        const resolved = resolveTaskFile(taskParam);
+        if ("error" in resolved) return resolved.error;
+        const taskFile = resolved.path;
+        const pilotContent = readFileSync(taskFile, "utf-8");
+        const pilotStatus = parseTaskFrontmatter(pilotContent).status;
+        if (pilotStatus !== "deferred") {
+          return new Response(
+            JSON.stringify({ error: `task is ${pilotStatus}, not deferred` }),
+            { status: 409, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        addFrontmatterField(taskFile, "orchestration_mode", "pilot");
+        updateFrontmatterField(taskFile, "status", "ready");
+        lastGenerated = 0;
+        return new Response(JSON.stringify({ status: "approved", mode: "pilot" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(String(e), { status: 500 });
+      }
+    }
+
     // API: abandon a deferred task. Slotted deferred tasks are rejected
     // with 409 — the user must clear the slot first (slot operations'
     // terminal transitions handle displaced-task recovery via

@@ -1218,6 +1218,60 @@ describe("solo mode — agentParticipatesInPhase", () => {
   });
 });
 
+function makePilotState(overrides: Partial<OrchestrationState> = {}): OrchestrationState {
+  return makeSoloState({ mode: "pilot", ...overrides });
+}
+
+describe("pilot mode — evaluateTransition", () => {
+  test("setup → work (reuses the solo graph)", () => {
+    expect(evaluateTransition(makePilotState())).toBe("work");
+  });
+
+  test("work does NOT advance on phase timeout alone (waits for the user)", () => {
+    // phaseStartedAt: 0 forces phaseTimeoutExpired === true; coder is NOT done.
+    const state = makePilotState({ phase: "work", phaseStartedAt: 0 });
+    state.agentStates.coder.status = "idle";
+    expect(phaseTimeoutExpired(state)).toBe(true);
+    // Solo would advance here; pilot must stall until the done-signal.
+    expect(evaluateTransition(state)).toBeNull();
+  });
+
+  test("work → update-docs ONLY on the explicit done-signal (allAgentsDone)", () => {
+    const state = makePilotState({ phase: "work", phaseStartedAt: 0 });
+    state.agentStates.coder.status = "done";
+    expect(evaluateTransition(state)).toBe("update-docs");
+  });
+
+  test("work → pr-comments on done-signal when a PR already exists", () => {
+    const state = makePilotState({ phase: "work", phaseStartedAt: 0 });
+    state.agentStates.coder.status = "done";
+    state.agentStates.coder.prUrl = "https://github.com/o/r/pull/9";
+    expect(evaluateTransition(state)).toBe("pr-comments");
+  });
+
+  test("non-work pilot phases keep solo timeout behavior (update-docs advances on timeout)", () => {
+    // update-docs is NOT the suppressed phase: an expired timeout advances it
+    // exactly as solo does, even without a done status.
+    const state = makePilotState({ phase: "update-docs", phaseStartedAt: 0 });
+    state.agentStates.coder.status = "idle";
+    expect(phaseTimeoutExpired(state)).toBe(true);
+    expect(evaluateTransition(state)).toBe("pr-create");
+  });
+
+  test("pilot bail-out short-circuits to done (same as solo)", () => {
+    const state = makePilotState({ phase: "work" });
+    state.agentStates.coder.status = "bail-out";
+    expect(evaluateTransition(state)).toBe("done");
+  });
+
+  test("coder participates in pilot active phases; reviewer-keyed checks are false", () => {
+    const state = makePilotState({ phase: "work" });
+    expect(agentParticipatesInPhase(state, state.agents[0])).toBe(true);
+    state.phase = "setup";
+    expect(agentParticipatesInPhase(state, state.agents[0])).toBe(false);
+  });
+});
+
 describe("isSoloBailedOut / isBailedOut", () => {
   test("isSoloBailedOut: true when solo coder status is bail-out", () => {
     const state = makeSoloState();

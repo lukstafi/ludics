@@ -65,7 +65,7 @@ interface ParsedAgentToken {
 }
 
 interface ParsedOrchestrationArgs {
-  mode: "duo" | "pair" | "solo";
+  mode: "duo" | "pair" | "solo" | "pilot";
   config: Partial<OrchestrationConfig>;
   agents: ParsedAgentToken[];
   /** Explicit coder model override from --coder-model flag. */
@@ -351,6 +351,11 @@ export function parseOrchestrationAdapterArgs(raw: string): ParsedAdapterArgs {
       case "--solo":
         mode = "solo";
         break;
+      case "--pilot":
+        // User-piloted solo: identical single-coder/no-reviewer shape as --solo;
+        // differs only in the work-phase prompt and idle-wait behavior.
+        mode = "pilot";
+        break;
       case "--agent":
         // Legacy duo --agent flag is no longer supported; use --coder/--reviewer instead.
         throw new Error("orchestration adapter args: --agent is no longer supported (duo mode now uses --coder/--reviewer). Use --coder and --reviewer instead.");
@@ -476,22 +481,25 @@ export function parseOrchestrationAdapterArgs(raw: string): ParsedAdapterArgs {
 
   if (!mode) return parsed;
 
-  if (mode === "solo") {
+  if (mode === "solo" || mode === "pilot") {
+    // Pilot shares solo's single-coder/no-reviewer invariants verbatim; the
+    // flag name in error messages tracks the mode the user actually passed.
+    const flag = mode === "pilot" ? "--pilot" : "--solo";
     if (!coderToken) {
-      throw new Error("orchestration adapter args: --solo requires --coder provider[:model[:name]]");
+      throw new Error(`orchestration adapter args: ${flag} requires --coder provider[:model[:name]]`);
     }
     if (reviewerToken) {
-      throw new Error("orchestration adapter args: --solo is incompatible with --reviewer");
+      throw new Error(`orchestration adapter args: ${flag} is incompatible with --reviewer`);
     }
     if (duoPeerSlot != null) {
-      throw new Error("orchestration adapter args: --solo is incompatible with --duo-peer-slot");
+      throw new Error(`orchestration adapter args: ${flag} is incompatible with --duo-peer-slot`);
     }
     if (reviewerOnlyFlag) {
-      throw new Error(`orchestration adapter args: --solo is incompatible with ${reviewerOnlyFlag} (no reviewer exists in solo mode)`);
+      throw new Error(`orchestration adapter args: ${flag} is incompatible with ${reviewerOnlyFlag} (no reviewer exists in ${mode} mode)`);
     }
     const coderParsed = parseProviderToken(coderToken, "coder", parsed.model);
     parsed.orchestration = {
-      mode: "solo",
+      mode,
       config: orchestrationConfig,
       agents: [
         { ...coderParsed, role: "coder", modelExplicit: coderParsed.modelExplicit },
@@ -910,7 +918,25 @@ export function selectOrchestrationFlagsForTask(
   effort: string,
   config?: LudicsFullConfig,
 ): { adapter: string; args: string; isDuo: boolean } {
-  const skipPlan = parseTaskFrontmatter(taskContent).skip_plan === true;
+  const fm = parseTaskFrontmatter(taskContent);
+
+  // Explicit pilot override: `orchestration_mode: pilot` forces a user-piloted
+  // solo session regardless of effort. Single coder, no reviewer, no pre-work
+  // phases (no --plan/--gather) — modeled on the tiny/solo branch but emitting
+  // --pilot instead of --solo. The work phase waits for the user.
+  if ((fm.orchestration_mode ?? "").toString().trim() === "pilot") {
+    const resolvedAdapter = globalAdapter();
+    if (resolvedAdapter === "t3code" && !t3codeIntegrationEnabled()) {
+      throw new T3codeIntegrationPausedError();
+    }
+    const orchCfg = loadConfigOrchestration(config);
+    const coder = (orchCfg?.default_coder as string | undefined)?.trim() || "claude-code";
+    const modelSuffix = coder === "claude-code" ? `:${classModel("claude-sonnet", orchCfg)}` : "";
+    const args = `--pilot --coder ${coder}${modelSuffix}`;
+    return { adapter: resolvedAdapter, args, isDuo: false };
+  }
+
+  const skipPlan = fm.skip_plan === true;
   return selectOrchestrationFlags(effort, config, { skipPlan });
 }
 

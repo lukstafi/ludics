@@ -184,7 +184,7 @@ function staleBaseCategoryOf(state: OrchestrationState): "coder" | "reviewer" | 
   const phase = state.phase;
   if (phase === "plan" || phase === "work") return "coder";
   if (phase === "plan-review" || phase === "review") {
-    return state.mode === "solo" ? "coder" : "reviewer";
+    return (state.mode === "solo" || state.mode === "pilot") ? "coder" : "reviewer";
   }
   return null;
 }
@@ -670,6 +670,11 @@ export async function detectAndNudgeSettledNoSignal(
   state: OrchestrationState,
   transport: OrchestrationTransport,
 ): Promise<void> {
+  // Pilot work phase is user-driven: the coder legitimately sits idle waiting
+  // for the user to attach and chat. Suppress the settled-no-signal auto-nudge
+  // so the harness never nags or force-settles it. Other pilot phases keep
+  // normal behavior.
+  if (state.mode === "pilot" && state.phase === "work") return;
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
     const runtime = state.agentStates[agent.name]!;
@@ -867,6 +872,9 @@ export async function detectAndNudgeHungAgents(
   transport: OrchestrationTransport,
 ): Promise<void> {
   if (state.backend !== "tmux") return;
+  // Pilot work phase is user-driven: suppress hung-agent detection so the
+  // coder's legitimate idle wait for the user is never force-settled.
+  if (state.mode === "pilot" && state.phase === "work") return;
 
   const cfg = state.config.substantiveStall;
   for (const agent of state.agents) {
@@ -2146,7 +2154,7 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
   // work → update-docs instead of review → update-docs.
   if (
     next === "update-docs"
-    && (state.phase === "review" || (state.mode === "solo" && state.phase === "work"))
+    && (state.phase === "review" || (((state.mode === "solo" || state.mode === "pilot")) && state.phase === "work"))
     && !shouldRunUpdateDocs(state)
   ) {
     state.lastLearningAt = state.lastLearningAt ?? 0;
@@ -2258,7 +2266,7 @@ function maybeOverrideTransition(state: OrchestrationState, next: OrchestrationS
   // Solo skips review: the work→update-docs override mirrors pair's review→update-docs.
   if (
     next === "update-docs"
-    && (state.phase === "review" || (state.mode === "solo" && state.phase === "work"))
+    && (state.phase === "review" || (((state.mode === "solo" || state.mode === "pilot")) && state.phase === "work"))
     && !shouldRunUpdateDocs(state)
   ) {
     return state.agents.some((agent) => !!state.agentStates[agent.name]?.prUrl)

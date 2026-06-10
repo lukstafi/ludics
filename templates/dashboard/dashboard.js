@@ -642,6 +642,7 @@ function fetchDeferredLaunch() {
                 <span class="deferred-actions">
                     <a class="view-btn" href="${viewLink}" target="_blank" title="View proposal">View</a>
                     <button class="approve-btn" onclick="approveDeferred('${escapeHtml(task.id)}')" title="Approve: enable auto-start">Approve</button>
+                    <button class="pilot-btn" onclick="pilotDeferred('${escapeHtml(task.id)}')" title="Pilot: start a user-piloted solo session">Pilot</button>
                     <button class="abandon-btn" onclick="abandonDeferred('${escapeHtml(task.id)}')" title="Abandon task">Abandon</button>
                 </span>
             </li>`;
@@ -720,6 +721,24 @@ async function approveDeferred(taskId) {
         }
     } catch {
         btn.textContent = 'Approve';
+        setTimeout(() => { btn.disabled = false; }, 2000);
+    }
+}
+
+async function pilotDeferred(taskId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '\u2026';
+    try {
+        const response = await fetch(`/api/deferred-pilot?task=${encodeURIComponent(taskId)}`);
+        if (response.ok) {
+            fetchAllData();
+        } else {
+            btn.textContent = 'Pilot';
+            setTimeout(() => { btn.disabled = false; }, 2000);
+        }
+    } catch {
+        btn.textContent = 'Pilot';
         setTimeout(() => { btn.disabled = false; }, 2000);
     }
 }

@@ -528,7 +528,7 @@ export function createWorktrees(
   agents: Array<{ name: string }>,
   mainBranch: string = defaultMainBranch(projectDir),
   slot?: number,
-  mode: "duo" | "pair" | "solo" = "duo",
+  mode: "duo" | "pair" | "solo" | "pilot" = "duo",
 ): WorktreeSetup {
   // Refresh the project's main branch from origin so new worktrees fork from
   // current upstream rather than whatever the local checkout last pointed at.
@@ -558,9 +558,9 @@ export function createWorktrees(
   addWorktree(projectDir, rootWorktree, branches.root, mainBranch);
 
   const agentWorktrees: Record<string, string> = {};
-  if (mode === "pair" || mode === "solo") {
-    // Pair / solo: all agents share the root worktree and branch.
-    // Solo has a single agent; pair has coder + reviewer sharing one worktree.
+  if (mode === "pair" || mode === "solo" || mode === "pilot") {
+    // Pair / solo / pilot: all agents share the root worktree and branch.
+    // Solo and pilot have a single agent; pair has coder + reviewer sharing one worktree.
     for (const agent of agents) {
       branches[agent.name] = branches.root;
       agentWorktrees[agent.name] = rootWorktree;
@@ -770,7 +770,7 @@ export function cleanupWorktrees(
   taskId: string,
   agents: Array<{ name: string }>,
   slot?: number,
-  mode: "duo" | "pair" | "solo" = "duo",
+  mode: "duo" | "pair" | "solo" | "pilot" = "duo",
 ): void {
   const featureSlug = slugify(taskId);
   const parentDir = dirname(resolve(projectDir));

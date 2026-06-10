@@ -1432,6 +1432,37 @@ describe("dashboard HTTP /api/stale-revive and /api/stale-abandon (AC 10)", () =
     // assertion, even if a future regression somehow preserved `task`).
     expect(readFileSync(slotFile, "utf-8")).toBe(slotBefore);
   });
+
+  test("POST /api/deferred-pilot sets orchestration_mode: pilot AND status: ready", async () => {
+    // Harness condition: a deferred task. The endpoint forces pilot mode and
+    // de-defers so the keepalive auto-start picks it up.
+    const file = writeTask("task-deferred-pilot", "deferred");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/deferred-pilot?task=task-deferred-pilot"));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { status: string; mode: string };
+    expect(body.status).toBe("approved");
+    expect(body.mode).toBe("pilot");
+    // Invariant: BOTH frontmatter fields are written. Mutation: drop either
+    // the addFrontmatterField or the status flip and one assertion fails.
+    const after = readFileSync(file, "utf-8");
+    expect(after).toContain("orchestration_mode: pilot");
+    expect(after).toContain("status: ready");
+  });
+
+  test("POST /api/deferred-pilot on a non-deferred task returns 409 and does not mutate", async () => {
+    // Harness condition: task is `ready`, not deferred — must 409, mirroring
+    // deferred-approve's status guard.
+    const file = writeTask("task-not-deferred-pilot", "ready");
+    const before = readFileSync(file, "utf-8");
+
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/deferred-pilot?task=task-not-deferred-pilot"));
+    expect(resp.status).toBe(409);
+    // Invariant: no orchestration_mode written, file byte-identical.
+    expect(readFileSync(file, "utf-8")).toBe(before);
+  });
 });
 
 // task-7476a03a — slot ttyd flap-suppression. /api/ttyd-reset is the

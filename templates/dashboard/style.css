@@ -1195,7 +1195,7 @@ main {
 
 /* ── Shared Action Buttons ─────────────────────────────────── */
 .confirm-btn, .dismiss-btn,
-.view-btn, .approve-btn, .abandon-btn {
+.view-btn, .approve-btn, .pilot-btn, .abandon-btn {
     font-family: var(--font-brand);
     font-size: 0.68rem;
     font-weight: 500;
@@ -1220,6 +1220,12 @@ main {
     color: var(--success);
 }
 .approve-btn:hover, .confirm-btn:hover { background: var(--success); color: var(--bg-primary); }
+
+.pilot-btn {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+.pilot-btn:hover { background: var(--warning); color: var(--bg-primary); }
 
 .abandon-btn, .dismiss-btn {
     border-color: var(--accent);

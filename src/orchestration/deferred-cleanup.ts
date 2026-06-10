@@ -15,7 +15,7 @@ export interface CleanupEntry {
   taskId: string;
   slot: number;
   agents: Array<{ name: string }>;
-  mode: "duo" | "pair" | "solo";
+  mode: "duo" | "pair" | "solo" | "pilot";
   branches: string[];
   worktreePaths: string[];
   tmuxSessionNames: string[];
