@@ -2004,6 +2004,16 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
   const deadline = state.phaseStartedAt + timeout;
   const interval = state.config.pollInterval * 1000;
 
+  // Pilot work phase is user-driven: the coder reads the proposal and then
+  // sits idle (a settled, not-done lifecycle) until the user attaches, chats,
+  // and confirms completion. Every path in this loop that would otherwise
+  // poke or interrupt such an agent must be exempted so the "wait indefinitely
+  // for the user-written done-signal" contract holds: the settled-no-signal
+  // and hung detectors above already early-return on this predicate; here it
+  // also gates the interrupted-agent "Continue." nudge and the poll deadline's
+  // handleTimeout. `state.phase`/`state.mode` are stable for one pollUntilDone.
+  const pilotIdleWait = state.mode === "pilot" && state.phase === "work";
+
   // Subscribe to transport events for early wakeup (optional; falls back to pure polling).
   let wakeResolve: (() => void) | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -2067,8 +2077,12 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
       if (allAgentsDone(state)) return;
 
       // Nudge interrupted agents: turn settled (stop hook fired) but no done
-      // status — cut short by provider error, capacity limit, etc.
+      // status — cut short by provider error, capacity limit, etc. Skipped
+      // entirely in a pilot work phase, where a settled idle prompt is the
+      // expected state while the coder waits for the user (not an interruption
+      // to recover from).
       for (const agent of state.agents) {
+        if (pilotIdleWait) break;
         if (!agentParticipatesInPhase(state, agent)) continue;
         const rt = state.agentStates[agent.name]!;
         const alc = rt.turnLifecycle;
@@ -2120,7 +2134,10 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
         persistState(state, state.harnessDir ?? defaultHarnessDir());
       }
 
-      if (nowEpoch() >= deadline) {
+      // Pilot work waits indefinitely: never trip the poll deadline (which
+      // would handleTimeout → interrupt the coder). The phase ends only when
+      // the user-confirmed done-signal lands and allAgentsDone returns above.
+      if (!pilotIdleWait && nowEpoch() >= deadline) {
         await handleTimeout(state, transport);
         return;
       }
