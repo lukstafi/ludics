@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { buildOrchestratedDesiredThreadConfig, canReuseSlotThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError, resolveAgentModel, classModel, providerDefaultModel, singleThreadCodexModel } from "./t3code.ts";
+import { buildOrchestratedDesiredThreadConfig, canReuseSlotThread, ensureThread, orchestratedThreadTitle, parseOrchestrationAdapterArgs, startOrchestrationProcess, stop, selectOrchestrationFlags, selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError, resolveAgentModel, classModel, providerDefaultModel, singleThreadCodexModel } from "./t3code.ts";
 import type { T3CodeThreadRecord } from "../t3code/types.ts";
 import { mergeAdapterState } from "../slots/markdown.ts";
 import { emptySlotData } from "../slots/json.ts";
@@ -872,5 +872,125 @@ describe("selectOrchestrationFlags — coder model suffix sourced from the confi
     expect(() => selectOrchestrationFlags("medium", fakeConfig)).toThrow(
       /mag\.orchestration\.model_classes\.claude-opus is required/,
     );
+  });
+});
+
+describe("selectOrchestrationFlags — per-role high-end class (task-13dee93b AC3/5/6)", () => {
+  // Gate reads the real (harness) config; orchCfg reads the passed fakeConfig.
+  const cfg = installT3codeConfigHarness();
+  beforeEach(() => cfg.write({ t3codeEnabled: true }));
+
+  const TABLE = {
+    codex: "gpt-5.5",
+    "claude-opus": "claude-opus-4-8",
+    "claude-sonnet": "claude-sonnet-4-6",
+    "claude-fable": "claude-fable-5",
+  };
+  const cfgWith = (orch: Record<string, unknown>) =>
+    ({ mag: { orchestration: { model_classes: TABLE, ...orch } } } as unknown as Parameters<
+      typeof selectOrchestrationFlags
+    >[1]);
+
+  test("coder_class: claude-fable → medium coder runs claude-fable-5, NOT opus (AC5, no fallback)", () => {
+    const { args } = selectOrchestrationFlags(
+      "medium",
+      cfgWith({ default_coder: "claude-code", default_reviewer: "codex", coder_class: "claude-fable" }),
+    );
+    expect(args).toContain("--coder claude-code:claude-fable-5");
+    expect(args).not.toContain(":claude-opus");
+  });
+
+  test("coder_class absent / claude-opus → medium coder stays claude-opus-4-8 (default preserved)", () => {
+    const dflt = selectOrchestrationFlags(
+      "medium",
+      cfgWith({ default_coder: "claude-code", default_reviewer: "codex" }),
+    );
+    expect(dflt.args).toContain("--coder claude-code:claude-opus-4-8");
+    const opus = selectOrchestrationFlags(
+      "medium",
+      cfgWith({ default_coder: "claude-code", default_reviewer: "codex", coder_class: "claude-opus" }),
+    );
+    expect(opus.args).toContain("--coder claude-code:claude-opus-4-8");
+  });
+
+  test("reviewer_class: claude-fable + claude-code reviewer → medium reviewer runs claude-fable-5 (AC3)", () => {
+    const { args } = selectOrchestrationFlags(
+      "medium",
+      cfgWith({ default_coder: "claude-code", default_reviewer: "claude-code", reviewer_class: "claude-fable" }),
+    );
+    expect(args).toContain("--reviewer claude-code:claude-fable-5");
+  });
+
+  test("codex reviewer carries no class suffix even with reviewer_class set", () => {
+    const { args } = selectOrchestrationFlags(
+      "medium",
+      cfgWith({ default_coder: "claude-code", default_reviewer: "codex", reviewer_class: "claude-fable" }),
+    );
+    expect(args).toContain("--reviewer codex");
+    expect(args).not.toContain("--reviewer codex:");
+  });
+
+  // AC6 mutation guard: the Sonnet low-effort floor must ignore the high-end class.
+  test("coder_class: claude-fable + tiny effort still emits Sonnet (AC6)", () => {
+    const { args } = selectOrchestrationFlags(
+      "tiny",
+      cfgWith({ default_coder: "claude-code", default_reviewer: "codex", coder_class: "claude-fable" }),
+    );
+    expect(args).toContain(":claude-sonnet-4-6");
+    expect(args).not.toContain(":claude-fable-5");
+  });
+
+  test("coder_class: claude-fable + small effort still emits Sonnet (AC6)", () => {
+    const { args } = selectOrchestrationFlags(
+      "small",
+      cfgWith({ default_coder: "claude-code", default_reviewer: "codex", coder_class: "claude-fable" }),
+    );
+    expect(args).toContain("--coder claude-code:claude-sonnet-4-6");
+    expect(args).not.toContain(":claude-fable-5");
+  });
+});
+
+describe("ensureThread — Fable-unavailable hard error (task-13dee93b AC9)", () => {
+  const baseDesired = {
+    worktreePath: "/tmp/wt-coder",
+    title: "task-x-coder",
+    provider: "claude-code" as const,
+    runtimeMode: "full-access" as const,
+    interactionMode: "default" as const,
+    branch: null,
+  };
+
+  test("a Fable thread.create failure rethrows naming coder_class + claude-opus, preserving the original", async () => {
+    const client = {
+      dispatchCommand: () => Promise.reject(new Error("server: model claude-fable-5 not available on plan")),
+    } as unknown as Parameters<typeof ensureThread>[0];
+    const p = ensureThread(
+      client,
+      {} as unknown as Parameters<typeof ensureThread>[1],
+      2,
+      "project-1",
+      { ...baseDesired, model: "claude-fable-5", role: "coder" },
+      undefined,
+    );
+    await expect(p).rejects.toThrow(/mag\.orchestration\.coder_class/);
+    await expect(p).rejects.toThrow(/claude-opus/);
+    await expect(p).rejects.toThrow(/not available on plan/); // original preserved
+  });
+
+  test("a non-Fable thread.create failure is NOT relabeled (mutation guard)", async () => {
+    const original = new Error("transient ws disconnect");
+    const client = {
+      dispatchCommand: () => Promise.reject(original),
+    } as unknown as Parameters<typeof ensureThread>[0];
+    const p = ensureThread(
+      client,
+      {} as unknown as Parameters<typeof ensureThread>[1],
+      2,
+      "project-1",
+      { ...baseDesired, model: "claude-opus-4-8", role: "coder" },
+      undefined,
+    );
+    await expect(p).rejects.toThrow(/transient ws disconnect/);
+    await expect(p).rejects.not.toThrow(/mag\.orchestration/);
   });
 });

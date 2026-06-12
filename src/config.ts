@@ -281,6 +281,22 @@ export async function loadConfig(): Promise<LudicsFullConfig> {
 }
 
 /**
+ * Return the parsed `mag.orchestration` config block (or undefined when absent
+ * or config loading fails). Neutral, exported home for the orchestration record
+ * so non-adapter modules (e.g. `transport-t3code.ts`) can resolve it without
+ * importing an adapter's private `loadConfigOrchestration` helper (task-13dee93b).
+ */
+export function loadOrchestrationConfig(): Record<string, unknown> | undefined {
+  try {
+    const cfg = loadConfigSync();
+    const mag = cfg.mag as Record<string, unknown> | undefined;
+    return mag?.orchestration as Record<string, unknown> | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Return the global orchestration adapter mode.
  * Defaults to "t3code" when the key is absent for backward compatibility.
  */
