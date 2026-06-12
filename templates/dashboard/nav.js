@@ -83,6 +83,10 @@
             }).then(function (data) {
                 if (!data) return;
                 var initialState = mod.fromWireBody(data);
+                var initialClasses = {
+                    coder: (data && data.coderClass) || 'claude-opus',
+                    reviewer: (data && data.reviewerClass) || 'claude-opus',
+                };
                 var roleSwitcher = mod.createRoleSwitcherElement(initialState, function (newState) {
                     return fetch('/api/orchestration-defaults', {
                         method: 'POST',
@@ -95,7 +99,7 @@
                         }
                         return resp.json();
                     });
-                });
+                }, initialClasses);
                 statusBar.insertBefore(roleSwitcher, switcher);
             });
         }).catch(function (e) {

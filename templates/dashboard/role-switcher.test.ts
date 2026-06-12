@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { applyRoleChange, createInFlightSequencer, fromWireBody, PROVIDERS, ROLES } from "./role-switcher.js";
+import { applyRoleChange, createInFlightSequencer, fromWireBody, HIGH_END_CLASSES, PROVIDERS, ROLES, roleHeldByClaudeCode, toWireBody } from "./role-switcher.js";
 
 describe("PROVIDERS (browser-side copy)", () => {
   test("lists exactly claude-code and codex (in this order)", () => {
@@ -269,5 +269,54 @@ describe("role-switcher.js source-level pins (AC 1, AC 3)", () => {
     expect(matches.length).toBeGreaterThanOrEqual(2);
     // Must obtain its myId BEFORE awaiting onSubmit.
     expect(source).toMatch(/const myId\s*=\s*sequencer\.begin\(\);\s*\n\s*try\s*\{/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-13dee93b — per-role high-end class sub-select (pure, DOM-independent).
+// ---------------------------------------------------------------------------
+
+describe("HIGH_END_CLASSES (browser-side copy)", () => {
+  test("is exactly opus + fable, and PROVIDERS is unchanged (AC7)", () => {
+    expect([...HIGH_END_CLASSES]).toEqual(["claude-opus", "claude-fable"]);
+    // The class choice must NOT have leaked into the provider universe.
+    expect([...PROVIDERS]).toEqual(["claude-code", "codex"]);
+  });
+});
+
+describe("roleHeldByClaudeCode — class sub-select enablement rule", () => {
+  test("true only when claude-code holds that role", () => {
+    const state = { "claude-code": "coder", "codex": "reviewer" };
+    expect(roleHeldByClaudeCode("coder", state)).toBe(true);
+    expect(roleHeldByClaudeCode("reviewer", state)).toBe(false); // codex holds reviewer
+  });
+
+  test("false when the role is held by codex or is vacant", () => {
+    expect(roleHeldByClaudeCode("coder", { "claude-code": "none", "codex": "coder" })).toBe(false);
+    expect(roleHeldByClaudeCode("reviewer", { "claude-code": "coder", "codex": "none" })).toBe(false);
+  });
+});
+
+describe("toWireBody — carries provider state + class fields", () => {
+  test("emits provider nulls + both class fields", () => {
+    const state = { "claude-code": "coder", "codex": "reviewer" };
+    const body = toWireBody(state, { coder: "claude-fable", reviewer: "claude-opus" });
+    expect(body).toEqual({
+      coder: "claude-code",
+      reviewer: "codex",
+      coderClass: "claude-fable",
+      reviewerClass: "claude-opus",
+    });
+  });
+
+  test("defaults absent/invalid class values to claude-opus (preserves the choice across reload)", () => {
+    const state = { "claude-code": "none", "codex": "none" };
+    expect(toWireBody(state, {})).toEqual({
+      coder: null,
+      reviewer: null,
+      coderClass: "claude-opus",
+      reviewerClass: "claude-opus",
+    });
+    expect(toWireBody(state, { coder: "bogus" }).coderClass).toBe("claude-opus");
   });
 });
