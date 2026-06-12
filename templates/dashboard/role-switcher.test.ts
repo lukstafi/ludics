@@ -4,7 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { applyRoleChange, createInFlightSequencer, createRoleSwitcherElement, fromWireBody, HIGH_END_CLASSES, PROVIDERS, ROLES, roleHeldByClaudeCode, toWireBody } from "./role-switcher.js";
+import { applyRoleChange, createInFlightSequencer, createRoleSwitcherElement, fromWireBody, HIGH_END_CLASSES, PROVIDERS, providerForOptionValue, ROLE_OPTION_VALUES, ROLES, toWireBody } from "./role-switcher.js";
 
 describe("PROVIDERS (browser-side copy)", () => {
   test("lists exactly claude-code and codex (in this order)", () => {
@@ -247,8 +247,10 @@ describe("role-switcher.js source-level pins (AC 1, AC 3)", () => {
   });
 
   test("AC 3 (post-redesign): one <select> per role, classed .role-select, with C:/R: prefixes", () => {
-    // Two selects, one per role, each with three options (— + two providers).
+    // One select per role; each lists — plus ROLE_OPTION_VALUES
+    // (claude-opus, claude-fable, codex). No separate class sub-select.
     expect(source).toMatch(/document\.createElement\("select"\)/);
+    expect(source).not.toContain('"class-select"');
     expect(source).toMatch(/sel\.className\s*=\s*"role-select"/);
     // C: / R: prefixes are the user-visible mnemonic for which dropdown is which.
     expect(source).toContain('coder: "C"');
@@ -284,16 +286,17 @@ describe("HIGH_END_CLASSES (browser-side copy)", () => {
   });
 });
 
-describe("roleHeldByClaudeCode — class sub-select enablement rule", () => {
-  test("true only when claude-code holds that role", () => {
-    const state = { "claude-code": "coder", "codex": "reviewer" };
-    expect(roleHeldByClaudeCode("coder", state)).toBe(true);
-    expect(roleHeldByClaudeCode("reviewer", state)).toBe(false); // codex holds reviewer
+describe("ROLE_OPTION_VALUES / providerForOptionValue — single-dropdown expansion", () => {
+  test("claude-code expands into its two classes; codex stays as itself (AC7)", () => {
+    expect([...ROLE_OPTION_VALUES]).toEqual(["claude-opus", "claude-fable", "codex"]);
+    // The class expansion must NOT have leaked into the provider universe.
+    expect([...PROVIDERS]).toEqual(["claude-code", "codex"]);
   });
 
-  test("false when the role is held by codex or is vacant", () => {
-    expect(roleHeldByClaudeCode("coder", { "claude-code": "none", "codex": "coder" })).toBe(false);
-    expect(roleHeldByClaudeCode("reviewer", { "claude-code": "coder", "codex": "none" })).toBe(false);
+  test("both high-end classes map back to claude-code; other values map to themselves", () => {
+    expect(providerForOptionValue("claude-opus")).toBe("claude-code");
+    expect(providerForOptionValue("claude-fable")).toBe("claude-code");
+    expect(providerForOptionValue("codex")).toBe("codex");
   });
 });
 
@@ -322,12 +325,13 @@ describe("toWireBody — carries provider state + class fields", () => {
 });
 
 // ---------------------------------------------------------------------------
-// task-13dee93b AC4 — DOM-level test of the class sub-select interaction.
+// task-13dee93b AC4 — DOM-level test of the single per-role dropdown.
 // Bun has no DOM; a minimal hand-rolled `document` stub records change
-// listeners so we can drive the sub-select end-to-end. This enforces the GUI
-// invariant: a user can pick Opus/Fable from the role-switcher and have that
-// choice submitted (a future edit removing the sub-select or disconnecting its
-// change handler would fail here, not silently pass the pure-helper tests).
+// listeners so we can drive the select end-to-end. This enforces the GUI
+// invariant: a user picks Opus/Fable (or codex) from ONE dropdown per role and
+// has that choice submitted as provider + class — no separate sub-select. A
+// future edit reintroducing a second dropdown or disconnecting the change
+// handler would fail here, not silently pass the pure-helper tests.
 // ---------------------------------------------------------------------------
 
 function makeFakeEl(tagName: string): any {
@@ -354,7 +358,7 @@ function findChild(root: any, className: string, role: string): any {
   return root.children.find((c: any) => c.className === className && c.dataset.role === role);
 }
 
-describe("createRoleSwitcherElement — class sub-select DOM interaction (AC4)", () => {
+describe("createRoleSwitcherElement — single per-role dropdown DOM interaction (AC4)", () => {
   let prevDoc: unknown;
   beforeEach(() => {
     prevDoc = (globalThis as any).document;
@@ -364,22 +368,33 @@ describe("createRoleSwitcherElement — class sub-select DOM interaction (AC4)",
     (globalThis as any).document = prevDoc;
   });
 
-  test("coder class-select is enabled + set to the initial class; codex-held reviewer's is disabled", () => {
+  test("exactly one .role-select per role and no .class-select; values reflect class/provider", () => {
     const root = createRoleSwitcherElement(
       { "claude-code": "coder", "codex": "reviewer" },
       () => Promise.resolve({}),
-      { coder: "claude-opus" },
+      { coder: "claude-fable", reviewer: "claude-opus" },
     );
-    const coderClassSel = findChild(root, "class-select", "coder");
-    const reviewerClassSel = findChild(root, "class-select", "reviewer");
-    expect(coderClassSel).toBeTruthy();
-    expect(coderClassSel.disabled).toBe(false); // claude-code holds coder
-    expect(coderClassSel.value).toBe("claude-opus");
-    // reviewer is held by codex → its class sub-select is disabled (meaningless).
-    expect(reviewerClassSel.disabled).toBe(true);
+    const roleSelects = root.children.filter((c: any) => c.className === "role-select");
+    expect(roleSelects.length).toBe(2);
+    // The eliminated sub-select must be gone — this is the whole point of the fix.
+    expect(root.children.some((c: any) => c.className === "class-select")).toBe(false);
+    // claude-code-held coder shows its model class directly in the one dropdown.
+    expect(findChild(root, "role-select", "coder").value).toBe("claude-fable");
+    // codex-held reviewer shows the provider.
+    expect(findChild(root, "role-select", "reviewer").value).toBe("codex");
   });
 
-  test("changing the coder class-select to claude-fable submits coderClass with the provider state", async () => {
+  test("the dropdown lists — / claude-opus / claude-fable / codex", () => {
+    const root = createRoleSwitcherElement(
+      { "claude-code": "coder", "codex": "none" },
+      () => Promise.resolve({}),
+      {},
+    );
+    const coderSel = findChild(root, "role-select", "coder");
+    expect(coderSel.children.map((o: any) => o.value)).toEqual(["", "claude-opus", "claude-fable", "codex"]);
+  });
+
+  test("picking claude-fable submits coder=claude-code + coderClass=claude-fable (no second dropdown)", async () => {
     let captured: any = null;
     const onSubmit = (body: any) => { captured = body; return Promise.resolve(body); };
     const root = createRoleSwitcherElement(
@@ -387,20 +402,39 @@ describe("createRoleSwitcherElement — class sub-select DOM interaction (AC4)",
       onSubmit,
       { coder: "claude-opus", reviewer: "claude-opus" },
     );
-    const coderClassSel = findChild(root, "class-select", "coder");
+    const coderSel = findChild(root, "role-select", "coder");
 
-    // User picks Fable and the select fires `change`.
-    coderClassSel.value = "claude-fable";
-    coderClassSel.dispatch("change");
+    // User picks Fable from the single dropdown and it fires `change`.
+    coderSel.value = "claude-fable";
+    coderSel.dispatch("change");
     // onSubmit is invoked synchronously inside the handler (before its await),
     // but await a tick for robustness against future refactors.
     await Promise.resolve();
 
     expect(captured).not.toBeNull();
-    expect(captured.coderClass).toBe("claude-fable"); // the GUI choice was submitted
-    // The existing provider role-state rides along in the same POST body.
     expect(captured.coder).toBe("claude-code");
+    expect(captured.coderClass).toBe("claude-fable"); // the GUI choice was submitted
+    // The reviewer's provider + class ride along untouched in the same POST body.
     expect(captured.reviewer).toBe("codex");
-    expect(captured.reviewerClass).toBe("claude-opus"); // untouched
+    expect(captured.reviewerClass).toBe("claude-opus");
+  });
+
+  test("picking codex for the coder cascades claude-code to reviewer (swap)", async () => {
+    let captured: any = null;
+    const onSubmit = (body: any) => { captured = body; return Promise.resolve(body); };
+    const root = createRoleSwitcherElement(
+      { "claude-code": "coder", "codex": "reviewer" },
+      onSubmit,
+      { coder: "claude-fable", reviewer: "claude-opus" },
+    );
+    const coderSel = findChild(root, "role-select", "coder");
+
+    coderSel.value = "codex";
+    coderSel.dispatch("change");
+    await Promise.resolve();
+
+    // The ≤1-coder / ≤1-reviewer cascade still runs on the underlying provider.
+    expect(captured.coder).toBe("codex");
+    expect(captured.reviewer).toBe("claude-code");
   });
 });
