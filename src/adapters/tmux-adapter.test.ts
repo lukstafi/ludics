@@ -662,6 +662,31 @@ describe("agentCliCommand — passes --model + Fable remediation (task-13dee93b 
     expect(cmd).not.toContain("coder_class");
   });
 
+  // Codex PR review (P2): the remediation must follow a config-bumped Fable id,
+  // not the hardcoded claude-fable-5. Resolve the class from orchCfg.model_classes.
+  test("a config-bumped Fable model id still triggers the remediation (via orchCfg)", async () => {
+    const { agentCliCommand } = await import("./tmux-adapter.ts");
+    const orchCfg = { model_classes: { "claude-fable": "claude-fable-6-future" } };
+    const cmd = agentCliCommand(
+      { provider: "claude-code", model: "claude-fable-6-future", role: "coder" },
+      orchCfg,
+    );
+    expect(cmd).toContain("--model claude-fable-6-future");
+    expect(cmd).toContain("claude-fable unavailable");
+    expect(cmd).toContain("coder_class");
+  });
+
+  test("a non-Fable model with the same orchCfg gets NO remediation (mutation guard)", async () => {
+    const { agentCliCommand } = await import("./tmux-adapter.ts");
+    const orchCfg = { model_classes: { "claude-fable": "claude-fable-6-future" } };
+    const cmd = agentCliCommand(
+      { provider: "claude-code", model: "claude-opus-4-8", role: "coder" },
+      orchCfg,
+    );
+    expect(cmd).toContain("--model claude-opus-4-8");
+    expect(cmd).not.toContain("claude-fable unavailable");
+  });
+
   test("no --model is emitted when model is absent", async () => {
     const { agentCliCommand } = await import("./tmux-adapter.ts");
     expect(agentCliCommand({ provider: "claude-code" })).not.toContain("--model");

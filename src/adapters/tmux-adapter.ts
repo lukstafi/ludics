@@ -37,6 +37,7 @@ import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/defer
 import { isoNow, nowEpoch } from "../orchestration/util.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { parseOrchestrationAdapterArgs, providerDefaultModel } from "./t3code.ts";
+import { isFableModel } from "../orchestration/model-defaults.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -276,6 +277,7 @@ export function startTmuxAgentSessionsForOrchestratedSlot(
   peerSyncDir: string,
   taskId: string | undefined,
   startTtydEnabled: boolean,
+  orchCfg?: Record<string, unknown>,
 ): Record<string, number> {
   const ttydPids: Record<string, number> = {};
   for (let i = 0; i < agents.length; i++) {
@@ -283,8 +285,9 @@ export function startTmuxAgentSessionsForOrchestratedSlot(
     createTmuxAgentSession(slot, agent.name, agent.worktreePath, taskId);
     const role = agentPortRole(agent, i);
     if (startTtydEnabled) ttydPids[agent.name] = startTtyd(slot, agent.name, role, taskId);
-    // Boot persistent interactive agent CLI in the session
-    bootAgentCli(slot, agent, peerSyncDir, "setup", taskId);
+    // Boot persistent interactive agent CLI in the session (orchCfg lets the
+    // Fable-remediation guard recognise a config-bumped Fable model id).
+    bootAgentCli(slot, agent, peerSyncDir, "setup", taskId, orchCfg);
   }
   return ttydPids;
 }
@@ -384,6 +387,7 @@ function bootAgentCli(
   peerSyncDir: string,
   _phaseToken: string,
   taskId?: string,
+  orchCfg?: Record<string, unknown>,
 ): void {
   const target = tmuxTarget(slot, agent.name, taskId);
 
@@ -397,7 +401,7 @@ function bootAgentCli(
   tmuxSendCommand(target, envCmd);
 
   // Boot the CLI (runs persistently in the pane)
-  tmuxSendCommand(target, agentCliCommand(agent));
+  tmuxSendCommand(target, agentCliCommand(agent, orchCfg));
 }
 
 // ---------------------------------------------------------------------------
@@ -496,13 +500,22 @@ export function captureLastMessageHash(target: string, lines: number = 50): stri
  * class, a pane-visible remediation is appended that fires on a nonzero exit
  * (e.g. Fable unreachable on the active plan), naming the role's config key and
  * `claude-opus` — AC9's actionable hard error for the fire-and-forget tmux launch.
+ *
+ * The Fable check uses {@link isFableModel} against `orchCfg`, so it stays correct
+ * when `model_classes.claude-fable` is config-bumped to a future Fable ID (not just
+ * the seeded `claude-fable-5`). When `orchCfg` is absent, isFableModel falls back to
+ * the canonical literal — the launch still passes `--model`, only the remediation
+ * text depends on recognising the Fable class.
  */
-export function agentCliCommand(agent: {
-  provider: string;
-  model?: string;
-  role?: "coder" | "reviewer";
-  thinkingEffort?: string;
-}): string {
+export function agentCliCommand(
+  agent: {
+    provider: string;
+    model?: string;
+    role?: "coder" | "reviewer";
+    thinkingEffort?: string;
+  },
+  orchCfg?: Record<string, unknown>,
+): string {
   const effortRaw = agent.thinkingEffort?.trim();
   if (agent.provider === "claude-code") {
     let base = "claude --dangerously-skip-permissions";
@@ -512,7 +525,7 @@ export function agentCliCommand(agent: {
       const level = normaliseEffortLevel(effortRaw);
       base += ` --effort ${claudeEffort(level)}`;
     }
-    if (model === "claude-fable-5") {
+    if (model && isFableModel(model, orchCfg)) {
       // AC9: leave the config-key remediation visible in the pane if the Fable
       // CLI exits nonzero (e.g. model unavailable). No silent fallback.
       const roleKey = `${agent.role ?? "coder"}_class`;
@@ -662,7 +675,7 @@ async function start(ctx: AdapterContext): Promise<string> {
 
   // --- tmux-specific setup: create sessions + ttyd + boot agent CLIs ---
   const ttydPids = startTmuxAgentSessionsForOrchestratedSlot(
-    ctx.slot, agents, setup.peerSyncDir, taskId, ctx.startTtyd !== false,
+    ctx.slot, agents, setup.peerSyncDir, taskId, ctx.startTtyd !== false, orchCfg,
   );
 
   // --- Build orchestration state (no t3code threadIds) ---
