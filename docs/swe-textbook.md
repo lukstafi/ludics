@@ -745,3 +745,11 @@ Description: Some tasks resolve a question or produce a document rather than cha
 Precipitating retro: task-a2c331e9
 
 Filter decision: A process-suggestions run skips this under the competent-SWE filter because "a decision is a deliverable" is obvious to an experienced engineer the moment it is stated — too general to earn space in an always-loaded prompt. It is journaled rather than dropped because the failure is also not reliably caught downstream: a coder who bails on a no-code task leaves nothing for the reviewer to flag.
+
+### Key a latest-value guard off its resolver, not the seeded literal, or a config bump silently disables it
+
+Description: When a guard, branch, or special-case recognises the "current latest" value of something that is actually sourced from a bumpable lookup table or config (e.g. "is this the newest model id?"), test it against the resolver or predicate that owns that table — not against the literal value that happened to be seeded at the time of writing. If the guard hardcodes the seeded literal, a later bump of the config value turns the guard into a silent no-op: the rest of the feature keeps working because it reads the resolved value, so nothing visibly breaks, and the dead guard surfaces only when someone notices the special behaviour stopped firing. That makes it among the hardest kinds of drift to catch — there is no error, no failing test unless one was written against the resolver, just a quietly disabled code path.
+
+Precipitating retro: task-13dee93b
+
+Filter decision: A process-suggestions run skips this from always-loaded doctrine because it is a fairly advanced, situational subtlety — obvious in hindsight to a careful engineer, and partly caught downstream (a reviewer flagged this very instance as a P2). It does not earn space in every prompt, but it is a real, low-visibility drift trap worth journaling for the publication seed.
