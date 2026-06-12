@@ -23,13 +23,17 @@ export interface RoleSwitcherClasses {
 
 export const HIGH_END_CLASSES: ReadonlyArray<HighEndClass>;
 
+// task-13dee93b: claude-code is surfaced in each role dropdown as its two
+// model classes directly (no separate sub-select).
+export const ROLE_OPTION_VALUES: ReadonlyArray<string>;
+
+export function providerForOptionValue(value: string): string;
+
 export function applyRoleChange(
   state: RoleSwitcherState,
   provider: string,
   role: RoleSwitcherRole,
 ): RoleSwitcherState;
-
-export function roleHeldByClaudeCode(role: "coder" | "reviewer", state: RoleSwitcherState): boolean;
 
 export function toWireBody(
   state: RoleSwitcherState,

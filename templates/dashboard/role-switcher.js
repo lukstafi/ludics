@@ -13,17 +13,26 @@ export const PROVIDERS = ["claude-code", "codex"];
 export const ROLES = ["coder", "reviewer"];
 const ROLE_PREFIX = { coder: "C", reviewer: "R" };
 
-// task-13dee93b: per-role high-end Claude class sub-select. NOT a provider —
-// PROVIDERS stays exactly [claude-code, codex] (AC7). The class choice is only
-// meaningful for a claude-code-held role.
+// task-13dee93b: per-role high-end Claude model class. NOT a provider —
+// PROVIDERS stays exactly [claude-code, codex] (AC7). claude-code is surfaced in
+// the role dropdown as these two classes directly (no separate sub-select), so
+// picking a class both assigns claude-code AND records the model class.
 export const HIGH_END_CLASSES = ["claude-opus", "claude-fable"];
 const DEFAULT_HIGH_END_CLASS = "claude-opus";
 
-/** A role's class sub-select is only enabled when claude-code holds that role
- *  (a model class is meaningless for codex / an unheld role). Pure — exported so
- *  the enable/disable rule is tested without a DOM. */
-export function roleHeldByClaudeCode(role, state) {
-  return !!state && state["claude-code"] === role;
+// The values offered in each role's single dropdown. claude-code expands into
+// its two model classes; every other provider appears as itself. PROVIDERS +
+// HIGH_END_CLASSES remain the semantic source of truth (AC7) — this is purely
+// the display expansion that lets one dropdown cover provider + class.
+export const ROLE_OPTION_VALUES = PROVIDERS.flatMap((p) =>
+  p === "claude-code" ? [...HIGH_END_CLASSES] : [p],
+);
+
+/** Map a dropdown value back to its underlying provider. Both high-end classes
+ *  resolve to claude-code; every other value is its own provider. Pure —
+ *  exported so the mapping is tested without a DOM. */
+export function providerForOptionValue(value) {
+  return HIGH_END_CLASSES.includes(value) ? "claude-code" : value;
 }
 
 /** Build the POST wire body from the provider role-state + the per-role class
@@ -86,9 +95,12 @@ export function applyRoleChange(state, provider, role) {
 /**
  * Construct a `.role-switcher` element with one `<select>` per role.
  *
- * Each select shows `<prefix>: <provider>` (e.g. "C: claude-code") or
- * `<prefix>: —` when no provider holds the role. The same cascade
- * `applyRoleChange` runs whether the user picks a provider (assign) or "—"
+ * Each select shows `<prefix>: <value>` where the value is the model class for
+ * a claude-code-held role (e.g. "C: claude-opus" / "C: claude-fable"), the
+ * provider for any other (e.g. "R: codex"), or `<prefix>: —` when no provider
+ * holds the role. Surfacing claude-code as its two model classes directly means
+ * the model choice needs no second dropdown (task-13dee93b). The same cascade
+ * `applyRoleChange` runs whether the user picks a value (assign) or "—"
  * (release) — the ≤1-coder / ≤1-reviewer invariant is preserved either way.
  *
  * `initialState` shape: { [provider]: "coder" | "reviewer" | "none" }
@@ -112,8 +124,7 @@ export function createRoleSwitcherElement(initialState, onSubmit, initialClasses
   const root = document.createElement("div");
   root.className = "role-switcher";
 
-  const selects = {}; // role -> provider <select>
-  const classSelects = {}; // role -> class <select>
+  const selects = {}; // role -> <select>
 
   function holderOf(role, st) {
     for (const p of PROVIDERS) {
@@ -122,16 +133,19 @@ export function createRoleSwitcherElement(initialState, onSubmit, initialClasses
     return "";
   }
 
+  // The dropdown value for a role encodes BOTH provider and (for claude-code)
+  // model class: claude-code → its class (opus/fable), another provider → that
+  // provider, unheld → "" (the em-dash option).
+  function optionValueFor(role) {
+    const holder = holderOf(role, state);
+    if (holder === "claude-code") return classState[role];
+    return holder; // codex → "codex"; unheld → ""
+  }
+
   function syncSelects() {
     for (const r of ROLES) {
       const sel = selects[r];
-      if (sel) sel.value = holderOf(r, state);
-      const csel = classSelects[r];
-      if (csel) {
-        csel.value = classState[r];
-        // The class sub-select is only relevant for a claude-code-held role.
-        csel.disabled = !roleHeldByClaudeCode(r, state);
-      }
+      if (sel) sel.value = optionValueFor(r);
     }
   }
 
@@ -147,30 +161,15 @@ export function createRoleSwitcherElement(initialState, onSubmit, initialClasses
     noneOpt.textContent = `${prefix}: —`;
     sel.appendChild(noneOpt);
 
-    for (const p of PROVIDERS) {
+    for (const v of ROLE_OPTION_VALUES) {
       const opt = document.createElement("option");
-      opt.value = p;
-      opt.textContent = `${prefix}: ${p}`;
+      opt.value = v;
+      opt.textContent = `${prefix}: ${v}`;
       sel.appendChild(opt);
     }
     sel.addEventListener("change", () => handleChange(role, sel.value));
     selects[role] = sel;
     root.appendChild(sel);
-
-    // High-end class sub-select (Opus/Fable) for this role.
-    const csel = document.createElement("select");
-    csel.className = "class-select";
-    csel.dataset.role = role;
-    csel.setAttribute("aria-label", `${role === "coder" ? "Coder" : "Reviewer"} high-end class`);
-    for (const cls of HIGH_END_CLASSES) {
-      const opt = document.createElement("option");
-      opt.value = cls;
-      opt.textContent = cls === "claude-fable" ? "Fable" : "Opus";
-      csel.appendChild(opt);
-    }
-    csel.addEventListener("change", () => handleClassChange(role, csel.value));
-    classSelects[role] = csel;
-    root.appendChild(csel);
   }
 
   const sequencer = createInFlightSequencer();
@@ -201,26 +200,21 @@ export function createRoleSwitcherElement(initialState, onSubmit, initialClasses
     }
   }
 
-  async function handleChange(role, chosenProvider) {
+  async function handleChange(role, chosenValue) {
     const prev = state;
     const prevClasses = { ...classState };
     let next;
-    if (chosenProvider === "") {
+    if (chosenValue === "") {
       const holder = holderOf(role, prev);
       if (!holder) return; // no-op release
       next = applyRoleChange(prev, holder, "none");
     } else {
-      next = applyRoleChange(prev, chosenProvider, role);
+      // A high-end class value both assigns claude-code to the role AND records
+      // which model class that role should use; a plain provider just assigns.
+      if (HIGH_END_CLASSES.includes(chosenValue)) classState[role] = chosenValue;
+      next = applyRoleChange(prev, providerForOptionValue(chosenValue), role);
     }
     state = next;
-    await submit(prev, prevClasses);
-  }
-
-  async function handleClassChange(role, chosenClass) {
-    if (!HIGH_END_CLASSES.includes(chosenClass)) return;
-    const prev = state;
-    const prevClasses = { ...classState };
-    classState[role] = chosenClass;
     await submit(prev, prevClasses);
   }
 
