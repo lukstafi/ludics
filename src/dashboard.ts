@@ -21,7 +21,7 @@ import { ludicsSelfCommand } from "./orchestration/util.ts";
 import { startDashboardServer } from "./dashboard-server.ts";
 import { clusterIsController, heartbeatIsFresh, clusterCurrentMachineName } from "./cluster.ts";
 import { getIntentForDashboard } from "./cluster-http.ts";
-import { effectiveDefaultsFromConfig } from "./orchestration-defaults.ts";
+import { effectiveDefaultsFromConfig, highEndClassesFromConfig } from "./orchestration-defaults.ts";
 
 function readSlotIntentForDashboard(slotNum: number): { action: string } | null {
   return getIntentForDashboard(slotNum);
@@ -845,14 +845,23 @@ function generateAdapter(): Record<string, unknown> {
 //   - key present and null → null (preserves explicit user "none")
 //   - key present + valid  → the configured value
 
-export function generateOrchestrationDefaults(): { coder: string | null; reviewer: string | null } {
+export function generateOrchestrationDefaults(): {
+  coder: string | null;
+  reviewer: string | null;
+  coderClass: string;
+  reviewerClass: string;
+} {
+  // task-13dee93b: also expose the effective per-role high-end class so the
+  // dashboard sub-select renders the persisted choice (survives reload, AC4).
   try {
     const config = loadConfigSync();
     const mag = config.mag as Record<string, unknown> | undefined;
     const orch = mag?.orchestration as Record<string, unknown> | undefined;
-    return effectiveDefaultsFromConfig(orch);
+    const classes = highEndClassesFromConfig(orch);
+    return { ...effectiveDefaultsFromConfig(orch), coderClass: classes.coder, reviewerClass: classes.reviewer };
   } catch {
-    return effectiveDefaultsFromConfig(undefined);
+    const classes = highEndClassesFromConfig(undefined);
+    return { ...effectiveDefaultsFromConfig(undefined), coderClass: classes.coder, reviewerClass: classes.reviewer };
   }
 }
 

@@ -1624,6 +1624,8 @@ describe("generateOrchestrationDefaults — task-b43bd578", () => {
     expect(generateOrchestrationDefaults()).toEqual({
       coder: "claude-code",
       reviewer: "codex",
+      coderClass: "claude-opus",
+      reviewerClass: "claude-opus",
     });
   });
 
@@ -1633,6 +1635,8 @@ describe("generateOrchestrationDefaults — task-b43bd578", () => {
     expect(generateOrchestrationDefaults()).toEqual({
       coder: "codex",
       reviewer: "claude-code",
+      coderClass: "claude-opus",
+      reviewerClass: "claude-opus",
     });
   });
 
@@ -1642,6 +1646,8 @@ describe("generateOrchestrationDefaults — task-b43bd578", () => {
     expect(generateOrchestrationDefaults()).toEqual({
       coder: null,
       reviewer: "codex",
+      coderClass: "claude-opus",
+      reviewerClass: "claude-opus",
     });
   });
 
@@ -1653,12 +1659,32 @@ describe("generateOrchestrationDefaults — task-b43bd578", () => {
       const { generateOrchestrationDefaults } = await import("./dashboard.ts");
       const result = generateOrchestrationDefaults();
       calls = spy.mock.calls;
-      expect(result).toEqual({ coder: "claude-code", reviewer: "codex" });
+      expect(result).toEqual({ coder: "claude-code", reviewer: "codex", coderClass: "claude-opus", reviewerClass: "claude-opus" });
     } finally {
       spy.mockRestore();
     }
     const matched = calls.some((c) => String(c[0]).includes("cursor"));
     expect(matched).toBe(true);
+  });
+
+  // task-13dee93b AC4: the effective per-role high-end class is exposed for the
+  // dashboard sub-select and survives reload.
+  test("configured coder_class/reviewer_class are reflected; default is claude-opus", async () => {
+    writeConfigWithMag(
+      "mag:\n  orchestration:\n    coder_class: claude-fable\n    reviewer_class: claude-opus\n",
+    );
+    const { generateOrchestrationDefaults } = await import("./dashboard.ts");
+    const r = generateOrchestrationDefaults();
+    expect(r.coderClass).toBe("claude-fable");
+    expect(r.reviewerClass).toBe("claude-opus");
+  });
+
+  test("absent class keys default to claude-opus (mutation guard vs reading a wrong key)", async () => {
+    writeConfigWithMag("mag:\n  orchestration:\n    default_coder: codex\n");
+    const { generateOrchestrationDefaults } = await import("./dashboard.ts");
+    const r = generateOrchestrationDefaults();
+    expect(r.coderClass).toBe("claude-opus");
+    expect(r.reviewerClass).toBe("claude-opus");
   });
 });
 
@@ -1674,7 +1700,7 @@ describe("dashboardGenerate writes orchestration-defaults.json — task-b43bd578
     const outFile = join(harnessDir(), "dashboard", "data", "orchestration-defaults.json");
     expect(existsSync(outFile)).toBe(true);
     const parsed = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>;
-    expect(parsed).toEqual({ coder: "codex", reviewer: "claude-code" });
+    expect(parsed).toEqual({ coder: "codex", reviewer: "claude-code", coderClass: "claude-opus", reviewerClass: "claude-opus" });
   });
 
   test("regenerates after writeOrchestrationDefaults (POST-then-regenerate path)", async () => {
@@ -1684,13 +1710,13 @@ describe("dashboardGenerate writes orchestration-defaults.json — task-b43bd578
     dashboardGenerate();
     const outFile = join(harnessDir(), "dashboard", "data", "orchestration-defaults.json");
     const before = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>;
-    expect(before).toEqual({ coder: "claude-code", reviewer: "codex" });
+    expect(before).toEqual({ coder: "claude-code", reviewer: "codex", coderClass: "claude-opus", reviewerClass: "claude-opus" });
 
     const { writeOrchestrationDefaults } = await import("./config.ts");
     writeOrchestrationDefaults({ coder: "codex", reviewer: "claude-code" });
     dashboardGenerate();
     const after = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>;
-    expect(after).toEqual({ coder: "codex", reviewer: "claude-code" });
+    expect(after).toEqual({ coder: "codex", reviewer: "claude-code", coderClass: "claude-opus", reviewerClass: "claude-opus" });
   });
 });
 
@@ -1727,6 +1753,38 @@ describe("dashboard HTTP /api/orchestration-defaults — task-b43bd578", () => {
     const raw = readFileSync(process.env.LUDICS_CONFIG!, "utf-8");
     expect(raw).toMatch(/default_coder:\s*codex/);
     expect(raw).toMatch(/default_reviewer:\s*claude-code/);
+  });
+
+  test("POST with coderClass: claude-fable persists the key, seeds model_classes, and echoes it (AC4)", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/orchestration-defaults", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ coder: "claude-code", reviewer: "codex", coderClass: "claude-fable", reviewerClass: "claude-opus" }),
+    }));
+    expect(resp.status).toBe(200);
+    const body = await resp.json() as { coderClass: string; reviewerClass: string };
+    expect(body.coderClass).toBe("claude-fable");
+    expect(body.reviewerClass).toBe("claude-opus");
+    const raw = readFileSync(process.env.LUDICS_CONFIG!, "utf-8");
+    expect(raw).toMatch(/coder_class:\s*claude-fable/);
+    expect(raw).toMatch(/reviewer_class:\s*claude-opus/);
+    // Idempotent backfill: a fable selection seeds a resolvable model entry.
+    expect(raw).toMatch(/claude-fable:\s*claude-fable-5/);
+  });
+
+  test("POST with an invalid coderClass → 400", async () => {
+    seedConfig();
+    const handler = await makeHandler();
+    const resp = await handler(new Request("http://x/api/orchestration-defaults", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ coder: "claude-code", reviewer: "codex", coderClass: "claude-sonnet" }),
+    }));
+    expect(resp.status).toBe(400);
+    const body = await resp.json() as { error: string };
+    expect(body.error).toMatch(/coderClass/);
   });
 
   test("missing 'coder' key → 400 + JSON error", async () => {
@@ -1798,7 +1856,7 @@ describe("dashboard HTTP /api/orchestration-defaults — task-b43bd578", () => {
     const { dashboardGenerate } = await import("./dashboard.ts");
     dashboardGenerate();
     const out = JSON.parse(readFileSync(join(harnessDir(), "dashboard", "data", "orchestration-defaults.json"), "utf-8"));
-    expect(out).toEqual({ coder: null, reviewer: "codex" });
+    expect(out).toEqual({ coder: null, reviewer: "codex", coderClass: "claude-opus", reviewerClass: "claude-opus" });
   });
 
   test("GET to /api/orchestration-defaults → 405", async () => {
@@ -1842,7 +1900,7 @@ describe("dashboard HTTP /api/orchestration-defaults — task-b43bd578", () => {
     const dataReq = new Request("http://x/data/orchestration-defaults.json");
     const dataResp = await handler(dataReq);
     expect(dataResp.status).toBe(200);
-    const dataBody = await dataResp.json() as { coder: string; reviewer: string };
-    expect(dataBody).toEqual({ coder: "codex", reviewer: "claude-code" });
+    const dataBody = await dataResp.json() as { coder: string; reviewer: string; coderClass: string; reviewerClass: string };
+    expect(dataBody).toEqual({ coder: "codex", reviewer: "claude-code", coderClass: "claude-opus", reviewerClass: "claude-opus" });
   });
 });

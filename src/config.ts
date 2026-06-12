@@ -653,6 +653,8 @@ export function milestoneKey(
 export function writeOrchestrationDefaults(state: {
   coder: Provider | null;
   reviewer: Provider | null;
+  coderClass?: "claude-opus" | "claude-fable";
+  reviewerClass?: "claude-opus" | "claude-fable";
 }): void {
   const configPath = resolveConfigPath();
   if (!existsSync(configPath)) {
@@ -662,6 +664,24 @@ export function writeOrchestrationDefaults(state: {
   const doc = YAML.parseDocument(text);
   doc.setIn(["mag", "orchestration", "default_coder"], state.coder);
   doc.setIn(["mag", "orchestration", "default_reviewer"], state.reviewer);
+  // task-13dee93b: persist the per-role high-end class when provided; absent
+  // fields leave the existing config key untouched.
+  let seedFable = false;
+  if (state.coderClass !== undefined) {
+    doc.setIn(["mag", "orchestration", "coder_class"], state.coderClass);
+    if (state.coderClass === "claude-fable") seedFable = true;
+  }
+  if (state.reviewerClass !== undefined) {
+    doc.setIn(["mag", "orchestration", "reviewer_class"], state.reviewerClass);
+    if (state.reviewerClass === "claude-fable") seedFable = true;
+  }
+  // Idempotent backfill: a claude-fable selection requires a resolvable
+  // model_classes.claude-fable, or the session would throw "…is required" at
+  // launch. Seed the canonical value only when the key is absent — never
+  // overwrite a user's existing value.
+  if (seedFable && doc.getIn(["mag", "orchestration", "model_classes", "claude-fable"]) === undefined) {
+    doc.setIn(["mag", "orchestration", "model_classes", "claude-fable"], "claude-fable-5");
+  }
   atomicWriteFileSync(configPath, doc.toString());
 }
 

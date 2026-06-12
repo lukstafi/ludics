@@ -7,6 +7,8 @@ import {
   EFFECTIVE_DEFAULTS,
   PROVIDERS,
   effectiveDefaultsFromConfig,
+  highEndClassesFromConfig,
+  isHighEndClass,
   isProvider,
   validatePayload,
 } from "./orchestration-defaults.ts";
@@ -93,6 +95,60 @@ describe("validatePayload", () => {
     expect(validatePayload(null).ok).toBe(false);
     expect(validatePayload([]).ok).toBe(false);
     expect(validatePayload("string").ok).toBe(false);
+  });
+
+  // task-13dee93b AC4 — optional per-role high-end class fields.
+  test("accepts valid coderClass/reviewerClass and returns them", () => {
+    const r = validatePayload({
+      coder: "claude-code",
+      reviewer: "codex",
+      coderClass: "claude-fable",
+      reviewerClass: "claude-opus",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.coderClass).toBe("claude-fable");
+      expect(r.reviewerClass).toBe("claude-opus");
+    }
+  });
+
+  test("omitting class fields leaves them undefined (server preserves existing)", () => {
+    const r = validatePayload({ coder: "claude-code", reviewer: "codex" });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.coderClass).toBeUndefined();
+      expect(r.reviewerClass).toBeUndefined();
+    }
+  });
+
+  test("rejects an invalid class value (e.g. claude-sonnet or a number)", () => {
+    const r1 = validatePayload({ coder: "claude-code", reviewer: "codex", coderClass: "claude-sonnet" });
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.error).toMatch(/coderClass/);
+    const r2 = validatePayload({ coder: "claude-code", reviewer: "codex", reviewerClass: 5 });
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.error).toMatch(/reviewerClass/);
+  });
+});
+
+describe("isHighEndClass / highEndClassesFromConfig (task-13dee93b)", () => {
+  test("isHighEndClass accepts only opus + fable", () => {
+    expect(isHighEndClass("claude-opus")).toBe(true);
+    expect(isHighEndClass("claude-fable")).toBe(true);
+    expect(isHighEndClass("claude-sonnet")).toBe(false);
+    expect(isHighEndClass("codex")).toBe(false);
+    expect(isHighEndClass(123)).toBe(false);
+  });
+
+  test("highEndClassesFromConfig reads per-role keys, defaulting to claude-opus", () => {
+    expect(highEndClassesFromConfig({ coder_class: "claude-fable", reviewer_class: "claude-opus" })).toEqual({
+      coder: "claude-fable",
+      reviewer: "claude-opus",
+    });
+    // Absent / undefined config → both default to claude-opus.
+    expect(highEndClassesFromConfig(undefined)).toEqual({ coder: "claude-opus", reviewer: "claude-opus" });
+    // Unknown value → forgiving default (not a throw).
+    expect(highEndClassesFromConfig({ coder_class: "bogus" }).coder).toBe("claude-opus");
   });
 });
 
