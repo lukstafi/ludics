@@ -858,7 +858,11 @@ describe("integration", () => {
     expect(result.errorCount).toBe(0);
     // 19 after gh-ludics-524 deleted src/adapters/agent-session.test.ts,
     // which contributed one rule-N warning.
-    const expectedWarningCount = 19;
+    // 20 after task-13dee93b added src/orchestration/transport-t3code.test.ts —
+    // a pure-unit AC9 test (spies readServerRecord + the t3code client prototype)
+    // that transitively imports src/events.ts via transport-t3code.ts, so it
+    // trips rule-3 despite needing no real harness.
+    const expectedWarningCount = 20;
     if (result.warningCount !== expectedWarningCount) {
       throw new Error(formatWarningCountHeuristic(result.warningCount));
     }
