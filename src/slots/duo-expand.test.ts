@@ -65,4 +65,14 @@ describe("expandDuoSlots — no stray positional leak", () => {
       }
     }
   });
+
+  // task-13dee93b: the reviewer high-end suffix (e.g. claude-fable-5) must be
+  // preserved and swapped onto slot B's coder, mirroring the coder suffix.
+  test("--reviewer provider:model suffix swaps onto slot B coder", () => {
+    const result = expandDuoSlots(1, 2, "--coder claude-code:claude-opus-4-8 --reviewer claude-code:claude-fable-5");
+    expect(result.slotA.args).toContain("--reviewer claude-code:claude-fable-5");
+    // Roles swap: the reviewer's resolved model becomes slot B's coder model.
+    expect(result.slotB.args).toContain("--coder claude-code:claude-fable-5");
+    expect(result.slotB.args).toContain("--reviewer claude-code:claude-opus-4-8");
+  });
 });
