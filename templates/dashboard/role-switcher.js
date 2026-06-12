@@ -13,6 +13,34 @@ export const PROVIDERS = ["claude-code", "codex"];
 export const ROLES = ["coder", "reviewer"];
 const ROLE_PREFIX = { coder: "C", reviewer: "R" };
 
+// task-13dee93b: per-role high-end Claude class sub-select. NOT a provider —
+// PROVIDERS stays exactly [claude-code, codex] (AC7). The class choice is only
+// meaningful for a claude-code-held role.
+export const HIGH_END_CLASSES = ["claude-opus", "claude-fable"];
+const DEFAULT_HIGH_END_CLASS = "claude-opus";
+
+/** A role's class sub-select is only enabled when claude-code holds that role
+ *  (a model class is meaningless for codex / an unheld role). Pure — exported so
+ *  the enable/disable rule is tested without a DOM. */
+export function roleHeldByClaudeCode(role, state) {
+  return !!state && state["claude-code"] === role;
+}
+
+/** Build the POST wire body from the provider role-state + the per-role class
+ *  state. Maps internal `none` → `null` for providers and always carries the two
+ *  class fields (so the persisted choice round-trips). Exported for testing. */
+export function toWireBody(state, classState) {
+  const out = { coder: null, reviewer: null };
+  for (const p of PROVIDERS) {
+    if (state[p] === "coder") out.coder = p;
+    else if (state[p] === "reviewer") out.reviewer = p;
+  }
+  const cs = classState || {};
+  out.coderClass = HIGH_END_CLASSES.includes(cs.coder) ? cs.coder : DEFAULT_HIGH_END_CLASS;
+  out.reviewerClass = HIGH_END_CLASSES.includes(cs.reviewer) ? cs.reviewer : DEFAULT_HIGH_END_CLASS;
+  return out;
+}
+
 /**
  * Pure constraint-propagation cascade.
  *
@@ -72,12 +100,20 @@ export function applyRoleChange(state, provider, role) {
  * Returns the constructed element. Pure DOM construction — no document
  * mutation outside the returned subtree.
  */
-export function createRoleSwitcherElement(initialState, onSubmit) {
+export function createRoleSwitcherElement(initialState, onSubmit, initialClasses) {
   let state = { ...initialState };
+  // Per-role high-end class, tracked separately from the provider role-state so
+  // the value is preserved even while a role is held by codex/none (AC4 reload).
+  const ic = initialClasses || {};
+  const classState = {
+    coder: HIGH_END_CLASSES.includes(ic.coder) ? ic.coder : DEFAULT_HIGH_END_CLASS,
+    reviewer: HIGH_END_CLASSES.includes(ic.reviewer) ? ic.reviewer : DEFAULT_HIGH_END_CLASS,
+  };
   const root = document.createElement("div");
   root.className = "role-switcher";
 
-  const selects = {}; // role -> <select>
+  const selects = {}; // role -> provider <select>
+  const classSelects = {}; // role -> class <select>
 
   function holderOf(role, st) {
     for (const p of PROVIDERS) {
@@ -90,6 +126,12 @@ export function createRoleSwitcherElement(initialState, onSubmit) {
     for (const r of ROLES) {
       const sel = selects[r];
       if (sel) sel.value = holderOf(r, state);
+      const csel = classSelects[r];
+      if (csel) {
+        csel.value = classState[r];
+        // The class sub-select is only relevant for a claude-code-held role.
+        csel.disabled = !roleHeldByClaudeCode(r, state);
+      }
     }
   }
 
@@ -114,12 +156,54 @@ export function createRoleSwitcherElement(initialState, onSubmit) {
     sel.addEventListener("change", () => handleChange(role, sel.value));
     selects[role] = sel;
     root.appendChild(sel);
+
+    // High-end class sub-select (Opus/Fable) for this role.
+    const csel = document.createElement("select");
+    csel.className = "class-select";
+    csel.dataset.role = role;
+    csel.setAttribute("aria-label", `${role === "coder" ? "Coder" : "Reviewer"} high-end class`);
+    for (const cls of HIGH_END_CLASSES) {
+      const opt = document.createElement("option");
+      opt.value = cls;
+      opt.textContent = cls === "claude-fable" ? "Fable" : "Opus";
+      csel.appendChild(opt);
+    }
+    csel.addEventListener("change", () => handleClassChange(role, csel.value));
+    classSelects[role] = csel;
+    root.appendChild(csel);
   }
 
   const sequencer = createInFlightSequencer();
 
+  async function submit(prevState, prevClasses) {
+    syncSelects();
+    root.removeAttribute("title");
+    const myId = sequencer.begin();
+    try {
+      const confirmed = await onSubmit(toWireBody(state, classState));
+      // Drop stale responses: if a newer change started after this one,
+      // its response (or its failure) is authoritative — not ours.
+      if (!sequencer.isLatest(myId)) return;
+      if (confirmed && typeof confirmed === "object") {
+        state = fromWireBody(confirmed);
+        if (HIGH_END_CLASSES.includes(confirmed.coderClass)) classState.coder = confirmed.coderClass;
+        if (HIGH_END_CLASSES.includes(confirmed.reviewerClass)) classState.reviewer = confirmed.reviewerClass;
+        syncSelects();
+      }
+    } catch (err) {
+      if (!sequencer.isLatest(myId)) return;
+      // Pessimistic rollback: server rejected or network failed.
+      state = prevState;
+      classState.coder = prevClasses.coder;
+      classState.reviewer = prevClasses.reviewer;
+      syncSelects();
+      root.setAttribute("title", `Failed to save: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   async function handleChange(role, chosenProvider) {
     const prev = state;
+    const prevClasses = { ...classState };
     let next;
     if (chosenProvider === "") {
       const holder = holderOf(role, prev);
@@ -129,25 +213,15 @@ export function createRoleSwitcherElement(initialState, onSubmit) {
       next = applyRoleChange(prev, chosenProvider, role);
     }
     state = next;
-    syncSelects();
-    root.removeAttribute("title");
-    const myId = sequencer.begin();
-    try {
-      const confirmed = await onSubmit(toWireBody(next));
-      // Drop stale responses: if a newer change started after this one,
-      // its response (or its failure) is authoritative — not ours.
-      if (!sequencer.isLatest(myId)) return;
-      if (confirmed && typeof confirmed === "object") {
-        state = fromWireBody(confirmed);
-        syncSelects();
-      }
-    } catch (err) {
-      if (!sequencer.isLatest(myId)) return;
-      // Pessimistic rollback: server rejected or network failed.
-      state = prev;
-      syncSelects();
-      root.setAttribute("title", `Failed to save: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    await submit(prev, prevClasses);
+  }
+
+  async function handleClassChange(role, chosenClass) {
+    if (!HIGH_END_CLASSES.includes(chosenClass)) return;
+    const prev = state;
+    const prevClasses = { ...classState };
+    classState[role] = chosenClass;
+    await submit(prev, prevClasses);
   }
 
   syncSelects();
@@ -172,16 +246,6 @@ export function createInFlightSequencer() {
       return id === latest;
     },
   };
-}
-
-/** Map internal `none` ↔ wire-body `null`. */
-function toWireBody(state) {
-  const out = { coder: null, reviewer: null };
-  for (const p of PROVIDERS) {
-    if (state[p] === "coder") out.coder = p;
-    else if (state[p] === "reviewer") out.reviewer = p;
-  }
-  return out;
 }
 
 export function fromWireBody(body) {

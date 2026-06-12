@@ -834,10 +834,20 @@ export function buildHandlers(deps: DashboardHandlerDeps): (req: Request) => Pro
         );
       }
       try {
-        writeOrchestrationDefaults({ coder: result.coder, reviewer: result.reviewer });
+        writeOrchestrationDefaults({
+          coder: result.coder,
+          reviewer: result.reviewer,
+          coderClass: result.coderClass,
+          reviewerClass: result.reviewerClass,
+        });
         lastGenerated = 0; // force regeneration on next data request
         return new Response(
-          JSON.stringify({ coder: result.coder, reviewer: result.reviewer }),
+          JSON.stringify({
+            coder: result.coder,
+            reviewer: result.reviewer,
+            coderClass: result.coderClass,
+            reviewerClass: result.reviewerClass,
+          }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
       } catch (e) {

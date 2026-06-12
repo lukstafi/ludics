@@ -11,6 +11,7 @@ import {
 } from "../adapters/tmux-adapter.ts";
 import { tmuxCapture } from "../adapters/tmux.ts";
 import { substantiveDiff } from "./runner.ts";
+import { loadOrchestrationConfig } from "../config.ts";
 
 // Re-export for backwards compatibility (used by tests)
 export { ttydPort };
@@ -45,7 +46,7 @@ export class TmuxTransport implements OrchestrationTransport {
     // Check if the agent CLI is already running in the pane (persistent session).
     // If not, reboot it — this handles crash recovery and first-turn-after-resume.
     if (!isAgentAlive(state.slot, agent.name, state.taskId)) {
-      tmuxSendCommand(target, agentCliCommand(agent));
+      tmuxSendCommand(target, agentCliCommand(agent, loadOrchestrationConfig()));
       // Wait for the CLI to boot, then verify it's alive before pasting.
       // Codex can take longer to start than Claude Code.
       for (let wait = 0; wait < 15; wait++) {

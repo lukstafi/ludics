@@ -2,7 +2,7 @@
 // Extracted from runner.ts to allow pluggable transport backends.
 
 import { T3CodeClient } from "../t3code/client.ts";
-import { readServerRecord } from "../t3code/server.ts";
+import * as t3server from "../t3code/server.ts";
 import { toWireProvider } from "../t3code/types.ts";
 import type { T3CodeServerRecord, T3Snapshot } from "../t3code/types.ts";
 import { emitEvent } from "../events.ts";
@@ -12,6 +12,8 @@ import type { OrchestrationTransport } from "./transport.ts";
 import type { AgentConfig, AgentTurnLifecycle, OrchestrationState } from "./state.ts";
 import { isoNow, makeId } from "./util.ts";
 import { claudeEffort, codexEffort, normaliseEffortLevel } from "./effort.ts";
+import { dispatchWithFableContext } from "./model-defaults.ts";
+import { loadOrchestrationConfig } from "../config.ts";
 
 async function withClient<T>(
   record: T3CodeServerRecord,
@@ -102,29 +104,38 @@ export class T3CodeTransport implements OrchestrationTransport {
     message: string,
   ): Promise<string> {
     const threadId = state.threadIds[agent.name];
-    const record = readServerRecord();
+    const record = t3server.readServerRecord();
     if (!record || !threadId) throw new Error(`no t3code thread for agent ${agent.name}`);
 
     const modelSelection = buildModelSelection(agent);
     const commandId = makeId("cmd");
 
-    await withClient(record, async (client) => {
-      await client.dispatchCommand({
-        type: "thread.turn.start",
-        commandId,
-        threadId,
-        message: {
-          messageId: makeId("msg"),
-          role: "user",
-          text: message,
-          attachments: [],
-        },
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        createdAt: isoNow(),
-      });
-    });
+    // task-13dee93b AC9: a claude-fable first-turn dispatch that fails (model
+    // unreachable) is rethrown with the actionable config-key remediation naming
+    // this agent's role; non-Fable failures pass through unchanged. No fallback.
+    await dispatchWithFableContext(
+      () =>
+        withClient(record, async (client) => {
+          await client.dispatchCommand({
+            type: "thread.turn.start",
+            commandId,
+            threadId,
+            message: {
+              messageId: makeId("msg"),
+              role: "user",
+              text: message,
+              attachments: [],
+            },
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: isoNow(),
+          });
+        }),
+      agent.model,
+      agent.role,
+      loadOrchestrationConfig(),
+    );
 
     return commandId;
   }
@@ -134,7 +145,7 @@ export class T3CodeTransport implements OrchestrationTransport {
   }
 
   async refreshAgentTransportState(state: OrchestrationState): Promise<void> {
-    const record = readServerRecord();
+    const record = t3server.readServerRecord();
     const snapshot = await fetchSnapshot(record);
 
     for (const agent of state.agents) {
@@ -224,7 +235,7 @@ export class T3CodeTransport implements OrchestrationTransport {
     agent: AgentConfig,
   ): Promise<void> {
     const threadId = state.threadIds[agent.name];
-    const record = readServerRecord();
+    const record = t3server.readServerRecord();
     if (record && threadId) {
       await withClient(record, async (client) => {
         try {
@@ -242,7 +253,7 @@ export class T3CodeTransport implements OrchestrationTransport {
   }
 
   async subscribeEvents(callback: () => void): Promise<(() => void) | null> {
-    const record = readServerRecord();
+    const record = t3server.readServerRecord();
     if (!record) return null;
 
     try {

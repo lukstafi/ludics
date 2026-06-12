@@ -214,6 +214,63 @@ describe("writeOrchestrationDefaults", () => {
     expect(parsed.mag.orchestration.default_coder).toBeNull();
   });
 
+  // task-13dee93b: per-role high-end class persistence + idempotent fable seed.
+  test("persists coder_class/reviewer_class and round-trips them (AC4); fable selection seeds model_classes", async () => {
+    const { readFileSync } = await import("fs");
+    const { writeOrchestrationDefaults } = await import("./config.ts");
+    const YAML = (await import("yaml")).default;
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(
+      configPath,
+      "state_repo: owner/ludics-state\nstate_path: harness\nmag:\n  orchestration:\n    default_mode: pair\n",
+    );
+    writeOrchestrationDefaults({
+      coder: "claude-code",
+      reviewer: "codex",
+      coderClass: "claude-fable",
+      reviewerClass: "claude-opus",
+    });
+    const raw = readFileSync(configPath, "utf-8");
+    // Round-trip via the YAML parser so a silent serialization omission shows up.
+    const parsed = YAML.parse(raw) as { mag: { orchestration: Record<string, unknown> } };
+    const orch = parsed.mag.orchestration;
+    expect(orch.coder_class).toBe("claude-fable");
+    expect(orch.reviewer_class).toBe("claude-opus");
+    // Positive backfill: a fable selection seeds a resolvable model_classes entry.
+    expect((orch.model_classes as Record<string, unknown>)["claude-fable"]).toBe("claude-fable-5");
+  });
+
+  test("negative control: an opus-only write does NOT add model_classes and leaves existing values intact", async () => {
+    const { readFileSync } = await import("fs");
+    const { writeOrchestrationDefaults } = await import("./config.ts");
+    const YAML = (await import("yaml")).default;
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(
+      configPath,
+      "state_repo: owner/ludics-state\nstate_path: harness\nmag:\n  orchestration:\n    default_mode: pair\n    model_classes:\n      claude-opus: pinned-opus\n",
+    );
+    writeOrchestrationDefaults({ coder: "claude-code", reviewer: "codex", coderClass: "claude-opus" });
+    const parsed = YAML.parse(readFileSync(configPath, "utf-8")) as { mag: { orchestration: Record<string, unknown> } };
+    const mc = parsed.mag.orchestration.model_classes as Record<string, unknown>;
+    expect(parsed.mag.orchestration.coder_class).toBe("claude-opus");
+    expect("claude-fable" in mc).toBe(false); // no fable seed for an opus selection
+    expect(mc["claude-opus"]).toBe("pinned-opus"); // existing value untouched
+  });
+
+  test("omitting class fields leaves any existing class keys untouched", async () => {
+    const { readFileSync } = await import("fs");
+    const { writeOrchestrationDefaults } = await import("./config.ts");
+    const YAML = (await import("yaml")).default;
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(
+      configPath,
+      "state_repo: owner/ludics-state\nstate_path: harness\nmag:\n  orchestration:\n    coder_class: claude-fable\n",
+    );
+    writeOrchestrationDefaults({ coder: "claude-code", reviewer: "codex" });
+    const parsed = YAML.parse(readFileSync(configPath, "utf-8")) as { mag: { orchestration: Record<string, unknown> } };
+    expect(parsed.mag.orchestration.coder_class).toBe("claude-fable"); // untouched
+  });
+
   test("preserves adjacent comment + sibling default_mode verbatim", async () => {
     const { readFileSync } = await import("fs");
     const { writeOrchestrationDefaults } = await import("./config.ts");

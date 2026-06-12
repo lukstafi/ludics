@@ -47,10 +47,13 @@ mag:
   # Orchestration default models — bump a value when a new minor ships (config
   # edit, not a code change). A missing/blank class fails loudly at session start.
   orchestration:
+    coder_class: claude-opus     # High-end Claude class for the coder: claude-opus | claude-fable
+    reviewer_class: claude-opus  # High-end Claude class for the reviewer: claude-opus | claude-fable
     model_classes:
       codex: gpt-5.5
       claude-opus: claude-opus-4-8
       claude-sonnet: claude-sonnet-4-6
+      claude-fable: claude-fable-5
 
   autonomy_level:
     elaborate_tasks: auto

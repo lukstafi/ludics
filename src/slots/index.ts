@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
-import { globalAdapter, harnessDir, slotsCount, stateRepoDir, resolveProjectPath, t3codeIntegrationEnabled } from "../config.ts";
+import { globalAdapter, harnessDir, loadOrchestrationConfig, slotsCount, stateRepoDir, resolveProjectPath, t3codeIntegrationEnabled } from "../config.ts";
 import { atomicWriteFileSync } from "../json.ts";
 import { mergeAdapterState, addNoteToSlotData } from "./markdown.ts";
 import { readSlotJson, writeSlotJson, readAllSlotJson, emptySlotData, slotJsonDir, slotDataToMarkdown, normalizeTaskId } from "./json.ts";
@@ -1327,14 +1327,14 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     const newTtydPids: Record<string, number> = { ...(tmuxState?.ttydPids ?? {}) };
     const taskId = orchState.taskId;
 
-    const bootCliInSession = (session: string, agent: { name: string; provider: string; thinkingEffort?: string }) => {
+    const bootCliInSession = (session: string, agent: { name: string; provider: string; model?: string; role?: "coder" | "reviewer"; thinkingEffort?: string }) => {
       const envCmd = [
         `export LUDICS_SLOT=${slotNum}`,
         `LUDICS_AGENT=${agent.name}`,
         `LUDICS_PEER_SYNC_DIR="${orchState.peerSyncDir}"`,
       ].join(" ");
       tmuxSendCommand(session, envCmd);
-      tmuxSendCommand(session, agentCliCommand(agent));
+      tmuxSendCommand(session, agentCliCommand(agent, loadOrchestrationConfig()));
     };
 
     for (let i = 0; i < orchState.agents.length; i++) {

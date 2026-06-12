@@ -12,8 +12,34 @@
 // the literal fallback. Honouring null at auto-fill is deferred to the
 // N≥3 provider-extension task.
 
+import {
+  HIGH_END_CLAUDE_CLASSES,
+  normalizeHighEndClass,
+  type HighEndClass,
+} from "./orchestration/model-defaults.ts";
+
 export const PROVIDERS = ["claude-code", "codex"] as const;
 export type Provider = (typeof PROVIDERS)[number];
+
+/** True for a valid per-role high-end Claude class (`claude-opus` | `claude-fable`).
+ *  Used by the dashboard POST validator (task-13dee93b AC4). */
+export function isHighEndClass(x: unknown): x is HighEndClass {
+  return typeof x === "string" && (HIGH_END_CLAUDE_CLASSES as readonly string[]).includes(x);
+}
+
+/**
+ * Resolve the effective per-role high-end class from a parsed `mag.orchestration`
+ * block, for the dashboard role-switcher's initial state (task-13dee93b AC4).
+ * Forgiving: missing/invalid → `claude-opus` (default), via normalizeHighEndClass.
+ */
+export function highEndClassesFromConfig(
+  orch: Record<string, unknown> | undefined | null,
+): { coder: HighEndClass; reviewer: HighEndClass } {
+  return {
+    coder: normalizeHighEndClass(orch?.coder_class),
+    reviewer: normalizeHighEndClass(orch?.reviewer_class),
+  };
+}
 
 export const ROLES = ["coder", "reviewer", "none"] as const;
 export type Role = (typeof ROLES)[number];
@@ -68,7 +94,13 @@ function resolveRole(
 }
 
 export type ValidatePayloadResult =
-  | { ok: true; coder: Provider | null; reviewer: Provider | null }
+  | {
+      ok: true;
+      coder: Provider | null;
+      reviewer: Provider | null;
+      coderClass?: HighEndClass;
+      reviewerClass?: HighEndClass;
+    }
   | { ok: false; error: string };
 
 /**
@@ -94,9 +126,27 @@ export function validatePayload(body: unknown): ValidatePayloadResult {
   if (coder !== null && reviewer !== null && coder === reviewer) {
     return { ok: false, error: "'coder' and 'reviewer' must differ when both non-null" };
   }
+  // task-13dee93b: optional per-role high-end class. Absent → omitted (server
+  // leaves the existing config key untouched); present-but-invalid → reject.
+  let coderClass: HighEndClass | undefined;
+  let reviewerClass: HighEndClass | undefined;
+  if ("coderClass" in obj) {
+    if (!isHighEndClass(obj.coderClass)) {
+      return { ok: false, error: `invalid 'coderClass' value: ${JSON.stringify(obj.coderClass)}` };
+    }
+    coderClass = obj.coderClass;
+  }
+  if ("reviewerClass" in obj) {
+    if (!isHighEndClass(obj.reviewerClass)) {
+      return { ok: false, error: `invalid 'reviewerClass' value: ${JSON.stringify(obj.reviewerClass)}` };
+    }
+    reviewerClass = obj.reviewerClass;
+  }
   return {
     ok: true,
     coder: coder as Provider | null,
     reviewer: reviewer as Provider | null,
+    coderClass,
+    reviewerClass,
   };
 }

@@ -51,6 +51,8 @@ import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/defer
 import { isoNow, makeId, nowEpoch } from "../orchestration/util.ts";
 import {
   classForProvider,
+  dispatchWithFableContext,
+  normalizeHighEndClass,
   resolveModelClass,
   type ModelClass,
 } from "../orchestration/model-defaults.ts";
@@ -93,6 +95,10 @@ export interface DesiredThreadConfig {
   title: string;
   model: string;
   provider?: T3ProviderKind;
+  /** Orchestration role, threaded through so a Fable-model launch failure can
+   *  name the exact config key (`coder_class`/`reviewer_class`) in its hard error
+   *  (task-13dee93b AC9). Transient dispatch field — not persisted state. */
+  role?: "coder" | "reviewer";
   runtimeMode: T3RuntimeMode;
   interactionMode: T3InteractionMode;
   branch?: string | null;
@@ -166,6 +172,7 @@ export function buildOrchestratedDesiredThreadConfig(
     title: orchestratedThreadTitle(slot, agent.role ?? agent.name, taskId),
     model: agent.model,
     provider: agent.provider,
+    role: agent.role === "coder" || agent.role === "reviewer" ? agent.role : undefined,
     runtimeMode: options.runtimeMode,
     interactionMode: options.interactionMode,
     branch: agent.branch,
@@ -603,7 +610,10 @@ async function ensureProject(
   return projectId;
 }
 
-async function ensureThread(
+/** Exported as a test seam (mirrors `resolveAgentModel`): lets a regression test
+ *  drive a mocked `dispatchCommand` failure and assert the task-13dee93b AC9
+ *  Fable-unavailable rethrow without standing up a real t3code server. */
+export async function ensureThread(
   client: T3CodeClient,
   snapshot: T3Snapshot,
   slot: number,
@@ -656,19 +666,28 @@ async function ensureThread(
   const threadId = makeId(`thread-slot-${slot}`);
   const wireProvider = desired.provider ? toWireProvider(desired.provider) : "codex";
   const modelSelection: T3ModelSelection = { provider: wireProvider, model };
-  await client.dispatchCommand({
-    type: "thread.create",
-    commandId: makeId("cmd"),
-    threadId,
-    projectId,
-    title: desired.title,
-    modelSelection,
-    runtimeMode: desired.runtimeMode,
-    interactionMode: desired.interactionMode,
-    branch: desired.branch ?? null,
-    worktreePath: desired.worktreePath,
-    createdAt,
-  });
+  // task-13dee93b AC9: a claude-fable thread.create that fails (model unreachable
+  // on the active plan) is rethrown with the actionable config-key remediation;
+  // non-Fable failures pass through unchanged. No silent fallback.
+  await dispatchWithFableContext(
+    () =>
+      client.dispatchCommand({
+        type: "thread.create",
+        commandId: makeId("cmd"),
+        threadId,
+        projectId,
+        title: desired.title,
+        modelSelection,
+        runtimeMode: desired.runtimeMode,
+        interactionMode: desired.interactionMode,
+        branch: desired.branch ?? null,
+        worktreePath: desired.worktreePath,
+        createdAt,
+      }),
+    model,
+    desired.role,
+    loadConfigOrchestration(),
+  );
 
   return {
     threadId,
@@ -870,15 +889,27 @@ export function selectOrchestrationFlags(
 
   // Only apply effort-based model selection for Claude providers; other providers
   // (codex) carry no suffix and resolve their latest-within-class default later
-  // in resolveAgentModel. claude-code coders resolve to the opus class for
-  // medium/large effort, the sonnet class otherwise (task-c48b7beb).
+  // in resolveAgentModel. claude-code coders resolve to their per-role high-end
+  // class (claude-opus by default, claude-fable when selected — task-13dee93b) for
+  // medium/large effort, the sonnet class otherwise (task-c48b7beb). The literal
+  // `orchCfg?.coder_class` / `orchCfg?.reviewer_class` reads below also satisfy the
+  // config-reference lint's Direction-4 adapter-read scan for those keys.
   let coderModelSuffix = "";
   if (coder === "claude-code") {
     if (norm === "large" || norm === "medium") {
-      coderModelSuffix = `:${classModel("claude-opus", orchCfg)}`;
+      coderModelSuffix = `:${classModel(normalizeHighEndClass(orchCfg?.coder_class), orchCfg)}`;
     } else {
       coderModelSuffix = `:${classModel("claude-sonnet", orchCfg)}`;
     }
+  }
+
+  // Reviewer high-end class: today a claude-code reviewer carries no model suffix
+  // (resolving to the Sonnet generic default). To make `reviewer_class` meaningful
+  // (AC3/AC5), emit the per-role high-end class suffix for medium/large effort
+  // claude-code reviewers; tiny/small reviewers (if any) and codex stay unchanged.
+  let reviewerModelSuffix = "";
+  if (reviewer === "claude-code" && (norm === "large" || norm === "medium")) {
+    reviewerModelSuffix = `:${classModel(normalizeHighEndClass(orchCfg?.reviewer_class), orchCfg)}`;
   }
 
   // Small / tiny / unknown effort: never run pre-work phases.
@@ -897,7 +928,7 @@ export function selectOrchestrationFlags(
   const modeArgs = [
     "--pair",
     `--coder ${coder}${coderModelSuffix}`,
-    `--reviewer ${reviewer}`,
+    `--reviewer ${reviewer}${reviewerModelSuffix}`,
   ];
 
   const args = [...modeArgs, ...phaseFlags].join(" ");

@@ -118,6 +118,15 @@ mag:
     default_reviewer: codex      # Default reviewer provider for auto-selected sessions: codex | claude-code
     coder_model: ""              # Model ID for the coder agent (e.g. claude-opus-4-8); empty = provider default
     reviewer_model: ""           # Model ID for the reviewer agent; empty = provider default
+    # High-end Claude model class per role, for medium/large effort claude-code
+    # sessions only (task-13dee93b): claude-opus (default) | claude-fable.
+    # Selecting claude-fable runs claude-fable-5 (the tier above Opus) on
+    # medium/large sessions for that role; tiny/small + pilot/solo stay on Sonnet,
+    # and Codex / explicit model overrides are unaffected. Fable is promo-gated to
+    # 2026-06-22 and may be absent on a subscription plan; if a claude-fable session
+    # fails to launch, set the key back to claude-opus (there is no silent fallback).
+    coder_class: claude-opus     # High-end Claude class for the coder: claude-opus | claude-fable
+    reviewer_class: claude-opus  # High-end Claude class for the reviewer: claude-opus | claude-fable
     coder_effort: "high"         # Effort level for the coder: low | medium | high | xhigh | max; default: high
     reviewer_effort: "high"      # Effort level for the reviewer: low | medium | high | xhigh | max; default: high
     # Latest-within-class default models — the SINGLE SOURCE OF TRUTH for the
@@ -126,12 +135,15 @@ mag:
     # change. A missing/blank tracked class FAILS LOUDLY at session start,
     # before any worktree/session is created (resolveModelClass in
     # src/orchestration/model-defaults.ts). Provider is not class: a
-    # claude-code coder resolves to claude-opus for medium/large effort and
-    # claude-sonnet otherwise; codex coder/reviewer resolve to the codex class.
+    # claude-code coder resolves to its high-end class (claude-opus by default, or
+    # claude-fable when coder_class/reviewer_class selects it) for medium/large
+    # effort and claude-sonnet otherwise; codex coder/reviewer resolve to the codex
+    # class. claude-fable is a selectable high-end CLASS, not a provider.
     model_classes:
       codex: gpt-5.5                    # latest GPT-5 (codex coder/reviewer default)
-      claude-opus: claude-opus-4-8      # latest Opus 4 (medium/large claude-code coder)
+      claude-opus: claude-opus-4-8      # latest Opus 4 (default high-end claude-code class)
       claude-sonnet: claude-sonnet-4-6  # latest Sonnet 4 (tiny/small coder + claude-code default)
+      claude-fable: claude-fable-5      # latest Fable 5 (opt-in high-end class; promo-gated to 2026-06-22)
     # Unified ladder — same rung means same relative budget across providers.
     # Per-provider CLI/wire mapping:
     #   unified  | claude-code --effort | codex model_reasoning_effort
