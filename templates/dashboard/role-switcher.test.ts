@@ -2,9 +2,9 @@
 // AC 14 names this transformation and pins its behaviour independently
 // of the DOM.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { applyRoleChange, createInFlightSequencer, fromWireBody, HIGH_END_CLASSES, PROVIDERS, ROLES, roleHeldByClaudeCode, toWireBody } from "./role-switcher.js";
+import { applyRoleChange, createInFlightSequencer, createRoleSwitcherElement, fromWireBody, HIGH_END_CLASSES, PROVIDERS, ROLES, roleHeldByClaudeCode, toWireBody } from "./role-switcher.js";
 
 describe("PROVIDERS (browser-side copy)", () => {
   test("lists exactly claude-code and codex (in this order)", () => {
@@ -167,11 +167,11 @@ describe("fromWireBody — null ↔ none mapping", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createRoleSwitcherElement source-level pins (AC 1, AC 3).
-// Bun's test runtime has no DOM and we don't want to add a polyfill dep
-// just for this test. The live HTTP smoke probe (AC 19) exercises the DOM
-// construction end-to-end against a real browser-like fetcher; here we pin
-// the source-level invariants that the DOM constructor must encode.
+// createRoleSwitcherElement (AC 1, AC 3). Bun's test runtime has no DOM; rather
+// than a polyfill dep, a minimal hand-rolled `document` stub (below, in the
+// task-13dee93b class sub-select describe) drives the DOM constructor directly.
+// The live HTTP smoke probe (AC 19) exercises construction end-to-end against a
+// real browser-like fetcher.
 //
 // AC 12 (pre-redesign) pinned a "Defaults for new sessions" label. That label
 // was removed in the per-role-select redesign; the assertion was dropped
@@ -318,5 +318,89 @@ describe("toWireBody — carries provider state + class fields", () => {
       reviewerClass: "claude-opus",
     });
     expect(toWireBody(state, { coder: "bogus" }).coderClass).toBe("claude-opus");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-13dee93b AC4 — DOM-level test of the class sub-select interaction.
+// Bun has no DOM; a minimal hand-rolled `document` stub records change
+// listeners so we can drive the sub-select end-to-end. This enforces the GUI
+// invariant: a user can pick Opus/Fable from the role-switcher and have that
+// choice submitted (a future edit removing the sub-select or disconnecting its
+// change handler would fail here, not silently pass the pure-helper tests).
+// ---------------------------------------------------------------------------
+
+function makeFakeEl(tagName: string): any {
+  const listeners: Record<string, Array<() => void>> = {};
+  return {
+    tagName,
+    className: "",
+    dataset: {} as Record<string, string>,
+    children: [] as any[],
+    value: "",
+    disabled: false,
+    textContent: "",
+    _attrs: {} as Record<string, string>,
+    appendChild(c: any) { this.children.push(c); return c; },
+    setAttribute(k: string, v: string) { this._attrs[k] = v; },
+    removeAttribute(k: string) { delete this._attrs[k]; },
+    getAttribute(k: string) { return this._attrs[k]; },
+    addEventListener(t: string, cb: () => void) { (listeners[t] ||= []).push(cb); },
+    dispatch(t: string) { (listeners[t] || []).forEach((cb) => cb()); },
+  };
+}
+
+function findChild(root: any, className: string, role: string): any {
+  return root.children.find((c: any) => c.className === className && c.dataset.role === role);
+}
+
+describe("createRoleSwitcherElement — class sub-select DOM interaction (AC4)", () => {
+  let prevDoc: unknown;
+  beforeEach(() => {
+    prevDoc = (globalThis as any).document;
+    (globalThis as any).document = { createElement: (tag: string) => makeFakeEl(tag) };
+  });
+  afterEach(() => {
+    (globalThis as any).document = prevDoc;
+  });
+
+  test("coder class-select is enabled + set to the initial class; codex-held reviewer's is disabled", () => {
+    const root = createRoleSwitcherElement(
+      { "claude-code": "coder", "codex": "reviewer" },
+      () => Promise.resolve({}),
+      { coder: "claude-opus" },
+    );
+    const coderClassSel = findChild(root, "class-select", "coder");
+    const reviewerClassSel = findChild(root, "class-select", "reviewer");
+    expect(coderClassSel).toBeTruthy();
+    expect(coderClassSel.disabled).toBe(false); // claude-code holds coder
+    expect(coderClassSel.value).toBe("claude-opus");
+    // reviewer is held by codex → its class sub-select is disabled (meaningless).
+    expect(reviewerClassSel.disabled).toBe(true);
+  });
+
+  test("changing the coder class-select to claude-fable submits coderClass with the provider state", async () => {
+    let captured: any = null;
+    const onSubmit = (body: any) => { captured = body; return Promise.resolve(body); };
+    const root = createRoleSwitcherElement(
+      { "claude-code": "coder", "codex": "reviewer" },
+      onSubmit,
+      { coder: "claude-opus", reviewer: "claude-opus" },
+    );
+    const coderClassSel = findChild(root, "class-select", "coder");
+
+    // User picks Fable and the select fires `change`.
+    coderClassSel.value = "claude-fable";
+    coderClassSel.dispatch("change");
+    // onSubmit is invoked synchronously inside the handler (before its await),
+    // but await a tick for robustness against future refactors.
+    await Promise.resolve();
+
+    expect(captured).not.toBeNull();
+    expect(captured.coderClass).toBe("claude-fable"); // the GUI choice was submitted
+    // The existing provider role-state rides along in the same POST body.
+    expect(captured.coder).toBe("claude-code");
+    expect(captured.reviewer).toBe("codex");
+    expect(captured.reviewerClass).toBe("claude-opus"); // untouched
   });
 });
