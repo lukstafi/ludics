@@ -380,7 +380,7 @@ function killTtydForSlot(slot: number): void {
  */
 function bootAgentCli(
   slot: number,
-  agent: { name: string; provider: string; thinkingEffort?: string },
+  agent: { name: string; provider: string; model?: string; role?: "coder" | "reviewer"; thinkingEffort?: string },
   peerSyncDir: string,
   _phaseToken: string,
   taskId?: string,
@@ -489,14 +489,38 @@ export function captureLastMessageHash(target: string, lines: number = 50): stri
  * Get the CLI launch command for an agent. If the agent has a thinkingEffort
  * set, it is translated through the unified ladder and passed as the
  * provider-specific flag (claude: --effort; codex: -c model_reasoning_effort).
+ *
+ * task-13dee93b: for `claude-code` agents the resolved `model` is now passed via
+ * `--model` (previously the model was display/state-only under tmux, so the class
+ * selection — incl. claude-fable — had no effect). When the model is the Fable
+ * class, a pane-visible remediation is appended that fires on a nonzero exit
+ * (e.g. Fable unreachable on the active plan), naming the role's config key and
+ * `claude-opus` — AC9's actionable hard error for the fire-and-forget tmux launch.
  */
-export function agentCliCommand(agent: { provider: string; thinkingEffort?: string }): string {
+export function agentCliCommand(agent: {
+  provider: string;
+  model?: string;
+  role?: "coder" | "reviewer";
+  thinkingEffort?: string;
+}): string {
   const effortRaw = agent.thinkingEffort?.trim();
   if (agent.provider === "claude-code") {
-    const base = "claude --dangerously-skip-permissions";
-    if (!effortRaw) return base;
-    const level = normaliseEffortLevel(effortRaw);
-    return `${base} --effort ${claudeEffort(level)}`;
+    let base = "claude --dangerously-skip-permissions";
+    const model = agent.model?.trim();
+    if (model) base += ` --model ${model}`;
+    if (effortRaw) {
+      const level = normaliseEffortLevel(effortRaw);
+      base += ` --effort ${claudeEffort(level)}`;
+    }
+    if (model === "claude-fable-5") {
+      // AC9: leave the config-key remediation visible in the pane if the Fable
+      // CLI exits nonzero (e.g. model unavailable). No silent fallback.
+      const roleKey = `${agent.role ?? "coder"}_class`;
+      base +=
+        ` || printf >&2 'ludics: claude-fable unavailable — ` +
+        `set mag.orchestration.%s: claude-opus in config.yaml and restart\\n' '${roleKey}'`;
+    }
+    return base;
   }
   const base = "codex --yolo -c check_for_update_on_startup=false";
   if (!effortRaw) return base;

@@ -634,3 +634,44 @@ describe("tmux resolveAgentModel — latest-within-class default", () => {
     );
   });
 });
+
+describe("agentCliCommand — passes --model + Fable remediation (task-13dee93b AC5/8/9)", () => {
+  test("claude-code agent passes the resolved model via --model, no remediation for non-Fable", async () => {
+    const { agentCliCommand } = await import("./tmux-adapter.ts");
+    const cmd = agentCliCommand({ provider: "claude-code", model: "claude-opus-4-8", role: "coder", thinkingEffort: "high" });
+    expect(cmd).toContain("--model claude-opus-4-8");
+    expect(cmd).toContain("--effort"); // effort still mapped
+    // Mutation guard: a non-Fable model carries NO remediation wrapper.
+    expect(cmd).not.toContain("claude-fable unavailable");
+    expect(cmd).not.toContain("||");
+  });
+
+  test("a claude-fable coder appends the nonzero-exit remediation naming coder_class + claude-opus", async () => {
+    const { agentCliCommand } = await import("./tmux-adapter.ts");
+    const cmd = agentCliCommand({ provider: "claude-code", model: "claude-fable-5", role: "coder" });
+    expect(cmd).toContain("--model claude-fable-5");
+    expect(cmd).toContain("claude-fable unavailable");
+    expect(cmd).toContain("coder_class");
+    expect(cmd).toContain("claude-opus");
+  });
+
+  test("a claude-fable reviewer names reviewer_class, not coder_class", async () => {
+    const { agentCliCommand } = await import("./tmux-adapter.ts");
+    const cmd = agentCliCommand({ provider: "claude-code", model: "claude-fable-5", role: "reviewer" });
+    expect(cmd).toContain("reviewer_class");
+    expect(cmd).not.toContain("coder_class");
+  });
+
+  test("no --model is emitted when model is absent", async () => {
+    const { agentCliCommand } = await import("./tmux-adapter.ts");
+    expect(agentCliCommand({ provider: "claude-code" })).not.toContain("--model");
+  });
+
+  test("codex agent is unaffected (no --model, no remediation)", async () => {
+    const { agentCliCommand } = await import("./tmux-adapter.ts");
+    const cmd = agentCliCommand({ provider: "codex", model: "gpt-5.5", thinkingEffort: "high" });
+    expect(cmd).toContain("codex --yolo");
+    expect(cmd).not.toContain("--model");
+    expect(cmd).not.toContain("claude-fable unavailable");
+  });
+});

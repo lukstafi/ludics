@@ -1327,7 +1327,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     const newTtydPids: Record<string, number> = { ...(tmuxState?.ttydPids ?? {}) };
     const taskId = orchState.taskId;
 
-    const bootCliInSession = (session: string, agent: { name: string; provider: string; thinkingEffort?: string }) => {
+    const bootCliInSession = (session: string, agent: { name: string; provider: string; model?: string; role?: "coder" | "reviewer"; thinkingEffort?: string }) => {
       const envCmd = [
         `export LUDICS_SLOT=${slotNum}`,
         `LUDICS_AGENT=${agent.name}`,
