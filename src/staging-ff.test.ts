@@ -905,6 +905,32 @@ describe("syncUpstreamMainFromStaging", () => {
     expect(existsSync(join(sentinelDir, "last-outbound-fast-forward-ocannl.epoch"))).toBe(false);
   });
 
+  test("dirty worktree: emits staging_outbound_skipped_dirty event for the project, sentinel NOT touched", () => {
+    const dir = mkdtempSync("/tmp/outbound-checkout-");
+    const sentinelDir = mkdtempSync("/tmp/outbound-sentinel-");
+    const events: Array<{ type: string; project: string; message: string }> = [];
+    const { run } = outboundFakeGit({
+      status: { stdout: " M file.ts\n" },
+    });
+    const res = syncUpstreamMainFromStaging(
+      [project("ocannl", dir)],
+      {
+        now: new Date(),
+        runGit: run,
+        sentinelDir,
+        emitEvent: (ev) => events.push({ type: ev.type, project: ev.project, message: ev.message }),
+      },
+    );
+    expect(res[0]!.outcome).toBe("skipped-dirty-worktree");
+    // AC 1: exactly one staging_outbound_skipped_dirty event emitted with structured project.
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("staging_outbound_skipped_dirty");
+    expect(events[0]!.project).toBe("ocannl");
+    expect(events[0]!.message).toContain("ocannl");
+    // AC 2: sentinel still untouched after the event.
+    expect(existsSync(join(sentinelDir, "last-outbound-fast-forward-ocannl.epoch"))).toBe(false);
+  });
+
   test("throttled within 24h: outcome=throttled, zero git calls, independent of inbound sentinel", () => {
     const dir = mkdtempSync("/tmp/outbound-checkout-");
     const sentinelDir = mkdtempSync("/tmp/outbound-sentinel-");
