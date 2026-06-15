@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import {
   OUTBOUND_EVENT_CAUSE_REMEDY,
   NO_ATTEMPTS_REMEDY,
+  BLOCKED_WORKTREE_REMEDY,
   latestOutboundCauseRemedy,
   outboundActivitySince,
   classifyOutboundStaleness,
@@ -238,5 +239,47 @@ describe("classifyOutboundStaleness", () => {
       1000,
     );
     expect(result.kind).toBe("no-attempts");
+  });
+
+  test("blocked-worktree: dirty-skip-only window → { kind: 'blocked-worktree', remedy }", () => {
+    // Only in-window activity is the dirty-skip event → tick ran, worktree blocked.
+    const file = tmpEvents([
+      { event_type: "staging_outbound_skipped_dirty", project: "ocannl", epoch: 500, message: "ocannl: outbound skipped — /path worktree dirty" },
+    ]);
+    const result = classifyOutboundStaleness(file, "ocannl", 400);
+    expect(result.kind).toBe("blocked-worktree");
+    if (result.kind === "blocked-worktree") {
+      expect(result.remedy).toBe(BLOCKED_WORKTREE_REMEDY);
+    }
+  });
+
+  test("blocked-worktree: dirty-skip + real activity (fast-forward) → unknown (negative control)", () => {
+    // Real push activity present alongside dirty-skip: not exclusively dirty-skip → unknown.
+    const file = tmpEvents([
+      { event_type: "staging_outbound_skipped_dirty", project: "ocannl", epoch: 500, message: "ocannl: skipped" },
+      { event_type: "staging_outbound_fast_forwarded", project: "ocannl", epoch: 510, message: "ocannl: pushed" },
+    ]);
+    const result = classifyOutboundStaleness(file, "ocannl", 400);
+    expect(result.kind).toBe("unknown");
+    expect(result.kind).not.toBe("blocked-worktree");
+  });
+
+  test("blocked-worktree: zero events → no-attempts (negative control)", () => {
+    // No activity at all → controller downtime, not dirty worktree.
+    const file = tmpEvents([]);
+    const result = classifyOutboundStaleness(file, "ocannl", 0);
+    expect(result.kind).toBe("no-attempts");
+    expect(result.kind).not.toBe("blocked-worktree");
+  });
+
+  test("blocked-worktree: dirty-skip + in-window auth failure → auth (auth takes precedence)", () => {
+    // Auth failure co-present with dirty-skip event: auth must win over blocked-worktree.
+    const file = tmpEvents([
+      { event_type: "staging_outbound_skipped_dirty", project: "ocannl", epoch: 500, message: "ocannl: skipped" },
+      { event_type: "staging_outbound_workflow_scope_missing", project: "ocannl", epoch: 510, message: "ocannl: x" },
+    ]);
+    const result = classifyOutboundStaleness(file, "ocannl", 400);
+    expect(result.kind).toBe("auth");
+    expect(result.kind).not.toBe("blocked-worktree");
   });
 });
