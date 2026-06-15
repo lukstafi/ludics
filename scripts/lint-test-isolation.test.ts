@@ -14,6 +14,7 @@ import {
   runCli,
   RULE_3_TARGETS,
   formatWarningCountHeuristic,
+  formatPinMismatch,
 } from "./lint-test-isolation.ts";
 
 // ---------------------------------------------------------------------------
@@ -843,6 +844,52 @@ describe("runCli", () => {
 });
 
 // ---------------------------------------------------------------------------
+// formatPinMismatch — unit coverage for the direction-aware diagnostic
+// ---------------------------------------------------------------------------
+
+describe("formatPinMismatch", () => {
+  test("UP: names cause, remedy, and all offending files", () => {
+    const msg = formatPinMismatch(21, 20, [
+      { rule: "rule-3", severity: "warning", file: "src/foo.test.ts", message: "imports src/config.ts" },
+      { rule: "rule-3", severity: "warning", file: "src/bar.test.ts", message: "imports src/events.ts" },
+    ]);
+    expect(msg).toContain("rose 20 → 21");
+    expect(msg).toContain("transitively imports a flagged module");
+    expect(msg).toContain("withSyntheticHarness(beforeEach, afterEach)");
+    expect(msg).toContain("src/foo.test.ts");
+    expect(msg).toContain("src/bar.test.ts");
+    expect(msg).not.toContain("fell");
+    expect(msg).not.toContain("lowering");
+  });
+
+  test("UP: deduplicates repeated files in rule-3 issues", () => {
+    const msg = formatPinMismatch(21, 20, [
+      { rule: "rule-3", severity: "warning", file: "src/dup.test.ts", message: "imports src/config.ts" },
+      { rule: "rule-3", severity: "warning", file: "src/dup.test.ts", message: "imports src/events.ts" },
+    ]);
+    // "src/dup.test.ts" appears only once in the file list
+    const occurrences = (msg.match(/src\/dup\.test\.ts/g) ?? []).length;
+    expect(occurrences).toBe(1);
+  });
+
+  test("UP: works with no rule-3 issues supplied (omitted)", () => {
+    const msg = formatPinMismatch(22, 20);
+    expect(msg).toContain("rose 20 → 22");
+    expect(msg).toContain("withSyntheticHarness");
+    expect(msg).not.toContain("Offending");
+  });
+
+  test("DOWN: recommends lowering pin, does NOT suggest synthetic-harness wrap", () => {
+    const msg = formatPinMismatch(18, 20);
+    expect(msg).toContain("fell 20 → 18");
+    expect(msg).toContain("update the pin to 18");
+    expect(msg).toContain("legitimate lowering");
+    expect(msg).not.toContain("withSyntheticHarness");
+    expect(msg).not.toContain("transitively imports");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration — drive the real CLI against the real repo
 // ---------------------------------------------------------------------------
 
@@ -864,7 +911,13 @@ describe("integration", () => {
     // trips rule-3 despite needing no real harness.
     const expectedWarningCount = 20;
     if (result.warningCount !== expectedWarningCount) {
-      throw new Error(formatWarningCountHeuristic(result.warningCount));
+      throw new Error(
+        formatPinMismatch(
+          result.warningCount,
+          expectedWarningCount,
+          result.issues.filter((i) => i.rule === "rule-3"),
+        ),
+      );
     }
     expect(result.warningCount).toBe(expectedWarningCount);
   });
