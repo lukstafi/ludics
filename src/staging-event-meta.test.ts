@@ -250,6 +250,9 @@ describe("classifyOutboundStaleness", () => {
     expect(result.kind).toBe("blocked-worktree");
     if (result.kind === "blocked-worktree") {
       expect(result.remedy).toBe(BLOCKED_WORKTREE_REMEDY);
+      // Invariant: remedy must name the blocked ~/<repo> checkout so the
+      // operator knows what to clear. Fails if the placeholder is dropped.
+      expect(result.remedy).toContain("~/<repo>");
     }
   });
 

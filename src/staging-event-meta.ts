@@ -55,7 +55,7 @@ export const NO_ATTEMPTS_REMEDY =
  * `NO_ATTEMPTS_REMEDY` / `OUTBOUND_EVENT_CAUSE_REMEDY` (task-cabf6402).
  */
 export const BLOCKED_WORKTREE_REMEDY =
-  "the outbound tick is skipping because the staging worktree is dirty — commit, stash, or clean it so the push can run";
+  "the outbound tick is skipping because `~/<repo>` has a dirty worktree — commit, stash, or clean `~/<repo>` so the push can run";
 
 /** Discriminated union returned by `classifyOutboundStaleness`. */
 export type OutboundStaleClassification =
