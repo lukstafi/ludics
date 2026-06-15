@@ -4,7 +4,10 @@ import { join } from "path";
 import { tmpdir } from "os";
 import {
   OUTBOUND_EVENT_CAUSE_REMEDY,
+  NO_ATTEMPTS_REMEDY,
   latestOutboundCauseRemedy,
+  outboundActivitySince,
+  classifyOutboundStaleness,
 } from "./staging-event-meta.ts";
 
 function tmpEvents(lines: Record<string, unknown>[]): string {
@@ -113,5 +116,127 @@ describe("latestOutboundCauseRemedy", () => {
 
   test("missing file → null (best-effort, never throws)", () => {
     expect(latestOutboundCauseRemedy(join(tmpdir(), "does-not-exist-xyz", "events.jsonl"), "ocannl")).toBeNull();
+  });
+});
+
+describe("outboundActivitySince", () => {
+  test("returns true when a staging_outbound_* event for the project is in-window", () => {
+    const file = tmpEvents([
+      { event_type: "staging_outbound_fast_forwarded", project: "ocannl", epoch: 500, message: "ocannl: pushed" },
+    ]);
+    expect(outboundActivitySince(file, "ocannl", 400)).toBe(true);
+  });
+
+  test("returns false when the only matching event predates sinceEpoch", () => {
+    const file = tmpEvents([
+      { event_type: "staging_outbound_fast_forwarded", project: "ocannl", epoch: 100, message: "ocannl: pushed" },
+    ]);
+    expect(outboundActivitySince(file, "ocannl", 200)).toBe(false);
+  });
+
+  test("returns false for events belonging to a different project", () => {
+    const file = tmpEvents([
+      { event_type: "staging_outbound_fast_forwarded", project: "other", epoch: 500, message: "other: pushed" },
+    ]);
+    expect(outboundActivitySince(file, "ocannl", 0)).toBe(false);
+  });
+
+  test("returns false for non-staging_outbound_ events", () => {
+    const file = tmpEvents([
+      { event_type: "some_other_event", project: "ocannl", epoch: 500, message: "ocannl: x" },
+    ]);
+    expect(outboundActivitySince(file, "ocannl", 0)).toBe(false);
+  });
+
+  test("returns false for missing file (best-effort)", () => {
+    expect(outboundActivitySince(join(tmpdir(), "does-not-exist-xyz", "events.jsonl"), "ocannl", 0)).toBe(false);
+  });
+
+  test("matches events at exactly sinceEpoch boundary", () => {
+    const file = tmpEvents([
+      { event_type: "staging_outbound_error", project: "ocannl", epoch: 300, message: "ocannl: err" },
+    ]);
+    expect(outboundActivitySince(file, "ocannl", 300)).toBe(true);
+    expect(outboundActivitySince(file, "ocannl", 301)).toBe(false);
+  });
+});
+
+describe("classifyOutboundStaleness", () => {
+  test("auth branch: workflow-scope failure in window → { kind: 'auth', cause, remedy }", () => {
+    const file = tmpEvents([
+      { event_type: "staging_outbound_workflow_scope_missing", project: "ocannl", epoch: 500, message: "ocannl: x" },
+    ]);
+    const result = classifyOutboundStaleness(file, "ocannl", 400);
+    expect(result.kind).toBe("auth");
+    if (result.kind === "auth") {
+      expect(result.cause).toBe(OUTBOUND_EVENT_CAUSE_REMEDY.staging_outbound_workflow_scope_missing!.cause);
+      expect(result.remedy).toBe(OUTBOUND_EVENT_CAUSE_REMEDY.staging_outbound_workflow_scope_missing!.remedy);
+    }
+  });
+
+  test("auth branch: credentials failure in window → { kind: 'auth', cause, remedy }", () => {
+    const file = tmpEvents([
+      { event_type: "staging_outbound_credentials_missing", project: "ocannl", epoch: 500, message: "ocannl: x" },
+    ]);
+    const result = classifyOutboundStaleness(file, "ocannl", 400);
+    expect(result.kind).toBe("auth");
+    if (result.kind === "auth") {
+      expect(result.cause).toBe(OUTBOUND_EVENT_CAUSE_REMEDY.staging_outbound_credentials_missing!.cause);
+      expect(result.remedy).toBe(OUTBOUND_EVENT_CAUSE_REMEDY.staging_outbound_credentials_missing!.remedy);
+    }
+  });
+
+  test("boundary: obsolete pre-sinceEpoch auth failure does NOT produce auth", () => {
+    // Auth event exists but predates the sentinel boundary — must be dropped.
+    const file = tmpEvents([
+      { event_type: "staging_outbound_workflow_scope_missing", project: "ocannl", epoch: 100, message: "ocannl: x" },
+    ]);
+    // sinceEpoch 200 > epoch 100 → event is obsolete
+    const result = classifyOutboundStaleness(file, "ocannl", 200);
+    expect(result.kind).not.toBe("auth");
+  });
+
+  test("no-attempts branch: empty/missing events file → { kind: 'no-attempts', remedy }", () => {
+    const file = tmpEvents([]);
+    const result = classifyOutboundStaleness(file, "ocannl", 0);
+    expect(result.kind).toBe("no-attempts");
+    if (result.kind === "no-attempts") {
+      expect(result.remedy).toBe(NO_ATTEMPTS_REMEDY);
+    }
+  });
+
+  test("no-attempts branch: only pre-sinceEpoch activity → { kind: 'no-attempts' }", () => {
+    // Tick ran before the sentinel, but nothing since — downtime diagnosis.
+    const file = tmpEvents([
+      { event_type: "staging_outbound_fast_forwarded", project: "ocannl", epoch: 100, message: "ocannl: pushed" },
+    ]);
+    const result = classifyOutboundStaleness(file, "ocannl", 200);
+    expect(result.kind).toBe("no-attempts");
+  });
+
+  test("unknown branch: non-auth outbound activity in window → { kind: 'unknown' }", () => {
+    // Tick ran (non-auth outcome like fast_forward or error) — conservative, no annotation.
+    const file = tmpEvents([
+      { event_type: "staging_outbound_fast_forwarded", project: "ocannl", epoch: 500, message: "ocannl: pushed" },
+    ]);
+    const result = classifyOutboundStaleness(file, "ocannl", 400);
+    expect(result.kind).toBe("unknown");
+  });
+
+  test("unknown branch: staging_outbound_local_behind in window → { kind: 'unknown' }", () => {
+    const file = tmpEvents([
+      { event_type: "staging_outbound_local_behind", project: "ocannl", epoch: 500, message: "ocannl: behind" },
+    ]);
+    const result = classifyOutboundStaleness(file, "ocannl", 400);
+    expect(result.kind).toBe("unknown");
+  });
+
+  test("missing file with positive sinceEpoch → no-attempts (never throws)", () => {
+    const result = classifyOutboundStaleness(
+      join(tmpdir(), "does-not-exist-xyz", "events.jsonl"),
+      "ocannl",
+      1000,
+    );
+    expect(result.kind).toBe("no-attempts");
   });
 });

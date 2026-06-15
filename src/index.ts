@@ -175,6 +175,8 @@ Commands:
                                Reset task(s) to deferred and queue revision (comma-separated ids)
   mag auto-start-evaluate <id> <high|low> [rationale]
                                Evaluate auto-start decision and update task status
+  mag outbound-cause-remedy <project>
+                               Classify outbound sentinel staleness (auth/no-attempts/unknown) as JSON
   mag completed <proposal>     Mark a proposal completed (without .md extension)
   mag feedback-digest          Queue a feedback digest run
   mag sync-learnings           Queue a learnings-consolidation run
