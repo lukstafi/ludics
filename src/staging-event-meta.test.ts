@@ -256,8 +256,24 @@ describe("classifyOutboundStaleness", () => {
     }
   });
 
-  test("blocked-worktree: dirty-skip + real activity (fast-forward) → unknown (negative control)", () => {
-    // Real push activity present alongside dirty-skip: not exclusively dirty-skip → unknown.
+  test("blocked-worktree: prior success AT sinceEpoch boundary + dirty-skip after → blocked-worktree (sentinel-epoch excluded)", () => {
+    // Real-world case: last tick succeeded at epoch 400 and touched the sentinel
+    // (sinceEpoch = 400). After that the worktree became dirty, so ticks at 401+
+    // all emitted dirty-skip events. The success event at epoch === sinceEpoch must
+    // NOT count as "real post-sentinel activity" — only events strictly after the
+    // boundary are in scope for the dirty-only check.
+    const file = tmpEvents([
+      { event_type: "staging_outbound_fast_forwarded", project: "ocannl", epoch: 400, message: "ocannl: pushed" },
+      { event_type: "staging_outbound_skipped_dirty", project: "ocannl", epoch: 401, message: "ocannl: skipped" },
+    ]);
+    const result = classifyOutboundStaleness(file, "ocannl", 400);
+    // Without the > fix (old >=), the fast_forwarded event at epoch 400 is kept,
+    // isExclusivelyDirtySkipActivity returns false, result is "unknown".
+    expect(result.kind).toBe("blocked-worktree");
+  });
+
+  test("blocked-worktree: dirty-skip + real activity (fast-forward) after sentinel → unknown (negative control)", () => {
+    // Real push activity AFTER sinceEpoch alongside dirty-skip: not exclusively dirty-skip → unknown.
     const file = tmpEvents([
       { event_type: "staging_outbound_skipped_dirty", project: "ocannl", epoch: 500, message: "ocannl: skipped" },
       { event_type: "staging_outbound_fast_forwarded", project: "ocannl", epoch: 510, message: "ocannl: pushed" },

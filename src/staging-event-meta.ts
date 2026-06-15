@@ -225,7 +225,9 @@ function isExclusivelyDirtySkipActivity(
     const matches = structured === project || message.startsWith(`${project}:`);
     if (!matches) continue;
     const epoch = typeof parsed.epoch === "number" && Number.isFinite(parsed.epoch) ? parsed.epoch : 0;
-    if (epoch < sinceEpoch) continue;
+    // Use strict > so the sentinel-creating event (success/error, epoch === sinceEpoch)
+    // is excluded. Only post-sentinel dirty-skip events count for blocked-worktree.
+    if (epoch <= sinceEpoch) continue;
     hasAny = true;
     if (type !== "staging_outbound_skipped_dirty") return false;
   }
