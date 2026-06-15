@@ -53,6 +53,7 @@ import {
 } from "./adapters/tmux.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { ludicsSelfCommand } from "./orchestration/util.ts";
+import { classifyOutboundStaleness } from "./staging-event-meta.ts";
 
 const MAG_SESSION_NAME = process.env.LUDICS_MAG_SESSION ?? "ludics-mag";
 const MAG_DEFAULT_PORT = process.env.LUDICS_MAG_PORT ?? "7679";
@@ -4425,6 +4426,22 @@ const magSubcommands: ReadonlyMap<string, MagSubHandler> = new Map<string, MagSu
       }
     }
     console.log(JSON.stringify(result));
+  }],
+  ["outbound-cause-remedy", (args) => {
+    const project = args[0];
+    if (!project) throw new Error("project name required");
+    const eventsFile = join(harnessDir(), "journal", "events.jsonl");
+    const sentinelPath = join(harnessDir(), "mag", `last-outbound-fast-forward-${project}.epoch`);
+    let sinceEpoch = 0;
+    if (existsSync(sentinelPath)) {
+      try {
+        sinceEpoch = Math.floor(statSync(sentinelPath).mtimeMs / 1000);
+      } catch {
+        sinceEpoch = 0;
+      }
+    }
+    const classification = classifyOutboundStaleness(eventsFile, project, sinceEpoch);
+    console.log(JSON.stringify(classification));
   }],
   ["draft-proposal", (args) => {
     const taskId = args[0];

@@ -11,6 +11,11 @@
 import { existsSync, readFileSync } from "fs";
 import { isPlainObject } from "./json.ts";
 
+// Shared prefix that all outbound staging→upstream event types carry.
+// Used by `outboundActivitySince` to detect any push-tick activity without
+// enumerating every outcome type.
+const OUTBOUND_EVENT_PREFIX = "staging_outbound_";
+
 export interface OutboundCauseRemedy {
   cause: string;
   remedy: string;
@@ -33,6 +38,22 @@ export const OUTBOUND_EVENT_CAUSE_REMEDY: Record<string, OutboundCauseRemedy> = 
     remedy: "refresh the push credentials (gh auth login / update the stored token)",
   },
 };
+
+/**
+ * Remedy string for the "no push attempts" case: the outbound sentinel is
+ * stale but there are zero `staging_outbound_*` events in the window, meaning
+ * the once-daily outbound tick never ran (controller/keepalive downtime) rather
+ * than an auth failure. Single-sourced here beside `OUTBOUND_EVENT_CAUSE_REMEDY`
+ * so all remedy strings live in one module (task-c4aedd6b).
+ */
+export const NO_ATTEMPTS_REMEDY =
+  "no outbound push attempts since <sentinel time> — the once-daily outbound tick is not running; verify the controller/keepalive is alive";
+
+/** Discriminated union returned by `classifyOutboundStaleness`. */
+export type OutboundStaleClassification =
+  | { kind: "auth"; cause: string; remedy: string }
+  | { kind: "no-attempts"; remedy: string }
+  | { kind: "unknown" };
 
 /**
  * Return the cause/remedy for the most recent outbound push-auth event for
@@ -109,4 +130,83 @@ export function latestOutboundCauseRemedy(
   }
   if (!best) return null;
   return OUTBOUND_EVENT_CAUSE_REMEDY[best.type] ?? null;
+}
+
+/**
+ * Return true when any `staging_outbound_*` event for `project` exists in the
+ * events file with `epoch >= sinceEpoch`. Used by `classifyOutboundStaleness`
+ * to distinguish "tick ran but produced no auth failure" from "tick never ran".
+ *
+ * Matches all `staging_outbound_` event types (not just auth failures) so new
+ * outcome types added to `src/staging-ff.ts` are covered automatically.
+ * Best-effort: missing/empty/unparseable file → false.
+ */
+export function outboundActivitySince(
+  eventsFile: string,
+  project: string,
+  sinceEpoch: number,
+): boolean {
+  let content: string;
+  try {
+    if (!existsSync(eventsFile)) return false;
+    content = readFileSync(eventsFile, "utf-8");
+  } catch {
+    return false;
+  }
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+
+  for (const line of trimmed.split("\n")) {
+    if (!line) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isPlainObject(parsed)) continue;
+    const type = typeof parsed.event_type === "string" ? parsed.event_type : "";
+    if (!type.startsWith(OUTBOUND_EVENT_PREFIX)) continue;
+    const structured = typeof parsed.project === "string" ? parsed.project : null;
+    const message = typeof parsed.message === "string" ? parsed.message : "";
+    const matches = structured === project || message.startsWith(`${project}:`);
+    if (!matches) continue;
+    const epoch = typeof parsed.epoch === "number" && Number.isFinite(parsed.epoch) ? parsed.epoch : 0;
+    if (epoch >= sinceEpoch) return true;
+  }
+  return false;
+}
+
+/**
+ * Classify why the outbound staging→upstream sentinel is stale, given the
+ * events file, project name, and the `sinceEpoch` boundary (floor of sentinel
+ * mtime / 1000; pass 0 to scan the whole file when the sentinel is missing).
+ *
+ * Returns:
+ *   - `{ kind: "auth", cause, remedy }` when a recent outbound auth failure
+ *     event exists in the window (workflow-scope or credentials gap).
+ *   - `{ kind: "no-attempts", remedy }` when no `staging_outbound_*` events
+ *     exist for the project in the window — the tick never ran (downtime).
+ *   - `{ kind: "unknown" }` when outbound events exist but none are auth
+ *     failures — the tick ran but produced a non-auth outcome; stay
+ *     conservative, emit no annotation.
+ *
+ * Pure given (eventsFile contents, project, sinceEpoch): no harness paths
+ * resolved here. The caller (`ludics mag outbound-cause-remedy`) resolves
+ * paths and computes sinceEpoch from the sentinel mtime.
+ */
+export function classifyOutboundStaleness(
+  eventsFile: string,
+  project: string,
+  sinceEpoch: number,
+): OutboundStaleClassification {
+  const auth = latestOutboundCauseRemedy(eventsFile, project, { sinceEpoch });
+  if (auth !== null) {
+    return { kind: "auth", cause: auth.cause, remedy: auth.remedy };
+  }
+  const hasActivity = outboundActivitySince(eventsFile, project, sinceEpoch);
+  if (!hasActivity) {
+    return { kind: "no-attempts", remedy: NO_ATTEMPTS_REMEDY };
+  }
+  return { kind: "unknown" };
 }

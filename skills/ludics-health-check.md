@@ -164,6 +164,20 @@ This skill is invoked when:
    - Build stable issue key: `outbound-staging-ff-stale:<project>`
      (delta-tracked against `mag/health-last.json` so the same staleness
      counts as `ongoing` after the first detection, not `new`).
+   - **Annotate each finding** by invoking the diagnostic subcommand:
+     ```bash
+     annotation=$(ludics mag outbound-cause-remedy "$project" 2>/dev/null || echo '{"kind":"unknown"}')
+     kind=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('kind','unknown'))")
+     if [ "$kind" = "auth" ]; then
+       cause=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cause',''))")
+       remedy=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('remedy',''))")
+       finding_text="$finding_text — cause: $cause; remedy: $remedy"
+     elif [ "$kind" = "no-attempts" ]; then
+       remedy=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('remedy',''))")
+       finding_text="$finding_text — $remedy"
+     fi
+     ```
+     When `kind` is `unknown`, leave the finding text unchanged.
    - **No notification**: `git push` auth failure does NOT raise a
      `ludics notify outgoing` from the push function or from this
      check. This stable-key entry is the only surfacing path for
