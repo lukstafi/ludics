@@ -67,6 +67,44 @@ export function formatWarningCountHeuristic(warningCount: number): string {
   return `(${warningCount} warnings — to silence a new test: wrap with withSyntheticHarness(beforeEach, afterEach) from src/test-utils.ts (preferred — actually isolates the harness env), OR bump the pinned count in scripts/lint-test-isolation.test.ts (only for pure-unit tests with no harness needs).`;
 }
 
+/**
+ * Direction-aware diagnostic for a pin mismatch in the integration test.
+ * UP branch: names the cause (transitive import of a flagged module), the
+ * remedy (withSyntheticHarness wrap), and every offending rule-3 file.
+ * DOWN branch: explains the count fell and recommends lowering the pin.
+ * Never called on the CLI success-summary path — that path keeps using
+ * formatWarningCountHeuristic (no pin context available there).
+ */
+export function formatPinMismatch(
+  observed: number,
+  expected: number,
+  rule3Issues?: LintIssue[],
+): string {
+  if (observed > expected) {
+    const files = rule3Issues
+      ? [...new Set(rule3Issues.map((i) => i.file))]
+      : [];
+    const fileList =
+      files.length > 0
+        ? `\nOffending file(s) tripping rule-3:\n${files.map((f) => `  - ${f}`).join("\n")}`
+        : "";
+    return (
+      `warning count rose ${expected} → ${observed}. ` +
+      `A new *.test.ts likely transitively imports a flagged module ` +
+      `(src/config.ts, src/events.ts, src/slots/json.ts, or src/adapters/base.ts). ` +
+      `Wrap its describe with withSyntheticHarness(beforeEach, afterEach) from src/test-utils.ts ` +
+      `to keep the pin; bump the pin only for a genuine pure-unit file.` +
+      fileList
+    );
+  } else {
+    return (
+      `warning count fell ${expected} → ${observed}. ` +
+      `A test was removed or isolated — this is a legitimate lowering: ` +
+      `update the pin to ${observed}.`
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Issue shape
 // ---------------------------------------------------------------------------
