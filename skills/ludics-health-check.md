@@ -175,6 +175,9 @@ This skill is invoked when:
      elif [ "$kind" = "no-attempts" ]; then
        remedy=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('remedy',''))")
        finding_text="$finding_text — $remedy"
+     elif [ "$kind" = "blocked-worktree" ]; then
+       remedy=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('remedy',''))")
+       finding_text="$finding_text — $remedy"
      fi
      ```
      When `kind` is `unknown`, leave the finding text unchanged.

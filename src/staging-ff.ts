@@ -361,6 +361,11 @@ export function syncUpstreamMainFromStaging(
 
     if (!worktreeClean(path, opts.runGit)) {
       out.push({ project, outcome: "skipped-dirty-worktree" });
+      opts.emitEvent?.({
+        type: "staging_outbound_skipped_dirty",
+        project,
+        message: `${project}: outbound skipped — ${path} worktree dirty`,
+      });
       // No sentinel touch — same policy as inbound (transient user state).
       continue;
     }

@@ -49,10 +49,19 @@ export const OUTBOUND_EVENT_CAUSE_REMEDY: Record<string, OutboundCauseRemedy> = 
 export const NO_ATTEMPTS_REMEDY =
   "no outbound push attempts since <sentinel time> — the once-daily outbound tick is not running; verify the controller/keepalive is alive";
 
+/**
+ * Remedy string for the "blocked worktree" case: the tick ran but the staging
+ * worktree was dirty, so the push was skipped. Single-sourced here beside
+ * `NO_ATTEMPTS_REMEDY` / `OUTBOUND_EVENT_CAUSE_REMEDY` (task-cabf6402).
+ */
+export const BLOCKED_WORKTREE_REMEDY =
+  "the outbound tick is skipping because `~/<repo>` has a dirty worktree — commit, stash, or clean `~/<repo>` so the push can run";
+
 /** Discriminated union returned by `classifyOutboundStaleness`. */
 export type OutboundStaleClassification =
   | { kind: "auth"; cause: string; remedy: string }
   | { kind: "no-attempts"; remedy: string }
+  | { kind: "blocked-worktree"; remedy: string }
   | { kind: "unknown" };
 
 /**
@@ -178,6 +187,54 @@ export function outboundActivitySince(
 }
 
 /**
+ * Return true when ALL in-window `staging_outbound_*` events for `project`
+ * are of type `staging_outbound_skipped_dirty` (and at least one exists).
+ * Used by `classifyOutboundStaleness` to distinguish a persistently dirty
+ * worktree (tick ran but was blocked) from a real push attempt or error.
+ * Best-effort: missing/empty/unparseable file → false.
+ */
+function isExclusivelyDirtySkipActivity(
+  eventsFile: string,
+  project: string,
+  sinceEpoch: number,
+): boolean {
+  let content: string;
+  try {
+    if (!existsSync(eventsFile)) return false;
+    content = readFileSync(eventsFile, "utf-8");
+  } catch {
+    return false;
+  }
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+
+  let hasAny = false;
+  for (const line of trimmed.split("\n")) {
+    if (!line) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isPlainObject(parsed)) continue;
+    const type = typeof parsed.event_type === "string" ? parsed.event_type : "";
+    if (!type.startsWith(OUTBOUND_EVENT_PREFIX)) continue;
+    const structured = typeof parsed.project === "string" ? parsed.project : null;
+    const message = typeof parsed.message === "string" ? parsed.message : "";
+    const matches = structured === project || message.startsWith(`${project}:`);
+    if (!matches) continue;
+    const epoch = typeof parsed.epoch === "number" && Number.isFinite(parsed.epoch) ? parsed.epoch : 0;
+    // Use strict > so the sentinel-creating event (success/error, epoch === sinceEpoch)
+    // is excluded. Only post-sentinel dirty-skip events count for blocked-worktree.
+    if (epoch <= sinceEpoch) continue;
+    hasAny = true;
+    if (type !== "staging_outbound_skipped_dirty") return false;
+  }
+  return hasAny;
+}
+
+/**
  * Classify why the outbound staging→upstream sentinel is stale, given the
  * events file, project name, and the `sinceEpoch` boundary (floor of sentinel
  * mtime / 1000; pass 0 to scan the whole file when the sentinel is missing).
@@ -187,9 +244,12 @@ export function outboundActivitySince(
  *     event exists in the window (workflow-scope or credentials gap).
  *   - `{ kind: "no-attempts", remedy }` when no `staging_outbound_*` events
  *     exist for the project in the window — the tick never ran (downtime).
+ *   - `{ kind: "blocked-worktree", remedy }` when the only in-window activity
+ *     is `staging_outbound_skipped_dirty` — the tick ran but the staging
+ *     worktree was dirty; the operator should commit / stash / clean it.
  *   - `{ kind: "unknown" }` when outbound events exist but none are auth
- *     failures — the tick ran but produced a non-auth outcome; stay
- *     conservative, emit no annotation.
+ *     failures and not all are dirty-skip — stay conservative, emit no
+ *     annotation.
  *
  * Pure given (eventsFile contents, project, sinceEpoch): no harness paths
  * resolved here. The caller (`ludics mag outbound-cause-remedy`) resolves
@@ -207,6 +267,9 @@ export function classifyOutboundStaleness(
   const hasActivity = outboundActivitySince(eventsFile, project, sinceEpoch);
   if (!hasActivity) {
     return { kind: "no-attempts", remedy: NO_ATTEMPTS_REMEDY };
+  }
+  if (isExclusivelyDirtySkipActivity(eventsFile, project, sinceEpoch)) {
+    return { kind: "blocked-worktree", remedy: BLOCKED_WORKTREE_REMEDY };
   }
   return { kind: "unknown" };
 }
