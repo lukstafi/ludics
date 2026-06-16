@@ -1168,6 +1168,45 @@ function readLiveOrchestratorPid(slotNum: number, mode: string, harness: string)
 }
 
 /**
+ * Decide the ttyd pid to persist for an agent during slot re-init, bringing the
+ * ttyd into a consistent state in the SAME operation as the tmux-session
+ * decision (the root-cause fix for mid-session ttyd deaths — task-1373e911):
+ *
+ *  - `sessionRecreated` → any pre-existing ttyd is attached to the now-destroyed
+ *    session instance; restart it unconditionally. (startTtyd's `pkill -f
+ *    "ttyd.*--port ${port}"` clears the orphan and the fresh ttyd re-attaches
+ *    the new session.) Returns the fresh pid. Skipping the restart here because
+ *    the old ttyd still occupies the port is exactly the bug: that orphan dies
+ *    ~30-60s later and the runner flap logic eventually trips the give-up
+ *    sentinel (the observed connection-refused gap).
+ *  - `!sessionRecreated` & port free → (re)start; fresh pid.
+ *  - `!sessionRecreated` & port in use & a tracked prior pid is still alive →
+ *    preserve it (a healthy ttyd is still serving the intact session). Never
+ *    pkill a healthy ttyd here.
+ *  - `!sessionRecreated` & port in use & no/dead tracked pid → restart, so we
+ *    record a real pid instead of persisting `undefined`/a stale pid for a
+ *    process the next `ensureTtydAlive` tick would then have to chase.
+ *
+ * Exported as a test seam (mirrors `createTmuxAgentSession`): the decision is
+ * verified directly without driving the full resume against a live tmux.
+ */
+export function reinitTtydPid(opts: {
+  slot: number;
+  agentName: string;
+  role: "coder" | "reviewer";
+  taskId?: string;
+  sessionRecreated: boolean;
+  portInUse: boolean;
+  priorPid?: number;
+}): number {
+  const { slot, agentName, role, taskId, sessionRecreated, portInUse, priorPid } = opts;
+  if (sessionRecreated) return startTtyd(slot, agentName, role, taskId);
+  if (!portInUse) return startTtyd(slot, agentName, role, taskId);
+  if (priorPid !== undefined && processAlive(priorPid)) return priorPid;
+  return startTtyd(slot, agentName, role, taskId);
+}
+
+/**
  * Resume a crashed orchestrated session from persisted state.
  */
 export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd = true }: { startTtyd?: boolean } = {}): Promise<void> {
@@ -1376,10 +1415,24 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
           const lsofBin = process.platform === "darwin" ? "/usr/sbin/lsof" : "lsof";
           portInUse = safeSyncOutput([lsofBin, "-i", `:${port}`]).ok;
         } catch { /* lsof not available */ }
-        if (!portInUse) {
-          newTtydPids[agent.name] = startTtyd(slotNum, agent.name, role, taskId);
-          console.error(`ludics: re-started ttyd on port ${port} for ${agent.name}`);
-        }
+        // Bring the ttyd into a consistent state in the same operation as the
+        // session decision. On a recreate the port-in-use ttyd is an orphan
+        // attached to the destroyed session and MUST be replaced; the skip is
+        // valid only when the session was left intact and a healthy ttyd is
+        // still serving it (see reinitTtydPid).
+        newTtydPids[agent.name] = reinitTtydPid({
+          slot: slotNum,
+          agentName: agent.name,
+          role,
+          taskId,
+          sessionRecreated: !sessionExists,
+          portInUse,
+          priorPid: tmuxState?.ttydPids?.[agent.name],
+        });
+        console.error(
+          `ludics: ttyd for ${agent.name} on port ${port} reconciled ` +
+          `(recreated=${!sessionExists}, portInUse=${portInUse}, pid=${newTtydPids[agent.name]})`,
+        );
       }
     }
 

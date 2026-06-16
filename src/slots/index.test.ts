@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { hostname as osHostname, tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS } from "./index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS, reinitTtydPid } from "./index.ts";
+import * as tmuxAdapterMod from "../adapters/tmux-adapter.ts";
+import * as t3codeServerMod from "../t3code/server.ts";
 import { hasStash, writeStash } from "./preempt.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
@@ -1640,6 +1642,148 @@ describe("slotResume — escalated slot handling (task-4cd94043)", () => {
       startSpy.mockRestore();
       logSpy.mockRestore();
     }
+  });
+});
+
+describe("reinitTtydPid — re-init coherence (task-1373e911)", () => {
+  // Observes the pid returned at the persisted seam — the value slotResume
+  // assigns to newTtydPids[agent] and writes into tmux-slot-N.json. startTtyd
+  // is spied so no real ttyd/bash spawns; processAlive is spied so the
+  // prior-pid liveness branch is deterministic.
+  let startTtydSpy: ReturnType<typeof spyOn>;
+  let processAliveSpy: ReturnType<typeof spyOn>;
+  const FRESH_PID = 424242;
+
+  beforeEach(() => {
+    startTtydSpy = spyOn(tmuxAdapterMod, "startTtyd").mockImplementation(() => FRESH_PID);
+    processAliveSpy = spyOn(t3codeServerMod, "processAlive").mockImplementation(() => true);
+  });
+  afterEach(() => {
+    startTtydSpy.mockRestore();
+    processAliveSpy.mockRestore();
+  });
+
+  const base = { slot: 1, agentName: "coder", role: "coder" as const, taskId: "task-abc" };
+
+  test("recreated session + port in use → restart unconditionally (orphan replaced), returns fresh pid [AC2-(a)]", () => {
+    // Invariant: a recreated session means the port listener is an orphan
+    // attached to the destroyed session — it MUST be replaced. Mutation:
+    // reverting to the old "skip when portInUse" returns the stale prior pid
+    // (7000) and calls startTtyd 0 times — both assertions catch it.
+    const pid = reinitTtydPid({ ...base, sessionRecreated: true, portInUse: true, priorPid: 7000 });
+    expect(pid).toBe(FRESH_PID);
+    expect(startTtydSpy.mock.calls.length).toBe(1);
+  });
+
+  test("intact session + port in use + live prior pid → preserve prior pid, no startTtyd [AC3/AC4]", () => {
+    const pid = reinitTtydPid({ ...base, sessionRecreated: false, portInUse: true, priorPid: 7000 });
+    expect(pid).toBe(7000);
+    expect(startTtydSpy.mock.calls.length).toBe(0);
+  });
+
+  test("intact session + free port → start ttyd, returns fresh pid", () => {
+    const pid = reinitTtydPid({ ...base, sessionRecreated: false, portInUse: false, priorPid: 7000 });
+    expect(pid).toBe(FRESH_PID);
+    expect(startTtydSpy.mock.calls.length).toBe(1);
+  });
+
+  test("intact session + port in use + NO prior pid → restart (never persist undefined) [AC4 negative]", () => {
+    // The bug AC4 forbids: persisting undefined/garbage for a busy port. With
+    // no tracked pid we restart to record a real pid.
+    const pid = reinitTtydPid({ ...base, sessionRecreated: false, portInUse: true, priorPid: undefined });
+    expect(pid).toBe(FRESH_PID);
+    expect(startTtydSpy.mock.calls.length).toBe(1);
+    expect(pid).not.toBeUndefined();
+  });
+
+  test("intact session + port in use + DEAD prior pid → restart (don't preserve a stale tracked pid)", () => {
+    processAliveSpy.mockImplementation(() => false);
+    const pid = reinitTtydPid({ ...base, sessionRecreated: false, portInUse: true, priorPid: 7000 });
+    expect(pid).toBe(FRESH_PID);
+    expect(startTtydSpy.mock.calls.length).toBe(1);
+  });
+});
+
+describe("slotResume — ttyd re-init persists fresh pid on session recreate (task-1373e911)", () => {
+  // Behavioural end-to-end: drive slotResume with startTtyd enabled. The agent
+  // tmux session does not exist → recreate branch → reinitTtydPid must restart
+  // ttyd and persist the FRESH pid (not the stale seeded pid). Proves the helper
+  // is wired into the resume path, not vacuous.
+  const createdTmuxSessions: string[] = [];
+  let startTtydSpy: ReturnType<typeof spyOn>;
+  let startOrchSpy: ReturnType<typeof spyOn> | undefined;
+  const FRESH_PID = 515151;
+  const STALE_PID = 909090;
+
+  beforeEach(() => {
+    startTtydSpy = spyOn(tmuxAdapterMod, "startTtyd").mockImplementation(() => FRESH_PID);
+  });
+  afterEach(() => {
+    startTtydSpy.mockRestore();
+    startOrchSpy?.mockRestore();
+    for (const session of createdTmuxSessions) {
+      try { if (tmuxHasSession(session)) tmuxKillSession(session); } catch { /* ignore */ }
+    }
+    createdTmuxSessions.length = 0;
+  });
+
+  test("recreated session persists the fresh startTtyd pid, not the stale seeded pid", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    const orchDir = join(harness, "orchestration");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(orchDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-ttyd-recreate", "Recreate ttyd coherence");
+
+    void slotAssign(1, "task-ttyd-recreate", "tmux", "", "", "--pair --coder claude --reviewer claude");
+
+    // Seed tmux slot state with a STALE ttyd pid for the coder. The recreate
+    // branch must overwrite it with the fresh startTtyd pid.
+    writeFileSync(
+      join(orchDir, "tmux-slot-1.json"),
+      JSON.stringify({ slot: 1, ttydPids: { coder: STALE_PID }, orchestration: { stateFile: "orch-1.json", mode: "pair" } }),
+    );
+
+    const orchState: OrchestrationState = {
+      slot: 1,
+      taskId: "task-ttyd-recreate",
+      mode: "pair",
+      phase: "work",
+      round: 1,
+      mergeRound: 0,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "sonnet", branch: "test-coder", worktreePath: "/tmp/wt-coder" },
+      ],
+      agentStates: initAgentRuntimeState(["coder"]),
+      config: defaultOrchestrationConfig({}),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/fake-project",
+      rootWorktree: "/tmp/fake-root",
+      peerSyncDir: "/tmp/fake-peersync",
+      threadIds: {},
+      backend: "tmux",
+      slotTitle: "test",
+    };
+    persistState(orchState, harness);
+
+    // Stub the expensive runner spawn so resume reaches the ttyd-pid write.
+    const orchProcess = await import("../orchestration/process.ts");
+    startOrchSpy = spyOn(orchProcess, "startOrchestrationProcess").mockImplementation(async () => 99_997);
+
+    createdTmuxSessions.push("s1_coder_task-ttyd-recreate");
+
+    await slotResume(1, { startTtyd: true });
+
+    // Invariant: the recreate branch restarted ttyd in the SAME operation as
+    // the session recreation and persisted the live pid. Mutation: the old
+    // "skip startTtyd when portInUse" leaves ttydPids.coder == STALE_PID.
+    expect(startTtydSpy).toHaveBeenCalled();
+    const persisted = JSON.parse(readFileSync(join(orchDir, "tmux-slot-1.json"), "utf-8"));
+    expect(persisted.ttydPids.coder).toBe(FRESH_PID);
+    expect(persisted.ttydPids.coder).not.toBe(STALE_PID);
   });
 });
 
