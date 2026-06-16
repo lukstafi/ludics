@@ -1710,17 +1710,10 @@ describe("slotResume — ttyd re-init persists fresh pid on session recreate (ta
   // ttyd and persist the FRESH pid (not the stale seeded pid). Proves the helper
   // is wired into the resume path, not vacuous.
   const createdTmuxSessions: string[] = [];
-  let startTtydSpy: ReturnType<typeof spyOn>;
-  let startOrchSpy: ReturnType<typeof spyOn> | undefined;
   const FRESH_PID = 515151;
   const STALE_PID = 909090;
 
-  beforeEach(() => {
-    startTtydSpy = spyOn(tmuxAdapterMod, "startTtyd").mockImplementation(() => FRESH_PID);
-  });
   afterEach(() => {
-    startTtydSpy.mockRestore();
-    startOrchSpy?.mockRestore();
     for (const session of createdTmuxSessions) {
       try { if (tmuxHasSession(session)) tmuxKillSession(session); } catch { /* ignore */ }
     }
@@ -1728,6 +1721,7 @@ describe("slotResume — ttyd re-init persists fresh pid on session recreate (ta
   });
 
   test("recreated session persists the fresh startTtyd pid, not the stale seeded pid", async () => {
+    const startTtydSpy = spyOn(tmuxAdapterMod, "startTtyd").mockImplementation(() => FRESH_PID);
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     const orchDir = join(harness, "orchestration");
@@ -1771,19 +1765,24 @@ describe("slotResume — ttyd re-init persists fresh pid on session recreate (ta
 
     // Stub the expensive runner spawn so resume reaches the ttyd-pid write.
     const orchProcess = await import("../orchestration/process.ts");
-    startOrchSpy = spyOn(orchProcess, "startOrchestrationProcess").mockImplementation(async () => 99_997);
+    const startOrchSpy = spyOn(orchProcess, "startOrchestrationProcess").mockImplementation(async () => 99_997);
 
     createdTmuxSessions.push("s1_coder_task-ttyd-recreate");
 
-    await slotResume(1, { startTtyd: true });
+    try {
+      await slotResume(1, { startTtyd: true });
 
-    // Invariant: the recreate branch restarted ttyd in the SAME operation as
-    // the session recreation and persisted the live pid. Mutation: the old
-    // "skip startTtyd when portInUse" leaves ttydPids.coder == STALE_PID.
-    expect(startTtydSpy).toHaveBeenCalled();
-    const persisted = JSON.parse(readFileSync(join(orchDir, "tmux-slot-1.json"), "utf-8"));
-    expect(persisted.ttydPids.coder).toBe(FRESH_PID);
-    expect(persisted.ttydPids.coder).not.toBe(STALE_PID);
+      // Invariant: the recreate branch restarted ttyd in the SAME operation as
+      // the session recreation and persisted the live pid. Mutation: the old
+      // "skip startTtyd when portInUse" leaves ttydPids.coder == STALE_PID.
+      expect(startTtydSpy).toHaveBeenCalled();
+      const persisted = JSON.parse(readFileSync(join(orchDir, "tmux-slot-1.json"), "utf-8"));
+      expect(persisted.ttydPids.coder).toBe(FRESH_PID);
+      expect(persisted.ttydPids.coder).not.toBe(STALE_PID);
+    } finally {
+      startTtydSpy.mockRestore();
+      startOrchSpy.mockRestore();
+    }
   });
 });
 

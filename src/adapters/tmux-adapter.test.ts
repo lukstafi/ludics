@@ -395,7 +395,7 @@ describe("ttydMatchesSession — exact session-identity match (task-1373e911)", 
   // (safeSyncOutput) and must match the EXACT `--port`/`-t` tokens, not a
   // substring. We spy safeSyncOutput on the spawn module so no real `ps` runs.
   let spawnMod: typeof import("../spawn.ts");
-  let psSpy: ReturnType<typeof spyOn> | undefined;
+  let psSpy: ReturnType<typeof spyOn>;
 
   function mockPs(line: string): void {
     psSpy = spyOn(spawnMod, "safeSyncOutput").mockImplementation(
@@ -404,7 +404,7 @@ describe("ttydMatchesSession — exact session-identity match (task-1373e911)", 
   }
 
   afterEach(() => {
-    psSpy?.mockRestore();
+    psSpy.mockRestore();
   });
 
   test("alive ttyd attached to the expected slot/agent target → true", async () => {
