@@ -448,6 +448,21 @@ describe("ttydMatchesSession — exact session-identity match (task-1373e911)", 
     mockPs("ttyd --writable -6 --port 76810 tmux attach -t s1_coder_task-abc");
     expect(ttydMatchesSession(4321, 1, "coder", "coder", "task-abc")).toBe(false);
   });
+
+  test("target with WHITESPACE (custom agent name) still matches its own session → true", async () => {
+    spawnMod = await import("../spawn.ts");
+    const { ttydMatchesSession, tmuxTarget } = await import("./tmux-adapter.ts");
+    // slotSessionName does not sanitize the agent name, so a quoted custom
+    // agent name with a space yields a target with a space. `ps -o command=`
+    // flattens argv with spaces, so the OLD whitespace-split matcher truncated
+    // the target to its first word ("s1_my") and spuriously failed — restarting
+    // a HEALTHY ttyd on every tick (flap). Codex P2. The target is the final
+    // argv element, so we compare the slice after the last ` -t ` exactly.
+    const target = tmuxTarget(1, "my agent", "task-abc"); // -> "s1_my agent_task-abc"
+    expect(target).toContain(" "); // sanity: the harness condition (a space) holds
+    mockPs(`ttyd --writable -6 --port 7681 tmux attach -t ${target}`);
+    expect(ttydMatchesSession(4321, 1, "coder", "my agent", "task-abc")).toBe(true);
+  });
 });
 
 describe("readTmuxSlotState read-boundary preserves sparse ttydRestartCounts", () => {

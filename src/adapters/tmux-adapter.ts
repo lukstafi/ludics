@@ -377,17 +377,24 @@ export function startTtyd(slot: number, agentName: string, role: "coder" | "revi
  *
  * Reads the process command line via `ps -p <pid> -o command=`. After the
  * `exec ttyd …` replaces bash (see buildTtydSpawnArgs), that command line is
- * the ttyd argv itself, e.g.
+ * the ttyd argv itself, with the tmux target as the FINAL argument (the
+ * `>>log 2>&1` redirection is consumed by the shell and is not in argv):
  *   `ttyd --writable -6 --port 7681 tmux attach -t s1_coder_task-abc`
  *
- * Matches the EXACT adjacent tokens `--port <port>` and `-t <target>` by
- * splitting on whitespace and comparing token equality — NOT substring
- * `includes`. A substring match would false-positive when the expected target
- * is a prefix of a stale one (expected `s1_coder_task-abc` vs actual
- * `s1_coder_task-abcdef`) or a port is a prefix of another (`7681` vs `76810`),
- * making `ensureTtydAlive` treat a wrong-session ttyd as healthy. Tmux session
- * names contain no whitespace (slotSessionName) and buildTtydSpawnArgs emits the
- * space-separated `--port N` / `-t NAME` forms, so token splitting is exact.
+ * Two match conditions, both exact (NOT substring `includes`, which would
+ * false-positive when the expected target/port is a prefix of a stale one —
+ * `s1_coder_task-abc` vs `s1_coder_task-abcdef`, or `7681` vs `76810` — making
+ * `ensureTtydAlive` treat a wrong-session ttyd as healthy):
+ *  - **port**: the port is whitespace-free, so a whitespace-split token match
+ *    of `--port <port>` is exact.
+ *  - **target**: `slotSessionName` does NOT sanitize the agent name, so a
+ *    custom agent name containing whitespace yields a target with spaces. But
+ *    `ps -o command=` flattens argv (spaces between args), so whitespace-
+ *    splitting the line would truncate such a target to its first word and
+ *    spuriously fail — restarting a healthy ttyd on every tick (flap). Instead,
+ *    since the target is the LAST argv element, compare everything after the
+ *    final ` -t ` marker to the expected target exactly. End-of-string anchoring
+ *    preserves the prefix rejection while tolerating spaces inside the target.
  *
  * Empty / failed `ps` output → returns `true` (the safe default: never churn a
  * healthy ttyd on a transient ps failure).
@@ -402,11 +409,16 @@ export function ttydMatchesSession(
   const r = safeSyncOutput(["ps", "-p", String(pid), "-o", "command="]);
   const cmd = r.ok ? r.stdout.trim() : "";
   if (!cmd) return true;
-  const tokens = cmd.split(/\s+/);
   const expectedPort = String(ttydPort(slot, role));
   const expectedTarget = tmuxTarget(slot, agentName, taskId);
+  const tokens = cmd.split(/\s+/);
   const portOk = tokens.some((t, i) => t === "--port" && tokens[i + 1] === expectedPort);
-  const targetOk = tokens.some((t, i) => t === "-t" && tokens[i + 1] === expectedTarget);
+  // Target is the terminal argv element; match the slice after the last ` -t `
+  // exactly so a whitespace-bearing target round-trips and a prefix target is
+  // still rejected (end-of-string anchored).
+  const marker = " -t ";
+  const idx = cmd.lastIndexOf(marker);
+  const targetOk = idx >= 0 && cmd.slice(idx + marker.length) === expectedTarget;
   return portOk && targetOk;
 }
 
