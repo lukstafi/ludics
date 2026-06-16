@@ -131,8 +131,10 @@ export function tmuxSessionName(slot: number, agentName: string, taskId?: string
   return slotSessionName(slot, agentName, taskId);
 }
 
-/** Target for tmux commands — just the session name (one window per session) */
-function tmuxTarget(slot: number, agentName: string, taskId?: string): string {
+/** Target for tmux commands — just the session name (one window per session).
+ *  Exported so `ensureTtydAlive`'s wrong-session check can match a live ttyd's
+ *  `tmux attach -t <target>` argv against the expected session identity. */
+export function tmuxTarget(slot: number, agentName: string, taskId?: string): string {
   return tmuxSessionName(slot, agentName, taskId);
 }
 
@@ -342,7 +344,12 @@ export function buildTtydSpawnArgs(
   const port = ttydPort(slot, role);
   const target = tmuxTarget(slot, agentName, taskId);
   const logFile = ttydLogPath(slot, agentName);
-  const cmd = `exec ttyd --writable --port ${port} tmux attach -t ${shellSingleQuote(target)} >>${shellSingleQuote(logFile)} 2>&1`;
+  // `-6` enables IPv6 so ttyd binds dual-stack (`::` with V6ONLY off → serves
+  // both A and AAAA). The dashboard advertises a MagicDNS host carrying both
+  // record families; without `-6` an IPv6-preferring client reaches a family
+  // ttyd never bound (connection-refused against a live session). IPv4
+  // localhost / Tailnet access is unaffected (still served).
+  const cmd = `exec ttyd --writable -6 --port ${port} tmux attach -t ${shellSingleQuote(target)} >>${shellSingleQuote(logFile)} 2>&1`;
   return setsidWrap(["bash", "-c", cmd]);
 }
 
@@ -363,6 +370,56 @@ export function startTtyd(slot: number, agentName: string, role: "coder" | "revi
     (proc as { unref: () => void }).unref();
   }
   return proc.pid;
+}
+
+/**
+ * True iff the live ttyd `pid` is attached to the expected slot/agent session.
+ *
+ * Reads the process command line via `ps -p <pid> -o command=`. After the
+ * `exec ttyd …` replaces bash (see buildTtydSpawnArgs), that command line is
+ * the ttyd argv itself, with the tmux target as the FINAL argument (the
+ * `>>log 2>&1` redirection is consumed by the shell and is not in argv):
+ *   `ttyd --writable -6 --port 7681 tmux attach -t s1_coder_task-abc`
+ *
+ * Two match conditions, both exact (NOT substring `includes`, which would
+ * false-positive when the expected target/port is a prefix of a stale one —
+ * `s1_coder_task-abc` vs `s1_coder_task-abcdef`, or `7681` vs `76810` — making
+ * `ensureTtydAlive` treat a wrong-session ttyd as healthy):
+ *  - **port**: the port is whitespace-free, so a whitespace-split token match
+ *    of `--port <port>` is exact.
+ *  - **target**: `slotSessionName` does NOT sanitize the agent name, so a
+ *    custom agent name containing whitespace yields a target with spaces. But
+ *    `ps -o command=` flattens argv (spaces between args), so whitespace-
+ *    splitting the line would truncate such a target to its first word and
+ *    spuriously fail — restarting a healthy ttyd on every tick (flap). Instead,
+ *    since the target is the LAST argv element, compare everything after the
+ *    final ` -t ` marker to the expected target exactly. End-of-string anchoring
+ *    preserves the prefix rejection while tolerating spaces inside the target.
+ *
+ * Empty / failed `ps` output → returns `true` (the safe default: never churn a
+ * healthy ttyd on a transient ps failure).
+ */
+export function ttydMatchesSession(
+  pid: number,
+  slot: number,
+  role: "coder" | "reviewer",
+  agentName: string,
+  taskId?: string,
+): boolean {
+  const r = safeSyncOutput(["ps", "-p", String(pid), "-o", "command="]);
+  const cmd = r.ok ? r.stdout.trim() : "";
+  if (!cmd) return true;
+  const expectedPort = String(ttydPort(slot, role));
+  const expectedTarget = tmuxTarget(slot, agentName, taskId);
+  const tokens = cmd.split(/\s+/);
+  const portOk = tokens.some((t, i) => t === "--port" && tokens[i + 1] === expectedPort);
+  // Target is the terminal argv element; match the slice after the last ` -t `
+  // exactly so a whitespace-bearing target round-trips and a prefix target is
+  // still rejected (end-of-string anchored).
+  const marker = " -t ";
+  const idx = cmd.lastIndexOf(marker);
+  const targetOk = idx >= 0 && cmd.slice(idx + marker.length) === expectedTarget;
+  return portOk && targetOk;
 }
 
 function killTtydForSlot(slot: number): void {

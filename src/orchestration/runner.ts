@@ -29,7 +29,7 @@ import { setSlotLivenessOnData } from "../slots/index.ts";
 import { clusterRole } from "../cluster.ts";
 import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
-import { agentPortRole, readTmuxSlotState, startTtyd, ttydLogPath, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
+import { agentPortRole, readTmuxSlotState, startTtyd, ttydLogPath, ttydMatchesSession, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { readSlotState, writeSlotState, processAlive } from "../t3code/server.ts";
 import { recoverWrongFilename } from "./wrong-filename-recovery.ts";
 
@@ -1047,11 +1047,17 @@ export async function ensureTtydAlive(state: OrchestrationState): Promise<void> 
     // further events, no respawn, no liveness churn while suppressed.
     if (prev?.backoffUntil === TTYD_GIVE_UP_SENTINEL) continue;
 
+    const role = agentPortRole(agent, i);
     const pid = tmuxState.ttydPids[agent.name];
     const alive = pid ? processAlive(pid) : false;
-    if (alive) continue;
-
-    const role = agentPortRole(agent, i);
+    // Optional wrong-session hardening (task-1373e911): a ttyd whose pid is
+    // alive but attached to the WRONG tmux target (a stale session left by an
+    // upstream re-init) is treated as needing restart, so the ensure converges
+    // on session identity rather than mere pid-liveness. startTtyd's pkill
+    // clears the stale-session ttyd before respawn. ttydMatchesSession returns
+    // true on a transient `ps` failure, so a correctly-attached ttyd is never
+    // churned.
+    if (alive && ttydMatchesSession(pid!, state.slot, role, agent.name, state.taskId)) continue;
 
     // Window-reset path: no record, or quiet > 5 min since the LAST
     // restart (not the first — that would misclassify an active flap
