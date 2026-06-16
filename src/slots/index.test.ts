@@ -5,6 +5,7 @@ import { join } from "path";
 import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS, reinitTtydPid } from "./index.ts";
 import * as tmuxAdapterMod from "../adapters/tmux-adapter.ts";
 import * as t3codeServerMod from "../t3code/server.ts";
+import * as spawnMod from "../spawn.ts";
 import { hasStash, writeStash } from "./preempt.ts";
 import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
@@ -1720,8 +1721,23 @@ describe("slotResume — ttyd re-init persists fresh pid on session recreate (ta
     createdTmuxSessions.length = 0;
   });
 
-  test("recreated session persists the fresh startTtyd pid, not the stale seeded pid", async () => {
+  test("recreated session + ttyd port ALREADY BUSY persists the fresh startTtyd pid, not the stale seeded pid", async () => {
     const startTtydSpy = spyOn(tmuxAdapterMod, "startTtyd").mockImplementation(() => FRESH_PID);
+    // Instantiate the actual failing condition: the slot-1 coder ttyd port
+    // (7681) is ALREADY occupied at re-init time (by the orphaned ttyd still
+    // attached to the destroyed session). Force the `lsof -i :7681` probe to
+    // report busy; delegate every other safeSyncOutput call (real tmux
+    // session create / set-option / send) to the real implementation so the
+    // recreate path runs normally. Without this, lsof returns not-busy and the
+    // OLD `if (!portInUse) startTtyd(...)` would have started ttyd anyway,
+    // making the fresh-pid assertion pass vacuously.
+    const realSafeSync = spawnMod.safeSyncOutput;
+    const safeSyncSpy = spyOn(spawnMod, "safeSyncOutput").mockImplementation((args, opts) => {
+      if (Array.isArray(args) && args.includes("-i") && args.includes(":7681")) {
+        return { ok: true, exitCode: 0, stdout: "ttyd 12345 user ...", stderr: "", timedOut: false };
+      }
+      return realSafeSync(args, opts);
+    });
     const harness = join(TMP, "ludics-state", "harness");
     const tasksDir = join(harness, "tasks");
     const orchDir = join(harness, "orchestration");
@@ -1772,14 +1788,26 @@ describe("slotResume — ttyd re-init persists fresh pid on session recreate (ta
     try {
       await slotResume(1, { startTtyd: true });
 
-      // Invariant: the recreate branch restarted ttyd in the SAME operation as
-      // the session recreation and persisted the live pid. Mutation: the old
-      // "skip startTtyd when portInUse" leaves ttydPids.coder == STALE_PID.
+      // Harness precondition actually fired: the lsof port-busy probe was hit
+      // (so portInUse=true was in play). Without this the test could silently
+      // regress to the not-busy path and the mutation below would no longer be
+      // caught.
+      const lsofProbed = safeSyncSpy.mock.calls.some(
+        (c: unknown[]) => Array.isArray(c[0]) && (c[0] as string[]).includes("-i") && (c[0] as string[]).includes(":7681"),
+      );
+      expect(lsofProbed).toBe(true);
+
+      // Invariant: with the port ALREADY busy, the recreate branch still
+      // restarted ttyd in the SAME operation as the session recreation and
+      // persisted the live pid. Mutation: reverting the call site to the old
+      // `if (!portInUse) startTtyd(...)` skips the restart (port is busy) and
+      // leaves ttydPids.coder == STALE_PID — failing both assertions below.
       expect(startTtydSpy).toHaveBeenCalled();
       const persisted = JSON.parse(readFileSync(join(orchDir, "tmux-slot-1.json"), "utf-8"));
       expect(persisted.ttydPids.coder).toBe(FRESH_PID);
       expect(persisted.ttydPids.coder).not.toBe(STALE_PID);
     } finally {
+      safeSyncSpy.mockRestore();
       startTtydSpy.mockRestore();
       startOrchSpy.mockRestore();
     }
