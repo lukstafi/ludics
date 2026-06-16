@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -334,6 +334,10 @@ describe("buildTtydSpawnArgs — bash wrapper appends to per-agent log file", ()
     // (>>) preserves cause-of-death history across restarts.
     expect(cmd).toContain("exec ttyd");
     expect(cmd).toContain("--writable");
+    // Dual-stack bind: `-6` must sit between `ttyd` and `--port` so ttyd serves
+    // both A and AAAA for the advertised MagicDNS host. Mutation: dropping `-6`
+    // fails this assertion (IPv6-preferring clients would hit a dead family).
+    expect(cmd).toContain("--writable -6 --port");
     const expectedLog = mod.ttydLogPath(3, "coder");
     expect(cmd).toContain(`>>'${expectedLog}'`);
     expect(cmd).toContain("2>&1");
@@ -383,6 +387,66 @@ describe("buildTtydSpawnArgs — bash wrapper appends to per-agent log file", ()
       else process.env.HOME = savedHome;
       rmSync(tmpRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("ttydMatchesSession — exact session-identity match (task-1373e911)", () => {
+  // The matcher reads the live ttyd argv via `ps -p <pid> -o command=`
+  // (safeSyncOutput) and must match the EXACT `--port`/`-t` tokens, not a
+  // substring. We spy safeSyncOutput on the spawn module so no real `ps` runs.
+  let spawnMod: typeof import("../spawn.ts");
+  let psSpy: ReturnType<typeof spyOn> | undefined;
+
+  function mockPs(line: string): void {
+    psSpy = spyOn(spawnMod, "safeSyncOutput").mockImplementation(
+      () => ({ ok: line !== "", exitCode: line === "" ? 1 : 0, stdout: line, stderr: "", timedOut: false }),
+    );
+  }
+
+  afterEach(() => {
+    psSpy?.mockRestore();
+  });
+
+  test("alive ttyd attached to the expected slot/agent target → true", async () => {
+    spawnMod = await import("../spawn.ts");
+    const { ttydMatchesSession } = await import("./tmux-adapter.ts");
+    // Slot 1 coder port = 7681, target = s1_coder_task-abc.
+    mockPs("ttyd --writable -6 --port 7681 tmux attach -t s1_coder_task-abc");
+    expect(ttydMatchesSession(4321, 1, "coder", "coder", "task-abc")).toBe(true);
+  });
+
+  test("alive ttyd attached to a DIFFERENT target → false", async () => {
+    spawnMod = await import("../spawn.ts");
+    const { ttydMatchesSession } = await import("./tmux-adapter.ts");
+    mockPs("ttyd --writable -6 --port 7681 tmux attach -t s1_coder_task-other");
+    expect(ttydMatchesSession(4321, 1, "coder", "coder", "task-abc")).toBe(false);
+  });
+
+  test("empty/failed ps output → true (safe default, never churn on transient ps failure)", async () => {
+    spawnMod = await import("../spawn.ts");
+    const { ttydMatchesSession } = await import("./tmux-adapter.ts");
+    mockPs("");
+    expect(ttydMatchesSession(4321, 1, "coder", "coder", "task-abc")).toBe(true);
+  });
+
+  test("prefix target is REJECTED: expected s1_coder_task-abc vs actual s1_coder_task-abcdef → false", async () => {
+    spawnMod = await import("../spawn.ts");
+    const { ttydMatchesSession } = await import("./tmux-adapter.ts");
+    // Invariant: exact adjacent-token equality on `-t <target>`. Mutation:
+    // reverting the matcher to `cmd.includes(target)` makes this WRONGLY return
+    // true — a wrong-session ttyd would be treated as healthy and never
+    // restarted, defeating the optional wrong-session hardening (AC5).
+    mockPs("ttyd --writable -6 --port 7681 tmux attach -t s1_coder_task-abcdef");
+    expect(ttydMatchesSession(4321, 1, "coder", "coder", "task-abc")).toBe(false);
+  });
+
+  test("prefix port is REJECTED: expected --port 7681 vs actual --port 76810 → false", async () => {
+    spawnMod = await import("../spawn.ts");
+    const { ttydMatchesSession } = await import("./tmux-adapter.ts");
+    // Token equality also guards the port (substring `includes("7681")` would
+    // match "76810"). Target matches; only the port differs.
+    mockPs("ttyd --writable -6 --port 76810 tmux attach -t s1_coder_task-abc");
+    expect(ttydMatchesSession(4321, 1, "coder", "coder", "task-abc")).toBe(false);
   });
 });
 

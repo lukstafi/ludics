@@ -131,8 +131,10 @@ export function tmuxSessionName(slot: number, agentName: string, taskId?: string
   return slotSessionName(slot, agentName, taskId);
 }
 
-/** Target for tmux commands — just the session name (one window per session) */
-function tmuxTarget(slot: number, agentName: string, taskId?: string): string {
+/** Target for tmux commands — just the session name (one window per session).
+ *  Exported so `ensureTtydAlive`'s wrong-session check can match a live ttyd's
+ *  `tmux attach -t <target>` argv against the expected session identity. */
+export function tmuxTarget(slot: number, agentName: string, taskId?: string): string {
   return tmuxSessionName(slot, agentName, taskId);
 }
 
@@ -342,7 +344,12 @@ export function buildTtydSpawnArgs(
   const port = ttydPort(slot, role);
   const target = tmuxTarget(slot, agentName, taskId);
   const logFile = ttydLogPath(slot, agentName);
-  const cmd = `exec ttyd --writable --port ${port} tmux attach -t ${shellSingleQuote(target)} >>${shellSingleQuote(logFile)} 2>&1`;
+  // `-6` enables IPv6 so ttyd binds dual-stack (`::` with V6ONLY off → serves
+  // both A and AAAA). The dashboard advertises a MagicDNS host carrying both
+  // record families; without `-6` an IPv6-preferring client reaches a family
+  // ttyd never bound (connection-refused against a live session). IPv4
+  // localhost / Tailnet access is unaffected (still served).
+  const cmd = `exec ttyd --writable -6 --port ${port} tmux attach -t ${shellSingleQuote(target)} >>${shellSingleQuote(logFile)} 2>&1`;
   return setsidWrap(["bash", "-c", cmd]);
 }
 
@@ -363,6 +370,44 @@ export function startTtyd(slot: number, agentName: string, role: "coder" | "revi
     (proc as { unref: () => void }).unref();
   }
   return proc.pid;
+}
+
+/**
+ * True iff the live ttyd `pid` is attached to the expected slot/agent session.
+ *
+ * Reads the process command line via `ps -p <pid> -o command=`. After the
+ * `exec ttyd …` replaces bash (see buildTtydSpawnArgs), that command line is
+ * the ttyd argv itself, e.g.
+ *   `ttyd --writable -6 --port 7681 tmux attach -t s1_coder_task-abc`
+ *
+ * Matches the EXACT adjacent tokens `--port <port>` and `-t <target>` by
+ * splitting on whitespace and comparing token equality — NOT substring
+ * `includes`. A substring match would false-positive when the expected target
+ * is a prefix of a stale one (expected `s1_coder_task-abc` vs actual
+ * `s1_coder_task-abcdef`) or a port is a prefix of another (`7681` vs `76810`),
+ * making `ensureTtydAlive` treat a wrong-session ttyd as healthy. Tmux session
+ * names contain no whitespace (slotSessionName) and buildTtydSpawnArgs emits the
+ * space-separated `--port N` / `-t NAME` forms, so token splitting is exact.
+ *
+ * Empty / failed `ps` output → returns `true` (the safe default: never churn a
+ * healthy ttyd on a transient ps failure).
+ */
+export function ttydMatchesSession(
+  pid: number,
+  slot: number,
+  role: "coder" | "reviewer",
+  agentName: string,
+  taskId?: string,
+): boolean {
+  const r = safeSyncOutput(["ps", "-p", String(pid), "-o", "command="]);
+  const cmd = r.ok ? r.stdout.trim() : "";
+  if (!cmd) return true;
+  const tokens = cmd.split(/\s+/);
+  const expectedPort = String(ttydPort(slot, role));
+  const expectedTarget = tmuxTarget(slot, agentName, taskId);
+  const portOk = tokens.some((t, i) => t === "--port" && tokens[i + 1] === expectedPort);
+  const targetOk = tokens.some((t, i) => t === "-t" && tokens[i + 1] === expectedTarget);
+  return portOk && targetOk;
 }
 
 function killTtydForSlot(slot: number): void {
