@@ -1922,4 +1922,50 @@ describe("ensureTtydAlive — flap suppression", () => {
     const expectedLog = tmuxAdapter.ttydLogPath(5, "coder");
     expect(String(payload.message)).toContain(expectedLog);
   });
+
+  // --- wrong-session hardening (task-1373e911) ---
+  // These cases set processAlive → TRUE (the rest of the suite mocks false) and
+  // spy ttydMatchesSession, isolating the alive-branch session-identity check.
+
+  test("alive ttyd attached to the CORRECT session → no startTtyd, no event (AC5 no-churn)", async () => {
+    seedSlot(1, { ttydPids: { coder: 12345 } });
+    const state = makeTmuxState(1);
+    processAliveSpy.mockImplementation(() => true);
+    const matchSpy = spyOn(tmuxAdapter, "ttydMatchesSession").mockImplementation(() => true);
+    startTtydSpy.mockClear();
+    emitSpy.mockClear();
+    try {
+      __resetTtydCheckGateForTests();
+      await ensureTtydAlive(state);
+      // Invariant: an alive, correctly-attached ttyd is left untouched.
+      // Mutation: dropping the `&& ttydMatchesSession(...)` term keeps the old
+      // `if (alive) continue` — still passes here, so the wrong-target test
+      // below is the discriminating case.
+      expect(startTtydSpy.mock.calls.length).toBe(0);
+      expect(emitSpy.mock.calls.length).toBe(0);
+    } finally {
+      matchSpy.mockRestore();
+    }
+  });
+
+  test("alive ttyd attached to the WRONG session → restart + one ttyd_restarted event", async () => {
+    seedSlot(2, { ttydPids: { coder: 12345 } });
+    const state = makeTmuxState(2);
+    processAliveSpy.mockImplementation(() => true);
+    const matchSpy = spyOn(tmuxAdapter, "ttydMatchesSession").mockImplementation(() => false);
+    startTtydSpy.mockClear();
+    emitSpy.mockClear();
+    try {
+      __resetTtydCheckGateForTests();
+      await ensureTtydAlive(state);
+      // Invariant: alive-but-wrong-session is treated as needing restart.
+      // Mutation: removing the `&& ttydMatchesSession(...)` term makes the
+      // alive ttyd `continue` here → 0 startTtyd calls, 0 events — caught.
+      expect(startTtydSpy.mock.calls.length).toBe(1);
+      const types = eventTypes();
+      expect(types.filter((t) => t === "ttyd_restarted").length).toBe(1);
+    } finally {
+      matchSpy.mockRestore();
+    }
+  });
 });
