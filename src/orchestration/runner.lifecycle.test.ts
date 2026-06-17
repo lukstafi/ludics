@@ -4,8 +4,10 @@ import { join } from "path";
 import { isAgentDone } from "./phases.ts";
 import * as phases from "./phases.ts";
 import { updateTurnLifecycle } from "./transport-t3code.ts";
-import { ensureTtydAlive, refreshAgentStatuses, runOrchestration, runWrongFilenameRecovery, __resetTtydCheckGateForTests } from "./runner.ts";
+import { detectAndNudgeSettledNoSignal, detectAndRecoverVanishedTmuxSessions, ensureTtydAlive, refreshAgentStatuses, runOrchestration, runWrongFilenameRecovery, __resetTtydCheckGateForTests, __resetVanishedRecoveryStateForTests } from "./runner.ts";
 import * as tmuxAdapter from "../adapters/tmux-adapter.ts";
+import * as tmux from "../adapters/tmux.ts";
+import * as notify from "../notify.ts";
 import * as t3codeServer from "../t3code/server.ts";
 import * as orchUtil from "./util.ts";
 import * as wfr from "./wrong-filename-recovery.ts";
@@ -23,6 +25,7 @@ import {
   makePeerSyncDir,
   makeSnapshot,
   makeMockTransport,
+  noopTransport,
 } from "./runner.test-helpers.ts";
 
 setDefaultTimeout(20_000);
@@ -1966,6 +1969,322 @@ describe("ensureTtydAlive — flap suppression", () => {
       expect(types.filter((t) => t === "ttyd_restarted").length).toBe(1);
     } finally {
       matchSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Vanished-session detection & recovery (gh-ludics-559 defect A)
+// ---------------------------------------------------------------------------
+
+describe("detectAndRecoverVanishedTmuxSessions", () => {
+  let origHarnessDir: string | undefined;
+  let origRetryMax: string | undefined;
+  let origStartupGrace: string | undefined;
+
+  beforeEach(() => {
+    origHarnessDir = process.env.LUDICS_HARNESS_DIR;
+    origRetryMax = process.env.LUDICS_RUNNER_VANISHED_RETRY_MAX;
+    origStartupGrace = process.env.LUDICS_RUNNER_STARTUP_GRACE_MS;
+    __resetVanishedRecoveryStateForTests();
+  });
+
+  afterEach(() => {
+    if (origHarnessDir !== undefined) process.env.LUDICS_HARNESS_DIR = origHarnessDir;
+    else delete process.env.LUDICS_HARNESS_DIR;
+    if (origRetryMax !== undefined) process.env.LUDICS_RUNNER_VANISHED_RETRY_MAX = origRetryMax;
+    else delete process.env.LUDICS_RUNNER_VANISHED_RETRY_MAX;
+    if (origStartupGrace !== undefined) process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = origStartupGrace;
+    else delete process.env.LUDICS_RUNNER_STARTUP_GRACE_MS;
+    __resetVanishedRecoveryStateForTests();
+  });
+
+  // Mirror of escalation.test.ts seedHarness: sibling tmux-slot file (pid == our
+  // own so the self-guard passes) + a slot json so liveness can flip.
+  function seedHarness(slot: number): { harness: string; peerSyncDir: string } {
+    const tmpDir = makeTmpDir();
+    const harness = join(tmpDir, "harness");
+    const peerSyncDir = join(tmpDir, "peer-sync");
+    mkdirSync(join(harness, "orchestration"), { recursive: true });
+    mkdirSync(join(harness, "slots"), { recursive: true });
+    mkdirSync(join(peerSyncDir, "plans"), { recursive: true });
+    mkdirSync(join(peerSyncDir, "reviews"), { recursive: true });
+    writeFileSync(
+      join(harness, "orchestration", `tmux-slot-${slot}.json`),
+      JSON.stringify({ slot, orchestration: { pid: process.pid, stateFile: "x", mode: "pair" }, ttydPids: {} }),
+    );
+    writeFileSync(
+      join(harness, "slots", `slot-${slot}.json`),
+      JSON.stringify({
+        slot, process: "test-process", task: "feat", mode: "tmux", session: null,
+        path: null, started: null, adapterArgs: null, machine: null,
+        sessionStarted: null, liveness: null, terminals: "", runtime: "", git: "",
+      }, null, 2),
+    );
+    return { harness, peerSyncDir };
+  }
+
+  function eventTypes(spy: ReturnType<typeof spyOn>): string[] {
+    return spy.mock.calls.map((c: unknown[]) => (c[0] as { event_type?: string }).event_type ?? "");
+  }
+
+  test("vanished participating session triggers exactly one slot-scoped recreate, rewrites sibling, resumes in order (AC6/AC7/AC8/AC10)", async () => {
+    const slot = 31;
+    const { harness, peerSyncDir } = seedHarness(slot);
+    const state = makeState({ slot, backend: "tmux", phase: "work", harnessDir: harness }, peerSyncDir);
+    // Pre-set in-flight bookkeeping that orderly-resume must clear.
+    state.agentStates.coder!.turnLifecycle = makeLifecycle({ state: "running", observedTurnId: "turn-x" });
+    state.phaseDispatched = true;
+    const origPhase = state.phase;
+    const origRound = state.round;
+
+    const hasSessionSpy = spyOn(tmux, "tmuxHasSession").mockImplementation(() => false);
+    const recreateSpy = spyOn(tmuxAdapter, "startTmuxAgentSessionsForOrchestratedSlot")
+      .mockImplementation(() => ({ coder: 4242, reviewer: 4243 }));
+    const emitSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+
+    try {
+      const res = await detectAndRecoverVanishedTmuxSessions(state);
+      expect(res).toBe("recovered");
+      // Invariant: exactly one slot-scoped recreate (not per-agent racing).
+      expect(recreateSpy).toHaveBeenCalledTimes(1);
+      expect(recreateSpy.mock.calls[0]![0]).toBe(slot);
+
+      // Invariant: sibling file rewritten with our pid + fresh ttyd pids, so
+      // stop/clear can still track the slot. Without the rewrite, the recovered
+      // slot would be untrackable (the original incident's orphan-ttyd problem).
+      const sib = tmuxAdapter.readTmuxSlotState(slot, harness);
+      expect(sib!.orchestration?.pid).toBe(process.pid);
+      expect(sib!.ttydPids).toEqual({ coder: 4242, reviewer: 4243 });
+
+      // Invariant (AC8): orderly resume — current-turn bookkeeping cleared,
+      // phase/round NOT rewound (no replay of prior phases).
+      expect(state.phaseDispatched).toBe(false);
+      expect(state.agentStates.coder!.turnLifecycle).toBeNull();
+      expect(state.agentStates.reviewer!.turnLifecycle).toBeNull();
+      expect(state.phase).toBe(origPhase);
+      expect(state.round).toBe(origRound);
+
+      // Invariant (AC10): recovery is observable in the event log.
+      const types = eventTypes(emitSpy);
+      expect(types).toContain("tmux_sessions_vanished");
+      expect(types).toContain("tmux_sessions_recovered");
+    } finally {
+      hasSessionSpy.mockRestore();
+      recreateSpy.mockRestore();
+      emitSpy.mockRestore();
+    }
+  });
+
+  test("missing NON-participating session does not trigger recovery (AC6 participant-scoping)", async () => {
+    // Harness condition: phase "review" → only the reviewer participates
+    // (agentParticipatesInPhase). The coder session is missing but the coder is
+    // a non-participant, and the reviewer session is present. A vacuous
+    // all-agents check (state.agents.some) would mis-fire here; the participant
+    // filter must not. Mutation: drop the participant filter → recreate fires.
+    const slot = 32;
+    const { harness, peerSyncDir } = seedHarness(slot);
+    const state = makeState({ slot, backend: "tmux", phase: "review", harnessDir: harness }, peerSyncDir);
+    const coderSession = tmuxAdapter.tmuxSessionName(slot, "coder", state.taskId);
+
+    const hasSessionSpy = spyOn(tmux, "tmuxHasSession")
+      .mockImplementation((name: string) => name !== coderSession); // coder gone, reviewer present
+    const recreateSpy = spyOn(tmuxAdapter, "startTmuxAgentSessionsForOrchestratedSlot")
+      .mockImplementation(() => ({}));
+
+    try {
+      const res = await detectAndRecoverVanishedTmuxSessions(state);
+      expect(res).toBe("ok");
+      expect(recreateSpy).not.toHaveBeenCalled();
+    } finally {
+      hasSessionSpy.mockRestore();
+      recreateSpy.mockRestore();
+    }
+  });
+
+  test("all participating sessions present → no recovery (a dead CLI in a live session is not a vanish) (AC6)", async () => {
+    const slot = 33;
+    const { harness, peerSyncDir } = seedHarness(slot);
+    const state = makeState({ slot, backend: "tmux", phase: "work", harnessDir: harness }, peerSyncDir);
+
+    const hasSessionSpy = spyOn(tmux, "tmuxHasSession").mockImplementation(() => true);
+    const recreateSpy = spyOn(tmuxAdapter, "startTmuxAgentSessionsForOrchestratedSlot")
+      .mockImplementation(() => ({}));
+
+    try {
+      const res = await detectAndRecoverVanishedTmuxSessions(state);
+      expect(res).toBe("ok");
+      expect(recreateSpy).not.toHaveBeenCalled();
+    } finally {
+      hasSessionSpy.mockRestore();
+      recreateSpy.mockRestore();
+    }
+  });
+
+  test("retry budget exhaustion escalates (priority-5 notify + escalation_requested + liveness flip) and halts (AC9/AC10)", async () => {
+    const slot = 34;
+    const { harness, peerSyncDir } = seedHarness(slot);
+    process.env.LUDICS_HARNESS_DIR = harness;
+    process.env.LUDICS_RUNNER_VANISHED_RETRY_MAX = "1";
+    const state = makeState({ slot, backend: "tmux", phase: "work", harnessDir: harness }, peerSyncDir);
+
+    const hasSessionSpy = spyOn(tmux, "tmuxHasSession").mockImplementation(() => false);
+    // Recreate keeps failing (server wedged present-but-unresponsive).
+    const recreateSpy = spyOn(tmuxAdapter, "startTmuxAgentSessionsForOrchestratedSlot")
+      .mockImplementation(() => { throw new Error("tmux server unresponsive"); });
+    const emitSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    const notifySpy = spyOn(notify, "notifyOutgoing").mockImplementation(() => {});
+
+    try {
+      // Attempt 1: under budget → counted, recreate attempted (throws) → "ok".
+      const r1 = await detectAndRecoverVanishedTmuxSessions(state);
+      expect(r1).toBe("ok");
+      // Attempt 2: budget (1) reached → escalate + halt, no further recreate.
+      const r2 = await detectAndRecoverVanishedTmuxSessions(state);
+      expect(r2).toBe("halt");
+
+      // Invariant (AC9): bounded — recreate attempted at most maxRetries times.
+      expect(recreateSpy).toHaveBeenCalledTimes(1);
+
+      // Invariant (AC10): reuses the escalation machinery — failure precursor
+      // AND escalation_requested, priority-5 notify, slot liveness escalated.
+      const types = eventTypes(emitSpy);
+      expect(types).toContain("tmux_sessions_recovery_failed");
+      expect(types).toContain("escalation_requested");
+      expect(notifySpy).toHaveBeenCalledTimes(1);
+      expect((notifySpy.mock.calls[0] as unknown[])[1]).toBe(5);
+      const slotData = JSON.parse(readFileSync(join(harness, "slots", `slot-${slot}.json`), "utf-8"));
+      expect(slotData.liveness).toBe("escalated");
+    } finally {
+      hasSessionSpy.mockRestore();
+      recreateSpy.mockRestore();
+      emitSpy.mockRestore();
+      notifySpy.mockRestore();
+    }
+  });
+
+  test("after recovery the runner re-enters enterPhase to re-prompt the recreated CLIs (Codex PR #569 — no stall until timeout)", async () => {
+    // Codex flagged: clearing phaseDispatched inside pollUntilDone is insufficient
+    // — enterPhase only runs in the OUTER runOrchestration loop, so without a
+    // re-dispatch signal the freshly-booted CLIs sit idle (null lifecycles) until
+    // the phase deadline. Invariant: a successful recovery re-dispatches the
+    // current phase, i.e. transport.sendTurn is called again (initial dispatch +
+    // post-recovery re-dispatch). Mutation: if recovery returned "ok" instead of
+    // "redispatch" (or runOrchestration didn't `continue`), sendTurn fires only
+    // once. Harness: session vanished on the first detection then present after
+    // recreate; loop terminated deterministically by forcing allAgentsDone once
+    // the re-dispatch has happened.
+    const slot = 36;
+    const { harness, peerSyncDir } = seedHarness(slot);
+    process.env.LUDICS_HARNESS_DIR = harness;
+    process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = "0";
+    const state = makeState({ slot, backend: "tmux", phase: "work", harnessDir: harness, phaseDispatched: false }, peerSyncDir);
+
+    let recreated = false;
+    let sendTurns = 0;
+    const hasSessionSpy = spyOn(tmux, "tmuxHasSession").mockImplementation(() => recreated);
+    const recreateSpy = spyOn(tmuxAdapter, "startTmuxAgentSessionsForOrchestratedSlot")
+      .mockImplementation(() => { recreated = true; return { coder: 1, reviewer: 2 }; });
+    const emitSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    // Terminate the loop once the re-dispatch has occurred: allAgentsDone true
+    // after sendTurns>=2 → pollUntilDone returns normally → evaluateTransition
+    // forces "done" → outer while exits.
+    const allDoneSpy = spyOn(phases, "allAgentsDone").mockImplementation(() => sendTurns >= 2);
+    const transitionSpy = spyOn(phases, "evaluateTransition").mockReturnValue("done");
+
+    const recordingTransport: OrchestrationTransport = {
+      async sendTurn() { sendTurns++; return "cmd-redispatch"; },
+      async sendEnter() {},
+      async refreshAgentTransportState() {},
+      async interruptAgent() {},
+    };
+
+    try {
+      await runOrchestration(state, recordingTransport);
+      // One recreate; sendTurn fired for the initial dispatch AND the
+      // post-recovery re-dispatch (≥2). Single-dispatch would mean the stall bug.
+      expect(recreateSpy).toHaveBeenCalledTimes(1);
+      expect(sendTurns).toBeGreaterThanOrEqual(2);
+    } finally {
+      hasSessionSpy.mockRestore();
+      recreateSpy.mockRestore();
+      emitSpy.mockRestore();
+      allDoneSpy.mockRestore();
+      transitionSpy.mockRestore();
+    }
+  });
+
+  test("vanished check runs BEFORE settled-no-signal: a vanished session is never nudged as settled (AC5/AC12d)", async () => {
+    // Positive control (non-vacuity): the primed coder genuinely trips the
+    // settled-no-signal detector when it runs.
+    const pcDir = makeTmpDir();
+    mkdirSync(join(pcDir, "plans"), { recursive: true });
+    mkdirSync(join(pcDir, "reviews"), { recursive: true });
+    const primed = makeState({ phase: "work" }, pcDir);
+    primed.agentStates.coder!.status = "done";
+    primed.agentStates.coder!.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-settled",
+      turnStartedAt: new Date(Date.now() - 400_000).toISOString(), // > 300s threshold
+    });
+    await detectAndNudgeSettledNoSignal(primed, noopTransport);
+    expect(primed.agentStates.coder!.turnLifecycle!.settledNoSignalDetectedAt).not.toBeNull();
+
+    // Negative (ordering): same prime, but the session vanished and the retry
+    // budget is 0 → the poll loop halts AT the vanished check, before reaching
+    // detectAndNudgeSettledNoSignal. The settled-no-signal event (whose only
+    // emitter is downstream of the halt) must therefore never appear. Mutation:
+    // moving the vanished check after the settled detector lets tick 1 emit it.
+    const slot = 35;
+    const { harness, peerSyncDir } = seedHarness(slot);
+    process.env.LUDICS_HARNESS_DIR = harness;
+    process.env.LUDICS_RUNNER_VANISHED_RETRY_MAX = "0";
+    process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = "0";
+    const state = makeState({
+      slot,
+      backend: "tmux",
+      phase: "work",
+      harnessDir: harness,
+      // Skip re-entry into enterPhase's dispatch loop while still exercising the
+      // real pollUntilDone path (same trick as escalation.test.ts).
+      phaseDispatched: true,
+      currentPhaseToken: "phase-existing",
+    }, peerSyncDir);
+    state.agentStates.coder!.status = "done";
+    state.agentStates.coder!.turnLifecycle = makeLifecycle({
+      state: "running",
+      observedTurnId: "turn-settled",
+      turnStartedAt: new Date(Date.now() - 400_000).toISOString(),
+    });
+
+    let sendTurnCalls = 0;
+    const recordingTransport: OrchestrationTransport = {
+      async sendTurn() { sendTurnCalls++; return "cmd-vanished-order"; },
+      async sendEnter() {},
+      async refreshAgentTransportState() {},
+      async interruptAgent() {},
+    };
+
+    const hasSessionSpy = spyOn(tmux, "tmuxHasSession").mockImplementation(() => false);
+    const emitSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    const notifySpy = spyOn(notify, "notifyOutgoing").mockImplementation(() => {});
+
+    try {
+      await runOrchestration(state, recordingTransport);
+      const types = eventTypes(emitSpy);
+      // Ordering invariant: vanished session never aged into settled-no-signal.
+      expect(types).not.toContain("orchestration_settled_no_signal_detected");
+      expect(types).not.toContain("orchestration_settled_no_signal_nudge_sent");
+      // And recovery escalation did run (budget 0 → immediate give-up).
+      expect(types).toContain("escalation_requested");
+      // No prompt was pasted into the (dead) target.
+      expect(sendTurnCalls).toBe(0);
+      // Phase not advanced (orderly halt).
+      expect(state.phase).toBe("work");
+    } finally {
+      hasSessionSpy.mockRestore();
+      emitSpy.mockRestore();
+      notifySpy.mockRestore();
     }
   });
 });

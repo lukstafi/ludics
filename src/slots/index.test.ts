@@ -7,7 +7,7 @@ import * as tmuxAdapterMod from "../adapters/tmux-adapter.ts";
 import * as t3codeServerMod from "../t3code/server.ts";
 import * as spawnMod from "../spawn.ts";
 import { hasStash, writeStash } from "./preempt.ts";
-import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, type OrchestrationState } from "../orchestration/state.ts";
+import { persistState, defaultOrchestrationConfig, initAgentRuntimeState, readOrchestrationState, stateFilePath, type OrchestrationState } from "../orchestration/state.ts";
 import { tmuxKillSession, tmuxHasSession } from "../adapters/tmux.ts";
 import { existsSync } from "fs";
 import { getIntentForDashboard, clearIntent } from "../cluster-http.ts";
@@ -1552,6 +1552,145 @@ describe("slotResume — escalated slot handling (task-4cd94043)", () => {
       // escalated-liveness acceptance branch, the resume would have thrown
       // earlier and this assertion would never run.
       expect(readSlotJson(1, harness).liveness).toBeNull();
+      expect(startSpy).toHaveBeenCalled();
+    } finally {
+      startSpy.mockRestore();
+    }
+  });
+
+  test("slotResume writes tmux-slot-N.json when absent, with live runner pid (gh-ludics-559 defect B)", async () => {
+    // Invariant (AC1/AC2): post-tmux-server-restart, `tmux-slot-N.json` is gone.
+    // After resume the sibling file MUST exist with orchestration.pid === the
+    // pid startOrchestrationProcess returned, plus a full reconstructed shape
+    // (mode + stateFile). Harness condition: NO tmux-slot-1.json is written
+    // before resume — that absence is exactly the bug's trigger. Without the
+    // unconditional write this assertion fails (file stays null → the runner
+    // would exit on the sibling-state grace timeout).
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    const orchDir = join(harness, "orchestration");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(orchDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-absent-sibling", "Resume writes absent sibling");
+
+    void slotAssign(1, "task-absent-sibling", "tmux", "", "", "--pair --coder claude --reviewer claude");
+
+    const orchState: OrchestrationState = {
+      slot: 1,
+      taskId: "task-absent-sibling",
+      mode: "pair",
+      phase: "review",
+      round: 2,
+      mergeRound: 0,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "sonnet", branch: "test-coder", worktreePath: "/tmp/wt-coder" },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "sonnet", branch: "test-reviewer", worktreePath: "/tmp/wt-reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      config: defaultOrchestrationConfig({}),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/fake-project",
+      rootWorktree: "/tmp/fake-root",
+      peerSyncDir: "/tmp/fake-peersync",
+      threadIds: {},
+      backend: "tmux",
+      slotTitle: "test",
+    };
+    persistState(orchState, harness);
+
+    // Sanity: the sibling file is genuinely absent before resume (the bug state).
+    expect(tmuxAdapterMod.readTmuxSlotState(1, harness)).toBeNull();
+
+    const orchProcess = await import("../orchestration/process.ts");
+    const startSpy = spyOn(orchProcess, "startOrchestrationProcess")
+      .mockImplementation(async () => 99_998);
+
+    createdTmuxSessions.push(
+      "s1_coder_task-absent-sibling", "s1_reviewer_task-absent-sibling",
+    );
+    try {
+      await slotResume(1, { startTtyd: false });
+      const sibling = tmuxAdapterMod.readTmuxSlotState(1, harness);
+      expect(sibling).not.toBeNull();
+      expect(sibling!.orchestration?.pid).toBe(99_998);
+      expect(sibling!.orchestration?.mode).toBe("pair");
+      expect(sibling!.orchestration?.stateFile).toBe(stateFilePath(1, harness));
+      expect(typeof sibling!.ttydPids).toBe("object");
+      expect(startSpy).toHaveBeenCalled();
+    } finally {
+      startSpy.mockRestore();
+    }
+  });
+
+  test("slotResume preserves unmanaged tmux-slot-N.json fields when present (gh-ludics-559 defect B / AC3)", async () => {
+    // Invariant (AC3): when the sibling file already exists, resume patches it in
+    // place — refreshing ttydPids and orchestration.pid — WITHOUT discarding
+    // fields it does not own. ttydRestartCounts is the canary. Harness
+    // condition: pre-write a sibling file carrying a non-trivial
+    // ttydRestartCounts BEFORE resume; if the patch path clobbered the file
+    // (e.g. by reconstructing instead of spreading), the counter would vanish.
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    const orchDir = join(harness, "orchestration");
+    mkdirSync(tasksDir, { recursive: true });
+    mkdirSync(orchDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-present-sibling", "Resume preserves present sibling");
+
+    void slotAssign(1, "task-present-sibling", "tmux", "", "", "--pair --coder claude --reviewer claude");
+
+    const orchState: OrchestrationState = {
+      slot: 1,
+      taskId: "task-present-sibling",
+      mode: "pair",
+      phase: "review",
+      round: 2,
+      mergeRound: 0,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "sonnet", branch: "test-coder", worktreePath: "/tmp/wt-coder" },
+        { name: "reviewer", provider: "claude-code", role: "reviewer", model: "sonnet", branch: "test-reviewer", worktreePath: "/tmp/wt-reviewer" },
+      ],
+      agentStates: initAgentRuntimeState(["coder", "reviewer"]),
+      config: defaultOrchestrationConfig({}),
+      phaseStartedAt: Math.floor(Date.now() / 1000),
+      startedAt: new Date().toISOString(),
+      projectDir: "/tmp/fake-project",
+      rootWorktree: "/tmp/fake-root",
+      peerSyncDir: "/tmp/fake-peersync",
+      threadIds: {},
+      backend: "tmux",
+      slotTitle: "test",
+    };
+    persistState(orchState, harness);
+
+    // Pre-existing sibling file carrying an unmanaged field.
+    tmuxAdapterMod.writeTmuxSlotState({
+      slot: 1,
+      ttydPids: { coder: 111, reviewer: 222 },
+      ttydRestartCounts: { coder: { count: 3, firstRestartAt: 100, lastRestartAt: 200 } },
+      orchestration: { stateFile: stateFilePath(1, harness), mode: "pair", pid: 12_345 },
+    }, harness);
+
+    const orchProcess = await import("../orchestration/process.ts");
+    const startSpy = spyOn(orchProcess, "startOrchestrationProcess")
+      .mockImplementation(async () => 77_777);
+
+    createdTmuxSessions.push(
+      "s1_coder_task-present-sibling", "s1_reviewer_task-present-sibling",
+    );
+    try {
+      await slotResume(1, { startTtyd: false });
+      const sibling = tmuxAdapterMod.readTmuxSlotState(1, harness);
+      expect(sibling).not.toBeNull();
+      // pid refreshed to the new runner pid
+      expect(sibling!.orchestration?.pid).toBe(77_777);
+      // unmanaged field survives the patch
+      expect(sibling!.ttydRestartCounts?.coder?.count).toBe(3);
+      expect(sibling!.ttydRestartCounts?.coder?.firstRestartAt).toBe(100);
       expect(startSpy).toHaveBeenCalled();
     } finally {
       startSpy.mockRestore();

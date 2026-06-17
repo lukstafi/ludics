@@ -19,7 +19,7 @@ import { hasStash, readStash, writeStash, removeStash } from "./preempt.ts";
 import { expandDuoSlots } from "./duo-expand.ts";
 import type { PreemptStash } from "./preempt.ts";
 import { readSlotState, writeSlotState, processAlive } from "../t3code/server.ts";
-import { agentCliCommand, isAgentAlive, readTmuxSlotState, startTtyd, tmuxSessionName, ttydPort, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
+import { agentCliCommand, isAgentAlive, readTmuxSlotState, startTtyd, tmuxSessionName, ttydPort, writeTmuxOrchestrationSiblingState, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { tmuxHasSession, tmuxNewSession, tmuxSendCommand, tmuxSendKeys } from "../adapters/tmux.ts";
 import { selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError } from "../adapters/t3code.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
@@ -1347,6 +1347,12 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
     }
   }
 
+  // Collected during the tmux reconciliation loop below; hoisted to function
+  // scope so the post-`startOrchestrationProcess` sibling-state write can
+  // reconstruct the full TmuxSlotState even when the file was absent at resume
+  // start (gh-ludics-559 defect B).
+  let newTtydPids: Record<string, number> = {};
+
   // --- tmux-specific: verify/recreate tmux session, windows, ttyd, agent CLIs ---
   if (ctx.mode === "tmux") {
     const tmuxState = readTmuxSlotState(slotNum, ctx.harnessDir);
@@ -1363,7 +1369,7 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
       }
     }
 
-    const newTtydPids: Record<string, number> = { ...(tmuxState?.ttydPids ?? {}) };
+    newTtydPids = { ...(tmuxState?.ttydPids ?? {}) };
     const taskId = orchState.taskId;
 
     const bootCliInSession = (session: string, agent: { name: string; provider: string; model?: string; role?: "coder" | "reviewer"; thinkingEffort?: string }) => {
@@ -1476,13 +1482,22 @@ export async function slotResume(slotNum: number, { startTtyd: shouldStartTtyd =
       orchestration: { ...slotState.orchestration, pid: newPid },
     }, ctx.harnessDir);
   } else if (ctx.mode === "tmux") {
+    // Unconditional sibling-state write (gh-ludics-559 defect B). When
+    // `tmux-slot-N.json` is absent (post-tmux-server-restart, post-`stop`), the
+    // helper reconstructs the full TmuxSlotState mirroring `start()`; when it is
+    // present, the helper patches in place, preserving unmanaged fields such as
+    // `ttydRestartCounts`. Previously this write was guarded by `if (tmuxState)`
+    // and silently no-op'd on a missing file, so the runner exited on the
+    // sibling-state self-guard grace timeout.
     const tmuxState = readTmuxSlotState(slotNum, ctx.harnessDir);
-    if (tmuxState) {
-      writeTmuxSlotState({
-        ...tmuxState,
-        orchestration: { ...tmuxState.orchestration!, pid: newPid },
-      }, ctx.harnessDir);
-    }
+    writeTmuxOrchestrationSiblingState({
+      slot: slotNum,
+      harnessDir: ctx.harnessDir,
+      mode: orchState.mode,
+      pid: newPid,
+      ttydPids: newTtydPids,
+      existing: tmuxState,
+    });
   }
 
   // Clear interrupted liveness and stamp session-active marker

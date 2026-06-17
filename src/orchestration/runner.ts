@@ -20,7 +20,7 @@ import {
 import { isoNow, makeId, nowEpoch, sleepMs } from "./util.ts";
 import { fetchNewPrCommentCount, getPrVerification, hasCodexPostedComment, hasCodexSubmittedReview, isPrMerged, isPrUrl, postCodexReviewComment, postPrDriftComment, prUrlBelongsToRepo, repoSlugFromPrUrl, validateAndFixPrFile, type PrVerification } from "./github.ts";
 import { updateFrontmatterField, addFrontmatterField, appendToSection } from "../tasks/markdown.ts";
-import { findProjectConfig, globalAdapter, harnessDir as defaultHarnessDir, ludicsRoot } from "../config.ts";
+import { findProjectConfig, globalAdapter, harnessDir as defaultHarnessDir, loadOrchestrationConfig, ludicsRoot } from "../config.ts";
 import { taskFilePath } from "./paths.ts";
 import { notifyAgents, notifyOutgoing } from "../notify.ts";
 import { readSlotJson, writeSlotJson } from "../slots/json.ts";
@@ -29,7 +29,8 @@ import { setSlotLivenessOnData } from "../slots/index.ts";
 import { clusterRole } from "../cluster.ts";
 import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
-import { agentPortRole, readTmuxSlotState, startTtyd, ttydLogPath, ttydMatchesSession, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
+import { agentPortRole, readTmuxSlotState, startTmuxAgentSessionsForOrchestratedSlot, startTtyd, tmuxSessionName, ttydLogPath, ttydMatchesSession, writeTmuxOrchestrationSiblingState, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
+import { tmuxHasSession } from "../adapters/tmux.ts";
 import { readSlotState, writeSlotState, processAlive } from "../t3code/server.ts";
 import { recoverWrongFilename } from "./wrong-filename-recovery.ts";
 
@@ -1130,6 +1131,166 @@ export async function ensureTtydAlive(state: OrchestrationState): Promise<void> 
   if (changed) writeTmuxSlotState(tmuxState, dir);
 }
 
+// ---------------------------------------------------------------------------
+// Vanished-session detection & recovery (gh-ludics-559 defect A)
+//
+// When the tmux *server* dies (an opaque wedge, not a reboot/OOM/signal) the
+// orchestration runner process survives but every `sN_<role>_<task>` agent
+// session vanishes at once. Without this check the runner keeps driving dead
+// panes: `tmuxCapture` returns null on a missing session, the pane hash stops
+// advancing, and `detectAndNudgeSettledNoSignal` nudges a corpse forever.
+//
+// This polled check runs BEFORE the settled/hung detectors so a vanished
+// session is never misclassified as settled-no-signal. It is slot-scoped: per
+// the precipitating incident the server takes every session at once, so a
+// single recreate of all slot sessions avoids racing per-agent recoveries.
+// ---------------------------------------------------------------------------
+
+/** Small linear-backoff base between vanished-session recreate attempts. */
+const VANISHED_BACKOFF_MS = 500;
+
+/** Per-incident recreate-attempt counters, keyed by harnessDir:slot:taskId.
+ *  Module-level (not persisted) so it survives across poll ticks without
+ *  changing OrchestrationState's JSON shape; reset on healthy detection and on
+ *  successful recovery. */
+const vanishedRecoveryAttempts = new Map<string, number>();
+
+function vanishedKey(state: OrchestrationState): string {
+  return `${state.harnessDir ?? defaultHarnessDir()}:${state.slot}:${state.taskId}`;
+}
+
+/** Test-only: clear the module-scoped vanished-recovery attempt counters so
+ *  unit tests can drive consecutive detection calls deterministically. */
+export function __resetVanishedRecoveryStateForTests(): void {
+  vanishedRecoveryAttempts.clear();
+}
+
+/**
+ * Detect a slot-level vanished tmux session and recover it, or escalate-and-halt
+ * once a bounded retry budget is exhausted.
+ *
+ * Returns "halt" only when recovery has given up (budget exhausted): the caller
+ * must `return` from the poll loop immediately, mirroring `checkEscalationHalt`.
+ * Returns "recovered" when sessions were recreated this tick — the caller must
+ * re-enter `enterPhase` (re-prompt the fresh CLIs for the current phase) rather
+ * than keep polling null lifecycles. Returns "ok" otherwise (healthy, or recreate
+ * failed but the budget is not yet spent — the next tick re-detects).
+ *
+ * Detection is participant-scoped (AC6): a missing session for a NON-participating
+ * agent does not trigger recovery. A dead agent CLI inside a still-live session
+ * is NOT a vanished session — that remains the existing isAgentAlive/sendTurn
+ * reboot path. Recovery recreates ALL slot sessions and continues the loop from
+ * the persisted phase/turn (orderly resume, AC8): no phase rewind, no replay.
+ */
+export async function detectAndRecoverVanishedTmuxSessions(
+  state: OrchestrationState,
+): Promise<"ok" | "halt" | "recovered"> {
+  if (state.backend !== "tmux") return "ok";
+
+  const key = vanishedKey(state);
+  const participants = state.agents.filter((a) => agentParticipatesInPhase(state, a));
+  const anyMissing = participants.some((a) => {
+    try {
+      return !tmuxHasSession(tmuxSessionName(state.slot, a.name, state.taskId));
+    } catch {
+      // Server present-but-unresponsive (wedge window): treat as missing so the
+      // bounded-retry budget converges to escalation rather than nudging.
+      return true;
+    }
+  });
+  if (!anyMissing) {
+    vanishedRecoveryAttempts.delete(key);
+    return "ok";
+  }
+
+  const maxRetries = Number(process.env.LUDICS_RUNNER_VANISHED_RETRY_MAX ?? "2");
+  const priorAttempts = vanishedRecoveryAttempts.get(key) ?? 0;
+
+  // Budget exhausted — escalate via the shared escalation machinery and halt.
+  if (priorAttempts >= maxRetries) {
+    const reason = `vanished tmux sessions: retry budget exhausted after ${maxRetries} attempt(s) — tmux server may be wedged present-but-unresponsive`;
+    escalateSlot(state, {
+      reason,
+      title: `slot ${state.slot} vanished-session escalation`,
+      message: `Slot ${state.slot} task ${state.taskId} at phase ${state.phase}: ${reason}`,
+      failedEvent: "tmux_sessions_recovery_failed",
+    });
+    vanishedRecoveryAttempts.delete(key);
+    return "halt";
+  }
+
+  const attempt = priorAttempts + 1;
+  vanishedRecoveryAttempts.set(key, attempt); // count before recreate can throw
+  await sleepMs(VANISHED_BACKOFF_MS * attempt);
+
+  emitEvent({
+    event_type: "tmux_sessions_vanished",
+    source: "orchestration",
+    scope: "slot",
+    slot: state.slot,
+    task: state.taskId,
+    phase: state.phase,
+    attempt,
+    max_attempts: maxRetries,
+    message: `slot ${state.slot}: tmux session(s) vanished — recreating (attempt ${attempt}/${maxRetries})`,
+  });
+
+  const dir = state.harnessDir ?? defaultHarnessDir();
+  try {
+    // Recreate ALL slot sessions (kills any stale session, recreates it,
+    // restarts ttyd — which pkills the role port, so no duplicate ttyds — and
+    // boots the agent CLI fresh per agent).
+    const ttydPids = startTmuxAgentSessionsForOrchestratedSlot(
+      state.slot,
+      state.agents,
+      state.peerSyncDir,
+      state.taskId,
+      /* startTtydEnabled */ true,
+      loadOrchestrationConfig(),
+    );
+
+    // Rewrite the sibling file so stop/clear can still track the slot, and so
+    // this runner re-asserts ownership (orchestration.pid === our pid).
+    writeTmuxOrchestrationSiblingState({
+      slot: state.slot,
+      harnessDir: dir,
+      mode: state.mode,
+      pid: process.pid,
+      ttydPids,
+      existing: readTmuxSlotState(state.slot, dir),
+    });
+
+    // Orderly resume (AC8): re-prompt only the CURRENT phase to the freshly
+    // booted CLIs — clear in-flight turn bookkeeping, exactly as slotResume
+    // does, WITHOUT rewinding state.phase/round or replaying prior phases.
+    for (const name of Object.keys(state.agentStates)) {
+      state.agentStates[name]!.turnLifecycle = null;
+    }
+    state.phaseDispatched = false;
+    persistState(state, dir);
+
+    emitEvent({
+      event_type: "tmux_sessions_recovered",
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      phase: state.phase,
+      attempt,
+      message: `slot ${state.slot}: sessions recreated; resuming phase ${state.phase}`,
+    });
+    vanishedRecoveryAttempts.delete(key);
+    return "recovered";
+  } catch (err) {
+    // Recreate failed (server still wedged). The attempt is already counted; the
+    // next tick re-detects and converges toward the escalation branch above.
+    console.error(
+      `ludics: slot ${state.slot}: vanished-session recreate failed (attempt ${attempt}/${maxRetries}): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return "ok";
+  }
+}
+
 function markActiveAgents(state: OrchestrationState): void {
   for (const agent of state.agents) {
     if (!agentParticipatesInPhase(state, agent)) continue;
@@ -2005,7 +2166,7 @@ export async function runWrongFilenameRecovery(
   }
 }
 
-async function pollUntilDone(state: OrchestrationState, transport: OrchestrationTransport): Promise<void> {
+async function pollUntilDone(state: OrchestrationState, transport: OrchestrationTransport): Promise<"halt" | "redispatch" | void> {
   const timeout = state.config.timeouts[state.phase] ?? 600;
   const deadline = state.phaseStartedAt + timeout;
   const interval = state.config.pollInterval * 1000;
@@ -2046,6 +2207,24 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
       // event + priority-5 notification, and flip slot liveness without any
       // intervening phase-advance work (nudge, auto-commit, verification gate).
       if (checkEscalationHalt(state)) return;
+
+      // Vanished-session detection & recovery (gh-ludics-559 defect A). MUST run
+      // before the settled/hung detectors: a tmux session that vanished (opaque
+      // tmux-server wedge) otherwise reads as a static, settled pane and gets
+      // nudged forever. Recreates the slot (bounded retries) and resumes from
+      // the persisted phase; on "halt" the retry budget is spent and the runner
+      // has escalated — propagate the halt so runOrchestration returns without
+      // any phase-advance work (the escalation already flipped slot liveness).
+      // On "recovered" the sessions were recreated and the loop's current-turn
+      // bookkeeping was cleared (phaseDispatched=false); signal runOrchestration
+      // to re-enter enterPhase so the freshly-booted CLIs are re-prompted for the
+      // current phase immediately, rather than polling null lifecycles until the
+      // phase deadline (gh-ludics-559 — Codex review of PR #569).
+      {
+        const vanished = await detectAndRecoverVanishedTmuxSessions(state);
+        if (vanished === "halt") return "halt";
+        if (vanished === "recovered") return "redispatch";
+      }
 
       // Detect settled-no-signal agents (static terminal, read loop open) and
       // send Enter / "Continue." / re-dispatch / force-settle.
@@ -2438,11 +2617,20 @@ export function handleEscalation(state: OrchestrationState): void {
     ? `Slot ${state.slot} agent ${raisers[0]!.name} escalated on task ${state.taskId} at phase ${state.phase}: ${reasonFor(raisers[0]!.name).reason}`
     : `Slot ${state.slot} agents escalated on task ${state.taskId} at phase ${state.phase} — ${parts.join(" | ")}`;
   const title = `slot ${state.slot} escalation`;
+  notifyAndFlipEscalated(state, message, title);
+}
+
+/**
+ * Shared escalation tail: priority-5 `ludics notify outgoing` + flip slot
+ * liveness to "escalated" + persist. Used by both `handleEscalation`
+ * (agent-initiated) and `escalateSlot` (runtime-infrastructure give-up). notify
+ * is best-effort; the runner still halts if the notification pipe is broken —
+ * the event log is the authoritative record.
+ */
+function notifyAndFlipEscalated(state: OrchestrationState, message: string, title: string): void {
   try {
     notifyOutgoing(message, 5, title);
   } catch (err) {
-    // notify is best-effort; still halt the runner even if the notification
-    // pipe is broken. The event log is the authoritative record.
     console.error(`ludics: notifyOutgoing failed for slot ${state.slot} escalation: ${err instanceof Error ? err.message : String(err)}`);
   }
 
@@ -2455,6 +2643,44 @@ export function handleEscalation(state: OrchestrationState): void {
   }
 
   persistState(state, state.harnessDir ?? defaultHarnessDir());
+}
+
+/**
+ * Runtime-infrastructure escalation: a halt condition with no agent-authored
+ * escalate status (e.g. vanished tmux sessions that cannot be recreated). Reuses
+ * the existing `escalation_requested` event + priority-5 notify machinery (AC10
+ * — not a parallel notify), optionally preceded by a failure precursor event.
+ */
+export function escalateSlot(state: OrchestrationState, opts: {
+  reason: string;
+  title: string;
+  message: string;
+  failedEvent?: string;
+}): void {
+  if (opts.failedEvent) {
+    emitEvent({
+      event_type: opts.failedEvent,
+      source: "orchestration",
+      scope: "slot",
+      slot: state.slot,
+      task: state.taskId,
+      phase: state.phase,
+      reason: opts.reason,
+      message: opts.message,
+    });
+  }
+  emitEvent({
+    event_type: "escalation_requested",
+    source: "orchestration",
+    scope: "slot",
+    slot: state.slot,
+    task: state.taskId,
+    phase: state.phase,
+    reason: opts.reason,
+    reason_provided: true,
+    message: opts.message,
+  });
+  notifyAndFlipEscalated(state, opts.message, opts.title);
 }
 
 /**
@@ -2620,7 +2846,20 @@ export async function runOrchestration(
     await enterPhase(state, transport);
     persistState(state, state.harnessDir ?? defaultHarnessDir());
 
-    await pollUntilDone(state, transport);
+    const pollOutcome = await pollUntilDone(state, transport);
+
+    // Vanished-session recovery re-dispatch (gh-ludics-559 defect A). The
+    // recovery path recreated the slot's sessions and cleared phaseDispatched;
+    // re-enter the loop so enterPhase re-prompts the freshly-booted CLIs for the
+    // CURRENT phase (phase/round unchanged → no replay). Without this `continue`
+    // the runner would poll null lifecycles until the phase deadline.
+    if (pollOutcome === "redispatch") continue;
+
+    // Vanished-session give-up halt (gh-ludics-559 defect A). The recovery path
+    // already escalated (priority-5 notify + slot liveness flip + events) and
+    // signalled halt; return without phase-advance work, leaving the non-"done"
+    // phase intact so `ludics slot N resume` can recover the slot.
+    if (pollOutcome === "halt") return;
 
     // Escalation halt — checked before any phase-advance work so we don't
     // auto-commit, verify, or transition while the human is being flagged in.
