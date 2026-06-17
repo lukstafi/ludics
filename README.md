@@ -9,7 +9,7 @@ Inspired by Daniel Miessler's Personal AI Infrastructure, by Steve Yegge's Gas T
 - **Slots**: 6 ephemeral "CPUs" for active work, not memory or identity.
 - **Task index**: unified task list from GitHub issues and README TODOs.
 - **Flow engine**: priority/dependency-based views (ready, blocked, critical, impact).
-- **Adapters**: thin integrations with existing agent setups (tmux, t3code, claude.ai, manual).
+- **Adapters**: thin integrations with existing agent setups (tmux, claude.ai, manual; t3code is experimental).
 - **Notifications**: ntfy.sh integration — outgoing (strategic), incoming (from phone), agents (operational).
 - **Triggers**: launchd/systemd automation for briefings and syncs.
 
@@ -173,6 +173,8 @@ For the full list of options and their defaults, see [`templates/config.referenc
 state_repo: your-username/private-state
 state_path: harness
 
+adapter: tmux   # global orchestration adapter; required for v1 (defaults to the experimental t3code if omitted)
+
 projects:
   - name: my-app
     repo: your-username/my-app
@@ -182,12 +184,12 @@ mag:
   enabled: true
 
 adapters:
-  t3code:
-    enabled: true
   tmux:
     enabled: true
   manual:
     enabled: true
+  t3code:
+    enabled: false   # experimental; unsupported in v1.0
 
 triggers:
   startup:
@@ -212,9 +214,9 @@ notifications:
 
 ### Adapter Args Layering
 
-For orchestrated work (the `t3code` or `tmux` adapter plus orchestration flags
-such as `--pair` / `--duo`), ludics builds final CLI args from multiple sources
-in this order:
+For orchestrated work (the `tmux` adapter plus orchestration flags such as
+`--pair` / `--duo`; the experimental `t3code` adapter follows the same rules),
+ludics builds final CLI args from multiple sources in this order:
 
 1. `adapters.<adapter>.default_args`
 2. `projects[].adapter_profiles.<adapter>`
@@ -223,11 +225,11 @@ in this order:
 
 Later layers are appended last, so they override earlier options in typical CLI parsing.
 
-#### 1) Global defaults for `t3code`
+#### 1) Global defaults for `tmux`
 
 ```yaml
 adapters:
-  t3code:
+  tmux:
     enabled: true
     default_args:
       - --clarify
@@ -236,7 +238,7 @@ adapters:
       - "5400"
 ```
 
-#### 2) Per-project profile for `t3code`
+#### 2) Per-project profile for `tmux`
 
 ```yaml
 projects:
@@ -244,7 +246,7 @@ projects:
     repo: your-username/my-app
     issues: true
     adapter_profiles:
-      t3code:
+      tmux:
         args:
           - --clarify
           - --pushback
@@ -381,7 +383,9 @@ ludics dashboard restart [port]   # Restart the dashboard server
 ludics dashboard install          # Install dashboard assets to state repo
 ```
 
-### t3code adapter
+### t3code adapter (experimental)
+
+> **Experimental — unsupported in v1.0.** The `t3code` adapter and these commands remain in the tree but are not part of the supported v1.0 surface. Use the `tmux` adapter for orchestrated work; t3code support may return in a future release as its stability improves.
 
 ```bash
 ludics t3code [status]                    # Show shared t3code server status
@@ -491,14 +495,15 @@ ludics help                    # Show help
 
 Adapters are thin integrations that translate external state into slot format:
 
-Only `tmux`, `t3code`, and `manual` are assignable via `-a` (see `slot <n> assign`).
+`tmux` and `manual` are the supported assignable adapters via `-a` (see `slot <n> assign`).
+`t3code` is also assignable but experimental and unsupported in v1.0.
 `claude-ai` and `chatgpt-com` stay registered for legacy bookmark-slot state reads.
 
 | Adapter | Description |
 |---------|-------------|
-| `t3code` | Multi-agent orchestration or single-thread coding via t3code |
-| `tmux` | Agent sessions (solo or orchestrated) managed in tmux |
+| `tmux` | Agent sessions (solo or orchestrated) managed in tmux — the primary, supported adapter |
 | `manual` | Track human work without an agent |
+| `t3code` | Multi-agent orchestration or single-thread coding via t3code — **experimental, unsupported in v1.0** |
 | `claude-ai` | Treats bookmarked claude.ai URLs as sessions (state reads only) |
 | `chatgpt-com` | Tracks ChatGPT browser sessions (state reads only) |
 
