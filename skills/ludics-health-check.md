@@ -164,21 +164,24 @@ This skill is invoked when:
    - Build stable issue key: `outbound-staging-ff-stale:<project>`
      (delta-tracked against `mag/health-last.json` so the same staleness
      counts as `ongoing` after the first detection, not `new`).
-   - **Annotate each finding** by invoking the diagnostic subcommand:
+   - **Annotate each finding** by iterating opted-in projects and invoking
+     the diagnostic subcommand:
      ```bash
-     annotation=$(ludics mag outbound-cause-remedy "$project" 2>/dev/null || echo '{"kind":"unknown"}')
-     kind=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('kind','unknown'))")
-     if [ "$kind" = "auth" ]; then
-       cause=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cause',''))")
-       remedy=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('remedy',''))")
-       finding_text="$finding_text — cause: $cause; remedy: $remedy"
-     elif [ "$kind" = "no-attempts" ]; then
-       remedy=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('remedy',''))")
-       finding_text="$finding_text — $remedy"
-     elif [ "$kind" = "blocked-worktree" ]; then
-       remedy=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('remedy',''))")
-       finding_text="$finding_text — $remedy"
-     fi
+     for project in $(yq eval '.projects[] | select(.outbound_sync_enabled == true) | .name' "$LUDICS_STATE_PATH/config.yaml"); do
+       annotation=$(ludics mag outbound-cause-remedy "$project" 2>/dev/null || echo '{"kind":"unknown"}')
+       kind=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('kind','unknown'))")
+       if [ "$kind" = "auth" ]; then
+         cause=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cause',''))")
+         remedy=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('remedy',''))")
+         finding_text="$finding_text — cause: $cause; remedy: $remedy"
+       elif [ "$kind" = "no-attempts" ]; then
+         remedy=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('remedy',''))")
+         finding_text="$finding_text — $remedy"
+       elif [ "$kind" = "blocked-worktree" ]; then
+         remedy=$(echo "$annotation" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('remedy',''))")
+         finding_text="$finding_text — $remedy"
+       fi
+     done
      ```
      When `kind` is `unknown`, leave the finding text unchanged.
    - **No notification**: `git push` auth failure does NOT raise a
@@ -186,11 +189,6 @@ This skill is invoked when:
      check. This stable-key entry is the only surfacing path for
      outbound credential gaps; the briefing-lag section also shows the
      annotation alongside `upstream fetch data is ~Nh old`.
-   - Example yq lookup of opted-in projects:
-     ```bash
-     yq eval '.projects[] | select(.outbound_sync_enabled == true) | .name' \
-       "$LUDICS_STATE_PATH/config.yaml"
-     ```
 
 <!-- section:check-tests -->
 4. **Check test suite health**:
