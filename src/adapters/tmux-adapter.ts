@@ -122,6 +122,48 @@ function removeTmuxSlotState(slot: number, harnessDir: string): void {
   }
 }
 
+/**
+ * Canonical post-`startOrchestrationProcess` sibling-state write, shared by the
+ * fresh-`start` path, `slotResume` (gh-ludics-559 defect B), and the runner's
+ * vanished-session recovery (gh-ludics-559 defect A).
+ *
+ * When `existing` is null/absent (post-tmux-server-restart, post-`stop`), the
+ * full `TmuxSlotState` is reconstructed exactly as `start()` does, so the
+ * runner's sibling-state self-guard is satisfied. When `existing` is provided,
+ * it is patched in place — `ttydPids` refreshed and `orchestration.pid` set —
+ * while unmanaged fields (notably `ttydRestartCounts`) are preserved.
+ */
+export function writeTmuxOrchestrationSiblingState(opts: {
+  slot: number;
+  harnessDir: string;
+  mode: OrchestrationState["mode"];
+  pid: number;
+  ttydPids: Record<string, number>;
+  existing?: TmuxSlotState | null;
+}): void {
+  const { slot, harnessDir, mode, pid, ttydPids, existing } = opts;
+  if (existing) {
+    writeTmuxSlotState(
+      {
+        ...existing,
+        slot,
+        ttydPids,
+        orchestration: {
+          stateFile: existing.orchestration?.stateFile ?? stateFilePath(slot, harnessDir),
+          mode: existing.orchestration?.mode ?? mode,
+          pid,
+        },
+      },
+      harnessDir,
+    );
+    return;
+  }
+  writeTmuxSlotState(
+    { slot, ttydPids, orchestration: { stateFile: stateFilePath(slot, harnessDir), mode, pid } },
+    harnessDir,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Naming / port helpers
 // ---------------------------------------------------------------------------
