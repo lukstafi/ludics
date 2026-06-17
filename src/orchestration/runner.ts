@@ -1182,7 +1182,7 @@ export function __resetVanishedRecoveryStateForTests(): void {
  */
 export async function detectAndRecoverVanishedTmuxSessions(
   state: OrchestrationState,
-): Promise<"ok" | "halt"> {
+): Promise<"ok" | "halt" | "recovered"> {
   if (state.backend !== "tmux") return "ok";
 
   const key = vanishedKey(state);
@@ -1278,7 +1278,7 @@ export async function detectAndRecoverVanishedTmuxSessions(
       message: `slot ${state.slot}: sessions recreated; resuming phase ${state.phase}`,
     });
     vanishedRecoveryAttempts.delete(key);
-    return "ok";
+    return "recovered";
   } catch (err) {
     // Recreate failed (server still wedged). The attempt is already counted; the
     // next tick re-detects and converges toward the escalation branch above.
@@ -2164,7 +2164,7 @@ export async function runWrongFilenameRecovery(
   }
 }
 
-async function pollUntilDone(state: OrchestrationState, transport: OrchestrationTransport): Promise<"halt" | void> {
+async function pollUntilDone(state: OrchestrationState, transport: OrchestrationTransport): Promise<"halt" | "redispatch" | void> {
   const timeout = state.config.timeouts[state.phase] ?? 600;
   const deadline = state.phaseStartedAt + timeout;
   const interval = state.config.pollInterval * 1000;
@@ -2213,7 +2213,16 @@ async function pollUntilDone(state: OrchestrationState, transport: Orchestration
       // the persisted phase; on "halt" the retry budget is spent and the runner
       // has escalated — propagate the halt so runOrchestration returns without
       // any phase-advance work (the escalation already flipped slot liveness).
-      if (await detectAndRecoverVanishedTmuxSessions(state) === "halt") return "halt";
+      // On "recovered" the sessions were recreated and the loop's current-turn
+      // bookkeeping was cleared (phaseDispatched=false); signal runOrchestration
+      // to re-enter enterPhase so the freshly-booted CLIs are re-prompted for the
+      // current phase immediately, rather than polling null lifecycles until the
+      // phase deadline (gh-ludics-559 — Codex review of PR #569).
+      {
+        const vanished = await detectAndRecoverVanishedTmuxSessions(state);
+        if (vanished === "halt") return "halt";
+        if (vanished === "recovered") return "redispatch";
+      }
 
       // Detect settled-no-signal agents (static terminal, read loop open) and
       // send Enter / "Continue." / re-dispatch / force-settle.
@@ -2836,6 +2845,13 @@ export async function runOrchestration(
     persistState(state, state.harnessDir ?? defaultHarnessDir());
 
     const pollOutcome = await pollUntilDone(state, transport);
+
+    // Vanished-session recovery re-dispatch (gh-ludics-559 defect A). The
+    // recovery path recreated the slot's sessions and cleared phaseDispatched;
+    // re-enter the loop so enterPhase re-prompts the freshly-booted CLIs for the
+    // CURRENT phase (phase/round unchanged → no replay). Without this `continue`
+    // the runner would poll null lifecycles until the phase deadline.
+    if (pollOutcome === "redispatch") continue;
 
     // Vanished-session give-up halt (gh-ludics-559 defect A). The recovery path
     // already escalated (priority-5 notify + slot liveness flip + events) and

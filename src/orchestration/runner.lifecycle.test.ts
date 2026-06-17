@@ -2045,7 +2045,7 @@ describe("detectAndRecoverVanishedTmuxSessions", () => {
 
     try {
       const res = await detectAndRecoverVanishedTmuxSessions(state);
-      expect(res).toBe("ok");
+      expect(res).toBe("recovered");
       // Invariant: exactly one slot-scoped recreate (not per-agent racing).
       expect(recreateSpy).toHaveBeenCalledTimes(1);
       expect(recreateSpy.mock.calls[0]![0]).toBe(slot);
@@ -2160,6 +2160,57 @@ describe("detectAndRecoverVanishedTmuxSessions", () => {
       recreateSpy.mockRestore();
       emitSpy.mockRestore();
       notifySpy.mockRestore();
+    }
+  });
+
+  test("after recovery the runner re-enters enterPhase to re-prompt the recreated CLIs (Codex PR #569 — no stall until timeout)", async () => {
+    // Codex flagged: clearing phaseDispatched inside pollUntilDone is insufficient
+    // — enterPhase only runs in the OUTER runOrchestration loop, so without a
+    // re-dispatch signal the freshly-booted CLIs sit idle (null lifecycles) until
+    // the phase deadline. Invariant: a successful recovery re-dispatches the
+    // current phase, i.e. transport.sendTurn is called again (initial dispatch +
+    // post-recovery re-dispatch). Mutation: if recovery returned "ok" instead of
+    // "redispatch" (or runOrchestration didn't `continue`), sendTurn fires only
+    // once. Harness: session vanished on the first detection then present after
+    // recreate; loop terminated deterministically by forcing allAgentsDone once
+    // the re-dispatch has happened.
+    const slot = 36;
+    const { harness, peerSyncDir } = seedHarness(slot);
+    process.env.LUDICS_HARNESS_DIR = harness;
+    process.env.LUDICS_RUNNER_STARTUP_GRACE_MS = "0";
+    const state = makeState({ slot, backend: "tmux", phase: "work", harnessDir: harness, phaseDispatched: false }, peerSyncDir);
+
+    let recreated = false;
+    let sendTurns = 0;
+    const hasSessionSpy = spyOn(tmux, "tmuxHasSession").mockImplementation(() => recreated);
+    const recreateSpy = spyOn(tmuxAdapter, "startTmuxAgentSessionsForOrchestratedSlot")
+      .mockImplementation(() => { recreated = true; return { coder: 1, reviewer: 2 }; });
+    const emitSpy = spyOn(events, "emitEvent").mockImplementation(() => {});
+    // Terminate the loop once the re-dispatch has occurred: allAgentsDone true
+    // after sendTurns>=2 → pollUntilDone returns normally → evaluateTransition
+    // forces "done" → outer while exits.
+    const allDoneSpy = spyOn(phases, "allAgentsDone").mockImplementation(() => sendTurns >= 2);
+    const transitionSpy = spyOn(phases, "evaluateTransition").mockReturnValue("done");
+
+    const recordingTransport: OrchestrationTransport = {
+      async sendTurn() { sendTurns++; return "cmd-redispatch"; },
+      async sendEnter() {},
+      async refreshAgentTransportState() {},
+      async interruptAgent() {},
+    };
+
+    try {
+      await runOrchestration(state, recordingTransport);
+      // One recreate; sendTurn fired for the initial dispatch AND the
+      // post-recovery re-dispatch (≥2). Single-dispatch would mean the stall bug.
+      expect(recreateSpy).toHaveBeenCalledTimes(1);
+      expect(sendTurns).toBeGreaterThanOrEqual(2);
+    } finally {
+      hasSessionSpy.mockRestore();
+      recreateSpy.mockRestore();
+      emitSpy.mockRestore();
+      allDoneSpy.mockRestore();
+      transitionSpy.mockRestore();
     }
   });
 
