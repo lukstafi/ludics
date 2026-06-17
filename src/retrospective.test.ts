@@ -2,7 +2,7 @@ import { describe, expect, test, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { extractReviews } from "./retrospective.ts";
+import { extractReviews, writeRetrospective } from "./retrospective.ts";
 import type { RetrospectiveVerdict } from "./retrospective.ts";
 
 function makeTmpDir(): string {
@@ -147,6 +147,84 @@ describe("extractReviews", () => {
 
 import { existsSync, readFileSync } from "fs";
 import type { RetrospectiveData } from "./retrospective.ts";
+
+describe("writeRetrospective - review-only auto-queue path", () => {
+  let harness: string;
+  let ORIGINAL_HARNESS: string | undefined;
+
+  afterEach(() => {
+    if (ORIGINAL_HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR;
+    else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS;
+    ORIGINAL_HARNESS = undefined;
+    try { rmSync(harness, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  function setupHarness(): void {
+    ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
+    harness = mkdtempSync(join(tmpdir(), "retro-autoqueue-"));
+    process.env.LUDICS_HARNESS_DIR = harness;
+  }
+
+  function makeReviewOnlyData(): RetrospectiveData {
+    return {
+      taskId: "task-review-only-queue",
+      title: "Review-only auto-queue test",
+      status: "done",
+      completedAt: "2026-06-17T00:00:00Z",
+      startedAt: null,
+      slot: null,
+      mode: null,
+      proposalPath: null,
+      prUrl: null,
+      githubUrl: null,
+      phases: [],
+      rounds: 1,
+      mergeRound: 0,
+      planMergeRound: 0,
+      agents: [],
+      verdicts: [],
+      reviews: [
+        { round: 1, type: "review", reviewer: "reviewer", verdict: "request_changes", content: "Fix the issue." },
+      ],
+      threads: [],
+      turns: [],
+      missingThreads: [],
+      suggestRefactorSummary: null,
+      workflowFeedback: {},
+      workflowFeedbackSummary: null,
+      collectedAt: "2026-06-17T00:00:00Z",
+    };
+  }
+
+  test("queues process-suggestions when only request_changes reviews exist (no suggestRefactorSummary, empty workflowFeedback)", () => {
+    setupHarness();
+    writeRetrospective(makeReviewOnlyData());
+    const queuePath = join(harness, "mag", "queue.jsonl");
+    expect(existsSync(queuePath)).toBe(true);
+    const records = readFileSync(queuePath, "utf-8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map(l => JSON.parse(l) as Record<string, unknown>);
+    const hits = records.filter(r => r.action === "process-suggestions");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.task).toBe("task-review-only-queue");
+  });
+
+  test("negative control: process-suggestions not queued with no reviews, no suggestRefactorSummary, empty workflowFeedback", () => {
+    setupHarness();
+    writeRetrospective({ ...makeReviewOnlyData(), reviews: [] });
+    const queuePath = join(harness, "mag", "queue.jsonl");
+    const records = existsSync(queuePath)
+      ? readFileSync(queuePath, "utf-8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map(l => JSON.parse(l) as Record<string, unknown>)
+      : [];
+    expect(records.filter(r => r.action === "process-suggestions")).toHaveLength(0);
+  });
+});
 
 describe("writeRetrospective atomic write", () => {
   test("writes JSON file and leaves no .tmp sibling", async () => {
