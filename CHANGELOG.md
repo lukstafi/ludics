@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased
+## v1.0.0 — 2026-06-17
 
-Simplified upstream workflow: for projects declaring `upstream_repo`, orchestration now completes at staging-main PR merge, identical to the non-upstream flow.
+First stable release. ludics is feature-complete for everyday use: ephemeral slot management, flow-based task aggregation from GitHub and READMEs, the phase-driven multi-agent orchestration engine, Mag autonomous coordination, and multi-machine cluster coordination are all exercised in daily use through the `tmux` adapter.
+
+**t3code orchestration is not part of the v1.0 supported surface.** The `t3code` adapter and its CLI (`ludics t3code …`) remain in the tree and can still be enabled, but they ship as **experimental and unsupported** in this release: t3code has not reached the stability bar where it offers sufficient value over the `tmux` adapter. Every documented and supported orchestration workflow runs through `tmux`. t3code support may return in a future release as its stability improves.
+
+This release also simplifies the upstream workflow: for projects declaring `upstream_repo`, orchestration now completes at staging-main PR merge, identical to the non-upstream flow.
 
 ### Documentation / contracts
 
