@@ -173,6 +173,8 @@ For the full list of options and their defaults, see [`templates/config.referenc
 state_repo: your-username/private-state
 state_path: harness
 
+adapter: tmux   # global orchestration adapter; required for v1 (defaults to the experimental t3code if omitted)
+
 projects:
   - name: my-app
     repo: your-username/my-app
