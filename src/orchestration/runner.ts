@@ -1171,8 +1171,10 @@ export function __resetVanishedRecoveryStateForTests(): void {
  *
  * Returns "halt" only when recovery has given up (budget exhausted): the caller
  * must `return` from the poll loop immediately, mirroring `checkEscalationHalt`.
- * Returns "ok" otherwise (healthy, recovered this tick, or recreate failed but
- * the budget is not yet spent).
+ * Returns "recovered" when sessions were recreated this tick — the caller must
+ * re-enter `enterPhase` (re-prompt the fresh CLIs for the current phase) rather
+ * than keep polling null lifecycles. Returns "ok" otherwise (healthy, or recreate
+ * failed but the budget is not yet spent — the next tick re-detects).
  *
  * Detection is participant-scoped (AC6): a missing session for a NON-participating
  * agent does not trigger recovery. A dead agent CLI inside a still-live session
