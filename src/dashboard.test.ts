@@ -641,7 +641,8 @@ projects:
 
   test("milestone is surfaced on tasks-tree node for milestone-enabled project", async () => {
     writeConfigWithMilestones(TMP);
-    writeTask("task-ms-enabled", "milestonedproject", "v1.0");
+    // Use mixed-case project name to exercise case-insensitive matching.
+    writeTask("task-ms-enabled", "MilestonedProject", "v1.0");
 
     const { dashboardGenerate } = await import("./dashboard.ts");
     silenceConsoleError(() => dashboardGenerate());

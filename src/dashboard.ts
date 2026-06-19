@@ -665,7 +665,7 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
         retroLink,
         priority: task.priority,
         status: task.status,
-        milestone: milestonesEnabled.has(task.project) ? task.milestone : null,
+        milestone: milestonesEnabled.has(task.project.toLowerCase()) ? task.milestone : null,
         hasProposal: hasActiveProposal,
         highlighted,
         mtime: task.mtime,

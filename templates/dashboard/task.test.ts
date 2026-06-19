@@ -185,9 +185,9 @@ describe("task.html template", () => {
     expect(template).toContain("milestoneProjects");
   });
 
-  test("renders milestone badge gated by milestoneProjects", () => {
+  test("renders milestone badge gated by milestoneProjects with case-insensitive project check", () => {
     expect(template).toContain("meta.milestone");
-    expect(template).toContain("milestoneProjects.includes(meta.project)");
+    expect(template).toContain("milestoneProjects.includes(meta.project.toLowerCase())");
   });
 });
 
