@@ -601,6 +601,86 @@ describe("tasks-tree link renders task.html", () => {
   });
 });
 
+describe("tasks-tree milestone gating", () => {
+  function writeConfigWithMilestones(homeDir: string): void {
+    const configPath = process.env.LUDICS_CONFIG!;
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+projects:
+  - name: milestonedproject
+    milestones: true
+  - name: plainproject
+`);
+  }
+
+  function writeTask(id: string, project: string, milestone: string | null, extra = ""): void {
+    const tasksDir = join(harnessDir(), "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    const milestoneLine = milestone !== null ? `milestone: ${milestone}\n` : "";
+    writeFileSync(
+      join(tasksDir, `${id}.md`),
+      `---\nid: ${id}\ntitle: "${id}"\nstatus: ready\npriority: B\nproject: ${project}\ncreated: "2026-04-10"\n${milestoneLine}${extra}---\n\n# ${id}\n`,
+    );
+  }
+
+  function collectTaskNodes(nodes: unknown[]): Record<string, unknown>[] {
+    const out: Record<string, unknown>[] = [];
+    const walk = (arr: unknown[]): void => {
+      for (const n of arr) {
+        if (!n || typeof n !== "object") continue;
+        const node = n as Record<string, unknown>;
+        if (node.kind === "task") out.push(node);
+        if (Array.isArray(node.children)) walk(node.children as unknown[]);
+      }
+    };
+    walk(nodes);
+    return out;
+  }
+
+  test("milestone is surfaced on tasks-tree node for milestone-enabled project", async () => {
+    writeConfigWithMilestones(TMP);
+    writeTask("task-ms-enabled", "milestonedproject", "v1.0");
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    silenceConsoleError(() => dashboardGenerate());
+
+    const tree = JSON.parse(readFileSync(join(harnessDir(), "dashboard", "data", "tasks-tree.json"), "utf-8")) as unknown[];
+    const tasks = collectTaskNodes(tree);
+    const task = tasks.find((t) => t.id === "task-ms-enabled");
+    expect(task).toBeDefined();
+    expect(task!.milestone).toBe("v1.0");
+  });
+
+  test("stray milestone is suppressed (null) for non-milestone-enabled project", async () => {
+    writeConfigWithMilestones(TMP);
+    writeTask("task-ms-stray", "plainproject", "v1.0");
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    silenceConsoleError(() => dashboardGenerate());
+
+    const tree = JSON.parse(readFileSync(join(harnessDir(), "dashboard", "data", "tasks-tree.json"), "utf-8")) as unknown[];
+    const tasks = collectTaskNodes(tree);
+    const task = tasks.find((t) => t.id === "task-ms-stray");
+    expect(task).toBeDefined();
+    expect(task!.milestone).toBeNull();
+  });
+
+  test("milestone-projects.json lists only projects with milestones enabled", async () => {
+    writeConfigWithMilestones(TMP);
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    silenceConsoleError(() => dashboardGenerate());
+
+    const projectsFile = join(harnessDir(), "dashboard", "data", "milestone-projects.json");
+    expect(existsSync(projectsFile)).toBe(true);
+    const projects = JSON.parse(readFileSync(projectsFile, "utf-8")) as string[];
+    expect(projects).toContain("milestonedproject");
+    expect(projects).not.toContain("plainproject");
+  });
+});
+
 describe("taskLink / proposalLink round-trip", () => {
   const ids = ["plain", "task&x", "task#x", "task?x", "task+x", "task with space", "tâsk-ünîcödé"];
 

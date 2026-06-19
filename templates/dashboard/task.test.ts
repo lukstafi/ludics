@@ -179,6 +179,42 @@ describe("task.html template", () => {
   test("sets the document title to include the task ID", () => {
     expect(template).toContain("ludics Task: ${taskId}");
   });
+
+  test("fetches data/milestone-projects.json for project gating", () => {
+    expect(template).toContain("data/milestone-projects.json");
+    expect(template).toContain("milestoneProjects");
+  });
+
+  test("renders milestone badge gated by milestoneProjects", () => {
+    expect(template).toContain("meta.milestone");
+    expect(template).toContain("milestoneProjects.includes(meta.project)");
+  });
+});
+
+describe("parseFrontmatter milestone field", () => {
+  test("extracts milestone as a plain value", () => {
+    const yaml = "id: task-1\nstatus: ready\nmilestone: v1.0";
+    const meta = parseFrontmatter(yaml);
+    expect(meta.milestone).toBe("v1.0");
+  });
+
+  test("strips surrounding double-quotes from milestone value", () => {
+    const yaml = 'milestone: "v0.7.1"';
+    const meta = parseFrontmatter(yaml);
+    expect(meta.milestone).toBe("v0.7.1");
+  });
+
+  test("strips surrounding single-quotes from milestone value", () => {
+    const yaml = "milestone: 'v0.7.1'";
+    const meta = parseFrontmatter(yaml);
+    expect(meta.milestone).toBe("v0.7.1");
+  });
+
+  test("null milestone value is parsed as null", () => {
+    const yaml = "milestone: null";
+    const meta = parseFrontmatter(yaml);
+    expect(meta.milestone).toBeNull();
+  });
 });
 
 describe("dashboard.js task links", () => {
