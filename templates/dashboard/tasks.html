@@ -233,6 +233,13 @@
                     row.appendChild(proposal);
                 }
 
+                if (node.milestone) {
+                    const milestoneBadge = document.createElement('span');
+                    milestoneBadge.className = 'task-badge';
+                    milestoneBadge.textContent = node.milestone;
+                    row.appendChild(milestoneBadge);
+                }
+
                 body.appendChild(row);
             }
 

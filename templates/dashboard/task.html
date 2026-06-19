@@ -53,6 +53,7 @@
     <script>
         const params = new URLSearchParams(window.location.search);
         const taskId = params.get('task') || '';
+        let milestoneProjects = null;
 
         if (taskId) {
             document.title = `ludics Task: ${taskId}`;
@@ -60,9 +61,19 @@
             if (taskIdEl) taskIdEl.textContent = taskId;
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', async () => {
+            await fetchMilestoneProjects();
             fetchTask();
         });
+
+        async function fetchMilestoneProjects() {
+            try {
+                const resp = await fetch('data/milestone-projects.json');
+                milestoneProjects = resp.ok ? await resp.json() : [];
+            } catch {
+                milestoneProjects = [];
+            }
+        }
 
         // Strip leading YAML frontmatter (between two --- fences) and return
         // { frontmatter: string, body: string }. If there is no frontmatter, the
@@ -116,6 +127,9 @@
             if (meta.status) parts.push(`<span class="task-badge">${escapeHtml(String(meta.status))}</span>`);
             if (meta.priority) parts.push(`<span class="task-badge">P${escapeHtml(String(meta.priority))}</span>`);
             if (meta.project) parts.push(`<span class="task-badge">${escapeHtml(String(meta.project))}</span>`);
+            if (meta.milestone && Array.isArray(milestoneProjects) && milestoneProjects.includes(meta.project.toLowerCase())) {
+                parts.push(`<span class="task-badge">${escapeHtml(String(meta.milestone))}</span>`);
+            }
             container.innerHTML = parts.join(' ');
         }
 

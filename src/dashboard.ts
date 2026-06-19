@@ -378,6 +378,7 @@ interface TasksTreeNode {
   retroLink: string | null;
   priority: string | null;
   status: string | null;
+  milestone: string | null;
   hasProposal: boolean;
   highlighted: boolean;
   mtime: string | null;
@@ -607,6 +608,8 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
     return a.id.localeCompare(b.id);
   }
 
+  const milestonesEnabled = milestonesEnabledProjects();
+
   function buildTaskNode(
     taskId: string,
     path: Set<string>,
@@ -622,6 +625,7 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
         retroLink: null,
         priority: null,
         status: null,
+        milestone: null,
         hasProposal: false,
         highlighted: false,
         mtime: null,
@@ -661,6 +665,7 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
         retroLink,
         priority: task.priority,
         status: task.status,
+        milestone: milestonesEnabled.has(task.project.toLowerCase()) ? task.milestone : null,
         hasProposal: hasActiveProposal,
         highlighted,
         mtime: task.mtime,
@@ -701,6 +706,7 @@ function generateTasksTree(tasks: DashboardTask[]): TasksTreeNode[] {
       retroLink: null,
       priority: null,
       status: null,
+      milestone: null,
       hasProposal: false,
       highlighted: childResults.some((child) => child.subtreeHasActiveProposal),
       mtime: null,
@@ -1176,6 +1182,9 @@ export function dashboardGenerate(): void {
 
   writeFileSync(join(dataDir, "tasks-tree.json"), JSON.stringify(generateTasksTree(tasks), null, 2));
   console.error("  tasks-tree.json");
+
+  writeFileSync(join(dataDir, "milestone-projects.json"), JSON.stringify([...milestonesEnabledProjects()], null, 2));
+  console.error("  milestone-projects.json");
 
   writeFileSync(join(dataDir, "notifications.json"), JSON.stringify(generateNotifications(), null, 2));
   console.error("  notifications.json");
