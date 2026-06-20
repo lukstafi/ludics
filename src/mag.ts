@@ -13,7 +13,7 @@ import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
 import { queueRequest, queueRequestAtHead, queueHasCompactForTrigger, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults, parseQueueLines } from "./queue.ts";
 import { getUrl } from "./network.ts";
-import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName } from "./cluster.ts";
+import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterDoctor, wslPersistenceStatus } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
 import { isRemoteMachine } from "./remote.ts";
 // slot-intents.ts deleted — intents use in-memory store via cluster-http.ts
@@ -4090,6 +4090,19 @@ export function magDoctor(): void {
     } else {
       console.log(`  ${key}: not set (default ${defaultSec}s)`);
     }
+  }
+
+  // --- Cluster / worker onboarding checks (AC 9) ---
+  console.log("");
+  console.log("Cluster onboarding:");
+  const cd = clusterDoctor();
+  for (const line of cd.lines) console.log(`  ${line}`);
+  if (!cd.ok) allOk = false;
+
+  const wsl = wslPersistenceStatus();
+  if (wsl.applicable) {
+    for (const line of wsl.lines) console.log(`  ${line}`);
+    if (!wsl.ok) allOk = false;
   }
 
   console.log("");

@@ -709,7 +709,9 @@ For multi-machine setups (e.g., laptop + always-on Mac Mini), ludics includes a 
 - **Network support**: Tailscale hostname detection (`src/network.ts`)
 - **HTTP transport** (`src/cluster-http.ts`): Worker nodes write state changes to the controller via HTTP instead of git push. Endpoints: `/api/cluster/journal`, `/event`, `/orchestration-state`, `/task-update`, `/slot-update`, `/intent`. Intents are stored in-memory on the controller; workers poll via HTTP (pure-pull flow). Git commits happen only at natural checkpoints (health-check, shutdown).
 - **Worker keepalive** (`src/cluster.ts`): Separate from the cluster trigger, worker nodes run their own keepalive that detects dispatched-but-lost slots (proposal exists, no active session) and auto-starts them via intent consumption.
-- **Machine selection** (`selectMachineForSlot` in `src/cluster.ts`): Tasks with `requirements` frontmatter (optional `os`, `gpu` fields) are matched against cluster machine capabilities. Project-level `requirements` are also matched. Selection priority: (1) filter by requirements, (2) prefer `always_on` machines, (3) tiebreak by preferring non-current machine for load balance. Returns `null` (blocks assignment) if no cluster machine matches requirements. Offline but matching machines are still selected — the slot is assigned but start is blocked until the machine comes online, with an "offline" badge on the dashboard.
+- **Machine selection** (`selectMachineForSlot` in `src/cluster.ts`): Tasks with `requirements` frontmatter (optional `os`, `gpu` fields) are matched against cluster machine capabilities. Project-level `requirements` are also matched. Selection priority: (1) filter by requirements, (2) prefer online (fresh-heartbeat) machines, (3) prefer `always_on` machines, (4) tiebreak by preferring non-current machine for load balance. Returns `null` (blocks assignment) if no cluster machine matches requirements. **Worker-online gating**: for a task that carries explicit `requirements`, if no eligible machine currently has a fresh heartbeat, selection returns `null` so the task is *not* stamped onto a slot that would idle waiting for an offline worker to wake — the auto-start path treats this as "no machine available right now" and retries later. Standalone (`!clusterEnabled()`) and same-machine (no `requirements`) dispatch is unchanged.
+- **Worker trigger gating** (`triggerAllowedForRole` in `src/triggers.ts`): on a node whose `clusterRole()` is `worker`, `ludics init` installs only worker-relevant units (mag keepalive, cluster heartbeat, startup, session adoption/sweeper, t3code-cleanup) and skips controller-only ones (dashboard server, morning briefing, health check, ntfy-subscribe, sync, watch) — so a worker never schedules leader duties.
+- **Onboarding doctor** (`clusterDoctor` / `wslPersistenceStatus` in `src/cluster.ts`, surfaced by `ludics cluster doctor` and `ludics doctor`): on a node that resolves to a cluster machine, reports self-identification, resolved role, controller HTTP reachability (worker), keepalive-timer state (worker, Linux), and on WSL2 the systemd-PID-1 / user-linger preconditions. `ludics cluster doctor` exits non-zero on any failure so onboarding (`setup.sh`) can gate completion on a green result.
 
 ### Triggers
 
@@ -1187,6 +1189,8 @@ ludics journal list [days]     # List journal files from last n days
 ludics cluster status          # Show cluster status
 ludics cluster tick            # Publish heartbeat
 ludics cluster heartbeat       # Publish heartbeat only
+ludics cluster ping <machine>  # Ping another cluster machine
+ludics cluster doctor          # Check worker onboarding state (exit 1 on failure)
 
 # Health monitoring
 ludics health run-tests [--project=NAME] [--force]  # Run project test suites

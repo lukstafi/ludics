@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { loadConfigSync, stateRepoDir } from "./config.ts";
+import { clusterSecret } from "./cluster-http.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { hostnameTailscale } from "./network.ts";
 import { emitEvent } from "./events.ts";
@@ -78,6 +79,11 @@ export function clusterCurrentMachine(): ClusterMachine | undefined {
   if (!clusterEnabled()) return undefined;
 
   const machines = clusterMachines();
+
+  // Explicit override (used by tests and any deployment where hostname matching is
+  // unreliable): resolve the current machine directly by name.
+  const override = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+  if (override) return machines.find((m) => m.name === override);
 
   // Collect candidate hostnames: Tailscale DNS, system hostname, OS hostname
   const candidates: string[] = [];
@@ -367,6 +373,16 @@ export function selectMachineForSlot(
   // Among eligible, prefer online machines
   const online = eligible.filter((m) => heartbeatIsFresh(m.name));
 
+  // AC10: for tasks with explicit requirements (cross-machine routing), require a
+  // fresh-heartbeat (online) eligible machine. If none is online, block assignment
+  // (return null) rather than stamping a slot that idles waiting for an offline
+  // worker to wake. Tasks without requirements keep the prior fallback below.
+  const hasReqs = !!(reqs && (reqs.os || reqs.gpu));
+  if (hasReqs && online.length === 0) {
+    console.error(`ludics: no ONLINE cluster machine meets requirements (os=${reqs!.os ?? "any"}, gpu=${reqs!.gpu ?? "any"}) — blocking assignment, will retry`);
+    return null;
+  }
+
   // Pick from online if available, otherwise from all eligible (task will wait for machine to come online)
   const pool = online.length > 0 ? online : eligible;
 
@@ -382,6 +398,175 @@ export function selectMachineForSlot(
   if (other.length > 0) return other[0]!.name;
 
   return pool[0]?.name ?? current;
+}
+
+// --- WSL2 / systemd-user persistence (AC 8) ---
+
+/**
+ * Detect a WSL2 environment. `osrelease`/`distroEnv` overrides are for tests.
+ */
+export function isWsl(opts?: { osrelease?: string; distroEnv?: string }): boolean {
+  const distroEnv = opts?.distroEnv ?? process.env.WSL_DISTRO_NAME ?? process.env.WSL_INTEROP ?? "";
+  if (distroEnv) return true;
+  let osrelease = opts?.osrelease;
+  if (osrelease === undefined) {
+    try { osrelease = readFileSync("/proc/sys/kernel/osrelease", "utf-8"); }
+    catch { osrelease = ""; }
+  }
+  return /microsoft|wsl/i.test(osrelease);
+}
+
+/**
+ * WSL2 persistence preconditions for the systemd-user keepalive timer to fire
+ * (AC 8): systemd must be PID 1 (`/etc/wsl.conf` `[boot] systemd=true`) and the
+ * user session must linger so `systemctl --user` timers survive logout. Probes are
+ * injectable for tests; `lingerEnabled` returns null when `loginctl` is unavailable.
+ */
+export function wslPersistenceStatus(opts?: {
+  isWslOverride?: boolean;
+  systemdIsPid1?: () => boolean;
+  lingerEnabled?: () => boolean | null;
+}): { applicable: boolean; ok: boolean; lines: string[] } {
+  const applicable = opts?.isWslOverride ?? isWsl();
+  if (!applicable) return { applicable: false, ok: true, lines: [] };
+
+  const lines: string[] = [];
+  let ok = true;
+
+  const systemdPid1 = opts?.systemdIsPid1
+    ? opts.systemdIsPid1()
+    : safeSyncOutput(["ps", "-p", "1", "-o", "comm="]).stdout.trim() === "systemd";
+  if (systemdPid1) {
+    lines.push("WSL2 systemd: PID 1 ✓");
+  } else {
+    ok = false;
+    lines.push("WSL2 systemd: NOT PID 1 — set /etc/wsl.conf [boot] systemd=true, then `wsl --shutdown` from Windows and reopen");
+  }
+
+  const linger = opts?.lingerEnabled
+    ? opts.lingerEnabled()
+    : defaultLingerEnabled();
+  if (linger === true) {
+    lines.push("WSL2 user linger: enabled ✓");
+  } else if (linger === null) {
+    // AC 8 is "detect or fail loud": an *undetermined* linger precondition must
+    // not silently pass — a keepalive timer that may never survive logout leaves
+    // the node "declared but dead". Treat undeterminable as a failure with
+    // remediation rather than a soft warning.
+    ok = false;
+    lines.push("WSL2 user linger: cannot determine (loginctl unavailable) — install systemd/loginctl, then run `loginctl enable-linger \"$USER\"` to persist the keepalive timer");
+  } else {
+    ok = false;
+    lines.push("WSL2 user linger: disabled — run `loginctl enable-linger \"$USER\"` so the keepalive timer survives logout");
+  }
+
+  return { applicable, ok, lines };
+}
+
+function defaultLingerEnabled(): boolean | null {
+  if (!safeSyncOutput(["which", "loginctl"]).ok) return null;
+  const user = process.env.USER ?? "";
+  const res = safeSyncOutput(["loginctl", "show-user", user, "--property=Linger"]);
+  if (!res.ok) return null;
+  return res.stdout.trim() === "Linger=yes";
+}
+
+// --- Cluster / worker onboarding doctor checks (AC 9) ---
+
+export interface ClusterDoctorResult { ok: boolean; lines: string[]; }
+
+/**
+ * Onboarding-legibility checks for a node that resolves to a cluster machine
+ * (AC 9): self-identification, resolved role, controller HTTP reachability (worker),
+ * and keepalive-timer installed/active (worker, Linux). Active probes
+ * (`probeController`, `timerActive`, `timerEnabled`) are injectable for tests.
+ */
+export function clusterDoctor(opts?: {
+  probeController?: (m: ClusterMachine) => boolean;
+  timerActive?: () => boolean;
+  timerEnabled?: () => boolean;
+}): ClusterDoctorResult {
+  const lines: string[] = [];
+  let ok = true;
+
+  if (!clusterEnabled()) {
+    return { ok: true, lines: ["Cluster: not configured (standalone)"] };
+  }
+
+  // (a) self-identify
+  const current = clusterCurrentMachineName();
+  if (!current) {
+    ok = false;
+    lines.push("Self-identify: FAILED — this host is not in cluster.machines (check hostnameTailscale() / add the machine entry)");
+    // Without identity the remaining role/worker checks are meaningless.
+    return { ok, lines };
+  }
+  lines.push(`Self-identify: ${current} ✓`);
+
+  // (b) role
+  const role = clusterRole();
+  lines.push(`Role: ${role}`);
+
+  if (role === "worker") {
+    // (c) controller reachability
+    const controller = resolveController();
+    if (!controller) {
+      ok = false;
+      lines.push("Controller: none resolved — no machine with role 'leader' in cluster.machines");
+    } else {
+      const probe = opts?.probeController ?? defaultProbeController;
+      const reachable = probe(controller);
+      const port = controller.dashboard_port ?? (loadConfigSync().dashboard?.port ?? 7678);
+      if (reachable) {
+        lines.push(`Controller reachable: ${controller.host}:${port} ✓`);
+      } else {
+        ok = false;
+        lines.push(`Controller unreachable: ${controller.host}:${port} — is 'ludics dashboard serve' up on the controller and Tailscale connected?`);
+      }
+    }
+
+    // (d) keepalive timer (Linux only — launchd handles this on macOS)
+    if (process.platform === "linux") {
+      const enabled = opts?.timerEnabled ? opts.timerEnabled() : defaultTimerEnabled();
+      const active = opts?.timerActive ? opts.timerActive() : defaultTimerActive();
+      if (enabled && active) {
+        lines.push("Keepalive timer: enabled + active ✓");
+      } else {
+        ok = false;
+        lines.push(`Keepalive timer: ${enabled ? "enabled" : "NOT enabled"}, ${active ? "active" : "NOT active"} — run 'ludics triggers install'; on WSL2 see the systemd persistence check`);
+      }
+    }
+  }
+
+  return { ok, lines };
+}
+
+/**
+ * curl args for the controller reachability probe. When a `cluster.secret` is
+ * configured the controller enforces Bearer auth (`handleClusterRequest`), so the
+ * probe MUST send the header too — otherwise a correctly-configured worker gets
+ * 401 and falsely reports "Controller unreachable". Mirrors the authenticated
+ * client path in cluster-http.ts (`if (secret) headers.Authorization = …`).
+ */
+export function controllerProbeCurlArgs(host: string, port: number, secret: string): string[] {
+  const args = ["curl", "-fsS", "-m", "3", "-o", "/dev/null"];
+  if (secret) args.push("-H", `Authorization: Bearer ${secret}`);
+  args.push(`http://${host}:${port}/api/cluster/slots`);
+  return args;
+}
+
+function defaultProbeController(controller: ClusterMachine): boolean {
+  if (!safeSyncOutput(["which", "curl"]).ok) return false;
+  const port = controller.dashboard_port ?? (loadConfigSync().dashboard?.port ?? 7678);
+  return safeSyncOutput(controllerProbeCurlArgs(controller.host, port, clusterSecret())).ok;
+}
+
+function defaultTimerActive(): boolean {
+  return safeSyncOutput(["systemctl", "--user", "is-active", "ludics-mag.timer"]).stdout.trim() === "active";
+}
+
+function defaultTimerEnabled(): boolean {
+  return safeSyncOutput(["systemctl", "--user", "is-enabled", "ludics-mag.timer"]).stdout.trim() === "enabled";
 }
 
 export async function runCluster(args: string[]): Promise<void> {
@@ -408,7 +593,20 @@ export async function runCluster(args: string[]): Promise<void> {
       console.log(`${target}: ${result.ok ? "reachable" : "unreachable"}`);
       break;
     }
+    case "doctor": {
+      // Onboarding-legibility checks (AC 9) plus WSL2 persistence preconditions
+      // (AC 8). Exits non-zero when any check fails so onboarding flows
+      // (setup.sh) can gate "onboarding complete" on a green result — i.e. detect
+      // or fail loud, never declare a worker ready while its keepalive can't run.
+      const cd = clusterDoctor();
+      for (const line of cd.lines) console.log(line);
+      const wsl = wslPersistenceStatus();
+      if (wsl.applicable) for (const line of wsl.lines) console.log(line);
+      const allOk = cd.ok && (!wsl.applicable || wsl.ok);
+      if (!allOk) process.exitCode = 1;
+      break;
+    }
     default:
-      throw new Error(`unknown cluster command: ${sub} (use: status, tick, heartbeat, ping)`);
+      throw new Error(`unknown cluster command: ${sub} (use: status, tick, heartbeat, ping, doctor)`);
   }
 }

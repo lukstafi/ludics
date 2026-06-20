@@ -322,7 +322,9 @@ triggers:
 cluster:
   transport: local            # local (single machine) | tailscale | ssh
   domain: ""                  # Tailscale MagicDNS domain (e.g. your-tailnet.ts.net)
-  secret: ""                  # Shared secret for HTTP cluster endpoints (required for HTTP transport)
+  secret: ""                  # Shared Bearer secret for HTTP cluster endpoints. Empty = unauthenticated over
+                              # the Tailscale tailnet (the tailnet is the trust boundary). Set a value to
+                              # require Bearer auth on every /cluster/* request.
   machines: []
     # - name: desktop
     #   host: desktop.your-tailnet.ts.net
