@@ -1189,6 +1189,8 @@ ludics journal list [days]     # List journal files from last n days
 ludics cluster status          # Show cluster status
 ludics cluster tick            # Publish heartbeat
 ludics cluster heartbeat       # Publish heartbeat only
+ludics cluster ping <machine>  # Ping another cluster machine
+ludics cluster doctor          # Check worker onboarding state (exit 1 on failure)
 
 # Health monitoring
 ludics health run-tests [--project=NAME] [--force]  # Run project test suites

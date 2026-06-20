@@ -274,3 +274,16 @@ candidate spin-off.
 **Dependencies**: relates to task-02a97261 and task-6abfb6a9; task-6abfb6a9 (CUDA
 pool-allocator fix) is the concrete validation target for §B and already carries
 `requirements: { gpu: nvidia }`.
+
+### Scope split (accepted in pair-work review)
+
+The §C **framework changes** (ACs 7–10) are delivered and test-backed under
+task-ce21c233. The §A **operational onboarding** (ACs 1–5) and the **live arm of
+§B** (AC 6 validation in the real federation) are live-node checks that can only
+be run on `minipc-wsl` / from `mac-studio` over Tailscale — outside any coding
+worktree's git+test context (see the *Verification reachability note* above).
+With reviewer agreement, those operational ACs are carved into the linked
+follow-up **task-7eab5162** (`status: needs-confirmation`,
+`relates_to: [task-ce21c233]`), to be completed against the binary built from the
+framework changes. This PR's acceptance is therefore scoped to §C; the unit-level
+routing invariant behind AC 6 is verified here (`src/cluster.test.ts`).
