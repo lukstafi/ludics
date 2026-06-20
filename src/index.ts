@@ -253,6 +253,7 @@ Commands:
   cluster tick                Publish heartbeat
   cluster heartbeat           Publish heartbeat only
   cluster ping <machine>      Ping another cluster machine
+  cluster doctor              Check worker onboarding state (exit 1 on failure)
 
   queue hold                   Suppress automatic slot assignments
   queue resume                 Re-enable automatic slot assignments

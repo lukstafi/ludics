@@ -129,6 +129,42 @@ export PATH="$HOME/.local/bin:$PATH"
 bin/ludics init --no-triggers --no-dashboard
 info "ludics init complete"
 
+# ── Step 2b: WSL2 worker persistence preflight (AC 8) ─────────────────────────
+# On WSL2 the systemd-user keepalive timer only fires if systemd is PID 1 and the
+# user session lingers. Onboarding must configure these or fail loud — never leave
+# the node "declared but dead" with a timer that never runs. Detection mirrors
+# isWsl() in src/cluster.ts (WSL_DISTRO_NAME env or microsoft/wsl in osrelease).
+is_wsl() {
+  [[ -n "${WSL_DISTRO_NAME:-}" || -n "${WSL_INTEROP:-}" ]] && return 0
+  grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null
+}
+
+if is_linux && is_wsl; then
+  step "Configuring WSL2 worker persistence"
+
+  # systemd must be PID 1 — cannot be auto-fixed (requires /etc/wsl.conf + a
+  # Windows-side `wsl --shutdown`); fail loud with remediation.
+  if [[ "$(ps -p 1 -o comm= 2>/dev/null | tr -d ' ')" != "systemd" ]]; then
+    fail "WSL2 systemd is not PID 1 — add '[boot]\nsystemd=true' to /etc/wsl.conf, run 'wsl --shutdown' from Windows, reopen, and re-run setup.sh"
+  fi
+  info "WSL2 systemd: PID 1"
+
+  # Configure linger so --user timers survive logout.
+  if command -v loginctl &>/dev/null; then
+    loginctl enable-linger "$USER" || fail "could not enable linger — run 'sudo loginctl enable-linger \"$USER\"' and re-run setup.sh"
+    info "WSL2 user linger: enabled"
+  else
+    fail "loginctl not available — install systemd, then run 'loginctl enable-linger \"$USER\"' so the keepalive timer persists"
+  fi
+
+  # Install the worker triggers (role-gated: only worker-relevant units, AC 7),
+  # then verify the onboarding state. setup.sh's default init runs --no-triggers
+  # for safe re-runs, so the keepalive timer is installed explicitly here.
+  bin/ludics triggers install
+  bin/ludics cluster doctor || fail "worker onboarding incomplete — see 'ludics cluster doctor' output above for the failing precondition"
+  info "WSL2 worker persistence configured — keepalive timer active"
+fi
+
 # ── Step 3: Clone t3code-ludics ──────────────────────────────────────────────
 
 step "Checking t3code-ludics"

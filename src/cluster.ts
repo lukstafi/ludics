@@ -448,7 +448,12 @@ export function wslPersistenceStatus(opts?: {
   if (linger === true) {
     lines.push("WSL2 user linger: enabled ✓");
   } else if (linger === null) {
-    lines.push("WSL2 user linger: cannot determine (loginctl unavailable) — run `loginctl enable-linger \"$USER\"` to persist the keepalive timer");
+    // AC 8 is "detect or fail loud": an *undetermined* linger precondition must
+    // not silently pass — a keepalive timer that may never survive logout leaves
+    // the node "declared but dead". Treat undeterminable as a failure with
+    // remediation rather than a soft warning.
+    ok = false;
+    lines.push("WSL2 user linger: cannot determine (loginctl unavailable) — install systemd/loginctl, then run `loginctl enable-linger \"$USER\"` to persist the keepalive timer");
   } else {
     ok = false;
     lines.push("WSL2 user linger: disabled — run `loginctl enable-linger \"$USER\"` so the keepalive timer survives logout");
@@ -574,7 +579,20 @@ export async function runCluster(args: string[]): Promise<void> {
       console.log(`${target}: ${result.ok ? "reachable" : "unreachable"}`);
       break;
     }
+    case "doctor": {
+      // Onboarding-legibility checks (AC 9) plus WSL2 persistence preconditions
+      // (AC 8). Exits non-zero when any check fails so onboarding flows
+      // (setup.sh) can gate "onboarding complete" on a green result — i.e. detect
+      // or fail loud, never declare a worker ready while its keepalive can't run.
+      const cd = clusterDoctor();
+      for (const line of cd.lines) console.log(line);
+      const wsl = wslPersistenceStatus();
+      if (wsl.applicable) for (const line of wsl.lines) console.log(line);
+      const allOk = cd.ok && (!wsl.applicable || wsl.ok);
+      if (!allOk) process.exitCode = 1;
+      break;
+    }
     default:
-      throw new Error(`unknown cluster command: ${sub} (use: status, tick, heartbeat, ping)`);
+      throw new Error(`unknown cluster command: ${sub} (use: status, tick, heartbeat, ping, doctor)`);
   }
 }

@@ -6,6 +6,7 @@
 // LUDICS_CONFIG with cluster.machines + LUDICS_CLUSTER_MACHINE_NAME.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { spawnSync } from "child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -127,15 +128,61 @@ describe("wslPersistenceStatus / isWsl (AC 8)", () => {
     expect(res.lines.join("\n")).toContain("systemd=true");
   });
 
-  test("WSL + linger undeterminable (loginctl absent) → warning, not a false fail", () => {
+  test("WSL + linger undeterminable (loginctl absent) → fail loud, not a silent pass (AC 8)", () => {
+    // AC 8 requires "detect or fail loud". An undetermined linger precondition
+    // must NOT pass: a timer that may not survive logout leaves the node declared
+    // but dead. Mutation: flipping the null branch back to ok:true fails here.
     const res = wslPersistenceStatus({ isWslOverride: true, systemdIsPid1: () => true, lingerEnabled: () => null });
-    expect(res.ok).toBe(true); // warning, does not fail the check
+    expect(res.ok).toBe(false);
     expect(res.lines.join("\n")).toContain("cannot determine");
+    expect(res.lines.join("\n")).toContain("enable-linger");
   });
 
   test("isWsl detects a microsoft osrelease and rejects a vanilla one", () => {
     expect(isWsl({ osrelease: "5.15.90.1-microsoft-standard-WSL2", distroEnv: "" })).toBe(true);
     expect(isWsl({ osrelease: "6.8.0-generic", distroEnv: "" })).toBe(false);
     expect(isWsl({ osrelease: "6.8.0-generic", distroEnv: "Ubuntu" })).toBe(true);
+  });
+});
+
+// `ludics cluster doctor` must exit non-zero on a failed check so onboarding
+// flows (setup.sh) can gate "complete" on a green result. In-process unit tests
+// cover the line content; this spawns the real CLI to pin the exit code, which a
+// `process.exitCode = 1` regression (or a `break` that swallows it) would flip.
+describe("ludics cluster doctor exit code (AC 8/9 onboarding gate)", () => {
+  const ENTRY = join(import.meta.dir, "index.ts");
+
+  function runDoctor(env: Record<string, string>): { code: number; out: string } {
+    const TMP = mkdtempSync(join(tmpdir(), "ludics-doctor-cli-"));
+    try {
+      const cfgPath = join(TMP, "config.yaml");
+      writeFileSync(cfgPath, env.__CONFIG__ ?? CONFIG);
+      const { __CONFIG__, ...rest } = env;
+      const proc = spawnSync("bun", [ENTRY, "cluster", "doctor"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: TMP,
+          LUDICS_HARNESS_DIR: join(TMP, "harness"),
+          LUDICS_CONFIG: cfgPath,
+          ...rest,
+        },
+      });
+      return { code: proc.status ?? -1, out: (proc.stdout ?? "") + (proc.stderr ?? "") };
+    } finally {
+      rmSync(TMP, { recursive: true, force: true });
+    }
+  }
+
+  test("self-identify failure (host not in cluster.machines) exits non-zero", () => {
+    const { code, out } = runDoctor({ LUDICS_CLUSTER_MACHINE_NAME: "ghost-host" });
+    expect(code).toBe(1);
+    expect(out).toContain("Self-identify: FAILED");
+  });
+
+  test("standalone (no cluster) exits zero", () => {
+    const { code, out } = runDoctor({ __CONFIG__: "state_repo: test/state\nstate_path: harness\n" });
+    expect(code).toBe(0);
+    expect(out).toContain("not configured");
   });
 });

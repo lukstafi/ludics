@@ -451,6 +451,7 @@ ludics cluster status         # Show cluster status (multi-machine)
 ludics cluster tick           # Publish heartbeat + run election
 ludics cluster heartbeat      # Publish heartbeat only
 ludics cluster ping <machine> # Ping another cluster machine
+ludics cluster doctor         # Check worker onboarding state (exit 1 on failure)
 ```
 
 ### Queue control
