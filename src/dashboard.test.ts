@@ -602,7 +602,7 @@ describe("tasks-tree link renders task.html", () => {
 });
 
 describe("tasks-tree milestone gating", () => {
-  function writeConfigWithMilestones(homeDir: string): void {
+  function writeConfigWithMilestones(_homeDir: string): void {
     const configPath = process.env.LUDICS_CONFIG!;
     writeFileSync(configPath, `state_repo: owner/ludics-state
 state_path: harness

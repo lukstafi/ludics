@@ -909,11 +909,12 @@ describe("integration", () => {
     // a pure-unit AC9 test (spies readServerRecord + the t3code client prototype)
     // that transitively imports src/events.ts via transport-t3code.ts, so it
     // trips rule-3 despite needing no real harness.
-    // 21 after task-ce21c233 added src/triggers.test.ts — a pure-unit AC7 test
-    // (exercises the pure triggerAllowedForRole predicate only) that transitively
-    // imports src/config.ts via triggers.ts, so it trips rule-3 with no real
-    // harness needs.
-    const expectedWarningCount = 21;
+    // Still 20 after task-ce21c233: net zero. src/triggers.test.ts (pure-unit AC7,
+    // transitively imports src/config.ts via triggers.ts) ADDS a rule-3 warning,
+    // but src/cluster.test.ts gained real harness isolation (scratch
+    // LUDICS_HARNESS_DIR / LUDICS_CLUSTER_MACHINE_NAME setup) and no longer trips,
+    // REMOVING one — so the count is unchanged.
+    const expectedWarningCount = 20;
     if (result.warningCount !== expectedWarningCount) {
       throw new Error(
         formatPinMismatch(
