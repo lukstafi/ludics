@@ -171,7 +171,7 @@ When a proposal is ready, ludics evaluates whether to automatically launch a cod
 4. If no slot available → defer
 5. Otherwise → auto-start
 
-Exposed via `ludics auto-start-evaluate <taskId> [high|low] [rationale...]`.
+Exposed via `ludics mag auto-start-evaluate <id> <high|low> [rationale]`.
 
 **Deferred launch** (task `status: deferred`):
 
@@ -179,7 +179,7 @@ When auto-start defers to the user, the task gets `status: deferred`. The dashbo
 
 **Project health test monitoring** (`src/health.ts`, ~166 lines):
 
-Projects can have an optional `test_command` (auto-detected from build system files). Tests run during night window `[0, 6)` or every 24h. Results stored in `mag/test-health.json`. On test failure, a priority-A fix task is auto-filed with content-fingerprint dedup. CLI: `ludics health run-tests [--project=NAME] [--force]`.
+Projects can have an optional `test_command` (auto-detected from build system files). Tests run during night window `[0, 6)` or every 24h. Results stored in `mag/test-health.json`. On test failure, a priority-A fix task is auto-filed with content-fingerprint dedup. (No user-facing CLI entry point; invoked internally by the night-window scheduler.)
 
 **How automation invokes Mag:**
 
