@@ -4,6 +4,7 @@ import { existsSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from "f
 import { join } from "path";
 import { loadConfigSync, ludicsRoot } from "./config.ts";
 import { safeSyncOutput } from "./spawn.ts";
+import { clusterRole } from "./cluster.ts";
 
 const KNOWN_LUDICS_TRIGGER_NAMES = [
   "startup",
@@ -18,6 +19,36 @@ const KNOWN_LUDICS_TRIGGER_NAMES = [
   "ntfy-subscribe",
   "t3code-cleanup",
 ];
+
+/**
+ * Triggers that are leader/controller duties — never installed on a worker node
+ * (AC 7). Installing these on a worker would be split-brain pollution (a second
+ * dashboard server, duplicate morning briefings / health checks, a duplicate ntfy
+ * subscriber, and repo/staging sync + watch automation that belong to the leader).
+ */
+export const CONTROLLER_ONLY_TRIGGER_NAMES: ReadonlySet<string> = new Set([
+  "dashboard",
+  "ntfy-subscribe",
+  "morning",
+  "health",
+  "sync",
+  "watch",
+]);
+
+/**
+ * Whether a trigger named `name` should be installed for the given cluster role.
+ * Workers install only worker-relevant units (startup, mag keepalive, cluster
+ * heartbeat, sessions adoption/sweeper, t3code-cleanup); controllers and
+ * standalone nodes install everything (still subject to per-trigger enabled
+ * checks at each call site).
+ */
+export function triggerAllowedForRole(
+  name: string,
+  role: "controller" | "worker" | "standalone",
+): boolean {
+  if (role === "worker") return !CONTROLLER_ONLY_TRIGGER_NAMES.has(name);
+  return true;
+}
 
 function binPath(): string {
   // The binary is the compiled entry point
@@ -123,12 +154,17 @@ function installPlist(label: string, content: string): void {
 
 function triggersInstallMacos(): void {
   const bin = binPath();
+  const role = clusterRole();
 
-  // Interval-based triggers
-  installIntervalTrigger("sync", "sync trigger", 3600);
+  // Interval-based triggers (sync is controller-only — AC 7)
+  if (triggerAllowedForRole("sync", role)) {
+    installIntervalTrigger("sync", "sync trigger", 3600);
+  } else {
+    console.log("Skipping controller trigger on worker: sync");
+  }
 
-  // Morning briefing trigger
-  if (triggerGet("morning", "enabled") === "true") {
+  // Morning briefing trigger (controller-only — AC 7)
+  if (triggerAllowedForRole("morning", role) && triggerGet("morning", "enabled") === "true") {
     const action = commandFromAction(triggerGet("morning", "action"));
     const hour = triggerGet("morning", "hour") || "8";
     const minute = triggerGet("morning", "minute") || "0";
@@ -146,8 +182,8 @@ function triggersInstallMacos(): void {
     console.log(`Installed launchd trigger: morning (daily at ${hour}:${minute.padStart(2, "0")})`);
   }
 
-  // Health check trigger
-  if (triggerGet("health", "enabled") === "true") {
+  // Health check trigger (controller-only — AC 7)
+  if (triggerAllowedForRole("health", role) && triggerGet("health", "enabled") === "true") {
     const action = commandFromAction(triggerGet("health", "action"));
     const label = "com.ludics.health";
     const schedule = triggerGetSchedule("health");
@@ -186,8 +222,8 @@ function triggersInstallMacos(): void {
   installIntervalTrigger("sessions-sweep", "detached session sweeper", 86400);
   installIntervalTrigger("t3code-cleanup", "t3code stale thread cleanup", 86400);
 
-  // Watch triggers
-  for (const rule of triggerGetWatchRules()) {
+  // Watch triggers (controller-only — AC 7)
+  for (const rule of triggerAllowedForRole("watch", role) ? triggerGetWatchRules() : []) {
     const sanitized = sanitizeAction(rule.action);
     const label = `com.ludics.watch-${sanitized}`;
     const actionCmd = commandFromAction(rule.action);
@@ -316,6 +352,7 @@ function installIntervalTrigger(name: string, description: string, defaultInterv
 
 function installSimpleTriggers(): void {
   const bin = binPath();
+  const role = clusterRole();
 
   // Startup
   const startupAction = commandFromAction(triggerGet("startup", "action"));
@@ -346,38 +383,51 @@ function installSimpleTriggers(): void {
     },
     `mag (keepalive every ${intervalLabel})`);
 
-  // Dashboard
-  let dashPort = triggerGet("dashboard", "port");
-  if (!dashPort) dashPort = String(config.dashboard?.port ?? 7678);
-  installSimpleTrigger("dashboard", "dashboard server",
-    ["dashboard", "serve", dashPort],
-    triggerGet("dashboard", "enabled") === "true",
-    {
-      plistScheduling: `  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>`,
-      systemdServiceBody: `[Service]\nType=simple\nExecStart=${bin} dashboard serve ${dashPort}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n`,
-    },
-    `dashboard (port ${dashPort}, KeepAlive)`);
+  // Dashboard (controller-only — skipped on workers, AC 7)
+  if (triggerAllowedForRole("dashboard", role)) {
+    let dashPort = triggerGet("dashboard", "port");
+    if (!dashPort) dashPort = String(config.dashboard?.port ?? 7678);
+    installSimpleTrigger("dashboard", "dashboard server",
+      ["dashboard", "serve", dashPort],
+      triggerGet("dashboard", "enabled") === "true",
+      {
+        plistScheduling: `  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>`,
+        systemdServiceBody: `[Service]\nType=simple\nExecStart=${bin} dashboard serve ${dashPort}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n`,
+      },
+      `dashboard (port ${dashPort}, KeepAlive)`);
+  } else {
+    console.log("Skipping controller trigger on worker: dashboard");
+  }
 
-  // ntfy-subscribe (incoming messages)
-  const incomingTopic = config.notifications?.topics?.incoming;
-  installSimpleTrigger("ntfy-subscribe", "ntfy incoming message subscriber",
-    ["notify", "subscribe"],
-    !!incomingTopic,
-    {
-      plistScheduling: `  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>`,
-      systemdServiceBody: `[Service]\nType=simple\nExecStart=${bin} notify subscribe\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n`,
-    },
-    "ntfy-subscribe (KeepAlive)");
+  // ntfy-subscribe (incoming messages) — controller-only (AC 7)
+  if (triggerAllowedForRole("ntfy-subscribe", role)) {
+    const incomingTopic = config.notifications?.topics?.incoming;
+    installSimpleTrigger("ntfy-subscribe", "ntfy incoming message subscriber",
+      ["notify", "subscribe"],
+      !!incomingTopic,
+      {
+        plistScheduling: `  <key>KeepAlive</key>\n  <true/>\n  <key>RunAtLoad</key>\n  <true/>`,
+        systemdServiceBody: `[Service]\nType=simple\nExecStart=${bin} notify subscribe\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n`,
+      },
+      "ntfy-subscribe (KeepAlive)");
+  } else {
+    console.log("Skipping controller trigger on worker: ntfy-subscribe");
+  }
 }
 
 function triggersInstallLinux(): void {
   const bin = binPath();
+  const role = clusterRole();
 
-  // Interval-based triggers
-  installIntervalTrigger("sync", "sync trigger", 3600);
+  // Interval-based triggers (sync is controller-only — AC 7)
+  if (triggerAllowedForRole("sync", role)) {
+    installIntervalTrigger("sync", "sync trigger", 3600);
+  } else {
+    console.log("Skipping controller trigger on worker: sync");
+  }
 
-  // Morning
-  if (triggerGet("morning", "enabled") === "true") {
+  // Morning (controller-only — AC 7)
+  if (triggerAllowedForRole("morning", role) && triggerGet("morning", "enabled") === "true") {
     const action = commandFromAction(triggerGet("morning", "action"));
     const hour = triggerGet("morning", "hour") || "8";
     const minute = (triggerGet("morning", "minute") || "0").padStart(2, "0");
@@ -387,8 +437,8 @@ function triggersInstallLinux(): void {
     console.log(`Installed systemd trigger: morning (daily at ${hour}:${minute})`);
   }
 
-  // Health
-  if (triggerGet("health", "enabled") === "true") {
+  // Health (controller-only — AC 7)
+  if (triggerAllowedForRole("health", role) && triggerGet("health", "enabled") === "true") {
     const action = commandFromAction(triggerGet("health", "action"));
     const schedule = triggerGetSchedule("health");
     writeSystemdUnit("ludics-health.service", `[Unit]\nDescription=ludics health check\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
@@ -417,8 +467,8 @@ function triggersInstallLinux(): void {
   installIntervalTrigger("sessions-sweep", "detached session sweeper", 86400);
   installIntervalTrigger("t3code-cleanup", "t3code stale thread cleanup", 86400);
 
-  // Watch
-  for (const rule of triggerGetWatchRules()) {
+  // Watch (controller-only — AC 7)
+  for (const rule of triggerAllowedForRole("watch", role) ? triggerGetWatchRules() : []) {
     const sanitized = sanitizeAction(rule.action);
     const unitName = `ludics-watch-${sanitized}`;
     const actionCmd = commandFromAction(rule.action);
