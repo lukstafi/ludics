@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { loadConfigSync, stateRepoDir } from "./config.ts";
+import { clusterSecret } from "./cluster-http.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { hostnameTailscale } from "./network.ts";
 import { emitEvent } from "./events.ts";
@@ -540,11 +541,24 @@ export function clusterDoctor(opts?: {
   return { ok, lines };
 }
 
+/**
+ * curl args for the controller reachability probe. When a `cluster.secret` is
+ * configured the controller enforces Bearer auth (`handleClusterRequest`), so the
+ * probe MUST send the header too — otherwise a correctly-configured worker gets
+ * 401 and falsely reports "Controller unreachable". Mirrors the authenticated
+ * client path in cluster-http.ts (`if (secret) headers.Authorization = …`).
+ */
+export function controllerProbeCurlArgs(host: string, port: number, secret: string): string[] {
+  const args = ["curl", "-fsS", "-m", "3", "-o", "/dev/null"];
+  if (secret) args.push("-H", `Authorization: Bearer ${secret}`);
+  args.push(`http://${host}:${port}/api/cluster/slots`);
+  return args;
+}
+
 function defaultProbeController(controller: ClusterMachine): boolean {
   if (!safeSyncOutput(["which", "curl"]).ok) return false;
   const port = controller.dashboard_port ?? (loadConfigSync().dashboard?.port ?? 7678);
-  const url = `http://${controller.host}:${port}/api/cluster/slots`;
-  return safeSyncOutput(["curl", "-fsS", "-m", "3", "-o", "/dev/null", url]).ok;
+  return safeSyncOutput(controllerProbeCurlArgs(controller.host, port, clusterSecret())).ok;
 }
 
 function defaultTimerActive(): boolean {

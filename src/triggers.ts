@@ -50,6 +50,57 @@ export function triggerAllowedForRole(
   return true;
 }
 
+/**
+ * Disable + delete any installed unit(s) for trigger `name`. Used on a worker to
+ * actively remove controller-only units left over from a prior standalone /
+ * controller install (AC 7): skip-only logging in the install paths does not stop
+ * an already-running `ludics-dashboard` (etc.) unit, so re-running `triggers
+ * install` after a role change would otherwise leave leader duties running on the
+ * worker. `platform` is injectable for tests; both branches read `HOME`.
+ */
+export function removeControllerTriggerUnits(
+  name: string,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  if (platform === "darwin") {
+    const agentsDir = join(process.env.HOME!, "Library/LaunchAgents");
+    if (!existsSync(agentsDir)) return;
+    const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+    const removeLabel = (label: string): void => {
+      const plist = join(agentsDir, `${label}.plist`);
+      if (!existsSync(plist)) return;
+      safeSyncOutput(["launchctl", "disable", `gui/${uid}/${label}`]);
+      safeSyncOutput(["launchctl", "bootout", `gui/${uid}/${label}`]);
+      unlinkSync(plist);
+      console.log(`Removed stale controller trigger on worker: ${label.replace("com.ludics.", "")}`);
+    };
+    if (name === "watch") {
+      for (const f of readdirSync(agentsDir)) {
+        if (f.startsWith("com.ludics.watch-") && f.endsWith(".plist")) removeLabel(f.replace(".plist", ""));
+      }
+    } else {
+      removeLabel(`com.ludics.${name}`);
+    }
+  } else if (platform === "linux") {
+    const systemdDir = join(process.env.HOME!, ".config/systemd/user");
+    if (!existsSync(systemdDir)) return;
+    const removeUnit = (unit: string): void => {
+      const f = join(systemdDir, unit);
+      if (!existsSync(f)) return;
+      safeSyncOutput(["systemctl", "--user", "disable", "--now", unit]);
+      unlinkSync(f);
+      console.log(`Removed stale controller trigger on worker: ${unit}`);
+    };
+    if (name === "watch") {
+      for (const f of readdirSync(systemdDir)) {
+        if (f.startsWith("ludics-watch-") && (f.endsWith(".service") || f.endsWith(".path"))) removeUnit(f);
+      }
+    } else {
+      for (const ext of ["timer", "service", "path"]) removeUnit(`ludics-${name}.${ext}`);
+    }
+  }
+}
+
 function binPath(): string {
   // The binary is the compiled entry point
   return join(ludicsRoot(), "bin", "ludics");
@@ -824,6 +875,15 @@ function currentPlatform(): string {
 }
 
 export function triggersInstall(): void {
+  // AC 7: on a worker, actively remove any controller-only units left by a prior
+  // standalone/controller install before (re)installing. The install paths below
+  // only *skip* controller units (they don't stop ones already running), so
+  // without this an upgraded worker keeps a stale dashboard/briefing/health/etc.
+  // unit alive — split-brain that the role gate is meant to prevent.
+  if (clusterRole() === "worker") {
+    for (const name of CONTROLLER_ONLY_TRIGGER_NAMES) removeControllerTriggerUnits(name);
+  }
+
   const platform = currentPlatform();
   switch (platform) {
     case "Darwin":

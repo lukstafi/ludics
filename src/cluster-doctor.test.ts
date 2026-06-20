@@ -10,7 +10,7 @@ import { spawnSync } from "child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { clusterDoctor, wslPersistenceStatus, isWsl } from "./cluster.ts";
+import { clusterDoctor, wslPersistenceStatus, isWsl, controllerProbeCurlArgs } from "./cluster.ts";
 
 const CONFIG = `state_repo: test/state
 state_path: harness
@@ -184,5 +184,26 @@ describe("ludics cluster doctor exit code (AC 8/9 onboarding gate)", () => {
     const { code, out } = runDoctor({ __CONFIG__: "state_repo: test/state\nstate_path: harness\n" });
     expect(code).toBe(0);
     expect(out).toContain("not configured");
+  });
+});
+
+// PR #574 review (P2): the controller reachability probe must send the Bearer
+// token when a secret is configured, or a correctly-set-up worker gets 401 and
+// falsely reports "Controller unreachable" (handleClusterRequest enforces auth).
+describe("controllerProbeCurlArgs — sends bearer iff secret configured", () => {
+  test("with a secret, includes the Authorization: Bearer header", () => {
+    const args = controllerProbeCurlArgs("mac-studio.ts.net", 7678, "s3cr3t");
+    // Invariant: the probe authenticates exactly like cluster-http's client.
+    // Mutation: dropping the `if (secret) push(...)` makes this fail.
+    expect(args).toContain("-H");
+    expect(args).toContain("Authorization: Bearer s3cr3t");
+    expect(args[args.length - 1]).toBe("http://mac-studio.ts.net:7678/api/cluster/slots");
+  });
+
+  test("with no secret (empty-secret tailnet mode), sends no Authorization header", () => {
+    const args = controllerProbeCurlArgs("mac-studio.ts.net", 7678, "");
+    expect(args.join(" ")).not.toContain("Authorization");
+    expect(args).not.toContain("-H");
+    expect(args[args.length - 1]).toBe("http://mac-studio.ts.net:7678/api/cluster/slots");
   });
 });
