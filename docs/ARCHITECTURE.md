@@ -1134,6 +1134,12 @@ ludics t3code [status]         # Show t3code server status
 ludics t3code start            # Start t3code server
 ludics t3code stop             # Stop t3code server
 
+# tmux inspection
+ludics tmux status             # Show tmux session state, windows, and ttyd processes
+ludics tmux list-panes         # Show all panes with process state
+ludics tmux attach <slot> [agent]  # Attach to a slot's agent tmux window
+ludics tmux capture <slot> [agent] # Capture pane content for debugging
+
 # Events
 ludics events [--type X] [--task Y] [--scope S] [--source R] [--since T] [--limit N]
 
@@ -1156,7 +1162,7 @@ ludics mag queue pop all       # Atomic dequeue of all requests
 ludics mag queue promote <id>  # Move pending request to head of queue
 ludics mag queue cancel <id>   # Remove pending request (prints the JSON line)
 ludics mag context             # Pre-compute briefing context file
-ludics auto-start-evaluate <id> [confidence] [rationale...]  # Evaluate auto-start decision
+ludics mag auto-start-evaluate <id> <high|low> [rationale]  # Evaluate auto-start decision
 
 # Session discovery
 ludics sessions [--json]       # Discover and classify all agent sessions
@@ -1192,13 +1198,16 @@ ludics cluster heartbeat       # Publish heartbeat only
 ludics cluster ping <machine>  # Ping another cluster machine
 ludics cluster doctor          # Check worker onboarding state (exit 1 on failure)
 
-# Health monitoring
-ludics health run-tests [--project=NAME] [--force]  # Run project test suites
+# Queue control
+ludics queue hold              # Suppress automatic slot assignments
+ludics queue resume            # Re-enable automatic slot assignments
+ludics queue status            # Show whether queue is held or active
 
 # Network
 ludics network status          # Show network configuration
 
 # Setup & diagnostics
+ludics config proposals-path <project>  # Print resolved proposals directory path for a project
 ludics init [--no-hooks] [--no-dashboard] [--no-triggers]
 ludics stop [pause|uninstall]  # Stop scheduled trigger activity
 ludics triggers install        # Install launchd/systemd triggers
@@ -1209,6 +1218,7 @@ ludics doctor                  # Check system health and dependencies
 ludics status                  # Overview of slots + tasks
 ludics briefing                # Morning briefing (invokes Mag)
 ludics quote                   # Print a random quote
+ludics help                    # Show this message
 ```
 
 ## Design Principles
