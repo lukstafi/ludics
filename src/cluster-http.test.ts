@@ -296,6 +296,72 @@ describe("atomic writes for intent/heartbeat/orchestration-state", () => {
 });
 
 // ---------------------------------------------------------------------------
+// checkAuth gating (AC 3) — empty cluster.secret = unauthenticated tailnet HTTP;
+// a configured secret still enforces bearer auth.
+// Reuses the TMP/HOME/config fixture from the handleSignal suite above; each test
+// rewrites the config's secret to instantiate its own case.
+// ---------------------------------------------------------------------------
+
+describe("cluster HTTP auth gating (AC 3)", () => {
+  function setSecret(secret: string): void {
+    // Overwrite the LUDICS_CONFIG file (set in beforeEach) with the given secret.
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+cluster:
+  secret: ${JSON.stringify(secret)}
+slots:
+  count: 4
+`);
+  }
+
+  function getReq(pathname: string, auth?: string): Request {
+    const headers: Record<string, string> = {};
+    if (auth !== undefined) headers["Authorization"] = auth;
+    return new Request(`http://localhost${pathname}`, { method: "GET", headers });
+  }
+
+  test("empty secret allows an unauthenticated GET /api/cluster/slots/json (not 401)", async () => {
+    setSecret("");
+    const resp = await handleClusterRequest(getReq("/api/cluster/slots/json"), "/api/cluster/slots/json");
+    // The invariant: with no secret, the auth gate must NOT short-circuit to 401.
+    // (Mutation: restoring the empty-secret 401 branch flips this to 401.)
+    expect(resp.status).not.toBe(401);
+    expect(resp.status).toBe(200);
+  });
+
+  test("empty secret allows an unauthenticated POST /cluster/heartbeat (not 401)", async () => {
+    setSecret("");
+    const req = new Request("http://localhost/cluster/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ node: "minipc-wsl", epoch: Math.floor(Date.now() / 1000) }),
+    });
+    const resp = await handleClusterRequest(req, "/cluster/heartbeat");
+    expect(resp.status).not.toBe(401);
+    expect(resp.status).toBe(200);
+  });
+
+  test("configured secret rejects a missing bearer with 401", async () => {
+    setSecret(TEST_SECRET);
+    const resp = await handleClusterRequest(getReq("/api/cluster/slots/json"), "/api/cluster/slots/json");
+    expect(resp.status).toBe(401);
+  });
+
+  test("configured secret rejects a wrong bearer with 401", async () => {
+    setSecret(TEST_SECRET);
+    const resp = await handleClusterRequest(getReq("/api/cluster/slots/json", "Bearer wrong-token"), "/api/cluster/slots/json");
+    expect(resp.status).toBe(401);
+  });
+
+  test("configured secret accepts the correct bearer (not 401)", async () => {
+    setSecret(TEST_SECRET);
+    const resp = await handleClusterRequest(getReq("/api/cluster/slots/json", `Bearer ${TEST_SECRET}`), "/api/cluster/slots/json");
+    expect(resp.status).not.toBe(401);
+    expect(resp.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // parsePendingIntent — boundary validator (gh-ludics-411 AC 1)
 // ---------------------------------------------------------------------------
 

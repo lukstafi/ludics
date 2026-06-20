@@ -85,11 +85,11 @@ export async function clusterHttpPost(
 
 function checkAuth(req: Request): Response | null {
   const secret = clusterSecret();
-  if (!secret) {
-    return new Response(JSON.stringify({ error: "cluster secret not configured" }), {
-      status: 401, headers: { "Content-Type": "application/json" },
-    });
-  }
+  // No secret configured → unauthenticated tailnet model (the Tailscale tailnet is
+  // the trust boundary). Allow, mirroring the client which only sends Authorization
+  // when a secret exists (clusterHttpGet/clusterHttpPost). With a secret set, bearer
+  // auth is still enforced below.
+  if (!secret) return null;
   const authHeader = req.headers.get("authorization") ?? "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
   if (token !== secret) {
