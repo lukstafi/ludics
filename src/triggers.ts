@@ -4,7 +4,7 @@ import { existsSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from "f
 import { join } from "path";
 import { loadConfigSync, ludicsRoot } from "./config.ts";
 import { safeSyncOutput } from "./spawn.ts";
-import { clusterRole } from "./cluster.ts";
+import { clusterRole, clusterCurrentMachine, clusterCurrentMachineName, type ClusterMachine } from "./cluster.ts";
 
 const KNOWN_LUDICS_TRIGGER_NAMES = [
   "startup",
@@ -48,6 +48,20 @@ export function triggerAllowedForRole(
 ): boolean {
   if (role === "worker") return !CONTROLLER_ONLY_TRIGGER_NAMES.has(name);
   return true;
+}
+
+/**
+ * Whether `triggersInstall` should actively tear down (disable + bootout + delete)
+ * controller-only units. ONLY true when this node is *confidently* identified as a
+ * non-leader machine. If identity is unknown — `clusterCurrentMachine()` returned
+ * undefined because Tailscale is down AND the system hostname matched no machine —
+ * we must NOT tear down: `clusterRole()` defaults such a host to "worker", and
+ * blindly trusting that default would let a transient identity miss on the *leader*
+ * itself disable its own dashboard/briefing/health units. Leaving controller units
+ * up on a misidentified node is recoverable; destroying the leader's duties is not.
+ */
+export function shouldTeardownControllerUnits(machine: ClusterMachine | undefined): boolean {
+  return machine !== undefined && machine.role !== "leader";
 }
 
 /**
@@ -164,12 +178,29 @@ const PLIST_HEADER = `<?xml version="1.0" encoding="UTF-8"?>
 const PLIST_FOOTER = `</dict>
 </plist>`;
 
-function plistEnv(): string {
+/**
+ * Render the launchd EnvironmentVariables dict. When `machineName` is non-null we
+ * bake it in as `LUDICS_CLUSTER_MACHINE_NAME` so long-running KeepAlive jobs (the
+ * dashboard especially) resolve their cluster identity from a fixed env var rather
+ * than re-running Tailscale/hostname detection on every relaunch — which fails
+ * transiently while Tailscale is reconnecting and would otherwise demote the leader
+ * to "worker" and skip serving. Pure for testability; `plistEnv()` supplies the
+ * runtime-resolved name. Extracted so the override is exercised without live state.
+ */
+export function plistEnvXml(machineName: string | null): string {
+  const path = `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.HOME}/.local/bin:${process.env.HOME}/.bun/bin`;
+  const override = machineName
+    ? `\n    <key>LUDICS_CLUSTER_MACHINE_NAME</key>\n    <string>${machineName}</string>`
+    : "";
   return `  <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.HOME}/.local/bin:${process.env.HOME}/.bun/bin</string>
+    <string>${path}</string>${override}
   </dict>`;
+}
+
+function plistEnv(): string {
+  return plistEnvXml(clusterCurrentMachineName());
 }
 
 function plistArgs(bin: string, ...args: string[]): string {
@@ -880,8 +911,14 @@ export function triggersInstall(): void {
   // only *skip* controller units (they don't stop ones already running), so
   // without this an upgraded worker keeps a stale dashboard/briefing/health/etc.
   // unit alive — split-brain that the role gate is meant to prevent.
-  if (clusterRole() === "worker") {
+  const currentMachine = clusterCurrentMachine();
+  if (shouldTeardownControllerUnits(currentMachine)) {
     for (const name of CONTROLLER_ONLY_TRIGGER_NAMES) removeControllerTriggerUnits(name);
+  } else if (!currentMachine) {
+    console.error(
+      "ludics: triggers: this host is not in cluster.machines (Tailscale down + hostname mismatch?) — " +
+      "skipping controller-unit teardown to avoid destroying leader duties on a transient identity miss",
+    );
   }
 
   const platform = currentPlatform();

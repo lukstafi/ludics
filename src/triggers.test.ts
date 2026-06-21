@@ -11,7 +11,8 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { triggerAllowedForRole, CONTROLLER_ONLY_TRIGGER_NAMES, removeControllerTriggerUnits } from "./triggers.ts";
+import { triggerAllowedForRole, CONTROLLER_ONLY_TRIGGER_NAMES, removeControllerTriggerUnits, shouldTeardownControllerUnits, plistEnvXml } from "./triggers.ts";
+import type { ClusterMachine } from "./cluster.ts";
 
 const CONTROLLER_ONLY = ["dashboard", "ntfy-subscribe", "morning", "health", "sync", "watch"] as const;
 const WORKER_RELEVANT = ["mag", "cluster", "startup", "sessions", "sessions-sweep", "t3code-cleanup"] as const;
@@ -124,5 +125,52 @@ describe("removeControllerTriggerUnits — removes stale controller units, keeps
       expect(existsSync(join(agentsDir, "com.ludics.dashboard.plist"))).toBe(false);
       expect(existsSync(join(agentsDir, "com.ludics.mag.plist"))).toBe(true);
     } finally { teardown(); }
+  });
+});
+
+// The destructive teardown loop above must NOT run on a transient identity miss.
+// `triggersInstall` gates it on shouldTeardownControllerUnits(clusterCurrentMachine()):
+// only an *identified non-leader* tears down. Unknown identity (Tailscale down +
+// hostname mismatch — exactly the leader-at-home failure mode) must be left alone,
+// or the leader disables its own dashboard/briefing units on a flaky resolve.
+describe("shouldTeardownControllerUnits — only confidently-identified workers tear down", () => {
+  const machine = (role: string): ClusterMachine => ({
+    name: "n", host: "n.ts.net", os: "macos", role, always_on: true, gpu: "",
+  });
+
+  test("unknown identity (undefined) → false (the leader-safety fix)", () => {
+    // Mutation guard: reverting to `clusterRole() === "worker"` would make an
+    // unidentified leader tear down its own controller units — this stays false.
+    expect(shouldTeardownControllerUnits(undefined)).toBe(false);
+  });
+
+  test("identified worker → true", () => {
+    expect(shouldTeardownControllerUnits(machine("worker"))).toBe(true);
+  });
+
+  test("identified console (non-leader) → true", () => {
+    expect(shouldTeardownControllerUnits(machine("console"))).toBe(true);
+  });
+
+  test("identified leader → false", () => {
+    expect(shouldTeardownControllerUnits(machine("leader"))).toBe(false);
+  });
+});
+
+// KeepAlive jobs re-resolve cluster identity on every relaunch; baking the
+// install-time machine name into the plist env keeps the dashboard serving even
+// while Tailscale is reconnecting (the override is honored by clusterCurrentMachine).
+describe("plistEnvXml — bakes LUDICS_CLUSTER_MACHINE_NAME when resolvable", () => {
+  test("includes the override key/value when a name is given", () => {
+    const xml = plistEnvXml("mac-studio");
+    expect(xml).toContain("<key>LUDICS_CLUSTER_MACHINE_NAME</key>");
+    expect(xml).toContain("<string>mac-studio</string>");
+    expect(xml).toContain("<key>PATH</key>"); // PATH still present
+  });
+
+  test("omits the override entirely when name is null (no empty/garbage env)", () => {
+    const xml = plistEnvXml(null);
+    expect(xml).not.toContain("LUDICS_CLUSTER_MACHINE_NAME");
+    expect(xml).toContain("<key>PATH</key>");
   });
 });
