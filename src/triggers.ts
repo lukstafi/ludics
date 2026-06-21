@@ -537,6 +537,21 @@ function installSimpleTrigger(
   console.log(`Installed ${platform} trigger: ${logMessage}`);
 }
 
+/**
+ * Body of a recurring systemd interval timer.
+ *
+ * `OnActiveSec` seeds an initial trigger relative to *timer activation* (boot or
+ * the `daemon-reload` that `ludics init` performs). Without it, `OnUnitActiveSec`
+ * alone — which is relative to the triggered *service's* last activation — never
+ * schedules a first run when the action is invoked directly (e.g. `cluster tick`
+ * during init rather than via the service), so the timer silently never fires.
+ * That regression left worker `ludics-cluster.timer` publishing one heartbeat at
+ * init and then never again, so the node went stale and dropped out of routing.
+ */
+export function systemdIntervalTimerBody(name: string, description: string, interval: string): string {
+  return `[Unit]\nDescription=ludics ${description} timer\n\n[Timer]\nOnActiveSec=${interval}s\nOnUnitActiveSec=${interval}s\nUnit=ludics-${name}.service\n\n[Install]\nWantedBy=timers.target\n`;
+}
+
 function installIntervalTrigger(name: string, description: string, defaultInterval: number): void {
   if (triggerGet(name, "enabled") !== "true") return;
   const bin = binPath();
@@ -557,7 +572,7 @@ function installIntervalTrigger(name: string, description: string, defaultInterv
     installPlist(label, content);
   } else {
     writeSystemdUnit(`ludics-${name}.service`, `[Unit]\nDescription=ludics ${description}\n\n[Service]\nType=oneshot\nExecStart=${bin} ${action}\n`);
-    writeSystemdUnit(`ludics-${name}.timer`, `[Unit]\nDescription=ludics ${description} timer\n\n[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-${name}.service\n\n[Install]\nWantedBy=timers.target\n`);
+    writeSystemdUnit(`ludics-${name}.timer`, systemdIntervalTimerBody(name, description, interval));
     enableSystemdUnit(`ludics-${name}.timer`);
   }
 
@@ -668,7 +683,9 @@ function triggersInstallLinux(): void {
       timerSection = `[Timer]\n${onCalendarLines}\nPersistent=true\nUnit=ludics-health.service`;
     } else {
       const interval = triggerGet("health", "interval") || "14400";
-      timerSection = `[Timer]\nOnUnitActiveSec=${interval}s\nUnit=ludics-health.service`;
+      // OnActiveSec seeds the initial trigger (same reason as the generic timer
+      // above) — OnUnitActiveSec alone never schedules a first run.
+      timerSection = `[Timer]\nOnActiveSec=${interval}s\nOnUnitActiveSec=${interval}s\nUnit=ludics-health.service`;
     }
 
     writeSystemdUnit("ludics-health.timer", `[Unit]\nDescription=ludics health check timer\n\n${timerSection}\n\n[Install]\nWantedBy=timers.target\n`);
