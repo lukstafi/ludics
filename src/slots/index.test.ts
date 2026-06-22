@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { hostname as osHostname, tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS, reinitTtydPid, setWorkerSlotsOverride } from "./index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS, reinitTtydPid, setWorkerSlotsOverride, persistSlotLiveness } from "./index.ts";
 import * as tmuxAdapterMod from "../adapters/tmux-adapter.ts";
 import * as t3codeServerMod from "../t3code/server.ts";
 import * as spawnMod from "../spawn.ts";
@@ -2989,5 +2989,110 @@ cluster:
     // "offline — cannot resume" and the assertions below would fail.
     await expect(slotResume(1)).rejects.toThrow("no persisted t3code state");
     await expect(slotResume(1)).rejects.not.toThrow("offline — cannot resume");
+  });
+});
+
+// gh-ludics-584: persistSlotLiveness must persist to AUTHORITATIVE state
+// worker-first — the worker branch POSTs to the controller WITHOUT reading the
+// local slot clone, because that clone may be stale/empty (gh-ludics-580) and an
+// `(empty)` clone would otherwise early-return and silently drop the escalation
+// the resume circuit-breaker depends on.
+describe("persistSlotLiveness — worker-first authoritative liveness (gh-ludics-584)", () => {
+  const ORIGINAL_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+
+  function writeClusterConfig(): void {
+    const cfgDir = join(TMP, ".config", "ludics");
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(join(cfgDir, "config.yaml"), `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: self-node
+      host: self-node.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    process.env.LUDICS_CONFIG = join(cfgDir, "config.yaml");
+  }
+
+  afterEach(() => {
+    if (ORIGINAL_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
+    else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_MACHINE;
+  });
+
+  test("worker + STALE/EMPTY local clone → POSTs {liveness} to controller, never reads local (stale-clone case)", async () => {
+    writeClusterConfig();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "self-node"; // worker context
+
+    // The #580 trap: the local clone is EMPTY (process="(empty)"). A readSlot-
+    // first helper would early-return here and NEVER escalate the authoritative
+    // slot. The controller-live slot is active, so escalation MUST still POST.
+    writeSlotJson(1, emptySlotData(1)); // local clone = (empty)
+
+    // Observe the real worker transport: clusterPostSlotUpdate → resolveAndPost
+    // → clusterHttpPost → global `fetch`. Spying `fetch` (a true global) is
+    // reliable, unlike spying the dynamically-imported cluster-http namespace.
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch);
+    try {
+      await persistSlotLiveness(1, "escalated");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+
+    // Invariant: the authoritative (controller) slot is updated despite the
+    // empty local clone. Mutation control: a `readSlot()`-before-branch helper
+    // would early-return on (empty) → zero POSTs → this fails.
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.url).toContain("/api/cluster/slot-update");
+    expect(calls[0]!.body).toMatchObject({ slot: 1, liveness: "escalated" });
+
+    // And the worker branch must NOT have written the local clone.
+    expect(readSlotJson(1).liveness).toBeNull();
+  });
+
+  test("controller/standalone → writes liveness to the local authoritative slot, no HTTP POST", async () => {
+    // Default writeConfig() (beforeEach) has no cluster block → isWorkerContext
+    // is false → local harness is authoritative.
+    writeSlotJson(1, { ...emptySlotData(1), process: "orch-runner", task: "task-x", machine: "" });
+
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
+    try {
+      await persistSlotLiveness(1, "escalated");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(readSlotJson(1).liveness).toBe("escalated");
+  });
+
+  test("controller/standalone + (empty) slot → no-op (no write, no POST)", async () => {
+    writeSlotJson(1, emptySlotData(1)); // process = "(empty)"
+
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
+    try {
+      await persistSlotLiveness(1, "escalated");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(readSlotJson(1).liveness).toBeNull();
   });
 });

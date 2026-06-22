@@ -66,8 +66,8 @@ describe("startOrchestrationProcess stdio", () => {
     const harnessDir = mkdtempSync(join(tmpdir(), "ludics-584-proc-"));
     mkdirSync(join(harnessDir, "orchestration"), { recursive: true });
     const captured: Array<Record<string, unknown>> = [];
-    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((_argv: unknown, opts: unknown) => {
-      captured.push(opts as Record<string, unknown>);
+    const spawnSpy = spyOn(Bun, "spawn").mockImplementation((...args: unknown[]) => {
+      captured.push(args[1] as Record<string, unknown>);
       // Pretend the runner is alive (exitCode null) so the immediate-exit check passes.
       return { pid: 4242, exitCode: null, unref() {} } as never;
     });
