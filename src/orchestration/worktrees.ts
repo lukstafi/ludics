@@ -1,10 +1,11 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from "fs";
-import { basename, dirname, join, normalize, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { PEER_SYNC_DIRNAME, peerSyncPath } from "./peer-sync.ts";
 import { slugify } from "./util.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import { findProjectConfig, type ProjectConfig } from "../config.ts";
 import { emitEvent } from "../events.ts";
+import { assertRepoRelativeProposalPath } from "../adapters/task-launch.ts";
 
 export interface WorktreeSetup {
   rootWorktree: string;
@@ -489,14 +490,12 @@ export function ensureProposalReachable(
 ): void {
   // AC4: no-op for proposal-less tasks (absent or deprecated "inline" sentinel)
   if (!proposalPath || proposalPath === "inline") return;
-
-  // Lightweight repo-relative validation (mirrors assertRepoRelativeProposalPath
-  // from task-launch.ts without the cross-package import)
   const trimmed = proposalPath.trim();
   if (!trimmed) return;
-  if (trimmed.startsWith("/") || trimmed.startsWith("~/")) return;
-  const norm = normalize(trimmed);
-  if (norm.startsWith("../") || norm === "..") return;
+
+  // AC1: validate the path is repo-relative; throws for absolute, home-relative,
+  // or tree-escaping paths so invalid proposal: values fail setup rather than no-op.
+  assertRepoRelativeProposalPath(trimmed);
 
   const originRef = `origin/${resolvedMainBranch}`;
   const localReachable = proposalReachableFromRef(projectDir, resolvedMainBranch, trimmed);
