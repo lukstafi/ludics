@@ -400,6 +400,30 @@ export function selectMachineForSlot(
   return pool[0]?.name ?? current;
 }
 
+/**
+ * Capability + online filter shared with test-health routing (gh-ludics-578).
+ * Mirrors `selectMachineForSlot`'s per-key exact-equality requirement filter
+ * (above) plus its `heartbeatIsFresh` online gate, but returns the full
+ * `ClusterMachine` (routing needs `.host` for SSH) and *any* fresh-heartbeat
+ * capable machine — no load-balancing tiebreak is needed for a health probe.
+ *
+ * The current (requirement-unmet) host cannot pass the capability filter, so it
+ * is excluded by construction — no non-current special-casing is required.
+ * Returns null when the cluster is disabled, no machine is capable, or no
+ * capable machine is online. If `selectMachineForSlot`'s filter changes, mirror
+ * it here.
+ */
+export function selectOnlineCapableMachine(
+  reqs: { os?: string; gpu?: string },
+): ClusterMachine | null {
+  if (!clusterEnabled()) return null;
+  let eligible = clusterMachines();
+  if (reqs.os) eligible = eligible.filter((m) => m.os === reqs.os);
+  if (reqs.gpu) eligible = eligible.filter((m) => m.gpu === reqs.gpu);
+  const online = eligible.filter((m) => heartbeatIsFresh(m.name));
+  return online[0] ?? null;
+}
+
 // --- WSL2 / systemd-user persistence (AC 8) ---
 
 /**
