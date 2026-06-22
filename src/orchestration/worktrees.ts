@@ -1,9 +1,10 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, join, normalize, resolve } from "path";
 import { PEER_SYNC_DIRNAME, peerSyncPath } from "./peer-sync.ts";
 import { slugify } from "./util.ts";
 import { safeSyncOutput } from "../spawn.ts";
 import { findProjectConfig, type ProjectConfig } from "../config.ts";
+import { emitEvent } from "../events.ts";
 
 export interface WorktreeSetup {
   rootWorktree: string;
@@ -436,6 +437,167 @@ function lstatExistsLink(target: string): boolean {
   try { return lstatSync(target).isSymbolicLink(); } catch { return false; }
 }
 
+/** Skip reasons for {@link refreshMainBranchFromRemote}. */
+export type RefreshSkipReason = "no-origin" | "wrong-branch" | "dirty" | "fetch-failed" | "diverged";
+
+/** Return value for {@link refreshMainBranchFromRemote}: either a successful
+ *  fast-forward or a structured skip with the reason. */
+export type RefreshSkipResult = { skipped: false } | { skipped: true; reason: RefreshSkipReason };
+
+/**
+ * Check whether `<ref>:<proposalPath>` exists as a git object in `projectDir`.
+ * Uses `safeSyncOutput` so it never throws. Returns `false` on any error.
+ */
+export function proposalReachableFromRef(
+  projectDir: string,
+  ref: string,
+  proposalPath: string,
+): boolean {
+  return safeSyncOutput(
+    ["git", "cat-file", "-e", `${ref}:${proposalPath}`],
+    { cwd: projectDir },
+  ).ok;
+}
+
+/**
+ * Verify the proposal artifact is committed and reachable from both the local
+ * fork ref (`resolvedMainBranch`) **and** `origin/<resolvedMainBranch>` before
+ * slot-start forks worktrees.
+ *
+ * - No-ops when `proposalPath` is empty or the deprecated `"inline"` sentinel.
+ * - No-ops when the root orchestration branch for this task/slot already exists
+ *   locally and has the proposal in its tree (resume path — the proposal was
+ *   present when the branch was first forked).
+ * - Emits a `main_refresh_skipped` warning event when `refreshMainBranchFromRemote`
+ *   skipped (AC5) and the proposal is not yet locally reachable.
+ * - If the artifact is on disk but not committed, **self-heals** by staging and
+ *   committing only that one file on `resolvedMainBranch`, pushing to origin,
+ *   and emitting a `proposal_self_healed` event.
+ * - **Hard-fails** (throws) with a clear error and emits `proposal_unreachable`
+ *   when neither self-heal is possible. The throw surfaces through the same
+ *   adapter setup-failure path as the existing "project checkout not found" error.
+ *
+ * See `docs/proposals/proposal-reachability-self-heal-at-fork.md` AC1–AC5.
+ */
+export function ensureProposalReachable(
+  projectDir: string,
+  taskId: string,
+  proposalPath: string,
+  resolvedMainBranch: string,
+  slot: number | undefined,
+  refreshSkip?: RefreshSkipReason,
+): void {
+  // AC4: no-op for proposal-less tasks (absent or deprecated "inline" sentinel)
+  if (!proposalPath || proposalPath === "inline") return;
+
+  // Lightweight repo-relative validation (mirrors assertRepoRelativeProposalPath
+  // from task-launch.ts without the cross-package import)
+  const trimmed = proposalPath.trim();
+  if (!trimmed) return;
+  if (trimmed.startsWith("/") || trimmed.startsWith("~/")) return;
+  const norm = normalize(trimmed);
+  if (norm.startsWith("../") || norm === "..") return;
+
+  const originRef = `origin/${resolvedMainBranch}`;
+  const localReachable = proposalReachableFromRef(projectDir, resolvedMainBranch, trimmed);
+  const originReachable = proposalReachableFromRef(projectDir, originRef, trimmed);
+
+  // Happy path: proposal reachable from both refs.
+  if (localReachable && originReachable) return;
+
+  // AC4 resume tolerance: the root orchestration branch already exists (this is
+  // a resume), and the proposal is in its tree — it was present when first forked.
+  const rootBranch = orchBranchName(taskId, slot, "root");
+  if (
+    branchRefExists(projectDir, rootBranch) &&
+    proposalReachableFromRef(projectDir, rootBranch, trimmed)
+  ) return;
+
+  // AC5: emit warning when refreshMainBranchFromRemote skipped while proposal
+  // is not yet locally reachable (making the mode-(a) race visible).
+  if (refreshSkip && !localReachable) {
+    emitEvent({
+      event_type: "main_refresh_skipped",
+      source: "slot-start",
+      scope: "orchestration",
+      task: taskId,
+      slot,
+      proposal_path: trimmed,
+      skip_reason: refreshSkip,
+      message: `refreshMainBranchFromRemote skipped (${refreshSkip}) while proposal ${trimmed} is not yet reachable from ${resolvedMainBranch}`,
+    });
+  }
+
+  // AC2: try self-heal — commit the on-disk artifact then push.
+  // Guards: we must be on resolvedMainBranch with no pre-existing staged changes.
+  const proposalAbsPath = join(resolve(projectDir), trimmed);
+  const currentBranch = maybeGit(projectDir, ["branch", "--show-current"]).trim();
+  if (existsSync(proposalAbsPath) && currentBranch === resolvedMainBranch) {
+    // Stage only the proposal file if it is not yet locally committed.
+    if (!localReachable) {
+      const preStaged = maybeGit(projectDir, ["diff", "--cached", "--name-only"]).trim();
+      if (!preStaged) {
+        const addOk = safeSyncOutput(["git", "add", "--", trimmed], { cwd: projectDir }).ok;
+        if (addOk) {
+          const afterStaged = maybeGit(projectDir, ["diff", "--cached", "--name-only"])
+            .trim().split("\n").filter(Boolean);
+          if (afterStaged.length === 1 && afterStaged[0] === trimmed) {
+            const commitOk = safeSyncOutput(
+              ["git", "commit", "-m", `chore: commit proposal artifact for ${taskId}`, "--", trimmed],
+              { cwd: projectDir },
+            ).ok;
+            if (!commitOk) {
+              maybeGit(projectDir, ["reset", "HEAD", "--", trimmed]);
+              // fall through to block path
+            }
+          } else {
+            maybeGit(projectDir, ["reset", "HEAD", "--", trimmed]);
+            // fall through to block path
+          }
+        }
+      }
+    }
+    // Push if the proposal is now reachable locally (just committed, or was
+    // already committed locally but not pushed).
+    if (proposalReachableFromRef(projectDir, resolvedMainBranch, trimmed)) {
+      const pushOk = safeSyncOutput(
+        ["git", "push", "origin", resolvedMainBranch],
+        { cwd: projectDir },
+      ).ok;
+      if (pushOk) {
+        const afterLocal = proposalReachableFromRef(projectDir, resolvedMainBranch, trimmed);
+        const afterOrigin = proposalReachableFromRef(projectDir, originRef, trimmed);
+        if (afterLocal && afterOrigin) {
+          emitEvent({
+            event_type: "proposal_self_healed",
+            source: "slot-start",
+            scope: "orchestration",
+            task: taskId,
+            slot,
+            proposal_path: trimmed,
+            message: `Self-healed proposal artifact ${trimmed} for task ${taskId}: committed and pushed to ${resolvedMainBranch}`,
+          });
+          return;
+        }
+      }
+    }
+  }
+
+  // AC3: cannot self-heal — emit warning and hard-fail.
+  emitEvent({
+    event_type: "proposal_unreachable",
+    source: "slot-start",
+    scope: "orchestration",
+    task: taskId,
+    slot,
+    proposal_path: trimmed,
+    message: `Proposal ${trimmed} for task ${taskId} is not reachable from ${resolvedMainBranch}/origin and could not be self-healed`,
+  });
+  throw new Error(
+    `proposal ${trimmed} for task ${taskId} is not reachable from ${resolvedMainBranch}/origin and could not be self-healed`,
+  );
+}
+
 export function defaultMainBranch(projectDir: string): string {
   const remoteHead = maybeGit(projectDir, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
   if (remoteHead.startsWith("origin/")) return remoteHead.slice("origin/".length);
@@ -464,7 +626,10 @@ export function defaultMainBranch(projectDir: string): string {
  *
  * Never throws.
  */
-export function refreshMainBranchFromRemote(projectDir: string, mainBranch: string): void {
+export function refreshMainBranchFromRemote(
+  projectDir: string,
+  mainBranch: string,
+): RefreshSkipResult {
   const dir = resolve(projectDir);
   // `git remote` may list a name purely from leftover `remote.<name>.*`
   // config keys even when no URL is set; require `remote.origin.url` so we
@@ -472,20 +637,22 @@ export function refreshMainBranchFromRemote(projectDir: string, mainBranch: stri
   // noisy warning in test repos that set `remote.origin.gh-resolved` without
   // a real remote URL).
   const originUrl = safeSyncOutput(["git", "config", "--get", "remote.origin.url"], { cwd: dir });
-  if (!originUrl.ok || originUrl.stdout.trim().length === 0) return;
+  if (!originUrl.ok || originUrl.stdout.trim().length === 0) return { skipped: true, reason: "no-origin" };
   const current = maybeGit(dir, ["branch", "--show-current"]).trim();
-  if (current !== mainBranch) return;
+  if (current !== mainBranch) return { skipped: true, reason: "wrong-branch" };
   const dirty = maybeGit(dir, ["status", "--porcelain"]).trim();
-  if (dirty.length > 0) return;
+  if (dirty.length > 0) return { skipped: true, reason: "dirty" };
   const fetchResult = safeSyncOutput(["git", "fetch", "origin", mainBranch], { cwd: dir });
   if (!fetchResult.ok) {
     console.error(`ludics: refreshMainBranchFromRemote: git fetch origin ${mainBranch} failed in ${dir} — continuing with stale local state`);
-    return;
+    return { skipped: true, reason: "fetch-failed" };
   }
   const mergeResult = safeSyncOutput(["git", "merge", "--ff-only", `origin/${mainBranch}`], { cwd: dir });
   if (!mergeResult.ok) {
     console.error(`ludics: refreshMainBranchFromRemote: ff-only merge of origin/${mainBranch} failed in ${dir} — local branch has diverged from origin, continuing with stale local state`);
+    return { skipped: true, reason: "diverged" };
   }
+  return { skipped: false };
 }
 
 /**
@@ -534,6 +701,7 @@ export function createWorktrees(
   mainBranch?: string,
   slot?: number,
   mode: "duo" | "pair" | "solo" | "pilot" = "duo",
+  proposalPath?: string,
 ): WorktreeSetup {
   // gh-ludics-579 AC2: fail loudly with a clear, machine-attributed error when
   // the project checkout is absent on the executing machine, BEFORE any git op
@@ -560,7 +728,17 @@ export function createWorktrees(
   // Best-effort: any reason this can't proceed (no origin, wrong branch
   // checked out, dirty working tree, network failure, or local divergence) is
   // logged and skipped — see refreshMainBranchFromRemote for details.
-  refreshMainBranchFromRemote(projectDir, resolvedMainBranch);
+  const refreshResult = refreshMainBranchFromRemote(projectDir, resolvedMainBranch);
+
+  // Proposal reachability guard (AC1–AC5 of proposal-reachability-self-heal-at-fork).
+  // Runs after refresh (so a just-pushed proposal can be fetched) and before
+  // addWorktree (so the fork never starts from a proposal-less tree).
+  if (proposalPath) {
+    ensureProposalReachable(
+      projectDir, taskId, proposalPath, resolvedMainBranch, slot,
+      refreshResult.skipped ? refreshResult.reason : undefined,
+    );
+  }
 
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));
