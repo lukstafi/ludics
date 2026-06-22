@@ -322,6 +322,13 @@ export interface OrchestrationState {
    *  backfilled from the readOrchestrationState() harnessDir arg for legacy
    *  state files. Consumers should read via `state.harnessDir ?? defaultHarnessDir()`. */
   harnessDir?: string;
+  /** gh-ludics-584 resume circuit-breaker: how many consecutive keepalive
+   *  auto-resume detections found the orchestrator dead in the SAME (taskId,
+   *  phase) with no advance. Reset when the phase advances or the task changes.
+   *  Persisted (worker cache survives oneshot ticks) so the count accumulates
+   *  across the separate per-tick worker keepalive processes. Single-line by
+   *  design so the lint:state-migration field extractor records one field. */
+  autoResumeNoProgress?: { taskId: string; phase: Phase; consecutiveTicks: number };
 }
 
 export const DEFAULT_TIMEOUTS: Record<string, number> = {
@@ -629,6 +636,25 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
       nudgeCooldownSeconds: ss.nudgeCooldownSeconds ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.nudgeCooldownSeconds,
       maxNudgeAttempts: ss.maxNudgeAttempts ?? DEFAULT_SUBSTANTIVE_STALL_CONFIG.maxNudgeAttempts,
     };
+  }
+  // gh-ludics-584: normalize the resume circuit-breaker record read from disk.
+  // Absent → stays undefined (new-field default). Present-but-corrupt → drop the
+  // whole record when taskId/phase are not strings (a malformed key can't drive
+  // the same-phase comparison), else clamp a bad/negative consecutiveTicks to 0
+  // so the breaker counts forward from a sane floor rather than tripping/looping
+  // on garbage. (lint:state-migration read-boundary coercion for the new field.)
+  if (state.autoResumeNoProgress !== undefined) {
+    const arp = state.autoResumeNoProgress as unknown as {
+      taskId?: unknown; phase?: unknown; consecutiveTicks?: unknown;
+    };
+    if (typeof arp.taskId !== "string" || typeof arp.phase !== "string") {
+      delete state.autoResumeNoProgress;
+    } else {
+      const ticks = arp.consecutiveTicks;
+      if (typeof ticks !== "number" || !Number.isFinite(ticks) || ticks < 0) {
+        state.autoResumeNoProgress.consecutiveTicks = 0;
+      }
+    }
   }
   return state;
 }
