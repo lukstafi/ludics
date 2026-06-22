@@ -12,7 +12,7 @@
 
 import { existsSync, statSync } from "fs";
 import { join } from "path";
-import type { ProjectConfig } from "./config.ts";
+import { projectConfigPath, type ProjectConfig } from "./config.ts";
 import { detectDefaultBranches, expandHome, hasRemote, type RunGit } from "./git-runner.ts";
 import { latestOutboundCauseRemedy } from "./staging-event-meta.ts";
 
@@ -136,9 +136,10 @@ export function formatUpstreamLagSection(
   const blocks: string[] = [];
   for (const p of relevant) {
     const name = p.name || p.repo || "(unnamed)";
-    const path = p.path ? expandHome(String(p.path)) : null;
+    const cfgPath = projectConfigPath(p);
+    const path = cfgPath ? expandHome(cfgPath) : null;
     if (!path || !existsSync(path)) {
-      blocks.push(`### ${name}\n\n- checkout path not found (configured: ${p.path ?? "none"})\n`);
+      blocks.push(`### ${name}\n\n- checkout path not found (configured: ${cfgPath ?? "none"})\n`);
       continue;
     }
     if (!hasRemote(path, "upstream", opts.runGit)) {

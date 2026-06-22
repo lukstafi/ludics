@@ -19,7 +19,7 @@ import {
 import { parseLeftRightCount } from "./briefing-lag.ts";
 import { OUTBOUND_EVENT_CAUSE_REMEDY } from "./staging-event-meta.ts";
 import { sentinelFresh, touchSentinel } from "./sentinel.ts";
-import type { ProjectConfig } from "./config.ts";
+import { projectConfigPath, type ProjectConfig } from "./config.ts";
 
 export type FastForwardOutcome =
   | "throttled"
@@ -97,9 +97,10 @@ export function syncStagingMainWithUpstream(
       continue;
     }
 
-    const path = p.path ? expandHome(String(p.path)) : null;
+    const cfgPath = projectConfigPath(p);
+    const path = cfgPath ? expandHome(cfgPath) : null;
     if (!path || !existsSync(path)) {
-      out.push({ project, outcome: "skipped-no-path", detail: p.path ?? undefined });
+      out.push({ project, outcome: "skipped-no-path", detail: cfgPath ?? undefined });
       continue;
     }
     if (!hasRemote(path, "upstream", opts.runGit)) {
@@ -308,9 +309,10 @@ export function syncUpstreamMainFromStaging(
       continue;
     }
 
-    const path = p.path ? expandHome(String(p.path)) : null;
+    const cfgPath = projectConfigPath(p);
+    const path = cfgPath ? expandHome(cfgPath) : null;
     if (!path || !existsSync(path)) {
-      out.push({ project, outcome: "skipped-no-path", detail: p.path ?? undefined });
+      out.push({ project, outcome: "skipped-no-path", detail: cfgPath ?? undefined });
       continue;
     }
     if (!hasRemote(path, "upstream", opts.runGit)) {
