@@ -48,9 +48,25 @@ export function classifyRemoteResult(r: SyncResult): RemoteRunResult {
 }
 
 /**
+ * Build the remote shell script: change into the checkout, then run the command.
+ *
+ * The `|| exit 255` is load-bearing for the skip-not-fail invariant: a missing or
+ * invalid remote checkout makes `cd` fail *before the suite runs*, which is a
+ * setup/connectivity failure, NOT a test failure. Without the guard the failed
+ * `cd` would exit with the shell's normal non-zero status (e.g. 1), ssh would
+ * relay it, and `classifyRemoteResult` would mark it `ran`/`ok:false` → a
+ * false-positive fix-task. Forcing the exit to ssh's transport sentinel (255)
+ * routes a setup failure through the transport-error branch → skip.
+ */
+export function buildRemoteScript(cwd: string, cmd: string): string {
+  return `cd ${cwd} || exit 255; ${cmd}`;
+}
+
+/**
  * Run `cmd` in `cwd` on `machine` over SSH, synchronously, returning a
  * classified result. `BatchMode=yes` fails fast on auth instead of prompting;
- * `ConnectTimeout` bounds the connect attempt for a nightly probe.
+ * `ConnectTimeout` bounds the connect attempt for a nightly probe. A missing
+ * remote checkout is mapped to a transport-error skip via `buildRemoteScript`.
  *
  * Remote env parity (e.g. `eval $(opam env)`) relies on the worker's login-shell
  * profile sourcing on the SSH command channel; deeper hardening is out of scope.
@@ -62,9 +78,8 @@ export function runRemoteCommand(
   cmd: string,
   opts: { cwd: string; timeout?: number },
 ): RemoteRunResult {
-  const remoteScript = `cd ${opts.cwd} && ${cmd}`;
   const res = safeSyncOutput(
-    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", machine.host, remoteScript],
+    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", machine.host, buildRemoteScript(opts.cwd, cmd)],
     { timeout: opts.timeout, trim: false },
   );
   return classifyRemoteResult(res);

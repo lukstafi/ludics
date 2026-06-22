@@ -566,6 +566,31 @@ describe("test-health capability gating (gh-ludics-578)", () => {
     expect(taskFiles()).toEqual([]);
   });
 
+  test("unmet + online worker but NO test_command and NO resolvable checkout → skip (must not auto-detect from controller cwd)", () => {
+    // Regression (PR #582 review): with no test_command and no checkout on the
+    // controller, resolveProjectPath returns "" and a naive detectTestCommand("")
+    // would probe the controller's process cwd — which here (the ludics repo) has
+    // bun.lock, yielding "bun test" and wrongly routing an unrelated command.
+    // Invariant: routing requires a command we can actually name; otherwise skip.
+    // Mutation: reverting to detectTestCommand(resolveProjectPath(...)) makes
+    // `fired` true (bun test routed) from the repo cwd.
+    writeConfig();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    writeHeartbeat("minipc-wsl", 10); // capable worker IS online
+
+    let fired = false;
+    _remoteTestExec.fn = (): RemoteRunResult => { fired = true; return { kind: "ran", ok: true, stdout: "", stderr: "", timedOut: false }; };
+
+    // No test_command, no path → unresolvable command.
+    const project = { name: "ocaml-cudajit", repo: "ex/cudajit", requirements: { gpu: "nvidia" } } as const;
+    const result = checkProjectTestHealth(project, { force: true });
+
+    expect(result).toEqual({ skipped: true, reason: "requirements-unmet" });
+    expect(fired).toBe(false); // never routed a cwd-detected command
+    expect(existsSync(testHealthStatePath())).toBe(false);
+    expect(taskFiles()).toEqual([]);
+  });
+
   // --- AC2: unknown-capability host ---
 
   test("unknown host (name not in cluster): gated project skips, requirement-free runs", () => {

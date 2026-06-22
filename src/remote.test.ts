@@ -9,7 +9,7 @@
 // real pass/fail.
 
 import { describe, test, expect } from "bun:test";
-import { classifyRemoteResult } from "./remote.ts";
+import { buildRemoteScript, classifyRemoteResult } from "./remote.ts";
 import type { SyncResult } from "./spawn.ts";
 
 function syncResult(over: Partial<SyncResult>): SyncResult {
@@ -47,5 +47,23 @@ describe("classifyRemoteResult", () => {
     const r = classifyRemoteResult(syncResult({ ok: true, exitCode: 0, stdout: "ok" }));
     expect(r.kind).toBe("ran");
     if (r.kind === "ran") expect(r.ok).toBe(true);
+  });
+});
+
+describe("buildRemoteScript", () => {
+  test("cd-failure is forced to the SSH transport sentinel (exit 255), not a test exit", () => {
+    // Invariant for skip-not-fail: a missing/invalid remote checkout must NOT
+    // reach the test command as a normal non-255 shell failure (which
+    // classifyRemoteResult would treat as `ran`/ok:false → a false fix-task).
+    // `|| exit 255` maps the cd failure onto ssh's transport sentinel, which the
+    // classifier above routes to transport-error → skip. Mutation: dropping the
+    // `|| exit 255` (back to `cd X && cmd`) makes a missing-checkout `cd` exit 1.
+    expect(buildRemoteScript("~/ocaml-cudajit", "dune runtest")).toBe("cd ~/ocaml-cudajit || exit 255; dune runtest");
+  });
+
+  test("classifying a forced cd-failure (exit 255) yields a transport-error skip", () => {
+    // End-to-end of the two-step chain: buildRemoteScript emits `|| exit 255`, a
+    // failed cd produces exit 255, classifyRemoteResult → transport-error.
+    expect(classifyRemoteResult(syncResult({ ok: false, exitCode: 255, stderr: "bash: cd: ~/missing: No such file or directory" })).kind).toBe("transport-error");
   });
 });

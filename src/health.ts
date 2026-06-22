@@ -203,7 +203,13 @@ function routeOrSkipRequirementsUnmet(
   const worker = selectOnlineCapableMachine(check.reqs);
   if (!worker) return SKIP; // no eligible/online worker (AC5)
 
-  const testCmd = (project.test_command?.trim() || null) ?? detectTestCommand(resolveProjectPath(project.name));
+  // Resolve the command WITHOUT probing the controller's process cwd: when the
+  // project has no `test_command` AND no checkout resolvable on the controller,
+  // `resolveProjectPath` returns "" and `detectTestCommand("")` would probe files
+  // in the current working directory (e.g. the ludics repo's own bun.lock),
+  // wrongly routing an unrelated command. Only auto-detect against a real path.
+  const localPath = resolveProjectPath(project.name); // "" or an existing path
+  const testCmd = project.test_command?.trim() || (localPath ? detectTestCommand(localPath) : null);
   if (!testCmd) return SKIP; // cannot route a command we can't name (synchronous remote detection isn't possible)
 
   // Respect the same nightly rate-limit gate as the local path, so routing does
