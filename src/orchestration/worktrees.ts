@@ -526,16 +526,41 @@ export function createWorktrees(
   projectDir: string,
   taskId: string,
   agents: Array<{ name: string }>,
-  mainBranch: string = defaultMainBranch(projectDir),
+  // gh-ludics-579: NO `= defaultMainBranch(projectDir)` default — default
+  // parameter expressions evaluate before the body, and `defaultMainBranch`
+  // runs git against `projectDir`; with a missing checkout that would surface
+  // the misleading `posix_spawn 'git'` ENOENT *before* the guard below can
+  // throw the clear error. Resolve the branch only AFTER the guard.
+  mainBranch?: string,
   slot?: number,
   mode: "duo" | "pair" | "solo" | "pilot" = "duo",
 ): WorktreeSetup {
+  // gh-ludics-579 AC2: fail loudly with a clear, machine-attributed error when
+  // the project checkout is absent on the executing machine, BEFORE any git op
+  // (defaultMainBranch / refreshMainBranchFromRemote / git worktree add) faults
+  // on a non-existent cwd. Expand a leading `~/` against the local $HOME first
+  // (workers receive `~/`-relative paths the controller did not pre-expand).
+  if (projectDir.startsWith("~/")) projectDir = resolve(process.env.HOME ?? "~", projectDir.slice(2));
+  if (!existsSync(projectDir)) {
+    let machineLabel = "local";
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- avoid a top-level cluster import in this leaf module; only used on the error path
+      machineLabel = (require("../cluster.ts") as typeof import("../cluster.ts")).clusterCurrentMachineName() ?? "local";
+    } catch { /* cluster unavailable — keep "local" */ }
+    throw new Error(`project checkout not found on ${machineLabel} at ${projectDir}`);
+  }
+
+  // Resolve the main branch now that `projectDir` is known to exist (caller
+  // value wins; otherwise probe via git). Identical semantics to the former
+  // default parameter, just sequenced after the existence guard.
+  const resolvedMainBranch = mainBranch ?? defaultMainBranch(projectDir);
+
   // Refresh the project's main branch from origin so new worktrees fork from
   // current upstream rather than whatever the local checkout last pointed at.
   // Best-effort: any reason this can't proceed (no origin, wrong branch
   // checked out, dirty working tree, network failure, or local divergence) is
   // logged and skipped — see refreshMainBranchFromRemote for details.
-  refreshMainBranchFromRemote(projectDir, mainBranch);
+  refreshMainBranchFromRemote(projectDir, resolvedMainBranch);
 
   const parentDir = dirname(resolve(projectDir));
   const repoName = basename(resolve(projectDir));
@@ -546,16 +571,16 @@ export function createWorktrees(
     root: orchBranchName(taskId, slot, "root"),
   };
   // Invariant (paired with scope (1) of `proposal-commit-on-main-and-worktree-resume`):
-  // every per-agent and root branch is forked from `mainBranch` (resolved by
-  // `defaultMainBranch(projectDir)` unless the caller passes a different
-  // value). In duo mode the coder and reviewer never share a branch, so the
-  // proposal commit reaches them only if it is already on `mainBranch` at
-  // the moment `addWorktree` runs — which is what the worker-skill edits in
+  // every per-agent and root branch is forked from `resolvedMainBranch`
+  // (the caller's `mainBranch` if supplied, else `defaultMainBranch(projectDir)`).
+  // In duo mode the coder and reviewer never share a branch, so the
+  // proposal commit reaches them only if it is already on `resolvedMainBranch`
+  // at the moment `addWorktree` runs — which is what the worker-skill edits in
   // `skills/ludics-{draft,revise}-proposal-worker.md` step "Commit and push"
-  // guarantee. Do not change the `mainBranch` argument here without also
+  // guarantee. Do not change the branch argument here without also
   // re-validating that the worker still commits the proposal on the same
   // branch.
-  addWorktree(projectDir, rootWorktree, branches.root, mainBranch);
+  addWorktree(projectDir, rootWorktree, branches.root, resolvedMainBranch);
 
   const agentWorktrees: Record<string, string> = {};
   if (mode === "pair" || mode === "solo" || mode === "pilot") {
@@ -567,13 +592,13 @@ export function createWorktrees(
     }
   } else {
     // Duo mode: each agent gets its own worktree and branch.
-    // Each per-agent branch is forked from `mainBranch` (see invariant
+    // Each per-agent branch is forked from `resolvedMainBranch` (see invariant
     // comment on the root `addWorktree` call above).
     for (const agent of agents) {
       const path = join(parentDir, `${stem}-${slugify(agent.name)}`);
       const branch = orchBranchName(taskId, slot, slugify(agent.name));
       branches[agent.name] = branch;
-      addWorktree(projectDir, path, branch, mainBranch);
+      addWorktree(projectDir, path, branch, resolvedMainBranch);
       agentWorktrees[agent.name] = path;
     }
   }
