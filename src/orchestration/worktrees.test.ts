@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, ensureUpstreamRemote, GIT_EXCLUDE_ENTRIES, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, parseRegisteredWorktreeMatches, purgeOrphanDirIfRecoverable, refreshMainBranchFromRemote, removeWorktreeByPath, seedGhResolvedToOrigin, symlinkPeerSync } from "./worktrees.ts";
+import { tmpdir } from "os";
+import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, ensureProposalReachable, ensureUpstreamRemote, GIT_EXCLUDE_ENTRIES, maybeGit, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, parseRegisteredWorktreeMatches, proposalReachableFromRef, purgeOrphanDirIfRecoverable, refreshMainBranchFromRemote, removeWorktreeByPath, seedGhResolvedToOrigin, symlinkPeerSync } from "./worktrees.ts";
 import { captureConsoleError, withSyntheticHarness } from "../test-utils.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
@@ -1842,5 +1843,443 @@ describe("createWorktrees missing-checkout guard (gh-ludics-579 AC2)", () => {
     expect(existsSync(setup.rootWorktree)).toBe(true);
     expect(existsSync(setup.agentWorktrees.agent1!)).toBe(true);
     cleanupWorktrees(repo, "feat", [{ name: "agent1" }], 9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// proposal-reachability-self-heal-at-fork (AC6 regression tests)
+// Covers: AC1 both-refs check, AC2 self-heal, AC3 hard-fail,
+//         AC4 proposal-less no-op + resume tolerance, AC5 refresh-skip warning.
+// ---------------------------------------------------------------------------
+
+/**
+ * Set up a bare-origin + working-clone pair where the clone is fully up to date.
+ * The origin is a real local bare repo so `git push` and `git fetch` work
+ * without network access. Returns the clone path and the bare-origin path.
+ */
+function setupOriginClone(rootDir: string): { repo: string; origin: string } {
+  const origin = join(rootDir, "proposal-tests.git");
+  run(["git", "init", "--bare", "-b", "main", origin], rootDir);
+  const repo = join(rootDir, "proposal-tests-repo");
+  run(["git", "clone", origin, repo], rootDir);
+  run(["git", "config", "user.email", "test@example.com"], repo);
+  run(["git", "config", "user.name", "Test User"], repo);
+  writeFileSync(join(repo, "README.md"), "hello\n");
+  run(["git", "add", "README.md"], repo);
+  run(["git", "commit", "-m", "init"], repo);
+  run(["git", "push", "origin", "main"], repo);
+  return { repo, origin };
+}
+
+/** Read all events from a harness journal/events.jsonl file. */
+function readEvents(harnessDir: string): Record<string, unknown>[] {
+  const file = join(harnessDir, "journal", "events.jsonl");
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf-8").trim().split("\n").filter(Boolean)
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
+/** Temporarily override LUDICS_HARNESS_DIR for a synchronous function; restores on return/throw. */
+function withHarnessDir<T>(fn: (harnessDir: string) => T): T {
+  const harnessDir = mkdtempSync(join(tmpdir(), "ludics-test-harness-"));
+  const saved = process.env.LUDICS_HARNESS_DIR;
+  process.env.LUDICS_HARNESS_DIR = harnessDir;
+  try {
+    return fn(harnessDir);
+  } finally {
+    if (saved === undefined) delete process.env.LUDICS_HARNESS_DIR;
+    else process.env.LUDICS_HARNESS_DIR = saved;
+    rmSync(harnessDir, { recursive: true, force: true });
+  }
+}
+
+describe("proposalReachableFromRef", () => {
+  test("AC1: returns true when <ref>:<path> is a valid git object", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/test.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Proposal\n");
+    run(["git", "add", proposalPath], repo);
+    run(["git", "commit", "-m", "add proposal"], repo);
+
+    expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(true);
+    expect(proposalReachableFromRef(repo, "main", "does/not/exist.md")).toBe(false);
+  });
+
+  test("AC1: returns false for origin/<main> when not yet pushed", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/local-only.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Proposal\n");
+    run(["git", "add", proposalPath], repo);
+    run(["git", "commit", "-m", "add proposal (local only)"], repo);
+
+    // Locally reachable
+    expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(true);
+    // Not yet on origin
+    expect(proposalReachableFromRef(repo, "origin/main", proposalPath)).toBe(false);
+  });
+
+  test("AC1: both refs reachable after push", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/pushed.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Proposal\n");
+    run(["git", "add", proposalPath], repo);
+    run(["git", "commit", "-m", "add proposal"], repo);
+    run(["git", "push", "origin", "main"], repo);
+
+    expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(true);
+    expect(proposalReachableFromRef(repo, "origin/main", proposalPath)).toBe(true);
+  });
+});
+
+describe("AC6(iii): both-refs check — one ref missing triggers guard", () => {
+  test("only local (not pushed): guard self-heals by pushing, both refs pass after", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/local-push.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Proposal\n");
+    run(["git", "add", proposalPath], repo);
+    run(["git", "commit", "-m", "add proposal (local)"], repo);
+
+    // Precondition: local=true, origin=false
+    expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(true);
+    expect(proposalReachableFromRef(repo, "origin/main", proposalPath)).toBe(false);
+
+    withHarnessDir((harnessDir) => {
+      // ensureProposalReachable should self-heal by pushing
+      expect(() =>
+        ensureProposalReachable(repo, "task-iii-local", proposalPath, "main", 1),
+      ).not.toThrow();
+
+      // After self-heal: both refs reachable
+      expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(true);
+      expect(proposalReachableFromRef(repo, "origin/main", proposalPath)).toBe(true);
+
+      const selfHealEvent = readEvents(harnessDir).find(
+        (e) => e.event_type === "proposal_self_healed",
+      );
+      expect(selfHealEvent).toBeDefined();
+      expect(selfHealEvent!.proposal_path).toBe(proposalPath);
+    });
+  });
+
+  test("only origin (not local): guard treats as not reachable → hard-fails when artifact absent", () => {
+    // AC1 mutation evidence: if we changed `&&` to `||` in the both-refs check,
+    // a `proposal_unreachable` event would never be emitted here — the guard would
+    // short-circuit on origin=true and silently return instead of throwing.
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/origin-only.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Origin-only Proposal\n");
+    run(["git", "add", proposalPath], repo);
+    run(["git", "commit", "-m", "add proposal"], repo);
+    run(["git", "push", "origin", "main"], repo);
+
+    // Reset local main back before the proposal commit so only origin has it.
+    // Hard reset also removes the tracked file from the working tree — no artifact on disk.
+    run(["git", "reset", "--hard", "HEAD~1"], repo);
+
+    // Precondition: local=false, origin=true
+    expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(false);
+    expect(proposalReachableFromRef(repo, "origin/main", proposalPath)).toBe(true);
+
+    withHarnessDir((harnessDir) => {
+      // Guard must NOT treat origin-only as "reachable" — it throws (AC3)
+      expect(() =>
+        ensureProposalReachable(repo, "task-iii-origin", proposalPath, "main", 1),
+      ).toThrow(/proposal.*task-iii-origin.*not reachable/i);
+
+      // proposal_unreachable event emitted (not short-circuited by origin-only)
+      const unreachable = readEvents(harnessDir).find(
+        (e) => e.event_type === "proposal_unreachable",
+      );
+      expect(unreachable).toBeDefined();
+      expect(unreachable!.proposal_path).toBe(proposalPath);
+    });
+  });
+
+  test("both refs reachable: guard is a no-op (positive control)", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/already-pushed.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Proposal\n");
+    run(["git", "add", proposalPath], repo);
+    run(["git", "commit", "-m", "add proposal"], repo);
+    run(["git", "push", "origin", "main"], repo);
+
+    withHarnessDir((harnessDir) => {
+      expect(() =>
+        ensureProposalReachable(repo, "task-iii-both", proposalPath, "main", 1),
+      ).not.toThrow();
+
+      // No events emitted: proposal was already reachable from both refs
+      expect(readEvents(harnessDir)).toHaveLength(0);
+    });
+  });
+});
+
+describe("AC6(i): self-heal path — on-disk but uncommitted artifact", () => {
+  test("commits only the proposal file, pushes, fork proceeds, emits proposal_self_healed", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/orphaned.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Orphaned Proposal\n");
+    // Artifact is on disk but NOT committed
+    expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(false);
+    expect(proposalReachableFromRef(repo, "origin/main", proposalPath)).toBe(false);
+
+    withHarnessDir((harnessDir) => {
+      // createWorktrees with the proposal path triggers self-heal
+      const setup = createWorktrees(
+        repo, "task-self-heal", [{ name: "coder" }], "main", 1, "solo", proposalPath,
+      );
+
+      // Self-heal: proposal committed+pushed; both refs reachable
+      expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(true);
+      expect(proposalReachableFromRef(repo, "origin/main", proposalPath)).toBe(true);
+
+      // Commit touched only the proposal file — use --name-only for clean filename list
+      const changedFiles = Bun.spawnSync(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        { cwd: repo, stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> },
+      ).stdout.toString().trim().split("\n").filter(Boolean);
+      expect(changedFiles).toEqual([proposalPath]);
+
+      // proposal_self_healed event emitted
+      const events = readEvents(harnessDir);
+      const selfHeal = events.find((e) => e.event_type === "proposal_self_healed");
+      expect(selfHeal).toBeDefined();
+      expect(selfHeal!.task).toBe("task-self-heal");
+      expect(selfHeal!.proposal_path).toBe(proposalPath);
+
+      // Fork succeeded: worktrees exist and proposal is visible in them
+      expect(existsSync(setup.rootWorktree)).toBe(true);
+      expect(existsSync(join(setup.rootWorktree, proposalPath))).toBe(true);
+
+      cleanupWorktrees(repo, "task-self-heal", [{ name: "coder" }], 1, "solo");
+    });
+  });
+});
+
+describe("AC6(ii): hard-fail path — proposal absent from disk", () => {
+  test("throws clear error naming task+proposal, emits proposal_unreachable, no worktree forked", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/absent.md";
+    // Proposal file does NOT exist on disk at all
+
+    withHarnessDir((harnessDir) => {
+      expect(() =>
+        createWorktrees(
+          repo, "task-hard-fail", [{ name: "coder" }], "main", 1, "solo", proposalPath,
+        ),
+      ).toThrow(/proposal.*task-hard-fail.*not reachable/i);
+
+      // proposal_unreachable event emitted
+      const events = readEvents(harnessDir);
+      const unreachable = events.find((e) => e.event_type === "proposal_unreachable");
+      expect(unreachable).toBeDefined();
+      expect(unreachable!.task).toBe("task-hard-fail");
+      expect(unreachable!.proposal_path).toBe(proposalPath);
+
+      // No worktree was forked (root worktree must not exist)
+      const stem = orchWorktreeStem("proposal-tests-repo", "task-hard-fail", 1);
+      const rootWorktreePath = join(join(repo, ".."), stem);
+      expect(existsSync(rootWorktreePath)).toBe(false);
+    });
+  });
+});
+
+describe("AC6(iv): refresh-skip warning — main_refresh_skipped emitted when refresh skips + proposal pending", () => {
+  test("dirty working tree skips refresh; pending proposal emits main_refresh_skipped then self-heals", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/dirty-test.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Dirty Test Proposal\n");
+    // Create an unrelated dirty file → causes refresh to skip with reason "dirty"
+    writeFileSync(join(repo, "dirty-file.txt"), "uncommitted\n");
+
+    withHarnessDir((harnessDir) => {
+      // Verify refreshMainBranchFromRemote skips due to dirty tree
+      const result = refreshMainBranchFromRemote(repo, "main");
+      expect(result).toMatchObject({ skipped: true, reason: "dirty" });
+
+      // ensureProposalReachable: proposal not reachable (uncommitted) + refresh skipped
+      // → should emit main_refresh_skipped, then self-heal (commit+push)
+      expect(() =>
+        ensureProposalReachable(repo, "task-dirty", proposalPath, "main", 1, "dirty"),
+      ).not.toThrow();
+
+      const events = readEvents(harnessDir);
+
+      // AC5: main_refresh_skipped warning emitted with skip_reason and proposal_path
+      const skipWarn = events.find((e) => e.event_type === "main_refresh_skipped");
+      expect(skipWarn).toBeDefined();
+      expect(skipWarn!.skip_reason).toBe("dirty");
+      expect(skipWarn!.proposal_path).toBe(proposalPath);
+
+      // Self-heal succeeded (proposal was on disk)
+      const selfHeal = events.find((e) => e.event_type === "proposal_self_healed");
+      expect(selfHeal).toBeDefined();
+    });
+  });
+
+  test("control: clean ff-merge succeeds; both refs reachable; no main_refresh_skipped emitted", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/clean-test.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Clean Proposal\n");
+    run(["git", "add", proposalPath], repo);
+    run(["git", "commit", "-m", "add proposal"], repo);
+    run(["git", "push", "origin", "main"], repo);
+
+    withHarnessDir((harnessDir) => {
+      // Refresh succeeds (clean tree, on main, origin reachable)
+      const result = refreshMainBranchFromRemote(repo, "main");
+      expect(result).toMatchObject({ skipped: false });
+
+      expect(() =>
+        ensureProposalReachable(repo, "task-clean", proposalPath, "main", 1),
+      ).not.toThrow();
+
+      // No main_refresh_skipped event (refresh did not skip)
+      const events = readEvents(harnessDir);
+      expect(events.find((e) => e.event_type === "main_refresh_skipped")).toBeUndefined();
+    });
+  });
+});
+
+describe("AC6(v): proposal-less no-op — guard emits nothing, fork proceeds unchanged", () => {
+  test("no proposal (empty string): no error, no event, fork proceeds", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+
+    withHarnessDir((harnessDir) => {
+      expect(() =>
+        ensureProposalReachable(repo, "task-noproposal", "", "main", 1),
+      ).not.toThrow();
+      expect(readEvents(harnessDir)).toHaveLength(0);
+
+      // Also works via createWorktrees with no proposalPath
+      const setup = createWorktrees(
+        repo, "task-noproposal", [{ name: "coder" }], "main", 1, "solo",
+      );
+      expect(existsSync(setup.rootWorktree)).toBe(true);
+      expect(readEvents(harnessDir)).toHaveLength(0);
+      cleanupWorktrees(repo, "task-noproposal", [{ name: "coder" }], 1, "solo");
+    });
+  });
+
+  test("proposal: 'inline' (deprecated sentinel): no error, no event, fork proceeds", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+
+    withHarnessDir((harnessDir) => {
+      expect(() =>
+        ensureProposalReachable(repo, "task-inline", "inline", "main", 1),
+      ).not.toThrow();
+      expect(readEvents(harnessDir)).toHaveLength(0);
+    });
+  });
+
+  test("AC1: invalid proposal path (absolute) throws setup error rather than silently no-opping", () => {
+    // AC1 requires assertRepoRelativeProposalPath to gate invalid paths.
+    // Before this fix, absolute/home-relative/escaping paths silently returned.
+    // Now they fail setup so operator sees the misconfiguration.
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+
+    withHarnessDir((_harnessDir) => {
+      expect(() =>
+        ensureProposalReachable(repo, "task-bad-path", "/etc/passwd", "main", 1),
+      ).toThrow(/proposal path must be repo-relative/i);
+
+      expect(() =>
+        ensureProposalReachable(repo, "task-bad-path", "~/secrets.md", "main", 1),
+      ).toThrow(/proposal path must be repo-relative/i);
+
+      expect(() =>
+        ensureProposalReachable(repo, "task-bad-path", "../outside.md", "main", 1),
+      ).toThrow(/proposal path escapes project tree/i);
+    });
+  });
+});
+
+describe("AC4 resume tolerance: agent branch with proposal allows re-run without block", () => {
+  test("resume: main + origin no longer have proposal, root branch does → guard does not false-fail", () => {
+    // Mutation evidence: removing the root-branch arm from ensureProposalReachable
+    // (lines `if (branchRefExists(...) && proposalReachableFromRef(repo, rootBranch, ...)) return;`)
+    // would make this test throw instead of passing — since both main refs are reset to
+    // before the proposal commit, the only escape from the block path is that arm.
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/resume-test.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Resume Proposal\n");
+    run(["git", "add", proposalPath], repo);
+    run(["git", "commit", "-m", "add proposal"], repo);
+    run(["git", "push", "origin", "main"], repo);
+
+    withHarnessDir((harnessDir) => {
+      // Cold-start fork: proposal reachable from both refs → root branch created with proposal
+      const setup = createWorktrees(
+        repo, "task-resume", [{ name: "coder" }], "main", 1, "solo", proposalPath,
+      );
+      expect(existsSync(setup.rootWorktree)).toBe(true);
+
+      // Verify root branch has proposal in its tree
+      const rootBranch = orchBranchName("task-resume", 1, "root");
+      expect(proposalReachableFromRef(repo, rootBranch, proposalPath)).toBe(true);
+
+      // Simulate "main has since moved" — reset local main and origin tracking ref
+      // to the init commit so neither main ref satisfies the both-refs check.
+      const initCommit = maybeGit(repo, ["rev-list", "--max-parents=0", "HEAD"]).trim();
+      run(["git", "update-ref", "refs/heads/main", initCommit], repo);
+      run(["git", "update-ref", "refs/remotes/origin/main", initCommit], repo);
+      // Remove the artifact from disk too (so self-heal cannot rescue)
+      rmSync(join(repo, proposalPath));
+
+      // Precondition: both main refs now missing the proposal
+      expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(false);
+      expect(proposalReachableFromRef(repo, "origin/main", proposalPath)).toBe(false);
+      // Root branch still has it
+      expect(proposalReachableFromRef(repo, rootBranch, proposalPath)).toBe(true);
+
+      // Guard must NOT false-fail: resume tolerance arm accepts root-branch reachability
+      expect(() =>
+        ensureProposalReachable(repo, "task-resume", proposalPath, "main", 1),
+      ).not.toThrow();
+      // No events emitted (guard took the root-branch resume arm, not the block path)
+      expect(readEvents(harnessDir).filter(
+        (e) => e.event_type === "proposal_unreachable" || e.event_type === "proposal_self_healed",
+      )).toHaveLength(0);
+
+      cleanupWorktrees(repo, "task-resume", [{ name: "coder" }], 1, "solo");
+    });
   });
 });

@@ -35,6 +35,7 @@ import {
 import { initPeerSync, writeAgentMarkerFiles } from "../orchestration/peer-sync.ts";
 import { claudeEffort, codexEffort, normaliseEffortLevel } from "../orchestration/effort.ts";
 import { createWorktrees, symlinkPeerSync } from "../orchestration/worktrees.ts";
+import { parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { recordDeferredCleanup, buildCleanupEntry } from "../orchestration/deferred-cleanup.ts";
 import { isoNow, nowEpoch } from "../orchestration/util.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
@@ -771,7 +772,12 @@ async function start(ctx: AdapterContext): Promise<string> {
     ),
   );
 
-  const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode);
+  // Read proposal path for the reachability guard (AC1–AC5).
+  const taskFilePath_ = join(ctx.harnessDir, "tasks", `${taskId}.md`);
+  const taskContent_ = existsSync(taskFilePath_) ? readFileSync(taskFilePath_, "utf-8") : null;
+  const proposalPath_ = taskContent_ ? (parseTaskFrontmatter(taskContent_).proposal ?? "") : "";
+
+  const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode, proposalPath_);
   symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);
 
   const agents: AgentConfig[] = orchestration.agents.map((agent, index) => ({
