@@ -352,9 +352,16 @@ function currentOsId(): string {
  * branch touches cluster, so plain-string configs never do.
  */
 export function projectConfigPath(p: ProjectConfig, machine?: string): string | undefined {
-  const raw = p.path;
-  if (raw === undefined) return undefined;
+  const raw = p.path as unknown;
   if (typeof raw === "string") return raw;
+  // Tolerate runtime values the static type forbids but YAML produces: a blank
+  // `path:` parses to `null`, and loadConfigSync() casts parsed YAML rather than
+  // validating it. Treat null / non-string / non-plain-object as "no path" —
+  // matching the former `if (p.path)` falsy semantics — so best-effort consumers
+  // (findProjectConfig / init / staging-ff / briefing-lag) never crash indexing
+  // into a non-object. Only a genuine map reaches the selection below.
+  if (!isPlainObject(raw)) return undefined;
+  const map = raw as Record<string, string>;
   // Map form: resolve target machine name + OS.
   let targetName = machine;
   let targetOs: string | undefined;
@@ -365,8 +372,8 @@ export function projectConfigPath(p: ProjectConfig, machine?: string): string | 
     targetOs = machine ? cluster.clusterMachine(machine)?.os : cluster.clusterCurrentMachine()?.os;
   } catch { /* cluster unavailable — fall back to platform OS below */ }
   if (!targetOs) targetOs = machine ? undefined : currentOsId();
-  if (targetName && raw[targetName] !== undefined) return raw[targetName];
-  if (targetOs && raw[targetOs] !== undefined) return raw[targetOs];
+  if (targetName && map[targetName] !== undefined) return map[targetName];
+  if (targetOs && map[targetOs] !== undefined) return map[targetOs];
   return undefined;
 }
 

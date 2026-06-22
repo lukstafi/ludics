@@ -10,6 +10,8 @@ import {
   resolveProjectPath,
   projectConfigPath,
   ProjectPathMapMissError,
+  findProjectConfigByName,
+  loadConfigSync,
   type ProjectConfig,
 } from "./config.ts";
 
@@ -729,5 +731,82 @@ ${pathBlock}cluster:
     expect(projectConfigPath({ name: "z", repo: "o/z", path: { linux: "~/l" } }, "minipc-wsl")).toBe("~/l"); // os key
     expect(projectConfigPath({ name: "w", repo: "o/w", path: { macos: "~/mac" } }, "minipc-wsl")).toBeUndefined(); // miss
     expect(projectConfigPath({ name: "n", repo: "o/n" })).toBeUndefined(); // no path
+  });
+
+  // gh-ludics-579 (review round 2): YAML produces `null` for a blank `path:`,
+  // and loadConfigSync() casts rather than validates. projectConfigPath must
+  // treat null / non-string / non-plain-object as "no path" (the former
+  // `if (p.path)` falsy semantics) instead of indexing into it and crashing.
+  test("projectConfigPath tolerates null / non-map runtime path values (no crash)", () => {
+    writeClusterConfig(undefined);
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    // The exact reviewer-reported crash case: path === null must NOT throw.
+    expect(projectConfigPath({ name: "a", repo: "o/a", path: null } as unknown as ProjectConfig)).toBeUndefined();
+    expect(projectConfigPath({ name: "b", repo: "o/b", path: 42 } as unknown as ProjectConfig)).toBeUndefined();
+    expect(projectConfigPath({ name: "c", repo: "o/c", path: [] } as unknown as ProjectConfig)).toBeUndefined();
+  });
+
+  // Round-trip from YAML (the real external surface): a project with a blank
+  // `path:` loads as { path: null }; projectConfigPath returns undefined and
+  // resolveProjectPath falls through exactly like an absent path — no crash for
+  // best-effort consumers. Mutation: removing the isPlainObject guard makes
+  // projectConfigPath throw "null is not an object" here.
+  test("blank YAML path: round-trips as absent (null) without crashing consumers", () => {
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+projects:
+  - name: blankpath
+    repo: owner/blankrepo
+    path:
+  - name: strpath
+    repo: owner/strrepo
+    path: ~/strrepo
+`);
+    const cfg = loadConfigSync();
+    const blank = findProjectConfigByName("blankpath", cfg)!;
+    const str = findProjectConfigByName("strpath", cfg)!;
+    // Sanity: blank path really parsed as a non-string falsy (null), not "".
+    expect(typeof blank.path === "string").toBe(false);
+    // Helper treats it as absent.
+    expect(projectConfigPath(blank)).toBeUndefined();
+    expect(projectConfigPath(str)).toBe("~/strrepo");
+    // resolveProjectPath: blank behaves like absent (local → "" since no dir
+    // exists; never throws). String path resolves through the normal branch.
+    expect(() => resolveProjectPath("blankpath")).not.toThrow();
+    expect(resolveProjectPath("blankpath")).toBe("");
+  });
+
+  // And a null path on a REMOTE dispatch returns the conventional ~/<repoTail>
+  // (unexpanded) rather than crashing or returning "".
+  test("null path on a remote destination yields conventional ~/<repoTail>", () => {
+    writeFileSync(process.env.LUDICS_CONFIG!, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+projects:
+  - name: cudajit
+    repo: lukstafi/ocaml-cudajit
+    path:
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: mac-studio
+      host: mac-studio.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: minipc-wsl
+      host: minipc-wsl.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: nvidia
+`);
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    expect(resolveProjectPath("cudajit", "minipc-wsl")).toBe("~/ocaml-cudajit");
   });
 });
