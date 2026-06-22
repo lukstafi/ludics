@@ -1782,3 +1782,196 @@ cluster:
     expect(out).toContain("no persisted t3code state");
   });
 });
+
+// gh-ludics-584: resume-loop circuit-breaker. When the keepalive auto-resumes a
+// slot that keeps dying in the SAME (taskId, phase) without advancing, it must
+// stop re-spawning after N consecutive no-advance ticks, mark the slot
+// escalated, raise a priority notification, and emit a structured event —
+// instead of churning a dying runner every ~2 min forever. These run in
+// CONTROLLER context (leader-box) so emitEvent/notify/persistSlotLiveness write
+// locally and are directly observable.
+describe("maybeResumeDeadOrchestrators — resume circuit-breaker (gh-ludics-584)", () => {
+  const ORIGINAL_HOME = process.env.HOME;
+  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+  const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
+  const ORIGINAL_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+  let TMP = "";
+  const DEAD_PID = 2147483647; // INT32_MAX — never a live process
+  const THRESHOLD = 3; // mirrors MAX_CONSECUTIVE_NO_ADVANCE_RESUMES
+
+  function harness(): string { return join(TMP, "harness"); }
+
+  function writeConfig(homeDir: string): string {
+    const configPath = join(homeDir, "config.yaml");
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+mag:
+  autonomy_level:
+    start_sessions: auto
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: minipc-wsl
+      host: minipc-wsl.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    return configPath;
+  }
+
+  // Controller harness writers: orch state + t3code (dead pid) live in the
+  // harness tree. `threads: []` → slotResume throws "no persisted t3code state"
+  // *after* the machine gate, a deterministic process-free failure that proves
+  // slotResume was reached (the positive control / no-throttle path).
+  function writeOrchState(slot: number, taskId: string, phase: string, noProgress?: { taskId: string; phase: string; consecutiveTicks: number }): void {
+    mkdirSync(join(harness(), "orchestration"), { recursive: true });
+    writeFileSync(join(harness(), "orchestration", `slot-${slot}.json`), JSON.stringify({
+      slot, taskId, phase, mode: "pair",
+      ...(noProgress ? { autoResumeNoProgress: noProgress } : {}),
+    }));
+  }
+  function writeT3codeState(slot: number, pid: number): void {
+    mkdirSync(join(harness(), "t3code"), { recursive: true });
+    writeFileSync(join(harness(), "t3code", `slot-${slot}.json`), JSON.stringify({
+      slot, threads: [], orchestration: { stateFile: "x", mode: "pair", pid },
+    }));
+  }
+  function writeSlot(slot: number, taskId: string, liveness: SlotData["liveness"] = null): void {
+    writeSlotJson(slot, { ...emptySlotData(slot), process: "orch-runner", task: taskId, mode: "t3code", machine: "leader-box", path: join(TMP, "wt"), liveness });
+  }
+
+  async function runCapturingErrors(fresh: Map<number, SlotData> | null): Promise<string> {
+    const logs: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    });
+    try {
+      await maybeResumeDeadOrchestrators(fresh);
+    } finally {
+      spy.mockRestore();
+    }
+    return logs.join("\n");
+  }
+
+  function readSlotLiveness(slot: number): unknown {
+    const raw = JSON.parse(readFileSync(join(harness(), "slots", `slot-${slot}.json`), "utf-8"));
+    return raw.liveness;
+  }
+  function readEvents(): string {
+    const p = join(harness(), "journal", "events.jsonl");
+    return existsSync(p) ? readFileSync(p, "utf-8") : "";
+  }
+  function readNotifications(): string {
+    const p = join(harness(), "journal", "notifications.jsonl");
+    return existsSync(p) ? readFileSync(p, "utf-8") : "";
+  }
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-mag-cb-"));
+    process.env.HOME = TMP;
+    process.env.LUDICS_CONFIG = writeConfig(TMP);
+    process.env.LUDICS_HARNESS_DIR = harness();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "leader-box"; // controller context
+    mkdirSync(harness(), { recursive: true });
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HOME === undefined) delete process.env.HOME; else process.env.HOME = ORIGINAL_HOME;
+    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+    if (ORIGINAL_HARNESS_DIR === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
+    if (ORIGINAL_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_MACHINE;
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  test("TRIP: same (task,phase) at threshold-1 → no resume, slot escalated, priority-5 notify, event emitted", async () => {
+    // Harness condition: prior persisted count = THRESHOLD-1 (=2) for the SAME
+    // (taskId, phase) the orchestrator is still stuck in → this detection makes
+    // ticks reach THRESHOLD and trips the breaker.
+    writeSlot(1, "task-66a3bbff");
+    writeOrchState(1, "task-66a3bbff", "setup", { taskId: "task-66a3bbff", phase: "setup", consecutiveTicks: THRESHOLD - 1 });
+    writeT3codeState(1, DEAD_PID);
+
+    const out = await runCapturingErrors(null);
+
+    // Invariant: the breaker tripped — it did NOT reach slotResume. If it had,
+    // the t3code branch would log "no persisted t3code state". Its absence is
+    // what proves no re-spawn happened.
+    expect(out).toContain("circuit-breaker tripped for slot 1");
+    expect(out).not.toContain("no persisted t3code state");
+    expect(out).not.toContain("detected dead orchestrator for slot 1 (pid"); // the resume log
+
+    // Invariant: the slot is marked escalated in authoritative state so the
+    // other auto-loops (and the next tick's liveness skip) stop touching it.
+    expect(readSlotLiveness(1)).toBe("escalated");
+
+    // Invariant: one priority-5 notification names the wedge.
+    const notifs = readNotifications();
+    expect(notifs).toContain('"priority":5');
+    expect(notifs).toContain("orchestration wedged");
+
+    // Invariant: a structured circuit-break event is emitted with the count.
+    const events = readEvents();
+    expect(events).toContain("orchestration_resume_circuit_break");
+    expect(events).toContain(`"count":${THRESHOLD}`);
+  });
+
+  test("NO-THROTTLE positive control: recorded phase differs (advanced) → counter resets, resume IS attempted", async () => {
+    // Harness condition: a HIGH prior count (5) but recorded against a DIFFERENT
+    // phase ("plan") than the current orchestrator phase ("setup") — i.e. the
+    // orchestrator advanced between ticks. sameWork=false → ticks resets to 1 <
+    // THRESHOLD → resume proceeds, never throttled.
+    writeSlot(1, "task-66a3bbff");
+    writeOrchState(1, "task-66a3bbff", "setup", { taskId: "task-66a3bbff", phase: "plan", consecutiveTicks: 5 });
+    writeT3codeState(1, DEAD_PID);
+
+    const out = await runCapturingErrors(null);
+
+    expect(out).not.toContain("circuit-breaker tripped");
+    // Reached slotResume (proves not throttled) — fails on the t3code state check.
+    expect(out).toContain("detected dead orchestrator for slot 1");
+    expect(out).toContain("no persisted t3code state");
+  });
+
+  test("LIVENESS SKIP: an already-escalated slot is never re-detected or re-escalated", async () => {
+    // Harness condition: slot liveness already "escalated" (a prior trip, or an
+    // operator). The loop must skip it entirely — no detection, no second
+    // escalation/notification. Without the skip the breaker would re-fire each tick.
+    writeSlot(1, "task-66a3bbff", "escalated");
+    writeOrchState(1, "task-66a3bbff", "setup", { taskId: "task-66a3bbff", phase: "setup", consecutiveTicks: THRESHOLD });
+    writeT3codeState(1, DEAD_PID);
+
+    const out = await runCapturingErrors(null);
+
+    expect(out).not.toContain("detected dead orchestrator");
+    expect(out).not.toContain("circuit-breaker tripped");
+  });
+
+  test("RATE LIMIT: a trip on slot 1 consumes the per-invocation action — slot 2 is left untouched this tick", async () => {
+    // Harness condition: slot 1 trips (escalation), slot 2 is independently
+    // resumable. Escalation does `resumed += 1`, so the loop must not also act
+    // on slot 2 in the same invocation. Mutation control: dropping `resumed += 1`
+    // from the trip path would let slot 2 be detected → this assertion FAILS.
+    writeSlot(1, "task-aaa");
+    writeOrchState(1, "task-aaa", "setup", { taskId: "task-aaa", phase: "setup", consecutiveTicks: THRESHOLD - 1 });
+    writeT3codeState(1, DEAD_PID);
+    writeSlot(2, "task-bbb");
+    writeOrchState(2, "task-bbb", "setup");
+    writeT3codeState(2, DEAD_PID);
+
+    const out = await runCapturingErrors(null);
+
+    expect(out).toContain("circuit-breaker tripped for slot 1");
+    expect(out).not.toContain("slot 2"); // slot 2 not detected/resumed this tick
+  });
+});

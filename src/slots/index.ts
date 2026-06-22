@@ -192,6 +192,36 @@ function writeSlotOrHttp(slotNum: number, data: SlotData): void {
   writeSlotJson(slotNum, data);
 }
 
+/**
+ * Persist a slot's liveness to the AUTHORITATIVE store, worker-first
+ * (gh-ludics-584).
+ *
+ * Unlike `writeSlotOrHttp`, the worker branch here does NOT read the local
+ * slot clone: `readSlot()` falls back to the (possibly stale/empty) local
+ * `slot-N.json` whenever `workerSlotsOverride` is not active (gh-ludics-580),
+ * and an `(empty)` clone would early-return before the controller POST — so
+ * the keepalive resume circuit-breaker's `escalated` mark would never reach the
+ * controller-authoritative state and the loop would keep re-detecting the slot
+ * as non-escalated. We therefore POST directly on a worker (no local read) and
+ * `await` it so it lands before the keepalive oneshot process exits. The breaker
+ * only calls this for a slot already confirmed active via controller-live
+ * `freshSlots`, so skipping the local `(empty)` guard on the worker is safe.
+ */
+export async function persistSlotLiveness(slotNum: number, liveness: SlotLiveness): Promise<void> {
+  validateRange(slotNum, slotsCount());
+  if (isWorkerContext()) {
+    const { clusterPostSlotUpdate } = await import("../cluster-http.ts");
+    await clusterPostSlotUpdate(slotNum, { liveness: liveness ?? undefined });
+    return;
+  }
+  // Controller / standalone: the local harness is authoritative.
+  ensureSlotsDir();
+  const data = readSlot(slotNum);
+  if (data.process === "(empty)") return;
+  setSlotLivenessOnData(data, liveness);
+  writeSlotJson(slotNum, data);
+}
+
 function validateRange(slot: number, count: number): void {
   if (slot < 1 || slot > count) {
     throw new Error(`slot out of range: ${slot} (1-${count})`);

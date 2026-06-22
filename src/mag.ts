@@ -20,7 +20,7 @@ import { isRemoteMachine } from "./remote.ts";
 import { stateMarkDirty } from "./state.ts";
 import { journalAppend } from "./journal.ts";
 import { emitEvent } from "./events.ts";
-import { readOrchestrationState } from "./orchestration/state.ts";
+import { readOrchestrationState, persistState } from "./orchestration/state.ts";
 import { isElaborated } from "./tasks/elaboration.ts";
 import { tasksAbandon, tasksNeedsConfirmationList } from "./tasks/index.ts";
 import { buildAffinityLookup, type AffinityInput } from "./tasks/affinity.ts";
@@ -30,7 +30,7 @@ import {
   expirePendingFollowupRevises,
 } from "./notify.ts";
 import { updateFrontmatterField, removeFrontmatterField, parseTaskFrontmatter, priorityValue, TERMINAL_STATUSES } from "./tasks/markdown.ts";
-import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask } from "./slots/index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotStop, taskCompleteDirectly, markSlotSetupFailed, findSlotForTask, persistSlotLiveness } from "./slots/index.ts";
 import { expandDuoSlots } from "./slots/duo-expand.ts";
 import { readSlotState } from "./t3code/server.ts";
 import { captureLastMessage, captureLastMessageHash, readTmuxSlotState } from "./adapters/tmux-adapter.ts";
@@ -3474,6 +3474,15 @@ function isWorkerNode(): boolean {
   return !!clusterCurrentMachineName() && !clusterIsController();
 }
 
+/**
+ * gh-ludics-584 resume circuit-breaker threshold: stop re-spawning after this
+ * many consecutive keepalive ticks that found the orchestrator dead in the SAME
+ * (taskId, phase) with no advance. At the ~2-min worker keepalive cadence this
+ * is ~4-6 min of pure no-progress before escalating to a single actionable
+ * alert instead of looping forever.
+ */
+const MAX_CONSECUTIVE_NO_ADVANCE_RESUMES = 3;
+
 export async function maybeResumeDeadOrchestrators(freshSlots?: Map<number, SlotData> | null): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
 
@@ -3497,6 +3506,16 @@ export async function maybeResumeDeadOrchestrators(freshSlots?: Map<number, Slot
     // IMPORTANT: use `slotProcess` not `process` to avoid shadowing the global
     const slotProcess = data.process;
     if (!slotProcess || slotProcess === "(empty)") continue;
+
+    // gh-ludics-584: skip slots an operator (or our own circuit-breaker) has
+    // marked interrupted/escalated — both require an explicit `ludics slot N
+    // resume` to clear. Mirrors maybeAutoStartSlots/maybeFillEmptySlots. On a
+    // worker `data` is the controller-live freshSlots row, so this reads the
+    // authoritative liveness, not a stale local clone. Without this skip the
+    // breaker's escalation would not stick: the slot would be re-detected dead
+    // and re-escalated/re-notified every tick.
+    const slotLiveness = data.liveness ?? "";
+    if (slotLiveness === "interrupted" || slotLiveness === "escalated") continue;
 
     const mode = data.mode ?? "";
     if (mode !== "t3code" && mode !== "tmux") continue;
@@ -3526,6 +3545,62 @@ export async function maybeResumeDeadOrchestrators(freshSlots?: Map<number, Slot
     }
     if (alive) continue;
 
+    // gh-ludics-584 circuit-breaker: count consecutive dead-runner detections
+    // in the SAME (taskId, phase). A different (taskId, phase) than last time
+    // means real progress (or a new task) → reset to 1. Same → increment. When
+    // the count reaches the threshold, the runner is dying without ever
+    // advancing (the worker cgroup-reap loop): stop re-spawning, mark the slot
+    // escalated, and raise one priority alert instead of looping forever.
+    const rec = orchState.autoResumeNoProgress;
+    const sameWork = !!rec && rec.taskId === taskId && rec.phase === orchState.phase;
+    const ticks = sameWork ? rec!.consecutiveTicks + 1 : 1;
+
+    if (ticks >= MAX_CONSECUTIVE_NO_ADVANCE_RESUMES) {
+      console.error(
+        `ludics: orchestration resume circuit-breaker tripped for slot ${slotNum} ` +
+        `(task ${taskId}, phase ${orchState.phase}, ${ticks} consecutive no-advance ` +
+        `resumes) — halting auto-resume and escalating`,
+      );
+      // Persist the tripped count so the record reflects reality even though we
+      // won't resume (informational; the escalated liveness is what stops the loop).
+      orchState.autoResumeNoProgress = { taskId, phase: orchState.phase, consecutiveTicks: ticks };
+      persistState(orchState, orchState.harnessDir);
+      // Worker-authoritative escalation (POSTs to controller on a worker; no
+      // stale local read — see persistSlotLiveness).
+      try {
+        await persistSlotLiveness(slotNum, "escalated");
+      } catch (err) {
+        console.error(
+          `ludics: failed to mark slot ${slotNum} escalated: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      notifyOutgoing(
+        `slot ${slotNum} orchestration wedged: runner for task ${taskId} died ` +
+        `${ticks}× in phase "${orchState.phase}" without advancing (last dead pid ` +
+        `${pid}) — auto-resume halted; run \`ludics slot ${slotNum} resume\` after fixing`,
+        5,
+        "ludics orchestration stuck",
+      );
+      emitEvent({
+        event_type: "orchestration_resume_circuit_break",
+        source: "keepalive",
+        scope: "slot",
+        slot: slotNum,
+        task: taskId,
+        phase: orchState.phase,
+        deadPid: pid,
+        threshold: MAX_CONSECUTIVE_NO_ADVANCE_RESUMES,
+        count: ticks,
+        message: `resume circuit-breaker tripped for slot ${slotNum}: ${ticks} consecutive ` +
+          `no-advance resumes in phase=${orchState.phase} (task ${taskId})`,
+      });
+      // Escalation consumes this invocation's single action so the loop does
+      // not also resume/churn another slot in the same tick.
+      resumed += 1;
+      continue;
+    }
+
     console.error(
       `ludics: detected dead orchestrator for slot ${slotNum} ` +
       `(pid ${pid}, task ${taskId}, phase ${orchState.phase}) — auto-resuming`,
@@ -3549,6 +3624,21 @@ export async function maybeResumeDeadOrchestrators(freshSlots?: Map<number, Slot
         if (setWorkerSlotsOverride) setWorkerSlotsOverride(null);
       }
       resumed += 1;
+      // gh-ludics-584: record the no-advance counter AFTER a successful resume
+      // (a throwing resume must not advance it). Re-read post-resume so we write
+      // against the freshest state (slotResume may have rewritten it); the phase
+      // is whatever the resume produced — if it advanced, next tick's sameWork
+      // compares against the new phase and resets to 1.
+      try {
+        const post = readOrchestrationState(slotNum) ?? orchState;
+        post.autoResumeNoProgress = { taskId, phase: post.phase, consecutiveTicks: ticks };
+        persistState(post, post.harnessDir);
+      } catch (err) {
+        console.error(
+          `ludics: failed to persist resume counter for slot ${slotNum}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       emitEvent({
         event_type: "orchestration_auto_resume",
         source: "keepalive",

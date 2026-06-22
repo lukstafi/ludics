@@ -39,6 +39,7 @@
   "OrchestrationState": [
     "agentStates",
     "agents",
+    "autoResumeNoProgress",
     "backend",
     "branches",
     "config",
