@@ -51,26 +51,42 @@ framework code, buildable and testable on mac-studio.
 
 ## Acceptance Criteria
 
-1. **The detached runner survives the worker keepalive oneshot exit.** On
-   Linux, the runner is launched into its own process scope/cgroup that is
-   **not** reaped when `ludics-mag.service` finishes, so an orchestration
-   started or resumed by the worker keepalive keeps running and advances past
-   `setup` (operator-verified live on minipc-wsl; see AC 7).
+1. **The detached runner survives the worker keepalive oneshot exit.** The
+   `setsid`-detached runner is **not** reaped when `ludics-mag.service`
+   finishes, so an orchestration started or resumed by the worker keepalive
+   keeps running and advances past `setup` (operator-verified live on
+   minipc-wsl; see AC 7). On Linux this is delivered by the generated unit's
+   `KillMode=process` (AC 2), which kills only the keepalive's main process on
+   oneshot exit and leaves the detached descendant alive.
 
-2. **The escape is applied in BOTH layers** (per the user-resolved design,
-   Q2 → both):
-   - **TS spawn path** (`src/orchestration/process.ts`): a **Linux-only**
-     branch detaches the runner out of the parent cgroup; the existing
-     `setsid`/perl path is **unchanged on macOS** and on Linux where the
-     escape mechanism is unavailable (graceful fallback).
+2. **The cgroup escape is delivered by the generated systemd unit; the TS spawn
+   path keeps the pid-preserving `setsid` wrapper.** *(Design note — supersedes
+   the original Q2 "both layers" plan, per PR #586 review.)* The original plan
+   also wrapped the runner in `systemd-run --user --scope` in
+   `src/orchestration/process.ts`. That mechanism is **incompatible** with the
+   runner's pid-based sibling self-guard: `systemd-run --scope` runs the command
+   under a long-lived supervisor, so `Bun.spawn`'s pid is the **wrapper**, not
+   the runner. `slotResume` persists that wrapper pid as the sibling
+   orchestration pid, and the runner's self-guard (`src/orchestration/runner.ts`)
+   then exits on the live-pid mismatch (`recordedPid !== process.pid` with a
+   *live* `recordedPid`; the gh-509 reclaim only triggers for a *dead* recorded
+   pid). A transient scope's `MainPID` is not reliably queryable to recover the
+   real runner pid, so the TS-layer cgroup escape is **dropped** in favor of:
    - **Generated systemd unit** (`src/triggers.ts`, the `mag` keepalive unit):
-     the `ludics-mag.service` body is hardened so a detached descendant is not
-     reaped on oneshot exit.
+     `KillMode=process` so a detached descendant is not reaped on oneshot exit.
+     This is the load-bearing fix (the proposal's own Approach §2 already noted
+     `KillMode=process` "protects *any* keepalive descendant from cgroup reaping
+     … [when] the fallback `setsid` path is taken").
+   - **TS spawn path** (`src/orchestration/process.ts`): retains the existing
+     `setsid`/perl wrapper, which `exec`s the runner in place so `proc.pid` is
+     the runner's real pid (required by the self-guard and liveness checks), and
+     additionally captures stdout (AC 6).
 
 3. **Controller / standalone behavior is unchanged.** macOS (launchd) keepalive,
    the long-lived controller `mag start`, and standalone runs spawn the runner
-   exactly as before. The Linux-only detection is a runtime check (platform +
-   mechanism availability), not a compile-time switch.
+   exactly as before (`setsid`/perl, unchanged). `KillMode=process` is added
+   only to the Linux-generated `mag` unit, so non-Linux nodes are untouched by
+   construction.
 
 4. **Resume-loop circuit-breaker with escalation** (Q3 → yes, in this task):
    `maybeResumeDeadOrchestrators` (`src/mag.ts`) detects when a slot has been
@@ -92,12 +108,12 @@ framework code, buildable and testable on mac-studio.
    silent-death diagnosis doesn't require guessing which sink was used.
 
 7. **The cgroup behavior is operator-verified live** on the Linux worker
-   (minipc-wsl): a remote `--pair` orchestration started from the controller
-   advances past `setup` and the runner pid is stable across keepalive ticks.
-   The proposal calls this out explicitly as an operator step — the in-repo
-   tests assert the falsifiable *proxies* (per-OS spawn shape + circuit-breaker
-   + stdout capture), since the cgroup reaping itself can only be reproduced
-   under systemd.
+   (minipc-wsl): after re-init regenerates the `KillMode=process` unit, a remote
+   `--pair` orchestration started from the controller advances past `setup` and
+   the runner pid is stable across keepalive ticks. The proposal calls this out
+   explicitly as an operator step — the in-repo tests assert the falsifiable
+   *proxies* (`KillMode=process` unit body + circuit-breaker + stdout capture),
+   since the cgroup reaping itself can only be reproduced under systemd.
 
 ## Context
 
@@ -181,6 +197,14 @@ capture. The skeleton below is straightforward; the agents own the details.
 
 ### 1. TS spawn path — Linux cgroup-escape branch (`src/orchestration/process.ts`)
 
+> **⚠️ Superseded by AC 2 (PR #586 review).** This `systemd-run --scope`
+> approach was found incompatible with the runner's pid-based sibling
+> self-guard (the wrapper pid would be persisted and the runner would exit on
+> the live-pid mismatch). The cgroup escape is delivered solely by the unit's
+> `KillMode=process` (§2); the TS spawn path keeps the pid-preserving `setsid`
+> wrapper and only adds stdout capture (§4). The original sketch is retained
+> below for the analysis trail.
+
 Move the runner into its own transient scope so it leaves the keepalive's
 cgroup. The cleanest mechanism is `systemd-run --user --scope --collect`:
 
@@ -256,15 +280,14 @@ visibility gap that made this hard to diagnose.
 
 Build/verify: `bun run build` then `bun test` in `~/ludics`.
 
-1. **Per-OS spawn shape** (`src/orchestration/process.test.ts` or extend
-   `util.test.ts`): drive the new `runnerLaunchCommand` helper with explicit
-   `{ platform, systemdRunPath, hasUserSystemd }` overrides and assert:
-   - Linux + `systemd-run` present + user systemd → argv begins with
-     `systemd-run --user --scope --collect …` and the original
-     `orch run-internal N` command is the tail;
-   - Linux + `systemd-run` absent → falls back to the `setsidWrap` shape;
-   - macOS (`darwin`) → unchanged `setsid`/perl wrapper (no `systemd-run`).
-   This is the falsifiable proxy for "the runner escapes the parent cgroup."
+1. ~~**Per-OS spawn shape** (`runnerLaunchCommand`)~~ — **superseded (AC 2):** the
+   `systemd-run` branch was dropped, so there is no per-OS spawn-shape helper.
+   The falsifiable proxy for "the runner escapes the parent cgroup" is instead
+   the **`KillMode=process` unit-body test** (`src/triggers.test.ts`): the
+   generated `mag` `systemdServiceBody` contains `KillMode=process`, and no
+   other oneshot body does (scope negative-control). The stdout-capture test
+   (`src/orchestration/process.test.ts`) additionally asserts the runner's real
+   pid is returned and stdout/stderr share the per-slot log fd.
 
 2. **Circuit-breaker** (extend `src/mag.test.ts`): seed a slot with a dead
    orchestrator pid and persisted no-progress state at the threshold; assert

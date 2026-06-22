@@ -356,8 +356,12 @@ function enableSystemdUnit(unitName: string): void {
  * `KillMode=control-group` reaps the unit's *entire* cgroup when the oneshot
  * exits, killing the detached orchestration runner the keepalive just spawned
  * (the worker resume loop). `process` kills only the unit's main process,
- * leaving detached descendants alive — belt-and-suspenders alongside the
- * `systemd-run --scope` cgroup-escape in `runnerLaunchCommand`. Scoped to the
+ * leaving the `setsid`-detached runner alive. This is the load-bearing
+ * cgroup-escape fix: the runner is spawned via `setsid`/`perl` (which exec the
+ * runner in place, preserving its real pid for the sibling self-guard), so the
+ * escape cannot live in the TS spawn path — a `systemd-run --scope` wrapper
+ * would change `Bun.spawn`'s pid to the supervisor and break the runner's
+ * pid-based self-guard (see `src/orchestration/process.ts`). Scoped to the
  * `mag` unit only; the other oneshot triggers have no long-lived descendants.
  */
 export function magKeepaliveServiceBody(bin: string): string {
