@@ -11,7 +11,8 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { triggerAllowedForRole, CONTROLLER_ONLY_TRIGGER_NAMES, removeControllerTriggerUnits, shouldTeardownControllerUnits, plistEnvXml } from "./triggers.ts";
+import { readFileSync } from "fs";
+import { triggerAllowedForRole, CONTROLLER_ONLY_TRIGGER_NAMES, removeControllerTriggerUnits, shouldTeardownControllerUnits, plistEnvXml, magKeepaliveServiceBody } from "./triggers.ts";
 import type { ClusterMachine } from "./cluster.ts";
 
 const CONTROLLER_ONLY = ["dashboard", "ntfy-subscribe", "morning", "health", "sync", "watch"] as const;
@@ -172,5 +173,39 @@ describe("plistEnvXml — bakes LUDICS_CLUSTER_MACHINE_NAME when resolvable", ()
     const xml = plistEnvXml(null);
     expect(xml).not.toContain("LUDICS_CLUSTER_MACHINE_NAME");
     expect(xml).toContain("<key>PATH</key>");
+  });
+});
+
+// gh-ludics-584: the generated worker `ludics-mag.service` must carry
+// `KillMode=process` so the oneshot keepalive does NOT reap the detached
+// orchestration runner via its cgroup on exit. Without this line the worker
+// resume loop never advances past `setup` (the runner is SIGTERM'd each tick).
+describe("magKeepaliveServiceBody — KillMode=process hardening (gh-ludics-584)", () => {
+  test("emits Type=oneshot, KillMode=process, and the mag start ExecStart", () => {
+    const body = magKeepaliveServiceBody("/usr/local/bin/ludics");
+    // Invariant: the cgroup-reap-protection line is present (its absence is the bug).
+    expect(body).toContain("KillMode=process");
+    expect(body).toContain("Type=oneshot");
+    expect(body).toContain("ExecStart=/usr/local/bin/ludics mag start");
+  });
+
+  test("does NOT hardcode a stale bin path (uses the passed bin)", () => {
+    const body = magKeepaliveServiceBody("/opt/custom/ludics");
+    expect(body).toContain("ExecStart=/opt/custom/ludics mag start");
+    expect(body).not.toContain("/usr/local/bin/ludics");
+  });
+
+  // Negative control / scope guard: KillMode must be applied ONLY to the mag
+  // unit — the other oneshot trigger bodies (startup, morning, health, watch)
+  // intentionally have no long-lived descendants and must not gain it. The mag
+  // body is the single source; a leak into another inline systemdServiceBody
+  // would push this count above 1.
+  test("KillMode appears in exactly one unit body in triggers.ts (mag unit only)", () => {
+    const src = readFileSync(new URL("./triggers.ts", import.meta.url), "utf-8");
+    // Match the template-literal form `\nKillMode=process` (an actual unit-body
+    // line), not prose mentions in doc comments. A leak into another inline
+    // `systemdServiceBody` template would push this above 1.
+    const matches = src.match(/\\nKillMode=process/g) ?? [];
+    expect(matches.length).toBe(1);
   });
 });

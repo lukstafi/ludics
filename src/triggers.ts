@@ -349,6 +349,21 @@ function enableSystemdUnit(unitName: string): void {
   safeSyncOutput(["systemctl", "--user", "restart", unitName]);
 }
 
+/**
+ * systemd `[Service]` body for the Mag keepalive oneshot.
+ *
+ * `KillMode=process` (gh-ludics-584) is the critical line: the default
+ * `KillMode=control-group` reaps the unit's *entire* cgroup when the oneshot
+ * exits, killing the detached orchestration runner the keepalive just spawned
+ * (the worker resume loop). `process` kills only the unit's main process,
+ * leaving detached descendants alive — belt-and-suspenders alongside the
+ * `systemd-run --scope` cgroup-escape in `runnerLaunchCommand`. Scoped to the
+ * `mag` unit only; the other oneshot triggers have no long-lived descendants.
+ */
+export function magKeepaliveServiceBody(bin: string): string {
+  return `[Service]\nType=oneshot\nKillMode=process\nExecStart=${bin} mag start\n`;
+}
+
 type SimpleTriggerSpec = {
   /** macOS plist scheduling lines (between Label and EnvironmentVariables) */
   plistScheduling: string;
@@ -459,7 +474,7 @@ function installSimpleTriggers(): void {
     magEnabled === true || magEnabled === "true",
     {
       plistScheduling: `  <key>RunAtLoad</key>\n  <true/>\n  <key>StartInterval</key>\n  <integer>${keepaliveInterval}</integer>`,
-      systemdServiceBody: `[Service]\nType=oneshot\nExecStart=${bin} mag start\n`,
+      systemdServiceBody: magKeepaliveServiceBody(bin),
       systemdActivationUnit: "timer",
       systemdActivationBody: `[Unit]\nDescription=ludics Mag keepalive timer\n\n[Timer]\nOnBootSec=60\nOnUnitActiveSec=${keepaliveInterval}s\nUnit=ludics-mag.service\n\n[Install]\nWantedBy=timers.target\n`,
     },

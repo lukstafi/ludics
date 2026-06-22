@@ -18,6 +18,10 @@ After=network.target
 
 [Service]
 Type=oneshot
+# gh-ludics-584: kill only the main process on stop, not the whole cgroup —
+# otherwise the detached orchestration runner spawned by `mag start` is reaped
+# when this oneshot exits (the worker resume loop).
+KillMode=process
 # Update this path to your ludics installation
 ExecStart=/usr/local/bin/ludics mag start
 
