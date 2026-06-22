@@ -1,6 +1,6 @@
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { parseTaskFrontmatter } from "../tasks/markdown.ts";
-import { basename, resolve } from "path";
+import { basename, join, resolve } from "path";
 import {
   getGitBranch,
   getMainRepoFromWorktree,
@@ -1093,7 +1093,12 @@ async function startOrchestratedThreads(
     ),
   );
 
-  const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode);
+  // Read proposal path for the reachability guard (AC1–AC5).
+  const taskFilePath_ = join(ctx.harnessDir, "tasks", `${taskId}.md`);
+  const taskContent_ = existsSync(taskFilePath_) ? readFileSync(taskFilePath_, "utf-8") : null;
+  const proposalPath_ = taskContent_ ? (parseTaskFrontmatter(taskContent_).proposal ?? "") : "";
+
+  const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode, proposalPath_);
   symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);
 
   const agents: AgentConfig[] = orchestration.agents.map((agent, index) => ({
