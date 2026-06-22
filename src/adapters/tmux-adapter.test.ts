@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { AdapterContext } from "./types.ts";
@@ -777,5 +777,123 @@ describe("agentCliCommand — passes --model + Fable remediation (task-13dee93b 
     expect(cmd).toContain("codex --yolo");
     expect(cmd).not.toContain("--model");
     expect(cmd).not.toContain("claude-fable unavailable");
+  });
+});
+
+// gh-ludics-580 AC5 + AC9: per-slot tmux state must move to a non-harness
+// worker cache on a federation worker, while controller/standalone keeps using
+// the git-tracked harness tree (harnessDir/orchestration/tmux-slot-N.json).
+describe("readTmuxSlotState/writeTmuxSlotState/removeTmuxSlotState — worker-cache migration", () => {
+  let TMP: string;
+  let harness: string;
+  const ORIGINAL_HOME = process.env.HOME;
+  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+  const ORIGINAL_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+
+  function writeClusterConfig(homeDir: string): string {
+    const cfg = join(homeDir, "config.yaml");
+    writeFileSync(cfg, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: minipc-wsl
+      host: minipc-wsl.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    return cfg;
+  }
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "tmux-worker-cache-"));
+    process.env.HOME = TMP;
+    harness = join(TMP, "harness");
+    mkdirSync(harness, { recursive: true });
+    process.env.LUDICS_CONFIG = writeClusterConfig(TMP);
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HOME === undefined) delete process.env.HOME; else process.env.HOME = ORIGINAL_HOME;
+    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+    if (ORIGINAL_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_MACHINE;
+    try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test("worker: write/read round-trip via $HOME/.ludics-orch-cache/tmux, harness untouched", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // → worker context
+    const { readTmuxSlotState, writeTmuxSlotState, removeTmuxSlotState } = await import("./tmux-adapter.ts");
+    const state = {
+      slot: 4,
+      ttydPids: { coder: 4242 },
+      orchestration: { stateFile: join(harness, "orchestration", "slot-4.json"), mode: "pair", pid: 9999 },
+    } as unknown as Parameters<typeof writeTmuxSlotState>[0];
+    writeTmuxSlotState(state, harness);
+
+    const round = readTmuxSlotState(4, harness);
+    expect(round).not.toBeNull();
+    expect(round!.slot).toBe(4);
+    expect(round!.ttydPids.coder).toBe(4242);
+    expect(round!.orchestration?.pid).toBe(9999);
+
+    const cachePath = join(TMP, ".ludics-orch-cache", "tmux", "slot-4.json");
+    expect(existsSync(cachePath)).toBe(true);
+    expect(existsSync(join(harness, "orchestration", "tmux-slot-4.json"))).toBe(false);
+
+    removeTmuxSlotState(4, harness);
+    expect(existsSync(cachePath)).toBe(false);
+    expect(readTmuxSlotState(4, harness)).toBeNull();
+  });
+
+  test("worker upgrade bridge: reads fall back to a legacy harness file when the cache is empty (gh-ludics-580 P1)", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker context
+    const { readTmuxSlotState, writeTmuxSlotState } = await import("./tmux-adapter.ts");
+
+    // In-flight slot started BEFORE the migration: state at the legacy harness
+    // path, nothing in the cache.
+    const harnessSlotPath = join(harness, "orchestration", "tmux-slot-7.json");
+    mkdirSync(join(harness, "orchestration"), { recursive: true });
+    writeFileSync(harnessSlotPath, JSON.stringify({ slot: 7, ttydPids: { coder: 7777 }, orchestration: { stateFile: "x", mode: "pair", pid: 4321 } }));
+    expect(existsSync(join(TMP, ".ludics-orch-cache", "tmux", "slot-7.json"))).toBe(false);
+
+    // Invariant: legacy file is read (resume must not see "no state"). Without
+    // the fallback this is null.
+    const read = readTmuxSlotState(7, harness);
+    expect(read).not.toBeNull();
+    expect(read!.orchestration?.pid).toBe(4321);
+
+    // Next persist migrates forward to the cache, which shadows the (undeleted)
+    // legacy file; the worker did not mutate its git-tracked harness clone.
+    writeTmuxSlotState({ slot: 7, ttydPids: { coder: 8888 }, orchestration: { stateFile: "x", mode: "pair", pid: 9999 } } as unknown as Parameters<typeof writeTmuxSlotState>[0], harness);
+    expect(existsSync(join(TMP, ".ludics-orch-cache", "tmux", "slot-7.json"))).toBe(true);
+    expect(readTmuxSlotState(7, harness)!.orchestration?.pid).toBe(9999);
+    expect(JSON.parse(readFileSync(harnessSlotPath, "utf-8")).orchestration.pid).toBe(4321);
+  });
+
+  test("controller: write/read uses harness tree, cache untouched, no leftover .tmp", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "leader-box"; // role leader → controller
+    const { readTmuxSlotState, writeTmuxSlotState, removeTmuxSlotState } = await import("./tmux-adapter.ts");
+    const state = { slot: 2, ttydPids: { coder: 1 } } as unknown as Parameters<typeof writeTmuxSlotState>[0];
+    writeTmuxSlotState(state, harness);
+
+    const harnessPath = join(harness, "orchestration", "tmux-slot-2.json");
+    expect(existsSync(harnessPath)).toBe(true);
+    expect(existsSync(`${harnessPath}.tmp`)).toBe(false);
+    expect(existsSync(join(TMP, ".ludics-orch-cache", "tmux", "slot-2.json"))).toBe(false);
+    expect(readTmuxSlotState(2, harness)?.ttydPids.coder).toBe(1);
+
+    removeTmuxSlotState(2, harness);
+    expect(existsSync(harnessPath)).toBe(false);
   });
 });

@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile, runStagingOutboundPushTick } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile, runStagingOutboundPushTick, maybeResumeDeadOrchestrators } from "./mag.ts";
+import { emptySlotData, writeSlotJson } from "./slots/json.ts";
+import type { SlotData } from "./slots/types.ts";
 import type { RunGit } from "./git-runner.ts";
 import type { LudicsFullConfig, ProjectConfig } from "./config.ts";
 
@@ -1601,5 +1603,182 @@ describe("runStagingOutboundPushTick", () => {
     });
     expect(results).toEqual([]);
     expect(calls).toHaveLength(0);
+  });
+});
+
+// gh-ludics-580: worker dead-orchestrator auto-resume must use controller-live
+// slot state (the `freshSlots` map), never the worker's stale local harness
+// clone. These tests exercise maybeResumeDeadOrchestrators on a federation
+// worker — a path that previously had zero coverage.
+describe("maybeResumeDeadOrchestrators — worker controller-live slot state (gh-ludics-580)", () => {
+  const ORIGINAL_HOME = process.env.HOME;
+  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+  const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
+  const ORIGINAL_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+  let TMP = "";
+
+  function harness(): string { return join(TMP, "harness"); }
+  function orchCacheDir(): string { return join(TMP, ".ludics-orch-cache"); }
+
+  // Config: start_sessions autonomy must be non-manual or the function
+  // early-returns (gh feedback: keepalive tests need autonomy auto), plus a
+  // two-machine cluster so worker/controller context resolves via
+  // LUDICS_CLUSTER_MACHINE_NAME.
+  function writeConfig(homeDir: string): string {
+    const configPath = join(homeDir, "config.yaml");
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+mag:
+  autonomy_level:
+    start_sessions: auto
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: minipc-wsl
+      host: minipc-wsl.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    return configPath;
+  }
+
+  // Worker-cache writers (mirror the migrated read paths in worker context).
+  function writeWorkerOrchState(slot: number, taskId: string): void {
+    mkdirSync(orchCacheDir(), { recursive: true });
+    writeFileSync(join(orchCacheDir(), `slot-${slot}.json`), JSON.stringify({
+      slot, taskId, phase: "work", mode: "pair",
+    }));
+  }
+  function writeWorkerT3codeState(slot: number, pid: number): void {
+    const dir = join(orchCacheDir(), "t3code");
+    mkdirSync(dir, { recursive: true });
+    // threads: [] → slotResume's t3code branch throws "no persisted t3code
+    // state" *after* the machine gate — a deterministic, process-free failure
+    // that is NOT the remote-offline refusal.
+    writeFileSync(join(dir, `slot-${slot}.json`), JSON.stringify({
+      slot, threads: [], orchestration: { stateFile: "x", mode: "pair", pid },
+    }));
+  }
+  function freshSlot(slot: number, machine: string, taskId: string): SlotData {
+    return { ...emptySlotData(slot), process: "orch-runner", task: taskId, mode: "t3code", machine, path: join(TMP, "wt"), liveness: null };
+  }
+  // Observable seam: on a worker, emitEvent forwards to the controller over
+  // HTTP and writes no local journal, so we observe the resume decision via
+  // console.error — which fires locally for both the "detected dead
+  // orchestrator" detection log and the catch-path "failed to auto-resume" log
+  // (carrying the thrown message).
+  async function runCapturingErrors(fresh: Map<number, SlotData> | null): Promise<string> {
+    const logs: string[] = [];
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    });
+    try {
+      await maybeResumeDeadOrchestrators(fresh);
+    } finally {
+      spy.mockRestore();
+    }
+    return logs.join("\n");
+  }
+
+  const DEAD_PID = 2147483647; // INT32_MAX — never a live process
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-mag-resume-"));
+    process.env.HOME = TMP;
+    process.env.LUDICS_CONFIG = writeConfig(TMP);
+    process.env.LUDICS_HARNESS_DIR = harness();
+    mkdirSync(harness(), { recursive: true });
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HOME === undefined) delete process.env.HOME; else process.env.HOME = ORIGINAL_HOME;
+    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+    if (ORIGINAL_HARNESS_DIR === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
+    if (ORIGINAL_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_MACHINE;
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  test("AC1: worker resumes its own slot locally despite a stale local harness clone (no remote-offline refusal)", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker context
+
+    // Stale LOCAL harness slot — the bug's trigger: machine=mac-studio (a remote
+    // peer with no heartbeat). Without the override, readSlot reads THIS.
+    writeSlotJson(1, { ...emptySlotData(1), process: "orch-runner", task: "task-850e1b37", mode: "t3code", machine: "mac-studio" });
+
+    // Worker-cache state (fresh, what the runner wrote): orch state + dead t3code pid.
+    writeWorkerOrchState(1, "task-66a3bbff");
+    writeWorkerT3codeState(1, DEAD_PID);
+
+    // Controller-live state: this worker (minipc-wsl) owns slot 1, current task.
+    const freshSlots = new Map<number, SlotData>([[1, freshSlot(1, "minipc-wsl", "task-66a3bbff")]]);
+
+    const out = await runCapturingErrors(freshSlots);
+
+    // Harness condition: stale local machine=mac-studio + freshSlots machine=self.
+    // Invariant: the slot the worker legitimately owns reaches LOCAL execution.
+    // The override makes readSlot return machine=minipc-wsl (self), so resume
+    // passes the isRemoteMachine gate and fails only on the t3code state check —
+    // never the machine-identity refusal.
+    expect(out).toContain("detected dead orchestrator for slot 1"); // reached resume
+    expect(out).toContain("no persisted t3code state");             // failed LOCALLY, past the gate
+    // Mutation control: dropping the setWorkerSlotsOverride wrap makes readSlot
+    // return the stale machine=mac-studio → this assertion would FAIL with
+    // "assigned machine mac-studio is offline — cannot resume".
+    expect(out).not.toContain("is offline — cannot resume");
+  });
+
+  test("AC2: worker skips auto-resume when freshSlots is null — no local-clone fallback", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker context
+
+    // A LOCAL slot that WOULD look resumable (machine=self so it survives the
+    // remote-skip; dead orch in the worker cache). If the function fell back to
+    // readAllSlotJson, it would detect this and attempt resume.
+    writeSlotJson(1, { ...emptySlotData(1), process: "orch-runner", task: "task-66a3bbff", mode: "t3code", machine: "minipc-wsl" });
+    writeWorkerOrchState(1, "task-66a3bbff");
+    writeWorkerT3codeState(1, DEAD_PID);
+
+    const out = await runCapturingErrors(null);
+
+    // Harness condition: worker context + null freshSlots + a resumable local
+    // clone. Invariant: with no controller-live state, a worker never reads the
+    // local clone, so it never even detects the dead orchestrator. Mutation
+    // control: removing the `if (isWorkerNode()) return` guard makes
+    // readAllSlotJson find slot 1 → "detected dead orchestrator" would appear →
+    // this assertion would FAIL.
+    expect(out).not.toContain("detected dead orchestrator");
+  });
+
+  test("AC2 positive control: controller WITH null freshSlots still reaches the loop (skip is worker-only)", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "leader-box"; // controller context
+
+    // On the controller the harness is authoritative; the local-clone fallback
+    // is legitimate. Same resumable local slot → resume IS attempted.
+    writeSlotJson(1, { ...emptySlotData(1), process: "orch-runner", task: "task-66a3bbff", mode: "t3code", machine: "leader-box" });
+    // On the controller, orch + t3code state live in the harness tree (not the
+    // worker cache), so write them there.
+    mkdirSync(join(harness(), "orchestration"), { recursive: true });
+    writeFileSync(join(harness(), "orchestration", "slot-1.json"), JSON.stringify({ slot: 1, taskId: "task-66a3bbff", phase: "work", mode: "pair" }));
+    mkdirSync(join(harness(), "t3code"), { recursive: true });
+    writeFileSync(join(harness(), "t3code", "slot-1.json"), JSON.stringify({ slot: 1, threads: [], orchestration: { stateFile: "x", mode: "pair", pid: DEAD_PID } }));
+
+    const out = await runCapturingErrors(null);
+
+    // Controller did NOT early-return: it reached slotResume (which fails on the
+    // t3code state check). isRemoteMachine("leader-box")=self → local, so the
+    // failure is the t3code-state one, not an offline refusal. This proves the
+    // null-freshSlots skip is gated on isWorkerNode(), not unconditional.
+    expect(out).toContain("detected dead orchestrator for slot 1");
+    expect(out).toContain("no persisted t3code state");
   });
 });

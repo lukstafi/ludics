@@ -23,10 +23,12 @@ import {
   DEFAULT_SUBSTANTIVE_STALL_CONFIG,
   initAgentRuntimeState,
   parseSubstantiveStallOverrides,
+  isWorkerContext,
   persistState,
   readOrchestrationState,
   removeOrchestrationState,
   stateFilePath,
+  workerCacheDir,
   type AgentConfig,
   type OrchestrationState,
 } from "../orchestration/state.ts";
@@ -82,6 +84,14 @@ function tmuxSlotPath(slot: number, harnessDir: string): string {
   return join(harnessDir, "orchestration", `tmux-slot-${slot}.json`);
 }
 
+// gh-ludics-580: on a federation worker, per-slot tmux state must NOT live in
+// the git-tracked harness tree. Mirror readOrchestrationState: redirect to a
+// non-harness cache under workerCacheDir(), disambiguated by the `tmux/`
+// subdirectory.
+function tmuxWorkerCachePath(slot: number): string {
+  return join(workerCacheDir(), "tmux", `slot-${slot}.json`);
+}
+
 // Per-slot per-agent ttyd log path. Mirrors src/mag.ts's HOME/Library/Logs
 // preference with a /tmp fallback for non-macOS hosts so newsyslog rotates
 // the macOS path for free.
@@ -93,20 +103,39 @@ export function ttydLogPath(slot: number, agentName: string): string {
 }
 
 function readTmuxSlotState(slot: number, harnessDir: string): TmuxSlotState | null {
-  const path = tmuxSlotPath(slot, harnessDir);
-  if (!existsSync(path)) return null;
-  try {
-    // Read-boundary for TmuxSlotState. Optional persisted fields stay sparse:
-    // ttydRestartCounts is preserved as-on-disk (undefined for legacy files,
-    // populated Record when present). New optional fields should land here so
-    // every reader sees the same normalized shape.
-    return JSON.parse(readFileSync(path, "utf-8")) as TmuxSlotState;
-  } catch {
-    return null;
+  // On a worker, prefer the non-harness cache but fall back to a legacy
+  // pre-migration harness file written by THIS worker before the cache existed
+  // (gh-ludics-580 upgrade bridge — mirrors readSlotState). Read-only: writes
+  // go to the cache, which then shadows the stale legacy file; the legacy file
+  // is not deleted (a worker must not dirty its git-tracked harness clone). A
+  // corrupt cache file returns null without falling through (preserves the
+  // existing "exists-but-corrupt → null" semantics); only an ABSENT cache
+  // falls back to the legacy path.
+  const candidates = isWorkerContext()
+    ? [tmuxWorkerCachePath(slot), tmuxSlotPath(slot, harnessDir)]
+    : [tmuxSlotPath(slot, harnessDir)];
+  for (const path of candidates) {
+    if (!existsSync(path)) continue;
+    try {
+      // Read-boundary for TmuxSlotState. Optional persisted fields stay sparse:
+      // ttydRestartCounts is preserved as-on-disk (undefined for legacy files,
+      // populated Record when present). New optional fields should land here so
+      // every reader sees the same normalized shape.
+      return JSON.parse(readFileSync(path, "utf-8")) as TmuxSlotState;
+    } catch {
+      return null;
+    }
   }
+  return null;
 }
 
 function writeTmuxSlotState(state: TmuxSlotState, harnessDir: string): void {
+  if (isWorkerContext()) {
+    const dir = join(workerCacheDir(), "tmux");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeJsonFile(tmuxWorkerCachePath(state.slot), state);
+    return;
+  }
   const path = tmuxSlotPath(state.slot, harnessDir);
   const dir = join(harnessDir, "orchestration");
   if (!existsSync(dir)) {
@@ -116,7 +145,7 @@ function writeTmuxSlotState(state: TmuxSlotState, harnessDir: string): void {
 }
 
 function removeTmuxSlotState(slot: number, harnessDir: string): void {
-  const path = tmuxSlotPath(slot, harnessDir);
+  const path = isWorkerContext() ? tmuxWorkerCachePath(slot) : tmuxSlotPath(slot, harnessDir);
   if (existsSync(path)) {
     try { unlinkSync(path); } catch { /* ignore */ }
   }

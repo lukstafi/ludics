@@ -20,6 +20,7 @@ function migrateStateDirIfNeeded(t3Dir: string): void {
   }
 }
 import { harnessDir as defaultHarnessDir } from "../config.ts";
+import { isWorkerContext, workerCacheDir } from "../orchestration/state.ts";
 import { networkHostname } from "../network.ts";
 import { T3CodeClient } from "./client.ts";
 import type { T3CodeServerRecord, T3CodeSlotState, T3Snapshot } from "./types.ts";
@@ -87,6 +88,15 @@ export function t3codeSlotPath(slot: number, harnessDir: string = defaultHarness
   return join(t3codeDir(harnessDir), `slot-${slot}.json`);
 }
 
+// gh-ludics-580: on a federation worker, per-slot t3code state must NOT live in
+// the git-tracked harness tree (it is worker-local runtime state, never the
+// controller's source of truth). Mirror readOrchestrationState: redirect to a
+// non-harness cache under workerCacheDir(). Disambiguated by the `t3code/`
+// subdirectory so it never collides with orch-state's `slot-N.json`.
+function t3codeWorkerCachePath(slot: number): string {
+  return join(workerCacheDir(), "t3code", `slot-${slot}.json`);
+}
+
 export function readServerRecord(harnessDir: string = defaultHarnessDir()): T3CodeServerRecord | null {
   return readJsonFile<T3CodeServerRecord>(t3codeServerPath(harnessDir));
 }
@@ -95,6 +105,18 @@ export function readSlotState(
   slot: number,
   harnessDir: string = defaultHarnessDir(),
 ): T3CodeSlotState | null {
+  if (isWorkerContext()) {
+    // Prefer the non-harness cache, but fall back to a legacy pre-migration
+    // harness file written by THIS worker before the cache existed
+    // (gh-ludics-580 upgrade bridge): an in-flight slot upgraded across this
+    // change would otherwise read an empty cache and look like it has no
+    // persisted state. Read-only — writes go to the cache, so the next persist
+    // migrates state forward and the cache shadows the stale legacy file. The
+    // legacy file is intentionally not deleted here (a worker must not dirty
+    // its git-tracked harness clone).
+    return readJsonFile<T3CodeSlotState>(t3codeWorkerCachePath(slot))
+      ?? readJsonFile<T3CodeSlotState>(t3codeSlotPath(slot, harnessDir));
+  }
   return readJsonFile<T3CodeSlotState>(t3codeSlotPath(slot, harnessDir));
 }
 
@@ -102,11 +124,16 @@ export function writeSlotState(
   state: T3CodeSlotState,
   harnessDir: string = defaultHarnessDir(),
 ): void {
+  if (isWorkerContext()) {
+    mkdirSync(join(workerCacheDir(), "t3code"), { recursive: true });
+    writeJsonFile(t3codeWorkerCachePath(state.slot), state);
+    return;
+  }
   writeJsonFile(t3codeSlotPath(state.slot, harnessDir), state);
 }
 
 export function removeSlotState(slot: number, harnessDir: string = defaultHarnessDir()): void {
-  const path = t3codeSlotPath(slot, harnessDir);
+  const path = isWorkerContext() ? t3codeWorkerCachePath(slot) : t3codeSlotPath(slot, harnessDir);
   if (!existsSync(path)) return;
   unlinkSync(path);
 }
