@@ -23,10 +23,12 @@ import {
   DEFAULT_SUBSTANTIVE_STALL_CONFIG,
   initAgentRuntimeState,
   parseSubstantiveStallOverrides,
+  isWorkerContext,
   persistState,
   readOrchestrationState,
   removeOrchestrationState,
   stateFilePath,
+  workerCacheDir,
   type AgentConfig,
   type OrchestrationState,
 } from "../orchestration/state.ts";
@@ -82,6 +84,14 @@ function tmuxSlotPath(slot: number, harnessDir: string): string {
   return join(harnessDir, "orchestration", `tmux-slot-${slot}.json`);
 }
 
+// gh-ludics-580: on a federation worker, per-slot tmux state must NOT live in
+// the git-tracked harness tree. Mirror readOrchestrationState: redirect to a
+// non-harness cache under workerCacheDir(), disambiguated by the `tmux/`
+// subdirectory.
+function tmuxWorkerCachePath(slot: number): string {
+  return join(workerCacheDir(), "tmux", `slot-${slot}.json`);
+}
+
 // Per-slot per-agent ttyd log path. Mirrors src/mag.ts's HOME/Library/Logs
 // preference with a /tmp fallback for non-macOS hosts so newsyslog rotates
 // the macOS path for free.
@@ -93,7 +103,7 @@ export function ttydLogPath(slot: number, agentName: string): string {
 }
 
 function readTmuxSlotState(slot: number, harnessDir: string): TmuxSlotState | null {
-  const path = tmuxSlotPath(slot, harnessDir);
+  const path = isWorkerContext() ? tmuxWorkerCachePath(slot) : tmuxSlotPath(slot, harnessDir);
   if (!existsSync(path)) return null;
   try {
     // Read-boundary for TmuxSlotState. Optional persisted fields stay sparse:
@@ -107,6 +117,12 @@ function readTmuxSlotState(slot: number, harnessDir: string): TmuxSlotState | nu
 }
 
 function writeTmuxSlotState(state: TmuxSlotState, harnessDir: string): void {
+  if (isWorkerContext()) {
+    const dir = join(workerCacheDir(), "tmux");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeJsonFile(tmuxWorkerCachePath(state.slot), state);
+    return;
+  }
   const path = tmuxSlotPath(state.slot, harnessDir);
   const dir = join(harnessDir, "orchestration");
   if (!existsSync(dir)) {
@@ -116,7 +132,7 @@ function writeTmuxSlotState(state: TmuxSlotState, harnessDir: string): void {
 }
 
 function removeTmuxSlotState(slot: number, harnessDir: string): void {
-  const path = tmuxSlotPath(slot, harnessDir);
+  const path = isWorkerContext() ? tmuxWorkerCachePath(slot) : tmuxSlotPath(slot, harnessDir);
   if (existsSync(path)) {
     try { unlinkSync(path); } catch { /* ignore */ }
   }

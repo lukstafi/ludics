@@ -399,8 +399,10 @@ export function stateFilePath(slot: number, harnessDir: string = defaultHarnessD
   return join(orchestrationDir(harnessDir), `slot-${slot}.json`);
 }
 
-// Non-harness local cache for worker-side orchestration state
-function workerCacheDir(): string {
+// Non-harness local cache root for worker-side orchestration + adapter state.
+// Exported so the t3code/tmux per-slot state readers/writers can place their
+// own (disambiguated) cache files under the same root — see gh-ludics-580.
+export function workerCacheDir(): string {
   return join(process.env.HOME ?? "/tmp", ".ludics-orch-cache");
 }
 
@@ -408,7 +410,9 @@ function workerCacheFilePath(slot: number): string {
   return join(workerCacheDir(), `slot-${slot}.json`);
 }
 
-function isWorkerContext(): boolean {
+// Exported so adapters (t3code/server.ts, tmux-adapter.ts) share a single
+// worker-context detector instead of duplicating it (gh-ludics-580 AC6).
+export function isWorkerContext(): boolean {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports -- circular-dep chain: cluster → events → journal → state
     const { clusterIsController, clusterCurrentMachineName } = require("../cluster.ts") as typeof import("../cluster.ts");

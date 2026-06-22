@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { commandLineMatchesServerRecord, processAlive, readServerRecord } from "./server.ts";
-import type { T3CodeServerRecord } from "./types.ts";
+import { commandLineMatchesServerRecord, processAlive, readServerRecord, readSlotState, removeSlotState, writeSlotState } from "./server.ts";
+import type { T3CodeServerRecord, T3CodeSlotState } from "./types.ts";
 
 function makeRecord(overrides: Partial<T3CodeServerRecord> = {}): T3CodeServerRecord {
   return {
@@ -146,5 +146,111 @@ describe("processAlive", () => {
     // processAlive catches it. Using a sentinel pid avoids the PID-reuse race
     // a freshly-exited spawnSync child would have on busy CI hosts.
     expect(processAlive(2147483647)).toBe(false);
+  });
+});
+
+// gh-ludics-580 AC4 + AC9: per-slot t3code state must move to a non-harness
+// worker cache on a federation worker, while controller/standalone keeps using
+// the git-tracked harness tree.
+describe("readSlotState/writeSlotState/removeSlotState — worker-cache migration", () => {
+  let TMP: string;
+  let harness: string;
+  const ORIGINAL_HOME = process.env.HOME;
+  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+  const ORIGINAL_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+
+  function writeClusterConfig(homeDir: string): string {
+    const cfg = join(homeDir, "config.yaml");
+    writeFileSync(cfg, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: minipc-wsl
+      host: minipc-wsl.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    return cfg;
+  }
+
+  function makeState(slot: number): T3CodeSlotState {
+    return {
+      slot,
+      threads: [{
+        threadId: `thr-${slot}`,
+        projectId: "proj-1",
+        worktreePath: `/tmp/wt-${slot}`,
+        title: "t",
+        model: "claude-opus-4-8",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt: "2026-06-22T00:00:00Z",
+        updatedAt: "2026-06-22T00:00:00Z",
+      }],
+    } as T3CodeSlotState;
+  }
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "t3code-worker-cache-"));
+    process.env.HOME = TMP;
+    harness = join(TMP, "harness");
+    mkdirSync(harness, { recursive: true });
+    process.env.LUDICS_CONFIG = writeClusterConfig(TMP);
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HOME === undefined) delete process.env.HOME; else process.env.HOME = ORIGINAL_HOME;
+    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+    if (ORIGINAL_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_MACHINE;
+    try { rmSync(TMP, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test("worker: write/read round-trip via $HOME/.ludics-orch-cache/t3code, harness untouched", () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // → worker context
+    const state = makeState(4);
+    writeSlotState(state, harness);
+
+    // Round-trip fidelity: every key field survives serialize→deserialize.
+    const round = readSlotState(4, harness);
+    expect(round).not.toBeNull();
+    expect(round!.slot).toBe(4);
+    expect(round!.threads.map((t) => t.threadId)).toEqual(["thr-4"]);
+
+    // Bytes live in the non-harness cache…
+    const cachePath = join(TMP, ".ludics-orch-cache", "t3code", "slot-4.json");
+    expect(existsSync(cachePath)).toBe(true);
+    // …and NOT in the git-tracked harness tree.
+    expect(existsSync(join(harness, "t3code", "slot-4.json"))).toBe(false);
+
+    removeSlotState(4, harness);
+    expect(existsSync(cachePath)).toBe(false);
+    expect(readSlotState(4, harness)).toBeNull();
+  });
+
+  test("controller/standalone: write/read uses harness tree, cache untouched", () => {
+    // No LUDICS_CLUSTER_MACHINE_NAME and host won't match a configured machine →
+    // not a worker (isWorkerContext false). Use a self-leader to be explicit.
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "leader-box"; // role leader → controller
+    const state = makeState(2);
+    writeSlotState(state, harness);
+
+    expect(existsSync(join(harness, "t3code", "slot-2.json"))).toBe(true);
+    expect(existsSync(join(TMP, ".ludics-orch-cache", "t3code", "slot-2.json"))).toBe(false);
+    expect(readSlotState(2, harness)?.threads.map((t) => t.threadId)).toEqual(["thr-2"]);
+
+    removeSlotState(2, harness);
+    expect(existsSync(join(harness, "t3code", "slot-2.json"))).toBe(false);
   });
 });
