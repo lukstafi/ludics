@@ -3418,11 +3418,26 @@ export function orchPidForSlotMode(
   return undefined;
 }
 
-async function maybeResumeDeadOrchestrators(freshSlots?: Map<number, SlotData> | null): Promise<void> {
+/** True on a federation worker (cluster identity resolves + not the controller). */
+function isWorkerNode(): boolean {
+  return !!clusterCurrentMachineName() && !clusterIsController();
+}
+
+export async function maybeResumeDeadOrchestrators(freshSlots?: Map<number, SlotData> | null): Promise<void> {
   if (startSessionsAutonomy() === "manual") return;
 
-  // On worker: use in-memory slots from HTTP fetch; otherwise read from JSON files
-  const slots: Map<number, SlotData> = freshSlots ?? readAllSlotJson(slotsCount());
+  // gh-ludics-580: a worker must never trust its stale local harness clone.
+  // START (processSlotIntents) already uses controller-live `freshSlots`; the
+  // RESUME path must do the same. When `freshSlots` is null on a worker
+  // (controller unreachable), skip this tick rather than falling back to
+  // readAllSlotJson — the next keepalive retries once the controller is back.
+  let slots: Map<number, SlotData>;
+  if (freshSlots) {
+    slots = freshSlots;
+  } else {
+    if (isWorkerNode()) return; // no controller-live state — skip (Q2 → (a))
+    slots = readAllSlotJson(slotsCount()); // controller/standalone: harness is authoritative
+  }
   let resumed = 0;
 
   for (const [slotNum, data] of slots) {
@@ -3465,7 +3480,23 @@ async function maybeResumeDeadOrchestrators(freshSlots?: Map<number, SlotData> |
       `(pid ${pid}, task ${taskId}, phase ${orchState.phase}) — auto-resuming`,
     );
     try {
-      await slotResume(slotNum);
+      // gh-ludics-580: on the worker path, set the controller-live slots
+      // override so readSlot inside slotResume returns the fresh machine/task
+      // (this worker) instead of the stale local harness clone — mirroring
+      // processSlotIntents. Without it, a slot the worker legitimately owns is
+      // refused "machine offline" against a stale assignment. Cleared per-slot
+      // in finally so it cannot leak across slots/ticks.
+      const applyOverride = !!freshSlots && isWorkerNode();
+      let setWorkerSlotsOverride: ((data: Map<number, SlotData> | null) => void) | null = null;
+      if (applyOverride) {
+        ({ setWorkerSlotsOverride } = await import("./slots/index.ts"));
+      }
+      try {
+        if (setWorkerSlotsOverride) setWorkerSlotsOverride(freshSlots ?? null);
+        await slotResume(slotNum);
+      } finally {
+        if (setWorkerSlotsOverride) setWorkerSlotsOverride(null);
+      }
       resumed += 1;
       emitEvent({
         event_type: "orchestration_auto_resume",

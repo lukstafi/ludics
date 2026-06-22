@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { hostname as osHostname, tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS, reinitTtydPid } from "./index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS, reinitTtydPid, setWorkerSlotsOverride } from "./index.ts";
 import * as tmuxAdapterMod from "../adapters/tmux-adapter.ts";
 import * as t3codeServerMod from "../t3code/server.ts";
 import * as spawnMod from "../spawn.ts";
@@ -2901,5 +2901,93 @@ cluster:
 
     const data = readSlotJson(1, harness);
     expect(data.machine).toBe("explicit-node");
+  });
+});
+
+// gh-ludics-580 AC7: worker-resume routing. On a worker, the controller-live
+// slots override (set around slotResume by maybeResumeDeadOrchestrators) must
+// make readSlot return the worker's own machine, so a slot it legitimately owns
+// routes to LOCAL execution instead of being refused "machine offline" against
+// a stale local harness clone. This is the slotResume + setWorkerSlotsOverride
+// unit seam the integration test in mag.test.ts exercises end-to-end.
+describe("slotResume worker override routing (gh-ludics-580)", () => {
+  const ORIGINAL_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+
+  function writeClusterConfig(): void {
+    const cfgDir = join(TMP, ".config", "ludics");
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(join(cfgDir, "config.yaml"), `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: self-node
+      host: self-node.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+    - name: worker-a
+      host: worker-a.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    process.env.LUDICS_CONFIG = join(cfgDir, "config.yaml");
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "self-node"; // this host = the worker
+  }
+
+  function staleLocal(slot: number): import("./types.ts").SlotData {
+    // The bug's trigger: local harness clone says a DIFFERENT, offline machine.
+    return { ...emptySlotData(slot), process: "orch-runner", task: "task-stale", mode: "t3code", machine: "worker-a" };
+  }
+  function controllerLive(slot: number): import("./types.ts").SlotData {
+    // Controller-live truth: this worker (self-node) owns the slot.
+    return { ...emptySlotData(slot), process: "orch-runner", task: "task-live", mode: "t3code", machine: "self-node" };
+  }
+
+  afterEach(() => {
+    setWorkerSlotsOverride(null); // never leak the override across tests
+    if (ORIGINAL_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
+    else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_MACHINE;
+  });
+
+  test("control: WITHOUT the override, slotResume reads the stale local clone and refuses (machine offline)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeClusterConfig();
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeSlotJson(1, staleLocal(1), harness); // machine=worker-a, no heartbeat → offline
+
+    await expect(slotResume(1)).rejects.toThrow("offline — cannot resume");
+  });
+
+  test("WITH the override, slotResume routes locally (no offline refusal) and fails only on the t3code-state check", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeClusterConfig();
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeSlotJson(1, staleLocal(1), harness); // stale local would say worker-a/offline
+
+    // Controller-live override: slot 1 belongs to self-node (this worker).
+    setWorkerSlotsOverride(new Map([[1, controllerLive(1)]]));
+
+    // Invariant: readSlot returns self-node → isRemoteMachine(self-node)=false →
+    // LOCAL execution. Resume then fails only because no t3code slot state was
+    // persisted — NOT the machine-identity refusal. Mutation control: if the
+    // override were ignored (readSlot → stale worker-a), this would reject with
+    // "offline — cannot resume" and the assertions below would fail.
+    await expect(slotResume(1)).rejects.toThrow("no persisted t3code state");
+    await expect(slotResume(1)).rejects.not.toThrow("offline — cannot resume");
   });
 });
