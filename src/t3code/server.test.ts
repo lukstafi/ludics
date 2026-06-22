@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { commandLineMatchesServerRecord, processAlive, readServerRecord, readSlotState, removeSlotState, writeSlotState } from "./server.ts";
@@ -237,6 +237,31 @@ cluster:
     removeSlotState(4, harness);
     expect(existsSync(cachePath)).toBe(false);
     expect(readSlotState(4, harness)).toBeNull();
+  });
+
+  test("worker upgrade bridge: reads fall back to a legacy harness file when the cache is empty (gh-ludics-580 P1)", () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker context
+    // Simulate an in-flight slot started BEFORE the migration: state at the
+    // legacy harness path, nothing in the cache.
+    const harnessSlotPath = join(harness, "t3code", "slot-7.json");
+    mkdirSync(join(harness, "t3code"), { recursive: true });
+    const legacy = makeState(7);
+    writeFileSync(harnessSlotPath, JSON.stringify(legacy));
+    expect(existsSync(join(TMP, ".ludics-orch-cache", "t3code", "slot-7.json"))).toBe(false);
+
+    // Invariant: the legacy file is read (resume must not treat the active slot
+    // as having no persisted state). Without the `?? legacy` fallback this is null.
+    const read = readSlotState(7, harness);
+    expect(read).not.toBeNull();
+    expect(read!.threads.map((t) => t.threadId)).toEqual(["thr-7"]);
+
+    // After the next persist, state migrates forward to the cache, which then
+    // shadows the (intentionally undeleted) legacy file.
+    writeSlotState({ ...makeState(7), threads: [{ ...legacy.threads[0], threadId: "thr-7-migrated" }] }, harness);
+    expect(existsSync(join(TMP, ".ludics-orch-cache", "t3code", "slot-7.json"))).toBe(true);
+    expect(readSlotState(7, harness)!.threads.map((t) => t.threadId)).toEqual(["thr-7-migrated"]);
+    // Worker did NOT mutate its git-tracked harness clone on write.
+    expect(JSON.parse(readFileSync(harnessSlotPath, "utf-8")).threads[0].threadId).toBe("thr-7");
   });
 
   test("controller/standalone: write/read uses harness tree, cache untouched", () => {

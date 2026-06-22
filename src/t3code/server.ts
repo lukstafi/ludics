@@ -106,7 +106,16 @@ export function readSlotState(
   harnessDir: string = defaultHarnessDir(),
 ): T3CodeSlotState | null {
   if (isWorkerContext()) {
-    return readJsonFile<T3CodeSlotState>(t3codeWorkerCachePath(slot));
+    // Prefer the non-harness cache, but fall back to a legacy pre-migration
+    // harness file written by THIS worker before the cache existed
+    // (gh-ludics-580 upgrade bridge): an in-flight slot upgraded across this
+    // change would otherwise read an empty cache and look like it has no
+    // persisted state. Read-only — writes go to the cache, so the next persist
+    // migrates state forward and the cache shadows the stale legacy file. The
+    // legacy file is intentionally not deleted here (a worker must not dirty
+    // its git-tracked harness clone).
+    return readJsonFile<T3CodeSlotState>(t3codeWorkerCachePath(slot))
+      ?? readJsonFile<T3CodeSlotState>(t3codeSlotPath(slot, harnessDir));
   }
   return readJsonFile<T3CodeSlotState>(t3codeSlotPath(slot, harnessDir));
 }

@@ -103,17 +103,30 @@ export function ttydLogPath(slot: number, agentName: string): string {
 }
 
 function readTmuxSlotState(slot: number, harnessDir: string): TmuxSlotState | null {
-  const path = isWorkerContext() ? tmuxWorkerCachePath(slot) : tmuxSlotPath(slot, harnessDir);
-  if (!existsSync(path)) return null;
-  try {
-    // Read-boundary for TmuxSlotState. Optional persisted fields stay sparse:
-    // ttydRestartCounts is preserved as-on-disk (undefined for legacy files,
-    // populated Record when present). New optional fields should land here so
-    // every reader sees the same normalized shape.
-    return JSON.parse(readFileSync(path, "utf-8")) as TmuxSlotState;
-  } catch {
-    return null;
+  // On a worker, prefer the non-harness cache but fall back to a legacy
+  // pre-migration harness file written by THIS worker before the cache existed
+  // (gh-ludics-580 upgrade bridge — mirrors readSlotState). Read-only: writes
+  // go to the cache, which then shadows the stale legacy file; the legacy file
+  // is not deleted (a worker must not dirty its git-tracked harness clone). A
+  // corrupt cache file returns null without falling through (preserves the
+  // existing "exists-but-corrupt → null" semantics); only an ABSENT cache
+  // falls back to the legacy path.
+  const candidates = isWorkerContext()
+    ? [tmuxWorkerCachePath(slot), tmuxSlotPath(slot, harnessDir)]
+    : [tmuxSlotPath(slot, harnessDir)];
+  for (const path of candidates) {
+    if (!existsSync(path)) continue;
+    try {
+      // Read-boundary for TmuxSlotState. Optional persisted fields stay sparse:
+      // ttydRestartCounts is preserved as-on-disk (undefined for legacy files,
+      // populated Record when present). New optional fields should land here so
+      // every reader sees the same normalized shape.
+      return JSON.parse(readFileSync(path, "utf-8")) as TmuxSlotState;
+    } catch {
+      return null;
+    }
   }
+  return null;
 }
 
 function writeTmuxSlotState(state: TmuxSlotState, harnessDir: string): void {

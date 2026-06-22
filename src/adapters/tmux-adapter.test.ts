@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { AdapterContext } from "./types.ts";
@@ -854,6 +854,31 @@ cluster:
     removeTmuxSlotState(4, harness);
     expect(existsSync(cachePath)).toBe(false);
     expect(readTmuxSlotState(4, harness)).toBeNull();
+  });
+
+  test("worker upgrade bridge: reads fall back to a legacy harness file when the cache is empty (gh-ludics-580 P1)", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker context
+    const { readTmuxSlotState, writeTmuxSlotState } = await import("./tmux-adapter.ts");
+
+    // In-flight slot started BEFORE the migration: state at the legacy harness
+    // path, nothing in the cache.
+    const harnessSlotPath = join(harness, "orchestration", "tmux-slot-7.json");
+    mkdirSync(join(harness, "orchestration"), { recursive: true });
+    writeFileSync(harnessSlotPath, JSON.stringify({ slot: 7, ttydPids: { coder: 7777 }, orchestration: { stateFile: "x", mode: "pair", pid: 4321 } }));
+    expect(existsSync(join(TMP, ".ludics-orch-cache", "tmux", "slot-7.json"))).toBe(false);
+
+    // Invariant: legacy file is read (resume must not see "no state"). Without
+    // the fallback this is null.
+    const read = readTmuxSlotState(7, harness);
+    expect(read).not.toBeNull();
+    expect(read!.orchestration?.pid).toBe(4321);
+
+    // Next persist migrates forward to the cache, which shadows the (undeleted)
+    // legacy file; the worker did not mutate its git-tracked harness clone.
+    writeTmuxSlotState({ slot: 7, ttydPids: { coder: 8888 }, orchestration: { stateFile: "x", mode: "pair", pid: 9999 } } as unknown as Parameters<typeof writeTmuxSlotState>[0], harness);
+    expect(existsSync(join(TMP, ".ludics-orch-cache", "tmux", "slot-7.json"))).toBe(true);
+    expect(readTmuxSlotState(7, harness)!.orchestration?.pid).toBe(9999);
+    expect(JSON.parse(readFileSync(harnessSlotPath, "utf-8")).orchestration.pid).toBe(4321);
   });
 
   test("controller: write/read uses harness tree, cache untouched, no leftover .tmp", async () => {
