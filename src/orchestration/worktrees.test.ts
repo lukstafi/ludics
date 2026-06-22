@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { tmpdir } from "os";
-import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, ensureProposalReachable, ensureUpstreamRemote, GIT_EXCLUDE_ENTRIES, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, parseRegisteredWorktreeMatches, proposalReachableFromRef, purgeOrphanDirIfRecoverable, refreshMainBranchFromRemote, removeWorktreeByPath, seedGhResolvedToOrigin, symlinkPeerSync } from "./worktrees.ts";
+import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, ensureProposalReachable, ensureUpstreamRemote, GIT_EXCLUDE_ENTRIES, maybeGit, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, parseRegisteredWorktreeMatches, proposalReachableFromRef, purgeOrphanDirIfRecoverable, refreshMainBranchFromRemote, removeWorktreeByPath, seedGhResolvedToOrigin, symlinkPeerSync } from "./worktrees.ts";
 import { captureConsoleError, withSyntheticHarness } from "../test-utils.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
@@ -1973,6 +1973,43 @@ describe("AC6(iii): both-refs check — one ref missing triggers guard", () => {
     });
   });
 
+  test("only origin (not local): guard treats as not reachable → hard-fails when artifact absent", () => {
+    // AC1 mutation evidence: if we changed `&&` to `||` in the both-refs check,
+    // a `proposal_unreachable` event would never be emitted here — the guard would
+    // short-circuit on origin=true and silently return instead of throwing.
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+    const proposalPath = "docs/proposals/origin-only.md";
+    mkdirSync(join(repo, "docs/proposals"), { recursive: true });
+    writeFileSync(join(repo, proposalPath), "# Origin-only Proposal\n");
+    run(["git", "add", proposalPath], repo);
+    run(["git", "commit", "-m", "add proposal"], repo);
+    run(["git", "push", "origin", "main"], repo);
+
+    // Reset local main back before the proposal commit so only origin has it.
+    // Hard reset also removes the tracked file from the working tree — no artifact on disk.
+    run(["git", "reset", "--hard", "HEAD~1"], repo);
+
+    // Precondition: local=false, origin=true
+    expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(false);
+    expect(proposalReachableFromRef(repo, "origin/main", proposalPath)).toBe(true);
+
+    withHarnessDir((harnessDir) => {
+      // Guard must NOT treat origin-only as "reachable" — it throws (AC3)
+      expect(() =>
+        ensureProposalReachable(repo, "task-iii-origin", proposalPath, "main", 1),
+      ).toThrow(/proposal.*task-iii-origin.*not reachable/i);
+
+      // proposal_unreachable event emitted (not short-circuited by origin-only)
+      const unreachable = readEvents(harnessDir).find(
+        (e) => e.event_type === "proposal_unreachable",
+      );
+      expect(unreachable).toBeDefined();
+      expect(unreachable!.proposal_path).toBe(proposalPath);
+    });
+  });
+
   test("both refs reachable: guard is a no-op (positive control)", () => {
     if (!Bun.which("git")) return;
     mkdirSync(TMP, { recursive: true });
@@ -2167,10 +2204,37 @@ describe("AC6(v): proposal-less no-op — guard emits nothing, fork proceeds unc
       expect(readEvents(harnessDir)).toHaveLength(0);
     });
   });
+
+  test("AC1: invalid proposal path (absolute) throws setup error rather than silently no-opping", () => {
+    // AC1 requires assertRepoRelativeProposalPath to gate invalid paths.
+    // Before this fix, absolute/home-relative/escaping paths silently returned.
+    // Now they fail setup so operator sees the misconfiguration.
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginClone(TMP);
+
+    withHarnessDir((_harnessDir) => {
+      expect(() =>
+        ensureProposalReachable(repo, "task-bad-path", "/etc/passwd", "main", 1),
+      ).toThrow(/proposal path must be repo-relative/i);
+
+      expect(() =>
+        ensureProposalReachable(repo, "task-bad-path", "~/secrets.md", "main", 1),
+      ).toThrow(/proposal path must be repo-relative/i);
+
+      expect(() =>
+        ensureProposalReachable(repo, "task-bad-path", "../outside.md", "main", 1),
+      ).toThrow(/proposal path escapes project tree/i);
+    });
+  });
 });
 
 describe("AC4 resume tolerance: agent branch with proposal allows re-run without block", () => {
-  test("resume: root branch already has proposal → guard passes without self-heal", () => {
+  test("resume: main + origin no longer have proposal, root branch does → guard does not false-fail", () => {
+    // Mutation evidence: removing the root-branch arm from ensureProposalReachable
+    // (lines `if (branchRefExists(...) && proposalReachableFromRef(repo, rootBranch, ...)) return;`)
+    // would make this test throw instead of passing — since both main refs are reset to
+    // before the proposal commit, the only escape from the block path is that arm.
     if (!Bun.which("git")) return;
     mkdirSync(TMP, { recursive: true });
     const { repo } = setupOriginClone(TMP);
@@ -2182,31 +2246,38 @@ describe("AC4 resume tolerance: agent branch with proposal allows re-run without
     run(["git", "push", "origin", "main"], repo);
 
     withHarnessDir((harnessDir) => {
-      // First run: cold-start, creates worktrees (proposal reachable from both refs)
+      // Cold-start fork: proposal reachable from both refs → root branch created with proposal
       const setup = createWorktrees(
         repo, "task-resume", [{ name: "coder" }], "main", 1, "solo", proposalPath,
       );
       expect(existsSync(setup.rootWorktree)).toBe(true);
 
-      // Simulate: local main no longer has the proposal (e.g., it was rebased away),
-      // but the root orchestration branch still does (it was forked from main with it).
-      // We test ensureProposalReachable directly with the root branch already existing.
+      // Verify root branch has proposal in its tree
       const rootBranch = orchBranchName("task-resume", 1, "root");
       expect(proposalReachableFromRef(repo, rootBranch, proposalPath)).toBe(true);
 
-      // Guard with no refreshSkip: if both main refs had it this passes; verifying
-      // resume tolerance by testing the helper directly with a fabricated scenario
-      // where localReachable=false but rootBranch has it.
-      // (Directly test that the root-branch arm prevents a false-fail on resume.)
-      // We cannot easily un-commit from local main without affecting origin, so we
-      // test the invariant via proposalReachableFromRef directly:
-      expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(true); // still true here
+      // Simulate "main has since moved" — reset local main and origin tracking ref
+      // to the init commit so neither main ref satisfies the both-refs check.
+      const initCommit = maybeGit(repo, ["rev-list", "--max-parents=0", "HEAD"]).trim();
+      run(["git", "update-ref", "refs/heads/main", initCommit], repo);
+      run(["git", "update-ref", "refs/remotes/origin/main", initCommit], repo);
+      // Remove the artifact from disk too (so self-heal cannot rescue)
+      rmSync(join(repo, proposalPath));
 
-      // Full guard call must not throw (both refs have it → happy path)
+      // Precondition: both main refs now missing the proposal
+      expect(proposalReachableFromRef(repo, "main", proposalPath)).toBe(false);
+      expect(proposalReachableFromRef(repo, "origin/main", proposalPath)).toBe(false);
+      // Root branch still has it
+      expect(proposalReachableFromRef(repo, rootBranch, proposalPath)).toBe(true);
+
+      // Guard must NOT false-fail: resume tolerance arm accepts root-branch reachability
       expect(() =>
         ensureProposalReachable(repo, "task-resume", proposalPath, "main", 1),
       ).not.toThrow();
-      expect(readEvents(harnessDir)).toHaveLength(0);
+      // No events emitted (guard took the root-branch resume arm, not the block path)
+      expect(readEvents(harnessDir).filter(
+        (e) => e.event_type === "proposal_unreachable" || e.event_type === "proposal_self_healed",
+      )).toHaveLength(0);
 
       cleanupWorktrees(repo, "task-resume", [{ name: "coder" }], 1, "solo");
     });
