@@ -1,7 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { _runAllTestHealthDispatch, checkProjectTestHealth, detectTestCommand, runAllTestHealth, shouldRunTestHealth, testHealthStatePath } from "./health.ts";
+import { _remoteTestExec, _runAllTestHealthDispatch, checkProjectTestHealth, detectTestCommand, requirementsSatisfiedByCurrentHost, runAllTestHealth, shouldRunTestHealth, testHealthStatePath } from "./health.ts";
+import type { RemoteRunResult } from "./remote.ts";
+import { heartbeatsDir } from "./cluster.ts";
 import { tmpdir } from "os";
 import { _resetPostponedProjectsCache } from "./config.ts";
 import { captureConsoleError, withSyntheticHarness } from "./test-utils.ts";
@@ -388,5 +390,256 @@ describe("test-health t3code integration gate (gh-ludics-539)", () => {
     } finally {
       _runAllTestHealthDispatch.fn = original;
     }
+  });
+});
+
+describe("test-health capability gating (gh-ludics-578)", () => {
+  // Current host is pinned via LUDICS_CLUSTER_MACHINE_NAME against a scratch
+  // cluster config; routed remote execution is injected through the
+  // _remoteTestExec seam so no real SSH/network runs. tasksCreate's side effect
+  // (a markdown file under <harness>/tasks) is observed on disk: the no-task
+  // guarantee is "the tasks dir does not exist".
+  let TMP = "";
+  const ORIG = {
+    HOME: process.env.HOME,
+    CONFIG: process.env.LUDICS_CONFIG,
+    HARNESS: process.env.LUDICS_HARNESS_DIR,
+    MACHINE: process.env.LUDICS_CLUSTER_MACHINE_NAME,
+  };
+  const ORIGINAL_REMOTE = _remoteTestExec.fn;
+
+  // mac-studio = apple-silicon (the always-on leader Mag runs on); minipc-wsl =
+  // the sole nvidia worker (always_on: false). Mirrors the live config the
+  // proposal corrected.
+  const CLUSTER = `cluster:
+  transport: tailscale
+  machines:
+    - name: mac-studio
+      host: mac-studio.ts.net
+      role: leader
+      os: macos
+      gpu: apple-silicon
+      always_on: true
+    - name: minipc-wsl
+      host: minipc-wsl.ts.net
+      role: worker
+      os: linux
+      gpu: nvidia
+`;
+
+  /** Write config.yaml. `cluster` defaults on; pass `{ cluster: "" }` to omit it
+   *  (cluster-disabled case). `projectsBlock` declares postponed/requirements
+   *  for projects the guards read from config (postponedProjectSet). */
+  function writeConfig(opts?: { cluster?: string; projectsBlock?: string }): void {
+    const cfgPath = join(TMP, "config.yaml");
+    const cluster = opts?.cluster ?? CLUSTER;
+    writeFileSync(cfgPath, `state_repo: test/state\nstate_path: harness\n${cluster}${opts?.projectsBlock ?? ""}`);
+    process.env.LUDICS_CONFIG = cfgPath;
+  }
+
+  function writeHeartbeat(name: string, ageSeconds: number): void {
+    const dir = heartbeatsDir();
+    mkdirSync(dir, { recursive: true });
+    const epoch = Math.floor(Date.now() / 1000) - ageSeconds;
+    writeFileSync(join(dir, `${name}.json`), JSON.stringify({ node: name, epoch }));
+  }
+
+  function taskFiles(): string[] {
+    const dir = join(TMP, "tasks");
+    return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".md")) : [];
+  }
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-health-cap-"));
+    process.env.HOME = TMP;
+    process.env.LUDICS_HARNESS_DIR = TMP;
+    _resetPostponedProjectsCache();
+  });
+
+  afterEach(() => {
+    _remoteTestExec.fn = ORIGINAL_REMOTE;
+    if (ORIG.HOME === undefined) delete process.env.HOME; else process.env.HOME = ORIG.HOME;
+    if (ORIG.CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = ORIG.CONFIG;
+    if (ORIG.HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = ORIG.HARNESS;
+    if (ORIG.MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIG.MACHINE;
+    _resetPostponedProjectsCache();
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  // --- AC1: predicate ---
+
+  test("requirementsSatisfiedByCurrentHost: satisfied / unmet / host-unknown / no-reqs", () => {
+    writeConfig();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio"; // apple-silicon / macos
+
+    // No requirements → always satisfied.
+    expect(requirementsSatisfiedByCurrentHost({ name: "p", repo: "x/p" }).status).toBe("satisfied");
+    // Met (apple-silicon on mac-studio).
+    expect(requirementsSatisfiedByCurrentHost({ name: "p", repo: "x/p", requirements: { gpu: "apple-silicon" } }).status).toBe("satisfied");
+    // Unmet (nvidia on apple-silicon host).
+    expect(requirementsSatisfiedByCurrentHost({ name: "p", repo: "x/p", requirements: { gpu: "nvidia" } }).status).toBe("unmet");
+    // Both keys: os matches, gpu mismatch → unmet (exact per-key equality).
+    expect(requirementsSatisfiedByCurrentHost({ name: "p", repo: "x/p", requirements: { os: "macos", gpu: "nvidia" } }).status).toBe("unmet");
+
+    // Host unknown (name not in cluster) → host-unknown for gated, satisfied for free.
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "ghost";
+    expect(requirementsSatisfiedByCurrentHost({ name: "p", repo: "x/p", requirements: { gpu: "nvidia" } }).status).toBe("host-unknown");
+    expect(requirementsSatisfiedByCurrentHost({ name: "p", repo: "x/p" }).status).toBe("satisfied");
+  });
+
+  // --- AC3: capability-met runs unchanged ---
+
+  test("capability-met project is NOT skipped for requirements-unmet (falls through)", () => {
+    writeConfig();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    // ocaml-metal-shaped: gpu apple-silicon, met on mac-studio. No checkout on
+    // disk → falls through to path-not-found, NOT requirements-unmet.
+    const project = { name: "ocaml-metal", repo: "ex/metal", requirements: { gpu: "apple-silicon" } } as const;
+    const result = checkProjectTestHealth(project);
+    expect(result.reason).not.toBe("requirements-unmet");
+    expect(result.reason).toBe("path-not-found");
+  });
+
+  // --- AC4: routed remote execution ---
+
+  test("unmet + online capable worker → routes; a real remote failure files a fix-task", () => {
+    writeConfig();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio"; // incapable (apple-silicon)
+    writeHeartbeat("minipc-wsl", 10); // fresh nvidia worker
+
+    const calls: Array<{ host: string; cmd: string; cwd: string }> = [];
+    _remoteTestExec.fn = (machine, cmd, opts): RemoteRunResult => {
+      calls.push({ host: machine.host, cmd, cwd: opts.cwd });
+      return { kind: "ran", ok: false, stdout: "3 tests failed", stderr: "", timedOut: false };
+    };
+
+    const project = { name: "ocaml-cudajit", repo: "ex/cudajit", requirements: { gpu: "nvidia" }, test_command: "dune runtest", path: "~/ocaml-cudajit" } as const;
+    const result = checkProjectTestHealth(project, { force: true });
+
+    // Routed to the nvidia worker with the project's command + remote checkout.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.host).toBe("minipc-wsl.ts.net");
+    expect(calls[0]!.cmd).toBe("dune runtest");
+    expect(calls[0]!.cwd).toBe("~/ocaml-cudajit");
+    // Same result shape as a local run; a genuine non-zero result files a task.
+    expect(result).toMatchObject({ skipped: false, passed: false });
+    expect(existsSync(testHealthStatePath())).toBe(true); // state persisted
+    expect(taskFiles()).toHaveLength(1); // fix-task filed
+  });
+
+  // --- AC5: routing degrades to skip-not-fail ---
+
+  test("unmet + transport/connectivity failure → skip, NO state, NO fix-task", () => {
+    writeConfig();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    writeHeartbeat("minipc-wsl", 10);
+
+    let fired = false;
+    _remoteTestExec.fn = (): RemoteRunResult => {
+      fired = true;
+      return { kind: "transport-error", detail: "ssh: connect to host minipc-wsl.ts.net: Connection refused" };
+    };
+
+    const project = { name: "ocaml-cudajit", repo: "ex/cudajit", requirements: { gpu: "nvidia" }, test_command: "dune runtest" } as const;
+    const result = checkProjectTestHealth(project, { force: true });
+
+    expect(fired).toBe(true); // routing was attempted (distinguishes from no-worker skip)
+    expect(result).toEqual({ skipped: true, reason: "requirements-unmet" });
+    expect(existsSync(testHealthStatePath())).toBe(false); // no state mutation
+    expect(taskFiles()).toEqual([]); // no fix-task
+  });
+
+  test("unmet + NO online worker → skip requirements-unmet; remote exec never attempted (AC5/AC6: cudajit on mac-studio)", () => {
+    writeConfig();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    // No heartbeat for minipc-wsl → offline → not routable.
+
+    let fired = false;
+    _remoteTestExec.fn = (): RemoteRunResult => { fired = true; return { kind: "transport-error", detail: "" }; };
+
+    const project = { name: "ocaml-cudajit", repo: "ex/cudajit", requirements: { gpu: "nvidia" }, test_command: "dune runtest" } as const;
+    const result = checkProjectTestHealth(project, { force: true });
+
+    expect(result).toEqual({ skipped: true, reason: "requirements-unmet" });
+    expect(fired).toBe(false); // short-circuits at worker selection — never runs/fails locally
+    expect(existsSync(testHealthStatePath())).toBe(false);
+    expect(taskFiles()).toEqual([]);
+  });
+
+  test("unmet + online worker but NO test_command and NO resolvable checkout → skip (must not auto-detect from controller cwd)", () => {
+    // Regression (PR #582 review): with no test_command and no checkout on the
+    // controller, resolveProjectPath returns "" and a naive detectTestCommand("")
+    // would probe the controller's process cwd — which here (the ludics repo) has
+    // bun.lock, yielding "bun test" and wrongly routing an unrelated command.
+    // Invariant: routing requires a command we can actually name; otherwise skip.
+    // Mutation: reverting to detectTestCommand(resolveProjectPath(...)) makes
+    // `fired` true (bun test routed) from the repo cwd.
+    writeConfig();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    writeHeartbeat("minipc-wsl", 10); // capable worker IS online
+
+    let fired = false;
+    _remoteTestExec.fn = (): RemoteRunResult => { fired = true; return { kind: "ran", ok: true, stdout: "", stderr: "", timedOut: false }; };
+
+    // No test_command, no path → unresolvable command.
+    const project = { name: "ocaml-cudajit", repo: "ex/cudajit", requirements: { gpu: "nvidia" } } as const;
+    const result = checkProjectTestHealth(project, { force: true });
+
+    expect(result).toEqual({ skipped: true, reason: "requirements-unmet" });
+    expect(fired).toBe(false); // never routed a cwd-detected command
+    expect(existsSync(testHealthStatePath())).toBe(false);
+    expect(taskFiles()).toEqual([]);
+  });
+
+  // --- AC2: unknown-capability host ---
+
+  test("unknown host (name not in cluster): gated project skips, requirement-free runs", () => {
+    writeConfig();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "ghost"; // not a configured machine
+
+    const gated = { name: "ocaml-cudajit", repo: "ex/cudajit", requirements: { gpu: "nvidia" }, test_command: "dune runtest" } as const;
+    expect(checkProjectTestHealth(gated, { force: true })).toEqual({ skipped: true, reason: "requirements-unmet" });
+    expect(taskFiles()).toEqual([]);
+
+    // Negative control for AC2: a requirement-free project must NOT be skipped
+    // for requirements-unmet on the same unknown host (falls through).
+    const free = { name: "ludics", repo: "ex/ludics" } as const;
+    expect(checkProjectTestHealth(free, { force: true }).reason).not.toBe("requirements-unmet");
+  });
+
+  test("cluster disabled: gated project skips requirements-unmet", () => {
+    writeConfig({ cluster: "" }); // no cluster block → clusterEnabled() false
+    const gated = { name: "ocaml-cudajit", repo: "ex/cudajit", requirements: { gpu: "nvidia" }, test_command: "dune runtest" } as const;
+    expect(checkProjectTestHealth(gated, { force: true })).toEqual({ skipped: true, reason: "requirements-unmet" });
+  });
+
+  // --- AC7: precedence ---
+
+  test("postponed wins over requirements-unmet (ocaml-hipjit: postponed + gpu:amd)", () => {
+    // postponedProjectSet reads config.projects[].postponed, so the project must
+    // be declared postponed in config (not just on the literal).
+    writeConfig({
+      projectsBlock: "projects:\n  - name: ocaml-hipjit\n    repo: ex/hipjit\n    postponed: true\n    requirements:\n      gpu: amd\n",
+    });
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio"; // would be unmet for gpu:amd
+    _resetPostponedProjectsCache();
+
+    const project = { name: "ocaml-hipjit", repo: "ex/hipjit", postponed: true, requirements: { gpu: "amd" }, test_command: "false" } as const;
+    const result = checkProjectTestHealth(project, { force: true });
+    expect(result).toEqual({ skipped: true, reason: "postponed" }); // NOT requirements-unmet
+  });
+
+  // --- AC8: batch-loop visible skip line ---
+
+  test("runAllTestHealth emits '[test-health] <name>: skipped (requirements-unmet)'", () => {
+    writeConfig({
+      projectsBlock: "projects:\n  - name: ocaml-cudajit\n    repo: ex/cudajit\n    test_command: dune runtest\n    requirements:\n      gpu: nvidia\n",
+    });
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    // minipc-wsl offline → unmet + no worker → requirements-unmet skip.
+
+    const { lines } = captureConsoleError(() => runAllTestHealth({ project: "ocaml-cudajit", force: true }));
+    expect(lines.some((l) => l.includes("[test-health] ocaml-cudajit: skipped (requirements-unmet)"))).toBe(true);
+    expect(taskFiles()).toEqual([]);
   });
 });

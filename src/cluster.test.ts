@@ -7,6 +7,7 @@ import { join } from "path";
 import {
   clusterConfig,
   selectMachineForSlot,
+  selectOnlineCapableMachine,
   resolveController,
   clusterCurrentMachineName,
   heartbeatsDir,
@@ -174,5 +175,95 @@ slots:
   it("honors LUDICS_CLUSTER_MACHINE_NAME for current-machine resolution", () => {
     process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl";
     expect(clusterCurrentMachineName()).toBe("minipc-wsl");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// selectOnlineCapableMachine — capability + online filter for test-health
+// routing (gh-ludics-578). Mirrors selectMachineForSlot's per-key filter +
+// heartbeatIsFresh gate but returns the full ClusterMachine for SSH routing.
+// ---------------------------------------------------------------------------
+
+describe("selectOnlineCapableMachine — capability + online gate", () => {
+  const ORIGINAL_HOME = process.env.HOME;
+  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+  const ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
+  let TMP = "";
+
+  const CONFIG = `state_repo: test/state
+state_path: harness
+cluster:
+  transport: tailscale
+  machines:
+    - name: mac-studio
+      host: mac-studio.ts.net
+      role: leader
+      os: macos
+      gpu: apple-silicon
+      always_on: true
+    - name: minipc-wsl
+      host: minipc-wsl.ts.net
+      role: worker
+      os: linux
+      gpu: nvidia
+`;
+
+  function writeHeartbeat(name: string, ageSeconds: number): void {
+    const dir = heartbeatsDir();
+    mkdirSync(dir, { recursive: true });
+    const epoch = Math.floor(Date.now() / 1000) - ageSeconds;
+    writeFileSync(join(dir, `${name}.json`), JSON.stringify({ node: name, epoch }));
+  }
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-cluster-capable-"));
+    process.env.HOME = TMP;
+    process.env.LUDICS_HARNESS_DIR = join(TMP, "harness");
+    const cfgPath = join(TMP, "config.yaml");
+    writeFileSync(cfgPath, CONFIG);
+    process.env.LUDICS_CONFIG = cfgPath;
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HOME === undefined) delete process.env.HOME; else process.env.HOME = ORIGINAL_HOME;
+    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+    if (ORIGINAL_HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS;
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  it("returns the fresh-heartbeat nvidia worker for { gpu: nvidia }", () => {
+    writeHeartbeat("minipc-wsl", 10); // fresh
+    const m = selectOnlineCapableMachine({ gpu: "nvidia" });
+    expect(m?.name).toBe("minipc-wsl");
+    expect(m?.host).toBe("minipc-wsl.ts.net"); // routing needs .host
+  });
+
+  it("returns null when the only capable worker is offline (no heartbeat)", () => {
+    // Invariant: an offline capable worker is not routable. Mutation: dropping
+    // the heartbeatIsFresh filter would return minipc-wsl here.
+    const m = selectOnlineCapableMachine({ gpu: "nvidia" });
+    expect(m).toBeNull();
+  });
+
+  it("returns null when the only capable worker heartbeat is stale", () => {
+    writeHeartbeat("minipc-wsl", 1000); // > 900s default TTL
+    expect(selectOnlineCapableMachine({ gpu: "nvidia" })).toBeNull();
+  });
+
+  it("returns null when no machine has the required capability (gpu: amd)", () => {
+    writeHeartbeat("minipc-wsl", 10);
+    expect(selectOnlineCapableMachine({ gpu: "amd" })).toBeNull();
+  });
+
+  it("matches both os and gpu keys exactly when both present", () => {
+    writeHeartbeat("minipc-wsl", 10);
+    expect(selectOnlineCapableMachine({ os: "linux", gpu: "nvidia" })?.name).toBe("minipc-wsl");
+    // os mismatch (macos worker with nvidia does not exist) → null
+    expect(selectOnlineCapableMachine({ os: "macos", gpu: "nvidia" })).toBeNull();
+  });
+
+  it("returns null when the cluster is disabled (no config)", () => {
+    delete process.env.LUDICS_CONFIG;
+    expect(selectOnlineCapableMachine({ gpu: "nvidia" })).toBeNull();
   });
 });

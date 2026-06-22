@@ -4,6 +4,8 @@ import { join } from "path";
 import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath, postponedProjectSet, t3codeIntegrationEnabled } from "./config.ts";
 import { tasksCreate } from "./tasks/index.ts";
 import { safeSyncOutput } from "./spawn.ts";
+import { clusterCurrentMachine, selectOnlineCapableMachine } from "./cluster.ts";
+import { runRemoteCommand } from "./remote.ts";
 
 // --- Types ---
 
@@ -100,6 +102,135 @@ export function projectRequiresT3code(project: ProjectConfig): boolean {
     || project.name.toLowerCase() === "t3code-ludics";
 }
 
+// --- Capability gating (gh-ludics-578) ---
+
+/** Result of evaluating a project's `requirements` against the current host.
+ *  - `satisfied`: no requirements, or the current host meets every present key.
+ *  - `unmet`: the current host is known but lacks a required capability.
+ *  - `host-unknown`: capabilities are unprovable (cluster disabled or the host
+ *    doesn't resolve to a `cluster.machines` entry). */
+export type RequirementsCheck =
+  | { status: "satisfied" }
+  | { status: "unmet"; reqs: { os?: string; gpu?: string } }
+  | { status: "host-unknown"; reqs: { os?: string; gpu?: string } };
+
+/**
+ * Evaluate `project.requirements` against the current host, mirroring
+ * `selectMachineForSlot`'s per-key exact-equality semantics projected onto the
+ * current machine: for each *present* requirement key (`os`, `gpu`), the host
+ * satisfies it iff `currentMachine[key] === reqs[key]`. A project with no
+ * requirements (or an empty requirements object) is always satisfied — even on
+ * an unknown host (so this gate never disables test-health for requirement-free
+ * projects on standalone deployments).
+ */
+export function requirementsSatisfiedByCurrentHost(project: ProjectConfig): RequirementsCheck {
+  const reqs = project.requirements;
+  const hasReqs = !!(reqs && (reqs.os || reqs.gpu));
+  if (!hasReqs) return { status: "satisfied" };
+  const current = clusterCurrentMachine(); // undefined when cluster disabled OR host unresolved
+  if (!current) return { status: "host-unknown", reqs: reqs! };
+  const ok = (!reqs!.os || current.os === reqs!.os)
+    && (!reqs!.gpu || current.gpu === reqs!.gpu);
+  return ok ? { status: "satisfied" } : { status: "unmet", reqs: reqs! };
+}
+
+// Test seam: routed remote execution dispatches through this holder so tests can
+// inject a synthetic result (no real SSH/network). Mirrors the
+// _runAllTestHealthDispatch pattern below.
+/** @internal exported for tests only */
+export const _remoteTestExec: { fn: typeof runRemoteCommand } = { fn: runRemoteCommand };
+
+/** Best-effort project checkout path on a *remote* worker. Uses the project's
+ *  configured `path` literally (a leading `~` is left for the remote shell to
+ *  expand — NOT against the controller's HOME), else the `~/<repoTail>`
+ *  convention. No local `existsSync` — the path lives on the worker. */
+function remoteProjectPath(project: ProjectConfig): string {
+  if (project.path) return String(project.path);
+  const repoTail = String(project.repo ?? "").split("/").pop() ?? "";
+  return `~/${repoTail}`;
+}
+
+/** Shared post-run finalization for an *actually-executed* suite (local or
+ *  remote): extract failure text, persist `mag/test-health.json`, and file a
+ *  fix-task on a real non-zero result. Guarantees AC4's "same result shape as a
+ *  local run" by being the single code path both runs flow through. */
+function finalizeExecutedRun(
+  project: ProjectConfig,
+  run: { ok: boolean; stdout: string; stderr: string; timedOut: boolean },
+  duration: number,
+): TestHealthResult {
+  const passed = run.ok;
+  let failures: string | undefined;
+  if (!passed) {
+    const source = run.stderr.trim().length >= 20 ? run.stderr : (run.stdout || run.stderr);
+    failures = source.slice(-500);
+    if (run.timedOut) {
+      failures = `timeout after 300s\n${failures}`;
+    }
+  }
+
+  const state = loadTestHealthState();
+  state[project.name] = { lastRun: new Date().toISOString(), passed, ...(failures ? { failures } : {}) };
+  saveTestHealthState(state);
+
+  if (!passed) {
+    tasksCreate(`Fix broken test suite: ${project.name}`, project.name, "A");
+  }
+
+  return { skipped: false, passed, duration, failures };
+}
+
+/**
+ * Handle a project whose current host does NOT satisfy its requirements
+ * (AC4/AC5). `host-unknown` skips directly (capabilities unprovable). For a
+ * known-but-incapable host, route the suite to a capability-matched, online
+ * worker; degrade to a `requirements-unmet` skip — with NO state mutation and NO
+ * fix-task — whenever routing can't complete for a capability/connectivity
+ * reason. Only an actually-executed remote suite with a real non-zero result
+ * files a fix-task.
+ */
+function routeOrSkipRequirementsUnmet(
+  project: ProjectConfig,
+  check: Extract<RequirementsCheck, { status: "unmet" | "host-unknown" }>,
+  options?: { force?: boolean },
+): TestHealthResult {
+  const SKIP: TestHealthResult = { skipped: true, reason: "requirements-unmet" };
+
+  // Unprovable capabilities (cluster off / host unresolved): skip, do not route.
+  if (check.status === "host-unknown") return SKIP;
+
+  // Known-but-incapable host: route to a fresh-heartbeat capable worker, if any.
+  const worker = selectOnlineCapableMachine(check.reqs);
+  if (!worker) return SKIP; // no eligible/online worker (AC5)
+
+  // Resolve the command WITHOUT probing the controller's process cwd: when the
+  // project has no `test_command` AND no checkout resolvable on the controller,
+  // `resolveProjectPath` returns "" and `detectTestCommand("")` would probe files
+  // in the current working directory (e.g. the ludics repo's own bun.lock),
+  // wrongly routing an unrelated command. Only auto-detect against a real path.
+  const localPath = resolveProjectPath(project.name); // "" or an existing path
+  const testCmd = project.test_command?.trim() || (localPath ? detectTestCommand(localPath) : null);
+  if (!testCmd) return SKIP; // cannot route a command we can't name (synchronous remote detection isn't possible)
+
+  // Respect the same nightly rate-limit gate as the local path, so routing does
+  // not SSH the worker and run the full suite on every keepalive tick.
+  const config = loadConfigSync();
+  const state = loadTestHealthState();
+  if (!options?.force && !shouldRunTestHealth(project.name, state, config)) {
+    return { skipped: true, reason: "rate-limited" };
+  }
+
+  const start = Date.now();
+  const result = _remoteTestExec.fn(worker, testCmd, { cwd: remoteProjectPath(project), timeout: 300_000 });
+  const duration = Date.now() - start;
+
+  // Transport/connectivity failure: the suite never ran → skip-not-fail (AC5).
+  if (result.kind === "transport-error") return SKIP;
+
+  // The suite actually executed remotely: map exactly like a local run (AC4).
+  return finalizeExecutedRun(project, result, duration);
+}
+
 export function checkProjectTestHealth(
   project: ProjectConfig,
   options?: { force?: boolean },
@@ -112,6 +243,15 @@ export function checkProjectTestHealth(
   // 300s timeout run, no test-health.json entry, no fix-task.
   if (projectRequiresT3code(project) && !t3codeIntegrationEnabled()) {
     return { skipped: true, reason: "t3code-integration-paused" };
+  }
+  // gh-ludics-578: capability gate — after postponed/t3code (AC7 precedence),
+  // before path resolution / command detection / execution. A host that can't
+  // satisfy the project's requirements routes to a capable worker or skips
+  // `requirements-unmet` (never runs-and-fails locally / files a false-positive
+  // fix-task). Cheap (host-only); no path cost to avoid.
+  const capability = requirementsSatisfiedByCurrentHost(project);
+  if (capability.status !== "satisfied") {
+    return routeOrSkipRequirementsUnmet(project, capability, options);
   }
   const projectPath = resolveProjectPath(project.name);
   if (!existsSync(projectPath)) return { skipped: true, reason: "path-not-found" };
@@ -128,25 +268,8 @@ export function checkProjectTestHealth(
   const start = Date.now();
   const proc = safeSyncOutput(["sh", "-c", testCmd], { cwd: projectPath, timeout: 300_000, trim: false });
   const duration = Date.now() - start;
-  const passed = proc.ok;
 
-  let failures: string | undefined;
-  if (!passed) {
-    const source = proc.stderr.trim().length >= 20 ? proc.stderr : (proc.stdout || proc.stderr);
-    failures = source.slice(-500);
-    if (proc.timedOut) {
-      failures = `timeout after 300s\n${failures}`;
-    }
-  }
-
-  state[project.name] = { lastRun: new Date().toISOString(), passed, ...(failures ? { failures } : {}) };
-  saveTestHealthState(state);
-
-  if (!passed) {
-    tasksCreate(`Fix broken test suite: ${project.name}`, project.name, "A");
-  }
-
-  return { skipped: false, passed, duration, failures };
+  return finalizeExecutedRun(project, proc, duration);
 }
 
 // --- Batch ---
