@@ -31,7 +31,19 @@ projects:
                           # construction: client-side `git merge-base --is-ancestor` pre-check plus server-side
                           # non-ff rejection (no --force / --force-with-lease). Throttled via
                           # mag/last-outbound-fast-forward-<project>.epoch. Absent → off (legacy configs stay off).
-    path: ~/my-project    # Local checkout path (used for slot start, worktree creation)
+    path: ~/my-project    # Local checkout path (used for slot start, worktree creation).
+                          # A leading ~/ is expanded against the RESOLVING machine's $HOME — so a
+                          # ~/-relative string already bridges same-OS cluster machines. For
+                          # clusters with divergent roots (macOS /Users vs Linux /home) that ~/
+                          # cannot bridge, `path` may instead be a map keyed by cluster machine
+                          # name or OS identifier (`macos` / `linux` — matching cluster.machines[].os,
+                          # NOT `darwin`), selected most-specific-first (machine name → OS), e.g.:
+                          #   path:
+                          #     mac-studio: ~/ocaml-cudajit   # machine-specific wins
+                          #     linux: ~/ocaml-cudajit        # all linux machines
+                          #     macos: ~/ocaml-cudajit
+                          # The controller resolves `path` FOR the destination machine at dispatch
+                          # and ships it unexpanded; the worker expands ~/ against its own $HOME.
     issues: true          # Include GitHub issues as tasks
     priority: false       # Priority project: preempt slots when tasks arrive
     postponed: false      # When true, tasks from this project are excluded from the ready queue,

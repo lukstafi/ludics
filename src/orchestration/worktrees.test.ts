@@ -1802,3 +1802,45 @@ describe("createWorktrees refreshes main before forking", () => {
     cleanupWorktrees(repo, "feat", [{ name: "agent1" }], 7);
   });
 });
+
+// gh-ludics-579 AC2: fail loudly when the project checkout is absent on the
+// executing machine, BEFORE any git op (defaultMainBranch / git worktree add)
+// faults on the missing cwd with the misleading `posix_spawn 'git'` ENOENT.
+describe("createWorktrees missing-checkout guard (gh-ludics-579 AC2)", () => {
+  beforeEach(() => {
+    mkdirSync(TMP, { recursive: true });
+  });
+
+  // The omitted `mainBranch` arg is load-bearing: it exercises the path that
+  // previously evaluated `defaultMainBranch(projectDir)` as a default parameter
+  // (a git call) BEFORE the body. Reverting to that default-param form would
+  // make this throw the old git/cwd error instead of the explicit message.
+  test("throws explicit 'project checkout not found' for a nonexistent projectDir (no mainBranch arg)", () => {
+    const missing = join(TMP, "does-not-exist-repo");
+    expect(existsSync(missing)).toBe(false);
+    expect(() => createWorktrees(missing, "feat", [{ name: "agent1" }])).toThrow(
+      /project checkout not found on .* at /,
+    );
+    // And it must NOT surface the misleading spawn/cwd error.
+    expect(() => createWorktrees(missing, "feat", [{ name: "agent1" }])).not.toThrow(/posix_spawn/);
+  });
+
+  // Positive control: a REAL repo with the `mainBranch` arg omitted still
+  // resolves the default branch after the guard and creates the worktree.
+  test("real repo with omitted mainBranch resolves the default branch after the guard", () => {
+    if (!Bun.which("git")) return;
+    const repo = join(TMP, "real-repo");
+    mkdirSync(repo, { recursive: true });
+    run(["git", "init", "-b", "main"], repo);
+    run(["git", "config", "user.email", "test@example.com"], repo);
+    run(["git", "config", "user.name", "Test User"], repo);
+    writeFileSync(join(repo, "README.md"), "hello\n");
+    run(["git", "add", "README.md"], repo);
+    run(["git", "commit", "-m", "init"], repo);
+
+    const setup = createWorktrees(repo, "feat", [{ name: "agent1" }], undefined, 9);
+    expect(existsSync(setup.rootWorktree)).toBe(true);
+    expect(existsSync(setup.agentWorktrees.agent1!)).toBe(true);
+    cleanupWorktrees(repo, "feat", [{ name: "agent1" }], 9);
+  });
+});

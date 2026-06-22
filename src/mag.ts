@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
-import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, effectivePriorityValue, milestonesEnabledProjects, resolveProjectPath, postponedProjectSet, findProjectConfigByName, t3codeIntegrationEnabled, type LudicsFullConfig } from "./config.ts";
+import { harnessDir, loadConfigSync, startSessionsAutonomy, slotsCount, effectivePriorityValue, milestonesEnabledProjects, resolveProjectPath, projectConfigPath, postponedProjectSet, findProjectConfigByName, t3codeIntegrationEnabled, ProjectPathMapMissError, type LudicsFullConfig } from "./config.ts";
 import { formatUpstreamLagSection } from "./briefing-lag.ts";
 import { defaultRunGit, type RunGit } from "./git-runner.ts";
 import { clearSentinel, readSentinelEpoch, sentinelExists, sentinelFresh, touchSentinel } from "./sentinel.ts";
@@ -1475,7 +1475,8 @@ export function evaluateAutoStartDecisionPure(
 }
 
 
-async function launchSessionFromNotification(taskId: string, adapterArgs: string = ""): Promise<void> {
+/** @internal exported for tests (gh-ludics-579 notification-launch path resolution) */
+export async function launchSessionFromNotification(taskId: string, adapterArgs: string = ""): Promise<void> {
   const adapter = "t3code";
   const launchArgs = adapterArgs.trim();
   const selection = selectSlotForLaunch(taskId);
@@ -1508,17 +1509,21 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
   }
 
   const slotNum = selection.taskSlot ?? selection.emptySlot!;
-  const path = selection.existingPath || resolveTaskProjectPath(taskId);
 
-  // Resolve merged requirements for machine selection
+  // gh-ludics-579: resolve the destination machine FIRST, then resolve the
+  // project path FOR that machine. Shipping a controller-local /Users/... path
+  // to a Linux worker is the worktree-ENOENT bug this task fixes (same class as
+  // the keepalive maybeFillEmptySlots dispatch).
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
   let launchMachine = "";
+  let launchProject = "";
   if (existsSync(taskFile)) {
     const taskContent = readFileSync(taskFile, "utf-8");
     try {
       const taskFm = parseTaskFrontmatter(taskContent);
       const cfgLaunch = loadConfigSync();
       const projectName = taskFm.project ?? "";
+      launchProject = projectName;
       const projectReqs = findProjectConfigByName(projectName, cfgLaunch)?.requirements;
       const launchReqs = mergeRequirements(taskFm.requirements, projectReqs);
       const machine = selectMachineForSlot({
@@ -1535,6 +1540,27 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
       launchMachine = machine;
     } catch {
       // Malformed task file — proceed without requirements (graceful degradation)
+    }
+  }
+
+  // Resolve the project path FOR the destination machine (remote → ~/-relative,
+  // expanded by the worker). Prefer an existing slot path on a re-launch. A
+  // path-map miss surfaces a clear config error and aborts rather than
+  // dispatching to the wrong root.
+  let path = selection.existingPath;
+  if (!path) {
+    try {
+      path = launchProject
+        ? resolveProjectPath(launchProject, launchMachine)
+        : resolveTaskProjectPath(taskId);
+    } catch (e) {
+      if (e instanceof ProjectPathMapMissError) {
+        const msg = `Cannot launch ${taskId}: ${e.message}`;
+        notifyOutgoing(msg, 3, "ludics");
+        console.error(`ludics: ${msg}`);
+        return;
+      }
+      throw e;
     }
   }
 
@@ -2743,8 +2769,9 @@ export function computeTaskLastActivityEpoch(taskId: string): number | null {
       const projectName = String(fm.project ?? "");
       if (projectName) {
         const proj = findProjectConfigByName(projectName);
-        const projPath = proj?.path
-          ? (proj.path.startsWith("~/") ? join(process.env.HOME ?? "~", proj.path.slice(2)) : proj.path)
+        const projCfgPath = proj ? projectConfigPath(proj) : undefined;
+        const projPath = projCfgPath
+          ? (projCfgPath.startsWith("~/") ? join(process.env.HOME ?? "~", projCfgPath.slice(2)) : projCfgPath)
           : null;
         if (projPath && existsSync(projPath)) {
           const r = Bun.spawnSync(["git", "log", "-1", "--format=%ct", "HEAD"], { cwd: projPath });
@@ -3342,11 +3369,24 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
     const slotA = emptySlots[0]!;
     const slotB = emptySlots[1]!;
     const expansion = expandDuoSlots(slotA, slotB, autoArgs);
-    const projectPath = resolveProjectPath(task.project);
+    // Select the destination machine BEFORE resolving the path so the path is
+    // resolved for that machine (gh-ludics-579): a `~/`-relative or map-selected
+    // path is shipped for the worker to expand against its own $HOME, never the
+    // controller's locally-expanded absolute path.
     const machine = selectMachineForSlot({ project: task.project, effort: task.effort, requirements: task.requirements });
     if (machine === null) {
       console.error(`ludics: no machine meets requirements for ${task.id} — skipping`);
       return;
+    }
+    let projectPath: string;
+    try {
+      projectPath = resolveProjectPath(task.project, machine);
+    } catch (e) {
+      if (e instanceof ProjectPathMapMissError) {
+        console.error(`ludics: ${task.id}: ${e.message} — skipping`);
+        return;
+      }
+      throw e;
     }
 
     await slotAssign(slotA, task.id, autoAdapter, "", projectPath, expansion.slotA.args, machine);
@@ -3367,14 +3407,25 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
   } else {
     const slot = emptySlots[0]!;
 
-    // Resolve project path from config
-    const projectPath = resolveProjectPath(task.project);
-
-    // Select machine for slot assignment (cluster-aware)
+    // Select machine for slot assignment (cluster-aware) BEFORE resolving the
+    // path, so the path is resolved for the destination machine (gh-ludics-579).
     const machine = selectMachineForSlot({ project: task.project, effort: task.effort, requirements: task.requirements });
     if (machine === null) {
       console.error(`ludics: no machine meets requirements for ${task.id} — skipping`);
       return;
+    }
+
+    // Resolve project path from config FOR the destination machine. A map-miss
+    // throws ProjectPathMapMissError → skip (no slot assigned), retried next tick.
+    let projectPath: string;
+    try {
+      projectPath = resolveProjectPath(task.project, machine);
+    } catch (e) {
+      if (e instanceof ProjectPathMapMissError) {
+        console.error(`ludics: ${task.id}: ${e.message} — skipping`);
+        return;
+      }
+      throw e;
     }
 
     // Assign task to the empty slot using the auto-selected adapter, path, and flags

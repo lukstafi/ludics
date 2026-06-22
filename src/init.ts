@@ -4,7 +4,7 @@ import { existsSync, readFileSync, readlinkSync, writeFileSync, mkdirSync, copyF
 import { join, dirname } from "path";
 import YAML from "yaml";
 import { safeSyncOutput } from "./spawn.ts";
-import { ludicsRoot, pointerConfigPath, loadConfigSync, slotsCount } from "./config.ts";
+import { ludicsRoot, pointerConfigPath, loadConfigSync, slotsCount, projectConfigPath } from "./config.ts";
 import { dashboardInstall, dashboardStop } from "./dashboard.ts";
 import { writeSlotJson, emptySlotData } from "./slots/json.ts";
 import { triggersInstall } from "./triggers.ts";
@@ -27,14 +27,15 @@ function validateProjectPaths(): void {
   for (const p of config.projects ?? []) {
     const repo = String(p.repo ?? "");
     const upstreamRepo = String(p.upstream_repo ?? "");
-    if (!upstreamRepo || upstreamRepo === repo || !p.path) continue;
+    const cfgPath = projectConfigPath(p);
+    if (!upstreamRepo || upstreamRepo === repo || !cfgPath) continue;
 
     const repoTail = repo.split("/").pop() ?? "";
     const upstreamTail = upstreamRepo.split("/").pop() ?? "";
     // When both repos share the same tail (e.g. lukstafi/ocannl vs ahrefs/ocannl),
     // path-tail comparison cannot distinguish them — skip the heuristic.
     if (repoTail === upstreamTail) continue;
-    const pathStr = String(p.path);
+    const pathStr = cfgPath;
     // Check if path ends with upstream repo tail — likely misconfigured
     const pathTail = pathStr.replace(/\/+$/, "").split("/").pop() ?? "";
     if (pathTail === upstreamTail) {

@@ -914,7 +914,13 @@ describe("integration", () => {
     // but src/cluster.test.ts gained real harness isolation (scratch
     // LUDICS_HARNESS_DIR / LUDICS_CLUSTER_MACHINE_NAME setup) and no longer trips,
     // REMOVING one — so the count is unchanged.
-    const expectedWarningCount = 20;
+    // 22 after gh-ludics-579: staging-ff.ts and briefing-lag.ts now VALUE-import
+    // `projectConfigPath` from src/config.ts (formerly `import type { ProjectConfig }`,
+    // erased at runtime), so src/staging-ff.test.ts and src/briefing-lag.test.ts
+    // newly trip rule-3 (transitive runtime config.ts import). Both are pure-unit —
+    // they exercise projectConfigPath on string `path` fixtures, which never touches
+    // config/cluster — so no real harness is needed; +2.
+    const expectedWarningCount = 22;
     if (result.warningCount !== expectedWarningCount) {
       throw new Error(
         formatPinMismatch(
