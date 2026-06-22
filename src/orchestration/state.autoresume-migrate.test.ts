@@ -3,12 +3,17 @@
 // without the field loads clean), negative-control coercion/drop of corrupt
 // persisted values, and a JSON round-trip fidelity check.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   defaultOrchestrationConfig,
   migrateState,
   type OrchestrationState,
 } from "./state.ts";
+import { withSyntheticHarness } from "../test-utils.ts";
+
+// migrateState/defaultOrchestrationConfig transitively read config; isolate the
+// harness env so this file keeps the lint:test-isolation pin.
+withSyntheticHarness(beforeEach, afterEach);
 
 function baseState(): OrchestrationState {
   return {
