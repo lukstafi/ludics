@@ -372,9 +372,17 @@ export function projectConfigPath(p: ProjectConfig, machine?: string): string | 
     targetOs = machine ? cluster.clusterMachine(machine)?.os : cluster.clusterCurrentMachine()?.os;
   } catch { /* cluster unavailable — fall back to platform OS below */ }
   if (!targetOs) targetOs = machine ? undefined : currentOsId();
-  if (targetName && map[targetName] !== undefined) return map[targetName];
-  if (targetOs && map[targetOs] !== undefined) return map[targetOs];
-  return undefined;
+  // Only a non-empty STRING entry counts as a match. A blank/non-string entry
+  // (YAML `linux:` parses to null) must NOT match — otherwise resolveProjectPath
+  // would skip the ProjectPathMapMissError and silently fall back to ~/<repoTail>,
+  // dispatching to the wrong root. Treat it as a miss so precedence continues to
+  // the OS key, and an all-blank map ultimately throws.
+  const pick = (key?: string): string | undefined => {
+    if (!key) return undefined;
+    const v = map[key];
+    return typeof v === "string" && v !== "" ? v : undefined;
+  };
+  return pick(targetName) ?? pick(targetOs);
 }
 
 /**

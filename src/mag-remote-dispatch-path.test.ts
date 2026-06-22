@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { maybeFillEmptySlots } from "./mag.ts";
+import { maybeFillEmptySlots, launchSessionFromNotification } from "./mag.ts";
 import { heartbeatsDir } from "./cluster.ts";
 
 // gh-ludics-579: the controller must resolve a slot's project path FOR the
@@ -153,5 +153,72 @@ describe("maybeFillEmptySlots — destination-aware path resolution (gh-ludics-5
     expect(readdirSync(join(TMP, "slots"))).toEqual([]);
     // And the config error was surfaced (loud, retryable next tick).
     expect(calls.some((l) => l.includes("no entry for machine"))).toBe(true);
+  });
+});
+
+// gh-ludics-579 (review round 3): the notification/dashboard launch path
+// (launchSessionFromNotification) is a SECOND dispatch site with the same bug —
+// it must resolve the project path FOR the destination machine, after machine
+// selection, not via the controller-local resolveTaskProjectPath.
+describe("launchSessionFromNotification — destination-aware path (gh-ludics-579)", () => {
+  /** t3code-enabled config (launchSessionFromNotification hardcodes adapter t3code),
+   *  controller mac-studio + nvidia worker minipc-wsl, cudajit requires nvidia gpu. */
+  function writeLaunchConfig(): void {
+    const configPath = join(TMP, "config.yaml");
+    writeFileSync(configPath, `state_repo: test/state
+state_path: harness
+adapter: tmux
+slots:
+  count: 2
+projects:
+  - name: cudajit
+    repo: lukstafi/ocaml-cudajit
+    path: ~/ocaml-cudajit
+    requirements:
+      gpu: nvidia
+mag:
+  t3code_integration_enabled: true
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: mac-studio
+      host: mac-studio.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: minipc-wsl
+      host: minipc-wsl.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: nvidia
+`);
+    process.env.LUDICS_CONFIG = configPath;
+  }
+
+  // Invariant: the slot stamped for the remote worker carries the UNEXPANDED
+  // ~/ocaml-cudajit, not the controller's /Users/.... slotStart short-circuits
+  // to a recorded intent for a remote machine, so slotAssign's persisted path is
+  // observable. Fails under the bug (path resolved via resolveTaskProjectPath
+  // before machine selection → controller-local /Users/... or "").
+  test("notification launch to a remote worker stores the ~/-relative path unexpanded", async () => {
+    writeLaunchConfig();
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio"; // controller
+    writeFreshHeartbeat("minipc-wsl");
+    writeReadyTask(); // task-cudajit-remote, project cudajit
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await launchSessionFromNotification("task-cudajit-remote");
+    } finally {
+      errSpy.mockRestore();
+    }
+    const slotFile = join(TMP, "slots", "slot-1.json");
+    expect(existsSync(slotFile)).toBe(true);
+    const slot = JSON.parse(readFileSync(slotFile, "utf-8")) as { path: string; machine: string };
+    expect(slot.machine).toBe("minipc-wsl");
+    expect(slot.path).toBe("~/ocaml-cudajit");
+    expect(slot.path.startsWith("/Users/")).toBe(false);
   });
 });

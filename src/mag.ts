@@ -1475,7 +1475,8 @@ export function evaluateAutoStartDecisionPure(
 }
 
 
-async function launchSessionFromNotification(taskId: string, adapterArgs: string = ""): Promise<void> {
+/** @internal exported for tests (gh-ludics-579 notification-launch path resolution) */
+export async function launchSessionFromNotification(taskId: string, adapterArgs: string = ""): Promise<void> {
   const adapter = "t3code";
   const launchArgs = adapterArgs.trim();
   const selection = selectSlotForLaunch(taskId);
@@ -1508,17 +1509,21 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
   }
 
   const slotNum = selection.taskSlot ?? selection.emptySlot!;
-  const path = selection.existingPath || resolveTaskProjectPath(taskId);
 
-  // Resolve merged requirements for machine selection
+  // gh-ludics-579: resolve the destination machine FIRST, then resolve the
+  // project path FOR that machine. Shipping a controller-local /Users/... path
+  // to a Linux worker is the worktree-ENOENT bug this task fixes (same class as
+  // the keepalive maybeFillEmptySlots dispatch).
   const taskFile = join(harnessDir(), "tasks", `${taskId}.md`);
   let launchMachine = "";
+  let launchProject = "";
   if (existsSync(taskFile)) {
     const taskContent = readFileSync(taskFile, "utf-8");
     try {
       const taskFm = parseTaskFrontmatter(taskContent);
       const cfgLaunch = loadConfigSync();
       const projectName = taskFm.project ?? "";
+      launchProject = projectName;
       const projectReqs = findProjectConfigByName(projectName, cfgLaunch)?.requirements;
       const launchReqs = mergeRequirements(taskFm.requirements, projectReqs);
       const machine = selectMachineForSlot({
@@ -1535,6 +1540,27 @@ async function launchSessionFromNotification(taskId: string, adapterArgs: string
       launchMachine = machine;
     } catch {
       // Malformed task file — proceed without requirements (graceful degradation)
+    }
+  }
+
+  // Resolve the project path FOR the destination machine (remote → ~/-relative,
+  // expanded by the worker). Prefer an existing slot path on a re-launch. A
+  // path-map miss surfaces a clear config error and aborts rather than
+  // dispatching to the wrong root.
+  let path = selection.existingPath;
+  if (!path) {
+    try {
+      path = launchProject
+        ? resolveProjectPath(launchProject, launchMachine)
+        : resolveTaskProjectPath(taskId);
+    } catch (e) {
+      if (e instanceof ProjectPathMapMissError) {
+        const msg = `Cannot launch ${taskId}: ${e.message}`;
+        notifyOutgoing(msg, 3, "ludics");
+        console.error(`ludics: ${msg}`);
+        return;
+      }
+      throw e;
     }
   }
 

@@ -809,4 +809,26 @@ cluster:
     process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
     expect(resolveProjectPath("cudajit", "minipc-wsl")).toBe("~/ocaml-cudajit");
   });
+
+  // gh-ludics-579 (review round 3): a present-but-blank map entry (YAML
+  // `minipc-wsl:` → null) is NOT a match — precedence continues to the OS key.
+  test("blank map entry is not a match — precedence falls through to the OS key", () => {
+    writeClusterConfig({ "minipc-wsl": "", linux: "~/ocaml-cudajit" });
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    expect(resolveProjectPath("cudajit", "minipc-wsl")).toBe("~/ocaml-cudajit");
+  });
+
+  // The reviewer's silent-wrong-root case: a map whose only candidate entry is
+  // blank must THROW (map-miss), not match "" and fall back to ~/<repoTail>.
+  // Mutation: a `!== undefined` (instead of non-empty-string) match returns ""
+  // → resolveProjectPath's `if (selected)` is falsy → returns "~/ocaml-cudajit",
+  // failing the .toThrow below.
+  test("map whose only matching entry is blank throws (no silent ~/<repoTail>)", () => {
+    writeClusterConfig({ "minipc-wsl": "" }); // present but blank, no OS key
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    expect(() => resolveProjectPath("cudajit", "minipc-wsl")).toThrow(ProjectPathMapMissError);
+    // Direct unit form: empty-string and null entries are both non-matches.
+    expect(projectConfigPath({ name: "q", repo: "o/q", path: { "minipc-wsl": "" } }, "minipc-wsl")).toBeUndefined();
+    expect(projectConfigPath({ name: "q", repo: "o/q", path: { "minipc-wsl": null } } as unknown as ProjectConfig, "minipc-wsl")).toBeUndefined();
+  });
 });
