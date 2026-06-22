@@ -23,7 +23,18 @@ export interface ProjectConfig {
    *  outbound when `outbound_sync_enabled` is true). PR creation targets `repo`
    *  (the working/staging fork). */
   upstream_repo?: string;
-  path?: string;
+  /**
+   * Local checkout path for the project. Either:
+   * - a plain string (back-compat; `~/`-relative is expanded against the
+   *   resolving machine's `$HOME`), or
+   * - a map keyed by cluster machine name (e.g. `mac-studio`) or OS identifier
+   *   (`macos` / `linux`, matching `cluster.machines[].os` — NOT `darwin`),
+   *   selected most-specific-first (machine name → OS). Use the map only when
+   *   the cluster spans genuinely divergent roots that the `~/`-relative
+   *   convention cannot bridge (e.g. macOS `/Users` vs Linux `/home`).
+   * Resolved via {@link projectConfigPath} / {@link resolveProjectPath}.
+   */
+  path?: string | Record<string, string>;
   issues?: boolean;
   priority?: boolean;
   /** When true, tasks from this project are excluded from the ready queue,
@@ -310,6 +321,56 @@ export function globalAdapter(): GlobalAdapterMode {
 }
 
 /**
+ * Thrown when a project's `path` is a machine/OS map but no entry matches the
+ * resolution target. A hard error (rather than an empty string) so a
+ * misconfigured map cannot silently fall through to the empty-path fallback
+ * chain (`makeAdapterContext` local re-resolve / `resolveProjectDir` →
+ * `process.cwd()`) and dispatch a slot against the wrong root.
+ */
+export class ProjectPathMapMissError extends Error {}
+
+/** Map `process.platform` to the config's OS vocabulary (`macos` / `linux`). */
+function currentOsId(): string {
+  return process.platform === "darwin" ? "macos" : "linux";
+}
+
+/**
+ * Select the configured checkout path string for a project, honoring the
+ * `string | Record<string,string>` schema. Returns the **unexpanded** string
+ * (a leading `~/` is left for the resolving machine to expand against its own
+ * `$HOME`).
+ *
+ * For a map, selects most-specific-first: machine name → that machine's OS →
+ * `undefined`. `machine` defaults to the local cluster machine name; the OS
+ * defaults to the local platform. Returns `undefined` when no `path` is
+ * configured or (for a map) no key matches — callers that are dispatch
+ * authorities translate the map-miss into a thrown {@link ProjectPathMapMissError};
+ * best-effort/display callers treat `undefined` as "no path".
+ *
+ * Cluster lookups are done via a lazy `require("./cluster.ts")` (cluster.ts
+ * imports this module, so a static import would create a cycle); only the map
+ * branch touches cluster, so plain-string configs never do.
+ */
+export function projectConfigPath(p: ProjectConfig, machine?: string): string | undefined {
+  const raw = p.path;
+  if (raw === undefined) return undefined;
+  if (typeof raw === "string") return raw;
+  // Map form: resolve target machine name + OS.
+  let targetName = machine;
+  let targetOs: string | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- cluster.ts imports config.ts; lazy require breaks the cycle
+    const cluster = require("./cluster.ts") as typeof import("./cluster.ts");
+    if (!targetName) targetName = cluster.clusterCurrentMachineName() ?? undefined;
+    targetOs = machine ? cluster.clusterMachine(machine)?.os : cluster.clusterCurrentMachine()?.os;
+  } catch { /* cluster unavailable — fall back to platform OS below */ }
+  if (!targetOs) targetOs = machine ? undefined : currentOsId();
+  if (targetName && raw[targetName] !== undefined) return raw[targetName];
+  if (targetOs && raw[targetOs] !== undefined) return raw[targetOs];
+  return undefined;
+}
+
+/**
  * Find the ProjectConfig entry matching a given project directory.
  * Match semantics, tried in order against each configured project's `path`:
  * - Exact match against the configured path (with `~/` expansion).
@@ -331,10 +392,14 @@ export function findProjectConfig(
   const cfg = config ?? loadConfigSync();
   const normalized = projectDir.replace(/\/+$/, "");
   return (cfg.projects ?? []).find((p) => {
-    if (p.path) {
-      const expanded = (String(p.path).startsWith("~/")
-        ? join(process.env.HOME ?? "~", String(p.path).slice(2))
-        : String(p.path)).replace(/\/+$/, "");
+    // Best-effort reverse lookup: a map-miss yields `undefined` and simply
+    // falls through to the name/repo-tail match below (no throw — this is not
+    // a dispatch authority).
+    const cfgPath = projectConfigPath(p);
+    if (cfgPath) {
+      const expanded = (cfgPath.startsWith("~/")
+        ? join(process.env.HOME ?? "~", cfgPath.slice(2))
+        : cfgPath).replace(/\/+$/, "");
       if (normalized === expanded || normalized.startsWith(expanded + "/")) return true;
       // Orchestration worktree sibling: same parent, basename prefixed with
       // the configured project's basename + "-". The "-" separator anchors
@@ -494,12 +559,41 @@ export function t3codeIntegrationEnabled(): boolean {
 }
 
 /**
- * Resolve the local checkout path for a project by name.
- * Checks the `path` field in config, then falls back to ~/name and ~/repos/name.
+ * Resolve the checkout path for a project by name.
+ *
+ * Local resolution (no `machine`, or `machine` == this node, or no cluster):
+ * checks the `path` field in config, then falls back to ~/name and ~/repos/name,
+ * existsSync-gating each candidate against the local disk.
+ *
+ * Remote resolution (controller resolving for a non-local destination
+ * `machine`): selects the destination's `path` (machine/OS map entry or the
+ * plain string) and returns it **unexpanded** — a leading `~/` is left for the
+ * worker to expand against its own `$HOME` — and **without** existsSync gating,
+ * since the controller cannot see the worker's disk (gh-ludics-579 AC3). The
+ * worker-side `createWorktrees` guard owns the actual checkout-existence check.
+ *
+ * @throws {ProjectPathMapMissError} when the matched project's `path` is a
+ *   machine/OS map with no entry for the resolution target — a hard error so a
+ *   misconfigured map cannot silently fall through to a wrong-root fallback.
  */
-export function resolveProjectPath(projectName: string): string {
+export function resolveProjectPath(projectName: string, machine?: string): string {
   const config = loadConfigSync();
   const projects = config.projects ?? [];
+
+  // A `machine` denotes a *remote* destination only when cluster is enabled and
+  // we can resolve the current node's name. Standalone / no-cluster / same-node
+  // → local resolution (the `machine` arg is a no-op), preserving every existing
+  // single-box and local caller's behaviour.
+  let isRemote = false;
+  if (machine) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- cluster.ts imports config.ts; lazy require breaks the cycle
+      const cluster = require("./cluster.ts") as typeof import("./cluster.ts");
+      const current = cluster.clusterCurrentMachineName();
+      isRemote = !!current && machine !== current;
+    } catch { isRemote = false; }
+  }
+
   for (const p of projects) {
     const name = String(p.name ?? "").toLowerCase();
     const repo = String(p.repo ?? "");
@@ -508,10 +602,28 @@ export function resolveProjectPath(projectName: string): string {
       name === projectName.toLowerCase()
       || repoTail.toLowerCase() === projectName.toLowerCase()
     ) {
-      if (p.path) {
-        const resolved = String(p.path).startsWith("~/")
-          ? join(process.env.HOME ?? "~", String(p.path).slice(2))
-          : String(p.path);
+      const selected = projectConfigPath(p, machine);
+      // Map present but no machine/OS key matched → loud config error rather
+      // than an empty path that would fall through to the wrong root.
+      if (selected === undefined && isPlainObject(p.path)) {
+        throw new ProjectPathMapMissError(
+          `project "${projectName}" has a path map with no entry for machine ` +
+          `"${machine ?? "<local>"}" or its OS — add a machine- or OS-keyed entry to projects[].path`,
+        );
+      }
+
+      if (isRemote) {
+        // Ship unexpanded, no existsSync (controller can't see the worker disk).
+        if (selected) return selected;
+        // No `path` configured → conventional ~/<repoTail> (worker expands).
+        return repoTail ? `~/${repoTail}` : (projectName ? `~/${projectName}` : "");
+      }
+
+      // Local resolution (unchanged semantics).
+      if (selected) {
+        const resolved = selected.startsWith("~/")
+          ? join(process.env.HOME ?? "~", selected.slice(2))
+          : selected;
         if (existsSync(resolved)) return resolved;
       }
       // repo is the working repo directly; try upstream_repo tail as fallback
@@ -532,7 +644,10 @@ export function resolveProjectPath(projectName: string): string {
       }
     }
   }
-  // Last resort: try ~/projectName
+  // No project config matched. For a remote destination, return the conventional
+  // ~/<projectName> unexpanded (no local existsSync — AC3).
+  if (isRemote) return projectName ? `~/${projectName}` : "";
+  // Last resort (local): try ~/projectName
   const home = process.env.HOME ?? "~";
   for (const candidate of [
     join(home, projectName),
