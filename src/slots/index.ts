@@ -1035,12 +1035,23 @@ async function ensureRemoteMachineReachable(
  * referenced this way, so it is correctly NOT flagged. No `SlotData` field and no
  * migration — derived entirely from existing args.
  *
+ * The match additionally requires the sibling to share this slot's `task`. A
+ * genuine duo pair is assigned to the same task id by both `slotAssign` calls, so
+ * this is always true for a real delivery failure. It guards against a STALE peer
+ * token: `clearDuoPeerLink` clears the sibling's orchestration `duoPeerSlot` when
+ * a duo breaks but does NOT rewrite the sibling's stored `adapterArgs`, so a later
+ * SOLO reuse of this slot would otherwise be mis-flagged by the leftover
+ * `--duo-peer-slot=<slotNum>` token (the new task has a different id → no match).
+ *
  * Exported as a test seam (mirrors `autoFillAdapterArgs`).
  */
 export function slotIsDuoMember(slotNum: number): boolean {
   const all = readAllSlots();
+  const selfTask = all.get(slotNum)?.task ?? "";
+  if (!selfTask) return false; // no task → not a duo delivery failure
   for (const [other, sd] of all) {
     if (other === slotNum) continue;
+    if ((sd?.task ?? "") !== selfTask) continue; // stale-token / unrelated-pair guard
     const args = sd?.adapterArgs ?? "";
     const m = args.match(/--duo-peer-slot=(\d+)/);
     if (m && Number(m[1]) === slotNum) return true;

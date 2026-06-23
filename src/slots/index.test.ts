@@ -3188,6 +3188,25 @@ cluster:
     expect(slotIsDuoMember(3)).toBe(false); // slotA itself is not named by anyone here
   });
 
+  test("slotIsDuoMember ignores a STALE peer token from a sibling on a different task (PR #594 review)", () => {
+    // Scenario: slots 1+2 ran a duo for task-old; the duo broke (clearDuoPeerLink
+    // cleared sibling 2's orchestration duoPeerSlot but NOT its stored adapterArgs,
+    // which still says --duo-peer-slot=1). slot 1 is then reused for a fresh SOLO
+    // task-new with empty args.
+    setWorkerSlotsOverride(new Map<number, SlotData>([
+      // slot 1: reused solo, NEW task, empty args (would auto-fill).
+      [1, { ...emptySlotData(1), process: "orch-runner", task: "task-new", mode: "tmux", adapterArgs: "" }],
+      // slot 2: stale leftover — still names slot 1 as peer, but on the OLD task.
+      [2, { ...emptySlotData(2), process: "orch-runner", task: "task-old", mode: "tmux", adapterArgs: "--pair --coder codex --reviewer claude-code --duo-peer-slot=1" }],
+    ]));
+    // Invariant: a duo pair shares a task; a peer token whose sibling is on a
+    // different task is stale and must NOT block the reused slot's auto-fill.
+    // Mutation: dropping the same-task guard flips this back to true → the solo
+    // reuse throws instead of auto-filling (the exact false positive the reviewer
+    // flagged).
+    expect(slotIsDuoMember(1)).toBe(false);
+  });
+
   test("autoFillAdapterArgs REFUSES (throws) a duo slot with empty args — no default-pair fallback (AC1)", async () => {
     setWorkerSlotsOverride(new Map<number, SlotData>([
       [3, duoSibling(3, 4)],
@@ -3212,9 +3231,11 @@ cluster:
     writeTask(tasksDir, "task-solo-fill", "Solo fill");
     void slotAssign(1, "task-solo-fill", "t3code");
     const data = readSlotJson(1, harness);
-    // Override carries an UNRELATED duo pair on other slots — slot 1 is solo and
-    // must not be swept up by the duo refusal.
+    // Override carries an UNRELATED duo pair on other slots — slot 1 (its own task)
+    // is solo and must not be swept up by the duo refusal. slot 1 is present in the
+    // override so the same-task guard sees its real task, not an empty self.
     setWorkerSlotsOverride(new Map<number, SlotData>([
+      [1, data],
       [3, duoSibling(3, 4)],
       [4, blankDuoSlotB(4)],
     ]));
