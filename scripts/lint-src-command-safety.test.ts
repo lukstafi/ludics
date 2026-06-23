@@ -73,6 +73,41 @@ describe("scanFile — path rule", () => {
     expect(issues).toHaveLength(2);
     expect(issues.map((i) => i.command).sort()).toEqual(["scp", "ssh"]);
   });
+
+  test("single-quoted 'ssh' argv literal is flagged (not only double-quoted)", () => {
+    // Regression: the original regex only matched "ssh" (double-quoted).
+    // A single-quoted ['ssh', host, script] must also be caught.
+    const source = "safeSyncOutput(['ssh', host, script], {});";
+    const issues = scanFile(source, "src/danger.ts");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ command: "ssh", kind: "path" });
+  });
+
+  test("single-quoted 'scp' argv literal is flagged", () => {
+    const source = "safeSyncOutput(['scp', 'file.txt', 'remote:/path/'], {});";
+    const issues = scanFile(source, "src/upload.ts");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ command: "scp", kind: "path" });
+  });
+
+  test("block comment between [ and \"ssh\" does not bypass detection", () => {
+    // Regression: `[/* vetted? */ "ssh", host, script]` must be flagged.
+    // The original regex's `\\s*` did not match comment text, so the pattern
+    // silently passed. The mask-aware firstStringArg skips masked comment
+    // bytes and still finds "ssh" as the first real source element.
+    const source = 'safeSyncOutput([/* vetted? */ "ssh", host, script], {});';
+    const issues = scanFile(source, "src/danger.ts");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ command: "ssh", kind: "path" });
+  });
+
+  test("line comment on previous line does not affect detection", () => {
+    // The comment is on a line by itself before the array — should not mask the [.
+    const source = "// see also safe patterns\nsafeSyncOutput([\"ssh\", host, script], {});";
+    const issues = scanFile(source, "src/danger.ts");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ command: "ssh", kind: "path" });
+  });
 });
 
 // ---------------------------------------------------------------------------

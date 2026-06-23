@@ -67,8 +67,8 @@ export interface CommandSafetyIssue {
 // Detection helpers
 // ---------------------------------------------------------------------------
 
-/** Matches an argv-array literal whose first element is "ssh", "scp", or "rsync". */
-const SSH_ARGV_RE = /\[\s*"(ssh|scp|rsync)"\s*[,\]]/g;
+/** Command names whose presence as the first argv element is a violation. */
+const SSH_COMMANDS = new Set(["ssh", "scp", "rsync"]);
 
 function lineOf(source: string, idx: number): number {
   let line = 1;
@@ -76,6 +76,44 @@ function lineOf(source: string, idx: number): number {
     if (source[i] === "\n") line++;
   }
   return line;
+}
+
+/**
+ * Given an unmasked `[` at `bracketIdx`, scan forward through unmasked bytes
+ * to find the first string literal (double- or single-quoted) in the array.
+ * Masked bytes (comment bodies, string interiors, template bodies) are skipped
+ * so block/line comments between `[` and the first element do not suppress
+ * detection (e.g. `[/* vetted? *\/ "ssh", ...]` is still caught).
+ *
+ * Returns the string content if the first non-whitespace, non-masked byte is
+ * a quote character; returns null if any other code byte appears first (meaning
+ * the first element is not a string literal — a variable, template literal, ]).
+ */
+function firstStringArg(
+  source: string,
+  bracketIdx: number,
+  mask: Uint8Array,
+): string | null {
+  for (let i = bracketIdx + 1; i < source.length; i++) {
+    if (mask[i]) continue; // masked = comment body, string body, template body — skip
+    const c = source[i];
+    if (c === '"' || c === "'") {
+      // Opening of a string literal (unmasked quote in code).
+      // Collect the masked content bytes until the closing (unmasked) quote.
+      i++;
+      let content = "";
+      while (i < source.length) {
+        if (!mask[i]) break; // unmasked = closing quote (or unexpected code byte)
+        content += source[i];
+        i++;
+      }
+      return content;
+    }
+    // Any unmasked non-whitespace, non-string byte before a string means the
+    // first element is not a string literal — no match.
+    if (!/\s/.test(c)) return null;
+  }
+  return null;
 }
 
 /**
@@ -153,23 +191,24 @@ export function scanFile(
   const mask = computeCodeMask(source);
   const issues: CommandSafetyIssue[] = [];
 
-  SSH_ARGV_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
+  for (let i = 0; i < source.length; i++) {
+    if (mask[i]) continue;
+    if (source[i] !== "[") continue;
 
-  while ((match = SSH_ARGV_RE.exec(source)) !== null) {
-    if (mask[match.index]) continue; // inside comment, string, or template body
+    // Found an unmasked `[`. Use firstStringArg to resolve the first real
+    // (non-comment, non-whitespace) source element, handling single-quoted
+    // strings and comments between `[` and the first element correctly.
+    const cmd = firstStringArg(source, i, mask);
+    if (!cmd || !SSH_COMMANDS.has(cmd)) continue;
 
-    const line = lineOf(source, match.index);
-    const command = match[1]!;
-
-    const arrayEnd = findArrayEnd(source, match.index, mask);
+    const line = lineOf(source, i);
+    const arrayEnd = findArrayEnd(source, i, mask);
     const kind: IssueKind =
-      arrayEnd !== -1 &&
-      hasTemplateInterpolation(source, match.index, arrayEnd, mask)
+      arrayEnd !== -1 && hasTemplateInterpolation(source, i, arrayEnd, mask)
         ? "interpolation"
         : "path";
 
-    issues.push({ file: relPath, line, command, kind });
+    issues.push({ file: relPath, line, command: cmd, kind });
   }
 
   return issues;
