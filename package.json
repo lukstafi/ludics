@@ -23,6 +23,7 @@
     "lint:no-mock-module": "bun run scripts/lint-no-mock-module.ts",
     "lint:no-nul-bytes": "bun run scripts/lint-no-nul-bytes.ts",
     "lint:no-shadow-util": "bun run scripts/lint-no-shadow-util.ts",
+    "lint:src-command-safety": "bun run scripts/lint-src-command-safety.ts",
     "smoke": "bun run scripts/smoke.ts"
   },
   "devDependencies": {

@@ -46,6 +46,9 @@ jobs:
       - name: Lint template variable safety
         run: bun run lint:template-safety
 
+      - name: Lint — src command safety
+        run: bun run lint:src-command-safety
+
       - name: Lint — no mock.module() in tests
         run: bun run lint:no-mock-module
 
