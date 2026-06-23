@@ -12,11 +12,33 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { readFileSync } from "fs";
-import { triggerAllowedForRole, CONTROLLER_ONLY_TRIGGER_NAMES, removeControllerTriggerUnits, shouldTeardownControllerUnits, shouldRunTeardown, isUnitDisabledInPrintOutput, plistEnvXml, magKeepaliveServiceBody } from "./triggers.ts";
+import { triggerAllowedForRole, CONTROLLER_ONLY_TRIGGER_NAMES, removeControllerTriggerUnits, shouldTeardownControllerUnits, shouldRunTeardown, isUnitDisabledInPrintOutput, plistEnvXml, magKeepaliveServiceBody, systemdIntervalTimerBody } from "./triggers.ts";
 import type { ClusterMachine } from "./cluster.ts";
 
 const CONTROLLER_ONLY = ["dashboard", "ntfy-subscribe", "morning", "health", "sync", "watch"] as const;
 const WORKER_RELEVANT = ["mag", "cluster", "startup", "sessions", "sessions-sweep", "t3code-cleanup"] as const;
+
+describe("systemdIntervalTimerBody — recurring timers seed an initial trigger", () => {
+  // Regression: a timer with only OnUnitActiveSec (relative to the service's last
+  // activation) never schedules a first run when the action is invoked directly
+  // (e.g. `cluster tick` during init), so the worker heartbeat went stale and the
+  // node dropped out of routing. The body must carry BOTH an activation-relative
+  // initial trigger (OnActiveSec) and the recurrence (OnUnitActiveSec).
+  const body = systemdIntervalTimerBody("cluster", "cluster heartbeat", "300");
+
+  test("includes an OnActiveSec initial trigger", () => {
+    expect(body).toContain("OnActiveSec=300s");
+  });
+  test("includes the OnUnitActiveSec recurrence", () => {
+    expect(body).toContain("OnUnitActiveSec=300s");
+  });
+  test("OnActiveSec is ordered before OnUnitActiveSec (initial trigger seeds the cycle)", () => {
+    expect(body.indexOf("OnActiveSec=")).toBeLessThan(body.indexOf("OnUnitActiveSec="));
+  });
+  test("binds the right service unit", () => {
+    expect(body).toContain("Unit=ludics-cluster.service");
+  });
+});
 
 describe("triggerAllowedForRole — worker excludes controller-only units (AC 7)", () => {
   // One assertion per named member: a single representative would let a
