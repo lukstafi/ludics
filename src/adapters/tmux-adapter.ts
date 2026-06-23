@@ -425,11 +425,57 @@ export function buildTtydSpawnArgs(
   return setsidWrap(["bash", "-c", cmd]);
 }
 
+/**
+ * gh-ludics-590: detect a FOREIGN process bound to a slot's computed ttyd port at the
+ * point ludics would bind it. The Debian/Ubuntu ttyd package auto-enables a login
+ * ttyd.service on port 7681 (slot-1 coder) that our `pkill -f "ttyd.*--port N"` cleanup
+ * does NOT match (it starts ttyd via `-p`/config, not `--port`), so the per-slot ttyd
+ * silently fails to bind. Returns a loud diagnostic naming slot + role + port +
+ * remediation when the port is held, else null. Conservative on probe failure (treat
+ * as free → never blocks launch). `probe` is injectable for tests.
+ */
+export function foreignTtydPortConflict(
+  slot: number,
+  role: "coder" | "reviewer",
+  probe?: (port: number) => boolean,
+): string | null {
+  const port = ttydPort(slot, role);
+  const check =
+    probe ??
+    ((p: number): boolean => {
+      const lsofBin = process.platform === "darwin" ? "/usr/sbin/lsof" : "lsof";
+      const r = safeSyncOutput([lsofBin, "-nP", `-iTCP:${p}`, "-sTCP:LISTEN"]);
+      if (r.ok && r.stdout.trim()) return true;
+      // Linux minimal images may lack lsof — fall back to ss.
+      const ss = safeSyncOutput(["ss", "-ltnH", `sport = :${p}`]);
+      return ss.ok && ss.stdout.trim().length > 0;
+    });
+  let bound = false;
+  try {
+    bound = check(port);
+  } catch {
+    return null;
+  }
+  if (!bound) return null;
+  return (
+    `ludics: ttyd port ${port} (slot ${slot} ${role}) is already bound by another ` +
+    `process — the per-slot web terminal cannot start. On Debian/Ubuntu the ttyd ` +
+    `package auto-enables a login service on 7681; run 'sudo systemctl disable --now ttyd.service'.`
+  );
+}
+
 export function startTtyd(slot: number, agentName: string, role: "coder" | "reviewer", taskId?: string): number {
   const port = ttydPort(slot, role);
 
   // Kill any stale ttyd on this port
   safeSyncOutput(["pkill", "-f", `ttyd.*--port ${port}`]);
+
+  // gh-ludics-590: after clearing our own stale ttyd, a still-bound port means a
+  // FOREIGN process holds it (e.g. the Debian ttyd login service). Surface it loudly
+  // rather than letting the bind fail silently. Non-fatal: the agent/tmux session is
+  // already functional; only the web terminal is affected, so we warn and still spawn.
+  const conflict = foreignTtydPortConflict(slot, role);
+  if (conflict) console.error(conflict);
 
   // Use setsidWrap to detach ttyd into its own process session so it survives
   // when the parent (launchd oneshot keepalive) exits. The bash wrapper

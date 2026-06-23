@@ -465,6 +465,98 @@ describe("ttydMatchesSession — exact session-identity match (task-1373e911)", 
   });
 });
 
+// gh-ludics-590: a foreign process (e.g. the Debian ttyd package's auto-enabled
+// login service on 7681) bound to a slot's ttyd port must be surfaced LOUDLY at the
+// bind point, not fail silently. Detection only (ports stay hardcoded).
+describe("foreignTtydPortConflict (gh-ludics-590)", () => {
+  test("port held → diagnostic names the exact port, slot, role, and remediation", async () => {
+    const { foreignTtydPortConflict } = await import("./tmux-adapter.ts");
+    // Harness condition: probe reports the port BOUND.
+    const msg = foreignTtydPortConflict(1, "coder", () => true);
+    expect(msg).not.toBeNull();
+    expect(msg).toContain("7681");
+    expect(msg).toContain("slot 1");
+    expect(msg).toContain("coder");
+    expect(msg).toContain("sudo systemctl disable --now ttyd.service");
+  });
+
+  test("port computed per (slot,role): slot-2 reviewer names 7684, not 7681", async () => {
+    const { foreignTtydPortConflict } = await import("./tmux-adapter.ts");
+    // Mutation guard: hardcoding 7681 in the message (instead of ttydPort(slot,role))
+    // would make this fail — 7681 + (2-1)*2 + 1 = 7684.
+    const msg = foreignTtydPortConflict(2, "reviewer", () => true)!;
+    // Target the COMPUTED-port phrase, not the literal 7681 (which legitimately
+    // appears in the static Debian-default remediation hint).
+    expect(msg).toContain("ttyd port 7684");
+    expect(msg).toContain("slot 2 reviewer");
+    expect(msg).not.toContain("ttyd port 7681");
+  });
+
+  test("port free → null (does not block launch)", async () => {
+    const { foreignTtydPortConflict } = await import("./tmux-adapter.ts");
+    expect(foreignTtydPortConflict(1, "coder", () => false)).toBeNull();
+  });
+
+  test("probe throws → null (conservative; transient probe failure never blocks)", async () => {
+    const { foreignTtydPortConflict } = await import("./tmux-adapter.ts");
+    expect(
+      foreignTtydPortConflict(1, "coder", () => {
+        throw new Error("lsof exploded");
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("startTtyd surfaces a foreign port conflict AFTER stale cleanup (gh-ludics-590)", () => {
+  let spawnMod: typeof import("../spawn.ts");
+  const spies: Array<{ mockRestore: () => void }> = [];
+  afterEach(() => {
+    for (const s of spies.splice(0)) s.mockRestore();
+  });
+
+  test("port still bound after pkill → console.error names slot/role/port; spawn still happens; probe runs after pkill", async () => {
+    spawnMod = await import("../spawn.ts");
+    const calls: string[][] = [];
+    const safeSpy = spyOn(spawnMod, "safeSyncOutput").mockImplementation((argv: string[]) => {
+      calls.push(argv);
+      // The stale-ttyd cleanup pkill succeeds/no-ops.
+      if (argv[0] === "pkill") return { ok: true, exitCode: 0, stdout: "", stderr: "", timedOut: false };
+      // The port probe reports slot-1 coder port (7681) BOUND by a foreign listener.
+      if (argv.includes("-iTCP:7681")) {
+        return { ok: true, exitCode: 0, stdout: "ttyd 999 root 6u IPv4 TCP *:7681 (LISTEN)", stderr: "", timedOut: false };
+      }
+      return { ok: false, exitCode: 1, stdout: "", stderr: "", timedOut: false };
+    });
+    spies.push(safeSpy);
+    // Stub the real ttyd spawn so the test binds nothing.
+    const spawnSpy = spyOn(Bun, "spawn").mockReturnValue({ pid: 4242, unref() {} } as never);
+    spies.push(spawnSpy as unknown as { mockRestore: () => void });
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    spies.push(errSpy);
+
+    const { startTtyd } = await import("./tmux-adapter.ts");
+    const pid = startTtyd(1, "coder", "coder", "task-abc");
+
+    // Invariant 1 — warn, not abort: the conflict is surfaced via console.error but
+    // startTtyd still spawns (returns the stub pid). Mutation: changing the warn to a
+    // throw would make `startTtyd` reject and `pid`/spawn assertions fail.
+    expect(pid).toBe(4242);
+    expect(spawnSpy).toHaveBeenCalledTimes(1);
+    const diag = (errSpy.mock.calls.find((c) => String(c[0]).includes("ttyd port"))?.[0] as string) ?? "";
+    expect(diag).toContain("slot 1");
+    expect(diag).toContain("coder");
+    expect(diag).toContain("7681");
+
+    // Invariant 2 — the probe runs AFTER the stale-ttyd pkill cleanup (reviewer trap:
+    // probing first would false-positive on our own not-yet-killed ttyd). Mutation:
+    // moving the conflict check above the pkill flips this ordering assertion.
+    const pkillIdx = calls.findIndex((c) => c[0] === "pkill");
+    const probeIdx = calls.findIndex((c) => c.includes("-iTCP:7681"));
+    expect(pkillIdx).toBeGreaterThanOrEqual(0);
+    expect(probeIdx).toBeGreaterThan(pkillIdx);
+  });
+});
+
 describe("readTmuxSlotState read-boundary preserves sparse ttydRestartCounts", () => {
   let tmpDir = "";
 
