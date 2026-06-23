@@ -50,6 +50,18 @@ install_pkg() {
   fi
 }
 
+# gh-ludics-590: disable the Debian/Ubuntu ttyd-package login service that squats
+# slot-1's port 7681. No-op on macOS / distros without systemd or the unit.
+disable_ttyd_login_service() {
+  is_linux || return 0
+  command -v systemctl &>/dev/null || return 0
+  if systemctl list-unit-files ttyd.service 2>/dev/null | grep -q '^ttyd\.service'; then
+    warn "disabling auto-enabled ttyd.service (squats slot port 7681)"
+    sudo systemctl disable --now ttyd.service \
+      || warn "could not disable ttyd.service — disable manually"
+  fi
+}
+
 # bun
 export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
 export PATH="$BUN_INSTALL/bin:$PATH"
@@ -98,6 +110,17 @@ else
   info "gh: $(gh --version | head -1)"
 fi
 
+# jq (gh-ludics-590): the orchestration on-stop hook + Mag queue hard-depend on jq.
+# Without it a worker silently breaks (every agent stop errors, phase signals lost),
+# so install it at onboarding rather than degrading to bun fallbacks unflagged.
+if command -v jq &>/dev/null; then
+  info "jq: $(jq --version)"
+else
+  warn "jq not found — installing..."
+  install_pkg jq
+  info "jq installed"
+fi
+
 # ttyd (web terminal)
 if command -v ttyd &>/dev/null; then
   info "ttyd: $(ttyd --version 2>&1 | head -1)"
@@ -106,6 +129,13 @@ else
   install_pkg ttyd
   info "ttyd installed"
 fi
+
+# gh-ludics-590: the Debian/Ubuntu ttyd package ships and ENABLES a login
+# ttyd.service on port 7681 at boot — exactly the port ludics computes for the
+# slot-1 coder web terminal. Keep the binary, drop the auto-enabled squatter.
+# Called unconditionally (not only when we just installed ttyd) so hosts where the
+# package was enabled on a previous run are also fixed.
+disable_ttyd_login_service
 
 # ── Step 2: Build & initialize Ludics ────────────────────────────────────────
 
