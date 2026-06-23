@@ -897,3 +897,43 @@ cluster:
     expect(existsSync(harnessPath)).toBe(false);
   });
 });
+
+// gh-ludics-589: the start() agent-construction loop must fail LOUD when an agent
+// name has no createWorktrees entry, rather than masking the missing key (the
+// old `setup.agentWorktrees[agent.name]!`) and launching a tmux session in $HOME.
+// The "tmux adapter cold-start CWD" describe above is the positive control: real
+// matching keys → distinct worktree cwds. This covers the missing-key branch.
+describe("resolveAgentLaunchPaths fail-loud (gh-ludics-589)", () => {
+  test("throws naming the missing key and available keys when an agent has no worktree", async () => {
+    const { resolveAgentLaunchPaths } = await import("./tmux-adapter.ts");
+    const setup = {
+      agentWorktrees: { coder: "/wt/coder" }, // reviewer key MISSING (the bug)
+      branches: { coder: "br-coder", reviewer: "br-reviewer" },
+    };
+    // Invariant: a missing worktree key surfaces as an error before any tmux
+    // session, naming the agent and the keys present. Mutation: restoring the `!`
+    // assertion returns `undefined` for worktreePath (no throw) → $HOME launch.
+    expect(() => resolveAgentLaunchPaths(setup, "reviewer", 4, "task-duo-b"))
+      .toThrow(/no worktree created for agent "reviewer".*have: coder/s);
+  });
+
+  test("throws for a missing branch key too (same bug class)", async () => {
+    const { resolveAgentLaunchPaths } = await import("./tmux-adapter.ts");
+    const setup = {
+      agentWorktrees: { coder: "/wt/coder", reviewer: "/wt/reviewer" },
+      branches: { coder: "br-coder" }, // reviewer branch MISSING
+    };
+    expect(() => resolveAgentLaunchPaths(setup, "reviewer", 4, "task-duo-b"))
+      .toThrow(/no branch created for agent "reviewer"/);
+  });
+
+  test("returns the worktree + branch when both keys are present (positive control)", async () => {
+    const { resolveAgentLaunchPaths } = await import("./tmux-adapter.ts");
+    const setup = {
+      agentWorktrees: { coder: "/wt/coder", reviewer: "/wt/reviewer" },
+      branches: { coder: "br-coder", reviewer: "br-reviewer" },
+    };
+    expect(resolveAgentLaunchPaths(setup, "reviewer", 4, "task-duo-b"))
+      .toEqual({ worktreePath: "/wt/reviewer", branch: "br-reviewer" });
+  });
+});

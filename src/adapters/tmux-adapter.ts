@@ -714,6 +714,36 @@ export async function sendPromptToAgent(
 // Adapter implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * gh-ludics-589: resolve an agent's worktree path + branch from a
+ * `createWorktrees` setup, failing LOUD when the agent name has no entry instead
+ * of masking a missing key as `undefined`. The previous `setup.agentWorktrees[
+ * agent.name]!` non-null assertion turned a key mismatch (e.g. a swapped-slotB
+ * parse whose agent names don't match the worktree keys) into a tmux session
+ * launched with no cwd → `$HOME` (symptom 1) rather than the worktree. Throwing
+ * here surfaces the mismatch before any tmux session is created.
+ *
+ * Exported as a test seam (the real `start()` always feeds matching keys because
+ * `createWorktrees` keys by the same `orchestration.agents` names).
+ */
+export function resolveAgentLaunchPaths(
+  setup: { agentWorktrees: Record<string, string>; branches: Record<string, string> },
+  agentName: string,
+  slot: number,
+  taskId: string,
+): { worktreePath: string; branch: string } {
+  const worktreePath = setup.agentWorktrees[agentName];
+  const branch = setup.branches[agentName];
+  if (!worktreePath || !branch) {
+    throw new Error(
+      `slot ${slot} (task ${taskId}): no ${!worktreePath ? "worktree" : "branch"} created for agent "${agentName}" ` +
+      `(have: ${Object.keys(setup.agentWorktrees).join(", ") || "<none>"}) — ` +
+      `refusing to launch a tmux session without a worktree cwd.`
+    );
+  }
+  return { worktreePath, branch };
+}
+
 async function start(ctx: AdapterContext): Promise<string> {
   const workspaceRoot = normalizeWorkspacePath(ctx);
   const options = parseOrchestrationAdapterArgs(ctx.adapterArgs);
@@ -780,21 +810,24 @@ async function start(ctx: AdapterContext): Promise<string> {
   const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode, proposalPath_);
   symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);
 
-  const agents: AgentConfig[] = orchestration.agents.map((agent, index) => ({
-    name: agent.name,
-    provider: agent.provider,
-    role: agent.role,
-    model: resolvedModels[index]!,
-    thinkingEffort: resolveAgentThinkingEffort(
-      agent as ParsedAgentToken,
-      index,
-      orchCfg,
-      orchestration.coderThinkingEffort,
-      orchestration.reviewerThinkingEffort,
-    ),
-    branch: setup.branches[agent.name]!,
-    worktreePath: setup.agentWorktrees[agent.name]!,
-  }));
+  const agents: AgentConfig[] = orchestration.agents.map((agent, index) => {
+    const { worktreePath, branch } = resolveAgentLaunchPaths(setup, agent.name, ctx.slot, taskId);
+    return {
+      name: agent.name,
+      provider: agent.provider,
+      role: agent.role,
+      model: resolvedModels[index]!,
+      thinkingEffort: resolveAgentThinkingEffort(
+        agent as ParsedAgentToken,
+        index,
+        orchCfg,
+        orchestration.coderThinkingEffort,
+        orchestration.reviewerThinkingEffort,
+      ),
+      branch,
+      worktreePath,
+    };
+  });
 
   initPeerSync(
     setup.peerSyncDir,
