@@ -840,3 +840,108 @@ describe("harness teardown restoration", () => {
     }
   });
 });
+
+// gh-ludics-592 (defect 2): a federation worker must never create or mutate the
+// tracked Mag queue file (mag/queue.jsonl) or its .lock dir — a local write
+// blocks `git pull --ff-only` and strands the worker on a stale harness clone.
+// Every write/mutate API no-ops in worker context, returning an API-compatible
+// "nothing to do" result.
+describe("queue worker-context guard (gh-ludics-592)", () => {
+  let wtmp: string;
+  const SAVED_HOME = process.env.HOME;
+  const SAVED_HARNESS = process.env.LUDICS_HARNESS_DIR;
+  const SAVED_CONFIG = process.env.LUDICS_CONFIG;
+  const SAVED_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+
+  function writeClusterConfig(homeDir: string): string {
+    const configPath = join(homeDir, "config.yaml");
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: minipc-wsl
+      host: minipc-wsl.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    return configPath;
+  }
+
+  const qFile = (): string => join(wtmp, "harness", "mag", "queue.jsonl");
+  const qLock = (): string => join(wtmp, "harness", "mag", "queue.jsonl.lock");
+
+  beforeEach(() => {
+    wtmp = mkdtempSync(join(tmpdir(), "ludics-queue-worker-"));
+    process.env.HOME = wtmp;
+    process.env.LUDICS_HARNESS_DIR = join(wtmp, "harness");
+    process.env.LUDICS_CONFIG = writeClusterConfig(wtmp);
+    mkdirSync(join(wtmp, "harness", "mag"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(wtmp, { recursive: true, force: true });
+    if (SAVED_HOME === undefined) delete process.env.HOME; else process.env.HOME = SAVED_HOME;
+    if (SAVED_HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = SAVED_HARNESS;
+    if (SAVED_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = SAVED_CONFIG;
+    if (SAVED_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = SAVED_MACHINE;
+  });
+
+  test("worker context: enqueue/reinsert APIs write nothing and return API-compatible values", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker (role: worker)
+    const { queueRequest, queueRequestAtHead, queueReinsertHead, queueReinsertHeadWithFreshId, queuePending } = await loadQueue();
+
+    // Invariant: no tracked queue file (or lock dir) is created by a worker, so
+    // the tree stays clean and `git pull --ff-only` is never blocked.
+    // Harness condition: worker context (minipc-wsl role: worker) → isWorkerContext() true.
+    expect(queueRequest({ action: "briefing" })).toBe("");
+    expect(queueRequestAtHead({ action: "briefing" })).toBe("");
+    queueReinsertHead(JSON.stringify({ id: "x", action: "briefing" }));
+    // returns a syntactically valid req-* id without reinserting
+    expect(queueReinsertHeadWithFreshId({ action: "briefing" }, "orig-id")).toMatch(/^req-/);
+
+    expect(existsSync(qFile())).toBe(false);
+    expect(existsSync(qLock())).toBe(false);
+    expect(queuePending()).toBe(false);
+  });
+
+  test("worker context: pop/mutation APIs write nothing and return empty/not-found/mismatch", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker
+    const { queuePopOne, queuePopAll, queuePromoteToTop, queueCancel, queuePopExpected } = await loadQueue();
+
+    expect(queuePopOne()).toBeNull();
+    expect(queuePopAll()).toEqual([]);
+    expect(queuePromoteToTop("any-id")).toEqual({ status: "not-found" });
+    expect(queueCancel("any-id")).toEqual({ status: "not-found" });
+    expect(queuePopExpected("any-line")).toEqual({ status: "empty" });
+
+    // Mutation control: removing any `if (isWorkerContext())` guard makes the
+    // corresponding call create/rewrite the queue file or its lock dir → fails.
+    expect(existsSync(qFile())).toBe(false);
+    expect(existsSync(qLock())).toBe(false);
+  });
+
+  test("controller context positive control: queueRequest DOES write and queueList round-trips", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "leader-box"; // controller (role: leader)
+    const { queueRequest, queueList } = await loadQueue();
+
+    const id = queueRequest({ action: "briefing" });
+    expect(id).toMatch(/^req-/);
+    expect(existsSync(qFile())).toBe(true);
+    const list = queueList();
+    expect(list.length).toBe(1);
+    expect(list[0]!.action).toBe("briefing");
+    expect(list[0]!.id).toBe(id);
+  });
+});

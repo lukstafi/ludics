@@ -5,10 +5,21 @@ import { join, dirname } from "path";
 import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
 import { atomicWriteFileSync, isPlainObject, writeJsonFileCompact } from "./json.ts";
+import { isWorkerContext } from "./orchestration/state.ts";
 
 function queueFile(): string {
   return join(harnessDir(), "mag", "queue.jsonl");
 }
+
+// gh-ludics-592 (defect 2): the Mag request queue (mag/queue.jsonl) is the
+// controller-coordinator's — only the controller drains it. A federation worker
+// must never create or mutate the tracked queue file (nor its .lock dir): a
+// local write blocks `git pull --ff-only` and strands the worker on a stale
+// harness clone (the resurrection incident). Every write/mutate public API
+// early-returns BEFORE `withQueueLock` in worker context, returning an
+// API-compatible "nothing to do" result. Read-only helpers are untouched. A
+// worker never drains the queue, so suppressing the write half is a no-op
+// functionally — it only keeps the tree clean.
 
 const LOCK_MAX_ATTEMPTS = 50;
 const LOCK_RETRY_MS = 100;
@@ -154,6 +165,7 @@ export interface QueueRequestExtras {
 }
 
 export function queueRequest(req: QueueAction, extras?: QueueRequestExtras): string {
+  if (isWorkerContext()) return ""; // worker: never write the tracked queue (gh-ludics-592)
   const file = queueFile();
   mkdirSync(dirname(file), { recursive: true });
 
@@ -204,6 +216,7 @@ function writeQueueLines(lines: string[]): void {
 }
 
 export function queueReinsertHead(line: string): void {
+  if (isWorkerContext()) return; // worker: never write the tracked queue (gh-ludics-592)
   withQueueLock(() => {
     const lines = readQueueLines();
     writeQueueLines([line, ...lines]);
@@ -218,6 +231,7 @@ export function queueReinsertHead(line: string): void {
  * docs/proposals/auto-compact-after-checkpoints.md).
  */
 export function queueRequestAtHead(req: QueueAction, extras?: QueueRequestExtras): string {
+  if (isWorkerContext()) return ""; // worker: never write the tracked queue (gh-ludics-592)
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const requestId = nextRequestId();
   const baseRecord: Record<string, unknown> = { id: requestId, ...req, timestamp };
@@ -266,6 +280,8 @@ export function queueReinsertHeadWithFreshId(
   record: Record<string, unknown>,
   originalId: string,
 ): string {
+  // worker: return a syntactically valid id without reinserting (gh-ludics-592)
+  if (isWorkerContext()) return nextRequestId();
   const newId = nextRequestId();
   const updated = { ...record, id: newId, "re-fired-from": originalId };
   queueReinsertHead(JSON.stringify(updated));
@@ -273,6 +289,7 @@ export function queueReinsertHeadWithFreshId(
 }
 
 export function queuePopOne(): string | null {
+  if (isWorkerContext()) return null; // worker: never drain/rewrite the tracked queue (gh-ludics-592)
   const result = withQueueLock(() => {
     const lines = readQueueLines();
     if (lines.length === 0) return null;
@@ -287,6 +304,7 @@ export function queuePopOne(): string | null {
 }
 
 export function queuePopAll(): string[] {
+  if (isWorkerContext()) return []; // worker: never drain/rewrite the tracked queue (gh-ludics-592)
   const lines = withQueueLock(() => {
     const all = readQueueLines();
     if (all.length === 0) return [];
@@ -312,6 +330,7 @@ function findLineIndexById(lines: string[], id: string): number {
 }
 
 export function queuePromoteToTop(id: string): QueuePromoteResult {
+  if (isWorkerContext()) return { status: "not-found" }; // worker: never rewrite the tracked queue (gh-ludics-592)
   const result = withQueueLock<QueuePromoteResult>(() => {
     const lines = readQueueLines();
     const idx = findLineIndexById(lines, id);
@@ -333,6 +352,7 @@ export type QueueCancelResult =
   | { status: "not-found" };
 
 export function queueCancel(id: string): QueueCancelResult {
+  if (isWorkerContext()) return { status: "not-found" }; // worker: never rewrite the tracked queue (gh-ludics-592)
   const result = withQueueLock<QueueCancelResult>(() => {
     const lines = readQueueLines();
     const idx = findLineIndexById(lines, id);
@@ -355,6 +375,7 @@ export type QueueDequeueResult =
   | { status: "popped"; line: string; request: Record<string, unknown> | null };
 
 export function queuePopExpected(expectedLine?: string): QueueDequeueResult {
+  if (isWorkerContext()) return { status: "empty" }; // worker: never drain/rewrite the tracked queue (gh-ludics-592)
   return withQueueLock(() => {
     const lines = readQueueLines();
     if (lines.length === 0) return { status: "empty" };
