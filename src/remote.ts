@@ -70,8 +70,9 @@ export function buildRemoteScript(cwd: string, cmd: string): string {
  *
  * Remote env parity (e.g. `eval $(opam env)`) relies on the worker's login-shell
  * profile sourcing on the SSH command channel; deeper hardening is out of scope.
- * The `ssh` token in `scripts/lint-template-safety.ts`'s blocklist is
- * template-markdown-only (that lint never scans `src/`).
+ * This file is the sole vetted ssh chokepoint in src/; it is allowlisted in
+ * `scripts/lint-src-command-safety.ts` (`SRC_COMMAND_SAFETY_ALLOWLIST`), which
+ * enforces that no other src/ file constructs an ssh/scp/rsync argv directly.
  */
 export function runRemoteCommand(
   machine: ClusterMachine,
