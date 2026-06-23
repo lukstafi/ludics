@@ -45,3 +45,36 @@ describe("setup.sh WSL2 worker persistence preflight (AC 8)", () => {
     expect(SETUP).toMatch(/else\s*\n\s*fail "loginctl not available/);
   });
 });
+
+// gh-ludics-590: a worker must never finish onboarding jq-less (the orchestration
+// on-stop hook + Mag queue hard-depend on jq), and the Debian ttyd package's
+// auto-enabled login service must be disabled so it stops squatting slot-1 port 7681.
+describe("setup.sh jq install + ttyd login-service disable (gh-ludics-590)", () => {
+  test("installs jq via the install_pkg pattern, before ludics init", () => {
+    // Invariant: jq is installed at onboarding, ordered before `ludics init` (so the
+    // init jq hard-gate can't fail a freshly-onboarded worker). Mutation — deleting
+    // the block leaves install_pkg jq absent; moving it after init flips the order.
+    expect(SETUP).toMatch(/if command -v jq &>\/dev\/null; then[\s\S]*?else[\s\S]*?install_pkg jq/);
+    const jqIdx = SETUP.indexOf("install_pkg jq");
+    const initIdx = SETUP.indexOf("ludics init --no-triggers");
+    expect(jqIdx).toBeGreaterThan(-1);
+    expect(initIdx).toBeGreaterThan(jqIdx);
+  });
+
+  test("disables ttyd.service behind Linux/systemctl/unit-exists guards, after the ttyd block", () => {
+    // Invariant: the disable helper guards on Linux + systemctl + the unit existing
+    // (no-op elsewhere) and runs `systemctl disable --now ttyd.service`. Mutation —
+    // dropping any guard, or the disable command, fails this match.
+    expect(SETUP).toMatch(
+      /disable_ttyd_login_service\(\)\s*\{\s*\n\s*is_linux \|\| return 0\s*\n\s*command -v systemctl &>\/dev\/null \|\| return 0\s*\n\s*if systemctl list-unit-files ttyd\.service[\s\S]*?grep -q '\^ttyd\\\.service'[\s\S]*?sudo systemctl disable --now ttyd\.service/,
+    );
+    // The helper is actually CALLED, and the call comes after the ttyd dependency
+    // block (so a previously-enabled unit is fixed regardless of this run's install).
+    const defIdx = SETUP.indexOf("disable_ttyd_login_service()");
+    const callIdx = SETUP.search(/^disable_ttyd_login_service$/m);
+    const ttydIdx = SETUP.indexOf("install_pkg ttyd");
+    expect(defIdx).toBeGreaterThan(-1);
+    expect(callIdx).toBeGreaterThan(ttydIdx); // call after the ttyd block
+    expect(callIdx).toBeGreaterThan(defIdx);  // bash: defined before invoked
+  });
+});

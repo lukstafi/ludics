@@ -920,7 +920,12 @@ describe("integration", () => {
     // newly trip rule-3 (transitive runtime config.ts import). Both are pure-unit —
     // they exercise projectConfigPath on string `path` fixtures, which never touches
     // config/cluster — so no real harness is needed; +2.
-    const expectedWarningCount = 22;
+    // 23 after gh-ludics-590: src/init.test.ts exercises the new checkJqPrereq() jq
+    // hard-gate by spying safeSyncOutput on the spawn-module namespace (forces only
+    // `which jq`). It transitively imports src/config.ts via src/init.ts, tripping
+    // rule-3, but is pure-unit — it never reads real config/harness state — so no
+    // synthetic harness is needed; +1.
+    const expectedWarningCount = 23;
     if (result.warningCount !== expectedWarningCount) {
       throw new Error(
         formatPinMismatch(

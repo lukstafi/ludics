@@ -21,8 +21,32 @@
 # Loop prevention (Mag): when the queue is empty, mag_queue_pop outputs nothing
 # (exit 0), so Claude stops naturally.
 
-# Ensure Bash 4+ and tools like jq/yq are available (macOS system bash is v3)
-export PATH="/opt/homebrew/bin:$PATH"
+# Ensure Bash 4+ and tools like jq/yq are available (macOS system bash is v3).
+# $HOME/.local/bin is added additively (gh-ludics-590): on Linux workers jq often
+# lives there, and the macOS Homebrew prepend stays so Mac workers/leader are unaffected.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
+
+# Resolve jq to an absolute path (gh-ludics-590), mirroring the ludics_bin fallback
+# below. The orchestration on-stop hook hard-depends on jq to parse the Stop-hook JSON
+# (cwd / hook_event_name) and the marker-file walk-up reads; a bare `jq` on a
+# macOS-centric PATH silently exits 127 → empty cwd → lost phase signals. Resolve it
+# once here, before the mode branch, so BOTH the Claude-stdin and Codex notify paths
+# (the marker-file reads) use the resolved binary.
+jq_bin="$(command -v jq 2>/dev/null || true)"
+if [[ -z "$jq_bin" ]]; then
+  for bin in "$HOME/.local/bin/jq" "$HOME/.local/ludics/bin/jq"; do
+    if [[ -x "$bin" ]]; then
+      jq_bin="$bin"
+      break
+    fi
+  done
+fi
+if [[ -z "$jq_bin" ]]; then
+  # Fail loud naming jq — do NOT hand an empty/defaulted cwd to `ludics orch on-stop`,
+  # which surfaces only as a confusing downstream `usage:` error (gh-ludics-590).
+  echo "ludics-on-stop: jq not found (need jq on PATH or in \$HOME/.local/bin) — cannot parse Stop-hook JSON; orchestration phase signals would be lost. Install jq (macOS: brew install jq / Linux: apt install jq)." >&2
+  exit 1
+fi
 
 # Detect invocation mode: Codex passes "codex" as $1; Claude Code provides JSON on stdin.
 invocation_mode="${1:-claude}"
@@ -36,13 +60,13 @@ else
   input=$(cat)
 
   # Ignore subagent stops; only handle top-level Stop events.
-  hook_event_name=$(echo "$input" | jq -r '.hook_event_name // ""' 2>/dev/null)
+  hook_event_name=$(echo "$input" | "$jq_bin" -r '.hook_event_name // ""' 2>/dev/null)
   if [[ "$hook_event_name" == "SubagentStop" ]]; then
     exit 0
   fi
 
   # Extract cwd from the stop event
-  cwd=$(echo "$input" | jq -r '.cwd // ""' 2>/dev/null)
+  cwd=$(echo "$input" | "$jq_bin" -r '.cwd // ""' 2>/dev/null)
 fi
 
 # gh-ludics-589: never exec `ludics orch on-stop` (or `mag on-stop`) with a blank
@@ -91,8 +115,8 @@ if [[ -z "$peer_sync_dir" ]]; then
   check_dir="$cwd"
   while [[ -n "$check_dir" && "$check_dir" != "/" ]]; do
     if [[ -f "$check_dir/.ludics-orchestration.json" ]]; then
-      marker_peer_sync=$(jq -r '.peerSyncDir // ""' "$check_dir/.ludics-orchestration.json" 2>/dev/null)
-      marker_agent_name=$(jq -r '.agentName // ""' "$check_dir/.ludics-orchestration.json" 2>/dev/null)
+      marker_peer_sync=$("$jq_bin" -r '.peerSyncDir // ""' "$check_dir/.ludics-orchestration.json" 2>/dev/null)
+      marker_agent_name=$("$jq_bin" -r '.agentName // ""' "$check_dir/.ludics-orchestration.json" 2>/dev/null)
       if [[ -n "$marker_peer_sync" && -f "$marker_peer_sync/phase" ]]; then
         peer_sync_dir="$marker_peer_sync"
         export LUDICS_PEER_SYNC_DIR="$marker_peer_sync"
