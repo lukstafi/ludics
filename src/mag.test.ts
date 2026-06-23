@@ -1759,6 +1759,34 @@ cluster:
     expect(out).not.toContain("detected dead orchestrator");
   });
 
+  test("gh-ludics-592: worker never resurrects a slot the controller-live freshSlots reports (empty)", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker context
+
+    // The exact incident: the worker's stale LOCAL harness clone still shows the
+    // slot LIVE (task-55a11fa3, owned by self), and a dead orchestrator sits in
+    // the worker cache — so a stale-clone-driven resume WOULD detect it and
+    // re-create tmux/worktree on an already-DONE task.
+    writeSlotJson(4, { ...emptySlotData(4), process: "orch-runner", task: "task-55a11fa3", mode: "t3code", machine: "minipc-wsl" });
+    writeWorkerOrchState(4, "task-55a11fa3");
+    writeWorkerT3codeState(4, DEAD_PID);
+
+    // But the controller cleared the slot: its controller-live freshSlots row is
+    // (empty) (process defaults to "(empty)" in emptySlotData).
+    const freshSlots = new Map<number, SlotData>([[4, emptySlotData(4)]]);
+
+    const out = await runCapturingErrors(freshSlots);
+
+    // Invariant: with the controller-live view saying (empty), the worker must
+    // NOT detect the dead orchestrator or attempt any resume/resurrection — the
+    // `(empty)` continue fires BEFORE any orch-state read or PID check. Harness
+    // condition: freshSlots row for slot 4 has process="(empty)" while the local
+    // clone says live. Mutation control: flipping the fresh row's process to a
+    // non-empty value (e.g. {...emptySlotData(4), process:"orch-runner", task:...,
+    // mode:"t3code", machine:"minipc-wsl"}) makes the loop reach detection →
+    // "detected dead orchestrator" appears → this assertion FAILS.
+    expect(out).not.toContain("detected dead orchestrator");
+  });
+
   test("AC2 positive control: controller WITH null freshSlots still reaches the loop (skip is worker-only)", async () => {
     process.env.LUDICS_CLUSTER_MACHINE_NAME = "leader-box"; // controller context
 
