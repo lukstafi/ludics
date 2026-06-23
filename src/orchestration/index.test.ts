@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
-import { orchDiff, runOrchestrationCli } from "./index.ts";
-import { makeTmpDir, setupOrchTestState } from "./runner.test-helpers.ts";
+import { orchDiff, orchOnStop, runOrchestrationCli } from "./index.ts";
+import { makeTmpDir, makePeerSyncDir, setupOrchTestState } from "./runner.test-helpers.ts";
+import { readStopHookRecord } from "./peer-sync.ts";
 
 function makeRepo(dir: string): void {
   mkdirSync(dir, { recursive: true });
@@ -220,5 +221,64 @@ describe("runOrchestrationCli unknown-subcommand listing (gh-ludics-438)", () =>
     const useEntries = useMatch![1]!.split(/,\s*/);
     expect(useEntries).not.toContain("run-internal");
     expect(useEntries).not.toContain("on-stop");
+  });
+});
+
+// gh-ludics-589 (Part C): a blank cwd must be handled gracefully by orchOnStop —
+// no `usage: ...` + exit(1) that blocks phase advancement. A blank cwd from ANY
+// cause (the shell hook also defaults it to $PWD as defense in depth) falls
+// through to env/marker peer-sync resolution + env/status agent attribution.
+describe("orchOnStop blank-cwd handling (gh-ludics-589)", () => {
+  const ORIG_PSD = process.env.LUDICS_PEER_SYNC_DIR;
+  const ORIG_AGENT = process.env.LUDICS_AGENT_NAME;
+
+  afterEach(() => {
+    if (ORIG_PSD === undefined) delete process.env.LUDICS_PEER_SYNC_DIR;
+    else process.env.LUDICS_PEER_SYNC_DIR = ORIG_PSD;
+    if (ORIG_AGENT === undefined) delete process.env.LUDICS_AGENT_NAME;
+    else process.env.LUDICS_AGENT_NAME = ORIG_AGENT;
+  });
+
+  test("orchOnStop([]) / orchOnStop([\"\"]) return without usage error or process.exit", () => {
+    delete process.env.LUDICS_PEER_SYNC_DIR; // nothing resolves → silent no-op
+    delete process.env.LUDICS_AGENT_NAME;
+    const exitSpy = spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code}) called`);
+    }) as never);
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // Invariant: a blank cwd never reaches `process.exit(1)` / the usage error.
+      // Mutation: restoring `if (!cwd) { usage; process.exit(1); }` makes exitSpy
+      // fire (and throw) here.
+      expect(() => orchOnStop([])).not.toThrow();
+      expect(() => orchOnStop([""])).not.toThrow();
+      expect(exitSpy).not.toHaveBeenCalled();
+      const usagePrinted = errSpy.mock.calls.some(c => String(c[0] ?? "").includes("usage: ludics orch on-stop"));
+      expect(usagePrinted).toBe(false);
+    } finally {
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  test("blank cwd still attributes via LUDICS_AGENT_NAME and writes a stop record", () => {
+    // Harness condition: a live orchestration (phase + token + worktrees) with the
+    // agent identified only by env — exactly the slotB case where the worktree-cwd
+    // match is unavailable because cwd is blank.
+    const dir = makePeerSyncDir(
+      { root: "/wt/root", coder: "/wt/coder", reviewer: "/wt/reviewer" },
+      { coder: "working" },
+    );
+    process.env.LUDICS_PEER_SYNC_DIR = dir;
+    process.env.LUDICS_AGENT_NAME = "coder";
+
+    // Invariant: with a blank cwd, env attribution fires and a stop record lands,
+    // so the runner sees turn completion. Mutation: the old exit(1) on blank cwd
+    // would abort before any attribution and no record would be written.
+    orchOnStop([""]);
+    const rec = readStopHookRecord(dir, "coder");
+    expect(rec).not.toBeNull();
+    expect(rec!.agent).toBe("coder");
+    expect(rec!.phaseToken).toBe("phase-test-token");
   });
 });

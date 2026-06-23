@@ -3932,6 +3932,29 @@ async function workerKeepalive(): Promise<void> {
 }
 
 /** Poll controller for pending intents and execute them (pure pull model). */
+/**
+ * gh-ludics-589: when the up-front freshSlots snapshot raced the controller's
+ * two-slot hierarchical-duo publish, a `start` intent's controller-authored
+ * `adapterArgs` (swapped `--coder`/`--reviewer` + `--duo-peer-slot`) fills a
+ * BLANK snapshot entry so the worker launches slotB with the correct expanded
+ * args rather than tripping the empty-args auto-fill or a stale local
+ * `slot-N.json`. Returns the corrected `SlotData` when a fill applies, else
+ * `null`. Pure — exported as a test seam (the live `processSlotIntents` is not
+ * unit-reachable without the controller HTTP stack).
+ *
+ * A populated snapshot entry always wins (only a genuinely blank/whitespace
+ * `adapterArgs` is filled); non-`start` intents and intents without `adapterArgs`
+ * are no-ops.
+ */
+export function fillBlankSnapshotArgsFromIntent(
+  snap: SlotData | undefined,
+  intent: { action: string; adapterArgs?: string },
+): SlotData | null {
+  if (intent.action !== "start" || !intent.adapterArgs) return null;
+  if (!snap || (snap.adapterArgs ?? "").trim()) return null;
+  return { ...snap, adapterArgs: intent.adapterArgs };
+}
+
 async function processSlotIntents(freshSlots: Map<number, SlotData> | null): Promise<void> {
   const currentMachine = clusterCurrentMachineName();
   if (!currentMachine) return;
@@ -3957,6 +3980,15 @@ async function processSlotIntents(freshSlots: Map<number, SlotData> | null): Pro
         }
         let shouldAck = true;
         try {
+          // gh-ludics-589: if the up-front freshSlots snapshot raced the
+          // controller's two-slot duo publish, this slot's adapterArgs may be
+          // blank in the snapshot while the start intent carries the
+          // controller-authored expanded args. Fill the blank snapshot entry from
+          // the intent so slotStart launches with the correct providers/peer
+          // instead of tripping the empty-args auto-fill (or falling through to a
+          // stale local slot-N.json).
+          const filled = fillBlankSnapshotArgsFromIntent(freshSlots.get(slotNum), intent);
+          if (filled) freshSlots.set(slotNum, filled);
           // Set fresh controller state so slot operations use it instead of stale local harness
           setWorkerSlotsOverride(freshSlots);
           try {

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { hostname as osHostname, tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS, reinitTtydPid, setWorkerSlotsOverride, persistSlotLiveness } from "./index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS, reinitTtydPid, setWorkerSlotsOverride, persistSlotLiveness, slotIsDuoMember } from "./index.ts";
+import * as clusterHttpMod from "../cluster-http.ts";
 import * as tmuxAdapterMod from "../adapters/tmux-adapter.ts";
 import * as t3codeServerMod from "../t3code/server.ts";
 import * as spawnMod from "../spawn.ts";
@@ -3094,5 +3095,211 @@ cluster:
 
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(readSlotJson(1).liveness).toBeNull();
+  });
+});
+
+// gh-ludics-589: hierarchical-duo slotB launch hardening.
+//   Part A (fail-loud): a duo member whose expanded adapterArgs failed to reach
+//     the worker must NOT auto-fill a default pair (which would discard swapped
+//     providers + --duo-peer-slot and get persisted back as durable corruption).
+//   Part B (delivery): the controller's start intent carries the launch-time
+//     adapterArgs so the worker launches with the correct expanded duo args.
+describe("duo slotB launch hardening (gh-ludics-589)", () => {
+  type SlotData = import("./types.ts").SlotData;
+
+  function duoSibling(slot: number, peer: number): SlotData {
+    // A healthy duo sibling (slotA): its args still name `slot`'s peer even when
+    // `slot`'s own args are blank — the signal slotIsDuoMember keys on.
+    return {
+      ...emptySlotData(slot),
+      process: "orch-runner",
+      task: "task-duo",
+      mode: "tmux",
+      adapterArgs: `--pair --coder codex --reviewer claude-code --duo-peer-slot=${peer}`,
+    };
+  }
+  function blankDuoSlotB(slot: number, machine = ""): SlotData {
+    // slotB as it arrives on the worker when delivery failed: blank args.
+    return { ...emptySlotData(slot), process: "orch-runner", task: "task-duo", mode: "tmux", machine, adapterArgs: "" };
+  }
+
+  const ORIGINAL_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+
+  // A cluster where THIS host is a worker (self-node), so isWorkerContext() is
+  // true and remote dispatch to worker-a is reachable. Pins the machine name via
+  // env (like the slotResume worker-override tests) rather than relying on
+  // hostname matching, which is unreliable on dev boxes.
+  function writeWorkerClusterConfig(): void {
+    const cfgDir = join(TMP, ".config", "ludics");
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(join(cfgDir, "config.yaml"), `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 4
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: self-node
+      host: self-node.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+    - name: worker-a
+      host: worker-a.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    process.env.LUDICS_CONFIG = join(cfgDir, "config.yaml");
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "self-node";
+  }
+
+  afterEach(() => {
+    setWorkerSlotsOverride(null);
+    clearIntent(1);
+    clearIntent(4);
+    if (ORIGINAL_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
+    else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_MACHINE;
+  });
+
+  test("slotIsDuoMember is true only for the slot a sibling names as its peer (Part A signal)", () => {
+    // Harness condition: slot 3 (slotA) names slot 4 (slotB) as its duo peer;
+    // slot 4's own args are blank. A solo slot 1 coexists with NO peer reference.
+    setWorkerSlotsOverride(new Map<number, SlotData>([
+      [1, { ...emptySlotData(1), process: "orch-runner", task: "task-solo", mode: "tmux", adapterArgs: "--pair --coder claude-code --reviewer codex" }],
+      [3, duoSibling(3, 4)],
+      [4, blankDuoSlotB(4)],
+    ]));
+    // Invariant: membership is decided by the *number* in --duo-peer-slot=<n>,
+    // not the mere presence of the token. Mutation: dropping `Number(m[1]) ===
+    // slotNum` (matching any sibling with any peer token) would flip slot 1 to
+    // true; dropping the regex entirely would flip slot 4 to false.
+    expect(slotIsDuoMember(4)).toBe(true);  // named by sibling 3
+    expect(slotIsDuoMember(1)).toBe(false); // solo — never named, despite the 3↔4 pair
+    expect(slotIsDuoMember(3)).toBe(false); // slotA itself is not named by anyone here
+  });
+
+  test("slotIsDuoMember ignores a STALE peer token from a sibling on a different task (PR #594 review)", () => {
+    // Scenario: slots 1+2 ran a duo for task-old; the duo broke (clearDuoPeerLink
+    // cleared sibling 2's orchestration duoPeerSlot but NOT its stored adapterArgs,
+    // which still says --duo-peer-slot=1). slot 1 is then reused for a fresh SOLO
+    // task-new with empty args.
+    setWorkerSlotsOverride(new Map<number, SlotData>([
+      // slot 1: reused solo, NEW task, empty args (would auto-fill).
+      [1, { ...emptySlotData(1), process: "orch-runner", task: "task-new", mode: "tmux", adapterArgs: "" }],
+      // slot 2: stale leftover — still names slot 1 as peer, but on the OLD task.
+      [2, { ...emptySlotData(2), process: "orch-runner", task: "task-old", mode: "tmux", adapterArgs: "--pair --coder codex --reviewer claude-code --duo-peer-slot=1" }],
+    ]));
+    // Invariant: a duo pair shares a task; a peer token whose sibling is on a
+    // different task is stale and must NOT block the reused slot's auto-fill.
+    // Mutation: dropping the same-task guard flips this back to true → the solo
+    // reuse throws instead of auto-filling (the exact false positive the reviewer
+    // flagged).
+    expect(slotIsDuoMember(1)).toBe(false);
+  });
+
+  test("autoFillAdapterArgs REFUSES (throws) a duo slot with empty args — no default-pair fallback (AC1)", async () => {
+    setWorkerSlotsOverride(new Map<number, SlotData>([
+      [3, duoSibling(3, 4)],
+      [4, blankDuoSlotB(4)],
+    ]));
+    const data = blankDuoSlotB(4);
+    const ctx = makeAdapterContext(4, data);
+    // Invariant: empty args on a duo member is a delivery failure, not an
+    // operator default request. The refusal fires BEFORE selectOrchestrationFlags,
+    // so no `--pair --coder <default>` string is ever produced. Mutation: removing
+    // the slotIsDuoMember guard makes this resolve to a default pair instead of
+    // throwing (and the message would be the unrelated "task file not found").
+    await expect(autoFillAdapterArgs(ctx, data)).rejects.toThrow(/duo member with empty adapterArgs/);
+  });
+
+  test("autoFillAdapterArgs still auto-fills a SOLO slot with empty args (AC3 negative control)", async () => {
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-solo-fill", "Solo fill");
+    void slotAssign(1, "task-solo-fill", "t3code");
+    const data = readSlotJson(1, harness);
+    // Override carries an UNRELATED duo pair on other slots — slot 1 (its own task)
+    // is solo and must not be swept up by the duo refusal. slot 1 is present in the
+    // override so the same-task guard sees its real task, not an empty self.
+    setWorkerSlotsOverride(new Map<number, SlotData>([
+      [1, data],
+      [3, duoSibling(3, 4)],
+      [4, blankDuoSlotB(4)],
+    ]));
+    const ctx = makeAdapterContext(1, data);
+    // Invariant: a slot no sibling references still auto-fills as before. If the
+    // duo guard over-fired (number-blind), this would throw and fail here.
+    const result = await autoFillAdapterArgs(ctx, data);
+    expect(result).not.toBeNull();
+    expect(result!.args).toContain("--pair");
+    expect(result!.args).toContain("--coder");
+  });
+
+  test("slotStart does NOT persist default args back to the controller for a refused duo slot (AC2)", async () => {
+    // Worker context: this host = self-node (a worker, not the leader/controller),
+    // so isWorkerContext() is true and WITHOUT the fix slotStart would auto-fill
+    // and POST the default pair via clusterPostSlotUpdate.
+    writeWorkerClusterConfig();
+    const postSpy = spyOn(clusterHttpMod, "clusterPostSlotUpdate");
+
+    // slotB (1) is owned by THIS host (self-node) so slotStart runs local
+    // execution (not remote dispatch), reaching the auto-fill decision; slot 2
+    // (slotA) names slot 1 as its duo peer.
+    setWorkerSlotsOverride(new Map<number, SlotData>([
+      [2, duoSibling(2, 1)],
+      [1, blankDuoSlotB(1, "self-node")],
+    ]));
+
+    // Invariant: the refusal unwinds slotStart before the clusterPostSlotUpdate
+    // write-back, so a transient empty read never becomes durable controller
+    // corruption. Mutation: removing the duo guard makes slotStart auto-fill and
+    // call clusterPostSlotUpdate({ adapterArgs: <default pair> }) → spy fires.
+    await expect(slotStart(1)).rejects.toThrow(/duo member with empty adapterArgs/);
+    for (const call of postSpy.mock.calls) {
+      expect(JSON.stringify(call[1] ?? {})).not.toContain("adapterArgs");
+    }
+    postSpy.mockRestore();
+  });
+
+  test("remote start dispatch records a start intent carrying the expanded adapterArgs (Part B / AC4)", async () => {
+    writeWorkerClusterConfig();
+    const harness = join(TMP, "ludics-state", "harness");
+    mkdirSync(join(harness, "tasks"), { recursive: true });
+    writeSlotJson(2, emptySlotData(2), harness);
+
+    // Fresh heartbeat so worker-a is reachable.
+    const hbDir = getHeartbeatsDir();
+    mkdirSync(hbDir, { recursive: true });
+    writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
+
+    const duoArgs = "--pair --coder codex --reviewer claude-code --duo-peer-slot=3";
+    // Write slotB (1) directly with the expanded duo args + a remote machine
+    // (worker-a ≠ self-node), bypassing slotAssign's adapter-match guard.
+    writeSlotJson(1, { ...emptySlotData(1), process: "orch-runner", task: "task-duo-b", mode: "tmux", machine: "worker-a", adapterArgs: duoArgs }, harness);
+
+    await slotStart(1); // remote → records a start intent and returns
+
+    // Invariant: the controller captures launch-time args at dispatch, so the
+    // worker can launch slotB self-contained even if its freshSlots snapshot
+    // raced the two-slot publish. Mutation: dropping `adapterArgs` from the start
+    // payload leaves intent.adapterArgs undefined and this assertion fails.
+    const intent = getIntentForDashboard(1);
+    expect(intent).not.toBeNull();
+    expect(intent!.action).toBe("start");
+    expect(intent!.adapterArgs).toContain("--duo-peer-slot=3");
+    expect(intent!.adapterArgs).toContain("--coder codex");
   });
 });

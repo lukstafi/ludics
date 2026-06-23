@@ -1023,12 +1023,65 @@ async function ensureRemoteMachineReachable(
  * the original inline block. Does *not* call `runAdapterAction`, `t3code.start`,
  * or `ensureServer`, and does not persist or journal — that is the caller's job.
  */
+/**
+ * Detect whether `slotNum` is a hierarchical-duo member whose own `adapterArgs`
+ * failed to arrive, by scanning the *other* slots (worker override / fresh
+ * snapshot when active, else local slot json) for a sibling that names this slot
+ * as its duo peer via `--duo-peer-slot=<slotNum>` (gh-ludics-589).
+ *
+ * This is the duo-membership signal that survives an empty `adapterArgs`: a duo
+ * slotB with blank args cannot self-report its peer, but its healthy sibling
+ * slotA still carries `--duo-peer-slot=<slotB>`. A genuine solo slot is never
+ * referenced this way, so it is correctly NOT flagged. No `SlotData` field and no
+ * migration — derived entirely from existing args.
+ *
+ * The match additionally requires the sibling to share this slot's `task`. A
+ * genuine duo pair is assigned to the same task id by both `slotAssign` calls, so
+ * this is always true for a real delivery failure. It guards against a STALE peer
+ * token: `clearDuoPeerLink` clears the sibling's orchestration `duoPeerSlot` when
+ * a duo breaks but does NOT rewrite the sibling's stored `adapterArgs`, so a later
+ * SOLO reuse of this slot would otherwise be mis-flagged by the leftover
+ * `--duo-peer-slot=<slotNum>` token (the new task has a different id → no match).
+ *
+ * Exported as a test seam (mirrors `autoFillAdapterArgs`).
+ */
+export function slotIsDuoMember(slotNum: number): boolean {
+  const all = readAllSlots();
+  const selfTask = all.get(slotNum)?.task ?? "";
+  if (!selfTask) return false; // no task → not a duo delivery failure
+  for (const [other, sd] of all) {
+    if (other === slotNum) continue;
+    if ((sd?.task ?? "") !== selfTask) continue; // stale-token / unrelated-pair guard
+    const args = sd?.adapterArgs ?? "";
+    const m = args.match(/--duo-peer-slot=(\d+)/);
+    if (m && Number(m[1]) === slotNum) return true;
+  }
+  return false;
+}
+
 export async function autoFillAdapterArgs(
   ctx: AdapterContext,
   data: SlotData,
 ): Promise<{ args: string; effort: string; updatedData: SlotData } | null> {
   if (!(ctx.mode === "t3code" || ctx.mode === "tmux") || ctx.adapterArgs.trim()) {
     return null;
+  }
+
+  // gh-ludics-589 (Part A, fail-loud safety net): empty adapterArgs on a duo
+  // member is a *delivery failure*, not "operator wants defaults". Auto-filling a
+  // default pair here would discard the swapped providers and --duo-peer-slot, and
+  // slotStart would then persist that wrong default back to the controller via
+  // clusterPostSlotUpdate — turning a transient empty read into durable
+  // corruption. Refuse loudly so Mag can retry (the intent stays unacked). The
+  // throw also unwinds slotStart before the clusterPostSlotUpdate write-back, so
+  // no wrong default is ever persisted (AC2). Solo slots fall through and auto-fill
+  // exactly as before (AC3).
+  if (slotIsDuoMember(ctx.slot)) {
+    throw new Error(
+      `slot ${ctx.slot}: duo member with empty adapterArgs — refusing to auto-fill a default pair. ` +
+      `The expanded duo args (swapped --coder/--reviewer + --duo-peer-slot) failed to reach this worker. ` +
+      `Retry the launch so the controller-authored args are delivered.`
+    );
   }
 
   const taskId = ctx.taskId;
@@ -1093,7 +1146,15 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
 
   // Remote dispatch: record intent in controller memory (pure pull model)
   if (ctx.machine && isRemoteMachine(ctx.machine)) {
-    await ensureRemoteMachineReachable(slotNum, ctx.machine, "start", ctx.mode, { taskId: ctx.taskId });
+    // gh-ludics-589: capture the launch-time adapterArgs in the start intent so the
+    // worker launches with the correct expanded duo args (swapped providers +
+    // --duo-peer-slot) even if its up-front freshSlots snapshot raced the
+    // controller's two-slot publish. The controller's slot state is authoritative
+    // here. Pass undefined (not "") when empty so parsePendingIntent drops it.
+    await ensureRemoteMachineReachable(slotNum, ctx.machine, "start", ctx.mode, {
+      taskId: ctx.taskId,
+      adapterArgs: ctx.adapterArgs.trim() ? ctx.adapterArgs : undefined,
+    });
     return;
   }
 
