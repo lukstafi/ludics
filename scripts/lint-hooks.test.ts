@@ -133,7 +133,14 @@ describe("ludics-on-stop.sh blank-cwd default (gh-ludics-589)", () => {
 describe("ludics-on-stop.sh jq resolution (gh-ludics-590)", () => {
   let TMP = "";
   const hookPath = join(import.meta.dir, "..", "templates", "hooks", "ludics-on-stop.sh");
-  const realJq = "/usr/bin/jq";
+  // Resolve the real jq dynamically rather than hard-coding /usr/bin/jq — on Homebrew
+  // macOS jq lives in /opt/homebrew/bin (or /usr/local/bin), so a hard-coded
+  // /usr/bin/jq symlink would dangle and make the positive test platform-dependent.
+  const realJq = Bun.which("jq");
+  // Coreutils for the sandbox PATH, resolved dynamically (POSIX paths differ across
+  // distros); fall back to the conventional location when `which` can't find them.
+  const realCat = Bun.which("cat") ?? "/bin/cat";
+  const realDirname = Bun.which("dirname") ?? "/usr/bin/dirname";
 
   // The hook unconditionally prepends /opt/homebrew/bin and we cannot strip jq from
   // those dirs; if jq is reachable there, the jq-absent assertion below is not
@@ -155,9 +162,8 @@ describe("ludics-on-stop.sh jq resolution (gh-ludics-590)", () => {
   function makeCoreutilsOnlyBin(): string {
     const bin = join(TMP, "sysbin");
     mkdirSync(bin, { recursive: true });
-    for (const tool of ["/bin/cat", "/usr/bin/dirname"]) {
-      symlinkSync(tool, join(bin, tool.split("/").pop()!));
-    }
+    symlinkSync(realCat, join(bin, "cat"));
+    symlinkSync(realDirname, join(bin, "dirname"));
     return bin;
   }
 
@@ -169,14 +175,14 @@ describe("ludics-on-stop.sh jq resolution (gh-ludics-590)", () => {
     chmodSync(stub, 0o755);
   }
 
-  test("resolves jq present only at $HOME/.local/bin/jq (not on PATH) and execs orch on-stop", () => {
+  test.skipIf(!realJq)("resolves jq present only at $HOME/.local/bin/jq (not on PATH) and execs orch on-stop", () => {
     const home = join(TMP, "home");
     const argvOut = join(TMP, "argv.txt");
     stubLudics(home, argvOut);
     // jq lives ONLY under the sandbox HOME's local bin — not on the sandbox PATH.
     // The hook's `$HOME/.local/bin` prepend + `command -v jq` resolves it (absolute).
     // Symlink (not copy): copying a macOS system binary breaks its dyld/codesign load.
-    symlinkSync(realJq, join(home, ".local", "bin", "jq"));
+    symlinkSync(realJq!, join(home, ".local", "bin", "jq"));
 
     const psDir = join(TMP, "peer-sync");
     mkdirSync(psDir, { recursive: true });
