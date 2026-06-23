@@ -444,6 +444,36 @@ describe("parsePendingIntent", () => {
     expect(parsePendingIntent({ ...valid, taskId: null })?.taskId).toBeUndefined();
   });
 
+  test("preserves optional adapterArgs and round-trips a duo string (gh-ludics-589)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    const duoArgs = "--pair --coder codex --reviewer claude-code --duo-peer-slot=3";
+    const out = parsePendingIntent({ ...valid, taskId: "task-99", adapterArgs: duoArgs });
+    // Invariant: the controller-authored expanded duo args survive the parse
+    // boundary verbatim. If this dropped/mangled adapterArgs, the worker would
+    // launch slotB with no peer/swapped providers — the exact gh-ludics-589 bug.
+    expect(out).toEqual({ action: "start", epoch: NOW, machine: "host-a", taskId: "task-99", adapterArgs: duoArgs });
+    // The peer-slot token specifically must round-trip (drives slotIsDuoMember + parseOrchestrationAdapterArgs).
+    expect(out?.adapterArgs).toContain("--duo-peer-slot=3");
+  });
+
+  test("legacy intent without adapterArgs still validates (optional field; gh-ludics-589)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    // Harness condition: a stop/resume intent file written before this field
+    // existed. Must not be rejected by the new branch.
+    expect(parsePendingIntent({ action: "resume", epoch: NOW, machine: "host-a" }))
+      .toEqual({ action: "resume", epoch: NOW, machine: "host-a" });
+    expect(parsePendingIntent({ ...valid })?.adapterArgs).toBeUndefined();
+  });
+
+  test("string-coerces non-string adapterArgs; drops empty/whitespace after coercion (gh-ludics-589)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid, adapterArgs: 42 })?.adapterArgs).toBe("42");
+    // Empty / whitespace-only is dropped so it never overrides a populated worker read.
+    expect(parsePendingIntent({ ...valid, adapterArgs: "" })?.adapterArgs).toBeUndefined();
+    expect(parsePendingIntent({ ...valid, adapterArgs: "   " })?.adapterArgs).toBeUndefined();
+    expect(parsePendingIntent({ ...valid, adapterArgs: null })?.adapterArgs).toBeUndefined();
+  });
+
   test("rejects non-bool preserveState (no sensible coercion target)", async () => {
     const { parsePendingIntent } = await import("./cluster-http.ts");
     expect(parsePendingIntent({ ...valid, preserveState: "yes" })).toBeNull();

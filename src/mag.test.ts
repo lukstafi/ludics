@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile, runStagingOutboundPushTick, maybeResumeDeadOrchestrators } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile, runStagingOutboundPushTick, maybeResumeDeadOrchestrators, fillBlankSnapshotArgsFromIntent } from "./mag.ts";
 import { emptySlotData, writeSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
 import type { RunGit } from "./git-runner.ts";
@@ -1973,5 +1973,43 @@ cluster:
 
     expect(out).toContain("circuit-breaker tripped for slot 1");
     expect(out).not.toContain("slot 2"); // slot 2 not detected/resumed this tick
+  });
+});
+
+// gh-ludics-589: the worker fills a blank snapshot slot's adapterArgs from the
+// controller-authored start intent, so a freshSlots snapshot that raced the
+// two-slot duo publish still launches slotB with the correct expanded args.
+describe("fillBlankSnapshotArgsFromIntent (gh-ludics-589 Part B)", () => {
+  const duoArgs = "--pair --coder codex --reviewer claude-code --duo-peer-slot=3";
+  function snap(slot: number, adapterArgs: string): SlotData {
+    return { ...emptySlotData(slot), process: "orch-runner", task: "task-duo-b", mode: "tmux", machine: "self-node", adapterArgs };
+  }
+
+  test("fills a BLANK snapshot entry from a start intent carrying expanded duo args", () => {
+    // Harness condition: the snapshot raced the publish — slotB's row is blank,
+    // but the start intent carries the controller's swapped providers + peer.
+    const filled = fillBlankSnapshotArgsFromIntent(snap(4, ""), { action: "start", adapterArgs: duoArgs });
+    // Invariant: the corrected row carries the swapped providers and peer slot, so
+    // the downstream slotStart/auto-fill never sees empty args. If the merge were
+    // dropped, filled would be null and slotB would launch with default providers.
+    expect(filled).not.toBeNull();
+    expect(filled!.adapterArgs).toBe(duoArgs);
+    expect(filled!.adapterArgs).toContain("--duo-peer-slot=3");
+    // Whitespace-only is treated as blank and filled too.
+    expect(fillBlankSnapshotArgsFromIntent(snap(4, "   "), { action: "start", adapterArgs: duoArgs })?.adapterArgs).toBe(duoArgs);
+  });
+
+  test("a POPULATED snapshot entry wins — intent does not clobber it", () => {
+    const existing = snap(4, "--pair --coder claude-code --reviewer codex --duo-peer-slot=3");
+    // Invariant: only a delivery gap (blank args) is repaired; a snapshot that
+    // already carries args is authoritative and untouched.
+    expect(fillBlankSnapshotArgsFromIntent(existing, { action: "start", adapterArgs: duoArgs })).toBeNull();
+  });
+
+  test("no-ops for non-start intents, missing intent args, and missing snapshot row", () => {
+    expect(fillBlankSnapshotArgsFromIntent(snap(4, ""), { action: "stop", adapterArgs: duoArgs })).toBeNull();
+    expect(fillBlankSnapshotArgsFromIntent(snap(4, ""), { action: "resume", adapterArgs: duoArgs })).toBeNull();
+    expect(fillBlankSnapshotArgsFromIntent(snap(4, ""), { action: "start" })).toBeNull();
+    expect(fillBlankSnapshotArgsFromIntent(undefined, { action: "start", adapterArgs: duoArgs })).toBeNull();
   });
 });

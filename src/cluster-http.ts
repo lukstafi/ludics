@@ -139,6 +139,12 @@ export interface PendingIntent {
   machine: string;
   taskId?: string;
   preserveState?: boolean;
+  /** Launch-time adapter args captured by the controller at dispatch (gh-ludics-589).
+   *  Carried on `start` intents so the worker launches with the correct expanded
+   *  duo args (swapped providers + `--duo-peer-slot`) even when its up-front
+   *  `freshSlots` snapshot raced the controller's two-slot publish. Optional, so
+   *  legacy `stop`/`resume` intents and older on-disk files remain valid. */
+  adapterArgs?: string;
 }
 
 /** Validate an untrusted intent payload (file-on-disk read, HTTP body) into
@@ -152,6 +158,7 @@ export interface PendingIntent {
  *    epochs as strings.
  *  - `machine` and `taskId`: string-coerce non-string values with `String(…)`
  *    so a single function returns either a fully-validated intent or `null`.
+ *  - `adapterArgs`: optional, string-coerce + drop-when-empty (mirrors taskId).
  *  - `preserveState`: optional bool, no coercion (no sensible target). */
 export function parsePendingIntent(raw: unknown): PendingIntent | null {
   if (!raw || typeof raw !== "object") return null;
@@ -180,6 +187,14 @@ export function parsePendingIntent(raw: unknown): PendingIntent | null {
   if (r.taskId !== undefined && r.taskId !== null) {
     const taskId = typeof r.taskId === "string" ? r.taskId : String(r.taskId);
     if (taskId !== "") out.taskId = taskId;
+  }
+
+  // adapterArgs (gh-ludics-589): same string-coerce + drop-when-empty contract as
+  // taskId. An empty/whitespace value is dropped so it never overrides a populated
+  // worker-side read; a non-empty value carries the controller's expanded duo args.
+  if (r.adapterArgs !== undefined && r.adapterArgs !== null) {
+    const adapterArgs = typeof r.adapterArgs === "string" ? r.adapterArgs : String(r.adapterArgs);
+    if (adapterArgs.trim() !== "") out.adapterArgs = adapterArgs;
   }
 
   if (r.preserveState !== undefined) {
