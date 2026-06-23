@@ -247,7 +247,8 @@ describe("isUnitDisabledInPrintOutput — detects disabled controller labels (gh
     'com.apple.disabled list for <gui> {',
     '\t\t"com.ludics.dashboard" => disabled',
     '\t\t"com.ludics.mag" => enabled',
-    '\t\t"com.ludics.health" => true', // launchctl historically prints true/false too
+    '\t\t"com.ludics.health" => true',  // boolean spelling on some macOS versions = disabled
+    '\t\t"com.ludics.sync" => false',   // boolean spelling = enabled
     '}',
   ].join("\n");
 
@@ -260,12 +261,17 @@ describe("isUnitDisabledInPrintOutput — detects disabled controller labels (gh
   });
 
   test("returns false for an absent label", () => {
-    expect(isUnitDisabledInPrintOutput(sample, "com.ludics.sync")).toBe(false);
+    expect(isUnitDisabledInPrintOutput(sample, "com.ludics.ntfy-subscribe")).toBe(false);
   });
 
-  test("returns false for a non-'disabled' value (e.g. 'true')", () => {
-    // Fail-safe: only the literal `=> disabled` re-enables; any other token is left alone.
-    expect(isUnitDisabledInPrintOutput(sample, "com.ludics.health")).toBe(false);
+  test("treats the boolean 'true' spelling as disabled (gh-ludics-587 Codex review)", () => {
+    // Some macOS versions print `"<label>" => true` for a disabled override
+    // instead of `=> disabled`; both must trigger the self-heal.
+    expect(isUnitDisabledInPrintOutput(sample, "com.ludics.health")).toBe(true);
+  });
+
+  test("treats the boolean 'false' spelling as enabled", () => {
+    expect(isUnitDisabledInPrintOutput(sample, "com.ludics.sync")).toBe(false);
   });
 
   test("empty / garbage input → false (fail-safe)", () => {

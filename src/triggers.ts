@@ -133,16 +133,22 @@ export function removeControllerTriggerUnits(
 
 /**
  * Pure decision seam (gh-ludics-587): does `launchctl print-disabled gui/$uid`
- * output mark `label` as disabled? launchctl prints one line per known label in
- * the form `\t\t"com.ludics.dashboard" => disabled` (or `=> enabled`). Returns
- * true only for an explicit `"<label>" => disabled` entry; an enabled, absent, or
- * empty/garbage output yields false (fail-safe — never re-enable on a parse miss).
+ * output mark `label` as disabled? launchctl prints one line per known label as
+ * `\t\t"com.ludics.dashboard" => <state>`. The `<state>` token varies by macOS
+ * version: some emit `disabled`/`enabled`, others emit the boolean `true`
+ * (disabled) / `false` (enabled). Treat BOTH `disabled` and `true` as disabled so
+ * the self-heal works across versions (the federation spans multiple Macs). Any
+ * other / absent / empty / garbage output yields false (fail-safe — never
+ * re-enable on a parse miss).
  */
 export function isUnitDisabledInPrintOutput(printDisabledOutput: string, label: string): boolean {
   if (!printDisabledOutput) return false;
   for (const line of printDisabledOutput.split("\n")) {
     const m = line.match(/"([^"]+)"\s*=>\s*(\w+)/);
-    if (m && m[1] === label && m[2] === "disabled") return true;
+    if (m && m[1] === label) {
+      const state = m[2].toLowerCase();
+      return state === "disabled" || state === "true";
+    }
   }
   return false;
 }
