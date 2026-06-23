@@ -75,6 +75,24 @@ export function clusterMachine(name: string): ClusterMachine | undefined {
   return clusterMachines().find((m) => m.name === name);
 }
 
+/**
+ * Whether a system hostname prefix (the part before the first dot, lowercased)
+ * should be considered to identify a configured machine `machineName`.
+ *
+ * Boundaried match — return true only when the machine name equals the host
+ * prefix, OR is a boundaried suffix of it (separated by `-` or `.`). This
+ * preserves the legitimate case `lukaszs-mac-studio` ↔ `mac-studio` while
+ * rejecting an unbounded substring false-match such as a short name `mac`
+ * matching host prefix `mac-studio`. Both args are expected already
+ * lowercased/normalized by the caller; we normalize defensively (it's cheap).
+ */
+export function hostPrefixMatchesMachineName(hostPrefix: string, machineName: string): boolean {
+  const hp = hostPrefix.replace(/\.$/, "").toLowerCase();
+  const mn = machineName.replace(/\.$/, "").toLowerCase();
+  if (!hp || !mn) return false;
+  return hp === mn || hp.endsWith("-" + mn) || hp.endsWith("." + mn);
+}
+
 export function clusterCurrentMachine(): ClusterMachine | undefined {
   if (!clusterEnabled()) return undefined;
 
@@ -110,9 +128,9 @@ export function clusterCurrentMachine(): ClusterMachine | undefined {
     const prefix = normalized.split(".")[0];
     const nameMatch = machines.find((m) => {
       const mName = m.name.toLowerCase();
-      // Exact match, or machine name appears in hostname prefix
+      // Exact (full-host) match, or boundaried prefix/suffix match
       // (e.g., name "mac-studio" matches hostname "lukaszs-mac-studio.fritz.box")
-      return mName === normalized || mName === prefix || prefix.includes(mName);
+      return mName === normalized || hostPrefixMatchesMachineName(prefix, mName);
     });
     if (nameMatch) return nameMatch;
   }
@@ -249,6 +267,20 @@ export function clusterShouldRunMag(): boolean {
 export async function clusterTick(): Promise<void> {
   console.error("ludics: cluster: running tick...");
   heartbeatPublish();
+
+  // Self-heal: on a confidently-identified leader (the 300s `com.ludics.cluster`
+  // trigger carries the plist `LUDICS_CLUSTER_MACHINE_NAME` override, so this
+  // path KNOWS it is the leader), re-enable any controller unit launchd has been
+  // left in its persistent `disabled` state (gh-ludics-587). Workers must never
+  // run this. Dynamic import avoids a module-load cycle (triggers.ts imports
+  // cluster.ts), mirroring the cluster-http.ts dynamic-import pattern above.
+  // Best-effort: next tick retries.
+  if (clusterRole() === "controller") {
+    await import("./triggers.ts")
+      .then(({ reconcileControllerUnits }) => reconcileControllerUnits())
+      .catch(() => {});
+  }
+
   console.error("ludics: cluster: tick complete");
 }
 

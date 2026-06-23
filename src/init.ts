@@ -57,6 +57,10 @@ export async function runInit(args: string[]): Promise<void> {
   const noDashboard = args.includes("--no-dashboard");
   const noTriggers = args.includes("--no-triggers");
   const handoff = args.includes("--handoff");
+  // gh-ludics-587: only an explicit opt-in tears down controller units. Without
+  // it, init never disables controller units (protects the leader from a
+  // mis-resolved identity on a plain-shell `ludics init`).
+  const reconcileControllerUnits = args.includes("--reconcile-controller-units");
 
   const root = ludicsRoot();
 
@@ -163,7 +167,7 @@ export async function runInit(args: string[]): Promise<void> {
   if (!noTriggers && configOk) {
     console.log("\n--- Triggers ---");
     try {
-      triggersInstall();
+      triggersInstall({ reconcileControllerUnits });
     } catch (err) {
       console.warn(`warning: triggers install failed: ${err instanceof Error ? err.message : String(err)}`);
     }
