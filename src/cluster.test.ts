@@ -11,6 +11,7 @@ import {
   resolveController,
   clusterCurrentMachineName,
   heartbeatsDir,
+  hostPrefixMatchesMachineName,
 } from "./cluster.ts";
 
 // We test the pure logic helpers by importing and exercising them directly.
@@ -265,5 +266,57 @@ cluster:
   it("returns null when the cluster is disabled (no config)", () => {
     delete process.env.LUDICS_CONFIG;
     expect(selectOnlineCapableMachine({ gpu: "nvidia" })).toBeNull();
+  });
+});
+
+// gh-ludics-587: the loose `prefix.includes(mName)` substring match in
+// clusterCurrentMachine could let a short machine name false-match an unrelated
+// host prefix (and thereby mis-resolve identity → tear down the wrong node's
+// units). hostPrefixMatchesMachineName replaces it with a boundaried match:
+// equal, or a `-`/`.`-boundaried suffix of the host prefix.
+describe("hostPrefixMatchesMachineName — boundaried prefix↔name match (gh-ludics-587)", () => {
+  it("POSITIVE: documented legitimate case lukaszs-mac-studio ↔ mac-studio", () => {
+    expect(hostPrefixMatchesMachineName("lukaszs-mac-studio", "mac-studio")).toBe(true);
+  });
+
+  it("POSITIVE: exact equality", () => {
+    expect(hostPrefixMatchesMachineName("mac-studio", "mac-studio")).toBe(true);
+    expect(hostPrefixMatchesMachineName("minipc-wsl", "minipc-wsl")).toBe(true);
+  });
+
+  it("POSITIVE: dot-boundaried suffix", () => {
+    expect(hostPrefixMatchesMachineName("host.mac-studio", "mac-studio")).toBe(true);
+  });
+
+  it("NEGATIVE: short name does NOT substring-match a longer prefix (the bug)", () => {
+    expect(hostPrefixMatchesMachineName("mac-studio", "mac")).toBe(false);
+  });
+
+  it("NEGATIVE: unrelated roster member does not match another's host", () => {
+    expect(hostPrefixMatchesMachineName("macbook-pro", "mac-studio")).toBe(false);
+    expect(hostPrefixMatchesMachineName("mac-studio", "macbook-pro")).toBe(false);
+    expect(hostPrefixMatchesMachineName("minipc-wsl", "mac-studio")).toBe(false);
+  });
+
+  it("NEGATIVE: empty args are fail-safe false", () => {
+    expect(hostPrefixMatchesMachineName("", "mac-studio")).toBe(false);
+    expect(hostPrefixMatchesMachineName("mac-studio", "")).toBe(false);
+  });
+
+  it("boundaried-suffix semantics: mac-studio ↔ studio IS true (the '-' boundary matches)", () => {
+    // Documenting actual logic: `mac-studio`.endsWith(`-studio`) holds, so this is
+    // a boundaried suffix and returns true. This is acceptable — no current roster
+    // name is a boundaried suffix of another roster member's host.
+    expect(hostPrefixMatchesMachineName("mac-studio", "studio")).toBe(true);
+  });
+
+  it("no current-roster name false-matches another roster member's host prefix", () => {
+    const names = ["mac-studio", "macbook-pro", "minipc-wsl"];
+    for (const host of names) {
+      for (const name of names) {
+        if (host === name) continue;
+        expect(hostPrefixMatchesMachineName(host, name)).toBe(false);
+      }
+    }
   });
 });

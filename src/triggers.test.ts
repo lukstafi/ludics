@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { readFileSync } from "fs";
-import { triggerAllowedForRole, CONTROLLER_ONLY_TRIGGER_NAMES, removeControllerTriggerUnits, shouldTeardownControllerUnits, plistEnvXml, magKeepaliveServiceBody } from "./triggers.ts";
+import { triggerAllowedForRole, CONTROLLER_ONLY_TRIGGER_NAMES, removeControllerTriggerUnits, shouldTeardownControllerUnits, shouldRunTeardown, isUnitDisabledInPrintOutput, plistEnvXml, magKeepaliveServiceBody } from "./triggers.ts";
 import type { ClusterMachine } from "./cluster.ts";
 
 const CONTROLLER_ONLY = ["dashboard", "ntfy-subscribe", "morning", "health", "sync", "watch"] as const;
@@ -207,5 +207,70 @@ describe("magKeepaliveServiceBody — KillMode=process hardening (gh-ludics-584)
     // `systemdServiceBody` template would push this above 1.
     const matches = src.match(/\\nKillMode=process/g) ?? [];
     expect(matches.length).toBe(1);
+  });
+});
+
+// gh-ludics-587: controller-unit teardown is now an explicit opt-in. The pure
+// `shouldRunTeardown` seam composes the operator flag with the existing
+// leader-immunity guard. Routine installs (no flag) must NEVER run the
+// destructive teardown loop — that was the root cause of the leader disabling its
+// own dashboard on a mis-resolved `ludics init` from a plain shell.
+describe("shouldRunTeardown — teardown is explicit opt-in atop leader-immunity (gh-ludics-587)", () => {
+  const machine = (role: string): ClusterMachine => ({
+    name: "n", host: "n.ts.net", os: "macos", role, always_on: true, gpu: "",
+  });
+
+  test("no flag → NEVER tear down, even for an identified worker", () => {
+    expect(shouldRunTeardown({}, machine("worker"))).toBe(false);
+    expect(shouldRunTeardown({ reconcileControllerUnits: false }, machine("worker"))).toBe(false);
+  });
+
+  test("flag set + identified worker → tear down", () => {
+    expect(shouldRunTeardown({ reconcileControllerUnits: true }, machine("worker"))).toBe(true);
+    expect(shouldRunTeardown({ reconcileControllerUnits: true }, machine("console"))).toBe(true);
+  });
+
+  test("flag set but leader → still false (leader-immunity guard preserved)", () => {
+    expect(shouldRunTeardown({ reconcileControllerUnits: true }, machine("leader"))).toBe(false);
+  });
+
+  test("flag set but unknown identity (undefined) → false (transient-miss safety net)", () => {
+    expect(shouldRunTeardown({ reconcileControllerUnits: true }, undefined)).toBe(false);
+  });
+});
+
+// gh-ludics-587: self-heal parses `launchctl print-disabled gui/$uid` output to
+// decide whether a controller unit needs re-enabling. The parser is the
+// unit-testable seam; the surrounding reconcile shells out to launchctl.
+describe("isUnitDisabledInPrintOutput — detects disabled controller labels (gh-ludics-587)", () => {
+  const sample = [
+    'com.apple.disabled list for <gui> {',
+    '\t\t"com.ludics.dashboard" => disabled',
+    '\t\t"com.ludics.mag" => enabled',
+    '\t\t"com.ludics.health" => true', // launchctl historically prints true/false too
+    '}',
+  ].join("\n");
+
+  test("returns true for an explicitly disabled label", () => {
+    expect(isUnitDisabledInPrintOutput(sample, "com.ludics.dashboard")).toBe(true);
+  });
+
+  test("returns false for an enabled label", () => {
+    expect(isUnitDisabledInPrintOutput(sample, "com.ludics.mag")).toBe(false);
+  });
+
+  test("returns false for an absent label", () => {
+    expect(isUnitDisabledInPrintOutput(sample, "com.ludics.sync")).toBe(false);
+  });
+
+  test("returns false for a non-'disabled' value (e.g. 'true')", () => {
+    // Fail-safe: only the literal `=> disabled` re-enables; any other token is left alone.
+    expect(isUnitDisabledInPrintOutput(sample, "com.ludics.health")).toBe(false);
+  });
+
+  test("empty / garbage input → false (fail-safe)", () => {
+    expect(isUnitDisabledInPrintOutput("", "com.ludics.dashboard")).toBe(false);
+    expect(isUnitDisabledInPrintOutput("not launchctl output at all", "com.ludics.dashboard")).toBe(false);
+    expect(isUnitDisabledInPrintOutput("\n\n   \n", "com.ludics.dashboard")).toBe(false);
   });
 });

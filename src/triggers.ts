@@ -65,6 +65,22 @@ export function shouldTeardownControllerUnits(machine: ClusterMachine | undefine
 }
 
 /**
+ * Pure decision seam (gh-ludics-587): whether a given `triggersInstall` run should
+ * actually tear down controller-only units. Teardown is now an explicit opt-in —
+ * routine `ludics init` / `triggers install` must NEVER tear down (a mis-resolved
+ * identity from a plain shell could otherwise disable the *leader's own*
+ * controller units). Only `--reconcile-controller-units` enables it, AND the
+ * leader-immunity guard `shouldTeardownControllerUnits` still applies on top
+ * (undefined identity or a leader machine is never torn down).
+ */
+export function shouldRunTeardown(
+  opts: { reconcileControllerUnits?: boolean },
+  machine: ClusterMachine | undefined,
+): boolean {
+  return opts.reconcileControllerUnits === true && shouldTeardownControllerUnits(machine);
+}
+
+/**
  * Disable + delete any installed unit(s) for trigger `name`. Used on a worker to
  * actively remove controller-only units left over from a prior standalone /
  * controller install (AC 7): skip-only logging in the install paths does not stop
@@ -111,6 +127,100 @@ export function removeControllerTriggerUnits(
       }
     } else {
       for (const ext of ["timer", "service", "path"]) removeUnit(`ludics-${name}.${ext}`);
+    }
+  }
+}
+
+/**
+ * Pure decision seam (gh-ludics-587): does `launchctl print-disabled gui/$uid`
+ * output mark `label` as disabled? launchctl prints one line per known label in
+ * the form `\t\t"com.ludics.dashboard" => disabled` (or `=> enabled`). Returns
+ * true only for an explicit `"<label>" => disabled` entry; an enabled, absent, or
+ * empty/garbage output yields false (fail-safe — never re-enable on a parse miss).
+ */
+export function isUnitDisabledInPrintOutput(printDisabledOutput: string, label: string): boolean {
+  if (!printDisabledOutput) return false;
+  for (const line of printDisabledOutput.split("\n")) {
+    const m = line.match(/"([^"]+)"\s*=>\s*(\w+)/);
+    if (m && m[1] === label && m[2] === "disabled") return true;
+  }
+  return false;
+}
+
+/**
+ * Self-heal (gh-ludics-587): re-enable any controller-only unit that launchd (or
+ * systemd) has left in its persistent `disabled` state. Run every cluster tick on
+ * a confidently-identified leader (see `clusterTick`). IDEMPOTENT and SILENT when
+ * nothing is disabled — no bootstrap churn while all units are healthy.
+ *
+ * darwin: parse `launchctl print-disabled gui/$uid` once; for each disabled
+ * controller label whose plist still exists, re-enable → bootout (ignore) →
+ * bootstrap → kickstart. Missing plist → one-line warning suggesting `ludics
+ * init`, then skip (don't regenerate here). linux: mirror minimally via
+ * `systemctl --user is-enabled` / `enable --now`. Fail-safe: any shell/parse
+ * failure → don't touch.
+ */
+export function reconcileControllerUnits(platform: NodeJS.Platform = process.platform): void {
+  if (platform === "darwin") {
+    const agentsDir = join(process.env.HOME!, "Library/LaunchAgents");
+    if (!existsSync(agentsDir)) return;
+    const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+
+    const printRes = safeSyncOutput(["launchctl", "print-disabled", `gui/${uid}`]);
+    if (!printRes.ok) return; // fail-safe: cannot determine disabled state → don't touch
+    const printOut = printRes.stdout;
+
+    const reenableLabel = (label: string): void => {
+      if (!isUnitDisabledInPrintOutput(printOut, label)) return; // healthy → silent no-op
+      const plist = join(agentsDir, `${label}.plist`);
+      if (!existsSync(plist)) {
+        console.warn(
+          `ludics: cluster: controller unit ${label.replace("com.ludics.", "")} is disabled but its plist is missing — run 'ludics init' to reinstall it`,
+        );
+        return;
+      }
+      safeSyncOutput(["launchctl", "enable", `gui/${uid}/${label}`]);
+      safeSyncOutput(["launchctl", "bootout", `gui/${uid}/${label}`]); // ignore failure (may not be loaded)
+      safeSyncOutput(["launchctl", "bootstrap", `gui/${uid}`, plist]);
+      safeSyncOutput(["launchctl", "kickstart", "-k", `gui/${uid}/${label}`]);
+      console.log(`ludics: cluster: re-enabled disabled controller unit: ${label.replace("com.ludics.", "")}`);
+    };
+
+    for (const name of CONTROLLER_ONLY_TRIGGER_NAMES) {
+      if (name === "watch") {
+        for (const f of readdirSync(agentsDir)) {
+          if (f.startsWith("com.ludics.watch-") && f.endsWith(".plist")) {
+            reenableLabel(f.replace(".plist", ""));
+          }
+        }
+      } else {
+        reenableLabel(`com.ludics.${name}`);
+      }
+    }
+  } else if (platform === "linux") {
+    const systemdDir = join(process.env.HOME!, ".config/systemd/user");
+    if (!existsSync(systemdDir)) return;
+
+    const reenableUnit = (unit: string): void => {
+      const f = join(systemdDir, unit);
+      if (!existsSync(f)) return;
+      const res = safeSyncOutput(["systemctl", "--user", "is-enabled", unit]);
+      // is-enabled prints "disabled" (and exits non-zero) when masked/disabled.
+      if (res.stdout.trim() !== "disabled") return; // enabled/static/healthy → silent no-op
+      safeSyncOutput(["systemctl", "--user", "enable", "--now", unit]);
+      console.log(`ludics: cluster: re-enabled disabled controller unit: ${unit}`);
+    };
+
+    for (const name of CONTROLLER_ONLY_TRIGGER_NAMES) {
+      if (name === "watch") {
+        for (const f of readdirSync(systemdDir)) {
+          if (f.startsWith("ludics-watch-") && (f.endsWith(".service") || f.endsWith(".path") || f.endsWith(".timer"))) {
+            reenableUnit(f);
+          }
+        }
+      } else {
+        for (const ext of ["timer", "path", "service"]) reenableUnit(`ludics-${name}.${ext}`);
+      }
     }
   }
 }
@@ -924,20 +1034,25 @@ function currentPlatform(): string {
   return result.stdout;
 }
 
-export function triggersInstall(): void {
-  // AC 7: on a worker, actively remove any controller-only units left by a prior
-  // standalone/controller install before (re)installing. The install paths below
-  // only *skip* controller units (they don't stop ones already running), so
-  // without this an upgraded worker keeps a stale dashboard/briefing/health/etc.
-  // unit alive — split-brain that the role gate is meant to prevent.
-  const currentMachine = clusterCurrentMachine();
-  if (shouldTeardownControllerUnits(currentMachine)) {
-    for (const name of CONTROLLER_ONLY_TRIGGER_NAMES) removeControllerTriggerUnits(name);
-  } else if (!currentMachine) {
-    console.error(
-      "ludics: triggers: this host is not in cluster.machines (Tailscale down + hostname mismatch?) — " +
-      "skipping controller-unit teardown to avoid destroying leader duties on a transient identity miss",
-    );
+export function triggersInstall(opts: { reconcileControllerUnits?: boolean } = {}): void {
+  // gh-ludics-587: controller-unit teardown is now an explicit opt-in
+  // (`--reconcile-controller-units`). Routine `ludics init` / `triggers install`
+  // must NEVER tear down — a manual/remote run from a plain shell can mis-resolve
+  // identity and otherwise disable the *leader's own* controller units. When the
+  // operator deliberately reconciles a genuinely-reconfigured worker, the AC-7
+  // teardown still runs, but only under the leader-immunity guard
+  // (`shouldTeardownControllerUnits`): an unidentified host or a leader machine is
+  // never torn down.
+  if (opts.reconcileControllerUnits) {
+    const currentMachine = clusterCurrentMachine();
+    if (shouldTeardownControllerUnits(currentMachine)) {
+      for (const name of CONTROLLER_ONLY_TRIGGER_NAMES) removeControllerTriggerUnits(name);
+    } else if (!currentMachine) {
+      console.error(
+        "ludics: triggers: this host is not in cluster.machines (Tailscale down + hostname mismatch?) — " +
+        "skipping controller-unit teardown to avoid destroying leader duties on a transient identity miss",
+      );
+    }
   }
 
   const platform = currentPlatform();
@@ -1000,7 +1115,7 @@ export async function runTriggers(args: string[]): Promise<void> {
 
   switch (sub) {
     case "install":
-      triggersInstall();
+      triggersInstall({ reconcileControllerUnits: args.includes("--reconcile-controller-units") });
       break;
     case "pause":
     case "disable":

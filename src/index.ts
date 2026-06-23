@@ -266,10 +266,15 @@ Commands:
 
   status                       Overview of slots + tasks
   briefing [--auto]            Morning briefing (--auto skips if last sequence < 90min ago)
-  init [--no-hooks] [--no-dashboard] [--no-triggers] [--restart-t3code]
+  init [--no-hooks] [--no-dashboard] [--no-triggers] [--restart-t3code] [--reconcile-controller-units]
                                Initialize config, harness, hooks, dashboard, and triggers
+                               (--reconcile-controller-units: also tear down controller-only
+                                units when this node is a confidently-identified worker)
   stop [pause|uninstall]       Stop scheduled activity (default: pause)
-  triggers install             Install launchd/systemd triggers
+  triggers install [--reconcile-controller-units]
+                               Install launchd/systemd triggers
+                               (--reconcile-controller-units: tear down stale controller-only
+                                units on a confidently-identified worker)
   triggers pause               Pause/disable triggers without deleting unit files
   triggers status              Show trigger status
   triggers uninstall           Remove all triggers
