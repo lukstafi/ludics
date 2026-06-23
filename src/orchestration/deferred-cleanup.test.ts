@@ -734,3 +734,89 @@ describe("explicit harnessDir argument (isolation)", () => {
     }
   });
 });
+
+// gh-ludics-592 (defect 2): a federation worker must never write the tracked
+// deferred-cleanup manifest (mag/cleanup-pending.json) — a local write blocks
+// `git pull --ff-only` and strands the worker on a stale harness clone. The
+// manifest is the controller's post-mortem queue; saveDeferredCleanups no-ops
+// in worker context.
+describe("deferred-cleanup worker-context guard (gh-ludics-592)", () => {
+  let wtmp: string;
+  const SAVED_HOME = process.env.HOME;
+  const SAVED_HARNESS = process.env.LUDICS_HARNESS_DIR;
+  const SAVED_CONFIG = process.env.LUDICS_CONFIG;
+  const SAVED_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+
+  function writeClusterConfig(homeDir: string): string {
+    const configPath = join(homeDir, "config.yaml");
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: minipc-wsl
+      host: minipc-wsl.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    return configPath;
+  }
+
+  const harnessPath = (): string => join(wtmp, "harness");
+
+  beforeEach(() => {
+    wtmp = join(import.meta.dir, ".test-tmp-deferred-cleanup-worker");
+    mkdirSync(join(wtmp, "harness", "mag"), { recursive: true });
+    process.env.HOME = wtmp;
+    process.env.LUDICS_HARNESS_DIR = join(wtmp, "harness");
+    process.env.LUDICS_CONFIG = writeClusterConfig(wtmp);
+  });
+
+  afterEach(() => {
+    try { rmSync(wtmp, { recursive: true, force: true }); } catch { /* ignore */ }
+    if (SAVED_HOME === undefined) delete process.env.HOME; else process.env.HOME = SAVED_HOME;
+    if (SAVED_HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = SAVED_HARNESS;
+    if (SAVED_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = SAVED_CONFIG;
+    if (SAVED_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = SAVED_MACHINE;
+  });
+
+  test("worker context: recordDeferredCleanup does NOT write the tracked manifest", () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker (role: worker)
+    const harness = harnessPath();
+
+    recordDeferredCleanup(makeEntry({ taskId: "task-worker-guard" }), harness);
+
+    // Invariant: a worker leaves mag/cleanup-pending.json untouched, so the
+    // tracked tree stays clean and `git pull --ff-only` is never blocked.
+    // Harness condition: worker context (minipc-wsl role: worker) → isWorkerContext() true.
+    // Mutation control: removing the `if (isWorkerContext()) return;` guard
+    // makes this file appear → assertion fails.
+    expect(existsSync(cleanupPendingPath(harness))).toBe(false);
+    expect(loadDeferredCleanups(harness)).toEqual([]);
+  });
+
+  test("controller context positive control: recordDeferredCleanup DOES write and round-trips", () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "leader-box"; // controller (role: leader)
+    const harness = harnessPath();
+
+    recordDeferredCleanup(makeEntry({ taskId: "task-controller-guard" }), harness);
+
+    // On the controller the guard is inert: the manifest is written and the
+    // entry round-trips via loadDeferredCleanups.
+    expect(existsSync(cleanupPendingPath(harness))).toBe(true);
+    const loaded = loadDeferredCleanups(harness);
+    expect(loaded.length).toBe(1);
+    expect(loaded[0]!.taskId).toBe("task-controller-guard");
+  });
+});

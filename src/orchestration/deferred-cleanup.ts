@@ -6,6 +6,7 @@ import { join } from "path";
 import { harnessDir as defaultHarnessDir, cleanupDelayHours } from "../config.ts";
 import * as spawn from "../spawn.ts";
 import type { OrchestrationState } from "./state.ts";
+import { isWorkerContext } from "./state.ts";
 import { removeWorktreeByPath, deleteBranches, orchBranchName, purgeOrphanDirIfRecoverable } from "./worktrees.ts";
 import { removePeerSyncLink } from "./peer-sync.ts";
 
@@ -70,6 +71,15 @@ export function saveDeferredCleanups(
   entries: CleanupEntry[],
   harnessDir: string = defaultHarnessDir(),
 ): void {
+  // gh-ludics-592 (defect 2): cleanup-pending.json is the controller-owned
+  // post-mortem queue, drained by processDeferredCleanups during controller
+  // briefing prep (which reads the HARNESS file, never the worker cache). A
+  // federation worker must never write it — a local write blocks
+  // `git pull --ff-only` and strands the worker on a stale harness clone (the
+  // resurrection incident). No-op in worker context so the tree stays clean.
+  // (Keyed on cluster role, not the harnessDir argument, so controller/
+  // standalone callers passing an explicit harnessDir are never redirected.)
+  if (isWorkerContext()) return;
   try {
     const file = cleanupPendingPath(harnessDir);
     mkdirSync(join(harnessDir, "mag"), { recursive: true });
