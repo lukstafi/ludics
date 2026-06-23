@@ -93,6 +93,16 @@ export async function runInit(args: string[]): Promise<void> {
     installSkills(root, repoDir, statePath);
   }
 
+  // 6b. jq prerequisite — HARD gate (gh-ludics-590). The orchestration on-stop hook
+  // and the Mag queue both hard-depend on jq to parse JSON; a jq-less worker silently
+  // breaks (every agent stop errors, phase signals lost). Fail loud BEFORE installing
+  // the stop hook so the operator sees the dependency failure, not a downstream
+  // `usage:` red herring. Unconditional (not --no-hooks-guarded): per the resolved
+  // proposal question, "a worker must not complete init without jq."
+  console.log("\n--- jq prerequisite ---");
+  checkJqPrereq();
+  console.log("  jq: available");
+
   // 7. Stop hook (Claude Code + Codex)
   if (!noHooks) {
     installStopHook(root);
@@ -377,6 +387,22 @@ function installSkills(root: string, repoDir: string, statePath: string): void {
     count++;
   }
   console.log(`copied ${count} skill(s) to ${destDir}`);
+}
+
+/**
+ * Hard gate: ludics requires `jq` (the orchestration on-stop hook + Mag queue parse
+ * JSON with it). Mirrors the existing `which tmux` / `which ttyd` gates — exits the
+ * process with an install hint when jq is not resolvable. gh-ludics-590.
+ */
+export function checkJqPrereq(): void {
+  if (!safeSyncOutput(["which", "jq"]).ok) {
+    console.error(
+      "error: ludics requires jq (orchestration on-stop hook + Mag queue parse JSON).\n" +
+      "  macOS: brew install jq\n" +
+      "  Linux: apt install jq  (or dnf/pacman)"
+    );
+    process.exit(1);
+  }
 }
 
 function installStopHook(root: string): void {
