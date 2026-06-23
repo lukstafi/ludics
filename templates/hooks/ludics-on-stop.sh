@@ -45,6 +45,15 @@ else
   cwd=$(echo "$input" | jq -r '.cwd // ""' 2>/dev/null)
 fi
 
+# gh-ludics-589: never exec `ludics orch on-stop` (or `mag on-stop`) with a blank
+# first positional — that shifts the positional args and produced a `usage: ludics
+# orch on-stop <cwd> ...` error that blocked phase advancement. A blank cwd can
+# arise from ANY cause (e.g. jq missing → empty `.cwd`, owned by gh-ludics-590);
+# default it to $PWD so the exec always receives a real directory.
+if [[ -z "$cwd" ]]; then
+  cwd="$PWD"
+fi
+
 # Resolve ludics binary
 ludics_bin=""
 if command -v ludics >/dev/null 2>&1; then

@@ -195,11 +195,15 @@ export async function runOrchestrationCli(args: string[]): Promise<void> {
  * the CLI arg when it couldn't resolve the dir, so the env var kicks in.
  */
 export function orchOnStop(args: string[]): void {
-  const [cwd, cliPeerSyncDir, hookEventName] = args;
-  if (!cwd) {
-    console.error("usage: ludics orch on-stop <cwd> [peer-sync-dir] [hook-event-name]");
-    process.exit(1);
-  }
+  // gh-ludics-589: a blank cwd (the shell hook couldn't resolve it — from ANY
+  // cause, not just gh-ludics-590's jq/PATH gap) must NOT produce a usage error +
+  // exit(1) that blocks phase advancement. Fall through to env/marker peer-sync
+  // resolution and env/status-file agent attribution; if nothing resolves we
+  // return silently (exit 0). The shell hook also defaults a blank cwd to $PWD
+  // (defense in depth), so this graceful path is the second layer.
+  const cwd = args[0] ?? "";
+  const cliPeerSyncDir = args[1];
+  const hookEventName = args[2];
 
   // Resolve peerSyncDir: CLI arg (if valid) > env var > give up.
   const peerSyncDir = resolvePeerSyncDir({ cliArg: cliPeerSyncDir || undefined });
@@ -232,7 +236,9 @@ export function orchOnStop(args: string[]): void {
   }
 
   // Marker-file attribution: .ludics-orchestration.json written by orchestration setup.
-  if (!agentName) {
+  // Guard on a non-empty cwd (gh-ludics-589): readAgentMarkerFile("") would join
+  // against process.cwd() and could mis-attribute; a blank cwd has no marker.
+  if (!agentName && cwd) {
     const marker = readAgentMarkerFile(cwd);
     if (marker && worktreeAgentNames.includes(marker.agentName)) {
       agentName = marker.agentName;
