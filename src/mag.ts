@@ -3266,17 +3266,32 @@ export function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandid
 // A newly-assignable task (just flipped ready+elaborated+has-proposal) must
 // wait at least one full keepalive beat before the auto-fill may claim it,
 // giving a predictable manual-intervention window. We persist the first epoch
-// at which each candidate was seen assignable in a sidecar
-// (`mag/auto-assign-seen.json`, keyed task-id -> epochSeconds). On each beat
-// the gate is applied to the task about to be assigned, AFTER all existing
-// eligibility filters and BEFORE the actual slotAssign — mirroring the
-// `autoProposalDebounced` / `markAutoProposalQueued` sidecar-debounce pattern.
+// at which each candidate was seen *genuinely assignable* in a sidecar
+// (`mag/auto-assign-seen.json`, keyed task-id -> epochSeconds).
+//
+// The bookkeeping is split into two independent steps so that recording/aging
+// and stale-entry cleanup don't interfere (Codex PR #591 review):
+//
+//   1. `reconcileAutoAssignSeen(candidateSet, now)` — runs EVERY beat against
+//      the full current candidate set, *independent* of whether any candidate
+//      reaches the gate or is assigned. It drops entries for tasks that left
+//      the candidate set (so re-entry resets the grace) and prunes anything
+//      older than the bound. This guarantees a task that leaves between gate
+//      ticks (e.g. manually assigned while all slots are busy) still has its
+//      stale grace cleared.
+//
+//   2. `autoAssignGraceGate(taskId, now)` — runs ONLY for the single task that
+//      has passed every assignment-eligibility check (duo slot-count, machine
+//      selection, project-path resolution) and is about to be `slotAssign`ed
+//      this beat. It records `now` as the first-seen epoch the first time a
+//      genuinely-assignable task is observed, and returns whether the grace
+//      has elapsed. Because recording happens only here, a task that isn't
+//      actually assignable on a given beat is never aged toward its grace.
 //
 // This naturally lets a long-standing assignable task assign immediately (its
 // recorded `seen` is already older than the grace), while only FRESH
-// transitions wait ~1 beat. Entries are cleared when a task leaves the
-// candidate set (so re-entering resets the grace) and once it is actually
-// assigned; stale entries are pruned to keep the file bounded.
+// transitions wait ~1 beat. Entries are also cleared once a task is actually
+// assigned (`clearAutoAssignSeen`), so re-entry resets the grace.
 
 const AUTO_ASSIGN_GRACE_DEFAULT_SECONDS = 75;
 // Prune sidecar entries older than this (well past any plausible grace) so the
@@ -3334,15 +3349,53 @@ export function clearAutoAssignSeen(taskId: string): void {
 }
 
 /**
- * Reconcile the first-seen sidecar against the current assignable candidate set
- * and decide whether `taskId` (the task about to be assigned) may proceed this
- * beat.
+ * Reconcile the first-seen sidecar against the current candidate set,
+ * UNCONDITIONALLY each beat (independent of whether any candidate reaches the
+ * gate or is assigned). This is what guarantees a task whose grace was recorded
+ * but which later leaves the candidate set between gate ticks still gets its
+ * stale entry cleared.
  *
  * Side effects (persisted to `mag/auto-assign-seen.json`):
- *   - Records `nowSeconds` for any candidate not yet tracked.
  *   - Clears entries for tasks no longer in `candidateSet` (left the set →
  *     grace resets on re-entry).
  *   - Prunes entries older than AUTO_ASSIGN_SEEN_PRUNE_SECONDS.
+ *
+ * NOTE: this does NOT record/age candidates — that is deliberately deferred to
+ * `autoAssignGraceGate`, which runs only for a task that has passed every
+ * assignment-eligibility check, so a not-yet-assignable task is never aged.
+ *
+ * `nowSeconds` is injectable so tests can drive the clock deterministically;
+ * callers in normal runtime pass `Math.floor(Date.now() / 1000)`.
+ *
+ * @internal exported for tests
+ */
+export function reconcileAutoAssignSeen(
+  candidateSet: Iterable<string>,
+  nowSeconds: number,
+): void {
+  const candidates = new Set(candidateSet);
+  const seen = readAutoAssignSeen();
+  let dirty = false;
+
+  for (const id of Object.keys(seen)) {
+    if (!candidates.has(id) || nowSeconds - seen[id]! >= AUTO_ASSIGN_SEEN_PRUNE_SECONDS) {
+      delete seen[id];
+      dirty = true;
+    }
+  }
+
+  if (dirty) writeAutoAssignSeen(seen);
+}
+
+/**
+ * Decide whether `taskId` — the single task that has already passed EVERY
+ * assignment-eligibility check and is about to be `slotAssign`ed this beat —
+ * may proceed, recording its first-seen-assignable epoch on first sight.
+ *
+ * Side effect: records `nowSeconds` for `taskId` if not yet tracked. Because
+ * this runs only for a genuinely-assignable task (after duo slot-count, machine
+ * selection, and project-path checks), a task that isn't actually assignable on
+ * a given beat is never recorded/aged toward its grace.
  *
  * Returns `true` iff `taskId` has been tracked for at least the grace window
  * (i.e. `nowSeconds - seen >= grace`). A freshly-seen task returns `false`
@@ -3355,34 +3408,15 @@ export function clearAutoAssignSeen(taskId: string): void {
  */
 export function autoAssignGraceGate(
   taskId: string,
-  candidateSet: Iterable<string>,
   nowSeconds: number,
   graceSeconds: number = autoAssignGraceSeconds(),
 ): boolean {
-  const candidates = new Set(candidateSet);
   const seen = readAutoAssignSeen();
-  let dirty = false;
-
-  // Clear entries for tasks no longer in the candidate set, and prune stale.
-  for (const id of Object.keys(seen)) {
-    if (!candidates.has(id) || nowSeconds - seen[id]! >= AUTO_ASSIGN_SEEN_PRUNE_SECONDS) {
-      delete seen[id];
-      dirty = true;
-    }
+  if (!(taskId in seen)) {
+    seen[taskId] = nowSeconds;
+    writeAutoAssignSeen(seen);
   }
-
-  // Ensure every current candidate is tracked (record `now` on first sight).
-  for (const id of candidates) {
-    if (!(id in seen)) {
-      seen[id] = nowSeconds;
-      dirty = true;
-    }
-  }
-
-  const proceed = taskId in seen && nowSeconds - seen[taskId]! >= graceSeconds;
-
-  if (dirty) writeAutoAssignSeen(seen);
-  return proceed;
+  return nowSeconds - seen[taskId]! >= graceSeconds;
 }
 
 // --- Auto-fill empty slots ---
@@ -3404,9 +3438,28 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
     }
   }
 
+  const candidates = getSortedReadyCandidates(config);
+
+  // Reconcile the grace sidecar UNCONDITIONALLY every beat — independent of
+  // whether any slot is empty or any candidate reaches the gate. The candidate
+  // set is every currently-assignable task (ready + has a proposal). A recorded
+  // task that has left this set (e.g. manually assigned while all slots were
+  // busy, or status/deps changed) gets its stale grace entry cleared here, even
+  // on a beat that returns early below (Codex PR #591 review). Recording/aging
+  // of first-seen is NOT done here — that is deferred to the gate, which runs
+  // only for a genuinely-assignable task.
+  reconcileAutoAssignSeen(
+    candidates
+      .filter((c) => {
+        const f = join(harnessDir(), "tasks", `${c.id}.md`);
+        return existsSync(f) && readFileSync(f, "utf-8").includes("\nproposal:");
+      })
+      .map((c) => c.id),
+    Math.floor(Date.now() / 1000),
+  );
+
   if (emptySlots.length === 0) return;
 
-  const candidates = getSortedReadyCandidates(config);
   if (candidates.length > 0) {
     const top5 = candidates.slice(0, 5).map((c) => `${c.id}(p=${c.priority},ep=${effectivePriorityValue(c.priority, c.project)},elab=${c.elaborated})`);
     console.error(`ludics: auto-fill candidates (top 5): ${top5.join(", ")}`);
@@ -3476,24 +3529,20 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
     throw e;
   }
 
-  // Grace window (auto-assign race): a task must be seen assignable for at
-  // least one full keepalive beat before the auto-fill may claim it. Applied
-  // AFTER all eligibility filters (and the t3code-paused early-return above)
-  // and BEFORE either slotAssign branch, so both duo- and single-assign are
-  // gated. The candidate set passed to the gate is every remaining assignable
-  // candidate (those with a proposal), so a task that leaves the set has its
-  // grace reset on re-entry. Gates auto-ASSIGN only — auto-launch/start stays
-  // separately gated by deferred_launch / confidence.
-  const assignableCandidateSet = candidates
-    .filter((c) => {
-      const f = join(harnessDir(), "tasks", `${c.id}.md`);
-      return existsSync(f) && readFileSync(f, "utf-8").includes("\nproposal:");
-    })
-    .map((c) => c.id);
-  if (!autoAssignGraceGate(task.id, assignableCandidateSet, Math.floor(Date.now() / 1000))) {
+  // Grace gate (auto-assign race): a task must be seen GENUINELY ASSIGNABLE for
+  // at least one full keepalive beat before the auto-fill may claim it. The gate
+  // is invoked ONLY after the task has passed every assignment-eligibility check
+  // below (duo slot-count, machine selection, project-path resolution) — see the
+  // `gatePassed` checks before each `slotAssign` — so a task that isn't actually
+  // assignable on this beat is never recorded/aged toward its grace (Codex PR
+  // #591 review). Gates auto-ASSIGN only — auto-launch/start stays separately
+  // gated by deferred_launch / confidence.
+  const gateNow = Math.floor(Date.now() / 1000);
+  const graceGateOk = (): boolean => {
+    if (autoAssignGraceGate(task.id, gateNow)) return true;
     console.error(`ludics: ${task.id} newly assignable — grace window, will assign next beat`);
-    return;
-  }
+    return false;
+  };
 
   // Hierarchical duo: need 2 empty slots; assign both with swapped coder/reviewer
   if (isDuo) {
@@ -3531,6 +3580,10 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
       }
       throw e;
     }
+
+    // All eligibility checks passed — now apply the grace gate (records/ages
+    // first-seen only because the task is genuinely assignable this beat).
+    if (!graceGateOk()) return;
 
     await slotAssign(slotA, task.id, autoAdapter, "", projectPath, expansion.slotA.args, machine);
     await slotAssign(slotB, task.id, autoAdapter, "", projectPath, expansion.slotB.args, machine);
@@ -3571,6 +3624,10 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
       }
       throw e;
     }
+
+    // All eligibility checks passed — now apply the grace gate (records/ages
+    // first-seen only because the task is genuinely assignable this beat).
+    if (!graceGateOk()) return;
 
     // Assign task to the empty slot using the auto-selected adapter, path, and flags
     await slotAssign(slot, task.id, autoAdapter, "", projectPath, autoArgs, machine);
