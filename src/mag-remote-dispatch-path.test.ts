@@ -84,6 +84,20 @@ function writeReadyTask(): void {
       + `  relates_to: []\n  subtask_of: null\ncontext: cudajit\nuses_browser: false\n`
       + `created: 2026-05-01\nsource: manual\n---\n# task-cudajit-remote\n`,
   );
+  // The keepalive auto-assign gate (mag/auto-assign-seen.json) holds a freshly-
+  // assignable task back for one beat (~75s grace). These tests assert the
+  // immediate single-call dispatch behavior, so seed the task as seen long ago
+  // (past any grace) to exercise the actual assignment path on the first call.
+  const magDir = join(TMP, "mag");
+  mkdirSync(magDir, { recursive: true });
+  // Seen ~10 minutes ago: past the grace window but well within the prune
+  // horizon, so the gate proceeds on the first call rather than skipping or
+  // pruning-then-re-recording the entry as fresh.
+  const seenAt = Math.floor(Date.now() / 1000) - 600;
+  writeFileSync(
+    join(magDir, "auto-assign-seen.json"),
+    JSON.stringify({ "task-cudajit-remote": seenAt }),
+  );
 }
 
 beforeEach(() => {
