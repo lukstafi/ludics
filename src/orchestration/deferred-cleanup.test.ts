@@ -735,12 +735,14 @@ describe("explicit harnessDir argument (isolation)", () => {
   });
 });
 
-// gh-ludics-592 (defect 2): a federation worker must never write the tracked
-// deferred-cleanup manifest (mag/cleanup-pending.json) — a local write blocks
-// `git pull --ff-only` and strands the worker on a stale harness clone. The
-// manifest is the controller's post-mortem queue; saveDeferredCleanups no-ops
-// in worker context.
-describe("deferred-cleanup worker-context guard (gh-ludics-592)", () => {
+// gh-ludics-592 (defect 2): a federation worker must never write the TRACKED
+// deferred-cleanup manifest (harness/mag/cleanup-pending.json) — a local write
+// blocks `git pull --ff-only` and strands the worker on a stale harness clone.
+// But the entry must NOT be dropped: it records worker-local artifacts
+// (worktrees/branches/tmux/peer-sync) only the worker can reap. So on a worker
+// the manifest is ROUTED to the non-harness worker cache ($HOME/.ludics-orch-cache,
+// à la gh-580), where the worker's own processDeferredCleanups drain reads it.
+describe("deferred-cleanup worker-context routing (gh-ludics-592)", () => {
   let wtmp: string;
   const SAVED_HOME = process.env.HOME;
   const SAVED_HARNESS = process.env.LUDICS_HARNESS_DIR;
@@ -774,6 +776,11 @@ cluster:
   }
 
   const harnessPath = (): string => join(wtmp, "harness");
+  // The literal tracked-harness manifest path (NOT via cleanupPendingPath, which
+  // re-routes to the worker cache in worker context).
+  const trackedManifest = (): string => join(wtmp, "harness", "mag", "cleanup-pending.json");
+  // The worker-cache manifest path: workerCacheDir() === $HOME/.ludics-orch-cache.
+  const workerCacheManifest = (): string => join(wtmp, ".ludics-orch-cache", "cleanup-pending.json");
 
   beforeEach(() => {
     wtmp = join(import.meta.dir, ".test-tmp-deferred-cleanup-worker");
@@ -791,18 +798,61 @@ cluster:
     if (SAVED_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = SAVED_MACHINE;
   });
 
-  test("worker context: recordDeferredCleanup does NOT write the tracked manifest", () => {
+  test("worker context: recordDeferredCleanup routes to the worker cache, not the tracked manifest", () => {
     process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker (role: worker)
     const harness = harnessPath();
 
     recordDeferredCleanup(makeEntry({ taskId: "task-worker-guard" }), harness);
 
-    // Invariant: a worker leaves mag/cleanup-pending.json untouched, so the
-    // tracked tree stays clean and `git pull --ff-only` is never blocked.
+    // Invariant A (tree clean): the TRACKED harness manifest is never created on
+    // a worker, so `git pull --ff-only` is never blocked. Mutation control:
+    // reverting cleanupPendingPath's worker branch makes this file appear → fails.
+    expect(existsSync(trackedManifest())).toBe(false);
+    // Invariant B (not dropped): the entry IS persisted to the worker cache,
+    // where the worker's own drain can reap the worker-local artifacts the
+    // controller cannot see. Mutation control: a `return` no-op (the prior
+    // implementation) leaves this file absent → fails.
+    expect(existsSync(workerCacheManifest())).toBe(true);
+    // And it round-trips via loadDeferredCleanups (which re-routes to the cache).
     // Harness condition: worker context (minipc-wsl role: worker) → isWorkerContext() true.
-    // Mutation control: removing the `if (isWorkerContext()) return;` guard
-    // makes this file appear → assertion fails.
-    expect(existsSync(cleanupPendingPath(harness))).toBe(false);
+    const loaded = loadDeferredCleanups(harness);
+    expect(loaded.length).toBe(1);
+    expect(loaded[0]!.taskId).toBe("task-worker-guard");
+  });
+
+  test("worker context: cancelDeferredCleanup updates the worker-cache manifest, tracked tree stays clean", () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker
+    const harness = harnessPath();
+
+    recordDeferredCleanup(makeEntry({ taskId: "task-a", slot: 1 }), harness);
+    recordDeferredCleanup(makeEntry({ taskId: "task-b", slot: 2 }), harness);
+    cancelDeferredCleanup("task-a", 1, harness);
+
+    // The cancel rewrites the worker-cache manifest (never the tracked tree).
+    expect(existsSync(trackedManifest())).toBe(false);
+    const loaded = loadDeferredCleanups(harness);
+    expect(loaded.map((e) => e.taskId)).toEqual(["task-b"]);
+  });
+
+  test("worker context: processDeferredCleanups drains the worker-cache manifest (the keepalive reap path)", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker
+    const harness = harnessPath();
+
+    // An aged entry (30h ago > cleanupDelayHours) with no artifacts so no step is
+    // retryable — it must drain on the first pass. This is the mechanism
+    // workerKeepalive now invokes so a worker reaps its OWN local cleanup.
+    recordDeferredCleanup(
+      makeEntry({ taskId: "task-drain", branches: [], worktreePaths: [], peerSyncLink: null, tmuxSessionNames: [] }),
+      harness,
+    );
+    expect(existsSync(workerCacheManifest())).toBe(true);
+
+    await processDeferredCleanups(undefined, harness);
+
+    // Invariant: the worker's drain reads + rewrites the WORKER-CACHE manifest
+    // (not the tracked tree), reaping the aged entry. Harness condition: worker
+    // context + an entry older than the post-mortem cutoff.
+    expect(existsSync(trackedManifest())).toBe(false);
     expect(loadDeferredCleanups(harness)).toEqual([]);
   });
 

@@ -2,11 +2,11 @@
 // Entries are processed during briefing prep after a configurable delay.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { harnessDir as defaultHarnessDir, cleanupDelayHours } from "../config.ts";
 import * as spawn from "../spawn.ts";
 import type { OrchestrationState } from "./state.ts";
-import { isWorkerContext } from "./state.ts";
+import { isWorkerContext, workerCacheDir } from "./state.ts";
 import { removeWorktreeByPath, deleteBranches, orchBranchName, purgeOrphanDirIfRecoverable } from "./worktrees.ts";
 import { removePeerSyncLink } from "./peer-sync.ts";
 
@@ -25,6 +25,17 @@ export interface CleanupEntry {
 }
 
 export function cleanupPendingPath(harnessDir: string = defaultHarnessDir()): string {
+  // gh-ludics-592 (defect 2): on a federation worker, route the deferred-cleanup
+  // manifest OFF the tracked harness tree into the non-harness worker cache
+  // ($HOME/.ludics-orch-cache, à la gh-ludics-580). A worker writing
+  // mag/cleanup-pending.json under the harness blocks `git pull --ff-only` and
+  // strands it on a stale clone (the resurrection incident). Routing (vs
+  // dropping) PRESERVES the entry so the worker's own cleanup drain
+  // (processDeferredCleanups in workerKeepalive) can still reap the worker-local
+  // worktree/branches/tmux/peer-sync artifacts — which only the worker can reap
+  // (the controller is a different filesystem). load/save/process all resolve
+  // through here, so the worker reads and writes the same cache manifest.
+  if (isWorkerContext()) return join(workerCacheDir(), "cleanup-pending.json");
   return join(harnessDir, "mag", "cleanup-pending.json");
 }
 
@@ -71,18 +82,15 @@ export function saveDeferredCleanups(
   entries: CleanupEntry[],
   harnessDir: string = defaultHarnessDir(),
 ): void {
-  // gh-ludics-592 (defect 2): cleanup-pending.json is the controller-owned
-  // post-mortem queue, drained by processDeferredCleanups during controller
-  // briefing prep (which reads the HARNESS file, never the worker cache). A
-  // federation worker must never write it — a local write blocks
-  // `git pull --ff-only` and strands the worker on a stale harness clone (the
-  // resurrection incident). No-op in worker context so the tree stays clean.
-  // (Keyed on cluster role, not the harnessDir argument, so controller/
-  // standalone callers passing an explicit harnessDir are never redirected.)
-  if (isWorkerContext()) return;
+  // gh-ludics-592 (defect 2): the destination is resolved by cleanupPendingPath,
+  // which on a worker routes to the non-harness worker cache so the tracked tree
+  // stays clean (`git pull --ff-only` never blocked) while the entry is still
+  // PRESERVED for the worker's own cleanup drain. mkdir the resolved file's
+  // directory rather than assuming `<harnessDir>/mag` (the worker cache dir
+  // differs from the harness mag dir).
   try {
     const file = cleanupPendingPath(harnessDir);
-    mkdirSync(join(harnessDir, "mag"), { recursive: true });
+    mkdirSync(dirname(file), { recursive: true });
     const tmp = file + ".tmp";
     writeFileSync(tmp, JSON.stringify(entries, null, 2) + "\n");
     renameSync(tmp, file);

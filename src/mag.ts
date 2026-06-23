@@ -3929,6 +3929,19 @@ async function workerKeepalive(): Promise<void> {
 
   // Resume dead orchestrator processes on this machine's slots
   await maybeResumeDeadOrchestrators(freshSlots);
+
+  // gh-ludics-592: reap this worker's OWN deferred-cleanup artifacts
+  // (worktrees/branches/tmux/peer-sync left by worker-owned slot stops). The
+  // manifest is routed to the worker cache (cleanupPendingPath → workerCacheDir),
+  // so this drains worker-local entries only — the controller cannot reap them
+  // (different filesystem). Gated internally by cleanupDelayHours, so it is a
+  // cheap no-op until an entry ages past the post-mortem window.
+  try {
+    const { processDeferredCleanups } = await import("./orchestration/deferred-cleanup.ts");
+    await processDeferredCleanups();
+  } catch (err) {
+    console.error("ludics: worker deferred cleanup failed:", err);
+  }
 }
 
 /** Poll controller for pending intents and execute them (pure pull model). */
