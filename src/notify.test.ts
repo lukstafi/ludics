@@ -57,7 +57,7 @@ describe("buildProposalNotificationActions — t3code-only format", () => {
 });
 
 import { afterEach, beforeEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -255,5 +255,85 @@ describe("notify ntfy.sh suppression under bun test", () => {
     }
     expect(calls).toBe(0);
     expect(result).toEqual({ httpCode: "200", stderr: "", body: "" });
+  });
+});
+
+// gh-ludics-592 (defect 2): a federation worker must never write the tracked
+// notifications log — a local write blocks `git pull --ff-only` and strands the
+// worker on a stale harness clone. notifyLog no-ops in worker context.
+describe("notify worker-context guard (gh-ludics-592)", () => {
+  let tmpDir: string;
+  const ORIGINAL_HOME = process.env.HOME;
+  const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
+  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+  const ORIGINAL_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+
+  function writeClusterConfig(homeDir: string): string {
+    const configPath = join(homeDir, "config.yaml");
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: minipc-wsl
+      host: minipc-wsl.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    return configPath;
+  }
+
+  const logPath = (): string => join(tmpDir, "harness", "journal", "notifications.jsonl");
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "ludics-notify-worker-"));
+    process.env.HOME = tmpDir;
+    process.env.LUDICS_HARNESS_DIR = join(tmpDir, "harness");
+    process.env.LUDICS_CONFIG = writeClusterConfig(tmpDir);
+    mkdirSync(join(tmpDir, "harness", "journal"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    if (ORIGINAL_HOME === undefined) delete process.env.HOME; else process.env.HOME = ORIGINAL_HOME;
+    if (ORIGINAL_HARNESS_DIR === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS_DIR;
+    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+    if (ORIGINAL_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_MACHINE;
+  });
+
+  test("worker context: notifyAgents does NOT create the tracked notifications log", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl"; // worker (role: worker)
+    const { notifyAgents } = await import("./notify.ts");
+
+    notifyAgents("worker-guard-probe", 1, "worker-guard-title");
+
+    // Invariant: a worker leaves journal/notifications.jsonl untouched, so the
+    // tracked tree stays clean and `git pull --ff-only` is never blocked.
+    // Harness condition: worker context (minipc-wsl has role: worker) — this is
+    // what makes isWorkerContext() true. Mutation control: removing the
+    // `if (isWorkerContext()) return;` guard makes this file appear → fails.
+    expect(existsSync(logPath())).toBe(false);
+  });
+
+  test("controller context positive control: notifyAgents DOES write the notifications log", async () => {
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "leader-box"; // controller (role: leader)
+    const { notifyAgents } = await import("./notify.ts");
+
+    notifyAgents("controller-guard-probe", 1, "controller-guard-title");
+
+    // On the controller the guard is inert: the tracked log is still written.
+    expect(existsSync(logPath())).toBe(true);
+    expect(readFileSync(logPath(), "utf-8")).toContain("controller-guard-probe");
   });
 });

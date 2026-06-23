@@ -11,12 +11,21 @@ import { readAllSlotJson } from "./slots/json.ts";
 import { getUrl } from "./network.ts";
 import { parseTaskFrontmatter } from "./tasks/markdown.ts";
 import { proposalLink } from "./dashboard.ts";
+import { isWorkerContext } from "./orchestration/state.ts";
 
 function notificationLogFile(): string {
   return join(harnessDir(), "journal", "notifications.jsonl");
 }
 
 function notifyLog(tier: string, message: string, priority: number, title: string): void {
+  // gh-ludics-592: a federation worker must never dirty the tracked
+  // notifications log — a local write there blocks `git pull --ff-only` and
+  // strands the worker on a stale harness clone (the resurrection incident).
+  // The network ntfy send (notifySend / notifyPublishMessage) is NOT guarded
+  // and still surfaces the notification; only the controller-owned tracked log
+  // is suppressed. Mirrors journalAppend's worker-forward guard. The dashboard
+  // reads the controller's notifications.jsonl, so observability is unaffected.
+  if (isWorkerContext()) return;
   const logFile = notificationLogFile();
   mkdirSync(join(harnessDir(), "journal"), { recursive: true });
 
