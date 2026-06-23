@@ -122,6 +122,10 @@ mag:
   startup_watchdog_seconds: 60    # Seconds to wait for Mag startup before declaring failure (default: 60)
   startup_helper_stuck_seconds: 45  # Seconds before a startup helper is considered stuck (default: 45)
   cleanup_delay_hours: 25         # Hours to wait before cleaning up completed task worktrees (default: 25, max: 72)
+  auto_assign_grace_seconds: 75   # Grace window before the keepalive auto-fill may claim a newly-assignable
+                                  # task for an empty slot (default: 75 — reliably spans one 60s beat). A
+                                  # freshly-ready task waits ~1 beat before auto-assign, giving a predictable
+                                  # manual-intervention window. Gates auto-ASSIGN only, not auto-launch/start.
 
   # Orchestration settings (overridable per-task via adapter -A args)
   orchestration:

@@ -3261,6 +3261,130 @@ export function getSortedReadyCandidates(config?: LudicsFullConfig): ReadyCandid
   return candidates;
 }
 
+// --- Auto-assign grace window (lukstafi/ludics auto-assign race) ---
+//
+// A newly-assignable task (just flipped ready+elaborated+has-proposal) must
+// wait at least one full keepalive beat before the auto-fill may claim it,
+// giving a predictable manual-intervention window. We persist the first epoch
+// at which each candidate was seen assignable in a sidecar
+// (`mag/auto-assign-seen.json`, keyed task-id -> epochSeconds). On each beat
+// the gate is applied to the task about to be assigned, AFTER all existing
+// eligibility filters and BEFORE the actual slotAssign — mirroring the
+// `autoProposalDebounced` / `markAutoProposalQueued` sidecar-debounce pattern.
+//
+// This naturally lets a long-standing assignable task assign immediately (its
+// recorded `seen` is already older than the grace), while only FRESH
+// transitions wait ~1 beat. Entries are cleared when a task leaves the
+// candidate set (so re-entering resets the grace) and once it is actually
+// assigned; stale entries are pruned to keep the file bounded.
+
+const AUTO_ASSIGN_GRACE_DEFAULT_SECONDS = 75;
+// Prune sidecar entries older than this (well past any plausible grace) so the
+// file stays bounded even if a task somehow never leaves via the normal paths.
+const AUTO_ASSIGN_SEEN_PRUNE_SECONDS = 24 * 60 * 60;
+
+function autoAssignSeenFile(): string {
+  return join(harnessDir(), "mag", "auto-assign-seen.json");
+}
+
+/** Grace window in seconds; configurable via `mag.auto_assign_grace_seconds`. */
+function autoAssignGraceSeconds(): number {
+  const config = loadConfigSync();
+  const mag = config.mag as Record<string, unknown> | undefined;
+  const configured = Number(mag?.auto_assign_grace_seconds);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  return AUTO_ASSIGN_GRACE_DEFAULT_SECONDS;
+}
+
+function readAutoAssignSeen(): Record<string, number> {
+  const f = autoAssignSeenFile();
+  if (!existsSync(f)) return {};
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(f, "utf-8"));
+    if (!isPlainObject(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      const n = Number(v);
+      if (Number.isFinite(n)) out[k] = n;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeAutoAssignSeen(seen: Record<string, number>): void {
+  const f = autoAssignSeenFile();
+  mkdirSync(dirname(f), { recursive: true });
+  writeJsonFile(f, seen);
+}
+
+/**
+ * Drop the first-seen-assignable record for a task (best-effort). Called once a
+ * task is actually assigned, so a later re-entry into the candidate set resets
+ * its grace window.
+ *
+ * @internal exported for tests
+ */
+export function clearAutoAssignSeen(taskId: string): void {
+  const seen = readAutoAssignSeen();
+  if (!(taskId in seen)) return;
+  delete seen[taskId];
+  writeAutoAssignSeen(seen);
+}
+
+/**
+ * Reconcile the first-seen sidecar against the current assignable candidate set
+ * and decide whether `taskId` (the task about to be assigned) may proceed this
+ * beat.
+ *
+ * Side effects (persisted to `mag/auto-assign-seen.json`):
+ *   - Records `nowSeconds` for any candidate not yet tracked.
+ *   - Clears entries for tasks no longer in `candidateSet` (left the set →
+ *     grace resets on re-entry).
+ *   - Prunes entries older than AUTO_ASSIGN_SEEN_PRUNE_SECONDS.
+ *
+ * Returns `true` iff `taskId` has been tracked for at least the grace window
+ * (i.e. `nowSeconds - seen >= grace`). A freshly-seen task returns `false`
+ * (skip this beat — assign next beat).
+ *
+ * `nowSeconds` is injectable so tests can drive the clock deterministically;
+ * callers in normal runtime pass `Math.floor(Date.now() / 1000)`.
+ *
+ * @internal exported for tests
+ */
+export function autoAssignGraceGate(
+  taskId: string,
+  candidateSet: Iterable<string>,
+  nowSeconds: number,
+  graceSeconds: number = autoAssignGraceSeconds(),
+): boolean {
+  const candidates = new Set(candidateSet);
+  const seen = readAutoAssignSeen();
+  let dirty = false;
+
+  // Clear entries for tasks no longer in the candidate set, and prune stale.
+  for (const id of Object.keys(seen)) {
+    if (!candidates.has(id) || nowSeconds - seen[id]! >= AUTO_ASSIGN_SEEN_PRUNE_SECONDS) {
+      delete seen[id];
+      dirty = true;
+    }
+  }
+
+  // Ensure every current candidate is tracked (record `now` on first sight).
+  for (const id of candidates) {
+    if (!(id in seen)) {
+      seen[id] = nowSeconds;
+      dirty = true;
+    }
+  }
+
+  const proceed = taskId in seen && nowSeconds - seen[taskId]! >= graceSeconds;
+
+  if (dirty) writeAutoAssignSeen(seen);
+  return proceed;
+}
+
 // --- Auto-fill empty slots ---
 
 /** @internal exported for tests */
@@ -3352,6 +3476,25 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
     throw e;
   }
 
+  // Grace window (auto-assign race): a task must be seen assignable for at
+  // least one full keepalive beat before the auto-fill may claim it. Applied
+  // AFTER all eligibility filters (and the t3code-paused early-return above)
+  // and BEFORE either slotAssign branch, so both duo- and single-assign are
+  // gated. The candidate set passed to the gate is every remaining assignable
+  // candidate (those with a proposal), so a task that leaves the set has its
+  // grace reset on re-entry. Gates auto-ASSIGN only — auto-launch/start stays
+  // separately gated by deferred_launch / confidence.
+  const assignableCandidateSet = candidates
+    .filter((c) => {
+      const f = join(harnessDir(), "tasks", `${c.id}.md`);
+      return existsSync(f) && readFileSync(f, "utf-8").includes("\nproposal:");
+    })
+    .map((c) => c.id);
+  if (!autoAssignGraceGate(task.id, assignableCandidateSet, Math.floor(Date.now() / 1000))) {
+    console.error(`ludics: ${task.id} newly assignable — grace window, will assign next beat`);
+    return;
+  }
+
   // Hierarchical duo: need 2 empty slots; assign both with swapped coder/reviewer
   if (isDuo) {
     if (emptySlots.length < 2) {
@@ -3404,6 +3547,7 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
       message: `auto-assigned duo ${task.id} to slots ${slotA}+${slotB} with effort=${task.effort}${machine ? ` on ${machine}` : ""}`,
     });
     console.error(`ludics: auto-assigned duo ${task.id} to slots ${slotA}+${slotB} with effort=${task.effort} (${autoAdapter})${machine ? ` on ${machine}` : ""}`);
+    clearAutoAssignSeen(task.id);
   } else {
     const slot = emptySlots[0]!;
 
@@ -3443,6 +3587,7 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
       message: `auto-assigned ${task.id} to slot ${slot} with effort=${task.effort}: ${autoArgs}${machine ? ` on ${machine}` : ""}`,
     });
     console.error(`ludics: auto-assigned ${task.id} to slot ${slot} with effort=${task.effort} (${autoAdapter} ${autoArgs})${machine ? ` on ${machine}` : ""}`);
+    clearAutoAssignSeen(task.id);
   }
 
   // No need to queue draft-proposal here — we only assign tasks that
