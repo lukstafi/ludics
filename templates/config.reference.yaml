@@ -170,6 +170,13 @@ mag:
     #   xhigh    | xhigh                | high
     #   max      | max                  | xhigh
     # Legacy aliases (still accepted): coder_thinking_effort, reviewer_thinking_effort
+    # Seconds to wait after the initial pr-comments transition before posting the
+    # explicit `@codex review` request, when no Codex review/comment is already present
+    # at that point (gh-ludics-604). 0 (default) posts immediately on the first eligible
+    # poll; a positive value adds a grace period (e.g. 120) if redundant remote reviews
+    # appear. Decoupled from the human-comment quiet window. Per-task override:
+    # `-A "--codex-review-request-delay <seconds>"`.
+    codex_review_request_delay: 0
     phase_timeouts:              # Per-phase timeout overrides in seconds (unset phases use built-in defaults)
       work: 7200
       review: 3600

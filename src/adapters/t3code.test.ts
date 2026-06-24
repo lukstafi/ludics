@@ -167,6 +167,34 @@ describe("parseOrchestrationAdapterArgs", () => {
     // adapter parser does NOT silently force the field to false.
     expect(parsed.orchestration?.config.autoRecoverWrongFilename).not.toBe(false);
   });
+
+  test("--codex-review-request-delay parses seconds into config.codexReviewRequestDelay (gh-ludics-604)", () => {
+    const parsed = parseOrchestrationAdapterArgs("--pair --codex-review-request-delay 120");
+    expect(parsed.orchestration?.config.codexReviewRequestDelay).toBe(120);
+  });
+
+  test("--codex-review-request-delay 0 is honored (not treated as unset)", () => {
+    const parsed = parseOrchestrationAdapterArgs("--pair --codex-review-request-delay 0");
+    expect(parsed.orchestration?.config.codexReviewRequestDelay).toBe(0);
+  });
+
+  test("--codex-review-request-delay without a value throws", () => {
+    expect(() => parseOrchestrationAdapterArgs("--pair --codex-review-request-delay")).toThrow(
+      /--codex-review-request-delay requires seconds/,
+    );
+  });
+
+  test("--codex-review-request-delay with a non-numeric value throws", () => {
+    expect(() => parseOrchestrationAdapterArgs("--pair --codex-review-request-delay soon")).toThrow(
+      /non-negative number/,
+    );
+  });
+
+  test("--codex-review-request-delay with a negative value throws", () => {
+    expect(() => parseOrchestrationAdapterArgs("--pair --codex-review-request-delay -5")).toThrow(
+      /non-negative number/,
+    );
+  });
 });
 
 describe("orchestratedThreadTitle", () => {

@@ -36,6 +36,7 @@ import {
   defaultOrchestrationConfig,
   DEFAULT_SUBSTANTIVE_STALL_CONFIG,
   parseSubstantiveStallOverrides,
+  parseCodexReviewRequestDelay,
   initAgentRuntimeState,
   persistState,
   readOrchestrationState,
@@ -459,6 +460,17 @@ export function parseOrchestrationAdapterArgs(raw: string): ParsedAdapterArgs {
         const reviewSecs = parseInt(next, 10);
         if (isNaN(reviewSecs)) throw new Error(`orchestration adapter args: --review-timeout requires a valid number, got "${next}"`);
         orchestrationConfig.timeouts = { ...orchestrationConfig.timeouts, review: reviewSecs };
+        i++;
+        break;
+      }
+      case "--codex-review-request-delay": {
+        // gh-ludics-604: per-task override for the @codex review request delay (seconds).
+        if (!next) throw new Error("orchestration adapter args: --codex-review-request-delay requires seconds");
+        const codexDelaySecs = parseInt(next, 10);
+        if (isNaN(codexDelaySecs) || codexDelaySecs < 0) {
+          throw new Error(`orchestration adapter args: --codex-review-request-delay requires a non-negative number, got "${next}"`);
+        }
+        orchestrationConfig.codexReviewRequestDelay = codexDelaySecs;
         i++;
         break;
       }
@@ -1078,6 +1090,14 @@ async function startOrchestratedThreads(
       ...(orchestration.config.substantiveStall ?? {}),
       ...substantiveStallOverrides,
     };
+  }
+
+  // gh-ludics-604: wire mag.orchestration.codex_review_request_delay into config.
+  // Guarded on `=== undefined` so an explicit --codex-review-request-delay adapter
+  // arg (already in orchestration.config by this point) wins over YAML.
+  const codexReviewDelay = parseCodexReviewRequestDelay(orchCfg?.codex_review_request_delay);
+  if (codexReviewDelay !== undefined && orchestration.config.codexReviewRequestDelay === undefined) {
+    orchestration.config.codexReviewRequestDelay = codexReviewDelay;
   }
 
   // Resolve models up-front, BEFORE createWorktrees, so a missing/blank
