@@ -4,7 +4,7 @@ import { join } from "path";
 import { isAgentDone } from "./phases.ts";
 import * as phases from "./phases.ts";
 import { updateTurnLifecycle } from "./transport-t3code.ts";
-import { detectAndNudgeSettledNoSignal, detectAndRecoverVanishedTmuxSessions, ensureTtydAlive, refreshAgentStatuses, runOrchestration, runWrongFilenameRecovery, __resetTtydCheckGateForTests, __resetVanishedRecoveryStateForTests } from "./runner.ts";
+import { detectAndNudgeSettledNoSignal, detectAndRecoverVanishedTmuxSessions, enterPhase, ensureTtydAlive, refreshAgentStatuses, runOrchestration, runWrongFilenameRecovery, __resetTtydCheckGateForTests, __resetVanishedRecoveryStateForTests } from "./runner.ts";
 import * as tmuxAdapter from "../adapters/tmux-adapter.ts";
 import * as tmux from "../adapters/tmux.ts";
 import * as notify from "../notify.ts";
@@ -2384,5 +2384,93 @@ describe("detectAndRecoverVanishedTmuxSessions", () => {
       emitSpy.mockRestore();
       notifySpy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gh-ludics-600 AC(b): end-hook freshness — entering merge-execute refreshes the
+// project's local base branch to origin BEFORE the merge is dispatched.
+// ---------------------------------------------------------------------------
+
+describe("enterPhase merge-execute end hook (gh-ludics-600 AC b)", () => {
+  const TMP = join(import.meta.dir, ".test-tmp-merge-refresh");
+
+  function gitRun(cmd: string[], cwd: string): void {
+    const r = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe", env: process.env as Record<string, string> });
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString().trim() || cmd.join(" "));
+  }
+  function rev(repo: string, ref: string): string {
+    return Bun.spawnSync(["git", "rev-parse", ref], { cwd: repo }).stdout.toString().trim();
+  }
+  // Bare origin with `main` pushed, a project clone that lags, and origin then
+  // advanced one commit so the local clone's `main` is 1 commit behind origin.
+  function setupOriginAhead(): { repo: string; upstreamSha: string } {
+    const origin = join(TMP, "origin.git");
+    const repo = join(TMP, "repo");
+    const seed = join(TMP, "seed");
+    gitRun(["git", "init", "--bare", "-b", "main", origin], TMP);
+    gitRun(["git", "clone", origin, seed], TMP);
+    gitRun(["git", "config", "user.email", "t@e.com"], seed);
+    gitRun(["git", "config", "user.name", "T"], seed);
+    writeFileSync(join(seed, "README.md"), "seed\n");
+    gitRun(["git", "add", "README.md"], seed);
+    gitRun(["git", "commit", "-m", "seed"], seed);
+    gitRun(["git", "push", "origin", "main"], seed);
+    gitRun(["git", "clone", origin, repo], TMP);
+    gitRun(["git", "config", "user.email", "t@e.com"], repo);
+    gitRun(["git", "config", "user.name", "T"], repo);
+    writeFileSync(join(seed, "added.txt"), "upstream\n");
+    gitRun(["git", "add", "added.txt"], seed);
+    gitRun(["git", "commit", "-m", "advance"], seed);
+    gitRun(["git", "push", "origin", "main"], seed);
+    return { repo, upstreamSha: rev(seed, "main") };
+  }
+
+  afterEach(() => {
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  // Invariant: on entry to merge-execute the local base equals origin/<base>
+  // (fast-forwarded) AND that fresh tip is in place before the merge skill is
+  // dispatched. The assertion `dispatchBaseSha === upstreamSha` fails if the
+  // end-hook runs after dispatch or not at all; `rev(repo,"main") === upstreamSha`
+  // fails if the refresh never runs. Harness condition: local `main` starts 1
+  // commit behind origin (precondition asserted), so a no-op refresh cannot make
+  // the assertions pass vacuously. Mutation: deleting the `state.phase ===
+  // "merge-execute"` end-hook block leaves both SHAs at the stale tip.
+  test("entering merge-execute fast-forwards local base to origin before merge dispatch", async () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo, upstreamSha } = setupOriginAhead();
+    // Precondition: local base is behind origin (the case the AC guards).
+    expect(rev(repo, "main")).not.toBe(upstreamSha);
+
+    const captured: { dispatchBaseSha: string | null } = { dispatchBaseSha: null };
+    const transport: OrchestrationTransport = {
+      async sendTurn() {
+        // Captured at merge dispatch time — must already be the refreshed tip.
+        captured.dispatchBaseSha = rev(repo, "main");
+        return "cmd-merge";
+      },
+      async sendEnter() {},
+      async refreshAgentTransportState() {},
+      async interruptAgent() {},
+    };
+
+    const state = makeState({
+      phase: "merge-execute",
+      mode: "solo",
+      projectDir: repo,
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "x", worktreePath: repo },
+      ],
+    });
+
+    await enterPhase(state, transport);
+
+    // End hook fast-forwarded the local base to origin …
+    expect(rev(repo, "main")).toBe(upstreamSha);
+    // … and it happened before the merge skill was dispatched.
+    expect(captured.dispatchBaseSha).toBe(upstreamSha);
   });
 });

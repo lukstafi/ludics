@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, ensureProposalReachable, ensureUpstreamRemote, GIT_EXCLUDE_ENTRIES, maybeGit, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, parseRegisteredWorktreeMatches, proposalReachableFromRef, purgeOrphanDirIfRecoverable, refreshMainBranchFromRemote, removeWorktreeByPath, seedGhResolvedToOrigin, symlinkPeerSync } from "./worktrees.ts";
 import { captureConsoleError, withSyntheticHarness } from "../test-utils.ts";
+import * as spawnMod from "../spawn.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-worktrees");
 
@@ -1783,6 +1784,58 @@ describe("refreshMainBranchFromRemote", () => {
     // Warning was emitted so the operator can see why ff failed.
     expect(captured.some((l) => l.includes("ff-only merge") && l.includes("diverged"))).toBe(true);
   });
+
+  // gh-ludics-600 safety property: the fetch must be bounded so a credential
+  // prompt or network hang cannot wedge slot startup / merge entry. Spy on
+  // safeSyncOutput and assert the `git fetch origin <base>` invocation carries
+  // GIT_TERMINAL_PROMPT=0 and a positive numeric timeout. Mutation: dropping the
+  // env/timeout opts from the fetch call makes the two assertions below fail.
+  test("fetch is bounded: GIT_TERMINAL_PROMPT=0 + a positive timeout on git fetch", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginAhead(TMP);
+    const real = spawnMod.safeSyncOutput;
+    const calls: Array<{ cmd: string[]; opts?: { env?: Record<string, string>; timeout?: number } }> = [];
+    const spy = spyOn(spawnMod, "safeSyncOutput").mockImplementation((cmd, opts) => {
+      calls.push({ cmd, opts });
+      return real(cmd, opts);
+    });
+    try {
+      refreshMainBranchFromRemote(repo, "main");
+    } finally {
+      spy.mockRestore();
+    }
+    const fetchCall = calls.find((c) => c.cmd[0] === "git" && c.cmd[1] === "fetch");
+    expect(fetchCall).toBeDefined();
+    expect(fetchCall!.opts?.env?.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(typeof fetchCall!.opts?.timeout).toBe("number");
+    expect(fetchCall!.opts!.timeout!).toBeGreaterThan(0);
+  });
+
+  // LUDICS_WARN_FETCH_TIMEOUT_MS overrides the 10s default (shared knob with
+  // warnStaleBase). Asserts the env-derived value reaches the fetch call.
+  test("fetch timeout honours LUDICS_WARN_FETCH_TIMEOUT_MS override", () => {
+    if (!Bun.which("git")) return;
+    mkdirSync(TMP, { recursive: true });
+    const { repo } = setupOriginAhead(TMP);
+    const real = spawnMod.safeSyncOutput;
+    const calls: Array<{ cmd: string[]; opts?: { timeout?: number } }> = [];
+    const prev = process.env.LUDICS_WARN_FETCH_TIMEOUT_MS;
+    process.env.LUDICS_WARN_FETCH_TIMEOUT_MS = "4321";
+    const spy = spyOn(spawnMod, "safeSyncOutput").mockImplementation((cmd, opts) => {
+      calls.push({ cmd, opts });
+      return real(cmd, opts);
+    });
+    try {
+      refreshMainBranchFromRemote(repo, "main");
+    } finally {
+      spy.mockRestore();
+      if (prev === undefined) delete process.env.LUDICS_WARN_FETCH_TIMEOUT_MS;
+      else process.env.LUDICS_WARN_FETCH_TIMEOUT_MS = prev;
+    }
+    const fetchCall = calls.find((c) => c.cmd[0] === "git" && c.cmd[1] === "fetch");
+    expect(fetchCall!.opts?.timeout).toBe(4321);
+  });
 });
 
 describe("createWorktrees refreshes main before forking", () => {
@@ -1800,6 +1853,13 @@ describe("createWorktrees refreshes main before forking", () => {
     const worktreeSha = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: setup.rootWorktree }).stdout.toString().trim();
     expect(worktreeSha).toBe(upstreamSha);
     expect(existsSync(join(setup.rootWorktree, "added.txt"))).toBe(true);
+    // gh-ludics-600 AC(a) literal: the worktree forks from the refreshed tip —
+    // merge-base(HEAD, origin/main) == origin/main, i.e. 0 commits behind.
+    // Mutation: stashing the refreshMainBranchFromRemote call in createWorktrees
+    // makes the fork-point lag origin (mergeBase != originSha).
+    const originSha = Bun.spawnSync(["git", "rev-parse", "origin/main"], { cwd: repo }).stdout.toString().trim();
+    const mergeBase = Bun.spawnSync(["git", "merge-base", "HEAD", "origin/main"], { cwd: setup.rootWorktree }).stdout.toString().trim();
+    expect(mergeBase).toBe(originSha);
     cleanupWorktrees(repo, "feat", [{ name: "agent1" }], 7);
   });
 });

@@ -27,7 +27,7 @@ import { readSlotJson, writeSlotJson } from "../slots/json.ts";
 import { setSlotLivenessOnData } from "../slots/index.ts";
 // workerReportStatus replaced by clusterReportWorkerSignal (lazy import)
 import { clusterRole } from "../cluster.ts";
-import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch } from "./worktrees.ts";
+import { autoCommitWorktree, countCommitsAhead, defaultMainBranch, pushBranch, refreshMainBranchFromRemote } from "./worktrees.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 import { agentPortRole, readTmuxSlotState, startTmuxAgentSessionsForOrchestratedSlot, startTtyd, tmuxSessionName, ttydLogPath, ttydMatchesSession, writeTmuxOrchestrationSiblingState, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { tmuxHasSession } from "../adapters/tmux.ts";
@@ -1326,7 +1326,10 @@ export function resetPrCommentsState(state: OrchestrationState): void {
   state.prCodexReviewFallbackPosted = undefined;
 }
 
-async function enterPhase(
+// Exported as a test seam (gh-ludics-600): the merge-execute end-hook lives on
+// this entry path and is otherwise only reachable through the full
+// runOrchestration loop. Not part of the public API.
+export async function enterPhase(
   state: OrchestrationState,
   transport: OrchestrationTransport,
 ): Promise<void> {
@@ -1363,6 +1366,18 @@ async function enterPhase(
   // Dedup is "newly needing rebase" per round per phase-category.
   if (staleBaseCategoryOf(state) !== null) {
     warnStaleBase(state);
+  }
+
+  // End hook (gh-ludics-600 AC b): on entry to merge-execute, fast-forward the
+  // project's local base branch to origin BEFORE the merge is dispatched, so the
+  // merge lands on current main. Reuses the start-hook helper (ff-only /
+  // GIT_TERMINAL_PROMPT=0 / bounded timeout / skip-on-dirty-or-diverged). Runs
+  // in projectDir (shared remote refs), not a worktree. Best-effort: the helper
+  // swallows every failure internally and never throws — merge entry never
+  // wedges. Idempotent: a no-op when the local base is already current. The
+  // enterPhase phaseDispatched early-return bounds this to once per entry.
+  if (state.phase === "merge-execute") {
+    refreshMainBranchFromRemote(state.projectDir, defaultMainBranch(state.projectDir));
   }
 
   markActiveAgents(state);
@@ -1703,8 +1718,12 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
       state.prMergeableStates[agent.name] = current;
     }
 
-    // Edge trigger: fire only on transition TO dirty
-    if (current === "dirty" && previous !== "dirty") {
+    // Edge trigger: fire only on transition TO dirty, AND only for the coder
+    // (gh-ludics-600 AC d: base-integration conflicts route to the coder only —
+    // never the reviewer — mirroring the PR-conflict default and avoiding a
+    // two-agent resolution race). The prMergeableStates tracking above still
+    // updates for every agent, so reviewer-PR edge detection stays accurate.
+    if (current === "dirty" && previous !== "dirty" && agent.role === "coder") {
       conflictAgents.push(agent);
     }
   }
