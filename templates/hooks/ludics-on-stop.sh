@@ -69,6 +69,15 @@ else
   cwd=$(echo "$input" | "$jq_bin" -r '.cwd // ""' 2>/dev/null)
 fi
 
+# gh-ludics-597: the invoking provider, passed to `orch on-stop` as a 4th arg so
+# it can disambiguate stop-hook attribution in pair mode (shared worktree). The
+# value must match the `<agent>-agent` provider files: "codex" / "claude-code".
+if [[ "$invocation_mode" == "codex" ]]; then
+  provider="codex"
+else
+  provider="claude-code"
+fi
+
 # gh-ludics-589: never exec `ludics orch on-stop` (or `mag on-stop`) with a blank
 # first positional — that shifts the positional args and produced a `usage: ludics
 # orch on-stop <cwd> ...` error that blocked phase advancement. A blank cwd can
@@ -136,7 +145,7 @@ fi
 # raw LUDICS_PEER_SYNC_DIR env var here, because it may be stale (no phase file),
 # and exec-ing would prevent the Mag fallback from running.
 if [[ -n "$peer_sync_dir" ]]; then
-  exec "$ludics_bin" orch on-stop "$cwd" "$peer_sync_dir" "$hook_event_name"
+  exec "$ludics_bin" orch on-stop "$cwd" "$peer_sync_dir" "$hook_event_name" "$provider"
 fi
 
 # Codex only needs orchestration routing — no Mag settled signal.

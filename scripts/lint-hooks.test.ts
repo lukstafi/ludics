@@ -114,16 +114,18 @@ describe("ludics-on-stop.sh blank-cwd default (gh-ludics-589)", () => {
     // observable. Drop only the single trailing newline from `printf '%s\n'`.
     const argv = readFileSync(argvOut, "utf-8").split("\n");
     if (argv.length && argv[argv.length - 1] === "") argv.pop();
-    // Invariant: the exec is exactly `orch on-stop <cwd> <peer-sync> <event>` with
-    // a NON-EMPTY <cwd>. Mutation: removing the `cwd="${cwd:-$PWD}"` default leaves
+    // Invariant: the exec is exactly `orch on-stop <cwd> <peer-sync> <event> <provider>`
+    // with a NON-EMPTY <cwd>. Mutation: removing the `cwd="${cwd:-$PWD}"` default leaves
     // argv[2] === "" (jq's `.cwd // ""`), flipping argv[2]/argv[3]/argv[4] — caught
     // by both the non-empty check and the exact peer-sync/event slot assertions.
-    expect(argv).toHaveLength(5);
+    // argv[5] is the invoking provider (gh-ludics-597), "claude-code" on this path.
+    expect(argv).toHaveLength(6);
     expect(argv[0]).toBe("orch");
     expect(argv[1]).toBe("on-stop");
     expect(argv[2]).not.toBe(""); // the cwd positional — defaulted to $PWD
     expect(argv[3]).toBe(psDir);  // peer-sync dir stays in its own slot
     expect(argv[4]).toBe("Stop");
+    expect(argv[5]).toBe("claude-code"); // provider (gh-ludics-597)
   });
 });
 
@@ -203,7 +205,7 @@ describe("ludics-on-stop.sh jq resolution (gh-ludics-590)", () => {
     expect(proc.exitCode).toBe(0);
     const argv = readFileSync(argvOut, "utf-8").split("\n");
     if (argv.length && argv[argv.length - 1] === "") argv.pop();
-    expect(argv).toEqual(["orch", "on-stop", workDir, psDir, "Stop"]);
+    expect(argv).toEqual(["orch", "on-stop", workDir, psDir, "Stop", "claude-code"]);
   });
 
   test.skipIf(jqReachableViaHardcodedPrepend)(
