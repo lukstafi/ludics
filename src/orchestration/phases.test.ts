@@ -11,6 +11,7 @@ import {
   initAgentRuntimeState,
   migrateState,
   parseSubstantiveStallOverrides,
+  parseCodexReviewRequestDelay,
   type OrchestrationState,
 } from "./state.ts";
 
@@ -1698,6 +1699,61 @@ describe("parseSubstantiveStallOverrides — YAML→config (task-a670cdbf)", () 
       nudgeCooldownSeconds: 180,
       maxNudgeAttempts: 2,
     });
+  });
+});
+
+// gh-ludics-604 — codexReviewRequestDelay knob: default, migration backfill triple,
+// and YAML parser. The migration backfill is mandatory: without it, a legacy state
+// file deserializes with codexReviewRequestDelay === undefined and the fire site's
+// `elapsed >= undefined` (NaN) never fires the explicit request.
+describe("codexReviewRequestDelay — default + migration (gh-ludics-604)", () => {
+  test("defaultOrchestrationConfig defaults the knob to 0; override is honored", () => {
+    expect(defaultOrchestrationConfig().codexReviewRequestDelay).toBe(0);
+    expect(defaultOrchestrationConfig({ codexReviewRequestDelay: 120 }).codexReviewRequestDelay).toBe(120);
+  });
+
+  test("legacy state without codexReviewRequestDelay backfills config default (0)", () => {
+    const state = makeSoloState();
+    delete (state.config as { codexReviewRequestDelay?: number }).codexReviewRequestDelay;
+    const result = migrateState(state, 1);
+    expect(result.config.codexReviewRequestDelay).toBe(0);
+  });
+
+  test("negative control: a non-default value is NOT overwritten by the backfill", () => {
+    const state = makeSoloState();
+    state.config.codexReviewRequestDelay = 90;
+    const result = migrateState(state, 1);
+    expect(result.config.codexReviewRequestDelay).toBe(90);
+  });
+
+  test("user override survives migration round-trip (serialize → deserialize → migrate)", () => {
+    const state = makeSoloState();
+    state.config.codexReviewRequestDelay = 120;
+    const round = migrateState(JSON.parse(JSON.stringify(migrateState(state, 1))), 1);
+    expect(round.config.codexReviewRequestDelay).toBe(120);
+  });
+});
+
+describe("parseCodexReviewRequestDelay — YAML→config (gh-ludics-604)", () => {
+  test("accepts a finite non-negative number (and floors fractional seconds)", () => {
+    expect(parseCodexReviewRequestDelay(0)).toBe(0);
+    expect(parseCodexReviewRequestDelay(120)).toBe(120);
+    expect(parseCodexReviewRequestDelay(90.7)).toBe(90);
+  });
+
+  test("drops invalid values — typo-resilient (returns undefined)", () => {
+    expect(parseCodexReviewRequestDelay("120")).toBeUndefined();   // string
+    expect(parseCodexReviewRequestDelay(-5)).toBeUndefined();       // negative
+    expect(parseCodexReviewRequestDelay(NaN)).toBeUndefined();      // NaN
+    expect(parseCodexReviewRequestDelay(Infinity)).toBeUndefined(); // non-finite
+    expect(parseCodexReviewRequestDelay(null)).toBeUndefined();
+    expect(parseCodexReviewRequestDelay({ x: 1 })).toBeUndefined();
+    expect(parseCodexReviewRequestDelay(undefined)).toBeUndefined();
+  });
+
+  test("a dropped value flows through defaultOrchestrationConfig to the default (0)", () => {
+    const parsed = parseCodexReviewRequestDelay("not a number");
+    expect(defaultOrchestrationConfig({ codexReviewRequestDelay: parsed }).codexReviewRequestDelay).toBe(0);
   });
 });
 

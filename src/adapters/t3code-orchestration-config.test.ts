@@ -14,6 +14,8 @@ import {
   defaultOrchestrationConfig,
   DEFAULT_SUBSTANTIVE_STALL_CONFIG,
   parseSubstantiveStallOverrides,
+  parseCodexReviewRequestDelay,
+  type OrchestrationConfig,
 } from "../orchestration/state.ts";
 import { withSyntheticHarness } from "../test-utils.ts";
 
@@ -87,5 +89,50 @@ describe("adapter substantive_stall wiring (task-a670cdbf)", () => {
       .toBe(DEFAULT_SUBSTANTIVE_STALL_CONFIG.thresholdSeconds);
     expect(finalConfig.substantiveStall.minPct)
       .toBe(DEFAULT_SUBSTANTIVE_STALL_CONFIG.minPct);
+  });
+});
+
+// gh-ludics-604 — adapter wiring regression: mag.orchestration.codex_review_request_delay
+// reaches orchestration.config.codexReviewRequestDelay via the guarded merge shared by
+// src/adapters/t3code.ts and tmux-adapter.ts. The guard (`=== undefined`) is what makes an
+// explicit --codex-review-request-delay adapter arg win over YAML — the precedence the
+// merged plan requires. We reproduce the exact adapter merge here.
+describe("adapter codex_review_request_delay wiring (gh-ludics-604)", () => {
+  // Mirrors the guarded merge in both adapters:
+  //   const d = parseCodexReviewRequestDelay(orchCfg?.codex_review_request_delay);
+  //   if (d !== undefined && config.codexReviewRequestDelay === undefined) config.codexReviewRequestDelay = d;
+  function applyAdapterMerge(
+    config: Partial<OrchestrationConfig>,
+    yamlValue: unknown,
+  ): Partial<OrchestrationConfig> {
+    const d = parseCodexReviewRequestDelay(yamlValue);
+    if (d !== undefined && config.codexReviewRequestDelay === undefined) {
+      config.codexReviewRequestDelay = d;
+    }
+    return config;
+  }
+
+  test("YAML value flows through when no adapter arg set the field", () => {
+    const config = applyAdapterMerge({}, 120);
+    expect(defaultOrchestrationConfig(config).codexReviewRequestDelay).toBe(120);
+  });
+
+  test("explicit adapter arg WINS over YAML (guarded merge does not clobber)", () => {
+    // arg already populated config.codexReviewRequestDelay = 30 before the YAML merge runs.
+    const config = applyAdapterMerge({ codexReviewRequestDelay: 30 }, 120);
+    expect(config.codexReviewRequestDelay).toBe(30);
+    expect(defaultOrchestrationConfig(config).codexReviewRequestDelay).toBe(30);
+  });
+
+  test("malformed YAML value is dropped → falls through to default 0", () => {
+    const config = applyAdapterMerge({}, "soon");
+    expect(config.codexReviewRequestDelay).toBeUndefined();
+    expect(defaultOrchestrationConfig(config).codexReviewRequestDelay).toBe(0);
+  });
+
+  test("absent YAML key leaves the field unset → default 0", () => {
+    const config = applyAdapterMerge({}, undefined);
+    expect(config.codexReviewRequestDelay).toBeUndefined();
+    expect(defaultOrchestrationConfig(config).codexReviewRequestDelay).toBe(0);
   });
 });

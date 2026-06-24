@@ -23,6 +23,7 @@ import {
   DEFAULT_SUBSTANTIVE_STALL_CONFIG,
   initAgentRuntimeState,
   parseSubstantiveStallOverrides,
+  parseCodexReviewRequestDelay,
   isWorkerContext,
   persistState,
   readOrchestrationState,
@@ -834,6 +835,14 @@ async function start(ctx: AdapterContext): Promise<string> {
       ...(orchestration.config.substantiveStall ?? {}),
       ...substantiveStallOverrides,
     };
+  }
+
+  // gh-ludics-604: wire mag.orchestration.codex_review_request_delay into config.
+  // Guarded on `=== undefined` so an explicit --codex-review-request-delay adapter
+  // arg (already in orchestration.config by this point) wins over YAML.
+  const codexReviewDelay = parseCodexReviewRequestDelay(orchCfg?.codex_review_request_delay);
+  if (codexReviewDelay !== undefined && orchestration.config.codexReviewRequestDelay === undefined) {
+    orchestration.config.codexReviewRequestDelay = codexReviewDelay;
   }
 
   // Resolve models up-front, BEFORE createWorktrees / tmux sessions, so a

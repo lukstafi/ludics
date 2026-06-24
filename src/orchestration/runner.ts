@@ -1735,9 +1735,19 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
     return;
   }
 
+  // PRs we post an explicit `@codex review` trigger to on THIS tick (gh-ludics-604).
+  // Our own trigger is an issue comment that fetchNewPrCommentCount would otherwise
+  // count as fresh coder-facing feedback; we discount it below so the coder is not
+  // redispatched to "address" the trigger instead of waiting for the Codex review.
+  const codexTriggeredThisTick = new Set<string>();
+
   // --- Deferred Codex review request (per-PR resolution) ---
   if (state.prCodexReviewDeferredSince) {
-    const deferralTimeout = Math.min(600, Math.floor(state.config.prCommentsTimeout / 2));
+    // gh-ludics-604: delay sourced from the dedicated codexReviewRequestDelay knob
+    // (default 0 = post on the first eligible poll after the pr-comments transition),
+    // decoupled from prCommentsTimeout. The per-PR urlsMissingReview partition below
+    // provides the point-in-time "already reviewed?" dedup that prevents a double-spend.
+    const deferralTimeout = state.config.codexReviewRequestDelay;
     const elapsed = now - state.prCodexReviewDeferredSince;
     const deadlineReached = elapsed >= deferralTimeout;
 
@@ -1766,7 +1776,11 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
       const projectEntry = findProjectConfig(state.projectDir);
       const customPrompt = projectEntry?.codex_review_prompt ?? undefined;
       for (const prUrl of urlsMissingReview) {
-        postCodexReviewComment(prUrl, customPrompt);
+        // Only mark the PR as triggered when the comment actually posted, so a
+        // failed post does not wrongly discount a real new comment below.
+        if (postCodexReviewComment(prUrl, customPrompt)) {
+          codexTriggeredThisTick.add(prUrl);
+        }
       }
       state.prCodexReviewFallbackPosted = true;
     }
@@ -1776,7 +1790,13 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
   // Count new comments since the last check.
   let totalNewComments = 0;
   for (const agent of agentsWithPr) {
-    totalNewComments += fetchNewPrCommentCount(state.agentStates[agent.name]!.prUrl!, lastCheck);
+    const prUrl = state.agentStates[agent.name]!.prUrl!;
+    let newComments = fetchNewPrCommentCount(prUrl, lastCheck);
+    // gh-ludics-604: subtract our own @codex review trigger posted this tick (the
+    // GitHub API is read-your-writes, so the fresh trigger is in this count) so it
+    // does not read as new coder-facing feedback and spuriously redispatch the coder.
+    if (codexTriggeredThisTick.has(prUrl)) newComments = Math.max(0, newComments - 1);
+    totalNewComments += newComments;
   }
 
   state.prCommentsLastCheckAt = now;
@@ -2454,11 +2474,13 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
 }
 
 /**
- * Arm deferred Codex review request on initial entry to pr-comments.
- * Instead of posting `@codex review` immediately, sets
- * `prCodexReviewDeferredSince` so that `checkAndRedispatchPrComments()`
- * can check for an auto-triggered review first and only post the
- * explicit request as a fallback after `min(10m, quiet_period/2)`.
+ * Mark the explicit Codex review request as pending on initial entry to
+ * pr-comments. Sets `prCodexReviewDeferredSince` to the entry timestamp so that
+ * `checkAndRedispatchPrComments()` performs a point-in-time check for an
+ * already-present Codex review and, when none is found, posts the explicit
+ * `@codex review` request after `state.config.codexReviewRequestDelay` seconds
+ * (gh-ludics-604; default 0 = on the next eligible poll). The field is a
+ * "request pending / not yet resolved" marker, not a hard-coded 10-minute timer.
  *
  * Only fires on initial pr-comments entry paths (pr-create, update-docs,
  * review), NOT on merge-loop re-entries (merge-review -> pr-comments).
@@ -2479,7 +2501,8 @@ export function maybePostCodexReviewRequests(
   const hasAnyPrUrl = state.agents.some((a) => !!state.agentStates[a.name]?.prUrl);
   if (!hasAnyPrUrl) return;
 
-  // Arm deferral — use nowEpoch() because phaseStartedAt hasn't been updated yet
+  // Mark the request pending — use nowEpoch() because phaseStartedAt hasn't been
+  // updated yet. checkAndRedispatchPrComments resolves it after codexReviewRequestDelay.
   state.prCodexReviewDeferredSince = nowEpoch();
 }
 
