@@ -276,10 +276,20 @@ function hasActiveChild(parentId: string): boolean {
 function createEpisodeChild(projectName: string, failures: string | undefined, parentId: string): void {
   const today = new Date().toISOString().slice(0, 10);
   const child = tasksCreate(`Fix broken test suite: ${projectName} — ${today}`, projectName, "A");
-  // Same-day double-break: the dated child already exists → no-op (don't
-  // re-link or append divergent failure text). The existing open child keeps
-  // the active-episode signal.
-  if (!child.created) return;
+  if (!child.created) {
+    // Today's dated child already exists. In the no-active-child paths that
+    // reach here, that child is necessarily RESOLVED. If it was marked
+    // done/merged but the suite is still red — a claimed fix that didn't hold,
+    // or a forced/second same-day run — reopen it so the episode stays
+    // actionable today (don't leave the container open with no active child
+    // until the UTC date rolls over). A fresh same-day child under a
+    // non-colliding title would reintroduce the proliferation date-stamping
+    // exists to avoid, so reopen in place instead. transitionStatus no-ops for
+    // abandoned/stale, deliberately respecting a same-day set-aside (a fresh
+    // child is filed tomorrow under a new date).
+    transitionStatus(child.path, ["done", "merged"], "ready");
+    return;
+  }
   // Link to the container so containerCompletionSweep discovers the child.
   setDependencyScalar(child.path, "subtask_of", parentId);
   if (failures && failures.trim().length > 0) {

@@ -807,6 +807,42 @@ describe("test-health container/child auto-filer (gh-ludics-605)", () => {
     expect(children()).toHaveLength(1);
   });
 
+  test("same-day, today's child marked done + suite still red + no other active child → child REOPENED to ready", () => {
+    // A claimed same-day fix that didn't hold: the only (dated) child is done,
+    // the container stays ready (verify never closes it), and a fresh same-day
+    // child would collide on the date fingerprint. Reopen in place so the
+    // episode is actionable again today instead of waiting for the UTC rollover.
+    failingRun();
+    const childId = children()[0]!.id;
+    const childFile = join(tasksDir(), `${childId}.md`);
+    transitionStatus(childFile, parseTaskFrontmatter(readFileSync(childFile, "utf-8")).status ?? "ready", "done");
+    expect(children()[0]!.status).toBe("done");
+
+    failingRun();
+
+    // No new child filed (date collision); the existing one is reopened.
+    expect(children()).toHaveLength(1);
+    expect(children()[0]!.id).toBe(childId);
+    expect(children()[0]!.status).toBe("ready");
+  });
+
+  test("same-day, today's child marked abandoned + suite still red → child STAYS abandoned (respects set-aside)", () => {
+    // A deliberate same-day set-aside must be respected: transitionStatus only
+    // reopens done/merged, so abandoned/stale are left untouched and NO fresh
+    // same-day child is filed. A new child is filed tomorrow under a new date.
+    failingRun();
+    const childId = children()[0]!.id;
+    const childFile = join(tasksDir(), `${childId}.md`);
+    transitionStatus(childFile, parseTaskFrontmatter(readFileSync(childFile, "utf-8")).status ?? "ready", "abandoned");
+    expect(children()[0]!.status).toBe("abandoned");
+
+    failingRun();
+
+    expect(children()).toHaveLength(1);
+    expect(children()[0]!.id).toBe(childId);
+    expect(children()[0]!.status).toBe("abandoned"); // untouched
+  });
+
   for (const terminal of ["done", "abandoned", "stale"] as const) {
     test(`re-break after container terminal (${terminal}) → container revived to ready + fresh child`, () => {
       failingRun();
