@@ -330,6 +330,104 @@ describe("orchOnStop handler", () => {
     expect(coderRecord!.agent).toBe("coder");
   });
 
+  // gh-ludics-597: in pair mode both agents share one worktree, so a cwd-prefix
+  // match is ambiguous. The invoking provider (4th arg) disambiguates against the
+  // per-agent `<agent>-agent` files. Before the fix, first-match-wins always
+  // attributed to coder and reviewer.stop.json was never written.
+  test("pair-mode shared worktree: codex provider attributes to reviewer (gh-597)", () => {
+    const sharedWorktree = join(tmpDir, "shared-worktree");
+    mkdirSync(sharedWorktree, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir({
+      root: sharedWorktree,
+      coder: sharedWorktree,
+      reviewer: sharedWorktree,
+    });
+    // Per-agent provider files (written by initPeerSync in production).
+    writeFileSync(join(peerSyncDir, "coder-agent"), "claude-code");
+    writeFileSync(join(peerSyncDir, "reviewer-agent"), "codex");
+
+    // Codex (reviewer) stop hook — passes provider "codex" as the 4th arg.
+    orchOnStop([sharedWorktree, peerSyncDir, "Stop", "codex"]);
+
+    const reviewerRecord = readStopHookRecord(peerSyncDir, "reviewer");
+    expect(reviewerRecord).not.toBeNull();
+    expect(reviewerRecord!.agent).toBe("reviewer");
+    expect(reviewerRecord!.provider).toBe("codex");
+    // The coder must NOT be mis-attributed.
+    expect(readStopHookRecord(peerSyncDir, "coder")).toBeNull();
+  });
+
+  test("pair-mode shared worktree: claude-code provider attributes to coder (gh-597)", () => {
+    const sharedWorktree = join(tmpDir, "shared-worktree");
+    mkdirSync(sharedWorktree, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir({
+      root: sharedWorktree,
+      coder: sharedWorktree,
+      reviewer: sharedWorktree,
+    });
+    writeFileSync(join(peerSyncDir, "coder-agent"), "claude-code");
+    writeFileSync(join(peerSyncDir, "reviewer-agent"), "codex");
+
+    orchOnStop([sharedWorktree, peerSyncDir, "Stop", "claude-code"]);
+
+    const coderRecord = readStopHookRecord(peerSyncDir, "coder");
+    expect(coderRecord).not.toBeNull();
+    expect(coderRecord!.agent).toBe("coder");
+    expect(coderRecord!.provider).toBe("claude-code");
+    expect(readStopHookRecord(peerSyncDir, "reviewer")).toBeNull();
+  });
+
+  // gh-ludics-597 (review follow-up): custom agent names (`name:provider:model`
+  // tokens) key worktrees.json by the custom name, ≠ role. initPeerSync now writes
+  // per-name provider markers (`<name>-agent`), so orchOnStop's `${worktreeKey}-agent`
+  // lookup resolves for custom names too — not just role-named coder/reviewer.
+  test("pair-mode custom agent names: provider attributes by name, not role (gh-597)", () => {
+    const sharedWorktree = join(tmpDir, "shared-worktree");
+    mkdirSync(sharedWorktree, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir({
+      root: sharedWorktree,
+      alice: sharedWorktree, // role coder, provider claude-code
+      bob: sharedWorktree, // role reviewer, provider codex
+    });
+    // Per-name provider markers (as initPeerSync now writes them).
+    writeFileSync(join(peerSyncDir, "alice-agent"), "claude-code");
+    writeFileSync(join(peerSyncDir, "bob-agent"), "codex");
+
+    // Codex (bob) stop hook.
+    orchOnStop([sharedWorktree, peerSyncDir, "Stop", "codex"]);
+
+    const bobRecord = readStopHookRecord(peerSyncDir, "bob");
+    expect(bobRecord).not.toBeNull();
+    expect(bobRecord!.agent).toBe("bob");
+    expect(bobRecord!.provider).toBe("codex");
+    expect(readStopHookRecord(peerSyncDir, "alice")).toBeNull();
+  });
+
+  test("separate worktrees still attribute by unambiguous path match (gh-597 regression)", () => {
+    const coderWorktree = join(tmpDir, "wt-coder");
+    const reviewerWorktree = join(tmpDir, "wt-reviewer");
+    mkdirSync(coderWorktree, { recursive: true });
+    mkdirSync(reviewerWorktree, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir({
+      root: tmpDir,
+      coder: coderWorktree,
+      reviewer: reviewerWorktree,
+    });
+    writeFileSync(join(peerSyncDir, "coder-agent"), "claude-code");
+    writeFileSync(join(peerSyncDir, "reviewer-agent"), "claude-code");
+
+    // Even with identical providers, a unique path match resolves unambiguously.
+    orchOnStop([reviewerWorktree, peerSyncDir, "Stop", "claude-code"]);
+
+    const record = readStopHookRecord(peerSyncDir, "reviewer");
+    expect(record).not.toBeNull();
+    expect(record!.agent).toBe("reviewer");
+  });
+
   test("env var LUDICS_AGENT_NAME resolves when path matching fails", () => {
     const unknownCwd = join(tmpDir, "unknown-dir");
     mkdirSync(unknownCwd, { recursive: true });

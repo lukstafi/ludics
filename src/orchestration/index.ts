@@ -3,7 +3,7 @@ import { join } from "path";
 import { harnessDir } from "../config.ts";
 import { defaultRunGit, resolveBaseRef, type RunGit } from "../git-runner.ts";
 import type { Phase } from "./phases.ts";
-import { readAgentMarkerFile, readAgentStatus, readPhaseToken, resolvePeerSyncDir, writeStopHookRecord } from "./peer-sync.ts";
+import { readAgentMarkerFile, readAgentStatus, readMarker, readPhaseToken, resolvePeerSyncDir, writeStopHookRecord } from "./peer-sync.ts";
 import { confirmPhase, interruptCurrentPhase, runOrchestrationForSlot, skipToPhase } from "./runner.ts";
 import { readOrchestrationState } from "./state.ts";
 import { isoNow } from "./util.ts";
@@ -204,6 +204,10 @@ export function orchOnStop(args: string[]): void {
   const cwd = args[0] ?? "";
   const cliPeerSyncDir = args[1];
   const hookEventName = args[2];
+  // gh-ludics-597: the invoking provider ("codex" / "claude-code"), passed by the
+  // shell hook. Used to disambiguate stop-hook attribution in pair mode, where
+  // both agents share one worktree and a cwd-prefix match is ambiguous.
+  const invokingProvider = args[3] || undefined;
 
   // Resolve peerSyncDir: CLI arg (if valid) > env var > give up.
   const peerSyncDir = resolvePeerSyncDir({ cliArg: cliPeerSyncDir || undefined });
@@ -224,12 +228,34 @@ export function orchOnStop(args: string[]): void {
   try {
     const worktrees = JSON.parse(readFileSync(join(peerSyncDir, "worktrees.json"), "utf-8")) as Record<string, unknown>;
     worktreeAgentNames = Object.keys(worktrees).filter((n) => n !== "root");
+    // gh-ludics-597: collect ALL non-root entries matching the cwd rather than
+    // taking the first. In pair mode both agents share one worktree, so a
+    // first-match-wins loop always attributed to the first-listed agent (coder)
+    // and the second agent (reviewer) never got a stop record. The marker/env
+    // attribution below could not fix this because it only ran when agentName
+    // was still unset.
+    const matchingAgents: string[] = [];
     for (const [name, path] of Object.entries(worktrees)) {
       if (name === "root") continue;
       if (typeof path === "string" && cwd.startsWith(path)) {
-        agentName = name;
-        break;
+        matchingAgents.push(name);
       }
+    }
+    if (matchingAgents.length === 1) {
+      // Unambiguous (separate worktrees, e.g. duo mode) — keep prior behavior.
+      agentName = matchingAgents[0]!;
+    } else if (matchingAgents.length > 1 && invokingProvider) {
+      // Shared-worktree pair: disambiguate by the invoking provider against the
+      // per-agent `<agent>-agent` files (e.g. coder-agent=claude-code,
+      // reviewer-agent=codex). Provider is per-agent even when cwd is not.
+      const byProvider = matchingAgents.filter(
+        (name) => readMarker(peerSyncDir, `${name}-agent`) === invokingProvider,
+      );
+      if (byProvider.length === 1) {
+        agentName = byProvider[0]!;
+      }
+      // Same-provider pairs remain ambiguous here and fall through to the
+      // marker/env/status attribution below (tracked as a follow-up).
     }
   } catch {
     // Can't read worktrees — fall through to env-var check.
@@ -274,7 +300,9 @@ export function orchOnStop(args: string[]): void {
 
   writeStopHookRecord(peerSyncDir, {
     agent: agentName,
-    provider: "unknown", // We don't know the provider from the hook context.
+    // gh-ludics-597: prefer the hook-supplied provider; fall back to the
+    // per-agent `<agent>-agent` file, then "unknown".
+    provider: invokingProvider ?? readMarker(peerSyncDir, `${agentName}-agent`) ?? "unknown",
     phase,
     phaseToken,
     observedAt: isoNow(),
