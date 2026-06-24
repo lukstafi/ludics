@@ -641,7 +641,20 @@ export function refreshMainBranchFromRemote(
   if (current !== mainBranch) return { skipped: true, reason: "wrong-branch" };
   const dirty = maybeGit(dir, ["status", "--porcelain"]).trim();
   if (dirty.length > 0) return { skipped: true, reason: "dirty" };
-  const fetchResult = safeSyncOutput(["git", "fetch", "origin", mainBranch], { cwd: dir });
+  // Safety (gh-ludics-600): bound the fetch exactly as warnStaleBase does, so a
+  // credential prompt or network hang cannot wedge slot startup (start hook) or
+  // merge entry (end hook). `GIT_TERMINAL_PROMPT=0` disables interactive prompts;
+  // a timeout (ms) caps wall-clock cost — default 10s, overridable via
+  // LUDICS_WARN_FETCH_TIMEOUT_MS (shared knob with warnStaleBase). A timeout
+  // returns ok:false, falling through to the `fetch-failed` skip below.
+  const timeoutRaw = process.env.LUDICS_WARN_FETCH_TIMEOUT_MS;
+  const timeoutParsed = timeoutRaw !== undefined ? parseInt(timeoutRaw, 10) : NaN;
+  const fetchTimeoutMs = Number.isFinite(timeoutParsed) && timeoutParsed > 0 ? timeoutParsed : 10_000;
+  const fetchResult = safeSyncOutput(["git", "fetch", "origin", mainBranch], {
+    cwd: dir,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } as Record<string, string>,
+    timeout: fetchTimeoutMs,
+  });
   if (!fetchResult.ok) {
     console.error(`ludics: refreshMainBranchFromRemote: git fetch origin ${mainBranch} failed in ${dir} — continuing with stale local state`);
     return { skipped: true, reason: "fetch-failed" };
