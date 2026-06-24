@@ -6,6 +6,7 @@ import type { RemoteRunResult } from "./remote.ts";
 import { heartbeatsDir } from "./cluster.ts";
 import { tmpdir } from "os";
 import { _resetPostponedProjectsCache } from "./config.ts";
+import { parseTaskFrontmatter, transitionStatus } from "./tasks/markdown.ts";
 import { captureConsoleError, withSyntheticHarness } from "./test-utils.ts";
 
 function makeTmpDir(): string {
@@ -524,7 +525,9 @@ describe("test-health capability gating (gh-ludics-578)", () => {
     // Same result shape as a local run; a genuine non-zero result files a task.
     expect(result).toMatchObject({ skipped: false, passed: false });
     expect(existsSync(testHealthStatePath())).toBe(true); // state persisted
-    expect(taskFiles()).toHaveLength(1); // fix-task filed
+    // gh-ludics-605: container/child model files TWO tasks — the `leaf: false`
+    // umbrella container plus one dated episode child `subtask_of` it.
+    expect(taskFiles()).toHaveLength(2); // container + dated child
   });
 
   // --- AC5: routing degrades to skip-not-fail ---
@@ -641,5 +644,255 @@ describe("test-health capability gating (gh-ludics-578)", () => {
     const { lines } = captureConsoleError(() => runAllTestHealth({ project: "ocaml-cudajit", force: true }));
     expect(lines.some((l) => l.includes("[test-health] ocaml-cudajit: skipped (requirements-unmet)"))).toBe(true);
     expect(taskFiles()).toEqual([]);
+  });
+});
+
+describe("test-health container/child auto-filer (gh-ludics-605)", () => {
+  // Drive failing runs through the remote-exec seam (a nvidia-gated project
+  // routed to an online worker returning ok:false), which flows through the
+  // exact same finalizeExecutedRun → fileTestFailureEpisode path as a local
+  // failure. Inspect the resulting task files on disk.
+  let TMP = "";
+  const ORIG = {
+    HOME: process.env.HOME,
+    CONFIG: process.env.LUDICS_CONFIG,
+    HARNESS: process.env.LUDICS_HARNESS_DIR,
+    MACHINE: process.env.LUDICS_CLUSTER_MACHINE_NAME,
+  };
+  const ORIGINAL_REMOTE = _remoteTestExec.fn;
+
+  const CLUSTER = `cluster:
+  transport: tailscale
+  machines:
+    - name: mac-studio
+      host: mac-studio.ts.net
+      role: leader
+      os: macos
+      gpu: apple-silicon
+      always_on: true
+    - name: minipc-wsl
+      host: minipc-wsl.ts.net
+      role: worker
+      os: linux
+      gpu: nvidia
+`;
+
+  function writeConfig(): void {
+    const cfgPath = join(TMP, "config.yaml");
+    writeFileSync(cfgPath, `state_repo: test/state\nstate_path: harness\n${CLUSTER}`);
+    process.env.LUDICS_CONFIG = cfgPath;
+  }
+
+  function writeHeartbeat(name: string, ageSeconds: number): void {
+    const dir = heartbeatsDir();
+    mkdirSync(dir, { recursive: true });
+    const epoch = Math.floor(Date.now() / 1000) - ageSeconds;
+    writeFileSync(join(dir, `${name}.json`), JSON.stringify({ node: name, epoch }));
+  }
+
+  const PROJECT = "ludics" as const;
+  function project() {
+    return { name: PROJECT, repo: "ex/ludics", requirements: { gpu: "nvidia" }, test_command: "dune runtest", path: "~/ludics" } as const;
+  }
+
+  function tasksDir(): string {
+    return join(TMP, "tasks");
+  }
+
+  function readTask(file: string): { id: string; status?: string; leaf?: boolean; subtask_of: string | null; title?: string; body: string } {
+    const content = readFileSync(join(tasksDir(), file), "utf-8");
+    const fm = parseTaskFrontmatter(content);
+    const bodyIdx = content.indexOf("\n---", 3);
+    return {
+      id: fm.id!,
+      status: fm.status,
+      leaf: fm.leaf,
+      subtask_of: fm.dependencies?.subtask_of ?? null,
+      title: fm.title,
+      body: bodyIdx >= 0 ? content.slice(bodyIdx) : content,
+    };
+  }
+
+  function allTasks() {
+    const dir = tasksDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir).filter((f) => f.endsWith(".md")).map(readTask);
+  }
+
+  function container() {
+    return allTasks().find((t) => t.leaf === false && t.subtask_of === null);
+  }
+  function children() {
+    const c = container();
+    return c ? allTasks().filter((t) => t.subtask_of === c.id) : [];
+  }
+
+  /** Trigger one failing run; failures stderr drives the child body. */
+  function failingRun(stderr = "FAILED: 3 tests broke"): void {
+    _remoteTestExec.fn = () => ({ kind: "ran", ok: false, stdout: "", stderr, timedOut: false } as RemoteRunResult);
+    checkProjectTestHealth(project(), { force: true });
+  }
+
+  /**
+   * Simulate the existing dated child belonging to a *prior day* so today's
+   * date-stamped child gets a distinct fingerprint (filename). Renames the file
+   * to a stable past-dated id and rewrites its `id:`/`title:` to a past date,
+   * freeing today's fingerprint for a fresh child. Returns the new (past) id.
+   */
+  function agePriorChildToPastDay(childId: string): string {
+    const oldFile = join(tasksDir(), `${childId}.md`);
+    const pastId = "task-past-episode";
+    const content = readFileSync(oldFile, "utf-8")
+      .replace(/^id: .+$/m, `id: ${pastId}`)
+      .replace(/— \d{4}-\d{2}-\d{2}/g, "— 2000-01-01");
+    const newFile = join(tasksDir(), `${pastId}.md`);
+    writeFileSync(newFile, content);
+    rmSync(oldFile);
+    return pastId;
+  }
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-health-605-"));
+    process.env.HOME = TMP;
+    process.env.LUDICS_HARNESS_DIR = TMP;
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio"; // incapable → routes to worker
+    _resetPostponedProjectsCache();
+    writeConfig();
+    writeHeartbeat("minipc-wsl", 10);
+  });
+
+  afterEach(() => {
+    _remoteTestExec.fn = ORIGINAL_REMOTE;
+    if (ORIG.HOME === undefined) delete process.env.HOME; else process.env.HOME = ORIG.HOME;
+    if (ORIG.CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = ORIG.CONFIG;
+    if (ORIG.HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = ORIG.HARNESS;
+    if (ORIG.MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIG.MACHINE;
+    _resetPostponedProjectsCache();
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  test("first failure → container (leaf:false, ready) + one dated child subtask_of it, child carries failures excerpt", () => {
+    failingRun("FAILED: assertion in foo_test");
+
+    const c = container();
+    expect(c).toBeDefined();
+    expect(c!.leaf).toBe(false);
+    expect(c!.status).toBe("ready");
+    expect(c!.title).toBe(`Fix broken test suite: ${PROJECT}`);
+
+    const kids = children();
+    expect(kids).toHaveLength(1);
+    const today = new Date().toISOString().slice(0, 10);
+    expect(kids[0]!.title).toBe(`Fix broken test suite: ${PROJECT} — ${today}`);
+    expect(kids[0]!.subtask_of).toBe(c!.id);
+    // Failures excerpt embedded in the child body (not the container).
+    expect(kids[0]!.body).toContain("FAILED: assertion in foo_test");
+    expect(c!.body).not.toContain("FAILED: assertion in foo_test");
+  });
+
+  test("active episode (container ready + open child) → NO new task on re-break", () => {
+    failingRun();
+    const before = allTasks().length;
+    expect(children()).toHaveLength(1);
+
+    // Re-break while the child is still open (ready).
+    failingRun();
+    expect(allTasks().length).toBe(before); // no new files
+    expect(children()).toHaveLength(1);
+  });
+
+  test("same-day double-break → no duplicate child", () => {
+    failingRun();
+    failingRun(); // identical day
+    expect(children()).toHaveLength(1);
+  });
+
+  test("same-day, today's child marked done + suite still red + no other active child → child REOPENED to ready", () => {
+    // A claimed same-day fix that didn't hold: the only (dated) child is done,
+    // the container stays ready (verify never closes it), and a fresh same-day
+    // child would collide on the date fingerprint. Reopen in place so the
+    // episode is actionable again today instead of waiting for the UTC rollover.
+    failingRun();
+    const childId = children()[0]!.id;
+    const childFile = join(tasksDir(), `${childId}.md`);
+    transitionStatus(childFile, parseTaskFrontmatter(readFileSync(childFile, "utf-8")).status ?? "ready", "done");
+    expect(children()[0]!.status).toBe("done");
+
+    failingRun();
+
+    // No new child filed (date collision); the existing one is reopened.
+    expect(children()).toHaveLength(1);
+    expect(children()[0]!.id).toBe(childId);
+    expect(children()[0]!.status).toBe("ready");
+  });
+
+  test("same-day, today's child marked abandoned + suite still red → child STAYS abandoned (respects set-aside)", () => {
+    // A deliberate same-day set-aside must be respected: transitionStatus only
+    // reopens done/merged, so abandoned/stale are left untouched and NO fresh
+    // same-day child is filed. A new child is filed tomorrow under a new date.
+    failingRun();
+    const childId = children()[0]!.id;
+    const childFile = join(tasksDir(), `${childId}.md`);
+    transitionStatus(childFile, parseTaskFrontmatter(readFileSync(childFile, "utf-8")).status ?? "ready", "abandoned");
+    expect(children()[0]!.status).toBe("abandoned");
+
+    failingRun();
+
+    expect(children()).toHaveLength(1);
+    expect(children()[0]!.id).toBe(childId);
+    expect(children()[0]!.status).toBe("abandoned"); // untouched
+  });
+
+  for (const terminal of ["done", "abandoned", "stale"] as const) {
+    test(`re-break after container terminal (${terminal}) → container revived to ready + fresh child`, () => {
+      failingRun();
+      const c = container()!;
+      const firstChildId = children()[0]!.id;
+
+      // Age the prior child to a past day (so today's child is a fresh
+      // fingerprint), resolve it, then close the container to the terminal
+      // status under test.
+      const pastId = agePriorChildToPastDay(firstChildId);
+      const childFile = join(tasksDir(), `${pastId}.md`);
+      transitionStatus(childFile, parseTaskFrontmatter(readFileSync(childFile, "utf-8")).status ?? "ready", "done");
+      const containerFile = join(tasksDir(), `${c.id}.md`);
+      transitionStatus(containerFile, "ready", terminal);
+
+      failingRun();
+
+      const revived = container()!;
+      expect(revived.status).toBe("ready"); // revived
+      expect(revived.leaf).toBe(false); // still a container
+      // A fresh dated child exists (today's), distinct from the resolved one.
+      const today = new Date().toISOString().slice(0, 10);
+      const fresh = children().find((k) => k.title === `Fix broken test suite: ${PROJECT} — ${today}`);
+      expect(fresh).toBeDefined();
+      expect(fresh!.id).not.toBe(pastId);
+    });
+  }
+
+  test("self-heal guard: container non-terminal but child already resolved → fresh child filed (signal not lost)", () => {
+    // Models the verify-container-completion interaction: the sweep queues
+    // verify when all children are terminal, but verify only NOTIFIES — it does
+    // NOT close the container. So the container can sit `ready` with a resolved
+    // child while the suite is still red. The active-episode no-op is keyed on
+    // an OPEN child, not container status, so a fresh child is filed.
+    failingRun();
+    const firstChildId = children()[0]!.id;
+
+    // Age the prior child to a past day and resolve it (as the downstream user
+    // action after verify-container-completion would), but leave the container
+    // `ready` — verify never closes it.
+    const pastId = agePriorChildToPastDay(firstChildId);
+    const childFile = join(tasksDir(), `${pastId}.md`);
+    transitionStatus(childFile, parseTaskFrontmatter(readFileSync(childFile, "utf-8")).status ?? "ready", "done");
+    expect(container()!.status).toBe("ready"); // container still open
+
+    failingRun();
+
+    const today = new Date().toISOString().slice(0, 10);
+    const fresh = children().find((k) => k.title === `Fix broken test suite: ${PROJECT} — ${today}`);
+    expect(fresh).toBeDefined(); // signal preserved: a new open episode exists
+    expect(fresh!.id).not.toBe(pastId);
   });
 });

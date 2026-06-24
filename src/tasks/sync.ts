@@ -748,7 +748,16 @@ function containerCompletionSweep(taskMap: TaskMap): void {
     "done", "abandoned", "merged", "stale", "needs-confirmation",
     "in-progress", "deferred", "preempt-queued", "preempted",
   ]);
-  const TERMINAL_FOR_CHILD = new Set(["done", "abandoned"]);
+  // A child does no further work once it reaches any TERMINAL_STATUSES state.
+  // Must match health.ts's `CHILD_RESOLVED_STATUSES` (also = TERMINAL_STATUSES):
+  // if `hasActiveChild` treats a `merged`/`stale` child as resolved but this
+  // sweep required {done, abandoned} only, the container's `allTerminal` would
+  // never become true and `verify-container-completion` would never re-queue —
+  // leaving the container permanently un-completable (gh-ludics-605). Sourcing
+  // both sites from `TERMINAL_STATUSES` prevents that drift. Distinct from
+  // `TERMINAL_FOR_PARENT` above, which additionally treats active/needs-
+  // confirmation parent states as "already decided".
+  const TERMINAL_FOR_CHILD = new Set<string>(TERMINAL_STATUSES);
 
   // Single pass to index children by parent.
   const childrenByParent = new Map<string, Array<{ id: string; status: string }>>();

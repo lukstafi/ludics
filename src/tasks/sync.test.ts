@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { contentFingerprint, formatYamlScalar, setFrontmatterScalar, tasksNeedsElaborationList, tasksQueuePreemptions, tasksReconcileBlockedStatus } from "./sync.ts";
-import { renderFrontmatterValue } from "./markdown.ts";
+import { renderFrontmatterValue, TERMINAL_STATUSES } from "./markdown.ts";
 import { emptySlotData, writeSlotJson } from "../slots/json.ts";
 
 const TMP = join(import.meta.dir, ".test-tmp-sync");
@@ -428,6 +428,50 @@ describe("containerCompletionSweep", () => {
     tasksReconcileBlockedStatus(tasksDir);
     entries = readQueueActions(queueFile).filter(e => e.action === "verify-container-completion");
     expect(entries).toHaveLength(1);
+  });
+
+  test("merged child counts as terminal → all-terminal {done, merged} enqueues verify (gh-ludics-605)", () => {
+    // A `merged` child does no further work, so it must satisfy the
+    // all-children-terminal predicate. Mutation: with TERMINAL_FOR_CHILD =
+    // {done, abandoned} only, allTerminal stays false and the container is
+    // never queued — it can never auto-complete.
+    const { tasksDir, queueFile } = setupContainerWithChildren("task-parent-merged", [
+      { id: "task-cm-a", status: "done" },
+      { id: "task-cm-b", status: "merged" },
+    ]);
+
+    tasksReconcileBlockedStatus(tasksDir);
+    const entries = readQueueActions(queueFile).filter(e => e.action === "verify-container-completion" && e.task === "task-parent-merged");
+    expect(entries).toHaveLength(1);
+  });
+
+  test("stale child counts as terminal → all-terminal {abandoned, stale} enqueues verify (gh-ludics-605)", () => {
+    const { tasksDir, queueFile } = setupContainerWithChildren("task-parent-stale", [
+      { id: "task-cs-a", status: "abandoned" },
+      { id: "task-cs-b", status: "stale" },
+    ]);
+
+    tasksReconcileBlockedStatus(tasksDir);
+    const entries = readQueueActions(queueFile).filter(e => e.action === "verify-container-completion" && e.task === "task-parent-stale");
+    expect(entries).toHaveLength(1);
+  });
+
+  test("every TERMINAL_STATUSES value, as the sole child, queues verify — sweep child-terminal set ⊇ TERMINAL_STATUSES (gh-ludics-605 drift guard)", () => {
+    // Regression guard for the cross-site definition mismatch: health.ts's
+    // `hasActiveChild` treats every TERMINAL_STATUSES state as resolved, so this
+    // sweep MUST also treat every one of them as child-terminal — otherwise a
+    // merged/stale child leaves the container permanently un-completable. By
+    // exercising each terminal status as a sole child here, we assert the
+    // sweep's child-terminal membership covers all of TERMINAL_STATUSES.
+    for (const status of TERMINAL_STATUSES) {
+      const parent = `task-tdrift-${status}`;
+      const { tasksDir, queueFile } = setupContainerWithChildren(parent, [
+        { id: `task-tdrift-child-${status}`, status },
+      ]);
+      tasksReconcileBlockedStatus(tasksDir);
+      const entries = readQueueActions(queueFile).filter(e => e.action === "verify-container-completion" && e.task === parent);
+      expect(entries, `child status '${status}' should count as terminal`).toHaveLength(1);
+    }
   });
 
   test("vacuous parent (no children with subtask_of) does not enqueue (AC6 edge case)", () => {

@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync, mkdirSync } from "fs";
 import { writeJsonFile } from "./json.ts";
 import { join } from "path";
 import { type ProjectConfig, loadConfigSync, harnessDir, resolveProjectPath, postponedProjectSet, t3codeIntegrationEnabled } from "./config.ts";
 import { tasksCreate } from "./tasks/index.ts";
+import { addFrontmatterField, transitionStatus, appendToSection, setDependencyScalar, parseTaskFrontmatter, TERMINAL_STATUSES } from "./tasks/markdown.ts";
 import { safeSyncOutput } from "./spawn.ts";
 import { clusterCurrentMachine, selectOnlineCapableMachine } from "./cluster.ts";
 import { runRemoteCommand } from "./remote.ts";
@@ -174,10 +175,126 @@ function finalizeExecutedRun(
   saveTestHealthState(state);
 
   if (!passed) {
-    tasksCreate(`Fix broken test suite: ${project.name}`, project.name, "A");
+    fileTestFailureEpisode(project.name, failures);
   }
 
   return { skipped: false, passed, duration, failures };
+}
+
+/** Statuses that mean a child episode is no longer doing work. Mirrors
+ *  `containerCompletionSweep`'s `TERMINAL_FOR_CHILD` ({done, abandoned}) plus
+ *  the broader terminal set so a `stale`/`merged` child never counts as an
+ *  active episode. A child in any of these states is "resolved"; one in any
+ *  other status (ready/in-progress/etc.) is an active open episode. */
+const CHILD_RESOLVED_STATUSES: ReadonlySet<string> = new Set([
+  ...TERMINAL_STATUSES, // done, abandoned, merged, stale
+]);
+
+/**
+ * Container/child auto-filer for a failing test suite (gh-ludics-605).
+ *
+ * The per-project umbrella task ("Fix broken test suite: <proj>") is a
+ * `leaf: false` container; each failure *episode* is a dated child filed
+ * `subtask_of` it. This replaces the old status-blind `tasksCreate` call, which
+ * went permanently silent once the single per-project task reached a terminal
+ * status (the fingerprint existence check is status-blind — issue #605).
+ *
+ * `tasksCreate` itself stays pure (idempotent fingerprint create); ALL policy
+ * lives here.
+ *
+ *   res = tasksCreate(container-title)             // pure
+ *   if res.created:  promote to container + file first dated child
+ *   else (exists):
+ *     terminal status  -> revive to `ready`, ensure container, file fresh child
+ *     non-terminal AND has an active (open) child -> NO-OP (episode in flight)
+ *     non-terminal AND no active child -> file a fresh dated child
+ *
+ * The "non-terminal but no active child" branch is the self-heal guard
+ * (see PR notes): `verify-container-completion` only NOTIFIES — it never closes
+ * the container — so a container can sit `ready` with all children already
+ * resolved while the suite is still red. Keying the no-op on an *active child*
+ * (not merely on container status) means a still-failing suite always carries
+ * an open episode instead of silently losing the signal.
+ */
+function fileTestFailureEpisode(projectName: string, failures: string | undefined): void {
+  const res = tasksCreate(`Fix broken test suite: ${projectName}`, projectName, "A");
+
+  if (res.created) {
+    addFrontmatterField(res.path, "leaf", "false"); // promote fresh task to container (stays `ready`)
+    createEpisodeChild(projectName, failures, res.id);
+    return;
+  }
+
+  const status = parseTaskFrontmatter(readFileSync(res.path, "utf-8")).status ?? "ready";
+
+  if (TERMINAL_STATUSES.includes(status)) {
+    // Container was closed (done/abandoned/merged/stale): revive + fresh child.
+    transitionStatus(res.path, status, "ready");
+    addFrontmatterField(res.path, "leaf", "false"); // idempotent ensure-container
+    createEpisodeChild(projectName, failures, res.id);
+    return;
+  }
+
+  // Container is non-terminal. No-op only if an active (open) child episode
+  // already exists; otherwise file a fresh dated child so a still-red suite
+  // never loses its open episode.
+  if (hasActiveChild(res.id)) return;
+  addFrontmatterField(res.path, "leaf", "false"); // idempotent ensure-container
+  createEpisodeChild(projectName, failures, res.id);
+}
+
+/** True iff the container has at least one child (`subtask_of: <parentId>`)
+ *  whose status is NOT resolved (i.e. an open episode is in flight). */
+function hasActiveChild(parentId: string): boolean {
+  const dir = join(harnessDir(), "tasks");
+  if (!existsSync(dir)) return false;
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".md")) continue;
+    let fm;
+    try {
+      fm = parseTaskFrontmatter(readFileSync(join(dir, f), "utf-8"));
+    } catch {
+      continue;
+    }
+    if (fm.dependencies?.subtask_of !== parentId) continue;
+    if (!CHILD_RESOLVED_STATUSES.has(fm.status ?? "ready")) return true;
+  }
+  return false;
+}
+
+/**
+ * File one dated failure-episode child task `subtask_of` the container.
+ *
+ * Title is episode-unique by date (`… — YYYY-MM-DD`) — a stable child title
+ * would reintroduce the same fingerprint muzzle one level down. Same-day
+ * double-breaks no-op via `tasksCreate`'s existence check; cross-day breaks get
+ * a fresh child. The title is deliberately NOT fingerprinted by stderr content
+ * (flaky output would proliferate children). The failures excerpt is embedded
+ * in the child's `## Context` section so the episode is actionable without
+ * cross-referencing `mag/test-health.json`.
+ */
+function createEpisodeChild(projectName: string, failures: string | undefined, parentId: string): void {
+  const today = new Date().toISOString().slice(0, 10);
+  const child = tasksCreate(`Fix broken test suite: ${projectName} — ${today}`, projectName, "A");
+  if (!child.created) {
+    // Today's dated child already exists. In the no-active-child paths that
+    // reach here, that child is necessarily RESOLVED. If it was marked
+    // done/merged but the suite is still red — a claimed fix that didn't hold,
+    // or a forced/second same-day run — reopen it so the episode stays
+    // actionable today (don't leave the container open with no active child
+    // until the UTC date rolls over). A fresh same-day child under a
+    // non-colliding title would reintroduce the proliferation date-stamping
+    // exists to avoid, so reopen in place instead. transitionStatus no-ops for
+    // abandoned/stale, deliberately respecting a same-day set-aside (a fresh
+    // child is filed tomorrow under a new date).
+    transitionStatus(child.path, ["done", "merged"], "ready");
+    return;
+  }
+  // Link to the container so containerCompletionSweep discovers the child.
+  setDependencyScalar(child.path, "subtask_of", parentId);
+  if (failures && failures.trim().length > 0) {
+    appendToSection(child.path, "Context", `Failing tests (${today}):\n\n\`\`\`\n${failures.trim()}\n\`\`\``);
+  }
 }
 
 /**
