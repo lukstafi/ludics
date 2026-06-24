@@ -92,6 +92,86 @@ describe("style.css contains pending-action-badge class", () => {
   });
 });
 
+// task-44558ae0: the Stale panel's task-title link previously had no CSS rule,
+// so the <a class="task-title stale-link"> fell back to the browser-default
+// blue anchor color — theme-invariant and unreadable on Night/OLED. These
+// tests pin the theme-aware, non-blue title color and the warm-accent hover,
+// mirroring the sibling .needs-confirm-link / .unanswered-q-link rules.
+describe("style.css — Stale panel theme-aware link (task-44558ae0)", () => {
+  const stylePath = join(import.meta.dir, "style.css");
+  const style = readFileSync(stylePath, "utf-8");
+
+  function ruleFor(selector: string): string {
+    // Escape selector for a regex, then match its declaration block.
+    const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const m = style.match(new RegExp(`${esc}\\s*\\{[^}]*\\}`));
+    expect(m).not.toBeNull();
+    return m![0];
+  }
+
+  test(".stale-link base color is the load-bearing theme token, never blue", () => {
+    const rule = ruleFor(".stale-link");
+    // Load-bearing title color resolves to --text-primary (#e8e6e3 / #1c1917 /
+    // #ffffff across Night/Day/OLED) — high-contrast and non-blue on all three.
+    expect(rule).toContain("color: var(--text-primary)");
+    // At rest the link is not underlined (matches siblings).
+    expect(rule).toContain("text-decoration: none");
+    // Guard against any blue literal / UA-default anchor color creeping back.
+    expect(rule.toLowerCase()).not.toContain("blue");
+    expect(rule).not.toMatch(/#(?:3b82f6|2563eb|0000ff|00f\b)/i);
+  });
+
+  test(".stale-link:hover mirrors siblings: warm accent + underline", () => {
+    const rule = ruleFor(".stale-link:hover");
+    // --accent is warm red/orange (#e85d4a / #c9362c / #ff4040) — never blue.
+    expect(rule).toContain("color: var(--accent)");
+    expect(rule).toContain("text-decoration: underline");
+  });
+
+  test(".stale-item is a flex row and .stale-actions right-aligns the buttons", () => {
+    const item = ruleFor(".stale-item");
+    expect(item).toContain("display: flex");
+    expect(item).toContain("align-items: center");
+    const actions = ruleFor(".stale-actions");
+    expect(actions).toContain("margin-left: auto");
+    expect(actions).toContain("flex-shrink: 0");
+  });
+
+  // Positive control: the matcher distinguishes presence from absence — the
+  // sibling link this fix mirrors must still pin --text-primary. If this
+  // assertion ever fails, the test infra (not just the Stale rule) is broken.
+  test("sibling .needs-confirm-link base color is still var(--text-primary)", () => {
+    expect(ruleFor(".needs-confirm-link")).toContain("color: var(--text-primary)");
+  });
+});
+
+// task-44558ae0 (AC4/AC5): the priority chip geometry (fixed box, centering,
+// radius) was scoped to `.ready-queue .priority`, so the same badge span in
+// the Stale / Needs-Confirmation / Unanswered / Deferred panels rendered as a
+// bare inline letter. The geometry selector is broadened to bare `.priority`
+// (values unchanged) so every badge gets the chip; Ready Queue is unchanged.
+describe("style.css — priority chip geometry is global (task-44558ae0)", () => {
+  const stylePath = join(import.meta.dir, "style.css");
+  const style = readFileSync(stylePath, "utf-8");
+
+  test("geometry lives on an unscoped .priority rule with the fixed-chip box", () => {
+    const m = style.match(/(^|[^a-zA-Z-])\.priority\s*\{[^}]*\}/m);
+    expect(m).not.toBeNull();
+    const rule = m![0];
+    expect(rule).toContain("display: inline-flex");
+    expect(rule).toContain("width: 20px");
+    expect(rule).toContain("height: 20px");
+    expect(rule).toContain("border-radius: var(--radius-sm)");
+    expect(rule).toContain("justify-content: center");
+  });
+
+  test("the chip geometry is no longer scoped to .ready-queue .priority", () => {
+    // Mutation guard: reverting the selector to `.ready-queue .priority` makes
+    // this assertion fail, which is the whole point of the broadening.
+    expect(style).not.toContain(".ready-queue .priority");
+  });
+});
+
 // gh-ludics-535: the Mag queue renderer must surface unresolved deliveries
 // as an "Unresolved deliveries" panel between Pending and Recent. `inFlight`
 // is always an array (possibly empty). These tests extract the real

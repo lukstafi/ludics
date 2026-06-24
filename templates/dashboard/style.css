@@ -1054,7 +1054,7 @@ main {
     gap: 0.4rem;
 }
 
-.ready-queue .priority {
+.priority {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1187,6 +1187,33 @@ main {
 }
 
 .deferred-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 0.25em;
+    flex-shrink: 0;
+}
+
+/* ── Stale ─────────────────────────────────────────────────── */
+.stale-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    padding: 0.25em 0.4em;
+    cursor: default;
+}
+
+.stale-link {
+    color: var(--text-primary);
+    text-decoration: none;
+    font-size: 0.82rem;
+}
+
+.stale-link:hover {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
+.stale-actions {
     margin-left: auto;
     display: flex;
     gap: 0.25em;
