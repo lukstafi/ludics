@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
-import { addFrontmatterField, appendToSection, frontmatterBounds, removeFrontmatterField, updateDependencyArray, updateFrontmatterField, transitionStatus, parseTaskFrontmatter, writeTaskFile, _resetParseTaskFrontmatterCache, _parseTaskFrontmatterCacheSize, VALID_STATUSES, TERMINAL_STATUSES, READY_QUEUE_ELIGIBLE_STATUSES, BLOCKED_RECONCILE_SKIP_STATUSES } from "./markdown.ts";
+import { addFrontmatterField, appendToSection, frontmatterBounds, removeFrontmatterField, updateDependencyArray, setDependencyScalar, updateFrontmatterField, transitionStatus, parseTaskFrontmatter, writeTaskFile, _resetParseTaskFrontmatterCache, _parseTaskFrontmatterCacheSize, VALID_STATUSES, TERMINAL_STATUSES, READY_QUEUE_ELIGIBLE_STATUSES, BLOCKED_RECONCILE_SKIP_STATUSES } from "./markdown.ts";
 
 const TMP_DIR = join(import.meta.dir, ".test-tmp");
 
@@ -681,6 +681,40 @@ describe("updateDependencyArray", () => {
     expect(result).toContain("dependencies: none");
     const fmMatch = result.match(/^---\n([\s\S]*?)\n---/);
     expect(fmMatch![1]).toContain("blocks: [z]");
+  });
+});
+
+describe("setDependencyScalar (gh-ludics-605)", () => {
+  test("replaces an existing nested scalar in place", () => {
+    const f = tmpFile("dep-scalar-update.md", "---\nid: task-1\ndependencies:\n  blocks: []\n  subtask_of: null\n---\n\n# Title\n");
+    setDependencyScalar(f, "subtask_of", "task-parent");
+    const fm = parseTaskFrontmatter(readFileSync(f, "utf-8"));
+    expect(fm.dependencies?.subtask_of).toBe("task-parent");
+  });
+
+  test("inserts a missing nested scalar after the dependency block", () => {
+    const f = tmpFile("dep-scalar-insert.md", "---\nid: task-1\ndependencies:\n  blocks: []\n---\n\n# Title\n");
+    setDependencyScalar(f, "subtask_of", "task-parent");
+    const result = readFileSync(f, "utf-8");
+    const fmMatch = result.match(/^---\n([\s\S]*?)\n---/);
+    expect(fmMatch![1]).toContain("subtask_of: task-parent");
+    expect(parseTaskFrontmatter(result).dependencies?.subtask_of).toBe("task-parent");
+  });
+
+  test("null clears the link (renders canonical YAML null)", () => {
+    const f = tmpFile("dep-scalar-clear.md", "---\nid: task-1\ndependencies:\n  blocks: []\n  subtask_of: task-parent\n---\n\n# Title\n");
+    setDependencyScalar(f, "subtask_of", null);
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("subtask_of: null");
+    expect(parseTaskFrontmatter(result).dependencies?.subtask_of).toBeNull();
+  });
+
+  test("does not touch body content matching the subfield name", () => {
+    const f = tmpFile("dep-scalar-body.md", "---\nid: task-1\ndependencies:\n  blocks: []\n---\n\nsubtask_of: prose\n");
+    setDependencyScalar(f, "subtask_of", "task-parent");
+    const result = readFileSync(f, "utf-8");
+    expect(result).toContain("subtask_of: prose"); // body untouched
+    expect(parseTaskFrontmatter(result).dependencies?.subtask_of).toBe("task-parent");
   });
 });
 

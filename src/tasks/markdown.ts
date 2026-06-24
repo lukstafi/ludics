@@ -418,6 +418,68 @@ export function updateDependencyArray(filePath: string, subfield: string, values
   atomicWriteFileSync(filePath, output.join("\n"));
 }
 
+/**
+ * Set a scalar subfield within the `dependencies:` block of a task file
+ * (e.g. `subtask_of: <parent-id>`). Mirrors `updateDependencyArray` but for a
+ * single scalar value rather than a YAML list. If the subfield already exists
+ * inside the dependencies block it is replaced in place; otherwise it is
+ * inserted after the last dependency line. A `null` value renders as the
+ * canonical YAML null token (clearing the link). No-ops if the file is missing
+ * or has no frontmatter.
+ *
+ * `subtask_of` lives nested under `dependencies:`, so it cannot be written by
+ * the top-level `updateFrontmatterField`/`addFrontmatterField` writers (those
+ * would inject a top-level `subtask_of:` key the parser ignores). The
+ * `containerCompletionSweep` reads `dependencies.subtask_of`, so the link must
+ * be written into the nested block.
+ */
+export function setDependencyScalar(filePath: string, subfield: string, value: string | null): void {
+  if (!existsSync(filePath)) return;
+  const content = readFileSync(filePath, "utf-8");
+  const lines = content.split("\n");
+  const bounds = frontmatterBounds(lines);
+  if (!bounds) return;
+
+  const formatted = `  ${subfield}: ${renderFrontmatterValue(value)}`;
+
+  let inDeps = false;
+  let found = false;
+  let lastDepsLineIdx = -1;
+  const output: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (i === bounds.closeLine) {
+      if (!found && lastDepsLineIdx >= 0) {
+        output.splice(lastDepsLineIdx + 1, 0, formatted);
+      }
+      output.push(line);
+      continue;
+    }
+    if (i > bounds.openLine && i < bounds.closeLine) {
+      if (line.startsWith("dependencies:")) {
+        inDeps = true;
+        lastDepsLineIdx = output.length;
+        output.push(line);
+        continue;
+      }
+      if (inDeps && line.match(/^\s{2}\w/)) {
+        lastDepsLineIdx = output.length;
+        if (line.trimStart().startsWith(`${subfield}:`)) {
+          output.push(formatted);
+          found = true;
+          continue;
+        }
+      } else if (inDeps && !line.match(/^\s/)) {
+        inDeps = false;
+      }
+    }
+    output.push(line);
+  }
+
+  atomicWriteFileSync(filePath, output.join("\n"));
+}
+
 export function writeTaskFile(
   dir: string,
   id: string,
