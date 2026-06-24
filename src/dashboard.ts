@@ -541,6 +541,7 @@ const needsConfirmationConfig: FilteredTaskTileConfig = {
 const unansweredQuestionsConfig: FilteredTaskTileConfig = {
   filter: (task) => task.hasQuestions && !task.isCompleted,
   extraFields: () => ({}),
+  sort: byCreatedDescNullLast,
 };
 
 const deferredLaunchConfig: FilteredTaskTileConfig = {
