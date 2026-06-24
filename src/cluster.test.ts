@@ -103,7 +103,14 @@ cluster:
       host: mac-studio.ts.net
       role: leader
       os: macos
+      gpu: apple-silicon
       always_on: true
+    - name: macbook-pro
+      host: macbook-pro.ts.net
+      role: console
+      os: macos
+      gpu: apple-silicon
+      always_on: false
     - name: minipc-wsl
       host: minipc-wsl.ts.net
       role: worker
@@ -176,6 +183,81 @@ slots:
   it("honors LUDICS_CLUSTER_MACHINE_NAME for current-machine resolution", () => {
     process.env.LUDICS_CLUSTER_MACHINE_NAME = "minipc-wsl";
     expect(clusterCurrentMachineName()).toBe("minipc-wsl");
+  });
+
+  // gh-ludics-602: ludics SELF-task routing preference — keep self-modification
+  // off the watched controller when a live console node exists. Current machine
+  // is pinned to mac-studio (the leader) by beforeEach.
+
+  it("AC(a): routes a no-requirements ludics self-task to the live console node, not the always_on controller", () => {
+    writeHeartbeat("macbook-pro", 10); // console fresh
+    writeHeartbeat("mac-studio", 10);  // controller also online
+    const result = selectMachineForSlot({ project: "ludics", effort: "medium" });
+    // Invariant: a fresh console node wins over the online always_on controller.
+    // Mutation: deleting the self-task branch returns "mac-studio".
+    expect(result).toBe("macbook-pro");
+  });
+
+  it("AC(b): falls back to the controller (not null) when the console node has no heartbeat", () => {
+    writeHeartbeat("mac-studio", 10); // controller online; console absent (down)
+    const result = selectMachineForSlot({ project: "ludics", effort: "medium" });
+    // Invariant: self-task stays assignable; empty consolePref falls through to
+    // the always_on ranking (mac-studio), never null.
+    expect(result).not.toBeNull();
+    expect(result).toBe("mac-studio");
+  });
+
+  it("AC(b): treats a stale console heartbeat as down and falls back to the controller", () => {
+    writeHeartbeat("macbook-pro", 1000); // stale (> 900s timeout) → not in `online`
+    writeHeartbeat("mac-studio", 10);
+    const result = selectMachineForSlot({ project: "ludics", effort: "medium" });
+    expect(result).toBe("mac-studio");
+  });
+
+  it("AC(c): leaves a non-ludics no-requirements task on the always_on controller even when the console is live", () => {
+    writeHeartbeat("macbook-pro", 10);
+    writeHeartbeat("mac-studio", 10);
+    const result = selectMachineForSlot({ project: "ocannl", effort: "medium" });
+    // Invariant: the self-task branch must not perturb other projects.
+    // Mutation: making isLudicsSelfTask always-true returns "macbook-pro".
+    expect(result).toBe("mac-studio");
+  });
+
+  it("AC(c): matches the self-task project name case-insensitively", () => {
+    writeHeartbeat("macbook-pro", 10);
+    writeHeartbeat("mac-studio", 10);
+    const result = selectMachineForSlot({ project: "LUDICS", effort: "medium" });
+    // Invariant: case-insensitive match via .toLowerCase().
+    // Mutation: dropping .toLowerCase() returns "mac-studio".
+    expect(result).toBe("macbook-pro");
+  });
+
+  it("AC(d)/(e): a ludics self-task with a hard gpu requirement routes to the eligible worker, never the console", () => {
+    writeHeartbeat("macbook-pro", 10); // console fresh but gpu-ineligible (apple-silicon)
+    writeHeartbeat("minipc-wsl", 10);  // nvidia worker fresh
+    const result = selectMachineForSlot({
+      project: "ludics",
+      effort: "medium",
+      requirements: { gpu: "nvidia" },
+    });
+    // Invariant: the console preference re-ranks only WITHIN the requirement-
+    // filtered online pool; a requirement-ineligible console is unreachable.
+    // Mutation: filtering `pool`/all-machines instead of `online` returns
+    // "macbook-pro".
+    expect(result).toBe("minipc-wsl");
+  });
+
+  it("AC(d): a ludics self-task with a hard gpu requirement is still blocked (null) when the eligible worker is offline, even with a live console", () => {
+    writeHeartbeat("macbook-pro", 10); // console fresh — must NOT rescue the requirement
+    // minipc-wsl absent → offline
+    const result = selectMachineForSlot({
+      project: "ludics",
+      effort: "medium",
+      requirements: { gpu: "nvidia" },
+    });
+    // Invariant: the AC10 online gate fires before the self-task branch; a fresh
+    // console cannot resurrect a requirement-ineligible/offline assignment.
+    expect(result).toBeNull();
   });
 });
 
