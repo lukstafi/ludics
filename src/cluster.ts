@@ -418,6 +418,22 @@ export function selectMachineForSlot(
   // Pick from online if available, otherwise from all eligible (task will wait for machine to come online)
   const pool = online.length > 0 ? online : eligible;
 
+  // gh-ludics-602: keep ludics SELF-tasks off the watched controller. When a
+  // live (fresh-heartbeat) console node exists, route there so a per-worktree
+  // `ludics init` can't bootout the controller's dashboard / repoint its global
+  // binary. Restrict to `online` (NOT `pool`, which may have fallen back to
+  // offline `eligible`): only route off the controller when a worker is truly
+  // up; otherwise fall through to the controller fallback below. Applied AFTER
+  // the requirement filter + online gate, so it composes with — never overrides
+  // — hard requirements: a console node that fails the requirement filter is
+  // absent from `online` and cannot be resurrected here.
+  const isLudicsSelfTask = (_task.project ?? "").toLowerCase() === "ludics";
+  if (isLudicsSelfTask) {
+    const consolePref = online.filter((m) => m.role !== "leader" && m.role === "console");
+    if (consolePref.length > 0) return consolePref[0]!.name;
+    // else: fall through to the always_on ranking below → controller fallback.
+  }
+
   // Primary signal: prefer always_on machines; tiebreak: prefer non-current for load balance
   const alwaysOn = pool.filter((m) => m.always_on);
   if (alwaysOn.length > 0) {
