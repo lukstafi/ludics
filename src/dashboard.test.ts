@@ -519,6 +519,33 @@ describe("deferred-launch sorting", () => {
   });
 });
 
+describe("unanswered-questions sorting", () => {
+  function writeQuestionTask(id: string, title: string, created: string | null): void {
+    const tasksDir = join(harnessDir(), "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    const createdLine = created ? `created: "${created}"` : "created: null";
+    writeFileSync(
+      join(tasksDir, `${id}.md`),
+      `---\nid: ${id}\ntitle: "${title}"\nstatus: ready\npriority: B\n${createdLine}\ncontext: ludics\nhas_questions: true\n---\n\n# ${title}\n`,
+    );
+  }
+
+  test("tasks sorted by created date descending, null last", async () => {
+    writeQuestionTask("task-uq-oldest", "Oldest", "2026-01-01");
+    writeQuestionTask("task-uq-newest", "Newest", "2026-04-15");
+    writeQuestionTask("task-uq-middle", "Middle", "2026-03-10");
+    writeQuestionTask("task-uq-no-date", "No date", null);
+
+    const { dashboardGenerate } = await import("./dashboard.ts");
+    silenceConsoleError(() => dashboardGenerate());
+
+    const outFile = join(harnessDir(), "dashboard", "data", "unanswered-questions.json");
+    const items = JSON.parse(readFileSync(outFile, "utf-8")) as Record<string, unknown>[];
+    const ids = items.map((item) => item.id);
+    expect(ids).toEqual(["task-uq-newest", "task-uq-middle", "task-uq-oldest", "task-uq-no-date"]);
+  });
+});
+
 describe("needs-confirmation sorting", () => {
   function writeNeedsConfirmationTask(id: string, title: string, created: string | null): void {
     const tasksDir = join(harnessDir(), "tasks");
