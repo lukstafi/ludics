@@ -154,6 +154,12 @@ export interface OrchestrationConfig {
   /** Seconds since the last redispatch after which a quiet pr-comments phase with an
    *  unaddressed review on the PR triggers a one-shot orchestration_warning. Default 600. */
   prCommentsStuckThreshold: number;
+  /** Seconds to wait after the initial pr-comments transition before posting the explicit
+   *  `@codex review` request, when no Codex review/comment is present at that point.
+   *  Decoupled from prCommentsTimeout (the human-comment window) — gh-ludics-604. Default 0
+   *  = post on the first eligible poll after entry. Raise to 60-120 only if redundant remote
+   *  reviews appear. */
+  codexReviewRequestDelay: number;
   /** Gates the wrong-filename auto-cp branch only. When false, whitelisted suspects
    *  fall through to the targeted-nudge branch instead of being auto-copied. */
   autoRecoverWrongFilename: boolean;
@@ -218,6 +224,19 @@ export function parseSubstantiveStallOverrides(
     out.maxNudgeAttempts = yaml.max_nudge_attempts;
   }
   return out;
+}
+
+/**
+ * Parse `mag.orchestration.codex_review_request_delay` (seconds) into a number
+ * for `orchestration.config.codexReviewRequestDelay` (gh-ludics-604). Validated
+ * as a finite non-negative `number` (per
+ * `feedback_narrowing_needs_boundary_validators`); a hand-edited typo or negative
+ * value is dropped silently (returns `undefined`) so it falls through to its
+ * default rather than crashing slot init.
+ */
+export function parseCodexReviewRequestDelay(raw: unknown): number | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return undefined;
+  return Math.floor(raw);
 }
 
 export interface OrchestrationState {
@@ -355,6 +374,7 @@ export const DEFAULT_TIMEOUTS: Record<string, number> = {
 export const DEFAULT_PR_COMMENTS_TIMEOUT = 1800; // 30 min quiet before auto-merging
 export const DEFAULT_PR_COMMENTS_CHECK_INTERVAL = 60; // poll GitHub every 60 s
 export const DEFAULT_PR_COMMENTS_STUCK_THRESHOLD = 600; // 10 min quiet-after-redispatch before stuck warning
+export const DEFAULT_CODEX_REVIEW_REQUEST_DELAY = 0; // post the @codex review request immediately (gh-ludics-604)
 
 export const DEFAULT_POLL_INTERVAL = 10;
 export const DEFAULT_LEARNING_INTERVAL = 3600;
@@ -382,6 +402,8 @@ export function defaultOrchestrationConfig(
       overrides.prCommentsCheckInterval ?? DEFAULT_PR_COMMENTS_CHECK_INTERVAL,
     prCommentsStuckThreshold:
       overrides.prCommentsStuckThreshold ?? DEFAULT_PR_COMMENTS_STUCK_THRESHOLD,
+    codexReviewRequestDelay:
+      overrides.codexReviewRequestDelay ?? DEFAULT_CODEX_REVIEW_REQUEST_DELAY,
     autoRecoverWrongFilename: overrides.autoRecoverWrongFilename ?? true,
     substantiveStall: {
       thresholdSeconds:
@@ -624,6 +646,12 @@ export function migrateState(state: OrchestrationState, slot: number): Orchestra
   // gh-bce80781: backfill new config field for legacy state files.
   if (state.config && state.config.prCommentsStuckThreshold === undefined) {
     state.config.prCommentsStuckThreshold = DEFAULT_PR_COMMENTS_STUCK_THRESHOLD;
+  }
+  // gh-ludics-604: backfill new config field for legacy state files. Without this,
+  // the fire site reads `undefined` and `elapsed >= undefined` is NaN-false, so a
+  // mid-flight upgraded slot would never post the explicit @codex review request.
+  if (state.config && state.config.codexReviewRequestDelay === undefined) {
+    state.config.codexReviewRequestDelay = DEFAULT_CODEX_REVIEW_REQUEST_DELAY;
   }
   // task-a670cdbf: backfill substantive-stall config for legacy state files.
   // Per-leaf so a partial override doesn't drop the missing leaves.

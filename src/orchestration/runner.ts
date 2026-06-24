@@ -1737,7 +1737,11 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
 
   // --- Deferred Codex review request (per-PR resolution) ---
   if (state.prCodexReviewDeferredSince) {
-    const deferralTimeout = Math.min(600, Math.floor(state.config.prCommentsTimeout / 2));
+    // gh-ludics-604: delay sourced from the dedicated codexReviewRequestDelay knob
+    // (default 0 = post on the first eligible poll after the pr-comments transition),
+    // decoupled from prCommentsTimeout. The per-PR urlsMissingReview partition below
+    // provides the point-in-time "already reviewed?" dedup that prevents a double-spend.
+    const deferralTimeout = state.config.codexReviewRequestDelay;
     const elapsed = now - state.prCodexReviewDeferredSince;
     const deadlineReached = elapsed >= deferralTimeout;
 
@@ -2454,11 +2458,13 @@ export function applyPhaseSideEffects(state: OrchestrationState, next: Orchestra
 }
 
 /**
- * Arm deferred Codex review request on initial entry to pr-comments.
- * Instead of posting `@codex review` immediately, sets
- * `prCodexReviewDeferredSince` so that `checkAndRedispatchPrComments()`
- * can check for an auto-triggered review first and only post the
- * explicit request as a fallback after `min(10m, quiet_period/2)`.
+ * Mark the explicit Codex review request as pending on initial entry to
+ * pr-comments. Sets `prCodexReviewDeferredSince` to the entry timestamp so that
+ * `checkAndRedispatchPrComments()` performs a point-in-time check for an
+ * already-present Codex review and, when none is found, posts the explicit
+ * `@codex review` request after `state.config.codexReviewRequestDelay` seconds
+ * (gh-ludics-604; default 0 = on the next eligible poll). The field is a
+ * "request pending / not yet resolved" marker, not a hard-coded 10-minute timer.
  *
  * Only fires on initial pr-comments entry paths (pr-create, update-docs,
  * review), NOT on merge-loop re-entries (merge-review -> pr-comments).
@@ -2479,7 +2485,8 @@ export function maybePostCodexReviewRequests(
   const hasAnyPrUrl = state.agents.some((a) => !!state.agentStates[a.name]?.prUrl);
   if (!hasAnyPrUrl) return;
 
-  // Arm deferral — use nowEpoch() because phaseStartedAt hasn't been updated yet
+  // Mark the request pending — use nowEpoch() because phaseStartedAt hasn't been
+  // updated yet. checkAndRedispatchPrComments resolves it after codexReviewRequestDelay.
   state.prCodexReviewDeferredSince = nowEpoch();
 }
 

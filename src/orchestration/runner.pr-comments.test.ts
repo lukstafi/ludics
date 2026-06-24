@@ -9,7 +9,7 @@ import * as notify from "../notify.ts";
 import * as events from "../events.ts";
 import * as github from "./github.ts";
 import * as worktrees from "./worktrees.ts";
-import { type OrchestrationState } from "./state.ts";
+import { defaultOrchestrationConfig, type OrchestrationState } from "./state.ts";
 import {
   makeTmpDir,
   makeState,
@@ -243,45 +243,48 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
     eventSpy.mockRestore();
   });
 
-  test("clears deferral early when all PRs have submitted reviews", async () => {
+  test("clears deferral early (no request) when a Codex review is already present at entry", async () => {
+    // gh-ludics-604: review-present-at-entry → no double-spend even at default delay 0.
     reviewSpy.mockReturnValue(true);
     const state = makePrCommentsState({
-      prCodexReviewDeferredSince: nowSec - 60, // armed 60s ago (within window)
+      prCodexReviewDeferredSince: nowSec, // just armed; default delay 0 ⇒ checked immediately
     });
     await checkAndRedispatchPrComments(state, dummyTransport);
     expect(state.prCodexReviewDeferredSince).toBeUndefined();
     expect(postSpy).not.toHaveBeenCalled();
   });
 
-  test("posts fallback after deadline when no review exists, keeps deferral armed", async () => {
+  test("default delay 0: posts the explicit request immediately when no review exists, keeps deferral armed", async () => {
+    // gh-ludics-604: the request fires on the first eligible poll after entry — no ~10-min wait.
     reviewSpy.mockReturnValue(false);
     const state = makePrCommentsState({
-      prCodexReviewDeferredSince: nowSec - 700, // 700s ago, past 600s deadline
+      prCodexReviewDeferredSince: nowSec, // just armed this poll
     });
+    expect(state.config.codexReviewRequestDelay).toBe(0); // harness precondition: default knob
     await checkAndRedispatchPrComments(state, dummyTransport);
     expect(postSpy).toHaveBeenCalledTimes(1);
     expect(postSpy.mock.calls[0]![0]).toBe("https://github.com/test/repo/pull/42");
     // Deferral stays armed — blocks shortcut until review actually arrives
-    expect(state.prCodexReviewDeferredSince).toBe(nowSec - 700);
+    expect(state.prCodexReviewDeferredSince).toBe(nowSec);
     expect(state.prCodexReviewFallbackPosted).toBe(true);
   });
 
   test("does not re-post fallback once already posted, keeps waiting for review", async () => {
     reviewSpy.mockReturnValue(false);
     const state = makePrCommentsState({
-      prCodexReviewDeferredSince: nowSec - 800,
+      prCodexReviewDeferredSince: nowSec,
       prCodexReviewFallbackPosted: true,
     });
     await checkAndRedispatchPrComments(state, dummyTransport);
     expect(postSpy).not.toHaveBeenCalled();
     // Still armed — waiting for review
-    expect(state.prCodexReviewDeferredSince).toBe(nowSec - 800);
+    expect(state.prCodexReviewDeferredSince).toBe(nowSec);
   });
 
   test("clears deferral after fallback posted and review arrives", async () => {
     reviewSpy.mockReturnValue(true);
     const state = makePrCommentsState({
-      prCodexReviewDeferredSince: nowSec - 800,
+      prCodexReviewDeferredSince: nowSec - 30,
       prCodexReviewFallbackPosted: true,
     });
     await checkAndRedispatchPrComments(state, dummyTransport);
@@ -289,23 +292,35 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
     expect(state.prCodexReviewFallbackPosted).toBeUndefined();
   });
 
-  test("keeps waiting within deferral window when no review yet", async () => {
+  test("positive delay (120s) honors the grace: within grace → no request; past grace → posts", async () => {
+    // gh-ludics-604: the knob lets a grace be dialed in without a code change.
     reviewSpy.mockReturnValue(false);
-    const state = makePrCommentsState({
-      prCodexReviewDeferredSince: nowSec - 60, // only 60s, well within 600s window
+    // Within the 120s grace (armed 60s ago) → not yet posted, deferral unchanged.
+    const within = makePrCommentsState({
+      prCodexReviewDeferredSince: nowSec - 60,
+      config: defaultOrchestrationConfig({ codexReviewRequestDelay: 120 }),
     });
-    await checkAndRedispatchPrComments(state, dummyTransport);
+    await checkAndRedispatchPrComments(within, dummyTransport);
     expect(postSpy).not.toHaveBeenCalled();
-    expect(state.prCodexReviewDeferredSince).toBe(nowSec - 60); // unchanged
+    expect(within.prCodexReviewDeferredSince).toBe(nowSec - 60); // unchanged
+
+    // Past the 120s grace (armed 200s ago) → posts for the missing-review PR.
+    const past = makePrCommentsState({
+      prCodexReviewDeferredSince: nowSec - 200,
+      config: defaultOrchestrationConfig({ codexReviewRequestDelay: 120 }),
+    });
+    await checkAndRedispatchPrComments(past, dummyTransport);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(past.prCodexReviewFallbackPosted).toBe(true);
   });
 
-  test("posts fallback only for PRs missing review (per-PR resolution)", async () => {
+  test("posts request only for PRs missing review (per-PR resolution) at default delay 0", async () => {
     // PR 42 has review, PR 43 does not
     reviewSpy.mockImplementation((url: string) =>
       url.includes("pull/42")
     );
     const state = makePrCommentsState({
-      prCodexReviewDeferredSince: nowSec - 700,
+      prCodexReviewDeferredSince: nowSec,
       mode: "duo",
       agents: [
         { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
@@ -328,7 +343,7 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
     expect(postSpy).toHaveBeenCalledTimes(1);
     expect(postSpy.mock.calls[0]![0]).toBe("https://github.com/test/repo/pull/43");
     // Still armed — PR 43 review hasn't arrived yet
-    expect(state.prCodexReviewDeferredSince).toBe(nowSec - 700);
+    expect(state.prCodexReviewDeferredSince).toBe(nowSec);
     expect(state.prCodexReviewFallbackPosted).toBe(true);
   });
 
@@ -351,13 +366,17 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
     expect(postSpy).not.toHaveBeenCalled();
   });
 
-  test("keeps deferral armed when no Codex review or comment", async () => {
+  test("keeps deferral armed within the configured grace when no Codex review or comment", async () => {
+    // With a positive grace the marker survives an early poll without posting,
+    // so it still blocks the shortcut transition until the grace elapses.
     reviewSpy.mockReturnValue(false);
     commentSpy.mockReturnValue(false);
     const state = makePrCommentsState({
       prCodexReviewDeferredSince: nowSec - 60,
+      config: defaultOrchestrationConfig({ codexReviewRequestDelay: 120 }),
     });
     await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(postSpy).not.toHaveBeenCalled();
     expect(state.prCodexReviewDeferredSince).toBe(nowSec - 60);
   });
 });
