@@ -87,6 +87,14 @@ export function initPeerSync(
 
   for (const agent of agents) {
     writeFile(join(peerSyncDir, `${agent.name}.status`), `idle|0|awaiting-${agent.name}\n`);
+    // gh-ludics-597 (review follow-up): per-NAME provider marker. worktrees.json is
+    // keyed by agent.name (which can be a custom name via `name:provider:model`
+    // tokens, ≠ role), while the role-based coder-agent/reviewer-agent markers above
+    // are not. orchOnStop disambiguates shared-worktree pairs by reading
+    // `${worktreeKey}-agent`, so it needs a marker keyed by agent.name to work for
+    // custom-named agents. For standard pairs (name === role) this writes the same
+    // coder-agent/reviewer-agent files — idempotent.
+    writeFile(join(peerSyncDir, `${agent.name}-agent`), agent.provider);
   }
 
   const sessionsDir = join(projectDir, ".agent-sessions");

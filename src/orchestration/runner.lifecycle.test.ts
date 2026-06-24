@@ -379,6 +379,33 @@ describe("orchOnStop handler", () => {
     expect(readStopHookRecord(peerSyncDir, "reviewer")).toBeNull();
   });
 
+  // gh-ludics-597 (review follow-up): custom agent names (`name:provider:model`
+  // tokens) key worktrees.json by the custom name, ≠ role. initPeerSync now writes
+  // per-name provider markers (`<name>-agent`), so orchOnStop's `${worktreeKey}-agent`
+  // lookup resolves for custom names too — not just role-named coder/reviewer.
+  test("pair-mode custom agent names: provider attributes by name, not role (gh-597)", () => {
+    const sharedWorktree = join(tmpDir, "shared-worktree");
+    mkdirSync(sharedWorktree, { recursive: true });
+
+    const peerSyncDir = makePeerSyncDir({
+      root: sharedWorktree,
+      alice: sharedWorktree, // role coder, provider claude-code
+      bob: sharedWorktree, // role reviewer, provider codex
+    });
+    // Per-name provider markers (as initPeerSync now writes them).
+    writeFileSync(join(peerSyncDir, "alice-agent"), "claude-code");
+    writeFileSync(join(peerSyncDir, "bob-agent"), "codex");
+
+    // Codex (bob) stop hook.
+    orchOnStop([sharedWorktree, peerSyncDir, "Stop", "codex"]);
+
+    const bobRecord = readStopHookRecord(peerSyncDir, "bob");
+    expect(bobRecord).not.toBeNull();
+    expect(bobRecord!.agent).toBe("bob");
+    expect(bobRecord!.provider).toBe("codex");
+    expect(readStopHookRecord(peerSyncDir, "alice")).toBeNull();
+  });
+
   test("separate worktrees still attribute by unambiguous path match (gh-597 regression)", () => {
     const coderWorktree = join(tmpDir, "wt-coder");
     const reviewerWorktree = join(tmpDir, "wt-reviewer");
