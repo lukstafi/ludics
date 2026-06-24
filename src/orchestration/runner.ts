@@ -1735,6 +1735,12 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
     return;
   }
 
+  // PRs we post an explicit `@codex review` trigger to on THIS tick (gh-ludics-604).
+  // Our own trigger is an issue comment that fetchNewPrCommentCount would otherwise
+  // count as fresh coder-facing feedback; we discount it below so the coder is not
+  // redispatched to "address" the trigger instead of waiting for the Codex review.
+  const codexTriggeredThisTick = new Set<string>();
+
   // --- Deferred Codex review request (per-PR resolution) ---
   if (state.prCodexReviewDeferredSince) {
     // gh-ludics-604: delay sourced from the dedicated codexReviewRequestDelay knob
@@ -1770,7 +1776,11 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
       const projectEntry = findProjectConfig(state.projectDir);
       const customPrompt = projectEntry?.codex_review_prompt ?? undefined;
       for (const prUrl of urlsMissingReview) {
-        postCodexReviewComment(prUrl, customPrompt);
+        // Only mark the PR as triggered when the comment actually posted, so a
+        // failed post does not wrongly discount a real new comment below.
+        if (postCodexReviewComment(prUrl, customPrompt)) {
+          codexTriggeredThisTick.add(prUrl);
+        }
       }
       state.prCodexReviewFallbackPosted = true;
     }
@@ -1780,7 +1790,13 @@ export async function checkAndRedispatchPrComments(state: OrchestrationState, tr
   // Count new comments since the last check.
   let totalNewComments = 0;
   for (const agent of agentsWithPr) {
-    totalNewComments += fetchNewPrCommentCount(state.agentStates[agent.name]!.prUrl!, lastCheck);
+    const prUrl = state.agentStates[agent.name]!.prUrl!;
+    let newComments = fetchNewPrCommentCount(prUrl, lastCheck);
+    // gh-ludics-604: subtract our own @codex review trigger posted this tick (the
+    // GitHub API is read-your-writes, so the fresh trigger is in this count) so it
+    // does not read as new coder-facing feedback and spuriously redispatch the coder.
+    if (codexTriggeredThisTick.has(prUrl)) newComments = Math.max(0, newComments - 1);
+    totalNewComments += newComments;
   }
 
   state.prCommentsLastCheckAt = now;

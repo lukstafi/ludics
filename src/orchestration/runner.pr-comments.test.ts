@@ -269,6 +269,34 @@ describe("checkAndRedispatchPrComments deferred review fallback", () => {
     expect(state.prCodexReviewFallbackPosted).toBe(true);
   });
 
+  test("does NOT redispatch the coder for its own @codex review trigger counted this tick (gh-ludics-604)", async () => {
+    // Codex review #608: at delay 0 the trigger is posted this tick; GitHub is
+    // read-your-writes so fetchNewPrCommentCount returns that fresh trigger as a
+    // "new comment". It must be discounted, not treated as coder-facing feedback.
+    reviewSpy.mockReturnValue(false);
+    commentSpy.mockReturnValue(false);
+    commentCountSpy.mockReturnValue(1); // the self-trigger, counted by the API
+    const state = makePrCommentsState({ prCodexReviewDeferredSince: nowSec });
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(postSpy).toHaveBeenCalledTimes(1);               // trigger posted
+    expect(state.prCommentsRedispatchCount).toBeUndefined(); // coder NOT redispatched
+    // Quiet path taken. Mutation: without the discount, totalNewComments is 1, the
+    // redispatch branch runs and sets prCommentsQuietSince = 0 — this assertion fails.
+    expect(state.prCommentsQuietSince).toBeGreaterThan(0);
+  });
+
+  test("still redispatches when a real comment arrives alongside the @codex trigger (only our own is discounted)", async () => {
+    reviewSpy.mockReturnValue(false);
+    commentSpy.mockReturnValue(false);
+    commentCountSpy.mockReturnValue(2); // 1 = our trigger, 1 = a genuine new comment
+    const state = makePrCommentsState({ prCodexReviewDeferredSince: nowSec });
+    await checkAndRedispatchPrComments(state, dummyTransport);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    // 2 − 1(our trigger) = 1 > 0 ⇒ the genuine comment still redispatches the coder.
+    expect(state.prCommentsRedispatchCount).toBe(1);
+    expect(state.prCommentsQuietSince).toBe(0);
+  });
+
   test("does not re-post fallback once already posted, keeps waiting for review", async () => {
     reviewSpy.mockReturnValue(false);
     const state = makePrCommentsState({
