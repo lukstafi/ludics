@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, afterEach, spyOn, setDefaultTimeout
 import { existsSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { pairReviewVerdict } from "./phases.ts";
+import * as phases from "./phases.ts";
 import { applyPhaseSideEffects, checkAndAnnotatePrBodyDrift, maybePostCodexReviewRequests, checkAndRedispatchPrComments, resetPrCommentsState, validateAgentPrFiles } from "./runner.ts";
 import type { OrchestrationTransport } from "./transport.ts";
 import * as notify from "../notify.ts";
@@ -533,6 +534,79 @@ describe("checkAndRedispatchPrComments conflict detection", () => {
     await checkAndRedispatchPrComments(state, transport);
     expect(transport.sendTurnCalls).toHaveLength(1);
     expect(transport.sendTurnCalls[0]!.agent).toBe("coder");
+  });
+
+  // gh-ludics-600 AC(d): base-integration conflicts route to the CODER ONLY.
+  // These two tests force `agentParticipatesInPhase` true for BOTH agents so the
+  // `agent.role === "coder"` filter in checkAndRedispatchPrComments is the SOLE
+  // guard under test (otherwise the phase's coder-only participation rule would
+  // shadow the filter and the test would pass vacuously). Mutation: removing
+  // `&& agent.role === "coder"` makes the reviewer redispatch under both setups.
+  function makeDuoConflictState(): OrchestrationState {
+    return makeConflictState({
+      mode: "duo",
+      prMergeableStates: { coder: "clean", reviewer: "clean" },
+      agents: [
+        { name: "coder", provider: "claude-code", role: "coder", model: "opus-4", branch: "a", worktreePath: "/tmp/a" },
+        { name: "reviewer", provider: "codex", role: "reviewer", model: "o3-pro", branch: "b", worktreePath: "/tmp/b" },
+      ],
+      agentStates: {
+        coder: {
+          status: "pr-comments-done", statusEpoch: nowSec, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/42", interrupted: false,
+          turnLifecycle: null,
+        },
+        reviewer: {
+          status: "pr-comments-done", statusEpoch: nowSec, statusMessage: "",
+          prUrl: "https://github.com/test/repo/pull/43", interrupted: false,
+          turnLifecycle: null,
+        },
+      },
+    });
+  }
+
+  test("reviewer-only dirty PR does NOT redispatch (coder-only handoff)", async () => {
+    const participatesSpy = spyOn(phases, "agentParticipatesInPhase").mockReturnValue(true);
+    try {
+      verificationSpy.mockImplementation((url: string) => {
+        if (url.includes("pull/43")) {
+          return { exists: true, state: "open", merged: false, mergeableState: "dirty", reason: "ok" };
+        }
+        return { exists: true, state: "open", merged: false, mergeableState: "clean", reason: "ok" };
+      });
+      const transport = makeConflictTransport();
+      const state = makeDuoConflictState();
+      await checkAndRedispatchPrComments(state, transport);
+      // No redispatch at all — the dirty PR belongs to the reviewer, and the
+      // coder-only filter drops it even though the reviewer fully participates.
+      expect(transport.sendTurnCalls).toHaveLength(0);
+      // Edge tracking still updates for the reviewer (so a later coder-side
+      // conflict isn't masked by a stale "clean" entry).
+      expect(state.prMergeableStates!.reviewer).toBe("dirty");
+    } finally {
+      participatesSpy.mockRestore();
+    }
+  });
+
+  // When BOTH PRs go dirty in the same poll, exactly one redispatch fires and it
+  // targets the coder — never both agents (avoids a two-agent resolution race).
+  test("both coder + reviewer dirty redispatches the coder only (never both)", async () => {
+    const participatesSpy = spyOn(phases, "agentParticipatesInPhase").mockReturnValue(true);
+    try {
+      verificationSpy.mockReturnValue({
+        exists: true, state: "open", merged: false, mergeableState: "dirty", reason: "ok",
+      });
+      const transport = makeConflictTransport();
+      const state = makeDuoConflictState();
+      await checkAndRedispatchPrComments(state, transport);
+      expect(transport.sendTurnCalls).toHaveLength(1);
+      expect(transport.sendTurnCalls[0]!.agent).toBe("coder");
+      // Both PRs' states are still tracked.
+      expect(state.prMergeableStates!.coder).toBe("dirty");
+      expect(state.prMergeableStates!.reviewer).toBe("dirty");
+    } finally {
+      participatesSpy.mockRestore();
+    }
   });
 
   test("does NOT advance prCommentsLastCheckAt on conflict dispatch", async () => {
