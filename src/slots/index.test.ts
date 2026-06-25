@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { hostname as osHostname, tmpdir } from "os";
 import { join } from "path";
-import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS, reinitTtydPid, setWorkerSlotsOverride, persistSlotLiveness, slotIsDuoMember } from "./index.ts";
+import { slotAssign, slotClear, slotResume, slotStart, slotSetMode, slotStop, runSlot, markSlotSetupFailed, autoFillAdapterArgs, makeAdapterContext, slotPreempt, slotReset, slotRestore, validateAssignAdapter, VALID_ASSIGN_ADAPTERS, reinitTtydPid, setWorkerSlotsOverride, persistSlotLiveness, slotIsDuoMember, setPendingStartFingerprint, getPendingStartFingerprint } from "./index.ts";
 import * as clusterHttpMod from "../cluster-http.ts";
 import * as tmuxAdapterMod from "../adapters/tmux-adapter.ts";
 import * as t3codeServerMod from "../t3code/server.ts";
@@ -908,6 +908,27 @@ describe("makeAdapterContext taskId normalization", () => {
   test("preserves a real task id", () => {
     const ctx = makeAdapterContext(1, buildSlotData("task-abc123"));
     expect(ctx.taskId).toBe("task-abc123");
+  });
+
+  test("threads the per-slot start fingerprint onto ctx.expectedTaskIntroCommit (gh-ludics-609 AC2)", () => {
+    // Harness condition: processSlotIntents set a fingerprint for this slot before
+    // dispatching slotStart. makeAdapterContext must surface it so the adapter setup
+    // can refuse a present-but-stale local task file. Absent override → undefined
+    // (controller-local/standalone run, existence-only gate).
+    expect(makeAdapterContext(1, buildSlotData("task-abc123")).expectedTaskIntroCommit).toBeUndefined();
+    setPendingStartFingerprint(1, "deadbeef".repeat(5));
+    try {
+      const ctx = makeAdapterContext(1, buildSlotData("task-abc123"));
+      // Invariant: the exact fingerprint reaches ctx. If makeAdapterContext dropped
+      // the read, resolveTaskContentForSetup would get undefined and the AC2
+      // stale-content limb would go vacuous.
+      expect(ctx.expectedTaskIntroCommit).toBe("deadbeef".repeat(5));
+      // Scoped per slot — a different slot has no fingerprint.
+      expect(makeAdapterContext(2, buildSlotData("task-abc123")).expectedTaskIntroCommit).toBeUndefined();
+    } finally {
+      setPendingStartFingerprint(1, undefined);
+    }
+    expect(getPendingStartFingerprint(1)).toBeUndefined();
   });
 });
 
@@ -2237,6 +2258,79 @@ describe("remote slot dispatch via HTTP", () => {
     expect(data.sessionStarted).toBe("2026-04-04T20:00Z");
 
     clearIntent(1);
+  });
+
+  test("remote slotStart records a start intent carrying the task intro-commit fingerprint (gh-ludics-609 AC4)", async () => {
+    // Pin the controller machine via a named cluster entry + LUDICS_CLUSTER_MACHINE_NAME
+    // rather than includeSelf's osHostname() match, which is host-dependent in this
+    // worktree (see reference_slots_tests_pin_cluster_machine_env).
+    const SAVED_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+    const cfgDir = join(TMP, ".config", "ludics");
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(join(cfgDir, "config.yaml"), `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: ctrl-node
+      host: ctrl-node.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: worker-a
+      host: worker-a.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    process.env.LUDICS_CONFIG = join(cfgDir, "config.yaml");
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "ctrl-node"; // this host = the controller
+
+    const harness = join(TMP, "ludics-state", "harness");
+    const tasksDir = join(harness, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeSlotJson(1, emptySlotData(1), harness);
+    writeSlotJson(2, emptySlotData(2), harness);
+    writeTask(tasksDir, "task-fp-intent", "Fingerprint intent test");
+
+    // git-init the harness and commit the task file so taskFileIntroCommit resolves a
+    // real SHA (the controller's authoritative checkout). Without git this would be
+    // "" and the field would be (correctly) dropped — here we want the populated path.
+    const git = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd: harness, stdout: "pipe", stderr: "pipe" });
+    git(["init", "-q"]);
+    git(["config", "user.email", "t@t"]);
+    git(["config", "user.name", "t"]);
+    git(["config", "commit.gpgsign", "false"]);
+    git(["add", "-A"]);
+    git(["commit", "-q", "-m", "add task"]);
+    const expectedSha = git(["rev-parse", "HEAD"]).stdout.toString().trim();
+
+    const hbDir = getHeartbeatsDir();
+    mkdirSync(hbDir, { recursive: true });
+    writeFileSync(join(hbDir, "worker-a.json"), JSON.stringify({ epoch: Math.floor(Date.now() / 1000) }));
+
+    try {
+      void slotAssign(1, "task-fp-intent", "tmux", "", "", "", "worker-a");
+      await slotStart(1);
+
+      // Invariant: the controller threads the freshness fingerprint to the worker. If
+      // dropped, the worker's (c) ancestry gate and (b) content gate both go vacuous and
+      // a stale harness could again run the wrong task silently.
+      const intent = getIntentForDashboard(1);
+      expect(intent).not.toBeNull();
+      expect(intent!.action).toBe("start");
+      expect(intent!.machine).toBe("worker-a");
+      expect(intent!.taskIntroCommit).toBe(expectedSha);
+      clearIntent(1);
+    } finally {
+      if (SAVED_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
+      else process.env.LUDICS_CLUSTER_MACHINE_NAME = SAVED_MACHINE;
+    }
   });
 
   test("remote slotStop with --force does not write intent, clears state", async () => {
