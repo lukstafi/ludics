@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { autoCommitWorktree, classifyOrphanDir, cleanupWorktrees, clearGhResolvedMarkers, createWorktrees, deleteBranches, ensureGitExcludes, ensureProposalReachable, ensureUpstreamRemote, GIT_EXCLUDE_ENTRIES, maybeGit, ORPHAN_RECOVERY_ALLOWLIST, orchBranchName, orchWorktreeStem, parseRegisteredWorktreeMatches, proposalReachableFromRef, purgeOrphanDirIfRecoverable, refreshMainBranchFromRemote, removeWorktreeByPath, seedGhResolvedToOrigin, symlinkPeerSync } from "./worktrees.ts";
 import { captureConsoleError, withSyntheticHarness } from "../test-utils.ts";
 import * as spawnMod from "../spawn.ts";
 
-const TMP = join(import.meta.dir, ".test-tmp-worktrees");
+const TMP = realpathSync(mkdtempSync(join(tmpdir(), "ludics-worktrees-test-")));
 
 function run(cmd: string[], cwd: string): void {
   const result = Bun.spawnSync(cmd, {
