@@ -132,8 +132,15 @@ describe("notify ntfy.sh suppression under bun test", () => {
     // cluster section makes clusterCurrentMachineName() return falsy, so
     // isWorkerContext() short-circuits without spawning — and no topics keeps
     // the notify* calls on the "topic not configured" path.
+    //
+    // The config MUST be terminal: omit `state_repo`. resolveConfigPath() treats
+    // a pointer config carrying `state_repo`/`state_path` as a redirect to
+    // $HOME/<repoName>/<statePath>/config.yaml and, when that file exists (the
+    // real harness clone on a controller — exactly the env we're neutralizing),
+    // loads it instead. Without `state_repo` the redirect branch is skipped and
+    // our synthetic config is used directly, independent of $HOME.
     const configPath = join(tmpDir, "config.yaml");
-    writeFileSync(configPath, "state_repo: owner/ludics-state\nstate_path: harness\nslots:\n  count: 2\n");
+    writeFileSync(configPath, "slots:\n  count: 2\n");
     process.env.LUDICS_CONFIG = configPath;
     // Set BUN_TEST explicitly: bun-test does not always populate it. The
     // guard's primary signal is BUN_TEST; assert from the test that the
