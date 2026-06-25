@@ -3,7 +3,7 @@
 // Server handlers are called by dashboard-server routing.
 // Client helper is used by slots, cluster, and worker-signal modules.
 
-import { existsSync, readFileSync, mkdirSync, readdirSync, unlinkSync, appendFileSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, readdirSync, unlinkSync, appendFileSync, writeFileSync } from "fs";
 import { writeJsonFile, writeJsonFileCompact } from "./json.ts";
 import { join } from "path";
 import { harnessDir, loadConfigSync, slotsCount, stateRepoDir } from "./config.ts";
@@ -360,6 +360,18 @@ export async function clusterPostTaskSectionAppend(taskId: string, section: stri
   return resolveAndPost("/api/cluster/task-section-append", { taskId, section, line });
 }
 
+/** Worker→controller: deliver a retrospective JSON for the controller to write into
+ *  its authoritative harness (gh-ludics-609 write-leak closure). */
+export async function clusterPostRetrospective(taskId: string, data: object): Promise<{ ok: boolean }> {
+  return resolveAndPost("/api/cluster/retrospective", { taskId, data });
+}
+
+/** Worker→controller: deliver a single workflow-feedback markdown file for the
+ *  controller to copy into its harness feedback/ dir (gh-ludics-609). */
+export async function clusterPostFeedback(taskId: string, filename: string, content: string): Promise<{ ok: boolean }> {
+  return resolveAndPost("/api/cluster/feedback", { taskId, filename, content });
+}
+
 export async function clusterGetTask(taskId: string): Promise<{ ok: boolean; data?: string }> {
   const result = await resolveAndGet(`/api/cluster/task/${taskId}`);
   return { ok: result.ok, data: typeof result.data === "string" ? result.data : undefined };
@@ -492,6 +504,8 @@ const taskMatch = pathname.match(/^\/api\/cluster\/task\/(.+)$/);
     case "/api/cluster/task-update": return handlePostTaskUpdate(body);
     case "/api/cluster/task-section-append": return handlePostTaskSectionAppend(body);
     case "/api/cluster/slot-update": return handlePostSlotUpdate(body);
+    case "/api/cluster/retrospective": return handlePostRetrospective(body);
+    case "/api/cluster/feedback": return handlePostFeedback(body);
     default:
       return jsonResponse(404, { error: "not found" });
   }
@@ -764,6 +778,44 @@ function handlePostSlotUpdate(body: Record<string, unknown>): Response {
   if (typeof body.git === "string") data.git = body.git;
 
   writeSlotJson(slot, data);
+  return jsonResponse(200, { ok: true });
+}
+
+// gh-ludics-609 write-leak closure: workers POST their retrospective JSON and
+// workflow-feedback files to the controller instead of writing the tracked harness
+// directly (which would dirty the worker checkout and wedge the next git pull).
+// The controller writes them into its authoritative harness here.
+const RETRO_TASK_ID_RE = /^[a-z0-9_-]+$/i;
+
+function handlePostRetrospective(body: Record<string, unknown>): Response {
+  const taskId = String(body.taskId ?? "");
+  if (!taskId || !RETRO_TASK_ID_RE.test(taskId)) return jsonResponse(400, { error: "invalid task id" });
+  if (!body.data || typeof body.data !== "object") return jsonResponse(400, { error: "data object required" });
+  try {
+    const dir = join(harnessDir(), "retrospectives");
+    mkdirSync(dir, { recursive: true });
+    writeJsonFile(join(dir, `${taskId}.json`), body.data);
+  } catch (err) {
+    return jsonResponse(500, { error: String(err) });
+  }
+  return jsonResponse(200, { ok: true });
+}
+
+function handlePostFeedback(body: Record<string, unknown>): Response {
+  const taskId = String(body.taskId ?? "");
+  const filename = String(body.filename ?? "");
+  const content = String(body.content ?? "");
+  if (!taskId || !RETRO_TASK_ID_RE.test(taskId)) return jsonResponse(400, { error: "invalid task id" });
+  // Only workflow-feedback markdown, no path separators (traversal guard).
+  if (!/^workflow-feedback[\w.-]*\.md$/.test(filename)) return jsonResponse(400, { error: "invalid filename" });
+  try {
+    const dir = join(harnessDir(), "feedback");
+    mkdirSync(dir, { recursive: true });
+    // Mirror persistWorkflowFeedback's <taskId>--<original> collision-avoidance naming.
+    writeFileSync(join(dir, `${taskId}--${filename}`), content);
+  } catch (err) {
+    return jsonResponse(500, { error: String(err) });
+  }
   return jsonResponse(200, { ok: true });
 }
 

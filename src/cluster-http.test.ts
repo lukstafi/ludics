@@ -256,6 +256,42 @@ describe("handleSignal dispatch", () => {
 
 import { existsSync, readFileSync } from "fs";
 
+// gh-ludics-609 write-leak closure: the controller-side endpoints workers POST to.
+// Reuses the TMP/harnessDir/config fixture from the handleSignal suite above.
+describe("POST /api/cluster/retrospective + /api/cluster/feedback (gh-ludics-609)", () => {
+  test("retrospective: writes harness/retrospectives/<id>.json on the controller", async () => {
+    const req = makeRequest("/api/cluster/retrospective", { taskId: "task-abc", data: { taskId: "task-abc", title: "T" } });
+    const resp = await handleClusterRequest(req, "/api/cluster/retrospective");
+    expect(resp.status).toBe(200);
+    const file = join(harnessDir, "retrospectives", "task-abc.json");
+    expect(existsSync(file)).toBe(true);
+    expect(JSON.parse(readFileSync(file, "utf-8")).title).toBe("T");
+  });
+
+  test("retrospective: rejects an invalid task id (traversal guard) with 400 and writes nothing", async () => {
+    const req = makeRequest("/api/cluster/retrospective", { taskId: "../evil", data: { x: 1 } });
+    const resp = await handleClusterRequest(req, "/api/cluster/retrospective");
+    expect(resp.status).toBe(400);
+    expect(existsSync(join(harnessDir, "retrospectives"))).toBe(false);
+  });
+
+  test("feedback: writes harness/feedback/<id>--<file>.md on the controller", async () => {
+    const req = makeRequest("/api/cluster/feedback", { taskId: "task-fb", filename: "workflow-feedback-coder.md", content: "body\n" });
+    const resp = await handleClusterRequest(req, "/api/cluster/feedback");
+    expect(resp.status).toBe(200);
+    const file = join(harnessDir, "feedback", "task-fb--workflow-feedback-coder.md");
+    expect(existsSync(file)).toBe(true);
+    expect(readFileSync(file, "utf-8")).toBe("body\n");
+  });
+
+  test("feedback: rejects a filename with path separators (traversal) with 400", async () => {
+    const req = makeRequest("/api/cluster/feedback", { taskId: "task-fb", filename: "../../etc/passwd", content: "x" });
+    const resp = await handleClusterRequest(req, "/api/cluster/feedback");
+    expect(resp.status).toBe(400);
+    expect(existsSync(join(harnessDir, "feedback"))).toBe(false);
+  });
+});
+
 // Reuses the TMP/harnessDir/config fixture from the handleSignal suite above.
 describe("atomic writes for intent/heartbeat/orchestration-state", () => {
   test("recordIntent writes a round-trippable file with no .tmp leftover", async () => {
