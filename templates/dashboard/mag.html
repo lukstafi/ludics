@@ -153,9 +153,26 @@
                 }
             }
 
-            if (results.length > 0) {
+            // Recently dropped (stale): condition-gated requests consumed at
+            // delivery time because their predicate went stale (task-c16f71b5).
+            // Read-only observability list, not an actionable queue.
+            const dropped = results.filter(r => r && r.status === 'skipped-stale').slice(0, 10);
+            const completed = results.filter(r => !r || r.status !== 'skipped-stale');
+
+            if (dropped.length > 0) {
+                html += '<div class="mag-queue-section-title">Recently dropped (stale)</div>';
+                for (const item of dropped) {
+                    const action = escapeHtml(String(item.action || 'unknown'));
+                    const task = item.task ? ' ' + escapeHtml(String(item.task)) : '';
+                    const reason = item.reason ? ' — ' + escapeHtml(String(item.reason)) : '';
+                    const ts = item.timestamp ? `<div class="timestamp">${escapeHtml(String(item.timestamp))}</div>` : '';
+                    html += `<div class="mag-queue-item dropped-stale"><span class="action">[dropped]</span> ${action}${task}${reason}${ts}</div>`;
+                }
+            }
+
+            if (completed.length > 0) {
                 html += '<div class="mag-queue-section-title">Recent</div>';
-                for (const item of results) {
+                for (const item of completed) {
                     if (item.error) {
                         html += `<div class="mag-queue-item"><span class="action">[parse error]</span></div>`;
                         continue;

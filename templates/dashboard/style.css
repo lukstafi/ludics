@@ -2191,6 +2191,15 @@ footer a:hover {
 .mag-queue-item .action { font-weight: 600; }
 .mag-queue-item .timestamp { color: var(--text-muted); font-size: 0.72rem; }
 
+/* Recently dropped (stale) requests (task-c16f71b5). Amber `--warning` accent
+   is theme-aware across all three themes; deliberately not blue, which reads as
+   low-contrast on dark backgrounds (memory feedback_blue_low_luminosity). */
+.mag-queue-item.dropped-stale {
+    border-left: 2px solid var(--warning);
+    color: var(--text-muted);
+}
+.mag-queue-item.dropped-stale .action { color: var(--warning); }
+
 .mag-queue-actions {
     display: inline-flex;
     gap: 4px;
