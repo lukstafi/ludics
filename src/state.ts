@@ -132,6 +132,41 @@ export function statePull(): boolean {
   return true;
 }
 
+/**
+ * Worker-side dispatch-time freshness gate (gh-ludics-609 (c)/AC5).
+ *
+ * Refresh the local state repo from origin, then verify the controller-supplied
+ * task introducing-commit is an ancestor of the worker's harness HEAD. Returns
+ * true if the harness is fresh enough to launch, false to refuse.
+ *
+ * Fetch-before-ancestry is load-bearing: a 0-behind `HEAD..origin/main` lies if
+ * the worker has not fetched, and pre-fetch the worker may not even hold the
+ * commit object — `merge-base --is-ancestor` would then report "not an ancestor"
+ * for a commit that IS reachable post-fetch (the worker-deploy stale-ref trap).
+ * So we always `statePull()` (fetch + reset --hard origin/main) first. The reset
+ * is safe because worker runs no longer dirty the harness (gh-ludics-609 write-leak
+ * closure) — a clean checkout always fast-forwards.
+ *
+ * An empty `introCommit` means the controller had no fingerprint (legacy/local
+ * dispatch); callers treat that as "no gate" and should not call this.
+ */
+export function ensureHarnessFreshForCommit(introCommit: string): boolean {
+  if (!introCommit) return true; // no fingerprint supplied → nothing to gate on
+  if (!statePull()) {
+    console.error("ludics: harness freshness gate: fetch/reset failed — refusing start");
+    return false;
+  }
+  const repoDir = stateRepoDir();
+  const r = run(["git", "merge-base", "--is-ancestor", introCommit, "HEAD"], repoDir);
+  if (!r.success) {
+    console.error(
+      `ludics: harness freshness gate: task intro-commit ${introCommit} is not an ancestor ` +
+      `of harness HEAD after fetch — refusing start (stale worker harness)`,
+    );
+  }
+  return r.success;
+}
+
 export function statePush(): void {
   const repoDir = stateRepoDir();
 

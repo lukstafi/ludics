@@ -3968,6 +3968,37 @@ export function fillBlankSnapshotArgsFromIntent(
   return { ...snap, adapterArgs: intent.adapterArgs };
 }
 
+/**
+ * Dispatch decision for the gh-ludics-609 (c)/AC5 freshness gate. Returns a
+ * non-null refusal reason when a `start` intent carrying a task freshness
+ * fingerprint must be REFUSED (harness stale — leave the intent unacked, surface
+ * a setup failure), or `null` to PROCEED. Only `start` intents with a fingerprint
+ * are gated; `stop`/`resume` and fingerprint-less (legacy/local) starts proceed
+ * (the worker falls back to the adapter's existence-only check).
+ *
+ * Pure given an injected freshness checker — exported as a test seam (the live
+ * `processSlotIntents` is not unit-reachable without the controller HTTP stack).
+ * The default checker is the real `ensureHarnessFreshForCommit` (fetch + ancestry).
+ */
+export function startFreshnessRefusal(
+  intent: { action: string; taskId?: string; taskIntroCommit?: string },
+  freshChecker: (introCommit: string) => boolean = ensureHarnessFreshForCommitDefault,
+): string | null {
+  if (intent.action !== "start" || !intent.taskIntroCommit) return null;
+  if (freshChecker(intent.taskIntroCommit)) return null;
+  return `task ${intent.taskId ?? "?"} intro-commit ${intent.taskIntroCommit} ` +
+    `not an ancestor of harness HEAD after fetch (gh-ludics-609)`;
+}
+
+// Indirection so the seam's default arg references a stable symbol even though the
+// real implementation is imported lazily inside processSlotIntents (circular-dep
+// avoidance). Tests inject their own checker, so this default is only the live path.
+function ensureHarnessFreshForCommitDefault(introCommit: string): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { ensureHarnessFreshForCommit } = require("./state.ts") as typeof import("./state.ts");
+  return ensureHarnessFreshForCommit(introCommit);
+}
+
 async function processSlotIntents(freshSlots: Map<number, SlotData> | null): Promise<void> {
   const currentMachine = clusterCurrentMachineName();
   if (!currentMachine) return;
@@ -3977,7 +4008,7 @@ async function processSlotIntents(freshSlots: Map<number, SlotData> | null): Pro
     if (!clusterIsController()) {
       if (!freshSlots) return; // no fresh state — skip
       const { clusterGetIntents, clusterDeleteIntent } = await import("./cluster-http.ts");
-      const { setWorkerSlotsOverride } = await import("./slots/index.ts");
+      const { setWorkerSlotsOverride, setPendingStartFingerprint } = await import("./slots/index.ts");
       const result = await clusterGetIntents();
       if (!result.ok || !result.data) return;
       // result.data is Record<number, PendingIntent> validated by
@@ -4002,8 +4033,30 @@ async function processSlotIntents(freshSlots: Map<number, SlotData> | null): Pro
           // stale local slot-N.json).
           const filled = fillBlankSnapshotArgsFromIntent(freshSlots.get(slotNum), intent);
           if (filled) freshSlots.set(slotNum, filled);
+
+          // gh-ludics-609 (c)/AC5: before launching a start, refresh the harness and
+          // require the assigned task's freshness fingerprint to be an ancestor of
+          // HEAD. A stale checkout (missing/old tasks/<id>.md) is refused loudly —
+          // intent left unacked, surfaced as a setup failure — instead of launching
+          // an agent against an empty/divergent task spec. Fetch precedes the
+          // ancestry test (worker-deploy stale-ref trap). Skipped when the intent
+          // carries no fingerprint (legacy/local dispatch — existence-only gate).
+          const refusal = startFreshnessRefusal(intent);
+          if (refusal) {
+            emitEvent({
+              event_type: "slot_setup_failed", source: "keepalive", scope: "slot", slot: slotNum,
+              message: `refused start: harness stale — ${refusal}`,
+            });
+            shouldAck = false; // leave unacked → controller retry / TTL sweep
+            continue; // do NOT dispatch slotStart against stale content
+          }
+
           // Set fresh controller state so slot operations use it instead of stale local harness
           setWorkerSlotsOverride(freshSlots);
+          // Thread the content fingerprint so the adapter setup re-checks the local
+          // task file (AC2 — catches present-but-stale that the ancestry gate's
+          // post-fetch reset already healed but a racing edit could re-introduce).
+          setPendingStartFingerprint(slotNum, intent.action === "start" ? intent.taskIntroCommit : undefined);
           try {
             switch (intent.action) {
               case "start": await slotStart(slotNum); break;
@@ -4012,6 +4065,7 @@ async function processSlotIntents(freshSlots: Map<number, SlotData> | null): Pro
             }
           } finally {
             setWorkerSlotsOverride(null);
+            setPendingStartFingerprint(slotNum, undefined);
           }
           emitEvent({ event_type: `slot_intent_${intent.action}`, source: "keepalive", scope: "slot", slot: slotNum, message: `processed ${intent.action} intent` });
         } catch (err) {
