@@ -118,11 +118,23 @@ describe("notify ntfy.sh suppression under bun test", () => {
   const ORIGINAL_HARNESS_DIR = process.env.LUDICS_HARNESS_DIR;
   const ORIGINAL_BUN_TEST = process.env.BUN_TEST;
   const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "ludics-notify-suppress-"));
     mkdirSync(join(tmpDir, "journal"), { recursive: true });
     process.env.LUDICS_HARNESS_DIR = tmpDir;
+    // Isolate the config: without this, loadConfigSync resolves the developer's
+    // real ~/config.yaml. On a federation controller that config self-matches
+    // the local hostname, so notifyLog's isWorkerContext() guard spawns
+    // safeSyncOutput (git/hostname) during cluster-identity resolution and
+    // defeats the "0 safeSyncOutput" assertions below. A minimal config with no
+    // cluster section makes clusterCurrentMachineName() return falsy, so
+    // isWorkerContext() short-circuits without spawning — and no topics keeps
+    // the notify* calls on the "topic not configured" path.
+    const configPath = join(tmpDir, "config.yaml");
+    writeFileSync(configPath, "state_repo: owner/ludics-state\nstate_path: harness\nslots:\n  count: 2\n");
+    process.env.LUDICS_CONFIG = configPath;
     // Set BUN_TEST explicitly: bun-test does not always populate it. The
     // guard's primary signal is BUN_TEST; assert from the test that the
     // value the suppression check sees matches what the runner / wrapper
@@ -138,6 +150,8 @@ describe("notify ntfy.sh suppression under bun test", () => {
     else process.env.BUN_TEST = ORIGINAL_BUN_TEST;
     if (ORIGINAL_NODE_ENV === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG;
+    else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
   });
 
   test("notifyAgents writes to journal but does NOT invoke safeSyncOutput under BUN_TEST", async () => {
