@@ -118,3 +118,62 @@ describe("queue record — bypassGate field (gh-ludics-538 AC 11)", () => {
     expect("bypassGate" in ev).toBe(false);
   });
 });
+
+// task-c16f71b5: the additive `enqueueSource` field opts an autonomous,
+// condition-gated record into the delivery-time staleness re-check. Mirrors the
+// bypassGate provenance idiom — set-when-on-the-allow-list, omitted otherwise.
+describe("queue record — enqueueSource field (task-c16f71b5)", () => {
+  const getStateDir = withSyntheticHarness(beforeEach, afterEach);
+
+  test("queueRequest persists a valid enqueueSource on the record", () => {
+    queueRequest({ action: "elaborate", task: "task-es" }, { enqueueSource: "keepalive" });
+    const rec = readLastQueueRecord(getStateDir());
+    expect(rec.action).toBe("elaborate");
+    // Invariant: an autonomous record carries its provenance, so the delivery
+    // gate can distinguish it from a user/CLI enqueue. Without this the gate
+    // never fires and stale pops reach Mag again.
+    expect(rec.enqueueSource).toBe("keepalive");
+  });
+
+  test("queueRequest without extras omits enqueueSource (user/CLI records never gated)", () => {
+    queueRequest({ action: "elaborate", task: "task-es" });
+    const rec = readLastQueueRecord(getStateDir());
+    expect(rec.action).toBe("elaborate");
+    expect("enqueueSource" in rec).toBe(false);
+  });
+
+  test("queueRequest with an off-allow-list enqueueSource omits the field", () => {
+    // Only keepalive/sync/retrospective are persisted — a stray value (cast to
+    // bypass tsc, mimicking malformed input) must never land on the record.
+    queueRequest(
+      { action: "elaborate", task: "task-es" },
+      { enqueueSource: "manual" as unknown as "keepalive" },
+    );
+    const rec = readLastQueueRecord(getStateDir());
+    expect("enqueueSource" in rec).toBe(false);
+  });
+
+  test("queueRequestAtHead persists a valid enqueueSource", () => {
+    queueRequestAtHead({ action: "elaborate", task: "task-es" }, { enqueueSource: "sync" });
+    const rec = readFirstQueueRecord(getStateDir());
+    expect(rec.enqueueSource).toBe("sync");
+  });
+
+  test("enqueueSource survives a JSON round-trip on the queue record", () => {
+    queueRequest({ action: "preempt", task: "task-rt", autonomy: "auto" }, { enqueueSource: "sync" });
+    const rec = readLastQueueRecord(getStateDir());
+    // Re-serialize and re-parse to prove the field is not dropped by the
+    // record's own JSON encoding (deliverPoppedSkill re-parses the raw line).
+    const roundTripped = JSON.parse(JSON.stringify(rec)) as Record<string, unknown>;
+    expect(roundTripped.action).toBe("preempt");
+    expect(roundTripped.task).toBe("task-rt");
+    expect(roundTripped.enqueueSource).toBe("sync");
+  });
+
+  test("enqueueSource is NOT mirrored onto the queue_request event payload", () => {
+    queueRequest({ action: "elaborate", task: "task-es" }, { enqueueSource: "keepalive" });
+    const ev = readLastEvent(getStateDir());
+    expect(ev.event_type).toBe("queue_request");
+    expect("enqueueSource" in ev).toBe(false);
+  });
+});

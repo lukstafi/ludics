@@ -298,4 +298,76 @@ describe("mag.html renderQueue — Unresolved deliveries section (gh-ludics-535)
     ]);
     expect(listEl.innerHTML).toContain('<span class="mag-queue-badge">3</span>');
   });
+
+  // task-c16f71b5: skipped-stale result markers render in their own
+  // "Recently dropped (stale)" section, NOT in "Recent".
+  test("a skipped-stale result renders under 'Recently dropped (stale)' with action/task/reason/timestamp", () => {
+    const listEl = { innerHTML: "" };
+    const renderQueue = makeRenderQueue(listEl);
+    renderQueue([], [
+      { id: "req-d", status: "skipped-stale", action: "elaborate", task: "task-x", reason: "already elaborated", timestamp: "2026-06-25T07:44:00Z" },
+    ], []);
+    const html = listEl.innerHTML;
+    const droppedIdx = html.indexOf("Recently dropped (stale)");
+    // Invariant: a stale-drop is visible in its own section — the whole point of
+    // the observability surface. If it fell through to "Recent" or vanished,
+    // this lookup would fail.
+    expect(droppedIdx).toBeGreaterThanOrEqual(0);
+    expect(html).toContain("dropped-stale");
+    expect(html).toContain("elaborate");
+    expect(html).toContain("task-x");
+    expect(html).toContain("already elaborated");
+    expect(html).toContain("2026-06-25T07:44:00Z");
+  });
+
+  test("a completed result stays in 'Recent', not in the dropped section", () => {
+    const listEl = { innerHTML: "" };
+    const renderQueue = makeRenderQueue(listEl);
+    renderQueue([], [
+      { id: "req-ok", status: "completed", action: "elaborate", task: "task-ok" },
+      { id: "req-d", status: "skipped-stale", action: "preempt", task: "task-d", reason: "no longer preemptable" },
+    ], []);
+    const html = listEl.innerHTML;
+    const droppedIdx = html.indexOf("Recently dropped (stale)");
+    const recentIdx = html.indexOf("Recent</div>");
+    // Both sections present; the completed item lives under Recent, the stale
+    // drop under its own header.
+    expect(droppedIdx).toBeGreaterThanOrEqual(0);
+    expect(recentIdx).toBeGreaterThan(droppedIdx);
+    expect(html).toContain("no longer preemptable");
+  });
+
+  test("escapes the dropped reason (XSS guard)", () => {
+    const listEl = { innerHTML: "" };
+    const renderQueue = makeRenderQueue(listEl);
+    renderQueue([], [
+      { id: "req-x", status: "skipped-stale", action: "elaborate", task: "t", reason: "<script>evil</script>" },
+    ], []);
+    expect(listEl.innerHTML).toContain("&lt;script&gt;evil&lt;/script&gt;");
+    expect(listEl.innerHTML).not.toContain("<script>evil");
+  });
+});
+
+// task-c16f71b5: the dropped-stale row styling must be theme-aware (amber
+// `--warning`), not a hardcoded blue literal that reads low-contrast on dark
+// themes (memory feedback_blue_low_luminosity).
+describe("style.css — .dropped-stale theme-aware accent (task-c16f71b5)", () => {
+  const style = readFileSync(join(import.meta.dir, "style.css"), "utf-8");
+
+  test(".dropped-stale rule exists and references the --warning theme var", () => {
+    const ruleIdx = style.indexOf(".mag-queue-item.dropped-stale");
+    expect(ruleIdx).toBeGreaterThanOrEqual(0);
+    // The rule block must use var(--warning); absence would mean the drop styling
+    // is either missing or pinned to a non-theme color.
+    const block = style.slice(ruleIdx, ruleIdx + 400);
+    expect(block).toContain("var(--warning)");
+  });
+
+  test(".dropped-stale does not hardcode a blue hex literal", () => {
+    const ruleIdx = style.indexOf(".mag-queue-item.dropped-stale");
+    const block = style.slice(ruleIdx, ruleIdx + 400);
+    // Guard the load-bearing-contrast invariant: no #..ff / blue() in the rule.
+    expect(block.toLowerCase()).not.toMatch(/#[0-9a-f]{0,4}ff\b/);
+    expect(block.toLowerCase()).not.toContain("blue");
+  });
 });

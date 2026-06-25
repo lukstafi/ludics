@@ -11,7 +11,7 @@ import { atomicWriteFileSync, isPlainObject, writeJsonFile, writeJsonFileCompact
 import { listStashes } from "./slots/preempt.ts";
 import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
-import { queueRequest, queueRequestAtHead, queueHasCompactForTrigger, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults, parseQueueLines } from "./queue.ts";
+import { queueRequest, queueRequestAtHead, queueHasCompactForTrigger, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults, parseQueueLines, writeResult } from "./queue.ts";
 import { getUrl } from "./network.ts";
 import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterDoctor, wslPersistenceStatus } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
@@ -507,6 +507,122 @@ export function deliveryGateBlocked(): boolean {
   return listInFlight().some(r => !existsSync(magResultFile(r.requestId)));
 }
 
+// ---------------------------------------------------------------------------
+// Delivery-time staleness re-check (task-c16f71b5).
+//
+// A condition-gated request can be correct when enqueued yet stale by the time
+// it is popped: the keepalive queues `elaborate <task>` because the task had no
+// `elaborated:` field, the field lands before the pop, and the stale pop is then
+// delivered as a no-op "already-elaborated" round-trip (the gh-ludics-609
+// incident). The gate below re-evaluates the motivating predicate at pop time
+// and drops the request when it no longer applies.
+//
+// The gate is SOURCE-keyed, not action-keyed: the same action can be enqueued
+// autonomously OR via manual CLI, and only the autonomous copy carries
+// `enqueueSource`. A record without `enqueueSource` is never dropped here.
+// ---------------------------------------------------------------------------
+
+/** A per-action staleness predicate. Returns `true` when the request still
+ *  applies (deliver), or `false` / a non-empty reason string when the request
+ *  is stale (drop — the string carries the human-readable reason). Synchronous
+ *  and file-read-only, matching `deliverPoppedSkill`'s sync body. */
+type StillApplicable = (record: Record<string, unknown>) => boolean | string;
+
+/** Read a task file's content, or `null` when missing/unreadable. */
+function readTaskFileContent(taskId: string): string | null {
+  if (!taskId) return null;
+  const file = join(harnessDir(), "tasks", `${taskId}.md`);
+  if (!existsSync(file)) return null;
+  try {
+    return readFileSync(file, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/** True iff every child task (`dependencies.subtask_of === containerId`) is in a
+ *  terminal status. Mirrors `containerCompletionSweep` in tasks/sync.ts — both
+ *  read `dependencies.subtask_of` and treat `TERMINAL_STATUSES` as the
+ *  child-resolved set, so the delivery re-check and the enqueue sweep cannot
+ *  drift. A container with zero matching children returns `true` (no open work).
+ */
+function containerChildrenAllTerminal(containerId: string): boolean {
+  const tasksDir = join(harnessDir(), "tasks");
+  let files: string[];
+  try {
+    files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".md"));
+  } catch {
+    return true;
+  }
+  for (const f of files) {
+    let fm;
+    try {
+      fm = parseTaskFrontmatter(readFileSync(join(tasksDir, f), "utf-8"));
+    } catch {
+      continue;
+    }
+    if (fm.dependencies?.subtask_of !== containerId) continue;
+    if (!TERMINAL_STATUSES.includes(fm.status ?? "")) return false;
+  }
+  return true;
+}
+
+/** Per-action delivery-time staleness predicates. An action absent from this
+ *  registry defaults to "always applicable" (deliver) — adding a new gated
+ *  action is a single entry. `process-suggestions` is intentionally absent: its
+ *  "already processed" condition has no cheap synchronous marker (the skill's
+ *  idempotency is relates_to-overlap based), so it is tagged for provenance but
+ *  left to the in-skill guard. */
+const STILL_APPLICABLE: Record<string, StillApplicable> = {
+  // gh-ludics-609 incident predicate: drop once the task is gone, no longer
+  // ready, a non-leaf container, or already elaborated.
+  elaborate: (record) => {
+    const task = String(record.task ?? "");
+    const content = readTaskFileContent(task);
+    if (content === null) return "task file gone";
+    const fm = parseTaskFrontmatter(content);
+    if (fm.status !== undefined && fm.status !== "ready") return `not ready (status: ${fm.status})`;
+    if (fm.leaf === false) return "task is a non-leaf container";
+    if (isElaborated(content)) return "already elaborated";
+    return true;
+  },
+  // Drop once a proposal exists, questions reopened, the task left ready, or a
+  // second draft-proposal for the same task is already pending/in-flight.
+  "draft-proposal": (record) => {
+    const task = String(record.task ?? "");
+    const content = readTaskFileContent(task);
+    if (content === null) return "task file gone";
+    if (content.includes("\nproposal:")) return "proposal already exists";
+    if (content.includes("\nhas_questions:")) return "has unanswered questions";
+    const fm = parseTaskFrontmatter(content);
+    if (fm.status !== undefined && fm.status !== "ready") return `not ready (status: ${fm.status})`;
+    if (draftProposalAlreadyPendingOrInFlight(task)) return "draft-proposal already pending/in-flight";
+    return true;
+  },
+  // Sync flips the task to `preempt-queued` immediately on enqueue, so a valid
+  // pending preempt reads `ready` or `preempt-queued`; anything else means the
+  // priority task already got slotted or moved on.
+  preempt: (record) => {
+    const task = String(record.task ?? "");
+    const content = readTaskFileContent(task);
+    if (content === null) return "task file gone";
+    const status = parseTaskFrontmatter(content).status ?? "";
+    if (status === "ready" || status === "preempt-queued") return true;
+    return `no longer preemptable (status: ${status})`;
+  },
+  // Drop once the container is gone, already terminal, or a child reopened
+  // (children no longer all-terminal).
+  "verify-container-completion": (record) => {
+    const task = String(record.task ?? "");
+    const content = readTaskFileContent(task);
+    if (content === null) return "container file gone";
+    const status = parseTaskFrontmatter(content).status ?? "";
+    if (TERMINAL_STATUSES.includes(status)) return "container already terminal";
+    if (!containerChildrenAllTerminal(task)) return "children no longer all terminal";
+    return true;
+  },
+};
+
 /**
  * Deliver one popped skill item into the Mag pane (gh-ludics-535).
  *
@@ -549,6 +665,37 @@ export function deliverPoppedSkill(
       message: `skipped: ${delivered}`,
     });
     return true;
+  }
+  // Delivery-time staleness gate (task-c16f71b5): an autonomously enqueued,
+  // condition-gated request (carrying `enqueueSource`) whose motivating
+  // predicate no longer holds is consumed without sending — same
+  // consume-without-send shape as A6. Records lacking `enqueueSource`
+  // (user/event-driven items + every current record) fall straight through.
+  const rec = parseQueueLines(popped.line)[0];
+  if (rec && typeof rec.enqueueSource === "string") {
+    const action = String(rec.action ?? "");
+    const predicate = STILL_APPLICABLE[action];
+    if (predicate) {
+      const verdict = predicate(rec);
+      if (verdict !== true) {
+        const reason = (typeof verdict === "string" && verdict) ? verdict : `${action} no longer applicable`;
+        const task = String(rec.task ?? "");
+        // Tier-2 (expectsResult !== false): leave a durable, inspectable
+        // skip-marker result (A10 shape). Tier-3 items have no result-file
+        // contract — emit the event only. Never writeInFlight: the item never
+        // went out, so nothing must be left awaiting.
+        if (popped.expectsResult !== false) {
+          writeResult(popped.requestId, "skipped-stale", undefined, { action, task, reason });
+        }
+        emitEvent({
+          event_type: "mag_queue_skipped_stale",
+          source: "keepalive",
+          scope: "mag",
+          message: `dropped stale (${reason}): ${delivered}`,
+        });
+        return true;
+      }
+    }
   }
   const sent = send(MAG_SESSION_NAME, delivered);
   if (sent) {
@@ -3007,7 +3154,7 @@ function maybeUnstickAssignedSlots(): void {
     // Not elaborated — needs elaboration first
     if (!isElaborated(content)) {
       if (!autoProposalDebounced(taskId) && !queueHasPendingActionForTask("elaborate", taskId)) {
-        queueRequest({ action: "elaborate", task: taskId });
+        queueRequest({ action: "elaborate", task: taskId }, { enqueueSource: "keepalive" });
         markAutoProposalQueued(taskId);
         emitEvent({ event_type: "slot_unstick", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `queued elaboration for stuck slot ${slotNum}` });
         console.error(`ludics: slot ${slotNum} stuck — queued elaboration for ${taskId}`);
@@ -3019,7 +3166,7 @@ function maybeUnstickAssignedSlots(): void {
     // Skip if already queued for this specific task (prevents spam when
     // the orchestrator skips in-progress tasks without writing a proposal)
     if (!autoProposalDebounced(taskId) && !draftProposalAlreadyPendingOrInFlight(taskId)) {
-      queueRequest({ action: "draft-proposal", task: taskId });
+      queueRequest({ action: "draft-proposal", task: taskId }, { enqueueSource: "keepalive" });
       markAutoProposalQueued(taskId);
       emitEvent({ event_type: "slot_unstick", source: "keepalive", scope: "slot", slot: slotNum, task: taskId, message: `re-queued draft-proposal for stuck slot ${slotNum}` });
       console.error(`ludics: slot ${slotNum} stuck — re-queued draft-proposal for ${taskId}`);
@@ -3065,7 +3212,7 @@ export function maybeQueueProposals(config?: LudicsFullConfig): void {
     // invisible to it — share the predicate so the in-flight arm is authoritative.
     if (draftProposalAlreadyPendingOrInFlight(task.id)) continue;
 
-    queueRequest({ action: "draft-proposal", task: task.id });
+    queueRequest({ action: "draft-proposal", task: task.id }, { enqueueSource: "keepalive" });
     markAutoProposalQueued(task.id);
     console.error(`ludics: auto-queued draft-proposal for ${task.id} (ready queue position)`);
     return; // one per cycle
@@ -3470,7 +3617,7 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
   const topCandidate = candidates[0]!;
   if (!topCandidate.elaborated) {
     if (!autoProposalDebounced(topCandidate.id)) {
-      queueRequest({ action: "elaborate", task: topCandidate.id });
+      queueRequest({ action: "elaborate", task: topCandidate.id }, { enqueueSource: "keepalive" });
       markAutoProposalQueued(topCandidate.id); // reuse debounce to avoid re-queuing
       emitEvent({ event_type: "task_elaborate_queued", source: "keepalive", scope: "task", task: topCandidate.id, message: `top candidate needs elaboration` });
       console.error(`ludics: top candidate ${topCandidate.id} needs elaboration — queued`);
@@ -3494,7 +3641,7 @@ export async function maybeFillEmptySlots(config?: LudicsFullConfig): Promise<vo
         if (topContent.includes("\nhas_questions:")) {
           // Can't generate proposal yet — skip this candidate entirely
         } else {
-          queueRequest({ action: "draft-proposal", task: topTask.id });
+          queueRequest({ action: "draft-proposal", task: topTask.id }, { enqueueSource: "keepalive" });
           markAutoProposalQueued(topTask.id);
           console.error(`ludics: top candidate ${topTask.id} needs proposal — queued draft-proposal`);
         }

@@ -879,3 +879,202 @@ describe("listInFlight — skips malformed records (A11 robustness)", () => {
     expect(readInFlight("req-MISSING")).toBeNull();
   });
 });
+
+// --- task-c16f71b5: delivery-time staleness gate -----------------------------
+//
+// An autonomously enqueued, condition-gated request (carrying `enqueueSource`)
+// whose motivating predicate no longer holds at pop time is consumed without
+// sending: no `send`, no in-flight record, a `skipped-stale` skip-marker (Tier-2
+// only), and a `mag_queue_skipped_stale` event. Records without `enqueueSource`
+// always deliver.
+
+describe("deliverPoppedSkill — delivery-time staleness gate (task-c16f71b5)", () => {
+  function tasksDir(): string {
+    return join(harnessDir(), "tasks");
+  }
+  function writeTask(id: string, frontmatter: string): void {
+    mkdirSync(tasksDir(), { recursive: true });
+    writeFileSync(join(tasksDir(), `${id}.md`), `---\nid: ${id}\n${frontmatter}---\n\n# ${id}\n`);
+  }
+  function readResult(id: string): Record<string, unknown> | null {
+    if (!existsSync(resultFile(id))) return null;
+    return JSON.parse(readFileSync(resultFile(id), "utf-8")) as Record<string, unknown>;
+  }
+  function skippedStaleEvents(): Record<string, unknown>[] {
+    return readEvents().filter((e) => e.event_type === "mag_queue_skipped_stale");
+  }
+
+  // AC8(a): a stale autonomous elaborate is dropped — no send, skip-marker
+  // written, event emitted, no in-flight record. (The gh-ludics-609 replay.)
+  test("stale autonomous elaborate (already elaborated) is dropped without sending", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    writeTask("task-stale", "status: ready\nleaf: true\nelaborated: 2026-06-25\n");
+    const line = JSON.stringify({ id: "req-EL", action: "elaborate", task: "task-stale", enqueueSource: "keepalive" });
+
+    let sendCalls = 0;
+    const sent = deliverPoppedSkill(
+      { requestId: "req-EL", command: "/ludics-elaborate task-stale", line, expectsResult: true },
+      { send: () => { sendCalls++; return true; } },
+    );
+
+    // The pop is consumed (return true) but the skill is NOT sent — the
+    // invariant that would break under the old behaviour (no-op Mag round-trip).
+    expect(sent).toBe(true);
+    expect(sendCalls).toBe(0);
+    expect(existsSync(inFlightFilePath("req-EL"))).toBe(false);
+    const marker = readResult("req-EL");
+    expect(marker?.status).toBe("skipped-stale");
+    expect(marker?.action).toBe("elaborate");
+    expect(marker?.task).toBe("task-stale");
+    expect(typeof marker?.reason).toBe("string");
+    expect(String(marker?.reason)).toContain("elaborated");
+    expect(skippedStaleEvents().length).toBe(1);
+  });
+
+  // AC8(b): a non-stale autonomous record delivers normally.
+  test("non-stale autonomous elaborate (not yet elaborated) delivers normally", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    writeTask("task-fresh", "status: ready\nleaf: true\n");
+    const line = JSON.stringify({ id: "req-EL2", action: "elaborate", task: "task-fresh", enqueueSource: "keepalive" });
+
+    let sendCalls = 0;
+    const sent = deliverPoppedSkill(
+      { requestId: "req-EL2", command: "/ludics-elaborate task-fresh", line, expectsResult: true },
+      { send: () => { sendCalls++; return true; } },
+    );
+
+    expect(sent).toBe(true);
+    expect(sendCalls).toBe(1);
+    expect(existsSync(inFlightFilePath("req-EL2"))).toBe(true); // delivered → in-flight written
+    expect(readResult("req-EL2")).toBeNull(); // no skip-marker
+    expect(skippedStaleEvents().length).toBe(0);
+  });
+
+  // AC8(c): a record WITHOUT enqueueSource always delivers, even when its
+  // predicate would report stale. Proves the drop is gated on the field, not
+  // the predicate alone — mutation guard against dropping user/CLI records.
+  test("record lacking enqueueSource delivers even when the predicate would say stale", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    writeTask("task-stale-cli", "status: ready\nleaf: true\nelaborated: 2026-06-25\n");
+    // Same already-elaborated task as (a) but no enqueueSource on the line.
+    const line = JSON.stringify({ id: "req-CLI", action: "elaborate", task: "task-stale-cli" });
+
+    let sendCalls = 0;
+    const sent = deliverPoppedSkill(
+      { requestId: "req-CLI", command: "/ludics-elaborate task-stale-cli", line, expectsResult: true },
+      { send: () => { sendCalls++; return true; } },
+    );
+
+    expect(sent).toBe(true);
+    expect(sendCalls).toBe(1);
+    expect(existsSync(inFlightFilePath("req-CLI"))).toBe(true);
+    expect(readResult("req-CLI")).toBeNull();
+    expect(skippedStaleEvents().length).toBe(0);
+  });
+
+  // AC8(d): a Tier-3 drop (expectsResult:false) writes NO result file but still
+  // emits the event.
+  test("Tier-3 stale drop emits the event but writes no result file", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    writeTask("task-stale-t3", "status: ready\nleaf: true\nelaborated: 2026-06-25\n");
+    const line = JSON.stringify({ id: "req-T3", action: "elaborate", task: "task-stale-t3", enqueueSource: "keepalive" });
+
+    let sendCalls = 0;
+    const sent = deliverPoppedSkill(
+      { requestId: "req-T3", command: "/ludics-elaborate task-stale-t3", line, expectsResult: false },
+      { send: () => { sendCalls++; return true; } },
+    );
+
+    expect(sent).toBe(true);
+    expect(sendCalls).toBe(0);
+    expect(readResult("req-T3")).toBeNull(); // Tier-3 → no skip-marker
+    expect(skippedStaleEvents().length).toBe(1); // …but the event still fires
+  });
+
+  // Per-action predicate coverage. Each pair instantiates one drop condition and
+  // its non-stale control, observed at the delivery seam.
+  test("draft-proposal drops when a proposal already exists, delivers when absent", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+
+    writeTask("task-dp1", "status: ready\nleaf: true\nproposal: docs/proposals/x.md\n");
+    const dropLine = JSON.stringify({ id: "req-DP1", action: "draft-proposal", task: "task-dp1", enqueueSource: "keepalive" });
+    let dropped = 0;
+    deliverPoppedSkill({ requestId: "req-DP1", command: "/ludics-draft-proposal task-dp1", line: dropLine, expectsResult: true },
+      { send: () => { dropped++; return true; } });
+    expect(dropped).toBe(0);
+    expect(readResult("req-DP1")?.status).toBe("skipped-stale");
+
+    writeTask("task-dp2", "status: ready\nleaf: true\n");
+    const okLine = JSON.stringify({ id: "req-DP2", action: "draft-proposal", task: "task-dp2", enqueueSource: "keepalive" });
+    let okSends = 0;
+    deliverPoppedSkill({ requestId: "req-DP2", command: "/ludics-draft-proposal task-dp2", line: okLine, expectsResult: true },
+      { send: () => { okSends++; return true; } });
+    expect(okSends).toBe(1);
+    expect(readResult("req-DP2")).toBeNull();
+  });
+
+  test("draft-proposal drops when has_questions is set", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    writeTask("task-dpq", "status: ready\nleaf: true\nhas_questions: true\n");
+    const line = JSON.stringify({ id: "req-DPQ", action: "draft-proposal", task: "task-dpq", enqueueSource: "keepalive" });
+    let sends = 0;
+    deliverPoppedSkill({ requestId: "req-DPQ", command: "/ludics-draft-proposal task-dpq", line, expectsResult: true },
+      { send: () => { sends++; return true; } });
+    expect(sends).toBe(0);
+    expect(String(readResult("req-DPQ")?.reason)).toContain("questions");
+  });
+
+  test("preempt delivers on preempt-queued, drops once the task is in-progress", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+
+    writeTask("task-pre1", "status: preempt-queued\nleaf: true\n");
+    const okLine = JSON.stringify({ id: "req-PRE1", action: "preempt", task: "task-pre1", autonomy: "auto", enqueueSource: "sync" });
+    let okSends = 0;
+    deliverPoppedSkill({ requestId: "req-PRE1", command: "/ludics-preempt task-pre1", line: okLine, expectsResult: true },
+      { send: () => { okSends++; return true; } });
+    expect(okSends).toBe(1);
+
+    writeTask("task-pre2", "status: in-progress\nleaf: true\n");
+    const dropLine = JSON.stringify({ id: "req-PRE2", action: "preempt", task: "task-pre2", autonomy: "auto", enqueueSource: "sync" });
+    let dropSends = 0;
+    deliverPoppedSkill({ requestId: "req-PRE2", command: "/ludics-preempt task-pre2", line: dropLine, expectsResult: true },
+      { send: () => { dropSends++; return true; } });
+    expect(dropSends).toBe(0);
+    expect(readResult("req-PRE2")?.status).toBe("skipped-stale");
+  });
+
+  test("verify-container-completion drops on a reopened child and on a terminal container", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+
+    // Reopened child: container not terminal but a child is back to in-progress.
+    writeTask("task-cont", "status: ready\nleaf: false\n");
+    writeTask("task-child", "status: in-progress\nleaf: true\ndependencies:\n  subtask_of: task-cont\n");
+    const childLine = JSON.stringify({ id: "req-VC1", action: "verify-container-completion", task: "task-cont", enqueueSource: "sync" });
+    let vc1 = 0;
+    deliverPoppedSkill({ requestId: "req-VC1", command: "/ludics-verify-container task-cont", line: childLine, expectsResult: true },
+      { send: () => { vc1++; return true; } });
+    expect(vc1).toBe(0);
+    expect(String(readResult("req-VC1")?.reason)).toContain("children");
+
+    // Container already terminal.
+    writeTask("task-cont2", "status: done\nleaf: false\n");
+    const termLine = JSON.stringify({ id: "req-VC2", action: "verify-container-completion", task: "task-cont2", enqueueSource: "sync" });
+    let vc2 = 0;
+    deliverPoppedSkill({ requestId: "req-VC2", command: "/ludics-verify-container task-cont2", line: termLine, expectsResult: true },
+      { send: () => { vc2++; return true; } });
+    expect(vc2).toBe(0);
+    expect(String(readResult("req-VC2")?.reason)).toContain("terminal");
+  });
+
+  test("verify-container-completion delivers when every child is terminal", async () => {
+    const { deliverPoppedSkill } = await import("./mag.ts");
+    writeTask("task-cont3", "status: ready\nleaf: false\n");
+    writeTask("task-child3", "status: done\nleaf: true\ndependencies:\n  subtask_of: task-cont3\n");
+    const line = JSON.stringify({ id: "req-VC3", action: "verify-container-completion", task: "task-cont3", enqueueSource: "sync" });
+    let sends = 0;
+    deliverPoppedSkill({ requestId: "req-VC3", command: "/ludics-verify-container task-cont3", line, expectsResult: true },
+      { send: () => { sends++; return true; } });
+    expect(sends).toBe(1);
+    expect(readResult("req-VC3")).toBeNull();
+  });
+});
