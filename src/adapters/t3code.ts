@@ -1,7 +1,7 @@
 import { existsSync } from "fs";
 import { parseTaskFrontmatter } from "../tasks/markdown.ts";
 import { resolveTaskContentForSetup } from "./task-launch.ts";
-import { basename, join, resolve } from "path";
+import { basename, resolve } from "path";
 import {
   getGitBranch,
   getMainRepoFromWorktree,
