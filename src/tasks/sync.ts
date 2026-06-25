@@ -794,7 +794,7 @@ function containerCompletionSweep(taskMap: TaskMap): void {
     if (fpUnchanged && containerCompletionDebounced(parentId)) continue;
     if (queueHasPendingActionForTask("verify-container-completion", parentId)) continue;
 
-    queueRequest({ action: "verify-container-completion", task: parentId });
+    queueRequest({ action: "verify-container-completion", task: parentId }, { enqueueSource: "sync" });
     markContainerCompletionQueued(parentId);
     writeContainerCompletionFingerprint(parentId, currentFingerprint);
     emitEvent({
@@ -911,7 +911,7 @@ function tasksQueueElaborations(): void {
 
     if (alreadyQueuedElaborateTasks.has(taskId)) continue;
 
-    queueRequest({ action: "elaborate", task: taskId });
+    queueRequest({ action: "elaborate", task: taskId }, { enqueueSource: "sync" });
     emitEvent({ event_type: "task_elaborate_queued", source: "sync", scope: "task", task: taskId });
     count++;
   }
@@ -998,7 +998,7 @@ function tasksQueuePreemptions(): void {
     if (alreadyQueuedPreemptTasks.has(id)) continue;
 
     const autonomy = preemptAutonomy();
-    queueRequest({ action: "preempt", task: id, autonomy });
+    queueRequest({ action: "preempt", task: id, autonomy }, { enqueueSource: "sync" });
     emitEvent({ event_type: "task_preempt_queued", source: "sync", scope: "task", task: id, message: `priority project: ${project}` });
     // Mark task immediately so subsequent syncs won't re-queue it
     // (closes the race window between queue-pop and actual slot assignment)

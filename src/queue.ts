@@ -158,10 +158,25 @@ export type QueueAction =
  *  `triggeredBy` records the request id that caused a follow-up enqueue
  *  (e.g. the briefing/health-check that gated a /compact) so retried
  *  dispatches can dedup against an already-queued follow-up (PR #552 review
- *  by Codex: send-failure rollback used to double-queue /compact). */
+ *  by Codex: send-failure rollback used to double-queue /compact).
+ *  `enqueueSource` records that an autonomous, condition-gated request was
+ *  enqueued by the keepalive / sync sweep / retrospective writer (task-c16f71b5).
+ *  Like `bypassGate`, it is side-band provenance set at enqueue and read at
+ *  dispatch: `deliverPoppedSkill` re-checks the motivating predicate at pop time
+ *  and drops the request if it went stale. Absence of the field is the
+ *  unconditional-deliver signal — every user-/event-driven item omits it and is
+ *  never re-checked. */
 export interface QueueRequestExtras {
   bypassGate?: boolean;
   triggeredBy?: string;
+  enqueueSource?: "keepalive" | "sync" | "retrospective";
+}
+
+/** True for the three autonomous enqueue provenances that opt a record into the
+ *  delivery-time staleness re-check. An explicit allow-list (not a bare
+ *  `typeof === "string"`) so a stray value can never land on a record. */
+function isEnqueueSource(v: unknown): v is "keepalive" | "sync" | "retrospective" {
+  return v === "keepalive" || v === "sync" || v === "retrospective";
 }
 
 export function queueRequest(req: QueueAction, extras?: QueueRequestExtras): string {
@@ -177,6 +192,7 @@ export function queueRequest(req: QueueAction, extras?: QueueRequestExtras): str
   if (typeof extras?.triggeredBy === "string" && extras.triggeredBy.length > 0) {
     baseRecord.triggeredBy = extras.triggeredBy;
   }
+  if (isEnqueueSource(extras?.enqueueSource)) baseRecord.enqueueSource = extras.enqueueSource;
   withQueueLock(() => {
     appendFileSync(file, JSON.stringify(baseRecord) + "\n");
   });
@@ -239,6 +255,7 @@ export function queueRequestAtHead(req: QueueAction, extras?: QueueRequestExtras
   if (typeof extras?.triggeredBy === "string" && extras.triggeredBy.length > 0) {
     baseRecord.triggeredBy = extras.triggeredBy;
   }
+  if (isEnqueueSource(extras?.enqueueSource)) baseRecord.enqueueSource = extras.enqueueSource;
   queueReinsertHead(JSON.stringify(baseRecord));
   emitEvent(buildQueueRequestEvent(req, requestId));
   return requestId;
