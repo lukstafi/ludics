@@ -18,3 +18,14 @@ if (!process.env.LUDICS_HARNESS_DIR) {
 // preload runs and restore it in their own afterEach/finally, so they are
 // unaffected.
 delete process.env.LUDICS_CLUSTER_MACHINE_NAME;
+
+// Mark the process as a test run so safeSyncOutput refuses to execute real
+// service-manager commands (`launchctl`/`systemctl`) against the live machine.
+// Those binaries address the user's launchd/systemd domain by uid and ignore
+// the HOME sandbox that test setups rely on, so a test exercising the trigger
+// teardown path (e.g. triggers.test.ts "darwin: deletes com.ludics.dashboard.plist")
+// would `launchctl disable`+`bootout` the developer/controller's REAL
+// com.ludics.dashboard job — taking the live dashboard down. CI never saw it
+// (Linux has no launchctl, so the call failed harmlessly); only a darwin
+// controller running the suite was hit. See safeSyncOutput in src/spawn.ts.
+process.env.LUDICS_TEST_MODE = "1";

@@ -36,4 +36,34 @@ describe("safeSyncOutput", () => {
     const r = safeSyncOutput(["echo", "hi"]);
     expect(r.timedOut).toBe(false);
   });
+
+  // Regression guard: service-manager commands (launchctl/systemctl) address
+  // the live launchd/systemd domain by uid and ignore the HOME sandbox, so
+  // running them for real in a test would mutate the developer/controller's
+  // actual jobs (e.g. bootout com.ludics.dashboard). They must be skipped under
+  // LUDICS_TEST_MODE — set by the src/test-setup.ts preload for every test run.
+  describe("service-manager isolation under LUDICS_TEST_MODE", () => {
+    test("preload set LUDICS_TEST_MODE for this test run", () => {
+      expect(process.env.LUDICS_TEST_MODE).toBe("1");
+    });
+
+    test("launchctl is skipped, never spawned (no live-domain mutation)", () => {
+      const r = safeSyncOutput(["launchctl", "bootout", "gui/0/com.ludics.dashboard"]);
+      expect(r.ok).toBe(false);
+      expect(r.exitCode).toBe(-1);
+      expect(r.stderr).toBe("skipped under LUDICS_TEST_MODE");
+    });
+
+    test("systemctl is skipped, never spawned", () => {
+      const r = safeSyncOutput(["systemctl", "--user", "disable", "--now", "ludics-dashboard.service"]);
+      expect(r.ok).toBe(false);
+      expect(r.stderr).toBe("skipped under LUDICS_TEST_MODE");
+    });
+
+    test("guard is targeted — unrelated commands still run in test mode", () => {
+      const r = safeSyncOutput(["echo", "still-runs"]);
+      expect(r.ok).toBe(true);
+      expect(r.stdout).toBe("still-runs");
+    });
+  });
 });
