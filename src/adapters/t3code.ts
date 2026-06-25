@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync } from "fs";
 import { parseTaskFrontmatter } from "../tasks/markdown.ts";
+import { resolveTaskContentForSetup } from "./task-launch.ts";
 import { basename, join, resolve } from "path";
 import {
   getGitBranch,
@@ -1113,10 +1114,14 @@ async function startOrchestratedThreads(
     ),
   );
 
-  // Read proposal path for the reachability guard (AC1–AC5).
-  const taskFilePath_ = join(ctx.harnessDir, "tasks", `${taskId}.md`);
-  const taskContent_ = existsSync(taskFilePath_) ? readFileSync(taskFilePath_, "utf-8") : null;
-  const proposalPath_ = taskContent_ ? (parseTaskFrontmatter(taskContent_).proposal ?? "") : "";
+  // Resolve task content + proposal path, failing loudly on a missing/stale task
+  // file (gh-ludics-609 (b)) instead of silently degrading to an empty spec. The
+  // throw surfaces through the same `slot_setup_failed` path as the proposal-
+  // reachability and project-checkout guards. `expectedTaskIntroCommit` is set on
+  // a worker from the controller's start-intent fingerprint (AC2); unset locally.
+  const { proposalPath: proposalPath_ } = resolveTaskContentForSetup(
+    ctx.harnessDir, taskId, ctx.expectedTaskIntroCommit,
+  );
 
   const setup = createWorktrees(projectDir, taskId, orchestration.agents, undefined, ctx.slot, orchestration.mode, proposalPath_);
   symlinkPeerSync(setup.peerSyncDir, setup.agentWorktrees);

@@ -474,6 +474,33 @@ describe("parsePendingIntent", () => {
     expect(parsePendingIntent({ ...valid, adapterArgs: null })?.adapterArgs).toBeUndefined();
   });
 
+  test("preserves optional taskIntroCommit and round-trips the freshness SHA (gh-ludics-609)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    const sha = "a".repeat(40);
+    const out = parsePendingIntent({ ...valid, taskId: "task-99", taskIntroCommit: sha });
+    // Invariant: the controller-authored task-content freshness fingerprint survives
+    // the parse boundary verbatim. If this dropped/mangled it, the worker's (c)
+    // ancestry gate and (b) content gate would both go vacuous (undefined → skipped).
+    expect(out).toEqual({ action: "start", epoch: NOW, machine: "host-a", taskId: "task-99", taskIntroCommit: sha });
+  });
+
+  test("legacy intent without taskIntroCommit still validates (optional field; gh-ludics-609)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid })?.taskIntroCommit).toBeUndefined();
+  });
+
+  test("string-coerces non-string taskIntroCommit; drops/trims empty after coercion (gh-ludics-609)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid, taskIntroCommit: 42 })?.taskIntroCommit).toBe("42");
+    // Empty / whitespace-only is dropped so a worker with no fingerprint falls back
+    // to the existence-only gate (AC2 fallback), not a vacuous mismatch on "".
+    expect(parsePendingIntent({ ...valid, taskIntroCommit: "" })?.taskIntroCommit).toBeUndefined();
+    expect(parsePendingIntent({ ...valid, taskIntroCommit: "   " })?.taskIntroCommit).toBeUndefined();
+    expect(parsePendingIntent({ ...valid, taskIntroCommit: null })?.taskIntroCommit).toBeUndefined();
+    // Surrounding whitespace is trimmed so the ancestry compare uses a bare SHA.
+    expect(parsePendingIntent({ ...valid, taskIntroCommit: "  abc123  " })?.taskIntroCommit).toBe("abc123");
+  });
+
   test("rejects non-bool preserveState (no sensible coercion target)", async () => {
     const { parsePendingIntent } = await import("./cluster-http.ts");
     expect(parsePendingIntent({ ...valid, preserveState: "yes" })).toBeNull();

@@ -22,6 +22,7 @@ import { readSlotState, writeSlotState, processAlive } from "../t3code/server.ts
 import { agentCliCommand, isAgentAlive, readTmuxSlotState, startTtyd, tmuxSessionName, ttydPort, writeTmuxOrchestrationSiblingState, writeTmuxSlotState } from "../adapters/tmux-adapter.ts";
 import { tmuxHasSession, tmuxNewSession, tmuxSendCommand, tmuxSendKeys } from "../adapters/tmux.ts";
 import { selectOrchestrationFlagsForTask, isT3codeIntegrationPausedError } from "../adapters/t3code.ts";
+import { taskFileIntroCommit } from "../adapters/task-launch.ts";
 import { readOrchestrationState, persistState, removeOrchestrationState } from "../orchestration/state.ts";
 import { startOrchestrationProcess } from "../orchestration/process.ts";
 import { isRemoteMachine } from "../remote.ts";
@@ -71,6 +72,24 @@ let workerSlotsOverride: Map<number, SlotData> | null = null;
  *  Call with null to clear. */
 export function setWorkerSlotsOverride(data: Map<number, SlotData> | null): void {
   workerSlotsOverride = data;
+}
+
+// Worker-side per-slot task-content freshness fingerprint (gh-ludics-609 (b)/AC2).
+// Set by processSlotIntents from the start intent's `taskIntroCommit` just before
+// dispatching slotStart, so makeAdapterContext can thread it onto the AdapterContext
+// and the adapter setup refuses on present-but-stale task content. Cleared after.
+const pendingStartFingerprint = new Map<number, string>();
+
+/** Record the controller-supplied task intro-commit fingerprint for a slot's
+ *  imminent worker-side start. Pass an empty/undefined commit to clear the slot. */
+export function setPendingStartFingerprint(slot: number, introCommit: string | undefined): void {
+  if (introCommit && introCommit.trim()) pendingStartFingerprint.set(slot, introCommit.trim());
+  else pendingStartFingerprint.delete(slot);
+}
+
+/** Read the pending task intro-commit fingerprint for a slot, or undefined. */
+export function getPendingStartFingerprint(slot: number): string | undefined {
+  return pendingStartFingerprint.get(slot);
 }
 
 /** Mutator-only liveness writer: structural mirror of `parseSlotLiveness` on
@@ -960,6 +979,7 @@ export function makeAdapterContext(slotNum: number, data: SlotData): AdapterCont
     machine: data.machine ?? "",
     harnessDir: harnessDir(),
     stateRepoDir: stateRepoDir(),
+    expectedTaskIntroCommit: getPendingStartFingerprint(slotNum),
   };
 }
 
@@ -1151,9 +1171,14 @@ export async function slotStart(slotNum: number, { startTtyd: shouldStartTtyd = 
     // --duo-peer-slot) even if its up-front freshSlots snapshot raced the
     // controller's two-slot publish. The controller's slot state is authoritative
     // here. Pass undefined (not "") when empty so parsePendingIntent drops it.
+    // gh-ludics-609 (c): thread the assigned task file's freshness fingerprint (the
+    // commit that last touched tasks/<id>.md in the controller's authoritative
+    // harness) so the worker can (1) require it to be an ancestor of its harness
+    // HEAD before launching and (2) refuse a present-but-stale local task file.
     await ensureRemoteMachineReachable(slotNum, ctx.machine, "start", ctx.mode, {
       taskId: ctx.taskId,
       adapterArgs: ctx.adapterArgs.trim() ? ctx.adapterArgs : undefined,
+      taskIntroCommit: ctx.taskId ? (taskFileIntroCommit(harnessDir(), ctx.taskId) || undefined) : undefined,
     });
     return;
   }

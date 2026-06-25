@@ -1,7 +1,30 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { assertRepoRelativeProposalPath, readProposalLaunchMetadata } from "./task-launch.ts";
+import {
+  assertRepoRelativeProposalPath,
+  readProposalLaunchMetadata,
+  resolveTaskContentForSetup,
+  taskFileIntroCommit,
+} from "./task-launch.ts";
+
+/** Initialize a throwaway git repo at `dir` and return a committer that stages all
+ *  and commits, returning the new HEAD sha. Used for the freshness-fingerprint tests. */
+function gitRepo(dir: string): (msg: string) => string {
+  const git = (args: string[]) => {
+    const r = Bun.spawnSync(["git", ...args], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+    return r.stdout.toString().trim();
+  };
+  git(["init", "-q"]);
+  git(["config", "user.email", "t@t"]);
+  git(["config", "user.name", "t"]);
+  git(["config", "commit.gpgsign", "false"]);
+  return (msg: string) => {
+    git(["add", "-A"]);
+    git(["commit", "-q", "-m", msg]);
+    return git(["rev-parse", "HEAD"]);
+  };
+}
 
 const TMP = join(import.meta.dir, ".test-tmp-task-launch");
 
@@ -118,6 +141,66 @@ describe("readProposalLaunchMetadata", () => {
     const meta = readProposalLaunchMetadata("agent-claude", harnessDir, "task-105", projectDir);
     expect(meta?.launchFeature).toBe("add-filter");
     expect(meta?.proposalFile).toBe(join(projectDir, "docs", "proposals", "add-filter.md"));
+  });
+});
+
+describe("resolveTaskContentForSetup (gh-ludics-609 (b))", () => {
+  test("AC1: throws naming the missing task file when tasks/<id>.md is absent", () => {
+    const harnessDir = join(TMP, "harness");
+    mkdirSync(join(harnessDir, "tasks"), { recursive: true });
+    // No task file written.
+    const expectedPath = join(harnessDir, "tasks", "task-missing.md");
+    expect(() => resolveTaskContentForSetup(harnessDir, "task-missing")).toThrow(
+      `slot setup blocked: assigned task file not found at ${expectedPath}`,
+    );
+  });
+
+  test("present file with no fingerprint returns the parsed proposal path (AC2 fallback)", () => {
+    const harnessDir = join(TMP, "harness");
+    mkdirSync(join(harnessDir, "tasks"), { recursive: true });
+    writeFileSync(
+      join(harnessDir, "tasks", "task-present.md"),
+      ["---", "id: task-present", "proposal: docs/proposals/foo.md", "---", "", "# Task"].join("\n"),
+    );
+    const out = resolveTaskContentForSetup(harnessDir, "task-present");
+    expect(out.proposalPath).toBe("docs/proposals/foo.md");
+    expect(out.taskContent).toContain("# Task");
+  });
+
+  test("AC2: throws on intro-commit fingerprint mismatch (present-but-stale)", () => {
+    const harnessDir = join(TMP, "harness-git");
+    mkdirSync(join(harnessDir, "tasks"), { recursive: true });
+    const commit = gitRepo(harnessDir);
+    writeFileSync(
+      join(harnessDir, "tasks", "task-fp.md"),
+      ["---", "id: task-fp", "proposal: docs/p.md", "---", ""].join("\n"),
+    );
+    const localSha = commit("add task");
+    // A non-matching expected fingerprint (controller has a newer commit) → refuse.
+    expect(() => resolveTaskContentForSetup(harnessDir, "task-fp", "0".repeat(40))).toThrow(
+      /task file .* is stale — expected intro-commit 0{40}, local checkout has/,
+    );
+    // The matching fingerprint passes (no throw) and returns the proposal path.
+    const out = resolveTaskContentForSetup(harnessDir, "task-fp", localSha);
+    expect(out.proposalPath).toBe("docs/p.md");
+  });
+});
+
+describe("taskFileIntroCommit (gh-ludics-609 (c))", () => {
+  test("returns the latest commit touching tasks/<id>.md; '' when untracked", () => {
+    const harnessDir = join(TMP, "harness-fp");
+    mkdirSync(join(harnessDir, "tasks"), { recursive: true });
+    const commit = gitRepo(harnessDir);
+    writeFileSync(join(harnessDir, "tasks", "task-z.md"), "v1\n");
+    const sha1 = commit("v1");
+    expect(taskFileIntroCommit(harnessDir, "task-z")).toBe(sha1);
+    // A later edit moves the fingerprint forward — freshness semantics.
+    writeFileSync(join(harnessDir, "tasks", "task-z.md"), "v2\n");
+    const sha2 = commit("v2");
+    expect(sha2).not.toBe(sha1);
+    expect(taskFileIntroCommit(harnessDir, "task-z")).toBe(sha2);
+    // Unknown task / not git-tracked → "".
+    expect(taskFileIntroCommit(harnessDir, "task-none")).toBe("");
   });
 });
 

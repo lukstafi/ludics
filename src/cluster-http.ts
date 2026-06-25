@@ -145,6 +145,13 @@ export interface PendingIntent {
    *  `freshSlots` snapshot raced the controller's two-slot publish. Optional, so
    *  legacy `stop`/`resume` intents and older on-disk files remain valid. */
   adapterArgs?: string;
+  /** Assigned task file's freshness fingerprint (gh-ludics-609 (c)): the SHA of the
+   *  commit that last touched `tasks/<taskId>.md` in the controller's authoritative
+   *  harness (`git log -1 --format=%H -- tasks/<id>.md`). Carried on `start` intents
+   *  so the worker requires it to be an ancestor of its harness HEAD before launching
+   *  and refuses a present-but-stale local task file. Optional, so legacy/local
+   *  dispatch and older on-disk files remain valid. */
+  taskIntroCommit?: string;
 }
 
 /** Validate an untrusted intent payload (file-on-disk read, HTTP body) into
@@ -195,6 +202,15 @@ export function parsePendingIntent(raw: unknown): PendingIntent | null {
   if (r.adapterArgs !== undefined && r.adapterArgs !== null) {
     const adapterArgs = typeof r.adapterArgs === "string" ? r.adapterArgs : String(r.adapterArgs);
     if (adapterArgs.trim() !== "") out.adapterArgs = adapterArgs;
+  }
+
+  // taskIntroCommit (gh-ludics-609): same string-coerce + drop-when-empty contract as
+  // taskId/adapterArgs. An empty/whitespace value is dropped so legacy/local dispatch
+  // (no fingerprint) falls back to the worker's existence-only gate; a non-empty value
+  // carries the controller's task-content freshness SHA.
+  if (r.taskIntroCommit !== undefined && r.taskIntroCommit !== null) {
+    const taskIntroCommit = typeof r.taskIntroCommit === "string" ? r.taskIntroCommit : String(r.taskIntroCommit);
+    if (taskIntroCommit.trim() !== "") out.taskIntroCommit = taskIntroCommit.trim();
   }
 
   if (r.preserveState !== undefined) {
