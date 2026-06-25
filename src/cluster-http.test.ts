@@ -275,6 +275,17 @@ describe("POST /api/cluster/retrospective + /api/cluster/feedback (gh-ludics-609
     expect(existsSync(join(harnessDir, "retrospectives"))).toBe(false);
   });
 
+  test("retrospective: ACCEPTS a dotted task id matching the shared TASK_ID_RE (PR #611 P2)", async () => {
+    // Invariant: the endpoint validator must equal the authoritative TASK_ID_RE
+    // (which allows '.'), else a worker's retrospective for a dotted id is silently
+    // dropped (callers discard POST failures). An inline /^[a-z0-9_-]+$/i mirror
+    // would 400 here. '/' is still rejected (traversal) — see the test above.
+    const req = makeRequest("/api/cluster/retrospective", { taskId: "task-1.2.3", data: { taskId: "task-1.2.3", title: "Dotted" } });
+    const resp = await handleClusterRequest(req, "/api/cluster/retrospective");
+    expect(resp.status).toBe(200);
+    expect(existsSync(join(harnessDir, "retrospectives", "task-1.2.3.json"))).toBe(true);
+  });
+
   test("feedback: writes harness/feedback/<id>--<file>.md on the controller", async () => {
     const req = makeRequest("/api/cluster/feedback", { taskId: "task-fb", filename: "workflow-feedback-coder.md", content: "body\n" });
     const resp = await handleClusterRequest(req, "/api/cluster/feedback");

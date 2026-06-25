@@ -12,7 +12,7 @@ import { parseSlotLiveness, type SlotData } from "./slots/types.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
 import { journalAppend } from "./journal.ts";
-import { updateFrontmatterField, appendToSection } from "./tasks/markdown.ts";
+import { updateFrontmatterField, appendToSection, TASK_ID_RE } from "./tasks/markdown.ts";
 import type { ClusterMachine } from "./cluster.ts";
 
 // --- Config helpers ---
@@ -784,12 +784,15 @@ function handlePostSlotUpdate(body: Record<string, unknown>): Response {
 // gh-ludics-609 write-leak closure: workers POST their retrospective JSON and
 // workflow-feedback files to the controller instead of writing the tracked harness
 // directly (which would dirty the worker checkout and wedge the next git pull).
-// The controller writes them into its authoritative harness here.
-const RETRO_TASK_ID_RE = /^[a-z0-9_-]+$/i;
+// The controller writes them into its authoritative harness here. Task IDs are
+// validated against the authoritative shared TASK_ID_RE (which allows dots, e.g.
+// GitHub-sourced ids) rather than a stricter inline mirror — a mismatch would
+// silently drop retrospectives/feedback for dotted ids since worker callers discard
+// POST failures. TASK_ID_RE forbids "/" so it still blocks path traversal.
 
 function handlePostRetrospective(body: Record<string, unknown>): Response {
   const taskId = String(body.taskId ?? "");
-  if (!taskId || !RETRO_TASK_ID_RE.test(taskId)) return jsonResponse(400, { error: "invalid task id" });
+  if (!taskId || !TASK_ID_RE.test(taskId)) return jsonResponse(400, { error: "invalid task id" });
   if (!body.data || typeof body.data !== "object") return jsonResponse(400, { error: "data object required" });
   try {
     const dir = join(harnessDir(), "retrospectives");
@@ -805,7 +808,7 @@ function handlePostFeedback(body: Record<string, unknown>): Response {
   const taskId = String(body.taskId ?? "");
   const filename = String(body.filename ?? "");
   const content = String(body.content ?? "");
-  if (!taskId || !RETRO_TASK_ID_RE.test(taskId)) return jsonResponse(400, { error: "invalid task id" });
+  if (!taskId || !TASK_ID_RE.test(taskId)) return jsonResponse(400, { error: "invalid task id" });
   // Only workflow-feedback markdown, no path separators (traversal guard).
   if (!/^workflow-feedback[\w.-]*\.md$/.test(filename)) return jsonResponse(400, { error: "invalid filename" });
   try {
