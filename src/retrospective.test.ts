@@ -145,8 +145,101 @@ describe("extractReviews", () => {
   });
 });
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import type { RetrospectiveData } from "./retrospective.ts";
+import { persistWorkflowFeedback } from "./retrospective.ts";
+
+// gh-ludics-609 write-leak closure (AC6/AC8): a worker run must NOT drop untracked
+// files into its tracked harness (retrospectives/<id>.json, feedback/<id>--*.md) —
+// those wedge the next `git pull --ff-only`. Driven via real cluster config +
+// LUDICS_CLUSTER_MACHINE_NAME (the queue.test pattern), with a controller positive
+// control. No HTTP server runs in-test, so the worker POSTs are fire-and-forget
+// no-ops — the assertion is purely that the harness gains no files.
+describe("write-leak closure: worker retrospective/feedback never dirty the harness (gh-ludics-609)", () => {
+  const SAVED_HOME = process.env.HOME;
+  const SAVED_HARNESS = process.env.LUDICS_HARNESS_DIR;
+  const SAVED_CONFIG = process.env.LUDICS_CONFIG;
+  const SAVED_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+  let wtmp = "";
+
+  function writeClusterConfig(homeDir: string): string {
+    const configPath = join(homeDir, "config.yaml");
+    writeFileSync(configPath, `state_repo: owner/ludics-state
+state_path: harness
+slots:
+  count: 2
+cluster:
+  transport: http
+  domain: test.local
+  machines:
+    - name: leader-box
+      host: leader-box.test.local
+      os: macos
+      role: leader
+      always_on: true
+      gpu: ""
+    - name: minipc-wsl
+      host: minipc-wsl.test.local
+      os: linux
+      role: worker
+      always_on: false
+      gpu: ""
+`);
+    return configPath;
+  }
+
+  function setup(machine: string): { harness: string; peerSync: string } {
+    wtmp = mkdtempSync(join(tmpdir(), "ludics-retro-leak-"));
+    process.env.HOME = wtmp;
+    const harness = join(wtmp, "harness");
+    process.env.LUDICS_HARNESS_DIR = harness;
+    process.env.LUDICS_CONFIG = writeClusterConfig(wtmp);
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = machine;
+    mkdirSync(harness, { recursive: true });
+    const peerSync = join(wtmp, "peer-sync");
+    mkdirSync(peerSync, { recursive: true });
+    writeFileSync(join(peerSync, "workflow-feedback-coder.md"), "feedback body\n");
+    return { harness, peerSync };
+  }
+
+  function minimalData(taskId: string): RetrospectiveData {
+    return {
+      taskId, title: "t", status: "done", completedAt: "2026-06-25T00:00:00Z", startedAt: null,
+      slot: null, mode: null, proposalPath: null, prUrl: null, githubUrl: null, phases: [],
+      rounds: 1, mergeRound: 0, planMergeRound: 0, agents: [], verdicts: [], reviews: [],
+      threads: [], turns: [], missingThreads: [], suggestRefactorSummary: null,
+      workflowFeedback: {}, workflowFeedbackSummary: null, collectedAt: "2026-06-25T00:00:00Z",
+    };
+  }
+
+  afterEach(() => {
+    if (SAVED_HOME === undefined) delete process.env.HOME; else process.env.HOME = SAVED_HOME;
+    if (SAVED_HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = SAVED_HARNESS;
+    if (SAVED_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = SAVED_CONFIG;
+    if (SAVED_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = SAVED_MACHINE;
+    try { rmSync(wtmp, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test("worker: writeRetrospective + persistWorkflowFeedback leave retrospectives/ and feedback/ EMPTY", () => {
+    const { harness, peerSync } = setup("minipc-wsl"); // role: worker → isWorkerContext()
+    // Invariant: zero new files under the two tracked dirs. Removing either
+    // isWorkerContext() guard makes the corresponding write land here → fails.
+    writeRetrospective(minimalData("task-worker-leak"));
+    persistWorkflowFeedback(peerSync, "task-worker-leak");
+    expect(existsSync(join(harness, "retrospectives", "task-worker-leak.json"))).toBe(false);
+    const feedbackDir = join(harness, "feedback");
+    const feedbackFiles = existsSync(feedbackDir) ? readdirSync(feedbackDir) : [];
+    expect(feedbackFiles).toHaveLength(0);
+  });
+
+  test("controller positive control: leader-box DOES write both retrospective and feedback", () => {
+    const { harness, peerSync } = setup("leader-box"); // role: leader → controller
+    writeRetrospective(minimalData("task-ctrl-leak"));
+    persistWorkflowFeedback(peerSync, "task-ctrl-leak");
+    expect(existsSync(join(harness, "retrospectives", "task-ctrl-leak.json"))).toBe(true);
+    expect(existsSync(join(harness, "feedback", "task-ctrl-leak--workflow-feedback-coder.md"))).toBe(true);
+  });
+});
 
 describe("writeRetrospective - review-only auto-queue path", () => {
   let harness: string;

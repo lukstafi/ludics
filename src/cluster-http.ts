@@ -3,7 +3,7 @@
 // Server handlers are called by dashboard-server routing.
 // Client helper is used by slots, cluster, and worker-signal modules.
 
-import { existsSync, readFileSync, mkdirSync, readdirSync, unlinkSync, appendFileSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, readdirSync, unlinkSync, appendFileSync, writeFileSync } from "fs";
 import { writeJsonFile, writeJsonFileCompact } from "./json.ts";
 import { join } from "path";
 import { harnessDir, loadConfigSync, slotsCount, stateRepoDir } from "./config.ts";
@@ -12,7 +12,7 @@ import { parseSlotLiveness, type SlotData } from "./slots/types.ts";
 import { slotClear } from "./slots/index.ts";
 import { emitEvent } from "./events.ts";
 import { journalAppend } from "./journal.ts";
-import { updateFrontmatterField, appendToSection } from "./tasks/markdown.ts";
+import { updateFrontmatterField, appendToSection, TASK_ID_RE } from "./tasks/markdown.ts";
 import type { ClusterMachine } from "./cluster.ts";
 
 // --- Config helpers ---
@@ -145,6 +145,13 @@ export interface PendingIntent {
    *  `freshSlots` snapshot raced the controller's two-slot publish. Optional, so
    *  legacy `stop`/`resume` intents and older on-disk files remain valid. */
   adapterArgs?: string;
+  /** Assigned task file's freshness fingerprint (gh-ludics-609 (c)): the SHA of the
+   *  commit that last touched `tasks/<taskId>.md` in the controller's authoritative
+   *  harness (`git log -1 --format=%H -- tasks/<id>.md`). Carried on `start` intents
+   *  so the worker requires it to be an ancestor of its harness HEAD before launching
+   *  and refuses a present-but-stale local task file. Optional, so legacy/local
+   *  dispatch and older on-disk files remain valid. */
+  taskIntroCommit?: string;
 }
 
 /** Validate an untrusted intent payload (file-on-disk read, HTTP body) into
@@ -195,6 +202,15 @@ export function parsePendingIntent(raw: unknown): PendingIntent | null {
   if (r.adapterArgs !== undefined && r.adapterArgs !== null) {
     const adapterArgs = typeof r.adapterArgs === "string" ? r.adapterArgs : String(r.adapterArgs);
     if (adapterArgs.trim() !== "") out.adapterArgs = adapterArgs;
+  }
+
+  // taskIntroCommit (gh-ludics-609): same string-coerce + drop-when-empty contract as
+  // taskId/adapterArgs. An empty/whitespace value is dropped so legacy/local dispatch
+  // (no fingerprint) falls back to the worker's existence-only gate; a non-empty value
+  // carries the controller's task-content freshness SHA.
+  if (r.taskIntroCommit !== undefined && r.taskIntroCommit !== null) {
+    const taskIntroCommit = typeof r.taskIntroCommit === "string" ? r.taskIntroCommit : String(r.taskIntroCommit);
+    if (taskIntroCommit.trim() !== "") out.taskIntroCommit = taskIntroCommit.trim();
   }
 
   if (r.preserveState !== undefined) {
@@ -344,6 +360,18 @@ export async function clusterPostTaskSectionAppend(taskId: string, section: stri
   return resolveAndPost("/api/cluster/task-section-append", { taskId, section, line });
 }
 
+/** Worker→controller: deliver a retrospective JSON for the controller to write into
+ *  its authoritative harness (gh-ludics-609 write-leak closure). */
+export async function clusterPostRetrospective(taskId: string, data: object): Promise<{ ok: boolean }> {
+  return resolveAndPost("/api/cluster/retrospective", { taskId, data });
+}
+
+/** Worker→controller: deliver a single workflow-feedback markdown file for the
+ *  controller to copy into its harness feedback/ dir (gh-ludics-609). */
+export async function clusterPostFeedback(taskId: string, filename: string, content: string): Promise<{ ok: boolean }> {
+  return resolveAndPost("/api/cluster/feedback", { taskId, filename, content });
+}
+
 export async function clusterGetTask(taskId: string): Promise<{ ok: boolean; data?: string }> {
   const result = await resolveAndGet(`/api/cluster/task/${taskId}`);
   return { ok: result.ok, data: typeof result.data === "string" ? result.data : undefined };
@@ -476,6 +504,8 @@ const taskMatch = pathname.match(/^\/api\/cluster\/task\/(.+)$/);
     case "/api/cluster/task-update": return handlePostTaskUpdate(body);
     case "/api/cluster/task-section-append": return handlePostTaskSectionAppend(body);
     case "/api/cluster/slot-update": return handlePostSlotUpdate(body);
+    case "/api/cluster/retrospective": return handlePostRetrospective(body);
+    case "/api/cluster/feedback": return handlePostFeedback(body);
     default:
       return jsonResponse(404, { error: "not found" });
   }
@@ -748,6 +778,47 @@ function handlePostSlotUpdate(body: Record<string, unknown>): Response {
   if (typeof body.git === "string") data.git = body.git;
 
   writeSlotJson(slot, data);
+  return jsonResponse(200, { ok: true });
+}
+
+// gh-ludics-609 write-leak closure: workers POST their retrospective JSON and
+// workflow-feedback files to the controller instead of writing the tracked harness
+// directly (which would dirty the worker checkout and wedge the next git pull).
+// The controller writes them into its authoritative harness here. Task IDs are
+// validated against the authoritative shared TASK_ID_RE (which allows dots, e.g.
+// GitHub-sourced ids) rather than a stricter inline mirror — a mismatch would
+// silently drop retrospectives/feedback for dotted ids since worker callers discard
+// POST failures. TASK_ID_RE forbids "/" so it still blocks path traversal.
+
+function handlePostRetrospective(body: Record<string, unknown>): Response {
+  const taskId = String(body.taskId ?? "");
+  if (!taskId || !TASK_ID_RE.test(taskId)) return jsonResponse(400, { error: "invalid task id" });
+  if (!body.data || typeof body.data !== "object") return jsonResponse(400, { error: "data object required" });
+  try {
+    const dir = join(harnessDir(), "retrospectives");
+    mkdirSync(dir, { recursive: true });
+    writeJsonFile(join(dir, `${taskId}.json`), body.data);
+  } catch (err) {
+    return jsonResponse(500, { error: String(err) });
+  }
+  return jsonResponse(200, { ok: true });
+}
+
+function handlePostFeedback(body: Record<string, unknown>): Response {
+  const taskId = String(body.taskId ?? "");
+  const filename = String(body.filename ?? "");
+  const content = String(body.content ?? "");
+  if (!taskId || !TASK_ID_RE.test(taskId)) return jsonResponse(400, { error: "invalid task id" });
+  // Only workflow-feedback markdown, no path separators (traversal guard).
+  if (!/^workflow-feedback[\w.-]*\.md$/.test(filename)) return jsonResponse(400, { error: "invalid filename" });
+  try {
+    const dir = join(harnessDir(), "feedback");
+    mkdirSync(dir, { recursive: true });
+    // Mirror persistWorkflowFeedback's <taskId>--<original> collision-avoidance naming.
+    writeFileSync(join(dir, `${taskId}--${filename}`), content);
+  } catch (err) {
+    return jsonResponse(500, { error: String(err) });
+  }
   return jsonResponse(200, { ok: true });
 }
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile, runStagingOutboundPushTick, maybeResumeDeadOrchestrators, fillBlankSnapshotArgsFromIntent } from "./mag.ts";
+import { normalizeLaunchAdapter, evaluateAutoStartDecisionPure, resolveQueueRequestCommand, orchPidForSlotMode, mergeRequirements, briefingPrecomputeContext, clearStaleSettled, setQueueHold, isQueueHeld, applyQueueFeedPrefix, runMag, clearAutoProposalDebounce, autoProposalDebounceFile, runStagingOutboundPushTick, maybeResumeDeadOrchestrators, fillBlankSnapshotArgsFromIntent, startFreshnessRefusal } from "./mag.ts";
 import { emptySlotData, writeSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
 import type { RunGit } from "./git-runner.ts";
@@ -2039,5 +2039,39 @@ describe("fillBlankSnapshotArgsFromIntent (gh-ludics-589 Part B)", () => {
     expect(fillBlankSnapshotArgsFromIntent(snap(4, ""), { action: "resume", adapterArgs: duoArgs })).toBeNull();
     expect(fillBlankSnapshotArgsFromIntent(snap(4, ""), { action: "start" })).toBeNull();
     expect(fillBlankSnapshotArgsFromIntent(undefined, { action: "start", adapterArgs: duoArgs })).toBeNull();
+  });
+});
+
+describe("startFreshnessRefusal (gh-ludics-609 (c)/AC5)", () => {
+  const sha = "f".repeat(40);
+
+  test("REFUSES a start whose fingerprint fails the ancestry check", () => {
+    // Harness condition: worker HEAD does not contain the intro-commit (checker→false).
+    // Invariant: a stale-harness start is refused — the returned reason is the signal
+    // the loop uses to skip dispatch + leave the intent unacked. If the gate were
+    // removed (always proceed), this would return null and the agent would launch
+    // against stale content (the gh-ludics-609 incident).
+    const reason = startFreshnessRefusal({ action: "start", taskId: "task-7d2", taskIntroCommit: sha }, () => false);
+    expect(reason).not.toBeNull();
+    expect(reason).toContain("task-7d2");
+    expect(reason).toContain(sha);
+  });
+
+  test("PROCEEDS when the fingerprint is an ancestor (checker→true)", () => {
+    // Post-fetch the worker HEAD contains the intro-commit → no refusal → dispatch.
+    expect(startFreshnessRefusal({ action: "start", taskId: "task-7d2", taskIntroCommit: sha }, () => true)).toBeNull();
+  });
+
+  test("PROCEEDS (existence-only fallback) when the start carries no fingerprint", () => {
+    // Legacy/local dispatch: the checker must NOT even be consulted — a throwing
+    // checker proves the no-fingerprint branch short-circuits before calling it.
+    const boom = () => { throw new Error("checker should not run"); };
+    expect(startFreshnessRefusal({ action: "start", taskId: "t" }, boom)).toBeNull();
+  });
+
+  test("never gates stop/resume intents", () => {
+    const boom = () => { throw new Error("checker should not run for stop/resume"); };
+    expect(startFreshnessRefusal({ action: "stop", taskIntroCommit: sha }, boom)).toBeNull();
+    expect(startFreshnessRefusal({ action: "resume", taskIntroCommit: sha }, boom)).toBeNull();
   });
 });

@@ -9,6 +9,8 @@ import { harnessDir } from "./config.ts";
 import { emitEvent } from "./events.ts";
 import { parseReviewFilename } from "./orchestration/review-files.ts";
 import { queueRequest } from "./queue.ts";
+import { isWorkerContext } from "./orchestration/state.ts";
+import { clusterPostRetrospective, clusterPostFeedback } from "./cluster-http.ts";
 import type { OrchestrationState } from "./orchestration/state.ts";
 import type { T3Thread, T3ThreadMessage } from "./t3code/types.ts";
 import { threadModel } from "./t3code/types.ts";
@@ -341,13 +343,26 @@ function extractAllWorkflowFeedback(peerSyncDir: string): Record<string, string>
   return result;
 }
 
-/** Copy workflow feedback files to harness/feedback/ for the digest pipeline. */
-function persistWorkflowFeedback(peerSyncDir: string, taskId: string): void {
+/** Copy workflow feedback files to harness/feedback/ for the digest pipeline.
+ *  On a worker (gh-ludics-609 write-leak closure) POST each file to the controller
+ *  instead of writing the tracked harness — an untracked feedback/<id>--*.md would
+ *  dirty the worker checkout and wedge the next git pull.
+ *  @internal exported for tests only */
+export function persistWorkflowFeedback(peerSyncDir: string, taskId: string): void {
   if (!existsSync(peerSyncDir)) return;
 
   try {
     const files = readdirSync(peerSyncDir).filter((f: string) => /^workflow-feedback.*\.md$/.test(f));
     if (files.length === 0) return;
+
+    if (isWorkerContext()) {
+      for (const f of files) {
+        const content = readFileSync(join(peerSyncDir, f), "utf-8");
+        // Fire-and-forget: the controller writes its authoritative harness.
+        void clusterPostFeedback(taskId, f, content).catch(() => {});
+      }
+      return;
+    }
 
     const feedbackDir = join(harnessDir(), "feedback");
     mkdirSync(feedbackDir, { recursive: true });
@@ -408,9 +423,18 @@ function readTaskFrontmatter(taskId: string): TaskFrontmatter | null {
 
 /** @internal exported for tests only */
 export function writeRetrospective(data: RetrospectiveData): void {
-  const dir = join(harnessDir(), "retrospectives");
-  mkdirSync(dir, { recursive: true });
-  writeJsonFile(join(dir, `${data.taskId}.json`), data);
+  // gh-ludics-609 write-leak closure: on a worker, POST the retrospective to the
+  // controller (which writes its authoritative harness) instead of dropping an
+  // untracked retrospectives/<id>.json into the worker's tracked checkout — that
+  // would dirty the harness and wedge the next git pull. The event + suggestion
+  // queueing below still run (emitEvent POSTs on a worker; queueRequest no-ops).
+  if (isWorkerContext()) {
+    void clusterPostRetrospective(data.taskId, data).catch(() => {});
+  } else {
+    const dir = join(harnessDir(), "retrospectives");
+    mkdirSync(dir, { recursive: true });
+    writeJsonFile(join(dir, `${data.taskId}.json`), data);
+  }
 
   emitEvent({
     event_type: "retrospective_written",

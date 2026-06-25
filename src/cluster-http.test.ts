@@ -256,6 +256,53 @@ describe("handleSignal dispatch", () => {
 
 import { existsSync, readFileSync } from "fs";
 
+// gh-ludics-609 write-leak closure: the controller-side endpoints workers POST to.
+// Reuses the TMP/harnessDir/config fixture from the handleSignal suite above.
+describe("POST /api/cluster/retrospective + /api/cluster/feedback (gh-ludics-609)", () => {
+  test("retrospective: writes harness/retrospectives/<id>.json on the controller", async () => {
+    const req = makeRequest("/api/cluster/retrospective", { taskId: "task-abc", data: { taskId: "task-abc", title: "T" } });
+    const resp = await handleClusterRequest(req, "/api/cluster/retrospective");
+    expect(resp.status).toBe(200);
+    const file = join(harnessDir, "retrospectives", "task-abc.json");
+    expect(existsSync(file)).toBe(true);
+    expect(JSON.parse(readFileSync(file, "utf-8")).title).toBe("T");
+  });
+
+  test("retrospective: rejects an invalid task id (traversal guard) with 400 and writes nothing", async () => {
+    const req = makeRequest("/api/cluster/retrospective", { taskId: "../evil", data: { x: 1 } });
+    const resp = await handleClusterRequest(req, "/api/cluster/retrospective");
+    expect(resp.status).toBe(400);
+    expect(existsSync(join(harnessDir, "retrospectives"))).toBe(false);
+  });
+
+  test("retrospective: ACCEPTS a dotted task id matching the shared TASK_ID_RE (PR #611 P2)", async () => {
+    // Invariant: the endpoint validator must equal the authoritative TASK_ID_RE
+    // (which allows '.'), else a worker's retrospective for a dotted id is silently
+    // dropped (callers discard POST failures). An inline /^[a-z0-9_-]+$/i mirror
+    // would 400 here. '/' is still rejected (traversal) — see the test above.
+    const req = makeRequest("/api/cluster/retrospective", { taskId: "task-1.2.3", data: { taskId: "task-1.2.3", title: "Dotted" } });
+    const resp = await handleClusterRequest(req, "/api/cluster/retrospective");
+    expect(resp.status).toBe(200);
+    expect(existsSync(join(harnessDir, "retrospectives", "task-1.2.3.json"))).toBe(true);
+  });
+
+  test("feedback: writes harness/feedback/<id>--<file>.md on the controller", async () => {
+    const req = makeRequest("/api/cluster/feedback", { taskId: "task-fb", filename: "workflow-feedback-coder.md", content: "body\n" });
+    const resp = await handleClusterRequest(req, "/api/cluster/feedback");
+    expect(resp.status).toBe(200);
+    const file = join(harnessDir, "feedback", "task-fb--workflow-feedback-coder.md");
+    expect(existsSync(file)).toBe(true);
+    expect(readFileSync(file, "utf-8")).toBe("body\n");
+  });
+
+  test("feedback: rejects a filename with path separators (traversal) with 400", async () => {
+    const req = makeRequest("/api/cluster/feedback", { taskId: "task-fb", filename: "../../etc/passwd", content: "x" });
+    const resp = await handleClusterRequest(req, "/api/cluster/feedback");
+    expect(resp.status).toBe(400);
+    expect(existsSync(join(harnessDir, "feedback"))).toBe(false);
+  });
+});
+
 // Reuses the TMP/harnessDir/config fixture from the handleSignal suite above.
 describe("atomic writes for intent/heartbeat/orchestration-state", () => {
   test("recordIntent writes a round-trippable file with no .tmp leftover", async () => {
@@ -472,6 +519,33 @@ describe("parsePendingIntent", () => {
     expect(parsePendingIntent({ ...valid, adapterArgs: "" })?.adapterArgs).toBeUndefined();
     expect(parsePendingIntent({ ...valid, adapterArgs: "   " })?.adapterArgs).toBeUndefined();
     expect(parsePendingIntent({ ...valid, adapterArgs: null })?.adapterArgs).toBeUndefined();
+  });
+
+  test("preserves optional taskIntroCommit and round-trips the freshness SHA (gh-ludics-609)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    const sha = "a".repeat(40);
+    const out = parsePendingIntent({ ...valid, taskId: "task-99", taskIntroCommit: sha });
+    // Invariant: the controller-authored task-content freshness fingerprint survives
+    // the parse boundary verbatim. If this dropped/mangled it, the worker's (c)
+    // ancestry gate and (b) content gate would both go vacuous (undefined → skipped).
+    expect(out).toEqual({ action: "start", epoch: NOW, machine: "host-a", taskId: "task-99", taskIntroCommit: sha });
+  });
+
+  test("legacy intent without taskIntroCommit still validates (optional field; gh-ludics-609)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid })?.taskIntroCommit).toBeUndefined();
+  });
+
+  test("string-coerces non-string taskIntroCommit; drops/trims empty after coercion (gh-ludics-609)", async () => {
+    const { parsePendingIntent } = await import("./cluster-http.ts");
+    expect(parsePendingIntent({ ...valid, taskIntroCommit: 42 })?.taskIntroCommit).toBe("42");
+    // Empty / whitespace-only is dropped so a worker with no fingerprint falls back
+    // to the existence-only gate (AC2 fallback), not a vacuous mismatch on "".
+    expect(parsePendingIntent({ ...valid, taskIntroCommit: "" })?.taskIntroCommit).toBeUndefined();
+    expect(parsePendingIntent({ ...valid, taskIntroCommit: "   " })?.taskIntroCommit).toBeUndefined();
+    expect(parsePendingIntent({ ...valid, taskIntroCommit: null })?.taskIntroCommit).toBeUndefined();
+    // Surrounding whitespace is trimmed so the ancestry compare uses a bare SHA.
+    expect(parsePendingIntent({ ...valid, taskIntroCommit: "  abc123  " })?.taskIntroCommit).toBe("abc123");
   });
 
   test("rejects non-bool preserveState (no sensible coercion target)", async () => {
