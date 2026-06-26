@@ -28,6 +28,11 @@ interface ClusterConfig {
   transport: string;
   domain: string;
   machines: ClusterMachine[];
+  // When true, machines with role "console" are never selected to run worker
+  // slots and are never auto-started by the keepalive — frees the console box
+  // for interactive/SSH use. Maps from YAML `cluster.disable_console_workers`.
+  // Defaults to false for back-compat.
+  disableConsoleWorkers: boolean;
 }
 
 export function clusterConfig(): ClusterConfig {
@@ -56,10 +61,21 @@ export function clusterConfig(): ClusterConfig {
       transport,
       domain: String(fed?.domain ?? ""),
       machines,
+      disableConsoleWorkers: Boolean(fed?.disable_console_workers ?? false),
     };
   } catch {
-    return { transport: "local", domain: "", machines: [] };
+    return { transport: "local", domain: "", machines: [], disableConsoleWorkers: false };
   }
+}
+
+/**
+ * Whether console-role machines are barred from running worker slots.
+ * Reads `cluster.disable_console_workers` (default false). Used by
+ * `selectMachineForSlot` (excludes console from the candidate set) and the
+ * keepalive auto-start path (skips slots assigned to a console machine).
+ */
+export function disableConsoleWorkers(): boolean {
+  return clusterConfig().disableConsoleWorkers;
 }
 
 export function clusterEnabled(): boolean {
@@ -398,6 +414,22 @@ export function selectMachineForSlot(
     if (reqs.gpu) eligible = eligible.filter((m) => m.gpu === reqs.gpu);
     if (eligible.length === 0) {
       console.error(`ludics: no cluster machine meets requirements (os=${reqs.os ?? "any"}, gpu=${reqs.gpu ?? "any"}) — ${machines.length} machines checked`);
+      return null;
+    }
+  }
+
+  // disable_console_workers: when set, console-role machines are never eligible
+  // to run worker slots (frees the console box for interactive use). Applied
+  // AFTER the requirement filter so a requirement-driven empty set keeps its
+  // specific message. If excluding the console empties the candidate set, BLOCK
+  // the assignment (return null) rather than silently falling back onto the
+  // console. This also neutralizes the gh-ludics-602 console-preference branch
+  // below (an excluded console can't be in `online`), so ludics self-tasks fall
+  // through to the controller fallback instead of routing to the console.
+  if (clusterConfig().disableConsoleWorkers) {
+    eligible = eligible.filter((m) => m.role !== "console");
+    if (eligible.length === 0) {
+      console.error(`ludics: disable_console_workers is set and no non-console machine is eligible — blocking assignment`);
       return null;
     }
   }

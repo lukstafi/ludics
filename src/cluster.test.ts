@@ -262,6 +262,143 @@ slots:
 });
 
 // ---------------------------------------------------------------------------
+// cluster.disable_console_workers — config parse + console-exclusion routing.
+// When set, console-role machines are never selected to run worker slots and
+// (in mag's keepalive) are never auto-started. Default false for back-compat.
+// ---------------------------------------------------------------------------
+
+describe("cluster.disable_console_workers — parsing + console exclusion", () => {
+  const ORIGINAL_HOME = process.env.HOME;
+  const ORIGINAL_CONFIG = process.env.LUDICS_CONFIG;
+  const ORIGINAL_HARNESS = process.env.LUDICS_HARNESS_DIR;
+  const ORIGINAL_MACHINE = process.env.LUDICS_CLUSTER_MACHINE_NAME;
+  let TMP = "";
+
+  // `${flagLine}` is spliced in to toggle the option (or omit it entirely).
+  function config(flagLine: string): string {
+    return `state_repo: test/state
+state_path: harness
+cluster:
+  transport: tailscale
+${flagLine}  machines:
+    - name: mac-studio
+      host: mac-studio.ts.net
+      role: leader
+      os: macos
+      gpu: apple-silicon
+      always_on: true
+    - name: macbook-pro
+      host: macbook-pro.ts.net
+      role: console
+      os: macos
+      gpu: apple-silicon
+      always_on: false
+    - name: minipc-wsl
+      host: minipc-wsl.ts.net
+      role: worker
+      os: linux
+      gpu: nvidia
+slots:
+  count: 6
+`;
+  }
+
+  function writeHeartbeat(name: string, ageSeconds: number): void {
+    const dir = heartbeatsDir();
+    mkdirSync(dir, { recursive: true });
+    const epoch = Math.floor(Date.now() / 1000) - ageSeconds;
+    writeFileSync(join(dir, `${name}.json`), JSON.stringify({ node: name, epoch }));
+  }
+
+  function setup(flagLine: string): void {
+    writeFileSync(join(TMP, "config.yaml"), config(flagLine));
+  }
+
+  beforeEach(() => {
+    TMP = mkdtempSync(join(tmpdir(), "ludics-disable-console-"));
+    process.env.HOME = TMP;
+    process.env.LUDICS_HARNESS_DIR = join(TMP, "harness");
+    process.env.LUDICS_CONFIG = join(TMP, "config.yaml");
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio"; // current = leader
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_HOME === undefined) delete process.env.HOME; else process.env.HOME = ORIGINAL_HOME;
+    if (ORIGINAL_CONFIG === undefined) delete process.env.LUDICS_CONFIG; else process.env.LUDICS_CONFIG = ORIGINAL_CONFIG;
+    if (ORIGINAL_HARNESS === undefined) delete process.env.LUDICS_HARNESS_DIR; else process.env.LUDICS_HARNESS_DIR = ORIGINAL_HARNESS;
+    if (ORIGINAL_MACHINE === undefined) delete process.env.LUDICS_CLUSTER_MACHINE_NAME; else process.env.LUDICS_CLUSTER_MACHINE_NAME = ORIGINAL_MACHINE;
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
+  // (a) parse
+  it("parses disable_console_workers: true", () => {
+    setup("  disable_console_workers: true\n");
+    expect(clusterConfig().disableConsoleWorkers).toBe(true);
+  });
+
+  it("parses disable_console_workers: false", () => {
+    setup("  disable_console_workers: false\n");
+    expect(clusterConfig().disableConsoleWorkers).toBe(false);
+  });
+
+  it("defaults disable_console_workers to false when absent", () => {
+    setup("");
+    expect(clusterConfig().disableConsoleWorkers).toBe(false);
+  });
+
+  // (b) selection excludes / includes the console per the flag
+  it("excludes the console node from a ludics self-task when the flag is ON", () => {
+    setup("  disable_console_workers: true\n");
+    writeHeartbeat("macbook-pro", 10); // console fresh
+    writeHeartbeat("mac-studio", 10);  // controller online
+    const result = selectMachineForSlot({ project: "ludics", effort: "medium" });
+    // With the flag ON the console is removed from `eligible`, so the
+    // gh-ludics-602 console-preference branch can't fire — the self-task falls
+    // back to the always_on controller instead of the console.
+    expect(result).not.toBe("macbook-pro");
+    expect(result).toBe("mac-studio");
+  });
+
+  it("includes the console node (gh-ludics-602 routing) when the flag is OFF", () => {
+    setup("  disable_console_workers: false\n");
+    writeHeartbeat("macbook-pro", 10); // console fresh
+    writeHeartbeat("mac-studio", 10);  // controller online
+    const result = selectMachineForSlot({ project: "ludics", effort: "medium" });
+    // Back-compat: with the flag OFF a live console still wins for self-tasks.
+    expect(result).toBe("macbook-pro");
+  });
+
+  // (c) no-eligible-machine path must NOT fall back to the console
+  it("returns null (no fallback to console) when excluding the console empties the candidate set", () => {
+    // Config with ONLY a console machine; flag ON. current = a non-listed name
+    // so the console is the sole candidate, then excluded → no machine left.
+    const onlyConsole = `state_repo: test/state
+state_path: harness
+cluster:
+  transport: tailscale
+  disable_console_workers: true
+  machines:
+    - name: macbook-pro
+      host: macbook-pro.ts.net
+      role: console
+      os: macos
+      gpu: apple-silicon
+      always_on: true
+slots:
+  count: 6
+`;
+    writeFileSync(join(TMP, "config.yaml"), onlyConsole);
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "macbook-pro";
+    writeHeartbeat("macbook-pro", 10); // fresh — must NOT rescue the assignment
+    const result = selectMachineForSlot({ project: "ocannl", effort: "medium" });
+    // Invariant: console-only + flag ON blocks assignment rather than running
+    // on the console. Mutation: dropping the empty-after-exclusion guard returns
+    // "macbook-pro".
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // selectOnlineCapableMachine — capability + online filter for test-health
 // routing (gh-ludics-578). Mirrors selectMachineForSlot's per-key filter +
 // heartbeatIsFresh gate but returns the full ClusterMachine for SSH routing.
