@@ -346,15 +346,15 @@ slots:
     expect(clusterConfig().disableConsoleWorkers).toBe(false);
   });
 
-  // (b) selection excludes / includes the console per the flag
-  it("excludes the console node from a ludics self-task when the flag is ON", () => {
+  // (b) selection excludes the console for a non-ludics task, but the
+  // controller stays available to it (controller-exclusion is gh-602-only).
+  it("excludes the console node but keeps the controller for a NON-ludics task when the flag is ON", () => {
     setup("  disable_console_workers: true\n");
     writeHeartbeat("macbook-pro", 10); // console fresh
     writeHeartbeat("mac-studio", 10);  // controller online
-    const result = selectMachineForSlot({ project: "ludics", effort: "medium" });
-    // With the flag ON the console is removed from `eligible`, so the
-    // gh-ludics-602 console-preference branch can't fire — the self-task falls
-    // back to the always_on controller instead of the console.
+    const result = selectMachineForSlot({ project: "ocannl", effort: "medium" });
+    // Console is forbidden for every task; the controller (leader) is NOT —
+    // controller-exclusion applies only to ludics self-tasks (gh-602 half 1).
     expect(result).not.toBe("macbook-pro");
     expect(result).toBe("mac-studio");
   });
@@ -366,6 +366,66 @@ slots:
     const result = selectMachineForSlot({ project: "ludics", effort: "medium" });
     // Back-compat: with the flag OFF a live console still wins for self-tasks.
     expect(result).toBe("macbook-pro");
+  });
+
+  // gh-602 controller-exclusion half (1): a ludics self-task with the flag ON
+  // must be excluded from BOTH the console AND the controller/leader — never
+  // falling back to the controller. With only leader+console available it
+  // blocks (null) rather than running self-orchestration on the controller.
+  const LEADER_AND_CONSOLE_ONLY = `state_repo: test/state
+state_path: harness
+cluster:
+  transport: tailscale
+  disable_console_workers: true
+  machines:
+    - name: mac-studio
+      host: mac-studio.ts.net
+      role: leader
+      os: macos
+      gpu: apple-silicon
+      always_on: true
+    - name: macbook-pro
+      host: macbook-pro.ts.net
+      role: console
+      os: macos
+      gpu: apple-silicon
+      always_on: false
+slots:
+  count: 6
+`;
+
+  it("BLOCKS (null) a ludics self-task with the flag ON when only the controller + console are available — never picks the controller", () => {
+    writeFileSync(join(TMP, "config.yaml"), LEADER_AND_CONSOLE_ONLY);
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio"; // current = the leader
+    writeHeartbeat("mac-studio", 10);  // controller online
+    writeHeartbeat("macbook-pro", 10); // console online
+    const result = selectMachineForSlot({ project: "ludics", effort: "medium" });
+    // Invariant: console forbidden (flag) AND controller forbidden (gh-602 half 1)
+    // → empty candidate set → null. Mutation: dropping the leader-exclusion
+    // returns "mac-studio" (the controller).
+    expect(result).toBeNull();
+    expect(result).not.toBe("mac-studio");
+  });
+
+  it("keeps the controller forbidden for a ludics self-task even when the console is down (no escape-hatch fallback)", () => {
+    writeFileSync(join(TMP, "config.yaml"), LEADER_AND_CONSOLE_ONLY);
+    process.env.LUDICS_CLUSTER_MACHINE_NAME = "mac-studio";
+    writeHeartbeat("mac-studio", 10); // controller online; console absent (down)
+    const result = selectMachineForSlot({ project: "ludics", effort: "medium" });
+    // Even with the console offline (gh-602 escape hatch unavailable), the
+    // self-task must NOT fall back to the controller — it blocks.
+    expect(result).toBeNull();
+  });
+
+  it("still routes a ludics self-task with the flag ON to a non-console / non-controller worker when one exists", () => {
+    setup("  disable_console_workers: true\n");
+    // 3-machine config (mac-studio leader, macbook-pro console, minipc-wsl worker)
+    writeHeartbeat("minipc-wsl", 10); // a real worker is online
+    writeHeartbeat("mac-studio", 10);
+    writeHeartbeat("macbook-pro", 10);
+    const result = selectMachineForSlot({ project: "ludics", effort: "medium" });
+    // The worker is neither console nor leader → it survives both exclusions.
+    expect(result).toBe("minipc-wsl");
   });
 
   // (c) no-eligible-machine path must NOT fall back to the console
