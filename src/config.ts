@@ -117,6 +117,7 @@ export interface LudicsFullConfig {
     transport?: string;
     domain?: string;
     secret?: string;
+    disable_console_workers?: boolean;
     machines?: Array<Record<string, unknown>>;
   };
 }

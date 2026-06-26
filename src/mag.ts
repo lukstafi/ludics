@@ -13,7 +13,7 @@ import { readAllSlotJson, readSlotJson } from "./slots/json.ts";
 import type { SlotData } from "./slots/types.ts";
 import { queueRequest, queueRequestAtHead, queueHasCompactForTrigger, queuePending, queueHasPendingAction, queueHasPendingActionForTask, queueHasPendingFeedbackDigest, queueReinsertHead, queuePopExpected, queueList, recentResults, parseQueueLines, writeResult } from "./queue.ts";
 import { getUrl } from "./network.ts";
-import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterDoctor, wslPersistenceStatus } from "./cluster.ts";
+import { clusterShouldRunMag, clusterIsController, selectMachineForSlot, clusterCurrentMachineName, clusterDoctor, wslPersistenceStatus, disableConsoleWorkers, clusterMachine } from "./cluster.ts";
 // cluster-http imports are lazy to avoid import cycles
 import { isRemoteMachine } from "./remote.ts";
 // slot-intents.ts deleted — intents use in-memory store via cluster-http.ts
@@ -3068,9 +3068,16 @@ async function maybeAutoStartSlots(): Promise<void> {
     const sessionStarted = data.sessionStarted ?? "";
     if (sessionStarted) continue;
 
+    // disable_console_workers: never auto-start a slot assigned to a console
+    // machine when the flag is set — the console box is reserved for
+    // interactive/SSH use.
+    const slotMachine = data.machine ?? "";
+    if (disableConsoleWorkers() && slotMachine && clusterMachine(slotMachine)?.role === "console") {
+      continue;
+    }
+
     // Skip remote slots that already have a fresh pending start intent —
     // prevents re-recording the intent every keepalive.
-    const slotMachine = data.machine ?? "";
     if (slotMachine && isRemoteMachine(slotMachine)) {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy to avoid import cycle: mag.ts → cluster-http.ts → (journal/events chain back into mag)

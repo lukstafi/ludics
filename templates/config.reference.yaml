@@ -348,6 +348,9 @@ cluster:
   secret: ""                  # Shared Bearer secret for HTTP cluster endpoints. Empty = unauthenticated over
                               # the Tailscale tailnet (the tailnet is the trust boundary). Set a value to
                               # require Bearer auth on every /cluster/* request.
+  disable_console_workers: false  # When true, machines with role "console" are never selected to run
+                              # worker slots and are never auto-started by the keepalive — frees the
+                              # console box for interactive/SSH use. Default false (back-compat).
   machines: []
     # - name: desktop
     #   host: desktop.your-tailnet.ts.net

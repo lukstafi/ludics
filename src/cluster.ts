@@ -28,6 +28,11 @@ interface ClusterConfig {
   transport: string;
   domain: string;
   machines: ClusterMachine[];
+  // When true, machines with role "console" are never selected to run worker
+  // slots and are never auto-started by the keepalive — frees the console box
+  // for interactive/SSH use. Maps from YAML `cluster.disable_console_workers`.
+  // Defaults to false for back-compat.
+  disableConsoleWorkers: boolean;
 }
 
 export function clusterConfig(): ClusterConfig {
@@ -56,10 +61,21 @@ export function clusterConfig(): ClusterConfig {
       transport,
       domain: String(fed?.domain ?? ""),
       machines,
+      disableConsoleWorkers: Boolean(fed?.disable_console_workers ?? false),
     };
   } catch {
-    return { transport: "local", domain: "", machines: [] };
+    return { transport: "local", domain: "", machines: [], disableConsoleWorkers: false };
   }
+}
+
+/**
+ * Whether console-role machines are barred from running worker slots.
+ * Reads `cluster.disable_console_workers` (default false). Used by
+ * `selectMachineForSlot` (excludes console from the candidate set) and the
+ * keepalive auto-start path (skips slots assigned to a console machine).
+ */
+export function disableConsoleWorkers(): boolean {
+  return clusterConfig().disableConsoleWorkers;
 }
 
 export function clusterEnabled(): boolean {
@@ -402,6 +418,38 @@ export function selectMachineForSlot(
     }
   }
 
+  // gh-ludics-602 predicate — a ludics SELF-modifying task. Hoisted so the
+  // disable_console_workers block below can preserve gh-602's controller-
+  // exclusion half while the console-preference branch further down keeps using
+  // the same set. Matches gh-602 exactly (project name == "ludics", case-insensitive).
+  const isLudicsSelfTask = (_task.project ?? "").toLowerCase() === "ludics";
+
+  // disable_console_workers: a faithful 180° of gh-ludics-602's console-routing
+  // half. gh-602 has two halves — (1) keep ludics self-modifying tasks OFF the
+  // controller/leader (self-orchestration there repoints the global `ludics`
+  // symlink + boots the dashboard), and (2) PREFER/route them to the console as
+  // the escape hatch. This flag reverses ONLY half (2): the console flips from
+  // preferred to FORBIDDEN for ALL worker slots (frees the console box for
+  // interactive/SSH use). Half (1) stays. Net for a ludics self-task with the
+  // flag on: console AND controller/leader are both forbidden, so if no other
+  // eligible worker exists the candidate set empties and we BLOCK (return null)
+  // rather than ever falling back to the controller. Applied AFTER the
+  // requirement filter so a requirement-driven empty set keeps its specific
+  // message.
+  if (clusterConfig().disableConsoleWorkers) {
+    // Half (2) reversed: console is forbidden for every task.
+    eligible = eligible.filter((m) => m.role !== "console");
+    // Half (1) preserved: ludics self-tasks additionally stay off the
+    // controller/leader — never let them fall back onto it.
+    if (isLudicsSelfTask) {
+      eligible = eligible.filter((m) => m.role !== "leader");
+    }
+    if (eligible.length === 0) {
+      console.error(`ludics: disable_console_workers is set — no eligible machine for ${isLudicsSelfTask ? "ludics self-task (console + controller forbidden)" : "task (console forbidden)"} — blocking assignment`);
+      return null;
+    }
+  }
+
   // Among eligible, prefer online machines
   const online = eligible.filter((m) => heartbeatIsFresh(m.name));
 
@@ -427,7 +475,11 @@ export function selectMachineForSlot(
   // the requirement filter + online gate, so it composes with — never overrides
   // — hard requirements: a console node that fails the requirement filter is
   // absent from `online` and cannot be resurrected here.
-  const isLudicsSelfTask = (_task.project ?? "").toLowerCase() === "ludics";
+  //
+  // When disable_console_workers is on, the console was already removed from
+  // `eligible`/`online` above, so this branch is inert for that case (the
+  // controller-exclusion half is enforced upstream); it remains the active
+  // gh-602 path only with the flag OFF (default, full back-compat).
   if (isLudicsSelfTask) {
     const consolePref = online.filter((m) => m.role !== "leader" && m.role === "console");
     if (consolePref.length > 0) return consolePref[0]!.name;
