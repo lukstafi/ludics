@@ -251,7 +251,7 @@ gh() {
     # base.sha is a stale snapshot on purpose, as on a conflicted PR (see the base-drift suite).
     [ ! -e "$TEST_ROOT/pushed" ] || HEAD_SHA="$PUSHED_HEAD"
     response=$(jq -cn --arg h "$HEAD_SHA" --arg m "$MERGEABLE_STATE" \
-      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m}')
+      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, state:"open", draft:false}')
     # Armed AFTER the answer, so THIS read still sees the old head and the next one does not.
     fixture_nth pulls
     [ "$PUSH_AFTER_PULLS_READ" != "$FIXTURE_NTH" ] || : >"$TEST_ROOT/pushed"
@@ -1546,16 +1546,19 @@ test_a_stale_thumbs_up_leaves_the_ordinary_states() {
   run_status
   assert_eq "$(state_tok "$STATE")" reviewing "a 👀 newer than the stale 👍 is the new head's round"
   HEAD_AT=2026-09-01T10:02:11Z
-  # And `watch` does not end its wait on it. (`--no-nudge` keeps the case on that claim. The head
-  # is due, so without it the watch holds a window for the nudge it would post -- a stale 👍 is
-  # no approval of this head to clear -- and decides that nudge on a PR read this fixture never
-  # gives a `state`. The test clock makes the window take no wall time, and
-  # test-pr-review-watch.sh pins the nudge.)
+  # And `watch` does not end its wait on it. The head is due, so the watch nudges it: a stale 👍
+  # is no approval of this head for the request to clear, and the state the watch re-reads right
+  # before it posts (the read that keeps a nudge off a real 👍) has to judge it stale too. (The PR
+  # read answers an open, non-draft PR, so the write gate lets the post through. The test clock
+  # makes the pickup window take no wall time, and test-pr-review-watch.sh pins the nudge's own
+  # machinery.)
   REACTIONS_JSON="[$(reaction +1 2026-09-01T09:49:00Z)]"
-  WATCH_FLAG=--no-nudge
   run_watch 0,0,0
   assert_not_contains "$WATCH_OUT$WATCH_ERR" "approved" "watch does not read the stale 👍 as an approval"
   assert_contains "$WATCH_OUT$WATCH_ERR" "review EXPECTED but not started" "it reads the due round"
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 1 \
+    "the due head is nudged once: a stale 👍 is no approval of it to clear"
+  assert_contains "$WATCH_ERR" "posted '@codex review' on head head-sh" "the watch says it posted the nudge"
 }
 
 # --- a round the summary marks Completed with no 👍 (ludics-lite#439) ---------------------------
