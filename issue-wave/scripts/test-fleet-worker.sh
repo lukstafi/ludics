@@ -2503,18 +2503,20 @@ held() {
   ko "no holder announced $2 in $1: $(cat "$1" 2>/dev/null)"; return 1
 }
 # THE GROUP's fixtures (ludics-lite#566) each sleep with an argument of this run's own,
-# 600.566<suite pid><n>, so a check for leftovers cannot see a sibling's processes, nor another case's.
-GM="600.566$$"
+# 45.566<suite pid><n>, so a check for leftovers cannot see a sibling's processes, nor another case's.
+# Every case ends its sleep within 5 s when correct, and none needs it to outlive more than that, so
+# 45 s caps what a group-kill regression costs a case, where 600 s once made a run 828 s for 75.
+GM="45.566$$"
 # swept <n>: no process of marker <n> is left, within 5 s.
 swept() {
   local i
   for i in $(seq 50); do pgrep -f "sleep $GM$1" >/dev/null 2>&1 || return 0; sleep 0.1; done
   return 1
 }
-slotreq() { # <id> <kind> [standing] -> a reservation payload file on testbox
-  jq -n --arg id "$1" --arg kind "$2" --argjson standing "${3:-false}" \
+slotreq() { # <id> <kind> [standing] [host] -> a reservation payload file on host (agent and execution), default testbox
+  jq -n --arg id "$1" --arg kind "$2" --argjson standing "${3:-false}" --arg host "${4:-testbox}" \
     '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#1", purpose:"slot fixture",
-      agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/master",
+      agent_host:$host, execution_host:$host, repository:"o/r", requested_revision:"origin/master",
       kind:$kind} + (if $standing then {standing:true} else {} end)' > "$TMP/slot-$1.json"
   printf '%s' "$TMP/slot-$1.json"
 }
@@ -2986,8 +2988,7 @@ if held "$bgd/log" "waiting up to 60s (--wait-window) for it to conclude, then f
     ok "...in its slot, with its output in the run's log" || ko "the waited batch's log: $(cat "$bgd/log")"
 else ko "the --wait-window batch never said it waits: $(cat "$bgd/log" 2>/dev/null)"; fixture_done ww-measure; fi
 bgkill "$bgd"
-jq '.execution_host = "other" | .agent_host = "other"' "$(slotreq ww-other measurement)" > "$TMP/ww-other.json"
-"${FWS[@]}" execution window other "$TMP/ww-other.json" >/dev/null 2>&1 || ko "could not open the other box's window (setup)"
+"${FWS[@]}" execution window other "$(slotreq ww-other measurement false other)" >/dev/null 2>&1 || ko "could not open the other box's window (setup)"
 expect "a window on another box does not block a --wait-window batch" 0 "slot 1 of 1 held for: echo not-blocked" -- \
   "${FWS[@]}" execution slot --wait-window=60 --wait 0 -- echo not-blocked
 grep -q "waiting up to" <<<"$out" && ko "the batch waited for another box's window: $out" || ok "...nor make it wait"
@@ -2999,8 +3000,7 @@ expect "...by case, as ssh reads a host name" 0 '"ww-iterate"' -- "${FWS[@]}" ex
 cp -R "$TMP/dispatcher" "$TMP/dispatcher-map"
 printf '%s\n' '#!/usr/bin/env bash' '[ "$1" = endpoint-map ] && printf "%s\n" "rog rog-nv-linux rog-nv-wsl"' > "$TMP/dispatcher-map/scripts/wake-lab.sh"
 FWM=(env FLEET_BOXES="testbox other rog-nv-linux" "$TMP/dispatcher-map/issue-wave/scripts/fleet-worker.sh")
-jq '.execution_host = "rog-nv-linux"' "$(slotreq ww-rog correctness true)" > "$TMP/ww-rog.json"
-"${FWM[@]}" execution reserve "$TMP/ww-rog.json" >/dev/null || ko "could not reserve on rog-nv-linux (setup)"
+"${FWM[@]}" execution reserve "$(slotreq ww-rog correctness true rog-nv-linux)" >/dev/null || ko "could not reserve on rog-nv-linux (setup)"
 expect "...and an alias (rog) selects its roster entry's (rog-nv-linux) records" 0 '"ww-rog"' -- \
   "${FWM[@]}" execution list --active --compact --host rog
 grep -q '"ww-iterate"\|"ww-other"' <<<"$out" && ko "--host rog listed another box's records: $out" || ok "...and only those"
@@ -3021,10 +3021,14 @@ expect "...and so does the slot" 127 "EXECUTION SLOT REFUSED testbox: cannot run
 expect "execution hold runs bare where there is no systemd-inhibit" 0 "^bare-hold$" -- "${FWS[@]}" execution hold -- echo bare-hold
 expect "execution hold refuses a command that cannot be run" 127 "EXECUTION HOLD REFUSED testbox: cannot run /nonexistent/runner" -- "${FWS[@]}" execution hold -- /nonexistent/runner
 expect "execution hold needs a command after --" 2 "a command to hold the box around is required" -- "${FWS[@]}" execution hold --
-expect "execution hold takes no slot options" 2 "execution hold .--why <text>. .--request <id>. .--deadline <seconds>. -- <command>" -- "${FWS[@]}" execution hold --wait 5 -- true
+# The usage cases match the verb and the `-- <command>` tail, not the option list between them, so
+# a PR that adds a flag does not edit them; each case's own claim is its negative check.
+expect "execution hold takes no slot options" 2 "execution hold .--why <text>. .* -- <command>" -- "${FWS[@]}" execution hold --wait 5 -- true
+grep -Eq -- "--(bg|wait|cpu|gpu|probe)" <<<"$out" && ko "...the hold's usage offers a slot option: $out" || ok "...and its usage offers none"
 expect "execution slot needs a command after --" 2 "a command to hold the slot around is required" -- "${FWS[@]}" execution slot --
 expect "execution slot refuses a non-numeric --wait" 2 "whole number of seconds" -- "${FWS[@]}" execution slot --wait soon -- echo x
-expect "execution slot takes no --box: the slot is this box's own" 2 "execution slot .--bg <parent>. .--wait <seconds>. .--wait-window.=<seconds>.. .--cpu|--gpu. .--deadline <seconds>. -- <command>" -- "${FWS[@]}" execution slot --box other -- echo x
+expect "execution slot takes no --box: the slot is this box's own" 2 "execution slot .--bg <parent>. .* -- <command>" -- "${FWS[@]}" execution slot --box other -- echo x
+grep -q -- "--box" <<<"$out" && ko "...the slot's usage offers --box: $out" || ok "...and its usage offers none"
 expect "a malformed slots spec refuses before anything is locked" 1 "<box>=<positive n>" -- \
   env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=x" "$FW" execution slot -- echo x
 expect "a host with no fleet name has no slot to take" 2 "no fleet name" -- \
