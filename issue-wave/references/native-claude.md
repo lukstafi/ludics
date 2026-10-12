@@ -88,7 +88,9 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    suspended the worker's standing reservation until it concludes: the worker keeps working
    without the batch and retries it once the window closes, with no request.
 2. **Request, for everything else.** A measurement, a cross-box leg, a full suite: the worker
-   ends its turn with its final message carrying one block and nothing after it:
+   ends its turn with its final message carrying the block, one per request and each naming one
+   execution host, back to back with nothing after the last (ahrefs/ocannl#1168 wrote its four
+   requests as prose, and none was reserved):
 
    ```
    EXECUTION_REQUEST
