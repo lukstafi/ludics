@@ -9,10 +9,13 @@ Usage: bash scripts/install-linux.sh [--help]
        bash scripts/install-linux.sh --setup-peers [--apply] [--peer USER@HOST ...]
        bash scripts/install-linux.sh --wake-timer [HH:MM]
        bash scripts/install-linux.sh --jq
+       bash scripts/install-linux.sh --bench-venv [nvidia|amd|cpu]
 --setup-peers runs on Mac Studio, without installing packages or contacting MacBook Air.
 --wake-timer installs only the laptop's daily RTC wake for the OCANNL sweep (default 06:55
 local), for a box bootstrapped before that step existed.
 --jq installs only the fleet's pinned jq into /usr/local/bin, on native Linux or WSL.
+--bench-venv provisions only the shared OCANNL benchmark venv (~/.venvs/ocannl-bench) and copies
+the missing fixtures from the anchor; the GPU is detected unless named.
 Interactive setup for native Ubuntu 26.04, with Tailscale already connected.
 Installs development tools, Codex, Claude Code, Bun and ludics-lite skills;
 optionally configures SSH, logins and an OCANNL OCaml 5.5.1 switch.
@@ -331,6 +334,228 @@ wake_timer_only() {
   sudo systemctl list-timers --no-pager fleet-sweep-wake.timer
 }
 
+# THE SHARED BENCHMARK VENV (ludics-lite#537). OCANNL's measurement drivers find one venv per box
+# at ~/.venvs/ocannl-bench, through the checkout's benchmarks/.venv symlink or BENCH_VENV_PY
+# (benchmarks/bench_venv.py). numpy is pinned because the fixtures' random streams depend on it
+# (numpy promises no Generator stream stability); torch comes from its GPU-specific index.
+# The live venv is never edited: a rebuild goes into a fresh stamped directory beside it, and the
+# canonical path becomes a symlink to that directory only after the smoke passes there. The
+# directory it replaces is kept as the one rollback, and older ones are pruned. A venv that
+# already holds the pins and passes the smoke is left alone.
+BENCH_PINS=(numpy==2.5.3 safetensors==0.8.0 tinygrad==0.14.0)
+BENCH_INDEX_BASE=https://download.pytorch.org/whl
+BENCH_VENV=$HOME/.venvs/ocannl-bench
+BENCH_CHECKOUT=$HOME/ocannl-staging
+# The anchor's main OCANNL checkout, relative to its home: the fixtures' one source.
+BENCH_ANCHOR_CHECKOUT=ocannl-staging
+BENCH_FRESH='' BENCH_STAGE=''
+BENCH_WARNINGS=()
+
+# <gpu> [<gfx>] -> "<index> <torch version>". gfx1151 (MINIX, Radeon 8060S) takes ROCm 7.2: the
+# rocm7.1 wheel segfaults there on the first host-to-device copy, inside its bundled
+# librocprofiler-sdk (a bare torch.ones(1).cuda()), while the same wheel works on gfx1102 (TUF).
+bench_torch_spec() {
+  case $1:${2:-} in
+    nvidia:*) printf '%s\n' 'cu130 2.14.0+cu130' ;;
+    amd:gfx1151) printf '%s\n' 'rocm7.2 2.14.1+rocm7.2' ;;
+    amd:*) printf '%s\n' 'rocm7.1 2.13.0+rocm7.1' ;;
+    cpu:*) printf '%s\n' 'cpu 2.14.0+cpu' ;;
+    *) fail "Benchmark venv GPU must be nvidia, amd or cpu, not: $1" ;;
+  esac
+}
+
+# nvidia, amd or cpu, from the PCI display devices; a box with both GPU vendors is refused rather
+# than guessed (name one: --bench-venv nvidia|amd|cpu).
+bench_gpu_detect() {
+  local devices nvidia='' amd=''
+  devices=$(lspci 2>/dev/null | grep -Ei 'VGA|3D|Display') || devices=''
+  [[ $devices != *NVIDIA* ]] || nvidia=1
+  [[ $devices != *'Advanced Micro Devices'* && $devices != *AMD/ATI* ]] || amd=1
+  [[ -z $nvidia || -z $amd ]] || fail 'Both NVIDIA and AMD display devices: name the GPU, --bench-venv nvidia|amd|cpu.'
+  if [[ -n $nvidia ]]; then printf 'nvidia\n'; elif [[ -n $amd ]]; then printf 'amd\n'; else printf 'cpu\n'; fi
+}
+
+# The first GPU agent rocminfo lists (gfx1151 on MINIX), or nothing.
+bench_amd_gfx() {
+  local info
+  info=$(rocminfo 2>/dev/null) || info=''
+  awk '$1 == "Name:" && $2 ~ /^gfx[0-9a-f]+$/ { print $2; exit }' <<< "$info"
+}
+
+BENCH_PY_MINOR='import sys; print("%d.%d" % sys.version_info[:2])'
+# Imports every pinned package, then, on a GPU, makes the host-to-device copy that crashed MINIX.
+BENCH_SMOKE='
+import sys
+import numpy, safetensors, tinygrad, torch
+gpu = sys.argv[1]
+print("torch", torch.__version__, "cuda", torch.version.cuda, "hip", torch.version.hip)
+if gpu != "cpu":
+    assert (torch.version.cuda if gpu == "nvidia" else torch.version.hip), "torch is not a " + gpu + " build"
+    assert torch.cuda.is_available(), "torch.cuda.is_available() is False"
+    x = torch.ones(1).cuda()
+    torch.cuda.synchronize()
+    assert x.cpu().item() == 1.0, "torch.ones(1).cuda() did not round-trip"
+    print("device", torch.cuda.get_device_name(0))
+'
+
+bench_freeze() { "$1/bin/python" -m pip freeze --disable-pip-version-check; }
+
+# The venv runs the system python3's minor version and its freeze lists every pin verbatim.
+bench_matches() {
+  local venv=$1 freeze minor pin
+  shift
+  [[ -x $venv/bin/python ]] || return 1
+  minor=$("$venv/bin/python" -c "$BENCH_PY_MINOR" 2>/dev/null) || return 1
+  [[ $minor == "$(python3 -c "$BENCH_PY_MINOR")" ]] || return 1
+  freeze=$(bench_freeze "$venv") || return 1
+  for pin in "$@"; do grep -Fxq -- "$pin" <<< "$freeze" || return 1; done
+}
+
+bench_smoke() { timeout 600 "$1/bin/python" -X faulthandler -c "$BENCH_SMOKE" "$2"; }
+
+# torch.compile's launcher builds and tinygrad's GPU backends compile against Python.h. Installed
+# where sudo can run (a terminal, or a cached sudo ticket); otherwise a warning names the command.
+bench_dev_headers() {
+  local include
+  include=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("INCLUDEPY"))')
+  [[ ! -f $include/Python.h ]] || return 0
+  if [[ -t 0 ]] || sudo -n true 2>/dev/null; then
+    sudo apt-get install -y python3-dev
+    [[ -f $include/Python.h ]] || fail "python3-dev installed, but $include/Python.h is still missing."
+  else
+    BENCH_WARNINGS+=("No $include/Python.h, so torch.compile cannot build its launcher: run sudo apt-get install -y python3-dev on this box.")
+  fi
+}
+
+# Points BENCH_VENV at the fresh directory with one rename of a symlink. A real directory there is
+# first moved aside to <venv>-retired-<stamp>; that, or the previous symlink target, is kept.
+bench_swap() {
+  local fresh=$1 parent=${BENCH_VENV%/*} link retired='' target dir
+  link=$BENCH_VENV.swap.$$
+  ln -s "${fresh##*/}" "$link"
+  if [[ -L $BENCH_VENV ]]; then
+    target=$(readlink "$BENCH_VENV")
+    if [[ $target == /* ]]; then retired=$target; else retired=$parent/$target; fi
+  elif [[ -e $BENCH_VENV ]]; then
+    retired=$BENCH_VENV-retired-$(date -u +%Y%m%dT%H%M%SZ)
+    mv -- "$BENCH_VENV" "$retired"
+  fi
+  python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$link" "$BENCH_VENV"
+  for dir in "$BENCH_VENV"-[0-9]* "$BENCH_VENV"-retired-*; do
+    [[ -d $dir && ! -L $dir && $dir != "$fresh" && $dir != "$retired" ]] || continue
+    rm -rf -- "${dir:?}"
+  done
+  [[ -z $retired ]] || printf 'Previous benchmark venv kept for rollback: %s\n' "$retired"
+}
+
+bench_build() {
+  local fresh=$1 index=$2 torch=$3
+  python3 -m venv "$fresh" || fail "python3 -m venv failed; $BENCH_VENV is unchanged."
+  "$fresh/bin/python" -m pip install -q --disable-pip-version-check "${BENCH_PINS[@]}" ||
+    fail "pip could not install ${BENCH_PINS[*]}; $BENCH_VENV is unchanged."
+  "$fresh/bin/python" -m pip install -q --disable-pip-version-check --index-url "$BENCH_INDEX_BASE/$index" "torch==$torch" ||
+    fail "pip could not install torch==$torch from $BENCH_INDEX_BASE/$index; $BENCH_VENV is unchanged."
+}
+
+bench_record_requirements() {
+  local file=$BENCH_VENV.requirements.txt
+  bench_freeze "$BENCH_VENV" > "$file.new"
+  if cmp -s "$file.new" "$file"; then rm -f -- "$file.new"; else mv -- "$file.new" "$file"; fi
+}
+
+bench_link_checkout() {
+  local link=$BENCH_CHECKOUT/benchmarks/.venv
+  if [[ -L $link && $(readlink "$link") == "$BENCH_VENV" ]]; then return; fi
+  if [[ -e $link || -L $link ]]; then
+    BENCH_WARNINGS+=("$link is not a symlink to $BENCH_VENV; left as it is.")
+  else
+    ln -s "$BENCH_VENV" "$link"
+  fi
+}
+
+# Copies the fixtures this box lacks from the anchor's main checkout, never regenerating one: each
+# is staged beside the others and installed only when this checkout's fixture_digest.py --check
+# finds it among DIGESTS.txt's recorded bytes. An existing fixture is never replaced (it may be
+# this box's own recorded bytes). Reads only regular files named <name>.safetensors with a
+# portable name, listed NUL-delimited; any other name on the anchor is refused, not skipped.
+bench_fixtures() {
+  local dir=$BENCH_CHECKOUT/benchmarks/fixtures anchor=${FLEET_ANCHOR:-mac-studio} name failed=()
+  local tool=$BENCH_CHECKOUT/benchmarks/fixture_digest.py
+  [[ -f $dir/DIGESTS.txt && -f $tool ]] ||
+    fail "No $dir/DIGESTS.txt or $tool: update $BENCH_CHECKOUT, then rerun to copy the fixtures."
+  ssh -o BatchMode=yes "$anchor" "cd $BENCH_ANCHOR_CHECKOUT/benchmarks/fixtures && find . -maxdepth 1 -type f -name '*.safetensors' -print0" > "$scratch/anchor-fixtures" ||
+    fail "Cannot list the fixtures in $anchor:$BENCH_ANCHOR_CHECKOUT/benchmarks/fixtures."
+  BENCH_STAGE=$(mktemp -d "$dir/.incoming.XXXXXX")
+  while IFS= read -r -d '' name; do
+    [[ $name =~ ^\./[A-Za-z0-9][A-Za-z0-9_.-]*\.safetensors$ ]] || fail "Refusing anchor fixture name: $(printf '%q' "$name")"
+    name=${name#./}
+    [[ ! -e $dir/$name && ! -L $dir/$name ]] || continue
+    scp -q -p "$anchor:$BENCH_ANCHOR_CHECKOUT/benchmarks/fixtures/$name" "$BENCH_STAGE/$name" ||
+      fail "Cannot copy $name from $anchor."
+    if python3 "$tool" --check --digests "$dir/DIGESTS.txt" "$BENCH_STAGE/$name"; then
+      mv -- "$BENCH_STAGE/$name" "$dir/$name"
+    else
+      failed+=("$name")
+    fi
+  done < "$scratch/anchor-fixtures"
+  rm -rf -- "${BENCH_STAGE:?}"; BENCH_STAGE=''
+  [[ ${#failed[@]} -eq 0 ]] || fail "Not installed, matching nothing in $dir/DIGESTS.txt: ${failed[*]}"
+}
+
+# A failed or interrupted build never leaves its fresh directory or a staged fixture behind.
+bench_cleanup() {
+  [[ -z $BENCH_FRESH ]] || rm -rf -- "${BENCH_FRESH:?}"
+  [[ -z $BENCH_STAGE ]] || rm -rf -- "${BENCH_STAGE:?}"
+}
+
+bench_provision() {
+  local gpu=${1:-} gfx='' spec index torch fresh warning
+  [[ -n $gpu ]] || gpu=$(bench_gpu_detect)
+  [[ $gpu != amd ]] || gfx=$(bench_amd_gfx)
+  spec=$(bench_torch_spec "$gpu" "$gfx")
+  read -r index torch <<< "$spec"
+  local pins=("${BENCH_PINS[@]}" "torch==$torch")
+  printf 'Benchmark venv %s: %s%s, torch %s from %s/%s\n' "$BENCH_VENV" "$gpu" "${gfx:+ $gfx}" "$torch" "$BENCH_INDEX_BASE" "$index"
+  mkdir -p "${BENCH_VENV%/*}"
+  exec 9>> "$BENCH_VENV.lock"
+  flock -n 9 || fail "Another run holds $BENCH_VENV.lock."
+  bench_dev_headers
+  if bench_matches "$BENCH_VENV" "${pins[@]}" && bench_smoke "$BENCH_VENV" "$gpu"; then
+    printf 'Benchmark venv already holds the pins and passes the smoke; left unchanged.\n'
+  else
+    fresh=$(mktemp -d "$BENCH_VENV-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
+    BENCH_FRESH=$fresh
+    bench_build "$fresh" "$index" "$torch"
+    bench_matches "$fresh" "${pins[@]}" ||
+      fail "The fresh venv does not hold ${pins[*]}; $BENCH_VENV is unchanged."
+    bench_smoke "$fresh" "$gpu" ||
+      fail "The fresh venv's torch $torch failed the $gpu smoke; $BENCH_VENV is unchanged."
+    bench_swap "$fresh"
+    BENCH_FRESH=''
+  fi
+  bench_record_requirements
+  if [[ -d $BENCH_CHECKOUT/benchmarks ]]; then
+    bench_link_checkout
+    bench_fixtures
+  else
+    printf 'No %s/benchmarks: skipping its .venv link and the fixtures.\n' "$BENCH_CHECKOUT"
+  fi
+  for warning in ${BENCH_WARNINGS[@]+"${BENCH_WARNINGS[@]}"}; do printf 'WARNING: %s\n' "$warning"; done
+}
+
+# The venv alone, non-interactively apart from sudo for the dev headers:
+#   ssh <box> "bash <(printf %s <base64 of this script> | base64 -d) --bench-venv [nvidia|amd|cpu]"
+bench_venv_only() {
+  [[ $# -le 1 ]] || fail 'Usage: --bench-venv [nvidia|amd|cpu]'
+  [[ $# -eq 0 ]] || bench_torch_spec "$1" > /dev/null
+  [[ $(uname -s) == Linux ]] || fail 'Run this on the target Linux machine.'
+  [[ $EUID -ne 0 ]] || fail 'Run as your normal user; the venv belongs to the user who measures.'
+  scratch=$(mktemp -d)
+  scratch=$(cd "$scratch" && pwd -P)
+  trap 'rm -rf -- "$scratch"; bench_cleanup' EXIT
+  bench_provision "$@"
+}
+
 setup_gpu() {
   printf '\nDetected display devices:\n'
   lspci | grep -Ei 'VGA|3D|Display' || true
@@ -399,6 +624,11 @@ main() {
     jq_only "$@"
     return
   fi
+  if [[ ${1:-} == --bench-venv ]]; then
+    shift
+    bench_venv_only "$@"
+    return
+  fi
   case ${1:-} in -h|--help) usage; return ;; '') ;; *) usage >&2; return 2 ;; esac
   [[ $# -eq 0 ]] || fail 'Unexpected arguments.'
   [[ $(uname -s) == Linux ]] || fail 'Run this on the target Linux machine.'
@@ -432,12 +662,12 @@ main() {
   sudo apt-get update
   sudo apt-get install -y ca-certificates curl git gh jq ripgrep tmux unzip zip rsync \
     build-essential pkg-config cmake ninja-build clang gdb m4 bubblewrap opam \
-    python3 python3-venv python3-pip shellcheck openssh-client openssh-server \
+    python3 python3-dev python3-venv python3-pip shellcheck openssh-client openssh-server \
     nodejs npm libgmp-dev libffi-dev libssl-dev zlib1g-dev libopenblas-dev pciutils
   scratch=$(mktemp -d)
   scratch=$(cd "$scratch" && pwd -P)
   trap 'printf "Setup stopped at line %s. Fix the reported error and rerun.\n" "$LINENO" >&2' ERR
-  trap 'rm -rf -- "$scratch"' EXIT
+  trap 'rm -rf -- "$scratch"; bench_cleanup' EXIT
   install_jq
   mkdir -p "$HOME/.local/bin" "$HOME/.config/fleet" "$HOME/.claude/skills" "$HOME/.codex/skills"
   export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
@@ -575,6 +805,9 @@ main() {
       opam install hipjit -y
     fi
     if ask 'Build OCANNL now?'; then (cd "$HOME/ocannl-staging"; dune build); fi
+  fi
+  if ask 'Provision the shared benchmark venv (~/.venvs/ocannl-bench) and copy the fixtures from the anchor?'; then
+    bench_provision
   fi
   printf '\nSetup stages finished. Open a new login shell before using the tools.\n'
   printf 'Next: register this endpoint in the hub Flotilla config and coordinator roster.\n'
