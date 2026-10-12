@@ -309,7 +309,7 @@ must exist before launch. For example `reserve.json`:
   "agent_host": "mac-studio",
   "execution_host": "rog-nv-linux",
   "repository": "owner/repo",
-  "requested_revision": "<pushed-ref-or-exact-sha>",
+  "requested_revision": "<full 40-hex pushed SHA (git rev-parse), or a ref>",
   "kind": "correctness"
 }
 ```
