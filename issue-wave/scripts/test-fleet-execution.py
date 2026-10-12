@@ -41,6 +41,14 @@ SSH_LOG = Path(SSH_SHIM.name) / 'calls'
     'echo "ssh: shim: no real box is reached from this suite" >&2\nexit 255\n')
 (Path(SSH_SHIM.name) / 'ssh').chmod(0o755)
 os.environ['SSH_SHIM_LOG'] = str(SSH_LOG)
+# Every observed_sha a payload names is checked on GitHub before the anchor is asked (ludics-lite
+# #561), and the fixtures name made-up SHAs in a made-up `owner/repo`: no case may ask the real
+# GitHub. This `gh` answers that one call as GitHub does for a commit it has (the SHA back) and
+# refuses any other; test-fleet-worker.sh exercises the refusals.
+(Path(SSH_SHIM.name) / 'gh').write_text(
+    '#!/bin/sh\ncase "$*" in "api --hostname github.com repos/"*/*"/commits/"*" -q .sha")\n'
+    '  p=$4; echo "${p##*/}"; exit 0 ;; esac\necho "gh shim: unexpected call: $*" >&2\nexit 2\n')
+(Path(SSH_SHIM.name) / 'gh').chmod(0o755)
 os.environ['PATH'] = SSH_SHIM.name + os.pathsep + os.environ['PATH']
 with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
     root = Path(temporary)

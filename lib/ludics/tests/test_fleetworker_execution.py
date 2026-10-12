@@ -10,7 +10,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli, proc
-from ludics.fleetworker import execution
+from ludics.fleetworker import execution, revision
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.execution import (
     Payload,
@@ -24,6 +24,7 @@ from ludics.fleetworker.execution import (
     window_payload,
 )
 from ludics.fleetworker.gate import integration_rows
+from ludics.tests.fake import Answer, FakeTool
 
 SHA = "a" * 40
 
@@ -97,6 +98,73 @@ class Conclusions(unittest.TestCase):
         self.assertEqual(records_of("[]"), [])
         for text in ("{}", "[1]", "nope", ""):
             self.assertIsNone(records_of(text), text)
+
+
+class Revisions(unittest.TestCase):
+    """ludics-lite#561: a commit a payload names must exist in the request's repository on GitHub.
+    No commit (422) and no repository (404) refuse (1); anything else is UNVERIFIED (4)."""
+
+    GOOD = "c" * 40
+    TYPO = "c" * 39 + "d"
+
+    def test_a_commit_github_has_passes_and_the_call_names_the_repository(self) -> None:
+        with FakeTool("gh") as gh:
+            gh.script(Answer(stdout=self.GOOD + "\n"))
+            self.assertIsNone(revision.commit_refusal("o/r", "observed_sha", self.GOOD))
+            self.assertEqual(gh.calls(), [["api", "--hostname", "github.com", f"repos/o/r/commits/{self.GOOD}", "-q", ".sha"]])
+
+    def test_no_commit_refuses_naming_the_sha_and_where_it_was_checked(self) -> None:
+        with FakeTool("gh") as gh:
+            gh.script(Answer(1, '{"status":"422"}', f"gh: No commit found for SHA: {self.TYPO} (HTTP 422)\n"))
+            text, rc = revision.commit_refusal("o/r", "observed_sha", self.TYPO) or ("", 0)
+        self.assertEqual(rc, 1)
+        self.assertTrue(text.startswith(f"EXECUTION REFUSED: observed_sha {self.TYPO} is no commit of o/r (checked on GitHub: gh: No commit found"), text)
+
+    def test_no_repository_refuses_and_no_answer_is_unverified(self) -> None:
+        with FakeTool("gh") as gh:
+            gh.script(Answer(1, '{"status":"404"}', "gh: Not Found (HTTP 404)\n"))
+            text, rc = revision.commit_refusal("o/r", "observed_sha", self.GOOD) or ("", 0)
+            self.assertEqual(rc, 1)
+            self.assertIn("no repository o/r", text)
+            for answer in (Answer(1, "", "error connecting to api.github.com\ncheck your internet connection\n"),
+                           Answer(1, "", "gh: Server Error (HTTP 502)\n"), Answer(1, "", "gh: Bad credentials (HTTP 401)\n"),
+                           Answer(1, "", "unexpected end of JSON input\n"), Answer(4, "", "")):
+                gh.script(answer)
+                text, rc = revision.commit_refusal("o/r", "observed_sha", self.GOOD) or ("", 0)
+                self.assertEqual(rc, 4, answer)
+                self.assertTrue(text.startswith(f"EXECUTION UNVERIFIED github.com: observed_sha {self.GOOD} could not be checked in o/r ("), text)
+
+    def test_another_commit_answered_is_refused(self) -> None:
+        with FakeTool("gh") as gh:
+            gh.script(Answer(stdout=self.TYPO + "\n"))
+            text, rc = revision.commit_refusal("o/r", "observed_sha", self.GOOD) or ("", 0)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"to {self.TYPO}, not that commit", text)
+
+    def test_what_github_cannot_answer_is_refused_without_asking(self) -> None:
+        with FakeTool("gh") as gh:
+            for repo, sha, want in (("not a repo", self.GOOD, "is not <owner>/<name>"), ("o/r", "e" * 64, "SHA-256")):
+                text, rc = revision.commit_refusal(repo, "observed_sha", sha) or ("", 0)
+                self.assertEqual(rc, 1)
+                self.assertIn(want, text)
+            self.assertEqual(gh.calls(), [])
+
+    def test_requested_revision_reads_only_hex_words(self) -> None:
+        with FakeTool("gh") as gh:
+            gh.script(Answer(stdout=self.GOOD + "\n"))
+            for rev in ("origin/main", "master", "origin/claude/issue-1034-x", f"origin/{self.GOOD}", f"{self.GOOD}^"):
+                self.assertIsNone(revision.request_refusal({"repository": "o/r", "requested_revision": rev}), rev)
+            self.assertEqual(gh.calls(), [])
+            self.assertIsNone(revision.request_refusal({"repository": "o/r", "requested_revision": f"{self.GOOD} plus working diff"}))
+            self.assertEqual(gh.calls(), [["api", "--hostname", "github.com", f"repos/o/r/commits/{self.GOOD}", "-q", ".sha"]])
+            gh.script(Answer(stdout=self.GOOD + "\n"))
+            for rev in ("f8e0721f0", self.GOOD.upper(), self.GOOD + "c"):
+                text, rc = revision.request_refusal({"repository": "o/r", "requested_revision": rev}) or ("", 0)
+                self.assertEqual(rc, 1, rev)
+                self.assertIn("is not a full commit ID", text)
+            self.assertEqual(gh.calls(), [])
+            for request in (None, "x", {"repository": "o/r"}, {"repository": 1, "requested_revision": self.GOOD}):
+                self.assertIsNone(revision.request_refusal(request))
 
 
 class IntegrationRecords(unittest.TestCase):
