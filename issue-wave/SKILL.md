@@ -711,9 +711,10 @@ controlled through the tools in your coordinator's file, never through those com
      the same SHA) to rule out a flake: #479-class tee timeouts happen on the macOS runner. A red
      that reruns red is a regression: stop the world (below) before attributing it.
   2. **Attribute** by the failing job against the span, `git log --first-parent <floor>..<red>`:
-     `pr-review.sh base` names both ends, the failing job and `red since <red> ... (success at
-     <floor>, so the red entered in <floor>..<red>)`. A merge in the span whose diff reaches the
-     failing suite, alone, owns it.
+     `pr-review.sh base` names the failing job and both ends, `red since <red> ... (success at
+     <floor>)`; it orders runs by creation, so confirm `git merge-base --is-ancestor <floor>
+     <red>` before reading a span off them. A merge in the span whose diff reaches the failing
+     suite, alone, owns it.
   3. **Bisect only when that is still ambiguous**: run the failing suite at the span's
      intermediate merges (`git bisect start --first-parent <red> <floor>`) in a detached
      worktree, locally, on a box of the failing job's OS - mac-studio under `/bin/bash` 3.2 for

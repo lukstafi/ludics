@@ -355,8 +355,8 @@ test_a_shared_push_group_burst_is_judged_by_the_tips_own_run() {
       assert_contains "$BASE_OUTPUT" \
         "red since ${SHA_C:0:8} (run created" "the cancelled runs end no streak"
       assert_contains "$BASE_OUTPUT" \
-        "1 run(s) back; the judged run before it was not red (success at ${SHA_A:0:8}, so the red entered in ${SHA_A:0:8}..${SHA_C:0:8})" \
-        "the span to attribute runs from the older run's green over every cancelled merge"
+        "1 run(s) back; the judged run before it was not red (success at ${SHA_A:0:8})" \
+        "the floor of the span to attribute is the older run's green, under every cancelled merge"
       ;;
     esac
   done

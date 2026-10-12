@@ -592,14 +592,14 @@ class Base:
         if reds == 0:
             return ""
         if floor is not None:
-            # The floor's commit bounds the span to attribute (ludics-lite#597): merges between it
-            # and the first red one judged nothing of their own (a push group that keeps only the
-            # newest pending run cancels theirs), so the red entered somewhere in that range.
-            f8, x8 = floor.head_sha[:8], first_sha[:8]
-            span = (f"at the same commit {f8}" if floor.head_sha == first_sha
-                    else f"at {f8}, so the red entered in {f8}..{x8}")
-            detail = (f"{indent}red since {x8} (run created {first_when}), {reds} run(s)"
-                      f" back; the judged run before it was not red ({floor.conclusion} {span})\n")
+            # The floor's commit is the lower end of the span to attribute (ludics-lite#597): the
+            # merges between it and the first red run judged nothing of their own (a push group
+            # that keeps only the newest pending run cancels theirs). Named, never asserted as a
+            # range: the feed orders runs by creation, not by ancestry, and a branch that was
+            # force-pushed or recreated can put the floor on another history (review round 1).
+            detail = (f"{indent}red since {first_sha[:8]} (run created {first_when}), {reds} run(s)"
+                      f" back; the judged run before it was not red ({floor.conclusion} at"
+                      f" {floor.head_sha[:8]})\n")
         else:
             detail = (f"{indent}red for all {reds} judged run(s) in the window, back to"
                       f" {first_sha[:8]} (run created {first_when}) — the window holds no\n"
