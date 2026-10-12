@@ -118,6 +118,9 @@
 #                          # first takes every slot of the box (waiting for running batches), and
 #                          # an `execution slot` inside it runs under the hold instead of refusing
 #   fleet-worker.sh execution reserve|dispatch|record|reconcile|conclude <json-file>
+#                          # every commit a payload names must exist on GitHub in its repository
+#   fleet-worker.sh execution conclude <json-file> --observed-from <checkout>   # observed_sha is
+#                          # that checkout's HEAD, read on the execution host
 #   fleet-worker.sh execution run <json-file>          # reserve + dispatch in one step
 #   fleet-worker.sh execution window <box> <json-file> # `run` for a measurement that suspends the
 #                          # box's standing reservations, restored when it concludes
@@ -125,7 +128,7 @@
 #                          [--box <box>] [--evidence <text>]   # verdict, log and checkout read from a
 #                                                     # test-run.sh record on the reserved box
 #   fleet-worker.sh execution conclude --from-bg-run <run-dir> --request <id> --sha <sha>
-#                          [--box <box>] [--checkout <text>] [--evidence <text>]   # verdict and log
+#                          | --observed-from <checkout> [--box <box>] [--checkout <text>] [--evidence <text>]   # verdict and log
 #                          # read from a bg-run.sh directory (the mapping: lib/ludics/fleetworker/execution.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
 #                          # CI state and head age; flags <n> (5) or more rounds (read-only)
