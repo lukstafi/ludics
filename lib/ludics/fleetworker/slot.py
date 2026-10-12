@@ -721,6 +721,10 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
                     f" ({int(now - start)}s of {bound}s, --wait-window)")
             progress += WINDOW_PROGRESS
         time.sleep(min(poll, deadline - now))
+        if time.monotonic() >= deadline:
+            # The bound is the bound: no read after it, which over a remote anchor could run past
+            # it by the transport's timeout and then admit the batch late.
+            continue
         read = read_registry(cfg, box)
         if isinstance(read, Unread):
             # One failed read mid-wait is not the window's answer: said, and asked again until the

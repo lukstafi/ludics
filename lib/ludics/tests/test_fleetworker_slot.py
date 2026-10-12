@@ -183,6 +183,19 @@ class WindowWait(unittest.TestCase):
                          " (--wait-window); no slot taken\n")
         self.assertIn("measurement win holds testbox", err)
 
+    def test_no_read_is_made_past_the_bound(self) -> None:
+        # A read past the bound could admit the batch after it: the one stubbed read must stay unused.
+        result, out, _ = self.wait([measurement("win")], [[]], bound=0)
+        self.assertEqual((result, out), (1, "EXECUTION SLOT REFUSED testbox: measurement win still holds testbox"
+                                            " after 0s (--wait-window); no slot taken\n"))
+        reads = mock.Mock(return_value=[measurement("win")])
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "0.3"}, host="testbox")
+        with mock.patch.object(slot, "read_registry", reads), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 1, ["echo"]), 1)
+        self.assertLessEqual(reads.call_count, 3)  # reads at 0.3, 0.6 and 0.9 s, none at 1.0
+
     def test_a_failed_read_mid_wait_is_asked_again_and_refused_as_itself_at_the_bound(self) -> None:
         unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))
         result, _, err = self.wait([measurement("win")], [unread, []])
