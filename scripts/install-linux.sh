@@ -430,17 +430,21 @@ bench_dev_headers() {
 # Points BENCH_VENV at the fresh directory with one rename of a symlink. A real directory there is
 # first moved aside to <venv>-retired-<stamp>; that, or the previous symlink target, is kept.
 bench_swap() {
-  local fresh=$1 parent=${BENCH_VENV%/*} link retired='' target dir
+  local fresh=$1 parent=${BENCH_VENV%/*} link retired='' moved='' target dir
   link=$BENCH_VENV.swap.$$
   ln -s "${fresh##*/}" "$link"
   if [[ -L $BENCH_VENV ]]; then
     target=$(readlink "$BENCH_VENV")
     if [[ $target == /* ]]; then retired=$target; else retired=$parent/$target; fi
   elif [[ -e $BENCH_VENV ]]; then
-    retired=$BENCH_VENV-retired-$(date -u +%Y%m%dT%H%M%SZ)
+    retired=$BENCH_VENV-retired-$(date -u +%Y%m%dT%H%M%SZ) moved=1
     mv -- "$BENCH_VENV" "$retired"
   fi
-  python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$link" "$BENCH_VENV"
+  if ! python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$link" "$BENCH_VENV"; then
+    rm -f -- "$link"
+    [[ -z $moved ]] || mv -- "$retired" "$BENCH_VENV"
+    fail "Could not point $BENCH_VENV at $fresh; the previous venv is back in place."
+  fi
   for dir in "$BENCH_VENV"-[0-9]* "$BENCH_VENV"-retired-*; do
     [[ -d $dir && ! -L $dir && $dir != "$fresh" && $dir != "$retired" ]] || continue
     rm -rf -- "${dir:?}"
@@ -479,17 +483,20 @@ bench_link_checkout() {
 # this box's own recorded bytes). Reads only regular files named <name>.safetensors with a
 # portable name, listed NUL-delimited; any other name on the anchor is refused, not skipped.
 bench_fixtures() {
-  local dir=$BENCH_CHECKOUT/benchmarks/fixtures anchor=${FLEET_ANCHOR:-mac-studio} name failed=()
+  local dir=$BENCH_CHECKOUT/benchmarks/fixtures anchor=${FLEET_ANCHOR:-mac-studio} name missing=() failed=()
   local tool=$BENCH_CHECKOUT/benchmarks/fixture_digest.py
   [[ -f $dir/DIGESTS.txt && -f $tool ]] ||
     fail "No $dir/DIGESTS.txt or $tool: update $BENCH_CHECKOUT, then rerun to copy the fixtures."
   ssh -o BatchMode=yes "$anchor" "cd $BENCH_ANCHOR_CHECKOUT/benchmarks/fixtures && find . -maxdepth 1 -type f -name '*.safetensors' -print0" > "$scratch/anchor-fixtures" ||
     fail "Cannot list the fixtures in $anchor:$BENCH_ANCHOR_CHECKOUT/benchmarks/fixtures."
-  BENCH_STAGE=$(mktemp -d "$dir/.incoming.XXXXXX")
   while IFS= read -r -d '' name; do
     [[ $name =~ ^\./[A-Za-z0-9][A-Za-z0-9_.-]*\.safetensors$ ]] || fail "Refusing anchor fixture name: $(printf '%q' "$name")"
     name=${name#./}
-    [[ ! -e $dir/$name && ! -L $dir/$name ]] || continue
+    [[ -e $dir/$name || -L $dir/$name ]] || missing+=("$name")
+  done < "$scratch/anchor-fixtures"
+  [[ ${#missing[@]} -gt 0 ]] || return 0
+  BENCH_STAGE=$(mktemp -d "$dir/.incoming.XXXXXX")
+  for name in "${missing[@]}"; do
     scp -q -p "$anchor:$BENCH_ANCHOR_CHECKOUT/benchmarks/fixtures/$name" "$BENCH_STAGE/$name" ||
       fail "Cannot copy $name from $anchor."
     if python3 "$tool" --check --digests "$dir/DIGESTS.txt" "$BENCH_STAGE/$name"; then
@@ -497,7 +504,7 @@ bench_fixtures() {
     else
       failed+=("$name")
     fi
-  done < "$scratch/anchor-fixtures"
+  done
   rm -rf -- "${BENCH_STAGE:?}"; BENCH_STAGE=''
   [[ ${#failed[@]} -eq 0 ]] || fail "Not installed, matching nothing in $dir/DIGESTS.txt: ${failed[*]}"
 }

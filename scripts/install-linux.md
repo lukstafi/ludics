@@ -95,6 +95,31 @@ does not tell us the target Unix username.
   wrapper at `~/.local/bin/aarch64-linux-gnu-gcc` that puts the extracted binutils' private
   libraries on `LD_LIBRARY_PATH`, since they carry no RPATH.
 - Optional NVIDIA or AMD GPU setup below, and `cudajit` / `hipjit` bindings.
+- Optional shared OCANNL benchmark venv, `~/.venvs/ocannl-bench` (ludics-lite#537), the one
+  OCANNL's measurement drivers find (`benchmarks/bench_venv.py`). From system `python3`, with
+  `numpy==2.5.3` (the fixtures' random streams depend on it), `safetensors==0.8.0`,
+  `tinygrad==0.14.0` and torch from the GPU's index on `download.pytorch.org/whl`: `cu130`
+  (2.14.0) on NVIDIA, `rocm7.1` (2.13.0) on AMD, `rocm7.2` (2.14.1) on gfx1151, where the
+  rocm7.1 wheel segfaults in its bundled rocprofiler-sdk on the first host-to-device copy, and
+  `cpu` (2.14.0) otherwise. The GPU comes from `lspci` (and the gfx from `rocminfo`). The live
+  venv is never edited: a rebuild goes into a fresh `~/.venvs/ocannl-bench-<stamp>.*`, which must
+  pass the smoke (the pins in `pip freeze`, the imports, `torch.cuda.is_available()` and
+  `torch.ones(1).cuda()` on a GPU) before `~/.venvs/ocannl-bench` becomes a symlink to it. The
+  directory it replaces is kept for rollback (re-point the symlink), older ones are removed, and a
+  failed build leaves the old venv in place. A venv already on the pins that passes the smoke is
+  left alone. The freeze goes to `~/.venvs/ocannl-bench.requirements.txt`;
+  `~/ocannl-staging/benchmarks/.venv` is linked to the venv when that checkout exists and has no
+  `.venv` of its own. The fixtures the box lacks are copied, never regenerated, from the anchor's
+  `~/ocannl-staging/benchmarks/fixtures` (`$FLEET_ANCHOR`, over the fleet's ssh), and each one is
+  installed only if the box checkout's `fixture_digest.py --check` finds it in `DIGESTS.txt`; an
+  existing fixture is never replaced. `python3-dev` (for `torch.compile` and tinygrad's GPU
+  backends) is installed by the shared setup; the standalone mode installs it when sudo can run,
+  and otherwise ends with a WARNING naming the command. The standalone mode, from the Mac:
+  `git -C ~/ludics-lite fetch -q origin && ssh <box> "bash <(printf %s $(git -C ~/ludics-lite show
+  origin/main:scripts/install-linux.sh | base64 | tr -d '\n') | base64 -d) --bench-venv"`
+  (append `nvidia`, `amd` or `cpu` to override the detection; `ssh -t` lets sudo prompt). Run it
+  in the box's execution slot when other sessions may be measuring. Check: `~/.venvs/ocannl-bench/bin/python
+  -c 'import torch; print(torch.__version__); torch.ones(1).cuda()'`.
 
 Existing repositories are checked for the expected origin and left untouched.
 Skill conflicts stop with instructions rather than replacing local work. Existing
@@ -156,8 +181,8 @@ OCANNL_BACKEND=hip tools/test-run.sh run build @runtest    # MINIX, TUF
 
 These are acceptance checks to run on the real hardware, not tests already run
 by the authoring session. Do not run a fleet wave until the applicable backend
-works. Python ML packages such as PyTorch are deliberately left for a project
-venv and a GPU-specific wheel choice; system Python is not modified with pip.
+works. Python ML packages such as PyTorch go only into the shared benchmark venv
+above, with its GPU-specific wheel; system Python is not modified with pip.
 
 ## Exchange peer keys once, from Mac Studio
 
