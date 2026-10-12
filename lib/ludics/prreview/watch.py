@@ -44,8 +44,10 @@ from ludics.proc import windows_command_line
 from ludics.prreview import knobs
 from ludics.prreview.budget import pause as budget_pause
 from ludics.prreview.core import (
+    GhFailed,
     GhOk,
     GhSession,
+    GhUnanswered,
     die,
     mark_of,
     pr_arg,
@@ -303,6 +305,7 @@ class Watch:
         self.own_nudges: dict[str, int] = {}
         # When this process first read each head (round()).
         self.first_seen: dict[str, int] = {}
+        self.last_head = ""
         self.held_until = 0
 
     # --- the pieces of a round -------------------------------------------------------------------
@@ -332,8 +335,10 @@ class Watch:
         head = pr_head_read(self.ctx, self.pr)
         snap.put_head(self.pr, head)
         p.head = head.sha
-        if head.sha:
-            self.first_seen.setdefault(head.sha, self.clock.now())
+        if head.sha and head.sha != self.last_head:
+            # From each arrival: a head that comes back (A, B, A) is a new push of it.
+            self.first_seen[head.sha] = self.clock.now()
+            self.last_head = head.sha
         for entry in result.items.split():
             kind = _upto(entry, ":")
             rest = _after(entry, ":")
@@ -605,6 +610,11 @@ class Watch:
             case NudgeBarred(why=why):
                 return f" — not nudged automatically ({why}); consider nudging with a '@codex review' comment"
             case NudgeClear(head=head):
+                pr_state = self.pr_state()
+                if pr_state != "open":
+                    return (
+                        f" — not nudged automatically: the PR reads {pr_state or 'UNREAD'}, not open"
+                    )
                 # Recorded before the post: it is sent once whatever its error (it may have landed).
                 self.own_nudges[head] = self.clock.now()
                 posted, post_err = self.post_request()
@@ -622,6 +632,20 @@ class Watch:
                 return None
             case _:
                 assert_never(read)
+
+    def pr_state(self) -> str:
+        """The PR's own state (``open``, ``closed``), read fresh as the automatic write's last gate
+        (review of #583, round 3: a PR closed or merged mid-watch is still `expected`); "" unread."""
+        result = self.ctx.session.retry(
+            "read", ["api", f"repos/{self.repo}/pulls/{self.pr}", "--jq", ".state"]
+        )
+        match result:
+            case GhOk(stdout=out):
+                return out.strip()
+            case GhFailed() | GhUnanswered():
+                return ""
+            case _:
+                assert_never(result)
 
     def nudge_hold(self, state: State) -> int | None:
         """Until when a due head's verdict is held rather than given, when it is: the watch would
@@ -832,32 +856,32 @@ class Watch:
                                 " became due"
                             )
                     hold = self.nudge_hold(state) if verdict else None
-                    if hold is not None:
-                        # Held: the window stays open to the hold, as it does for a fresh nudge.
-                        verdict = ""
-                        if candidate_end is None or candidate_end < hold:
-                            candidate_end = hold
-                            candidate_kind = "nudged"
-                    if verdict:
+                    if verdict and hold is None:
                         rc = self.end(tok, verdict, remedy=True)
                         if rc == _HELD:
                             hold = self.held_until
-                            if candidate_end is None or candidate_end < hold:
-                                candidate_end = hold
-                                candidate_kind = "nudged"
-                            verdict = ""
                         elif rc != _NUDGED:
                             return rc
-                    if verdict:
-                        # The request's grace is the next window; it replaces a deadline already
-                        # fixed, once per head, since the request is a new one.
-                        candidate_end = self.clock.now() + cfg.grace
-                        candidate_kind = "nudged"
-                        if extension_end is not None:
-                            extension_end = candidate_end
+                        else:
+                            # The request's grace is the next window; it replaces a deadline already
+                            # fixed, once per head, since the request is a new one.
+                            candidate_end = self.clock.now() + cfg.grace
+                            candidate_kind = "nudged"
+                            if extension_end is not None:
+                                extension_end = candidate_end
+                                extension_kind = "nudged"
+                            was = "nudged"
+                            quiet = 0
+                    if hold is not None:
+                        # Held: the window stays open to the hold, as it does for a fresh nudge, an
+                        # extension already running included (each hold is bounded: the pickup
+                        # margin from a head's first sight, a request's grace from its post).
+                        if candidate_end is None or candidate_end < hold:
+                            candidate_end = hold
+                            candidate_kind = "nudged"
+                        if extension_end is not None and extension_end < hold:
+                            extension_end = hold
                             extension_kind = "nudged"
-                        was = "nudged"
-                        quiet = 0
                 case _:
                     assert_never(tok)
 

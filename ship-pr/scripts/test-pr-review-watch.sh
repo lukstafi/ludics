@@ -59,6 +59,8 @@ H1=1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 H2=2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 HEAD_SHA="$H2"
 MERGEABLE_STATE=clean
+# The PR's own state (open, closed), which the automatic nudge reads last.
+PR_STATE=open
 FAIL_PULLS=""
 # The poll round from which the feeds stop answering (the transport failure a final poll can hit),
 # and the one from which the PR read stops answering. 0 is never.
@@ -111,6 +113,7 @@ reset_fixture() {
   schedule review_comments 1 '[]'
   HEAD_SHA="$H2"
   MERGEABLE_STATE=clean
+  PR_STATE=open
   FAIL_PULLS=""
   FAIL_FEEDS_FROM=0
   FAIL_PULLS_FROM=0
@@ -276,8 +279,8 @@ gh() {
     # The head per round when a case schedules one (`schedule head <round> <sha>`), else HEAD_SHA.
     head="$HEAD_SHA"
     [ ! -e "$FEEDS/head.0" ] || head=$(feed_answer head)
-    response=$(jq -cn --arg h "$head" --arg m "$MERGEABLE_STATE" --arg c "$PR_CREATED_AT" \
-      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, created_at:$c}')
+    response=$(jq -cn --arg h "$head" --arg m "$MERGEABLE_STATE" --arg c "$PR_CREATED_AT" --arg s "$PR_STATE" \
+      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, created_at:$c, state:$s}')
     ;;
   "repos/$REPO/commits/$H1" | "repos/$REPO/commits/$H2")
     response=$(jq -cn --arg d "$HEAD_AT" '{sha:"head-sha", commit:{committer:{date:$d}}}')
@@ -2263,6 +2266,57 @@ test_a_head_the_final_poll_reads_first_gets_the_pickup_margin() {
   assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the watch ends on it"
 }
 
+# Review of #583, round 3. A head that comes back (H2, then H1, then H2 again: a push back to it)
+# is a new arrival and gets the pickup margin again; H2's first sight, six minutes before, does not
+# count. The pause is held at the interval (a minute) so the rounds fall where the schedule says.
+test_a_returning_head_gets_the_pickup_margin_again() {
+  reset_fixture
+  retune REVIEW_POLL_CAP=60
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  schedule head 0 "$H2"
+  schedule head 2 "$H1"
+  schedule head 7 "$H2"
+  schedule reactions 9 "[$(reaction eyes "$(clock_at 470)")]"
+  schedule reviews 10 "[$(review 502 "$H2" "$(clock_at 530)" 'the automatic round on the push back')]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted inside the returning head's margin"
+  assert_eq "$WATCH_RC" 0 "the automatic round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the watch ends on it"
+}
+
+# Review of #583, round 3. A hold that begins inside an extension already running extends it. The
+# window (a minute) is extended for a live 👀 to that round's grace, 200s in; the round ends without
+# a review of the head at the third round, whose verdict is held to the head's pickup margin, 300s
+# in. The window lasts to the hold, and the nudge and its round follow.
+test_a_hold_inside_an_extension_extends_it() {
+  reset_fixture
+  retune REVIEW_POLL_CAP=60
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  schedule reactions 1 "[$(reaction eyes "$(clock_at -1000)")]"
+  schedule reviews 2 "[$(review 501 "$H1" "$(clock_at -900)" 'the round on another head')]"
+  NUDGE_ANSWER=502
+  run_watch 0,0,0 60 60
+  assert_contains "$WATCH_ERR" "extending watch" "the window was extended for the live round"
+  assert_eq "$(nudges_posted)" 1 "the hold outlasted that extension, and the nudge followed it"
+  assert_eq "$WATCH_RC" 0 "the head's round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the watch ends on it"
+}
+
+# Review of #583, round 3. A PR closed or merged while the watch runs is not nudged: the state
+# machine still reads its head as due, and the PR's own state is the write's last gate.
+test_a_closed_pr_is_not_nudged() {
+  reset_fixture
+  retune GRACE=1
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  PR_STATE=closed
+  run_watch 0,0,0 60 120
+  assert_eq "$(nudges_posted)" 0 "nothing is posted on a closed PR"
+  assert_contains "$WATCH_OUT" "not nudged automatically: the PR reads closed, not open" "and the verdict says why"
+}
+
 # Review of #583, round 1. A request on the head that is younger than its grace is waited out, not
 # reported as one that drew nothing: a watch re-armed on a watermark past a request seconds old
 # (after a transport exit, say) holds the window to that request's grace before it says so.
@@ -2304,6 +2358,9 @@ test_a_draft_or_conflicted_pr_is_not_nudged() {
 }
 
 tests=(
+  test_a_returning_head_gets_the_pickup_margin_again
+  test_a_hold_inside_an_extension_extends_it
+  test_a_closed_pr_is_not_nudged
   test_a_head_the_final_poll_reads_first_gets_the_pickup_margin
   test_an_old_dated_push_gets_the_pickup_margin
   test_a_standing_request_holds_the_nudge
