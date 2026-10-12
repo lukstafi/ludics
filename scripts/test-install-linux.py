@@ -71,6 +71,39 @@ class BootstrapSafety(unittest.TestCase):
         self.assertEqual((self.root / 'env.sh').read_text(), 'export GH_TOKEN=stale\n. token\n')
         self.assertEqual((self.root / 'env.sh').stat().st_mode & 0o777, 0o640)
 
+    def test_drop_line_removes_only_that_line_and_keeps_the_mode(self):
+        (self.root / 'env.sh').write_text('export A=1\n. token\nexport B=2\n. token\n')
+        (self.root / 'env.sh').chmod(0o640)
+        self.run_shell("drop_line env.sh '. token'; drop_line env.sh '. token'; drop_line absent '. token'")
+        self.assertEqual((self.root / 'env.sh').read_text(), 'export A=1\nexport B=2\n')
+        self.assertEqual((self.root / 'env.sh').stat().st_mode & 0o777, 0o640)
+        self.assertFalse((self.root / 'absent').exists())
+
+    def test_drop_line_never_follows_a_symlink_and_refuses_an_unreadable_file(self):
+        self.run_shell("printf '. token\\n' > real; ln -s real link; drop_line link '. token'")
+        self.assertEqual((self.root / 'real').read_text(), '. token\n')
+        (self.root / 'env.sh').write_text('. token\n')
+        (self.root / 'env.sh').chmod(0o200)
+        self.run_shell("drop_line env.sh '. token'", False)
+        (self.root / 'env.sh').chmod(0o600)
+        self.assertEqual((self.root / 'env.sh').read_text(), '. token\n')
+
+    def test_store_gh_token_feeds_the_file_token_on_stdin_with_no_token_variable(self):
+        # ludics-lite#567: gh refuses to log in while GH_TOKEN or GITHUB_TOKEN is set, and the
+        # token must never be an argument; the fake gh records what it was given.
+        (self.root / 'bin').mkdir()
+        (self.root / 'bin/gh').write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$*" > "$REC.args"\n'
+            'printf "%s|%s\\n" "${GH_TOKEN+set}" "${GITHUB_TOKEN+set}" > "$REC.env"\ncat > "$REC.stdin"\n')
+        (self.root / 'bin/gh').chmod(0o755)
+        (self.root / 'tok.sh').write_text('export GH_TOKEN=ghp_fixture\n')
+        self.run_shell('export PATH="$PWD/bin:$PATH" REC="$PWD/rec" GH_TOKEN=ghp_session GITHUB_TOKEN=ghp_session; '
+                       'store_gh_token "$PWD/tok.sh"')
+        self.assertEqual((self.root / 'rec.args').read_text(),
+                         'auth login -h github.com --with-token --insecure-storage\n')
+        self.assertEqual((self.root / 'rec.env').read_text(), '|\n')
+        self.assertEqual((self.root / 'rec.stdin').read_text(), 'ghp_fixture\n')
+
     def test_startup_line_below_an_early_return_moves_first(self):
         (self.root / 'rc').write_text('return\nsource env\n')
         self.run_shell("source_at_start rc 'source env'")

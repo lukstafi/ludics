@@ -277,7 +277,8 @@ that checkout, so a stale checkout runs stale skill text silently (the ludics gh
 class; two consecutive merge cycles once stranded three boxes). Three refusals are user-side
 repairs: an expired Claude login on a box needs an interactive `claude auth login` there, a
 refused GitHub token needs the fleet PAT in the box's `~/.config/fleet/gh-token.sh` replaced from
-the anchor's (the refusal prints the command), and missing `~/.codex/skills` links need the README loop
+the anchor's and stored in gh there (the refusal prints both commands; no session exports the
+token, ludics-lite#567), and missing `~/.codex/skills` links need the README loop
 run once on that box. A box the fleet only executes on hosts no launch, so it is refreshed where
 the fleet reaches it for work instead: every `execution run`/`dispatch` and the daily sweep's
 wake step run `fleet-worker.sh refresh <box>...`, this same freshness check alone, and report a

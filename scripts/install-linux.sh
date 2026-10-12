@@ -67,6 +67,32 @@ append_line() {
   rm -f -- "$tmp"
 }
 
+# Idempotently remove an exact line; a file without it, or none, is left untouched. Rewrites in
+# place as append_line does (mode and owner kept), and never follows a symlink.
+drop_line() {
+  local target=$1 line=$2 tmp rc=0
+  [[ -e $target || -L $target ]] || return 0
+  [[ ! -L $target ]] || { printf 'Not rewriting symlink %s; remove this line yourself: %s\n' "$target" "$line"; return; }
+  grep -Fxq -- "$line" "$target" || rc=$?
+  [[ $rc -ne 1 ]] || return 0
+  [[ $rc -eq 0 ]] || fail "Cannot read $target"
+  tmp=$(mktemp "${target}.XXXXXX")
+  without_line "$line" "$target" > "$tmp" || { rm -f -- "$tmp"; fail "Cannot read $target"; }
+  cat "$tmp" > "$target"
+  rm -f -- "$tmp"
+}
+
+# The fleet's one GitHub PAT goes into gh's own store, never the session's environment
+# (ludics-lite#567): a token env.sh exports reaches every process a session starts, and dune
+# recorded it in its build trace (ahrefs/ocannl#1280). --insecure-storage keeps it in gh's 0600
+# hosts.yml, which ssh and tmux sessions read as they read the file (a keyring they may not). The
+# token goes on stdin, with both variables removed: gh refuses to log in while either is set.
+store_gh_token() {
+  # shellcheck disable=SC1090 # the fleet's token file, copied by hand
+  (unset GH_TOKEN; . "$1" >/dev/null 2>&1; printenv GH_TOKEN) |
+    env -u GH_TOKEN -u GITHUB_TOKEN gh auth login -h github.com --with-token --insecure-storage
+}
+
 # ssh-keygen -l on a private key reads the .pub beside it, so fingerprint a lone copy under
 # $scratch; OpenSSH keys carry their public half unencrypted, so no passphrase is asked.
 private_fingerprint() {
@@ -465,9 +491,9 @@ main() {
       printf '[ ! -r "$HOME/.opam/opam-init/init.sh" ] || . "$HOME/.opam/opam-init/init.sh" >/dev/null 2>&1\n'
     } > "$envfile"
   fi
-  # The fleet's one GitHub PAT (per-box keyring logins revoked each other). The token file is
-  # copied from the anchor by hand; this installer never writes it.
-  append_line "$envfile" '[ ! -r "$HOME/.config/fleet/gh-token.sh" ] || . "$HOME/.config/fleet/gh-token.sh"'
+  # Until ludics-lite#567 env.sh sourced the fleet PAT file, exporting the token into every
+  # session; gh stores it instead (the login step below), so a rerun drops that line.
+  drop_line "$envfile" '[ ! -r "$HOME/.config/fleet/gh-token.sh" ] || . "$HOME/.config/fleet/gh-token.sh"'
   local line='[ ! -r "$HOME/.config/fleet/env.sh" ] || . "$HOME/.config/fleet/env.sh"'
   source_at_start "$HOME/.bashrc" "$line"
   source_at_start "$HOME/.profile" "$line"
@@ -522,13 +548,14 @@ main() {
     done
   fi
   if ask 'Log into GitHub, Codex and Claude now?'; then
+    # The fleet's one GitHub PAT (per-box OAuth logins revoked each other). The token file is
+    # copied from the anchor by hand; this installer never writes it.
     if [[ -r $HOME/.config/fleet/gh-token.sh ]]; then
-      # shellcheck disable=SC1091
-      . "$HOME/.config/fleet/gh-token.sh"
+      store_gh_token "$HOME/.config/fleet/gh-token.sh"
       gh auth setup-git
     else
       printf 'No ~/.config/fleet/gh-token.sh. From the anchor: ssh %q '\''mkdir -p ~/.config/fleet; f=~/.config/fleet/gh-token.sh; umask 077; cat > "$f.new" && chmod 600 "$f.new" && mv "$f.new" "$f"'\'' < ~/.config/fleet/gh-token.sh\n' "$box"
-      printf 'then here: . ~/.config/fleet/gh-token.sh && gh auth setup-git\n'
+      printf 'then here: (. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN -u GITHUB_TOKEN gh auth login -h github.com --with-token --insecure-storage && gh auth setup-git\n'
     fi
     codex login
     claude auth login

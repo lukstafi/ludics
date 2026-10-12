@@ -77,11 +77,16 @@ does not tell us the target Unix username.
   not from power-off. Check: `systemctl show -p WakeSystem -p TimersCalendar
   fleet-sweep-wake.timer` shows `WakeSystem=yes` and the time, and `systemctl list-timers
   fleet-sweep-wake.timer` its next firing.
-- A line ending `env.sh` that sources `~/.config/fleet/gh-token.sh` (`export GH_TOKEN=ghp_...`,
-  mode 0600): the fleet's one GitHub PAT, copied from the anchor by hand, never written by the
-  installer. Per-box `gh auth login` tokens revoked each other (GitHub keeps 10 OAuth tokens
-  per user and app). Copy it with `ssh <box> 'mkdir -p ~/.config/fleet; f=~/.config/fleet/gh-token.sh; umask 077; cat > "$f.new" && chmod 600 "$f.new" && mv "$f.new" "$f"'
-  < ~/.config/fleet/gh-token.sh`; the login step then runs `gh auth setup-git`.
+- No GitHub token in `env.sh` (ludics-lite#567): a rerun removes the line that used to source
+  `~/.config/fleet/gh-token.sh`, since a token in the environment reaches every process a session
+  starts (dune recorded it in its build trace, ahrefs/ocannl#1280). That file (`export
+  GH_TOKEN=ghp_...`, mode 0600) holds the fleet's one GitHub PAT, copied from the anchor by hand,
+  never written by the installer. Per-box `gh auth login` OAuth tokens revoked each other (GitHub
+  keeps 10 per user and app). Copy it with `ssh <box> 'mkdir -p ~/.config/fleet; f=~/.config/fleet/gh-token.sh; umask 077; cat > "$f.new" && chmod 600 "$f.new" && mv "$f.new" "$f"'
+  < ~/.config/fleet/gh-token.sh`; the login step then stores it in gh (`gh auth login
+  --with-token --insecure-storage`, fed on stdin with `GH_TOKEN`/`GITHUB_TOKEN` unset) and runs
+  `gh auth setup-git`. Rotating the PAT repeats both: copy the file, then rerun the login step or
+  the store command the preflight prints.
 - Optional interactive Codex/Claude login, git routed through the PAT, and SSH key provisioning.
   If Codex login cannot open a callback over SSH, use `codex login --device-auth`.
 - Optional `~/ocannl-staging`, upstream `ahrefs/ocannl`, a named OCaml **5.5.1**
