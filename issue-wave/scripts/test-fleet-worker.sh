@@ -2538,7 +2538,7 @@ gm11=$!
 for gmi in $(seq 50); do pgrep -f "$(gmre 11)" >/dev/null 2>&1 && break; sleep 0.1; done
 if ! pgrep -f "$(gmre 11)" >/dev/null 2>&1; then ko "the marker-11 fixture never showed: $(pgrep -fl "sleep ${GM}")"
 elif swept 1; then ok "swept 1 does not report a live marker 11"
-else ko "swept 1 reported marker 11 as marker 1's: $(pgrep -fl "$(gmre 1)")"
+else ko "swept 1 reported marker 11 as marker 1's: $(pgrep -fl "sleep ${GM}1")"
 fi
 kill "$gm11" 2>/dev/null; wait "$gm11" 2>/dev/null
 slotreq() { # <id> <kind> [standing] [host] -> a reservation payload file on host (agent and execution), default testbox
