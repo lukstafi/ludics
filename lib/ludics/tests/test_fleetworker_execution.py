@@ -5,6 +5,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import unittest
 from typing import Any
 from unittest import mock
@@ -133,6 +134,27 @@ class Revisions(unittest.TestCase):
                 text, rc = revision.commit_refusal("o/r", "observed_sha", self.GOOD) or ("", 0)
                 self.assertEqual(rc, 4, answer)
                 self.assertTrue(text.startswith(f"EXECUTION UNVERIFIED github.com: observed_sha {self.GOOD} could not be checked in o/r ("), text)
+
+    def test_a_422_that_is_not_no_commit_is_unverified(self) -> None:
+        # GitHub's Get-a-commit also answers 422 for an endpoint it calls spammed.
+        with FakeTool("gh") as gh:
+            gh.script(Answer(1, "", "gh: Validation Failed: endpoint has been spammed (HTTP 422)\n"))
+            _, rc = revision.commit_refusal("o/r", "observed_sha", self.GOOD) or ("", 0)
+            self.assertEqual(rc, 4)
+            gh.script(Answer(1, "", f"gh: No commit found for SHA: {self.TYPO} (HTTP 422)\n"))
+            _, rc = revision.commit_refusal("o/r", "observed_sha", self.GOOD) or ("", 0)
+            self.assertEqual(rc, 4, "a no-commit answer about another SHA proves nothing about this one")
+
+    @unittest.skipIf(os.name == "nt", "the process-group kill is POSIX's")
+    def test_a_call_that_never_returns_is_cut_at_the_bound_child_and_all(self) -> None:
+        with FakeTool("gh") as gh:
+            with open(os.path.join(gh.dir, "gh"), "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\nsleep 30\n")
+            started = time.monotonic()
+            text, rc = revision.commit_refusal("o/r", "observed_sha", self.GOOD, timeout=1) or ("", 0)
+            self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual(rc, 4)
+        self.assertIn("(gh: no answer in 1s)", text)
 
     def test_another_commit_answered_is_refused(self) -> None:
         with FakeTool("gh") as gh:

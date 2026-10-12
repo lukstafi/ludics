@@ -486,8 +486,9 @@ SHIMEOF
 # SHIM_GH_SLOW=<s> delays every API answer; SHIM_GH_LOGIN=<login> answers as that account.
 # It also answers `execution`'s commit check (ludics-lite#561), `gh api --hostname github.com
 # repos/<owner>/<name>/commits/<sha> -q .sha`, as GitHub does: the SHA back, unless it is listed in
-# SHIM_GH_NO_COMMIT (422: no commit), the repository is SHIM_GH_NO_REPO (404) or SHIM_GH=down (no
-# answer). Each such call appends its path to $SHIM_GH_COMMIT_LOG.
+# SHIM_GH_NO_COMMIT (422: no commit), the repository is SHIM_GH_NO_REPO (404), SHIM_GH=down (no
+# answer), `spam` (GitHub's other 422) or `hang` (a call that never returns, from a child process as
+# a stalled connection would). Each such call appends its path to $SHIM_GH_COMMIT_LOG.
 cat > "$TMP/bin/gh" <<'SHIMEOF'
 #!/usr/bin/env bash
 if [ "$#" -eq 6 ] && [ "$1 $2 $3 $5 $6" = "api --hostname github.com -q .sha" ]; then
@@ -495,6 +496,8 @@ if [ "$#" -eq 6 ] && [ "$1 $2 $3 $5 $6" = "api --hostname github.com -q .sha" ];
   printf '%s\n' "$4" >> "$SHIM_GH_COMMIT_LOG"
   sha=${4##*/}; repo=${4#repos/}; repo=${repo%/commits/*}
   [ "${SHIM_GH:-}" != down ] || { printf 'error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n' >&2; exit 1; }
+  [ "${SHIM_GH:-}" != spam ] || { echo "gh: Validation Failed: endpoint has been spammed (HTTP 422)" >&2; exit 1; }
+  [ "${SHIM_GH:-}" != hang ] || sleep 30
   [ "$repo" != "${SHIM_GH_NO_REPO:-}" ] || { printf '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
   case " ${SHIM_GH_NO_COMMIT:-} " in
     *" $sha "*) printf '{"message":"No commit found for SHA: %s","status":"422"}' "$sha"; echo "gh: No commit found for SHA: $sha (HTTP 422)" >&2; exit 1 ;;
@@ -2171,6 +2174,14 @@ expect "a record whose observed_sha resolves to no commit is refused too" 1 "obs
   env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution record "$(jq -n --arg sha "$typo" '{request_id:"rv-ref", state:"running", evidence:"fixture", observed_sha:$sha}' > "$TMP/rv-rec.json"; printf '%s' "$TMP/rv-rec.json")"
 expect "a GitHub that does not answer is UNVERIFIED (exit 4), never a silent accept" 4 "^EXECUTION UNVERIFIED github.com: observed_sha $good could not be checked in o/r (check your internet connection" -- \
   env SHIM_GH=down "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
+expect "GitHub's other 422 (an endpoint it calls spammed) is UNVERIFIED, not a missing commit" 4 "^EXECUTION UNVERIFIED github.com: observed_sha $good could not be checked in o/r (gh: Validation Failed" -- \
+  env SHIM_GH=spam "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
+SECONDS=0
+expect "a GitHub call that never returns is cut at FLEET_GH_TIMEOUT: UNVERIFIED" 4 "could not be checked in o/r (gh: no answer in 1s)" -- \
+  env SHIM_GH=hang FLEET_GH_TIMEOUT=1 "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
+[ "$SECONDS" -lt 25 ] && ok "...in ${SECONDS}s, its child process killed with it" || ko "the bound did not hold: ${SECONDS}s"
+expect "a FLEET_GH_TIMEOUT that is not a number of seconds is a usage error" 2 "FLEET_GH_TIMEOUT must be a positive whole number" -- \
+  env FLEET_GH_TIMEOUT=soon "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
 expect "a repository GitHub does not show is refused, naming it" 1 "GitHub shows this box's gh no repository o/r" -- \
   env SHIM_GH_NO_REPO=o/r "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
 expect "a SHA-256 observed_sha is refused: GitHub cannot hold one" 1 "is a SHA-256 object ID" -- \
@@ -2195,6 +2206,12 @@ expect "...and a retry once the checkout has moved on composes the same payload,
   "${FWR[@]}" execution conclude "$TMP/rv-obs.json" --observed-from "$obs"
 grep -Fq "\"observed_sha\": \"$head\"" <<<"$out" && ok "...at the SHA the conclusion recorded" || ko "the retry recorded another SHA: $out"
 git -C "$obs" reset -q --hard "$head"
+# A conclusion that landed with its answer lost is retried while GitHub is down: the record is
+# concluded, so GitHub is not asked again and the registry takes the identical retry.
+"${FWR[@]}" execution run "$(rv_req rv-gh origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-gh (setup)"
+"${FWR[@]}" execution conclude "$(rv_done rv-gh "$good")" >/dev/null || ko "could not conclude rv-gh (setup)"
+expect "a retry of a landed conclusion is the registry's harmless retry, whatever GitHub says" 0 '"state": "concluded"' -- \
+  env SHIM_GH=down "${FWR[@]}" execution conclude "$(rv_done rv-gh "$good")"
 "${FWR[@]}" execution run "$(rv_req rv-far origin/main far-box)" >/dev/null 2>&1 || ko "could not reserve rv-far (setup)"
 expect "--observed-from on an execution host that does not answer concludes nothing (exit 4)" 4 "^OBSERVED-FROM UNREACHABLE far-box: nothing concluded$" -- \
   "${FWR[@]}" execution conclude "$(rv_done rv-far -)" --observed-from "$obs"
@@ -2216,6 +2233,10 @@ git -C "$obs" commit -q --allow-empty -m "moved on"
 expect "...and a retry once the checkout has moved on is the registry's harmless retry" 0 "\"observed_sha\": \"$head\"" -- \
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --observed-from "$obs"
 git -C "$obs" reset -q --hard "$head"
+"${FWR[@]}" execution run "$(rv_req rv-bg3 origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-bg3 (setup)"
+"${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg3 --sha "$good" >/dev/null || ko "could not conclude rv-bg3 (setup)"
+expect "--from-bg-run: a retry of a landed --sha conclusion asks GitHub nothing" 0 '"state": "concluded"' -- \
+  env SHIM_GH=down "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg3 --sha "$good"
 "${FWR[@]}" execution run "$(rv_req rv-bg2 origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-bg2 (setup)"
 expect "--from-bg-run --observed-from keeps the provenance beside an --evidence of its own" 0 "\"evidence\": \"leg green; revision $head read as HEAD of $obs on testbox\"" -- \
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg2 --observed-from "$obs" --evidence "leg green"

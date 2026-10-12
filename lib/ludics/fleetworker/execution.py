@@ -30,7 +30,7 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
-from ludics.fleetworker.preflight import refresh_box
+from ludics.fleetworker.preflight import knob, refresh_box
 from ludics.fleetworker.transport import Done, err, fleet_name, prelude, run, run_on, substitution
 
 REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "registry.py")
@@ -568,7 +568,9 @@ def checked_evidence(cfg: Config, text: str, observed_from: str) -> str:
     if record is None:
         return text
     if not observed_from:
-        fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "observed_sha", cast(str, sha)))
+        if record.get("state") != "concluded":
+            repo = jq_text(field(record, "request", "repository"))
+            fail(revision.commit_refusal(repo, "observed_sha", cast(str, sha), gh_timeout(cfg)))
         return text
     host = jq_text(field(record, "request", "execution_host"))
     head = observed_sha_of(cfg, record, host, observed_from)
@@ -599,7 +601,15 @@ def conclude_payload(cfg: Config, args: list[str]) -> str:
     return checked_evidence(cfg, payload, observed_from)
 
 
-def checked_request(payload: str, action: str) -> None:
+def gh_timeout(cfg: Config) -> float:
+    """FLEET_GH_TIMEOUT, the bound on each GitHub call (the preflight's knob, 30 s)."""
+    value = knob(cfg, "FLEET_GH_TIMEOUT", "30")
+    if not (value.isdigit() and int(value) > 0):
+        die(f"FLEET_GH_TIMEOUT must be a positive whole number of seconds, not {value!r}")
+    return int(value)
+
+
+def checked_request(cfg: Config, payload: str, action: str) -> None:
     """A reserve, run or window request whose requested_revision names only commits that resolve.
     A payload that does not parse is left to the registry, which refuses it."""
     try:
@@ -608,7 +618,7 @@ def checked_request(payload: str, action: str) -> None:
         return
     if action == "window":
         decoded = cast(dict[str, Any], decoded).get("request") if isinstance(decoded, dict) else None
-    fail(revision.request_refusal(decoded))
+    fail(revision.request_refusal(decoded, gh_timeout(cfg)))
 
 
 def from_run_payload(cfg: Config, args: list[str]) -> str:
@@ -689,8 +699,8 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
             cli.say(f"EXECUTION REFUSED: --sha {sha} is not HEAD {head} of {observed_from} on {host}; give one of them")
             raise cli.Exit(1)
         sha, source = head, f"read as HEAD of {observed_from} on {host}"
-    else:
-        fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "--sha", sha))
+    elif record.get("state") != "concluded":
+        fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "--sha", sha, gh_timeout(cfg)))
     # Without --checkout the record's own checkout is restated, or the placeholder when it has none
     # -- always spelled out in the payload, so a retry of a conclusion whose answer was lost
     # composes the same payload and meets the registry's identical-retry rule.
@@ -789,14 +799,14 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             if action in ("record", "reconcile"):
                 payload = checked_evidence(cfg, payload, "")
             else:
-                checked_request(payload, action)
+                checked_request(cfg, payload, action)
         case "window":
             # THE MEASUREMENT WINDOW (ludics-lite#481): the box is named apart from the payload so
             # the call says which box's standing reservations it suspends, and the registry refuses
             # a payload measuring on any other.
             payload = window_payload(args)
             check_identity(cfg)
-            checked_request(payload, action)
+            checked_request(cfg, payload, action)
         case _:
             die(USAGE)
     source = registry_source()

@@ -16,11 +16,14 @@ by construction, so it is not asked of GitHub. ``conclude --from-run`` asks noth
 its far side already refuses a ``--sha`` its run's checkout does not contain (``git cat-file -e``),
 which is resolution in a clone of the repository, and a record's launch ``head`` must equal it.
 
-Outcomes. A commit GitHub answers for is accepted. ``No commit found`` (HTTP 422) refuses, exit 1,
+Outcomes. A commit GitHub answers for is accepted. ``No commit found for SHA: <sha>`` (HTTP 422; a
+422 without it is GitHub calling the endpoint spammed) refuses, exit 1,
 naming the SHA and the repository it was checked in; so does a repository GitHub does not show
 this box's ``gh`` (HTTP 404), and a SHA-256 object ID, which GitHub cannot hold. Anything else -- no
-answer, a 5xx, a rate limit, bad credentials, no ``gh`` -- is ``EXECUTION UNVERIFIED``, exit 4:
-nothing is recorded, never a silent accept. What GitHub resolves is its repository NETWORK: a commit
+answer within FLEET_GH_TIMEOUT (30 s), a 5xx, a rate limit, bad credentials, no ``gh`` -- is
+``EXECUTION UNVERIFIED``, exit 4: nothing is recorded, never a silent accept. A record already
+concluded is not checked again: a retry of its conclusion is the registry's to judge (identical,
+harmless; anything else, refused), and a GitHub outage must not read as "nothing recorded" there. What GitHub resolves is its repository NETWORK: a commit
 pushed only to a fork resolves through the parent's name, which this check accepts.
 
 What is read, and nothing else (a fail-closed allowlist for what counts as a commit claim):
@@ -48,7 +51,7 @@ HEX_WORD = re.compile(r"[0-9A-Fa-f]{7,}")
 RETRY = "copy it again from `git rev-parse`, or conclude with --observed-from <checkout>, which reads it"
 
 
-def commit_refusal(repo: str, what: str, sha: str) -> tuple[str, int] | None:
+def commit_refusal(repo: str, what: str, sha: str, timeout: float = 30) -> tuple[str, int] | None:
     """None when GitHub has the commit ``sha`` in ``repo``; else the line to print and its exit."""
     if not REPOSITORY.fullmatch(repo):
         return (
@@ -66,6 +69,7 @@ def commit_refusal(repo: str, what: str, sha: str) -> tuple[str, int] | None:
         "gh",
         ["api", "--hostname", "github.com", f"repos/{repo}/commits/{sha}", "-q", ".sha"],
         stdin=subprocess.DEVNULL,
+        timeout=timeout,
     )
     lines = done.stderr.strip().splitlines()
     said = lines[-1].strip() if lines else f"gh exit {done.rc}, no message"
@@ -78,7 +82,8 @@ def commit_refusal(repo: str, what: str, sha: str) -> tuple[str, int] | None:
             " not that commit; nothing recorded",
             1,
         )
-    if "(HTTP 422)" in done.stderr:
+    # 422 is also GitHub's answer to an endpoint it calls spammed: only its no-commit message refuses.
+    if "(HTTP 422)" in done.stderr and f"No commit found for SHA: {sha}" in done.stderr:
         return (f"EXECUTION REFUSED: {what} {sha} is no commit of {repo} (checked on GitHub: {said}); nothing recorded -- {RETRY}", 1)
     if "(HTTP 404)" in done.stderr:
         return (
@@ -93,7 +98,7 @@ def commit_refusal(repo: str, what: str, sha: str) -> tuple[str, int] | None:
     )
 
 
-def request_refusal(request: Any) -> tuple[str, int] | None:
+def request_refusal(request: Any, timeout: float = 30) -> tuple[str, int] | None:
     """The requested_revision check of a reservation (see the header); None when it passes, or
     when the request is not shaped for one (the registry refuses that itself)."""
     if not isinstance(request, dict):
@@ -111,7 +116,7 @@ def request_refusal(request: Any) -> tuple[str, int] | None:
                 " give the 40-hex lowercase SHA (`git rev-parse <it>`), or a ref; nothing recorded",
                 1,
             )
-        refusal = commit_refusal(repo, "requested_revision", word)
+        refusal = commit_refusal(repo, "requested_revision", word, timeout)
         if refusal is not None:
             return refusal
     return None

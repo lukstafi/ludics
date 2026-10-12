@@ -212,7 +212,8 @@
 #   FLEET_FETCH_TIMEOUT: wall-clock bound on skills-checkout and project fetches; 300.
 #   FLEET_GH_TIMEOUT: wall-clock bound on each of the GitHub probe's API calls, `gh api user` and
 #     the try of the credential git returns (git's helper gets twice that plus 5 s, the try
-#     inside it included), in the preflight's session and in a tmux session; 30.
+#     inside it included), in the preflight's session and in a tmux session, and on `execution`'s
+#     check that a commit a payload names exists on GitHub; 30.
 #   FLEET_REFRESH_TIMEOUT: wall-clock bound on `refresh`'s skills fetch (and so on the refresh
 #     after a cross-box `execution run`/`dispatch`); 30.
 #   FLEET_DELIVERY_WAIT: seconds an appending `unstick` waits for the CLI to echo the message; 20.

@@ -25,6 +25,7 @@ production run, a tool is the binary on PATH and nothing else.
 
 import os
 import shutil
+import signal
 import subprocess
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
@@ -173,10 +174,15 @@ def run_tool(
     env: Mapping[str, str] | None = None,
     cwd: str | None = None,
     stdin: int | bytes | None = None,
+    timeout: float | None = None,
 ) -> Completed:
     """Run the tool ``name`` with ``args``, capturing both streams. stdin is inherited unless
     ``stdin`` names another: a file descriptor or ``subprocess.DEVNULL`` (the shell's
     ``</dev/null``), or bytes to feed it (a shell ``printf '%s' "$x" | tool``).
+
+    With ``timeout`` (seconds), a tool still running then is killed -- on POSIX with its whole
+    process group, started for it, so no child of it holds the pipes open -- and completes 124,
+    timeout(1)'s status, with ``<name>: no answer in <timeout>s`` closing its stderr.
 
     A tool that is not on PATH completes with 127 and the shell's message, as ``gh`` would have
     in the shell implementation, so callers classify it the same way.
@@ -191,6 +197,8 @@ def run_tool(
     # Under Windows the bridge's bash, and a #! tool handed to it, are MSYS programs: each word
     # must reach them quoted (``windows_command_line``).
     spawn: list[str] | str = windows_command_line(argv) if os.name == "nt" else argv
+    if timeout is not None:
+        return _bounded(name, spawn, environ, cwd, stdin, timeout)
     if isinstance(stdin, bytes):
         proc = subprocess.run(
             spawn, input=stdin, capture_output=True, env=environ, cwd=cwd, check=False
@@ -200,6 +208,35 @@ def run_tool(
             spawn, stdin=stdin, capture_output=True, env=environ, cwd=cwd, check=False
         )
     return Completed(proc.returncode, decode(proc.stdout), decode(proc.stderr))
+
+
+def _bounded(
+    name: str, spawn: list[str] | str, environ: Mapping[str, str], cwd: str | None, stdin: int | bytes | None, timeout: float
+) -> Completed:
+    """``run_tool`` under a wall-clock bound (its docstring)."""
+    posix = os.name != "nt"
+    with subprocess.Popen(
+        spawn,
+        stdin=subprocess.PIPE if isinstance(stdin, bytes) else stdin,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environ,
+        cwd=cwd,
+        start_new_session=posix,
+    ) as child:
+        try:
+            out, err = child.communicate(stdin if isinstance(stdin, bytes) else None, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if posix:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                child.kill()
+            out, err = child.communicate()
+            return Completed(124, decode(out), decode(err) + f"{name}: no answer in {timeout:g}s\n")
+        return Completed(child.returncode, decode(out), decode(err))
 
 
 def substitution(text: str) -> str:
