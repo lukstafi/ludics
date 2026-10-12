@@ -604,7 +604,9 @@ class Gate:
     def check(self, pr: str, wait_for: int, waive: bool = False) -> int:
         """``gate_checks <pr> <wait> [waive]``: read the head and judge its build signal, printing the
         report. 0 green or a confirmed absence; 1 red (a check, a checkless run, or every red
-        waived); 3 unread; 4 no verdict yet; 5 the head was superseded."""
+        waived); 3 unread; 4 no verdict yet; 5 the head was superseded. Under ``select`` (``checks
+        --check``, #569) the fold is over the matching checks alone, and 2 is a selection that
+        matches no check run while none can still appear."""
         repo = self.repo
         budget = self.session.budget
         # A wait is the PR's build observer (the polling budget, budget.py): one at a time, and it
