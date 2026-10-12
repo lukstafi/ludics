@@ -713,12 +713,12 @@ controlled through the tools in your coordinator's file, never through those com
   resumes with its remaining tasks. `fleet-worker.sh halted` is the check for a coordinator
   resuming after an interruption.
 - **A pause is not a halt.** When the user pauses the wave (a token budget about to run out),
-  a halt would refuse the workers' own reservations. Message each worker instead: commit, push
-  what has passed its tests, start no run, stop its own review watch and merge wait (a merge
-  wait left running merges with nobody there to close out; the stop is
-  [Blocking on a run](references/native-claude.md#blocking-on-a-run)'s `<dir>/cpid` kill), then
-  re-read the PR's merge state, since a merge call already in flight still lands, and end the
-  turn with a status block - head, that PR state, runs in flight, next step - to resume from.
+  a halt would refuse the workers' own reservations. Message each worker instead, through its
+  transport's channel: commit, push what has passed its tests, start no run, stop its own review
+  watch and merge wait (a merge wait left running merges with nobody there to close out), and end
+  the turn with a status block - head, PR state, runs in flight, next step. On resume, read each
+  PR's state from GitHub before handing a worker its next step, as after any interruption: a
+  merge call already under way when its wait was stopped can still land.
 - **Merge gates under a saturated runner queue.** GitHub's macOS runners serialize; a 20-PR
   day queues master runs ~2 h deep (2026-08-23: a stale test claim reached master unread, #452,
   red for two hours). `merge --wait` refuses without a verdict (see ship-pr): brief workers to
