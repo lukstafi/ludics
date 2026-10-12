@@ -134,7 +134,8 @@ base actually lands, not in the ten hours it stays red. So read it before taking
 
 Exit **0** green, **1** RED (it says so in three shouted lines and names the run, the job that
 failed and how far back the red runs go — the first red commit when a green run stands under the
-streak, and otherwise that the red may start further back than the window shows), **3** the API did
+streak, with that green's commit as the floor of the span to attribute (ludics-lite#597), and
+otherwise that the red may start further back than the window shows), **3** the API did
 not answer — which is not "green" — and **4** no verdict: no build workflow has ever completed on
 that branch, or nothing has judged its tip (below).
 
