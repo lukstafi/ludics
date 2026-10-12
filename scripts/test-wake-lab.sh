@@ -477,14 +477,14 @@ grep -q 'aa:bb:cc:00:00:02' "$CURL_LOG" && ! grep -q 'aa:bb:cc:00:00:01' "$CURL_
   && ok "...not about the Wi-Fi one" || ko "router_active used the wrong MAC: $(cat "$CURL_LOG")"
 # The column is named for what it reads, the router's NewActive bit, and never for the NIC's link
 # state: `eth-link=1` minutes after a shutdown was read as physical link when it was a stale DHCP
-# lease (ludics-lite#56). The footer is where a reader of the table learns the difference between
-# that stale reading and the settled, powered-off, WoL-armed one.
+# lease (ludics-lite#56). The footer is where a reader of the table learns that, and that behind
+# the LAN switch (2026-10-12) neither value says whether a powered-off NIC is WoL-armed.
 grep -q "NewActive bit for the Ethernet MAC, not the NIC's link state" <<<"$out" \
   && ok "...and says the column is the router's NewActive bit, not link state" \
   || ko "status does not say what router-active reads -- $out"
-grep -q 'stale DHCP lease' <<<"$out" && grep -q 'once settled' <<<"$out" \
-  && ok "...telling a stale lease from the settled powered-off state" \
-  || ko "status does not carry the stale-lease-vs-settled caveat -- $out"
+grep -q 'stale DHCP lease' <<<"$out" && grep -q 'neither value says whether the NIC is WoL-armed' <<<"$out" \
+  && ok "...warning of a stale lease, and that the bit says nothing about WoL readiness" \
+  || ko "status does not carry the stale-lease and WoL-readiness caveat -- $out"
 grep -qE 'eth-link|(^|[^-])link=' <<<"$out" \
   && ko "the old link column name resurfaced in status -- $out" \
   || ok "...and nothing in the table is still called link"

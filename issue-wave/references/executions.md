@@ -534,7 +534,7 @@ since the reboot ends everything running there; `--as` names that reservation, a
 active one on the box refuses the reboot) reboots it into Windows for one boot and exits 0 only once its native Git
 Bash answers; `wake-lab.sh boot-linux --as=<request_id> <box>` returns it, and `wake-lab.sh status <box>` then shows
 `os=linux`. Exit 3 is `NEEDS A PERSON`: tell the user at once rather than retrying. The README's lab
-section has the one-time sudoers grant each box needs. tuf is refused (no wired Wake-on-LAN).
+section has the one-time sudoers grant each box needs. tuf is refused (no Wake-on-LAN).
 
 Use `issue-wave/scripts/windows-driver.ps1` for a foreground Git Bash verifier on native
 Windows. It extracts the corrected driver from the #671 verification evidence. For example:

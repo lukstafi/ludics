@@ -25,8 +25,9 @@ are often sleeping, and sometimes powered off; step 1 tries to wake them, but if
 A fourth box, **tuf** (`tuf-amd-linux`, native Ubuntu only), runs hip AGAIN, and that is the point of
 it: its RX 7700S (gfx1102) is the fleet's one DISCRETE-memory AMD GPU, where a missing or misplaced
 host↔device transfer reads stale memory, while minix's gfx1151 is an iGPU whose device memory is
-host memory and can read the right bytes anyway (ludics-lite#320, gh-ocannl-1035). tuf is a Wi-Fi
-laptop, so Wake-on-LAN cannot reach it and this routine never wakes it: its own RTC timer does, a
+host memory and can read the right bytes anyway (ludics-lite#320, gh-ocannl-1035). tuf is a
+laptop whose NICs cannot wake it (cabled since 2026-10-12, but neither wired NIC wakes it), so
+Wake-on-LAN cannot reach it and this routine never wakes it: its own RTC timer does, a
 few minutes before this routine fires (a `WakeSystem=true` systemd timer, the optional laptop step
 of the Linux bootstrap, `scripts/install-linux.sh`), or a person does. Its lane is therefore **gated**: the sweep asks
 `wake-lab.sh status tuf` itself, runs the unit only when that reaches tuf's Linux, and otherwise
@@ -36,10 +37,10 @@ is inhibitor-aware), so a timer-woken laptop does not stay up all day. tuf is NO
 backends' gates: hip's gate stays minix, and tuf/hip is an additional unit reported on its own line.
 
 **TEMPORARILY, that sleep is disabled** (2026-09-26): once asleep, tuf stays down until a person
-wakes it, since nothing can reach it over Wi-Fi. Step 2 hands the sweep a `wake-lab.sh` wrapper
+wakes it, since no magic packet wakes it. Step 2 hands the sweep a `wake-lab.sh` wrapper
 that refuses `sleep tuf`, so the lane's line reads `tuf: left awake, not a failure -- REFUSED:
-tuf kept awake …`. That is expected, not a finding. Remove the wrapper once tuf is on
-WoL-capable wired Ethernet.
+tuf kept awake …`. That is expected, not a finding. Remove the wrapper once tuf has a
+Wake-on-LAN path that a wake test has confirmed.
 
 CI's Windows OS target is likewise off the per-PR path: it runs only on the
 twice-weekly scheduled CI sweep, and on demand via `workflow_dispatch`, because at 62-74min it
@@ -100,7 +101,7 @@ Read the site file's `kind_of` for each GPU box, then wake each kind through its
     printf 'holder list: %s\n' "$held_file"
     ~/bin/wake-lab.sh status rog minix tuf
 
-tuf appears in `status` only, never in the wake commands: it is Wi-Fi only (a wake sent to it is
+tuf appears in `status` only, never in the wake commands: it has no Wake-on-LAN (a wake sent to it is
 refused as `no wired NIC`), and it is woken by its own RTC timer or by hand. Read its `os=`/`linux=`
 fields for the report — `linux=UP` means today's run will cover discrete-memory hip; anything else
 means its unit will record `gate`, which is not a failure and needs nothing from you — and do not

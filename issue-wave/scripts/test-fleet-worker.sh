@@ -903,7 +903,7 @@ expect "a sibling that does not answer is noted on the OK line" 0 "PREFLIGHT OK.
 expect "a reachable sibling adds nothing to the OK line" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- env FLEET_BOXES="testbox otherbox" "$FW" preflight testbox --no-probe
 expect "--no-cross skips the reach probe" 0 "PREFLIGHT OK" -- env FLEET_BOXES="testbox otherbox" SHIM_SSH_DENY=otherbox "$FW" preflight testbox --no-probe --no-cross
 expect "a sibling whose login never returns is bounded and noted, not hung" 0 "PREFLIGHT OK.*otherbox(no answer in 2s)" -- env FLEET_BOXES="testbox otherbox" SHIM_SSH_HANG=otherbox FLEET_CROSS_TIMEOUT=2 "$FW" preflight testbox --no-probe
-# The same through the DEFAULT roster (ludics-lite#320): tuf-amd-linux is Wi-Fi only and woken by
+# The same through the DEFAULT roster (ludics-lite#320): tuf-amd-linux has no Wake-on-LAN and is woken by
 # hand, so from mac-studio it is often the one sibling asleep. Its silence is a note naming it
 # alone, never a refusal, and rog and minix answering add nothing (the `$` anchor says so).
 expect "mac-studio with the default roster notes a sleeping TUF and still passes" 0 "PREFLIGHT OK mac-studio skills=[0-9a-f]* (cross-box unreachable, asleep or off the network: tuf-amd-linux)$" -- \
@@ -1276,7 +1276,7 @@ expect "a gh call that hangs only in the server is bounded and noted" 0 "PREFLIG
 }
 
 # --- load: an asleep box is a row, not a failure ------------------------------------------------
-# `load` is placement input, and the box it most often reports asleep is tuf-amd-linux (Wi-Fi only,
+# `load` is placement input, and the box it most often reports asleep is tuf-amd-linux (no Wake-on-LAN,
 # manual wake; ludics-lite#320). The payload below is flotilla's own shape for an endpoint that did
 # not answer, copied from http://mac-studio:7799/api/fleet on 2026-09-23 (`data` null, null
 # averages, an ssh error). curl is shimmed on this case's PATH only.

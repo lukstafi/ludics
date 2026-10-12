@@ -83,9 +83,13 @@ HOSTS_SVC=urn:dslforum-org:service:Hosts:1
 #
 # * WoL works over Ethernet only, never over Wi-Fi: a magic packet cannot reach the Wi-Fi NIC of
 #   a powered-off machine. Both MACs are in the host table and packets go to both, but the
-#   Ethernet one does the waking. rog and minix are both CABLED (rog Ethernet .30, minix
-#   Ethernet .31; minix's old .27 Wi-Fi lease is inactive). tuf (formerly asus-amd) is Wi-Fi
-#   only and needs manual wake (flotilla PR #3), though native Linux SSH can be checked after it resumes.
+#   Ethernet one does the waking. All three boxes are CABLED, through a TP-Link switch to the
+#   router since 2026-10-12 (rog Ethernet .30, minix Ethernet .31, tuf Ethernet .35; the .27
+#   and .29 Wi-Fi leases are minix's and tuf's). tuf (formerly asus-amd) is cabled but still
+#   needs manual wake, though native Linux SSH can be checked after it resumes: an s2idle-only
+#   ASUS laptop whose onboard r8169 loses power in sleep, and whose USB AX88179B adapter cannot
+#   arm WoL under cdc_ncm and gets no link under ax88179_178a (all tested 2026-10-12). Its
+#   Ethernet MAC is therefore left out of eth_mac_of in the site file.
 # * Both boxes wake from a full shutdown (S5), not just from sleep — verified 2026-08-15 on both,
 #   after enabling the `Wake Up` item on minix's BIOS SECOND setup screen (not under Advanced).
 #   "Powered off" is a normal starting state for a wake, not a reason to expect failure.
@@ -94,12 +98,13 @@ HOSTS_SVC=urn:dslforum-org:service:Hosts:1
 #   what it reads so that it is not mistaken for link state. It is a fast UP signal and a SLOW
 #   DOWN signal: for several minutes after a shutdown or hibernate, router-active=1 is a stale
 #   DHCP lease aging out, and diagnosing the wake path from it is a misdiagnosis (2026-09-01);
-#   wait for it to settle first. Once settled after a full shutdown, router-active=1 means the
-#   NIC still holds Ethernet link while powered off: the WoL-armed state that makes the wake
-#   possible. A failed wake then means the magic packet was ignored: check the BIOS WoL option
-#   and the NIC wake settings of the OS last running on the box. With settled router-active=0 after
-#   a full shutdown, check the cable, the box's power, and the BIOS setting that keeps the NIC
-#   powered in S5.
+#   wait for it to settle first. Since the boxes reach the router through a switch (2026-10-12)
+#   it says even less: their traffic with the hub no longer passes the router, so rog and minix
+#   read router-active=0 while answering ssh, and the router's port holds link with the switch
+#   whatever a box's NIC does. Neither value tells whether a powered-off NIC is WoL-armed any
+#   more. A failed wake means the magic packet was ignored or never reached the NIC: check the
+#   cable and switch port, the BIOS WoL option (and the one that keeps the NIC powered in S5), and
+#   the NIC wake settings of the OS last running on the box.
 # mac_of (every MAC of a box), eth_mac_of (the Ethernet one alone, whose lease is what
 # router_active asks the router about) and ip_of are NOT here: they are the fleet's hardware
 # addresses, the one part of this script that is site data rather than reviewable logic, and they
@@ -180,7 +185,7 @@ box_kind() {
 ENDPOINT_MAP=(
   "rog   linux=rog-nv-linux    win=rog-nv-win    wsl=rog-nv-wsl    lan=rog-lan"
   "minix linux=minix-amd-linux win=minix-amd-win wsl=minix-amd-wsl lan=minix-lan"
-  "tuf   linux=tuf-amd-linux   win=tuf-amd-win   wsl=tuf-amd-wsl"    # Wi-Fi only: no LAN route
+  "tuf   linux=tuf-amd-linux   win=tuf-amd-win   wsl=tuf-amd-wsl"    # cabled, no WoL: manual wake
 )
 
 endpoints_of() { # endpoints_of <box> -- that box's row, less its name; 1 when the map has none
@@ -508,8 +513,8 @@ do_status() {
   echo "destroyer would be refused now; a 'free' lock's leftover line is shown as stale text. reservations"
   echo "counts the active 'fleet-worker.sh execution list' records naming the box (? = registry unread)."
   echo "router-active is the router's NewActive bit for the Ethernet MAC, not the NIC's link state:"
-  echo "minutes after a shutdown or hibernate, 1 is a stale DHCP lease still aging out; once settled,"
-  echo "1 on a powered-off box means the NIC holds link and is WoL-armed."
+  echo "minutes after a shutdown or hibernate, 1 is a stale DHCP lease still aging out; behind the LAN"
+  echo "switch, 0 on a box that is up is normal, and neither value says whether the NIC is WoL-armed."
 }
 
 # ---------------------------------------------------------------- power control
@@ -936,7 +941,7 @@ wake() { # wake <box>
   local name=$1 macs mac err ok=1
   macs=$(mac_of "$name") || { echo "unknown machine: $name" >&2; return 1; }
   if ! eth_mac_of "$name" >/dev/null 2>&1; then
-    echo "  $name has no wired NIC in the site file; wake it manually (Wi-Fi cannot receive WoL)"
+    echo "  $name has no wired NIC in the site file; wake it manually (none of its NICs wakes on LAN)"
     return 1
   fi
   for mac in $macs; do
@@ -1500,8 +1505,8 @@ for arg in "$@"; do
   esac
 done
 # Only `status` has a no-box default. It is a read -- a router query and ssh probes, nothing that
-# changes a box's state -- so it covers the whole lab, tuf included (ludics-lite#320): tuf is Wi-Fi
-# only and woken by hand, so it is often the one box awake, and a first look that leaves it out
+# changes a box's state -- so it covers the whole lab, tuf included (ludics-lite#320): tuf has no
+# Wake-on-LAN and is woken by hand, so it is often the one box awake, and a first look that leaves it out
 # reads that box as absent. Like `status all`, the default is checked against the site table whole,
 # so a table that does not know tuf refuses a bare `status` rather than silently shrinking it.
 # Every other verb, the bare wake first, takes no default at all: it prints the usage, exits 2 and
@@ -1637,7 +1642,7 @@ case "$VERB" in
           echo "Check BIOS Wake-on-LAN / 'Power Up' (minix needed the SECOND setup screen, not"
           echo "Advanced), then run scripts/enable-wol-windows.ps1 from an elevated Windows"
           echo "PowerShell to disable Fast Startup and re-arm the NIC. Check '$0 status' after the"
-          echo "router lease settles; Wi-Fi-only tuf needs manual wake."
+          echo "router lease settles; tuf (no Wake-on-LAN) needs manual wake."
         fi
         [ "$wsl_rc" != 0 ] && echo "NOT all up: $WSL_FAILED (see above)"
         exit 1
