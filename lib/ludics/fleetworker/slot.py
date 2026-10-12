@@ -467,6 +467,8 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, w
     through its guardian when this wrapper is killed outright."""
     if shutil.which(command[0]) is None:
         refuse_unrunnable(prefix, box, command, "no such executable")
+    if not (nested and deadline is None):
+        group.default_sigchld()  # the guard's helper and the group are this process's to wait for
     if inhibitor:
         start_guard(box, inhibitor, why)
     sys.stdout.flush()

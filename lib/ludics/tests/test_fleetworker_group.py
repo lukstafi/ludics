@@ -10,6 +10,7 @@ import signal
 import subprocess
 import time
 import unittest
+from unittest import mock
 from collections.abc import Callable
 from types import FrameType
 
@@ -140,6 +141,44 @@ class Group(unittest.TestCase):
             signal.signal(signal.SIGALRM, before)
         self.assertGreaterEqual(time.monotonic() - start, 2.9)
         self.assertTrue(gone(mark))
+
+    def test_a_masked_alarm_does_not_hold_the_deadline(self) -> None:
+        # PR #584 review, round 2: the deadline is the wrapper's own bounded wait, not a SIGALRM a
+        # caller's mask could hold pending.
+        mark = self.mark()
+        signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGALRM])
+        try:
+            self.assertEqual(self.run_group(f"sleep {mark} & wait", 1), group.Expired())
+        finally:
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGALRM])
+        self.assertTrue(gone(mark))
+
+    def test_an_ignored_alarm_stays_ignored_for_the_command_under_a_deadline(self) -> None:
+        # PR #584 review, round 2: no handler is installed for it, so the exec keeps it ignored.
+        before = signal.signal(signal.SIGALRM, signal.SIG_IGN)
+        try:
+            self.assertEqual(self.run_group("kill -ALRM $$; exit 7", 5), group.Exited(7))
+        finally:
+            signal.signal(signal.SIGALRM, before)
+
+    def test_an_ignored_sigchld_still_reads_the_status(self) -> None:
+        # PR #584 review, round 2: under an ignored SIGCHLD the kernel reaps every child at once.
+        before = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        try:
+            self.assertEqual(self.run_group("exit 3", 5), group.Exited(3))
+            self.assertEqual(signal.getsignal(signal.SIGCHLD), signal.SIG_IGN)
+        finally:
+            signal.signal(signal.SIGCHLD, before)
+
+    def test_a_guardian_that_cannot_start_refuses_with_nothing_started(self) -> None:
+        # PR #584 review, round 2: fail closed. The middle process cannot make its session, so no
+        # guardian says it is up, and the command is never started.
+        mark = self.mark()
+        with mock.patch.object(group.os, "setsid", side_effect=OSError("no session")):
+            with self.assertRaises(OSError):
+                self.run_group(f"sleep {mark}", None)
+        time.sleep(0.3)
+        self.assertFalse(running(mark), "the command started without a guardian")
 
     def test_a_signal_the_caller_ignores_stays_ignored_for_the_command(self) -> None:
         before = signal.signal(signal.SIGHUP, signal.SIG_IGN)

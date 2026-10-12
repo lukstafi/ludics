@@ -11,7 +11,9 @@ background group) and stays as its parent:
 
 - THE DEADLINE (``--deadline <seconds>``): when it passes, the whole group gets SIGTERM, then
   SIGKILL once the leader and the rest of the group are gone or ``GRACE`` seconds have passed,
-  and the wrapper exits 124, naming the bound. A command that exits first leaves the group
+  and the wrapper exits 124, naming the bound. The bound is the wrapper's own wait for the
+  leader's exit (a pidfd on Linux, a kqueue on macOS), not a timer: no SIGALRM, so an alarm, a
+  mask or a disposition the caller set on it stays the caller's. A command that exits first leaves the group
   behind only if something it started is still running: with a deadline that remainder is ended
   the same way at once (the bound is on the tree, and a tree whose top has ended has nothing
   left to wait for); without one it runs on, holding the slot's flock and the sleep guard's pipe
@@ -20,10 +22,13 @@ background group) and stays as its parent:
   task, a Ctrl-C at the terminal, a hand-rolled alarm around the wrapper) ends the group the same
   way, and the wrapper then dies of that signal, so its caller reads the status it read when the
   command itself was the pid it signalled. A signal the caller left IGNORED is left ignored, and
-  so inherited by the command, as across the exec before.
+  so inherited by the command, as across the exec before. One signal arriving while the wrapper
+  ends the group for another reason makes the wrapper die of it once the group is gone.
 - THE GUARDIAN: a wrapper killed outright (SIGKILL, which nothing catches) cannot end anything,
   so a helper in a session of its own holds the read end of a pipe only the wrapper can write.
-  The wrapper writes ``D`` (done) before it ends normally; EOF without it means the wrapper died,
+  It is started, and has said it is up, before the command is: a guardian that cannot start
+  refuses the run with nothing started. The wrapper writes the group's id once the command runs
+  and ``D`` (done) before it ends normally; EOF after the id without ``D`` means the wrapper died,
   and the guardian sends SIGKILL to the group at once, which is what a ``kill -9`` of the pid did
   when the pid was the command. Being in its own session, no group kill aimed at the wrapper's
   caller reaches it. It holds no descriptor of the wrapper's but that pipe and stderr, so it
@@ -37,12 +42,15 @@ command's to end. A group whose last member exits within the grace, and whose id
 then hands to a NEW group in that same instant, would receive the escalation: that needs the
 pid space to wrap around within a grace, which this module does not guard against. And the
 command has no controlling terminal: a program that opens ``/dev/tty`` (a password prompt)
-finds none, where it found the caller's before.
+finds none, where it found the caller's before. An ignored SIGCHLD is the one disposition not
+passed through (``default_sigchld``). A wrapper killed in the instant between starting the command
+and telling its guardian the group's id leaves that group to run on.
 
 POSIX only, like the flock it runs beside.
 """
 
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -128,41 +136,109 @@ def end_group(pgid: int, grace: float, leader: "subprocess.Popen[bytes] | None")
         leader.wait()
 
 
-def start_guardian(pgid: int, note: str) -> int:
-    """The guardian of ``pgid``, double-forked into a session of its own; returns the write end of
-    its pipe, which only this process holds."""
-    read_end, write_end = os.pipe()  # both close-on-exec: no command inherits either
+def default_sigchld() -> Callable[[int, FrameType | None], object] | int | None:
+    """Put SIGCHLD back to its default when the caller left it ignored, and return what it was.
+
+    Under an ignored SIGCHLD the kernel reaps every child at once, so no wait -- this wrapper's for
+    its helpers or for the command's status -- can read one: the command would read as exit 0, or
+    the helpers' waits fail outright. The command inherits the default with it, the one disposition
+    the wrapper does not pass through (POSIX leaves an ignored SIGCHLD's inheritance across exec
+    unspecified, and under it the command's own waits fail the same way)."""
+    previous = signal.getsignal(signal.SIGCHLD)
+    if previous == signal.SIG_IGN:
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    return previous
+
+
+def start_guardian(label: str) -> int:
+    """The guardian, double-forked into a session of its own; returns the write end of its pipe,
+    which only this process holds. The wrapper writes the group's id and a newline once the
+    command has started, and ``D`` when it ends normally. Raises OSError when the guardian did not
+    come up, before anything has been started."""
+    to_guardian, from_wrapper = os.pipe()  # close-on-exec, both: no command inherits either
+    ready_r, ready_w = os.pipe()
     sys.stdout.flush()
     sys.stderr.flush()  # nothing buffered may be written twice by a fork
-    middle = os.fork()
+    try:
+        middle = os.fork()
+    except OSError:
+        for descriptor in (to_guardian, from_wrapper, ready_r, ready_w):
+            os.close(descriptor)
+        raise
     if middle == 0:
         try:
             for signum in FORWARDED:
                 signal.signal(signum, signal.SIG_DFL)
             os.setsid()
             if os.fork() == 0:
-                os.dup2(read_end, 0)
+                os.dup2(to_guardian, 0)
                 devnull = os.open(os.devnull, os.O_WRONLY)
                 os.dup2(devnull, 1)
+                os.write(ready_w, b"R")
                 os.closerange(3, 65536)  # the slot flock, the guard's pipe, the write end: all of it
-                if os.read(0, 1) == b"" and group_alive(pgid):
-                    _signal_group(pgid, signal.SIGKILL)
+                said = b""
+                while b"D" not in said:
+                    chunk = os.read(0, 64)
+                    if not chunk:
+                        break
+                    said += chunk
+                line, newline, _ = said.partition(b"\n")
+                if b"D" not in said and newline and line.isdigit() and group_alive(int(line)):
+                    _signal_group(int(line), signal.SIGKILL)
+                    note = (f"{label}: the wrapper died without ending its command; its guardian killed"
+                            f" process group {int(line)}\n")
                     try:
-                        os.write(2, (note + "\n").encode("utf-8", "surrogateescape"))
+                        os.write(2, note.encode("utf-8", "surrogateescape"))
                     except OSError:
                         pass
         finally:
             os._exit(0)
-    os.waitpid(middle, 0)
-    os.close(read_end)
-    return write_end
-
-
-def _done(guardian: int) -> None:
+    os.close(to_guardian)
+    os.close(ready_w)
     try:
-        os.write(guardian, b"D")
+        os.waitpid(middle, 0)
+        ready = os.read(ready_r, 1)
+    finally:
+        os.close(ready_r)
+    if ready != b"R":
+        os.close(from_wrapper)
+        raise OSError("the guardian that ends the command's group if this wrapper is killed did not start")
+    return from_wrapper
+
+
+def _tell(guardian: int, data: bytes) -> None:
+    try:
+        os.write(guardian, data)
     except OSError:
         pass
+
+
+def _await_exit(pid: int, timeout: float) -> None:
+    """Block until the child ``pid`` ends or ``timeout`` seconds pass, reaping nothing. No timer and
+    no signal: the deadline is this wait's own bound, so a SIGALRM stays the caller's."""
+    if sys.platform == "linux":
+        try:
+            descriptor = os.pidfd_open(pid)
+        except OSError:  # a kernel before 5.3
+            time.sleep(min(timeout, 0.1))
+            return
+        try:
+            select.select([descriptor], [], [], timeout)
+        finally:
+            os.close(descriptor)
+    elif sys.platform == "darwin":
+        queue = select.kqueue()
+        try:
+            event = select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                  flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT)
+            try:
+                queue.control([event], 1, timeout)
+            except ProcessLookupError:  # ended before the registration
+                pass
+        finally:
+            queue.close()
+    else:
+        time.sleep(min(timeout, 0.1))
 
 
 def run(command: Sequence[str], deadline: int | None, label: str,
@@ -170,89 +246,76 @@ def run(command: Sequence[str], deadline: int | None, label: str,
     """Run ``command`` as a session leader, wait for it under the deadline and the forwarded
     signals, and say (through ``say``, prefixed with ``label``) whenever this wrapper ended the
     group. Raises OSError when the command cannot be started (nothing is left running then)."""
-    received: list[int] = []  # every forwarded signal acted on, in order
+    received: list[int] = []  # every forwarded signal taken, in order
     armed = [False]  # whether the handler raises (only while the leader is waited for)
-    expires = [0.0]  # when this wrapper's own deadline alarm is due; 0 while none is set
-    # A SIGALRM the caller ignores stays ignored, as it was across the exec before: the handler is
-    # installed for the deadline's own alarm and acts on no other.
-    alarm_ignored = signal.getsignal(signal.SIGALRM) == signal.SIG_IGN
-
-    def due() -> bool:
-        return expires[0] > 0 and time.monotonic() >= expires[0] - 0.05
 
     def handler(signum: int, frame: FrameType | None) -> None:
-        if signum == signal.SIGALRM and alarm_ignored and not due():
-            return
         received.append(signum)
         if armed[0]:
             armed[0] = False
             raise _Stop(signum)
 
-    # Installed before the fork, so no signal in between is lost; a signal the caller ignores is
-    # left ignored (the command inherits that), except the deadline's own SIGALRM.
+    # Installed before the fork, so no signal in between is lost. A signal the caller ignores is
+    # left ignored, so the command inherits that, as across the exec before.
     previous: dict[int, Callable[[int, FrameType | None], object] | int | None] = {}
     for signum in FORWARDED:
-        if signal.getsignal(signum) == signal.SIG_IGN and not (signum == signal.SIGALRM and deadline):
-            continue
-        previous[signum] = signal.signal(signum, handler)
+        if signal.getsignal(signum) != signal.SIG_IGN:
+            previous[signum] = signal.signal(signum, handler)
+    previous[signal.SIGCHLD] = default_sigchld()
     try:
-        # restore_signals puts back SIGPIPE and SIGXFSZ, which Python ignores and an exec would
-        # otherwise pass on: `yes | head -n1` must die of SIGPIPE under the wrapper as without it.
-        leader = subprocess.Popen(list(command), close_fds=False, start_new_session=True, restore_signals=True)
+        guardian = start_guardian(label)
     except BaseException:
         for signum, old in previous.items():
             signal.signal(signum, old)
         raise
-    pgid = leader.pid
-    guardian = start_guardian(
-        pgid, f"{label}: the wrapper died without ending its command; its guardian killed process group {pgid}"
-    )
-    # An alarm the caller armed before exec'ing this wrapper (a hand-rolled `perl -e 'alarm N;
-    # exec ...'`) survives the exec, and is the earlier bound when it comes first: kept, it reads
-    # as the signal it is. An ignored one bounds nothing, and the deadline replaces it.
-    inherited = signal.getitimer(signal.ITIMER_REAL)[0]
-    timed = bool(deadline) and (alarm_ignored or not 0 < inherited <= float(deadline or 0))
-    outcome: Outcome | None = None
     try:
         try:
-            if timed:
-                expires[0] = time.monotonic() + float(deadline or 0)
-                signal.setitimer(signal.ITIMER_REAL, float(deadline or 0))
+            # restore_signals puts back SIGPIPE and SIGXFSZ, which Python ignores and an exec
+            # would otherwise pass on: `yes | head -n1` must die of SIGPIPE under the wrapper.
+            leader = subprocess.Popen(list(command), close_fds=False, start_new_session=True, restore_signals=True)
+        except BaseException:
+            _tell(guardian, b"D")
+            raise
+        pgid = leader.pid
+        _tell(guardian, b"%d\n" % pgid)
+        until = time.monotonic() + deadline if deadline else None
+        outcome: Outcome | None = None
+        try:
             armed[0] = True
             if received:
                 armed[0] = False
                 raise _Stop(received[0])
-            leader.wait()
+            while leader.poll() is None:
+                if until is None:
+                    leader.wait()
+                elif time.monotonic() >= until:
+                    armed[0] = False
+                    say(f"{label}: --deadline {deadline}s reached: ending the command's process group {pgid}"
+                        f" (SIGTERM, then SIGKILL after {grace:g}s)")
+                    outcome = Expired()
+                    end_group(pgid, grace, leader)
+                    break
+                else:
+                    _await_exit(pgid, until - time.monotonic())
             armed[0] = False
         except _Stop as stop:
             armed[0] = False
-            if stop.signum == signal.SIGALRM and due():
-                say(f"{label}: --deadline {deadline}s reached: ending the command's process group {pgid}"
-                    f" (SIGTERM, then SIGKILL after {grace:g}s)")
-                outcome = Expired()
-            else:
-                say(f"{label}: {signal.Signals(stop.signum).name} received: ending the command's process group {pgid}"
-                    f" (SIGTERM, then SIGKILL after {grace:g}s)")
-                outcome = Interrupted(stop.signum)
-            if timed:
-                signal.setitimer(signal.ITIMER_REAL, 0)
-            expires[0] = 0.0
+            say(f"{label}: {signal.Signals(stop.signum).name} received: ending the command's process group {pgid}"
+                f" (SIGTERM, then SIGKILL after {grace:g}s)")
+            outcome = Interrupted(stop.signum)
             end_group(pgid, grace, leader)
-        if timed:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-        expires[0] = 0.0
         if outcome is None:
             code = leader.wait()  # reaped already: its status
             outcome = Killed(-code) if code < 0 else Exited(code)
             if deadline and group_alive(pgid):
                 say(f"{label}: the command ended, and its process group {pgid} still runs: ending it (--deadline)")
                 end_group(pgid, grace, None)
-            # Every signal the handler took while armed ended the wait above, so one recorded now
-            # came after the command ended -- during that cleanup, say. The wrapper was signalled
-            # all the same, and dies of it.
-            if received:
-                outcome = Interrupted(received[0])
-        _done(guardian)
+        # Every signal the handler took while armed ended the wait above, so one recorded beyond
+        # that came while the group was being ended. The wrapper was signalled all the same, and
+        # dies of it.
+        if received and not isinstance(outcome, Interrupted):
+            outcome = Interrupted(received[0])
+        _tell(guardian, b"D")
         return outcome
     finally:
         os.close(guardian)
