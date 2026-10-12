@@ -319,7 +319,7 @@ FRESHNESS = r"""checkout_lock() {
   trap 'release_lock "$plock"' EXIT
 }
 skills_freshness() {
-  local prior="$refuse" frc served statusz hidden entry st path from branch
+  local prior="$refuse" frc served statusz hidden entry st path from branch pycache pydirs dir
   repo=$(expand_tilde "$SKILLS_REPO")
   git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 2
   before=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
@@ -332,7 +332,13 @@ skills_freshness() {
   # The fast-forward below still fails, and refuses, if such a change collides with what upstream brings.
   # NUL-delimited, so a path git would otherwise quote (a space, a quote, a non-ASCII byte) is
   # still classified by its directory rather than falling through as "outside the served tree".
-  served=0; other=""
+  # One shape of served change gets its repair named (ludics-lite#585): an ignored Python bytecode
+  # cache under lib/ (`!!` on a path lib/.../__pycache__/...), which scripts/py wrote before it ran
+  # the interpreter with -B. It still refuses; the note names the directories to remove only when
+  # EVERY served entry has that shape and the scan noted nothing else (an index-hidden file, a
+  # status that failed), so the removal it names is the whole repair of the served tree. A single
+  # entry of any other shape, or another note, keeps the plain note.
+  served=0; other=""; pycache=0; pydirs=""
   statusz=$(mktemp "${TMPDIR:-/tmp}/fw-status.XXXXXX")
   if ! git -C "$repo" status --porcelain -z --untracked-files=all --ignored=matching > "$statusz" 2>/dev/null; then
     rm -f "$statusz"; note "git status failed in $repo (cannot scan the served tree)"; statusz=/dev/null
@@ -346,9 +352,18 @@ skills_freshness() {
     case "$st" in R*|C*) IFS= read -r -d '' from ;; esac   # a rename's second record is the source
     # Both sides of a rename count: a file moved OUT of the served tree is a served file gone.
     case "$path" in .claude/*) case "$from" in ""|.claude/*) other="$other$path " ;; *) served=$((served + 1)) ;; esac ;; *) served=$((served + 1)) ;; esac
+    case "$st:$path" in
+      '!!:lib/__pycache__/'*|'!!:lib/'*'/__pycache__/'*)
+        pycache=$((pycache + 1)); dir=$(printf '%q' "$repo/${path%%/__pycache__/*}/__pycache__")
+        case " $pydirs " in *" $dir "*) ;; *) pydirs="${pydirs:+$pydirs }$dir" ;; esac ;;
+    esac
   done < "$statusz"
   [ "$statusz" = /dev/null ] || rm -f "$statusz"
-  [ "$served" -eq 0 ] || note "$served local change(s) in the served tree"
+  if [ "$served" -gt 0 ] && [ "$pycache" -eq "$served" ] && [ "$refuse" = "$prior" ]; then
+    note "$served local change(s) in the served tree, every one an ignored Python bytecode cache under lib/ (left by a run before scripts/py ran Python with -B, ludics-lite#585) -- repair, on $BOX: rm -rf $pydirs"
+  elif [ "$served" -gt 0 ]; then
+    note "$served local change(s) in the served tree"
+  fi
   branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)
   [ "$branch" = main ] || note "checked out $branch, not main"
   if [ "$refuse" = "$prior" ]; then

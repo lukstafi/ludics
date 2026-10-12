@@ -1158,8 +1158,23 @@ expect "a git status that cannot run refuses instead of passing an empty scan" 1
 git -C "$repo" config --unset status.relativePaths
 printf '*.tmp\n' > "$TMP/excludes"; git -C "$repo" config core.excludesFile "$TMP/excludes"; touch "$repo/ship-pr/x.tmp"
 expect "an ignored file under the served tree still refuses" 1 "local change(s) in the served tree" -- "$FW" preflight testbox --no-probe
-rm "$repo/ship-pr/x.tmp"; git -C "$repo" config --unset core.excludesFile
-rm "$repo/ship-pr/scripts.sh"
+rm "$repo/ship-pr/x.tmp" "$repo/ship-pr/scripts.sh"
+# Python bytecode caches under lib/ (ludics-lite#585): still refused, but with the directories to
+# remove named, shell-quoted (this checkout's path has a space) -- and only while every served
+# entry is one: a single other entry keeps the plain refusal.
+printf '__pycache__/\n' > "$TMP/excludes"
+mkdir -p "$repo/lib/ludics/__pycache__" "$repo/lib/ludics/fleetworker/__pycache__"
+touch "$repo/lib/ludics/__pycache__/cli.cpython-312.pyc" "$repo/lib/ludics/fleetworker/__pycache__/farside.cpython-312.pyc" "$repo/lib/ludics/fleetworker/__pycache__/slot.cpython-312.pyc"
+expect "bytecode caches under lib/ refuse, naming the repair" 1 "PREFLIGHT REFUSED testbox: 2 local change(s) in the served tree, every one an ignored Python bytecode cache under lib/" -- "$FW" preflight testbox --no-probe
+want_repair="-- repair, on testbox: rm -rf $(printf '%q' "$repo/lib/ludics/__pycache__") $(printf '%q' "$repo/lib/ludics/fleetworker/__pycache__")"
+grep -qF -- "$want_repair" <<<"$out" && ok "...each cache directory once, shell-quoted" || ko "the repair is not '$want_repair' -- $out"
+git -C "$repo" update-index --skip-worktree ship-pr/SKILL.md
+expect "...but an index-hidden file beside them keeps the plain refusal" 1 "PREFLIGHT REFUSED testbox: 1 index-hidden (skip-worktree/assume-unchanged) file(s) in the served tree; 2 local change(s) in the served tree$" -- "$FW" preflight testbox --no-probe
+git -C "$repo" update-index --no-skip-worktree ship-pr/SKILL.md
+touch "$repo/ship-pr/x.tmp"; printf '__pycache__/\n*.tmp\n' > "$TMP/excludes"
+expect "...as does one other ignored file beside them" 1 "PREFLIGHT REFUSED testbox: 3 local change(s) in the served tree$" -- "$FW" preflight testbox --no-probe
+grep -qE 'bytecode|rm -rf' <<<"$out" && ko "a mixed served tree was offered the bytecode repair -- $out" || ok "...with no repair offered for it"
+rm -rf "${repo:?}/lib" "$repo/ship-pr/x.tmp"; git -C "$repo" config --unset core.excludesFile
 touch "$repo/ship-pr/a b.sh"
 expect "an untracked served file whose path git would quote still refuses" 1 "1 local change(s) in the served tree" -- "$FW" preflight testbox --no-probe
 rm "$repo/ship-pr/a b.sh"
