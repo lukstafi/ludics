@@ -576,8 +576,8 @@ class Base:
         prints UNKNOWN and leaves the red standing, and is not remembered."""
         indent = "           "
         run_id = first_sha = first_when = ""
+        floor: RunRow | None = None
         reds = 0
-        bounded = False
         for r in rows:
             if r.wid != wfid or r.status != "completed":
                 continue
@@ -587,13 +587,19 @@ class Base:
                 run_id = run_id or r.run_id
                 first_sha, first_when = r.head_sha, r.created_at
             elif klass == "green":
-                bounded = True
+                floor = r
                 break
         if reds == 0:
             return ""
-        if bounded:
-            detail = (f"{indent}red since {first_sha[:8]} (run created {first_when}), {reds} run(s)"
-                      " back; the judged run before it was not red\n")
+        if floor is not None:
+            # The floor's commit bounds the span to attribute (ludics-lite#597): merges between it
+            # and the first red one judged nothing of their own (a push group that keeps only the
+            # newest pending run cancels theirs), so the red entered somewhere in that range.
+            f8, x8 = floor.head_sha[:8], first_sha[:8]
+            span = (f"at the same commit {f8}" if floor.head_sha == first_sha
+                    else f"at {f8}, so the red entered in {f8}..{x8}")
+            detail = (f"{indent}red since {x8} (run created {first_when}), {reds} run(s)"
+                      f" back; the judged run before it was not red ({floor.conclusion} {span})\n")
         else:
             detail = (f"{indent}red for all {reds} judged run(s) in the window, back to"
                       f" {first_sha[:8]} (run created {first_when}) — the window holds no\n"

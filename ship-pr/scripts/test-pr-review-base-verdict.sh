@@ -272,8 +272,9 @@ test_a_same_second_tie_goes_to_the_higher_run_id() {
     "the superseded row of the tie is not what the report is about"
 }
 
-# A branch whose pushes never cancel each other (skill-scripts.yml keys main's concurrency group on
-# the commit, ludics-lite#511) has runs for two merges going at once, finishing in either order.
+# A branch whose pushes never cancel each other (no concurrency group, or one keyed on the commit, as
+# skill-scripts.yml's main was from ludics-lite#511 to #597) has runs for two merges going at once,
+# finishing in either order.
 # The fold reads them by creation, never by finish: the newer merge's finished run is the verdict
 # whether the older run is still going or finished red after it (the newer tree holds that merge),
 # and an older merge's red while the tip's run is going is that merge's red, not the tip's.
@@ -305,6 +306,60 @@ test_overlapping_push_runs_are_read_by_creation_not_by_finish() {
   assert_contains "$BASE_OUTPUT" "failure at ${SHA_B:0:8}" "and it is that merge's red"
   assert_contains "$BASE_OUTPUT" "(ci is running now at ${SHA_C:0:8})" \
     "with the tip's run named as going"
+}
+
+# shared_group_burst <tip run> <older run>: a shared push group's burst as one round reads it,
+# newest first -- the tip's run, three merges' cancelled runs, the older merge's run, and the green
+# before the burst.
+shared_group_burst() {
+  local d=dddddddddddddddddddddddddddddddddddddddd e=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  jq -cn --arg c "$SHA_C" --arg b "$SHA_B" --arg d "$d" --arg e "$e" --arg a "$SHA_A" --arg z "$SHA_0" \
+    --argjson tip "$1" --argjson older "$2" \
+    '[$tip + {head_sha:$c, id:6156},
+      {conclusion:"cancelled", head_sha:$b, id:6155},
+      {conclusion:"cancelled", head_sha:$d, id:6154},
+      {conclusion:"cancelled", head_sha:$e, id:6153},
+      $older + {head_sha:$a, id:6152},
+      {conclusion:"success", head_sha:$z, id:6151}]'
+}
+
+# Pushes sharing one group with `cancel-in-progress: false` (skill-scripts.yml's main since
+# ludics-lite#597; OCANNL's `ci`): a burst leaves one run going at an older merge, the tip's run
+# pending behind it, and the merges between them with `cancelled` runs, each replaced while it was
+# pending. The integration loop reads `base --wait` WITHOUT --interim, and none of those
+# cancellations may read red or hold the verdict: the wait ends on the tip's own run, whichever way
+# it goes, and a red there names the floor under the cancelled span, where attribution starts.
+# (Under --interim the same shape is test-pr-review-base-pushless.sh's
+# test_interim_in_a_group_that_does_not_cancel: held while the older run judges, answered once it
+# finished green.)
+test_a_shared_push_group_burst_is_judged_by_the_tips_own_run() {
+  local tip_concl
+  for tip_concl in success failure; do
+    reset_fixture
+    RUNS_1=$(runs_json 1 "$(shared_group_burst '{"status":"pending","conclusion":null}' '{"status":"in_progress","conclusion":null}')")
+    runs_from_round 2 1 "$(shared_group_burst '{"status":"in_progress","conclusion":null}' '{"conclusion":"success"}')"
+    runs_from_round 3 1 "$(shared_group_burst "{\"conclusion\":\"$tip_concl\"}" '{"conclusion":"success"}')"
+    JOBS_6156=$(jobs_json '[{"name":"bash 3.2 suites (macos)","conclusion":"failure"}]')
+    run_base --wait="$EVENT_CEILING"
+    assert_eq "$(rounds_polled)" 3 "the wait ends on the round the tip's own run finished ($tip_concl)"
+    assert_not_contains "$BASE_OUTPUT" "NO VERDICT" "the cancelled runs hold no verdict ($tip_concl)"
+    case $tip_concl in
+    success)
+      assert_eq "$BASE_RC" 0 "the tip's own green is the verdict over the cancelled span ($BASE_OUTPUT)"
+      assert_contains "$BASE_OUTPUT" "$REPO $BRANCH: green (tip ${SHA_C:0:8})" "about the tip"
+      assert_not_contains "$BASE_OUTPUT" "RED" "a cancelled run is never a red"
+      ;;
+    failure)
+      assert_eq "$BASE_RC" 1 "the tip's own red is the verdict ($BASE_OUTPUT)"
+      assert_contains "$BASE_OUTPUT" "RED      ci — failure at ${SHA_C:0:8}" "and it is the tip's"
+      assert_contains "$BASE_OUTPUT" \
+        "red since ${SHA_C:0:8} (run created" "the cancelled runs end no streak"
+      assert_contains "$BASE_OUTPUT" \
+        "1 run(s) back; the judged run before it was not red (success at ${SHA_A:0:8}, so the red entered in ${SHA_A:0:8}..${SHA_C:0:8})" \
+        "the span to attribute runs from the older run's green over every cancelled merge"
+      ;;
+    esac
+  done
 }
 
 # --- lessons of the fix rounds, pinned before the port (ludics-lite#403) ------------------------
@@ -544,6 +599,7 @@ tests=(
   test_an_unreadable_tip_is_unknown_under_wait_and_decoration_without_it
   test_a_same_second_tie_goes_to_the_higher_run_id
   test_overlapping_push_runs_are_read_by_creation_not_by_finish
+  test_a_shared_push_group_burst_is_judged_by_the_tips_own_run
   test_a_slashed_branch_is_the_branch_when_the_repo_is_named
   test_a_branch_name_is_percent_encoded
   test_the_default_branch_is_read_when_none_is_named

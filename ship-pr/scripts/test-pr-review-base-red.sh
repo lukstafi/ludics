@@ -58,6 +58,8 @@ test_red_names_the_failing_job_and_the_first_red_commit() {
   assert_contains "$BASE_OUTPUT" "2 run(s) back" "how far back the red goes should be counted"
   assert_contains "$BASE_OUTPUT" "the judged run before it was not red" \
     "a streak with a green under it should say the floor is known"
+  assert_contains "$BASE_OUTPUT" "(success at ${SHA_A:0:8}, so the red entered in ${SHA_A:0:8}..${SHA_B:0:8})" \
+    "and names the floor's commit, the lower end of the span to attribute (ludics-lite#597)"
   assert_contains "$BASE_OUTPUT" "failed job(s): bash 3.2 suites (macos) (failure)" \
     "the failing job should be named"
   assert_not_contains "$BASE_OUTPUT" "prompt hygiene" "a job that passed is not a failing job"
@@ -150,7 +152,8 @@ test_a_red_behind_a_page_of_cancelled_runs_is_red() {
   assert_eq "$BASE_RC" 1 "a red under twelve cancelled runs is red"
   assert_contains "$BASE_OUTPUT" "RED      ci — failure at ${SHA_B:0:8}" "naming the judged run below the page"
   assert_contains "$BASE_OUTPUT" "red since ${SHA_A:0:8} (run created" "the streak walk reads the same deeper rows"
-  assert_contains "$BASE_OUTPUT" "2 run(s) back; the judged run before it was not red" "and finds its floor there"
+  assert_contains "$BASE_OUTPUT" "2 run(s) back; the judged run before it was not red (success at ${SHA_0:0:8}, so the red entered in ${SHA_0:0:8}..${SHA_A:0:8})" \
+    "and finds its floor there"
   assert_contains "$BASE_OUTPUT" "failed job(s): bash 3.2 suites (macos) (failure)" "with the job that failed"
   assert_contains "$BASE_OUTPUT" "(newest completed run: cancelled at ${SHA_C:0:8}, stopped not judged" \
     "the cancelled run on top stays visible as context"
