@@ -10,7 +10,7 @@ mkdir -p "$tmp/bin"
 cp "$here/wake-lab.sh" "$tmp/wake-lab.sh"
 cat >"$tmp/hosts.sh" <<'HOSTS'
 mac_of() { [ "$1" = tuf ] && echo aa:bb:cc:00:00:06; }
-eth_mac_of() { return 1; } # TUF is Wi-Fi only, as verified in flotilla PR #3.
+eth_mac_of() { return 1; } # TUF has no Wake-on-LAN NIC: neither wired NIC wakes it (2026-10-12).
 ip_of() { [ "$1" = tuf ] && echo 192.0.2.32; }
 kind_of() { [ "$1" = tuf ] && echo linux; }
 HOSTS
@@ -160,7 +160,7 @@ out=$(WAKE_LAB_HOSTS="$tmp/rog-hosts.sh" SSH_UP=rog-nv-win "$tmp/wake-lab.sh" st
 check 'Linux-configured dual boot reports Windows when Windows answered' '[ "$rc" = 0 ] && [[ "$out" == *"os=windows"* ]]'
 out=$(WAKE_LAB_HOSTS="$tmp/rog-hosts.sh" SSH_UP=rog-nv-wsl "$tmp/wake-lab.sh" status rog 2>&1); rc=$?
 check 'Linux-configured dual boot reports WSL when its guest answered' '[ "$rc" = 0 ] && [[ "$out" == *"os=wsl"* ]]'
-# ludics-lite#320: a bare `status` is a read of the whole lab, so it shows tuf -- Wi-Fi only and
+# ludics-lite#320: a bare `status` is a read of the whole lab, so it shows tuf -- no Wake-on-LAN and
 # woken by hand, often the one box awake -- beside rog and minix. Nothing else has a default: a bare
 # `wake-lab.sh`, typed to see the usage, woke rog and minix on 2026-09-24.
 cat >"$tmp/lab-hosts.sh" <<'HOSTS'
@@ -196,7 +196,7 @@ check 'bare status over a table that does not know rog and minix refuses rather 
 out=$("$tmp/wake-lab.sh" unhold tuf 2>&1); rc=$?
 check 'Linux unhold is a no-op without the adapter' '[ "$rc" = 0 ] && [[ "$out" == *"no holder needed"* ]]'
 out=$("$tmp/wake-lab.sh" tuf 2>&1); rc=$?
-check 'Wi-Fi-only TUF refuses WoL with manual-wake guidance' '[ "$rc" = 1 ] && [[ "$out" == *"wake it manually"* ]]'
+check 'TUF, with no Wake-on-LAN NIC, refuses WoL with manual-wake guidance' '[ "$rc" = 1 ] && [[ "$out" == *"wake it manually"* ]]'
 : >"$SSH_LOG"
 out=$(SSH_UP=1 WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait --wsl --hold tuf 2>&1); rc=$?
 check 'Linux wait needs no WSL kick or holder and explains manual wake' '[ "$rc" = 0 ] && [[ "$out" == *"all up"* ]] && [[ "$out" == *"no holder needed"* ]] && [[ "$out" == *"wake it manually"* ]] && ! grep -q wsl.exe "$SSH_LOG"'

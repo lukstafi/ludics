@@ -22,17 +22,19 @@
 
 # Every MAC of a box, Wi-Fi and Ethernet. wake() sends a magic packet to each — the Wi-Fi ones
 # never wake anything (see the lore in wake-lab.sh) but cost nothing and keep this table readable
-# against the router's own host list. A Wi-Fi-only box gets one entry and can never be woken.
+# against the router's own host list. A box none of whose NICs wakes on LAN can never be woken,
+# cabled or not: list its MACs here, and leave it out of eth_mac_of.
 mac_of() { case "$1" in
   rog)   echo 00:00:00:00:00:01 00:00:00:00:00:02 ;;  # Wi-Fi, Ethernet
   minix) echo 00:00:00:00:00:03 00:00:00:00:00:04 ;;  # Wi-Fi, Ethernet
-  tuf)   echo 00:00:00:00:00:05 ;;                    # Wi-Fi only: manual wake
+  tuf)   echo 00:00:00:00:00:05 00:00:00:00:00:06 ;;  # Wi-Fi, Ethernet (no WoL): manual wake
   *) return 1 ;; esac; }
 
 # The Ethernet MAC alone — the one whose lease says anything about the wake path. router_active()
 # asks the router about this MAC, and `status` prints the router's NewActive bit for it as
-# router-active. A box with no cabled NIC belongs in neither branch: returning 1 is what makes its
-# router-active read `?`.
+# router-active. A box with no cabled NIC, or whose cabled NIC cannot wake it, belongs in neither
+# branch: returning 1 is what makes its router-active read `?` and makes wake and the reboots
+# refuse it.
 eth_mac_of() { case "$1" in
   rog)   echo 00:00:00:00:00:02 ;;
   minix) echo 00:00:00:00:00:04 ;;
@@ -44,7 +46,7 @@ eth_mac_of() { case "$1" in
 ip_of() { case "$1" in
   rog)   echo 192.0.2.30 ;;  # Ethernet; its Wi-Fi lease is a different address
   minix) echo 192.0.2.31 ;;  # Ethernet
-  tuf)   echo 192.0.2.29 ;;  # Wi-Fi; no Ethernet WoL
+  tuf)   echo 192.0.2.35 ;;  # Ethernet, no WoL; its Wi-Fi lease is a different address
   *) return 1 ;; esac; }
 
 # The OS reached after a magic packet depends on the box's boot selection. Set this to the

@@ -286,7 +286,7 @@ of the box's endpoints, which the registry keeps any later reservation on that h
 Any other active reservation naming any endpoint of the box refuses them, since a native Windows
 run holds no inhibitor and need not take a lock, and an unreadable registry refuses too. `boot-windows` also refuses a box with a run's sleep block
 inhibitor, which the lab locks do not see. Each is a real reboot, so whatever is open in the box's desktop session closes with it: the
-live witness on rog closed its Firefox and VS Code windows. They take exactly one box, and refuse one with no wired NIC (tuf), since
+live witness on rog closed its Firefox and VS Code windows. They take exactly one box, and refuse one with no Wake-on-LAN NIC in the site file (tuf), since
 what cannot be woken remotely cannot be recovered remotely. The wait prints a line per poll for up
 to 15 minutes in all (`WAKE_LAB_BOOT_WAIT_SECONDS`, one deadline for the old OS going down, which
 takes two dark polls in a row, the new one answering and its Git Bash) and ends in 0 (reached), 1 (refused, or back in a

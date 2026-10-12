@@ -105,7 +105,7 @@ script; they are what the coordinator tells its workers.
   questions section (see Decision gate), that too.
 - **The fleet**: `mac-studio` (Metal + cc, the reference dev box), `rog-nv-linux` (CUDA, 24
   cores), `minix-amd-linux` (HIP, 32 cores; Radeon 8060S `gfx1151`, unified memory), and
-  `tuf-amd-linux` (HIP, 16 threads; discrete RX 7700S `gfx1102`; Wi-Fi, manual wake).
+  `tuf-amd-linux` (HIP, 16 threads; discrete RX 7700S `gfx1102`; cabled but no Wake-on-LAN, manual wake).
   The site's `FLEET_BOXES` and `FLEET_HOSTNAME_MAP` must use the OS endpoint that `kind_of` and
   `wake-lab.sh status` report. The daily plan may still spell the same physical ROG or Minix
   box with its former `-wsl` suffix: translate only that suffix to the current `-linux` alias
@@ -133,8 +133,8 @@ script; they are what the coordinator tells its workers.
   discrete card exposes. So the daily plan homes HIP work whose behaviour depends on the memory
   model on TUF, or gives it a TUF leg beside minix's (the placement stays a lookup in the plan),
   and a HIP measurement says which memory model it ran on. It is
-  on Wi-Fi only, so neither `wake-lab.sh` nor flotilla's wake can reach it: a person wakes it by
-  hand. **Placement consequence:** a TUF-homed item, or a TUF leg, is gated on the box being up.
+  cabled, but none of its NICs wakes it on LAN, so neither `wake-lab.sh` nor flotilla's wake can
+  reach it: a person wakes it by hand. **Placement consequence:** a TUF-homed item, or a TUF leg, is gated on the box being up.
   When `wake-lab.sh status` shows it down, ask the user to wake it, or defer the item with the
   gate recorded on the board. Asleep is a placement fact, never a failure of the item, and never a
   reason to move a memory-model leg to minix, where the bug it exists to catch can hide. A silent
