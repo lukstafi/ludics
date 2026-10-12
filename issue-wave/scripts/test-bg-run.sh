@@ -33,6 +33,9 @@
 #     and leaves the winner's verdict alone -- also when the winner has already finished by the
 #     time the loser's claim fails;
 #   - a --within shorter than the poll interval is spent in full rather than answered at once;
+#   - a wait that reaches its bound says `RUNNING after <e> s of --within <w>` (a STARTING line
+#     likewise), and while it blocks prints heartbeat lines on stderr only, none starting with a
+#     verdict word, none with BG_RUN_HEARTBEAT=0;
 #   - the finish-between-reads order: a dead pid beside an rc reads rc, not DIED;
 #   - the usage errors (relative directory, missing `--`, a --within that is not a number), and
 #     that a zero-padded number is read as decimal;
@@ -393,6 +396,49 @@ else
   ko "the short-window fixture never published its pid"
 fi
 kill -9 "$S" 2>/dev/null; { wait "$S"; } 2>/dev/null
+
+# A wait that reaches its bound names the elapsed time and the bound on its RUNNING line, and says
+# it is still waiting at each heartbeat (here every 1 s) on stderr only, never in a line that starts
+# with a verdict word; stdout stays the one verdict line (ludics-lite#571).
+d="$TMP/heartbeat"
+bg_start "$d" sleep 30
+if until_file "$d/pid" 10; then
+  env BG_RUN_HEARTBEAT=1 "$BG" wait "$d" --within 3 > "$TMP/hb.out" 2> "$TMP/hb.err"; hrc=$?
+  hout=$(cat "$TMP/hb.out"); herr=$(cat "$TMP/hb.err")
+  case $hout in
+    'RUNNING after '[3-6]' s of --within 3') [ "$hrc" -eq 3 ] \
+      && ok "a wait that reaches its bound says how long it waited, against which bound ($hout)" \
+      || ko "the bound-reached wait exited $hrc, want 3 -- $hout" ;;
+    *) ko "the bound-reached wait printed /$hout/ (rc=$hrc), want 'RUNNING after <3..6> s of --within 3'" ;;
+  esac
+  beats=$(printf '%s\n' "$herr" | grep -c '^bg-run: still waiting after [1-9][0-9]* s of --within 3 (the run is live)$')
+  # Two beats fit the 3 s window (at 1 s and 2 s); a loaded box may stretch a 1 s poll past one.
+  [ "$beats" -ge 1 ] && ok "...with a heartbeat line on stderr while it blocked ($beats of them)" \
+    || ko "want a heartbeat line on stderr, got $beats -- $herr"
+  if printf '%s\n' "$herr" | grep -E -q '^(rc=|RUNNING|STARTING|DIED|REFUSED)'; then
+    ko "a heartbeat line starts with a verdict word -- $herr"
+  else
+    ok "...none of which starts with a verdict word"
+  fi
+  [ "$(printf '%s\n' "$hout" | wc -l | tr -d ' ')" = 1 ] && ok "...and stdout holds the one verdict line" \
+    || ko "stdout holds more than the verdict -- $hout"
+  expect "BG_RUN_HEARTBEAT=0 prints no heartbeat" 3 'RUNNING after' -- \
+    env BG_RUN_HEARTBEAT=0 "$BG" wait "$d" --within 2
+  contains "$out" 'still waiting' && ko "a heartbeat was printed with BG_RUN_HEARTBEAT=0 -- $out" \
+    || ok "...and says nothing while it blocks"
+  expect "a --within 0 wait reads 'RUNNING after 0 s of --within 0'" 3 'RUNNING after 0 s of --within 0' -- \
+    "$BG" wait "$d" --within 0
+  [ -s "$d/cpid" ] && kill -9 "$(head -n 1 "$d/cpid")" 2>/dev/null
+else
+  ko "the heartbeat fixture never published its pid"
+fi
+kill -9 "$S" 2>/dev/null; { wait "$S"; } 2>/dev/null
+expect "usage: a BG_RUN_HEARTBEAT that is not a number is refused" 2 'whole number' -- \
+  env BG_RUN_HEARTBEAT=often "$BG" wait "$TMP/u6" --within 0
+expect "a STARTING wait names its elapsed time and bound too" 4 ' s of --within 1' -- \
+  "$BG" wait "$TMP/never-started" --within 1
+case $out in 'STARTING after '[1-3]' s of --within 1') ok "...as 'STARTING after <e> s of --within 1' ($out)" ;;
+  *) ko "the STARTING line reads /$out/" ;; esac
 
 # --- the finish-between-reads order ------------------------------------------------------------------
 d="$TMP/dead-with-rc"; mkdir -p "$d"
