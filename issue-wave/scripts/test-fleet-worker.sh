@@ -2189,8 +2189,12 @@ expect "--observed-from records the checkout's HEAD as observed_sha" 0 "\"observ
 grep -Fq "\"remote_checkout\": \"$obs\"" <<<"$out" && grep -Fq "fixture run; observed_sha read as HEAD of $obs on testbox" <<<"$out" &&
   ok "...with the checkout it read and the provenance in the evidence" || ko "checkout or evidence missing: $out"
 [ -s "$SHIM_GH_COMMIT_LOG" ] && ko "--observed-from asked GitHub: $(cat "$SHIM_GH_COMMIT_LOG")" || ok "...asking GitHub nothing: it resolves in the checkout by construction"
-expect "...and a retry composes the same payload, the registry's harmless retry" 0 '"state": "concluded"' -- \
+# The answer lost, the retry comes after the worker moved its checkout on: the recorded SHA stands.
+git -C "$obs" commit -q --allow-empty -m "moved on"
+expect "...and a retry once the checkout has moved on composes the same payload, the registry's harmless retry" 0 '"state": "concluded"' -- \
   "${FWR[@]}" execution conclude "$TMP/rv-obs.json" --observed-from "$obs"
+grep -Fq "\"observed_sha\": \"$head\"" <<<"$out" && ok "...at the SHA the conclusion recorded" || ko "the retry recorded another SHA: $out"
+git -C "$obs" reset -q --hard "$head"
 "${FWR[@]}" execution run "$(rv_req rv-far origin/main far-box)" >/dev/null 2>&1 || ko "could not reserve rv-far (setup)"
 expect "--observed-from on an execution host that does not answer concludes nothing (exit 4)" 4 "^OBSERVED-FROM UNREACHABLE far-box: nothing concluded$" -- \
   "${FWR[@]}" execution conclude "$(rv_done rv-far -)" --observed-from "$obs"
@@ -2208,6 +2212,13 @@ expect "--from-bg-run --observed-from concludes at the checkout's HEAD" 0 "\"obs
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --observed-from "$obs"
 grep -Fq "\"remote_checkout\": \"$obs\"" <<<"$out" && grep -Fq "revision $head read as HEAD of $obs on testbox" <<<"$out" &&
   ok "...naming the checkout read, in the field and the evidence" || ko "checkout or evidence missing: $out"
+git -C "$obs" commit -q --allow-empty -m "moved on"
+expect "...and a retry once the checkout has moved on is the registry's harmless retry" 0 "\"observed_sha\": \"$head\"" -- \
+  "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --observed-from "$obs"
+git -C "$obs" reset -q --hard "$head"
+"${FWR[@]}" execution run "$(rv_req rv-bg2 origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-bg2 (setup)"
+expect "--from-bg-run --observed-from keeps the provenance beside an --evidence of its own" 0 "\"evidence\": \"leg green; revision $head read as HEAD of $obs on testbox\"" -- \
+  "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg2 --observed-from "$obs" --evidence "leg green"
 }
 
 section "prs (the supervision read)" && {

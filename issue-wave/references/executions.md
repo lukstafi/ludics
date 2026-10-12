@@ -383,7 +383,9 @@ checkout on the reservation's execution host and records it as `observed_sha` (a
 `remote_checkout` when the payload names none), appending where it was read to the evidence; a
 payload `observed_sha` that is not that HEAD is refused naming both. Such a SHA is not asked of
 GitHub: it resolves in the checkout by construction, which also covers a commit never pushed. Use it
-only while the checkout's HEAD is still the revision that ran.
+only while the checkout's HEAD is still the revision that ran. A retry of a conclusion that landed
+with its answer lost reuses the SHA the record holds rather than the checkout's HEAD now, so it is
+still the registry's harmless identical retry after the worktree has moved on or gone.
 
 When the run went through OCANNL's `tools/test-run.sh` (or any runner leaving `exit`, `log`,
 `wt` and `cmd` under a run directory), `fleet-worker.sh execution conclude --from-run <run-dir>

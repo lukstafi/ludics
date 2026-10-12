@@ -207,6 +207,10 @@ printf 'head=%s\n' "$head"
 """
 
 
+# How a conclusion's evidence names a revision the worker's result line gave.
+REPORTED = "as reported by the worker"
+
+
 @dataclass(frozen=True)
 class Payload:
     """A conclusion payload, compact JSON, ready for the registry."""
@@ -308,7 +312,7 @@ def conclude_from_bg_run(
     checkout: str,
     evidence: str,
     bgrun: str,
-    source: str = "as reported by the worker",
+    source: str = REPORTED,
 ) -> Conclusion:
     """The conclude payload read off a bg-run.sh directory. The verdict mapping:
       - the code is the runner's own sentinel when the log carries one and it is nonzero, else rc --
@@ -343,6 +347,8 @@ def conclude_from_bg_run(
     note += "; the command returned"
     if not evidence:
         evidence = f"{note}; revision {sha} {source}"
+    elif source != REPORTED:
+        evidence += f"; revision {sha} {source}"
     if box != host:
         evidence += f"; directory read on {box}, which drove the run on {host}"
     return Payload(
@@ -372,6 +378,17 @@ def observed_head(cfg: Config, box: str, checkout: str) -> str | Refusal:
     if not revision.OBJECT_ID.fullmatch(head):
         return Refusal(f"OBSERVED-FROM REFUSED: unreadable HEAD of {checkout} from {box}: {facts}", 1)
     return head
+
+
+def observed_sha_of(cfg: Config, record: dict[str, Any], host: str, checkout: str) -> str | Refusal:
+    """``--observed-from``'s SHA. A record already concluded at an observed_sha is this conclusion's
+    earlier call having landed with its answer lost: that SHA stands, so a retry composes the same
+    payload (the registry's identical-retry rule) even once the checkout has moved on or been
+    removed, and any other payload meets the registry's "already concluded" refusal."""
+    recorded = record.get("observed_sha")
+    if record.get("state") == "concluded" and isinstance(recorded, str) and recorded:
+        return recorded
+    return observed_head(cfg, host, checkout)
 
 
 # --- the endpoint map and the refresh after a dispatch -------------------------------------------
@@ -554,7 +571,7 @@ def checked_evidence(cfg: Config, text: str, observed_from: str) -> str:
         fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "observed_sha", cast(str, sha)))
         return text
     host = jq_text(field(record, "request", "execution_host"))
-    head = observed_head(cfg, host, observed_from)
+    head = observed_sha_of(cfg, record, host, observed_from)
     if isinstance(head, Refusal):
         concluded(head)
         return text
@@ -663,9 +680,9 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
         raise cli.Exit(1)
     # The revision: read off the checkout on the execution host, where the run ran, or the one
     # named, which must resolve in the request's repository (ludics-lite#561).
-    source = "as reported by the worker"
+    source = REPORTED
     if observed_from:
-        head = observed_head(cfg, host, observed_from)
+        head = observed_sha_of(cfg, record, host, observed_from)
         if isinstance(head, Refusal):
             return concluded(head)
         if sha and sha != head:
