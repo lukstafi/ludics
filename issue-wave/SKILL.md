@@ -709,16 +709,20 @@ controlled through the tools in your coordinator's file, never through those com
   run; `base --wait` reads that as no verdict, never green, and `gh run rerun <its id> --repo
   <owner/repo>` puts the tip back in line.
 
-  **On a red at the tip, in this order:**
-  1. **Halt launches, then rerun the failed jobs once** (`fleet-worker.sh halt "<red at the tip,
-     rerun pending>"`, then `gh run rerun <run id> --failed --repo <owner/repo>`; a local run,
-     once more at the same SHA) to rule out a flake: #479-class tee timeouts happen on the macOS
-     runner. The halt comes first because the rerun puts the tip's run back in flight, where the
-     base gate's interim could admit a launch onto the red. The rerun is a new attempt, so judge
-     that attempt and not the red already read: once `gh run view <run id> --repo <owner/repo>
-     --json attempt` shows the attempt gone up, await it with `pr-review.sh retry run watch
-     <owner/repo>#<run id>`. Green: `resume-launches`. Red: a regression, and the halt stands
-     as stop-the-world's (below) while you attribute it.
+  **On a red at the tip, halt launches at once** (`fleet-worker.sh halt "<red at <sha>, rerun
+  pending>"`): the rerun below puts the tip's run back in flight, where the base gate's interim
+  would admit a launch onto the red. Merges are not frozen (roll-forward: a merge never waits on
+  the base's tip); what lands meanwhile joins the span the next verdict covers. Then, in order:
+  1. **Rerun the failed jobs once** (`gh run rerun <run id> --failed --repo <owner/repo>`,
+     without `--failed` when the report names no failed job, a startup failure; a local run,
+     once more at the same SHA under the halt's one triage reservation, references/executions.md
+     *Adoption and halt*) to rule out a flake: #479-class tee timeouts happen on the macOS
+     runner. The rerun is a new attempt, so judge that attempt and not the red already read:
+     once `gh run view <run id> --repo <owner/repo> --json attempt` shows the attempt gone up,
+     await it with `pr-review.sh retry run watch <owner/repo>#<run id>`. Green, it was a flake:
+     `resume-launches` once `pr-review.sh base <owner/repo> --wait` reads the CURRENT tip green,
+     every workflow judged and every merge landed meanwhile included. Red, it is a regression:
+     the rest of stop-the-world (below) follows, and the next two steps are its owner's.
   2. **Attribute** by the failing job against its span, `git log --first-parent <floor>..<red>`.
      `pr-review.sh base` names the failing job and both ends, `red since <red> ... (success at
      <floor>)`; a local integration run's floor is the `observed_sha` of the newest `pass`
@@ -740,7 +744,8 @@ controlled through the tools in your coordinator's file, never through those com
      through the box's slot. Not a CI run on a temporary ref: that waits in the same macOS
      queue this rule exists to shorten.
 - **On a regression, stop the world - as a mechanism.** `fleet-worker.sh halt "<what
-  regressed, who owns the fix>"` makes every subsequent `launch` refuse until
+  regressed, who owns the fix>"` (already set by the integration loop's red at the tip; repeating
+  it updates the reason and keeps the halt) makes every subsequent `launch` refuse until
   `resume-launches`; that is the "launch nothing new" half, enforced rather than remembered,
   and it lives on the anchor with the lease, so a coordinator that adopts the wave from another
   box inherits the halt rather than launching into a known red. The halt covers every merge in
