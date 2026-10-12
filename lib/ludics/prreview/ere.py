@@ -1,4 +1,5 @@
-"""The advisory EREs, read by ``grep -E`` itself, as the shell read them.
+"""The advisory EREs (and ``checks --check``'s selection), read by ``grep -E`` itself, as the shell
+read them.
 
 The list is configuration whose contract is grep's: "one ERE per line, in SHIP_PR_ADVISORY_CHECKS's
 own sense", validated by "does grep compile it". What grep accepts and how it reads it depends on
@@ -29,11 +30,12 @@ def valid(pattern: str) -> bool:
     return done.rc != 2
 
 
-class Advisory:
-    """``is_advisory``: a name the advisory list says carries no build verdict, asked of grep
-    (``matches``). The one implementation for ``checks``, ``merge`` and ``base``. One process's
-    answers are kept: a wait loop asks the same names every round, and grep's answer for a pattern,
-    a name and an environment is fixed."""
+class Matcher:
+    """One ERE asked of grep per name (``matches``), one process's answers kept: a wait loop asks
+    the same names every round, and grep's answer for a pattern, a name and an environment is
+    fixed. The one implementation of ``is_advisory`` (a name the advisory list says carries no
+    build verdict) for ``checks``, ``merge`` and ``base``, and of ``Gate.selects`` (``checks
+    --check``'s selection)."""
 
     def __init__(self, pattern: str) -> None:
         self.pattern = pattern
