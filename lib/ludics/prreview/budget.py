@@ -56,7 +56,8 @@ directory, not per account: another host learns of the quota from its own first 
 state directory serves ONE credential: the hold is that token's quota, so a second token on the
 same host (a GH_TOKEN of its own) sets a SHIP_PR_STATE_DIR of its own. Every gh call passes the
 hold's gate: the session's, and ``repo_from_cwd``'s ``gh repo view``. An observer counts as live
-while its pid runs, so a pid the OS has reused reads as live until that process ends. The refusal
+while its pid runs, so a pid the OS has reused reads as live until that process ends. Under Git Bash
+that pid is an MSYS pid, whoever wrote it, and only bash's ``kill -0`` reads it (``pid_alive``). The refusal
 names the pid. Two processes replacing one dead lock at the same moment are kept apart by
 ``lock_reap``; a third arriving in that same window can still make two observers, which costs
 duplicate reads and never a verdict.
@@ -223,15 +224,17 @@ def _tab_read(path: str, n: int) -> list[str] | None:
 def pid_alive(pid_text: str) -> bool:
     """``kill -0 <pid>``: is the process that took a lock still running?
 
-    On native Windows (Git Bash runs a native Python) ``os.kill(pid, 0)`` TERMINATES the process,
-    and a lock may name either a Windows pid (another Python) or an MSYS one (a shell holder): the
-    pid is live when Windows has a running process of that number or bash's ``kill -0`` reaches it.
-    A reused pid reads as live either way, which the BOUNDARY already accepts."""
+    Under Git Bash (a native Python) every lock names an MSYS pid: the shell's holders write their
+    own, and this port writes ``proc.own_pid``. MSYS numbers its processes apart from Windows, so
+    a pid is live when bash's ``kill -0`` reaches it, and Windows is not asked: a Windows process
+    of the same number is an unrelated one (an svchost.exe read a dead holder as live, ludics-lite
+    run 38235190240), and ``os.kill(pid, 0)`` there TERMINATES whatever process has that number.
+    A reused pid reads as live, which the BOUNDARY already accepts."""
     if not _DIGITS.fullmatch(pid_text):
         return False
     pid = int(pid_text)
     if sys.platform == "win32":
-        return _windows_pid_alive(pid) or _bash_pid_alive(pid_text)
+        return _bash_pid_alive(pid_text)
     try:
         os.kill(pid, 0)
     except PermissionError:
@@ -239,24 +242,6 @@ def pid_alive(pid_text: str) -> bool:
     except (OSError, OverflowError, ValueError):
         return False
     return True
-
-
-def _windows_pid_alive(pid: int) -> bool:
-    if sys.platform != "win32":
-        return False
-    import ctypes
-
-    kernel32 = ctypes.windll.kernel32
-    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not handle:
-        return False
-    try:
-        code = ctypes.c_ulong()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-            return False
-        return code.value == 259  # STILL_ACTIVE
-    finally:
-        kernel32.CloseHandle(handle)
 
 
 def _bash_pid_alive(pid_text: str) -> bool:
@@ -316,7 +301,7 @@ class Budget:
         self.build_cap = build_cap
         self.env: Mapping[str, str] = os.environ if env is None else env
         self._run: Runner = run if run is not None else proc.run_tool
-        self.pid = os.getpid() if pid is None else pid
+        self.pid = proc.own_pid() if pid is None else pid
         self._alive = alive
         self.wait_until: int | None = None
         self.wait_from: int | None = None

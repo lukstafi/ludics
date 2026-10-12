@@ -253,7 +253,8 @@ reset_fixture() {
   : >"$CALL_LOG"
   : >"$SLEEP_LOG"
   : >"$MERGE_LOG"
-  rm -f "$TEST_ROOT/checks.calls" "$TEST_ROOT/probes" "$TEST_ROOT/state" "$TEST_ROOT/hooked"
+  rm -f "$TEST_ROOT/checks.calls" "$TEST_ROOT/probes" "$TEST_ROOT/state" "$TEST_ROOT/hooked" \
+    "$TEST_ROOT/holder" "$TEST_ROOT/holder-live"
   CHECKS_SEQ=(green)
   QUOTA_UNTIL=0
   QUOTA_RESET=""
@@ -421,6 +422,54 @@ test_a_second_observer_of_the_pr_is_refused() {
   assert_eq "$(rc third)" 0 "a holder that is no longer running is replaced ($(err third))"
   run plain cmd_checks "$REPO#7"
   assert_eq "$(rc plain)" 0 "a plain read is no observer and is never refused"
+}
+
+# Under Git Bash a lock names an MSYS pid, whoever wrote it, and MSYS numbers its processes apart
+# from Windows: a live WINDOWS process of the lock's number is no holder. (Run 38235190240: a dead
+# holder's MSYS pid 2380 was also an svchost.exe's Windows pid, and the next observer was refused.)
+test_a_windows_process_of_the_number_is_no_holder() {
+  local p winpid=""
+  case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*) ;;
+  *)
+    echo "SKIP test_a_windows_process_of_the_number_is_no_holder: only Git Bash numbers a process twice"
+    return 0
+    ;;
+  esac
+  reset_fixture
+  # A running Windows process whose number no MSYS process has: this shell's own, unless MSYS has
+  # that number too.
+  for p in "/proc/$$" /proc/[0-9]*; do
+    winpid=$(cat "$p/winpid" 2>/dev/null) || continue
+    kill -0 "$winpid" 2>/dev/null || break
+    winpid=""
+  done
+  assert_eq "${winpid:+found}" found "a running Windows pid that is no MSYS pid"
+  mkdir -p "$STATE_DIR/observers/example~repo#7.build"
+  printf '%s\n%s\n' "$winpid" "$T0" >"$STATE_DIR/observers/example~repo#7.build/owner"
+  run wait cmd_checks "$REPO#7" --wait
+  assert_eq "$(rc wait)" 0 "a lock naming Windows pid $winpid is replaced ($(err wait))"
+}
+
+# And this port's own observer is held by the pid the shell's kill -0 reads: a second observer
+# started while the first waits is refused, naming it.
+test_a_running_observer_is_refused_by_the_shells_pid() {
+  reset_fixture
+  CHECKS_SEQ=(pending green)
+  SLEEP_HOOK='[ -e "$TEST_ROOT/hooked" ] || {
+    : >"$TEST_ROOT/hooked"
+    head -n 1 "$STATE_DIR/observers/example~repo#7.build/owner" >"$TEST_ROOT/holder"
+    if kill -0 "$(cat "$TEST_ROOT/holder")" 2>/dev/null; then echo live >"$TEST_ROOT/holder-live"; fi
+    # The second is the port itself, run as the forward runs it: this hook is a fresh bash (the
+    # bridge), where the sourced pr-review.sh no longer knows its own path.
+    run second "$SCRIPT_DIR/../../scripts/py" -m ludics.prreview checks "$REPO#7" --wait
+  }'
+  run first cmd_checks "$REPO#7" --wait
+  assert_eq "$(rc first)" 0 "the first observer reads the green ($(err first))"
+  assert_eq "$(cat "$TEST_ROOT/holder-live" 2>/dev/null)" live \
+    "its lock names a pid the shell's kill -0 reaches ($(cat "$TEST_ROOT/holder" 2>/dev/null))"
+  assert_eq "$(rc second)" 2 "a second observer started while it waits is refused ($(err second))"
+  assert_contains "$(err second)" "pid $(cat "$TEST_ROOT/holder" 2>/dev/null)," "naming the first"
 }
 
 test_one_process_probes_an_ended_hold() {
@@ -1017,6 +1066,8 @@ run_tests \
   test_a_transport_failure_is_unknown_and_never_merges \
   test_an_observer_resumes_only_after_the_failing_endpoint_answers \
   test_a_second_observer_of_the_pr_is_refused \
+  test_a_windows_process_of_the_number_is_no_holder \
+  test_a_running_observer_is_refused_by_the_shells_pid \
   test_one_process_probes_an_ended_hold \
   test_a_probe_that_answers_still_holds_the_refused_operation \
   test_a_later_refusal_never_shortens_the_hold \
