@@ -483,6 +483,10 @@ SHIMEOF
 # was given, GH_TOKEN, as gh does), `other` one that answers as another account, and `slowcheck`
 # one GitHub never answers for.
 # SHIM_GH_SLOW=<s> delays every API answer; SHIM_GH_LOGIN=<login> answers as that account.
+# `auth token -h github.com` answers gh's stored token (ludics-lite#567): SHIM_GH_STORED's value,
+# or with none set gh's "no oauth token" (exit 1); `hang` never returns. Asked with GH_TOKEN or
+# GITHUB_TOKEN in its environment, even empty, it fails loudly: gh would answer that variable, so
+# the preflight must ask with both removed.
 cat > "$TMP/bin/gh" <<'SHIMEOF'
 #!/usr/bin/env bash
 if [ "$*" = "auth git-credential get" ]; then
@@ -490,6 +494,11 @@ if [ "$*" = "auth git-credential get" ]; then
   case "${SHIM_GH_CRED:-}" in none) exit 1 ;; hang) sleep 30 ;; esac
   case "${SHIM_GH_CRED:-}" in dead) tok=dead-token ;; other) tok=other-token ;; slowcheck) tok=slow-token ;; *) tok=shim-token ;; esac
   printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=%s\n' "$tok"; exit 0
+fi
+if [ "$*" = "auth token -h github.com" ]; then
+  [ -z "${GH_TOKEN+x}${GITHUB_TOKEN+x}" ] || { echo "gh shim: auth token asked with a token variable set"; exit 3; }
+  case "${SHIM_GH_STORED:-}" in '') echo "no oauth token found for github.com" >&2; exit 1 ;; hang) sleep 30 ;; esac
+  printf '%s\n' "$SHIM_GH_STORED"; exit 0
 fi
 [ "$*" = "api --hostname github.com user -q .login" ] || { echo "gh shim: unexpected call: $*" >&2; exit 2; }
 [ -z "${SHIM_GH_SLOW:-}" ] || sleep "$SHIM_GH_SLOW"
@@ -1026,20 +1035,44 @@ expect "a rejected token exported in the session names it in the repair" 1 "repa
 # The fleet's PAT file (2026-09-24): its contract is checked whatever gh answers, and a dead PAT
 # is replaced in the file, never by gh auth login.
 mkdir -p "$HOME/.config/fleet"; printf 'export GH_TOKEN=ghp_dead\n' > "$HOME/.config/fleet/gh-token.sh"; chmod 600 "$HOME/.config/fleet/gh-token.sh"
-expect "the file's own PAT, live, passes" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- env GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
-expect "a dead PAT from gh-token.sh is replaced from the anchor's file" 1 "repair: the PAT in ~/.config/fleet/gh-token.sh is dead: replace it from the anchor: ssh other 'f=~/.config/fleet/gh-token.sh; umask 077; cat > .*f.new.* && chmod 600 .*f.new.* && mv .*f.new.*' < ~/.config/fleet/gh-token.sh; then restart any tmux server that inherited the old value$" -- \
+# Two states pass (ludics-lite#567): the earlier one, where the session exports the file's token
+# (noted, since every child process sees it), and the target, where the session exports none and
+# gh's stored token is the file's. A session with no working credential in either is refused.
+expect "the earlier state, the session exporting the file's PAT, passes with a note" 0 "PREFLIGHT OK testbox skills=[0-9a-f]* (this session exports the fleet PAT as GH_TOKEN, so every process it starts sees it: store it in gh and drop the export, ludics-lite#567)$" -- \
+  env GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
+expect "...and so does one exporting it as GITHUB_TOKEN, named" 0 "PREFLIGHT OK other skills=[0-9a-f]* (this session exports the fleet PAT as GITHUB_TOKEN," -- \
+  env GITHUB_TOKEN=ghp_dead "${FWO[@]}" preflight other --native-claude --no-cross
+expect "the target state, no export and gh storing the file's PAT, passes clean" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH_STORED=ghp_dead "$FW" preflight testbox --native-claude --no-cross
+expect "...over ssh too" 0 "PREFLIGHT OK other skills=[0-9a-f]*$" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH_STORED=ghp_dead "${FWO[@]}" preflight other --native-claude --no-cross
+expect "...and an empty GH_TOKEN is no export: gh is asked with it removed" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
+  env GH_TOKEN= SHIM_GH_STORED=ghp_dead "$FW" preflight testbox --native-claude --no-cross
+out=$(env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH_STORED=ghp_other "$FW" preflight testbox --native-claude --no-cross 2>&1)
+grep -q -e ghp_dead -e ghp_other <<<"$out" && ko "a token reached the preflight's output -- $out" || ok "neither the file's token nor gh's stored one reaches the output"
+expect "no export and nothing stored in gh is refused with the store repair, on stdin" 1 "PREFLIGHT REFUSED other: this session exports no GitHub token and gh on other answers none stored (gh auth token -h github.com, bounded [0-9]*s) -- repair: store the fleet PAT in gh: ssh other '(. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN -u GITHUB_TOKEN gh auth login -h github.com --with-token --insecure-storage'$" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN "${FWO[@]}" preflight other --native-claude --no-cross
+expect "...in a terminal on the anchor" 1 "gh on testbox answers none stored .*-- repair: store the fleet PAT in gh: in a terminal on this box: (\. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN "$FW" preflight testbox --native-claude --no-cross
+expect "...and a gh token store that never answers is bounded and refused" 1 "gh on testbox answers none stored (gh auth token -h github.com, bounded 2s)" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH_STORED=hang FLEET_GH_TIMEOUT=2 "$FW" preflight testbox --native-claude --no-cross
+expect "a stored token other than the file's is a per-box login, refused though it is live" 1 "PREFLIGHT REFUSED testbox: gh's stored token on testbox is not the PAT in ~/.config/fleet/gh-token.sh (a per-box login) -- repair: store the fleet PAT in gh" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH_STORED=ghp_other "$FW" preflight testbox --native-claude --no-cross
+expect "the stored file's PAT, dead, is refused with replace-then-store" 1 "repair: the PAT in ~/.config/fleet/gh-token.sh is dead: replace it from the anchor: ssh other .*; then store it in gh (ssh other '(. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN -u GITHUB_TOKEN gh auth login .*') and restart any tmux server that inherited the old value$" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH=401 SHIM_GH_STORED=ghp_dead "${FWO[@]}" preflight other --native-claude --no-cross
+expect "a dead PAT from gh-token.sh is replaced from the anchor's file" 1 "repair: the PAT in ~/.config/fleet/gh-token.sh is dead: replace it from the anchor: ssh other 'f=~/.config/fleet/gh-token.sh; umask 077; cat > .*f.new.* && chmod 600 .*f.new.* && mv .*f.new.*' < ~/.config/fleet/gh-token.sh; then store it in gh (.*) and restart any tmux server that inherited the old value$" -- \
   env SHIM_GH=401 GH_TOKEN=ghp_dead "${FWO[@]}" preflight other --native-claude --no-cross
-expect "a LIVE token a later startup line exports is refused as the override" 1 "PREFLIGHT REFUSED other: this session's GH_TOKEN is not the one ~/.config/fleet/gh-token.sh exports on other: a later line of its shell startup overrides it.*grep -Hnos GH_TOKEN" -- \
+expect "a LIVE token a later startup line exports is refused as the override" 1 "PREFLIGHT REFUSED other: this session's GH_TOKEN is not the token ~/.config/fleet/gh-token.sh exports on other: a line of its shell startup sets it.*grep -Hnos -e GH_TOKEN -e GITHUB_TOKEN" -- \
   env GH_TOKEN=ghp_other "${FWO[@]}" preflight other --native-claude --no-cross
 expect "...and a dead one points at that, not at the file" 1 "repair: fix the token file first (above)" -- \
   env SHIM_GH=401 GH_TOKEN=ghp_other "$FW" preflight testbox --native-claude --no-cross
-expect "a gh-token.sh the session does not source names the env.sh line" 1 "this session does not export the token in ~/.config/fleet/gh-token.sh on testbox -- repair: end its ~/.config/fleet/env.sh with .*gh-token.sh.*install-linux.sh adds it)" -- \
-  env -u GH_TOKEN -u GITHUB_TOKEN "$FW" preflight testbox --native-claude --no-cross
-expect "an empty GH_TOKEN is not an export of the file's" 1 "this session does not export the token in ~/.config/fleet/gh-token.sh on testbox" -- \
+expect "...and so is a LIVE GITHUB_TOKEN other than the file's, named" 1 "PREFLIGHT REFUSED other: this session's GITHUB_TOKEN is not the token ~/.config/fleet/gh-token.sh exports on other" -- \
+  env GITHUB_TOKEN=ghp_other "${FWO[@]}" preflight other --native-claude --no-cross
+expect "an empty GH_TOKEN with nothing stored is no credential in either place" 1 "this session exports no GitHub token and gh on testbox answers none stored" -- \
   env GH_TOKEN= "$FW" preflight testbox --native-claude --no-cross
-expect "on the anchor, a mismatch says to re-source the file or open a new shell, with no ssh" 1 "this shell's GH_TOKEN is not the one ~/.config/fleet/gh-token.sh exports -- repair: run \\. ~/.config/fleet/gh-token.sh (or open a new shell)" -- \
+expect "on the anchor, a mismatch says to re-source the file or open a new shell, with no ssh" 1 "this shell's GH_TOKEN is not the token ~/.config/fleet/gh-token.sh exports -- repair: unset GH_TOKEN (or open a new shell) and rerun" -- \
   env GH_TOKEN=ghp_other "$FW" preflight local --native-claude --no-cross
-expect "...and so does the anchor addressed by its own name" 1 "this shell's GH_TOKEN is not the one ~/.config/fleet/gh-token.sh exports -- repair: run \\. ~/.config/fleet/gh-token.sh" -- \
+expect "...and so does the anchor addressed by its own name" 1 "this shell's GH_TOKEN is not the token ~/.config/fleet/gh-token.sh exports -- repair: unset GH_TOKEN" -- \
   env GH_TOKEN=ghp_other FLEET_LOCAL_BOX=anchorbox "$FW" preflight anchorbox --native-claude --no-cross
 printf 'export GH_TOKEN=\n' > "$HOME/.config/fleet/gh-token.sh"
 expect "a gh-token.sh exporting an empty GH_TOKEN is replaced" 1 "gh-token.sh on other exports no GH_TOKEN -- repair: replace it from the anchor" -- \
@@ -1237,6 +1270,14 @@ expect "a real server whose git gets no credential refuses, and names kill-serve
 expect "a real server whose credential is another account's refuses" 1 "the running tmux server on testbox gives a new session a GitHub credential that does not work (gh api user answers as other-user, not as shim-user)" -- \
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
 "$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
+# A server still holding the token every session used to export (ludics-lite#567): its credential
+# works, so nothing refuses, but a CLI worker started there hands it to every process it starts.
+"${fresh[@]}" GH_TOKEN=ghp_dead "$REAL_TMUX" -L "$envsock" new-session -d -s iw-real 'sleep 60'
+expect "a real server that still gives new sessions GH_TOKEN is noted, with the restart" 0 "PREFLIGHT OK testbox skills=[0-9a-f]* (a new session of the running tmux server on testbox gets GH_TOKEN, so a CLI worker started now hands the fleet PAT to every process it starts: wait for its live worker session(s) (iw-real; .*; ludics-lite#567)$" -- \
+  "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
+expect "...and not when this session exports one too (its own export is the cause)" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
+  "${fresh[@]}" GH_TOKEN=ghp_dead FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
+"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
 # No server running: the worker's session starts one from this shell, run by tmux's default shell,
 # whose startup can change the credential (zsh's ~/.zshenv sources env.sh on the anchor). A default
 # shell that exports a dead one is refused though this shell's passes, and the probe's server exits
@@ -1249,6 +1290,10 @@ for _ in $(seq 1 30); do "$REAL_TMUX" -L "$nosock" list-sessions >/dev/null 2>&1
 "$REAL_TMUX" -L "$nosock" list-sessions >/dev/null 2>&1 && ko "the probe left a tmux server running on $nosock" || ok "...and the server the probe started exits with it"
 expect "...while a default shell that leaves it alone passes" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
   "${fresh[@]}" SHELL="$(command -v bash)" FLEET_TMUX_SOCKET="$nosock" "$FW" preflight testbox --no-probe --no-cross
+"$REAL_TMUX" -L "$nosock" kill-server 2>/dev/null
+printf '#!/usr/bin/env bash\nexport GITHUB_TOKEN=ghp_dead\nexec bash "$@"\n' > "$TMP/tokshell"; chmod +x "$TMP/tokshell"
+expect "...and one whose startup exports a token is noted, naming the variable" 0 "PREFLIGHT OK testbox skills=[0-9a-f]* (a tmux server started from this session on testbox gives a new session GITHUB_TOKEN: its default shell's startup files export it" -- \
+  "${fresh[@]}" SHELL="$TMP/tokshell" FLEET_TMUX_SOCKET="$nosock" "$FW" preflight testbox --no-probe --no-cross
 "$REAL_TMUX" -L "$nosock" kill-server 2>/dev/null
 # A preflight killed outright (no trap runs) while its probe session is live: the probe ends that
 # session itself, so a remain-on-exit server keeps no dead fw-ghprobe-* session.
