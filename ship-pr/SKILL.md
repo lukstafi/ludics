@@ -417,14 +417,24 @@ An exit 0 is not always a round: `watch` also returns when it can tell that **no
 the 👀 went spent without a review of the head, or never landed, or a push has been sitting
 unreviewed past the grace (20 min, `SHIP_PR_REVIEW_GRACE`), or the reviewer said outright that it
 could not start (`failed`, below, which exits at once rather than holding the grace — except on a
-first Failed summary row, which `watch` re-requests itself and waits on). Its line says
-so and names the remedy: post a plain `@codex review` comment on the PR — `pr-review.sh comment
-<owner>/<repo>#<pr> '@codex review'` — which starts a round within one window. Do that rather than
-re-arming a fourth identical wait; see the state table below for why waiting cannot distinguish
-itself. Read the remedy off the line rather than from this paragraph when the two differ: on
-`failed` the nudge is the first move and not the only one — if the SAME head fails to initialize
-again, the next move is a new head (an amend suffices), because the reviewer's clone is what is
-behind.
+first Failed summary row, which `watch` re-requests itself and waits on).
+
+**The watch nudges for you, once per head** (ludics-lite#570). When the head is `expected` — a 👀
+round ended without reviewing it (a push landed during the round, so the round was the old head's),
+or it has no 👀 past the grace — and nothing stands for it (no review, no verdict, no 👍, no
+Completed row, and no `@codex review` on the PR since the head arrived, a hand nudge included),
+`watch` posts a plain top-level `@codex review` itself and keeps watching that request's grace, so
+the window ends on the head's round. The request on the PR is the once-per-head record: a re-armed
+watch reads it and posts no second one. If the nudge draws nothing, or a request already stood, the
+line says so and names the next move: read the feed, then push a new head (an amend suffices) or
+hand it to the maintainer. A nudge posted on a thumbs-up for the head would clear it, and these
+reads are what rule that out; they are the same final poll and state re-read below. Pass
+`--no-nudge` (`watch <pr> [watermark] --no-nudge`) to post nothing, the failed run's re-request
+included: the line then names the remedy, a plain `pr-review.sh comment <owner>/<repo>#<pr>
+'@codex review'`, and it is yours to post. Read the remedy off the line rather than from this
+paragraph when the two differ: on `failed` the nudge is the first move and not the only one — if
+the SAME head fails to initialize again, the next move is a new head, because the reviewer's clone
+is what is behind.
 
 Every one of those verdicts polls once more before it prints, and re-reads the state behind that
 poll. A round found by the last look wins; a 👍 that landed in the same gap is reported as the
@@ -638,9 +648,10 @@ against the convergence threshold.
 
 The third shape is a run the app started and could not finish (ludics-lite#453): the summary's
 Code Review row reads "⚠️ **Failed**" on the head (once in 621 rows, ocannl-staging#633), with no
-review and no 👍. That is the one case where a re-request cannot cost an approval, so `watch`
-makes it — it posts `@codex review` and keeps watching the request's grace — and the rule against
-re-requesting as stall recovery stands everywhere else. The reading is fail-closed: only the
+review and no 👍. A re-request cannot cost an approval there, so `watch`
+makes it — it posts `@codex review` and keeps watching the request's grace — as it does for an
+`expected` head with nothing standing (above); the rule against re-requesting as stall recovery
+stands everywhere else. The reading is fail-closed: only the
 observed row shape, only on the head, with no 👍 on the PR, nothing from the reviewer inside the
 run (since its 👀, or about this head at all once the 👀 is down), and no request since the row.
 It fires once per head (two watches on one PR at the same moment could each post one, which is a

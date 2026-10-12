@@ -65,6 +65,8 @@ HIDE_POSTED=""
 # answers REACTIONS_JSON plus a 👍 — how a case puts one between a round's read and the write
 # that round decided on.
 THUMBS_ON_REACTIONS_READ=""
+# Extra arguments for the watch (`--no-nudge`).
+WATCH_FLAG=""
 # The base's tip, and the head PUSH_ON_REVIEWS_READ swaps in. With HEAD_SHA these are the only
 # SHAs the transport below spells out, so a case that needs a new head just sets HEAD_SHA.
 BASE_SHA=base-sha
@@ -97,6 +99,7 @@ reset_fixture() {
   FAIL_POST=""
   HIDE_POSTED=""
   THUMBS_ON_REACTIONS_READ=""
+  WATCH_FLAG=""
   rm -f "$TEST_ROOT/pushed" "$TEST_ROOT/posted" "$TEST_ROOT"/nth.*
   : >"$REQUEST_LOG"
 }
@@ -299,7 +302,7 @@ run_cmd_status() {
 run_watch() { # [watermark] [interval] [timeout]
   local rc
   set +e
-  WATCH_INTERVAL="${2:-1}" WATCH_TIMEOUT="${3:-3}" cmd_watch 7 "${1:-0,0,0}" >"$TEST_ROOT/watch.out" 2>"$TEST_ROOT/watch.err"
+  WATCH_INTERVAL="${2:-1}" WATCH_TIMEOUT="${3:-3}" cmd_watch 7 "${1:-0,0,0}" ${WATCH_FLAG:+"$WATCH_FLAG"} >"$TEST_ROOT/watch.out" 2>"$TEST_ROOT/watch.err"
   rc=$?
   set -e
   WATCH_RC="$rc"
@@ -1942,7 +1945,21 @@ test_watch_does_not_post_twice_while_the_feed_lags_its_request() {
   assert_contains "$WATCH_OUT" "no reviewer activity about head" "and it says so"
 }
 
+# The opt-out (ludics-lite#570): `--no-nudge` posts nothing, the failed run's re-request included,
+# and hands the failure back with the request to post.
+test_watch_no_nudge_leaves_a_failed_run_to_the_caller() {
+  failed_run_fixture
+  WATCH_FLAG=--no-nudge
+  run_watch 0,1,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "nothing is posted"
+  assert_eq "$WATCH_RC" 0 "the failed run is something to act on"
+  assert_contains "$WATCH_OUT" "--no-nudge: the watch did not re-request the failed run on head 1e14b13" \
+    "the verdict says the request is the caller's"
+  assert_contains "$WATCH_OUT" "reviewer's run FAILED on head 1e14b13" "beside the state it is about"
+}
+
 tests=(
+  test_watch_no_nudge_leaves_a_failed_run_to_the_caller
   test_empty_reviews_need_their_own_findings
   test_idle_clean_says_next_move_is_yours
   test_idle_dirty_says_conflicts_not_next_move

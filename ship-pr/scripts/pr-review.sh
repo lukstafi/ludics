@@ -164,12 +164,16 @@
 #                                          # lists them all, anchor first — `id=900+901`, the token
 #                                          # `reply` and `resolve` take — with every distinct body
 #                                          # under the id of the thread carrying it
-#   pr-review.sh watch <pr> [watermark]    # poll on a timer until a round lands ON THE HEAD being
+#   pr-review.sh watch <pr> [watermark] [--no-nudge]
+#                                          # poll on a timer until a round lands ON THE HEAD being
 #                                          # watched; 0 = act, 1 = quiet. Reviewer activity about
 #                                          # another commit is printed on stderr for the record and
 #                                          # the wait continues; every exit names what it ends on,
 #                                          # and one on reviewer activity carries a `watch-rounds:`
-#                                          # line above the watermark (see prreview/rounds.py)
+#                                          # line above the watermark (see prreview/rounds.py). A
+#                                          # head due a review with nothing standing for it gets
+#                                          # one '@codex review' from the watch itself, once per
+#                                          # head (prreview/watch.py); --no-nudge posts nothing
 #   pr-review.sh status <pr>               # merge gate + who owes what: approved / unresolved
 #                                          # (approved over open review threads) / reviewing /
 #                                          # stalled / failed / expected / idle / unknown — and
