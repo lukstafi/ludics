@@ -98,7 +98,8 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    ```
    EXECUTION_REQUEST
    {"request_id":"<wave>-<issue>-<host>-<n>","execution_host":"rog-nv-linux","kind":"measurement",
-    "requested_revision":"<pushed sha>","checkout":"<absolute path on the execution host>",
+    "requested_revision":"<full 40-hex pushed SHA (git rev-parse), or a ref>",
+    "checkout":"<absolute path on the execution host>",
     "command":"<one bounded runner command>","log":"<intended log path, or ->"}
    END_EXECUTION_REQUEST
    ```
@@ -128,7 +129,7 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    so the coordinator concludes without grepping run ids out of prose:
 
    ```
-   EXECUTION_RESULT {"request_id":"<id>","run":"<absolute test-run.sh run directory>","exit":0,"observed_sha":"<sha that ran>"}
+   EXECUTION_RESULT {"request_id":"<id>","run":"<absolute test-run.sh run directory>","exit":0,"observed_sha":"<full 40-hex SHA that ran (git rev-parse HEAD)>"}
    ```
 
    The coordinator runs `fleet-worker.sh execution conclude --from-run <run> --request <id>
