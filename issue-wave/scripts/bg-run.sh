@@ -343,13 +343,17 @@ cmd_wait() {
     # not a multiple of it, is still spent in full.
     left=$((within - elapsed))
     [ "$left" -gt 0 ] || break
-    # The heartbeat, at most one poll late, and only while the wait goes on.
+    # The heartbeat, only while the wait goes on. The nap below also ends at the next one, so a
+    # poll slower than the heartbeat cannot skip it.
     if [ "$beat" -gt 0 ] && [ "$elapsed" -ge "$next_beat" ]; then
       case $V in RUNNING) state='the run is live' ;; *) state='no pid published yet' ;; esac
       say "still waiting after $elapsed s of --within $within ($state)"
       while [ "$next_beat" -le "$elapsed" ]; do next_beat=$((next_beat + beat)); done
     fi
-    if [ "$left" -lt "$interval" ]; then sleep "$left"; else sleep "$interval"; fi
+    nap=$interval
+    [ "$left" -ge "$nap" ] || nap=$left
+    [ "$beat" -eq 0 ] || [ $((next_beat - elapsed)) -ge "$nap" ] || nap=$((next_beat - elapsed))
+    sleep "$nap"
   done
   case $V in
     rc) printf 'rc=%s\n' "$(cat "$dir/rc")"; exit 0 ;;

@@ -422,6 +422,8 @@ if until_file "$d/pid" 10; then
   fi
   [ "$(printf '%s\n' "$hout" | wc -l | tr -d ' ')" = 1 ] && ok "...and stdout holds the one verdict line" \
     || ko "stdout holds more than the verdict -- $hout"
+  expect "a poll slower than the heartbeat still wakes for it" 3 'bg-run: still waiting after' -- \
+    env BG_RUN_POLL=10 BG_RUN_HEARTBEAT=1 "$BG" wait "$d" --within 3
   expect "BG_RUN_HEARTBEAT=0 prints no heartbeat" 3 'RUNNING after' -- \
     env BG_RUN_HEARTBEAT=0 "$BG" wait "$d" --within 2
   contains "$out" 'still waiting' && ko "a heartbeat was printed with BG_RUN_HEARTBEAT=0 -- $out" \
