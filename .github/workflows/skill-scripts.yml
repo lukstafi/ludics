@@ -429,7 +429,11 @@ jobs:
     # 3.12 with reportMatchNotExhaustive (pyrightconfig.json), so an unhandled variant of a sum
     # type is red here, and the package's own unittest suites. Pyright runs only here and on the
     # dev machine, never at run time, so the boxes carry no Node dependency; the version is
-    # pinned so a pyright release cannot turn a head red that was green.
+    # pinned so a pyright release cannot turn a head red that was green. Pyright evaluates a
+    # `sys.platform` branch only for the platform it checks, and on this runner that is Linux, so
+    # a second step checks the package as Darwin: fleetworker/group.py's kqueue wait is otherwise
+    # never type-checked. Windows is not a step: the package is POSIX-only (fcntl.flock, os.fork,
+    # os.killpg, SIGALRM), and `--pythonplatform Windows` reports those as errors throughout.
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
     runs-on: ubuntu-latest
@@ -441,6 +445,8 @@ jobs:
           python-version: '3.12'
       - name: Type-check the package (pyright, strict, pythonVersion 3.12)
         run: npx --yes pyright@1.1.414
+      - name: Type-check the package's macOS branches (pyright, --pythonplatform Darwin)
+        run: npx --yes pyright@1.1.414 --pythonplatform Darwin
       - name: The package's unit tests
         run: scripts/py -m unittest discover -s lib -t lib -p 'test_*.py' -v
 

@@ -1270,9 +1270,10 @@ answers it, to `ludics.fleetworker`; `check-prompts.sh` forwards
 whole, to `ludics.checkprompts`, and `post-merge-cleanup.sh` its whole command line, to
 `ludics.postmergecleanup`. The shell suites above are the conformance suite for a port,
 unchanged. The package's own checks are `npx --yes pyright@1.1.414` (strict, `pythonVersion`
-3.12, from `pyrightconfig.json`) and `scripts/py -m unittest discover -s lib -t lib -p 'test_*.py'`,
-both run by CI's `python` job. Where a port's code goes, how forwarding and the suites' shell
-bridge work, and the rule for helpers shared across subcommands: `lib/ludics/README.md`.
+3.12, from `pyrightconfig.json`; run as Linux and again with `--pythonplatform Darwin`) and
+`scripts/py -m unittest discover -s lib -t lib -p 'test_*.py'`, both run by CI's `python` job.
+Where a port's code goes, how forwarding and the suites' shell bridge work, and the rule for
+helpers shared across subcommands: `lib/ludics/README.md`.
 
 ## Why symlinks, not copies
 

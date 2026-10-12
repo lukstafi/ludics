@@ -13,7 +13,11 @@ porters: where code goes, how a subcommand is forwarded, and how to check it.
   (this Mac's is 3.14).
 - **Strict pyright**, `reportMatchNotExhaustive` on. A sum type is a union of frozen dataclasses,
   matched with `match`, and every match over a union ends in `case _: assert_never(x)`. See
-  `GhResult` in `prreview/core.py` and the match in `prreview/body.py`.
+  `GhResult` in `prreview/core.py` and the match in `prreview/body.py`. Pyright checks only the
+  `sys.platform` branch of the platform it evaluates (by default the host's), so the tree passes
+  it as Linux and as Darwin. CI's runner is Linux, and its second step adds `--pythonplatform
+  Darwin`, so a darwin branch such as `fleetworker/group.py`'s kqueue wait is checked too. Windows
+  is not checked: the package is POSIX-only (`fcntl.flock`, `os.fork`, `os.killpg`, `SIGALRM`).
 - **The command line is fixed.** Subcommands, flags, stdout lines, stderr wording that a suite
   or a skill reads, and exit codes stay exactly what the script did. The shell suites are the
   conformance suite: a port lands only when the script's existing suites pass unchanged against
@@ -132,7 +136,8 @@ them with their reasons): its `printf %q` (bash 5's rules, computed) beside `cor
 ## Checking
 
 ```sh
-npx --yes pyright@1.1.414                                         # from the repo root
+npx --yes pyright@1.1.414 --pythonplatform Linux                  # from the repo root
+npx --yes pyright@1.1.414 --pythonplatform Darwin                 # (CI runs both)
 scripts/py -m unittest discover -s lib -t lib -p 'test_*.py'     # the package's unit tests
 scripts/test-py.sh                                                # the wrapper
 ship-pr/scripts/test-pr-review-<suite>.sh                         # the conformance suites
