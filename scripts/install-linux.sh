@@ -538,6 +538,7 @@ bench_provision() {
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
     fresh=$(mktemp -d "$BENCH_VENV-$stamp.XXXXXX")
     fresh=$(CDPATH= cd "$fresh" && pwd -P)
+    chmod go+rx "$fresh"  # mktemp's 0700; a venv python3 -m venv makes is world-readable
     BENCH_FRESH=$fresh
     bench_build "$fresh" "$index" "$torch"
     bench_matches "$fresh" "${pins[@]}" ||
