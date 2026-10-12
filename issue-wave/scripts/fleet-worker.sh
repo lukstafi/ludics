@@ -262,15 +262,43 @@ set -uo pipefail
 # nor hand it the `ludics` package.
 # One exception stays in this shell: `execution slot --probe` is answered below, before any
 # interpreter is looked for (THE PROBE WITHOUT PYTHON).
-fw_probe=""
-if [ "${1:-}" = execution ] && [ "${2:-}" = slot ]; then
-  for fw_arg in "$@"; do
-    case "$fw_arg" in --probe) fw_probe=1 ;; --) break ;; esac
+#
+# THE PROBE'S WORDS: fw_is_probe is the shell's whole reading of an `execution slot` command line,
+# and it only recognizes, never refuses. A clean probe -- `--probe`, and before any `--` nothing but
+# the options a probe takes and ignores, each well formed as lib/ludics/fleetworker/slot.py's
+# parse_slot takes it -- is answered here. Anything else (an option a probe refuses, --bg or
+# --deadline; a malformed value; --cpu with --gpu; a word this list does not know) goes to Python
+# whole and unparsed, which refuses it in SLOT_USAGE's own words or runs it, so no usage or refusal
+# text of the slot lives in this file to drift from Python's. On a box with no Python >= 3.12 such a
+# line gets scripts/py's refusal (exit 2), still no PROBE line. test-fleet-worker.sh (THE PROBE'S
+# WORDS there) holds this list to parse_slot: a probe line answers here exactly when Python answers
+# it, and with Python's line.
+fw_is_probe() {
+  local probe="" kind=""
+  [ "${1:-}" = execution ] && [ "${2:-}" = slot ] || return 1
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --probe) probe=1 ;;
+      --wait)
+        case "${2-}" in ''|*[!0-9]*) return 1 ;; esac
+        shift ;;
+      --wait-window) ;;
+      --wait-window=*)
+        case "${1#--wait-window=}" in ''|*[!0-9]*) return 1 ;; esac ;;
+      --cpu|--gpu)
+        [ -z "$kind" ] || [ "$kind" = "$1" ] || return 1
+        kind="$1" ;;
+      --) break ;;
+      *) return 1 ;;
+    esac
+    shift
   done
-fi
+  [ -n "$probe" ]
+}
 die() { echo "fleet-worker.sh: $*" >&2; exit 2; }
 CHECKOUT=$(CDPATH='' cd -P "$(dirname "$0")/../.." 2>/dev/null && pwd -P)
-if [ -z "$fw_probe" ]; then
+if ! fw_is_probe "$@"; then
   # A copy of this file away from its checkout has no package to forward to: said, not left to
   # exec's own error.
   [ -x "$CHECKOUT/scripts/py" ] || die "no $CHECKOUT/scripts/py: run this script from its skills checkout (issue-wave/scripts/ in it)"
@@ -286,7 +314,7 @@ fi
 # measurement it runs -- the marker is judged against the hold's lock, which takes a flock -- and a
 # Python that cannot answer reads as no measurement, as a failed python3 always did here. The
 # slot count and token count are the spec's own text, as they always were. Anything that is not a
-# probe (an argument the forwarder misread, `--bg --probe` naming a directory) goes to Python.
+# clean probe (THE PROBE'S WORDS above; `--bg --probe` names a directory) went to Python already.
 #
 # What the probe reads is the configuration lib/ludics/fleetworker/config.py reads, in the same
 # grammar: which box this is (FLEET_LOCAL_BOX, else the hostname through FLEET_HOSTNAME_MAP, first
@@ -331,40 +359,8 @@ fw_spec_count() {
   echo "$found"
 }
 cmd_execution_slot_probe() {
-  local kind="" probe="" bg="" deadline="" box cap tokens inside="" answer entry ok
-  local -a all=("$@") roster=()
-  shift   # slot
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --probe) probe=1 ;;
-      --bg)
-        [ "$#" -ge 2 ] && [ -n "$2" ] || die "execution slot: expected a parent directory for --bg"
-        bg="$2"; shift ;;
-      --wait)
-        [ "$#" -ge 2 ] || die "execution slot: expected value for --wait"
-        case "$2" in ''|*[!0-9]*) die "execution slot: --wait takes a whole number of seconds" ;; esac
-        shift ;;
-      --deadline)
-        # A positive whole number: digits only, not all of them zeros.
-        case "${2-}" in ''|*[!0-9]*) deadline="" ;; *[1-9]*) deadline=1 ;; *) deadline="" ;; esac
-        [ -n "$deadline" ] || die "execution slot: --deadline takes a positive whole number of seconds"
-        shift ;;
-      --wait-window) ;;
-      --wait-window=*)
-        case "${1#--wait-window=}" in ''|*[!0-9]*) die "execution slot: --wait-window takes a whole number of seconds, as --wait-window=<seconds>" ;; esac ;;
-      --cpu|--gpu)
-        [ -z "$kind" ] || [ "$kind" = "$1" ] || die "execution slot: --cpu and --gpu are exclusive"
-        kind="$1" ;;
-      --) break ;;
-      *) die "execution slot [--bg <parent>] [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>] -- <command> [args...] | execution slot --probe" ;;
-    esac
-    shift
-  done
-  if [ -z "$probe" ]; then
-    exec "$CHECKOUT/scripts/py" -m ludics.fleetworker "$0" execution "${all[@]}"
-  fi
-  [ -z "$bg" ] || die "execution slot: --probe takes no --bg; it runs nothing"
-  [ -z "$deadline" ] || die "execution slot: --probe takes no --deadline; it runs nothing"
+  local box cap tokens inside="" answer entry ok
+  local -a roster=()
   box="${FLEET_LOCAL_BOX-$(fw_local_box)}"
   [ -n "$box" ] || die "execution slot: this host has no fleet name; set FLEET_LOCAL_BOX (the slot is this box's own)"
   ok=""; read -r -d "" -a roster <<< "$BOXES" || :
@@ -392,7 +388,6 @@ if [ "$(fw_words "$BOXES")" = "$(fw_words "$DEFAULT_BOXES")" ]; then DEFAULT_ROS
 SLOTS="${FLEET_BOX_CORRECTNESS_SLOTS-$([ "$DEFAULT_ROSTER" = 0 ] || echo mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3)}"
 GPU_TOKENS="${FLEET_BOX_GPU_TOKENS-$([ "$DEFAULT_ROSTER" = 0 ] || echo rog-nv-linux=2)}"
 
-shift   # execution
-cmd_execution_slot_probe "$@"
+cmd_execution_slot_probe
 exit "$?"
 }
