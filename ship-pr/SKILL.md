@@ -277,8 +277,10 @@ multi-PR arc that comment is what makes the phases legible later.
 
 ## Monitor
 
-Poll for the review yourself: nothing arms on its own. In the Claude Desktop client, the
-`<pr-created>` tag renders a PR card, but the review-event feed behind that card starts only when
+Poll for the review yourself. A repository with automatic reviews on starts its review
+unrequested when a PR opens for review (a draft, once it is marked ready); what never arms on its
+own is an observer. In the Claude Desktop
+client, the `<pr-created>` tag renders a PR card, but the review-event feed behind that card starts only when
 the user clicks its "Auto-fix CI & address comments" — verified on a PR opened with the tag and no
 other setup, which drew a review nobody was told about. If review events do start mid-loop and
 carry the comment bodies and ids inline, take them as they come and stop polling for what they

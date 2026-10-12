@@ -406,7 +406,10 @@ requirements for every transport with transport-specific setup and identity, and
   the box. **On GPU boxes**: name the backend and how to prove the run executed on it (a
   backend-uniform golden proves nothing), and keep one dune per _build. Add the box kind's
   durable traps to the brief: [native traps](references/linux-boxes.md) for `linux`, [WSL
-  traps](references/wsl-boxes.md) for `wsl`.
+  traps](references/wsl-boxes.md) for `wsl`. Say up front where the evidence goes: the PR body,
+  the issue's comments and the project's agent notes, never a report file the task did not ask
+  for - a Claude subagent is instructed not to write report `.md` files, so a planned
+  `benchmarks/report-*.md` had to move mid-task (ahrefs/ocannl#1190).
 - Execution handoff: the worker's own targeted correctness batches on its agent host run under
   the [standing reservation](references/executions.md#standing-iteration-reservation) the
   coordinator took at launch - name its request id, the bounded aliases and `-j` width it
@@ -440,14 +443,18 @@ requirements for every transport with transport-specific setup and identity, and
   copied from its own instructions (2026-09-15: an Opus worker inherited a Fable line and
   rightly corrected it). Every tool name in the brief is one the worker's runtime exposes
   ([native-workers.md](references/native-workers.md)).
-- Two shell traps the brief names outright, because each cost a worker a control run that lied
+- Shell traps the brief names outright, because each cost a worker a control run that lied
   (2026-09-16): the worker's shell tool runs **zsh**, where an unbraced `"$var:suffix"` is
   parsed as a parameter modifier when the suffix starts with a modifier letter (`s`, `h`, `t`,
   `r`, `e`, `p`, `a`, `l`, `u`, `q`, `c`, ...), so `git show "$sha:scripts/x.sh"` silently
   drops the path and prints the commit - always brace it, `"${sha}:scripts/x.sh"`; and native
   workers share the coordinator's scratchpad, so scratch files carry the issue number as a
   prefix and never sit inside the worktree ([native-workers.md](references/native-workers.md)
-  states the rule).
+  states the rule). zsh also expands a word starting with `=` as a command path, so
+  `echo =====` fails, and a reading command with that separator hid the brief's output from five
+  workers of the 2026-10-05 post-waves: a native Claude worker reads the brief file with its Read
+  tool, a CLI worker gets it on the launcher's input, and a shell command that reads it (a
+  Codex worker's) prints no separator.
 - Credentials, one line the brief carries verbatim: never borrow, copy or export a credential
   from another box, file or account to get past an authentication failure; a failed `gh`, push
   or login is a gate to report and stop on (2026-09-23: a worker on minix, whose `gh` token was
@@ -508,9 +515,14 @@ requirements for every transport with transport-specific setup and identity, and
   and every finding is then classified against that boundary: an in-scope form the scanner misses
   is a silent defect and stays must-fix under the convergence policy (Supervise: *Converge long
   reviews*), while a corner outside the declared boundary is deferred to one follow-up issue, not
-  fixed. Where the requirement needs structure (a nested key hierarchy, a block grammar), say so
-  and do not substitute a scan; a reduction of the requirement is a decision-gate item, never the
-  brief's alone. Left to the review, an unbounded reader draws one corner per round for as long as
+  fixed. Where the scan models an external language (a dune stanza, a bash command line), the
+  brief names the structural alternative up front: a fail-closed allowlist of the forms it
+  accepts, refusing the rest, or the language's own tool. A denylist of spellings never closes,
+  and the review finds the next exotic one every round (ahrefs/ocannl#1095: 14 rounds;
+  ahrefs/ocannl#1220: three to five in each of rounds 4-7); under an allowlist a missed
+  spelling is a refusal, a loud finding. Where the requirement needs structure (a nested key
+  hierarchy, a block grammar), say so and do not substitute a scan; a reduction of the
+  requirement is a decision-gate item, never the brief's alone. Left to the review, an unbounded reader draws one corner per round for as long as
   it exists (2026-09-19: PR #274 went 17 rounds and 1,800 lines for a warning, and the reduction
   had to be filed afterwards as ludics-lite#295).
 - Encouragement. It is cheap and the user asked for it: name why the issue matters and
@@ -700,6 +712,13 @@ controlled through the tools in your coordinator's file, never through those com
   one owner for the fix-forward. `resume-launches` when master is verified again, and the wave
   resumes with its remaining tasks. `fleet-worker.sh halted` is the check for a coordinator
   resuming after an interruption.
+- **A pause is not a halt.** When the user pauses the wave (a token budget about to run out),
+  a halt would refuse the workers' own reservations. Message each worker instead, through its
+  transport's channel: commit, push what has passed its tests, start no run, stop its own review
+  watch and merge wait (a merge wait left running merges with nobody there to close out), and end
+  the turn with a status block - head, PR state, runs in flight, next step. On resume, read each
+  PR's state from GitHub before handing a worker its next step, as after any interruption: a
+  merge call already under way when its wait was stopped can still land.
 - **Merge gates under a saturated runner queue.** GitHub's macOS runners serialize; a 20-PR
   day queues master runs ~2 h deep (2026-08-23: a stale test claim reached master unread, #452,
   red for two hours). `merge --wait` refuses without a verdict (see ship-pr): brief workers to
