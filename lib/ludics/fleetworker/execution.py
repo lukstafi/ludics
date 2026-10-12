@@ -546,10 +546,12 @@ def record_to_check(cfg: Config, request: str) -> dict[str, Any] | None:
     return record_of(records, request)
 
 
-def checked_evidence(cfg: Config, text: str, observed_from: str) -> str:
-    """A dispatch, record, reconcile or conclude payload whose ``observed_sha`` resolves in the request's
-    repository, or with it read off ``observed_from`` (conclude only). A payload the registry will
-    refuse on shape anyway (not an object, no request_id, a SHA of the wrong shape) passes unread."""
+def checked_evidence(cfg: Config, text: str, observed_from: str, action: str) -> str:
+    """A dispatch, record, reconcile or conclude payload whose ``observed_sha`` -- named, read off
+    ``observed_from`` (conclude only), or inherited from the record by a conclusion naming none --
+    is a commit of the request's repository on GitHub. A payload the registry will refuse on shape
+    anyway (not an object, no request_id, a SHA of the wrong shape) passes unread, and so does one
+    for a concluded record, whose retry is the registry's to judge."""
     try:
         decoded: Any = json.loads(text)
     except ValueError:
@@ -562,32 +564,42 @@ def checked_evidence(cfg: Config, text: str, observed_from: str) -> str:
     data = cast(dict[str, Any], decoded)
     sha, request = data.get("observed_sha"), data.get("request_id")
     shaped = isinstance(sha, str) and revision.OBJECT_ID.fullmatch(sha) is not None
-    if not (isinstance(request, str) and request and (shaped or observed_from)):
+    # A conclusion naming no observed_sha inherits the record's (registry.py), which a record
+    # written before this check existed may hold mistyped: it becomes immutable here.
+    inherits = action == "conclude" and "observed_sha" not in data and data.get("verdict") != "not-launched"
+    if not (isinstance(request, str) and request and (shaped or observed_from or inherits)):
         return text
     record = record_to_check(cfg, request)
     if record is None:
         return text
-    if not observed_from:
-        if record.get("state") != "concluded":
-            repo = jq_text(field(record, "request", "repository"))
-            fail(revision.commit_refusal(repo, "observed_sha", cast(str, sha), gh_timeout(cfg)))
-        return text
-    host = jq_text(field(record, "request", "execution_host"))
-    head = observed_sha_of(cfg, record, host, observed_from)
-    if isinstance(head, Refusal):
-        concluded(head)
-        return text
-    if "observed_sha" in data and sha != head:
-        cli.say(
-            f"EXECUTION REFUSED: the payload's observed_sha {jq_text(sha)} is not HEAD {head} of"
-            f" {observed_from} on {host}; drop it and let --observed-from record the checkout's"
-        )
-        raise cli.Exit(1)
-    data["observed_sha"] = head
-    data.setdefault("remote_checkout", observed_from)
-    if isinstance(data.get("evidence"), str) and data["evidence"].strip():
-        data["evidence"] += f"; observed_sha read as HEAD of {observed_from} on {host}"
-    return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+    checking = record.get("state") != "concluded"
+    repo = jq_text(field(record, "request", "repository"))
+    if observed_from:
+        host = jq_text(field(record, "request", "execution_host"))
+        head = observed_sha_of(cfg, record, host, observed_from)
+        if isinstance(head, Refusal):
+            concluded(head)
+            return text
+        if "observed_sha" in data and sha != head:
+            cli.say(
+                f"EXECUTION REFUSED: the payload's observed_sha {jq_text(sha)} is not HEAD {head} of"
+                f" {observed_from} on {host}; drop it and let --observed-from record the checkout's"
+            )
+            raise cli.Exit(1)
+        # Read off a checkout, the SHA has no typo, but the checkout may be another repository's.
+        if checking:
+            fail(revision.commit_refusal(repo, "observed_sha", head, gh_timeout(cfg)))
+        data["observed_sha"] = head
+        data.setdefault("remote_checkout", observed_from)
+        if isinstance(data.get("evidence"), str) and data["evidence"].strip():
+            data["evidence"] += f"; observed_sha read as HEAD of {observed_from} on {host}"
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+    if checking and shaped:
+        fail(revision.commit_refusal(repo, "observed_sha", cast(str, sha), gh_timeout(cfg)))
+    inherited = record.get("observed_sha")
+    if checking and inherits and isinstance(inherited, str) and inherited:
+        fail(revision.commit_refusal(repo, "inherited observed_sha", inherited, gh_timeout(cfg)))
+    return text
 
 
 def conclude_payload(cfg: Config, args: list[str]) -> str:
@@ -598,7 +610,7 @@ def conclude_payload(cfg: Config, args: list[str]) -> str:
     if observed_from:
         checkout_arg(observed_from, "")
     check_identity(cfg)
-    return checked_evidence(cfg, payload, observed_from)
+    return checked_evidence(cfg, payload, observed_from, "conclude")
 
 
 def gh_timeout(cfg: Config) -> float:
@@ -689,8 +701,8 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
         cli.say(f"EXECUTION REFUSED: unknown request_id {request} (no execution host to read the run for)")
         raise cli.Exit(1)
     # The revision: read off the checkout on the execution host, where the run ran, or the one
-    # named, which must resolve in the request's repository (ludics-lite#561).
-    source = REPORTED
+    # named; either must be a commit of the request's repository (ludics-lite#561).
+    source, what = REPORTED, "--sha"
     if observed_from:
         head = observed_sha_of(cfg, record, host, observed_from)
         if isinstance(head, Refusal):
@@ -698,9 +710,9 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
         if sha and sha != head:
             cli.say(f"EXECUTION REFUSED: --sha {sha} is not HEAD {head} of {observed_from} on {host}; give one of them")
             raise cli.Exit(1)
-        sha, source = head, f"read as HEAD of {observed_from} on {host}"
-    elif record.get("state") != "concluded":
-        fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "--sha", sha, gh_timeout(cfg)))
+        sha, source, what = head, f"read as HEAD of {observed_from} on {host}", "observed_sha"
+    if record.get("state") != "concluded":
+        fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), what, sha, gh_timeout(cfg)))
     # Without --checkout the record's own checkout is restated, or the placeholder when it has none
     # -- always spelled out in the payload, so a retry of a conclusion whose answer was lost
     # composes the same payload and meets the registry's identical-retry rule.
@@ -797,7 +809,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             payload = read_payload(action, args)
             check_identity(cfg)
             if action in ("dispatch", "record", "reconcile"):
-                payload = checked_evidence(cfg, payload, "")
+                payload = checked_evidence(cfg, payload, "", action)
             else:
                 checked_request(cfg, payload, action)
         case "window":

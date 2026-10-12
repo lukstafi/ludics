@@ -380,13 +380,14 @@ Once runner evidence establishes completion and no process remains, `execution c
 An `observed_sha` in a `dispatch`, `record`, `reconcile` or `conclude` payload must be a commit GitHub has in
 the request's `repository` (ludics-lite#561: two standing conclusions in one wave recorded the right
 prefix with a wrong tail, and a concluded record is immutable). A SHA GitHub does not have, or a
-SHA-256 ID, is refused before the anchor is asked. Rather than copy a SHA by hand, `execution
+SHA-256 ID (GitHub hosts no SHA-256 repository), is refused before the anchor is asked. Rather than copy a SHA by hand, `execution
 conclude <payload.json> --observed-from <checkout>` reads `git rev-parse HEAD` of that absolute
 checkout on the reservation's execution host and records it as `observed_sha` (and as
 `remote_checkout` when the payload names none), appending where it was read to the evidence; a
-payload `observed_sha` that is not that HEAD is refused naming both. Such a SHA is not asked of
-GitHub: it resolves in the checkout by construction, which also covers a commit never pushed. Use it
-only while the checkout's HEAD is still the revision that ran. A retry of a conclusion that landed
+payload `observed_sha` that is not that HEAD is refused naming both. The SHA it reads is checked on
+GitHub like any other, since the checkout named may be another repository's. Use it only while the
+checkout's HEAD is still the revision that ran. A conclusion that names no `observed_sha` inherits
+the record's, which is checked too (a record written before this check may hold a mistyped one). A retry of a conclusion that landed
 with its answer lost reuses the SHA the record holds rather than the checkout's HEAD now, so it is
 still the registry's harmless identical retry after the worktree has moved on or gone.
 

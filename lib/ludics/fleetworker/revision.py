@@ -9,10 +9,10 @@ box's checkout, which may be asleep, removed by the time a conclusion is written
 placeholder (``remote_checkout`` is free text: ``(removed)``, ``not recorded``); and not the anchor,
 which keeps no clone of the reservation's repository. A request names a pushed revision (the
 worker's EXECUTION_REQUEST says so), and the evidence a conclusion cites is the revision a reviewer
-reads on GitHub, so "GitHub has this commit in that repository" is the property worth holding. A
-commit that exists only in a checkout is concluded with ``--observed-from <checkout>`` instead,
-which reads ``git rev-parse HEAD`` on the execution host: a SHA read off the checkout resolves there
-by construction, so it is not asked of GitHub. ``conclude --from-run`` asks nothing of GitHub either:
+reads on GitHub, so "GitHub has this commit in that repository" is the property worth holding.
+``--observed-from <checkout>`` reads ``git rev-parse HEAD`` on the execution host instead of a SHA
+copied by hand, which removes the typo; it is still asked of GitHub, since the checkout named may be
+another repository's. ``conclude --from-run`` asks nothing of GitHub:
 its far side already refuses a ``--sha`` its run's checkout does not contain (``git cat-file -e``),
 which is resolution in a clone of the repository, and a record's launch ``head`` must equal it.
 
@@ -28,9 +28,11 @@ cannot fail a retry whose first call landed with its answer lost. What GitHub re
 pushed only to a fork resolves through the parent's name, which this check accepts.
 
 What is read, and nothing else (a fail-closed allowlist for what counts as a commit claim):
-  - ``observed_sha`` of a record, reconcile or conclude payload, and ``--sha`` of ``conclude
-    --from-bg-run``, when shaped as the registry's exact object ID (40 or 64 lowercase hex). Any
-    other value is left to the registry, which refuses it on shape.
+  - ``observed_sha`` of a dispatch, record, reconcile or conclude payload, ``--sha`` of ``conclude
+    --from-bg-run``, and the HEAD ``--observed-from`` reads, when shaped as the registry's exact
+    object ID (40 or 64 lowercase hex); and the record's own ``observed_sha`` when a conclusion
+    names none and so inherits it. Any other value is left to the registry, which refuses it on
+    shape.
   - ``requested_revision`` of a reserve, run or window request, which is free text (a pushed ref,
     an exact SHA, or a SHA with a note: ``<sha> plus working diff``): each whitespace-separated WORD
     made only of hex digits, seven or more, is a commit claim, and must be the full 40-hex SHA and
@@ -64,7 +66,7 @@ def commit_refusal(repo: str, what: str, sha: str, timeout: float = 30) -> tuple
     if SHA64.fullmatch(sha):
         return (
             f"EXECUTION REFUSED: {what} {sha} is a SHA-256 object ID, which GitHub cannot hold, so it"
-            f" cannot be checked in {repo}; nothing recorded (--observed-from <checkout> reads it off the checkout)",
+            f" cannot be checked in {repo}; nothing recorded",
             1,
         )
     done = proc.run_tool(

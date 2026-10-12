@@ -2191,6 +2191,8 @@ expect "a SHA-256 observed_sha is refused: GitHub cannot hold one" 1 "is a SHA-2
 expect "--observed-from must name an absolute checkout" 2 "must be absolute" -- "${FWR[@]}" execution conclude "$(rv_done rv-ref -)" --observed-from "obs wt"
 expect "--observed-from refuses a payload SHA that is not the checkout's HEAD, naming both" 1 "observed_sha $good is not HEAD $head of $obs on testbox" -- \
   "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")" --observed-from "$obs"
+expect "--observed-from refuses a HEAD GitHub does not have in the repository (another repository's checkout)" 1 "observed_sha $head is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$head" "${FWR[@]}" execution conclude "$(rv_done rv-ref -)" --observed-from "$obs"
 expect "--observed-from refuses a directory that is no checkout" 1 "OBSERVED-FROM REFUSED: cannot read HEAD of $TMP on testbox" -- \
   "${FWR[@]}" execution conclude "$(rv_done rv-ref -)" --observed-from "$TMP"
 : > "$SHIM_GH_COMMIT_LOG"
@@ -2199,7 +2201,8 @@ expect "--observed-from records the checkout's HEAD as observed_sha" 0 "\"observ
   "${FWR[@]}" execution conclude "$TMP/rv-obs.json" --observed-from "$obs"
 grep -Fq "\"remote_checkout\": \"$obs\"" <<<"$out" && grep -Fq "fixture run; observed_sha read as HEAD of $obs on testbox" <<<"$out" &&
   ok "...with the checkout it read and the provenance in the evidence" || ko "checkout or evidence missing: $out"
-[ -s "$SHIM_GH_COMMIT_LOG" ] && ko "--observed-from asked GitHub: $(cat "$SHIM_GH_COMMIT_LOG")" || ok "...asking GitHub nothing: it resolves in the checkout by construction"
+grep -qx "repos/o/r/commits/$head" "$SHIM_GH_COMMIT_LOG" && ok "...and checks that HEAD on GitHub, in the request's repository" ||
+  ko "--observed-from's HEAD was not checked: $(cat "$SHIM_GH_COMMIT_LOG")"
 # The answer lost, the retry comes after the worker moved its checkout on: the recorded SHA stands.
 git -C "$obs" commit -q --allow-empty -m "moved on"
 expect "...and a retry once the checkout has moved on composes the same payload, the registry's harmless retry" 0 '"state": "concluded"' -- \
@@ -2219,6 +2222,15 @@ expect "a dispatch whose observed_sha resolves to no commit is refused" 1 "obser
   env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution dispatch "$TMP/rv-dispatch.json"
 [ "$(state_of rv-rsv)" = reserved ] && ok "...leaving it reserved" || ko "the refused dispatch changed rv-rsv: $(state_of rv-rsv)"
 fixture_done rv-rsv
+# A conclusion naming no observed_sha inherits the record's, which a record written before this
+# check may hold mistyped (staged here by recording it while GitHub still answers for it).
+"${FWR[@]}" execution run "$(rv_req rv-inh origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-inh (setup)"
+jq -n --arg sha "$typo" '{request_id:"rv-inh", state:"running", evidence:"before the check", observed_sha:$sha}' > "$TMP/rv-inh-rec.json"
+"${FWR[@]}" execution record "$TMP/rv-inh-rec.json" >/dev/null || ko "could not record rv-inh's SHA (setup)"
+expect "a conclusion inheriting a record's observed_sha that resolves to no commit is refused" 1 "inherited observed_sha $typo is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution conclude "$(rv_done rv-inh -)"
+[ "$(state_of rv-inh)" = running ] && ok "...leaving it running" || ko "the refusal changed rv-inh: $(state_of rv-inh)"
+fixture_done rv-inh
 # A conclusion that landed with its answer lost is retried while GitHub is down: the record is
 # concluded, so GitHub is not asked again and the registry takes the identical retry.
 "${FWR[@]}" execution run "$(rv_req rv-gh origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-gh (setup)"
