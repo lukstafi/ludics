@@ -574,6 +574,10 @@ def nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
         return NudgeBarred(f"{rev} left {kind} evidence for head {short} at {ev_at}")
     if done_sha and head.sha.startswith(done_sha):
         return NudgeBarred(f"{rev}'s summary marks head {short}'s Code Review {done_kind} at {done_at}")
+    if any(not isinstance(a, str) or not a for a in asked):
+        # A request whose time does not read is a request: it may be this head's (review of #583,
+        # round 4), and jq's order would put it below any floor.
+        return NudgeBarred(f"a '@codex review' request on the PR has no readable time (head {short})", "-")
     floor = _arrival_floor(ctx, _commit_read(ctx, head.sha), head.created)
     try:
         since = [a for a in asked if ge(a, floor)]

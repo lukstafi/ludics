@@ -336,9 +336,12 @@ class Watch:
         snap.put_head(self.pr, head)
         p.head = head.sha
         if head.sha and head.sha != self.last_head:
-            # From each arrival: a head that comes back (A, B, A) is a new push of it.
+            # From each arrival: a head that comes back (A, B, A) is a new push of it, and so is
+            # any head read after one that did not read (it may have moved and come back unseen).
             self.first_seen[head.sha] = self.clock.now()
             self.last_head = head.sha
+        elif not head.sha:
+            self.last_head = ""
         for entry in result.items.split():
             kind = _upto(entry, ":")
             rest = _after(entry, ":")
@@ -505,10 +508,11 @@ class Watch:
         self.note_past()
         return 0
 
-    def end(self, verdict: str, message: str, remedy: bool = False) -> int:
+    def end(self, verdict: str, message: str, remedy: str = "") -> int:
         """``watch_end``: the final poll and state re-read before a nothing-is-coming verdict. With
-        ``remedy`` (the nothing-is-coming verdicts on a due head), the message gets its remedy, or
-        the verdict is answered with the automatic nudge (``_NUDGED``) or held (``_HELD``)."""
+        ``remedy="due"`` (the nothing-is-coming verdicts on a due head), the message gets its
+        remedy, or the verdict is answered with the automatic nudge (``_NUDGED``) or held
+        (``_HELD``); with ``remedy="failed-run"`` (``--no-nudge``), the message is the final read's."""
         before_settle = self.mark
         before_state = self.state
         rc = self.settle()
@@ -560,7 +564,7 @@ class Watch:
             )
             _say(f"watermark: {self.mark}")
             return 1
-        if remedy:
+        if remedy == "due":
             # Again on the final poll's own read: a head it read first, or a request it read, holds
             # the nudge as it would have held the loop's (review of #583, round 2).
             hold = self.nudge_hold(state)
@@ -570,7 +574,19 @@ class Watch:
             move = self.nudge_or_remedy(state, message)
             if move is None:
                 return _NUDGED
+            if isinstance(move, int):
+                self.held_until = move
+                return _HELD
             message += move
+        elif remedy == "failed-run":
+            # --no-nudge on a failed run: the remedy is the FINAL read's, since a request landing
+            # in the final poll turns `run` into `run-again`, whose line names the move itself.
+            fsha, _, rest = state.detail.partition("|")
+            message = (
+                f"--no-nudge: the watch did not re-request the failed run on head {fsha}; post it"
+                f" yourself (pr-review.sh comment {self.repo}#{self.pr} '@codex review')"
+                if rest.startswith("run|") else ""
+            )
         self.drift_note()
         if message:
             _say(message)
@@ -583,10 +599,10 @@ class Watch:
         head = self.polled.head
         return self.own_nudges.get(head) if head else None
 
-    def nudge_or_remedy(self, state: State, verdict: str) -> str | None:
+    def nudge_or_remedy(self, state: State, verdict: str) -> str | int | None:
         """The remedy a due head's verdict prints, or None when the watch posted the nudge itself
         (on an ``expected`` head only: a ``nudged`` one has a request pending, and an ``idle`` one
-        the reviewer's word)."""
+        the reviewer's word), or the time to hold to when the head moved under the write gate."""
         where = f"PR {self.repo}#{self.pr}"
         own = self.own_nudge()
         if own is not None:
@@ -610,11 +626,17 @@ class Watch:
             case NudgeBarred(why=why):
                 return f" — not nudged automatically ({why}); consider nudging with a '@codex review' comment"
             case NudgeClear(head=head):
-                pr_state = self.pr_state()
+                pr_state, now_head = self.write_gate()
                 if pr_state != "open":
                     return (
                         f" — not nudged automatically: the PR reads {pr_state or 'UNREAD'}, not open"
                     )
+                if now_head != head:
+                    # A push since the nudge's read: that head starts its own pickup margin.
+                    if now_head:
+                        self.last_head = now_head
+                        self.first_seen[now_head] = self.clock.now()
+                    return self.clock.now() + min(PICKUP, self.cfg.grace)
                 # Recorded before the post: it is sent once whatever its error (it may have landed).
                 self.own_nudges[head] = self.clock.now()
                 posted, post_err = self.post_request()
@@ -633,17 +655,21 @@ class Watch:
             case _:
                 assert_never(read)
 
-    def pr_state(self) -> str:
-        """The PR's own state (``open``, ``closed``), read fresh as the automatic write's last gate
-        (review of #583, round 3: a PR closed or merged mid-watch is still `expected`); "" unread."""
+    def write_gate(self) -> tuple[str, str]:
+        """The PR's own state (``open``, ``closed``) and head, read fresh as the automatic write's
+        last gate (review of #583, rounds 3 and 4: a PR closed or merged mid-watch is still
+        `expected`, and a push between the nudge's read and its post would be nudged unheld);
+        empty fields unread."""
         result = self.ctx.session.retry(
-            "read", ["api", f"repos/{self.repo}/pulls/{self.pr}", "--jq", ".state"]
+            "read",
+            ["api", f"repos/{self.repo}/pulls/{self.pr}", "--jq", '[(.state // "-"), (.head.sha // "-")] | @tsv'],
         )
         match result:
             case GhOk(stdout=out):
-                return out.strip()
+                state, _, head = out.strip().partition("\t")
+                return ("" if state == "-" else state), ("" if head in ("", "-") else head)
             case GhFailed() | GhUnanswered():
-                return ""
+                return "", ""
             case _:
                 assert_never(result)
 
@@ -792,11 +818,7 @@ class Watch:
                     fsha = _upto(detail, "|")
                     fkind = _upto(_after(detail, "|"), "|")
                     if fkind == "run" and rerequested != fsha and not self.nudge:
-                        return self.end(
-                            tok,
-                            f"--no-nudge: the watch did not re-request the failed run on head {fsha};"
-                            f" post it yourself (pr-review.sh comment {self.repo}#{pr} '@codex review')",
-                        )
+                        return self.end(tok, "", remedy="failed-run")
                     if fkind == "run" and rerequested != fsha:
                         posted, post_err = self.post_request()
                         if posted:
@@ -857,7 +879,7 @@ class Watch:
                             )
                     hold = self.nudge_hold(state) if verdict else None
                     if verdict and hold is None:
-                        rc = self.end(tok, verdict, remedy=True)
+                        rc = self.end(tok, verdict, remedy="due")
                         if rc == _HELD:
                             hold = self.held_until
                         elif rc != _NUDGED:

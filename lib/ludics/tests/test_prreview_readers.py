@@ -429,6 +429,10 @@ class NudgeRead(unittest.TestCase):
         quoted = comment(9, iso(30), "Thanks; @codex review was asked for earlier", login="me")
         self.assertIsInstance(run_nudge(feeds(comments=[quoted], head_at=iso(600))), state.NudgeBarred,
                               "a quoted summon is a summon to the connector")
+        for at in (None, 7, ""):
+            undated = {**comment(9, iso(30), "@codex review", login="me"), "created_at": at}
+            self.assertIsInstance(run_nudge(feeds(comments=[undated], head_at=iso(600))), state.NudgeBarred,
+                                  f"a request with no readable time ({at!r}) is still a request")
         mine = comment(9, iso(30), "@codex review")
         self.assertEqual(run_nudge(feeds(comments=[mine], head_at=iso(600))), state.NudgeClear(HEAD),
                          "the reviewer's own words are not a request")

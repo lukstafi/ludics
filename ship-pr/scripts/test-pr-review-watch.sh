@@ -59,13 +59,17 @@ H1=1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 H2=2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 HEAD_SHA="$H2"
 MERGEABLE_STATE=clean
-# The PR's own state (open, closed), which the automatic nudge reads last.
+# The PR's own state (open, closed), which the automatic nudge reads last; and a push landing
+# exactly then: from the write gate's read of the PR on, its head is PUSH_AT_WRITE_GATE.
 PR_STATE=open
+PUSH_AT_WRITE_GATE=""
 FAIL_PULLS=""
 # The poll round from which the feeds stop answering (the transport failure a final poll can hit),
 # and the one from which the PR read stops answering. 0 is never.
 FAIL_FEEDS_FROM=0
 FAIL_PULLS_FROM=0
+# The last round of a FAIL_PULLS_FROM outage (0: it never ends).
+FAIL_PULLS_UNTIL=0
 # A review's own comments endpoint refusing to answer: the per-review re-read poll makes for every
 # new review, whose failure fails the round (23755d8).
 FAIL_REVIEW_COMMENTS=""
@@ -114,9 +118,11 @@ reset_fixture() {
   HEAD_SHA="$H2"
   MERGEABLE_STATE=clean
   PR_STATE=open
+  PUSH_AT_WRITE_GATE=""
   FAIL_PULLS=""
   FAIL_FEEDS_FROM=0
   FAIL_PULLS_FROM=0
+  FAIL_PULLS_UNTIL=0
   FAIL_REVIEW_COMMENTS=""
   FAIL_REACTIONS=""
   FAIL_REACTIONS_ROUND=""
@@ -272,13 +278,16 @@ gh() {
     ;;
   "repos/$REPO/pulls/7")
     if [ -n "$FAIL_PULLS" ] ||
-      { [ "$FAIL_PULLS_FROM" -ne 0 ] && [ "$(cat "$FEEDS/round")" -ge "$FAIL_PULLS_FROM" ]; }; then
+      { [ "$FAIL_PULLS_FROM" -ne 0 ] && [ "$(cat "$FEEDS/round")" -ge "$FAIL_PULLS_FROM" ] &&
+        { [ "$FAIL_PULLS_UNTIL" -eq 0 ] || [ "$(cat "$FEEDS/round")" -le "$FAIL_PULLS_UNTIL" ]; }; }; then
       echo "gh: pull request unavailable (HTTP 500)" >&2
       return 1
     fi
     # The head per round when a case schedules one (`schedule head <round> <sha>`), else HEAD_SHA.
     head="$HEAD_SHA"
     [ ! -e "$FEEDS/head.0" ] || head=$(feed_answer head)
+    case "$FIXTURE_FILTER" in *.state*) [ -z "$PUSH_AT_WRITE_GATE" ] || : >"$FEEDS/pushed" ;; esac
+    [ ! -e "$FEEDS/pushed" ] || head="$PUSH_AT_WRITE_GATE"
     response=$(jq -cn --arg h "$head" --arg m "$MERGEABLE_STATE" --arg c "$PR_CREATED_AT" --arg s "$PR_STATE" \
       '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, created_at:$c, state:$s}')
     ;;
@@ -2266,6 +2275,66 @@ test_a_head_the_final_poll_reads_first_gets_the_pickup_margin() {
   assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the watch ends on it"
 }
 
+# Review of #583, round 4. A push landing between the nudge's read and its post: the write gate
+# reads the PR's head with its state, and a head other than the one the nudge was read for is held
+# to its own pickup margin, in which its automatic round lands. Pauses held at the interval: the
+# verdict is at round 6 (300s), its final poll round 7, and H1 arrives at that poll's write gate.
+test_a_push_at_the_write_gate_is_held() {
+  reset_fixture
+  retune REVIEW_POLL_CAP=60
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  PUSH_AT_WRITE_GATE="$H1"
+  schedule reactions 9 "[$(reaction eyes "$(clock_at 410)")]"
+  schedule reviews 10 "[$(review 502 "$H1" "$(clock_at 470)" 'the automatic round on the push')]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted for the head that moved under the gate"
+  assert_eq "$WATCH_RC" 0 "the automatic round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H1:0:7}" "and the watch ends on it"
+}
+
+# Review of #583, round 4. A head read after reads that did not answer is a new arrival too: the
+# branch may have moved and come back unseen. H2 is seen at round 1, the PR read fails for rounds 2
+# to 6, and H2 read again at round 7 (360s, past a margin counted from round 1) gets a margin of its
+# own, in which the automatic round lands.
+test_a_head_read_after_an_outage_gets_the_pickup_margin_again() {
+  reset_fixture
+  retune REVIEW_POLL_CAP=60
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  FAIL_PULLS_FROM=2
+  FAIL_PULLS_UNTIL=6
+  schedule reactions 9 "[$(reaction eyes "$(clock_at 470)")]"
+  schedule reviews 10 "[$(review 502 "$H2" "$(clock_at 530)" 'the automatic round')]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted inside the margin after the outage"
+  assert_eq "$WATCH_RC" 0 "the automatic round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502" "and the watch ends on it"
+}
+
+# Review of #583, round 4. Under --no-nudge a failed run's remedy is the final read's: a request on
+# the head that the final poll is the first to see turns the run into `run-again`, whose line names
+# the move, so the watch does not tell the caller to post a request that already stands.
+test_a_no_nudge_failed_run_takes_its_remedy_from_the_final_read() {
+  local row summary request
+  reset_fixture
+  WATCH_FLAG=--no-nudge
+  HEAD_AT=$(clock_at -300)
+  PR_CREATED_AT=$(clock_at -400)
+  row="| 📝 **Code Review** | ⚠️ **Failed** <relative-time datetime=\"$(clock_at -100)\">x</relative-time> | \`${H2:0:7}\` | New commits |"
+  summary=$(summary_comment 1 "$(clock_at -99)" "<!-- codex-pull-request-review-summary -->
+| Review | Status | Commit | Review trigger |
+| --- | --- | --- | --- |
+$row")
+  request=$(jq -cn --arg at "$(clock_at -200)" '{id:2,user:{login:"me"},created_at:$at,body:"@codex review"}')
+  schedule comments 1 "[$summary]"
+  schedule comments 2 "[$summary,$request]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted"
+  assert_contains "$WATCH_OUT" "reviewer's run FAILED AGAIN on head ${H2:0:7}" "the final read is the verdict"
+  assert_not_contains "$WATCH_OUT" "post it yourself" "and no request is asked for over the one that stands"
+}
+
 # Review of #583, round 3. A head that comes back (H2, then H1, then H2 again: a push back to it)
 # is a new arrival and gets the pickup margin again; H2's first sight, six minutes before, does not
 # count. The pause is held at the interval (a minute) so the rounds fall where the schedule says.
@@ -2358,6 +2427,9 @@ test_a_draft_or_conflicted_pr_is_not_nudged() {
 }
 
 tests=(
+  test_a_push_at_the_write_gate_is_held
+  test_a_head_read_after_an_outage_gets_the_pickup_margin_again
+  test_a_no_nudge_failed_run_takes_its_remedy_from_the_final_read
   test_a_returning_head_gets_the_pickup_margin_again
   test_a_hold_inside_an_extension_extends_it
   test_a_closed_pr_is_not_nudged
