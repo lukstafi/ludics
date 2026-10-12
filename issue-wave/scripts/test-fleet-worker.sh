@@ -2522,12 +2522,25 @@ held() {
 # Every case ends its sleep within 5 s when correct, and none needs it to outlive more than that, so
 # 45 s caps what a group-kill regression costs a case, where 600 s once made a run 828 s for 75.
 GM="45.566$$"
+# gmre <n>: the pgrep pattern (an ERE) for marker <n>'s sleep, its dot escaped and its END anchored
+# (a non-digit or the end of the command line), so marker 1 is not a prefix of marker 10's.
+gmre() { printf '%s' "sleep ${GM%%.*}\\.${GM#*.}$1([^0-9]|\$)"; }
 # swept <n>: no process of marker <n> is left, within 5 s.
 swept() {
   local i
-  for i in $(seq 50); do pgrep -f "sleep $GM$1" >/dev/null 2>&1 || return 0; sleep 0.1; done
+  for i in $(seq 50); do pgrep -f "$(gmre "$1")" >/dev/null 2>&1 || return 0; sleep 0.1; done
   return 1
 }
+# The anchor's own case: a live marker 11 is not marker 1's, which the unanchored `sleep $GM1`
+# reported (a prefix match), so the next marker added could pass or fail a case for the wrong reason.
+sleep "${GM}11" &
+gm11=$!
+for gmi in $(seq 50); do pgrep -f "$(gmre 11)" >/dev/null 2>&1 && break; sleep 0.1; done
+if ! pgrep -f "$(gmre 11)" >/dev/null 2>&1; then ko "the marker-11 fixture never showed: $(pgrep -fl "sleep ${GM}")"
+elif swept 1; then ok "swept 1 does not report a live marker 11"
+else ko "swept 1 reported marker 11 as marker 1's: $(pgrep -fl "$(gmre 1)")"
+fi
+kill "$gm11" 2>/dev/null; wait "$gm11" 2>/dev/null
 slotreq() { # <id> <kind> [standing] [host] -> a reservation payload file on host (agent and execution), default testbox
   jq -n --arg id "$1" --arg kind "$2" --argjson standing "${3:-false}" --arg host "${4:-testbox}" \
     '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#1", purpose:"slot fixture",
@@ -2899,7 +2912,7 @@ expect "...as does a slot nested a level deeper, through a shell" 0 "^deeper$" -
 # the hold's group kill reaches everything it started (ludics-lite#566).
 expect "a measurement hold's --deadline ends a grandchild that the slot inside it started" 124 "EXECUTION HOLD testbox: --deadline 2s reached" -- \
   "${FWS[@]}" execution hold --request hold-measure --deadline 2 -- "$FW" execution slot -- bash -c "sleep ${GM}10 & wait"
-swept 10 && ok "...leaving no sleep behind" || ko "the hold's deadline missed the nested slot's grandchild: $(pgrep -fl "sleep ${GM}10")"
+swept 10 && ok "...leaving no sleep behind" || ko "the hold's deadline missed the nested slot's grandchild: $(pgrep -fl "$(gmre 10)")"
 "${FWS[@]}" execution hold --request hold-measure -- sleep 30 > "$TMP/hold-m0.log" 2>&1 &
 m0=$!
 if held "$TMP/hold-m0.log" "measurement hold-measure held"; then
@@ -3060,28 +3073,28 @@ expect "...while repeating one is not" 0 "slot 1 of 1" -- "${FWS[@]}" execution 
 # the driver script that started it.
 expect "hold --deadline ends the command's tree at the bound, exit 124, naming the bound" 124 "EXECUTION HOLD testbox: --deadline 5s reached" -- \
   "${FWS[@]}" execution hold --deadline 5 -- bash -c "sleep ${GM}1 & wait"
-swept 1 && ok "...leaving no sleep behind" || ko "the deadline left the grandchild running: $(pgrep -fl "sleep ${GM}1")"
+swept 1 && ok "...leaving no sleep behind" || ko "the deadline left the grandchild running: $(pgrep -fl "$(gmre 1)")"
 expect "slot --deadline reaches a process orphaned inside the group, as the #1192 benchmark was" 124 "EXECUTION SLOT testbox: --deadline 2s reached" -- \
   "${FWS[@]}" execution slot --wait 0 --deadline 2 -- bash -c "sh -c 'sleep ${GM}2 >/dev/null 2>&1 &'; exec sleep ${GM}3"
 swept 2 && swept 3 && ok "...and ends it with the batch" || ko "the deadline missed the orphan: $(pgrep -fl "sleep ${GM}")"
 expect "a batch that ends before its deadline takes what it left running with it" 0 "still runs: ending it (--deadline)" -- \
   "${FWS[@]}" execution slot --wait 0 --deadline 60 -- sh -c "sleep ${GM}4 >/dev/null 2>&1 &"
-swept 4 && ok "...so nothing of it outlives the slot" || ko "a leftover outlived its deadline-bound batch: $(pgrep -fl "sleep ${GM}4")"
+swept 4 && ok "...so nothing of it outlives the slot" || ko "a leftover outlived its deadline-bound batch: $(pgrep -fl "$(gmre 4)")"
 # The slot's flock and the sleep guard keep their lifetimes: both end with the group a deadline ends.
 "${FWI[@]}" execution slot --wait 0 --deadline 2 -- bash -c "sleep ${GM}9 & wait" > "$TMP/group-guard.log" 2>&1; rc=$?
 [ "$rc" -eq 124 ] && grep -q "sleep:idle block inhibitor held" "$TMP/group-guard.log" &&
   ok "a deadline ends a batch under the sleep guard (124)" || ko "the guarded deadline: rc=$rc $(cat "$TMP/group-guard.log")"
 gone "$INHIBIT_PID" && ok "...releasing the inhibitor with the group" || ko "the inhibitor outlived the group its deadline ended"
 expect "...and the slot" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 0 -- echo after-guarded-deadline
-swept 9 || ko "the guarded deadline left its sleep running: $(pgrep -fl "sleep ${GM}9")"
+swept 9 || ko "the guarded deadline left its sleep running: $(pgrep -fl "$(gmre 9)")"
 # THE NESTED SLOT runs in its enclosing slot's process group: a group of its own would leave its
 # tree to the inner wrapper's own reaping, out of the outer group kill's reach.
 expect "an outer slot's --deadline ends a grandchild started under a nested slot" 124 "EXECUTION SLOT testbox: --deadline 2s reached" -- \
   "${FWS[@]}" execution slot --wait 0 --deadline 2 -- "$FW" execution slot --wait 0 -- bash -c "sleep ${GM}5 & wait"
-swept 5 && ok "...leaving no sleep behind" || ko "the outer deadline missed the nested slot's grandchild: $(pgrep -fl "sleep ${GM}5")"
+swept 5 && ok "...leaving no sleep behind" || ko "the outer deadline missed the nested slot's grandchild: $(pgrep -fl "$(gmre 5)")"
 expect "...and one started under a nested slot with a later deadline of its own" 124 "EXECUTION SLOT testbox: --deadline 2s reached" -- \
   "${FWS[@]}" execution slot --wait 0 --deadline 2 -- "$FW" execution slot --wait 0 --deadline 600 -- bash -c "sleep ${GM}6 & wait"
-swept 6 && ok "...which the inner wrapper ends when the outer group kill reaches it" || ko "the nested deadline's group outlived the outer deadline: $(pgrep -fl "sleep ${GM}6")"
+swept 6 && ok "...which the inner wrapper ends when the outer group kill reaches it" || ko "the nested deadline's group outlived the outer deadline: $(pgrep -fl "$(gmre 6)")"
 # A signalled wrapper (a harness stopping the task, a Ctrl-C) ends its group, then dies of the
 # signal, so its caller reads the status it read when the batch was the pid it signalled.
 "${FWS[@]}" execution hold -- bash -c "echo started; sleep ${GM}7 & wait" > "$TMP/group-term.log" 2>&1 &
@@ -3090,7 +3103,7 @@ if held "$TMP/group-term.log" "^started$"; then
   kill -TERM "$gt"; wait "$gt"; rc=$?
   [ "$rc" -eq 143 ] && grep -q "EXECUTION HOLD testbox: SIGTERM received: ending the command's process group" "$TMP/group-term.log" &&
     ok "a hold signalled TERM ends its command's group, then dies of TERM (143)" || ko "the signalled hold: rc=$rc $(cat "$TMP/group-term.log")"
-  swept 7 && ok "...leaving no sleep behind" || ko "the signalled hold left its group running: $(pgrep -fl "sleep ${GM}7")"
+  swept 7 && ok "...leaving no sleep behind" || ko "the signalled hold left its group running: $(pgrep -fl "$(gmre 7)")"
 fi
 kill -9 "$gt" 2>/dev/null; wait "$gt" 2>/dev/null
 # A wrapper killed outright can end nothing: its guardian, in a session of its own, kills the group.
@@ -3098,7 +3111,7 @@ kill -9 "$gt" 2>/dev/null; wait "$gt" 2>/dev/null
 gk=$!
 if held "$TMP/group-kill.log" "^started$"; then
   kill -KILL "$gk"; wait "$gk" 2>/dev/null
-  swept 8 && ok "a slot killed outright (SIGKILL) still ends its batch's group, through its guardian" || ko "the killed slot's group ran on: $(pgrep -fl "sleep ${GM}8")"
+  swept 8 && ok "a slot killed outright (SIGKILL) still ends its batch's group, through its guardian" || ko "the killed slot's group ran on: $(pgrep -fl "$(gmre 8)")"
   grep -q "its guardian killed process group" "$TMP/group-kill.log" && ok "...which says so" || ko "the guardian said nothing: $(cat "$TMP/group-kill.log")"
   expect "...and the slot is free" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 5 -- echo after-guardian
 fi
