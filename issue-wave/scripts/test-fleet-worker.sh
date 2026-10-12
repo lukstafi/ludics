@@ -489,6 +489,10 @@ SHIMEOF
 # SHIM_GH_NO_COMMIT (422: no commit), the repository is SHIM_GH_NO_REPO (404), SHIM_GH=down (no
 # answer), `spam` (GitHub's other 422) or `hang` (a call that never returns, from a child process as
 # a stalled connection would). Each such call appends its path to $SHIM_GH_COMMIT_LOG.
+# `auth token -h github.com` answers gh's stored token (ludics-lite#567): SHIM_GH_STORED's value,
+# or with none set gh's "no oauth token" (exit 1); `hang` never returns. Asked with GH_TOKEN or
+# GITHUB_TOKEN in its environment, even empty, it fails loudly: gh would answer that variable, so
+# the preflight must ask with both removed.
 cat > "$TMP/bin/gh" <<'SHIMEOF'
 #!/usr/bin/env bash
 if [ "$#" -eq 6 ] && [ "$1 $2 $3 $5 $6" = "api --hostname github.com -q .sha" ]; then
@@ -509,6 +513,11 @@ if [ "$*" = "auth git-credential get" ]; then
   case "${SHIM_GH_CRED:-}" in none) exit 1 ;; hang) sleep 30 ;; esac
   case "${SHIM_GH_CRED:-}" in dead) tok=dead-token ;; other) tok=other-token ;; slowcheck) tok=slow-token ;; *) tok=shim-token ;; esac
   printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=%s\n' "$tok"; exit 0
+fi
+if [ "$*" = "auth token -h github.com" ]; then
+  [ -z "${GH_TOKEN+x}${GITHUB_TOKEN+x}" ] || { echo "gh shim: auth token asked with a token variable set"; exit 3; }
+  case "${SHIM_GH_STORED:-}" in '') echo "no oauth token found for github.com" >&2; exit 1 ;; hang) sleep 30 ;; esac
+  printf '%s\n' "$SHIM_GH_STORED"; exit 0
 fi
 [ "$*" = "api --hostname github.com user -q .login" ] || { echo "gh shim: unexpected call: $*" >&2; exit 2; }
 [ -z "${SHIM_GH_SLOW:-}" ] || sleep "$SHIM_GH_SLOW"
@@ -1046,20 +1055,44 @@ expect "a rejected token exported in the session names it in the repair" 1 "repa
 # The fleet's PAT file (2026-09-24): its contract is checked whatever gh answers, and a dead PAT
 # is replaced in the file, never by gh auth login.
 mkdir -p "$HOME/.config/fleet"; printf 'export GH_TOKEN=ghp_dead\n' > "$HOME/.config/fleet/gh-token.sh"; chmod 600 "$HOME/.config/fleet/gh-token.sh"
-expect "the file's own PAT, live, passes" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- env GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
-expect "a dead PAT from gh-token.sh is replaced from the anchor's file" 1 "repair: the PAT in ~/.config/fleet/gh-token.sh is dead: replace it from the anchor: ssh other 'f=~/.config/fleet/gh-token.sh; umask 077; cat > .*f.new.* && chmod 600 .*f.new.* && mv .*f.new.*' < ~/.config/fleet/gh-token.sh; then restart any tmux server that inherited the old value$" -- \
+# Two states pass (ludics-lite#567): the earlier one, where the session exports the file's token
+# (noted, since every child process sees it), and the target, where the session exports none and
+# gh's stored token is the file's. A session with no working credential in either is refused.
+expect "the earlier state, the session exporting the file's PAT, passes with a note" 0 "PREFLIGHT OK testbox skills=[0-9a-f]* (this session exports the fleet PAT as GH_TOKEN, so every process it starts sees it: store it in gh and drop the export, ludics-lite#567)$" -- \
+  env GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
+expect "...and so does one exporting it as GITHUB_TOKEN, named" 0 "PREFLIGHT OK other skills=[0-9a-f]* (this session exports the fleet PAT as GITHUB_TOKEN," -- \
+  env GITHUB_TOKEN=ghp_dead "${FWO[@]}" preflight other --native-claude --no-cross
+expect "the target state, no export and gh storing the file's PAT, passes clean" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH_STORED=ghp_dead "$FW" preflight testbox --native-claude --no-cross
+expect "...over ssh too" 0 "PREFLIGHT OK other skills=[0-9a-f]*$" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH_STORED=ghp_dead "${FWO[@]}" preflight other --native-claude --no-cross
+expect "...and an empty GH_TOKEN is no export: gh is asked with it removed" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
+  env GH_TOKEN= SHIM_GH_STORED=ghp_dead "$FW" preflight testbox --native-claude --no-cross
+out=$(env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH_STORED=ghp_other "$FW" preflight testbox --native-claude --no-cross 2>&1)
+grep -q -e ghp_dead -e ghp_other <<<"$out" && ko "a token reached the preflight's output -- $out" || ok "neither the file's token nor gh's stored one reaches the output"
+expect "no export and nothing stored in gh is refused with the store repair, on stdin" 1 "PREFLIGHT REFUSED other: this session exports no GitHub token and gh on other answers none stored (gh auth token -h github.com, bounded [0-9]*s) -- repair: store the fleet PAT in gh: ssh other '(. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN -u GITHUB_TOKEN gh auth login -h github.com --with-token --insecure-storage'$" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN "${FWO[@]}" preflight other --native-claude --no-cross
+expect "...in a terminal on the anchor" 1 "gh on testbox answers none stored .*-- repair: store the fleet PAT in gh: in a terminal on this box: (\. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN "$FW" preflight testbox --native-claude --no-cross
+expect "...and a gh token store that never answers is bounded and refused" 1 "gh on testbox answers none stored (gh auth token -h github.com, bounded 2s)" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH_STORED=hang FLEET_GH_TIMEOUT=2 "$FW" preflight testbox --native-claude --no-cross
+expect "a stored token other than the file's is a per-box login, refused though it is live" 1 "PREFLIGHT REFUSED testbox: gh's stored token on testbox is not the PAT in ~/.config/fleet/gh-token.sh (a per-box login) -- repair: store the fleet PAT in gh" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH_STORED=ghp_other "$FW" preflight testbox --native-claude --no-cross
+expect "the stored file's PAT, dead, is refused with replace-then-store" 1 "repair: the PAT in ~/.config/fleet/gh-token.sh is dead: replace it from the anchor: ssh other .*; then store it in gh (ssh other '(. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN -u GITHUB_TOKEN gh auth login .*') and restart any tmux server that inherited the old value$" -- \
+  env -u GH_TOKEN -u GITHUB_TOKEN SHIM_GH=401 SHIM_GH_STORED=ghp_dead "${FWO[@]}" preflight other --native-claude --no-cross
+expect "a dead PAT from gh-token.sh is replaced from the anchor's file" 1 "repair: the PAT in ~/.config/fleet/gh-token.sh is dead: replace it from the anchor: ssh other 'f=~/.config/fleet/gh-token.sh; umask 077; cat > .*f.new.* && chmod 600 .*f.new.* && mv .*f.new.*' < ~/.config/fleet/gh-token.sh; then store it in gh (.*) and restart any tmux server that inherited the old value$" -- \
   env SHIM_GH=401 GH_TOKEN=ghp_dead "${FWO[@]}" preflight other --native-claude --no-cross
-expect "a LIVE token a later startup line exports is refused as the override" 1 "PREFLIGHT REFUSED other: this session's GH_TOKEN is not the one ~/.config/fleet/gh-token.sh exports on other: a later line of its shell startup overrides it.*grep -Hnos GH_TOKEN" -- \
+expect "a LIVE token a later startup line exports is refused as the override" 1 "PREFLIGHT REFUSED other: this session's GH_TOKEN is not the token ~/.config/fleet/gh-token.sh exports on other: a line of its shell startup sets it.*grep -Hnos -e GH_TOKEN -e GITHUB_TOKEN" -- \
   env GH_TOKEN=ghp_other "${FWO[@]}" preflight other --native-claude --no-cross
 expect "...and a dead one points at that, not at the file" 1 "repair: fix the token file first (above)" -- \
   env SHIM_GH=401 GH_TOKEN=ghp_other "$FW" preflight testbox --native-claude --no-cross
-expect "a gh-token.sh the session does not source names the env.sh line" 1 "this session does not export the token in ~/.config/fleet/gh-token.sh on testbox -- repair: end its ~/.config/fleet/env.sh with .*gh-token.sh.*install-linux.sh adds it)" -- \
-  env -u GH_TOKEN -u GITHUB_TOKEN "$FW" preflight testbox --native-claude --no-cross
-expect "an empty GH_TOKEN is not an export of the file's" 1 "this session does not export the token in ~/.config/fleet/gh-token.sh on testbox" -- \
+expect "...and so is a LIVE GITHUB_TOKEN other than the file's, named" 1 "PREFLIGHT REFUSED other: this session's GITHUB_TOKEN is not the token ~/.config/fleet/gh-token.sh exports on other" -- \
+  env GITHUB_TOKEN=ghp_other "${FWO[@]}" preflight other --native-claude --no-cross
+expect "an empty GH_TOKEN with nothing stored is no credential in either place" 1 "this session exports no GitHub token and gh on testbox answers none stored" -- \
   env GH_TOKEN= "$FW" preflight testbox --native-claude --no-cross
-expect "on the anchor, a mismatch says to re-source the file or open a new shell, with no ssh" 1 "this shell's GH_TOKEN is not the one ~/.config/fleet/gh-token.sh exports -- repair: run \\. ~/.config/fleet/gh-token.sh (or open a new shell)" -- \
+expect "on the anchor, a mismatch says to re-source the file or open a new shell, with no ssh" 1 "this shell's GH_TOKEN is not the token ~/.config/fleet/gh-token.sh exports -- repair: unset GH_TOKEN (or open a new shell) and rerun" -- \
   env GH_TOKEN=ghp_other "$FW" preflight local --native-claude --no-cross
-expect "...and so does the anchor addressed by its own name" 1 "this shell's GH_TOKEN is not the one ~/.config/fleet/gh-token.sh exports -- repair: run \\. ~/.config/fleet/gh-token.sh" -- \
+expect "...and so does the anchor addressed by its own name" 1 "this shell's GH_TOKEN is not the token ~/.config/fleet/gh-token.sh exports -- repair: unset GH_TOKEN" -- \
   env GH_TOKEN=ghp_other FLEET_LOCAL_BOX=anchorbox "$FW" preflight anchorbox --native-claude --no-cross
 printf 'export GH_TOKEN=\n' > "$HOME/.config/fleet/gh-token.sh"
 expect "a gh-token.sh exporting an empty GH_TOKEN is replaced" 1 "gh-token.sh on other exports no GH_TOKEN -- repair: replace it from the anchor" -- \
@@ -1257,6 +1290,14 @@ expect "a real server whose git gets no credential refuses, and names kill-serve
 expect "a real server whose credential is another account's refuses" 1 "the running tmux server on testbox gives a new session a GitHub credential that does not work (gh api user answers as other-user, not as shim-user)" -- \
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
 "$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
+# A server still holding the token every session used to export (ludics-lite#567): its credential
+# works, so nothing refuses, but a CLI worker started there hands it to every process it starts.
+"${fresh[@]}" GH_TOKEN=ghp_dead "$REAL_TMUX" -L "$envsock" new-session -d -s iw-real 'sleep 60'
+expect "a real server that still gives new sessions GH_TOKEN is noted, with the restart" 0 "PREFLIGHT OK testbox skills=[0-9a-f]* (a new session of the running tmux server on testbox gets GH_TOKEN, so a CLI worker started now hands the fleet PAT to every process it starts: wait for its live worker session(s) (iw-real; .*; ludics-lite#567)$" -- \
+  "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
+expect "...and not when this session exports one too (its own export is the cause)" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
+  "${fresh[@]}" GH_TOKEN=ghp_dead FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
+"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
 # No server running: the worker's session starts one from this shell, run by tmux's default shell,
 # whose startup can change the credential (zsh's ~/.zshenv sources env.sh on the anchor). A default
 # shell that exports a dead one is refused though this shell's passes, and the probe's server exits
@@ -1269,6 +1310,10 @@ for _ in $(seq 1 30); do "$REAL_TMUX" -L "$nosock" list-sessions >/dev/null 2>&1
 "$REAL_TMUX" -L "$nosock" list-sessions >/dev/null 2>&1 && ko "the probe left a tmux server running on $nosock" || ok "...and the server the probe started exits with it"
 expect "...while a default shell that leaves it alone passes" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
   "${fresh[@]}" SHELL="$(command -v bash)" FLEET_TMUX_SOCKET="$nosock" "$FW" preflight testbox --no-probe --no-cross
+"$REAL_TMUX" -L "$nosock" kill-server 2>/dev/null
+printf '#!/usr/bin/env bash\nexport GITHUB_TOKEN=ghp_dead\nexec bash "$@"\n' > "$TMP/tokshell"; chmod +x "$TMP/tokshell"
+expect "...and one whose startup exports a token is noted, naming the variable" 0 "PREFLIGHT OK testbox skills=[0-9a-f]* (a tmux server started from this session on testbox gives a new session GITHUB_TOKEN: its default shell's startup files export it" -- \
+  "${fresh[@]}" SHELL="$TMP/tokshell" FLEET_TMUX_SOCKET="$nosock" "$FW" preflight testbox --no-probe --no-cross
 "$REAL_TMUX" -L "$nosock" kill-server 2>/dev/null
 # A preflight killed outright (no trap runs) while its probe session is live: the probe ends that
 # session itself, so a remain-on-exit server keeps no dead fw-ghprobe-* session.
@@ -2885,6 +2930,52 @@ expect "concluding the measurement restores the standing reservation" 0 "EXECUTI
   "${FWS[@]}" execution conclude "$(jq -n '{request_id:"win-measure", verdict:"not-launched", log:"/dev/null", evidence:"fixture: nothing ran"}' > "$TMP/win-done.json"; printf '%s' "$TMP/win-done.json")"
 expect "...and a batch is admitted again" 0 "slot 1 of 1 held for: echo after-window" -- "${FWS[@]}" execution slot --wait 0 -- echo after-window
 fixture_done win-iterate
+# THE WINDOW WAIT (ludics-lite#557): `slot --wait-window` waits out a measurement on this box rather
+# than refusing, then queues for a slot as --wait says; a measurement on another box never blocks
+# it. `execution list --host` selects one box's records, an alias selecting its roster entry's.
+"${FWS[@]}" execution run "$(slotreq ww-iterate correctness true)" >/dev/null || ko "could not take the standing reservation (setup)"
+"${FWS[@]}" execution window testbox "$(slotreq ww-measure measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+expect "a --bg batch with --wait-window returns its run directory at once during a window" 0 "^$TMP/slot-ww/run-1$" -- \
+  env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-ww" --wait-window=60 --wait 0 -- echo after-window-wait
+bgd="$TMP/slot-ww/run-1"
+if held "$bgd/log" "waiting up to 60s (--wait-window) for it to conclude, then for a slot, for: echo after-window-wait"; then
+  grep -q "measurement window ww-measure holds testbox (coordinator test-coordinator; ww-measure for o/r#1; reserved " "$bgd/log" &&
+    ok "...which names the window, its box and its owner once" || ko "the waiting batch did not name the window: $(cat "$bgd/log")"
+  grep -q "^after-window-wait$" "$bgd/log" && ko "the batch ran during the window: $(cat "$bgd/log")" || ok "...and runs nothing while it is open"
+  expect "a foreground --wait-window batch is refused at its bound, naming the window" 1 "EXECUTION SLOT REFUSED testbox: measurement ww-measure still holds testbox after 1s (--wait-window); no slot taken" -- \
+    env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --wait-window=1 -- echo bounded
+  grep -q "^bounded$" <<<"$out" && ko "the bounded batch ran: $out" || ok "...running nothing"
+  expect "--wait-window does not wait inside a measurement's hold, where it would wait for its own measurement" 1 "does not wait inside a measurement's hold" -- \
+    "${FWS[@]}" execution hold --request no-such-request -- "$FW" execution slot --wait-window=60 -- echo in-hold
+  fixture_done ww-measure
+  expect "...and once the window concludes the waiting batch takes a slot and runs (rc=0)" 0 "rc=0" -- "$BGR" wait "$bgd" --within 30
+  grep -q "slot 1 of 1 held for: echo after-window-wait" "$bgd/log" && grep -q "^after-window-wait$" "$bgd/log" &&
+    ok "...in its slot, with its output in the run's log" || ko "the waited batch's log: $(cat "$bgd/log")"
+else ko "the --wait-window batch never said it waits: $(cat "$bgd/log" 2>/dev/null)"; fixture_done ww-measure; fi
+bgkill "$bgd"
+jq '.execution_host = "other" | .agent_host = "other"' "$(slotreq ww-other measurement)" > "$TMP/ww-other.json"
+"${FWS[@]}" execution window other "$TMP/ww-other.json" >/dev/null 2>&1 || ko "could not open the other box's window (setup)"
+expect "a window on another box does not block a --wait-window batch" 0 "slot 1 of 1 held for: echo not-blocked" -- \
+  "${FWS[@]}" execution slot --wait-window=60 --wait 0 -- echo not-blocked
+grep -q "waiting up to" <<<"$out" && ko "the batch waited for another box's window: $out" || ok "...nor make it wait"
+expect "execution list --host selects one box's records" 0 '"ww-other"' -- "${FWS[@]}" execution list --active --compact --host other
+grep -q '"ww-iterate"' <<<"$out" && ko "--host other listed testbox's record: $out" || ok "...and none of another box's"
+expect "...by case, as ssh reads a host name" 0 '"ww-iterate"' -- "${FWS[@]}" execution list --active --compact --host TESTBOX
+# An alias is read off the endpoint map, which the dispatcher copy has none of: a copy beside a
+# one-row wake-lab.sh stand-in gives it one.
+cp -R "$TMP/dispatcher" "$TMP/dispatcher-map"
+printf '%s\n' '#!/usr/bin/env bash' '[ "$1" = endpoint-map ] && printf "%s\n" "rog rog-nv-linux rog-nv-wsl"' > "$TMP/dispatcher-map/scripts/wake-lab.sh"
+FWM=(env FLEET_BOXES="testbox other rog-nv-linux" "$TMP/dispatcher-map/issue-wave/scripts/fleet-worker.sh")
+jq '.execution_host = "rog-nv-linux"' "$(slotreq ww-rog correctness true)" > "$TMP/ww-rog.json"
+"${FWM[@]}" execution reserve "$TMP/ww-rog.json" >/dev/null || ko "could not reserve on rog-nv-linux (setup)"
+expect "...and an alias (rog) selects its roster entry's (rog-nv-linux) records" 0 '"ww-rog"' -- \
+  "${FWM[@]}" execution list --active --compact --host rog
+grep -q '"ww-iterate"\|"ww-other"' <<<"$out" && ko "--host rog listed another box's records: $out" || ok "...and only those"
+expect "a --host that is no roster entry's box is refused, not answered with an empty list" 1 "list --host rgo: no FLEET_BOXES entry" -- \
+  "${FWS[@]}" execution list --host rgo
+expect "--host needs a box" 2 "expected a box for --host" -- "${FWS[@]}" execution list --host
+fixture_done ww-rog; fixture_done ww-other; fixture_done ww-iterate
+expect "execution slot refuses a non-numeric --wait-window" 2 "--wait-window takes a whole number of seconds" -- "${FWS[@]}" execution slot --wait-window=soon -- echo x
 expect "execution hold --request needs a request id" 2 "--request takes the measurement's request id" -- "${FWS[@]}" execution hold --request "../x" -- true
 expect "...and this host's fleet name, which the marker names" 2 "--request needs this host's fleet name" -- \
   env -u FLEET_LOCAL_BOX FLEET_HOSTNAME_MAP="nomatch*=testbox" "$FW" execution hold --request hold-measure -- true
@@ -2900,7 +2991,7 @@ expect "execution hold needs a command after --" 2 "a command to hold the box ar
 expect "execution hold takes no slot options" 2 "execution hold .--why <text>. .--request <id>. -- <command>" -- "${FWS[@]}" execution hold --wait 5 -- true
 expect "execution slot needs a command after --" 2 "a command to hold the slot around is required" -- "${FWS[@]}" execution slot --
 expect "execution slot refuses a non-numeric --wait" 2 "whole number of seconds" -- "${FWS[@]}" execution slot --wait soon -- echo x
-expect "execution slot takes no --box: the slot is this box's own" 2 "execution slot .--bg <parent>. .--wait <seconds>. .--cpu|--gpu. -- <command>" -- "${FWS[@]}" execution slot --box other -- echo x
+expect "execution slot takes no --box: the slot is this box's own" 2 "execution slot .--bg <parent>. .--wait <seconds>. .--wait-window.=<seconds>.. .--cpu|--gpu. -- <command>" -- "${FWS[@]}" execution slot --box other -- echo x
 expect "a malformed slots spec refuses before anything is locked" 1 "<box>=<positive n>" -- \
   env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=x" "$FW" execution slot -- echo x
 expect "a host with no fleet name has no slot to take" 2 "no fleet name" -- \

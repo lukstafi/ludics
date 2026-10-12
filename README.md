@@ -109,11 +109,17 @@ needs the box's CLI logged in: `claude auth login` for Claude workers (an expire
 cannot refresh headless, and `claude auth status` does not notice) and `codex login` for Codex
 CLI ones. The CLI preflight proves both with a live call, not a status read. Every worker, native
 or CLI, also needs the box's `gh` authenticated for a non-interactive ssh session (it pushes and
-opens the PR with it): every box exports one fleet PAT as `GH_TOKEN` from
-`~/.config/fleet/gh-token.sh` (per-box `gh auth login` tokens revoked each other). The preflight
-calls `gh api user` from that session kind and refuses a rejected token with the repair: replace
-the box's file from the anchor's, `ssh <box> 'f=~/.config/fleet/gh-token.sh; umask 077; cat > "$f.new" && chmod 600 "$f.new" && mv "$f.new" "$f"' <
-~/.config/fleet/gh-token.sh` (a fresh 0600 file, swapped in), and restart any tmux server that inherited the old value.
+opens the PR with it): every box uses one fleet PAT (per-box `gh auth login` OAuth tokens revoked
+each other), distributed as `~/.config/fleet/gh-token.sh` (`export GH_TOKEN=ghp_...`, mode 0600)
+and stored in gh itself, `(. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN -u
+GITHUB_TOKEN gh auth login -h github.com --with-token --insecure-storage` (a 0600 `hosts.yml`,
+which ssh and tmux sessions can read where a keyring may not). No session exports it: a token in
+the environment reaches every process the session starts, and dune recorded it in its build trace
+(ahrefs/ocannl#1280, ludics-lite#567). The preflight checks that gh's stored token is the file's
+(a session that still exports the file's token passes with a note) and calls `gh api user` from
+that session kind. It refuses a rejected token with the repair, which is also the rotation
+procedure: replace the box's file from the anchor's, `ssh <box> 'f=~/.config/fleet/gh-token.sh; umask 077; cat > "$f.new" && chmod 600 "$f.new" && mv "$f.new" "$f"' <
+~/.config/fleet/gh-token.sh` (a fresh 0600 file, swapped in), then store it in gh with the command above on that box.
 It also asks git for github.com's HTTPS credential the way a push does (`git credential fill`)
 and tries it against GitHub, refusing with `gh auth setup-git` when none comes back or GitHub
 refuses it, and for a CLI worker it runs the probe again as a tmux session of the server the
