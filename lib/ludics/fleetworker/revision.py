@@ -17,13 +17,14 @@ its far side already refuses a ``--sha`` its run's checkout does not contain (``
 which is resolution in a clone of the repository, and a record's launch ``head`` must equal it.
 
 Outcomes. A commit GitHub answers for is accepted. ``No commit found for SHA: <sha>`` (HTTP 422; a
-422 without it is GitHub calling the endpoint spammed) refuses, exit 1,
-naming the SHA and the repository it was checked in; so does a repository GitHub does not show
-this box's ``gh`` (HTTP 404), and a SHA-256 object ID, which GitHub cannot hold. Anything else -- no
-answer within FLEET_GH_TIMEOUT (30 s), a 5xx, a rate limit, bad credentials, no ``gh`` -- is
-``EXECUTION UNVERIFIED``, exit 4: nothing is recorded, never a silent accept. A record already
-concluded is not checked again: a retry of its conclusion is the registry's to judge (identical,
-harmless; anything else, refused), and a GitHub outage must not read as "nothing recorded" there. What GitHub resolves is its repository NETWORK: a commit
+422 without it is GitHub calling the endpoint spammed) refuses, exit 1, naming the SHA and the
+repository it was checked in; so does a SHA-256 object ID, which GitHub cannot hold. Anything else
+-- no answer within FLEET_GH_TIMEOUT (30 s), a 5xx, a rate limit, bad credentials, a 404 (no such
+repository, or a private one the token cannot see: GitHub does not say which), no ``gh`` -- is
+``EXECUTION UNVERIFIED``, exit 4: nothing is recorded, never a silent accept. A payload whose record
+the registry already holds is not checked again where the registry's own retry rule decides it --
+a conclusion of a concluded record, a reservation of an existing request id -- so a GitHub outage
+cannot fail a retry whose first call landed with its answer lost. What GitHub resolves is its repository NETWORK: a commit
 pushed only to a fork resolves through the parent's name, which this check accepts.
 
 What is read, and nothing else (a fail-closed allowlist for what counts as a commit claim):
@@ -39,6 +40,7 @@ What is read, and nothing else (a fail-closed allowlist for what counts as a com
 
 import re
 import subprocess
+from collections.abc import Callable
 from typing import Any, cast
 
 from ludics import proc
@@ -86,11 +88,8 @@ def commit_refusal(repo: str, what: str, sha: str, timeout: float = 30) -> tuple
     if "(HTTP 422)" in done.stderr and f"No commit found for SHA: {sha}" in done.stderr:
         return (f"EXECUTION REFUSED: {what} {sha} is no commit of {repo} (checked on GitHub: {said}); nothing recorded -- {RETRY}", 1)
     if "(HTTP 404)" in done.stderr:
-        return (
-            f"EXECUTION REFUSED: GitHub shows this box's gh no repository {repo} ({said}), so {what} {sha}"
-            " cannot be checked in it; nothing recorded",
-            1,
-        )
+        # GitHub answers 404 for a private repository the token cannot see, too: not proof of absence.
+        said += f": no repository {repo}, or one this box's gh token cannot see"
     return (
         f"EXECUTION UNVERIFIED github.com: {what} {sha} could not be checked in {repo} ({said});"
         " nothing recorded -- retry once GitHub answers",
@@ -98,18 +97,25 @@ def commit_refusal(repo: str, what: str, sha: str, timeout: float = 30) -> tuple
     )
 
 
-def request_refusal(request: Any, timeout: float = 30) -> tuple[str, int] | None:
+def request_refusal(
+    request: Any, timeout: float = 30, exists: Callable[[str], bool] = lambda _: False
+) -> tuple[str, int] | None:
     """The requested_revision check of a reservation (see the header); None when it passes, or
-    when the request is not shaped for one (the registry refuses that itself)."""
+    when the request is not shaped for one (the registry refuses that itself). ``exists`` says
+    whether the registry already holds the request id: a retry of a reservation that landed with
+    its answer lost is the registry's to judge (the identical request is returned, any other
+    refused), so it is not checked again and a GitHub outage cannot fail it."""
     if not isinstance(request, dict):
         return None
     fields = cast(dict[str, Any], request)
     repo, revision = fields.get("repository"), fields.get("requested_revision")
     if not (isinstance(repo, str) and isinstance(revision, str)):
         return None
-    for word in revision.split():
-        if not HEX_WORD.fullmatch(word):
-            continue
+    words = [word for word in revision.split() if HEX_WORD.fullmatch(word)]
+    request_id = fields.get("request_id")
+    if not words or (isinstance(request_id, str) and request_id and exists(request_id)):
+        return None
+    for word in words:
         if not SHA40.fullmatch(word):
             return (
                 f"EXECUTION REFUSED: requested_revision names {word}, which is not a full commit ID:"

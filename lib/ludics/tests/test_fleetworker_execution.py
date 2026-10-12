@@ -121,12 +121,13 @@ class Revisions(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertTrue(text.startswith(f"EXECUTION REFUSED: observed_sha {self.TYPO} is no commit of o/r (checked on GitHub: gh: No commit found"), text)
 
-    def test_no_repository_refuses_and_no_answer_is_unverified(self) -> None:
+    def test_a_404_and_no_answer_are_unverified(self) -> None:
         with FakeTool("gh") as gh:
+            # GitHub answers 404 for a private repository the token cannot see, too.
             gh.script(Answer(1, '{"status":"404"}', "gh: Not Found (HTTP 404)\n"))
             text, rc = revision.commit_refusal("o/r", "observed_sha", self.GOOD) or ("", 0)
-            self.assertEqual(rc, 1)
-            self.assertIn("no repository o/r", text)
+            self.assertEqual(rc, 4)
+            self.assertIn("(gh: Not Found (HTTP 404): no repository o/r, or one this box's gh token cannot see)", text)
             for answer in (Answer(1, "", "error connecting to api.github.com\ncheck your internet connection\n"),
                            Answer(1, "", "gh: Server Error (HTTP 502)\n"), Answer(1, "", "gh: Bad credentials (HTTP 401)\n"),
                            Answer(1, "", "unexpected end of JSON input\n"), Answer(4, "", "")):
@@ -187,6 +188,13 @@ class Revisions(unittest.TestCase):
             self.assertEqual(gh.calls(), [])
             for request in (None, "x", {"repository": "o/r"}, {"repository": 1, "requested_revision": self.GOOD}):
                 self.assertIsNone(revision.request_refusal(request))
+            # A request id the registry already holds is the registry's to judge: nothing is asked.
+            asked: list[str] = []
+            held = {"request_id": "r-1", "repository": "o/r", "requested_revision": "f8e0721f0"}
+            self.assertIsNone(revision.request_refusal(held, exists=lambda rid: asked.append(rid) is None))
+            self.assertEqual((asked, gh.calls()), (["r-1"], []))
+            self.assertIsNone(revision.request_refusal({"repository": "o/r", "requested_revision": "main"}, exists=lambda rid: asked.append(rid) is None))
+            self.assertEqual(asked, ["r-1"], "a revision with no commit claim reads no record")
 
 
 class IntegrationRecords(unittest.TestCase):

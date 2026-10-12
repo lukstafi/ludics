@@ -180,9 +180,11 @@ def run_tool(
     ``stdin`` names another: a file descriptor or ``subprocess.DEVNULL`` (the shell's
     ``</dev/null``), or bytes to feed it (a shell ``printf '%s' "$x" | tool``).
 
-    With ``timeout`` (seconds), a tool still running then is killed -- on POSIX with its whole
-    process group, started for it, so no child of it holds the pipes open -- and completes 124,
-    timeout(1)'s status, with ``<name>: no answer in <timeout>s`` closing its stderr.
+    With ``timeout`` (seconds), a tool still running then is killed with its descendants -- on
+    POSIX its whole process group, started for it; under Windows ``taskkill /T``, the process tree
+    -- and completes 124, timeout(1)'s status, with ``<name>: no answer in <timeout>s`` closing its
+    stderr. What it wrote is read for five seconds more at most: a descendant that escaped the kill
+    and still holds the pipes forfeits its output rather than the bound.
 
     A tool that is not on PATH completes with 127 and the shell's message, as ``gh`` would have
     in the shell implementation, so callers classify it the same way.
@@ -233,8 +235,15 @@ def _bounded(
                 except ProcessLookupError:
                     pass
             else:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(child.pid)],
+                    stdin=subprocess.DEVNULL, capture_output=True, check=False,
+                )
                 child.kill()
-            out, err = child.communicate()
+            try:
+                out, err = child.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                out, err = b"", b""
             return Completed(124, decode(out), decode(err) + f"{name}: no answer in {timeout:g}s\n")
         return Completed(child.returncode, decode(out), decode(err))
 

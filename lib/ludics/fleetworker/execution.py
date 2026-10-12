@@ -536,7 +536,7 @@ def record_to_check(cfg: Config, request: str) -> dict[str, Any] | None:
     registry has no such request (it refuses the payload itself)."""
     done = listing(cfg)
     if done.unreachable:
-        cli.say(f"EXECUTION UNREACHABLE {cfg.anchor}: cannot read request {request}'s repository to check its revision")
+        cli.say(f"EXECUTION UNREACHABLE {cfg.anchor}: cannot read request {request}'s record to check its revision")
         raise cli.Exit(4)
     records = records_of(done.out) if done.rc == 0 else None
     if records is None:
@@ -547,7 +547,7 @@ def record_to_check(cfg: Config, request: str) -> dict[str, Any] | None:
 
 
 def checked_evidence(cfg: Config, text: str, observed_from: str) -> str:
-    """A record, reconcile or conclude payload whose ``observed_sha`` resolves in the request's
+    """A dispatch, record, reconcile or conclude payload whose ``observed_sha`` resolves in the request's
     repository, or with it read off ``observed_from`` (conclude only). A payload the registry will
     refuse on shape anyway (not an object, no request_id, a SHA of the wrong shape) passes unread."""
     try:
@@ -618,7 +618,7 @@ def checked_request(cfg: Config, payload: str, action: str) -> None:
         return
     if action == "window":
         decoded = cast(dict[str, Any], decoded).get("request") if isinstance(decoded, dict) else None
-    fail(revision.request_refusal(decoded, gh_timeout(cfg)))
+    fail(revision.request_refusal(decoded, gh_timeout(cfg), lambda request: record_to_check(cfg, request) is not None))
 
 
 def from_run_payload(cfg: Config, args: list[str]) -> str:
@@ -796,7 +796,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
         case "reserve" | "run" | "dispatch" | "record" | "reconcile":
             payload = read_payload(action, args)
             check_identity(cfg)
-            if action in ("record", "reconcile"):
+            if action in ("dispatch", "record", "reconcile"):
                 payload = checked_evidence(cfg, payload, "")
             else:
                 checked_request(cfg, payload, action)

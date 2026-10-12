@@ -292,9 +292,12 @@ more, is read as a commit and must be the full 40-hex SHA of a commit GitHub has
 (ludics-lite#561): an abbreviation is refused before GitHub is asked, and a SHA GitHub answers `No
 commit found` for is refused naming it and the repository. A ref or prose is not read. Every commit
 a payload names is checked this way, near side, before the anchor is asked, with this box's `gh`
-(`gh api repos/<repository>/commits/<sha>`); a GitHub that does not answer (network, 5xx, rate
-limit, credentials) is `EXECUTION UNVERIFIED github.com: ...`, exit 4, and nothing is recorded. The
-boundary is `lib/ludics/fleetworker/revision.py`'s header.
+(`gh api repos/<repository>/commits/<sha>`, bounded by `FLEET_GH_TIMEOUT`); a GitHub that does not
+answer (network, 5xx, rate limit, credentials, a 404 that may be a private repository the token
+cannot see) is `EXECUTION UNVERIFIED github.com: ...`, exit 4, and nothing is recorded. A retry
+whose first call landed with its answer lost (a reservation under an existing request id, a
+conclusion of a concluded record) is not checked again: the registry's own retry rule answers it.
+The boundary is `lib/ludics/fleetworker/revision.py`'s header.
 
 Run `fleet-worker.sh execution reserve <absolute-reserve.json>`, or - the usual shape -
 `fleet-worker.sh execution run <absolute-reserve.json>`, which reserves and dispatches under one
@@ -374,7 +377,7 @@ Once runner evidence establishes completion and no process remains, `execution c
 }
 ```
 
-An `observed_sha` in a `record`, `reconcile` or `conclude` payload must be a commit GitHub has in
+An `observed_sha` in a `dispatch`, `record`, `reconcile` or `conclude` payload must be a commit GitHub has in
 the request's `repository` (ludics-lite#561: two standing conclusions in one wave recorded the right
 prefix with a wrong tail, and a concluded record is immutable). A SHA GitHub does not have, or a
 SHA-256 ID, is refused before the anchor is asked. Rather than copy a SHA by hand, `execution

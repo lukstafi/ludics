@@ -2182,7 +2182,7 @@ expect "a GitHub call that never returns is cut at FLEET_GH_TIMEOUT: UNVERIFIED"
 [ "$SECONDS" -lt 25 ] && ok "...in ${SECONDS}s, its child process killed with it" || ko "the bound did not hold: ${SECONDS}s"
 expect "a FLEET_GH_TIMEOUT that is not a number of seconds is a usage error" 2 "FLEET_GH_TIMEOUT must be a positive whole number" -- \
   env FLEET_GH_TIMEOUT=soon "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
-expect "a repository GitHub does not show is refused, naming it" 1 "GitHub shows this box's gh no repository o/r" -- \
+expect "a 404 is UNVERIFIED: no repository, or a private one the token cannot see" 4 "Not Found (HTTP 404): no repository o/r, or one this box's gh token cannot see" -- \
   env SHIM_GH_NO_REPO=o/r "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
 expect "a SHA-256 observed_sha is refused: GitHub cannot hold one" 1 "is a SHA-256 object ID" -- \
   "${FWR[@]}" execution conclude "$(rv_done rv-ref "$(printf 'e%.0s' $(seq 64))")"
@@ -2206,6 +2206,19 @@ expect "...and a retry once the checkout has moved on composes the same payload,
   "${FWR[@]}" execution conclude "$TMP/rv-obs.json" --observed-from "$obs"
 grep -Fq "\"observed_sha\": \"$head\"" <<<"$out" && ok "...at the SHA the conclusion recorded" || ko "the retry recorded another SHA: $out"
 git -C "$obs" reset -q --hard "$head"
+# A reservation that landed with its answer lost is retried while GitHub is down: the registry holds
+# the request id, so GitHub is not asked and the registry answers (the identical request returned).
+"${FWR[@]}" execution reserve "$(rv_req rv-rsv "$good")" >/dev/null 2>&1 || ko "could not reserve rv-rsv (setup)"
+expect "a retry of a landed reservation naming a SHA is the registry's idempotent answer, whatever GitHub says" 0 '"state": "reserved"' -- \
+  env SHIM_GH=down "${FWR[@]}" execution reserve "$(rv_req rv-rsv "$good")"
+expect "...and a changed request under that id is still the registry's refusal" 1 "already names a different assignment" -- \
+  env SHIM_GH=down "${FWR[@]}" execution reserve "$(rv_req rv-rsv "$good plus edits")"
+# Dispatch carries evidence too, and an observed_sha it records is inherited by the conclusion.
+jq -n --arg sha "$typo" '{request_id:"rv-rsv", evidence:"about to launch", observed_sha:$sha}' > "$TMP/rv-dispatch.json"
+expect "a dispatch whose observed_sha resolves to no commit is refused" 1 "observed_sha $typo is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution dispatch "$TMP/rv-dispatch.json"
+[ "$(state_of rv-rsv)" = reserved ] && ok "...leaving it reserved" || ko "the refused dispatch changed rv-rsv: $(state_of rv-rsv)"
+fixture_done rv-rsv
 # A conclusion that landed with its answer lost is retried while GitHub is down: the record is
 # concluded, so GitHub is not asked again and the registry takes the identical retry.
 "${FWR[@]}" execution run "$(rv_req rv-gh origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-gh (setup)"
