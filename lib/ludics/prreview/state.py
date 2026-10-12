@@ -13,6 +13,7 @@ carry.
 """
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Literal, assert_never
 
@@ -123,6 +124,8 @@ _REQUEST = onig("@codex[[:space:]]+review", 2)  # re.IGNORECASE
 _FRACTION_Z = onig(r"\.[0-9]+Z$")
 _TRAILING_Z = onig("Z$")
 _SUMMARY_TAG = "codex-pull-request-review-summary"
+# A GitHub timestamp, the only shape a request's time is compared in.
+_ISO_STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z")
 
 
 def instant(at: Json) -> str:
@@ -584,9 +587,9 @@ def nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
         return NudgeBarred(f"a {rev} Code Review row could not be read")
     if any(r is not None and head.sha.startswith(jstr(r["sha"])) for r in rows):
         return NudgeBarred(f"{rev}'s summary has a Code Review row naming head {short}")
-    if any(not isinstance(a, str) or not a for a in asked):
+    if any(not isinstance(a, str) or not _ISO_STAMP.fullmatch(a) for a in asked):
         # A request whose time does not read is a request: it may be this head's (review of #583,
-        # round 4), and jq's order would put it below any floor.
+        # rounds 4 and 6), and the string order would put it below any floor.
         return NudgeBarred(f"a '@codex review' request on the PR has no readable time (head {short})", "-")
     floor = _arrival_floor(ctx, _commit_read(ctx, head.sha), head.created)
     try:

@@ -1215,6 +1215,10 @@ test_a_nudge_buys_exactly_one_window() {
   assert_eq "$WATCH_RC" 0 "a fresh nudge is observed until its grace expires"
   assert_contains "$WATCH_ERR" "extending watch" "the nudge owns the full grace beyond timeout"
   [ "$(poll_rounds)" -ge 3 ] || bail "the nudge verdict returned on the first poll"
+  # Review of #583, round 6: the request that drew nothing gets the once-per-head remedy, never
+  # the advice to post another.
+  assert_contains "$WATCH_OUT" "drew no review in its grace, so no second one" "the remedy is a new head"
+  assert_eq "$(nudges_posted)" 0 "and nothing is posted over the request"
   mark=$(sed -n 's/^watermark: //p' <<<"$WATCH_OUT" | tail -1)
   assert_eq "$mark" 0,700,0 "the nudge identity is consumed by the outgoing watermark"
   run_watch "$mark" "$GRACE" 0

@@ -611,6 +611,10 @@ class Watch:
                 f" {fmt_age(self.clock.now() - own)} ago, drew no review, and a second is never posted"
                 f" automatically: {_NEW_HEAD}"
             )
+        if self.nudge and state.tok == "nudged":
+            # A request stood on the head through its grace and drew nothing: the once-per-head
+            # remedy, as for one below the watermark (review of #583, round 6).
+            return f" — a '@codex review' request on this head drew no review in its grace, so no second one: {_NEW_HEAD}"
         if not self.nudge or state.tok != "expected":
             return _ADVICE
         if state.merge in ("dirty", "draft"):
