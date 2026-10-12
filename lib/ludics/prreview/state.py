@@ -540,8 +540,9 @@ def nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
 
     Boundary, fail-closed: CLEAR only when every read below answered and none of these is there --
     the reviewer's evidence for the head that ``_evidence`` reads (a Running row, a review, a
-    comment stamped with the head, verdict or findings); the newest summary's Completed or Failed
-    Code Review row naming the head; and a '@codex review' request by anyone, at or after the head's
+    comment stamped with the head, verdict or findings); any Code Review row of the newest summary
+    that names the head, whatever its status, or whose stamp does not read; and a '@codex review'
+    request by anyone (a request whose time does not read included), at or after the head's
     arrival (``_arrival_floor``), whatever the watch's watermark. That last one is the record that
     makes the nudge once per head across processes (a re-armed watch, another host) and that
     counts a hand nudge too, as the failed run's re-request counts its own (#453). Not read: the
@@ -574,6 +575,15 @@ def nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
         return NudgeBarred(f"{rev} left {kind} evidence for head {short} at {ev_at}")
     if done_sha and head.sha.startswith(done_sha):
         return NudgeBarred(f"{rev}'s summary marks head {short}'s Code Review {done_kind} at {done_at}")
+    try:
+        rows = _stamp_rows(body_of(_newest_summary(comments, rev)))
+    except JqError:
+        return NudgeBarred("the reviewer's summary did not parse")
+    if any(r is None for r in rows):
+        # Review of #583, round 5: a row whose stamp does not read may be this head's, terminal.
+        return NudgeBarred(f"a {rev} Code Review row could not be read")
+    if any(r is not None and head.sha.startswith(jstr(r["sha"])) for r in rows):
+        return NudgeBarred(f"{rev}'s summary has a Code Review row naming head {short}")
     if any(not isinstance(a, str) or not a for a in asked):
         # A request whose time does not read is a request: it may be this head's (review of #583,
         # round 4), and jq's order would put it below any floor.

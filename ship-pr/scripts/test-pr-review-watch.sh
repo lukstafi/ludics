@@ -63,6 +63,7 @@ MERGEABLE_STATE=clean
 # exactly then: from the write gate's read of the PR on, its head is PUSH_AT_WRITE_GATE.
 PR_STATE=open
 PUSH_AT_WRITE_GATE=""
+DRAFT_AT_WRITE_GATE=""
 FAIL_PULLS=""
 # The poll round from which the feeds stop answering (the transport failure a final poll can hit),
 # and the one from which the PR read stops answering. 0 is never.
@@ -119,6 +120,7 @@ reset_fixture() {
   MERGEABLE_STATE=clean
   PR_STATE=open
   PUSH_AT_WRITE_GATE=""
+  DRAFT_AT_WRITE_GATE=""
   FAIL_PULLS=""
   FAIL_FEEDS_FROM=0
   FAIL_PULLS_FROM=0
@@ -288,8 +290,11 @@ gh() {
     [ ! -e "$FEEDS/head.0" ] || head=$(feed_answer head)
     case "$FIXTURE_FILTER" in *.state*) [ -z "$PUSH_AT_WRITE_GATE" ] || : >"$FEEDS/pushed" ;; esac
     [ ! -e "$FEEDS/pushed" ] || head="$PUSH_AT_WRITE_GATE"
+    local draft=false
+    case "$FIXTURE_FILTER" in *.draft*) [ -z "$DRAFT_AT_WRITE_GATE" ] || draft=true ;; esac
     response=$(jq -cn --arg h "$head" --arg m "$MERGEABLE_STATE" --arg c "$PR_CREATED_AT" --arg s "$PR_STATE" \
-      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, created_at:$c, state:$s}')
+      --argjson d "$draft" \
+      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, created_at:$c, state:$s, draft:$d}')
     ;;
   "repos/$REPO/commits/$H1" | "repos/$REPO/commits/$H2")
     response=$(jq -cn --arg d "$HEAD_AT" '{sha:"head-sha", commit:{committer:{date:$d}}}')
@@ -2275,6 +2280,20 @@ test_a_head_the_final_poll_reads_first_gets_the_pickup_margin() {
   assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the watch ends on it"
 }
 
+# Review of #583, round 5. The write gate reads the draft flag and the mergeability too: a PR made a
+# draft, or conflicted, between the state read and the post is not nudged. The fixture turns the PR
+# into a draft at exactly the gate's read (DRAFT_AT_WRITE_GATE).
+test_a_pr_made_a_draft_at_the_write_gate_is_not_nudged() {
+  reset_fixture
+  retune GRACE=1
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  DRAFT_AT_WRITE_GATE=1
+  run_watch 0,0,0 60 120
+  assert_eq "$(nudges_posted)" 0 "nothing is posted on the draft"
+  assert_contains "$WATCH_OUT" "not nudged automatically: the PR reads a draft, not open" "and the verdict says why"
+}
+
 # Review of #583, round 4. A push landing between the nudge's read and its post: the write gate
 # reads the PR's head with its state, and a head other than the one the nudge was read for is held
 # to its own pickup margin, in which its automatic round lands. Pauses held at the interval: the
@@ -2427,6 +2446,7 @@ test_a_draft_or_conflicted_pr_is_not_nudged() {
 }
 
 tests=(
+  test_a_pr_made_a_draft_at_the_write_gate_is_not_nudged
   test_a_push_at_the_write_gate_is_held
   test_a_head_read_after_an_outage_gets_the_pickup_margin_again
   test_a_no_nudge_failed_run_takes_its_remedy_from_the_final_read

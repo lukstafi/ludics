@@ -656,18 +656,30 @@ class Watch:
                 assert_never(read)
 
     def write_gate(self) -> tuple[str, str]:
-        """The PR's own state (``open``, ``closed``) and head, read fresh as the automatic write's
-        last gate (review of #583, rounds 3 and 4: a PR closed or merged mid-watch is still
-        `expected`, and a push between the nudge's read and its post would be nudged unheld);
-        empty fields unread."""
+        """The PR's state as the automatic write's last gate reads it fresh, and its head (review
+        of #583, rounds 3 to 5: a PR closed, merged, made a draft or conflicted mid-watch is still
+        `expected`, and a push between the nudge's read and its post would be nudged unheld). The
+        state is ``open`` only for an open, non-draft PR whose mergeability is not ``dirty`` or
+        ``draft``; otherwise it names what it is, "" unread."""
         result = self.ctx.session.retry(
             "read",
-            ["api", f"repos/{self.repo}/pulls/{self.pr}", "--jq", '[(.state // "-"), (.head.sha // "-")] | @tsv'],
+            [
+                "api", f"repos/{self.repo}/pulls/{self.pr}", "--jq",
+                '[(.state // "-"), (.head.sha // "-"), (.draft | tostring), (.mergeable_state // "-")] | @tsv',
+            ],
         )
         match result:
             case GhOk(stdout=out):
-                state, _, head = out.strip().partition("\t")
-                return ("" if state == "-" else state), ("" if head in ("", "-") else head)
+                fields = (out.strip().split("\t") + ["", "", "", ""])[:4]
+                state, head, draft, merge = fields
+                head = "" if head in ("", "-") else head
+                if state == "-" or not state:
+                    return "", head
+                if state == "open" and draft == "true":
+                    return "a draft", head
+                if state == "open" and merge in ("dirty", "draft"):
+                    return f"open but mergeable_state={merge}", head
+                return state, head
             case GhFailed() | GhUnanswered():
                 return "", ""
             case _:

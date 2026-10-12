@@ -441,6 +441,12 @@ class NudgeRead(unittest.TestCase):
         for name, gh in (
             ("review", feeds(reviews=[review(5, HEAD, iso(60))])),
             ("verdict", feeds(comments=[comment(5, iso(60), f"Didn't find any major issues.\n\n**Reviewed commit:** `{HEAD[:7]}`")])),
+            ("unread row", feeds(comments=[comment(5, iso(60), (
+                "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n"
+                "| 📝 **Code Review** | ✅ **Completed** at some point | aaaaaaa | New commits |"))])),
+            ("row in another shape", feeds(comments=[comment(5, iso(60), (
+                "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n"
+                f"| 📝 **Code Review** | ⏭️ **Skipped** <relative-time datetime=\"{iso(60)}\">x</relative-time> | `{HEAD[:7]}` | New commits |"))])),
             ("completed row", feeds(comments=[comment(5, iso(60), (
                 "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n"
                 f"| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"{iso(60)}\">x</relative-time> | `{HEAD[:7]}` | New commits |"))])),
@@ -450,7 +456,8 @@ class NudgeRead(unittest.TestCase):
                 self.assertIsInstance(read, state.NudgeBarred)
                 assert isinstance(read, state.NudgeBarred)
                 self.assertFalse(read.asked, read.why)
-                self.assertIn("aaaaaaa", read.why)
+                if name != "unread row":
+                    self.assertIn("aaaaaaa", read.why)
 
     def test_a_read_that_did_not_answer_bars_it(self) -> None:
         for endpoint in ("repos/o/r/issues/7/comments?per_page=100", "repos/o/r/pulls/7/reviews?per_page=100",
