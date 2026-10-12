@@ -2098,7 +2098,7 @@ test_checks_ends_with_its_verdict_trailer() {
   check_trailer 4 unjudged "NO VERDICT YET"
   reset_fixture
   CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"ci","status":"in_progress"}]')")
-  check_trailer 4 pending "NO VERDICT YET — still running"
+  check_trailer 4 pending "NO VERDICT YET — 1 check(s) still running: ci"
   reset_fixture
   CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"ci","conclusion":"failure","html_url":"u"}]')")
   check_trailer 1 red ": RED"
