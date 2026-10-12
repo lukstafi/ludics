@@ -2784,6 +2784,13 @@ swept 2 && swept 3 && ok "...and ends it with the batch" || ko "the deadline mis
 expect "a batch that ends before its deadline takes what it left running with it" 0 "still runs: ending it (--deadline)" -- \
   "${FWS[@]}" execution slot --wait 0 --deadline 60 -- sh -c "sleep ${GM}4 >/dev/null 2>&1 &"
 swept 4 && ok "...so nothing of it outlives the slot" || ko "a leftover outlived its deadline-bound batch: $(pgrep -fl "sleep ${GM}4")"
+# The slot's flock and the sleep guard keep their lifetimes: both end with the group a deadline ends.
+"${FWI[@]}" execution slot --wait 0 --deadline 2 -- bash -c "sleep ${GM}9 & wait" > "$TMP/group-guard.log" 2>&1; rc=$?
+[ "$rc" -eq 124 ] && grep -q "sleep:idle block inhibitor held" "$TMP/group-guard.log" &&
+  ok "a deadline ends a batch under the sleep guard (124)" || ko "the guarded deadline: rc=$rc $(cat "$TMP/group-guard.log")"
+gone "$INHIBIT_PID" && ok "...releasing the inhibitor with the group" || ko "the inhibitor outlived the group its deadline ended"
+expect "...and the slot" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 0 -- echo after-guarded-deadline
+swept 9 || ko "the guarded deadline left its sleep running: $(pgrep -fl "sleep ${GM}9")"
 # THE NESTED SLOT runs in its enclosing slot's process group: a group of its own would leave its
 # tree to the inner wrapper's own reaping, out of the outer group kill's reach.
 expect "an outer slot's --deadline ends a grandchild started under a nested slot" 124 "EXECUTION SLOT testbox: --deadline 2s reached" -- \
