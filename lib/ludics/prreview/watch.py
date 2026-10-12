@@ -79,6 +79,9 @@ _NEW_HEAD = (
 )
 # end()'s answer when it posted the automatic nudge: the loop goes on, watching the request.
 _NUDGED = -1
+# end()'s answer when its final poll read a head the nudge is held for (a new head, or a request
+# younger than its grace): the loop goes on to ``held_until``.
+_HELD = -2
 # How long this watch must itself have seen a head, with nothing started on it, before it nudges:
 # the evidence a commit's date cannot give that the push is not simply too new for the reviewer's
 # own automatic review. That 👀 lands seconds after a push (on ludics-lite#583, 18s to the
@@ -300,6 +303,7 @@ class Watch:
         self.own_nudges: dict[str, int] = {}
         # When this process first read each head (round()).
         self.first_seen: dict[str, int] = {}
+        self.held_until = 0
 
     # --- the pieces of a round -------------------------------------------------------------------
 
@@ -499,7 +503,7 @@ class Watch:
     def end(self, verdict: str, message: str, remedy: bool = False) -> int:
         """``watch_end``: the final poll and state re-read before a nothing-is-coming verdict. With
         ``remedy`` (the nothing-is-coming verdicts on a due head), the message gets its remedy, or
-        the verdict is answered with the automatic nudge and the answer is ``_NUDGED``."""
+        the verdict is answered with the automatic nudge (``_NUDGED``) or held (``_HELD``)."""
         before_settle = self.mark
         before_state = self.state
         rc = self.settle()
@@ -552,6 +556,12 @@ class Watch:
             _say(f"watermark: {self.mark}")
             return 1
         if remedy:
+            # Again on the final poll's own read: a head it read first, or a request it read, holds
+            # the nudge as it would have held the loop's (review of #583, round 2).
+            hold = self.nudge_hold(state)
+            if hold is not None:
+                self.held_until = hold
+                return _HELD
             move = self.nudge_or_remedy(state, message)
             if move is None:
                 return _NUDGED
@@ -830,8 +840,15 @@ class Watch:
                             candidate_kind = "nudged"
                     if verdict:
                         rc = self.end(tok, verdict, remedy=True)
-                        if rc != _NUDGED:
+                        if rc == _HELD:
+                            hold = self.held_until
+                            if candidate_end is None or candidate_end < hold:
+                                candidate_end = hold
+                                candidate_kind = "nudged"
+                            verdict = ""
+                        elif rc != _NUDGED:
                             return rc
+                    if verdict:
                         # The request's grace is the next window; it replaces a deadline already
                         # fixed, once per head, since the request is a new one.
                         candidate_end = self.clock.now() + cfg.grace

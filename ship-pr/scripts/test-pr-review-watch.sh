@@ -2245,6 +2245,24 @@ test_an_old_dated_push_gets_the_pickup_margin() {
   assert_contains "$WATCH_OUT" "--- review id=502" "and the watch ends on it"
 }
 
+# Review of #583, round 2. The pickup margin holds for a head the verdict's own final poll reads
+# first, too: H1 is held its five minutes and reaches the verdict (round 4, the pause having
+# doubled to 60+120+240s), whose final poll (round 5) reads a new old-dated head H2. H2 gets its
+# own margin, in which the reviewer's automatic round on it starts and lands.
+test_a_head_the_final_poll_reads_first_gets_the_pickup_margin() {
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  schedule head 0 "$H1"
+  schedule head 5 "$H2"
+  schedule reactions 6 "[$(reaction eyes "$(clock_at 470)")]"
+  schedule reviews 7 "[$(review 502 "$H2" "$(clock_at 500)" 'the automatic round on the push')]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted for the head the final poll read first"
+  assert_eq "$WATCH_RC" 0 "the automatic round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the watch ends on it"
+}
+
 # Review of #583, round 1. A request on the head that is younger than its grace is waited out, not
 # reported as one that drew nothing: a watch re-armed on a watermark past a request seconds old
 # (after a transport exit, say) holds the window to that request's grace before it says so.
@@ -2286,6 +2304,7 @@ test_a_draft_or_conflicted_pr_is_not_nudged() {
 }
 
 tests=(
+  test_a_head_the_final_poll_reads_first_gets_the_pickup_margin
   test_an_old_dated_push_gets_the_pickup_margin
   test_a_standing_request_holds_the_nudge
   test_a_draft_or_conflicted_pr_is_not_nudged
