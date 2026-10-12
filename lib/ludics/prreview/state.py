@@ -13,6 +13,7 @@ carry.
 """
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Literal, assert_never
 
@@ -123,6 +124,8 @@ _REQUEST = onig("@codex[[:space:]]+review", 2)  # re.IGNORECASE
 _FRACTION_Z = onig(r"\.[0-9]+Z$")
 _TRAILING_Z = onig("Z$")
 _SUMMARY_TAG = "codex-pull-request-review-summary"
+# A GitHub timestamp, the only shape a request's time is compared in.
+_ISO_STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z")
 
 
 def instant(at: Json) -> str:
@@ -408,15 +411,9 @@ def status_state(ctx: Ctx, pr: str) -> State:
         if not head_at_read:
             head_at = _commit_read(ctx, head_sha)
             head_at_read = True
-        floor = head_at if age_of(head_at, ctx.clock.time()) is not None else ""
-        if head.created and age_of(head.created, ctx.clock.time()) is not None:
-            floor = newest(floor, head.created)
+        floor = _arrival_floor(ctx, head_at, head.created)
         try:
-            asked = [
-                alt(idx(c, "created_at"), "")
-                for c in comments
-                if not login_is(c, rev) and _REQUEST.search(body_of(c))
-            ]
+            asked = _requests(comments, rev)
             req_after = any(ge(a, done_at) for a in asked)
             req_before = jstr(alt(jmax([a for a in asked if ge(a, floor) and lt(a, done_at)]), ""))
         except JqError:
@@ -496,6 +493,116 @@ def status_state(ctx: Ctx, pr: str) -> State:
         "expected", freshest_age(head_at, head.created, last_spoke, eyes_at, nudge_at, now=ctx.clock.time()), mstate,
         f"no 👀 in flight and no review of head {_short(head_sha)}{last}{stale}",
     )
+
+
+def _arrival_floor(ctx: Ctx, head_at: str, created: str) -> str:
+    """The earliest a request can be about the head: the newest of its commit's date and the PR's
+    creation that the clock can read, or "" when neither reads, which counts every request -- the
+    clock can only suppress a request, never license one."""
+    floor = head_at if age_of(head_at, ctx.clock.time()) is not None else ""
+    if created and age_of(created, ctx.clock.time()) is not None:
+        floor = newest(floor, created)
+    return floor
+
+
+def _requests(comments: list[Json], rev: str) -> list[Json]:
+    """When each '@codex review' request on the PR was made: anyone's comment but the reviewer's
+    that carries one, quoted or not, since the connector reads it either way."""
+    return [
+        alt(idx(c, "created_at"), "")
+        for c in comments
+        if not login_is(c, rev) and _REQUEST.search(body_of(c))
+    ]
+
+
+@dataclass(frozen=True)
+class NudgeClear:
+    """Nothing stands for the head: the watch may post its one automatic request."""
+
+    head: str
+
+
+@dataclass(frozen=True)
+class NudgeBarred:
+    """Something stands for the head, or could not be read. ``asked`` is the time of the newest
+    request already made on it when that is what stands ("" otherwise): the move after one is to
+    wait out its grace, and then a new head, never a second request."""
+
+    why: str
+    asked: str = ""
+
+
+type NudgeRead = NudgeClear | NudgeBarred
+
+
+def nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
+    """May ``watch`` post its automatic '@codex review' for the head (ludics-lite#570)? Asked only
+    after a fresh state read said ``expected`` -- no 👀 in flight, no review of the head, no
+    no-findings verdict for it, no 👍 that approves it, no request pending in the watch -- and read
+    from the same round's snapshot as that state.
+
+    Boundary, fail-closed: CLEAR only when every read below answered and none of these is there --
+    the reviewer's evidence for the head that ``_evidence`` reads (a Running row, a review, a
+    comment stamped with the head, verdict or findings); any Code Review row of the newest summary
+    that names the head, whatever its status, or whose stamp does not read; and a '@codex review'
+    request by anyone (a request whose time does not read included), at or after the head's
+    arrival (``_arrival_floor``), whatever the watch's watermark. That last one is the record that
+    makes the nudge once per head across processes (a re-armed watch, another host) and that
+    counts a hand nudge too, as the failed run's re-request counts its own (#453). Not read: the
+    reactions (the state read just judged them), a request older than the head's arrival (an
+    earlier head's), and the request's wording beyond the summon itself."""
+    rev = ctx.reviewer
+    try:
+        comments = state_comments(ctx, pr)
+    except ReadFailed:
+        return NudgeBarred(f"the comments API did not answer ({ctx.session.err_line()})")
+    try:
+        reviews = substantive_reviews(ctx, pr, state_reviews(ctx, pr))
+    except ReadFailed:
+        return NudgeBarred(f"the reviews API did not answer ({ctx.session.err_line()})")
+    except NotSubstantive:
+        return NudgeBarred("the review comments API did not establish substantive reviews")
+    head = state_head_read(ctx, pr)
+    if not head.sha:
+        return NudgeBarred(f"the pulls API did not answer for the head SHA ({head.err})")
+    short = _short(head.sha)
+    try:
+        kind, ev_at, unread, _row = _evidence(comments, reviews, rev, head.sha)
+        done_kind, done_at, done_sha = _done_row(comments, rev)
+        asked = _requests(comments, rev)
+    except JqError:
+        return NudgeBarred("the reviewer's evidence for the head did not parse")
+    if unread:
+        return NudgeBarred(f"a {rev} Code Review Running row could not be read")
+    if kind:
+        return NudgeBarred(f"{rev} left {kind} evidence for head {short} at {ev_at}")
+    if done_sha and head.sha.startswith(done_sha):
+        return NudgeBarred(f"{rev}'s summary marks head {short}'s Code Review {done_kind} at {done_at}")
+    try:
+        rows = _stamp_rows(body_of(_newest_summary(comments, rev)))
+    except JqError:
+        return NudgeBarred("the reviewer's summary did not parse")
+    if any(r is None for r in rows):
+        # Review of #583, round 5: a row whose stamp does not read may be this head's, terminal.
+        return NudgeBarred(f"a {rev} Code Review row could not be read")
+    if any(r is not None and head.sha.startswith(jstr(r["sha"])) for r in rows):
+        return NudgeBarred(f"{rev}'s summary has a Code Review row naming head {short}")
+    if any(not isinstance(a, str) or not _ISO_STAMP.fullmatch(a) for a in asked):
+        # A request whose time does not read is a request: it may be this head's (review of #583,
+        # rounds 4 and 6), and the string order would put it below any floor.
+        return NudgeBarred(f"a '@codex review' request on the PR has no readable time (head {short})", "-")
+    floor = _arrival_floor(ctx, _commit_read(ctx, head.sha), head.created)
+    try:
+        since = [a for a in asked if ge(a, floor)]
+        standing = jstr(alt(jmax(since), ""))
+    except JqError:
+        return NudgeBarred("the review-request comments feed did not parse")
+    if since:
+        return NudgeBarred(
+            f"a '@codex review' request at {standing or 'an unread time'} already stands on head {short}",
+            standing or "-",
+        )
+    return NudgeClear(head.sha)
 
 
 def _first_stamp(c: Json) -> str:

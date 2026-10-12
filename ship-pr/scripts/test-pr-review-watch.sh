@@ -59,11 +59,18 @@ H1=1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 H2=2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 HEAD_SHA="$H2"
 MERGEABLE_STATE=clean
+# The PR's own state (open, closed), which the automatic nudge reads last; and a push landing
+# exactly then: from the write gate's read of the PR on, its head is PUSH_AT_WRITE_GATE.
+PR_STATE=open
+PUSH_AT_WRITE_GATE=""
+DRAFT_AT_WRITE_GATE=""
 FAIL_PULLS=""
 # The poll round from which the feeds stop answering (the transport failure a final poll can hit),
 # and the one from which the PR read stops answering. 0 is never.
 FAIL_FEEDS_FROM=0
 FAIL_PULLS_FROM=0
+# The last round of a FAIL_PULLS_FROM outage (0: it never ends).
+FAIL_PULLS_UNTIL=0
 # A review's own comments endpoint refusing to answer: the per-review re-read poll makes for every
 # new review, whose failure fails the round (23755d8).
 FAIL_REVIEW_COMMENTS=""
@@ -75,6 +82,16 @@ FAIL_REACTIONS=""
 FAIL_REACTIONS_ROUND=""
 FAIL_REACTIONS_FROM=0
 FAIL_COMMENTS_FROM=0
+# The watch's own '@codex review' (ludics-lite#453's failed run, #570's automatic nudge): a POST
+# kept in $FEEDS/posted, one comment per line, and served back by the comments reads after it
+# unless HIDE_POSTED (a feed that has not caught up); FAIL_POST refuses it. NUDGE_ANSWER is the id
+# of the review the reviewer answers a posted request with: a review of the head the PR had when
+# the request was posted, served from the round after it.
+FAIL_POST=""
+HIDE_POSTED=""
+NUDGE_ANSWER=""
+# Extra arguments for the watch (`--no-nudge`).
+WATCH_FLAG=""
 # The head's committer date and the PR's creation, the two clocks the `expected` state runs on.
 # Fresh by default, so a case about what ends a wait is never decided by the grace expiring
 # underneath it; the clock cases set them where they need them.
@@ -101,14 +118,22 @@ reset_fixture() {
   schedule review_comments 1 '[]'
   HEAD_SHA="$H2"
   MERGEABLE_STATE=clean
+  PR_STATE=open
+  PUSH_AT_WRITE_GATE=""
+  DRAFT_AT_WRITE_GATE=""
   FAIL_PULLS=""
   FAIL_FEEDS_FROM=0
   FAIL_PULLS_FROM=0
+  FAIL_PULLS_UNTIL=0
   FAIL_REVIEW_COMMENTS=""
   FAIL_REACTIONS=""
   FAIL_REACTIONS_ROUND=""
   FAIL_REACTIONS_FROM=0
   FAIL_COMMENTS_FROM=0
+  FAIL_POST=""
+  HIDE_POSTED=""
+  NUDGE_ANSWER=""
+  WATCH_FLAG=""
   date +%s >"$SHIP_PR_TEST_CLOCK"
   HEAD_AT=$(clock_at -60)
   PR_CREATED_AT=$(clock_at -60)
@@ -193,7 +218,7 @@ compare_json() { # <behind> <ahead> <file>
 }
 
 gh() {
-  local response=""
+  local response="" posted head
   gh_fixture_parse "$@"
   case "$FIXTURE_ENDPOINT" in
   "repos/$REPO/pulls/7/comments?per_page=100")
@@ -213,13 +238,38 @@ gh() {
     fi
     response=$(feed_answer reactions)
     ;;
-  "repos/$REPO/pulls/7/reviews?per_page=100") response=$(feed_answer reviews) ;;
+  "repos/$REPO/pulls/7/reviews?per_page=100")
+    response=$(feed_answer reviews)
+    [ ! -e "$FEEDS/answer" ] || [ "$(poll_rounds)" -le "$(cat "$FEEDS/answer.round")" ] ||
+      response=$(jq -c --slurpfile a "$FEEDS/answer" '. + $a' <<<"$response")
+    ;;
   "repos/$REPO/issues/7/comments?per_page=100")
     if [ "$FAIL_COMMENTS_FROM" -ne 0 ] && [ "$(poll_rounds)" -ge "$FAIL_COMMENTS_FROM" ]; then
       echo "gh: 503 No server is currently available to service your request" >&2
       return 1
     fi
     response=$(feed_answer comments)
+    [ -n "$HIDE_POSTED" ] || [ ! -s "$FEEDS/posted" ] ||
+      response=$(jq -c --slurpfile p "$FEEDS/posted" '. + $p' <<<"$response")
+    ;;
+  "repos/$REPO/issues/7/comments")
+    [ "$FIXTURE_METHOD" = POST ] || bail "unexpected ${FIXTURE_METHOD:-GET} on $FIXTURE_ENDPOINT"
+    if [ -n "$FAIL_POST" ]; then
+      echo "gh: HTTP 502: Bad Gateway" >&2
+      return 1
+    fi
+    # Ids above every fixture comment's, dated on the fixture clock, as GitHub numbers a new one.
+    posted=0
+    head="$HEAD_SHA"
+    [ ! -e "$FEEDS/posted" ] || posted=$(($(wc -l <"$FEEDS/posted")))
+    jq -cn --argjson id "$((9000 + posted))" --arg b "$FIXTURE_BODY" --arg at "$(clock_at)" \
+      '{id:$id, user:{login:"me"}, created_at:$at, updated_at:$at, body:$b}' >>"$FEEDS/posted"
+    [ ! -e "$FEEDS/head.0" ] || head=$(feed_answer head)
+    [ -z "$NUDGE_ANSWER" ] || {
+      review "$NUDGE_ANSWER" "$head" "$(clock_at 1)" 'the round the request asked for' >"$FEEDS/answer"
+      poll_rounds >"$FEEDS/answer.round"
+    }
+    response='{"html_url":"https://github.com/example/repo/pull/7#issuecomment-9000"}'
     ;;
   "repos/$REPO/pulls/7/reviews/"*"/comments?per_page=100")
     if [ -n "$FAIL_REVIEW_COMMENTS" ]; then
@@ -230,15 +280,21 @@ gh() {
     ;;
   "repos/$REPO/pulls/7")
     if [ -n "$FAIL_PULLS" ] ||
-      { [ "$FAIL_PULLS_FROM" -ne 0 ] && [ "$(cat "$FEEDS/round")" -ge "$FAIL_PULLS_FROM" ]; }; then
+      { [ "$FAIL_PULLS_FROM" -ne 0 ] && [ "$(cat "$FEEDS/round")" -ge "$FAIL_PULLS_FROM" ] &&
+        { [ "$FAIL_PULLS_UNTIL" -eq 0 ] || [ "$(cat "$FEEDS/round")" -le "$FAIL_PULLS_UNTIL" ]; }; }; then
       echo "gh: pull request unavailable (HTTP 500)" >&2
       return 1
     fi
     # The head per round when a case schedules one (`schedule head <round> <sha>`), else HEAD_SHA.
-    local head="$HEAD_SHA"
+    head="$HEAD_SHA"
     [ ! -e "$FEEDS/head.0" ] || head=$(feed_answer head)
-    response=$(jq -cn --arg h "$head" --arg m "$MERGEABLE_STATE" --arg c "$PR_CREATED_AT" \
-      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, created_at:$c}')
+    case "$FIXTURE_FILTER" in *.state*) [ -z "$PUSH_AT_WRITE_GATE" ] || : >"$FEEDS/pushed" ;; esac
+    [ ! -e "$FEEDS/pushed" ] || head="$PUSH_AT_WRITE_GATE"
+    local draft=false
+    case "$FIXTURE_FILTER" in *.draft*) [ -z "$DRAFT_AT_WRITE_GATE" ] || draft=true ;; esac
+    response=$(jq -cn --arg h "$head" --arg m "$MERGEABLE_STATE" --arg c "$PR_CREATED_AT" --arg s "$PR_STATE" \
+      --argjson d "$draft" \
+      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, created_at:$c, state:$s, draft:$d}')
     ;;
   "repos/$REPO/commits/$H1" | "repos/$REPO/commits/$H2")
     response=$(jq -cn --arg d "$HEAD_AT" '{sha:"head-sha", commit:{committer:{date:$d}}}')
@@ -268,7 +324,7 @@ run_watch() { # [watermark] [interval] [timeout]
   local rc
   set +e
   WATCH_INTERVAL="${2:-1}" WATCH_TIMEOUT="${3:-1}" \
-    cmd_watch 7 "${1:-0,0,0}" >"$TEST_ROOT/watch.out" 2>"$TEST_ROOT/watch.err"
+    cmd_watch 7 "${1:-0,0,0}" ${WATCH_FLAG:+"$WATCH_FLAG"} >"$TEST_ROOT/watch.out" 2>"$TEST_ROOT/watch.err"
   rc=$?
   set -e
   WATCH_RC="$rc"
@@ -775,8 +831,11 @@ test_a_withheld_verdict_quotes_the_final_poll_s_error() {
 test_an_approval_landing_during_the_final_poll_drops_the_verdict() {
   reset_fixture
   retune GRACE=1
-  schedule reactions 2 "[$(head_thumb)]"
+  # Round 1 holds the due verdict for the pickup margin (min(PICKUP, GRACE): a second), round 2
+  # reaches it, and round 3 is its final poll.
+  schedule reactions 3 "[$(head_thumb)]"
   run_watch 0,0,0 5 1
+  assert_eq "$(nudges_posted)" 0 "no nudge is posted over the 👍"
   assert_eq "$WATCH_RC" 0 "an approved PR is something to act on"
   assert_contains "$WATCH_OUT" "the 👍 landed while it was being read" "and the line says why"
   assert_contains "$WATCH_OUT" "approved (👍 from" "the approval is what the caller reads"
@@ -789,8 +848,10 @@ test_an_approval_landing_during_the_final_poll_drops_the_verdict() {
 test_a_state_that_moved_drops_the_verdict_as_quiet() {
   reset_fixture
   retune GRACE=1
-  schedule reactions 2 "[$(reaction eyes "$(clock_at -5)")]"
+  # Round 3 is the verdict's final poll (the pickup margin holds round 1).
+  schedule reactions 3 "[$(reaction eyes "$(clock_at -5)")]"
   run_watch 0,0,0 5 1
+  assert_eq "$(nudges_posted)" 0 "no nudge is posted over the new round"
   assert_eq "$WATCH_RC" 1 "a round that just started is a quiet window, not a verdict"
   assert_contains "$WATCH_OUT" "the state moved to 'reviewing'" "and the line says what it moved to"
   assert_not_contains "$WATCH_OUT" "no review materialized" "no nudge over a round in flight"
@@ -806,8 +867,9 @@ test_a_state_that_could_not_be_re_read_withholds_the_verdict() {
   # while the re-read behind it lands in `unknown`.
   reset_fixture
   retune GRACE=1
-  FAIL_PULLS_FROM=2
+  FAIL_PULLS_FROM=3 # the verdict's final poll (the pickup margin holds round 1)
   run_watch 0,0,0 5 1
+  assert_eq "$(nudges_posted)" 0 "nothing is posted on a state that did not read"
   assert_eq "$WATCH_RC" 3 "an unreadable state is not 'the reviewer stayed quiet'"
   assert_contains "$WATCH_OUT" "is WITHHELD" "and the verdict is withheld"
 }
@@ -1153,6 +1215,10 @@ test_a_nudge_buys_exactly_one_window() {
   assert_eq "$WATCH_RC" 0 "a fresh nudge is observed until its grace expires"
   assert_contains "$WATCH_ERR" "extending watch" "the nudge owns the full grace beyond timeout"
   [ "$(poll_rounds)" -ge 3 ] || bail "the nudge verdict returned on the first poll"
+  # Review of #583, round 6: the request that drew nothing gets the once-per-head remedy, never
+  # the advice to post another.
+  assert_contains "$WATCH_OUT" "drew no review in its grace, so no second one" "the remedy is a new head"
+  assert_eq "$(nudges_posted)" 0 "and nothing is posted over the request"
   mark=$(sed -n 's/^watermark: //p' <<<"$WATCH_OUT" | tail -1)
   assert_eq "$mark" 0,700,0 "the nudge identity is consumed by the outgoing watermark"
   run_watch "$mark" "$GRACE" 0
@@ -1160,10 +1226,13 @@ test_a_nudge_buys_exactly_one_window() {
   assert_contains "$WATCH_OUT" "no review materialized" "the overdue verdict remains available"
 }
 
+# The advice path's clock (`--no-nudge`): with the default, a quoted summon is a request the
+# connector answers, and its grace holds the automatic nudge (test_a_standing_request_holds_the_nudge).
 test_an_ordinary_reply_or_old_nudge_does_not_reset_grace() {
   local body
   for body in 'Thanks, @codex review was requested earlier' '@codex review'; do
     reset_fixture
+    WATCH_FLAG=--no-nudge
     HEAD_AT=2026-09-01T00:00:00Z
     PR_CREATED_AT="$HEAD_AT"
     local at
@@ -1933,7 +2002,7 @@ test_an_approval_landing_in_the_final_poll_is_checked_too() {
   # as any approval does, so it is checked for open threads the same way.
   reset_fixture
   retune GRACE=1
-  schedule reactions 2 "[$(head_thumb)]"
+  schedule reactions 3 "[$(head_thumb)]" # the verdict's final poll, after the pickup margin
   schedule threads 1 "[$(review_thread 4053098120 false)]"
   run_watch 0,0,0 5 1
   assert_eq "$WATCH_RC" 0 "an approval is something to act on"
@@ -1964,9 +2033,11 @@ test_an_approval_beside_a_final_poll_round_is_checked_too() {
 # nothing (b6b09ee, "a spent 👀 must not read as a review is running"). One read is not proof — a
 # reaction read can come back empty once (test_one_empty_reaction_read_retains_the_live_boundary)
 # — so the second consecutive one is, and it ends the wait on the nudge advice after the final
-# poll, rather than holding the window or the grace.
+# poll, rather than holding the window or the grace. The advice is what `--no-nudge` prints; by
+# default the watch posts the nudge itself (test_a_push_during_a_live_round_gets_the_new_head_reviewed).
 test_a_live_round_that_reads_ended_twice_ends_on_the_nudge_advice() {
   reset_fixture
+  WATCH_FLAG=--no-nudge
   schedule reactions 1 "[$(reaction eyes "$(clock_at -5)")]"
   schedule reactions 2 '[]'
   run_watch 0,0,0 1 5
@@ -1977,6 +2048,7 @@ test_a_live_round_that_reads_ended_twice_ends_on_the_nudge_advice() {
   assert_contains "$WATCH_OUT" "no reviewer activity about head ${H2:0:7}; status: review EXPECTED" \
     "beside the state it was read from"
   assert_eq "$(poll_rounds)" 4 "two loop reads after the live one, then the final poll"
+  assert_eq "$(nudges_posted)" 0 "and --no-nudge posts nothing"
 }
 
 # A 👀 older than any round takes is `stalled`, and the watch answers it like the other
@@ -2027,7 +2099,374 @@ test_an_unread_head_is_named_unread_in_the_quiet_exit() {
     "the quiet line says the head was not read"
 }
 
+# --- the automatic nudge (ludics-lite#570) -------------------------------------------------------
+
+# The watch's own '@codex review' posts, counted off the request log: the POST is the only call on
+# the bare comments endpoint (every read carries ?per_page=100).
+nudges_posted() {
+  grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true
+}
+
+# OCANNL post-wave 1, p1t7 (lukstafi/ocannl-staging#1057): a push landed while the reviewer was
+# still on the old head; its round ended with a review of that head, and the new head sat
+# unreviewed until a hand nudge. Head H1 under a live 👀, H2 pushed at round 2, H1's review landing
+# at round 3: the round ends without a review of the head, and the watch nudges once and ends on
+# the new head's round.
+test_a_push_during_a_live_round_gets_the_new_head_reviewed() {
+  reset_fixture
+  schedule head 0 "$H1"
+  schedule head 2 "$H2"
+  schedule reactions 1 "[$(reaction eyes "$(clock_at -5)")]"
+  schedule reviews 3 "[$(review 501 "$H1" "$(clock_at -1)" 'the round on the head before the push')]"
+  NUDGE_ANSWER=502
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "the new head's round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" \
+    "the watch ends on the round about the pushed head"
+  assert_contains "$WATCH_ERR" "1 item(s) NOT about head ${H2:0:7}" "the old head's round scrolled past"
+  assert_eq "$(nudges_posted)" 1 "after exactly one automatic nudge"
+  assert_eq "$(jq -r .body "$FEEDS/posted")" "@codex review
+
+_🤖 Addressed by an automated coding agent_" "a plain top-level request, never a reply quoting it (#472)"
+}
+
+# p1t9 (lukstafi/ocannl-staging#1048): the reviewer never started on a head, no 👀 at all, and
+# "review EXPECTED but not started" cost a window before anyone nudged.
+test_a_head_with_no_eyes_past_its_grace_gets_reviewed() {
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  NUDGE_ANSWER=502
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "the head's round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" \
+    "the watch ends on the round the nudge drew"
+  assert_eq "$(nudges_posted)" 1 "after exactly one automatic nudge"
+  assert_not_contains "$WATCH_OUT" "no review materialized" "the overdue head is not handed back as a verdict"
+}
+
+# The opt-out: the same overdue head, and the watch hands the verdict back with the advice, as it
+# did before #570, having posted nothing.
+test_no_nudge_posts_nothing() {
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  NUDGE_ANSWER=502
+  WATCH_FLAG=--no-nudge
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "the overdue head is a verdict to act on"
+  assert_contains "$WATCH_OUT" "since it became due — consider nudging with a '@codex review' comment" \
+    "the advice is printed instead"
+  assert_eq "$(nudges_posted)" 0 "and nothing is posted"
+}
+
+# A head something already stands for is never nudged: an approval ends the wait as one, and a
+# verdict the state machine does not read as an approval still bars the request -- a no-findings
+# comment for the head with a later reviewer word under it, and the summary's Completed row for
+# the head with its 👀 gone. The control is the same overdue head with neither.
+test_a_head_with_a_verdict_is_never_nudged() {
+  local kind
+  for kind in thumb verdict outlived-verdict completed-row control; do
+    reset_fixture
+    retune GRACE=1
+    HEAD_AT=2026-09-01T00:00:00Z
+    PR_CREATED_AT="$HEAD_AT"
+    case "$kind" in
+    thumb) schedule reactions 1 "[$(head_thumb)]" ;;
+    verdict) schedule comments 1 "[$(stamped_summary 700 "$(clock_at -100)" "$H2" "Codex Review: Didn't find any major issues.")]" ;;
+    outlived-verdict)
+      schedule comments 1 "[$(stamped_summary 700 "$(clock_at -100)" "$H2" "Codex Review: Didn't find any major issues."),$(
+        summary_comment 701 "$(clock_at -50)" 'a later word, about no commit')]"
+      schedule reactions 1 "[$(reaction eyes "$(clock_at -75)")]"
+      ;;
+    completed-row)
+      schedule comments 1 "[$(summary_comment 700 "$(clock_at -100)" "<!-- codex-pull-request-review-summary -->
+| Review | Status | Commit | Review trigger |
+| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"$(clock_at -100)\">x</relative-time> | \`${H2:0:7}\` | New commits |")]"
+      ;;
+    esac
+    run_watch 0,701,0 60 120
+    assert_eq "$WATCH_RC" 0 "$kind: a verdict to act on"
+    case "$kind" in
+    thumb | verdict)
+      assert_contains "$WATCH_OUT" "approved (" "$kind: the approval ends the wait"
+      assert_eq "$(nudges_posted)" 0 "$kind: and nothing is posted over it"
+      ;;
+    control)
+      assert_eq "$(nudges_posted)" 1 "control: the same overdue head with nothing standing is nudged"
+      ;;
+    *)
+      assert_contains "$WATCH_OUT" "review EXPECTED but not started" "$kind: the state machine reads the head as due"
+      assert_contains "$WATCH_OUT" "not nudged automatically ($REVIEWER" "$kind: the request is barred, by name"
+      assert_eq "$(nudges_posted)" 0 "$kind: and nothing is posted"
+      ;;
+    esac
+  done
+}
+
+# Once per head: the watch that posted the nudge waits out its grace and says it drew nothing, and a
+# watch re-armed on its watermark reads the request on the PR and posts no second one. Within one
+# watch the in-process record holds even while the comments feed has not caught up with the post.
+test_a_head_is_nudged_once_across_re_armed_watches() {
+  local mark
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "a nudge that drew nothing is a verdict to act on"
+  assert_eq "$(nudges_posted)" 1 "one nudge"
+  assert_contains "$WATCH_OUT" "this watch's own '@codex review' on head ${H2:0:7}" "the verdict names the nudge it posted"
+  assert_contains "$WATCH_OUT" "a second is never posted automatically" "and says no second follows"
+  assert_contains "$WATCH_ERR" "extending watch" "the window held for the request's grace"
+  mark=$(sed -n 's/^watermark: //p' <<<"$WATCH_OUT" | tail -1)
+  run_watch "$mark" 60 900
+  assert_eq "$WATCH_RC" 0 "the re-armed watch reaches the same verdict"
+  assert_eq "$(nudges_posted)" 1 "and posts no second nudge"
+  assert_contains "$WATCH_OUT" "already stands on head ${H2:0:7}, so the watch posts no second one" \
+    "naming the request that stands"
+  # The feed lagging the post: the rounds after it still read the head as overdue and unasked.
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  HIDE_POSTED=1
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 1 "one nudge however many rounds miss it"
+  assert_contains "$WATCH_ERR" "extending watch" "and its grace, not the stale state's lack of one, bounds the window"
+  assert_contains "$WATCH_OUT" "this watch's own '@codex review' on head ${H2:0:7}" "before the verdict names it"
+}
+
+# A nudge whose POST failed is not retried: it may have landed (the #453 rule for the failed run's
+# re-request), and the verdict says so.
+test_a_nudge_that_did_not_post_is_not_retried() {
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  FAIL_POST=1
+  retune API_ATTEMPTS=4
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "the caller has a move to make"
+  assert_eq "$(nudges_posted)" 1 "the request is sent once whatever its error"
+  assert_contains "$WATCH_OUT" "the automatic '@codex review' nudge for head ${H2:0:7} did not go through" \
+    "and the verdict says it is not known to be on the PR"
+}
+
+# Review of #583, round 1. A commit's date is not its push: an old-dated head reads as overdue the
+# moment it lands, before the reviewer's own automatic round has had a chance to start. The watch
+# holds the nudge until it has itself seen the head for the pickup margin (five minutes): here the
+# 👀 lands at the third round, two minutes in, and the round it starts is what the watch ends on.
+test_an_old_dated_push_gets_the_pickup_margin() {
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  schedule reactions 3 "[$(reaction eyes "$(clock_at 110)")]"
+  schedule reviews 5 "[$(review 502 "$H2" "$(clock_at 230)" 'the automatic round on the push')]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted inside the pickup margin"
+  assert_eq "$WATCH_RC" 0 "the automatic round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502" "and the watch ends on it"
+}
+
+# Review of #583, round 2. The pickup margin holds for a head the verdict's own final poll reads
+# first, too: H1 is held its five minutes and reaches the verdict (round 4, the pause having
+# doubled to 60+120+240s), whose final poll (round 5) reads a new old-dated head H2. H2 gets its
+# own margin, in which the reviewer's automatic round on it starts and lands.
+test_a_head_the_final_poll_reads_first_gets_the_pickup_margin() {
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  schedule head 0 "$H1"
+  schedule head 5 "$H2"
+  schedule reactions 6 "[$(reaction eyes "$(clock_at 470)")]"
+  schedule reviews 7 "[$(review 502 "$H2" "$(clock_at 500)" 'the automatic round on the push')]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted for the head the final poll read first"
+  assert_eq "$WATCH_RC" 0 "the automatic round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the watch ends on it"
+}
+
+# Review of #583, round 5. The write gate reads the draft flag and the mergeability too: a PR made a
+# draft, or conflicted, between the state read and the post is not nudged. The fixture turns the PR
+# into a draft at exactly the gate's read (DRAFT_AT_WRITE_GATE).
+test_a_pr_made_a_draft_at_the_write_gate_is_not_nudged() {
+  reset_fixture
+  retune GRACE=1
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  DRAFT_AT_WRITE_GATE=1
+  run_watch 0,0,0 60 120
+  assert_eq "$(nudges_posted)" 0 "nothing is posted on the draft"
+  assert_contains "$WATCH_OUT" "not nudged automatically: the PR reads a draft, not open" "and the verdict says why"
+}
+
+# Review of #583, round 4. A push landing between the nudge's read and its post: the write gate
+# reads the PR's head with its state, and a head other than the one the nudge was read for is held
+# to its own pickup margin, in which its automatic round lands. Pauses held at the interval: the
+# verdict is at round 6 (300s), its final poll round 7, and H1 arrives at that poll's write gate.
+test_a_push_at_the_write_gate_is_held() {
+  reset_fixture
+  retune REVIEW_POLL_CAP=60
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  PUSH_AT_WRITE_GATE="$H1"
+  schedule reactions 9 "[$(reaction eyes "$(clock_at 410)")]"
+  schedule reviews 10 "[$(review 502 "$H1" "$(clock_at 470)" 'the automatic round on the push')]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted for the head that moved under the gate"
+  assert_eq "$WATCH_RC" 0 "the automatic round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H1:0:7}" "and the watch ends on it"
+}
+
+# Review of #583, round 4. A head read after reads that did not answer is a new arrival too: the
+# branch may have moved and come back unseen. H2 is seen at round 1, the PR read fails for rounds 2
+# to 6, and H2 read again at round 7 (360s, past a margin counted from round 1) gets a margin of its
+# own, in which the automatic round lands.
+test_a_head_read_after_an_outage_gets_the_pickup_margin_again() {
+  reset_fixture
+  retune REVIEW_POLL_CAP=60
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  FAIL_PULLS_FROM=2
+  FAIL_PULLS_UNTIL=6
+  schedule reactions 9 "[$(reaction eyes "$(clock_at 470)")]"
+  schedule reviews 10 "[$(review 502 "$H2" "$(clock_at 530)" 'the automatic round')]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted inside the margin after the outage"
+  assert_eq "$WATCH_RC" 0 "the automatic round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502" "and the watch ends on it"
+}
+
+# Review of #583, round 4. Under --no-nudge a failed run's remedy is the final read's: a request on
+# the head that the final poll is the first to see turns the run into `run-again`, whose line names
+# the move, so the watch does not tell the caller to post a request that already stands.
+test_a_no_nudge_failed_run_takes_its_remedy_from_the_final_read() {
+  local row summary request
+  reset_fixture
+  WATCH_FLAG=--no-nudge
+  HEAD_AT=$(clock_at -300)
+  PR_CREATED_AT=$(clock_at -400)
+  row="| 📝 **Code Review** | ⚠️ **Failed** <relative-time datetime=\"$(clock_at -100)\">x</relative-time> | \`${H2:0:7}\` | New commits |"
+  summary=$(summary_comment 1 "$(clock_at -99)" "<!-- codex-pull-request-review-summary -->
+| Review | Status | Commit | Review trigger |
+| --- | --- | --- | --- |
+$row")
+  request=$(jq -cn --arg at "$(clock_at -200)" '{id:2,user:{login:"me"},created_at:$at,body:"@codex review"}')
+  schedule comments 1 "[$summary]"
+  schedule comments 2 "[$summary,$request]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted"
+  assert_contains "$WATCH_OUT" "reviewer's run FAILED AGAIN on head ${H2:0:7}" "the final read is the verdict"
+  assert_not_contains "$WATCH_OUT" "post it yourself" "and no request is asked for over the one that stands"
+}
+
+# Review of #583, round 3. A head that comes back (H2, then H1, then H2 again: a push back to it)
+# is a new arrival and gets the pickup margin again; H2's first sight, six minutes before, does not
+# count. The pause is held at the interval (a minute) so the rounds fall where the schedule says.
+test_a_returning_head_gets_the_pickup_margin_again() {
+  reset_fixture
+  retune REVIEW_POLL_CAP=60
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  schedule head 0 "$H2"
+  schedule head 2 "$H1"
+  schedule head 7 "$H2"
+  schedule reactions 9 "[$(reaction eyes "$(clock_at 470)")]"
+  schedule reviews 10 "[$(review 502 "$H2" "$(clock_at 530)" 'the automatic round on the push back')]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted inside the returning head's margin"
+  assert_eq "$WATCH_RC" 0 "the automatic round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the watch ends on it"
+}
+
+# Review of #583, round 3. A hold that begins inside an extension already running extends it. The
+# window (a minute) is extended for a live 👀 to that round's grace, 200s in; the round ends without
+# a review of the head at the third round, whose verdict is held to the head's pickup margin, 300s
+# in. The window lasts to the hold, and the nudge and its round follow.
+test_a_hold_inside_an_extension_extends_it() {
+  reset_fixture
+  retune REVIEW_POLL_CAP=60
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  schedule reactions 1 "[$(reaction eyes "$(clock_at -1000)")]"
+  schedule reviews 2 "[$(review 501 "$H1" "$(clock_at -900)" 'the round on another head')]"
+  NUDGE_ANSWER=502
+  run_watch 0,0,0 60 60
+  assert_contains "$WATCH_ERR" "extending watch" "the window was extended for the live round"
+  assert_eq "$(nudges_posted)" 1 "the hold outlasted that extension, and the nudge followed it"
+  assert_eq "$WATCH_RC" 0 "the head's round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the watch ends on it"
+}
+
+# Review of #583, round 3. A PR closed or merged while the watch runs is not nudged: the state
+# machine still reads its head as due, and the PR's own state is the write's last gate.
+test_a_closed_pr_is_not_nudged() {
+  reset_fixture
+  retune GRACE=1
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  PR_STATE=closed
+  run_watch 0,0,0 60 120
+  assert_eq "$(nudges_posted)" 0 "nothing is posted on a closed PR"
+  assert_contains "$WATCH_OUT" "not nudged automatically: the PR reads closed, not open" "and the verdict says why"
+}
+
+# Review of #583, round 1. A request on the head that is younger than its grace is waited out, not
+# reported as one that drew nothing: a watch re-armed on a watermark past a request seconds old
+# (after a transport exit, say) holds the window to that request's grace before it says so.
+test_a_standing_request_holds_the_nudge() {
+  local started ended
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  schedule comments 1 "$(jq -cn --arg at "$(clock_at -10)" \
+    '[{id:700,user:{login:"me"},created_at:$at,body:"@codex review\n\n_🤖 Addressed by an automated coding agent_"}]')"
+  started=$(cat "$SHIP_PR_TEST_CLOCK")
+  run_watch 0,700,0 60 900
+  ended=$(cat "$SHIP_PR_TEST_CLOCK")
+  assert_eq "$(nudges_posted)" 0 "no second request is posted"
+  assert_contains "$WATCH_ERR" "extending watch" "the window is held for the request's grace"
+  [ $((ended - started)) -ge $((GRACE - 10)) ] ||
+    bail "the verdict came $((ended - started))s in, inside the standing request's grace"
+  assert_contains "$WATCH_OUT" "already stands on head ${H2:0:7}, so the watch posts no second one" \
+    "and only then names the request that drew nothing"
+}
+
+# Review of #583, round 1. A draft or a PR that conflicts with its base is not nudged: no review
+# lands it until the move its status line names is made, and the request would be spent on a head
+# that move replaces.
+test_a_draft_or_conflicted_pr_is_not_nudged() {
+  local merge
+  for merge in draft dirty; do
+    reset_fixture
+    retune GRACE=1
+    HEAD_AT=2026-09-01T00:00:00Z
+    PR_CREATED_AT="$HEAD_AT"
+    MERGEABLE_STATE="$merge"
+    run_watch 0,0,0 60 120
+    assert_eq "$WATCH_RC" 0 "$merge: the overdue head is still a verdict"
+    assert_eq "$(nudges_posted)" 0 "$merge: and nothing is posted"
+    assert_contains "$WATCH_OUT" "not nudged automatically: a review of this head cannot land it" \
+      "$merge: the verdict says why"
+  done
+}
+
 tests=(
+  test_a_pr_made_a_draft_at_the_write_gate_is_not_nudged
+  test_a_push_at_the_write_gate_is_held
+  test_a_head_read_after_an_outage_gets_the_pickup_margin_again
+  test_a_no_nudge_failed_run_takes_its_remedy_from_the_final_read
+  test_a_returning_head_gets_the_pickup_margin_again
+  test_a_hold_inside_an_extension_extends_it
+  test_a_closed_pr_is_not_nudged
+  test_a_head_the_final_poll_reads_first_gets_the_pickup_margin
+  test_an_old_dated_push_gets_the_pickup_margin
+  test_a_standing_request_holds_the_nudge
+  test_a_draft_or_conflicted_pr_is_not_nudged
+  test_no_nudge_posts_nothing
+  test_a_head_with_a_verdict_is_never_nudged
+  test_a_head_is_nudged_once_across_re_armed_watches
+  test_a_nudge_that_did_not_post_is_not_retried
+  test_a_push_during_a_live_round_gets_the_new_head_reviewed
+  test_a_head_with_no_eyes_past_its_grace_gets_reviewed
   test_the_about_codex_block_is_folded_to_one_line
   test_what_is_not_the_about_codex_block_renders_as_is
   test_a_quoted_opener_above_the_block_keeps_the_findings

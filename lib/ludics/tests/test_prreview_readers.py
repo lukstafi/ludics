@@ -400,6 +400,77 @@ class StatusState(unittest.TestCase):
         self.assertEqual(st.detail.split("|")[:2], ["aaaaaaa", "git"])
 
 
+def run_nudge(gh: FakeGh) -> state.NudgeRead:
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        return state.nudge_read(ctx(gh), "7")
+
+
+class NudgeRead(unittest.TestCase):
+    """``nudge_read``: what bars the watch's automatic request on the head (ludics-lite#570)."""
+
+    def test_nothing_standing_is_clear(self) -> None:
+        self.assertEqual(run_nudge(feeds(reviews=[review(5, "b" * 40, iso(600))])), state.NudgeClear(HEAD),
+                         "a review of another head stands for nothing here")
+
+    def test_a_request_since_the_head_arrived_is_the_record(self) -> None:
+        asked = comment(9, iso(30), "@codex review", login="me")
+        read = run_nudge(feeds(comments=[asked], head_at=iso(600), created=iso(9000)))
+        self.assertIsInstance(read, state.NudgeBarred)
+        assert isinstance(read, state.NudgeBarred)
+        self.assertTrue(read.asked, read.why)
+        self.assertIn("already stands on head aaaaaaa", read.why)
+        self.assertEqual(run_nudge(feeds(comments=[asked], head_at=iso(10), created=iso(9000))),
+                         state.NudgeClear(HEAD), "a request older than the head's commit was an earlier head's")
+        self.assertEqual(run_nudge(feeds(comments=[asked], head_at=iso(600), created=iso(10))),
+                         state.NudgeClear(HEAD), "and so is one older than the PR")
+        unread = run_nudge(feeds(comments=[asked], head_at="", created=""))
+        self.assertIsInstance(unread, state.NudgeBarred, "with no readable arrival every request counts")
+        quoted = comment(9, iso(30), "Thanks; @codex review was asked for earlier", login="me")
+        self.assertIsInstance(run_nudge(feeds(comments=[quoted], head_at=iso(600))), state.NudgeBarred,
+                              "a quoted summon is a summon to the connector")
+        for at in (None, 7, "", "0broken", "2026-10-12 16:00:00"):
+            undated = {**comment(9, iso(30), "@codex review", login="me"), "created_at": at}
+            self.assertIsInstance(run_nudge(feeds(comments=[undated], head_at=iso(600))), state.NudgeBarred,
+                                  f"a request with no readable time ({at!r}) is still a request")
+        mine = comment(9, iso(30), "@codex review")
+        self.assertEqual(run_nudge(feeds(comments=[mine], head_at=iso(600))), state.NudgeClear(HEAD),
+                         "the reviewer's own words are not a request")
+
+    def test_the_reviewers_word_on_the_head_bars_it(self) -> None:
+        for name, gh in (
+            ("review", feeds(reviews=[review(5, HEAD, iso(60))])),
+            ("verdict", feeds(comments=[comment(5, iso(60), f"Didn't find any major issues.\n\n**Reviewed commit:** `{HEAD[:7]}`")])),
+            ("unread row", feeds(comments=[comment(5, iso(60), (
+                "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n"
+                "| 📝 **Code Review** | ✅ **Completed** at some point | aaaaaaa | New commits |"))])),
+            ("row in another shape", feeds(comments=[comment(5, iso(60), (
+                "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n"
+                f"| 📝 **Code Review** | ⏭️ **Skipped** <relative-time datetime=\"{iso(60)}\">x</relative-time> | `{HEAD[:7]}` | New commits |"))])),
+            ("completed row", feeds(comments=[comment(5, iso(60), (
+                "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n"
+                f"| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"{iso(60)}\">x</relative-time> | `{HEAD[:7]}` | New commits |"))])),
+        ):
+            with self.subTest(name):
+                read = run_nudge(gh)
+                self.assertIsInstance(read, state.NudgeBarred)
+                assert isinstance(read, state.NudgeBarred)
+                self.assertFalse(read.asked, read.why)
+                if name != "unread row":
+                    self.assertIn("aaaaaaa", read.why)
+
+    def test_a_read_that_did_not_answer_bars_it(self) -> None:
+        for endpoint in ("repos/o/r/issues/7/comments?per_page=100", "repos/o/r/pulls/7/reviews?per_page=100",
+                         "repos/o/r/pulls/7"):
+            with self.subTest(endpoint):
+                gh = feeds()
+                gh.down.add(endpoint)
+                read = run_nudge(gh)
+                self.assertIsInstance(read, state.NudgeBarred)
+                assert isinstance(read, state.NudgeBarred)
+                self.assertIn("did not answer", read.why)
+
+
 class BrokenReads(unittest.TestCase):
     """A read of status_state that no feed can break on its own -- an earlier read of the same feed
     takes every shape it would -- still refuses rather than answers when it fails (ludics-lite#89):

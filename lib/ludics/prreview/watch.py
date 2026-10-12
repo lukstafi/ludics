@@ -15,7 +15,16 @@ parent commit (``git show 14f2ca7:ship-pr/scripts/pr-review.sh``); read them bef
 - "keep waiting" is said only while something runs: a live round or a fresh nudge extends the
   window ONCE, to a frozen deadline (handed off once from a nudge's pickup to its review);
 - a `failed` run is re-requested by the watch itself, once per head per process, on a state read
-  fresh after the round, and the request is sent ONCE whatever its error (it may have landed).
+  fresh after the round, and the request is sent ONCE whatever its error (it may have landed);
+- an `expected` verdict -- a 👀 round that ended without a review of the head (a push landed
+  during it), or a head with no 👀 past its grace -- is answered with the watch's own
+  '@codex review' (ludics-lite#570), once per head, when the verdict's re-reads stand and
+  ``state.nudge_read`` finds nothing for the head, its request record included; the watch then
+  waits out that request's grace for the head's round. It is held, not given, while this watch
+  has seen the head for less than ``PICKUP`` (a commit's date is not its push, so an old-dated
+  push reads as overdue the moment it lands), while a request on the head is younger than its
+  grace, and for a draft or a PR that conflicts with its base. ``--no-nudge`` posts nothing, here
+  or for a failed run, and prints the advice instead.
 
 Exit: 0 something to act on (a round, an approval, a verdict); 1 a quiet window; 3 the window, its
 tail or the verdict's re-reads were not observed. The last stdout line is always the watermark.
@@ -35,22 +44,27 @@ from ludics.proc import windows_command_line
 from ludics.prreview import knobs
 from ludics.prreview.budget import pause as budget_pause
 from ludics.prreview.core import (
+    GhFailed,
     GhOk,
     GhSession,
+    GhUnanswered,
     die,
     mark_of,
     pr_arg,
     warn,
 )
-from ludics.prreview.clock import Clock, clock_from_env, fmt_age
+from ludics.prreview.clock import Clock, age_of, clock_from_env, fmt_age
 from ludics.prreview.drift import warn_base_drift
 from ludics.prreview.feeds import Ctx, pr_head_read
 from ludics.prreview.poll import poll
 from ludics.prreview.state import (
+    NudgeBarred,
+    NudgeClear,
     Rounds,
     State,
     approval_gate,
     gated_state,
+    nudge_read,
     review_rounds,
     status_line,
     status_state,
@@ -59,6 +73,23 @@ from ludics.prreview.state import (
 _NUMBER = re.compile(r"[0-9]+")
 _WATERMARK = re.compile(r"[0-9].*,[0-9].*,[0-9].*", re.DOTALL)
 _REQUEST_BODY = "@codex review\n\n_\U0001f916 Addressed by an automated coding agent_"
+_ADVICE = " — consider nudging with a '@codex review' comment"
+_NEW_HEAD = (
+    "read the PR feed (retry --read pr view <pr> --comments), then push a new head (an amend"
+    " suffices: git commit --amend --no-edit && git push --force-with-lease) or hand it to the"
+    " maintainer"
+)
+# end()'s answer when it posted the automatic nudge: the loop goes on, watching the request.
+_NUDGED = -1
+# end()'s answer when its final poll read a head the nudge is held for (a new head, or a request
+# younger than its grace): the loop goes on to ``held_until``.
+_HELD = -2
+# How long this watch must itself have seen a head, with nothing started on it, before it nudges:
+# the evidence a commit's date cannot give that the push is not simply too new for the reviewer's
+# own automatic review. That 👀 lands seconds after a push (on ludics-lite#583, 18s to the
+# connector's first answer, 12s from a request to its 👀); five minutes is the margin, capped by the
+# grace for a grace set shorter.
+PICKUP = 300
 
 
 @dataclass(frozen=True)
@@ -241,7 +272,14 @@ class Polled:
 
 class Watch:
     def __init__(
-        self, ctx: Ctx, pr: str, mark: str, cfg: WatchConfig, round_gap: int, threshold: str
+        self,
+        ctx: Ctx,
+        pr: str,
+        mark: str,
+        cfg: WatchConfig,
+        round_gap: int,
+        threshold: str,
+        nudge: bool = True,
     ) -> None:
         self.ctx = ctx
         self.pr = pr
@@ -260,6 +298,15 @@ class Watch:
         self.state: State = State("unknown", None, "-", "")
         self.rounds_now = Rounds(None, "")
         self.rounds_before = Rounds(None, "")
+        self.nudge = nudge
+        # The heads this process posted its automatic nudge on, and when: the in-process half of
+        # the once-per-head record (the feed is the other, nudge_read), which also covers a comments
+        # feed that has not caught up with the post yet.
+        self.own_nudges: dict[str, int] = {}
+        # When this process first read each head (round()).
+        self.first_seen: dict[str, int] = {}
+        self.last_head = ""
+        self.held_until = 0
 
     # --- the pieces of a round -------------------------------------------------------------------
 
@@ -288,6 +335,13 @@ class Watch:
         head = pr_head_read(self.ctx, self.pr)
         snap.put_head(self.pr, head)
         p.head = head.sha
+        if head.sha and head.sha != self.last_head:
+            # From each arrival: a head that comes back (A, B, A) is a new push of it, and so is
+            # any head read after one that did not read (it may have moved and come back unseen).
+            self.first_seen[head.sha] = self.clock.now()
+            self.last_head = head.sha
+        elif not head.sha:
+            self.last_head = ""
         for entry in result.items.split():
             kind = _upto(entry, ":")
             rest = _after(entry, ":")
@@ -454,8 +508,11 @@ class Watch:
         self.note_past()
         return 0
 
-    def end(self, verdict: str, message: str) -> int:
-        """``watch_end``: the final poll and state re-read before a nothing-is-coming verdict."""
+    def end(self, verdict: str, message: str, remedy: str = "") -> int:
+        """``watch_end``: the final poll and state re-read before a nothing-is-coming verdict. With
+        ``remedy="due"`` (the nothing-is-coming verdicts on a due head), the message gets its
+        remedy, or the verdict is answered with the automatic nudge (``_NUDGED``) or held
+        (``_HELD``); with ``remedy="failed-run"`` (``--no-nudge``), the message is the final read's."""
         before_settle = self.mark
         before_state = self.state
         rc = self.settle()
@@ -507,12 +564,157 @@ class Watch:
             )
             _say(f"watermark: {self.mark}")
             return 1
+        if remedy == "due":
+            # Again on the final poll's own read: a head it read first, or a request it read, holds
+            # the nudge as it would have held the loop's (review of #583, round 2).
+            hold = self.nudge_hold(state)
+            if hold is not None:
+                self.held_until = hold
+                return _HELD
+            move = self.nudge_or_remedy(state, message)
+            if move is None:
+                return _NUDGED
+            if isinstance(move, int):
+                self.held_until = move
+                return _HELD
+            message += move
+        elif remedy == "failed-run":
+            # --no-nudge on a failed run: the remedy is the FINAL read's, since a request landing
+            # in the final poll turns `run` into `run-again`, whose line names the move itself.
+            fsha, _, rest = state.detail.partition("|")
+            message = (
+                f"--no-nudge: the watch did not re-request the failed run on head {fsha}; post it"
+                f" yourself (pr-review.sh comment {self.repo}#{self.pr} '@codex review')"
+                if rest.startswith("run|") else ""
+            )
         self.drift_note()
         if message:
             _say(message)
         _say(f"{self.quiet_line('-')}; status: {self.line(state)}")
         _say(f"watermark: {self.mark}")
         return 0
+
+    def own_nudge(self) -> int | None:
+        """When this process nudged the head the last round read, if it did."""
+        head = self.polled.head
+        return self.own_nudges.get(head) if head else None
+
+    def nudge_or_remedy(self, state: State, verdict: str) -> str | int | None:
+        """The remedy a due head's verdict prints, or None when the watch posted the nudge itself
+        (on an ``expected`` head only: a ``nudged`` one has a request pending, and an ``idle`` one
+        the reviewer's word), or the time to hold to when the head moved under the write gate."""
+        where = f"PR {self.repo}#{self.pr}"
+        own = self.own_nudge()
+        if own is not None:
+            return (
+                f" — this watch's own '@codex review' on head {self.polled.head[:7]},"
+                f" {fmt_age(self.clock.now() - own)} ago, drew no review, and a second is never posted"
+                f" automatically: {_NEW_HEAD}"
+            )
+        if self.nudge and state.tok == "nudged":
+            # A request stood on the head through its grace and drew nothing: the once-per-head
+            # remedy, as for one below the watermark (review of #583, round 6).
+            return f" — a '@codex review' request on this head drew no review in its grace, so no second one: {_NEW_HEAD}"
+        if not self.nudge or state.tok != "expected":
+            return _ADVICE
+        if state.merge in ("dirty", "draft"):
+            return (
+                " — not nudged automatically: a review of this head cannot land it until the"
+                " status below is dealt with (a draft marked ready, a conflict merged), so take"
+                " that move first"
+            )
+        read = nudge_read(self.ctx, self.pr)
+        match read:
+            case NudgeBarred(why=why, asked=asked) if asked:
+                return f" — {why}, so the watch posts no second one: {_NEW_HEAD}"
+            case NudgeBarred(why=why):
+                return f" — not nudged automatically ({why}); consider nudging with a '@codex review' comment"
+            case NudgeClear(head=head):
+                pr_state, now_head = self.write_gate()
+                if pr_state != "open":
+                    return (
+                        f" — not nudged automatically: the PR reads {pr_state or 'UNREAD'}, not open"
+                    )
+                if now_head != head:
+                    # A push since the nudge's read: that head starts its own pickup margin.
+                    if now_head:
+                        self.last_head = now_head
+                        self.first_seen[now_head] = self.clock.now()
+                    return self.clock.now() + min(PICKUP, self.cfg.grace)
+                # Recorded before the post: it is sent once whatever its error (it may have landed).
+                self.own_nudges[head] = self.clock.now()
+                posted, post_err = self.post_request()
+                if not posted:
+                    return (
+                        f" — the automatic '@codex review' nudge for head {head[:7]} did not go"
+                        f" through ({post_err}): read the PR's comments before posting it by hand,"
+                        " since a request that failed ambiguously may have landed"
+                    )
+                warn(
+                    f"{where}: posted '@codex review' on head {head[:7]} — {verdict}, with no"
+                    " review, no verdict, no 👍 and no request on it; one automatic nudge per head"
+                    " (--no-nudge turns it off), watching for the round it asks for"
+                )
+                return None
+            case _:
+                assert_never(read)
+
+    def write_gate(self) -> tuple[str, str]:
+        """The PR's state as the automatic write's last gate reads it fresh, and its head (review
+        of #583, rounds 3 to 5: a PR closed, merged, made a draft or conflicted mid-watch is still
+        `expected`, and a push between the nudge's read and its post would be nudged unheld). The
+        state is ``open`` only for an open, non-draft PR whose mergeability is not ``dirty`` or
+        ``draft``; otherwise it names what it is, "" unread."""
+        result = self.ctx.session.retry(
+            "read",
+            [
+                "api", f"repos/{self.repo}/pulls/{self.pr}", "--jq",
+                '[(.state // "-"), (.head.sha // "-"), (.draft | tostring), (.mergeable_state // "-")] | @tsv',
+            ],
+        )
+        match result:
+            case GhOk(stdout=out):
+                fields = (out.strip().split("\t") + ["", "", "", ""])[:4]
+                state, head, draft, merge = fields
+                head = "" if head in ("", "-") else head
+                if state == "-" or not state:
+                    return "", head
+                if state == "open" and draft == "true":
+                    return "a draft", head
+                if state == "open" and merge in ("dirty", "draft"):
+                    return f"open but mergeable_state={merge}", head
+                return state, head
+            case GhFailed() | GhUnanswered():
+                return "", ""
+            case _:
+                assert_never(result)
+
+    def nudge_hold(self, state: State) -> int | None:
+        """Until when a due head's verdict is held rather than given, when it is: the watch would
+        nudge it (``nudge_or_remedy``) but has seen the head for less than ``PICKUP``, or a request
+        on the head is younger than its grace. Read before ``end`` and its final poll, from the
+        round's own snapshot; ``end`` decides the nudge afresh."""
+        head = self.polled.head
+        if (
+            not self.nudge or state.tok != "expected" or state.merge in ("dirty", "draft")
+            or not head or self.own_nudge() is not None
+        ):
+            return None
+        now = self.clock.now()
+        hold = self.first_seen.get(head, now) + min(PICKUP, self.cfg.grace)
+        if hold > now:
+            return hold
+        read = nudge_read(self.ctx, self.pr)
+        match read:
+            case NudgeBarred(asked=asked) if asked:
+                age = age_of(asked, self.clock.time())
+                if age is not None and age < self.cfg.grace:
+                    return now + self.cfg.grace - age
+                return None
+            case NudgeBarred() | NudgeClear():
+                return None
+            case _:
+                assert_never(read)
 
     def grace_deadline(self, state: State) -> int | None:
         if state.tok not in ("reviewing", "nudged") or state.age is None:
@@ -606,6 +808,11 @@ class Watch:
                     candidate_end = self.grace_deadline(state)
                     candidate_kind = tok
                 self.last_healthy_mark = self.mark
+            own = self.own_nudge()
+            if own is not None and candidate_end is None:
+                # The automatic nudge's grace, while the feed has not caught up with it.
+                candidate_end = own + cfg.grace
+                candidate_kind = "nudged"
 
             if self.polled.on_n > 0:
                 self.act(state)
@@ -626,6 +833,8 @@ class Watch:
                     detail = state.detail
                     fsha = _upto(detail, "|")
                     fkind = _upto(_after(detail, "|"), "|")
+                    if fkind == "run" and rerequested != fsha and not self.nudge:
+                        return self.end(tok, "", remedy="failed-run")
                     if fkind == "run" and rerequested != fsha:
                         posted, post_err = self.post_request()
                         if posted:
@@ -659,24 +868,58 @@ class Watch:
                     else:
                         return self.end(tok, "")
                 case "reviewing" | "expected" | "idle" | "nudged":
+                    verdict = ""
                     if was == "reviewing" and tok != "reviewing" and tok != "nudged":
                         quiet += 1
                         if quiet >= 2:
-                            return self.end(
-                                tok,
-                                f"the 👀 round on {where} ended without a review of the head"
-                                " commit — consider nudging with a '@codex review' comment",
+                            verdict = (
+                                f"the 👀 round on {where} ended without a review of the head commit"
                             )
                     else:
                         quiet = 0
                         was = tok
-                    if tok in ("expected", "nudged") and not (was == "reviewing" and quiet == 1):
-                        if age is not None and age >= cfg.grace:
-                            return self.end(
-                                tok,
-                                f"no review materialized on {where} in the {fmt_age(age)} since"
-                                " it became due — consider nudging with a '@codex review' comment",
+                    if (
+                        not verdict
+                        and tok in ("expected", "nudged")
+                        and not (was == "reviewing" and quiet == 1)
+                    ):
+                        # A head this watch nudged is due from its own request, whatever the feed
+                        # says yet.
+                        due = age
+                        if own is not None:
+                            due = min(due, self.clock.now() - own) if due is not None else self.clock.now() - own
+                        if due is not None and due >= cfg.grace:
+                            verdict = (
+                                f"no review materialized on {where} in the {fmt_age(due)} since it"
+                                " became due"
                             )
+                    hold = self.nudge_hold(state) if verdict else None
+                    if verdict and hold is None:
+                        rc = self.end(tok, verdict, remedy="due")
+                        if rc == _HELD:
+                            hold = self.held_until
+                        elif rc != _NUDGED:
+                            return rc
+                        else:
+                            # The request's grace is the next window; it replaces a deadline already
+                            # fixed, once per head, since the request is a new one.
+                            candidate_end = self.clock.now() + cfg.grace
+                            candidate_kind = "nudged"
+                            if extension_end is not None:
+                                extension_end = candidate_end
+                                extension_kind = "nudged"
+                            was = "nudged"
+                            quiet = 0
+                    if hold is not None:
+                        # Held: the window stays open to the hold, as it does for a fresh nudge, an
+                        # extension already running included (each hold is bounded: the pickup
+                        # margin from a head's first sight, a request's grace from its post).
+                        if candidate_end is None or candidate_end < hold:
+                            candidate_end = hold
+                            candidate_kind = "nudged"
+                        if extension_end is not None and extension_end < hold:
+                            extension_end = hold
+                            extension_kind = "nudged"
                 case _:
                     assert_never(tok)
 
@@ -759,11 +1002,19 @@ def run(session: GhSession, args: list[str], env: Mapping[str, str] | None = Non
     if not args or not args[0]:
         # The shell's `${1:?usage: ...}`: bash's own message, and its exit status 1.
         sys.stdout.flush()
-        sys.stderr.write("pr-review.sh: 1: usage: watch <pr> [watermark]\n")
+        sys.stderr.write("pr-review.sh: 1: usage: watch <pr> [watermark] [--no-nudge]\n")
         return 1
-    mark = args[1] if len(args) > 1 else ""
+    nudge = "--no-nudge" not in args[1:]
+    rest = [a for a in args[1:] if a != "--no-nudge"]
+    # A misspelt opt-out must not leave the writes on: anything but one watermark is refused.
+    for a in rest:
+        if a.startswith("-"):
+            die(f"watch: unknown option '{a}' (usage: watch <pr> [watermark] [--no-nudge])")
+    if len(rest) > 1:
+        die(f"watch: one watermark at most, got {len(rest)} arguments after the PR")
+    mark = rest[0] if rest else ""
     target = pr_arg(args[0], session.config.repo)
     cfg = with_window(cfg, e)
     threshold = "off" if session.config.round_threshold is None else str(session.config.round_threshold)
     ctx = Ctx(session, target.repo, session.config.reviewer, clock_from_env(e), cfg.stall)
-    return Watch(ctx, target.num, mark, cfg, session.config.round_gap, threshold).run()
+    return Watch(ctx, target.num, mark, cfg, session.config.round_gap, threshold, nudge).run()
