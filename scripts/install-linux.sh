@@ -446,7 +446,7 @@ bench_swap() {
     fail "Could not point $BENCH_VENV at $fresh; the previous venv is back in place."
   fi
   for dir in "$BENCH_VENV"-[0-9]* "$BENCH_VENV"-retired-*; do
-    [[ -d $dir && ! -L $dir && $dir != "$fresh" && $dir != "$retired" ]] || continue
+    [[ -d $dir && ! -L $dir && ! $dir -ef $fresh && ! $dir -ef $retired ]] || continue
     rm -rf -- "${dir:?}"
   done
   [[ -z $retired ]] || printf 'Previous benchmark venv kept for rollback: %s\n' "$retired"
@@ -469,7 +469,7 @@ bench_record_requirements() {
 
 bench_link_checkout() {
   local link=$BENCH_CHECKOUT/benchmarks/.venv
-  if [[ -L $link && $(readlink "$link") == "$BENCH_VENV" ]]; then return; fi
+  if [[ -L $link && $link -ef $BENCH_VENV ]]; then return; fi
   if [[ -e $link || -L $link ]]; then
     BENCH_WARNINGS+=("$link is not a symlink to $BENCH_VENV; left as it is.")
   else
@@ -496,6 +496,7 @@ bench_fixtures() {
   done < "$scratch/anchor-fixtures"
   [[ ${#missing[@]} -gt 0 ]] || return 0
   BENCH_STAGE=$(mktemp -d "$dir/.incoming.XXXXXX")
+  BENCH_STAGE=$(CDPATH= cd "$BENCH_STAGE" && pwd -P)
   for name in "${missing[@]}"; do
     scp -q -p "$anchor:$BENCH_ANCHOR_CHECKOUT/benchmarks/fixtures/$name" "$BENCH_STAGE/$name" ||
       fail "Cannot copy $name from $anchor."
@@ -516,7 +517,7 @@ bench_cleanup() {
 }
 
 bench_provision() {
-  local gpu=${1:-} gfx='' spec index torch fresh warning
+  local gpu=${1:-} gfx='' spec index torch stamp fresh warning
   [[ -n $gpu ]] || gpu=$(bench_gpu_detect)
   [[ $gpu != amd ]] || gfx=$(bench_amd_gfx)
   spec=$(bench_torch_spec "$gpu" "$gfx")
@@ -530,7 +531,9 @@ bench_provision() {
   if bench_matches "$BENCH_VENV" "${pins[@]}" && bench_smoke "$BENCH_VENV" "$gpu"; then
     printf 'Benchmark venv already holds the pins and passes the smoke; left unchanged.\n'
   else
-    fresh=$(mktemp -d "$BENCH_VENV-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    fresh=$(mktemp -d "$BENCH_VENV-$stamp.XXXXXX")
+    fresh=$(CDPATH= cd "$fresh" && pwd -P)
     BENCH_FRESH=$fresh
     bench_build "$fresh" "$index" "$torch"
     bench_matches "$fresh" "${pins[@]}" ||
