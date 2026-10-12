@@ -29,9 +29,10 @@ class Registry(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.root)
 
-    def call(self, action: str, payload: object, boxes: str = "mac", slots: str = "") -> tuple[int, Any, str]:
+    def call(self, action: str, payload: object, boxes: str = "mac", slots: str = "",
+             map_spec: str = "") -> tuple[int, Any, str]:
         out, err = io.StringIO(), io.StringIO()
-        argv = ["-", self.root, action, "owner", "token", json.dumps(payload), boxes, slots]
+        argv = ["-", self.root, action, "owner", "token", json.dumps(payload), boxes, slots, map_spec]
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = registry.run(argv)
         return rc, json.loads(out.getvalue()) if out.getvalue() else None, err.getvalue()
@@ -59,6 +60,30 @@ class Registry(unittest.TestCase):
         with open(os.path.join(self.root, "executions", "a.json"), "w") as f:
             f.write("{}")
         self.assertEqual(self.call("list", {"active": True, "compact": True})[0], 1)
+
+    def test_list_host_selects_one_box_an_alias_its_roster_entry(self) -> None:
+        roster, endpoints = "mac rog-nv-linux", "rog rog-nv-linux rog-nv-wsl\n"
+        self.assertEqual(self.call("reserve", request("m", standing=True), boxes=roster)[0], 0)
+        self.assertEqual(self.call("reserve", request("r", standing=True, execution_host="rog-nv-linux"),
+                                   boxes=roster)[0], 0)
+
+        def listed(host: str) -> tuple[int, list[str], str]:
+            rc, out, err = self.call("list", {"active": True, "compact": True, "host": host}, boxes=roster,
+                                     map_spec=endpoints)
+            records: list[dict[str, Any]] = out or []
+            return rc, [r["request_id"] for r in records], err
+
+        self.assertEqual(listed("mac")[:2], (0, ["m"]))
+        for alias in ("rog-nv-linux", "rog", "ROG", "rog-nv-wsl"):
+            self.assertEqual(listed(alias)[:2], (0, ["r"]), alias)
+        rc, _, err = listed("rgo")
+        self.assertEqual(rc, 1)
+        self.assertIn("list --host rgo: no FLEET_BOXES entry (mac rog-nv-linux) is that box", err)
+        # Without a map an alias is its own name: refused, never an empty list read as an idle box.
+        rc, _, _ = self.call("list", {"host": "rog"}, boxes=roster)
+        self.assertEqual(rc, 1)
+        for bad in ({"host": ""}, {"host": 3}, {"active": "yes"}, {"box": "mac"}):
+            self.assertEqual(self.call("list", bad, boxes=roster)[0], 1, bad)
 
 
 if __name__ == "__main__":

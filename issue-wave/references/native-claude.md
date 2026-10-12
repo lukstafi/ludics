@@ -88,9 +88,8 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    with two GPU tokens that a batch declared `--cpu` does not take, four on minix-amd-linux,
    three on tuf-amd-linux, one on a box the spec does not name) and
    refuses while a measurement is outstanding there; a measurement still needs the box to itself through the registry.
-   A refusal naming a *measurement window* means the coordinator is measuring on the box and has
-   suspended the worker's standing reservation until it concludes: the worker keeps working
-   without the batch and retries it once the window closes, with no request.
+   The brief's wrapper adds `--wait-window`, which waits out a coordinator's *measurement
+   window* on the box instead of refusing (SKILL.md, *The brief*, execution handoff).
 2. **Request, for everything else.** A measurement, a cross-box leg, a full suite: the worker
    ends its turn with its final message carrying the block, one per request and each naming one
    execution host, back to back with nothing after the last (ahrefs/ocannl#1168 wrote its four

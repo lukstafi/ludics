@@ -419,7 +419,7 @@ def execution_refresh(cfg: Config, record_text: str) -> None:
 
 # --- the command ---------------------------------------------------------------------------------
 
-LIST_USAGE = "execution list: expected --active or --compact"
+LIST_USAGE = "execution list: expected --active, --compact or --host <box>"
 USAGE = (
     "execution: list, slot -- <command>, hold -- <command>, run|reserve|dispatch|record|reconcile|conclude"
     " <json-file>, window <box> <json-file>, or conclude --from-run|--from-bg-run <run-dir> --request <id>"
@@ -591,15 +591,23 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
     payload = "{}"
     match action:
         case "list":
-            active = compact_view = False
-            for arg in args[1:]:
+            options: dict[str, bool | str] = {"active": False, "compact": False}
+            rest = args[1:]
+            while rest:
+                arg, rest = rest[0], rest[1:]
                 if arg == "--active":
-                    active = True
+                    options["active"] = True
                 elif arg == "--compact":
-                    compact_view = True
+                    options["compact"] = True
+                elif arg == "--host":
+                    # One box's records (ludics-lite#557), an alias selecting its roster entry's:
+                    # the registry reads what is one box off the endpoint map passed below.
+                    if not rest or not rest[0]:
+                        die("execution list: expected a box for --host")
+                    options["host"], rest = rest[0], rest[1:]
                 else:
                     die(LIST_USAGE)
-            payload = json.dumps({"active": active, "compact": compact_view}, separators=(",", ":"))
+            payload = json.dumps(options, separators=(",", ":"))
         case "slot":
             from ludics.fleetworker import slot
 
@@ -630,7 +638,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             die(USAGE)
     source = registry_source()
     map_spec = ""
-    if action in ("reserve", "run", "dispatch", "window"):
+    if action in ("reserve", "run", "dispatch", "window") or (action == "list" and "--host" in args):
         found = endpoint_map(cfg)
         if found is None:
             return 1

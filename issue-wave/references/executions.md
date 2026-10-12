@@ -55,7 +55,7 @@ the slots wherever they are fewer, as `rog-nv-linux=4(gpu=2)`.
 
 The slot count is a RUN-TIME count, and `execution slot` is the single run-time mechanism
 (ludics-lite#160): every correctness run on a box, assigned or standing, is wrapped in
-`fleet-worker.sh execution slot [--wait <seconds>] [--cpu|--gpu] -- <command>` on that box, so the box never
+`fleet-worker.sh execution slot [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] -- <command>` on that box, so the box never
 carries more than its slots however the runs were authorized. A reservation carrying
 `"standing": true` - a correctness record held for a worker's whole life, review waits and idle
 included - consumes no slot; it stays outstanding for everything else, so a measurement still
@@ -130,9 +130,18 @@ the verdict, restores every reservation it suspended to its former state, with t
 (`EXECUTION WINDOW <box>: <id> concluded; restored <id> (<state>), ...` on stderr). While the window is open:
 
 - `execution slot` on the box refuses a batch with `EXECUTION SLOT REFUSED <box>: measurement window
-  <id> is open on <box> ...`, so a worker knows to retry after it closes rather than to debug or to
+  <id> is open on <box> ...`, so a caller knows to retry after it closes rather than to debug or to
   request; the measurement's own run is admitted inside its `hold --request`, as
-  [above](#exclusivity-and-the-run-time-slots).
+  [above](#exclusivity-and-the-run-time-slots). `execution slot --wait-window[=<seconds>]`
+  (ludics-lite#557; an hour when no bound is given) waits for the measurement instead, a window
+  or not: it names the measurement, its box and its coordinator once (`EXECUTION SLOT <box>:
+  measurement window <id> holds <box> (coordinator ...)`), says it is still waiting every 60
+  seconds, re-reads the registry every `FLEET_SLOT_WINDOW_POLL` seconds (15), and refuses at
+  its bound with `... still holds <box> after <n>s (--wait-window)`; once nothing is outstanding
+  it waits for a slot as `--wait` says, each wait with its own bound. A measurement on another
+  box never makes it wait, and it does not wait inside a measurement's hold (it would wait for
+  its own measurement). It is a flag of its own rather than a wider `--wait`, so a runner's
+  nested slot that relies on the immediate refusal is never parked for a whole window.
 - a standing reservation taken on the box is queued into the window - admitted straight into
   `suspended` and restored with the others - so a worker's launch never waits for a window;
 - a suspended reservation takes no dispatch, record or reconcile (the window owns its state), but
@@ -142,7 +151,9 @@ the verdict, restores every reservation it suspended to its former state, with t
   relies on, and gives each request its own record, assignment and conclusion.
 
 `execution list --active --compact` shows a suspended reservation by its state and its
-`suspended_by`. A retried `window` with the same payload never dispatches twice: it suspends any
+`suspended_by`, and `--host <box>` narrows any listing to one box's records - an alias, such as
+`rog` for `rog-nv-linux`, selecting its roster entry's by the endpoint map, and a name that is no
+roster box refused - which is the read for "is a window open on this box". A retried `window` with the same payload never dispatches twice: it suspends any
 standing reservation still outstanding there and prints the record. A standing reservation queued
 into a window is not followed by the usual [refresh](#reserve-launch-observe-conclude) of the box,
 which is measuring: `REFRESH DEFERRED <box>` names the refresh to run once the window concludes.
@@ -436,11 +447,11 @@ cap, and `execution list` shows the exemption as a field. Only a correctness res
 carry it, and only as `true`. In exchange the worker wraps each batch in the run-time lock:
 
 ```
-fleet-worker.sh execution slot -- tools/test-run.sh run <alias> -j 4
+fleet-worker.sh execution slot --wait-window -- tools/test-run.sh run <alias> -j 4
 ```
 
-which blocks until one of the box's slots is free (`--wait`, default 600 seconds, then a
-refusal), runs the batch under it, and returns the batch's own status. The `-j 4` is mac-studio's
+which waits out a measurement window on the box (`--wait-window`, below), blocks until one of
+the box's slots is free (`--wait`, default 600 seconds, then a refusal), runs the batch under it, and returns the batch's own status. The `-j 4` is mac-studio's
 width. On a native GPU box, omit it for a GPU batch: an explicit `-j` wins over the per-slot
 width `tools/test-run.sh` injects there (ahrefs/ocannl#1033), so `-j 4` would halve rog's `-j 8`.
 A batch that holds no GPU adds `--cpu` before the `--`, which on rog-nv-linux lets it run beside
@@ -451,9 +462,9 @@ request/assign/report round-trips parked three workers idle between review round
 
 A measurement on the worker's agent host suspends this reservation for as long as it runs: the
 coordinator opens it as a [measurement window](#exclusivity-and-the-run-time-slots), the record's
-state is `suspended` meanwhile, and every batch on the box is refused naming the window. The worker
-retries the batch once the window closes, with no request. A standing reservation taken while a
-window is open is admitted suspended, and restored with the others.
+state is `suspended` meanwhile, and a batch on the box waits for the window under the brief's
+`execution slot --wait-window` (or is refused naming it without that flag). A standing
+reservation taken while a window is open is admitted suspended, and restored with the others.
 
 ## Native handoffs
 
