@@ -34,10 +34,14 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   ~/.claude/skills/issue-wave/scripts/bg-run.sh wait <dir>
   ```
 
-  `wait` ends before the cap by itself (`--within`, default 540 s) and prints one verdict; its
-  exit code says the same. `rc=<n>` (exit 0): the command finished with status `<n>`, and its
+  `wait` blocks for its whole bound, `--within`, default 540 s so it ends under the 600 s cap,
+  unless the run settles first, and prints one line led by its verdict; its exit code says the
+  same. While it blocks it writes a `bg-run: still waiting after <e> s ...` line to stderr every
+  120 s. `rc=<n>` (exit 0): the command finished with status `<n>`, and its
   output is `<dir>/log`. The status is a file of its own, so a review body quoting `rc=` cannot
-  end the wait. `RUNNING` (3): re-issue it. `STARTING` (4): no pid within a minute of the wait:
+  end the wait. `RUNNING after <e> s of --within <w>` (3): the bound was spent with the run still
+  live, the designed return: re-issue it (an `<e>` under `<w>` is a bug worth reporting). A
+  slow CI takes several of these. `STARTING` (4): no pid within a minute of the wait:
   re-issue it once, and a second one means the launch itself failed, so spawn again. `DIED` (5):
   the run was killed before the command returned, which says nothing about what the command was
   reading: re-arm it, and for `merge --wait` first re-read the merge state as ship-pr's *The
