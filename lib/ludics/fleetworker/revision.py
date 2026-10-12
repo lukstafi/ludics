@@ -12,9 +12,9 @@ worker's EXECUTION_REQUEST says so), and the evidence a conclusion cites is the 
 reads on GitHub, so "GitHub has this commit in that repository" is the property worth holding.
 ``--observed-from <checkout>`` reads ``git rev-parse HEAD`` on the execution host instead of a SHA
 copied by hand, which removes the typo; it is still asked of GitHub, since the checkout named may be
-another repository's. ``conclude --from-run`` asks nothing of GitHub:
-its far side already refuses a ``--sha`` its run's checkout does not contain (``git cat-file -e``),
-which is resolution in a clone of the repository, and a record's launch ``head`` must equal it.
+another repository's. ``conclude --from-run`` checks its ``--sha`` on GitHub too, for the same reason
+(a box holds several repositories' runs), beside its far side's own checks: the run's checkout must
+contain it (``git cat-file -e``), and a record's launch ``head`` must equal it.
 
 Outcomes. A commit GitHub answers for is accepted. ``No commit found for SHA: <sha>`` (HTTP 422; a
 422 without it is GitHub calling the endpoint spammed) refuses, exit 1, naming the SHA and the
@@ -29,7 +29,7 @@ pushed only to a fork resolves through the parent's name, which this check accep
 
 What is read, and nothing else (a fail-closed allowlist for what counts as a commit claim):
   - ``observed_sha`` of a dispatch, record, reconcile or conclude payload, ``--sha`` of ``conclude
-    --from-bg-run``, and the HEAD ``--observed-from`` reads, when shaped as the registry's exact
+    --from-run`` and ``--from-bg-run``, and the HEAD ``--observed-from`` reads, when shaped as the registry's exact
     object ID (40 or 64 lowercase hex); and the record's own ``observed_sha`` when a conclusion
     names none and so inherits it. Any other value is left to the registry, which refuses it on
     shape.

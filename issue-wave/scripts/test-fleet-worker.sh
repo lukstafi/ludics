@@ -1980,13 +1980,17 @@ expect "evidence read on a box other than the reserved one is refused by the reg
 "$FW" execution list | grep -c '"state": "launching"' | grep -qx 2 && ok "every refusal left the assignments dispatched, not concluded" || ko "a refusal changed a record"
 : > "$SHIM_GH_COMMIT_LOG"
 expect "a passed run concludes with its verdict, log, checkout, handle and revision, on the reserved box by default" 0 '"verdict": "pass"' -- "${FWX[@]}" execution conclude --from-run "$run1" --request run-a --sha "$ran"
-[ -s "$SHIM_GH_COMMIT_LOG" ] && ko "--from-run asked GitHub, though its checkout's cat-file -e is the check: $(cat "$SHIM_GH_COMMIT_LOG")" ||
-  ok "...asking GitHub nothing: the checkout containing --sha is the revision check (ludics-lite#561)"
+grep -qx "repos/o/r/commits/$ran" "$SHIM_GH_COMMIT_LOG" && ok "...its --sha checked on GitHub in the request's repository (ludics-lite#561)" ||
+  ko "--from-run's --sha was not checked on GitHub: $(cat "$SHIM_GH_COMMIT_LOG")"
 for want in "\"observed_sha\": \"$ran\"" "\"remote_checkout\": \"$wt\"" "\"handle\": \"test-run:20260915T201414Z-1\"" "\"log\": \"$run1/log\"" "exit 0 published"; do
   grep -Fq -- "$want" <<<"$out" && ok "...recorded $want" || ko "missing $want in $out"
 done
 jq -e '.history[-1].data | has("execution_host") | not' <<<"$out" >/dev/null && ok "...and the box check left no field behind" || ko "the box bound to the evidence leaked into the record: $out"
 grep -Fq "the record has no head or dirty" <<<"$out" && ok "...and says the record named no revision of its own" || ko "a record without head/dirty concluded silently: $out"
+"${FWX[@]}" execution run "$(reqjson run-gh)" >/dev/null 2>&1 || ko "could not reserve run-gh (setup)"
+expect "--from-run refuses a --sha its checkout holds but the request's repository does not (another repository's run)" 1 "EXECUTION REFUSED: --sha $ran is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$ran" "${FWX[@]}" execution conclude --from-run "$run1" --request run-gh --sha "$ran" --box testbox
+fixture_done run-gh
 run_conclude() { local id="$1" dir="$2"; shift 2; "${FWX[@]}" execution run "$(reqjson "$id")" >/dev/null && "${FWX[@]}" execution conclude --from-run "$dir" --request "$id" --sha "$ran" "$@"; }
 expect "a capped run concludes as timeout" 0 '"verdict": "timeout"' -- run_conclude run-b "$runs/20260915T201414Z-3"
 expect "a red run concludes as fail, with the given evidence" 0 '"evidence": "sweep red on scans; the record has no head or dirty' -- run_conclude run-c "$runs/20260915T201414Z-4" --evidence "sweep red on scans"
@@ -2204,6 +2208,13 @@ expect "an abbreviated requested_revision is refused before GitHub is asked" 1 "
   "${FWR[@]}" execution reserve "$(rv_req rv-short f8e0721f0)"
 grep -q f8e0721f0 "$SHIM_GH_COMMIT_LOG" && ko "an abbreviation was sent to GitHub" || ok "...without a GitHub call"
 : > "$SHIM_GH_COMMIT_LOG"
+# `run` dispatches a record still reserved: one reserved before this check existed (staged here by
+# reserving while GitHub still answers for the SHA) is checked then, not waved through as a retry.
+"${FWR[@]}" execution reserve "$(rv_req rv-old "$typo")" >/dev/null 2>&1 || ko "could not reserve rv-old (setup)"
+expect "run of a reservation still reserved checks its requested_revision" 1 "requested_revision $typo is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution run "$(rv_req rv-old "$typo")"
+[ "$(state_of rv-old)" = reserved ] && ok "...and does not dispatch it" || ko "rv-old was dispatched: $(state_of rv-old)"
+fixture_done rv-old
 expect "a SHA with a note is read word by word, and its SHA checked" 0 '"state": "launching"' -- "${FWR[@]}" execution run "$(rv_req rv-note "$good plus working diff")"
 grep -qx "repos/o/r/commits/$good" "$SHIM_GH_COMMIT_LOG" && ok "...in the request's repository" || ko "wrong or no GitHub call: $(cat "$SHIM_GH_COMMIT_LOG")"
 fixture_done rv-note

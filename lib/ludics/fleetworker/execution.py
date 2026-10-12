@@ -630,7 +630,15 @@ def checked_request(cfg: Config, payload: str, action: str) -> None:
         return
     if action == "window":
         decoded = cast(dict[str, Any], decoded).get("request") if isinstance(decoded, dict) else None
-    fail(revision.request_refusal(decoded, gh_timeout(cfg), lambda request: record_to_check(cfg, request) is not None))
+    fail(revision.request_refusal(decoded, gh_timeout(cfg), lambda request: held(cfg, request, action)))
+
+
+def held(cfg: Config, request: str, action: str) -> bool:
+    """Whether the registry's own retry rule answers this request id: it holds the id, and the
+    action cannot newly dispatch it -- `run` dispatches a record still reserved (one taken before
+    this check existed, say), so that one is checked."""
+    record = record_to_check(cfg, request)
+    return record is not None and not (action == "run" and record.get("state") == "reserved")
 
 
 def from_run_payload(cfg: Config, args: list[str]) -> str:
@@ -660,6 +668,12 @@ def from_run_payload(cfg: Config, args: list[str]) -> str:
         if not box:
             cli.say(f"EXECUTION REFUSED: unknown request_id {request} (no execution host to read the run on)")
             raise cli.Exit(1)
+    else:
+        record = record_to_check(cfg, request)
+    # The run's checkout must contain --sha (the far side's cat-file), but a box can hold several
+    # repositories' runs: the SHA must also be a commit of the request's repository.
+    if record is not None and record.get("state") != "concluded":
+        fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "--sha", sha, gh_timeout(cfg)))
     return concluded(conclude_from_run(cfg, run_dir, request, box, sha, values.get("--evidence", "")))
 
 

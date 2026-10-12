@@ -414,10 +414,9 @@ and a nonempty `dirty` is refused with its path count, since a run over uncommit
 evidence for no commit (conclude one deliberately with a JSON payload whose evidence says so).
 A record with neither (an older run, or no checkout) concludes on `--sha` from the worker's
 result line and says so in the evidence; one file without the other is malformed and refused.
-A checkout whose head has moved on since is noted in the evidence. `--sha` is checked there and
-not on GitHub: the far side's `git cat-file -e` in the run's checkout is resolution in a clone of
-the repository, and a launch record's `head` must equal it, so the record names its revision and
-the checkout proves it exists. It
+A checkout whose head has moved on since is noted in the evidence. `--sha` is also checked on
+GitHub in the request's repository, as every revision is (a box holds several repositories' runs,
+and the checkout containing a SHA says nothing about which repository it is). It
 refuses a record without a verdict and a run the checkout's own `tools/test-run.sh status` does
 not call finished. The run directory is read on the reservation's execution host, resolved from
 the registry when `--box` is omitted; the conclusion names the box it read, and the registry
