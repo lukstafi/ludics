@@ -424,10 +424,13 @@ round ended without reviewing it (a push landed during the round, so the round w
 or it has no 👀 past the grace — and nothing stands for it (no review, no verdict, no 👍, no
 Completed row, and no `@codex review` on the PR since the head arrived, a hand nudge included),
 `watch` posts a plain top-level `@codex review` itself and keeps watching that request's grace, so
-the window ends on the head's round. The request on the PR is the once-per-head record: a re-armed
-watch reads it and posts no second one. If the nudge draws nothing, or a request already stood, the
-line says so and names the next move: read the feed, then push a new head (an amend suffices) or
-hand it to the maintainer. A nudge posted on a thumbs-up for the head would clear it, and these
+the window ends on the head's round. It holds the nudge until it has itself seen the head for five
+minutes with nothing started (a commit's date is not its push, so an old-dated push reads as
+overdue the moment it lands), and while a request on the head is younger than its grace; it never
+nudges a draft or a PR that conflicts with its base. The request on the PR is the once-per-head
+record: a re-armed watch reads it and posts no second one. If the nudge draws nothing, or a request
+already stood past its grace, the line says so and names the next move: read the feed, then push a
+new head (an amend suffices) or hand it to the maintainer. A nudge posted on a thumbs-up for the head would clear it, and these
 reads are what rule that out; they are the same final poll and state re-read below. Pass
 `--no-nudge` (`watch <pr> [watermark] --no-nudge`) to post nothing, the failed run's re-request
 included: the line then names the remedy, a plain `pr-review.sh comment <owner>/<repo>#<pr>

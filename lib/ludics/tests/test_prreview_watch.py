@@ -306,6 +306,16 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("PR 7 was given with no repository", done.stderr)
         self.assertEqual(self.calls(), [])
 
+    def test_a_misspelt_opt_out_is_refused_before_any_read(self) -> None:
+        # Review of #583, round 1: a watch told not to write must not write because of a typo.
+        self.quiet_pr()
+        for args in (["0,0,0", "--no-nudeg"], ["--no-nuge"], ["0,0,0", "1,1,1"]):
+            with self.subTest(args=args):
+                done = self.run_cmd([PR_REVIEW], "watch", "o/r#7", *args)
+                self.assertEqual(done.returncode, 2, done.stderr)
+                self.assertIn("watch:", done.stderr)
+        self.assertEqual(self.calls(), [])
+
     def test_a_missing_pr_is_bashs_usage_exit(self) -> None:
         done = self.run_cmd([PY, "-m", "ludics.prreview"], "watch")
         self.assertEqual((done.returncode, done.stderr), (1, "pr-review.sh: 1: usage: watch <pr> [watermark] [--no-nudge]\n"))

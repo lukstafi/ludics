@@ -521,11 +521,12 @@ class NudgeClear:
 
 @dataclass(frozen=True)
 class NudgeBarred:
-    """Something stands for the head, or could not be read. ``asked`` is True when what stands is
-    a request already made on it (the move after that is a new head, not a second request)."""
+    """Something stands for the head, or could not be read. ``asked`` is the time of the newest
+    request already made on it when that is what stands ("" otherwise): the move after one is to
+    wait out its grace, and then a new head, never a second request."""
 
     why: str
-    asked: bool = False
+    asked: str = ""
 
 
 type NudgeRead = NudgeClear | NudgeBarred
@@ -576,11 +577,14 @@ def nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
     floor = _arrival_floor(ctx, _commit_read(ctx, head.sha), head.created)
     try:
         since = [a for a in asked if ge(a, floor)]
-        standing = jstr(alt(jmax(since), "")) or "an unread time"
+        standing = jstr(alt(jmax(since), ""))
     except JqError:
         return NudgeBarred("the review-request comments feed did not parse")
     if since:
-        return NudgeBarred(f"a '@codex review' request at {standing} already stands on head {short}", True)
+        return NudgeBarred(
+            f"a '@codex review' request at {standing or 'an unread time'} already stands on head {short}",
+            standing or "-",
+        )
     return NudgeClear(head.sha)
 
 

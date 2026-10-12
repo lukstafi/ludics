@@ -814,8 +814,11 @@ test_a_withheld_verdict_quotes_the_final_poll_s_error() {
 test_an_approval_landing_during_the_final_poll_drops_the_verdict() {
   reset_fixture
   retune GRACE=1
-  schedule reactions 2 "[$(head_thumb)]"
+  # Round 1 holds the due verdict for the pickup margin (min(PICKUP, GRACE): a second), round 2
+  # reaches it, and round 3 is its final poll.
+  schedule reactions 3 "[$(head_thumb)]"
   run_watch 0,0,0 5 1
+  assert_eq "$(nudges_posted)" 0 "no nudge is posted over the 👍"
   assert_eq "$WATCH_RC" 0 "an approved PR is something to act on"
   assert_contains "$WATCH_OUT" "the 👍 landed while it was being read" "and the line says why"
   assert_contains "$WATCH_OUT" "approved (👍 from" "the approval is what the caller reads"
@@ -828,8 +831,10 @@ test_an_approval_landing_during_the_final_poll_drops_the_verdict() {
 test_a_state_that_moved_drops_the_verdict_as_quiet() {
   reset_fixture
   retune GRACE=1
-  schedule reactions 2 "[$(reaction eyes "$(clock_at -5)")]"
+  # Round 3 is the verdict's final poll (the pickup margin holds round 1).
+  schedule reactions 3 "[$(reaction eyes "$(clock_at -5)")]"
   run_watch 0,0,0 5 1
+  assert_eq "$(nudges_posted)" 0 "no nudge is posted over the new round"
   assert_eq "$WATCH_RC" 1 "a round that just started is a quiet window, not a verdict"
   assert_contains "$WATCH_OUT" "the state moved to 'reviewing'" "and the line says what it moved to"
   assert_not_contains "$WATCH_OUT" "no review materialized" "no nudge over a round in flight"
@@ -845,8 +850,9 @@ test_a_state_that_could_not_be_re_read_withholds_the_verdict() {
   # while the re-read behind it lands in `unknown`.
   reset_fixture
   retune GRACE=1
-  FAIL_PULLS_FROM=2
+  FAIL_PULLS_FROM=3 # the verdict's final poll (the pickup margin holds round 1)
   run_watch 0,0,0 5 1
+  assert_eq "$(nudges_posted)" 0 "nothing is posted on a state that did not read"
   assert_eq "$WATCH_RC" 3 "an unreadable state is not 'the reviewer stayed quiet'"
   assert_contains "$WATCH_OUT" "is WITHHELD" "and the verdict is withheld"
 }
@@ -1199,10 +1205,13 @@ test_a_nudge_buys_exactly_one_window() {
   assert_contains "$WATCH_OUT" "no review materialized" "the overdue verdict remains available"
 }
 
+# The advice path's clock (`--no-nudge`): with the default, a quoted summon is a request the
+# connector answers, and its grace holds the automatic nudge (test_a_standing_request_holds_the_nudge).
 test_an_ordinary_reply_or_old_nudge_does_not_reset_grace() {
   local body
   for body in 'Thanks, @codex review was requested earlier' '@codex review'; do
     reset_fixture
+    WATCH_FLAG=--no-nudge
     HEAD_AT=2026-09-01T00:00:00Z
     PR_CREATED_AT="$HEAD_AT"
     local at
@@ -1972,7 +1981,7 @@ test_an_approval_landing_in_the_final_poll_is_checked_too() {
   # as any approval does, so it is checked for open threads the same way.
   reset_fixture
   retune GRACE=1
-  schedule reactions 2 "[$(head_thumb)]"
+  schedule reactions 3 "[$(head_thumb)]" # the verdict's final poll, after the pickup margin
   schedule threads 1 "[$(review_thread 4053098120 false)]"
   run_watch 0,0,0 5 1
   assert_eq "$WATCH_RC" 0 "an approval is something to act on"
@@ -2220,7 +2229,66 @@ test_a_nudge_that_did_not_post_is_not_retried() {
     "and the verdict says it is not known to be on the PR"
 }
 
+# Review of #583, round 1. A commit's date is not its push: an old-dated head reads as overdue the
+# moment it lands, before the reviewer's own automatic round has had a chance to start. The watch
+# holds the nudge until it has itself seen the head for the pickup margin (five minutes): here the
+# 👀 lands at the third round, two minutes in, and the round it starts is what the watch ends on.
+test_an_old_dated_push_gets_the_pickup_margin() {
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  schedule reactions 3 "[$(reaction eyes "$(clock_at 110)")]"
+  schedule reviews 5 "[$(review 502 "$H2" "$(clock_at 230)" 'the automatic round on the push')]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 0 "nothing is posted inside the pickup margin"
+  assert_eq "$WATCH_RC" 0 "the automatic round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=502" "and the watch ends on it"
+}
+
+# Review of #583, round 1. A request on the head that is younger than its grace is waited out, not
+# reported as one that drew nothing: a watch re-armed on a watermark past a request seconds old
+# (after a transport exit, say) holds the window to that request's grace before it says so.
+test_a_standing_request_holds_the_nudge() {
+  local started ended
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  schedule comments 1 "$(jq -cn --arg at "$(clock_at -10)" \
+    '[{id:700,user:{login:"me"},created_at:$at,body:"@codex review\n\n_🤖 Addressed by an automated coding agent_"}]')"
+  started=$(cat "$SHIP_PR_TEST_CLOCK")
+  run_watch 0,700,0 60 900
+  ended=$(cat "$SHIP_PR_TEST_CLOCK")
+  assert_eq "$(nudges_posted)" 0 "no second request is posted"
+  assert_contains "$WATCH_ERR" "extending watch" "the window is held for the request's grace"
+  [ $((ended - started)) -ge $((GRACE - 10)) ] ||
+    bail "the verdict came $((ended - started))s in, inside the standing request's grace"
+  assert_contains "$WATCH_OUT" "already stands on head ${H2:0:7}, so the watch posts no second one" \
+    "and only then names the request that drew nothing"
+}
+
+# Review of #583, round 1. A draft or a PR that conflicts with its base is not nudged: no review
+# lands it until the move its status line names is made, and the request would be spent on a head
+# that move replaces.
+test_a_draft_or_conflicted_pr_is_not_nudged() {
+  local merge
+  for merge in draft dirty; do
+    reset_fixture
+    retune GRACE=1
+    HEAD_AT=2026-09-01T00:00:00Z
+    PR_CREATED_AT="$HEAD_AT"
+    MERGEABLE_STATE="$merge"
+    run_watch 0,0,0 60 120
+    assert_eq "$WATCH_RC" 0 "$merge: the overdue head is still a verdict"
+    assert_eq "$(nudges_posted)" 0 "$merge: and nothing is posted"
+    assert_contains "$WATCH_OUT" "not nudged automatically: a review of this head cannot land it" \
+      "$merge: the verdict says why"
+  done
+}
+
 tests=(
+  test_an_old_dated_push_gets_the_pickup_margin
+  test_a_standing_request_holds_the_nudge
+  test_a_draft_or_conflicted_pr_is_not_nudged
   test_no_nudge_posts_nothing
   test_a_head_with_a_verdict_is_never_nudged
   test_a_head_is_nudged_once_across_re_armed_watches
