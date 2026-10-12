@@ -1270,6 +1270,14 @@ expect "a real server whose git gets no credential refuses, and names kill-serve
 expect "a real server whose credential is another account's refuses" 1 "the running tmux server on testbox gives a new session a GitHub credential that does not work (gh api user answers as other-user, not as shim-user)" -- \
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
 "$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
+# A server still holding the token every session used to export (ludics-lite#567): its credential
+# works, so nothing refuses, but a CLI worker started there hands it to every process it starts.
+"${fresh[@]}" GH_TOKEN=ghp_dead "$REAL_TMUX" -L "$envsock" new-session -d -s iw-real 'sleep 60'
+expect "a real server that still gives new sessions GH_TOKEN is noted, with the restart" 0 "PREFLIGHT OK testbox skills=[0-9a-f]* (a new session of the running tmux server on testbox gets GH_TOKEN, so a CLI worker started now hands the fleet PAT to every process it starts: wait for its live worker session(s) (iw-real; .*; ludics-lite#567)$" -- \
+  "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
+expect "...and not when this session exports one too (its own export is the cause)" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
+  "${fresh[@]}" GH_TOKEN=ghp_dead FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
+"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
 # No server running: the worker's session starts one from this shell, run by tmux's default shell,
 # whose startup can change the credential (zsh's ~/.zshenv sources env.sh on the anchor). A default
 # shell that exports a dead one is refused though this shell's passes, and the probe's server exits
@@ -1282,6 +1290,10 @@ for _ in $(seq 1 30); do "$REAL_TMUX" -L "$nosock" list-sessions >/dev/null 2>&1
 "$REAL_TMUX" -L "$nosock" list-sessions >/dev/null 2>&1 && ko "the probe left a tmux server running on $nosock" || ok "...and the server the probe started exits with it"
 expect "...while a default shell that leaves it alone passes" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
   "${fresh[@]}" SHELL="$(command -v bash)" FLEET_TMUX_SOCKET="$nosock" "$FW" preflight testbox --no-probe --no-cross
+"$REAL_TMUX" -L "$nosock" kill-server 2>/dev/null
+printf '#!/usr/bin/env bash\nexport GITHUB_TOKEN=ghp_dead\nexec bash "$@"\n' > "$TMP/tokshell"; chmod +x "$TMP/tokshell"
+expect "...and one whose startup exports a token is noted, naming the variable" 0 "PREFLIGHT OK testbox skills=[0-9a-f]* (a tmux server started from this session on testbox gives a new session GITHUB_TOKEN: its default shell's startup files export it" -- \
+  "${fresh[@]}" SHELL="$TMP/tokshell" FLEET_TMUX_SOCKET="$nosock" "$FW" preflight testbox --no-probe --no-cross
 "$REAL_TMUX" -L "$nosock" kill-server 2>/dev/null
 # A preflight killed outright (no trap runs) while its probe session is live: the probe ends that
 # session itself, so a remain-on-exit server keeps no dead fw-ghprobe-* session.

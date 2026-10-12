@@ -384,6 +384,8 @@ gh_probe_write() {
   { printf '%s\n' 'set -u'; declare -f bounded; cat <<'PROBE'
 d="$1" t="$2"
 cd / || exit 1
+# Which token variables this session carries, by name alone (ludics-lite#567).
+{ [ -z "${GH_TOKEN:-}" ] || echo GH_TOKEN; [ -z "${GITHUB_TOKEN:-}" ] || echo GITHUB_TOKEN; } > "$d/env.out"
 if command -v gh >/dev/null 2>&1; then
   GH_PROMPT_DISABLED=1 bounded "$t" gh api --hostname github.com user -q .login > "$d/gh.out"; echo "$?" > "$d/gh.rc"
 else echo 127 > "$d/gh.rc"; fi
@@ -410,13 +412,17 @@ PROBE
   } > "$1"
 }
 # gh_read <dir>: ghst is ok, nogh, down, refused or none (no result at all), ghlast what gh said;
+# ghenv the token variables the probe's session carried (names, " and "-joined);
 # gitst ok, down, rejected, other (another account's), or none/nocred (no credential), gitwhy what
 # git or GitHub said. A
 # GitHub that did not answer is gh's "error connecting to" or an HTTP 5xx; any other failure refuses.
 gh_read() {
-  local ghrc gitrc ghout gitout
+  local ghrc gitrc ghout gitout v
   ghrc=$(cat "$1/gh.rc" 2>/dev/null); gitrc=$(cat "$1/git.rc" 2>/dev/null)
   ghout=$(cat "$1/gh.out" 2>/dev/null); gitout=$(cat "$1/git.out" 2>/dev/null)
+  ghenv=""; [ ! -r "$1/env.out" ] || while IFS= read -r v; do
+    case "$v" in GH_TOKEN|GITHUB_TOKEN) ghenv="${ghenv:+$ghenv and }$v" ;; esac
+  done < "$1/env.out"
   ghlast=$(printf '%s\n' "$ghout" | sed '/^[[:space:]]*$/d' | tail -n1 | sed 's/^.*}gh: /gh: /' | cut -c1-120)
   case "$ghrc" in
     '') ghst=none; ghlast="no result" ;;
@@ -459,10 +465,13 @@ gh_verdict() {
 # as the account this shell's probe proved: <login>, or with none given this shell is probed first
 # (a resume has no preflight in front of it, and a launch's preflight ran minutes earlier in another
 # shell). Returns 1 with tmux_gh_msg set on a failure; tmux_gh_down says GitHub did not answer.
+# tmux_gh_envmsg, set whatever it returns, says the new session carries a GitHub token variable
+# (ludics-lite#567: a CLI worker started there hands the PAT to every process it starts); the
+# preflight notes it when this session itself exports none.
 # The session is not iw-*, so no `ls` reads it as a worker.
 tmux_gh_check() {
   local want="${1:-}" pf pd ps perr waited srv="" had=1
-  tmux_gh_msg=""; tmux_gh_down=""
+  tmux_gh_msg=""; tmux_gh_down=""; tmux_gh_envmsg=""
   pf=$(mktemp "${TMPDIR:-/tmp}/fw-ghprobe.XXXXXX"); pd=$(mktemp -d "${TMPDIR:-/tmp}/fw-ghprobe.XXXXXX"); ps="fw-ghprobe-$$"
   gh_probe_write "$pf"
   if [ -z "$want" ]; then
@@ -483,6 +492,11 @@ tmux_gh_check() {
     done
     tm kill-session -t "=$ps" 2>/dev/null   # a probe past its bound; a finished one has gone itself
     gh_read "$pd"
+    if [ -n "$ghenv" ] && [ "$had" = 1 ]; then
+      tmux_gh_envmsg="a new session of the running tmux server on $BOX gets $ghenv, so a CLI worker started now hands the fleet PAT to every process it starts: $(tmux_restart_advice "$(tm list-sessions -F '#{session_name}' 2>/dev/null)")"
+    elif [ -n "$ghenv" ]; then
+      tmux_gh_envmsg="a tmux server started from this session on $BOX gives a new session $ghenv: its default shell's startup files export it (grep -Hnos -e GH_TOKEN -e GITHUB_TOKEN ~/.zshenv ~/.bashrc ~/.config/fleet/env.sh lists the lines without their values)"
+    fi
     gh_verdict && [ "$ghst" = ok ] && [ -n "$want" ] && [ "$ghlast" != "$want" ] && srv="gh api user answers as $ghlast, not as $want"
   else
     rm -rf "$pd" "$pf"
@@ -745,7 +759,7 @@ gh_down=""
 # which token it would use with no variable set (hosts.yml or keyring alike), and compared with
 # the file's; `gh api user` below then proves it live. A token other than the file's, an absent
 # one, or a `gh auth token` that fails or does not answer in the bound refuses alike.
-tokf="$HOME/.config/fleet/gh-token.sh"; tokbad=""; tokenv=""; qbox=$(printf '%q' "$BOX")
+tokf="$HOME/.config/fleet/gh-token.sh"; tokbad=""; tokenv=""; tmux_tok=""; qbox=$(printf '%q' "$BOX")
 storecmd="(. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN -u GITHUB_TOKEN gh auth login -h github.com --with-token --insecure-storage"
 case "$BOX_IS_LOCAL" in 1) tokcopy="replace it here with a regular 0600 file holding the fleet PAT (export GH_TOKEN=ghp_...)"; storecmd="in a terminal on this box: $storecmd" ;;
   *) tokcopy="replace it from the anchor: ssh $qbox 'f=~/.config/fleet/gh-token.sh; umask 077; cat > \"\$f.new\" && chmod 600 \"\$f.new\" && mv \"\$f.new\" \"\$f\"' < ~/.config/fleet/gh-token.sh"
@@ -827,12 +841,15 @@ esac
 if [ -n "$tmux_ok" ] && [ "$ghst" = ok ] && [ "$gitst" = ok ]; then
   tmux_gh_check "$ghlast" || note "$tmux_gh_msg"
   [ -z "$tmux_gh_down" ] || gh_down="${gh_down:+$gh_down; }in a tmux session: $tmux_gh_down"
+  # Noted, as this session's own export is: during the rollout a running server still holds the
+  # token every session used to export. When this session exports one too, its own note says so.
+  [ -z "$tmux_gh_envmsg" ] || [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] || tmux_tok="$tmux_gh_envmsg; ludics-lite#567"
 fi
 if [ -n "$refuse" ]; then
   echo "PREFLIGHT REFUSED $BOX: ${refuse#; }${other:+ (changes outside the served tree, ignored: $other)}"
   exit 1
 fi
-echo "PREFLIGHT OK $BOX skills=$(echo "$head" | cut -c1-9)${other:+ (changes outside the served tree, ignored: $other)}${cross_down:+ (cross-box unreachable, asleep or off the network:$cross_down)}${gh_down:+ (GitHub unreachable from $BOX: $gh_down)}${tokenv:+ (this session exports the fleet PAT as $tokenv, so every process it starts sees it: store it in gh and drop the export, ludics-lite#567)}${sleep_guard:+ ($sleep_guard)}"
+echo "PREFLIGHT OK $BOX skills=$(echo "$head" | cut -c1-9)${other:+ (changes outside the served tree, ignored: $other)}${cross_down:+ (cross-box unreachable, asleep or off the network:$cross_down)}${gh_down:+ (GitHub unreachable from $BOX: $gh_down)}${tokenv:+ (this session exports the fleet PAT as $tokenv, so every process it starts sees it: store it in gh and drop the export, ludics-lite#567)}${tmux_tok:+ ($tmux_tok)}${sleep_guard:+ ($sleep_guard)}"
 """
 
 

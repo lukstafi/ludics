@@ -491,9 +491,6 @@ main() {
       printf '[ ! -r "$HOME/.opam/opam-init/init.sh" ] || . "$HOME/.opam/opam-init/init.sh" >/dev/null 2>&1\n'
     } > "$envfile"
   fi
-  # Until ludics-lite#567 env.sh sourced the fleet PAT file, exporting the token into every
-  # session; gh stores it instead (the login step below), so a rerun drops that line.
-  drop_line "$envfile" '[ ! -r "$HOME/.config/fleet/gh-token.sh" ] || . "$HOME/.config/fleet/gh-token.sh"'
   local line='[ ! -r "$HOME/.config/fleet/env.sh" ] || . "$HOME/.config/fleet/env.sh"'
   source_at_start "$HOME/.bashrc" "$line"
   source_at_start "$HOME/.profile" "$line"
@@ -553,6 +550,10 @@ main() {
     if [[ -r $HOME/.config/fleet/gh-token.sh ]]; then
       store_gh_token "$HOME/.config/fleet/gh-token.sh"
       gh auth setup-git
+      # Until ludics-lite#567 env.sh sourced the token file, exporting the PAT into every session.
+      # Only once gh holds it (set -e stops a failed store above) does the line go, so a run that
+      # skips or fails this step leaves the export, a state the preflight still passes.
+      drop_line "$envfile" '[ ! -r "$HOME/.config/fleet/gh-token.sh" ] || . "$HOME/.config/fleet/gh-token.sh"'
     else
       printf 'No ~/.config/fleet/gh-token.sh. From the anchor: ssh %q '\''mkdir -p ~/.config/fleet; f=~/.config/fleet/gh-token.sh; umask 077; cat > "$f.new" && chmod 600 "$f.new" && mv "$f.new" "$f"'\'' < ~/.config/fleet/gh-token.sh\n' "$box"
       printf 'then here: (. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN -u GITHUB_TOKEN gh auth login -h github.com --with-token --insecure-storage && gh auth setup-git\n'

@@ -77,9 +77,10 @@ does not tell us the target Unix username.
   not from power-off. Check: `systemctl show -p WakeSystem -p TimersCalendar
   fleet-sweep-wake.timer` shows `WakeSystem=yes` and the time, and `systemctl list-timers
   fleet-sweep-wake.timer` its next firing.
-- No GitHub token in `env.sh` (ludics-lite#567): a rerun removes the line that used to source
-  `~/.config/fleet/gh-token.sh`, since a token in the environment reaches every process a session
-  starts (dune recorded it in its build trace, ahrefs/ocannl#1280). That file (`export
+- No GitHub token in `env.sh` (ludics-lite#567): once the login step has stored the PAT in gh,
+  it removes the line that used to source `~/.config/fleet/gh-token.sh`, since a token in the
+  environment reaches every process a session starts (dune recorded it in its build trace,
+  ahrefs/ocannl#1280). That file (`export
   GH_TOKEN=ghp_...`, mode 0600) holds the fleet's one GitHub PAT, copied from the anchor by hand,
   never written by the installer. Per-box `gh auth login` OAuth tokens revoked each other (GitHub
   keeps 10 per user and app). Copy it with `ssh <box> 'mkdir -p ~/.config/fleet; f=~/.config/fleet/gh-token.sh; umask 077; cat > "$f.new" && chmod 600 "$f.new" && mv "$f.new" "$f"'
