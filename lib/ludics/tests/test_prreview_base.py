@@ -574,6 +574,14 @@ class WaitLoop(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn(f"red since {C[:8]} (run created 2026-09-10T00:59:00Z), 1 run(s) back; the judged run"
                       f" before it was not red (success at {A[:8]})\n", out)
+        # A `skipped` run ends the streak but ran nothing, so it is no floor to bisect from.
+        page = runs({"conclusion": "failure", "head_sha": C}, {"conclusion": "skipped", "head_sha": B},
+                    {"conclusion": "success", "head_sha": A})
+        rc, out, _, _ = base_run(world(C, page, **{"repos/o/r/actions/runs/1000/jobs?per_page=100": jobs}),
+                                 ["main"])
+        self.assertEqual(rc, 1)
+        self.assertIn("1 run(s) back; the judged run before it was not red\n", out)
+        self.assertNotIn(f"at {B[:8]})", out)
 
 
 PULL = json.dumps([{"number": 7, "merged_at": "2026-09-26T08:00:53Z", "merge_commit_sha": C,

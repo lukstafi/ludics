@@ -710,10 +710,13 @@ controlled through the tools in your coordinator's file, never through those com
   1. **Rerun the failed jobs once** (`gh run rerun <run id> --failed`; a local run, once more at
      the same SHA) to rule out a flake: #479-class tee timeouts happen on the macOS runner. A red
      that reruns red is a regression: stop the world (below) before attributing it.
-  2. **Attribute** by the failing job against the span, `git log --first-parent <floor>..<red>`:
+  2. **Attribute** by the failing job against the span, `git log --first-parent <floor>..<red>`.
      `pr-review.sh base` names the failing job and both ends, `red since <red> ... (success at
-     <floor>)`; it orders runs by creation, so confirm `git merge-base --is-ancestor <floor>
-     <red>` before reading a span off them. A merge in the span whose diff reaches the failing
+     <floor>)`; a local integration run's floor is the `observed_sha` of the newest `pass`
+     integration record before the red one (`fleet-worker.sh execution list`). Runs are ordered
+     by creation, not ancestry, so first confirm that `git rev-list --first-parent <red>` lists
+     `<floor>`; when it does not, the span is unknown and the next step starts from the newest
+     first-parent commit you know to be green. A merge in the span whose diff reaches the failing
      suite, alone, owns it.
   3. **Bisect only when that is still ambiguous**: run the failing suite at the span's
      intermediate merges (`git bisect start --first-parent <red> <floor>`) in a detached

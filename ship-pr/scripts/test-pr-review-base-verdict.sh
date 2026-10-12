@@ -334,6 +334,16 @@ shared_group_burst() {
 # finished green.)
 test_a_shared_push_group_burst_is_judged_by_the_tips_own_run() {
   local tip_concl
+  # base-watch's read mid-burst: every cancelled run completes and triggers it (`workflow_run:
+  # completed`), with the older run going and the tip's pending. A plain read with --interim is the
+  # judged green under the span, exit 0, which files nothing; only a window with no judged run at
+  # all (a hundred cancelled rows, or a branch never judged) reads 4 (review round 2).
+  reset_fixture
+  RUNS_1=$(runs_json 1 "$(shared_group_burst '{"status":"pending","conclusion":null}' '{"status":"in_progress","conclusion":null}')")
+  run_base --interim
+  assert_eq "$BASE_RC" 0 "mid-burst, the plain read is the green under the span ($BASE_OUTPUT)"
+  assert_contains "$BASE_OUTPUT" "green    ci — success at ${SHA_0:0:8}" "naming the run it is"
+  assert_contains "$BASE_OUTPUT" "(ci is running now at ${SHA_C:0:8})" "beside the tip's run, still pending"
   for tip_concl in success failure; do
     reset_fixture
     RUNS_1=$(runs_json 1 "$(shared_group_burst '{"status":"pending","conclusion":null}' '{"status":"in_progress","conclusion":null}')")

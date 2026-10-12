@@ -597,9 +597,11 @@ class Base:
             # that keeps only the newest pending run cancels theirs). Named, never asserted as a
             # range: the feed orders runs by creation, not by ancestry, and a branch that was
             # force-pushed or recreated can put the floor on another history (review round 1).
+            # Only a `success` is named: a `skipped` or `neutral` run ends the streak, since it is
+            # not red, but ran nothing that could have passed the failing suite (review round 2).
+            named = f" ({floor.conclusion} at {floor.head_sha[:8]})" if floor.conclusion == "success" else ""
             detail = (f"{indent}red since {first_sha[:8]} (run created {first_when}), {reds} run(s)"
-                      f" back; the judged run before it was not red ({floor.conclusion} at"
-                      f" {floor.head_sha[:8]})\n")
+                      f" back; the judged run before it was not red{named}\n")
         else:
             detail = (f"{indent}red for all {reds} judged run(s) in the window, back to"
                       f" {first_sha[:8]} (run created {first_when}) — the window holds no\n"
