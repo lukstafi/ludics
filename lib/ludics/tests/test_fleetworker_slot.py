@@ -116,6 +116,15 @@ class SlotArguments(unittest.TestCase):
         self.assertIn("a command to hold the slot around is required", self.refused(["--"]))
         self.assertIn("execution slot [--bg <parent>]", self.refused(["--box", "other", "--", "true"]))
 
+    def test_deadline(self) -> None:
+        self.assertEqual(parse_slot(["--deadline", "5", "--", "true"]).deadline, 5)
+        self.assertIsNone(parse_slot(["--", "true"]).deadline)
+        for value in ("0", "00", "-1", "5s", ""):
+            self.assertIn("--deadline takes a positive whole number of seconds",
+                          self.refused(["--deadline", value, "--", "true"]), value)
+        self.assertIn("--deadline takes a positive whole number of seconds", self.refused(["--deadline"]))
+        self.assertIn("--probe takes no --deadline", self.refused(["--probe", "--deadline", "5"]))
+
 
 if __name__ == "__main__":
     unittest.main()
