@@ -2746,18 +2746,23 @@ if held "$bgd/log" "waiting up to 60s (--wait-window) for it to conclude, then f
     ok "...in its slot, with its output in the run's log" || ko "the waited batch's log: $(cat "$bgd/log")"
 else ko "the --wait-window batch never said it waits: $(cat "$bgd/log" 2>/dev/null)"; fixture_done ww-measure; fi
 bgkill "$bgd"
-jq '.execution_host = "other" | .agent_host = "other"' "$(slotreq ww-other measurement)" > "$TMP/slot-ww-other.json"
-"${FWS[@]}" execution window other "$TMP/slot-ww-other.json" >/dev/null 2>&1 || ko "could not open the other box's window (setup)"
+jq '.execution_host = "other" | .agent_host = "other"' "$(slotreq ww-other measurement)" > "$TMP/ww-other.json"
+"${FWS[@]}" execution window other "$TMP/ww-other.json" >/dev/null 2>&1 || ko "could not open the other box's window (setup)"
 expect "a window on another box does not block a --wait-window batch" 0 "slot 1 of 1 held for: echo not-blocked" -- \
   "${FWS[@]}" execution slot --wait-window=60 --wait 0 -- echo not-blocked
 grep -q "waiting up to" <<<"$out" && ko "the batch waited for another box's window: $out" || ok "...nor make it wait"
 expect "execution list --host selects one box's records" 0 '"ww-other"' -- "${FWS[@]}" execution list --active --compact --host other
 grep -q '"ww-iterate"' <<<"$out" && ko "--host other listed testbox's record: $out" || ok "...and none of another box's"
 expect "...by case, as ssh reads a host name" 0 '"ww-iterate"' -- "${FWS[@]}" execution list --active --compact --host TESTBOX
-jq '.execution_host = "rog-nv-linux"' "$(slotreq ww-rog correctness true)" > "$TMP/slot-ww-rog.json"
-env FLEET_BOXES="testbox other rog-nv-linux" "$FW" execution reserve "$TMP/slot-ww-rog.json" >/dev/null || ko "could not reserve on rog-nv-linux (setup)"
+# An alias is read off the endpoint map, which the dispatcher copy has none of: a copy beside a
+# one-row wake-lab.sh stand-in gives it one.
+cp -R "$TMP/dispatcher" "$TMP/dispatcher-map"
+printf '%s\n' '#!/usr/bin/env bash' '[ "$1" = endpoint-map ] && printf "%s\n" "rog rog-nv-linux rog-nv-wsl"' > "$TMP/dispatcher-map/scripts/wake-lab.sh"
+FWM=(env FLEET_BOXES="testbox other rog-nv-linux" "$TMP/dispatcher-map/issue-wave/scripts/fleet-worker.sh")
+jq '.execution_host = "rog-nv-linux"' "$(slotreq ww-rog correctness true)" > "$TMP/ww-rog.json"
+"${FWM[@]}" execution reserve "$TMP/ww-rog.json" >/dev/null || ko "could not reserve on rog-nv-linux (setup)"
 expect "...and an alias (rog) selects its roster entry's (rog-nv-linux) records" 0 '"ww-rog"' -- \
-  env FLEET_BOXES="testbox other rog-nv-linux" "$FW" execution list --active --compact --host rog
+  "${FWM[@]}" execution list --active --compact --host rog
 grep -q '"ww-iterate"\|"ww-other"' <<<"$out" && ko "--host rog listed another box's records: $out" || ok "...and only those"
 expect "a --host that is no roster entry's box is refused, not answered with an empty list" 1 "list --host rgo: no FLEET_BOXES entry" -- \
   "${FWS[@]}" execution list --host rgo

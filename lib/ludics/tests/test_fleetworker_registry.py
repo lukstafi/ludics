@@ -70,7 +70,8 @@ class Registry(unittest.TestCase):
         def listed(host: str) -> tuple[int, list[str], str]:
             rc, out, err = self.call("list", {"active": True, "compact": True, "host": host}, boxes=roster,
                                      map_spec=endpoints)
-            return rc, [r["request_id"] for r in out or []], err
+            records: list[dict[str, Any]] = out or []
+            return rc, [r["request_id"] for r in records], err
 
         self.assertEqual(listed("mac")[:2], (0, ["m"]))
         for alias in ("rog-nv-linux", "rog", "ROG", "rog-nv-wsl"):

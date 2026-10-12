@@ -411,15 +411,17 @@ requirements for every transport with transport-specific setup and identity, and
   the [standing reservation](references/executions.md#standing-iteration-reservation) the
   coordinator took at launch - name its request id, the bounded aliases and `-j` width it
   covers, and that every batch goes through the project runner, wrapped in `fleet-worker.sh
-  execution slot -- <batch>` (`execution slot --cpu -- <batch>` for one that holds no GPU; a
-  runner that takes the slot itself runs inside the wrapper, [nested
-  slots](references/executions.md#exclusivity-and-the-run-time-slots); a refusal naming a
-  measurement window is retried once the window closes, with no request), and
-  is reported by run directory. For a Claude batch that can outlast the 600 s tool cap, use
-  `execution slot --bg <parent> -- <batch>`, which prints a run directory to block on with
+  execution slot --wait-window -- <batch>` (`--cpu` before the `--` for one that holds no GPU;
+  a runner that takes the slot itself runs inside the wrapper, [nested
+  slots](references/executions.md#exclusivity-and-the-run-time-slots); `--wait-window` waits
+  out a [measurement window](references/executions.md#exclusivity-and-the-run-time-slots) on
+  the box instead of refusing, so the brief needs no waiter loop and no retry rule), and
+  is reported by run directory. For a Claude batch that can outlast the 600 s tool cap, a
+  window's wait included, use `execution slot --bg <parent> --wait-window -- <batch>`, which
+  prints a run directory to block on with
   `bg-run.sh wait` ([Blocking on a run](references/native-claude.md#blocking-on-a-run)). For
   local native Codex with managed exec sessions, use `bg-run.sh new <parent>`, then foreground
-  `bg-run.sh start <dir> -- fleet-worker.sh execution slot -- <batch>` (add `--cpu` for a
+  `bg-run.sh start <dir> -- fleet-worker.sh execution slot --wait-window -- <batch>` (add `--cpu` for a
   CPU-only batch); retain and observe that session to completion, as
   [local managed command sessions](references/native-codex.md#local-managed-command-sessions)
   says. Every other run - a

@@ -412,7 +412,7 @@ def main(argv: list[str]) -> None:
             refuse("list options must be active/compact booleans and a host")
         if "host" in options:
             nonempty(options, ["host"])
-        flags = cast(dict[str, Any], options)
+        flags = options
         # Validate the entire ledger above before filtering: a compact view must not hide
         # corrupt ownership evidence, including a malformed terminal record.
         selected = [record for record in records.values()
