@@ -143,8 +143,8 @@ class Gate:
     run_state: str = ""
     waive_mode: Literal["", "record", "apply"] = ""
     waived: set[str] = field(default_factory=lambda: set[str]())
-    _advisory: ere.Advisory | None = None
-    _selected: ere.Advisory | None = None
+    _advisory: ere.Matcher | None = None
+    _selected: ere.Matcher | None = None
 
     def __post_init__(self) -> None:
         if not self.advisory:
@@ -153,13 +153,13 @@ class Gate:
     # --- the advisory list ---------------------------------------------------------------------------
 
     def is_advisory(self, name: str) -> bool:
-        """``is_advisory`` (ere.Advisory) under the list this gate holds now: ``advisory_policy``
+        """``is_advisory`` (ere.Matcher) under the list this gate holds now: ``advisory_policy``
         may replace it with the repository's own. Under a selection nothing is advisory: the ERE
         names the checks to wait for, and a check it names is waited for whatever the list says."""
         if self.select:
             return False
         if self._advisory is None or self._advisory.pattern != self.advisory:
-            self._advisory = ere.Advisory(self.advisory)
+            self._advisory = ere.Matcher(self.advisory)
         return self._advisory(name)
 
     def advisory_policy(self) -> int:
@@ -253,7 +253,7 @@ class Gate:
         """Does ``--check``'s ERE match this check name? grep's reading, as for the advisory list
         (ere.py), and one process's answers kept the same way."""
         if self._selected is None or self._selected.pattern != self.select:
-            self._selected = ere.Advisory(self.select)
+            self._selected = ere.Matcher(self.select)
         return self._selected(name)
 
     def build_checks(self, sha: str) -> list[str] | None:

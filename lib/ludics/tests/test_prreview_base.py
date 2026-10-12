@@ -20,7 +20,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from ludics import cli, proc
 from ludics.prreview import base
-from ludics.prreview.ere import Advisory
+from ludics.prreview.ere import Matcher
 from ludics.prreview.workflow_yaml import glob_ere, paths_ignore_covers, workflow_filter, workflow_keys
 from ludics.prreview.checkruns import newest_first
 from ludics.prreview.shtext import encode_ref, tab_fields
@@ -126,18 +126,18 @@ class Readers(unittest.TestCase):
                          "an untranslatable pattern fails the whole question, even beside a match")
 
     def test_the_advisory_ere_reads_posix_classes(self) -> None:
-        adv = Advisory("^(claude|Claude Code|github pages docs)$")
+        adv = Matcher("^(claude|Claude Code|github pages docs)$")
         self.assertTrue(adv("Claude Code"))
         self.assertFalse(adv("ci"))
-        self.assertTrue(Advisory("^[[:alpha:]]+ docs$")("pages docs"))
-        self.assertFalse(Advisory("(unclosed")("anything"), "an ERE grep refuses matches nothing")
+        self.assertTrue(Matcher("^[[:alpha:]]+ docs$")("pages docs"))
+        self.assertFalse(Matcher("(unclosed")("anything"), "an ERE grep refuses matches nothing")
 
     def test_the_advisory_ere_reads_grep_word_anchors(self) -> None:
         # grep -E (BSD and GNU) reads \< and \> as word anchors; Python's re reads literal < and >.
-        self.assertTrue(Advisory("\\<claude\\>")("claude review"))
-        self.assertTrue(Advisory("^claude\\>")("claude"))
-        self.assertFalse(Advisory("\\<claude\\>")("xclaude review"))
-        self.assertFalse(Advisory("^claude\\>")("claudex"))
+        self.assertTrue(Matcher("\\<claude\\>")("claude review"))
+        self.assertTrue(Matcher("^claude\\>")("claude"))
+        self.assertFalse(Matcher("\\<claude\\>")("xclaude review"))
+        self.assertFalse(Matcher("^claude\\>")("claudex"))
 
 
 def row(wid: str, concl: str, sha: str, rid: str, created: str = "2026-09-10T00:00:00Z",

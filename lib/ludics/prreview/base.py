@@ -9,7 +9,7 @@ of every rule here; this file keeps the load-bearing ones, and the shell region 
 (``cmd_base`` and the helpers above it, in ship-pr/scripts/pr-review.sh at c856bb0, the v2 branch
 point) is where to read the rest. The helpers ``base`` shares with ``checks``/``merge`` -- the
 workflow-file readers, ``range_files`` and ``commit_files`` (workflows.Reads), the advisory list
-(ere.Advisory) and the gate itself (gate.Gate) -- are ported once, there.
+(ere.Matcher) and the gate itself (gate.Gate) -- are ported once, there.
 
 WHY ``base`` EXISTS, and why ``--wait``. The other half of ahrefs/ocannl#694: the confusion lands
 on whoever branches off a broken master, so the base's own CI is read before work starts, not
@@ -49,7 +49,7 @@ from typing import Literal, assert_never
 from ludics import cli, proc
 from ludics.prreview import jqsem
 from ludics.prreview import knobs
-from ludics.prreview.ere import Advisory
+from ludics.prreview.ere import Matcher
 from ludics.prreview.gate import GateConfig, Gate, load_gate_config
 from ludics.prreview.workflows import Reads
 from ludics.prreview.checkruns import conclusion_class, newest_first
@@ -484,7 +484,7 @@ class Base:
         self.gate_config = gate_config if gate_config is not None else load_gate_config(os.environ)
         self._gate: GateRunner = gate if gate is not None else self._gate_checks
         self.records = list(records)
-        self.is_advisory = Advisory(knobs.advisory)
+        self.is_advisory = Matcher(knobs.advisory)
         # The workflow-file readers and the paths-ignore walk, shared with checks/merge.
         self.reads = Reads(session, repo, self.gate_config.limits, self.is_advisory)
         self._jobs_cache: dict[str, str] = {}
