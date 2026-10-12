@@ -2003,9 +2003,11 @@ test_an_approval_beside_a_final_poll_round_is_checked_too() {
 # nothing (b6b09ee, "a spent 👀 must not read as a review is running"). One read is not proof — a
 # reaction read can come back empty once (test_one_empty_reaction_read_retains_the_live_boundary)
 # — so the second consecutive one is, and it ends the wait on the nudge advice after the final
-# poll, rather than holding the window or the grace.
+# poll, rather than holding the window or the grace. The advice is what `--no-nudge` prints; by
+# default the watch posts the nudge itself (test_a_push_during_a_live_round_gets_the_new_head_reviewed).
 test_a_live_round_that_reads_ended_twice_ends_on_the_nudge_advice() {
   reset_fixture
+  WATCH_FLAG=--no-nudge
   schedule reactions 1 "[$(reaction eyes "$(clock_at -5)")]"
   schedule reactions 2 '[]'
   run_watch 0,0,0 1 5
@@ -2016,6 +2018,7 @@ test_a_live_round_that_reads_ended_twice_ends_on_the_nudge_advice() {
   assert_contains "$WATCH_OUT" "no reviewer activity about head ${H2:0:7}; status: review EXPECTED" \
     "beside the state it was read from"
   assert_eq "$(poll_rounds)" 4 "two loop reads after the live one, then the final poll"
+  assert_eq "$(nudges_posted)" 0 "and --no-nudge posts nothing"
 }
 
 # A 👀 older than any round takes is `stalled`, and the watch answers it like the other
@@ -2112,7 +2115,116 @@ test_a_head_with_no_eyes_past_its_grace_gets_reviewed() {
   assert_not_contains "$WATCH_OUT" "no review materialized" "the overdue head is not handed back as a verdict"
 }
 
+# The opt-out: the same overdue head, and the watch hands the verdict back with the advice, as it
+# did before #570, having posted nothing.
+test_no_nudge_posts_nothing() {
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  NUDGE_ANSWER=502
+  WATCH_FLAG=--no-nudge
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "the overdue head is a verdict to act on"
+  assert_contains "$WATCH_OUT" "since it became due — consider nudging with a '@codex review' comment" \
+    "the advice is printed instead"
+  assert_eq "$(nudges_posted)" 0 "and nothing is posted"
+}
+
+# A head something already stands for is never nudged: an approval ends the wait as one, and a
+# verdict the state machine does not read as an approval still bars the request -- a no-findings
+# comment for the head with a later reviewer word under it, and the summary's Completed row for
+# the head with its 👀 gone. The control is the same overdue head with neither.
+test_a_head_with_a_verdict_is_never_nudged() {
+  local kind
+  for kind in thumb verdict outlived-verdict completed-row control; do
+    reset_fixture
+    retune GRACE=1
+    HEAD_AT=2026-09-01T00:00:00Z
+    PR_CREATED_AT="$HEAD_AT"
+    case "$kind" in
+    thumb) schedule reactions 1 "[$(head_thumb)]" ;;
+    verdict) schedule comments 1 "[$(stamped_summary 700 "$(clock_at -100)" "$H2" "Codex Review: Didn't find any major issues.")]" ;;
+    outlived-verdict)
+      schedule comments 1 "[$(stamped_summary 700 "$(clock_at -100)" "$H2" "Codex Review: Didn't find any major issues."),$(
+        summary_comment 701 "$(clock_at -50)" 'a later word, about no commit')]"
+      schedule reactions 1 "[$(reaction eyes "$(clock_at -75)")]"
+      ;;
+    completed-row)
+      schedule comments 1 "[$(summary_comment 700 "$(clock_at -100)" "<!-- codex-pull-request-review-summary -->
+| Review | Status | Commit | Review trigger |
+| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"$(clock_at -100)\">x</relative-time> | \`${H2:0:7}\` | New commits |")]"
+      ;;
+    esac
+    run_watch 0,701,0 60 120
+    assert_eq "$WATCH_RC" 0 "$kind: a verdict to act on"
+    case "$kind" in
+    thumb | verdict)
+      assert_contains "$WATCH_OUT" "approved (" "$kind: the approval ends the wait"
+      assert_eq "$(nudges_posted)" 0 "$kind: and nothing is posted over it"
+      ;;
+    control)
+      assert_eq "$(nudges_posted)" 1 "control: the same overdue head with nothing standing is nudged"
+      ;;
+    *)
+      assert_contains "$WATCH_OUT" "review EXPECTED but not started" "$kind: the state machine reads the head as due"
+      assert_contains "$WATCH_OUT" "not nudged automatically ($REVIEWER" "$kind: the request is barred, by name"
+      assert_eq "$(nudges_posted)" 0 "$kind: and nothing is posted"
+      ;;
+    esac
+  done
+}
+
+# Once per head: the watch that posted the nudge waits out its grace and says it drew nothing, and a
+# watch re-armed on its watermark reads the request on the PR and posts no second one. Within one
+# watch the in-process record holds even while the comments feed has not caught up with the post.
+test_a_head_is_nudged_once_across_re_armed_watches() {
+  local mark
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "a nudge that drew nothing is a verdict to act on"
+  assert_eq "$(nudges_posted)" 1 "one nudge"
+  assert_contains "$WATCH_OUT" "this watch's own '@codex review' on head ${H2:0:7}" "the verdict names the nudge it posted"
+  assert_contains "$WATCH_OUT" "a second is never posted automatically" "and says no second follows"
+  assert_contains "$WATCH_ERR" "extending watch" "the window held for the request's grace"
+  mark=$(sed -n 's/^watermark: //p' <<<"$WATCH_OUT" | tail -1)
+  run_watch "$mark" 60 900
+  assert_eq "$WATCH_RC" 0 "the re-armed watch reaches the same verdict"
+  assert_eq "$(nudges_posted)" 1 "and posts no second nudge"
+  assert_contains "$WATCH_OUT" "already stands on head ${H2:0:7}, so the watch posts no second one" \
+    "naming the request that stands"
+  # The feed lagging the post: the rounds after it still read the head as overdue and unasked.
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  HIDE_POSTED=1
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 1 "one nudge however many rounds miss it"
+  assert_contains "$WATCH_ERR" "extending watch" "and its grace, not the stale state's lack of one, bounds the window"
+  assert_contains "$WATCH_OUT" "this watch's own '@codex review' on head ${H2:0:7}" "before the verdict names it"
+}
+
+# A nudge whose POST failed is not retried: it may have landed (the #453 rule for the failed run's
+# re-request), and the verdict says so.
+test_a_nudge_that_did_not_post_is_not_retried() {
+  reset_fixture
+  HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT="$HEAD_AT"
+  FAIL_POST=1
+  retune API_ATTEMPTS=4
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "the caller has a move to make"
+  assert_eq "$(nudges_posted)" 1 "the request is sent once whatever its error"
+  assert_contains "$WATCH_OUT" "the automatic '@codex review' nudge for head ${H2:0:7} did not go through" \
+    "and the verdict says it is not known to be on the PR"
+}
+
 tests=(
+  test_no_nudge_posts_nothing
+  test_a_head_with_a_verdict_is_never_nudged
+  test_a_head_is_nudged_once_across_re_armed_watches
+  test_a_nudge_that_did_not_post_is_not_retried
   test_a_push_during_a_live_round_gets_the_new_head_reviewed
   test_a_head_with_no_eyes_past_its_grace_gets_reviewed
   test_the_about_codex_block_is_folded_to_one_line

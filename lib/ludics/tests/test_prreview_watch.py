@@ -308,7 +308,7 @@ class EndToEnd(unittest.TestCase):
 
     def test_a_missing_pr_is_bashs_usage_exit(self) -> None:
         done = self.run_cmd([PY, "-m", "ludics.prreview"], "watch")
-        self.assertEqual((done.returncode, done.stderr), (1, "pr-review.sh: 1: usage: watch <pr> [watermark]\n"))
+        self.assertEqual((done.returncode, done.stderr), (1, "pr-review.sh: 1: usage: watch <pr> [watermark] [--no-nudge]\n"))
 
     def test_the_run_await_through_retry(self) -> None:
         cases: tuple[tuple[dict[str, Json], int, str], ...] = (
