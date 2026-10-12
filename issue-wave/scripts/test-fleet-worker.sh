@@ -2284,6 +2284,15 @@ held() {
   for i in $(seq 40); do grep -q "$2" "$1" 2>/dev/null && return 0; sleep 1; done
   ko "no holder announced $2 in $1: $(cat "$1" 2>/dev/null)"; return 1
 }
+# THE GROUP's fixtures (ludics-lite#566) each sleep with an argument of this run's own,
+# 600.566<suite pid><n>, so a check for leftovers cannot see a sibling's processes, nor another case's.
+GM="600.566$$"
+# swept <n>: no process of marker <n> is left, within 5 s.
+swept() {
+  local i
+  for i in $(seq 50); do pgrep -f "sleep $GM$1" >/dev/null 2>&1 || return 0; sleep 0.1; done
+  return 1
+}
 slotreq() { # <id> <kind> [standing] -> a reservation payload file on testbox
   jq -n --arg id "$1" --arg kind "$2" --argjson standing "${3:-false}" \
     '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#1", purpose:"slot fixture",
@@ -2300,10 +2309,12 @@ expect "...and the slot it never took is still free" 0 "slot 1 of 1" -- "${FWS[@
 h0=$!
 held "$TMP/slot-h0.log" "slot 1 of 1 held" &&
   expect "a second batch is refused while the box's only run-time slot is held" 1 "all 1 run-time correctness slots busy after 0s" -- "${FWS[@]}" execution slot --wait 0 -- echo second
-# The lock is the kernel's, held on an open descriptor through the exec, so there is no lock file
-# to strand: killing the batch outright -- what a cancelled or stuck suite gets -- frees the slot.
+# The lock is the kernel's, held on an open descriptor the batch inherits, so there is no lock file
+# to strand: killing the batch's wrapper outright -- what a cancelled or stuck suite gets -- frees
+# the slot, once its guardian has killed the batch's process group (ludics-lite#566), so the next
+# batch may wait a moment for it.
 kill -9 "$h0" 2>/dev/null; wait "$h0" 2>/dev/null
-expect "a killed batch frees its slot at once (the kernel holds the lock, not a file)" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 0 -- echo after-kill
+expect "a killed batch frees its slot (the kernel holds the lock, not a file)" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 5 -- echo after-kill
 "${FWS2[@]}" execution slot -- sleep 30 > "$TMP/slot-h1.log" 2>&1 &
 h1=$!
 "${FWS2[@]}" execution slot -- sleep 30 > "$TMP/slot-h2.log" 2>&1 &
@@ -2313,7 +2324,7 @@ if held "$TMP/slot-h1.log" "held" && held "$TMP/slot-h2.log" "held"; then
   expect "...and a third waits for the deadline, then is refused" 1 "all 2 run-time correctness slots busy after 1s" -- "${FWS2[@]}" execution slot --wait 1 -- echo third
 fi
 kill -9 "$h1" "$h2" 2>/dev/null; wait "$h1" 2>/dev/null; wait "$h2" 2>/dev/null
-expect "the widened cap is read from FLEET_BOX_CORRECTNESS_SLOTS, not baked in" 0 "slot 1 of 2" -- "${FWS2[@]}" execution slot --wait 0 -- echo widened
+expect "the widened cap is read from FLEET_BOX_CORRECTNESS_SLOTS, not baked in" 0 "slot 1 of 2" -- "${FWS2[@]}" execution slot --wait 5 -- echo widened
 # A measurement owns the box through the registry, and the run-time lock reads that before locking.
 "${FWS[@]}" execution run "$(slotreq slot-measure measurement)" >/dev/null || ko "could not reserve the measurement (setup)"
 expect "a batch is refused while a measurement is outstanding on the box" 1 "a measurement holds the box exclusively (slot-measure)" -- "${FWS[@]}" execution slot -- echo during-measurement
@@ -2585,14 +2596,20 @@ grep -Fxq -- "--what=sleep:idle --mode=block --who=fleet-worker --why=testbox sl
   ok "...as systemd-inhibit --mode=block, never block-weak, which the caller's own uid would ignore" || ko "the batch did not run under the block inhibitor: $(cat "$INHIBIT_LOG")"
 grep -q "slot 1 of 1 held for: sh -c exit 3" <<<"$out" && ok "...inside the slot, which it still holds" || ko "the inhibited batch lost its slot line: $out"
 gone "$INHIBIT_PID" && ok "...and the inhibitor is released when the batch ends" || ko "the inhibitor helper outlived the batch"
-# The inhibitor is held BESIDE the batch, so the pid a caller holds is the batch's own: killing it
-# ends the batch, frees the slot and releases the inhibitor, with no process group to find (PR
-# #323 review, round 1: under a systemd-inhibit wrapper that pid was systemd-inhibit's).
+# The inhibitor is held BESIDE the batch, never around it (PR #323 review, round 1: under a
+# systemd-inhibit wrapper the pid a caller holds was systemd-inhibit's). That pid is the slot's
+# wrapper, the batch's parent, and the batch leads a process group of its own (ludics-lite#566):
+# killing the wrapper outright ends the batch through its guardian, which frees the slot and
+# releases the inhibitor.
 "${FWI[@]}" execution slot -- sleep 30 > "$TMP/slot-i0.log" 2>&1 &
 ipid=$!
 if held "$TMP/slot-i0.log" "block inhibitor held"; then
   kill -0 "$(cat "$INHIBIT_PID")" 2>/dev/null && ok "an inhibited batch's helper is alive while the batch runs" || ko "the helper was not running under a live batch"
-  [ "$(ps -o comm= -p "$ipid" | sed 's|.*/||')" = sleep ] && ok "...and the pid the caller holds is the batch itself" || ko "the caller's pid is $(ps -o comm= -p "$ipid"), not the batch"
+  ichild=""
+  for _ in $(seq 50); do ichild=$(pgrep -P "$ipid" sleep 2>/dev/null) && break; sleep 0.1; done
+  [ -n "$ichild" ] && [ "$(ps -o pgid= -p "$ichild" | tr -d ' ')" = "$ichild" ] &&
+    ok "...and the batch, the child of the pid the caller holds, leads a process group of its own" ||
+    ko "the batch is not a group leader under the caller's pid: child=$ichild $(ps -o pid,pgid,comm -p "${ichild:-$ipid}")"
   kill -KILL "$ipid"; wait "$ipid" 2>/dev/null
   gone "$INHIBIT_PID" && ok "...killing that pid releases the inhibitor" || ko "the inhibitor outlived its killed batch"
   expect "...and frees the slot" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 0 -- echo after-inhibited-kill
@@ -2643,6 +2660,11 @@ expect "...where a probe with no Python >= 3.12 to judge the marker still answer
   "${FWS[@]}" execution hold --request hold-measure -- env LUDICS_PY_CANDIDATES="$TMP/no-python" "$FW" execution slot --probe
 expect "...as does a slot nested a level deeper, through a shell" 0 "^deeper$" -- \
   "${FWS[@]}" execution hold --request hold-measure -- sh -c '"$1" execution slot -- "$1" execution slot -- echo deeper' _ "$FW"
+# The slot inside its measurement's hold runs in the hold's process group, not one of its own, so
+# the hold's group kill reaches everything it started (ludics-lite#566).
+expect "a measurement hold's --deadline ends a grandchild that the slot inside it started" 124 "EXECUTION HOLD testbox: --deadline 2s reached" -- \
+  "${FWS[@]}" execution hold --request hold-measure --deadline 2 -- "$FW" execution slot -- bash -c "sleep ${GM}10 & wait"
+swept 10 && ok "...leaving no sleep behind" || ko "the hold's deadline missed the nested slot's grandchild: $(pgrep -fl "sleep ${GM}10")"
 "${FWS[@]}" execution hold --request hold-measure -- sleep 30 > "$TMP/hold-m0.log" 2>&1 &
 m0=$!
 if held "$TMP/hold-m0.log" "measurement hold-measure held"; then
@@ -2735,10 +2757,10 @@ expect "...and so does the slot" 127 "EXECUTION SLOT REFUSED testbox: cannot run
 expect "execution hold runs bare where there is no systemd-inhibit" 0 "^bare-hold$" -- "${FWS[@]}" execution hold -- echo bare-hold
 expect "execution hold refuses a command that cannot be run" 127 "EXECUTION HOLD REFUSED testbox: cannot run /nonexistent/runner" -- "${FWS[@]}" execution hold -- /nonexistent/runner
 expect "execution hold needs a command after --" 2 "a command to hold the box around is required" -- "${FWS[@]}" execution hold --
-expect "execution hold takes no slot options" 2 "execution hold .--why <text>. .--request <id>. -- <command>" -- "${FWS[@]}" execution hold --wait 5 -- true
+expect "execution hold takes no slot options" 2 "execution hold .--why <text>. .--request <id>. .--deadline <seconds>. -- <command>" -- "${FWS[@]}" execution hold --wait 5 -- true
 expect "execution slot needs a command after --" 2 "a command to hold the slot around is required" -- "${FWS[@]}" execution slot --
 expect "execution slot refuses a non-numeric --wait" 2 "whole number of seconds" -- "${FWS[@]}" execution slot --wait soon -- echo x
-expect "execution slot takes no --box: the slot is this box's own" 2 "execution slot .--bg <parent>. .--wait <seconds>. .--cpu|--gpu. -- <command>" -- "${FWS[@]}" execution slot --box other -- echo x
+expect "execution slot takes no --box: the slot is this box's own" 2 "execution slot .--bg <parent>. .--wait <seconds>. .--cpu|--gpu. .--deadline <seconds>. -- <command>" -- "${FWS[@]}" execution slot --box other -- echo x
 expect "a malformed slots spec refuses before anything is locked" 1 "<box>=<positive n>" -- \
   env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=x" "$FW" execution slot -- echo x
 expect "a host with no fleet name has no slot to take" 2 "no fleet name" -- \
@@ -2749,6 +2771,51 @@ grep -q "^x$" <<<"$out" && ko "the batch ran over an unread registry: $out" || o
 expect "execution hold --why needs its text" 2 "execution hold: expected text for --why" -- "${FWS[@]}" execution hold --why "" -- true
 expect "execution slot --cpu and --gpu together are refused whatever their order" 2 "--cpu and --gpu are exclusive" -- "${FWS[@]}" execution slot --gpu --cpu -- true
 expect "...while repeating one is not" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 0 --cpu --cpu -- true
+# THE GROUP (ludics-lite#566): the batch leads a process group of its own and the wrapper stays its
+# parent, so a --deadline, a signal to the wrapper, or a kill -9 of it ends the batch's whole tree.
+# The #1192 benchmark ran on, orphaned on the GPU, for half an hour past an alarm that killed only
+# the driver script that started it.
+expect "hold --deadline ends the command's tree at the bound, exit 124, naming the bound" 124 "EXECUTION HOLD testbox: --deadline 5s reached" -- \
+  "${FWS[@]}" execution hold --deadline 5 -- bash -c "sleep ${GM}1 & wait"
+swept 1 && ok "...leaving no sleep behind" || ko "the deadline left the grandchild running: $(pgrep -fl "sleep ${GM}1")"
+expect "slot --deadline reaches a process orphaned inside the group, as the #1192 benchmark was" 124 "EXECUTION SLOT testbox: --deadline 2s reached" -- \
+  "${FWS[@]}" execution slot --wait 0 --deadline 2 -- bash -c "sh -c 'sleep ${GM}2 >/dev/null 2>&1 &'; exec sleep ${GM}3"
+swept 2 && swept 3 && ok "...and ends it with the batch" || ko "the deadline missed the orphan: $(pgrep -fl "sleep ${GM}")"
+expect "a batch that ends before its deadline takes what it left running with it" 0 "still runs: ending it (--deadline)" -- \
+  "${FWS[@]}" execution slot --wait 0 --deadline 60 -- sh -c "sleep ${GM}4 >/dev/null 2>&1 &"
+swept 4 && ok "...so nothing of it outlives the slot" || ko "a leftover outlived its deadline-bound batch: $(pgrep -fl "sleep ${GM}4")"
+# THE NESTED SLOT runs in its enclosing slot's process group: a group of its own would leave its
+# tree to the inner wrapper's own reaping, out of the outer group kill's reach.
+expect "an outer slot's --deadline ends a grandchild started under a nested slot" 124 "EXECUTION SLOT testbox: --deadline 2s reached" -- \
+  "${FWS[@]}" execution slot --wait 0 --deadline 2 -- "$FW" execution slot --wait 0 -- bash -c "sleep ${GM}5 & wait"
+swept 5 && ok "...leaving no sleep behind" || ko "the outer deadline missed the nested slot's grandchild: $(pgrep -fl "sleep ${GM}5")"
+expect "...and one started under a nested slot with a later deadline of its own" 124 "EXECUTION SLOT testbox: --deadline 2s reached" -- \
+  "${FWS[@]}" execution slot --wait 0 --deadline 2 -- "$FW" execution slot --wait 0 --deadline 600 -- bash -c "sleep ${GM}6 & wait"
+swept 6 && ok "...which the inner wrapper ends when the outer group kill reaches it" || ko "the nested deadline's group outlived the outer deadline: $(pgrep -fl "sleep ${GM}6")"
+# A signalled wrapper (a harness stopping the task, a Ctrl-C) ends its group, then dies of the
+# signal, so its caller reads the status it read when the batch was the pid it signalled.
+"${FWS[@]}" execution hold -- bash -c "echo started; sleep ${GM}7 & wait" > "$TMP/group-term.log" 2>&1 &
+gt=$!
+if held "$TMP/group-term.log" "^started$"; then
+  kill -TERM "$gt"; wait "$gt"; rc=$?
+  [ "$rc" -eq 143 ] && grep -q "EXECUTION HOLD testbox: SIGTERM received: ending the command's process group" "$TMP/group-term.log" &&
+    ok "a hold signalled TERM ends its command's group, then dies of TERM (143)" || ko "the signalled hold: rc=$rc $(cat "$TMP/group-term.log")"
+  swept 7 && ok "...leaving no sleep behind" || ko "the signalled hold left its group running: $(pgrep -fl "sleep ${GM}7")"
+fi
+kill -9 "$gt" 2>/dev/null; wait "$gt" 2>/dev/null
+# A wrapper killed outright can end nothing: its guardian, in a session of its own, kills the group.
+"${FWS[@]}" execution slot --wait 0 -- bash -c "echo started; sleep ${GM}8 & wait" > "$TMP/group-kill.log" 2>&1 &
+gk=$!
+if held "$TMP/group-kill.log" "^started$"; then
+  kill -KILL "$gk"; wait "$gk" 2>/dev/null
+  swept 8 && ok "a slot killed outright (SIGKILL) still ends its batch's group, through its guardian" || ko "the killed slot's group ran on: $(pgrep -fl "sleep ${GM}8")"
+  grep -q "its guardian killed process group" "$TMP/group-kill.log" && ok "...which says so" || ko "the guardian said nothing: $(cat "$TMP/group-kill.log")"
+  expect "...and the slot is free" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 5 -- echo after-guardian
+fi
+kill -9 "$gk" 2>/dev/null; wait "$gk" 2>/dev/null
+expect "--deadline takes a positive whole number of seconds" 2 "--deadline takes a positive whole number of seconds" -- "${FWS[@]}" execution hold --deadline 0 -- true
+expect "...in the slot too" 2 "--deadline takes a positive whole number of seconds" -- "${FWS[@]}" execution slot --deadline 5s -- true
+expect "--probe takes no --deadline" 2 "--probe takes no --deadline" -- "${FWS[@]}" execution slot --probe --deadline 5
 }
 
 section "usage" && {

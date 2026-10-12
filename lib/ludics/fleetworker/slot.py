@@ -498,7 +498,7 @@ def exec_command(prefix: str, box: str, command: Sequence[str]) -> NoReturn:
 
 
 def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: int, inhibitor: str,
-              command: Sequence[str], deadline: int | None) -> NoReturn:
+              command: Sequence[str], bound: int | None) -> NoReturn:
     """Wait up to ``wait`` seconds for a slot (a GPU token unless ``cpu``), then run the command in it."""
     # The candidate slots, in the order this batch tries them (THE GPU TOKENS).
     if not tokens:
@@ -525,7 +525,7 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             errline(f"{SLOT_PREFIX} {box}: {held} held for: {' '.join(command)}")
             # The marker a nested `execution slot` (and a runner that takes its own slot) reads.
             os.environ["FLEET_SLOT_HELD"] = f"{box} {index} {cap} {'gpu' if not tokens or index <= tokens else 'cpu'}"
-            run_command(SLOT_PREFIX, box, command, inhibitor, f"{box} {held}: {' '.join(command)}", deadline)
+            run_command(SLOT_PREFIX, box, command, inhibitor, f"{box} {held}: {' '.join(command)}", bound)
         if time.monotonic() >= deadline:
             if tokens and not cpu:
                 cli.say(f"{SLOT_PREFIX} REFUSED {box}: all {tokens} GPU tokens (slots 1-{tokens} of {cap}) busy"
