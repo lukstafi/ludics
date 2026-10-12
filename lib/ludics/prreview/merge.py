@@ -83,6 +83,11 @@ def parse(args: list[str], config: GateConfig) -> Options:
             opts.allow_no_verdict = True
         elif arg == "--require-green":
             opts.require_green = True
+        elif arg == "--check" or arg.startswith("--check="):
+            die(
+                "merge: --check is checks-only. merge's gate is every non-advisory check of the head,",
+                "never a subset; wait on one check with `checks <pr> --wait --check <ERE>`, then merge.",
+            )
         elif arg == "--":
             opts.gh_args = rest[1:]
             break

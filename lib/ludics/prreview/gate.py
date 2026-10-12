@@ -17,6 +17,7 @@ the column-shifting that read does on an empty field is part of what the placeho
 """
 
 import re
+import shlex
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -97,12 +98,15 @@ type Verdict = Literal[
 class RunSignal:
     """``run_signal``'s answer: its status (0 the fold stands, 1 red at the run level, 3 unread,
     4 no verdict yet), the run-level red count, the runs the waiver took out of it (one
-    "<run id> <run|job> <name>" per line), and the reason line."""
+    "<run id> <run|job> <name>" per line), and the reason line. ``stopped``: the 4 is a run that
+    stopped without a verdict, with nothing in flight -- no new check run comes of it unless
+    someone re-runs it, which ``checks --check`` reads as final (#569)."""
 
     rc: int
     red: int
     waived_runs: str
     reason: str
+    stopped: bool = False
 
 
 # `gate_checks` (with build_checks, summarize_checks, run_signal, apply_waiver), ported once: `checks`,
@@ -129,12 +133,18 @@ class Gate:
     check_total: int = 0
     check_green: int = 0
     check_lines: str = ""
+    # The names of the checks the fold left running, for the wait's progress line (#569).
+    pending_names: list[str] = field(default_factory=lambda: list[str]())
+    # ``checks --check <ERE>`` (#569): judge only the check runs whose name the ERE matches, grep
+    # reading it as it reads the advisory list. Empty is the whole head. See ``check``.
+    select: str = ""
     # The round's workflow runs, "<id> <status> <conclusion>" each, what the budget's pause keys
     # on beside the check counts (ludics-lite#551): a run moves before any check row exists.
     run_state: str = ""
     waive_mode: Literal["", "record", "apply"] = ""
     waived: set[str] = field(default_factory=lambda: set[str]())
     _advisory: ere.Advisory | None = None
+    _selected: ere.Advisory | None = None
 
     def __post_init__(self) -> None:
         if not self.advisory:
@@ -144,7 +154,10 @@ class Gate:
 
     def is_advisory(self, name: str) -> bool:
         """``is_advisory`` (ere.Advisory) under the list this gate holds now: ``advisory_policy``
-        may replace it with the repository's own."""
+        may replace it with the repository's own. Under a selection nothing is advisory: the ERE
+        names the checks to wait for, and a check it names is waited for whatever the list says."""
+        if self.select:
+            return False
         if self._advisory is None or self._advisory.pattern != self.advisory:
             self._advisory = ere.Advisory(self.advisory)
         return self._advisory(name)
@@ -236,6 +249,13 @@ class Gate:
 
     # --- the check fold -------------------------------------------------------------------------------
 
+    def selects(self, name: str) -> bool:
+        """Does ``--check``'s ERE match this check name? grep's reading, as for the advisory list
+        (ere.py), and one process's answers kept the same way."""
+        if self._selected is None or self._selected.pattern != self.select:
+            self._selected = ere.Advisory(self.select)
+        return self._selected(name)
+
     def build_checks(self, sha: str) -> list[str] | None:
         """``build_checks``: one "class\\tname\\tconclusion\\turl\\tsuite" line per non-advisory check
         run of ``sha``; None when the read failed (an outage is not a commit with no checks)."""
@@ -286,6 +306,7 @@ class Gate:
         """``summarize_checks``: the per-check classes folded into ``verdict`` and the report lines."""
         red = waived = pending = nogo = green = passed = 0
         lines: list[str] = []
+        running: list[str] = []
         for row in rows:
             cls, name, concl, url, _suite = tab_fields(row, 5)
             if not cls:
@@ -299,6 +320,7 @@ class Gate:
                     lines.append(f"  RED      {name} ({concl} — WAIVED: red when --override was given)  {url}\n")
                 case "pending":
                     pending += 1
+                    running.append(name)
                     lines.append(f"  running  {name} (no verdict yet)  {url}\n")
                 case "nogo":
                     nogo += 1
@@ -308,6 +330,7 @@ class Gate:
                     if concl == "success":
                         passed += 1
         self.check_lines = "".join(lines)
+        self.pending_names = running
         self.check_red = red
         self.check_waived = waived
         self.check_passed = passed
@@ -507,6 +530,7 @@ class Gate:
                 f"{nogo} workflow run(s) for this head completed stopped-not-judged (cancelled,"
                 " stale or action_required) with no build check behind them — stopped is not absence and"
                 " not a verdict: re-run the workflow",
+                stopped=True,
             )
         if checks > 0 and runs > 0:
             if released > 0:
@@ -584,7 +608,9 @@ class Gate:
     def check(self, pr: str, wait_for: int, waive: bool = False) -> int:
         """``gate_checks <pr> <wait> [waive]``: read the head and judge its build signal, printing the
         report. 0 green or a confirmed absence; 1 red (a check, a checkless run, or every red
-        waived); 3 unread; 4 no verdict yet; 5 the head was superseded."""
+        waived); 3 unread; 4 no verdict yet; 5 the head was superseded. Under ``select`` (``checks
+        --check``, #569) the fold is over the matching checks alone, and 2 is a selection that
+        matches no check run while none can still appear."""
         repo = self.repo
         budget = self.session.budget
         # A wait is the PR's build observer (the polling budget, budget.py): one at a time, and it
@@ -630,10 +656,41 @@ class Gate:
                 return 3
             if self.waive_mode:
                 rows = self.apply_waiver(rows)
+            if self.select:
+                rows = [row for row in rows if self.selects(tab_fields(row, 5)[1])]
             self.summarize(rows)
             self.run_waived = 0
             self.gate_base = base_sha
-            if self.verdict != "red":
+            nomatch = ""
+            if self.select and self.check_total == 0:
+                # A selection that matches no check run yet asks the run list one question: can a
+                # matching run still appear? A run in flight, or a run-less head inside the
+                # creation grace, holds (rc 4). Anything else -- every run finished (stopped ones
+                # included: only a re-run creates checks for them), or past the grace with none --
+                # means it cannot, and a selection that matches nothing is a refusal, never green
+                # and never ABSENT. The fold's count goes in as 1 so a
+                # finished run list answers at once rather than waiting the grace out: the grace
+                # is for a run not yet created, and finished runs have created their checks.
+                sig = self.run_signal(sha, pr_at, 1, base_sha, head_ref, pr)
+                match sig.rc:
+                    case 3:
+                        self.verdict = "unknown"
+                        warn(
+                            f"could not read the workflow runs of {repo}#{pr} @{sha[:8]} ({sig.reason}); whether a",
+                            "check matching --check can still appear is UNKNOWN.",
+                        )
+                        return 3
+                    case 4 if not sig.stopped:
+                        self.verdict = "unjudged"
+                        run_why = f"no check run matches --check {shlex.quote(self.select)} yet — {sig.reason}"
+                    case _:
+                        self.verdict = "unknown"
+                        nomatch = sig.reason
+            elif self.select:
+                # Checks match: their fold is the verdict. The run list speaks for the whole head
+                # -- the slow run the selection exists to leave out among it -- so it is not read.
+                pass
+            elif self.verdict != "red":
                 sig = self.run_signal(sha, pr_at, self.check_total, base_sha, head_ref, pr)
                 run_why = sig.reason
                 for entry in herestring_lines(sig.waived_runs):
@@ -691,13 +748,23 @@ class Gate:
             if budget is not None and budget.waited:
                 warn("a quota hold was waited out inside this round's reads; reading the round again")
                 continue
+            if nomatch:
+                warn(
+                    f"REFUSING: no check run of {repo}#{pr} @{sha[:8]} matches --check {shlex.quote(self.select)},",
+                    f"and none can still appear ({nomatch}). A selection that matches nothing is not a",
+                    "verdict; check the name against `gh pr checks` and the ERE.",
+                )
+                return 2
             now = self.clock.now()
             if self.verdict not in ("pending", "unjudged"):
                 break
             if now >= deadline:
                 break
             if now - beat >= self.config.checks_heartbeat:
-                note = run_why if self.verdict == "unjudged" else f"{self.check_pending} check(s) running"
+                note = (
+                    run_why if self.verdict == "unjudged"
+                    else f"{self.check_pending} check(s) running: {running_list(self.pending_names)}"
+                )
                 warn(
                     f"still waiting on {repo}#{pr} @{sha[:8]}: no verdict after {(now - started) // 60} of",
                     f"{wait_for // 60} min ({note})",
@@ -719,6 +786,8 @@ class Gate:
             self.clock.sleep(min(sleep_for, deadline - now))
         note = f" ({self.check_green} build check(s) have passed so far)" if self.check_green > 0 else ""
         head = f"build signal {repo}#{pr} @{sha[:8]}"
+        if self.select:
+            head += f" (--check {shlex.quote(self.select)})"
         match self.verdict:
             case "red":
                 cli.say(f"{head}: RED — {self.check_red} of {self.check_total} build checks failed")
@@ -728,7 +797,10 @@ class Gate:
                     " --override was given; everything else has a verdict and none is red"
                 )
             case "pending":
-                cli.say(f"{head}: NO VERDICT YET — still running")
+                cli.say(
+                    f"{head}: NO VERDICT YET — {self.check_pending} check(s) still running:"
+                    f" {running_list(self.pending_names)}"
+                )
             case "mixed":
                 cli.say(f"{head}: INCOMPLETE — {self.check_green} passed, the rest were stopped without a verdict")
             case "runred":
@@ -752,6 +824,20 @@ class Gate:
                 return 4
             case _:
                 return 0
+
+
+RUNNING_SHOWN = 3
+RUNNING_CHARS = 160
+
+
+def running_list(names: list[str]) -> str:
+    """The running checks for a progress line (#569): the first RUNNING_SHOWN names, cut at
+    RUNNING_CHARS, and a count of the rest -- the report lines below a verdict name every one."""
+    shown = ", ".join(names[:RUNNING_SHOWN])
+    if len(shown) > RUNNING_CHARS:
+        shown = shown[: RUNNING_CHARS - 1] + "…"
+    more = len(names) - RUNNING_SHOWN
+    return shown + (f" (+{more} more)" if more > 0 else "")
 
 
 def advisory_parse(text: str, where: str) -> str | None:
