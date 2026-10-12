@@ -2707,6 +2707,57 @@ expect "...and says the spec's own counts" 0 "^EXECUTION SLOT PROBE testbox 007 
   env FLEET_BOX_CORRECTNESS_SLOTS="testbox=007" "${FWS[@]}" execution slot --probe
 expect "...and a non-probe still needs one (scripts/py's refusal, exit 2)" 2 "no Python >= 3.12 found" -- \
   env LUDICS_PY_CANDIDATES="$TMP/no-python" "${FWS[@]}" execution slot --wait 0 -- echo no-python
+# THE PROBE'S WORDS (fleet-worker.sh): the shell answers a probe line exactly when Python's
+# parse_slot and probe answer it, and with Python's line; every other line is Python's to refuse.
+# The oracle is Python itself (scripts/py -m ludics.fleetworker, run directly, so the shell's
+# answer cannot stand in for it); the shell's side runs with no Python >= 3.12, where a line it does
+# not recognize gets scripts/py's refusal. The words tried are a superset that the oracle judges:
+# every `--word` in SLOT_USAGE (Python's side; an option parse_slot takes but its usage text does
+# not name is outside this pin) and every `--word` in the text of fleet-worker.sh's fw_is_probe,
+# from its `fw_is_probe() {` line to the first lone `}` (the shell's side; a word spelled there only
+# through a variable, or a glob label its own literal prefix does not match, is outside it). Each is
+# tried bare, with a good value, a bad one, as `=5` and before --probe, plus the pairs below.
+PY="$HERE/../../scripts/py"
+FWT_ENV=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=3" FLEET_BOX_GPU_TOKENS="testbox=1")
+usage_text=$("$PY" -c 'from ludics.fleetworker.slot import SLOT_USAGE; print(SLOT_USAGE)' 2>&1) || ko "could not read SLOT_USAGE (setup): $usage_text"
+shell_text=$(awk '/^fw_is_probe\(\) \{$/ { f = 1 } f { print } f && /^}$/ { exit }' "$FW")
+probe_words=$({ grep -o -- '--[a-z][a-z-]*' <<<"$usage_text"; grep -o -- '--[a-z][a-z-]*' <<<"$shell_text"; } | LC_ALL=C sort -u)
+# probe_verdict <output> <status>: the PROBE line a run answered, or `refused`.
+probe_verdict() {
+  local line
+  line=$(grep '^EXECUTION SLOT PROBE ' <<<"$1")
+  if [ "$2" -eq 0 ] && [ -n "$line" ]; then printf '%s\n' "$line"; else printf 'refused\n'; fi
+}
+pin_tried=0; pin_answered=0; pin_refused=0; pin_drift=""
+# pin_line <args...>: one `execution slot` line, judged by Python and answered by the shell.
+pin_line() {
+  local py_out py_rc sh_out sh_rc want got
+  py_out=$("${FWT_ENV[@]}" "$PY" -m ludics.fleetworker "$FW" execution slot "$@" 2>&1); py_rc=$?
+  sh_out=$(env LUDICS_PY_CANDIDATES="$TMP/no-python" "${FWT_ENV[@]}" "$FW" execution slot "$@" 2>&1); sh_rc=$?
+  want=$(probe_verdict "$py_out" "$py_rc"); got=$(probe_verdict "$sh_out" "$sh_rc")
+  pin_tried=$((pin_tried + 1))
+  if [ "$want" = refused ]; then pin_refused=$((pin_refused + 1)); else pin_answered=$((pin_answered + 1)); fi
+  [ "$want" = "$got" ] || pin_drift="$pin_drift
+  execution slot $*: Python says '$want', the shell '$got' ($sh_out)"
+}
+case "$probe_words" in *--probe*) ;; *) ko "the pin found no --probe in SLOT_USAGE or fw_is_probe (setup): $usage_text" ;; esac
+while IFS= read -r w; do
+  [ -n "$w" ] || continue
+  pin_line --probe "$w"
+  pin_line --probe "$w" 5
+  pin_line --probe "$w" x
+  pin_line --probe "$w=5"
+  pin_line "$w" 5 --probe
+done <<<"$probe_words"
+pin_line --probe --cpu --gpu
+pin_line --probe --gpu --gpu
+pin_line --probe --wait-window=
+pin_line --probe -- echo x
+if [ -z "$pin_drift" ] && [ "$pin_answered" -ge 5 ] && [ "$pin_refused" -ge 5 ]; then
+  ok "the shell answers a probe line exactly when Python does, with Python's line ($pin_tried lines: $pin_answered answered, $pin_refused refused)"
+else
+  ko "the shell's probe words drifted from parse_slot ($pin_tried lines: $pin_answered answered, $pin_refused refused):$pin_drift"
+fi
 # The wrapper hands the batch its caller's environment: scripts/py's PYTHONPATH (the checkout's lib/)
 # must not reach the batch, set or unset.
 mkdir -p "$TMP/pp"
