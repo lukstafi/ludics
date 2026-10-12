@@ -1042,7 +1042,8 @@ test.
 `test-pr-review-base-red.sh` is the red REPORT: what the command says once the answer is no
 (ludics-lite#73). A red names the
 failing JOB and the commit the red starts at, and the cases pin the claims that could be quietly
-wrong: a first red commit is named only when a judged run under the streak was not red (a window
+wrong: a first red commit is named only when a judged run under the streak was not red, and then
+with that run's commit as the floor of the span to attribute (ludics-lite#597; a window
 red to its end says the red may start further back instead), a run that was cancelled or is still
 going ends no streak because it judged nothing, two workflow files sharing a display name keep
 their histories apart, a jobs read that fails prints UNKNOWN and leaves the red standing rather
@@ -1112,9 +1113,13 @@ with no push run at all is ambiguous — dispatch-only, or a newcomer the tip ju
 separates them is the tip's own age, read off the sibling runs at the tip rather than off the
 wait's observation clock (an unreadable timestamp holds nothing). A run that completed
 stopped-not-judged does not speak for the run under it: the newest JUDGED run carries the verdict,
-so a red beneath a cancelled one still stands and a green beneath one still covers the tip. Runs
-that overlap because nothing cancels them (main's in skill-scripts.yml, which keys each push's
-concurrency group on its commit since ludics-lite#511) are read by creation, not by finish: the
+so a red beneath a cancelled one still stands and a green beneath one still covers the tip. A burst
+under a push group that keeps one running run and the newest pending one (skill-scripts.yml's main
+since ludics-lite#597) is the case that leans on that: the merges between the running run and the
+tip's have only `cancelled` runs, none reads red or holds the wait, the tip's own run is the
+verdict, and a red there names the green floor under the span as where attribution starts. Runs
+that overlap because nothing cancels them (no group, or one keyed on the commit, as main's was
+from ludics-lite#511 to #597) are read by creation, not by finish: the
 newest finished run is the verdict, an older merge's red that finishes after the tip's green does
 not displace it, and one that finishes while the tip's run is going is that merge's red. And
 under `--wait` the tip is the question, so a tip read that failed is UNKNOWN rather than something

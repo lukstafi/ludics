@@ -179,8 +179,9 @@ A tip whose own run is **in flight** over a window with no judged run reads **pe
 VERDICT YET`, exit 4 — not "never judged": the run that will judge it is running (ludics-lite#308).
 A merge burst makes that window, and where push CI does not cancel a running run, it also leaves
 runs at older merges going: one, with the tip's run pending behind it, where pushes share one group
-(a newer push replaces only a pending run, so a verdict covers a span of merges); several beside
-the tip's where each push has its own (this repository's `main`, ludics-lite#517). With `--interim` such a tip is green meanwhile when it is GitHub's clean merge of
+(this repository's `main` since ludics-lite#597: a newer push replaces only a pending run, which
+concludes `cancelled` and judges nothing, so a verdict covers a span of merges); several beside
+the tip's where each push has its own. With `--interim` such a tip is green meanwhile when it is GitHub's clean merge of
 a PR whose head built that workflow green and no run at an older commit is still in flight (that
 run judges base changes the PR head may never have met); the verdict line says `green, interim`
 and names the PR. That is the wave gate's opt-in and the base watch's; it is never the tip's own verdict, so a

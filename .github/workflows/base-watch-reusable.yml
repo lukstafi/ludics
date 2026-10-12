@@ -74,11 +74,12 @@ jobs:
           # the branch is told at session start — is exactly that reading. When it trails the tip the
           # report says which commit each verdict is about, and that goes into the issue.
           # `--interim` for the same reason (ludics-lite#308): in a merge burst under a CI that
-          # cancels superseded runs (a caller's; skill-scripts.yml stopped cancelling main's in
-          # ludics-lite#511), each tip's push run is cancelled by the next merge's, so the window can
-          # hold no judged run at all while the tip's own run is going. That is not a finding either,
-          # and when the tip is GitHub's clean merge of a PR whose head built green, the read is
-          # green meanwhile, naming that source. The tip's own run re-triggers this watch when it
+          # cancels superseded runs (a caller's; skill-scripts.yml's main cancels a PENDING run, never
+          # a running one, since ludics-lite#597), each tip's push run is cancelled by the next
+          # merge's, so the window can hold no judged run at all while the tip's own run is going,
+          # and a running run at an older merge holds the interim until it finishes. Neither is a
+          # finding, and when the tip is GitHub's clean merge of a PR whose head built green, the
+          # read is green meanwhile, naming that source. The tip's own run re-triggers this watch when it
           # completes, and a red it finds is filed then.
           # That source reads the merged PR, its head's check runs and its runs, with no
           # `pull-requests` or `checks` permission here: GitHub serves those reads of a PUBLIC

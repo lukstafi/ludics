@@ -57,11 +57,10 @@ permissions:
 # in the group, and a newer push cancels only the PENDING one waiting behind it, so a burst of
 # merges leaves at most two runs, the one going and one for the newest tip. That is GitHub's
 # default `queue: single` ("At most one job or workflow run can be `pending` in the concurrency
-# group"), left implicit because actionlint 1.7.12 refuses the key; `queue: max` would bring back a
-# run per merge. A merge whose run was
-# cancelled pending is judged by the next run, as part of a span; a red over a span is attributed,
-# then bisected, by the integration loop (issue-wave's SKILL.md, *Roll-forward merges and the
-# integration loop*). The history this replaces, both halves of it:
+# group"), left implicit because actionlint 1.7.12 refuses the key; `queue: max` would bring back
+# a run per merge. A merge whose run was cancelled pending is judged by the next run, as part of
+# a span; a red over a span is attributed, then bisected, by the integration loop (issue-wave's
+# SKILL.md, *Roll-forward merges and the integration loop*). The history this replaces:
 # - Grouped per ref WITH cancel-in-progress, each of seven merges on 2026-10-01 cancelled the run
 #   before, RUNNING or not: main had no verdict for about three hours, and a cross-PR red (#91 x
 #   #472) surfaced only on the first main run that finished. That is the failure this group does
