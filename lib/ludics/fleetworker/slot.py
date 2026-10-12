@@ -23,6 +23,12 @@ brief:
   of its own), or Refused.
 - THE DRAIN (ludics-lite#481): a ``hold --request`` takes every slot of the box before its command
   starts, so no batch runs beside a measurement.
+- THE WINDOW WAIT (ludics-lite#557): ``slot --wait-window[=<seconds>]`` turns the refusal beside an
+  outstanding measurement on this box (a window or not) into a bounded wait for it to conclude, then
+  queues for a slot under ``--wait`` as usual: two waits, each with its own bound and refusal line.
+  It is a separate flag, so a caller that relies on the immediate refusal (a runner's nested slot)
+  is never parked for a whole window, and it does not wait inside a measurement's hold, where it
+  would wait for its own measurement.
 - THE GUARD (ludics-lite#317): a logind ``block`` inhibitor on sleep:idle, held by a HELPER beside
   the command (systemd-inhibit closes the descriptors of the process it runs, SIGTERMs it, and
   rewrites its exit status, so it must never wrap the batch), alive for as long as anything in the
@@ -104,7 +110,8 @@ dispositions Python changed (SIGPIPE, SIGXFSZ ignored) put back first.
 # measurement does, for exactly as long as the batch runs. One Python program serves both
 # subcommands; `slot` is `hold` plus the flock.
 # Exit: the wrapped command's own status; 1 with a line beginning `EXECUTION SLOT REFUSED` (no
-# free slot or GPU token before the deadline, an outstanding measurement, a malformed spec); 4 when the
+# free slot or GPU token before the deadline, an outstanding measurement -- with --wait-window, one
+# still outstanding at its bound -- a malformed spec); 4 when the
 # anchor's registry could not be read; 127 when the command itself could not be run. The command
 # is exec'd and not interpreted, so a pipeline or a builtin goes as `sh -c '...'`.
 #
@@ -205,7 +212,7 @@ from ludics.fleetworker.config import (
     in_roster,
     short_hostname,
 )
-from ludics.fleetworker.execution import field, listing, records_of, registry_source
+from ludics.fleetworker.execution import field, jq_text, listing, records_of, registry_source
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import substitution
 
@@ -550,7 +557,12 @@ def inhibitor_path(cfg: Config) -> str:
 
 # --- the commands ---------------------------------------------------------------------------------
 
-SLOT_USAGE = "execution slot [--bg <parent>] [--wait <seconds>] [--cpu|--gpu] -- <command> [args...] | execution slot --probe"
+SLOT_USAGE = (
+    "execution slot [--bg <parent>] [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] -- <command> [args...]"
+    " | execution slot --probe"
+)
+WINDOW_WAIT = 3600  # --wait-window's bound when it names none: an hour of measuring
+WINDOW_PROGRESS = 60  # seconds between the lines that say a waiting batch is still waiting
 HOLD_USAGE = "execution hold [--why <text>] [--request <id>] -- <command> [args...]"
 
 
@@ -561,10 +573,12 @@ class SlotArgs:
     probe: bool
     bg: str
     command: list[str]
+    window_wait: int | None = None  # --wait-window's bound; None: refuse at once under a measurement
 
 
 def parse_slot(args: list[str]) -> SlotArgs:
     wait, kind, probe, bg = 600, "", False, ""
+    window_wait: int | None = None
     wait_text = "600"
     i = 0
     command: list[str] = []
@@ -585,6 +599,14 @@ def parse_slot(args: list[str]) -> SlotArgs:
                 die("execution slot: --wait takes a whole number of seconds")
             wait = int(wait_text)
             i += 1
+        elif arg == "--wait-window":
+            window_wait = WINDOW_WAIT
+        elif arg.startswith("--wait-window="):
+            # Its value only after `=`: a bare `--wait-window` is the flag, so the next word is never
+            # taken for a bound it was not meant as.
+            if not re.fullmatch(r"[0-9]+", arg[len("--wait-window=") :]):
+                die("execution slot: --wait-window takes a whole number of seconds, as --wait-window=<seconds>")
+            window_wait = int(arg[len("--wait-window=") :])
         elif arg in ("--cpu", "--gpu"):
             if kind and kind != arg:
                 die("execution slot: --cpu and --gpu are exclusive")
@@ -599,19 +621,115 @@ def parse_slot(args: list[str]) -> SlotArgs:
         die("execution slot: --probe takes no --bg; it runs nothing")
     if not probe and not command:
         die("execution slot: a command to hold the slot around is required, after --")
-    return SlotArgs(wait, kind, probe, bg, command)
+    return SlotArgs(wait, kind, probe, bg, command, window_wait)
+
+
+def measurement_records(records: list[dict[str, Any]], box: str) -> list[dict[str, Any]]:
+    """The outstanding measurements on ``box``, a window or not."""
+    return [
+        r
+        for r in records
+        if r.get("state") != "concluded"
+        and field(r, "request", "execution_host") == box
+        and field(r, "request", "kind") == "measurement"
+    ]
 
 
 def outstanding_measurements(records: list[dict[str, Any]], box: str, window_only: bool) -> str:
     ids = [
         str(r.get("request_id"))
-        for r in records
-        if r.get("state") != "concluded"
-        and field(r, "request", "execution_host") == box
-        and field(r, "request", "kind") == "measurement"
-        and (not window_only or r.get("window") is True)
+        for r in measurement_records(records, box)
+        if not window_only or r.get("window") is True
     ]
     return ", ".join(ids)
+
+
+@dataclass(frozen=True)
+class Unread:
+    """The anchor's registry could not be read: the lines a refusal prints, and its status."""
+
+    rc: int
+    lines: tuple[str, ...]
+
+
+def read_registry(cfg: Config, box: str) -> list[dict[str, Any]] | Unread:
+    done = listing(cfg)
+    if done.unreachable:
+        return Unread(4, (f"{SLOT_PREFIX} UNREACHABLE {cfg.anchor}: registry unread, no slot taken",))
+    if done.rc != 0:
+        return Unread(1, (substitution(done.out), f"{SLOT_PREFIX} REFUSED {box}: the anchor's registry could not be read"))
+    records = records_of(done.out)
+    if records is None:
+        return Unread(1, (f"{SLOT_PREFIX} REFUSED {box}: the anchor's registry did not parse",))
+    return records
+
+
+def describe_measurement(box: str, record: dict[str, Any]) -> str:
+    """Which measurement holds the box, and whose: one line, said once per measurement waited for."""
+    what = "measurement window" if record.get("window") is True else "measurement"
+    owner = jq_text(record.get("coordinator"))
+    worker = jq_text(field(record, "request", "worker"))
+    issue = jq_text(field(record, "request", "issue"))
+    since = jq_text(record.get("created_at"))
+    return (
+        f"{SLOT_PREFIX} {box}: {what} {jq_text(record.get('request_id'))} holds {box} (coordinator {owner};"
+        f" {worker} for {issue}; reserved {since}; no expected end is recorded)"
+    )
+
+
+def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bound: int,
+                       command: Sequence[str]) -> list[dict[str, Any]] | int:
+    """``--wait-window`` (ludics-lite#557): block until no measurement is outstanding on this box,
+    re-reading the registry every ``FLEET_SLOT_WINDOW_POLL`` seconds (15), for at most ``bound``
+    seconds; the registry it last read, or the refusal's status. A measurement on another box is
+    not this box's (``measurement_records``), so it never blocks. Each measurement waited for is
+    named once, and a line every ``WINDOW_PROGRESS`` seconds says the batch is still waiting."""
+    try:
+        poll = max(float(cfg.env.get("FLEET_SLOT_WINDOW_POLL", "15")), 0.1)
+    except ValueError:
+        poll = 15.0
+    start = time.monotonic()
+    deadline, progress = start + bound, start + WINDOW_PROGRESS
+    named: set[str] = set()
+    unread: Unread | None = None
+    while True:
+        holding = measurement_records(records, box)
+        if not holding and unread is None:
+            if named:
+                errline(f"{SLOT_PREFIX} {box}: no measurement holds {box} after {int(time.monotonic() - start)}s;"
+                        " taking a slot")
+            return records
+        for record in holding:
+            identity = jq_text(record.get("request_id"))
+            if identity not in named:
+                named.add(identity)
+                errline(describe_measurement(box, record))
+                errline(f"{SLOT_PREFIX} {box}: waiting up to {bound}s (--wait-window) for it to conclude, then for a"
+                        f" slot, for: {' '.join(command)}")
+        now = time.monotonic()
+        ids = ", ".join(jq_text(r.get("request_id")) for r in holding)
+        if now >= deadline:
+            if unread is not None:
+                for line in unread.lines:
+                    cli.say(line)
+                return unread.rc
+            cli.say(f"{SLOT_PREFIX} REFUSED {box}: measurement {ids} still holds {box} after {bound}s"
+                    " (--wait-window); no slot taken")
+            return 1
+        if now >= progress:
+            errline(f"{SLOT_PREFIX} {box}: still waiting for measurement {ids}"
+                    f" ({int(now - start)}s of {bound}s, --wait-window)")
+            progress += WINDOW_PROGRESS
+        time.sleep(min(poll, deadline - now))
+        read = read_registry(cfg, box)
+        if isinstance(read, Unread):
+            # One failed read mid-wait is not the window's answer: said, and asked again until the
+            # bound, when the refusal is the read's own.
+            unread = read
+            errline(f"{SLOT_PREFIX} {box}: the registry could not be read while waiting"
+                    f" ({' '.join(line for line in read.lines if line)}); asking again")
+            continue
+        records, unread = read, None
 
 
 def cmd_slot(cfg: Config, args: list[str]) -> int:
@@ -654,6 +772,8 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
         bgrun = os.path.join(cfg.here, "bg-run.sh")
         again = os.path.join(cfg.here, os.path.basename(cfg.script))
         argv = [bgrun, "spawn", parsed.bg, "--", again, "execution", "slot", "--wait", str(parsed.wait)]
+        if parsed.window_wait is not None:
+            argv.append(f"--wait-window={parsed.window_wait}")
         if parsed.kind:
             argv.append(parsed.kind)
         argv += ["--", *command]
@@ -678,18 +798,11 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
             case _:
                 assert_never(verdict)
     registry_source()  # `execution: missing helper` before the registry is asked anything
-    done = listing(cfg)
-    if done.unreachable:
-        cli.say(f"{SLOT_PREFIX} UNREACHABLE {cfg.anchor}: registry unread, no slot taken")
-        return 4
-    if done.rc != 0:
-        cli.say(substitution(done.out))
-        cli.say(f"{SLOT_PREFIX} REFUSED {box}: the anchor's registry could not be read")
-        return 1
-    records = records_of(done.out)
-    if records is None:
-        cli.say(f"{SLOT_PREFIX} REFUSED {box}: the anchor's registry did not parse")
-        return 1
+    records = read_registry(cfg, box)
+    if isinstance(records, Unread):
+        for line in records.lines:
+            cli.say(line)
+        return records.rc
     measuring = outstanding_measurements(records, box, window_only=False)
     window = outstanding_measurements(records, box, window_only=True)
     if marker_measure:
@@ -704,17 +817,31 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
                 return 1
             case _:
                 assert_never(verdict)
+    # --wait-window waits here, and never inside a measurement's hold (a batch carrying its
+    # marker that the judgement above did not admit): there it would wait for its own measurement.
+    if measuring and parsed.window_wait is not None and not marker_measure:
+        waited = await_measurements(cfg, box, records, parsed.window_wait, command)
+        if isinstance(waited, int):
+            return waited
+        records = waited
+        measuring = outstanding_measurements(records, box, window_only=False)
+        window = outstanding_measurements(records, box, window_only=True)
+    elif measuring and parsed.window_wait is not None:
+        errline(f"{SLOT_PREFIX} {box}: --wait-window does not wait inside a measurement's hold, where it would"
+                " wait for its own measurement")
     if window:
         cli.say(
             f"{SLOT_PREFIX} REFUSED {box}: measurement window {window} is open on {box}, and holds the box"
             " exclusively; standing reservations here are suspended until it concludes, so retry this batch"
-            " then (no request needed); only a batch inside its own `execution hold --request <id>` runs there"
+            " then (no request needed), or wrap it in `execution slot --wait-window`, which waits for that;"
+            " only a batch inside its own `execution hold --request <id>` runs there"
         )
         return 1
     if measuring:
         cli.say(
             f"{SLOT_PREFIX} REFUSED {box}: a measurement holds the box exclusively ({measuring}); only a batch"
             " inside its own `execution hold --request <id>` runs there"
+            + ("" if marker_measure or parsed.window_wait is not None else ", and `--wait-window` waits for it")
         )
         return 1
     try:

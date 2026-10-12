@@ -39,6 +39,9 @@ config; a map naming one alias on two rows is refused whole. It deliberately doe
 ~/.ssh/config: two `Host` stanzas pointing at one HostName outside the map are not detected. An
 empty or absent map argument keeps today's behaviour (each entry is its own box, up to case);
 fleet-worker passes one only when its checkout has no wake-lab.sh, and says so on stderr.
+`list --host <box>` (ludics-lite#557) selects one box's records by this same rule, so an alias
+(`rog`) selects its roster entry's (`rog-nv-linux`), and a name that is no roster entry's box is
+refused.
 
 A coordinator's correctness request may carry `"integration": true` (ludics-lite#401): the run is
 the repository's full integration suite at a merged tip, and once concluded pass or fail at an
@@ -252,6 +255,22 @@ def check_one_entry_per_box(roster: list[str], map_spec: str) -> None:
                    f"on one would not exclude a run on the other; keep one entry per physical box")
 
 
+def on_one_box(selected: list[Record], host: str, boxes: str, map_spec: str) -> list[Record]:
+    """`list --host` (ludics-lite#557): the records whose execution host is the same box as `host`,
+    by the one-box rule of the header (the endpoint map's rows, then case), so an alias (`rog`)
+    selects its roster entry's (`rog-nv-linux`) records. A host that is no roster entry's box is
+    refused rather than answered with an empty list a typo would read as an idle box."""
+    aliases = endpoint_boxes(map_spec)
+
+    def box_of(name: str) -> str:
+        return aliases.get(name.casefold(), name).casefold()
+
+    wanted = box_of(host)
+    if wanted not in {box_of(entry) for entry in boxes.split()}:
+        refuse(f"list --host {host}: no FLEET_BOXES entry ({boxes}) is that box, by the endpoint map or by case")
+    return [record for record in selected if box_of(record["request"]["execution_host"]) == wanted]
+
+
 LANE_LOCKS: list[int] = []   # lane-lock descriptors held SHARED until this process exits (see the header)
 
 
@@ -388,14 +407,18 @@ def main(argv: list[str]) -> None:
             records[path.stem] = validate_record(json.loads(path.read_text()), path)
     if action == "list":
         options = as_object(json.loads(raw))
-        if (options is None or set(options) - {"active", "compact"}
-                or any(type(value) is not bool for value in options.values())):
-            refuse("list options must be active/compact booleans")
-        flags = cast(dict[str, bool], options)
+        if (options is None or set(options) - {"active", "compact", "host"}
+                or any(type(value) is not bool for key, value in options.items() if key != "host")):
+            refuse("list options must be active/compact booleans and a host")
+        if "host" in options:
+            nonempty(options, ["host"])
+        flags = cast(dict[str, Any], options)
         # Validate the entire ledger above before filtering: a compact view must not hide
         # corrupt ownership evidence, including a malformed terminal record.
         selected = [record for record in records.values()
                     if not flags.get("active") or record["state"] != "concluded"]
+        if "host" in flags:
+            selected = on_one_box(selected, flags["host"], boxes, map_spec)
         if flags.get("compact"):
             selected = [{key: value for key, value in record.items()
                          if key not in {"history", "lease_token"}} for record in selected]

@@ -2723,6 +2723,47 @@ expect "concluding the measurement restores the standing reservation" 0 "EXECUTI
   "${FWS[@]}" execution conclude "$(jq -n '{request_id:"win-measure", verdict:"not-launched", log:"/dev/null", evidence:"fixture: nothing ran"}' > "$TMP/win-done.json"; printf '%s' "$TMP/win-done.json")"
 expect "...and a batch is admitted again" 0 "slot 1 of 1 held for: echo after-window" -- "${FWS[@]}" execution slot --wait 0 -- echo after-window
 fixture_done win-iterate
+# THE WINDOW WAIT (ludics-lite#557): `slot --wait-window` waits out a measurement on this box rather
+# than refusing, then queues for a slot as --wait says; a measurement on another box never blocks
+# it. `execution list --host` selects one box's records, an alias selecting its roster entry's.
+"${FWS[@]}" execution run "$(slotreq ww-iterate correctness true)" >/dev/null || ko "could not take the standing reservation (setup)"
+"${FWS[@]}" execution window testbox "$(slotreq ww-measure measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+expect "a --bg batch with --wait-window returns its run directory at once during a window" 0 "^$TMP/slot-ww/run-1$" -- \
+  env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-ww" --wait-window=60 --wait 0 -- echo after-window-wait
+bgd="$TMP/slot-ww/run-1"
+if held "$bgd/log" "waiting up to 60s (--wait-window) for it to conclude, then for a slot, for: echo after-window-wait"; then
+  grep -q "measurement window ww-measure holds testbox (coordinator test-coordinator; ww-measure for o/r#1; reserved " "$bgd/log" &&
+    ok "...which names the window, its box and its owner once" || ko "the waiting batch did not name the window: $(cat "$bgd/log")"
+  grep -q "^after-window-wait$" "$bgd/log" && ko "the batch ran during the window: $(cat "$bgd/log")" || ok "...and runs nothing while it is open"
+  expect "a foreground --wait-window batch is refused at its bound, naming the window" 1 "EXECUTION SLOT REFUSED testbox: measurement ww-measure still holds testbox after 1s (--wait-window); no slot taken" -- \
+    env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --wait-window=1 -- echo bounded
+  grep -q "^bounded$" <<<"$out" && ko "the bounded batch ran: $out" || ok "...running nothing"
+  expect "--wait-window does not wait inside a measurement's hold, where it would wait for its own measurement" 1 "does not wait inside a measurement's hold" -- \
+    "${FWS[@]}" execution hold --request no-such-request -- "$FW" execution slot --wait-window=60 -- echo in-hold
+  fixture_done ww-measure
+  expect "...and once the window concludes the waiting batch takes a slot and runs (rc=0)" 0 "rc=0" -- "$BGR" wait "$bgd" --within 30
+  grep -q "slot 1 of 1 held for: echo after-window-wait" "$bgd/log" && grep -q "^after-window-wait$" "$bgd/log" &&
+    ok "...in its slot, with its output in the run's log" || ko "the waited batch's log: $(cat "$bgd/log")"
+else ko "the --wait-window batch never said it waits: $(cat "$bgd/log" 2>/dev/null)"; fixture_done ww-measure; fi
+bgkill "$bgd"
+jq '.execution_host = "other" | .agent_host = "other"' "$(slotreq ww-other measurement)" > "$TMP/slot-ww-other.json"
+"${FWS[@]}" execution window other "$TMP/slot-ww-other.json" >/dev/null 2>&1 || ko "could not open the other box's window (setup)"
+expect "a window on another box does not block a --wait-window batch" 0 "slot 1 of 1 held for: echo not-blocked" -- \
+  "${FWS[@]}" execution slot --wait-window=60 --wait 0 -- echo not-blocked
+grep -q "waiting up to" <<<"$out" && ko "the batch waited for another box's window: $out" || ok "...nor make it wait"
+expect "execution list --host selects one box's records" 0 '"ww-other"' -- "${FWS[@]}" execution list --active --compact --host other
+grep -q '"ww-iterate"' <<<"$out" && ko "--host other listed testbox's record: $out" || ok "...and none of another box's"
+expect "...by case, as ssh reads a host name" 0 '"ww-iterate"' -- "${FWS[@]}" execution list --active --compact --host TESTBOX
+jq '.execution_host = "rog-nv-linux"' "$(slotreq ww-rog correctness true)" > "$TMP/slot-ww-rog.json"
+env FLEET_BOXES="testbox other rog-nv-linux" "$FW" execution reserve "$TMP/slot-ww-rog.json" >/dev/null || ko "could not reserve on rog-nv-linux (setup)"
+expect "...and an alias (rog) selects its roster entry's (rog-nv-linux) records" 0 '"ww-rog"' -- \
+  env FLEET_BOXES="testbox other rog-nv-linux" "$FW" execution list --active --compact --host rog
+grep -q '"ww-iterate"\|"ww-other"' <<<"$out" && ko "--host rog listed another box's records: $out" || ok "...and only those"
+expect "a --host that is no roster entry's box is refused, not answered with an empty list" 1 "list --host rgo: no FLEET_BOXES entry" -- \
+  "${FWS[@]}" execution list --host rgo
+expect "--host needs a box" 2 "expected a box for --host" -- "${FWS[@]}" execution list --host
+fixture_done ww-rog; fixture_done ww-other; fixture_done ww-iterate
+expect "execution slot refuses a non-numeric --wait-window" 2 "--wait-window takes a whole number of seconds" -- "${FWS[@]}" execution slot --wait-window=soon -- echo x
 expect "execution hold --request needs a request id" 2 "--request takes the measurement's request id" -- "${FWS[@]}" execution hold --request "../x" -- true
 expect "...and this host's fleet name, which the marker names" 2 "--request needs this host's fleet name" -- \
   env -u FLEET_LOCAL_BOX FLEET_HOSTNAME_MAP="nomatch*=testbox" "$FW" execution hold --request hold-measure -- true
@@ -2738,7 +2779,7 @@ expect "execution hold needs a command after --" 2 "a command to hold the box ar
 expect "execution hold takes no slot options" 2 "execution hold .--why <text>. .--request <id>. -- <command>" -- "${FWS[@]}" execution hold --wait 5 -- true
 expect "execution slot needs a command after --" 2 "a command to hold the slot around is required" -- "${FWS[@]}" execution slot --
 expect "execution slot refuses a non-numeric --wait" 2 "whole number of seconds" -- "${FWS[@]}" execution slot --wait soon -- echo x
-expect "execution slot takes no --box: the slot is this box's own" 2 "execution slot .--bg <parent>. .--wait <seconds>. .--cpu|--gpu. -- <command>" -- "${FWS[@]}" execution slot --box other -- echo x
+expect "execution slot takes no --box: the slot is this box's own" 2 "execution slot .--bg <parent>. .--wait <seconds>. .--wait-window.=<seconds>.. .--cpu|--gpu. -- <command>" -- "${FWS[@]}" execution slot --box other -- echo x
 expect "a malformed slots spec refuses before anything is locked" 1 "<box>=<positive n>" -- \
   env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=x" "$FW" execution slot -- echo x
 expect "a host with no fleet name has no slot to take" 2 "no fleet name" -- \

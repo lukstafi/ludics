@@ -9,13 +9,20 @@ import shutil
 import tempfile
 import unittest
 
+from typing import Any
+from unittest import mock
+
 from ludics import cli
+from ludics.fleetworker import slot
+from ludics.fleetworker.config import load_config
 from ludics.fleetworker.slot import (
     Covered,
     Inside,
     Refused,
     Take,
     Uncovered,
+    Unread,
+    await_measurements,
     judge_measurement,
     judge_nested,
     parse_slot,
@@ -115,6 +122,74 @@ class SlotArguments(unittest.TestCase):
         self.assertIn("--probe takes no --bg", self.refused(["--probe", "--bg", "/x"]))
         self.assertIn("a command to hold the slot around is required", self.refused(["--"]))
         self.assertIn("execution slot [--bg <parent>]", self.refused(["--box", "other", "--", "true"]))
+
+    def test_wait_window(self) -> None:
+        self.assertIsNone(parse_slot(["--", "true"]).window_wait)
+        self.assertEqual(parse_slot(["--wait-window", "--", "true"]).window_wait, slot.WINDOW_WAIT)
+        parsed = parse_slot(["--wait-window=90", "--wait", "5", "--", "true"])
+        self.assertEqual((parsed.window_wait, parsed.wait), (90, 5))
+        # The bound only after `=`: a bare flag never takes the next word for one.
+        self.assertIn("execution slot [--bg <parent>]", self.refused(["--wait-window", "90", "--", "true"]))
+        for bad in ("--wait-window=", "--wait-window=soon", "--wait-window=-1"):
+            self.assertIn("--wait-window takes a whole number of seconds", self.refused([bad, "--", "true"]), bad)
+
+
+def measurement(identity: str, box: str = "testbox", state: str = "launching", window: bool = True) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "request_id": identity, "coordinator": "coord", "state": state, "created_at": "2026-10-12T00:00:00+00:00",
+        "request": {"execution_host": box, "kind": "measurement", "worker": "w", "issue": "o/r#1"},
+    }
+    if window:
+        record["window"] = True
+    return record
+
+
+class WindowWait(unittest.TestCase):
+    """``--wait-window`` (ludics-lite#557), the registry re-reads stubbed in order."""
+
+    def wait(self, first: list[dict[str, Any]], reads: list[Any], bound: int = 30) -> tuple[object, str, str]:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "0.01"}, host="testbox")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(slot, "read_registry", side_effect=reads), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            result = await_measurements(cfg, "testbox", first, bound, ["echo", "x"])
+        return result, out.getvalue(), err.getvalue()
+
+    def test_a_window_that_opens_then_closes_lets_the_batch_take_a_slot(self) -> None:
+        concluded = [measurement("win", state="concluded")]
+        result, out, err = self.wait([measurement("win")], [[measurement("win")], concluded])
+        self.assertEqual((result, out), (concluded, ""))
+        self.assertEqual(err.count("measurement window win holds testbox (coordinator coord; w for o/r#1;"), 1)
+        self.assertIn("waiting up to 30s (--wait-window) for it to conclude, then for a slot, for: echo x", err)
+        self.assertIn("no measurement holds testbox after", err)
+
+    def test_a_window_on_another_box_does_not_block(self) -> None:
+        records = [measurement("elsewhere", box="other")]
+        result, out, err = self.wait(records, [])
+        self.assertEqual((result, out, err), (records, "", ""))
+
+    def test_the_next_window_of_a_batch_is_named_too(self) -> None:
+        result, _, err = self.wait([measurement("a")], [[measurement("b")], []])
+        self.assertEqual(result, [])
+        self.assertIn("measurement window a holds", err)
+        self.assertIn("measurement window b holds", err)
+
+    def test_a_window_still_open_at_the_bound_is_refused(self) -> None:
+        with mock.patch.object(slot, "WINDOW_PROGRESS", 0):
+            result, out, err = self.wait([measurement("win", window=False)], [], bound=0)
+        self.assertEqual(result, 1)
+        self.assertEqual(out, "EXECUTION SLOT REFUSED testbox: measurement win still holds testbox after 0s"
+                         " (--wait-window); no slot taken\n")
+        self.assertIn("measurement win holds testbox", err)
+
+    def test_a_failed_read_mid_wait_is_asked_again_and_refused_as_itself_at_the_bound(self) -> None:
+        unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))
+        result, _, err = self.wait([measurement("win")], [unread, []])
+        self.assertEqual(result, [])
+        self.assertIn("the registry could not be read while waiting", err)
+        result, out, _ = self.wait([measurement("win")], [unread] * 10000, bound=1)
+        self.assertEqual((result, out), (4, "EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken\n"))
 
 
 if __name__ == "__main__":
