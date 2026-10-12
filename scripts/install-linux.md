@@ -111,8 +111,8 @@ does not tell us the target Unix username.
   `~/ocannl-staging/benchmarks/.venv` is linked to the venv when that checkout exists and has no
   `.venv` of its own. The fixtures the box lacks are copied, never regenerated, from the anchor's
   `~/ocannl-staging/benchmarks/fixtures` (`$FLEET_ANCHOR`, over the fleet's ssh), and each one is
-  installed only if the box checkout's `fixture_digest.py --check` finds it in `DIGESTS.txt`; an
-  existing fixture is never replaced. `python3-dev` (for `torch.compile` and tinygrad's GPU
+  installed only if the anchor's `fixture_digest.py --check` finds it in the anchor's
+  `DIGESTS.txt` (a box's shared checkout can lag main); an existing fixture is never replaced. `python3-dev` (for `torch.compile` and tinygrad's GPU
   backends) is installed by the shared setup; the standalone mode installs it when sudo can run,
   and otherwise ends with a WARNING naming the command. The standalone mode, from the Mac:
   `git -C ~/ludics-lite fetch -q origin && ssh <box> "bash <(printf %s $(git -C ~/ludics-lite show

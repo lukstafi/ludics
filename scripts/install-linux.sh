@@ -477,37 +477,41 @@ bench_link_checkout() {
   fi
 }
 
-# Copies the fixtures this box lacks from the anchor's main checkout, never regenerating one: each
-# is staged beside the others and installed only when this checkout's fixture_digest.py --check
-# finds it among DIGESTS.txt's recorded bytes. An existing fixture is never replaced (it may be
-# this box's own recorded bytes). Reads only regular files named <name>.safetensors with a
-# portable name, listed NUL-delimited; any other name on the anchor is refused, not skipped.
+# Copies the fixtures this box lacks from the anchor's main checkout, never regenerating one. Each
+# is staged beside the others and installed only when the anchor's own fixture_digest.py --check
+# finds it among the anchor's DIGESTS.txt rows, both fetched from that same checkout: a box's
+# shared checkout can be weeks behind main, and its DIGESTS.txt would refuse fixtures recorded
+# since. An existing fixture is never replaced (it may be this box's own recorded bytes). Reads
+# only regular files named <name>.safetensors with a portable name, listed NUL-delimited; any
+# other name on the anchor is refused, not skipped.
 bench_fixtures() {
   local dir=$BENCH_CHECKOUT/benchmarks/fixtures anchor=${FLEET_ANCHOR:-mac-studio} name missing=() failed=()
-  local tool=$BENCH_CHECKOUT/benchmarks/fixture_digest.py
-  [[ -f $dir/DIGESTS.txt && -f $tool ]] ||
-    fail "No $dir/DIGESTS.txt or $tool: update $BENCH_CHECKOUT, then rerun to copy the fixtures."
-  ssh -o BatchMode=yes "$anchor" "cd $BENCH_ANCHOR_CHECKOUT/benchmarks/fixtures && find . -maxdepth 1 -type f -name '*.safetensors' -print0" > "$scratch/anchor-fixtures" ||
-    fail "Cannot list the fixtures in $anchor:$BENCH_ANCHOR_CHECKOUT/benchmarks/fixtures."
+  local remote=$BENCH_ANCHOR_CHECKOUT/benchmarks check=$scratch/anchor-digest
+  [[ -d $dir ]] || fail "No $dir: is $BENCH_CHECKOUT an OCANNL checkout?"
+  ssh -o BatchMode=yes "$anchor" "cd $remote/fixtures && find . -maxdepth 1 -type f -name '*.safetensors' -print0" > "$scratch/anchor-fixtures" ||
+    fail "Cannot list the fixtures in $anchor:$remote/fixtures."
   while IFS= read -r -d '' name; do
     [[ $name =~ ^\./[A-Za-z0-9][A-Za-z0-9_.-]*\.safetensors$ ]] || fail "Refusing anchor fixture name: $(printf '%q' "$name")"
     name=${name#./}
     [[ -e $dir/$name || -L $dir/$name ]] || missing+=("$name")
   done < "$scratch/anchor-fixtures"
   [[ ${#missing[@]} -gt 0 ]] || return 0
+  mkdir -p "$check"
+  scp -q "$anchor:$remote/fixture_digest.py" "$anchor:$remote/fixtures/DIGESTS.txt" "$check/" ||
+    fail "Cannot copy fixture_digest.py and DIGESTS.txt from $anchor:$remote."
   BENCH_STAGE=$(mktemp -d "$dir/.incoming.XXXXXX")
   BENCH_STAGE=$(CDPATH= cd "$BENCH_STAGE" && pwd -P)
   for name in "${missing[@]}"; do
-    scp -q -p "$anchor:$BENCH_ANCHOR_CHECKOUT/benchmarks/fixtures/$name" "$BENCH_STAGE/$name" ||
+    scp -q -p "$anchor:$remote/fixtures/$name" "$BENCH_STAGE/$name" ||
       fail "Cannot copy $name from $anchor."
-    if python3 "$tool" --check --digests "$dir/DIGESTS.txt" "$BENCH_STAGE/$name"; then
+    if python3 "$check/fixture_digest.py" --check --digests "$check/DIGESTS.txt" "$BENCH_STAGE/$name"; then
       mv -- "$BENCH_STAGE/$name" "$dir/$name"
     else
       failed+=("$name")
     fi
   done
   rm -rf -- "${BENCH_STAGE:?}"; BENCH_STAGE=''
-  [[ ${#failed[@]} -eq 0 ]] || fail "Not installed, matching nothing in $dir/DIGESTS.txt: ${failed[*]}"
+  [[ ${#failed[@]} -eq 0 ]] || fail "Not installed, matching nothing in $anchor:$remote/fixtures/DIGESTS.txt: ${failed[*]}"
 }
 
 # A failed or interrupted build never leaves its fresh directory or a staged fixture behind.

@@ -356,8 +356,9 @@ sys.exit(0 if ok else 1)
         'timeout() { shift; "$@"; }; flock() { echo "flock $*" >> "$CALLS"; }; '
         'sudo() { echo "sudo $*" >> "$CALLS"; [ "$1" != -n ] || return "${SUDO_N_RC:-1}"; '
         '[ "$1" != apt-get ] || touch "$FAKE_INCLUDE/Python.h"; }; '
-        'ssh() { echo "ssh $*" >> "$CALLS"; (cd "$ANCHOR" && find . -maxdepth 1 -type f -name "*.safetensors" -print0); }; '
-        'scp() { echo "scp $*" >> "$CALLS"; local src=${@: -2:1}; cp "$ANCHOR/${src##*/}" "${@: -1}"; }; '
+        'ssh() { echo "ssh $*" >> "$CALLS"; (cd "$ANCHOR/benchmarks/fixtures" && find . -maxdepth 1 -type f -name "*.safetensors" -print0); }; '
+        'scp() { echo "scp $*" >> "$CALLS"; local a dest=${@: -1}; '
+        'for a; do case $a in *:*) cp "$ANCHOR/${a#*:ocannl-staging/}" "$dest";; esac; done; }; '
         'mkvenv() { local d=$1; shift; mkdir -p "$d/bin"; cp "$FAKE_PY" "$d/bin/python"; printf "%s\\n" "$@" > "$d/installed"; }; ')
     NVIDIA_PINS = 'numpy==2.5.3 safetensors==0.8.0 tinygrad==0.14.0 torch==2.14.0+cu130'
 
@@ -365,18 +366,20 @@ sys.exit(0 if ok else 1)
         import hashlib
         (self.root / 'fake-python').write_text(self.FAKE_VENV_PYTHON)
         (self.root / 'fake-python').chmod(0o755)
-        for d in ['scratch', 'include', 'anchor', 'venvs', 'ocannl/benchmarks/fixtures']:
+        for d in ['scratch', 'include', 'anchor/benchmarks/fixtures', 'venvs', 'ocannl/benchmarks/fixtures']:
             (self.root / d).mkdir(parents=True, exist_ok=True)
         (self.root / 'include/Python.h').write_text('')
-        (self.root / 'ocannl/benchmarks/fixture_digest.py').write_text(self.FAKE_DIGEST_TOOL)
+        (self.root / 'anchor/benchmarks/fixture_digest.py').write_text(self.FAKE_DIGEST_TOOL)
         rows = ['# measurement-boxes: m4-max']
         for name in fixtures:
             body = ('fixture ' + name + '\n').encode()
-            (self.root / 'anchor' / (name + '.safetensors')).write_bytes(body)
+            (self.root / 'anchor/benchmarks/fixtures' / (name + '.safetensors')).write_bytes(body)
             if name in recorded:
                 rows.append(hashlib.sha256(body).hexdigest() + '  ' + str(len(body)) + '  '
                             + name + '.safetensors  m4-max  content-v1')
-        (self.root / 'ocannl/benchmarks/fixtures/DIGESTS.txt').write_text('\n'.join(rows) + '\n')
+        (self.root / 'anchor/benchmarks/fixtures/DIGESTS.txt').write_text('\n'.join(rows) + '\n')
+        # The box's own record is stale: the anchor's is the one a copy is checked against.
+        (self.root / 'ocannl/benchmarks/fixtures/DIGESTS.txt').write_text('# measurement-boxes: m4-max\n')
 
     def calls(self):
         path = self.root / 'calls'
@@ -521,7 +524,7 @@ sys.exit(0 if ok else 1)
 
     def test_bench_fixture_names_outside_the_allowlist_are_refused(self):
         self.bench_setup()
-        (self.root / 'anchor/bad name.safetensors').write_text('x\n')
+        (self.root / 'anchor/benchmarks/fixtures/bad name.safetensors').write_text('x\n')
         result = self.run_shell(self.BENCH_STUB + 'bench_provision', False)
         self.assertIn('Refusing anchor fixture name', result.stderr)
         self.assertEqual([p.name for p in (self.root / 'ocannl/benchmarks/fixtures').glob('.incoming*')], [])
