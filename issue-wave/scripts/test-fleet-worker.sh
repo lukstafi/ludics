@@ -1168,8 +1168,11 @@ touch "$repo/lib/ludics/__pycache__/cli.cpython-312.pyc" "$repo/lib/ludics/fleet
 expect "bytecode caches under lib/ refuse, naming the repair" 1 "PREFLIGHT REFUSED testbox: 2 local change(s) in the served tree, every one an ignored Python bytecode cache under lib/" -- "$FW" preflight testbox --no-probe
 want_repair="-- repair, on testbox: rm -rf $(printf '%q' "$repo/lib/ludics/__pycache__") $(printf '%q' "$repo/lib/ludics/fleetworker/__pycache__")"
 grep -qF -- "$want_repair" <<<"$out" && ok "...each cache directory once, shell-quoted" || ko "the repair is not '$want_repair' -- $out"
+git -C "$repo" update-index --skip-worktree ship-pr/SKILL.md
+expect "...but an index-hidden file beside them keeps the plain refusal" 1 "PREFLIGHT REFUSED testbox: 1 index-hidden (skip-worktree/assume-unchanged) file(s) in the served tree; 2 local change(s) in the served tree$" -- "$FW" preflight testbox --no-probe
+git -C "$repo" update-index --no-skip-worktree ship-pr/SKILL.md
 touch "$repo/ship-pr/x.tmp"; printf '__pycache__/\n*.tmp\n' > "$TMP/excludes"
-expect "...but one other ignored file beside them keeps the plain refusal" 1 "PREFLIGHT REFUSED testbox: 3 local change(s) in the served tree$" -- "$FW" preflight testbox --no-probe
+expect "...as does one other ignored file beside them" 1 "PREFLIGHT REFUSED testbox: 3 local change(s) in the served tree$" -- "$FW" preflight testbox --no-probe
 grep -qE 'bytecode|rm -rf' <<<"$out" && ko "a mixed served tree was offered the bytecode repair -- $out" || ok "...with no repair offered for it"
 rm -rf "${repo:?}/lib" "$repo/ship-pr/x.tmp"; git -C "$repo" config --unset core.excludesFile
 touch "$repo/ship-pr/a b.sh"

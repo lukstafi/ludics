@@ -335,7 +335,9 @@ skills_freshness() {
   # One shape of served change gets its repair named (ludics-lite#585): an ignored Python bytecode
   # cache under lib/ (`!!` on a path lib/.../__pycache__/...), which scripts/py wrote before it ran
   # the interpreter with -B. It still refuses; the note names the directories to remove only when
-  # EVERY served entry has that shape, and a single entry of any other shape keeps the plain note.
+  # EVERY served entry has that shape and the scan noted nothing else (an index-hidden file, a
+  # status that failed), so the removal it names is the whole repair of the served tree. A single
+  # entry of any other shape, or another note, keeps the plain note.
   served=0; other=""; pycache=0; pydirs=""
   statusz=$(mktemp "${TMPDIR:-/tmp}/fw-status.XXXXXX")
   if ! git -C "$repo" status --porcelain -z --untracked-files=all --ignored=matching > "$statusz" 2>/dev/null; then
@@ -357,7 +359,7 @@ skills_freshness() {
     esac
   done < "$statusz"
   [ "$statusz" = /dev/null ] || rm -f "$statusz"
-  if [ "$served" -gt 0 ] && [ "$pycache" -eq "$served" ]; then
+  if [ "$served" -gt 0 ] && [ "$pycache" -eq "$served" ] && [ "$refuse" = "$prior" ]; then
     note "$served local change(s) in the served tree, every one an ignored Python bytecode cache under lib/ (left by a run before scripts/py ran Python with -B, ludics-lite#585) -- repair, on $BOX: rm -rf $pydirs"
   elif [ "$served" -gt 0 ]; then
     note "$served local change(s) in the served tree"
