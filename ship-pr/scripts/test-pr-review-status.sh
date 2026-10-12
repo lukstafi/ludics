@@ -25,6 +25,21 @@ source "$SCRIPT_DIR/test-pr-review-lib.sh"
 {
 test_tmpdir TEST_ROOT status-test
 
+# The clock is the script's own test clock (SHIP_PR_TEST_CLOCK, prreview/clock.py), as in
+# test-pr-review-watch.sh: a file holding the epoch second every age and every watch deadline is
+# measured on, which a watch's sleep ADVANCES instead of waiting. So a window a watch holds (a
+# grace, a nudge's pickup) takes no wall time here. On the wall clock it took real seconds, and
+# when the watch began holding a window (#583) one case waited out the real 20-minute grace until
+# the suite was killed at 775 s. reset_fixture sets it to the wall time, and a case dates whatever
+# must be fresh on it (clock_at), never on jq's own `now`, which this clock does not move.
+export SHIP_PR_TEST_CLOCK="$TEST_ROOT/clock"
+date +%s >"$SHIP_PR_TEST_CLOCK"
+
+# The fixture clock's time, plus an offset in seconds, as GitHub dates things.
+clock_at() { # [offset]
+  jq -rn --argjson t "$(cat "$SHIP_PR_TEST_CLOCK")" --argjson o "${1:-0}" '($t + $o) | todate'
+}
+
 REPO=example/repo
 REQUEST_LOG="$TEST_ROOT/requests"
 REACTIONS_JSON='[]'
@@ -102,6 +117,7 @@ reset_fixture() {
   WATCH_FLAG=""
   rm -f "$TEST_ROOT/pushed" "$TEST_ROOT/posted" "$TEST_ROOT"/nth.*
   : >"$REQUEST_LOG"
+  date +%s >"$SHIP_PR_TEST_CLOCK"
 }
 
 reaction() { # <content> <created_at>
@@ -186,7 +202,7 @@ gh() {
     fixture_nth reactions
     response="$REACTIONS_JSON"
     [ -z "$THUMBS_ON_REACTIONS_READ" ] || [ "$FIXTURE_NTH" -lt "$THUMBS_ON_REACTIONS_READ" ] ||
-      response=$(jq -c --argjson r "$(reaction +1 "$(jq -rn 'now | todate')")" '. + [$r]' <<<"$response")
+      response=$(jq -c --argjson r "$(reaction +1 "$(clock_at)")" '. + [$r]' <<<"$response")
     ;;
   "repos/$REPO/pulls/7/reviews?per_page=100")
     # The simulated push: gh runs in a subshell, so the "new head" travels through a file that
@@ -208,11 +224,12 @@ gh() {
       echo "gh: HTTP 502: Bad Gateway" >&2
       return 1
     fi
-    # Ids above every fixture comment's, dated now, as GitHub numbers and dates a new comment.
+    # Ids above every fixture comment's, dated on the fixture clock, as GitHub numbers and dates a
+    # new comment.
     posted=0
     [ ! -e "$TEST_ROOT/posted" ] || posted=$(($(wc -l <"$TEST_ROOT/posted")))
     jq -cn --argjson id "$((900 + posted))" \
-      --arg b "$FIXTURE_BODY" --arg at "$(jq -rn 'now | todate')" \
+      --arg b "$FIXTURE_BODY" --arg at "$(clock_at)" \
       '{id:$id, user:{login:"me"}, created_at:$at, updated_at:$at, body:$b}' >>"$TEST_ROOT/posted"
     response='{"html_url":"https://github.com/example/repo/pull/7#issuecomment-900"}'
     ;;
@@ -372,7 +389,7 @@ test_idle_draft_names_gh_pr_ready() {
 test_reviewing_dirty_still_says_conflicts() {
   reset_fixture
   MERGEABLE_STATE=dirty
-  REACTIONS_JSON="[$(reaction eyes "$(jq -rn '(now - 60) | todate')")]"
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -60)")]"
   run_status
   assert_eq "$(state_tok "$STATE")" reviewing "a live 👀 with nothing posted is a round in flight"
   assert_contains "$LINE" "wait it out" "an in-flight round is still waited out"
@@ -409,7 +426,7 @@ test_approved_dirty_says_conflicts_and_survives_a_failed_pr_read() {
 test_reviewing_with_a_failed_pr_read_says_unread() {
   reset_fixture
   FAIL_PULLS=1
-  REACTIONS_JSON="[$(reaction eyes "$(jq -rn '(now - 60) | todate')")]"
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -60)")]"
   run_status
   assert_eq "$(state_tok "$STATE")" reviewing "a live 👀 is a round in flight whatever the PR read did"
   assert_contains "$LINE" "wait it out" "the round is still waited out"
@@ -559,7 +576,7 @@ test_a_round_reads_the_head_after_its_feeds() {
   idle_fixture
   # A head pushed seconds ago, so the `expected` grace this leaves cannot expire underneath the
   # case and turn the quiet window into the nudge verdict.
-  HEAD_AT=$(jq -rn 'now | todate')
+  HEAD_AT=$(clock_at)
   PUSH_ON_REVIEWS_READ=2
   run_watch 0,0,0
   assert_eq "$WATCH_RC" 1 "a review of the head the feeds were read at is not a review of the new head"
@@ -879,7 +896,7 @@ test_a_round_of_the_head_after_the_failure_wins() {
 
 test_a_newer_reviewer_word_supersedes_the_failure() {
   failed_fixture "$FAILED_HEAD"
-  REACTIONS_JSON="[$(reaction eyes "$(jq -rn '(now - 60) | todate')")]"
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -60)")]"
   run_status
   assert_eq "$(state_tok "$STATE")" reviewing \
     "a 👀 raised after the failure is a round that started after it — wait that one out"
@@ -1055,7 +1072,7 @@ test_a_verdict_older_than_a_fresh_eyes_is_not_an_approval() {
   reset_fixture
   HEAD_SHA="$VERDICT_HEAD"
   COMMENTS_JSON="[$(verdict_comment 9 aaaaaaa "$PAST")]"
-  REACTIONS_JSON="[$(reaction eyes "$(jq -rn '(now - 60) | todate')")]"
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -60)")]"
   run_status
   assert_eq "$(state_tok "$STATE")" reviewing "a 👀 newer than the verdict is a round still running"
 }
@@ -1065,8 +1082,8 @@ test_a_verdict_older_than_a_fresh_eyes_is_not_an_approval() {
 test_an_edited_placeholder_verdict_approves_over_its_eyes() {
   reset_fixture
   HEAD_SHA="$VERDICT_HEAD"
-  REACTIONS_JSON="[$(reaction eyes "$(jq -rn '(now - 120) | todate')")]"
-  COMMENTS_JSON="[$(jq -cn --arg rev "$REVIEWER" --arg c "$PAST" --arg u "$(jq -rn '(now - 30) | todate')" \
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -120)")]"
+  COMMENTS_JSON="[$(jq -cn --arg rev "$REVIEWER" --arg c "$PAST" --arg u "$(clock_at -30)" \
     '{id:9, user:{login:($rev + "[bot]")}, created_at:$c, updated_at:$u,
       body:"<!-- codex-pull-request-review-summary -->\nCodex Review: Didn'"'"'t find any major issues.\n**Reviewed commit:** `aaaaaaa`"}')]"
   run_status
@@ -1093,13 +1110,13 @@ test_a_verdict_older_than_a_later_findings_review_is_idle() {
 # reviewer's last word it made a LIVE 👀 look spent.
 test_the_round_started_placeholder_does_not_spend_the_eyes() {
   reset_fixture
-  REACTIONS_JSON="[$(reaction eyes "$(jq -rn '(now - 60) | todate')")]"
-  COMMENTS_JSON="[$(plain_comment 9 "$(jq -rn '(now - 30) | todate')" '<!-- codex-pull-request-review-summary -->
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -60)")]"
+  COMMENTS_JSON="[$(plain_comment 9 "$(clock_at -30)" '<!-- codex-pull-request-review-summary -->
 🔄 Running')]"
   run_status
   assert_eq "$(state_tok "$STATE")" reviewing "the placeholder is an announcement, not the reviewer speaking"
   # The control: an untagged comment at the same moment IS the reviewer speaking, and spends it.
-  COMMENTS_JSON="[$(plain_comment 9 "$(jq -rn '(now - 30) | todate')" 'Codex Review: a finding')]"
+  COMMENTS_JSON="[$(plain_comment 9 "$(clock_at -30)" 'Codex Review: a finding')]"
   run_status
   assert_eq "$(state_tok "$STATE")" expected "a comment after the 👀 spends it"
 }
@@ -1497,8 +1514,8 @@ test_a_thumbs_up_older_than_the_head_commit_is_not_an_approval() {
 # an older summary's row.
 test_a_thumbs_up_is_judged_only_on_evidence_that_can_prove_it_stale() {
   reset_fixture
-  REACTIONS_JSON="[$(reaction +1 "$(jq -rn '(now - 60) | todate')")]"
-  HEAD_AT=$(jq -rn '(now + 3600) | todate')
+  REACTIONS_JSON="[$(reaction +1 "$(clock_at -60)")]"
+  HEAD_AT=$(clock_at 3600)
   run_status
   assert_eq "$(state_tok "$STATE")" approved "a commit dated in the future cannot prove a 👍 stale"
   # The older summary's row names another head; the newest summary's row is one the stamp cannot
@@ -1524,14 +1541,16 @@ test_a_stale_thumbs_up_leaves_the_ordinary_states() {
   assert_eq "$(state_tok "$STATE")" expected "the 👀 under a stale 👍 is that round's, and spent"
   # The new head's 👀 lands before the app takes the old 👍 down: that round is in flight. Dated
   # from now, so the 👀 is young enough to be `reviewing` rather than `stalled`.
-  HEAD_AT=$(jq -rn '(now - 120) | todate')
-  REACTIONS_JSON="[$(reaction +1 "$(jq -rn '(now - 600) | todate')"),$(reaction eyes "$(jq -rn '(now - 60) | todate')")]"
+  HEAD_AT=$(clock_at -120)
+  REACTIONS_JSON="[$(reaction +1 "$(clock_at -600)"),$(reaction eyes "$(clock_at -60)")]"
   run_status
   assert_eq "$(state_tok "$STATE")" reviewing "a 👀 newer than the stale 👍 is the new head's round"
   HEAD_AT=2026-09-01T10:02:11Z
-  # And `watch` does not end its wait on it. (`--no-nudge`: the head is due, and the nudge the
-  # watch would post for it -- a stale 👍 is no approval of this head to clear -- would hold this
-  # wall-clock suite for its grace; test-pr-review-watch.sh pins the nudge on its test clock.)
+  # And `watch` does not end its wait on it. (`--no-nudge` keeps the case on that claim. The head
+  # is due, so without it the watch holds a window for the nudge it would post -- a stale 👍 is
+  # no approval of this head to clear -- and decides that nudge on a PR read this fixture never
+  # gives a `state`. The test clock makes the window take no wall time, and
+  # test-pr-review-watch.sh pins the nudge.)
   REACTIONS_JSON="[$(reaction +1 2026-09-01T09:49:00Z)]"
   WATCH_FLAG=--no-nudge
   run_watch 0,0,0
@@ -1749,7 +1768,7 @@ test_a_failed_run_needs_a_silent_reviewer() {
   assert_eq "$(state_tok "$STATE")" idle "a review between the 👀 and the row is the reviewer speaking"
   # A 👀 newer than the row is a round started after the failure.
   failed_run_fixture
-  REACTIONS_JSON="[$(reaction eyes "$(jq -rn '(now - 60) | todate')")]"
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -60)")]"
   run_status
   assert_eq "$(state_tok "$STATE")" reviewing "a 👀 above the row is a round to wait out"
   # A reviewer comment after the row is its newer word.
