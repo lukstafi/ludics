@@ -7,8 +7,9 @@ import os
 import tempfile
 import unittest
 from typing import Any
+from unittest import mock
 
-from ludics import cli
+from ludics import cli, proc
 from ludics.fleetworker import execution
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.execution import (
@@ -187,6 +188,16 @@ class CallerPythonpath(unittest.TestCase):
         env = {"MSYS2_ARG_CONV_EXCL": "*", "LUDICS_CALLER_ARG_CONV_EXCL": "=--foo"}
         cli.restore_caller_environment(env)
         self.assertEqual(env, {"MSYS2_ARG_CONV_EXCL": "--foo"})
+
+    def test_the_git_bash_pid_is_this_interpreters_alone(self) -> None:
+        # scripts/py's $$ names this interpreter: it is kept for own_pid, and a child never sees it.
+        env = {"LUDICS_SHELL_PID": "2380"}
+        with mock.patch.object(proc, "_shell_pid", None):
+            cli.restore_caller_environment(env)
+            self.assertEqual((env, proc.own_pid()), ({}, 2380))
+        with mock.patch.object(proc, "_shell_pid", None):
+            cli.restore_caller_environment({})
+            self.assertEqual(proc.own_pid(), os.getpid())
 
 
 if __name__ == "__main__":

@@ -26,12 +26,15 @@ production run, a tool is the binary on PATH and nothing else.
 import os
 import shutil
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 
 BRIDGE_FUNCS = "LUDICS_BRIDGE_FUNCS"
 BRIDGE_STATE = "LUDICS_BRIDGE_STATE"
 BRIDGE_SHELL = "LUDICS_BRIDGE_SHELL"
+# scripts/py's note, under Git Bash only, of this interpreter's pid as Git Bash numbers it.
+SHELL_PID = "LUDICS_SHELL_PID"
+_shell_pid: int | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,24 @@ class Completed:
     rc: int
     stdout: str
     stderr: str
+
+
+def take_shell_pid(env: MutableMapping[str, str]) -> None:
+    """Take scripts/py's ``LUDICS_SHELL_PID`` out of ``env``, keeping it for ``own_pid``: the note
+    names this interpreter, and a program it runs is another process."""
+    global _shell_pid
+    text = env.pop(SHELL_PID, None)
+    if text is not None and text.isascii() and text.isdigit():
+        _shell_pid = int(text)
+
+
+def own_pid() -> int:
+    """This process's pid in the namespace the shell's ``kill -0`` reads, which is the one a lock
+    shared with the shell implementation names: ``os.getpid()``, except under Git Bash, where a
+    native interpreter's own pid is a WINDOWS pid and the shell's are MSYS pids, two numberings
+    that overlap (MSYS pid 2380 and an unrelated svchost.exe of Windows pid 2380). There it is the
+    MSYS pid scripts/py noted (``take_shell_pid``)."""
+    return os.getpid() if _shell_pid is None else _shell_pid
 
 
 def decode(data: bytes) -> str:

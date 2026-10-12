@@ -38,7 +38,13 @@
 #                fixture -- sees the caller's environment, not the `ludics` package;
 #   LUDICS_CALLER_PYTHONCOERCECLOCALE
 #                the same note of the caller's PYTHONCOERCECLOCALE, put back the same way: the `0`
-#                above is for this interpreter's startup, not for a program it runs.
+#                above is for this interpreter's startup, not for a program it runs;
+#   LUDICS_SHELL_PID
+#                under Git Bash only, this file's own $$: the pid Git Bash numbers the interpreter
+#                by, since the exec below keeps it (and a `py` launcher holds it while its
+#                interpreter runs). A native Windows interpreter's own pid is a Windows one, of
+#                another namespace; the entry point takes the note out of the environment
+#                (ludics.proc.own_pid).
 #
 # Shell: bash 3.2 (macOS), bash 5, and Git Bash. No arrays-with-`set -u` pitfalls, no `local -n`.
 
@@ -143,6 +149,10 @@ fi
 PYTHONPATH="$lib_dir"
 PYTHONCOERCECLOCALE=0
 export PYTHONPATH PYTHONCOERCECLOCALE LUDICS_CALLER_PYTHONPATH LUDICS_CALLER_PYTHONCOERCECLOCALE
+if [ -n "$windows" ]; then
+  LUDICS_SHELL_PID=$$
+  export LUDICS_SHELL_PID
+fi
 
 if [ -n "$chosen_arg" ]; then
   exec "$chosen_cmd" "$chosen_arg" -X utf8 -P "$@"

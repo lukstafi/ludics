@@ -13,6 +13,8 @@ import sys
 from collections.abc import Callable, MutableMapping
 from typing import NoReturn
 
+from ludics import proc
+
 
 class Exit(Exception):
     """End the command with ``rc``; ``message`` (one line, may be empty) goes to stderr as
@@ -119,7 +121,9 @@ def restore_caller_environment(env: MutableMapping[str, str]) -> None:
     path and locale were fixed at startup. A run not through scripts/py has no notes, and keeps
     what it has. Likewise MSYS2_ARG_CONV_EXCL, which pr-review.sh's forward set only for this
     interpreter's own start: an MSYS program this one runs (the bridge's bash) must rewrite its
-    native children's arguments as the caller's shell would."""
+    native children's arguments as the caller's shell would. And scripts/py's note of this
+    interpreter's Git Bash pid, which is this process's alone (``proc.take_shell_pid``)."""
+    proc.take_shell_pid(env)
     for note, name in CALLER_NOTES.items():
         saved = env.pop(note, None)
         if saved is None:

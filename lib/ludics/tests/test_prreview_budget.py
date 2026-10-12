@@ -278,6 +278,26 @@ class Locks(Scratch):
         with open(os.path.join(lock, "owner"), encoding="utf-8") as f:
             self.assertEqual(f.read(), f"4242\n{T0}\n")
 
+    def test_a_lock_names_the_pid_the_shells_kill_reads(self) -> None:
+        # Under Git Bash that is the MSYS pid scripts/py noted, not the interpreter's Windows pid.
+        lock = os.path.join(self.dir, "lock")
+        with mock.patch.object(proc, "_shell_pid", 2380):
+            self.assertEqual(Budget(self.dir, self.clock, env={}, run=self.gh).lock_take(lock).rc, 0)
+        with open(os.path.join(lock, "owner"), encoding="utf-8") as f:
+            self.assertEqual(f.readline(), "2380\n")
+
+    def test_under_git_bash_only_the_shell_reads_a_pid(self) -> None:
+        # MSYS numbers its processes apart from Windows: a Windows process of the lock's number is
+        # an unrelated one, and os.kill there would terminate it.
+        with (
+            mock.patch.object(budget.sys, "platform", "win32"),
+            mock.patch.object(budget, "_bash_pid_alive", return_value=False) as bash,
+            mock.patch.object(budget.os, "kill") as kill,
+        ):
+            self.assertFalse(budget.pid_alive(str(os.getpid())))
+        bash.assert_called_once_with(str(os.getpid()))
+        kill.assert_not_called()
+
 
 class Session(Scratch):
     def session(self, b: Budget) -> GhSession:
