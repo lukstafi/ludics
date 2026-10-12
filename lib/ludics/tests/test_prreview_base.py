@@ -582,6 +582,12 @@ class WaitLoop(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("1 run(s) back; the judged run before it was not red\n", out)
         self.assertNotIn(f"at {B[:8]})", out)
+        # Nor is a success at the red commit itself: a floor equal to the red bounds no range.
+        page = runs({"conclusion": "failure", "head_sha": C}, {"conclusion": "success", "head_sha": C})
+        rc, out, _, _ = base_run(world(C, page, **{"repos/o/r/actions/runs/1000/jobs?per_page=100": jobs}),
+                                 ["main"])
+        self.assertEqual(rc, 1)
+        self.assertIn("1 run(s) back; the judged run before it was not red\n", out)
 
 
 PULL = json.dumps([{"number": 7, "merged_at": "2026-09-26T08:00:53Z", "merge_commit_sha": C,

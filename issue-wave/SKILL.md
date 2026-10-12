@@ -704,20 +704,30 @@ controlled through the tools in your coordinator's file, never through those com
   tip's verdict, and it is what the base gate reads before the next launch. Reserve it as transport
   `coordinator`, kind `correctness`, with `"integration": true`, and conclude it with its
   `observed_sha` - a record without the field is a targeted batch to the gate, not a verdict
-  source.
+  source. GitHub orders a group's waiting runs by when each started waiting and does not
+  guarantee it, so two pushes racing into the group can leave the tip with only a `cancelled`
+  run; `base --wait` reads that as no verdict, never green, and `gh run rerun <its id>` puts
+  the tip back in line.
 
   **On a red at the tip, in this order:**
   1. **Rerun the failed jobs once** (`gh run rerun <run id> --failed`; a local run, once more at
-     the same SHA) to rule out a flake: #479-class tee timeouts happen on the macOS runner. A red
-     that reruns red is a regression: stop the world (below) before attributing it.
+     the same SHA) to rule out a flake: #479-class tee timeouts happen on the macOS runner. The
+     rerun is a new attempt, so judge that attempt and not the red already read: once `gh run
+     view <run id> --json attempt` shows the attempt gone up, await it with `pr-review.sh retry
+     run watch <owner/repo>#<run id>`. A red that reruns red is a regression: stop the world
+     (below) before attributing it.
   2. **Attribute** by the failing job against the span, `git log --first-parent <floor>..<red>`.
      `pr-review.sh base` names the failing job and both ends, `red since <red> ... (success at
      <floor>)`; a local integration run's floor is the `observed_sha` of the newest `pass`
-     integration record before the red one (`fleet-worker.sh execution list`). Runs are ordered
-     by creation, not ancestry, so first confirm that `git rev-list --first-parent <red>` lists
-     `<floor>`; when it does not, the span is unknown and the next step starts from the newest
-     first-parent commit you know to be green. A merge in the span whose diff reaches the failing
-     suite, alone, owns it.
+     integration record before the red one (`fleet-worker.sh execution list`). A line that names
+     no floor (`skipped` or `neutral` under the streak, or a success at the red commit itself)
+     leaves the span unknown. The failing job is read off the NEWEST red run and `red since`
+     off the oldest, so when the streak is more than one run back, open the oldest red run: a
+     different failing job there is a second break, and the newest one's span starts at the
+     newest run where its job passed. Runs are ordered by creation, not ancestry, so confirm that
+     `git rev-list --first-parent <red>` lists `<floor>`; when it does not, the span is unknown.
+     An unknown span starts from the newest first-parent commit you know to be green. A merge in
+     the span whose diff reaches the failing suite, alone, owns it.
   3. **Bisect only when that is still ambiguous**: run the failing suite at the span's
      intermediate merges (`git bisect start --first-parent <red> <floor>`) in a detached
      worktree, locally, on a box of the failing job's OS - mac-studio under `/bin/bash` 3.2 for
