@@ -1529,8 +1529,11 @@ test_a_stale_thumbs_up_leaves_the_ordinary_states() {
   run_status
   assert_eq "$(state_tok "$STATE")" reviewing "a 👀 newer than the stale 👍 is the new head's round"
   HEAD_AT=2026-09-01T10:02:11Z
-  # And `watch` does not end its wait on it.
+  # And `watch` does not end its wait on it. (`--no-nudge`: the head is due, and the nudge the
+  # watch would post for it -- a stale 👍 is no approval of this head to clear -- would hold this
+  # wall-clock suite for its grace; test-pr-review-watch.sh pins the nudge on its test clock.)
   REACTIONS_JSON="[$(reaction +1 2026-09-01T09:49:00Z)]"
+  WATCH_FLAG=--no-nudge
   run_watch 0,0,0
   assert_not_contains "$WATCH_OUT$WATCH_ERR" "approved" "watch does not read the stale 👍 as an approval"
   assert_contains "$WATCH_OUT$WATCH_ERR" "review EXPECTED but not started" "it reads the due round"
