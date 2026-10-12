@@ -33,9 +33,14 @@ brief:
   the command (systemd-inhibit closes the descriptors of the process it runs, SIGTERMs it, and
   rewrites its exit status, so it must never wrap the batch), alive for as long as anything in the
   command's tree holds the lifetime pipe. Fail-open, and loudly.
+- THE GROUP (ludics-lite#566, ``group.py``): the command leads a process group of its own, this
+  process its parent, and ``--deadline``, a signal to this process, or a SIGKILL of it (through a
+  guardian) ends the whole group; a deadline exits 124. A nested batch is exec'd in its enclosing
+  group instead (``run_command``), so the enclosing wrapper's group kill reaches its tree.
 
-A wrapper must not change a batch's verdict: the command is exec'd on this pid, with the signal
-dispositions Python changed (SIGPIPE, SIGXFSZ ignored) put back first.
+A wrapper must not change a batch's verdict: the command's status is this process's, a command
+killed by a signal kills this process with the same one, and the signal dispositions Python
+changed (SIGPIPE, SIGXFSZ ignored) are put back for the command.
 """
 
 
@@ -109,11 +114,12 @@ dispositions Python changed (SIGPIPE, SIGXFSZ ignored) put back first.
 # (ludics-lite#317, below), so a correctness batch on a native Linux box carries the guard a
 # measurement does, for exactly as long as the batch runs. One Python program serves both
 # subcommands; `slot` is `hold` plus the flock.
-# Exit: the wrapped command's own status; 1 with a line beginning `EXECUTION SLOT REFUSED` (no
+# Exit: the wrapped command's own status; 124 when --deadline ended its process group
+# (ludics-lite#566); 1 with a line beginning `EXECUTION SLOT REFUSED` (no
 # free slot or GPU token before the deadline, an outstanding measurement -- with --wait-window, one
 # still outstanding at its bound -- a malformed spec); 4 when the
 # anchor's registry could not be read; 127 when the command itself could not be run. The command
-# is exec'd and not interpreted, so a pipeline or a builtin goes as `sh -c '...'`.
+# is run and not interpreted, so a pipeline or a builtin goes as `sh -c '...'`.
 #
 # THE GUARD (ludics-lite#317). Under WSL the Windows-side holder kept a lane's box alive; on
 # native Ubuntu nothing at the OS level stopped another session's `wake-lab.sh sleep`, or an idle
@@ -133,7 +139,8 @@ dispositions Python changed (SIGPIPE, SIGXFSZ ignored) put back first.
 # a wrapper that changes verdicts, and a PID that is not the workload's, so killing `$!` would
 # kill systemd-inhibit and not the batch (PR #323 review, round 1). So the helper is
 # `systemd-inhibit ... -- sh -c 'echo HELD; exec cat'`, reading a LIFETIME PIPE whose write end
-# the command inherits, and the command is exec'd exactly as before, on this PID, with the flock:
+# the command inherits, and the command is run exactly as before (since ludics-lite#566 as this
+# process's child, in a group of its own, inheriting the flock and the pipe alike):
 # the inhibitor then lives as long as anything in the command's process tree holds that pipe --
 # the same lifetime as the flock, ended by the kernel however the tree ends, including a kill -9
 # of the command alone. The helper is double-forked so it is never the command's child: a
@@ -189,7 +196,8 @@ dispositions Python changed (SIGPIPE, SIGXFSZ ignored) put back first.
 # reserves one on a box whose workers are iterating), nor one that was waiting for a slot then.
 # The slot check reads the registry once, at the batch's start, and cannot see either. A nested
 # hold of the same live measurement takes none, since its enclosing hold holds them.
-# Exit: the command's own status; 127 with `EXECUTION HOLD REFUSED` when it cannot be run; 2 usage.
+# Exit: the command's own status; 127 with `EXECUTION HOLD REFUSED` when it cannot be run; 2 usage;
+# 124 when --deadline ended the command's process group (ludics-lite#566).
 
 import fcntl
 import os
@@ -212,6 +220,7 @@ from ludics.fleetworker.config import (
     in_roster,
     short_hostname,
 )
+from ludics.fleetworker import group
 from ludics.fleetworker.execution import field, jq_text, listing, records_of, registry_source
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import substitution
@@ -444,15 +453,46 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
     )
 
 
-def exec_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, why: str) -> NoReturn:
-    """Run the command on this pid: resolved before the guard (a command that cannot be found takes
-    no inhibitor), the guard beside it when there is one, then exec."""
+def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, why: str,
+                deadline: int | None, nested: bool = False) -> NoReturn:
+    """Run the command: resolved before the guard (a command that cannot be found takes no
+    inhibitor), the guard beside it when there is one, then the command as the leader of a process
+    group of its own, which a deadline or a signal to this wrapper ends (THE GROUP, ``group.py``).
+
+    A NESTED batch -- one an enclosing slot or measurement hold covers, taking nothing -- is exec'd
+    on this pid in the enclosing group instead, so the enclosing wrapper's group kill reaches its
+    whole tree (ludics-lite#566): a group of its own would leave that tree to this wrapper's own
+    reaping. Only a nested ``--deadline`` starts one, since a bound needs a group to end; the
+    enclosing kill still reaches it through this wrapper, which ends its group when signalled, and
+    through its guardian when this wrapper is killed outright."""
     if shutil.which(command[0]) is None:
         refuse_unrunnable(prefix, box, command, "no such executable")
+    if not (nested and deadline is None):
+        group.default_sigchld()  # the guard's helper and the group are this process's to wait for
     if inhibitor:
         start_guard(box, inhibitor, why)
     sys.stdout.flush()
     sys.stderr.flush()
+    if nested and deadline is None:
+        exec_command(prefix, box, command)
+    try:
+        outcome = group.run(command, deadline, f"{prefix} {box}", errline)
+    except OSError as exc:
+        # A script whose interpreter is missing passes the lookup above and fails here.
+        refuse_unrunnable(prefix, box, command, exc)
+    match outcome:
+        case group.Exited(code=code):
+            raise cli.Exit(code)
+        case group.Expired():
+            raise cli.Exit(124)
+        case group.Killed(signum=signum) | group.Interrupted(signum=signum):
+            group.die_of(signum)
+        case _:
+            assert_never(outcome)
+
+
+def exec_command(prefix: str, box: str, command: Sequence[str]) -> NoReturn:
+    """Exec the command on this pid (a nested batch, ``run_command``)."""
     try:
         # Python ignores SIGPIPE (and SIGXFSZ), and an IGNORED disposition survives exec: without
         # this the wrapped batch would see `yes | head -n1` exit 1 with a "Broken pipe" diagnostic
@@ -467,7 +507,7 @@ def exec_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, 
 
 
 def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: int, inhibitor: str,
-              command: Sequence[str]) -> NoReturn:
+              command: Sequence[str], bound: int | None) -> NoReturn:
     """Wait up to ``wait`` seconds for a slot (a GPU token unless ``cpu``), then run the command in it."""
     # The candidate slots, in the order this batch tries them (THE GPU TOKENS).
     if not tokens:
@@ -485,8 +525,8 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             except OSError:
                 os.close(descriptor)
                 continue
-            # The lock lives on this descriptor: it must survive the exec below. Nothing releases it
-            # afterwards -- the kernel does, when the process ends.
+            # The lock lives on this descriptor, which the command inherits. Nothing releases it
+            # afterwards -- the kernel does, when the last process holding it ends.
             os.set_inheritable(descriptor, True)
             held = f"slot {index} of {cap}"
             if tokens and index <= tokens:
@@ -494,7 +534,7 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             errline(f"{SLOT_PREFIX} {box}: {held} held for: {' '.join(command)}")
             # The marker a nested `execution slot` (and a runner that takes its own slot) reads.
             os.environ["FLEET_SLOT_HELD"] = f"{box} {index} {cap} {'gpu' if not tokens or index <= tokens else 'cpu'}"
-            exec_command(SLOT_PREFIX, box, command, inhibitor, f"{box} {held}: {' '.join(command)}")
+            run_command(SLOT_PREFIX, box, command, inhibitor, f"{box} {held}: {' '.join(command)}", bound)
         if time.monotonic() >= deadline:
             if tokens and not cpu:
                 cli.say(f"{SLOT_PREFIX} REFUSED {box}: all {tokens} GPU tokens (slots 1-{tokens} of {cap}) busy"
@@ -506,7 +546,7 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
 
 
 def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: int,
-         command: Sequence[str]) -> NoReturn:
+         command: Sequence[str], deadline: int | None) -> NoReturn:
     """``execution hold``: with a measurement (``hold_lock``), THE DRAIN and the marker's shared lock
     first, then the command under the guard."""
     if hold_lock:
@@ -547,7 +587,7 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
             os.environ["FLEET_MEASUREMENT_HELD"] = marker
             errline(f"{HOLD_PREFIX} {box}: measurement {request} held; an `execution slot` inside it runs"
                     " under this hold")
-    exec_command(HOLD_PREFIX, box, command, inhibitor, why)
+    run_command(HOLD_PREFIX, box, command, inhibitor, why, deadline)
 
 
 def inhibitor_path(cfg: Config) -> str:
@@ -558,12 +598,13 @@ def inhibitor_path(cfg: Config) -> str:
 # --- the commands ---------------------------------------------------------------------------------
 
 SLOT_USAGE = (
-    "execution slot [--bg <parent>] [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] -- <command> [args...]"
+    "execution slot [--bg <parent>] [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>]"
+    " -- <command> [args...]"
     " | execution slot --probe"
 )
 WINDOW_WAIT = 3600  # --wait-window's bound when it names none: an hour of measuring
 WINDOW_PROGRESS = 60  # seconds between the lines that say a waiting batch is still waiting
-HOLD_USAGE = "execution hold [--why <text>] [--request <id>] -- <command> [args...]"
+HOLD_USAGE = "execution hold [--why <text>] [--request <id>] [--deadline <seconds>] -- <command> [args...]"
 
 
 @dataclass(frozen=True)
@@ -574,10 +615,19 @@ class SlotArgs:
     bg: str
     command: list[str]
     window_wait: int | None = None  # --wait-window's bound; None: refuse at once under a measurement
+    deadline: int | None = None
+
+
+def parse_deadline(verb: str, args: list[str], i: int) -> int:
+    """``--deadline <seconds>`` at ``args[i]``: a positive whole number (THE DEADLINE, group.py)."""
+    if i + 1 >= len(args) or not re.fullmatch(r"[0-9]+", args[i + 1]) or int(args[i + 1]) < 1:
+        die(f"execution {verb}: --deadline takes a positive whole number of seconds")
+    return int(args[i + 1])
 
 
 def parse_slot(args: list[str]) -> SlotArgs:
     wait, kind, probe, bg = 600, "", False, ""
+    deadline: int | None = None
     window_wait: int | None = None
     wait_text = "600"
     i = 0
@@ -599,6 +649,9 @@ def parse_slot(args: list[str]) -> SlotArgs:
                 die("execution slot: --wait takes a whole number of seconds")
             wait = int(wait_text)
             i += 1
+        elif arg == "--deadline":
+            deadline = parse_deadline("slot", args, i)
+            i += 1
         elif arg == "--wait-window":
             window_wait = WINDOW_WAIT
         elif arg.startswith("--wait-window="):
@@ -619,9 +672,11 @@ def parse_slot(args: list[str]) -> SlotArgs:
         i += 1
     if probe and bg:
         die("execution slot: --probe takes no --bg; it runs nothing")
+    if probe and deadline is not None:
+        die("execution slot: --probe takes no --deadline; it runs nothing")
     if not probe and not command:
         die("execution slot: a command to hold the slot around is required, after --")
-    return SlotArgs(wait, kind, probe, bg, command, window_wait)
+    return SlotArgs(wait, kind, probe, bg, command, window_wait, deadline)
 
 
 def measurement_records(records: list[dict[str, Any]], box: str) -> list[dict[str, Any]]:
@@ -780,6 +835,8 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
             argv.append(f"--wait-window={parsed.window_wait}")
         if parsed.kind:
             argv.append(parsed.kind)
+        if parsed.deadline is not None:
+            argv += ["--deadline", str(parsed.deadline)]
         argv += ["--", *command]
         sys.stdout.flush()
         sys.stderr.flush()
@@ -796,7 +853,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
                 cli.say(line)
                 return 1
             case Inside():
-                exec_command(SLOT_PREFIX, box, command, "", "")
+                run_command(SLOT_PREFIX, box, command, "", "", parsed.deadline, nested=True)
             case Take():
                 del os.environ["FLEET_SLOT_HELD"]
             case _:
@@ -813,7 +870,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
         verdict = measured_verdict(box, marker_measure, judge_measurement(box, directory, marker_measure, measuring), command)
         match verdict:
             case Inside():
-                exec_command(SLOT_PREFIX, box, command, "", "")
+                run_command(SLOT_PREFIX, box, command, "", "", parsed.deadline, nested=True)
             case Take():
                 del os.environ["FLEET_MEASUREMENT_HELD"]
             case Refused(line=line):
@@ -852,11 +909,12 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
         os.makedirs(directory, exist_ok=True)
     except OSError:
         die(f"execution slot: cannot create the slot directory {directory}")
-    take_slot(box, directory, cap, tokens, cpu, parsed.wait, inhibitor_path(cfg), command)
+    take_slot(box, directory, cap, tokens, cpu, parsed.wait, inhibitor_path(cfg), command, parsed.deadline)
 
 
 def cmd_hold(cfg: Config, args: list[str]) -> int:
     why, request = "", ""
+    deadline: int | None = None
     command: list[str] = []
     i = 0
     while i < len(args):
@@ -870,6 +928,9 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
             if i + 1 >= len(args) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args[i + 1]):
                 die("execution hold: --request takes the measurement's request id ([A-Za-z0-9][A-Za-z0-9._-]*)")
             request = args[i + 1]
+            i += 1
+        elif arg == "--deadline":
+            deadline = parse_deadline("hold", args, i)
             i += 1
         elif arg == "--":
             command = args[i + 1 :]
@@ -899,4 +960,4 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
             cap = 0
     if not why:
         why = f"{box} {'measurement ' + request + ' ' if request else ''}hold: {' '.join(command)}"
-    hold(box, inhibitor_path(cfg), why, hold_lock, marker, cap, command)
+    hold(box, inhibitor_path(cfg), why, hold_lock, marker, cap, command, deadline)

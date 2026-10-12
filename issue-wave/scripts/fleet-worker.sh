@@ -101,12 +101,15 @@
 #   fleet-worker.sh load
 #   fleet-worker.sh execution list [--active] [--compact] [--host <box>]   # --host: one box's
 #                          # records, an alias (rog) selecting its roster entry's (rog-nv-linux)
-#   fleet-worker.sh execution slot [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] -- <command...>
+#   fleet-worker.sh execution slot [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>]
+#                          -- <command...>
 #                          # hold one of THIS box's run-time correctness slots around a suite or
 #                          # batch (no lease needed), plus a GPU token unless it declares --cpu;
 #                          # inside a slot already held (FLEET_SLOT_HELD) it runs under that one;
 #                          # --wait-window waits out a measurement on this box (default 3600 s)
-#                          # instead of refusing, then waits for a slot as --wait says
+#                          # instead of refusing, then waits for a slot as --wait says. The batch
+#                          # leads a process group of its own, ended (exit 124) at --deadline, and
+#                          # when the wrapper is signalled or killed
 #   fleet-worker.sh execution slot --bg <parent> [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] -- <command...>
 #                          # the same batch detached, for one that can outlast a 600 s tool
 #                          # call: prints a bg-run.sh run directory under <parent> at once;
@@ -114,12 +117,13 @@
 #   fleet-worker.sh execution slot --probe             # `EXECUTION SLOT PROBE <box> <slots> <gpu
 #                          # tokens>` for this box, taking nothing (exit 2: not a fleet host),
 #                          # then `measurement <id>` inside a live `execution hold --request <id>`
-#   fleet-worker.sh execution hold [--why <text>] [--request <id>] -- <command...>   # run under
-#                          # THIS box's OS-level sleep guard alone (a systemd-inhibit block lock;
-#                          # bare where none): the wrapper for an exclusive measurement, and what
-#                          # `slot` runs inside; with --request <id> (the measurement's), it
-#                          # first takes every slot of the box (waiting for running batches), and
-#                          # an `execution slot` inside it runs under the hold instead of refusing
+#   fleet-worker.sh execution hold [--why <text>] [--request <id>] [--deadline <seconds>] -- <command...>
+#                          # run under THIS box's OS-level sleep guard alone (a systemd-inhibit
+#                          # block lock; bare where none): the wrapper for an exclusive
+#                          # measurement, and what `slot` runs inside; with --request <id> (the
+#                          # measurement's), it first takes every slot of the box (waiting for
+#                          # running batches), and an `execution slot` inside it runs under the
+#                          # hold instead of refusing; --deadline as for `slot`
 #   fleet-worker.sh execution reserve|dispatch|record|reconcile|conclude <json-file>
 #   fleet-worker.sh execution run <json-file>          # reserve + dispatch in one step
 #   fleet-worker.sh execution window <box> <json-file> # `run` for a measurement that suspends the
@@ -245,7 +249,8 @@ set -uo pipefail
 # checkout as the CHECKOUT line below does and reads its usage text from the header above. Forwarded
 # before any configuration is read here: the Python reads the same environment itself. An
 # `execution slot` keeps its pid through every hop (each is an exec), so the pid a caller holds is
-# still the batch's own.
+# the slot's own wrapper, the parent of the batch, which ends the batch's process group when it is
+# signalled (lib/ludics/fleetworker/group.py, ludics-lite#566).
 # The caller's PYTHONPATH rides along: scripts/py replaces PYTHONPATH with the checkout's lib/ and
 # notes the caller's in LUDICS_CALLER_PYTHONPATH, which the Python puts back before it runs
 # anything (ludics.cli), so a batch under `execution slot`/`hold` -- and every far side a verb runs
@@ -322,7 +327,7 @@ fw_spec_count() {
   echo "$found"
 }
 cmd_execution_slot_probe() {
-  local kind="" probe="" bg="" box cap tokens inside="" answer entry ok
+  local kind="" probe="" bg="" deadline="" box cap tokens inside="" answer entry ok
   local -a all=("$@") roster=()
   shift   # slot
   while [ "$#" -gt 0 ]; do
@@ -335,6 +340,11 @@ cmd_execution_slot_probe() {
         [ "$#" -ge 2 ] || die "execution slot: expected value for --wait"
         case "$2" in ''|*[!0-9]*) die "execution slot: --wait takes a whole number of seconds" ;; esac
         shift ;;
+      --deadline)
+        # A positive whole number: digits only, not all of them zeros.
+        case "${2-}" in ''|*[!0-9]*) deadline="" ;; *[1-9]*) deadline=1 ;; *) deadline="" ;; esac
+        [ -n "$deadline" ] || die "execution slot: --deadline takes a positive whole number of seconds"
+        shift ;;
       --wait-window) ;;
       --wait-window=*)
         case "${1#--wait-window=}" in ''|*[!0-9]*) die "execution slot: --wait-window takes a whole number of seconds, as --wait-window=<seconds>" ;; esac ;;
@@ -342,7 +352,7 @@ cmd_execution_slot_probe() {
         [ -z "$kind" ] || [ "$kind" = "$1" ] || die "execution slot: --cpu and --gpu are exclusive"
         kind="$1" ;;
       --) break ;;
-      *) die "execution slot [--bg <parent>] [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] -- <command> [args...] | execution slot --probe" ;;
+      *) die "execution slot [--bg <parent>] [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>] -- <command> [args...] | execution slot --probe" ;;
     esac
     shift
   done
@@ -350,6 +360,7 @@ cmd_execution_slot_probe() {
     exec "$CHECKOUT/scripts/py" -m ludics.fleetworker "$0" execution "${all[@]}"
   fi
   [ -z "$bg" ] || die "execution slot: --probe takes no --bg; it runs nothing"
+  [ -z "$deadline" ] || die "execution slot: --probe takes no --deadline; it runs nothing"
   box="${FLEET_LOCAL_BOX-$(fw_local_box)}"
   [ -n "$box" ] || die "execution slot: this host has no fleet name; set FLEET_LOCAL_BOX (the slot is this box's own)"
   ok=""; read -r -d "" -a roster <<< "$BOXES" || :

@@ -55,7 +55,7 @@ the slots wherever they are fewer, as `rog-nv-linux=4(gpu=2)`.
 
 The slot count is a RUN-TIME count, and `execution slot` is the single run-time mechanism
 (ludics-lite#160): every correctness run on a box, assigned or standing, is wrapped in
-`fleet-worker.sh execution slot [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] -- <command>` on that box, so the box never
+`fleet-worker.sh execution slot [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>] -- <command>` on that box, so the box never
 carries more than its slots however the runs were authorized. A reservation carrying
 `"standing": true` - a correctness record held for a worker's whole life, review waits and idle
 included - consumes no slot; it stays outstanding for everything else, so a measurement still
@@ -198,10 +198,27 @@ which takes no slot of its own, is invoked as `fleet-worker.sh execution hold --
 `hold` takes nothing else - no slot, no registry read, no lease - and where there is no
 `systemd-inhibit` (macOS, a Linux host without systemd) it runs the command bare and silently.
 The inhibitor is held by a helper BESIDE the command, not by systemd-inhibit wrapped around it:
-the command is exec'd on the caller's pid with its exit status and the slot flock unchanged,
-and the inhibitor lives exactly as long as the flock does - until the last process of the
-command's tree exits, however it ends, a `kill -9` of the command alone included.
+the command inherits the slot flock and the helper's lifetime pipe with its exit status
+unchanged, and the inhibitor lives exactly as long as the flock does - until the last process
+of the command's tree exits, however it ends.
 `FLEET_SYSTEMD_INHIBIT` names the binary; the suites point it at a stub.
+
+**The command's process group, and `--deadline`** (ludics-lite#566). `hold` and `slot` run the
+command as the leader of a process group (a session) of its own and stay its parent, so the
+whole tree can be ended, not just its top: in the 2026-10-05 wave a hand-rolled `perl -e 'alarm
+N; exec ...'` killed a driver script and left its benchmark child on the GPU for half an hour past
+the window. `--deadline <seconds>` bounds the tree: when it passes, the group gets SIGTERM, then
+SIGKILL once the leader and the rest are gone or 10 s have passed, and the wrapper exits **124**
+with `EXECUTION HOLD|SLOT <box>: --deadline <n>s reached`; a command that ends first takes
+anything it left running in its group with it. Without `--deadline` a command's leftovers run on,
+holding the slot and the guard, as before. A SIGTERM, SIGINT, SIGHUP or SIGALRM to the wrapper
+ends the group the same way and the wrapper then dies of that signal, so a harness's stop or a
+Ctrl-C reaches the whole tree; a wrapper killed outright (`kill -9`) is answered by a guardian in a
+session of its own, which kills the group at once. A nested `slot` (inside a held slot or a
+measurement's own hold) takes no group of its own unless it has its own `--deadline`, so the
+enclosing wrapper's group kill reaches everything it started. What leaves the group (a process
+that calls `setsid` itself, a `bg-run.sh spawn` run) is not the wrapper's to end, and the command
+has no controlling terminal, so a program that opens `/dev/tty` (a password prompt) finds none.
 
 The mode is `block`, not `block-weak`: systemd 259's `systemctl --check-inhibitors=yes suspend`,
 which is what `wake-lab.sh sleep` runs, refuses on any `block` inhibitor covering sleep, the

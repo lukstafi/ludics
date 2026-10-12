@@ -31,7 +31,8 @@
 # caller's and a group kill reaches the caller. A start
 # that has not published its pid by the time `spawn` returns is said so on stderr, and `wait` then
 # reads it as STARTING, as for any start. `fleet-worker.sh execution slot --bg <parent>` is this
-# around a slot-held batch.
+# around a slot-held batch; there the command is the slot's wrapper, and a kill of it reaches the
+# batch's whole process group (ludics-lite#566).
 #
 # `new` allocates the run directory, so no caller has to keep a fresh name by hand: it creates
 # <parent> if need be (absolute), then <parent>/run-<N> with one exclusive `mkdir`, N one past the
