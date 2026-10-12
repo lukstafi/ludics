@@ -100,7 +100,9 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    END_EXECUTION_REQUEST
    ```
 
-   The task notification that follows is this handoff, not completion.
+   The task notification that follows is this handoff, not completion. Several blocks are a
+   queue: the coordinator assigns them one at a time, in order, each after the previous one's
+   result is concluded, so a resumed worker holds one assignment and owes one result line.
 3. **Assign.** The coordinator completes the reservation (wave, worker, `transport:
    "subagent"`, agent host, repository, issue, purpose - the request supplies the rest), runs
    `execution run <reserve.json>` - or, for a measurement on a box where workers hold standing
