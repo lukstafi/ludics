@@ -20,6 +20,11 @@
 # what it found there, and runs nothing.
 #
 # How the interpreter is run, and why:
+#   -B           no bytecode written: lib/ is a box's served skills checkout, whose preflight counts
+#                even ignored files as local changes, so a `__pycache__/` an entry point left there
+#                refused every later preflight on that box (ludics-lite#585). Nothing reads the
+#                caches back to any purpose but speed, and the flag binds this interpreter alone: a
+#                program it runs (a batch under `execution slot`) keeps its own environment;
 #   -P           no cwd (or script directory) on sys.path: pr-review.sh runs from inside arbitrary
 #                project checkouts, and a `json.py` or `ludics/` there must not shadow anything;
 #   -X utf8      UTF-8 for every stream and open(), whatever the locale (a hostile pass runs the
@@ -155,6 +160,6 @@ if [ -n "$windows" ]; then
 fi
 
 if [ -n "$chosen_arg" ]; then
-  exec "$chosen_cmd" "$chosen_arg" -X utf8 -P "$@"
+  exec "$chosen_cmd" "$chosen_arg" -B -X utf8 -P "$@"
 fi
-exec "$chosen_cmd" -X utf8 -P "$@"
+exec "$chosen_cmd" -B -X utf8 -P "$@"

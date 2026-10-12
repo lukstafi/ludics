@@ -99,7 +99,8 @@ $TMP/bin/newer" "$PY" -m ludics.prreview 'two words' '' 2>&1)
 rc=$?
 [ "$rc" -eq 0 ] && ok "a qualifying interpreter after an old one runs" || ko "rc=$rc -- $out"
 log=$(cat "$TMP/dir with spaces/new.log" 2>/dev/null)
-want="arg:-X
+want="arg:-B
+arg:-X
 arg:utf8
 arg:-P
 arg:-m
@@ -107,7 +108,7 @@ arg:ludics.prreview
 arg:two words
 arg:
 PYTHONPATH:$ROOT/lib"
-[ "$log" = "$want" ] && ok "it gets -X utf8 -P, then the arguments verbatim, with lib/ as PYTHONPATH" ||
+[ "$log" = "$want" ] && ok "it gets -B -X utf8 -P, then the arguments verbatim, with lib/ as PYTHONPATH" ||
   ko "the chosen interpreter was run as: $log -- want: $want"
 [ ! -e "$TMP/bin/newer.log" ] && ok "a later candidate is not run" || ko "a later candidate ran too"
 
@@ -170,6 +171,19 @@ printf 'raise SystemExit("the cwd json.py was imported")\n' >"$TMP/project/json.
 out=$(cd "$TMP/project" && "$PY" -c 'import json; print(json.dumps([1]))' 2>&1)
 [ "$out" = "[1]" ] && ok "a module in the cwd does not shadow the standard library" ||
   ko "the cwd shadowed a module: $out"
+
+# No bytecode lands in the checkout (ludics-lite#585): lib/ is a box's served skills checkout, and
+# the preflight refuses on any file there, ignored ones included. A copy of the wrapper and lib/,
+# so a cache this checkout already holds cannot stand in for the run's; PYTHONDONTWRITEBYTECODE is
+# unset, as in a non-interactive ssh session, since a caller that exports it hides the defect.
+mkdir -p "$TMP/served/scripts"
+cp "$PY" "$TMP/served/scripts/py" && cp -R "$ROOT/lib" "$TMP/served/lib" &&
+  find "$TMP/served/lib" -name __pycache__ -type d -prune -exec rm -rf {} + ||
+  ko "could not copy scripts/py and lib/ (setup, not the wrapper)"
+out=$(unset PYTHONDONTWRITEBYTECODE; "$TMP/served/scripts/py" -c 'import ludics.fleetworker.farside, ludics.prreview; print("ran")' 2>&1)
+caches=$(find "$TMP/served/lib" -name __pycache__ 2>/dev/null)
+[ "$out" = ran ] && [ -z "$caches" ] && ok "a run with PYTHONDONTWRITEBYTECODE unset leaves no __pycache__ under lib/" ||
+  ko "a run with PYTHONDONTWRITEBYTECODE unset: output '$out', caches left: $caches"
 
 # UTF-8 on the streams whatever the locale.
 out=$(LC_ALL=C LANG=C "$PY" -c 'print("—")' 2>&1)
