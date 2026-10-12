@@ -104,6 +104,16 @@ class Group(unittest.TestCase):
         self.assertIn("T: SIGTERM received: ending the command's process group", self.lines[0])
         self.assertEqual(signal.getsignal(signal.SIGTERM), before)
 
+    def test_an_alarm_armed_before_the_wrapper_is_kept_when_it_comes_first(self) -> None:
+        mark = self.mark()
+        signal.setitimer(signal.ITIMER_REAL, 1)
+        try:
+            self.assertEqual(self.run_group(f"sleep {mark} & wait", 60), group.Interrupted(signal.SIGALRM))
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        self.assertTrue(gone(mark), "the caller's alarm left the group running")
+        self.assertIn("T: SIGALRM received", self.lines[0])
+
     def test_a_signal_the_caller_ignores_stays_ignored_for_the_command(self) -> None:
         before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
         try:

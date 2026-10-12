@@ -199,11 +199,16 @@ def run(command: Sequence[str], deadline: int | None, label: str,
         pgid, f"{label}: the wrapper died without ending its command; its guardian killed process group {pgid}"
     )
     expires = time.monotonic() + deadline if deadline else None
+    # An alarm the caller armed before exec'ing this wrapper (a hand-rolled `perl -e 'alarm N;
+    # exec ...'`) survives the exec, and is the earlier bound when it comes first: kept, it reads
+    # as the signal it is.
+    bound = float(deadline or 0)
+    timed = expires is not None and not 0 < signal.getitimer(signal.ITIMER_REAL)[0] <= bound
     outcome: Outcome | None = None
     try:
         try:
-            if expires is not None:
-                signal.setitimer(signal.ITIMER_REAL, float(deadline or 0))
+            if timed:
+                signal.setitimer(signal.ITIMER_REAL, bound)
             armed[0] = True
             if received:
                 armed[0] = False
@@ -212,8 +217,9 @@ def run(command: Sequence[str], deadline: int | None, label: str,
             armed[0] = False
         except _Stop as stop:
             armed[0] = False
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            if stop.signum == signal.SIGALRM and expires is not None and time.monotonic() >= expires - 0.05:
+            if timed:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            if stop.signum == signal.SIGALRM and timed and expires is not None and time.monotonic() >= expires - 0.05:
                 say(f"{label}: --deadline {deadline}s reached: ending the command's process group {pgid}"
                     f" (SIGTERM, then SIGKILL after {grace:g}s)")
                 outcome = Expired()
@@ -222,7 +228,8 @@ def run(command: Sequence[str], deadline: int | None, label: str,
                     f" (SIGTERM, then SIGKILL after {grace:g}s)")
                 outcome = Interrupted(stop.signum)
             end_group(pgid, grace, leader)
-        signal.setitimer(signal.ITIMER_REAL, 0)
+        if timed:
+            signal.setitimer(signal.ITIMER_REAL, 0)
         if outcome is None:
             code = leader.wait()  # reaped already: its status
             outcome = Killed(-code) if code < 0 else Exited(code)
