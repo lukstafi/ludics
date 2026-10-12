@@ -451,9 +451,10 @@ requirements for every transport with transport-specific setup and identity, and
   workers share the coordinator's scratchpad, so scratch files carry the issue number as a
   prefix and never sit inside the worktree ([native-workers.md](references/native-workers.md)
   states the rule). zsh also expands a word starting with `=` as a command path, so
-  `echo =====` fails: the spawn prompt has the worker read the brief file with its file-reading
-  tool, never a shell command, since a reading command with that separator hid the brief's
-  output from five workers of the 2026-10-05 post-waves.
+  `echo =====` fails, and a reading command with that separator hid the brief's output from five
+  workers of the 2026-10-05 post-waves: a native Claude worker reads the brief file with its Read
+  tool, a CLI worker gets it on the launcher's input, and a shell command that reads it (a
+  Codex worker's) prints no separator.
 - Credentials, one line the brief carries verbatim: never borrow, copy or export a credential
   from another box, file or account to get past an authentication failure; a failed `gh`, push
   or login is a gate to report and stop on (2026-09-23: a worker on minix, whose `gh` token was
@@ -715,8 +716,9 @@ controlled through the tools in your coordinator's file, never through those com
   a halt would refuse the workers' own reservations. Message each worker instead: commit, push
   what has passed its tests, start no run, stop its own review watch and merge wait (a merge
   wait left running merges with nobody there to close out; the stop is
-  [Blocking on a run](references/native-claude.md#blocking-on-a-run)'s `<dir>/cpid` kill), and
-  end the turn with a status block - head, PR state, runs in flight, next step - to resume from.
+  [Blocking on a run](references/native-claude.md#blocking-on-a-run)'s `<dir>/cpid` kill), then
+  re-read the PR's merge state, since a merge call already in flight still lands, and end the
+  turn with a status block - head, that PR state, runs in flight, next step - to resume from.
 - **Merge gates under a saturated runner queue.** GitHub's macOS runners serialize; a 20-PR
   day queues master runs ~2 h deep (2026-08-23: a stale test claim reached master unread, #452,
   red for two hours). `merge --wait` refuses without a verdict (see ship-pr): brief workers to
