@@ -20,7 +20,7 @@ class BootstrapSafety(unittest.TestCase):
     def run_shell(self, body, success=True):
         result = subprocess.run(
             ['bash', '-c', 'source "$1"; cd "$2"; ' + body, 'test', str(SCRIPT), str(self.root)],
-            text=True, capture_output=True)
+            text=True, capture_output=True, stdin=subprocess.DEVNULL)
         self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
         return result
 
@@ -316,6 +316,249 @@ class BootstrapSafety(unittest.TestCase):
         self.run_shell(stub + 'uname() { echo Darwin; }; jq_only', False)
         self.run_shell(stub + 'uname() { echo Linux; }; jq_only extra', False)
         self.assertFalse((self.root / 'calls').exists())
+
+    # The shared benchmark venv (ludics-lite#537), dry: a fake venv python records pip installs in
+    # <venv>/installed (what its freeze prints) and passes the smoke unless FAKE_SMOKE_FAIL is set or
+    # <venv>/smoke-fails exists. python3 makes those venvs and answers the version and include
+    # questions; anything else reaches the real python3 (the stub fixture_digest.py, os.replace).
+    # ssh and scp read a fake anchor directory, and every external call lands in calls.
+    FAKE_VENV_PYTHON = r"""#!/bin/sh
+d=$(cd "$(dirname "$0")/.." && pwd -P)
+case "$1" in
+  -m) shift 2; case "$1" in
+        install) shift; echo "pip install $*" >> "$CALLS"
+                 [ -z "${FAKE_PIP_FAIL-}" ] || exit 1
+                 for a; do case $a in *==*) echo "$a" >> "$d/installed";; esac; done ;;
+        freeze) cat "$d/installed" 2>/dev/null ;;
+      esac ;;
+  -c) echo "${FAKE_VENV_MINOR:-3.14}" ;;
+  -X) echo "smoke $d $5" >> "$CALLS"; [ ! -e "$d/smoke-fails" ] && [ -z "${FAKE_SMOKE_FAIL-}" ] ;;
+esac
+"""
+    FAKE_DIGEST_TOOL = r"""import hashlib, sys
+args = sys.argv[1:]
+digests, fixture = args[args.index('--digests') + 1], args[-1]
+sha = hashlib.sha256(open(fixture, 'rb').read()).hexdigest()
+ok = any(line.split()[:1] == [sha] for line in open(digests) if not line.startswith('#'))
+print(fixture, 'MATCH' if ok else 'MISMATCH')
+sys.exit(0 if ok else 1)
+"""
+    BENCH_STUB = (
+        'BENCH_VENV=$PWD/venvs/ocannl-bench; BENCH_CHECKOUT=$PWD/ocannl; scratch=$PWD/scratch; '
+        'export CALLS=$PWD/calls FAKE_PY=$PWD/fake-python; FAKE_INCLUDE=$PWD/include; ANCHOR=$PWD/anchor; '
+        'FAKE_LSPCI=${FAKE_LSPCI-"02:00.0 VGA compatible controller: NVIDIA Corporation GB205M"}; '
+        'python3() { if [ "$1" = -m ] && [ "$2" = venv ]; then echo "venv $3" >> "$CALLS"; mkdir -p "$3/bin"; '
+        'cp "$FAKE_PY" "$3/bin/python"; return; fi; '
+        'if [ "$1" = -c ] && [[ $2 == *INCLUDEPY* ]]; then echo "$FAKE_INCLUDE"; return; fi; '
+        'if [ "$1" = -c ] && [[ $2 == *version_info* ]]; then echo 3.14; return; fi; command python3 "$@"; }; '
+        'lspci() { printf "%s\\n" "$FAKE_LSPCI"; }; '
+        'rocminfo() { printf "  Name:                    AMD Ryzen AI\\n  Name:                    %s\\n" "${FAKE_GFX:-gfx1102}"; }; '
+        'timeout() { shift; "$@"; }; flock() { echo "flock $*" >> "$CALLS"; }; '
+        'sudo() { echo "sudo $*" >> "$CALLS"; [ "$1" != -n ] || return "${SUDO_N_RC:-1}"; '
+        '[ "$1" != apt-get ] || touch "$FAKE_INCLUDE/Python.h"; }; '
+        'ssh() { echo "ssh $*" >> "$CALLS"; (cd "$ANCHOR/benchmarks/fixtures" && find . -maxdepth 1 -type f -name "*.safetensors" -print0); }; '
+        'scp() { echo "scp $*" >> "$CALLS"; local a dest=${@: -1}; '
+        'for a; do case $a in *:*) cp "$ANCHOR/${a#*:ocannl-staging/}" "$dest";; esac; done; }; '
+        'mkvenv() { local d=$1; shift; mkdir -p "$d/bin"; cp "$FAKE_PY" "$d/bin/python"; printf "%s\\n" "$@" > "$d/installed"; }; ')
+    NVIDIA_PINS = 'numpy==2.5.3 safetensors==0.8.0 tinygrad==0.14.0 torch==2.14.0+cu130'
+
+    def bench_setup(self, fixtures=('a', 'b'), recorded=('a', 'b')):
+        import hashlib
+        (self.root / 'fake-python').write_text(self.FAKE_VENV_PYTHON)
+        (self.root / 'fake-python').chmod(0o755)
+        for d in ['scratch', 'include', 'anchor/benchmarks/fixtures', 'venvs', 'ocannl/benchmarks/fixtures']:
+            (self.root / d).mkdir(parents=True, exist_ok=True)
+        (self.root / 'include/Python.h').write_text('')
+        (self.root / 'anchor/benchmarks/fixture_digest.py').write_text(self.FAKE_DIGEST_TOOL)
+        rows = ['# measurement-boxes: m4-max']
+        for name in fixtures:
+            body = ('fixture ' + name + '\n').encode()
+            (self.root / 'anchor/benchmarks/fixtures' / (name + '.safetensors')).write_bytes(body)
+            if name in recorded:
+                rows.append(hashlib.sha256(body).hexdigest() + '  ' + str(len(body)) + '  '
+                            + name + '.safetensors  m4-max  content-v1')
+        (self.root / 'anchor/benchmarks/fixtures/DIGESTS.txt').write_text('\n'.join(rows) + '\n')
+        # The box's own record is stale: the anchor's is the one a copy is checked against.
+        (self.root / 'ocannl/benchmarks/fixtures/DIGESTS.txt').write_text('# measurement-boxes: m4-max\n')
+
+    def calls(self):
+        path = self.root / 'calls'
+        return path.read_text() if path.exists() else ''
+
+    def venv_dirs(self):
+        return sorted(p.name for p in (self.root / 'venvs').iterdir())
+
+    def test_bench_torch_index_per_gpu(self):
+        out = self.run_shell('bench_torch_spec nvidia; bench_torch_spec amd gfx1102; '
+                             'bench_torch_spec amd gfx1151; bench_torch_spec amd; bench_torch_spec cpu').stdout
+        self.assertEqual(out, 'cu130 2.14.0+cu130\nrocm7.1 2.13.0+rocm7.1\nrocm7.2 2.14.1+rocm7.2\n'
+                              'rocm7.1 2.13.0+rocm7.1\ncpu 2.14.0+cpu\n')
+        self.run_shell('bench_torch_spec none', False)
+
+    def test_bench_gpu_detect_reads_the_display_devices(self):
+        stub = 'lspci() { printf "%s\\n" "$@" "${DEV[@]}"; }; '
+        rog = ('00:02.0 VGA compatible controller: Intel Corporation Arrow Lake-S',
+               '02:00.0 VGA compatible controller: NVIDIA Corporation GB205M')
+        cases = [(rog, 'nvidia'),
+                 (('c5:00.0 Display controller: Advanced Micro Devices, Inc. [AMD/ATI] Strix Halo',), 'amd'),
+                 (('00:02.0 VGA compatible controller: Intel Corporation',), 'cpu')]
+        for devices, gpu in cases:
+            body = stub + 'DEV=(' + ' '.join(repr(d) for d in devices) + '); bench_gpu_detect'
+            self.assertEqual(self.run_shell(body).stdout, gpu + '\n')
+        both = stub + 'DEV=("01:00.0 VGA: NVIDIA Corporation" "02:00.0 VGA: Advanced Micro Devices"); bench_gpu_detect'
+        self.run_shell(both, False)
+        gfx = self.run_shell('rocminfo() { printf "  Name:   AMD Ryzen AI Max\\n  Name:   gfx1151\\n  Name:   amdgcn-amd-amdhsa--gfx1151\\n"; }; bench_amd_gfx')
+        self.assertEqual(gfx.stdout, 'gfx1151\n')
+
+    def test_bench_fresh_box_builds_swaps_records_links_and_copies(self):
+        self.bench_setup()
+        out = self.run_shell(self.BENCH_STUB + 'bench_provision').stdout
+        calls = self.calls()
+        self.assertIn('pip install -q --disable-pip-version-check numpy==2.5.3 safetensors==0.8.0 tinygrad==0.14.0\n', calls)
+        self.assertIn('--index-url https://download.pytorch.org/whl/cu130 torch==2.14.0+cu130\n', calls)
+        venv = self.root / 'venvs/ocannl-bench'
+        self.assertTrue(venv.is_symlink())
+        fresh = os.readlink(venv)
+        self.assertRegex(fresh, r'^ocannl-bench-\d{8}T\d{6}Z\.')
+        self.assertIn('smoke ' + str((self.root / 'venvs' / fresh).resolve()) + ' nvidia', calls)
+        self.assertLess(calls.index('smoke '), calls.index('ssh '))
+        self.assertEqual((self.root / 'venvs/ocannl-bench.requirements.txt').read_text(),
+                         self.NVIDIA_PINS.replace(' ', '\n') + '\n')
+        self.assertEqual(os.readlink(self.root / 'ocannl/benchmarks/.venv'), str(venv))
+        fixtures = self.root / 'ocannl/benchmarks/fixtures'
+        self.assertEqual((fixtures / 'a.safetensors').read_text(), 'fixture a\n')
+        self.assertEqual((fixtures / 'b.safetensors').read_text(), 'fixture b\n')
+        self.assertEqual([p.name for p in fixtures.glob('.incoming*')], [])
+        self.assertNotIn('WARNING', out)
+
+    def test_bench_amd_index_follows_the_gfx(self):
+        self.bench_setup()
+        amd = 'FAKE_LSPCI="c5:00.0 Display controller: Advanced Micro Devices, Inc. [AMD/ATI]"; '
+        self.run_shell(amd + self.BENCH_STUB + 'bench_provision')
+        self.assertIn('--index-url https://download.pytorch.org/whl/rocm7.1 torch==2.13.0+rocm7.1\n', self.calls())
+        self.assertRegex(self.calls(), r'smoke \S+ amd\n')
+        self.run_shell(amd + 'FAKE_GFX=gfx1151; ' + self.BENCH_STUB + 'bench_provision')
+        self.assertIn('--index-url https://download.pytorch.org/whl/rocm7.2 torch==2.14.1+rocm7.2\n', self.calls())
+        self.run_shell(self.BENCH_STUB + 'bench_provision cpu')
+        self.assertIn('--index-url https://download.pytorch.org/whl/cpu torch==2.14.0+cpu\n', self.calls())
+
+    def test_bench_venv_on_the_pins_that_passes_the_smoke_is_left_alone(self):
+        self.bench_setup()
+        self.run_shell(self.BENCH_STUB + 'bench_provision')
+        venv = self.root / 'venvs/ocannl-bench'
+        target = os.readlink(venv)
+        req = self.root / 'venvs/ocannl-bench.requirements.txt'
+        stamp = req.stat().st_mtime_ns
+        (self.root / 'calls').unlink()
+        self.run_shell(self.BENCH_STUB + 'bench_provision')
+        calls = self.calls()
+        self.assertNotIn('pip install', calls)
+        self.assertNotIn('venv ', calls)
+        self.assertNotIn('scp ', calls)
+        self.assertIn('smoke ', calls)
+        self.assertEqual(os.readlink(venv), target)
+        self.assertEqual(req.stat().st_mtime_ns, stamp)
+        self.assertEqual(self.venv_dirs(), sorted(['ocannl-bench', target, 'ocannl-bench.lock',
+                                                   'ocannl-bench.requirements.txt']))
+
+    def test_bench_hand_built_venv_on_the_pins_is_left_a_real_directory(self):
+        self.bench_setup()
+        self.run_shell(self.BENCH_STUB + 'mkvenv "$BENCH_VENV" ' + self.NVIDIA_PINS + '; bench_provision')
+        self.assertNotIn('pip install', self.calls())
+        self.assertFalse((self.root / 'venvs/ocannl-bench').is_symlink())
+
+    def test_bench_failed_smoke_leaves_the_old_venv(self):
+        self.bench_setup()
+        old = 'mkvenv "$BENCH_VENV" numpy==2.5.3 torch==2.13.0+rocm7.1; echo KEEP > "$BENCH_VENV.requirements.txt"; '
+        result = self.run_shell(self.BENCH_STUB + old + 'uname() { echo Linux; }; FAKE_SMOKE_FAIL=1 bench_venv_only nvidia', False)
+        self.assertIn('failed the nvidia smoke', result.stderr)
+        self.assertIn('pip install', self.calls())
+        venv = self.root / 'venvs/ocannl-bench'
+        self.assertFalse(venv.is_symlink())
+        self.assertEqual((venv / 'installed').read_text(), 'numpy==2.5.3\ntorch==2.13.0+rocm7.1\n')
+        self.assertEqual(self.venv_dirs(), ['ocannl-bench', 'ocannl-bench.lock', 'ocannl-bench.requirements.txt'])
+        self.assertEqual((self.root / 'venvs/ocannl-bench.requirements.txt').read_text(), 'KEEP\n')
+        self.assertFalse((self.root / 'ocannl/benchmarks/.venv').exists())
+
+    def test_bench_failed_install_leaves_the_old_venv(self):
+        self.bench_setup()
+        old = 'mkvenv "$BENCH_VENV" numpy==2.5.3; '
+        result = self.run_shell(self.BENCH_STUB + old + 'uname() { echo Linux; }; FAKE_PIP_FAIL=1 bench_venv_only nvidia', False)
+        self.assertIn('is unchanged', result.stderr)
+        self.assertEqual(self.venv_dirs(), ['ocannl-bench', 'ocannl-bench.lock'])
+
+    def test_bench_matching_venv_that_fails_the_smoke_is_rebuilt_and_kept_for_rollback(self):
+        self.bench_setup()
+        self.run_shell(self.BENCH_STUB + 'mkvenv "$BENCH_VENV" ' + self.NVIDIA_PINS +
+                       '; touch "$BENCH_VENV/smoke-fails"; bench_provision')
+        self.assertIn('pip install', self.calls())
+        dirs = self.venv_dirs()
+        retired = [d for d in dirs if d.startswith('ocannl-bench-retired-')]
+        self.assertEqual(len(retired), 1)
+        self.assertTrue((self.root / 'venvs' / retired[0] / 'smoke-fails').exists())
+        self.assertTrue((self.root / 'venvs/ocannl-bench').is_symlink())
+
+    def test_bench_rebuild_keeps_only_the_previous_venv(self):
+        self.bench_setup()
+        self.run_shell(self.BENCH_STUB + 'mkvenv "$BENCH_VENV" numpy==2.5.3; bench_provision')
+        first = os.readlink(self.root / 'venvs/ocannl-bench')
+        self.run_shell(self.BENCH_STUB + 'bench_provision cpu')
+        second = os.readlink(self.root / 'venvs/ocannl-bench')
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.venv_dirs(), sorted(['ocannl-bench', first, second, 'ocannl-bench.lock',
+                                                   'ocannl-bench.requirements.txt']))
+        self.assertIn('torch==2.14.0+cpu', (self.root / 'venvs/ocannl-bench.requirements.txt').read_text())
+
+    def test_bench_fixtures_install_only_recorded_bytes_and_never_replace(self):
+        self.bench_setup(fixtures=('a', 'b', 'c'), recorded=('a', 'b'))
+        fixtures = self.root / 'ocannl/benchmarks/fixtures'
+        (fixtures / 'a.safetensors').write_text('this box own bytes\n')
+        result = self.run_shell(self.BENCH_STUB + 'bench_provision', False)
+        self.assertIn('matching nothing', result.stderr)
+        self.assertIn('c.safetensors', result.stderr)
+        self.assertEqual((fixtures / 'a.safetensors').read_text(), 'this box own bytes\n')
+        self.assertEqual((fixtures / 'b.safetensors').read_text(), 'fixture b\n')
+        self.assertFalse((fixtures / 'c.safetensors').exists())
+        self.assertNotIn('a.safetensors', ''.join(l for l in self.calls().splitlines() if l.startswith('scp')))
+        self.assertEqual([p.name for p in fixtures.glob('.incoming*')], [])
+
+    def test_bench_fixture_names_outside_the_allowlist_are_refused(self):
+        self.bench_setup()
+        (self.root / 'anchor/benchmarks/fixtures/bad name.safetensors').write_text('x\n')
+        result = self.run_shell(self.BENCH_STUB + 'bench_provision', False)
+        self.assertIn('Refusing anchor fixture name', result.stderr)
+        self.assertEqual([p.name for p in (self.root / 'ocannl/benchmarks/fixtures').glob('.incoming*')], [])
+
+    def test_bench_without_the_checkout_skips_link_and_fixtures(self):
+        self.bench_setup()
+        out = self.run_shell(self.BENCH_STUB + 'BENCH_CHECKOUT=$PWD/none; bench_provision').stdout
+        self.assertIn('skipping', out)
+        self.assertNotIn('ssh ', self.calls())
+
+    def test_bench_foreign_checkout_venv_is_left_with_a_warning(self):
+        self.bench_setup()
+        (self.root / 'ocannl/benchmarks/.venv').mkdir()
+        out = self.run_shell(self.BENCH_STUB + 'bench_provision').stdout
+        self.assertIn('WARNING: ' + str(self.root) + '/ocannl/benchmarks/.venv is not a symlink', out)
+        self.assertTrue((self.root / 'ocannl/benchmarks/.venv').is_dir())
+
+    def test_bench_dev_headers_installed_with_sudo_else_named(self):
+        self.bench_setup()
+        (self.root / 'include/Python.h').unlink()
+        out = self.run_shell(self.BENCH_STUB + 'bench_provision').stdout
+        self.assertNotIn('apt-get', self.calls())
+        self.assertIn('WARNING: No ' + str(self.root) + '/include/Python.h', out)
+        self.assertIn('sudo apt-get install -y python3-dev', out)
+        out = self.run_shell(self.BENCH_STUB + 'SUDO_N_RC=0 bench_provision').stdout
+        self.assertIn('sudo apt-get install -y python3-dev', self.calls())
+        self.assertNotIn('WARNING', out)
+
+    def test_bench_venv_only_refuses_before_any_work(self):
+        stub = self.BENCH_STUB + 'uname() { echo Linux; }; '
+        self.run_shell(stub + 'bench_venv_only rocm', False)
+        self.run_shell(stub + 'bench_venv_only nvidia extra', False)
+        self.run_shell(self.BENCH_STUB + 'uname() { echo Darwin; }; bench_venv_only', False)
+        self.assertEqual(self.calls(), '')
 
     def test_endpoint_names_exclude_the_local_sentinel(self):
         self.run_shell('valid_endpoint rog-nv-linux && ! valid_endpoint local && ! valid_endpoint macbook-air && ! valid_endpoint user@host')
