@@ -1394,6 +1394,14 @@ test_a_selection_matching_nothing_is_refused() {
   assert_eq "$GATE_RC" 2 "a finished head with no matching check refuses"
   assert_contains "$GATE_OUTPUT" "REFUSING: no check run of" "the refusal says why"
   assert_contains "$GATE_OUTPUT" "checks: verdict=unknown" "the trailer is unknown, never green"
+  # Review round 1, P2: a run that STOPPED is finished for a selection -- only a re-run creates
+  # checks for it -- so a selection matching nothing refuses rather than spending the wait.
+  reset_fixture
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"completed","conclusion":"cancelled"}]')")
+  run_checks --wait=30 --check '^torch'
+  assert_eq "$GATE_RC" 2 "a stopped run with no matching check refuses"
+  assert_contains "$GATE_OUTPUT" "re-run the workflow" "the refusal carries the run's reason"
+  assert_not_contains "$GATE_OUTPUT" "still waiting" "and spends none of the wait"
   reset_fixture
   CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"lint","conclusion":"success","html_url":"l"}]')")
   RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"in_progress","conclusion":null}]')")

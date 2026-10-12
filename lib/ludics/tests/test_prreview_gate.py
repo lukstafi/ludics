@@ -388,7 +388,8 @@ class Selection(unittest.TestCase):
     def test_matching_nothing_holds_while_a_run_is_in_flight_and_refuses_after(self) -> None:
         for status, concl, want, verdict in (("in_progress", "pending", 4, "unjudged"),
                                              ("completed", "success", 2, "unknown"),
-                                             ("completed", "failure", 2, "unknown")):
+                                             ("completed", "failure", 2, "unknown"),
+                                             ("completed", "cancelled", 2, "unknown")):
             gh = FakeGh()
             self.head(gh)
             gh.on("check-runs", out="lint\tsuccess\tu\t1")

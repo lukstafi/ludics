@@ -98,12 +98,15 @@ type Verdict = Literal[
 class RunSignal:
     """``run_signal``'s answer: its status (0 the fold stands, 1 red at the run level, 3 unread,
     4 no verdict yet), the run-level red count, the runs the waiver took out of it (one
-    "<run id> <run|job> <name>" per line), and the reason line."""
+    "<run id> <run|job> <name>" per line), and the reason line. ``stopped``: the 4 is a run that
+    stopped without a verdict, with nothing in flight -- no new check run comes of it unless
+    someone re-runs it, which ``checks --check`` reads as final (#569)."""
 
     rc: int
     red: int
     waived_runs: str
     reason: str
+    stopped: bool = False
 
 
 # `gate_checks` (with build_checks, summarize_checks, run_signal, apply_waiver), ported once: `checks`,
@@ -527,6 +530,7 @@ class Gate:
                 f"{nogo} workflow run(s) for this head completed stopped-not-judged (cancelled,"
                 " stale or action_required) with no build check behind them — stopped is not absence and"
                 " not a verdict: re-run the workflow",
+                stopped=True,
             )
         if checks > 0 and runs > 0:
             if released > 0:
@@ -661,9 +665,10 @@ class Gate:
             if self.select and self.check_total == 0:
                 # A selection that matches no check run yet asks the run list one question: can a
                 # matching run still appear? A run in flight, or a run-less head inside the
-                # creation grace, holds (rc 4). Anything else -- every run finished, or past the
-                # grace with none -- means it cannot, and a selection that matches nothing is a
-                # refusal, never green and never ABSENT. The fold's count goes in as 1 so a
+                # creation grace, holds (rc 4). Anything else -- every run finished (stopped ones
+                # included: only a re-run creates checks for them), or past the grace with none --
+                # means it cannot, and a selection that matches nothing is a refusal, never green
+                # and never ABSENT. The fold's count goes in as 1 so a
                 # finished run list answers at once rather than waiting the grace out: the grace
                 # is for a run not yet created, and finished runs have created their checks.
                 sig = self.run_signal(sha, pr_at, 1, base_sha, head_ref, pr)
@@ -675,7 +680,7 @@ class Gate:
                             "check matching --check can still appear is UNKNOWN.",
                         )
                         return 3
-                    case 4:
+                    case 4 if not sig.stopped:
                         self.verdict = "unjudged"
                         run_why = f"no check run matches --check {shlex.quote(self.select)} yet — {sig.reason}"
                     case _:
