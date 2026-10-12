@@ -12,6 +12,9 @@ lock for every action but ``list``; its argv is ``root action coordinator token 
 
 The far sides of ``conclude --from-run`` and ``--from-bg-run`` stay the shell's, verbatim: they
 run on the box that holds the run, and read its record with the tools that wrote it.
+
+Every commit a payload names is checked before the anchor is asked (ludics-lite#561): what is read,
+where, and the outcomes are ``ludics.fleetworker.revision``'s header.
 """
 
 import json
@@ -22,11 +25,12 @@ from dataclasses import dataclass
 from typing import Any, assert_never, cast
 
 from ludics import cli
+from ludics.fleetworker import revision
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
-from ludics.fleetworker.preflight import refresh_box
+from ludics.fleetworker.preflight import knob, refresh_box
 from ludics.fleetworker.transport import Done, err, fleet_name, prelude, run, run_on, substitution
 
 REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "registry.py")
@@ -192,6 +196,21 @@ printf 'status=rc\nrc=%s\nsentinel=%s\n' "$code" "$sentinel"
 """
 
 
+# Far side of `--observed-from <checkout>`, on the execution host: the checkout's HEAD, the commit a
+# conclusion records instead of a SHA copied by hand (ludics-lite#561). Arg: the checkout. Prints one
+# `head=` line, or one OBSERVED-FROM REFUSED line.
+OBSERVED_FROM = r"""co="$1"
+refuse() { echo "OBSERVED-FROM REFUSED: $*"; exit 1; }
+[ -d "$co" ] || refuse "no checkout $co on $BOX"
+head=$(git -C "$co" rev-parse --verify -q 'HEAD^{commit}') || refuse "cannot read HEAD of $co on $BOX (not a git checkout, or no commit yet)"
+printf 'head=%s\n' "$head"
+"""
+
+
+# How a conclusion's evidence names a revision the worker's result line gave.
+REPORTED = "as reported by the worker"
+
+
 @dataclass(frozen=True)
 class Payload:
     """A conclusion payload, compact JSON, ready for the registry."""
@@ -209,7 +228,7 @@ class Refusal:
 
 type Conclusion = Payload | Refusal
 
-SHA40 = re.compile(r"[0-9a-f]{40}")
+SHA40 = revision.SHA40
 
 
 def facts_of(text: str, key: str) -> str:
@@ -293,6 +312,7 @@ def conclude_from_bg_run(
     checkout: str,
     evidence: str,
     bgrun: str,
+    source: str = REPORTED,
 ) -> Conclusion:
     """The conclude payload read off a bg-run.sh directory. The verdict mapping:
       - the code is the runner's own sentinel when the log carries one and it is nonzero, else rc --
@@ -326,7 +346,9 @@ def conclude_from_bg_run(
     verdict = run_verdict(code, timeout_codes=("124", "142"))
     note += "; the command returned"
     if not evidence:
-        evidence = f"{note}; revision {sha} as reported by the worker"
+        evidence = f"{note}; revision {sha} {source}"
+    elif source != REPORTED:
+        evidence += f"; revision {sha} {source}"
     if box != host:
         evidence += f"; directory read on {box}, which drove the run on {host}"
     return Payload(
@@ -342,6 +364,31 @@ def conclude_from_bg_run(
             }
         )
     )
+
+
+def observed_head(cfg: Config, box: str, checkout: str) -> str | Refusal:
+    """``--observed-from``: the checkout's HEAD, read on the box (the request's execution host)."""
+    done = run_on(cfg, box, prelude(cfg, box) + OBSERVED_FROM, [checkout], capture=True)
+    if done.unreachable:
+        return Refusal(f"OBSERVED-FROM UNREACHABLE {box}: nothing concluded", 4)
+    facts = substitution(done.out)
+    if done.rc != 0:
+        return Refusal(facts or f"OBSERVED-FROM REFUSED: exit {done.rc} reading {checkout} on {box}", 1)
+    head = facts_of(facts, "head")
+    if not revision.OBJECT_ID.fullmatch(head):
+        return Refusal(f"OBSERVED-FROM REFUSED: unreadable HEAD of {checkout} from {box}: {facts}", 1)
+    return head
+
+
+def observed_sha_of(cfg: Config, record: dict[str, Any], host: str, checkout: str) -> str | Refusal:
+    """``--observed-from``'s SHA. A record already concluded at an observed_sha is this conclusion's
+    earlier call having landed with its answer lost: that SHA stands, so a retry composes the same
+    payload (the registry's identical-retry rule) even once the checkout has moved on or been
+    removed, and any other payload meets the registry's "already concluded" refusal."""
+    recorded = record.get("observed_sha")
+    if record.get("state") == "concluded" and isinstance(recorded, str) and recorded:
+        return recorded
+    return observed_head(cfg, host, checkout)
 
 
 # --- the endpoint map and the refresh after a dispatch -------------------------------------------
@@ -424,6 +471,7 @@ USAGE = (
     "execution: list, slot -- <command>, hold -- <command>, run|reserve|dispatch|record|reconcile|conclude"
     " <json-file>, window <box> <json-file>, or conclude --from-run|--from-bg-run <run-dir> --request <id>"
 )
+CONCLUDE_USAGE = "execution conclude <json-file> [--observed-from <checkout>]"
 
 
 def read_payload(action: str, args: list[str]) -> str:
@@ -462,6 +510,137 @@ def run_dir_arg(args: list[str], mode: str, where: str) -> str:
     return run_dir
 
 
+def checkout_arg(checkout: str, mode: str) -> str:
+    """``--observed-from``'s checkout: absolute on the execution host, POSIX or a drive letter."""
+    if not (checkout.startswith("/") or re.match(r"[A-Za-z]:[/\\]", checkout)):
+        die(f"execution conclude{mode}: --observed-from <checkout> must be absolute (it is read on the execution host)")
+    return checkout
+
+
+def fail(refusal: tuple[str, int] | Refusal | None) -> None:
+    """Print a refusal and exit with its status; nothing for None."""
+    match refusal:
+        case None:
+            return
+        case Refusal():
+            concluded(refusal)
+        case (text, rc):
+            cli.say(text)
+            raise cli.Exit(rc)
+        case _:
+            assert_never(refusal)
+
+
+def record_to_check(cfg: Config, request: str) -> dict[str, Any] | None:
+    """The request's record, read to check a revision against its repository; None when the
+    registry has no such request (it refuses the payload itself)."""
+    done = listing(cfg)
+    if done.unreachable:
+        cli.say(f"EXECUTION UNREACHABLE {cfg.anchor}: cannot read request {request}'s record to check its revision")
+        raise cli.Exit(4)
+    records = records_of(done.out) if done.rc == 0 else None
+    if records is None:
+        cli.emit(substitution(done.out))
+        cli.say("EXECUTION REFUSED: the anchor's registry could not be read")
+        raise cli.Exit(1)
+    return record_of(records, request)
+
+
+def checked_evidence(cfg: Config, text: str, observed_from: str, action: str) -> str:
+    """A dispatch, record, reconcile or conclude payload whose ``observed_sha`` -- named, read off
+    ``observed_from`` (conclude only), or inherited from the record by a conclusion naming none --
+    is a commit of the request's repository on GitHub. A payload the registry will refuse on shape
+    anyway (not an object, no request_id, a SHA of the wrong shape) passes unread, and so does one
+    for a concluded record, whose retry is the registry's to judge."""
+    try:
+        decoded: Any = json.loads(text)
+    except ValueError:
+        decoded = None
+    if not isinstance(decoded, dict):
+        if observed_from:
+            cli.say("EXECUTION REFUSED: --observed-from needs a JSON object payload")
+            raise cli.Exit(1)
+        return text
+    data = cast(dict[str, Any], decoded)
+    sha, request = data.get("observed_sha"), data.get("request_id")
+    shaped = isinstance(sha, str) and revision.OBJECT_ID.fullmatch(sha) is not None
+    # A conclusion naming no observed_sha inherits the record's (registry.py), which a record
+    # written before this check existed may hold mistyped: it becomes immutable here.
+    inherits = action == "conclude" and "observed_sha" not in data and data.get("verdict") != "not-launched"
+    if not (isinstance(request, str) and request and (shaped or observed_from or inherits)):
+        return text
+    record = record_to_check(cfg, request)
+    if record is None:
+        return text
+    checking = record.get("state") != "concluded"
+    repo = jq_text(field(record, "request", "repository"))
+    if observed_from:
+        host = jq_text(field(record, "request", "execution_host"))
+        head = observed_sha_of(cfg, record, host, observed_from)
+        if isinstance(head, Refusal):
+            concluded(head)
+            return text
+        if "observed_sha" in data and sha != head:
+            cli.say(
+                f"EXECUTION REFUSED: the payload's observed_sha {jq_text(sha)} is not HEAD {head} of"
+                f" {observed_from} on {host}; drop it and let --observed-from record the checkout's"
+            )
+            raise cli.Exit(1)
+        # Read off a checkout, the SHA has no typo, but the checkout may be another repository's.
+        if checking:
+            fail(revision.commit_refusal(repo, "observed_sha", head, gh_timeout(cfg)))
+        data["observed_sha"] = head
+        data.setdefault("remote_checkout", observed_from)
+        if isinstance(data.get("evidence"), str) and data["evidence"].strip():
+            data["evidence"] += f"; observed_sha read as HEAD of {observed_from} on {host}"
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+    if checking and shaped:
+        fail(revision.commit_refusal(repo, "observed_sha", cast(str, sha), gh_timeout(cfg)))
+    inherited = record.get("observed_sha")
+    if checking and inherits and isinstance(inherited, str) and inherited:
+        fail(revision.commit_refusal(repo, "inherited observed_sha", inherited, gh_timeout(cfg)))
+    return text
+
+
+def conclude_payload(cfg: Config, args: list[str]) -> str:
+    """``conclude <json-file> [--observed-from <checkout>]``."""
+    values = flag_values(args[2:], ("--observed-from",), CONCLUDE_USAGE)
+    payload = read_payload("conclude", args[:2])
+    observed_from = values.get("--observed-from", "")
+    if observed_from:
+        checkout_arg(observed_from, "")
+    check_identity(cfg)
+    return checked_evidence(cfg, payload, observed_from, "conclude")
+
+
+def gh_timeout(cfg: Config) -> float:
+    """FLEET_GH_TIMEOUT, the bound on each GitHub call (the preflight's knob, 30 s)."""
+    value = knob(cfg, "FLEET_GH_TIMEOUT", "30")
+    if not (value.isdigit() and int(value) > 0):
+        die(f"FLEET_GH_TIMEOUT must be a positive whole number of seconds, not {value!r}")
+    return int(value)
+
+
+def checked_request(cfg: Config, payload: str, action: str) -> None:
+    """A reserve, run or window request whose requested_revision names only commits that resolve.
+    A payload that does not parse is left to the registry, which refuses it."""
+    try:
+        decoded: Any = json.loads(payload)
+    except ValueError:
+        return
+    if action == "window":
+        decoded = cast(dict[str, Any], decoded).get("request") if isinstance(decoded, dict) else None
+    fail(revision.request_refusal(decoded, gh_timeout(cfg), lambda request: held(cfg, request, action)))
+
+
+def held(cfg: Config, request: str, action: str) -> bool:
+    """Whether the registry's own retry rule answers this request id: it holds the id, and the
+    action cannot newly dispatch it -- `run` dispatches a record still reserved (one taken before
+    this check existed, say), so that one is checked."""
+    record = record_to_check(cfg, request)
+    return record is not None and not (action == "run" and record.get("state") == "reserved")
+
+
 def from_run_payload(cfg: Config, args: list[str]) -> str:
     run_dir = run_dir_arg(args, "--from-run", "the execution box")
     values = flag_values(
@@ -489,23 +668,34 @@ def from_run_payload(cfg: Config, args: list[str]) -> str:
         if not box:
             cli.say(f"EXECUTION REFUSED: unknown request_id {request} (no execution host to read the run on)")
             raise cli.Exit(1)
+    else:
+        record = record_to_check(cfg, request)
+    # The run's checkout must contain --sha (the far side's cat-file), but a box can hold several
+    # repositories' runs: the SHA must also be a commit of the request's repository.
+    if record is not None and record.get("state") != "concluded":
+        fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "--sha", sha, gh_timeout(cfg)))
     return concluded(conclude_from_run(cfg, run_dir, request, box, sha, values.get("--evidence", "")))
 
 
 def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
     usage = (
-        "execution conclude --from-bg-run <run-dir> --request <id> --sha <sha> [--box <box>]"
-        " [--checkout <text>] [--evidence <text>]"
+        "execution conclude --from-bg-run <run-dir> --request <id> --sha <sha>|--observed-from <checkout>"
+        " [--box <box>] [--checkout <text>] [--evidence <text>]"
     )
     run_dir = run_dir_arg(args, "--from-bg-run", "the box that holds it")
-    values = flag_values(args[3:], ("--request", "--box", "--sha", "--evidence", "--checkout"), usage)
+    values = flag_values(
+        args[3:], ("--request", "--box", "--sha", "--evidence", "--checkout", "--observed-from"), usage
+    )
     request, sha = values.get("--request", ""), values.get("--sha", "")
+    observed_from = values.get("--observed-from", "")
     if not request:
         die("execution conclude --from-bg-run: --request <id> required")
-    if not SHA40.fullmatch(sha):
+    if observed_from:
+        checkout_arg(observed_from, " --from-bg-run")
+    if not (SHA40.fullmatch(sha) or (observed_from and not sha)):
         die(
-            "execution conclude --from-bg-run: --sha <full commit SHA> required (a bg-run directory"
-            " records none; the worker's result line names it)"
+            "execution conclude --from-bg-run: --sha <full commit SHA> required, or --observed-from <checkout>"
+            " (a bg-run directory records none; the worker's result line names it)"
         )
     bgrun = os.path.join(cfg.here, "bg-run.sh")
     if not (_nonempty(bgrun) and os.access(bgrun, os.R_OK)):
@@ -524,10 +714,23 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
     if not host or record is None:
         cli.say(f"EXECUTION REFUSED: unknown request_id {request} (no execution host to read the run for)")
         raise cli.Exit(1)
+    # The revision: read off the checkout on the execution host, where the run ran, or the one
+    # named; either must be a commit of the request's repository (ludics-lite#561).
+    source, what = REPORTED, "--sha"
+    if observed_from:
+        head = observed_sha_of(cfg, record, host, observed_from)
+        if isinstance(head, Refusal):
+            return concluded(head)
+        if sha and sha != head:
+            cli.say(f"EXECUTION REFUSED: --sha {sha} is not HEAD {head} of {observed_from} on {host}; give one of them")
+            raise cli.Exit(1)
+        sha, source, what = head, f"read as HEAD of {observed_from} on {host}", "observed_sha"
+    if record.get("state") != "concluded":
+        fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), what, sha, gh_timeout(cfg)))
     # Without --checkout the record's own checkout is restated, or the placeholder when it has none
     # -- always spelled out in the payload, so a retry of a conclusion whose answer was lost
     # composes the same payload and meets the registry's identical-retry rule.
-    checkout = values.get("--checkout", "")
+    checkout = values.get("--checkout", "") or observed_from
     if not checkout:
         recorded = record.get("remote_checkout")
         checkout = "" if recorded is None or recorded is False else jq_text(recorded)
@@ -536,7 +739,7 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
     box = values.get("--box", "") or host
     return concluded(
         conclude_from_bg_run(
-            cfg, run_dir, request, box, host, sha, checkout, values.get("--evidence", ""), bgrun
+            cfg, run_dir, request, box, host, sha, checkout, values.get("--evidence", ""), bgrun, source
         )
     )
 
@@ -623,17 +826,21 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             elif mode == "--from-bg-run":
                 payload = from_bg_run_payload(cfg, args)
             else:
-                payload = read_payload(action, args)
-                check_identity(cfg)
+                payload = conclude_payload(cfg, args)
         case "reserve" | "run" | "dispatch" | "record" | "reconcile":
             payload = read_payload(action, args)
             check_identity(cfg)
+            if action in ("dispatch", "record", "reconcile"):
+                payload = checked_evidence(cfg, payload, "", action)
+            else:
+                checked_request(cfg, payload, action)
         case "window":
             # THE MEASUREMENT WINDOW (ludics-lite#481): the box is named apart from the payload so
             # the call says which box's standing reservations it suspends, and the registry refuses
             # a payload measuring on any other.
             payload = window_payload(args)
             check_identity(cfg)
+            checked_request(cfg, payload, action)
         case _:
             die(USAGE)
     source = registry_source()

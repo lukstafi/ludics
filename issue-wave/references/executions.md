@@ -314,6 +314,19 @@ must exist before launch. For example `reserve.json`:
 }
 ```
 
+`requested_revision` is free text: a pushed ref (`origin/main`), an exact SHA, or a SHA with a note
+(`<sha> plus working diff`). Each whitespace-separated word of it made only of hex digits, seven or
+more, is read as a commit and must be the full 40-hex SHA of a commit GitHub has in `repository`
+(ludics-lite#561): an abbreviation is refused before GitHub is asked, and a SHA GitHub answers `No
+commit found` for is refused naming it and the repository. A ref or prose is not read. Every commit
+a payload names is checked this way, near side, before the anchor is asked, with this box's `gh`
+(`gh api repos/<repository>/commits/<sha>`, bounded by `FLEET_GH_TIMEOUT`); a GitHub that does not
+answer (network, 5xx, rate limit, credentials, a 404 that may be a private repository the token
+cannot see) is `EXECUTION UNVERIFIED github.com: ...`, exit 4, and nothing is recorded. A retry
+whose first call landed with its answer lost (a reservation under an existing request id, a
+conclusion of a concluded record) is not checked again: the registry's own retry rule answers it.
+The boundary is `lib/ludics/fleetworker/revision.py`'s header.
+
 Run `fleet-worker.sh execution reserve <absolute-reserve.json>`, or - the usual shape -
 `fleet-worker.sh execution run <absolute-reserve.json>`, which reserves and dispatches under one
 lock and leaves the record `launching` (the payload may add `evidence` for the dispatch step).
@@ -392,6 +405,20 @@ Once runner evidence establishes completion and no process remains, `execution c
 }
 ```
 
+An `observed_sha` in a `dispatch`, `record`, `reconcile` or `conclude` payload must be a commit GitHub has in
+the request's `repository` (ludics-lite#561: two standing conclusions in one wave recorded the right
+prefix with a wrong tail, and a concluded record is immutable). A SHA GitHub does not have, or a
+SHA-256 ID (GitHub hosts no SHA-256 repository), is refused before the anchor is asked. Rather than copy a SHA by hand, `execution
+conclude <payload.json> --observed-from <checkout>` reads `git rev-parse HEAD` of that absolute
+checkout on the reservation's execution host and records it as `observed_sha` (and as
+`remote_checkout` when the payload names none), appending where it was read to the evidence; a
+payload `observed_sha` that is not that HEAD is refused naming both. The SHA it reads is checked on
+GitHub like any other, since the checkout named may be another repository's. Use it only while the
+checkout's HEAD is still the revision that ran. A conclusion that names no `observed_sha` inherits
+the record's, which is checked too (a record written before this check may hold a mistyped one). A retry of a conclusion that landed
+with its answer lost reuses the SHA the record holds rather than the checkout's HEAD now, so it is
+still the registry's harmless identical retry after the worktree has moved on or gone.
+
 When the run went through OCANNL's `tools/test-run.sh` (or any runner leaving `exit`, `log`,
 `wt` and `cmd` under a run directory), `fleet-worker.sh execution conclude --from-run <run-dir>
 --request <id> --sha <sha> [--box <execution host>] [--evidence <text>]` composes that payload
@@ -404,7 +431,9 @@ and a nonempty `dirty` is refused with its path count, since a run over uncommit
 evidence for no commit (conclude one deliberately with a JSON payload whose evidence says so).
 A record with neither (an older run, or no checkout) concludes on `--sha` from the worker's
 result line and says so in the evidence; one file without the other is malformed and refused.
-A checkout whose head has moved on since is noted in the evidence. It
+A checkout whose head has moved on since is noted in the evidence. `--sha` is also checked on
+GitHub in the request's repository, as every revision is (a box holds several repositories' runs,
+and the checkout containing a SHA says nothing about which repository it is). It
 refuses a record without a verdict and a run the checkout's own `tools/test-run.sh status` does
 not call finished. The run directory is read on the reservation's execution host, resolved from
 the registry when `--box` is omitted; the conclusion names the box it read, and the registry
@@ -413,7 +442,10 @@ refuses evidence read on any box but the reserved one.
 When the run blocked under `bg-run.sh` instead (a `tools/machine-verify.sh` leg, a measurement
 script: eleven hand-written conclusions in the 2026-09-25 wave, ludics-lite#405),
 `fleet-worker.sh execution conclude --from-bg-run <run-dir> --request <id> --sha <sha> [--box
-<box>] [--checkout <text>] [--evidence <text>]` composes the payload from the directory. The
+<box>] [--checkout <text>] [--evidence <text>]` composes the payload from the directory. Its `--sha`
+must be a commit GitHub has in the request's repository; `--observed-from <checkout>` in its place
+reads the checkout's HEAD on the execution host instead (and names that checkout unless `--checkout`
+does). The
 verdict comes from bg-run.sh's own `wait <dir> --within 0`, so `refused` is read before `rc` as
 its header requires, plus the runner's `exit:` sentinel when the log has one (a whole line `exit:
 N` or `<name>: exit: N`, the last one winning; OCANNL's `test-run.sh` and `machine-verify.sh`
@@ -456,7 +488,8 @@ request id `<wave>-<issue>-<host>-iterate`, `"standing": true`, purpose naming t
 aliases and `-j` width) and names it in the brief; the worker then runs those batches through
 the project runner without asking, blocks on each inside its turn, and reports every run
 directory. The reservation is concluded at hand-back with `conclude --from-run` on the last
-batch's record. Measurement, cross-box legs and full suites still go through a request.
+batch's record, or, with none to read, a JSON conclusion with `--observed-from <the worker's
+worktree>` rather than a SHA copied from the report. Measurement, cross-box legs and full suites still go through a request.
 
 `"standing": true` is what exempts the record from the box's slot count, and it is explicit
 rather than read off the `-iterate` id convention: a mistyped id must not silently escape the

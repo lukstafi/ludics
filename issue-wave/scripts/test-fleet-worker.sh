@@ -46,6 +46,7 @@ SECTIONS=(
   "halt"
   "execution run and conclude --from-run"
   "execution conclude --from-bg-run"
+  "execution revisions resolve"
   "prs (the supervision read)"
   "refresh (execution-only boxes)"
   "execution slot"
@@ -483,12 +484,30 @@ SHIMEOF
 # was given, GH_TOKEN, as gh does), `other` one that answers as another account, and `slowcheck`
 # one GitHub never answers for.
 # SHIM_GH_SLOW=<s> delays every API answer; SHIM_GH_LOGIN=<login> answers as that account.
+# It also answers `execution`'s commit check (ludics-lite#561), `gh api --hostname github.com
+# repos/<owner>/<name>/commits/<sha> -q .sha`, as GitHub does: the SHA back, unless it is listed in
+# SHIM_GH_NO_COMMIT (422: no commit), the repository is SHIM_GH_NO_REPO (404), SHIM_GH=down (no
+# answer), `spam` (GitHub's other 422) or `hang` (a call that never returns, from a child process as
+# a stalled connection would). Each such call appends its path to $SHIM_GH_COMMIT_LOG.
 # `auth token -h github.com` answers gh's stored token (ludics-lite#567): SHIM_GH_STORED's value,
 # or with none set gh's "no oauth token" (exit 1); `hang` never returns. Asked with GH_TOKEN or
 # GITHUB_TOKEN in its environment, even empty, it fails loudly: gh would answer that variable, so
 # the preflight must ask with both removed.
 cat > "$TMP/bin/gh" <<'SHIMEOF'
 #!/usr/bin/env bash
+if [ "$#" -eq 6 ] && [ "$1 $2 $3 $5 $6" = "api --hostname github.com -q .sha" ]; then
+  case "$4" in repos/*/*/commits/*) ;; *) echo "gh shim: unexpected call: $*" >&2; exit 2 ;; esac
+  printf '%s\n' "$4" >> "$SHIM_GH_COMMIT_LOG"
+  sha=${4##*/}; repo=${4#repos/}; repo=${repo%/commits/*}
+  [ "${SHIM_GH:-}" != down ] || { printf 'error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n' >&2; exit 1; }
+  [ "${SHIM_GH:-}" != spam ] || { echo "gh: Validation Failed: endpoint has been spammed (HTTP 422)" >&2; exit 1; }
+  [ "${SHIM_GH:-}" != hang ] || sleep 30
+  [ "$repo" != "${SHIM_GH_NO_REPO:-}" ] || { printf '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+  case " ${SHIM_GH_NO_COMMIT:-} " in
+    *" $sha "*) printf '{"message":"No commit found for SHA: %s","status":"422"}' "$sha"; echo "gh: No commit found for SHA: $sha (HTTP 422)" >&2; exit 1 ;;
+  esac
+  printf '%s\n' "$sha"; exit 0
+fi
 if [ "$*" = "auth git-credential get" ]; then
   cat > /dev/null
   case "${SHIM_GH_CRED:-}" in none) exit 1 ;; hang) sleep 30 ;; esac
@@ -516,6 +535,7 @@ esac
 echo "${SHIM_GH_LOGIN:-shim-user}"
 SHIMEOF
 chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/tmux" "$TMP/bin/ssh" "$TMP/bin/gh"
+export SHIM_GH_COMMIT_LOG="$TMP/gh-commits.log"
 # Through GIT_CONFIG_GLOBAL, not ~/.gitconfig: some sections preflight under a HOME of their own.
 export GIT_CONFIG_GLOBAL="$TMP/gitconfig"
 git config --global --add credential.https://github.com.helper ""
@@ -1958,12 +1978,19 @@ expect "a revision the checkout does not contain is refused" 1 "does not contain
 expect "evidence read on a box other than the reserved one is refused by the registry" 1 "evidence from testbox cannot conclude an assignment reserved on other" -- \
   "${FWX[@]}" execution conclude --from-run "$run1" --request run-other --sha "$ran" --box testbox
 "$FW" execution list | grep -c '"state": "launching"' | grep -qx 2 && ok "every refusal left the assignments dispatched, not concluded" || ko "a refusal changed a record"
+: > "$SHIM_GH_COMMIT_LOG"
 expect "a passed run concludes with its verdict, log, checkout, handle and revision, on the reserved box by default" 0 '"verdict": "pass"' -- "${FWX[@]}" execution conclude --from-run "$run1" --request run-a --sha "$ran"
+grep -qx "repos/o/r/commits/$ran" "$SHIM_GH_COMMIT_LOG" && ok "...its --sha checked on GitHub in the request's repository (ludics-lite#561)" ||
+  ko "--from-run's --sha was not checked on GitHub: $(cat "$SHIM_GH_COMMIT_LOG")"
 for want in "\"observed_sha\": \"$ran\"" "\"remote_checkout\": \"$wt\"" "\"handle\": \"test-run:20260915T201414Z-1\"" "\"log\": \"$run1/log\"" "exit 0 published"; do
   grep -Fq -- "$want" <<<"$out" && ok "...recorded $want" || ko "missing $want in $out"
 done
 jq -e '.history[-1].data | has("execution_host") | not' <<<"$out" >/dev/null && ok "...and the box check left no field behind" || ko "the box bound to the evidence leaked into the record: $out"
 grep -Fq "the record has no head or dirty" <<<"$out" && ok "...and says the record named no revision of its own" || ko "a record without head/dirty concluded silently: $out"
+"${FWX[@]}" execution run "$(reqjson run-gh)" >/dev/null 2>&1 || ko "could not reserve run-gh (setup)"
+expect "--from-run refuses a --sha its checkout holds but the request's repository does not (another repository's run)" 1 "EXECUTION REFUSED: --sha $ran is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$ran" "${FWX[@]}" execution conclude --from-run "$run1" --request run-gh --sha "$ran" --box testbox
+fixture_done run-gh
 run_conclude() { local id="$1" dir="$2"; shift 2; "${FWX[@]}" execution run "$(reqjson "$id")" >/dev/null && "${FWX[@]}" execution conclude --from-run "$dir" --request "$id" --sha "$ran" "$@"; }
 expect "a capped run concludes as timeout" 0 '"verdict": "timeout"' -- run_conclude run-b "$runs/20260915T201414Z-3"
 expect "a red run concludes as fail, with the given evidence" 0 '"evidence": "sweep red on scans; the record has no head or dirty' -- run_conclude run-c "$runs/20260915T201414Z-4" --evidence "sweep red on scans"
@@ -2148,6 +2175,152 @@ expect "...nor does one whose anchor does not answer" 4 "EXECUTION UNREACHABLE f
   env FLEET_ANCHOR=far-anchor "${FWB[@]}" execution conclude --from-bg-run "$ok_dir" --request bg-live --sha "$sha"
 "$FW" execution list | jq -e '[.[] | select(.request_id == "bg-live") | .state] == ["launching"]' >/dev/null && ok "every refusal left the assignment dispatched" || ko "a refusal changed bg-live"
 fixture_done bg-live
+}
+
+section "execution revisions resolve" && {
+need_lease
+# ludics-lite#561: two standing conclusions of the 2026-10-05 wave recorded an observed_sha with the
+# right prefix and a wrong tail, and records are immutable. Every commit a payload names is checked
+# in the request's repository on GitHub (the gh shim answers for it) before the anchor is asked, and
+# `--observed-from <checkout>` reads the checkout's HEAD instead of a SHA copied by hand.
+FWR=(env FLEET_BOXES="testbox other far-box" "$FW")
+obs="$TMP/obs wt"; git clone -q "$TMP/proj.git" "$obs" && git -C "$obs" commit -q --allow-empty -m observed
+head=$(git -C "$obs" rev-parse HEAD)
+good=$(printf 'c%.0s' $(seq 40)); typo="${good%?}d"
+rv_req() { # <id> <requested_revision> [host] -> a reservation payload file
+  jq -n --arg id "$1" --arg rev "$2" --arg host "${3:-testbox}" '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#561",
+    purpose:"revision fixture", agent_host:"testbox", execution_host:$host, repository:"o/r", requested_revision:$rev, kind:"correctness"}' > "$TMP/$1.json"
+  printf '%s' "$TMP/$1.json"
+}
+rv_done() { # <id> <observed_sha or -> -> a pass conclusion payload file
+  jq -n --arg id "$1" --arg sha "$2" '{request_id:$id, verdict:"pass", log:"/logs/x", evidence:"fixture run", handle:"fixture",
+    remote_checkout:"/w/x"} + (if $sha == "-" then {} else {observed_sha:$sha} end)' > "$TMP/$1-done.json"
+  printf '%s' "$TMP/$1-done.json"
+}
+state_of() { "$FW" execution list | jq -r --arg id "$1" '[.[] | select(.request_id == $id) | .state] | join(",")'; }
+# Reserve: a SHA-shaped word of requested_revision must be a full SHA GitHub has; a ref is not read.
+: > "$SHIM_GH_COMMIT_LOG"
+expect "a requested_revision whose SHA resolves to no commit is refused, naming it and the repository" 1 \
+  "EXECUTION REFUSED: requested_revision $typo is no commit of o/r (checked on GitHub: gh: No commit found" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution run "$(rv_req rv-typo "$typo")"
+[ -z "$(state_of rv-typo)" ] && ok "...and nothing was reserved" || ko "a refused request left a record: $(state_of rv-typo)"
+expect "an abbreviated requested_revision is refused before GitHub is asked" 1 "requested_revision names f8e0721f0, which is not a full commit ID" -- \
+  "${FWR[@]}" execution reserve "$(rv_req rv-short f8e0721f0)"
+grep -q f8e0721f0 "$SHIM_GH_COMMIT_LOG" && ko "an abbreviation was sent to GitHub" || ok "...without a GitHub call"
+: > "$SHIM_GH_COMMIT_LOG"
+# `run` dispatches a record still reserved: one reserved before this check existed (staged here by
+# reserving while GitHub still answers for the SHA) is checked then, not waved through as a retry.
+"${FWR[@]}" execution reserve "$(rv_req rv-old "$typo")" >/dev/null 2>&1 || ko "could not reserve rv-old (setup)"
+expect "run of a reservation still reserved checks its requested_revision" 1 "requested_revision $typo is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution run "$(rv_req rv-old "$typo")"
+[ "$(state_of rv-old)" = reserved ] && ok "...and does not dispatch it" || ko "rv-old was dispatched: $(state_of rv-old)"
+fixture_done rv-old
+expect "a SHA with a note is read word by word, and its SHA checked" 0 '"state": "launching"' -- "${FWR[@]}" execution run "$(rv_req rv-note "$good plus working diff")"
+grep -qx "repos/o/r/commits/$good" "$SHIM_GH_COMMIT_LOG" && ok "...in the request's repository" || ko "wrong or no GitHub call: $(cat "$SHIM_GH_COMMIT_LOG")"
+fixture_done rv-note
+: > "$SHIM_GH_COMMIT_LOG"
+expect "a ref is a requested_revision the check does not read" 0 '"state": "launching"' -- "${FWR[@]}" execution run "$(rv_req rv-ref origin/main)"
+[ -s "$SHIM_GH_COMMIT_LOG" ] && ko "a ref was sent to GitHub: $(cat "$SHIM_GH_COMMIT_LOG")" || ok "...and asks GitHub nothing"
+# Conclude, record: an observed_sha GitHub does not have is refused; a GitHub that cannot answer is
+# a distinct exit 4; every refusal leaves the assignment dispatched.
+expect "a conclusion whose observed_sha resolves to no commit is refused, naming the SHA and where it was checked" 1 \
+  "EXECUTION REFUSED: observed_sha $typo is no commit of o/r (checked on GitHub" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution conclude "$(rv_done rv-ref "$typo")"
+expect "a record whose observed_sha resolves to no commit is refused too" 1 "observed_sha $typo is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution record "$(jq -n --arg sha "$typo" '{request_id:"rv-ref", state:"running", evidence:"fixture", observed_sha:$sha}' > "$TMP/rv-rec.json"; printf '%s' "$TMP/rv-rec.json")"
+expect "a GitHub that does not answer is UNVERIFIED (exit 4), never a silent accept" 4 "^EXECUTION UNVERIFIED github.com: observed_sha $good could not be checked in o/r (check your internet connection" -- \
+  env SHIM_GH=down "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
+expect "GitHub's other 422 (an endpoint it calls spammed) is UNVERIFIED, not a missing commit" 4 "^EXECUTION UNVERIFIED github.com: observed_sha $good could not be checked in o/r (gh: Validation Failed" -- \
+  env SHIM_GH=spam "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
+SECONDS=0
+expect "a GitHub call that never returns is cut at FLEET_GH_TIMEOUT: UNVERIFIED" 4 "could not be checked in o/r (gh: no answer in 1s)" -- \
+  env SHIM_GH=hang FLEET_GH_TIMEOUT=1 "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
+[ "$SECONDS" -lt 25 ] && ok "...in ${SECONDS}s, its child process killed with it" || ko "the bound did not hold: ${SECONDS}s"
+expect "a FLEET_GH_TIMEOUT that is not a number of seconds is a usage error" 2 "FLEET_GH_TIMEOUT must be a positive whole number" -- \
+  env FLEET_GH_TIMEOUT=soon "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
+expect "a 404 is UNVERIFIED: no repository, or a private one the token cannot see" 4 "Not Found (HTTP 404): no repository o/r, or one this box's gh token cannot see" -- \
+  env SHIM_GH_NO_REPO=o/r "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
+expect "a SHA-256 observed_sha is refused: GitHub cannot hold one" 1 "is a SHA-256 object ID" -- \
+  "${FWR[@]}" execution conclude "$(rv_done rv-ref "$(printf 'e%.0s' $(seq 64))")"
+[ "$(state_of rv-ref)" = launching ] && ok "every refusal left the assignment dispatched" || ko "a refusal changed rv-ref: $(state_of rv-ref)"
+# --observed-from: the checkout's HEAD, read on the execution host, is the observed_sha.
+expect "--observed-from must name an absolute checkout" 2 "must be absolute" -- "${FWR[@]}" execution conclude "$(rv_done rv-ref -)" --observed-from "obs wt"
+expect "--observed-from refuses a payload SHA that is not the checkout's HEAD, naming both" 1 "observed_sha $good is not HEAD $head of $obs on testbox" -- \
+  "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")" --observed-from "$obs"
+expect "--observed-from refuses a HEAD GitHub does not have in the repository (another repository's checkout)" 1 "observed_sha $head is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$head" "${FWR[@]}" execution conclude "$(rv_done rv-ref -)" --observed-from "$obs"
+expect "--observed-from refuses a directory that is no checkout" 1 "OBSERVED-FROM REFUSED: cannot read HEAD of $TMP on testbox" -- \
+  "${FWR[@]}" execution conclude "$(rv_done rv-ref -)" --observed-from "$TMP"
+: > "$SHIM_GH_COMMIT_LOG"
+jq -n '{request_id:"rv-ref", verdict:"pass", log:"/logs/x", evidence:"fixture run", handle:"fixture"}' > "$TMP/rv-obs.json"
+expect "--observed-from records the checkout's HEAD as observed_sha" 0 "\"observed_sha\": \"$head\"" -- \
+  "${FWR[@]}" execution conclude "$TMP/rv-obs.json" --observed-from "$obs"
+grep -Fq "\"remote_checkout\": \"$obs\"" <<<"$out" && grep -Fq "fixture run; observed_sha read as HEAD of $obs on testbox" <<<"$out" &&
+  ok "...with the checkout it read and the provenance in the evidence" || ko "checkout or evidence missing: $out"
+grep -qx "repos/o/r/commits/$head" "$SHIM_GH_COMMIT_LOG" && ok "...and checks that HEAD on GitHub, in the request's repository" ||
+  ko "--observed-from's HEAD was not checked: $(cat "$SHIM_GH_COMMIT_LOG")"
+# The answer lost, the retry comes after the worker moved its checkout on: the recorded SHA stands.
+git -C "$obs" commit -q --allow-empty -m "moved on"
+expect "...and a retry once the checkout has moved on composes the same payload, the registry's harmless retry" 0 '"state": "concluded"' -- \
+  "${FWR[@]}" execution conclude "$TMP/rv-obs.json" --observed-from "$obs"
+grep -Fq "\"observed_sha\": \"$head\"" <<<"$out" && ok "...at the SHA the conclusion recorded" || ko "the retry recorded another SHA: $out"
+git -C "$obs" reset -q --hard "$head"
+# A reservation that landed with its answer lost is retried while GitHub is down: the registry holds
+# the request id, so GitHub is not asked and the registry answers (the identical request returned).
+"${FWR[@]}" execution reserve "$(rv_req rv-rsv "$good")" >/dev/null 2>&1 || ko "could not reserve rv-rsv (setup)"
+expect "a retry of a landed reservation naming a SHA is the registry's idempotent answer, whatever GitHub says" 0 '"state": "reserved"' -- \
+  env SHIM_GH=down "${FWR[@]}" execution reserve "$(rv_req rv-rsv "$good")"
+expect "...and a changed request under that id is still the registry's refusal" 1 "already names a different assignment" -- \
+  env SHIM_GH=down "${FWR[@]}" execution reserve "$(rv_req rv-rsv "$good plus edits")"
+# Dispatch carries evidence too, and an observed_sha it records is inherited by the conclusion.
+jq -n --arg sha "$typo" '{request_id:"rv-rsv", evidence:"about to launch", observed_sha:$sha}' > "$TMP/rv-dispatch.json"
+expect "a dispatch whose observed_sha resolves to no commit is refused" 1 "observed_sha $typo is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution dispatch "$TMP/rv-dispatch.json"
+[ "$(state_of rv-rsv)" = reserved ] && ok "...leaving it reserved" || ko "the refused dispatch changed rv-rsv: $(state_of rv-rsv)"
+fixture_done rv-rsv
+# A conclusion naming no observed_sha inherits the record's, which a record written before this
+# check may hold mistyped (staged here by recording it while GitHub still answers for it).
+"${FWR[@]}" execution run "$(rv_req rv-inh origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-inh (setup)"
+jq -n --arg sha "$typo" '{request_id:"rv-inh", state:"running", evidence:"before the check", observed_sha:$sha}' > "$TMP/rv-inh-rec.json"
+"${FWR[@]}" execution record "$TMP/rv-inh-rec.json" >/dev/null || ko "could not record rv-inh's SHA (setup)"
+expect "a conclusion inheriting a record's observed_sha that resolves to no commit is refused" 1 "inherited observed_sha $typo is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution conclude "$(rv_done rv-inh -)"
+[ "$(state_of rv-inh)" = running ] && ok "...leaving it running" || ko "the refusal changed rv-inh: $(state_of rv-inh)"
+fixture_done rv-inh
+# A conclusion that landed with its answer lost is retried while GitHub is down: the record is
+# concluded, so GitHub is not asked again and the registry takes the identical retry.
+"${FWR[@]}" execution run "$(rv_req rv-gh origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-gh (setup)"
+"${FWR[@]}" execution conclude "$(rv_done rv-gh "$good")" >/dev/null || ko "could not conclude rv-gh (setup)"
+expect "a retry of a landed conclusion is the registry's harmless retry, whatever GitHub says" 0 '"state": "concluded"' -- \
+  env SHIM_GH=down "${FWR[@]}" execution conclude "$(rv_done rv-gh "$good")"
+"${FWR[@]}" execution run "$(rv_req rv-far origin/main far-box)" >/dev/null 2>&1 || ko "could not reserve rv-far (setup)"
+expect "--observed-from on an execution host that does not answer concludes nothing (exit 4)" 4 "^OBSERVED-FROM UNREACHABLE far-box: nothing concluded$" -- \
+  "${FWR[@]}" execution conclude "$(rv_done rv-far -)" --observed-from "$obs"
+fixture_done rv-far
+# --from-bg-run: --sha is checked on GitHub, or --observed-from replaces it.
+BG="$TMP/dispatcher/issue-wave/scripts/bg-run.sh"
+bgd="$TMP/bg runs/rv-pass"; bash "$BG" start "$bgd" -- true >/dev/null 2>&1
+"${FWR[@]}" execution run "$(rv_req rv-bg origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-bg (setup)"
+expect "--from-bg-run refuses a --sha that resolves to no commit" 1 "EXECUTION REFUSED: --sha $typo is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --sha "$typo"
+expect "--from-bg-run --observed-from refuses a --sha that is not HEAD" 1 "--sha $good is not HEAD $head of $obs on testbox" -- \
+  "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --sha "$good" --observed-from "$obs"
+[ "$(state_of rv-bg)" = launching ] && ok "...each refusal leaving it dispatched" || ko "a refusal changed rv-bg: $(state_of rv-bg)"
+expect "--from-bg-run --observed-from concludes at the checkout's HEAD" 0 "\"observed_sha\": \"$head\"" -- \
+  "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --observed-from "$obs"
+grep -Fq "\"remote_checkout\": \"$obs\"" <<<"$out" && grep -Fq "revision $head read as HEAD of $obs on testbox" <<<"$out" &&
+  ok "...naming the checkout read, in the field and the evidence" || ko "checkout or evidence missing: $out"
+git -C "$obs" commit -q --allow-empty -m "moved on"
+expect "...and a retry once the checkout has moved on is the registry's harmless retry" 0 "\"observed_sha\": \"$head\"" -- \
+  "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --observed-from "$obs"
+git -C "$obs" reset -q --hard "$head"
+"${FWR[@]}" execution run "$(rv_req rv-bg3 origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-bg3 (setup)"
+"${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg3 --sha "$good" >/dev/null || ko "could not conclude rv-bg3 (setup)"
+expect "--from-bg-run: a retry of a landed --sha conclusion asks GitHub nothing" 0 '"state": "concluded"' -- \
+  env SHIM_GH=down "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg3 --sha "$good"
+"${FWR[@]}" execution run "$(rv_req rv-bg2 origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-bg2 (setup)"
+expect "--from-bg-run --observed-from keeps the provenance beside an --evidence of its own" 0 "\"evidence\": \"leg green; revision $head read as HEAD of $obs on testbox\"" -- \
+  "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg2 --observed-from "$obs" --evidence "leg green"
 }
 
 section "prs (the supervision read)" && {

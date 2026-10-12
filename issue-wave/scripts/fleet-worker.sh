@@ -125,6 +125,9 @@
 #                          # running batches), and an `execution slot` inside it runs under the
 #                          # hold instead of refusing; --deadline as for `slot`
 #   fleet-worker.sh execution reserve|dispatch|record|reconcile|conclude <json-file>
+#                          # every commit a payload names must exist on GitHub in its repository
+#   fleet-worker.sh execution conclude <json-file> --observed-from <checkout>   # observed_sha is
+#                          # that checkout's HEAD, read on the execution host
 #   fleet-worker.sh execution run <json-file>          # reserve + dispatch in one step
 #   fleet-worker.sh execution window <box> <json-file> # `run` for a measurement that suspends the
 #                          # box's standing reservations, restored when it concludes
@@ -132,7 +135,7 @@
 #                          [--box <box>] [--evidence <text>]   # verdict, log and checkout read from a
 #                                                     # test-run.sh record on the reserved box
 #   fleet-worker.sh execution conclude --from-bg-run <run-dir> --request <id> --sha <sha>
-#                          [--box <box>] [--checkout <text>] [--evidence <text>]   # verdict and log
+#                          | --observed-from <checkout> [--box <box>] [--checkout <text>] [--evidence <text>]   # verdict and log
 #                          # read from a bg-run.sh directory (the mapping: lib/ludics/fleetworker/execution.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
 #                          # CI state and head age; flags <n> (5) or more rounds (read-only)
@@ -218,7 +221,8 @@
 #   FLEET_FETCH_TIMEOUT: wall-clock bound on skills-checkout and project fetches; 300.
 #   FLEET_GH_TIMEOUT: wall-clock bound on each of the GitHub probe's API calls, `gh api user` and
 #     the try of the credential git returns (git's helper gets twice that plus 5 s, the try
-#     inside it included), in the preflight's session and in a tmux session; 30.
+#     inside it included), in the preflight's session and in a tmux session, and on `execution`'s
+#     check that a commit a payload names exists on GitHub; 30.
 #   FLEET_REFRESH_TIMEOUT: wall-clock bound on `refresh`'s skills fetch (and so on the refresh
 #     after a cross-box `execution run`/`dispatch`); 30.
 #   FLEET_DELIVERY_WAIT: seconds an appending `unstick` waits for the CLI to echo the message; 20.
