@@ -18,6 +18,15 @@ a stable local ID (for example `post-1-task-2`), repository, source worker/PR, g
 self-contained prompt and acceptance criteria. Preserve completed, issued and discarded
 dispositions across iterations and recovery so the loop does not rediscover the same work.
 
+The prompt is the spec itself, pasted from the draft with the source lines it acts on quoted,
+never a pointer to a draft section: reaching a one-paragraph spec that way took workers three or
+four file reads (2026-10-06). Check its premise against the tree before dispatch. A chip that
+names a golden, a duplicate or a code path quotes the line it expects to change and says whether
+that line exists today or only after the change (one worker hunted for a duplicate record that
+only the change would create; two chips rested on a vectorized loop and golden lines the tree
+did not have). A cause the source never reproduced is marked suspected, and a quoted word says
+whether it is a name in the code or a description.
+
 ## Run another wave
 
 Apply the regular scope, decision gate, launch, brief, supervision, integration and close-out

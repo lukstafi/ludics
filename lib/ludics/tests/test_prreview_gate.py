@@ -22,7 +22,7 @@ from ludics.prreview.core import Config, GhSession, Json
 from ludics.prreview.drift import compare_file_set, compare_hunks
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
 from ludics.prreview.clock import FuncClock
-from ludics.prreview.gate import Gate, advisory_parse, load_gate_config
+from ludics.prreview.gate import Gate, advisory_parse, load_gate_config, running_list
 
 
 def grep_refuses_in(locale: str, pattern: str) -> bool:
@@ -281,11 +281,13 @@ class FakeClock:
         self.t += seconds
 
 
-def make_gate(gh: FakeGh, clock: FakeClock, **env: str) -> Gate:
+def make_gate(gh: FakeGh, clock: FakeClock, select: str = "", **env: str) -> Gate:
     config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0, api_attempts=1, api_backoff=0)
     session = GhSession(config, run=gh, sleep=lambda _s: None)
     gate_config = load_gate_config({"SHIP_PR_CHECKS_INTERVAL": "60", **env})
-    return Gate(session, "o/r", gate_config, FuncClock(time=clock.now, sleep=clock.sleep))
+    gate = Gate(session, "o/r", gate_config, FuncClock(time=clock.now, sleep=clock.sleep))
+    gate.select = select
+    return gate
 
 
 class GateLoop(unittest.TestCase):
@@ -343,6 +345,73 @@ class GateLoop(unittest.TestCase):
         gate = make_gate(gh, FakeClock())
         self.assertEqual(gate.check("7", 600, waive=True), 1)
         self.assertEqual((gate.verdict, gate.waived), ("red", {"check:1/ubuntu"}))
+
+
+class Selection(unittest.TestCase):
+    """``checks --check <ERE>`` (ludics-lite#569): the selected checks' fold is the verdict."""
+
+    def setUp(self) -> None:
+        self.out = io.StringIO()
+        stack = contextlib.ExitStack()
+        stack.enter_context(contextlib.redirect_stdout(self.out))
+        stack.enter_context(contextlib.redirect_stderr(self.out))
+        self.addCleanup(stack.close)
+
+    def head(self, gh: FakeGh) -> None:
+        gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+        gh.on("pulls/7", out="h1\tb1\ttopic")
+
+    def test_a_selected_fast_check_settles_while_a_slow_one_runs(self) -> None:
+        gh = FakeGh()
+        self.head(gh)
+        gh.on("check-runs", out=["fast\tpending\tu\t1\nslow\tpending\tv\t1",
+                                 "fast\tsuccess\tu\t1\nslow\tpending\tv\t1"])
+        gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t1")
+        gh.on("actions/runs/100/jobs", out="")
+        clock = FakeClock()
+        gate = make_gate(gh, clock, select="^fast$")
+        self.assertEqual((gate.check("7", 600), gate.verdict, gate.check_total), (0, "green", 1))
+        self.assertEqual(clock.sleeps, [60], "one interval, then the fast check's verdict")
+        self.assertFalse(any("actions/runs" in " ".join(c) for c in gh.calls), "matched checks need no run read")
+        self.assertNotIn("slow", self.out.getvalue())
+
+    def test_the_heartbeat_names_the_running_checks(self) -> None:
+        gh = FakeGh()
+        self.head(gh)
+        gh.on("check-runs", out=["fast\tsuccess\tu\t1\nbuild (macos-latest)\tpending\tv\t1"])
+        gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t1")
+        gh.on("actions/runs/100/jobs", out="")
+        gate = make_gate(gh, FakeClock(), SHIP_PR_CHECKS_HEARTBEAT="0")
+        self.assertEqual(gate.check("7", 120), 4)
+        self.assertIn("(1 check(s) running: build (macos-latest))", self.out.getvalue())
+
+    def test_matching_nothing_holds_while_a_run_is_in_flight_and_refuses_after(self) -> None:
+        for status, concl, want, verdict in (("in_progress", "pending", 4, "unjudged"),
+                                             ("completed", "success", 2, "unknown"),
+                                             ("completed", "failure", 2, "unknown"),
+                                             ("completed", "cancelled", 2, "unknown")):
+            gh = FakeGh()
+            self.head(gh)
+            gh.on("check-runs", out="lint\tsuccess\tu\t1")
+            gh.on("actions/runs?head_sha=h1", out=f"2026-01-01T00:00:00Z\t100\t1\tpush\tci\t{status}\t{concl}\t1")
+            gh.on("actions/runs/100/jobs", out="lint\tfailure\t2026-01-01T00:00:00Z\t2026-01-01T00:01:00Z")
+            with self.subTest(status=status, concl=concl):
+                gate = make_gate(gh, FakeClock(), select="^torch")
+                self.assertEqual((gate.check("7", 0), gate.verdict), (want, verdict))
+
+    def test_nothing_is_advisory_under_a_selection(self) -> None:
+        gh = FakeGh()
+        self.head(gh)
+        gh.on("check-runs", out="claude\tfailure\tu\t1\nlint\tsuccess\tu\t1")
+        gate = make_gate(gh, FakeClock(), select="^claude$")
+        self.assertEqual((gate.check("7", 0), gate.verdict), (1, "red"))
+
+    def test_the_running_list_is_bounded(self) -> None:
+        self.assertEqual(running_list(["a"]), "a")
+        self.assertEqual(running_list(["a", "b", "c", "d", "e"]), "a, b, c (+2 more)")
+        long = running_list(["x" * 400])
+        self.assertEqual(len(long), 160)
+        self.assertTrue(long.endswith("…"))
 
 
 if __name__ == "__main__":

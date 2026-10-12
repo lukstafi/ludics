@@ -181,9 +181,12 @@
 #                                          # PR (heads the reviewer left comments on), against
 #                                          # SHIP_PR_ROUND_THRESHOLD; exit 1 past it; ends with a
 #                                          # `rounds: n=… threshold=…` trailer (see prreview/rounds.py)
-#   pr-review.sh checks <pr> [--wait]      # the BUILD signal on the head commit: green / red /
+#   pr-review.sh checks <pr> [--wait] [--check <ERE>]
+#                                          # the BUILD signal on the head commit: green / red /
 #                                          # no verdict yet / absent; ends with a
-#                                          # `checks: verdict=…` trailer (see prreview/rounds.py)
+#                                          # `checks: verdict=…` trailer (see prreview/rounds.py).
+#                                          # --check judges only the checks the ERE names
+#                                          # (see prreview/checks.py)
 #   pr-review.sh merge <pr> [--override "<why this red is unrelated>"] [--wait]
 #                           [--allow-no-verdict] [--require-green]
 #                                          # checks, then merge; refuses on an open review thread

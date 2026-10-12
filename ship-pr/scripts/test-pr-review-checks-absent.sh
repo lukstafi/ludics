@@ -440,6 +440,17 @@ run_gate() {
   GATE_RC="$rc"
 }
 
+# `checks` with the words a case gives it, verbatim: the --check cases (ludics-lite#569).
+run_checks() {
+  local capture rc
+  set +e
+  capture=$(cmd_checks 7 "$@" 2>&1)
+  rc=$?
+  set -e
+  GATE_OUTPUT="$capture"
+  GATE_RC="$rc"
+}
+
 # --- the cases --------------------------------------------------------------------------------
 
 # The issue itself: `checks --wait` armed seconds after a push, `gh run list` showing the run for
@@ -1318,6 +1329,111 @@ test_wait_ceiling_with_a_queued_run_is_no_verdict() {
   assert_not_contains "$GATE_OUTPUT" ": ABSENT" "the ceiling must not turn a queued run into absence"
 }
 
+# ludics-lite#569, the issue itself: a worker wanted the verdict of one ~2-minute job while a 45-minute
+# one ran beside it in the same workflow run. `--check <ERE>` judges the matching check alone, so
+# its verdict lands while the slow check, and the run around both, are still running -- green and
+# red alike. The same head without the selection holds the whole wait.
+test_a_selected_check_settles_while_a_slow_one_runs() {
+  local concl want verdict
+  for concl in success failure; do
+    reset_fixture
+    CHECK_RUNS_SEQ=(
+      "$(check_runs_json '[{"name":"torch-runner","conclusion":null,"html_url":"t"},
+                           {"name":"slow-suite","conclusion":null,"html_url":"s"}]')"
+      "$(check_runs_json "$(jq -cn --arg c "$concl" '[{name:"torch-runner", conclusion:$c, html_url:"t"},
+                           {name:"slow-suite", conclusion:null, html_url:"s"}]')")"
+    )
+    RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"in_progress","conclusion":null}]')")
+    run_checks --wait=30 --check '^torch-runner$'
+    if [ "$concl" = success ]; then want=0 verdict=green; else want=1 verdict=red; fi
+    assert_eq "$GATE_RC" "$want" "a $concl selected check is the verdict while the slow one runs"
+    assert_contains "$GATE_OUTPUT" "checks: verdict=$verdict" "the trailer carries the selection's verdict"
+    assert_contains "$GATE_OUTPUT" "(--check '^torch-runner\$')" "the headline names the selection"
+    assert_not_contains "$GATE_OUTPUT" "slow-suite" "an unselected check is not judged or listed"
+  done
+  reset_fixture
+  CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"torch-runner","conclusion":"success","html_url":"t"},
+                                       {"name":"slow-suite","conclusion":null,"html_url":"s"}]')")
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"in_progress","conclusion":null}]')")
+  run_checks --wait=2
+  assert_eq "$GATE_RC" 4 "without the selection the slow check holds the head"
+}
+
+# ludics-lite#569: an hour on "1 check(s) running" read as a stall. The heartbeat names the
+# check(s) it is still waiting on, a bounded list, and so does the no-verdict headline.
+test_the_progress_line_names_the_running_checks() {
+  reset_fixture
+  retune CHECKS_HEARTBEAT=0
+  CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"lint","conclusion":"success","html_url":"l"},
+                                       {"name":"build (macos-latest)","conclusion":null,"html_url":"m"}]')")
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"in_progress","conclusion":null}]')")
+  run_checks --wait=2
+  assert_eq "$GATE_RC" 4 "a check still running at the ceiling is no verdict"
+  assert_contains "$GATE_OUTPUT" "(1 check(s) running: build (macos-latest))" \
+    "the heartbeat names the running check"
+  assert_contains "$GATE_OUTPUT" "NO VERDICT YET — 1 check(s) still running: build (macos-latest)" \
+    "the no-verdict headline names it too"
+  reset_fixture
+  retune CHECKS_HEARTBEAT=0
+  CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"a","conclusion":null},{"name":"b","conclusion":null},
+                                       {"name":"c","conclusion":null},{"name":"d","conclusion":null},
+                                       {"name":"e","conclusion":null}]')")
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"in_progress","conclusion":null}]')")
+  run_checks --wait=2
+  assert_contains "$GATE_OUTPUT" "5 check(s) running: a, b, c (+2 more)" "the list is bounded"
+}
+
+# ludics-lite#569: a selection that matches nothing is a refusal, never green and never ABSENT --
+# once no matching check can still appear. While a run is in flight it may yet create one, so the
+# selection holds like any unstarted head.
+test_a_selection_matching_nothing_is_refused() {
+  reset_fixture
+  CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"lint","conclusion":"success","html_url":"l"}]')")
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"completed","conclusion":"success"}]')")
+  run_checks --check '^torch'
+  assert_eq "$GATE_RC" 2 "a finished head with no matching check refuses"
+  assert_contains "$GATE_OUTPUT" "REFUSING: no check run of" "the refusal says why"
+  assert_contains "$GATE_OUTPUT" "checks: verdict=unknown" "the trailer is unknown, never green"
+  # Review round 1, P2: a run that STOPPED is finished for a selection -- only a re-run creates
+  # checks for it -- so a selection matching nothing refuses rather than spending the wait.
+  reset_fixture
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"completed","conclusion":"cancelled"}]')")
+  run_checks --wait=30 --check '^torch'
+  assert_eq "$GATE_RC" 2 "a stopped run with no matching check refuses"
+  assert_contains "$GATE_OUTPUT" "re-run the workflow" "the refusal carries the run's reason"
+  assert_not_contains "$GATE_OUTPUT" "still waiting" "and spends none of the wait"
+  reset_fixture
+  CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"lint","conclusion":"success","html_url":"l"}]')")
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"in_progress","conclusion":null}]')")
+  run_checks --check '^torch'
+  assert_eq "$GATE_RC" 4 "a run in flight may still create the check: no verdict yet"
+  assert_contains "$GATE_OUTPUT" "no check run matches --check '^torch' yet" "the hold names the selection"
+  # The usage errors: an ERE grep refuses, an empty one, two of them, and merge's subset.
+  for bad in "--check=[" "--check=" "--check"; do
+    reset_fixture
+    run_checks "$bad"
+    assert_eq "$GATE_RC" 2 "checks $bad is a usage error"
+  done
+  run_checks --check a --check b
+  assert_eq "$GATE_RC" 2 "a second --check is a usage error"
+  run_merge --check a
+  assert_eq "$MERGE_RC" 2 "merge takes no --check"
+  assert_contains "$MERGE_OUTPUT" "never a subset" "merge says why"
+  assert_eq "$MERGE_CALLS" "" "and merges nothing"
+}
+
+# A selection names its checks itself: an advisory check it matches is waited for, and the
+# repository's advisory file is not read at all.
+test_a_selection_waits_on_an_advisory_check_it_names() {
+  reset_fixture
+  ADVISORY_HTTP=500
+  CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"claude","conclusion":"failure","html_url":"c"}]')")
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"completed","conclusion":"success"}]')")
+  run_checks --check '^claude$'
+  assert_eq "$GATE_RC" 1 "the advisory check the selection names is judged"
+  assert_not_contains "$(cat "$REQUEST_LOG")" "ship-pr-advisory-checks" "the advisory file is not read"
+}
+
 # Round 1 of the review of ludics-lite#38, P1: a run cancelled while still QUEUED reports
 # `completed` with no check runs behind it. Stopped is not judged anywhere else in this file, and
 # it is not absence here.
@@ -1990,7 +2106,7 @@ test_checks_ends_with_its_verdict_trailer() {
   check_trailer 4 unjudged "NO VERDICT YET"
   reset_fixture
   CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"ci","status":"in_progress"}]')")
-  check_trailer 4 pending "NO VERDICT YET — still running"
+  check_trailer 4 pending "NO VERDICT YET — 1 check(s) still running: ci"
   reset_fixture
   CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"ci","conclusion":"failure","html_url":"u"}]')")
   check_trailer 1 red ": RED"
@@ -2172,6 +2288,10 @@ tests=(
   test_an_untimed_job_holds_its_run
   test_wait_holds_until_the_checks_appear
   test_wait_ceiling_with_a_queued_run_is_no_verdict
+  test_a_selected_check_settles_while_a_slow_one_runs
+  test_the_progress_line_names_the_running_checks
+  test_a_selection_matching_nothing_is_refused
+  test_a_selection_waits_on_an_advisory_check_it_names
   test_merge_regates_an_absent_verdict_when_the_base_moved
   test_merge_lands_an_absent_verdict_the_moved_base_still_settles
 )

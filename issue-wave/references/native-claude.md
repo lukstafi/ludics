@@ -34,10 +34,14 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   ~/.claude/skills/issue-wave/scripts/bg-run.sh wait <dir>
   ```
 
-  `wait` ends before the cap by itself (`--within`, default 540 s) and prints one verdict; its
-  exit code says the same. `rc=<n>` (exit 0): the command finished with status `<n>`, and its
+  `wait` blocks for its whole bound, `--within`, default 540 s so it ends under the 600 s cap,
+  unless the run settles first, and prints one line led by its verdict; its exit code says the
+  same. While it blocks it writes a `bg-run: still waiting after <e> s ...` line to stderr every
+  120 s. `rc=<n>` (exit 0): the command finished with status `<n>`, and its
   output is `<dir>/log`. The status is a file of its own, so a review body quoting `rc=` cannot
-  end the wait. `RUNNING` (3): re-issue it. `STARTING` (4): no pid within a minute of the wait:
+  end the wait. `RUNNING after <e> s of --within <w>` (3): the bound was spent with the run still
+  live, the designed return: re-issue it (an `<e>` under `<w>` is a bug worth reporting). A
+  slow CI takes several of these. `STARTING` (4): no pid within a minute of the wait:
   re-issue it once, and a second one means the launch itself failed, so spawn again. `DIED` (5):
   the run was killed before the command returned, which says nothing about what the command was
   reading: re-arm it, and for `merge --wait` first re-read the merge state as ship-pr's *The
@@ -84,11 +88,12 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    with two GPU tokens that a batch declared `--cpu` does not take, four on minix-amd-linux,
    three on tuf-amd-linux, one on a box the spec does not name) and
    refuses while a measurement is outstanding there; a measurement still needs the box to itself through the registry.
-   A refusal naming a *measurement window* means the coordinator is measuring on the box and has
-   suspended the worker's standing reservation until it concludes: the worker keeps working
-   without the batch and retries it once the window closes, with no request.
+   The brief's wrapper adds `--wait-window`, which waits out a coordinator's *measurement
+   window* on the box instead of refusing (SKILL.md, *The brief*, execution handoff).
 2. **Request, for everything else.** A measurement, a cross-box leg, a full suite: the worker
-   ends its turn with its final message carrying one block and nothing after it:
+   ends its turn with its final message carrying the block, one per request and each naming one
+   execution host, back to back with nothing after the last (ahrefs/ocannl#1168 wrote its four
+   requests as prose, and none was reserved):
 
    ```
    EXECUTION_REQUEST
@@ -98,7 +103,9 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    END_EXECUTION_REQUEST
    ```
 
-   The task notification that follows is this handoff, not completion.
+   The task notification that follows is this handoff, not completion. Several blocks are a
+   queue: the coordinator assigns them one at a time, in order, each after the previous one's
+   result is concluded, so a resumed worker holds one assignment and owes one result line.
 3. **Assign.** The coordinator completes the reservation (wave, worker, `transport:
    "subagent"`, agent host, repository, issue, purpose - the request supplies the rest), runs
    `execution run <reserve.json>` - or, for a measurement on a box where workers hold standing

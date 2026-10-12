@@ -99,14 +99,18 @@
 #                          # print its final verdict; an ended worker's verdict as it stands
 #   fleet-worker.sh ls [<box> ...]
 #   fleet-worker.sh load
-#   fleet-worker.sh execution list [--active] [--compact]
-#   fleet-worker.sh execution slot [--wait <seconds>] [--cpu|--gpu] [--deadline <seconds>] -- <command...>
+#   fleet-worker.sh execution list [--active] [--compact] [--host <box>]   # --host: one box's
+#                          # records, an alias (rog) selecting its roster entry's (rog-nv-linux)
+#   fleet-worker.sh execution slot [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>]
+#                          -- <command...>
 #                          # hold one of THIS box's run-time correctness slots around a suite or
 #                          # batch (no lease needed), plus a GPU token unless it declares --cpu;
-#                          # inside a slot already held (FLEET_SLOT_HELD) it runs under that one.
-#                          # The batch leads a process group of its own, ended (exit 124) at
-#                          # --deadline, and when the wrapper is signalled or killed
-#   fleet-worker.sh execution slot --bg <parent> [--wait <seconds>] [--cpu|--gpu] -- <command...>
+#                          # inside a slot already held (FLEET_SLOT_HELD) it runs under that one;
+#                          # --wait-window waits out a measurement on this box (default 3600 s)
+#                          # instead of refusing, then waits for a slot as --wait says. The batch
+#                          # leads a process group of its own, ended (exit 124) at --deadline, and
+#                          # when the wrapper is signalled or killed
+#   fleet-worker.sh execution slot --bg <parent> [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] -- <command...>
 #                          # the same batch detached, for one that can outlast a 600 s tool
 #                          # call: prints a bg-run.sh run directory under <parent> at once;
 #                          # block on `bg-run.sh wait <dir>`
@@ -196,6 +200,8 @@
 #     ~/.local/state/fleet-execution-slots. Deliberately NOT under ISSUE_WAVE_STATE, which is
 #     per-coordinator: the cap is the box's, so every agent on the box must resolve this to the
 #     same directory (as every coordinator must resolve FLEET_ANCHOR_STATE to the same one).
+#   FLEET_SLOT_WINDOW_POLL: how often, in seconds, `execution slot --wait-window` re-reads the
+#     registry while a measurement holds the box; 15.
 #   FLEET_SLOT_HELD: set BY `execution slot` in its command's environment, never by hand:
 #     `<box> <slot> <slots> <gpu|cpu>`, the slot the batch holds (THE NESTED SLOT, below).
 #   FLEET_MEASUREMENT_HELD: set BY `execution hold --request <id>` in its command's environment,
@@ -339,11 +345,14 @@ cmd_execution_slot_probe() {
         case "${2-}" in ''|*[!0-9]*) deadline="" ;; *[1-9]*) deadline=1 ;; *) deadline="" ;; esac
         [ -n "$deadline" ] || die "execution slot: --deadline takes a positive whole number of seconds"
         shift ;;
+      --wait-window) ;;
+      --wait-window=*)
+        case "${1#--wait-window=}" in ''|*[!0-9]*) die "execution slot: --wait-window takes a whole number of seconds, as --wait-window=<seconds>" ;; esac ;;
       --cpu|--gpu)
         [ -z "$kind" ] || [ "$kind" = "$1" ] || die "execution slot: --cpu and --gpu are exclusive"
         kind="$1" ;;
       --) break ;;
-      *) die "execution slot [--bg <parent>] [--wait <seconds>] [--cpu|--gpu] [--deadline <seconds>] -- <command> [args...] | execution slot --probe" ;;
+      *) die "execution slot [--bg <parent>] [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>] -- <command> [args...] | execution slot --probe" ;;
     esac
     shift
   done

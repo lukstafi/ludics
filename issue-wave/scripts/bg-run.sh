@@ -68,20 +68,29 @@
 # (a review watch, a merge wait) are reads that a second run repeats harmlessly.
 #
 # `wait` polls every 5 s (BG_RUN_POLL, whole seconds) and returns the first settled verdict, or
-# the current one once --within seconds are spent. It prints one line and exits with its code:
+# the current one once --within seconds are spent (default 540, under the 600 s cap on a foreground
+# tool call). It prints one line on stdout and exits with its code. The verdict is the line's
+# first word; anything after it is for the reader, never the grammar:
 #   rc=<n>     0  the command finished; <n> is its exit status (also in <dir>/rc). Exit 0 means
 #                 FINISHED, not succeeded: a command may exit with any status, so no exit code
 #                 of this script can both carry it and stay distinct from the verdicts below.
-#   RUNNING    3  the pid or the cpid is alive and there is no rc yet: re-issue the wait.
-#   STARTING   4  no pid yet. A background task that has not published its pid is starting, not
-#                 dead. Returned at the --within deadline, or once no pid has appeared for 60 s
-#                 of this wait (BG_RUN_START_GRACE): re-issue once, and a second STARTING means
-#                 the launch itself failed, so start again in a NEW directory.
+#   RUNNING    3  the pid or the cpid is alive and there is no rc yet: re-issue the wait. The line
+#                 is `RUNNING after <e> s of --within <w>`, so a return at the bound (e >= w) can
+#                 be told from an early one, which would be a bug (ludics-lite#571).
+#   STARTING   4  no pid yet, said as `STARTING after <e> s of --within <w>`. A background task
+#                 that has not published its pid is starting, not dead. Returned at the
+#                 --within deadline, or once no pid has appeared for 60 s of this wait
+#                 (BG_RUN_START_GRACE): re-issue once, and a second STARTING means the launch
+#                 itself failed, so start again in a NEW directory.
 #   DIED       5  a pid was published, it and the command are both gone, and no rc was
 #                 written: the task was killed before the command returned (the harness does this, ~40 min into a
 #                 backgrounded `merge --wait`). It says nothing about what the command saw:
 #                 re-arm it in a new directory.
 #   REFUSED    6  `start` refused this directory (the reason follows): start again in a NEW one.
+# While it blocks, every 120 s of the wait (BG_RUN_HEARTBEAT, whole seconds; 0 for none) it says
+# so on stderr, `bg-run: still waiting after <e> s of --within <w> (<state>)`, so a long wait does
+# not read as a hang. A heartbeat line starts with `bg-run:`, never with a verdict word, and is
+# never on stdout, whose one line stays the verdict.
 # `new` exits 0 having printed the directory, and 2 when it cannot create one (a parent that is a
 # file, or one it cannot write in: an error, never a search through ever higher N). Usage errors
 # exit 2, from any subcommand.
@@ -313,14 +322,16 @@ cmd_wait() {
   done
   interval=${BG_RUN_POLL:-5}
   grace=${BG_RUN_START_GRACE:-60}
-  for n in "$within" "$interval" "$grace"; do
+  beat=${BG_RUN_HEARTBEAT:-120}
+  for n in "$within" "$interval" "$grace" "$beat"; do
     case $n in ''|*[!0-9]*) say "not a whole number of seconds: $(printf '%q' "$n")"; exit 2 ;; esac
   done
   # Decimal, whatever the padding: bash arithmetic reads a leading 0 as octal (08 is an error).
-  within=$((10#$within)); interval=$((10#$interval)); grace=$((10#$grace))
+  within=$((10#$within)); interval=$((10#$interval)); grace=$((10#$grace)); beat=$((10#$beat))
   [ "$interval" -ge 1 ] || { say 'BG_RUN_POLL must be at least 1'; exit 2; }
   need_absolute "$dir"
   t0=$SECONDS
+  next_beat=$beat
   while :; do
     verdict "$dir"
     elapsed=$((SECONDS - t0))
@@ -333,12 +344,22 @@ cmd_wait() {
     # not a multiple of it, is still spent in full.
     left=$((within - elapsed))
     [ "$left" -gt 0 ] || break
-    if [ "$left" -lt "$interval" ]; then sleep "$left"; else sleep "$interval"; fi
+    # The heartbeat, only while the wait goes on. The nap below also ends at the next one, so a
+    # poll slower than the heartbeat cannot skip it.
+    if [ "$beat" -gt 0 ] && [ "$elapsed" -ge "$next_beat" ]; then
+      case $V in RUNNING) state='the run is live' ;; *) state='no pid published yet' ;; esac
+      say "still waiting after $elapsed s of --within $within ($state)"
+      while [ "$next_beat" -le "$elapsed" ]; do next_beat=$((next_beat + beat)); done
+    fi
+    nap=$interval
+    [ "$left" -ge "$nap" ] || nap=$left
+    [ "$beat" -eq 0 ] || [ $((next_beat - elapsed)) -ge "$nap" ] || nap=$((next_beat - elapsed))
+    sleep "$nap"
   done
   case $V in
     rc) printf 'rc=%s\n' "$(cat "$dir/rc")"; exit 0 ;;
-    RUNNING) echo RUNNING; exit 3 ;;
-    STARTING) echo STARTING; exit 4 ;;
+    RUNNING) printf 'RUNNING after %s s of --within %s\n' "$elapsed" "$within"; exit 3 ;;
+    STARTING) printf 'STARTING after %s s of --within %s\n' "$elapsed" "$within"; exit 4 ;;
     DIED) echo DIED; exit 5 ;;
     REFUSED) printf 'REFUSED: %s\n' "$(cat "$dir/refused")"; exit 6 ;;
   esac
