@@ -483,9 +483,10 @@ class Watch:
         self.note_past()
         return 0
 
-    def end(self, verdict: str, message: str) -> int:
-        """``watch_end``: the final poll and state re-read before a nothing-is-coming verdict.
-        ``_NUDGED`` when the verdict stood and was answered with the automatic nudge."""
+    def end(self, verdict: str, message: str, remedy: bool = False) -> int:
+        """``watch_end``: the final poll and state re-read before a nothing-is-coming verdict. With
+        ``remedy`` (the nothing-is-coming verdicts on a due head), the message gets its remedy, or
+        the verdict is answered with the automatic nudge and the answer is ``_NUDGED``."""
         before_settle = self.mark
         before_state = self.state
         rc = self.settle()
@@ -537,11 +538,11 @@ class Watch:
             )
             _say(f"watermark: {self.mark}")
             return 1
-        if message and tok in ("expected", "nudged"):
-            remedy = self.nudge_or_remedy(state, message)
-            if remedy is None:
+        if remedy:
+            move = self.nudge_or_remedy(state, message)
+            if move is None:
                 return _NUDGED
-            message += remedy
+            message += move
         self.drift_note()
         if message:
             _say(message)
@@ -555,8 +556,9 @@ class Watch:
         return self.own_nudges.get(head) if head else None
 
     def nudge_or_remedy(self, state: State, verdict: str) -> str | None:
-        """The remedy an ``expected``/``nudged`` verdict prints, or None when the watch posted the
-        nudge itself (an ``expected`` one only: a ``nudged`` head has a request pending)."""
+        """The remedy a due head's verdict prints, or None when the watch posted the nudge itself
+        (on an ``expected`` head only: a ``nudged`` one has a request pending, and an ``idle`` one
+        the reviewer's word)."""
         where = f"PR {self.repo}#{self.pr}"
         own = self.own_nudge()
         if own is not None:
@@ -774,7 +776,7 @@ class Watch:
                                 " became due"
                             )
                     if verdict:
-                        rc = self.end(tok, verdict)
+                        rc = self.end(tok, verdict, remedy=True)
                         if rc != _NUDGED:
                             return rc
                         # The request's grace is the next window; it replaces a deadline already
