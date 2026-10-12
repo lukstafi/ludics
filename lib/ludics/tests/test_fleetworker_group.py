@@ -114,6 +114,33 @@ class Group(unittest.TestCase):
         self.assertTrue(gone(mark), "the caller's alarm left the group running")
         self.assertIn("T: SIGALRM received", self.lines[0])
 
+    def test_a_signal_during_the_cleanup_of_leftovers_still_ends_the_wrapper(self) -> None:
+        # PR #584 review, round 1: the leader is gone, its leftover ignores SIGTERM, and the wrapper
+        # is signalled while it waits out the grace. It must report the signal, not the status.
+        mark = self.mark()
+        sender = subprocess.Popen(["sh", "-c", f"sleep 1; kill -TERM {os.getpid()}"])
+        try:
+            outcome = self.run_group(f"trap '' TERM; sleep {mark} >/dev/null 2>&1 &", 60, grace=3)
+        finally:
+            sender.wait()
+        self.assertEqual(outcome, group.Interrupted(signal.SIGTERM))
+        self.assertTrue(gone(mark), "the leftover outlived the cleanup")
+
+    def test_an_ignored_alarm_armed_before_the_wrapper_stays_ignored(self) -> None:
+        # PR #584 review, round 1: an alarm the caller both armed and ignored ends nothing, and the
+        # deadline still does.
+        mark = self.mark()
+        before = signal.signal(signal.SIGALRM, signal.SIG_IGN)
+        signal.setitimer(signal.ITIMER_REAL, 1)
+        start = time.monotonic()
+        try:
+            self.assertEqual(self.run_group(f"sleep {mark} & wait", 3), group.Expired())
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, before)
+        self.assertGreaterEqual(time.monotonic() - start, 2.9)
+        self.assertTrue(gone(mark))
+
     def test_a_signal_the_caller_ignores_stays_ignored_for_the_command(self) -> None:
         before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
         try:

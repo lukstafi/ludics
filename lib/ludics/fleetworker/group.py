@@ -170,10 +170,19 @@ def run(command: Sequence[str], deadline: int | None, label: str,
     """Run ``command`` as a session leader, wait for it under the deadline and the forwarded
     signals, and say (through ``say``, prefixed with ``label``) whenever this wrapper ended the
     group. Raises OSError when the command cannot be started (nothing is left running then)."""
-    received: list[int] = []
-    armed = [False]
+    received: list[int] = []  # every forwarded signal acted on, in order
+    armed = [False]  # whether the handler raises (only while the leader is waited for)
+    expires = [0.0]  # when this wrapper's own deadline alarm is due; 0 while none is set
+    # A SIGALRM the caller ignores stays ignored, as it was across the exec before: the handler is
+    # installed for the deadline's own alarm and acts on no other.
+    alarm_ignored = signal.getsignal(signal.SIGALRM) == signal.SIG_IGN
+
+    def due() -> bool:
+        return expires[0] > 0 and time.monotonic() >= expires[0] - 0.05
 
     def handler(signum: int, frame: FrameType | None) -> None:
+        if signum == signal.SIGALRM and alarm_ignored and not due():
+            return
         received.append(signum)
         if armed[0]:
             armed[0] = False
@@ -198,17 +207,17 @@ def run(command: Sequence[str], deadline: int | None, label: str,
     guardian = start_guardian(
         pgid, f"{label}: the wrapper died without ending its command; its guardian killed process group {pgid}"
     )
-    expires = time.monotonic() + deadline if deadline else None
     # An alarm the caller armed before exec'ing this wrapper (a hand-rolled `perl -e 'alarm N;
     # exec ...'`) survives the exec, and is the earlier bound when it comes first: kept, it reads
-    # as the signal it is.
-    bound = float(deadline or 0)
-    timed = expires is not None and not 0 < signal.getitimer(signal.ITIMER_REAL)[0] <= bound
+    # as the signal it is. An ignored one bounds nothing, and the deadline replaces it.
+    inherited = signal.getitimer(signal.ITIMER_REAL)[0]
+    timed = bool(deadline) and (alarm_ignored or not 0 < inherited <= float(deadline or 0))
     outcome: Outcome | None = None
     try:
         try:
             if timed:
-                signal.setitimer(signal.ITIMER_REAL, bound)
+                expires[0] = time.monotonic() + float(deadline or 0)
+                signal.setitimer(signal.ITIMER_REAL, float(deadline or 0))
             armed[0] = True
             if received:
                 armed[0] = False
@@ -217,9 +226,7 @@ def run(command: Sequence[str], deadline: int | None, label: str,
             armed[0] = False
         except _Stop as stop:
             armed[0] = False
-            if timed:
-                signal.setitimer(signal.ITIMER_REAL, 0)
-            if stop.signum == signal.SIGALRM and timed and expires is not None and time.monotonic() >= expires - 0.05:
+            if stop.signum == signal.SIGALRM and due():
                 say(f"{label}: --deadline {deadline}s reached: ending the command's process group {pgid}"
                     f" (SIGTERM, then SIGKILL after {grace:g}s)")
                 outcome = Expired()
@@ -227,15 +234,24 @@ def run(command: Sequence[str], deadline: int | None, label: str,
                 say(f"{label}: {signal.Signals(stop.signum).name} received: ending the command's process group {pgid}"
                     f" (SIGTERM, then SIGKILL after {grace:g}s)")
                 outcome = Interrupted(stop.signum)
+            if timed:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            expires[0] = 0.0
             end_group(pgid, grace, leader)
         if timed:
             signal.setitimer(signal.ITIMER_REAL, 0)
+        expires[0] = 0.0
         if outcome is None:
             code = leader.wait()  # reaped already: its status
             outcome = Killed(-code) if code < 0 else Exited(code)
-            if expires is not None and group_alive(pgid):
+            if deadline and group_alive(pgid):
                 say(f"{label}: the command ended, and its process group {pgid} still runs: ending it (--deadline)")
                 end_group(pgid, grace, None)
+            # Every signal the handler took while armed ended the wait above, so one recorded now
+            # came after the command ended -- during that cleanup, say. The wrapper was signalled
+            # all the same, and dies of it.
+            if received:
+                outcome = Interrupted(received[0])
         _done(guardian)
         return outcome
     finally:
