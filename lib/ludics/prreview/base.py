@@ -576,8 +576,8 @@ class Base:
         prints UNKNOWN and leaves the red standing, and is not remembered."""
         indent = "           "
         run_id = first_sha = first_when = ""
-        floor: RunRow | None = None
         reds = 0
+        bounded = False
         for r in rows:
             if r.wid != wfid or r.status != "completed":
                 continue
@@ -587,24 +587,13 @@ class Base:
                 run_id = run_id or r.run_id
                 first_sha, first_when = r.head_sha, r.created_at
             elif klass == "green":
-                floor = r
+                bounded = True
                 break
         if reds == 0:
             return ""
-        if floor is not None:
-            # The floor's commit is the lower end of the span to attribute (ludics-lite#597): the
-            # merges between it and the first red run judged nothing of their own (a push group
-            # that keeps only the newest pending run cancels theirs). Named, never asserted as a
-            # range: the feed orders runs by creation, not by ancestry, and a branch that was
-            # force-pushed or recreated can put the floor on another history (review round 1).
-            # Only a `success` at another commit is named: a `skipped` or `neutral` run ends the
-            # streak, since it is not red, but ran nothing that could have passed the failing suite
-            # (review round 2), and a success at the red commit itself (a branch that moved away and
-            # back) bounds no range at all (round 3).
-            named = (f" ({floor.conclusion} at {floor.head_sha[:8]})"
-                     if floor.conclusion == "success" and floor.head_sha != first_sha else "")
+        if bounded:
             detail = (f"{indent}red since {first_sha[:8]} (run created {first_when}), {reds} run(s)"
-                      f" back; the judged run before it was not red{named}\n")
+                      " back; the judged run before it was not red\n")
         else:
             detail = (f"{indent}red for all {reds} judged run(s) in the window, back to"
                       f" {first_sha[:8]} (run created {first_when}) — the window holds no\n"

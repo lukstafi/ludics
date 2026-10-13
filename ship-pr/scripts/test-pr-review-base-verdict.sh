@@ -328,7 +328,7 @@ shared_group_burst() {
 # pending behind it, and the merges between them with `cancelled` runs, each replaced while it was
 # pending. The integration loop reads `base --wait` WITHOUT --interim, and none of those
 # cancellations may read red or hold the verdict: the wait ends on the tip's own run, whichever way
-# it goes, and a red there names the floor under the cancelled span, where attribution starts.
+# it goes, and a red there starts its streak at the tip: the cancelled runs end no streak.
 # (Under --interim the same shape is test-pr-review-base-pushless.sh's
 # test_interim_in_a_group_that_does_not_cancel: held while the older run judges, answered once it
 # finished green.)
@@ -364,9 +364,8 @@ test_a_shared_push_group_burst_is_judged_by_the_tips_own_run() {
       assert_contains "$BASE_OUTPUT" "RED      ci — failure at ${SHA_C:0:8}" "and it is the tip's"
       assert_contains "$BASE_OUTPUT" \
         "red since ${SHA_C:0:8} (run created" "the cancelled runs end no streak"
-      assert_contains "$BASE_OUTPUT" \
-        "1 run(s) back; the judged run before it was not red (success at ${SHA_A:0:8})" \
-        "the floor of the span to attribute is the older run's green, under every cancelled merge"
+      assert_contains "$BASE_OUTPUT" "1 run(s) back; the judged run before it was not red" \
+        "and the older run's green under them bounds it"
       ;;
     esac
   done

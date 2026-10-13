@@ -562,33 +562,6 @@ class WaitLoop(unittest.TestCase):
         self.assertEqual(rc, 3)
         self.assertIn("could not read o/r's workflow list (gh: Server Error (HTTP 500));", err)
 
-    def test_a_red_names_its_floor_commit_as_the_span_to_attribute(self) -> None:
-        # ludics-lite#597: a push group keeping only the newest pending run cancels the runs of the
-        # merges in between, so the green floor's commit is where attribution starts. Named only:
-        # the feed's order is creation, not ancestry.
-        jobs = json.dumps({"jobs": [{"name": "bash 3.2 suites (macos)", "conclusion": "failure"}]})
-        page = runs({"conclusion": "failure", "head_sha": C}, {"conclusion": "cancelled", "head_sha": B},
-                    {"conclusion": "success", "head_sha": A})
-        rc, out, _, _ = base_run(world(C, page, **{"repos/o/r/actions/runs/1000/jobs?per_page=100": jobs}),
-                                 ["main"])
-        self.assertEqual(rc, 1)
-        self.assertIn(f"red since {C[:8]} (run created 2026-09-10T00:59:00Z), 1 run(s) back; the judged run"
-                      f" before it was not red (success at {A[:8]})\n", out)
-        # A `skipped` run ends the streak but ran nothing, so it is no floor to bisect from.
-        page = runs({"conclusion": "failure", "head_sha": C}, {"conclusion": "skipped", "head_sha": B},
-                    {"conclusion": "success", "head_sha": A})
-        rc, out, _, _ = base_run(world(C, page, **{"repos/o/r/actions/runs/1000/jobs?per_page=100": jobs}),
-                                 ["main"])
-        self.assertEqual(rc, 1)
-        self.assertIn("1 run(s) back; the judged run before it was not red\n", out)
-        self.assertNotIn(f"at {B[:8]})", out)
-        # Nor is a success at the red commit itself: a floor equal to the red bounds no range.
-        page = runs({"conclusion": "failure", "head_sha": C}, {"conclusion": "success", "head_sha": C})
-        rc, out, _, _ = base_run(world(C, page, **{"repos/o/r/actions/runs/1000/jobs?per_page=100": jobs}),
-                                 ["main"])
-        self.assertEqual(rc, 1)
-        self.assertIn("1 run(s) back; the judged run before it was not red\n", out)
-
 
 PULL = json.dumps([{"number": 7, "merged_at": "2026-09-26T08:00:53Z", "merge_commit_sha": C,
                     "head": {"sha": H, "ref": "claude/topic"}, "base": {"ref": "main"}}])

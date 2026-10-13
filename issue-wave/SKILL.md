@@ -724,22 +724,14 @@ controlled through the tools in your coordinator's file, never through those com
      CURRENT tip by the rule above (its own push run, or an integration record at it), so every
      merge landed meanwhile is in it. Red, it is a regression: the rest of stop-the-world
      (below) follows, and the next two steps are its owner's.
-  2. **Attribute** by the failing job against its span, `git log --first-parent <floor>..<red>`.
-     `pr-review.sh base` names the failing job and both ends, `red since <red> ... (success at
-     <floor>)`; a local integration run's floor is the `observed_sha` of the newest `pass`
-     integration record before the red one (`fleet-worker.sh execution list`). That floor is
-     the WORKFLOW's last green, and the job's can be older: confirm the failing job itself
-     succeeded in the floor run (`gh run view <its id> --repo <owner/repo> --json jobs`), since a
-     diff-conditioned job is `skipped` in a green run, and that the oldest red run of a streak
-     more than one run back failed the same job (a different one there is a second break). Where
-     either check fails, the job's floor is the newest run where that job succeeded. A line that
-     names no floor (`skipped` or `neutral` under the streak, or a success at the red commit
-     itself) leaves the span unknown. Runs are ordered by creation, not ancestry, so confirm
-     that `git rev-list --first-parent <red>` lists `<floor>`; when it does not, the span is
-     unknown too. An unknown span starts from the newest first-parent commit you know to be
-     green. A merge in the span whose diff reaches the failing suite, alone, owns it.
-  3. **Bisect only when that is still ambiguous**: run the failing suite at the span's
-     intermediate merges (`git bisect start --first-parent <red> <floor>`) in a detached
+  2. **Attribute** by the failing job (`pr-review.sh base` names it, and `red since` where its
+     streak starts) against `git log --first-parent <last green>..<red tip>`: the last green is
+     the workflow's newest successful push run (`gh run list --repo <owner/repo> --branch <base>
+     --workflow <file> --status success --limit 1 --json headSha`), or, for a local integration
+     run, the newest `pass` integration record (`fleet-worker.sh execution list`). A merge in
+     that range whose diff reaches the failing suite, alone, owns it.
+  3. **Bisect only when that is still ambiguous**: run the failing suite at the range's
+     intermediate merges (`git bisect start --first-parent <red tip> <last green>`) in a detached
      worktree, locally, on a box of the failing job's OS - mac-studio under `/bin/bash` 3.2 for
      the macOS jobs, a Linux box for the Ubuntu ones - under an execution reservation, each step
      through the box's slot. Not a CI run on a temporary ref: that waits in the same macOS
