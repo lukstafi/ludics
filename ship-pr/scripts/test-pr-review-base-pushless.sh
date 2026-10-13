@@ -571,7 +571,8 @@ test_interim_is_not_asked_outside_its_shape() {
   assert_not_contains "$(cat "$REQUEST_LOG")" "/pulls" "and no source is asked"
 }
 
-# A push group that does not cancel (OCANNL's `ci`): a burst leaves one run going at an older
+# A push group that does not cancel a running run (OCANNL's `ci`, and skill-scripts.yml's main
+# since ludics-lite#597): a burst leaves one run going at an older
 # merge, the tip's run waiting behind it (status `pending`), and the merges between cancelled as
 # each was replaced while pending. That older run judges base changes the PR head never met, so
 # the interim waits for it; once it has finished green the tip's run is all that is coming and a

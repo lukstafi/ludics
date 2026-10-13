@@ -360,8 +360,10 @@ ceiling and refuse every launch (20-40 min per launch on 09-24 and 09-25). The g
 nothing else in flight, is green meanwhile when it is GitHub's clean merge of a PR whose head
 built that workflow green, and the verdict line reads `green, interim (...; judged meanwhile by
 PR #N's head run ...)`. A tip that is not such a merge stays pending and refused, and so does one
-with a run at an older merge still going, which a burst leaves wherever push CI does not cancel a
-running run (ship-pr's *Read the base before you branch*). The integration
+with a run at an older merge still going. Under a push group that keeps one running run and the
+newest pending one (this repository's main since ludics-lite#597, OCANNL's `ci`), that refusal
+comes only from the one running run, and runs cancelled while pending never hold it (ship-pr's
+*Read the base before you branch*). The integration
 loop, which reads `base --wait` WITHOUT `--interim`, still waits for the tip's own run: an interim is
 never its verdict. This is a bounded pre-dispatch check, not another observer, and it is
 point-in-time: not atomic with the spawn or launch that follows, so an adoption reconciles
@@ -678,11 +680,16 @@ controlled through the tools in your coordinator's file, never through those com
   The merge gate is ship-pr's (*How stale the base has grown*): one build verdict for the PR's
   own head, never the base's tip. `pr-review.sh merge` warns loudly on a stale base but no longer
   refuses. The complement is the coordinator's **integration loop**, whose value is a verdict
-  that keeps pace with the merges: master's CI gives a burst one verdict covering a span of
-  merges (ship-pr's *Read the base before you branch*). As each merge lands, pick a quiet, strong box with the whole board in view
+  that keeps pace with the merges. **It runs at the merged tip, never once per merge**
+  (ludics-lite#597, the maintainer's decision of 2026-10-12): when an integration run finishes,
+  the next one runs at the current tip, and its verdict covers every merge since the last one as a
+  span. That holds for a CI-verdict repository, whose push workflow keeps one running run and
+  only the newest pending one (this repository's `skill-scripts.yml`, whose `concurrency:`
+  comment says why that is not #511's failure), and for a local integration run like OCANNL's
+  alike. A local run goes on a quiet, strong box with the whole board in view
   (`fleet-worker.sh load` - CPU/GPU five-minute averages, dune count, agent sessions per box; a
   box already running this wave's GPU measurement is NOT quiet whatever its CPU says; the
-  maintainer chose minix-amd-linux over tuf-amd-linux), take an execution reservation there,
+  maintainer chose minix-amd-linux over tuf-amd-linux): take an execution reservation there,
   and run the MERGED
   repository's own full integration suite to completion in a checkout that owes the same proof
   as the launch preflight - clean porcelain, expected branch, HEAD equal to the remote master
@@ -697,22 +704,55 @@ controlled through the tools in your coordinator's file, never through those com
   tip's verdict, and it is what the base gate reads before the next launch. Reserve it as transport
   `coordinator`, kind `correctness`, with `"integration": true`, and conclude it with its
   `observed_sha` - a record without the field is a targeted batch to the gate, not a verdict
-  source. Pick up each merge as it lands; one run covering several merges is incidental
-  batching, never deliberate accumulation.
+  source. GitHub orders a group's waiting runs by when each started waiting and does not
+  guarantee it, so two pushes racing into the group can leave the tip with only a `cancelled`
+  run; `base --wait` reads that as no verdict, never green, and `gh run rerun <its id> --repo
+  <owner/repo>` puts the tip back in line.
+
+  **On a red at the tip, halt launches at once** (`fleet-worker.sh halt "<red at <sha>, rerun
+  pending>"`): the rerun below puts the tip's run back in flight, where the base gate's interim
+  would admit a launch onto the red. Merges are not frozen (roll-forward: a merge never waits on
+  the base's tip); what lands meanwhile joins the span the next verdict covers. Then, in order:
+  1. **Rerun the failed jobs once** (`gh run rerun <run id> --failed --repo <owner/repo>`,
+     without `--failed` when the report names no failed job, a startup failure; a local run,
+     once more at the same SHA under the halt's one triage reservation, references/executions.md
+     *Adoption and halt*) to rule out a flake: #479-class tee timeouts happen on the macOS
+     runner. The rerun is a new attempt, so judge that attempt and not the red already read:
+     once `gh run view <run id> --repo <owner/repo> --json attempt` shows the attempt gone up,
+     await it with `pr-review.sh retry run watch <owner/repo>#<run id>`. Green, it was a flake:
+     `resume-launches` on the integration loop's next green verdict, which is about the
+     CURRENT tip by the rule above (its own push run, or an integration record at it), so every
+     merge landed meanwhile is in it. Red, it is a regression: the rest of stop-the-world
+     (below) follows, and the next two steps are its owner's.
+  2. **Attribute** by the failing job (`pr-review.sh base` names it, and `red since` where its
+     streak starts) against `git log --first-parent <last green>..<red tip>`: the last green is
+     the workflow's newest successful push run (`gh run list --repo <owner/repo> --branch <base>
+     --workflow <file> --status success --limit 1 --json headSha`), or, for a local integration
+     run, the newest `pass` integration record (`fleet-worker.sh execution list`). A merge in
+     that range whose diff reaches the failing suite, alone, owns it.
+  3. **Bisect only when that is still ambiguous**: run the failing suite at the range's
+     intermediate merges (`git bisect start --first-parent <red tip> <last green>`) in a detached
+     worktree, locally, on a box of the failing job's OS - mac-studio under `/bin/bash` 3.2 for
+     the macOS jobs, a Linux box for the Ubuntu ones - under an execution reservation, each step
+     through the box's slot. Not a CI run on a temporary ref: that waits in the same macOS
+     queue this rule exists to shorten.
 - **On a regression, stop the world - as a mechanism.** `fleet-worker.sh halt "<what
-  regressed, who owns the fix>"` makes every subsequent `launch` refuse until
+  regressed, who owns the fix>"` (already set by the integration loop's red at the tip; repeating
+  it updates the reason and keeps the halt) makes every subsequent `launch` refuse until
   `resume-launches`; that is the "launch nothing new" half, enforced rather than remembered,
   and it lives on the anchor with the lease, so a coordinator that adopts the wave from another
-  box inherits the halt rather than launching into a known red. Then tell the running workers
+  box inherits the halt rather than launching into a known red. The halt covers every merge in
+  the red span until attribution (the integration loop's order, above) names an owner. Then tell
+  the running workers
   through the channel they already read - a `pr-review.sh comment` on every open wave PR
   stating that master's red is established and owned, so nobody bisects it independently, and
   a message to each native or app worker - and dispatch one triage worker with `launch --force
   --allow-red-base "<triage reason>"` (or native `gate --target-repo <owner/repo> --force
   --allow-red-base "<triage reason>"` followed by the runtime's spawn tool, recorded on the
   board; the only launch the halt admits): fix directly when the fix is straightforward, file
-  an issue when it involves a trade-off with no clearly better option. Diagnose from `git log`
-  on master between the last green and first red integration run, not by local re-bisecting;
-  one owner for the fix-forward. `resume-launches` when master is verified again, and the wave
+  an issue when it involves a trade-off with no clearly better option. The attribution and any
+  bisect are that owner's, done once; one owner for the fix-forward. `resume-launches` when
+  master is verified again, and the wave
   resumes with its remaining tasks. `fleet-worker.sh halted` is the check for a coordinator
   resuming after an interruption.
 - **A pause is not a halt.** When the user pauses the wave (a token budget about to run out),

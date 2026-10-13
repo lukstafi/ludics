@@ -50,21 +50,32 @@ on:
 permissions:
   contents: read
 
-# One run per pull request, one per push to main. A pull request's new push supersedes its
-# previous run instead of stacking behind it: nobody merges the head that run was judging. A push
-# to main is never superseded: each one is a merge, and its run is the verdict on that merged tree
-# (ludics-lite#511). Grouped per ref, with cancel-in-progress, seven merges on 2026-10-01 each
-# cancelled the run before, main had no verdict for about three hours, and a cross-PR red
-# (#91 x #472) surfaced only on the first main run that finished. So main's group is keyed on the
-# commit and only a pull request cancels. Both halves are needed: with `cancel-in-progress: false`
-# alone, a newer PENDING run in a shared group still cancels an older pending one, so a burst
-# would still judge only its first and last merges. The cost is a macOS runner per merge, which a
-# pull request's run may queue behind (THE MACOS QUEUE above). Overlapping main runs need nothing
-# from `pr-review.sh base`, which folds them per workflow newest-created first: the newest finished
-# run is main's verdict, an older one finishing after it does not displace it, and a red at an
-# older merge while the tip's run is going is reported as that merge's, not the tip's.
+# One run per pull request. A pull request's new push supersedes its previous run instead of
+# stacking behind it: nobody merges the head that run was judging. Pushes to a branch (main, v2)
+# share that branch's group without cancel-in-progress, so the next verdict is at the merged tip
+# (ludics-lite#597, the maintainer's decision of 2026-10-12): GitHub never cancels a RUNNING run
+# in the group, and a newer push cancels only the PENDING one waiting behind it, so a burst of
+# merges leaves at most two runs, the one going and one for the newest tip. That is GitHub's
+# default `queue: single` ("At most one job or workflow run can be `pending` in the concurrency
+# group"), left implicit because actionlint 1.7.12 refuses the key; `queue: max` would bring back
+# a run per merge. A merge whose run was cancelled pending is judged by the next run, as part of
+# a span; a red over a span is attributed, then bisected, by the integration loop (issue-wave's
+# SKILL.md, *Roll-forward merges and the integration loop*), which also says what to do in the
+# one race this leaves: GitHub orders waiting runs by when each started waiting, without a
+# guarantee, so two pushes racing in can leave the tip with only a cancelled run. The history
+# this replaces:
+# - Grouped per ref WITH cancel-in-progress, each of seven merges on 2026-10-01 cancelled the run
+#   before, RUNNING or not: main had no verdict for about three hours, and a cross-PR red (#91 x
+#   #472) surfaced only on the first main run that finished. That is the failure this group does
+#   not have: it never cancels a running run.
+# - So #511 keyed main's group on the commit, one run per merge. A burst of N merges then queued N
+#   pairs of macOS jobs (THE MACOS QUEUE above) before the tip got a verdict: nine merges on
+#   2026-10-12 waited 2 h 45 min for a green tip, and the base gate's interim was refused for the
+#   whole span, with an older merge's run always still going.
+# `pr-review.sh base` reads a cancelled run as stopped, not judged: never a red, never a verdict,
+# and the newest JUDGED run under it speaks (test-pr-review-base-verdict.sh pins the burst).
 concurrency:
-  group: skill-scripts-${{ github.event_name == 'push' && github.sha || github.ref }}
+  group: skill-scripts-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

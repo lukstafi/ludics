@@ -1112,9 +1112,13 @@ with no push run at all is ambiguous — dispatch-only, or a newcomer the tip ju
 separates them is the tip's own age, read off the sibling runs at the tip rather than off the
 wait's observation clock (an unreadable timestamp holds nothing). A run that completed
 stopped-not-judged does not speak for the run under it: the newest JUDGED run carries the verdict,
-so a red beneath a cancelled one still stands and a green beneath one still covers the tip. Runs
-that overlap because nothing cancels them (main's in skill-scripts.yml, which keys each push's
-concurrency group on its commit since ludics-lite#511) are read by creation, not by finish: the
+so a red beneath a cancelled one still stands and a green beneath one still covers the tip. A burst
+under a push group that keeps one running run and the newest pending one (skill-scripts.yml's main
+since ludics-lite#597) is the case that leans on that: the merges between the running run and the
+tip's have only `cancelled` runs, none reads red or holds the wait, the tip's own run is the
+verdict. Runs
+that overlap because nothing cancels them (no group, or one keyed on the commit, as main's was
+from ludics-lite#511 to #597) are read by creation, not by finish: the
 newest finished run is the verdict, an older merge's red that finishes after the tip's green does
 not displace it, and one that finishes while the tip's run is going is that merge's red. And
 under `--wait` the tip is the question, so a tip read that failed is UNKNOWN rather than something
