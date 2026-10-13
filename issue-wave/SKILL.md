@@ -720,9 +720,10 @@ controlled through the tools in your coordinator's file, never through those com
      runner. The rerun is a new attempt, so judge that attempt and not the red already read:
      once `gh run view <run id> --repo <owner/repo> --json attempt` shows the attempt gone up,
      await it with `pr-review.sh retry run watch <owner/repo>#<run id>`. Green, it was a flake:
-     `resume-launches` once `pr-review.sh base <owner/repo> --wait` reads the CURRENT tip green,
-     every workflow judged and every merge landed meanwhile included. Red, it is a regression:
-     the rest of stop-the-world (below) follows, and the next two steps are its owner's.
+     `resume-launches` on the integration loop's next green verdict, which is about the
+     CURRENT tip by the rule above (its own push run, or an integration record at it), so every
+     merge landed meanwhile is in it. Red, it is a regression: the rest of stop-the-world
+     (below) follows, and the next two steps are its owner's.
   2. **Attribute** by the failing job against its span, `git log --first-parent <floor>..<red>`.
      `pr-review.sh base` names the failing job and both ends, `red since <red> ... (success at
      <floor>)`; a local integration run's floor is the `observed_sha` of the newest `pass`
