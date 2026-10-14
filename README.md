@@ -101,7 +101,7 @@ project the waves run over; its opening "Site configuration" section lists what 
 `ship-pr` assumes the [Codex](https://github.com/openai/codex) GitHub app reviews every PR: its
 watch waits for that reviewer's rounds and its 👍 reaction is the approval gate. Without it, the
 watch reports that no review is coming and the merge gate has only the build signal to read.
-Before the push that opens a PR it also runs one local `codex review` of the branch, skipped
+Before the push that opens a PR it also runs one local `codex exec review` of the branch, skipped
 where the Codex CLI is missing or not logged in.
 
 Before every launch the preflight fast-forwards the target box's checkout of this repository to
