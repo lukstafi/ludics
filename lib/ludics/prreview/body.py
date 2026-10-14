@@ -106,6 +106,15 @@ def run(session: GhSession, args: list[str]) -> int:
                 f"{session.config.api_attempts} attempts ({session.err_line()}). Nothing was changed, so retry.",
             )
         case GhFailed():
+            # A rejection answers only the attempt it ended: an earlier one that failed unclearly
+            # may have set the body, so the outcome is still open, and still safe to repeat.
+            if session.unclear_attempts() > 0:
+                fail(
+                    3,
+                    f"body of PR {repo}#{num} failed AMBIGUOUSLY: an earlier attempt's outcome is unknown",
+                    f"and the last was refused ({session.err_line()}). The edit may or may not have landed;",
+                    "it sets the body whole, so repeating the same command is safe.",
+                )
             if api_rejection(session.err_line()):
                 fail(
                     1,

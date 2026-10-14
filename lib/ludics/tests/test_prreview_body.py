@@ -85,6 +85,18 @@ class Body(unittest.TestCase):
                 self.assertIn("retrying", done.stderr)
                 self.assertEqual(len(gh.calls()), 2)
 
+    def test_a_rejection_after_an_unclear_attempt_stays_ambiguous(self) -> None:
+        # The first PATCH may have landed; the 403 answers only the second.
+        for entry in self.entries():
+            with self.subTest(entry=entry[0]), FakeTool("gh") as gh:
+                gh.script(Answer(1, "", "unexpected end of JSON input\n"),
+                          Answer(1, "", "gh: Resource not accessible by integration (HTTP 403)\n"))
+                done = self.run_cmd(entry, "o/r#7", self.file)
+                self.assertEqual(done.returncode, 3, done.stderr)
+                self.assertIn("may or may not have landed", done.stderr)
+                self.assertNotIn("REJECTED", done.stderr)
+                self.assertEqual(len(gh.calls()), 2)
+
     def test_invocation_errors_send_nothing(self) -> None:
         blank = os.path.join(self.dir, "blank.md")
         with open(blank, "w", encoding="utf-8") as f:
