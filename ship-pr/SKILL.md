@@ -220,6 +220,16 @@ costs the approval too, which is the round ludics-lite#221 was filed for. A roun
 exactly as able to break a gate as the first commit was, so the habit belongs on the push and not
 on the branch.
 
+Before the push that opens the PR, and only that one, review the branch locally: commit, then run
+`codex review --base origin/<base>` once. It runs for minutes, so give it a long timeout or a
+background run. Fix the findings you agree with and commit, then run the gates above on that
+commit — they gate the head you push, so they come after the local review, not before it. Name
+each finding you dismiss, with the reason, in the PR body so the reviewer's first round does not
+raise it again. Do not re-run it to a clean pass, and do not run it on later rounds: it gates
+nothing, the reviewer's 👍 stays the review gate, and its job is to spend the first round's
+findings before the reviewer sees the code. Where `codex` is missing or not logged in, skip it and
+say so in the body.
+
 Write the body as the reviewer's map, not a changelog: what is now true that was not, what the
 tests pin, what changes for existing users, and where the risky corner is. Reviewers — human and
 automated — spend their attention where the body sends it.
