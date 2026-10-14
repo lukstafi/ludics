@@ -9,11 +9,18 @@ but the fields sent. A FILE and not an argument, because a body is multi-paragra
 backticks; and not stdin, because gh reads ``@-`` once, so a gateway retry would send the spent
 remainder as the new body. No agent marker: the body is the PR's own text, not a reply.
 
-The write policy is every write's, but an ambiguous failure reads differently: a PATCH SETS the
-body rather than adding to anything, so repeating it cannot post anything twice.
+A PATCH SETS the body rather than adding to anything, so repeating it cannot post anything twice,
+and it is sent under the READ policy, as ``resolve``'s idempotent mutation is: an ambiguous failure
+is retried on the backoff, where the write policy stops at it because a repeated POST posts twice. The case that called for it
+(wave 2026-10-14): GitHub answered the PATCH with an empty body, gh printed only its JSON decoder's
+``unexpected end of JSON input`` -- no ``gh:``, no HTTP status -- and two runs eight seconds
+apart both stopped at exit 3, landing nothing, while the same PATCH by hand went through nine
+seconds after the second. The payload
+was never the cause: gh reads the file itself (``-F body=@file``), byte for byte.
 
 Stdout: the PR's URL, and nothing else. Exit: 0 done; 1 the API rejected it (a 4xx); 2 usage;
-3 not done (a gateway refusal on every attempt) or ambiguous (any other failure).
+3 not done (a gateway or quota refusal on every attempt) or ambiguous (an attempt failed in a way
+that does not say whether it landed, and none confirmed it).
 """
 
 import os
@@ -32,6 +39,20 @@ from ludics.prreview.core import (
 )
 
 _SPACE_BYTES = frozenset(b" \t\n\r\f\v")
+
+# gh's JSON decoder, on an answer whose body is empty, cut off or not JSON: gh prints the decoder's
+# error alone, without the HTTP status it prints for an answer it can read.
+_DECODER_COMPLAINTS = ("unexpected end of JSON input", "invalid character ")
+
+
+def _why(err_line: str) -> str:
+    """The last failure, and what it means when gh could not read GitHub's answer at all."""
+    if any(err_line.startswith(c) for c in _DECODER_COMPLAINTS):
+        return (
+            f"{err_line} -- gh's JSON decoder: GitHub sent no readable answer, so its HTTP status"
+            " is unknown"
+        )
+    return err_line
 
 
 def _has_content(path: str) -> bool:
@@ -64,19 +85,36 @@ def run(session: GhSession, args: list[str]) -> int:
     target = pr_arg(pr, session.config.repo)
     repo, num = target.repo, target.num
     result = session.retry(
-        "write", ["api", "-X", "PATCH", f"repos/{repo}/pulls/{num}", "-F", f"body=@{path}", "--jq", ".html_url"]
+        "read",
+        ["api", "-X", "PATCH", f"repos/{repo}/pulls/{num}", "-F", f"body=@{path}", "--jq", ".html_url"],
     )
     match result:
         case GhOk(stdout=url):
             cli.emit(url)
             return 0
         case GhUnanswered():
+            if session.unclear_attempts() > 0:
+                fail(
+                    3,
+                    f"body of PR {repo}#{num} failed AMBIGUOUSLY on all {session.config.api_attempts}"
+                    f" attempts (last: {_why(session.err_line())}). The edit may or may not have landed;",
+                    "it sets the body whole, so repeating the same command is safe.",
+                )
             fail(
                 3,
                 f"body of PR {repo}#{num} was not updated — the API refused it at the gateway on all",
                 f"{session.config.api_attempts} attempts ({session.err_line()}). Nothing was changed, so retry.",
             )
         case GhFailed():
+            # A rejection answers only the attempt it ended: an earlier one that failed unclearly
+            # may have set the body, so the outcome is still open, and still safe to repeat.
+            if session.unclear_attempts() > 0:
+                fail(
+                    3,
+                    f"body of PR {repo}#{num} failed AMBIGUOUSLY: an earlier attempt's outcome is unknown",
+                    f"and the last was refused ({session.err_line()}). The edit may or may not have landed;",
+                    "it sets the body whole, so repeating the same command is safe.",
+                )
             if api_rejection(session.err_line()):
                 fail(
                     1,
@@ -85,7 +123,7 @@ def run(session: GhSession, args: list[str]) -> int:
                 )
             fail(
                 3,
-                f"body of PR {repo}#{num} failed AMBIGUOUSLY: {session.err_line()}. The edit may or may not",
+                f"body of PR {repo}#{num} failed AMBIGUOUSLY: {_why(session.err_line())}. The edit may or may not",
                 "have landed; it sets the body whole, so repeating the same command is safe.",
             )
         case _:
