@@ -63,8 +63,11 @@ FAIL_MSG=""
 THREADS="900:false 901:false 902:false 903:true"
 THREADS_FIXTURE_PAGE=""
 THREADS_FIXTURE_TOTAL=""
-# How many PATCHes of the PR body fail (with FAIL_MSG) before one succeeds.
+# How many PATCHes of the PR body fail (with FAIL_MSG) before one succeeds, and what goes before
+# FAIL_MSG on that stderr line: gh's own `gh: ` for an error it formats, nothing for one it passes
+# through as is (its JSON decoder's, when GitHub's answer has no readable body).
 BODY_FAILS=0
+BODY_FAIL_PREFIX="gh: "
 # How many POSTs of a plain PR comment fail (with FAIL_MSG) before one succeeds.
 COMMENT_FAILS=0
 # The review-threads read: THREADS_FAIL_MSG fails every page with it (gh's stderr, behind `gh: `),
@@ -89,6 +92,7 @@ reset_fixture() {
   THREADS_FIXTURE_PAGE=""
   THREADS_FIXTURE_TOTAL=""
   BODY_FAILS=0
+  BODY_FAIL_PREFIX="gh: "
   COMMENT_FAILS=0
   THREADS_FAIL_MSG=""
   THREADS_ANSWER=""
@@ -164,7 +168,7 @@ gh() {
     # Counted off the log, not by decrementing BODY_FAILS: each attempt runs the fixture in a fresh
     # bash (the forward's bridge), whose assignments never reach the next attempt.
     if [ "$(wc -l <"$BODIES/pr-methods")" -le "$BODY_FAILS" ]; then
-      echo "gh: $FAIL_MSG" >&2
+      echo "$BODY_FAIL_PREFIX$FAIL_MSG" >&2
       return 1
     fi
     gh_fixture_answer '{"html_url":"https://github.com/example/repo/pull/7","body":"ignored"}'
@@ -722,6 +726,78 @@ test_body_patches_the_pr_from_the_file() {
   assert_eq "$(cat "$REQUEST_LOG")" "repos/$TARGET_REPO/pulls/7" "one call, to the PR it names"
 }
 
+# A long description, as a close-out writes one: Markdown tables, code spans and fences, `$`
+# expansions that a shell would perform, printf directives, backslashes, a line that starts with
+# `@` (what `-F` reads as a file name when it starts the VALUE, not the file), and non-ASCII from
+# accents to emoji. All of it reaches GitHub as the file's bytes, because the file is what gh is
+# handed: no shell variable, heredoc or JSON assembly stands between them. (The suspicion behind
+# this case, from a wave hand-back, was that the payload was built in a shell variable; it never
+# was, in the shell implementation or the port.)
+test_body_sends_a_long_body_byte_for_byte() {
+  reset_fixture
+  local i
+  BODY_FILE="$TEST_ROOT/new-body.md"
+  printf '## What is now true\n\n' >"$BODY_FILE"
+  i=0
+  while [ "$i" -lt 60 ]; do
+    i=$((i + 1))
+    printf '### Arm %s\n\n' "$i" >>"$BODY_FILE"
+    cat >>"$BODY_FILE" <<'BODY'
+| Arm | `time` | $HOME | $(date) | ${PATH} | 100% %s %d | a\b | naïve — ü 🤖 中文 |
+| --- | ---: | :---: | --- | --- | --- | --- | --- |
+| A | `23.79 ms` | `$x` | `` ` `` | \n | "quoted" 'single' | <b>&amp;</b> | ≤ ⊑ → |
+
+```bash
+F=$(mktemp) && echo "${F}" | jq '.body' # \ trailing
+```
+@ a line starting with an at sign, then {"json": true} and null and 42
+BODY
+  done
+  [ "$(wc -c <"$BODY_FILE")" -gt 20000 ] || bail "the long body is not long: $(wc -c <"$BODY_FILE") bytes"
+  run_cmd cmd_body "$BODY_FILE"
+  assert_eq "$RC" 0 "a long body is set like a short one ($ERR)"
+  assert_eq "$(cat "$BODIES/pr-methods")" PATCH "in one PATCH"
+  # cmp names the first byte that differs, so a failure says where.
+  assert_eq "$(cmp "$BODIES/pr-body" "$BODY_FILE" 2>&1 && echo same)" same \
+    "and what is sent is the file, byte for byte"
+}
+
+# GitHub sometimes answers a PATCH with an empty or cut-off body, and gh then prints only its JSON
+# decoder's complaint -- `unexpected end of JSON input`, with no `gh: ` and no HTTP status -- and
+# exits 1 (the wave of 2026-10-14: two `body` runs on one PR failed so eight seconds apart, landing
+# nothing, and the same PATCH by hand went through nine seconds after the second). Nothing in that line says whether the edit
+# landed, which for a reply or a comment means it must not be sent again. A body edit sets the
+# description whole, so sending it again is safe whether or not the first one landed: `body`
+# repeats it on the backoff instead of handing the caller the retry.
+test_body_repeats_an_answer_gh_could_not_read() {
+  reset_fixture
+  retune API_ATTEMPTS=3
+  BODY_FAILS=2
+  BODY_FAIL_PREFIX=""
+  FAIL_MSG="unexpected end of JSON input"
+  body_file "The body."
+  run_cmd cmd_body "$BODY_FILE"
+  assert_eq "$RC" 0 "the third attempt lands ($ERR)"
+  assert_eq "$(wc -l <"$BODIES/pr-methods" | tr -d ' ')" 3 "after two unreadable answers"
+  assert_contains "$ERR" "retrying" "each retry is announced on stderr"
+  assert_eq "$OUT" "https://github.com/example/repo/pull/7" "and the url is still the whole of stdout"
+  # Every attempt unreadable: still not a verdict, and still not "nothing was changed" -- any of
+  # them may have landed. Repeating stays safe, and the message says why the answer was empty.
+  reset_fixture
+  retune API_ATTEMPTS=2
+  BODY_FAILS=5
+  BODY_FAIL_PREFIX=""
+  FAIL_MSG="unexpected end of JSON input"
+  run_cmd cmd_body "$BODY_FILE"
+  assert_eq "$RC" 3 "unreadable on every attempt is transport"
+  assert_eq "$(wc -l <"$BODIES/pr-methods" | tr -d ' ')" 2 "after every attempt was spent"
+  assert_contains "$ERR" "may or may not have landed" "and it may have landed"
+  assert_not_contains "$ERR" "Nothing was changed" "so it is not reported as unchanged"
+  assert_contains "$ERR" "repeating the same command is safe" "and repeating it is safe"
+  assert_contains "$ERR" "no readable answer" "gh's decoder complaint is named for what it is"
+  assert_eq "$OUT" "" "and nothing reaches stdout"
+}
+
 # The retry the other writes have: a gateway refusal is a request no backend ran, so it is
 # repeated, and the edit that finally goes through is reported as done.
 test_body_retries_a_gateway_refusal() {
@@ -746,9 +822,10 @@ test_body_retries_a_gateway_refusal() {
 }
 
 # The other two exits, kept apart as on every write: a 4xx is the API answering (1, not retried —
-# a retry answers the same), anything else ambiguous (3, not retried under the write policy).
-# Unlike a reply, an ambiguous edit is safe to REPEAT, since the PATCH sets the body whole, and
-# the message says so rather than sending the caller to read the PR first.
+# a retry answers the same), anything else ambiguous (3). Unlike a reply, an ambiguous edit is safe
+# to REPEAT, since the PATCH sets the body whole: `body` repeats it itself on the backoff, and once
+# the attempts are spent the message says it may be repeated as is, rather than sending the caller
+# to read the PR first.
 test_body_exits_stay_apart() {
   reset_fixture
   retune API_ATTEMPTS=3
@@ -764,9 +841,17 @@ test_body_exits_stay_apart() {
   BODY_FAILS=1
   FAIL_MSG="Internal Server Error (HTTP 500)"
   run_cmd cmd_body "$BODY_FILE"
-  assert_eq "$RC" 3 "an ambiguous write is transport, not a verdict"
+  assert_eq "$RC" 0 "an ambiguous failure is repeated, and the repeat lands ($ERR)"
+  assert_eq "$(wc -l <"$BODIES/pr-methods" | tr -d ' ')" 2 "on the second attempt"
+  reset_fixture
+  retune API_ATTEMPTS=3
+  BODY_FAILS=5
+  FAIL_MSG="Internal Server Error (HTTP 500)"
+  run_cmd cmd_body "$BODY_FILE"
+  assert_eq "$RC" 3 "an ambiguous write that outlives the attempts is transport, not a verdict"
   assert_contains "$ERR" "repeating the same command is safe" "and a whole-body edit may be repeated"
-  assert_eq "$(wc -l <"$BODIES/pr-methods" | tr -d ' ')" 1 "though the write policy does not repeat it itself"
+  assert_not_contains "$ERR" "Nothing was changed" "it may have landed, so it is not called unchanged"
+  assert_eq "$(wc -l <"$BODIES/pr-methods" | tr -d ' ')" 3 "after every attempt was spent"
 }
 
 # Every shape that is not `body <pr> <file>` is an invocation error, before any request: a missing
@@ -1275,6 +1360,8 @@ tests=(
   test_a_named_repo_writes_from_any_cwd
   test_a_bare_number_is_refused_even_after_a_named_call
   test_body_patches_the_pr_from_the_file
+  test_body_sends_a_long_body_byte_for_byte
+  test_body_repeats_an_answer_gh_could_not_read
   test_body_retries_a_gateway_refusal
   test_body_exits_stay_apart
   test_body_invocation_errors_send_nothing

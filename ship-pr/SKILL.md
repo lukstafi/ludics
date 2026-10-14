@@ -593,8 +593,11 @@ paragraph of a close-out, a closing sentence `merge` warned about — goes throu
 ```
 
 `gh pr edit --body-file` rides GraphQL and fails on `lukstafi/ocannl-staging` with the classic
-Projects deprecation error whatever is edited. `body` replaces the description whole, under the
-same write policy and exits as `comment`, except that an ambiguous exit 3 is safe to repeat as is.
+Projects deprecation error whatever is edited. `body` replaces the description whole, with the
+same exits as `comment`. Because the PATCH sets the body rather than adding to anything, `body`
+repeats an ambiguous failure itself on the backoff (a 5xx, or gh's bare `unexpected end of JSON
+input` when GitHub's answer has no readable body), and an exit 3 that outlives the attempts is
+safe to re-run as is.
 
 If a finding changes what a measurement *means* (not just how it is run), redo the affected
 measurement rather than editing the prose around it; and if a result rests on a premise the

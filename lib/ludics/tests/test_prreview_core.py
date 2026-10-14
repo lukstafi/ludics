@@ -180,6 +180,38 @@ class Retry(unittest.TestCase):
             self.assertEqual(len(gh.calls()), 1)
             self.assertFalse(core.api_rejection(s.session.err_line()))
 
+    def test_unclear_attempts_count_the_failures_that_leave_landing_open(self) -> None:
+        # gh's own line when GitHub's answer has no readable body: no `gh:`, no HTTP status.
+        unreadable = Answer(1, "", "unexpected end of JSON input\n")
+        patch = ["api", "-X", "PATCH", "x"]
+        with FakeTool("gh") as gh:
+            # Under the read policy (an idempotent mutation's) every one of them is repeated.
+            gh.script(unreadable)
+            s = Session(SHIP_PR_API_ATTEMPTS="3")
+            self.assertEqual(s.retry("read", patch), GhUnanswered())
+            self.assertEqual(len(gh.calls()), 3)
+            self.assertEqual(s.session.unclear_attempts(), 3)
+            self.assertEqual(s.session.err_line(), "unexpected end of JSON input")
+            # A gateway refusal never reached a backend; a 500 may have.
+            gh.script(GATEWAY, GATEWAY)
+            s = Session(SHIP_PR_API_ATTEMPTS="2")
+            self.assertEqual(s.retry("read", patch), GhUnanswered())
+            self.assertEqual(s.session.unclear_attempts(), 0)
+            gh.script(SERVER_ERROR, GATEWAY)
+            self.assertEqual(s.retry("read", patch), GhUnanswered())
+            self.assertEqual(s.session.unclear_attempts(), 1)
+            # A 4xx is the API answering, and the write policy's stop is counted as what it is.
+            gh.script(NOT_FOUND)
+            self.assertEqual(s.retry("read", patch), GhFailed())
+            self.assertEqual(s.session.unclear_attempts(), 0)
+            gh.script(unreadable)
+            self.assertEqual(s.retry("write", patch), GhFailed())
+            self.assertEqual(s.session.unclear_attempts(), 1)
+            # Each call starts the count again.
+            gh.script(Answer(0, "ok\n"))
+            self.assertEqual(s.retry("write", patch), GhOk("ok"))
+            self.assertEqual(s.session.unclear_attempts(), 0)
+
     def test_a_fixed_graphql_answer_is_not_retried_under_either_policy(self) -> None:
         for mode in ("read", "write"):
             with FakeTool("gh") as gh:

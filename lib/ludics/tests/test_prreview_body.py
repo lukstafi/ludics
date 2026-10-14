@@ -59,7 +59,9 @@ class Body(unittest.TestCase):
         cases = (
             (Answer(1, "", "gh: Not Found (HTTP 404)\n"), 1, "was REJECTED, not dropped", 1),
             (Answer(1, "", "gh: HTTP 503: Service Unavailable\n"), 3, "Nothing was changed, so retry", 2),
-            (Answer(1, "", "gh: Internal Server Error (HTTP 500)\n"), 3, "repeating the same command is safe", 1),
+            # Ambiguous: repeated, since the PATCH sets the body whole, and still 3 once spent.
+            (Answer(1, "", "gh: Internal Server Error (HTTP 500)\n"), 3, "repeating the same command is safe", 2),
+            (Answer(1, "", "unexpected end of JSON input\n"), 3, "GitHub sent no readable answer", 2),
         )
         for entry in self.entries():
             for answer, rc, says, calls in cases:
@@ -70,6 +72,18 @@ class Body(unittest.TestCase):
                     self.assertIn(says, done.stderr)
                     self.assertEqual(done.stdout, "")
                     self.assertEqual(len(gh.calls()), calls)
+
+    def test_an_unreadable_answer_is_repeated_until_one_lands(self) -> None:
+        # The wave of 2026-10-14: GitHub answered the PATCH with no readable body, gh printed only
+        # its decoder's complaint, and the edit had not landed. The repeat is what lands it.
+        for entry in self.entries():
+            with self.subTest(entry=entry[0]), FakeTool("gh") as gh:
+                gh.script(Answer(1, "", "unexpected end of JSON input\n"),
+                          Answer(0, "https://github.com/o/r/pull/7\n"))
+                done = self.run_cmd(entry, "o/r#7", self.file)
+                self.assertEqual((done.returncode, done.stdout), (0, "https://github.com/o/r/pull/7\n"))
+                self.assertIn("retrying", done.stderr)
+                self.assertEqual(len(gh.calls()), 2)
 
     def test_invocation_errors_send_nothing(self) -> None:
         blank = os.path.join(self.dir, "blank.md")

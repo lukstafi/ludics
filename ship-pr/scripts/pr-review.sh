@@ -244,7 +244,9 @@
 #   pr-review.sh body <pr> <file>          # replace the PR's description with the file's content,
 #                                          # over REST: `gh pr edit --body-file` rides GraphQL and
 #                                          # fails on a repo whose PRs trip the classic-Projects
-#                                          # deprecation (see prreview/body.py). Prints the PR's URL
+#                                          # deprecation (see prreview/body.py). Prints the PR's URL.
+#                                          # Retried like a read, ambiguous failures included: the
+#                                          # PATCH sets the body whole, so a repeat is harmless
 #   pr-review.sh retry [--read] <gh args...>
 #                                          # any other gh call (pr merge, api) with the same retry
 #                                          # policy, instead of a hand-rolled loop. gh refusing

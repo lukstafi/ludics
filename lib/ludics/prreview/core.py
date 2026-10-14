@@ -400,12 +400,23 @@ class GhSession:
         )
         self._sleep = sleep
         self._err_line = ""
+        self._unclear_attempts = 0
         # The polling budget (budget.py): every own call passes its hold's gate. None in the unit
         # tests that drive the retry policy alone.
         self.budget = budget
 
     def err_line(self) -> str:
         return self._err_line
+
+    def unclear_attempts(self) -> int:
+        """How many attempts of the last call failed in a way that says nothing about whether the
+        request reached a backend: neither a gateway refusal, nor a quota refusal, nor a 4xx, nor a
+        refusal of the arguments. A mutation any of them carried may have landed. It is for a
+        mutation sent under the READ policy because it is idempotent (``resolve``'s, ``body``'s
+        PATCH), which an ambiguous failure does not stop: its message, once the attempts are spent,
+        must not say nothing changed if one of them may have. The last call's count; each call
+        starts it again."""
+        return self._unclear_attempts
 
     def retry(self, mode: Mode, args: Sequence[str]) -> GhResult:
         """``gh_retry <mode> <args>`` for THIS script's own arguments. gh refusing one of them
@@ -435,6 +446,7 @@ class GhSession:
         *,
         budgeted: bool,
     ) -> GhCallerResult:
+        self._unclear_attempts = 0
         attempts = self.config.api_attempts
         delay = self.config.api_backoff
         attempt = 1
@@ -488,6 +500,11 @@ class GhSession:
                 retryable = gateway_failure(f"{err} {out}")
             else:
                 retryable = transient_failure(f"{err} {out}")
+            # What a failure that is none of the answers above leaves open: whether it landed.
+            if not (
+                gateway_failure(f"{err} {out}") or api_rejection(first) or graphql_fixed_answer(first)
+            ):
+                self._unclear_attempts += 1
             if not retryable:
                 return GhFailed()
             if attempt >= attempts:
