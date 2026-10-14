@@ -221,7 +221,15 @@ exactly as able to break a gate as the first commit was, so the habit belongs on
 on the branch.
 
 Before the push that opens the PR, and only that one, review the branch locally: commit, then run
-`codex review --base origin/<base>` once. It runs for minutes, so give it a long timeout or a
+`codex exec review` once, with the transcript going to a log and only the verdict to a file:
+
+```bash
+d=$(mktemp -d); codex exec review --base origin/<base> -o "$d/verdict.md" >"$d/run.log" 2>&1; echo "$d"
+```
+
+Read `verdict.md`, not the output: the transcript is the whole agent run, thousands of lines with
+every test PASS line of whatever it chose to run, and the verdict is only its last message. Open
+`run.log` only when `verdict.md` is empty. It runs for minutes, so give it a long timeout or a
 background run. Fix the findings you agree with and commit, then run the gates above on that
 commit — they gate the head you push, so they come after the local review, not before it. Name
 each finding you dismiss, with the reason, in the PR body so the reviewer's first round does not
