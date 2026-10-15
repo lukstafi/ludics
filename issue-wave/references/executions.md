@@ -480,6 +480,20 @@ field on any other shape. Concluded `pass` or `fail` at an exact `observed_sha`,
 `fleet-worker.sh gate` hands `pr-review.sh base` for a default branch without push CI
 (ludics-lite#401); a correctness run without the field is a targeted batch and is never offered.
 
+A loop run - the GPU integration loop's, or the cc loop's local run - is one call (ludics-lite#615):
+`fleet-worker.sh execution tip-run <reserve.json> --checkout <dir> [--runs <dir>] [--cpu] --
+<command...>`. Its request is the coordinator's non-standing `correctness` request whose
+`requested_revision` is exactly one full SHA. It yields, reserving nothing, to anything
+outstanding on the box but standing reservations; then it runs `execution run`, checks the SHA out
+detached in the clean checkout on the box (fetching only when it lacks it), and starts the command
+there under `execution slot --bg <runs> --wait 0` (default `<runs>`: `tip-runs` in the state
+directory, `~/.local/state/issue-wave` on the box unless `ISSUE_WAVE_STATE` names another), so it
+takes a GPU token, unless `--cpu`, only if one is free at once.
+It prints `TIP-RUN STARTED <id> <box> <sha> <dir>` with the record moved to `running`, or `TIP-RUN
+NOT STARTED <id>: <why>` (exit 1) with anything it reserved concluded `not-launched`; exit 4 is an
+outcome to reconcile. Conclude a started run with `conclude --from-bg-run <dir> --request <id>
+--sha <sha>`. The rules it enforces are `lib/ludics/fleetworker/tiprun.py`'s header.
+
 ## Standing iteration reservation
 
 A worker's own targeted correctness batches on its agent host, and on its GPU home box
