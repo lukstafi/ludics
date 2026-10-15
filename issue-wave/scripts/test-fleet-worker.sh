@@ -2621,9 +2621,9 @@ lbg=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" new "$TMP/leg runs") |
 bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" start "$lbg" -- "${FWL[@]}" execution leg --request leg-a --rev claude/topic \
   --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh >/dev/null 2>&1
 expect "a controlled leg under bg-run concludes pass from its directory" 0 '"verdict": "pass"' -- \
-  "${FWL[@]}" execution conclude --from-bg-run "$lbg" --request leg-a --observed-from "$lwt"
+  "${FWL[@]}" execution conclude --from-bg-run "$lbg" --request leg-a --sha "$(sed -n 's/.*; observed_sha=//p' "$lbg/log")"
 grep -Fq "runner sentinel 'execution-leg: exit: 0'" <<<"$out" && grep -Fq "\"observed_sha\": \"$lb\"" <<<"$out" &&
-  ok "...reading the leg's sentinel, at the leg's commit" || ko "the conclusion read another sentinel or SHA: $out"
+  ok "...reading the leg's sentinel, at the observed_sha it printed" || ko "the conclusion read another sentinel or SHA: $out"
 # Over ssh (the shim runs "other" here): every runner word crosses the remote shell intact.
 expect "a leg over ssh passes the runner's words through the remote shell untouched" 0 "runner argv: \\[a b\\] \\['q'\\] \\[\$HOME\\] \\[;\\]" -- \
   env SHIM_SSH_LOCAL=other "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh "a b" "'q'" '$HOME' ';'

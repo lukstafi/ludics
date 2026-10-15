@@ -37,8 +37,12 @@ it reports.
 THE RUNNER. The command after ``--`` runs in the worktree, its argv passed untouched (each word
 quoted for the box's shell), stdin closed; nothing here names a project's runner. Its status is the
 leg's, unchanged -- a 125 or a signal's 128+n survives the trip -- and the last line on stdout is
-``execution-leg: exit: <status>``, the sentinel ``conclude --from-bg-run`` reads (split onto a line
-of its own when the runner's output ended without a newline).
+``execution-leg: exit: <status>``, the sentinel ``conclude --from-bg-run`` reads. This verb prints
+that line itself, once the far side has ended, and only when the far side reported the status under
+this invocation's own random token (``execution-leg <token>: exit: <status>``, consumed, never
+passed through): a runner's output -- a nested leg's sentinel, say -- cannot stand in for it, even
+when the connection drops after printing it. A runner's own plain sentinel lines pass through as
+output.
 
 THE CONTROL. With ``--control <patch>`` (a file on this box, copied to the box's state directory),
 the patch must apply (``git apply --check``) before anything runs. After a main run that passed it
@@ -57,6 +61,7 @@ or the connection dropped, with the runner perhaps started -- find out on the bo
 
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -75,21 +80,18 @@ USAGE = (
     " [--deadline <seconds>] -- <runner command...>"
 )
 DISPATCHED = ("launching", "running", "uncertain")
-# The sentinel ends a line; a runner whose last output had no newline leaves it mid-line, where it is
-# split off onto a line of its own as it passes through.
-SENTINEL = re.compile(rb"execution-leg: exit: ([0-9]{1,3})\r?\n?\Z")
 HEX = re.compile(r"[0-9a-fA-F]{7,}")
 OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 REMOTE = re.compile(r"[A-Za-z0-9._-]+")
 SECONDS = re.compile(r"[1-9][0-9]*")
-HELD_BACK = 64  # bytes of an unfinished line kept back for the sentinel; it is never longer than 30
+HELD_BACK = 64  # bytes of an unfinished line kept back for the status line; it is never longer than 45
 
 # The far side, after the prelude. Args: checkout, worktree, remote, rev, want (the assigned commit or
 # empty), patch name (in $STATE/leg-control, or empty), request id, the fetch's bound in seconds
-# (FLEET_FETCH_TIMEOUT), the wrapper's word count and
+# (FLEET_FETCH_TIMEOUT), the status token (see the header), the wrapper's word count and
 # words (fleet-worker.sh's own verb and flags, ending before its `--`), then the runner's argv.
-LEG = r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" nwrap="$9"
-shift 9
+LEG = r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" nwrap="${10}"
+shift 10
 fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
 while [ "$nwrap" -gt 0 ]; do wrap+=("$1"); shift; nwrap=$((nwrap - 1)); done
@@ -104,7 +106,7 @@ cleanup() {
   return 0
 }
 refuse() { printf 'EXECUTION LEG REFUSED %s: %s\n' "$BOX" "$*" >&2; cleanup; exit 1; }
-finish() { cleanup; printf 'execution-leg: exit: %s\n' "$1"; exit "$1"; }
+finish() { cleanup; printf 'execution-leg %s: exit: %s\n' "$token" "$1"; exit "$1"; }
 # A path's git common directory, physical; empty when it is no checkout.
 common() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
 gitdir() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
@@ -339,18 +341,24 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
             return refused(f"the control patch could not be copied to {box} (exit {sent.rc}); nothing ran")
 
     script = prelude(cfg, box) + LEG
+    token = secrets.token_hex(8)
     fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
     if not SECONDS.fullmatch(fetch_timeout):
         die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
     argv = far_argv(
-        cfg, box, [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, str(len(wrap)), *wrap, *runner]
+        cfg, box,
+        [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, str(len(wrap)), *wrap, *runner],
     )
-    return stream(argv, script, box, local=is_local(cfg, box))
+    return stream(argv, script, box, token, local=is_local(cfg, box))
 
 
-def stream(argv: list[str], script: str, box: str, *, local: bool) -> int:
-    """Run the far side with its stdout passed through line by line, watching for the sentinel: the
-    runner's status when it came, else the far side's own (or UNREACHABLE for ssh's 255)."""
+def stream(argv: list[str], script: str, box: str, token: str, *, local: bool) -> int:
+    """Run the far side with its stdout passed through, watching for its status line under
+    ``token``: the runner's status when it came (printed last, as the plain sentinel), else the far
+    side's own (or UNREACHABLE for ssh's 255)."""
+    # The status line ends the far side's output; after a runner whose output ended with no newline
+    # it ends that line, whose text is kept and ended.
+    reported = re.compile(rb"execution-leg " + re.escape(token.encode()) + rb": exit: ([0-9]{1,3})\r?\n?\Z")
     sys.stdout.flush()
     sys.stderr.flush()
     try:
@@ -377,12 +385,13 @@ def stream(argv: list[str], script: str, box: str, *, local: bool) -> int:
 
     def line_out(line: bytes) -> None:
         nonlocal sentinel
-        found = SENTINEL.search(line)
-        if found and found.start() > 0:
-            out.write(line[: found.start()] + b"\n")
-            line = line[found.start() :]
-        out.write(line)
-        sentinel = int(found.group(1)) if found else sentinel
+        found = reported.search(line)
+        if found:
+            sentinel = int(found.group(1))
+            if found.start() > 0:
+                out.write(line[: found.start()] + b"\n")
+        else:
+            out.write(line)
 
     # Bounded reads, not readline: a runner's output with no newline in it (progress bars, binary)
     # passes through as it comes, and only a short tail of an unfinished line is held back, enough
@@ -404,6 +413,8 @@ def stream(argv: list[str], script: str, box: str, *, local: bool) -> int:
     rc = child.wait()
     feeder.join()
     if sentinel is not None:
+        out.write(b"execution-leg: exit: %d\n" % sentinel)
+        out.flush()
         return sentinel
     if rc == 255 and not local:
         cli.say(

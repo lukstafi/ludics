@@ -615,7 +615,8 @@ and its 125 and its abort statuses come back as they left. Any other repository 
 command, building first if its runner does not (`-- sh -c 'make && make check'`, `--
 scripts/test.sh unit`), with `--checkout` its clone on the box. A leg longer than a tool call runs
 under `bg-run.sh spawn` on the caller's box and concludes with `conclude --from-bg-run <dir> --box
-<that box> --observed-from <worktree>`. Do not wrap the leg itself in an `execution slot` on the
+<that box> --sha <the observed_sha the leg printed>`: not `--observed-from <worktree>`, whose HEAD a
+runner may have moved (a bisect) or a later leg may since have. Do not wrap the leg itself in an `execution slot` on the
 caller's box: the slot it needs is the execution host's, which it takes there.
 
 ## Standing iteration reservation
