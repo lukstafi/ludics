@@ -710,7 +710,15 @@ class Unread:
 def read_registry(cfg: Config, box: str) -> list[dict[str, Any]] | Unread:
     done = listing(cfg)
     if done.unreachable:
-        return Unread(4, (f"{SLOT_PREFIX} UNREACHABLE {cfg.anchor}: registry unread, no slot taken",))
+        # Refused at once, never retried here: later in a box's uptime an anchor that does not
+        # answer is the answer. The first minute after a wake is the exception (ludics-lite#617):
+        # the box's sshd answers before its own ssh to the anchor does, so the second line tells
+        # the caller that a retry may be all it needs, and that `wake-lab.sh --wait` waits for it.
+        return Unread(4, (
+            f"{SLOT_PREFIX} UNREACHABLE {cfg.anchor}: registry unread, no slot taken",
+            f"{SLOT_PREFIX} UNREACHABLE {cfg.anchor}: a box woken in the last few minutes may only need its"
+            f" ssh to {cfg.anchor} to come up; retry in a minute (wake-lab.sh --wait <box> waits for that leg)",
+        ))
     if done.rc != 0:
         return Unread(1, (substitution(done.out), f"{SLOT_PREFIX} REFUSED {box}: the anchor's registry could not be read"))
     records = records_of(done.out)

@@ -8,7 +8,9 @@
 #
 # Usage:
 #   wake-lab.sh rog|minix|tuf|all ...     wake the named boxes (all: every box in the endpoint map)
-#   wake-lab.sh --wait [--wsl] rog        wake, then poll until configured OS answers
+#   wake-lab.sh --wait [--wsl] rog        wake, then poll until configured OS answers, and on a
+#                                         linux box until its own ssh to the anchor works too
+#                                         (WAKE_LAB_ANCHOR, default mac-studio; "the anchor leg")
 #   wake-lab.sh --wait --restart-wsl rog  ...and start WSL from a FRESH VM (wsl --shutdown first)
 #   wake-lab.sh status [box...]           per-box reachability and reached OS, whether each lab lock
 #                                         is really held, and the box's execution reservations
@@ -1039,6 +1041,82 @@ wait_for() { # wait_for <box...> — poll until every box answers, for up to WAI
   done
 }
 
+# ---------------------------------------------------------------- the anchor leg
+# A box that answers ssh is not yet a box that can work (ludics-lite#617). Every fleet-worker.sh
+# run on a box reads the execution registry on the anchor over the box's OWN ssh to it, and in the
+# first minute after a wake that leg can still fail while the box's sshd already answers: on
+# 2026-10-14 an integration run started on minix right after `--wait minix` said up, and its
+# `execution slot` refused it `EXECUTION SLOT UNREACHABLE mac-studio`. So `--wait` asks the second
+# leg too, once the first answers: on the box, a non-interactive `ssh -o BatchMode=yes <anchor>
+# true`, polled for up to ANCHOR_WAIT_SECONDS. A box whose leg never comes up is NOT all up, and
+# its line says which leg failed -- the box itself, or its ssh to the anchor.
+# Boundary, a fail-closed allowlist: only a box whose kind is `linux` is asked, through its linux
+# endpoint, which is where its fleet shell runs. A wsl box's fleet shell is its WSL guest, and a
+# windows box runs no fleet work; neither is asked, and each says so on a line of its own rather
+# than passing as checked by omission. ANCHOR is the anchor's name as the BOX's ssh spells it,
+# fleet-worker.sh's FLEET_ANCHOR default; WAKE_LAB_ANCHOR overrides it, and set empty turns the leg
+# off for a lab with no fleet. It must be a plain ssh destination, since it is spliced into the
+# remote command line (checked before anything is sent).
+ANCHOR=${WAKE_LAB_ANCHOR-mac-studio}
+ANCHOR_WAIT_SECONDS=${WAKE_LAB_ANCHOR_WAIT_SECONDS:-120}
+ANCHOR_POLL_SECONDS=${WAKE_LAB_ANCHOR_POLL_SECONDS:-5}
+ANCHOR_LEG_FAILED=3   # the probe's status when the box answered and its own ssh to the anchor did not
+ANCHOR_FAILED=""      # set by wait_anchor: the boxes whose anchor leg never came up
+
+anchor_alias() { # anchor_alias <box> -- the endpoint whose ssh to the anchor is asked; 1 when none is
+  [ "$(box_kind "$1")" = linux ] || return 1
+  endpoint_of "$1" linux
+}
+
+# 0 the leg works; ANCHOR_LEG_FAILED the box answered and its ssh to the anchor did not;
+# CAP_EXPIRED nothing came back within PROBE_CAP; anything else, the box itself did not answer
+# (ssh's own 255). The remote `|| exit` is what tells the two legs apart: ssh hands back the
+# remote command's status, so a bare inner ssh failing reads as 255, the same as the outer one.
+anchor_probe() { # anchor_probe <alias>
+  capped "$PROBE_CAP" \
+    ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$1" \
+        "ssh -o BatchMode=yes -o ConnectTimeout=10 $ANCHOR true || exit $ANCHOR_LEG_FAILED" >/dev/null 2>&1
+}
+
+wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it works, for up to ANCHOR_WAIT_SECONDS
+  local n a i all line names=() aliases=() rcs=() deadline=$((SECONDS + ANCHOR_WAIT_SECONDS))
+  ANCHOR_FAILED=""
+  if [ -z "$ANCHOR" ]; then echo "anchor leg not checked: WAKE_LAB_ANCHOR is empty"; return 0; fi
+  for n in "$@"; do
+    if a=$(anchor_alias "$n"); then names+=("$n"); aliases+=("$a"); rcs+=(1)
+    else echo "anchor leg not checked on $n: its kind is $(box_kind "$n"), and only a linux box is asked"; fi
+  done
+  [ ${#names[@]} -gt 0 ] || return 0
+  echo "waiting for each box's own ssh to $ANCHOR..."
+  while :; do
+    all=1; line="anchor leg to $ANCHOR: "
+    for ((i = 0; i < ${#names[@]}; i++)); do
+      # A leg that answered once is not asked again: the question is whether it has come up.
+      if [ "${rcs[i]}" != 0 ]; then anchor_probe "${aliases[i]}"; rcs[i]=$?; fi
+      if [ "${rcs[i]}" = 0 ]; then line="$line${names[i]}=OK "
+      else line="$line${names[i]}=-- "; all=0; fi
+    done
+    printf '%s(%s)\n' "$line" "$(date +%H:%M:%S)"
+    [ "$all" = 1 ] && return 0
+    [ "$SECONDS" -ge "$deadline" ] && break
+    sleep "$ANCHOR_POLL_SECONDS"
+  done
+  for ((i = 0; i < ${#names[@]}; i++)); do
+    n=${names[i]}; a=${aliases[i]}
+    case "${rcs[i]}" in
+      0) continue ;;
+      "$ANCHOR_LEG_FAILED")
+        printf '%s\n' "anchor leg NOT up on $n: $a answers, but its own 'ssh -o BatchMode=yes $ANCHOR true' still failed after ${ANCHOR_WAIT_SECONDS}s; a fleet-worker.sh run there would refuse UNREACHABLE $ANCHOR" ;;
+      "$CAP_EXPIRED")
+        printf '%s\n' "anchor leg NOT up on $n: its check through $a did not return within ${PROBE_CAP}s" ;;
+      *)
+        printf '%s\n' "anchor leg NOT up on $n: $a itself stopped answering ssh (status ${rcs[i]}) while its ssh to $ANCHOR was asked" ;;
+    esac
+    ANCHOR_FAILED="${ANCHOR_FAILED:+$ANCHOR_FAILED }$n"
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------- dual boot
 # `boot-windows <box>` and `boot-linux <box>` reboot a dual-boot box into its other OS exactly once,
 # with nobody at the keyboard, and wait until that OS answers (ludics-lite#353). A booted Windows
@@ -1599,6 +1677,15 @@ if [ "$HOLD" = 1 ] && [ "$any_wsl" = 1 ] && [ "$VERB" != kick-wsl ] &&
   echo "  starts WSL only under --wait); end it with 'unhold'." >&2
   exit 1
 fi
+# The anchor goes into a remote command line (anchor_probe), so a name that is not a plain ssh
+# destination is refused here, before a packet is sent, rather than run on the box.
+if [ "$VERB" = wake ] && [ "$WAIT" = 1 ]; then
+  case "$ANCHOR" in
+    -*|*[!A-Za-z0-9._@-]*)
+      printf '%s\n' "wake-lab.sh: WAKE_LAB_ANCHOR $(printf '%q' "$ANCHOR") is not a plain ssh destination; nothing was sent." >&2
+      exit 1 ;;
+  esac
+fi
 
 case "$VERB" in
   status)
@@ -1630,11 +1717,20 @@ case "$VERB" in
         for t in "${TARGETS[@]}"; do is_up "$t" && UP+=("$t"); done
         [ ${#UP[@]} -gt 0 ] && { prepare_boxes "${UP[@]}" || wsl_rc=1; }
       fi
+      # The anchor leg, for the boxes that answer: one that never woke has no leg to wait for, and
+      # is already reported below as not woken. A box the leg does not ask is passed through
+      # unprobed, for wait_anchor to say so.
+      anchor_rc=0
+      UP=()
+      for t in "${TARGETS[@]}"; do
+        if [ "$rc" = 0 ] || [ -z "$ANCHOR" ] || ! anchor_alias "$t" >/dev/null || is_up "$t"; then UP+=("$t"); fi
+      done
+      if [ ${#UP[@]} -gt 0 ]; then wait_anchor "${UP[@]}" || anchor_rc=1; fi
       # The final verdict is the wake's AND the WSL step's: `all up` over a failed restart would
       # hand the sweep the degraded VM the restart exists to replace, so the WSL failure is
       # restated as the LAST line, where the sweep routine reads its verdict, and the exit
       # status says so too.
-      if [ "$rc" = 0 ] && [ "$wsl_rc" = 0 ]; then
+      if [ "$rc" = 0 ] && [ "$wsl_rc" = 0 ] && [ "$anchor_rc" = 0 ]; then
         echo "all up"
       else
         if [ "$rc" != 0 ]; then
@@ -1644,6 +1740,7 @@ case "$VERB" in
           echo "PowerShell to disable Fast Startup and re-arm the NIC. Check '$0 status' after the"
           echo "router lease settles; tuf (no Wake-on-LAN) needs manual wake."
         fi
+        [ "$anchor_rc" != 0 ] && echo "NOT all up: no ssh to $ANCHOR yet from: $ANCHOR_FAILED (see above)"
         [ "$wsl_rc" != 0 ] && echo "NOT all up: $WSL_FAILED (see above)"
         exit 1
       fi

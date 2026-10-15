@@ -33,6 +33,14 @@ case "$*" in
   *systemd-inhibit*)
     [ "${SSH_INHIBIT_FAIL:-0}" = 1 ] && exit 1
     printf '%s' "${SSH_INHIBITORS:-}"; exit 0 ;;
+  *' true || exit '*)
+    # The anchor leg (ludics-lite#617), asked ON the box: the box answers or it is ssh's own 255,
+    # and then the box's own ssh to the anchor fails the first $SSH_ANCHOR_AFTER times it is asked
+    # (counted in this log, this ask included), with the status the probe's `|| exit` names: a
+    # leg still coming up after a wake.
+    [ "${SSH_UP:-0}" = 1 ] || exit 255
+    [ "$(grep -c -- ' true || exit ' "$SSH_LOG")" -gt "${SSH_ANCHOR_AFTER:-0}" ] && exit 0
+    all=$*; exit "${all##* }" ;;
 esac
 case " $* " in
   *' tuf-amd-linux '*) [ "${SSH_UP:-0}" = 1 ] ;;
@@ -200,6 +208,28 @@ check 'TUF, with no Wake-on-LAN NIC, refuses WoL with manual-wake guidance' '[ "
 : >"$SSH_LOG"
 out=$(SSH_UP=1 WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait --wsl --hold tuf 2>&1); rc=$?
 check 'Linux wait needs no WSL kick or holder and explains manual wake' '[ "$rc" = 0 ] && [[ "$out" == *"all up"* ]] && [[ "$out" == *"no holder needed"* ]] && [[ "$out" == *"wake it manually"* ]] && ! grep -q wsl.exe "$SSH_LOG"'
+# ludics-lite#617: a box that answers is up only once its OWN ssh to the anchor works, which in the
+# first minute after a wake it may not. The leg is asked on the box, non-interactively, and polled.
+check '...and is up only once the box itself reaches the anchor, asked non-interactively on the box' '[[ "$out" == *"anchor leg to mac-studio: tuf=OK"* ]] && grep -q -- "-o BatchMode=yes .*tuf-amd-linux ssh -o BatchMode=yes .* mac-studio true || exit 3$" "$SSH_LOG"'
+: >"$SSH_LOG"
+out=$(SSH_UP=1 SSH_ANCHOR_AFTER=2 WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAIT_SECONDS=60 WAKE_LAB_ANCHOR_POLL_SECONDS=0 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?; last=${out##*$'\n'}
+check 'a box whose anchor leg comes up late is waited for, then all up' '[ "$rc" = 0 ] && [ "$last" = "all up" ] && [[ "$out" == *"anchor leg to mac-studio: tuf=--"*"anchor leg to mac-studio: tuf=OK"* ]] && [ "$(grep -c " mac-studio true || exit " "$SSH_LOG")" = 3 ]'
+: >"$SSH_LOG"
+out=$(SSH_UP=1 SSH_ANCHOR_AFTER=1000 WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_POLL_SECONDS=0 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?; last=${out##*$'\n'}
+want_leg="anchor leg NOT up on tuf: tuf-amd-linux answers, but its own 'ssh -o BatchMode=yes mac-studio true' still failed"
+check 'an anchor leg that never comes up is NOT all up, naming that leg and not the wake' '[ "$rc" = 1 ] && [ "$last" = "NOT all up: no ssh to mac-studio yet from: tuf (see above)" ] && [[ "$out" == *"$want_leg"* ]] && ! grep -qx "all up" <<<"$out" && [[ "$out" != *"did NOT wake"* ]]'
+: >"$SSH_LOG"
+out=$(SSH_UP=0 WAKE_LAB_WAIT_SECONDS=0 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
+check 'a box that never answered is reported not woken, and its anchor leg is never asked' '[ "$rc" = 1 ] && [[ "$out" == *"did NOT wake: tuf"* ]] && ! grep -q " true || exit " "$SSH_LOG" && [[ "$out" != *"anchor leg"* ]]'
+: >"$SSH_LOG"
+out=$(SSH_UP=1 WAKE_LAB_ANCHOR=hub.lan WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
+check 'WAKE_LAB_ANCHOR names the anchor the box is asked to reach' '[ "$rc" = 0 ] && [[ "$out" == *"anchor leg to hub.lan: tuf=OK"* ]] && grep -q " hub.lan true || exit 3$" "$SSH_LOG" && ! grep -q "mac-studio" "$SSH_LOG"'
+: >"$SSH_LOG"
+out=$(SSH_UP=1 WAKE_LAB_ANCHOR= WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
+check '...and set empty turns the leg off, saying so' '[ "$rc" = 0 ] && [[ "$out" == *"anchor leg not checked: WAKE_LAB_ANCHOR is empty"* ]] && ! grep -q " true || exit " "$SSH_LOG"'
+: >"$SSH_LOG"
+out=$(SSH_UP=1 WAKE_LAB_ANCHOR='hub; touch x' WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
+check 'an anchor that is not a plain ssh destination is refused before anything is sent' '[ "$rc" = 1 ] && [[ "$out" == *"is not a plain ssh destination; nothing was sent"* ]] && [ ! -s "$SSH_LOG" ]'
 : >"$SSH_LOG"
 out=$(SSH_UP=0 WAKE_LAB_DOWN_WAIT_SECONDS=0 "$tmp/wake-lab.sh" sleep tuf 2>&1); rc=$?
 check 'Linux sleep uses inhibitor-aware systemctl under both lab locks' '[ "$rc" = 0 ] && grep -q -- "--check-inhibitors=yes suspend" "$SSH_LOG" && [ -e "$WAKE_LAB_LOCK_DIR/tuf.lock" ] && [ -e "$WAKE_LAB_LOCK_DIR/tuf.hold.lock" ]'

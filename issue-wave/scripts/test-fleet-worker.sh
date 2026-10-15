@@ -3115,6 +3115,11 @@ expect "a host with no fleet name has no slot to take" 2 "no fleet name" -- \
 expect "a registry that does not answer takes no slot (exit 4)" 4 "^EXECUTION SLOT UNREACHABLE far-anchor: registry unread, no slot taken$" -- \
   env FLEET_ANCHOR=far-anchor "${FWS[@]}" execution slot --wait 0 -- echo x
 grep -q "^x$" <<<"$out" && ko "the batch ran over an unread registry: $out" || ok "...and runs nothing"
+# ludics-lite#617: still at once, and the refusal tells a caller whose box just woke that only its
+# ssh to the anchor may be missing, so a retry may be all it needs.
+grep -q "^EXECUTION SLOT UNREACHABLE far-anchor: a box woken in the last few minutes may only need its ssh to far-anchor to come up; retry" <<<"$out" \
+  && ok "...and its refusal says a box woken minutes ago may only need its anchor leg, so retry" \
+  || ko "the unreachable refusal gives no retry hint for a freshly woken box: $out"
 expect "execution hold --why needs its text" 2 "execution hold: expected text for --why" -- "${FWS[@]}" execution hold --why "" -- true
 expect "execution slot --cpu and --gpu together are refused whatever their order" 2 "--cpu and --gpu are exclusive" -- "${FWS[@]}" execution slot --gpu --cpu -- true
 expect "...while repeating one is not" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 0 --cpu --cpu -- true
