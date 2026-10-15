@@ -13,17 +13,26 @@ list. Run them against the issue tracker, which is not always the repository the
 (`ahrefs/ocannl` for `lukstafi/ocannl-staging` PRs).
 
 1. **The tracker search.** Search the chip's title words and its key terms (the script,
-   function or file it acts on, and the symptom's own wording), open and recently closed:
+   function or file it acts on, and the symptom's own wording). Open issues and recently closed
+   ones are separate searches, so closed history cannot crowd an open match out of a capped
+   list, and each runs once with the title words and once with the key terms (GitHub ANDs the
+   words of one query); `<chain start>` is the date the wave chain's first wave began:
 
-       gh issue list -R <tracker> --state all --limit 30 --json number,title,state,closedAt \
-         --search '<title words> in:title sort:updated-desc'
-       gh issue list -R <tracker> --state all --limit 30 --json number,title,state,closedAt \
-         --search '<key terms> in:title,body sort:updated-desc'
+       gh issue list -R <tracker> --state open --limit 200 --json number,title \
+         --search '<terms> in:title,body'
+       gh issue list -R <tracker> --state closed --limit 200 --json number,title,stateReason \
+         --search '<terms> in:title,body closed:>=<chain start>'
+
+   A hit is a match only once its own record bears it out, read before acting on it:
+
+       gh issue view <n> -R <tracker> \
+         --json title,state,stateReason,body,comments,closedByPullRequestsReferences
 
    An open match turns the chip into "work this issue": the chip leaves the list, and its
    evidence goes onto that issue, `gh issue comment <n> -R <tracker> --body-file <file>`. A
-   match closed since the wave chain began that already landed the chip's change drops the chip
-   as done; one closed as not planned drops it too, unless the chip brings evidence it lacked,
+   closed match whose record shows the chip's change landed (`stateReason` `COMPLETED`, with
+   the closing PR or a closing comment naming it) drops the chip as done; one closed
+   `NOT_PLANNED` drops it too, unless the chip brings evidence its body and comments lack,
    which goes onto it as a comment. (Wave 2026-10-14's third post-wave re-specified the open
    ludics-lite#568 as a chip; its worker noticed only after merging, and #568 was closed by hand.)
 2. **The value floor.** A chip is below the floor when all three hold: it is test or tooling
