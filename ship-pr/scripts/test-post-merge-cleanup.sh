@@ -1639,7 +1639,8 @@ test_master_owner_switch_refusal() {
 
   PATH="$fake_bin:$PATH" REAL_GIT="$real_git" MASTER_OWNER="$CASE_MASTER_OWNER" \
     SWITCH_MARKER="$TEST_ROOT/master-owner-branch-switch.status" \
-    "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >"$log" 2>&1
+    "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >"$log" 2>&1 ||
+    { tail -n 40 "$log" >&2; fail "cleanup with a concurrent master-owner branch switch failed (log tail above)"; }
   checkout_status=$(cat "$TEST_ROOT/master-owner-branch-switch.status")
   [ "$checkout_status" -ne 0 ] || fail "master-owner branch switch bypassed the held index lock"
   assert_eq "$(git -C "$CASE_MAIN" rev-parse refs/heads/master)" "$remote_master" \
@@ -1818,7 +1819,8 @@ test_master_reattach_compare_and_swap() {
 
   PATH="$fake_bin:$PATH" REAL_GIT="$real_git" MASTER_OWNER="$CASE_MASTER_OWNER" \
     CHECKOUT_MARKER="$TEST_ROOT/master-reattach-cas.status" \
-    "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >"$log" 2>&1
+    "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >"$log" 2>&1 ||
+    { tail -n 40 "$log" >&2; fail "cleanup with a concurrent master-owner switch during refresh failed (log tail above)"; }
   checkout_status=$(cat "$TEST_ROOT/master-reattach-cas.status")
   [ "$checkout_status" -ne 0 ] || fail "master-owner switch bypassed the refresh locks"
   assert_eq "$(git -C "$CASE_MAIN" rev-parse refs/heads/alternate)" "$alternate_oid" \
@@ -3652,7 +3654,8 @@ test_stale_master_response_retains_recovery() {
 
   PATH="$fake_bin:$PATH" REAL_GIT="$real_git" RACE_INTEGRATOR="$CASE_INTEGRATOR" \
     RACE_MAIN="$CASE_MAIN" RACE_BASE="$remote_base" \
-    "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >"$log" 2>&1
+    "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >"$log" 2>&1 ||
+    { tail -n 40 "$log" >&2; fail "cleanup with a stale final master response failed (log tail above)"; }
   assert_cleaned
   assert_eq "$(git -C "$CASE_MAIN" ls-remote origin refs/heads/master | awk '{print $1}')" \
     "$remote_base" "test must roll remote master back after returning its stale integrated OID"
@@ -3816,7 +3819,8 @@ test_dangling_link_at_session_removal() {
 
   PATH="$fake_bin:$PATH" REAL_GIT="$real_git" RACE_SESSION="$CASE_SESSION" \
     RACE_MARKER="$TEST_ROOT/dangling-link-at-removal.injected" \
-    "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >"$log" 2>&1
+    "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >"$log" 2>&1 ||
+    { tail -n 40 "$log" >&2; fail "cleanup with a dangling link at session removal failed (log tail above)"; }
   late_archive=""
   for archive in "$CASE_ROOT"/.session.ship-pr-late-data.*; do
     [ -L "$archive/data" ] || continue
@@ -4913,7 +4917,8 @@ test_success_reports_its_record() {
   setup_case success-record squash main-off
   err="$CASE_ROOT/success.err"
   out=$("$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic \
-    --force-integrated "confirmed squash merge" 2>"$err")
+    --force-integrated "confirmed squash merge" 2>"$err") ||
+    { tail -n 40 "$err" >&2; fail "the --force-integrated cleanup failed (stderr tail above)"; }
   assert_cleaned
   assert_eq "$out" "post-merge-cleanup.sh: cleaned topic and unregistered $CASE_SESSION; session archived at $CASE_ARCHIVE/worktree; recovery retained at refs/ship-pr/recovery/topic/$CASE_TOPIC_OID and refs/ship-pr/session-recovery/topic/$CASE_TOPIC_OID" \
     "the success line must name the session, its archive and both recovery refs"
@@ -4923,7 +4928,8 @@ test_success_reports_its_record() {
   setup_case success-record-absent-remote merge main-off
   git -C "$CASE_MAIN" push --no-verify origin :refs/heads/topic >/dev/null 2>&1
   err="$CASE_ROOT/success.err"
-  "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >/dev/null 2>"$err"
+  "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >/dev/null 2>"$err" ||
+    { tail -n 40 "$err" >&2; fail "cleanup of an already-absent remote topic failed (stderr tail above)"; }
   assert_cleaned
   grep -Fx "post-merge-cleanup.sh: origin/topic was already absent (no deletion sent)" "$err" >/dev/null ||
     fail "an already-absent remote topic was not reported: $(cat "$err")"
