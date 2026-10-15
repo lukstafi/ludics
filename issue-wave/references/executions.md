@@ -538,9 +538,10 @@ ssh <box> 'cd <checkout> && fleet-worker.sh execution slot --wait-window -- <run
 A GPU batch passes no `-j` (above), so the box's GPU tokens (rog-nv-linux: 2) still bound it
 however many standing records the box holds. A batch that can outlast the tool cap takes `--bg
 <parent>` the same way, with the parent and `bg-run.sh wait <dir>` on that box too. The
-reservation is concluded at hand-back like the agent-host one: `--from-run` on the last batch
-there (it reads the run directory on the reservation's execution host), or `--observed-from
-<the far-side checkout>`. A measurement there, and a one-off leg on a box the plan names no
+reservation is concluded at hand-back like the agent-host one, from the last batch there: its
+runner record with `--from-run`, or its `bg-run.sh` directory with `--from-bg-run` (each read on
+the reservation's execution host), or, with none to read, a JSON conclusion with
+`--observed-from <the far-side checkout>`. A measurement there, and a one-off leg on a box the plan names no
 iteration for, still go through a request.
 
 ## Native handoffs
