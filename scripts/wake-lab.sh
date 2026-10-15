@@ -1088,7 +1088,12 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
   ANCHOR_FAILED=""
   if [ -z "$ANCHOR" ]; then echo "anchor leg not checked: WAKE_LAB_ANCHOR is empty"; return 0; fi
   for n in "$@"; do
-    if a=$(anchor_alias "$n"); then names+=("$n"); aliases+=("$a"); rcs+=(1); caps+=("$PROBE_CAP")
+    # fleet-worker reads the registry WITHOUT ssh where the anchor is the box itself (`local`, or
+    # the box's own name -- transport.is_local), so there is no leg to ask there; an alias of the
+    # box's own row is the same machine.
+    if [ "$ANCHOR" = local ] || [ "$ANCHOR" = "$n" ] || [[ " $(endpoints_of "$n" | sed 's/[a-z]*=//g') " == *" $ANCHOR "* ]]; then
+      echo "anchor leg not asked on $n: the anchor $ANCHOR is that box itself, read without ssh"
+    elif a=$(anchor_alias "$n"); then names+=("$n"); aliases+=("$a"); rcs+=(1); caps+=("$PROBE_CAP")
     else echo "anchor leg not checked on $n: its kind is $(box_kind "$n"), and only a linux box is asked"; fi
   done
   [ ${#names[@]} -gt 0 ] || return 0

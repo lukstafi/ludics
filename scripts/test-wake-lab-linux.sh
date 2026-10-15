@@ -233,6 +233,12 @@ check 'a box that never answered is reported not woken, and its anchor leg is ne
 out=$(SSH_UP=1 WAKE_LAB_ANCHOR=hub.lan WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
 check 'WAKE_LAB_ANCHOR names the anchor the box is asked to reach' '[ "$rc" = 0 ] && [[ "$out" == *"anchor leg to hub.lan: tuf=OK"* ]] && grep -q " hub.lan true || exit 3$" "$SSH_LOG" && ! grep -q "mac-studio" "$SSH_LOG"'
 : >"$SSH_LOG"
+for anchor in local tuf tuf-amd-linux; do
+  : >"$SSH_LOG"
+  out=$(SSH_UP=1 SSH_ANCHOR_AFTER=1000 WAKE_LAB_ANCHOR=$anchor WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
+  check "an anchor that is the box itself ($anchor) has no leg to ask, as fleet-worker reads it without ssh" '[ "$rc" = 0 ] && [[ "$out" == *"anchor leg not asked on tuf: the anchor $anchor is that box itself"* ]] && ! grep -q " true || exit " "$SSH_LOG"'
+done
+: >"$SSH_LOG"
 out=$(SSH_UP=1 WAKE_LAB_ANCHOR= WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
 check '...and set empty turns the leg off, saying so' '[ "$rc" = 0 ] && [[ "$out" == *"anchor leg not checked: WAKE_LAB_ANCHOR is empty"* ]] && ! grep -q " true || exit " "$SSH_LOG"'
 : >"$SSH_LOG"
