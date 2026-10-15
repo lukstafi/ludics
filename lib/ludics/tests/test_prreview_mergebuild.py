@@ -226,8 +226,11 @@ class Build(unittest.TestCase):
                 marker = os.path.join(self.dir, f"started-{sig}")
                 survived = os.path.join(self.dir, f"survived-{sig}")
                 command = f"echo started > {marker}; sleep 3; echo survived > {survived}"
+                # SIGINT's Python handler is put back first: a parent that runs detached (bg-run.sh)
+                # can hand its children SIGINT ignored, and Python then installs none.
                 code = (
-                    "import os\n"
+                    "import os, signal\n"
+                    "signal.signal(signal.SIGINT, signal.default_int_handler)\n"
                     "from ludics.prreview.mergebuild import _build, BuildConfig\n"
                     "from ludics import cli\n"
                     f"os.chdir({self.clone!r})\n"
