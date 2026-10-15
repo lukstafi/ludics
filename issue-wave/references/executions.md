@@ -522,7 +522,8 @@ reservation taken while a window is open is admitted suspended, and restored wit
 By default the coordinator takes a second standing reservation at launch, beside the agent-host
 one, on the task's GPU box whenever the plan homes the task there or names a GPU iteration leg
 for it: one per such box, request id `<wave>-<issue>-<box>-iterate`, the agent host still the
-worker's (ludics-lite#621). A request per GPU run cost ahrefs/ocannl#1240 three HIP round trips
+worker's (ludics-lite#621). A GPU box that IS the agent host (a CLI worker resident there) takes
+no second one: its agent-host reservation already has that id and covers the batches, run locally. A request per GPU run cost ahrefs/ocannl#1240 three HIP round trips
 in wave-20261014 before the coordinator granted a standing one mid-task, while #1313 on
 tuf-amd-linux, holding one from launch, iterated without the coordinator and still yielded to
 measurement windows. Read the `REFRESH` line its `execution run` prints before the brief goes
