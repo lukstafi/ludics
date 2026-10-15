@@ -281,6 +281,10 @@ done
 out=$(SSH_UP=1 WAKE_LAB_ANCHOR= WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
 check '...and set empty turns the leg off, saying so' '[ "$rc" = 0 ] && [[ "$out" == *"anchor leg not checked: WAKE_LAB_ANCHOR is empty"* ]] && ! grep -q " true || exit " "$SSH_LOG"'
 : >"$SSH_LOG"
+: >"$SSH_LOG"
+out=$(SSH_UP=1 WAKE_LAB_ANCHOR=2001:db8::1 WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
+check '...an IPv6 literal anchor, which ssh takes as one word, is accepted and asked' '[ "$rc" = 0 ] && grep -q " 2001:db8::1 true || exit 3$" "$SSH_LOG"'
+: >"$SSH_LOG"
 out=$(SSH_UP=1 WAKE_LAB_ANCHOR='hub; touch x' WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
 check 'an anchor that is not a plain ssh destination is refused before anything is sent' '[ "$rc" = 1 ] && [[ "$out" == *"is not a plain ssh destination; nothing was sent"* ]] && [ ! -s "$SSH_LOG" ]'
 : >"$SSH_LOG"
