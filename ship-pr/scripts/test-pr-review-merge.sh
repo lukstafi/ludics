@@ -71,6 +71,16 @@ HEAD_AFTER_MOVE=""                     # nonempty = the head the gate reads once
 MOVED_RUN_RC=""                        # 4 = once the base has moved, a run is queued on it (no verdict)
 BASE_KEEPS_MOVING=""                   # nonempty = every base read answers a base no read gave before
 CHECKS_FAIL=""                         # nonempty = the head's check-run read does not answer
+# The merge build (ludics-lite#611): the head the gate reads, the base branch's tip the drift read
+# anchors on, the drift's two compares, the repository's .github/ship-pr-merge-build, and the
+# directory merge runs in (a clone of the fixture remote; build_fixture below).
+GATED_HEAD=head-sha
+BASE_TIP=base-tip
+COMPARE_FORWARD=""                     # nonempty = the compare from the tip to the head (the PR's paths)
+COMPARE_REVERSE=""                     # nonempty = the compare from the head to the tip (the base's)
+MERGE_BUILD_CONFIG=""                  # nonempty = the config's contents; empty = no file (a 404)
+MERGE_BUILD_CONFIG_FAIL=""             # nonempty = the config read answers with a 503
+MERGE_CWD=""                           # nonempty = the directory merge runs in
 MERGEABLE=true                         # what the mergeable read answers; FAIL = it does not answer
 STATE_FAIL=""                          # nonempty = the merged-state read after the call does not answer
 DISABLE_AUTO_FAIL=""                   # nonempty = `pr merge --disable-auto` is refused
@@ -160,7 +170,7 @@ gh() {
       printf '%s\t%s\tclean\n' "$PR_BASE" "$(fixture_head "$CURRENT_HEAD")"
       ;;
     *'.updated_at'*)
-      printf '%s\t2026-09-01T00:00:00Z\t%s\tclaude/topic\n' "$(fixture_head head-sha)" "$(fixture_base)"
+      printf '%s\t2026-09-01T00:00:00Z\t%s\tclaude/topic\n' "$(fixture_head "$GATED_HEAD")" "$(fixture_base)"
       ;;
     *'--jq .head.sha // "-"') printf '%s\n' "${HEAD_AFTER_MERGE:-$CURRENT_HEAD}" ;;
     *'--jq .base.sha // "-"')
@@ -215,13 +225,19 @@ gh() {
   "api repos/$REPO/commits/"*)
     case "$*" in
     *committer.date*) printf '2026-09-01T00:00:00Z\n' ;;
-    *) printf 'base-tip\n' ;;
+    *) printf '%s\n' "$BASE_TIP" ;;
     esac
     ;;
-  # The drift read's two compares: nothing behind, and no path changed on the base's side.
+  # The drift read's two compares: nothing behind, and no path changed on the base's side --
+  # unless a case sets them, the forward one told by its tip-first range.
   "api repos/$REPO/compare/"*)
     gh_fixture_parse "$@"
-    gh_fixture_answer '{"behind_by":0,"ahead_by":1,"merge_base_commit":{"sha":"merge-base"},"files":[]}'
+    case "$*" in
+    *"compare/$BASE_TIP..."*) reads=$COMPARE_FORWARD ;;
+    *) reads=$COMPARE_REVERSE ;;
+    esac
+    [ -n "$reads" ] || reads='{"behind_by":0,"ahead_by":1,"merge_base_commit":{"sha":"merge-base"},"files":[]}'
+    gh_fixture_answer "$reads"
     ;;
   "api repos/$REPO")
     reads=$(fixture_call_count default-branch) || return 1
@@ -243,6 +259,20 @@ gh() {
       if [ -n "$ADVISORY_FAIL" ]; then
         printf 'gh: 503 No server is currently available to service your request\n' >&2
         return 1
+      fi
+      printf 'gh: Not Found (HTTP 404)\n' >&2
+      return 1
+      ;;
+    # The merge build's config (ludics-lite#611): no file unless a case writes one.
+    *"repos/$REPO/contents/.github/ship-pr-merge-build")
+      printf 'CALL merge-build-config\n' >>"$CALLS_FILE"
+      if [ -n "$MERGE_BUILD_CONFIG_FAIL" ]; then
+        printf 'gh: 503 No server is currently available to service your request\n' >&2
+        return 1
+      fi
+      if [ -n "$MERGE_BUILD_CONFIG" ]; then
+        printf '%s\n' "$MERGE_BUILD_CONFIG"
+        return 0
       fi
       printf 'gh: Not Found (HTTP 404)\n' >&2
       return 1
@@ -369,7 +399,7 @@ run_merge() {
   fixture_call_reset
   : >"$CALLS_FILE"
   set +e
-  (cmd_merge "$REPO#7" "$@") >"$OUT_FILE" 2>"$ERR_FILE"
+  (if [ -n "$MERGE_CWD" ]; then cd "$MERGE_CWD" || exit 99; fi; cmd_merge "$REPO#7" "$@") >"$OUT_FILE" 2>"$ERR_FILE"
   rc=$?
   set -e
   MERGE_STDOUT=$(cat "$OUT_FILE")
@@ -418,6 +448,13 @@ reset() {
   MOVED_RUN_RC=""
   BASE_KEEPS_MOVING=""
   CHECKS_FAIL=""
+  GATED_HEAD=head-sha
+  BASE_TIP=base-tip
+  COMPARE_FORWARD=""
+  COMPARE_REVERSE=""
+  MERGE_BUILD_CONFIG=""
+  MERGE_BUILD_CONFIG_FAIL=""
+  MERGE_CWD=""
   MERGEABLE=true
   STATE_FAIL=""
   DISABLE_AUTO_FAIL=""
@@ -2201,6 +2238,189 @@ test_an_unread_merge_queue_refuses_a_close_out() {
   assert_no_merge_call
 }
 
+# --- the build of the would-be merge commit (ludics-lite#611) -----------------------------------
+# lukstafi/ocannl-staging#1142 and #1139 merged minutes apart on 2026-10-15, each on its own green
+# head, their shared paths changed "all in DISJOINT hunks" -- and the merge did not compile. These
+# cases run `merge` in a real clone against real branches: a bare remote whose path ends in the
+# repository's owner/name (how the build finds its clone), `main` at the base's tip, and
+# refs/pull/7/head at the PR's head; the fixture `gh` answers the drift's compares with the paths
+# each side changed. The build runs bare (FLEET_LOCAL_BOX names no fleet box, so the slot probe
+# answers no PROBE line), and its command is `sh ./api.sh`, which fails on a call to a function
+# nobody defines.
+
+# The fixture's commits, under a fixed identity.
+build_git() { git -c user.name=fixture -c user.email=fixture@example.com -C "$@"; }
+
+# A compare response for <from>...<to> in <work>, as GitHub serves one: each changed path with its
+# patch (the hunks from the first `@@` on) and its counts, so the drift read splits the overlap by
+# whether the two sides' hunks meet.
+build_compare() { # <work> <from> <to> <behind> <ahead>
+  local files
+  files=$(git -C "$1" diff --numstat "$2" "$3" | while IFS=$'\t' read -r add del path; do
+    jq -cn --arg f "$path" --arg p "$(git -C "$1" diff -U0 "$2" "$3" -- "$path" | sed -n '/^@@/,$p')" \
+      --argjson a "$add" --argjson d "$del" '{filename: $f, patch: $p, additions: $a, deletions: $d}'
+  done | jq -cs .)
+  jq -cn --argjson files "$files" --argjson b "$4" --argjson a "$5" \
+    '{behind_by: $b, ahead_by: $a, merge_base_commit: {sha: "merge-base"}, files: $files}'
+}
+
+# <kind>: clash = the base renames hook() on api.sh's first line while the PR calls hook on a line
+# appended at its end: disjoint hunks, a clean textual merge, and a merge commit `sh ./api.sh`
+# fails on, while each side alone runs clean; compatible = the same, the PR calling keep(), which
+# both sides keep; notes = both sides edit notes.md alone, in disjoint hunks. Sets BUILD_CLONE,
+# BUILD_HEAD and BUILD_TIP, and points the fixture's gated head, tip, compares and series at them.
+build_fixture() { # <kind>
+  local root="$TEST_ROOT/build-$1" work remote base
+  rm -rf "${root:?}"
+  mkdir -p "$root/remotes/example"
+  remote="$root/remotes/example/repo.git"
+  work="$root/work"
+  git init -q --bare "$remote"
+  git -C "$remote" symbolic-ref HEAD refs/heads/main
+  git init -q "$work"
+  printf '%s\n' 'hook() { :; }' '# one' '# two' '# three' '# four' 'keep() { :; }' \
+    '# five' '# six' '# seven' '# eight' >"$work/api.sh"
+  printf '%s\n' 'Notes' 'a' 'b' 'c' 'd' 'e' 'f' 'g' >"$work/notes.md"
+  build_git "$work" add -A
+  build_git "$work" commit -q -m base
+  build_git "$work" push -q "$remote" HEAD:refs/heads/main
+  base=$(git -C "$work" rev-parse HEAD)
+  case "$1" in
+  clash) printf 'hook\n' >>"$work/api.sh" ;;
+  compatible) printf 'keep\n' >>"$work/api.sh" ;;
+  notes) printf 'pr\n' >>"$work/notes.md" ;;
+  *) bail "build_fixture: no kind $1" ;;
+  esac
+  build_git "$work" commit -q -a -m 'the PR'
+  build_git "$work" push -q "$remote" HEAD:refs/pull/7/head
+  BUILD_HEAD=$(git -C "$work" rev-parse HEAD)
+  build_git "$work" checkout -q --detach HEAD~1
+  case "$1" in
+  notes)
+    printf '%s\n' 'Notes, renamed' 'a' 'b' 'c' 'd' 'e' 'f' 'g' >"$work/notes.md"
+    ;;
+  *)
+    printf '%s\n' 'seam() { :; }' '# one' '# two' '# three' '# four' 'keep() { :; }' \
+      '# five' '# six' '# seven' '# eight' >"$work/api.sh"
+    ;;
+  esac
+  build_git "$work" commit -q -a -m "the base's advance"
+  build_git "$work" push -q "$remote" HEAD:refs/heads/main
+  BUILD_TIP=$(git -C "$work" rev-parse HEAD)
+  git clone -q "$remote" "$root/clone"
+  BUILD_CLONE="$root/clone"
+  GATED_HEAD=$BUILD_HEAD
+  CURRENT_HEAD=$BUILD_HEAD
+  BASE_TIP=$BUILD_TIP
+  SERIES_JSON="[$(commit_row "$BUILD_HEAD" 'The PR.')]"
+  COMPARE_FORWARD=$(build_compare "$work" "$base" "$BUILD_HEAD" 1 1)
+  COMPARE_REVERSE=$(build_compare "$work" "$base" "$BUILD_TIP" 1 1)
+  MERGE_CWD=$BUILD_CLONE
+}
+
+MERGE_BUILD_SH=$'# The fixture\'s merge build.\ncommand sh ./api.sh\ninput *.sh\ntimeout 120'
+
+# The caller's clone after a merge build: its working tree, its worktrees and its refs as they were.
+assert_clone_untouched() {
+  assert_eq "$(git -C "$BUILD_CLONE" status --porcelain)" "" "the clone's working tree is untouched"
+  assert_eq "$(git -C "$BUILD_CLONE" worktree list --porcelain | grep -c '^worktree ')" 1 \
+    "the scratch worktree is gone"
+  assert_eq "$(git -C "$BUILD_CLONE" for-each-ref refs/ship-pr/)" "" "the private refs are gone"
+}
+
+# The issue's acceptance: two greens whose hunks are textually disjoint and do not compile together.
+# `merge` builds their merge commit and refuses it, with the build's output; no merge call is made.
+test_a_merge_commit_that_does_not_build_is_refused() {
+  reset
+  build_fixture clash
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 1 "a merge commit that does not build is refused ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" '1 path(s) changed on both sides, all in DISJOINT hunks' \
+    "the incident's shape: git merges the two by construction"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: 1 build input(s) changed on both sides: api.sh" \
+    "says why it builds"
+  assert_contains "$MERGE_STDOUT" "bare (this box has no run-time slots)" "runs bare off the fleet"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: FAILED" "says the build failed"
+  assert_contains "$MERGE_STDOUT" "  | " "and shows its output"
+  assert_contains "$MERGE_STDOUT" "hook" "the output names what does not resolve"
+  assert_contains "$MERGE_STDERR" "REFUSING to merge $REPO#7: ${BUILD_HEAD:0:8} merged with main at ${BUILD_TIP:0:8} does not build" \
+    "the refusal names the merge it built"
+  assert_no_merge_call
+  assert_clone_untouched
+  # Each side alone runs clean: the clash is the merge's.
+  git -C "$BUILD_CLONE" checkout -q --detach "$BUILD_HEAD"
+  (cd "$BUILD_CLONE" && sh ./api.sh) || bail "the PR's head alone must run clean"
+  git -C "$BUILD_CLONE" checkout -q --detach "$BUILD_TIP"
+  (cd "$BUILD_CLONE" && sh ./api.sh) || bail "the base's tip alone must run clean"
+}
+
+# The control: the same layout, whose merge commit builds, merges -- bound to the gated head.
+test_a_merge_commit_that_builds_merges() {
+  reset
+  build_fixture compatible
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 0 "a merge commit that builds merges ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: PASSED" "says the build passed"
+  assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
+  assert_clone_untouched
+}
+
+# The base moved, and the paths both sides changed hold no build input: the config is read, nothing
+# is built, and the merge proceeds. With nothing changed on both sides the config is not even read.
+test_no_build_input_on_both_sides_builds_nothing() {
+  reset
+  build_fixture notes
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 0 "no build input on both sides merges ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_CALLS" "CALL merge-build-config" "the config was read"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: no build — none of the 1 path(s) changed on both sides is a build input (*.sh)" \
+    "and says why nothing was built"
+  assert_not_contains "$MERGE_STDOUT" "building" "nothing was built"
+  assert_contains "$MERGE_CALLS" "pr merge 7" "the merge is made"
+  COMPARE_REVERSE=$(jq -cn '{behind_by:1, ahead_by:0, merge_base_commit:{sha:"merge-base"}, files:[{filename:"other.sh"}]}')
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 0 "nothing changed on both sides merges ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_CALLS" "CALL merge-build-config" "and the config is not read"
+}
+
+# A repository without the config keeps today's behaviour: the clash above merges unbuilt.
+test_a_repository_without_the_config_builds_nothing() {
+  reset
+  build_fixture clash
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 0 "no config: the merge proceeds as before ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_CALLS" "CALL merge-build-config" "the config was looked for"
+  assert_not_contains "$MERGE_OUTPUT" "merge build" "and nothing was built"
+  assert_contains "$MERGE_CALLS" "pr merge 7" "the merge is made"
+}
+
+# A config that is not one, an unread config, and a merge that runs outside a clone each refuse
+# before anything is built or merged.
+test_an_unusable_merge_build_never_merges() {
+  reset
+  build_fixture clash
+  MERGE_BUILD_CONFIG=$'command sh ./api.sh\ninputs *.sh'
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 2 "a line outside the grammar refuses ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "inputs *.sh" "naming the line"
+  assert_no_merge_call
+  MERGE_BUILD_CONFIG=""
+  MERGE_BUILD_CONFIG_FAIL=1
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 3 "an unread config is unknown ($MERGE_OUTPUT)"
+  assert_no_merge_call
+  MERGE_BUILD_CONFIG_FAIL=""
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
+  MERGE_CWD=$TEST_ROOT
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 2 "a merge build outside a clone refuses ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "Run merge from a clone of $REPO" "and says where to run it"
+  assert_no_merge_call
+}
+
 tests=(
   test_a_refused_merge_call_is_the_scripts_only_without_forwarded_flags
   test_superseded_head_never_merges
@@ -2298,6 +2518,11 @@ tests=(
   test_a_rejected_merge_call_and_an_unconfirmed_state
   test_a_deferred_close_out_that_cannot_be_disarmed_is_loud
   test_an_unread_merge_queue_refuses_a_close_out
+  test_a_merge_commit_that_does_not_build_is_refused
+  test_a_merge_commit_that_builds_merges
+  test_no_build_input_on_both_sides_builds_nothing
+  test_a_repository_without_the_config_builds_nothing
+  test_an_unusable_merge_build_never_merges
 )
 
 run_tests "${tests[@]}" -- "$@"
