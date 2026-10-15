@@ -27,6 +27,7 @@ from ludics.fleetworker.slot import (
     judge_nested,
     parse_slot,
     read_registry,
+    unreachable_lines,
 )
 from ludics.fleetworker.transport import UNREACHABLE, Done
 
@@ -239,6 +240,16 @@ class RegistryUnread(unittest.TestCase):
         self.assertIn("on a native-Linux box", unread.lines[1])
         # ...and naming this anchor, since wake-lab's own default would ask a different one.
         self.assertIn("WAKE_LAB_ANCHOR=far-anchor wake-lab.sh --wait <box>", unread.lines[1])
+
+    def test_the_wake_command_is_offered_only_for_an_anchor_wake_lab_accepts(self) -> None:
+        for anchor in ("mac-studio", "me@hub.lan", "192.0.2.1"):
+            self.assertIn(f"WAKE_LAB_ANCHOR={anchor} wake-lab.sh --wait", unreachable_lines(anchor)[1])
+        for anchor in ("2001:db8::1", "fe80::1%eth0", "-oProxyCommand=x", "a b"):
+            retry = unreachable_lines(anchor)[1]
+            self.assertNotIn("wake-lab", retry)
+            self.assertIn("retry in a minute, once its route to the anchor is up", retry)
+            self.assertEqual(unreachable_lines(anchor)[0],
+                             f"EXECUTION SLOT UNREACHABLE {anchor}: registry unread, no slot taken")
 
     def test_a_far_side_failure_is_not_given_the_wake_hint(self) -> None:
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",

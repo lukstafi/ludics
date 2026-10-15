@@ -1713,12 +1713,13 @@ if [ "$HOLD" = 1 ] && [ "$any_wsl" = 1 ] && [ "$VERB" != kick-wsl ] &&
   exit 1
 fi
 # The anchor goes into a remote command line (anchor_probe), so a name that is not a plain ssh
-# destination is refused here, before a packet is sent, rather than run on the box. Plain means a
-# host name, user@host, or an IPv4 or bare IPv6 literal (`:` is no shell metacharacter): every
-# FLEET_ANCHOR spelling ssh takes as one word without a shell's quoting.
+# destination is refused here, before a packet is sent, rather than run on the box. Plain is a
+# fail-closed allowlist, [A-Za-z0-9._@-] not led by `-`: a host name, user@host, an IPv4 literal.
+# Any other spelling ssh may take (an IPv6 literal, a scoped one) is outside it, and slot's
+# UNREACHABLE line offers this wait only for an anchor inside it (slot.WAKE_LAB_ANCHOR).
 if [ "$VERB" = wake ] && [ "$WAIT" = 1 ]; then
   case "$ANCHOR" in
-    -*|*[!A-Za-z0-9._@:-]*)
+    -*|*[!A-Za-z0-9._@-]*)
       printf '%s\n' "wake-lab.sh: WAKE_LAB_ANCHOR $(printf '%q' "$ANCHOR") is not a plain ssh destination; nothing was sent." >&2
       exit 1 ;;
   esac

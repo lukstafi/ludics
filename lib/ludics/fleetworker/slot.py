@@ -707,22 +707,36 @@ class Unread:
     lines: tuple[str, ...]
 
 
+# wake-lab.sh's anchor allowlist (its `--wait` check of WAKE_LAB_ANCHOR), restated as the boundary
+# of the retry line below: the wake command is offered only for an anchor wake-lab accepts, and
+# any other spelling (an IPv6 literal, a scoped one) gets the retry advice without it. Fail-closed:
+# a spelling this does not match is never handed a command that would refuse it.
+WAKE_LAB_ANCHOR = re.compile(r"[A-Za-z0-9._@][A-Za-z0-9._@-]*")
+
+
+def unreachable_lines(anchor: str) -> tuple[str, ...]:
+    """The UNREACHABLE refusal: the registry line, then why a freshly woken box may only need a retry."""
+    retry = (f"{SLOT_PREFIX} UNREACHABLE {anchor}: a box woken in the last few minutes may only need its"
+             f" ssh to {anchor} to come up; retry in a minute")
+    if WAKE_LAB_ANCHOR.fullmatch(anchor):
+        retry += (f" (on a native-Linux box, WAKE_LAB_ANCHOR={anchor} wake-lab.sh --wait <box> waits for that"
+                  " leg; it does not ask a WSL guest's)")
+    else:
+        retry += ", once its route to the anchor is up"
+    return (f"{SLOT_PREFIX} UNREACHABLE {anchor}: registry unread, no slot taken", retry)
+
+
 def read_registry(cfg: Config, box: str) -> list[dict[str, Any]] | Unread:
     done = listing(cfg)
     if done.unreachable:
         # Refused at once, never retried here: later in a box's uptime an anchor that does not
         # answer is the answer. The first minute after a wake is the exception (ludics-lite#617):
         # the box's sshd answers before its own ssh to the anchor does, so the second line tells
-        # the caller that a retry may be all it needs, and that `wake-lab.sh --wait` waits for it --
-        # on a native-Linux box only, since it does not ask a WSL guest's leg (its anchor_alias). The
-        # command names this anchor, which is this box's spelling of it, as WAKE_LAB_ANCHOR wants:
-        # wake-lab's own default (mac-studio) is FLEET_ANCHOR's default, not whatever this one is.
-        return Unread(4, (
-            f"{SLOT_PREFIX} UNREACHABLE {cfg.anchor}: registry unread, no slot taken",
-            f"{SLOT_PREFIX} UNREACHABLE {cfg.anchor}: a box woken in the last few minutes may only need its"
-            f" ssh to {cfg.anchor} to come up; retry in a minute (on a native-Linux box,"
-            f" WAKE_LAB_ANCHOR={cfg.anchor} wake-lab.sh --wait <box> waits for that leg; it does not ask a WSL guest's)",
-        ))
+        # the caller that a retry may be all it needs, and -- for an anchor wake-lab accepts, on a
+        # native-Linux box -- that `wake-lab.sh --wait` waits for it. The command names this
+        # anchor, this box's spelling of it, as WAKE_LAB_ANCHOR wants: wake-lab's own default
+        # (mac-studio) is FLEET_ANCHOR's default, not whatever this one is.
+        return Unread(4, unreachable_lines(cfg.anchor))
     if done.rc != 0:
         return Unread(1, (substitution(done.out), f"{SLOT_PREFIX} REFUSED {box}: the anchor's registry could not be read"))
     records = records_of(done.out)
