@@ -353,6 +353,8 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
             values[arg] = args[i + 1]
             i += 2
             continue
+        if arg in slot_flags and arg in ("--wait", "--deadline"):
+            die(f"execution leg: {arg} given twice")
         if arg in ("--wait", "--deadline"):
             # --wait 0 is the slot's refuse-at-once; a deadline is positive.
             if i + 1 >= len(args) or not (SECONDS if arg == "--deadline" else WHOLE).fullmatch(args[i + 1]):
@@ -387,6 +389,10 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     control = values.get("--control", "")
     if control and not (os.path.isfile(control) and os.access(control, os.R_OK)):
         die(f"execution leg: --control {control} is not a readable patch file")
+
+    fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
+    if not SECONDS.fullmatch(fetch_timeout):
+        die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
 
     # The reservation: a dispatched record, whose execution host is the box.
     done = execution.listing(cfg)
@@ -452,9 +458,6 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
             return refused(f"the control patch could not be copied to {box} (exit {sent.rc}); nothing ran")
 
     script = prelude(cfg, box) + LEG
-    fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
-    if not SECONDS.fullmatch(fetch_timeout):
-        die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
     argv = far_argv(
         cfg, box,
         [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, str(len(wrap)), *wrap,

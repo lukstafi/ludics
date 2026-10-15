@@ -2537,6 +2537,11 @@ expect "a leg needs --rev" 2 "execution leg: --rev required" -- leg --request le
 expect "a leg needs a runner command" 2 "execution leg --request <id>" -- leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt"
 expect "an abbreviated --rev is refused before anything is asked" 2 "looks like an abbreviated or uppercase SHA" -- \
   leg --request leg-a --rev "${la:0:9}" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+expect "a --deadline given twice is a usage error" 2 "execution leg: --deadline given twice" -- \
+  leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt" --deadline 10 --deadline 5 -- tools/check.sh
+expect "a bad FLEET_FETCH_TIMEOUT is refused before anything is copied to the box" 2 "FLEET_FETCH_TIMEOUT must be a positive whole number" -- \
+  env FLEET_FETCH_TIMEOUT=soon "${FWL[@]}" execution leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh
+[ -z "$(find "$ISSUE_WAVE_STATE/leg-control" -type f 2>/dev/null)" ] && ok "...no patch staged" || ko "a refused leg left a staged patch"
 expect "--worktree must not be the checkout" 2 "--worktree must not be --checkout" -- leg --request leg-a --rev main --checkout "$lco" --worktree "$lco/" -- tools/check.sh
 expect "a leg runs only inside a reservation the registry holds" 1 "EXECUTION LEG REFUSED: unknown request_id leg-zz" -- \
   leg --request leg-zz --rev main --checkout "$lco" --worktree "$lwt" -- tools/check.sh
