@@ -8,15 +8,52 @@ chip. Preserve the selected provider/model, transport and execution constraints.
 
 Finish the current wave's merges, integration checks, hand-backs and editorial pass first.
 Deduplicate the proposals, file the ones that merit issues, and add evidence to existing issues
-as usual. The next post-wave contains exactly the remaining non-discarded follow-ups without
-their own issue. An item covered by a new or existing issue stays with that issue; do not pull
-it into the post-wave. Keep reasoned drops out too. Do not reread the sequencing plan to refill
-this list, select unrelated backlog work, or file placeholder issues merely to run these tasks.
+as usual. Then put every remaining chip through two gates, in this order, before it joins the
+list. Run them against the issue tracker, which is not always the repository the PRs landed in
+(`ahrefs/ocannl` for `lukstafi/ocannl-staging` PRs).
+
+1. **The tracker search.** Search the chip's title words and its key terms (the script,
+   function or file it acts on, and the symptom's own wording), open and recently closed:
+
+       gh issue list -R <tracker> --state all --limit 30 --json number,title,state,closedAt \
+         --search '<title words> in:title sort:updated-desc'
+       gh issue list -R <tracker> --state all --limit 30 --json number,title,state,closedAt \
+         --search '<key terms> in:title,body sort:updated-desc'
+
+   An open match turns the chip into "work this issue": the chip leaves the list, and its
+   evidence goes onto that issue, `gh issue comment <n> -R <tracker> --body-file <file>`. A
+   match closed since the wave chain began that already landed the chip's change drops the chip
+   as done; one closed as not planned drops it too, unless the chip brings evidence it lacked,
+   which goes onto it as a comment. (Wave 2026-10-14's third post-wave re-specified the open
+   ludics-lite#568 as a chip; its worker noticed only after merging, and #568 was closed by hand.)
+2. **The value floor.** A chip is below the floor when all three hold: it is test or tooling
+   polish with no behaviour change; only one worker raised it (no recurrence across workers);
+   and no hand-back reports worker time it would have saved. A chip below the floor gets no
+   worker. It becomes a `- [ ] **<claim>** <one-line spec> (<task ID>, <source PR>)` item on
+   the wave's follow-up checklist issue, one per wave and its post-waves, titled
+   `Wave <YYYY-MM-DD> small follow-ups` (the ahrefs/ocannl#1160 shape):
+
+       gh issue list -R <tracker> --state open --json number,title \
+         --search '"Wave <YYYY-MM-DD> small follow-ups" in:title'
+       gh issue create -R <tracker> --label wave-followup --title 'Wave <YYYY-MM-DD> small follow-ups' \
+         --body-file <file>      # only when the search found none
+       gh issue view <n> -R <tracker> --json body --jq .body > <file>   # then append the items
+       gh issue edit <n> -R <tracker> --body-file <file>
+
+   (Wave 2026-10-14 ran five post-waves, 17 -> 11 -> 8 -> 2 -> 3 tasks, the last ones mostly
+   such polish, and filed about 47 follow-up issues.)
+
+The next post-wave contains exactly the chips that passed both gates: the remaining
+non-discarded follow-ups without their own issue. An item covered by a new or existing issue,
+the checklist included, stays with that issue; do not pull it into the post-wave. Keep reasoned
+drops out too. Do not reread the sequencing plan to refill this list, select unrelated backlog
+work, or file placeholder issues merely to run these tasks.
 
 Persist the task list and dispositions on the existing board before dispatch. Give each task
 a stable local ID (for example `post-1-task-2`), repository, source worker/PR, grounding,
-self-contained prompt and acceptance criteria. Preserve completed, issued and discarded
-dispositions across iterations and recovery so the loop does not rediscover the same work.
+self-contained prompt and acceptance criteria. Preserve completed, issued (to a new or a
+matched issue), checklisted and discarded dispositions across iterations and recovery so the
+loop does not rediscover the same work.
 
 The prompt is the spec itself, pasted from the draft with the source lines it acts on quoted,
 never a pointer to a draft section: reaching a one-paragraph spec that way took workers three or
