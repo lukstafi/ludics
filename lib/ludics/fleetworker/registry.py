@@ -109,7 +109,9 @@ no `..`, and every `/`-separated component nonempty, not starting with `.` and n
 `.lock` (git-check-ref-format's rules within that alphabet); anything else starting `head-of:` is
 refused at reserve. Any other revision is the free text it always was, and a dispatch
 carrying `resolved_revision` for one is refused, as is a head-of dispatch without it. A reconcile to
-`reserved` and a later dispatch resolve again: each dispatch records the commit it assigned.
+`reserved` and a later dispatch resolve again: each dispatch records the commit it assigned. A
+head-of record never dispatched names no commit, so reconcile refuses to make it `running` or
+`uncertain`.
 """
 import fcntl
 import json
@@ -670,6 +672,12 @@ def main(argv: list[str]) -> None:
             state = data.get("state")
             if state not in {"reserved", "running", "uncertain"}:
                 refuse("reconcile state must be reserved, running or uncertain")
+            if (state != "reserved" and record["request"]["requested_revision"].startswith(HEAD_OF)
+                    and "resolved_revision" not in record):
+                # Only a dispatch resolves the branch: an active record without that commit would
+                # name none, and any revision would pass for it.
+                refuse(f"{record['request']['requested_revision']} was never resolved (no dispatch): reconcile it "
+                       f"to reserved and dispatch it, which resolves the branch")
             # reserved means evidence establishes no launch occurred and no process can run.
             record["lease_token"] = token
         elif action == "conclude":

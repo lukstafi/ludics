@@ -2508,6 +2508,8 @@ git -C "$lsrc" add -A && git -C "$lsrc" commit -q -m A && la=$(git -C "$lsrc" re
 git -C "$lsrc" checkout -q -b claude/topic && printf 'b\n' > "$lsrc/b" && git -C "$lsrc" add b && git -C "$lsrc" commit -q -m B && lb=$(git -C "$lsrc" rev-parse HEAD)
 git -C "$lsrc" checkout -q -b red main && printf '1\n' > "$lsrc/verdict" && git -C "$lsrc" commit -q -am C && lred=$(git -C "$lsrc" rev-parse HEAD)
 git init -q --bare "$lremote" && git -C "$lsrc" push -q "$lremote" main claude/topic red
+# A tag named like the branch `red`, at another commit: a leg at the branch must not take it.
+git -C "$lsrc" tag red-tag main && git -C "$lsrc" push -q "$lremote" "refs/tags/red-tag:refs/tags/red" && git -C "$lsrc" tag -d red-tag >/dev/null
 git clone -q -b main "$lremote" "$lco" || ko "could not clone the leg checkout (setup)"
 git -C "$lsrc" checkout -q main
 # The control patches: one the runner catches (adds `broken`), one it cannot (README), one that does
@@ -2518,6 +2520,7 @@ mkpatch() { # <name> <file> <content>
 }
 mkpatch break broken x; mkpatch harmless README "leg fixture, edited"
 sed 's/^-leg fixture$/-no such line/; s/^ leg fixture$/ no such line/' "$TMP/harmless.patch" > "$TMP/stale.patch"
+rm "$lsrc/tools/check.sh" && git -C "$lsrc" diff > "$TMP/rm-runner.patch" && git -C "$lsrc" checkout -q -- .
 lreq() { # <id> [host] [kind] [revision] -> run it, print the payload path
   jq -n --arg id "$1" --arg host "${2:-testbox}" --arg kind "${3:-correctness}" --arg rev "${4:-origin/main}" '{request_id:$id, wave:"w", worker:$id,
     transport:"subagent", issue:"o/r#558", purpose:"leg fixture", agent_host:"testbox", execution_host:$host, repository:"o/r",
@@ -2617,7 +2620,14 @@ n=$(marks)
 expect "a control that does not apply is refused before anything runs" 1 "the control patch does not apply to $lb" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/stale.patch" -- tools/check.sh
 [ "$(marks)" = "$n" ] && ok "...the runner not started" || ko "the runner ran under a control that does not apply"
-expect "a main run that fails is the leg's status, its control not run" 1 "runner exit 1 at $lred" -- \
+expect "a control whose patch removes the runner is no control, never a pass" 1 "NO CONTROL: the control run could not execute the runner (exit 12[67]" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/rm-runner.patch" -- tools/check.sh
+[ "$(last_line)" = "execution-leg: exit: 1" ] && [ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...status 1, the patch reverted" || ko "last line $(last_line), status $(git -C "$lwt" status --porcelain)"
+expect "a main run that moves HEAD gets no control on the commit it left" 1 "NO CONTROL: the main run left $lwt at $la, not $lb" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
+  sh -c 'if [ ! -e broken ]; then git checkout -q --detach HEAD~1; fi; exit 0'
+grep -q "control patch applied" <<<"$out" && ko "the control ran on a moved worktree: $out" || ok "...the patch never applied"
+expect "a main run that fails is the leg's status, its control not run (and the branch red, not the tag red) " 1 "runner exit 1 at $lred" -- \
   leg --request leg-a --rev red --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh
 grep -q "control patch applied" <<<"$out" && ko "the control ran after a red main run: $out" || ok "...the control skipped"
 [ -z "$(find "$ISSUE_WAVE_STATE/leg-control" -type f 2>/dev/null)" ] && ok "...and every copied patch removed from the box" || ko "a patch was left: $(ls "$ISSUE_WAVE_STATE/leg-control")"
@@ -2645,6 +2655,15 @@ expect "a head-of leg refuses the branch once it has moved past the assigned com
   leg --request leg-h --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 expect "...and runs the assigned commit" 0 "execution-leg: exit: 0" -- leg --request leg-h --rev "$lb" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 fixture_done leg-h
+# A head-of record never dispatched was never resolved: no commit is its, so reconcile will not
+# make it active (and a leg refuses one that is, as a record written otherwise would be).
+jq -n '{request_id:"leg-hu", wave:"w", worker:"leg-hu", transport:"subagent", issue:"o/r#558", purpose:"leg fixture", agent_host:"testbox",
+  execution_host:"testbox", repository:"o/r", requested_revision:"head-of:claude/topic", kind:"correctness"}' > "$TMP/leg-hu.json"
+"${FWL[@]}" execution reserve "$TMP/leg-hu.json" >/dev/null || ko "could not reserve leg-hu (setup)"
+printf '{"request_id":"leg-hu","state":"running","evidence":"fixture: recovered"}' > "$TMP/leg-hu-rec.json"
+expect "reconcile never makes an unresolved head-of record running" 1 "head-of:claude/topic was never resolved (no dispatch)" -- \
+  "${FWL[@]}" execution reconcile "$TMP/leg-hu-rec.json"
+fixture_done leg-hu
 # A measurement runs under the hold of its own request, which takes no slot flags.
 lreq leg-m testbox measurement
 expect "a measurement's leg takes no slot flags" 2 "is a measurement, run under \`execution hold\`" -- \

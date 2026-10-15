@@ -24,7 +24,8 @@ checkout of the project there, ``--worktree`` a LINKED worktree of it (never the
 with ``git worktree add --detach`` when the path does not exist and checked out ``--detach`` at
 the commit when it does -- refused when it is another repository's, or has uncommitted changes,
 which a leg never overwrites. A full SHA already in the checkout is used as it is; anything else is
-fetched from ``--remote`` (``origin``) INTO A PRIVATE REF of the checkout, ``refs/fleet-leg/<pid>``,
+fetched from ``--remote`` (``origin``) -- a branch as ``refs/heads/<rev>``, so a tag of the same
+name is never taken for it -- INTO A PRIVATE REF of the checkout, ``refs/fleet-leg/<pid>``,
 and resolved there: never through ``FETCH_HEAD``, which a linked worktree cannot see and which two
 legs fetching in one checkout would overwrite. The ref is deleted once the worktree holds the
 commit. ``observed_sha`` is the worktree's ``git rev-parse HEAD`` before the runner starts. The fetch is
@@ -55,7 +56,10 @@ is applied, the runner runs again in the same slot and must FAIL, and the patch 
 leg's status is then 0 when the control failed (1-127 but 124, the slot's deadline); 1 when it
 passed (``CONTROL PASSED``: the runner does not see what the patch breaks); the control's own status
 when it was cut by the deadline or a signal (124, 128+), the patch reverted all the same; a patch
-that cannot be reverted is ``CONTROL NOT REVERTED``, status 1, whatever the control did. A main run
+that cannot be reverted is ``CONTROL NOT REVERTED``, status 1, whatever the control did. A control
+that is not exercised is ``NO CONTROL``, status 1, never a pass: its nested slot never started the
+runner, the runner could not be executed with the patch applied (126, 127), or the main run left the
+worktree at another commit than the one the leg reports. A main run
 that failed is the leg's status, and the control does not run.
 
 WHAT THE STATUS MEANS. The runner's, when the sentinel line was printed. Without it, nothing ran to
@@ -152,7 +156,10 @@ case "$rev" in *[!0-9a-f]*) sha_like=0 ;; *) case ${#rev} in 40|64) sha_like=1 ;
 if [ "$sha_like" = 1 ] && git -C "$co" cat-file -e "$rev^{commit}" 2>/dev/null; then
   sha=$rev how="already in $co"
 else
-  bounded "$fetch_timeout" env GIT_TERMINAL_PROMPT=0 git -C "$co" fetch -q --no-tags "$remote" "+$rev:$ref" >&2; frc=$?
+  # A branch is named as one (refs/heads/...): an unqualified source would take a tag of the same
+  # name first. A SHA is fetched as itself.
+  src=$rev; [ "$sha_like" = 1 ] || src="refs/heads/$rev"
+  bounded "$fetch_timeout" env GIT_TERMINAL_PROMPT=0 git -C "$co" fetch -q --no-tags "$remote" "+$src:$ref" >&2; frc=$?
   [ "$frc" -ne 124 ] || refuse "git fetch $remote $rev in $co did not finish in ${fetch_timeout}s (FLEET_FETCH_TIMEOUT)"
   [ "$frc" -eq 0 ] || refuse "git fetch $remote $rev in $co failed (above): no such branch or commit on $remote, or $remote is unreachable from $BOX"
   sha=$(git -C "$co" rev-parse --verify -q "$ref^{commit}") || refuse "$rev fetched from $remote is not a commit"
@@ -194,22 +201,31 @@ results=$(mktemp "${TMPDIR:-/tmp}/fleet-leg.XXXXXX") || refuse "cannot create a 
 # takes anything it left running in that group with it (group.py, ludics-lite#566), so a runner's
 # leftover background child cannot overlap the control run, nor outlive the leg.
 cat > "$results.sh" <<'FLEET_LEG_RUNS' || refuse "cannot write a scratch file on $BOX"
-wt="$1" patch="$2" results="$3" box="$4" fw="$5" n="$6"; shift 6
+wt="$1" patch="$2" results="$3" box="$4" fw="$5" head="$6" n="$7"; shift 7
 nest=(); while [ "$n" -gt 0 ]; do nest+=("$1"); shift; n=$((n - 1)); done
 cd "$wt" || exit 1
+# go <tag> <runner...>: one run in its nested slot; <tag>-started is written by the shell the slot
+# starts, just before it becomes the runner, so a slot that refused is told from a runner that ran.
+go() {
+  local tag="$1"; shift
+  "$fw" execution slot "${nest[@]}" -- bash -c 'printf "%s\n" "$1" >> "$2"; shift 2; exec "$@"' leg-run "$tag-started" "$results" "$@" </dev/null
+}
 printf "started\n" >> "$results"
-"$fw" execution slot "${nest[@]}" -- "$@" </dev/null; rc=$?
+go main "$@"; rc=$?
 printf "main=%s\n" "$rc" >> "$results"
-{ [ "$rc" -eq 0 ] && [ -n "$patch" ]; } || exit "$rc"
+{ [ "$rc" -eq 0 ] && [ -n "$patch" ] && grep -qx main-started "$results"; } || exit "$rc"
+# The control is made against the commit the leg reports, or not at all.
+now=$(git rev-parse --verify -q "HEAD^{commit}")
+[ "$now" = "$head" ] || { printf "moved=%s\n" "${now:-unreadable}" >> "$results"; exit 0; }
 git apply "$patch" >&2 || { printf "apply=failed\n" >> "$results"; exit 1; }
 printf "applied\n" >> "$results"
 printf "EXECUTION LEG %s: control patch applied; the runner again, which must fail\n" "$box" >&2
-"$fw" execution slot "${nest[@]}" -- "$@" </dev/null; crc=$?
+go control "$@"; crc=$?
 printf "control=%s\n" "$crc" >> "$results"
 git apply -R "$patch" >&2 && printf "revert=ok\n" >> "$results"
 exit 0
 FLEET_LEG_RUNS
-"${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
+"${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
 fact() { sed -n "s/^$1=//p" "$results" | head -n1; }
 main=$(fact main)
 now=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)
@@ -222,8 +238,17 @@ if [ -z "$main" ]; then
   printf 'EXECUTION LEG REFUSED %s: the runner never started: %s exit %s (above)\n' "$BOX" "${wrap[*]}" "$wrc" >&2
   cleanup; exit "$wrc"
 fi
+if ! grep -qx main-started "$results"; then
+  printf 'EXECUTION LEG REFUSED %s: the runner never started: its nested execution slot exit %s (above)\n' "$BOX" "$main" >&2
+  cleanup; exit "$main"
+fi
 say "runner exit $main at $head"
 { [ "$main" -eq 0 ] && [ -n "$patch" ]; } || finish "$main"
+moved=$(fact moved)
+if [ -n "$moved" ]; then
+  say "NO CONTROL: the main run left $wt at $moved, not $head, so a control there would not be about $head; no control verdict"
+  finish 1
+fi
 if [ "$(fact apply)" = failed ]; then
   printf 'EXECUTION LEG REFUSED %s: the control patch passed --check but did not apply after the run (above); %s may be dirty\n' "$BOX" "$wt" >&2
   cleanup; exit 1
@@ -244,6 +269,12 @@ fi
 if [ -z "$crc" ]; then
   say "the control run was ended before it returned (wrapper exit $wrc): no control verdict"
   finish "$wrc"
+elif ! grep -qx control-started "$results"; then
+  say "NO CONTROL: the control's nested execution slot never started the runner (exit $crc, above); no control verdict"
+  finish 1
+elif [ "$crc" -eq 126 ] || [ "$crc" -eq 127 ]; then
+  say "NO CONTROL: the control run could not execute the runner (exit $crc: the patch removed it, or its mode); no control verdict"
+  finish 1
 elif [ "$crc" -eq 0 ]; then
   say "CONTROL PASSED: the runner passed with $pname applied, so it does not detect what the patch breaks"
   finish 1
@@ -355,6 +386,12 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     nest = ["--deadline", deadline, *[flag for flag in slot_flags if flag in ("--cpu", "--gpu")]]
     resolved = record.get("resolved_revision")
     want = resolved if isinstance(resolved, str) and OBJECT_ID.fullmatch(resolved) else ""
+    requested = execution.field(record, "request", "requested_revision")
+    if isinstance(requested, str) and requested.startswith("head-of:") and not want:
+        # Reconciled to running without a dispatch, say: the branch was never resolved, so no commit
+        # is this request's, and any --rev would pass.
+        return refused(f"{request} follows {requested} but records no resolved_revision (it was never dispatched);"
+                       " reconcile it to reserved and dispatch it, which resolves the branch")
 
     pname = ""
     if control:

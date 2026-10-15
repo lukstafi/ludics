@@ -119,6 +119,13 @@ class HeadOf(RegistryCase):
         self.assertEqual((rc, rec["state"], rec["resolved_revision"]), (0, "launching", self.SHA))
         self.assertEqual(rec["history"][-1]["data"]["resolved_revision"], self.SHA)
 
+    def test_an_unresolved_head_of_record_is_never_made_active_by_reconcile(self) -> None:
+        self.call("reserve", request("h", requested_revision="head-of:topic"))
+        rc, _, err = self.call("reconcile", {"request_id": "h", "state": "running", "evidence": "recovered"})
+        self.assertEqual(rc, 1)
+        self.assertIn("head-of:topic was never resolved (no dispatch)", err)
+        self.assertEqual(self.call("reconcile", {"request_id": "h", "state": "reserved", "evidence": "nothing ran"})[0], 0)
+
     def test_run_takes_the_resolution_beside_the_request_and_only_for_head_of(self) -> None:
         rc, rec, _ = self.call("run", request("h", requested_revision="head-of:topic", resolved_revision=self.SHA))
         self.assertEqual((rc, rec["resolved_revision"]), (0, self.SHA))

@@ -383,7 +383,8 @@ request's `repository` (`gh api repos/<repository>/git/ref/heads/<branch>`), han
 commit as `resolved_revision`, and print `EXECUTION RESOLVED <id>: head-of:<branch> is <sha> in
 <repository>, read at assignment` on stderr. The record keeps `resolved_revision` beside the
 request, which stays as it was asked, and in the dispatch's history entry, through to the
-conclusion; a reconcile to `reserved` and a new dispatch resolve again. `reserve` records no commit.
+conclusion; a reconcile to `reserved` and a new dispatch resolve again, and a reconcile never makes
+an undispatched head-of record `running` or `uncertain`. `reserve` records no commit.
 The grammar is one branch name (`[A-Za-z0-9._/-]`, git's ref rules within that), refused at reserve
 otherwise; a branch GitHub has no head for is refused (exit 1), a GitHub that does not answer is
 `EXECUTION UNVERIFIED` (exit 4), and nothing is recorded either way. The assignment names the
@@ -584,7 +585,8 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   worktree of it (paths absolute or `~/`): made with `git worktree add --detach` when the path does
   not exist, checked out `--detach` at the commit when it does, and refused when it is another
   repository's, the main checkout itself, or dirty, which a leg never overwrites. A full SHA the
-  checkout has is used as it is; anything else is fetched from `--remote` (`origin`) into a private
+  checkout has is used as it is; a branch is fetched from `--remote` (`origin`) as
+  `refs/heads/<branch>`, never a tag of that name, into a private
   ref of the checkout and resolved there, never through `FETCH_HEAD`, which a linked worktree
   cannot see (the trap ahrefs/ocannl#1153 hit) and which two legs in one checkout would overwrite.
   `EXECUTION LEG <box>: created|refreshed <worktree> at <sha> ...; observed_sha=<sha>` on stderr is
@@ -606,7 +608,9 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   and the patch is reverted: the leg exits 0 when the control failed (1-127, but 124), 1 with
   `CONTROL PASSED` when it did not, and the control's own status when it was cut (124, 128+),
   the patch reverted either way; a patch that cannot be reverted is `CONTROL NOT REVERTED`, exit 1,
-  whatever the control did. A failed main run is the leg's status, and the control does not
+  whatever the control did. A control that was not exercised is `NO CONTROL`, exit 1, never a
+  pass: the runner never started, could not be executed with the patch applied (126, 127), or the
+  main run left the worktree at another commit than the one the leg reports. A failed main run is the leg's status, and the control does not
   run.
 
 The verb names no project's runner or layout. OCANNL's is `tools/test-run.sh`, which builds as it
