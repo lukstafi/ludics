@@ -298,5 +298,30 @@ class CallerPythonpath(unittest.TestCase):
             self.assertEqual(proc.own_pid(), os.getpid())
 
 
+
+class GpuClause(unittest.TestCase):
+    """THE CO-TENANT EVIDENCE's retry: the recorded evidence is the caller's own, exactly, then the
+    clause (ludics-lite#566)."""
+
+    def test_the_exact_evidence_then_a_clause_is_a_retry(self) -> None:
+        for clause in ("GPU co-tenants on rog (rog:/p): x", "no GPU co-tenant record on rog (/p): y",
+                       "GPU co-tenant record unread: rog did not answer"):
+            self.assertTrue(execution.gpu_clause("a; b", f"a; b; {clause}", "rog"), clause)
+
+    def test_a_shorter_evidence_is_not(self) -> None:
+        self.assertFalse(execution.gpu_clause("a", "a; b; GPU co-tenants on rog (rog:/p): x", "rog"))
+        self.assertFalse(execution.gpu_clause("a", "a; GPU co-tenants on minix (minix:/p): x", "rog"))
+        self.assertFalse(execution.gpu_clause("a", "a", "rog"))
+
+
+class ReservedSince(unittest.TestCase):
+    def test_a_snapshot_older_than_the_reservation_is_left_out_counted(self) -> None:
+        lines: list[dict[str, Any]] = [{"at": "2026-10-15T10:00:00+00:00"}, {"at": "2026-10-15T11:55:00+00:00"},
+                                       {"at": "2026-10-15T12:30:00+00:00"}, {"at": "unparsed"}, {}]
+        kept, older = execution.reserved_since(lines, "2026-10-15T12:00:00.123456+00:00")
+        self.assertEqual((kept, older), (lines[1:], 1))
+        self.assertEqual(execution.reserved_since(lines, "null"), (lines, 0))
+
+
 if __name__ == "__main__":
     unittest.main()

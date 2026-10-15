@@ -3104,6 +3104,60 @@ fixture_done hold-measure-2
 expect "...and with nothing outstanding the batch runs under the hold, which holds the box's slots" 0 "inside the enclosing .execution hold --request hold-measure., which holds this box's slots (the registry has no outstanding measurement hold-measure on testbox); no slot taken, for: echo after-measurements" -- \
   "${FWS[@]}" execution hold --request hold-measure -- "$FW" execution slot --wait 0 -- echo after-measurements
 grep -q "^after-measurements$" <<<"$out" && ok "...and runs" || ko "the batch under a hold with nothing outstanding did not run: $out"
+# THE CO-TENANTS (ludics-lite#566): a measurement's hold records the box's GPU-using processes
+# outside its own tree when it opens and when it closes, and the measurement's conclusion cites the
+# record. The probe is a stub nvidia-smi listing the hold itself (its parent) and every pid in
+# $GPU_APPS: a planted sleep, and a leftover the hold's command adds to the list and leaves running in
+# its group. Only the planted one is a co-tenant. The other probes are pointed at nothing.
+mkdir -p "$TMP/gpu"
+printf '%s\n' '#!/bin/sh' '[ -z "${GPU_SLOW:-}" ] || sleep "$GPU_SLOW"' 'echo "$PPID, fleet-hold, 1"' 'while read -r pid; do echo "$pid, stub-gpu-app, 640"; done < "$GPU_APPS"' > "$TMP/gpu/nvidia-smi"
+chmod +x "$TMP/gpu/nvidia-smi"
+FWG=(env GPU_APPS="$TMP/gpu/apps" FLEET_NVIDIA_SMI="$TMP/gpu/nvidia-smi" FLEET_DRM_PROC="$TMP/gpu/no-proc" FLEET_IOREG="$TMP/gpu/no-ioreg" "${FWS[@]}")
+gpurec="$HOME/.local/state/fleet-execution-slots/testbox/measurement.gpu-measure.gpu.jsonl"
+"${FWS[@]}" execution run "$(slotreq gpu-measure measurement)" >/dev/null || ko "could not reserve the GPU measurement (setup)"
+sleep "${GM}20" &
+planted=$!
+printf '%s\n' "$planted" > "$TMP/gpu/apps"
+expect "a measurement hold's record lists a planted GPU-using process" 0 "measurement gpu-measure: GPU co-tenants at open: 1 \[pid $planted [^ ]* sleep ${GM}20 (nvidia-smi, 640 MiB)\] (nvidia-smi ran)" -- \
+  "${FWG[@]}" execution hold --request gpu-measure -- sh -c 'sleep "$1" & echo "$!" >> "$GPU_APPS"' _ "${GM}21"
+grep -q "GPU co-tenants at close: 1 \[pid $planted " <<<"$out" && ok "...at its close too, leaving out the hold and its command's leftover" || ko "the closing snapshot: $out"
+pkill -f "$(gmre 21)"
+printf '%s\n' "$planted" > "$TMP/gpu/apps"  # the leftover is gone, as nvidia-smi would say
+[ "$(jq -sc --argjson p "$planted" '[.[] | [.event, ([.gpu_processes[].pid] == [$p]), .own_tree_gpu_processes]]' "$gpurec" 2>&1)" = '[["opened",true,1],["closed",true,2]]' ] &&
+  ok "...in the record on the box: one opened and one closed line, the hold's own tree counted, not listed" || ko "the co-tenant record: $(cat "$gpurec" 2>&1)"
+"${FWG[@]}" execution hold --request gpu-measure -- "$FW" execution hold --request gpu-measure -- true >/dev/null 2>&1
+[ "$(jq -sc --argjson p "$planted" '[.[2:][] | [.event, ([.gpu_processes[].pid] == [$p])]]' "$gpurec" 2>&1)" = '[["opened",true],["opened",true],["closed",true],["closed",true]]' ] &&
+  ok "...and a hold nested in a hold of the same measurement records its own pair, leaving out the measurement" || ko "the nested hold's record: $(cat "$gpurec")"
+printf '#!/nonexistent/interpreter\n' > "$TMP/gpu/no-interp.sh"; chmod +x "$TMP/gpu/no-interp.sh"
+expect "a hold whose command cannot be started is refused" 127 "EXECUTION HOLD REFUSED testbox: cannot run" -- \
+  "${FWG[@]}" execution hold --request gpu-measure -- "$TMP/gpu/no-interp.sh"
+[ "$(grep -c '' "$gpurec")" -eq 6 ] && ok "...and records no snapshot, which would read as a hold that never closed" || ko "the unstarted hold's record: $(cat "$gpurec")"
+# A 4 s command under a 2 s deadline, beside a 3 s opening probe: a deadline counted from the end of
+# the probe (as when the snapshot ran with the command already started) would let it finish, exit 0.
+expect "a slow opening probe does not eat into --deadline, which counts from the command's start" 124 "EXECUTION HOLD testbox: --deadline 2s reached" -- \
+  env GPU_SLOW=3 "${FWG[@]}" execution hold --request gpu-measure --deadline 2 -- sleep 4
+kill "$planted" 2>/dev/null; wait "$planted" 2>/dev/null
+jq -n '{request_id:"gpu-measure", verdict:"pass", log:"/dev/null", evidence:"fixture: measured",
+  observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-done.json"
+expect "the measurement's conclusion carries the co-tenant record in its evidence" 0 "fixture: measured; GPU co-tenants on testbox (testbox:$gpurec): hold [0-9]* opened [^ ]*: 1 \[pid $planted " -- \
+  "${FWS[@]}" execution conclude "$TMP/gpu-done.json"
+rm -f "$gpurec"
+expect "...and a retry of that conclusion, its answer lost, is the registry's identical retry though the record is gone" 0 "GPU co-tenants on testbox (testbox:$gpurec): hold " -- \
+  "${FWS[@]}" execution conclude "$TMP/gpu-done.json"
+# A record past the MiB a conclusion reads is read from its end, and the conclusion says so.
+"${FWS[@]}" execution run "$(slotreq gpu-big measurement)" >/dev/null || ko "could not reserve the long-record measurement (setup)"
+bigrec="$HOME/.local/state/fleet-execution-slots/testbox/measurement.gpu-big.gpu.jsonl"
+awk 'BEGIN { for (i = 0; i < 20000; i++) printf "{\"pad\":\"%080d\"}\n", i }' > "$bigrec"
+jq -cn '{hold_pid: 9, event: "opened", at: "T1", probes: [], gpu_processes: []}, {hold_pid: 9, event: "closed", at: "T2", probes: [], gpu_processes: []}' >> "$bigrec"
+jq -n '{request_id:"gpu-big", verdict:"pass", log:"/dev/null", evidence:"fixture: measured",
+  observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-big.json"
+expect "a record longer than the MiB a conclusion reads is read from its end, saying what it left out" 0 "the record is [0-9]* bytes, of which its last 1048576 were read, so the earliest snapshots are left out; .*hold 9 opened T1: none" -- \
+  "${FWS[@]}" execution conclude "$TMP/gpu-big.json"
+"${FWS[@]}" execution run "$(slotreq gpu-none measurement)" >/dev/null || ko "could not reserve the second GPU measurement (setup)"
+jq -n '{request_id:"gpu-none", verdict:"pass", log:"/dev/null", evidence:"fixture: measured",
+  observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-none.json"
+expect "...and one whose box holds no record says so" 0 "no GPU co-tenant record on testbox (.*): the measurement ran under no .execution hold --request gpu-none. there" -- \
+  "${FWS[@]}" execution conclude "$TMP/gpu-none.json"
 # THE MEASUREMENT WINDOW (ludics-lite#481): a measurement on a box whose workers hold standing
 # reservations suspends them; a batch there is refused naming the window, the measurement's own
 # run is still admitted inside its hold (#480), and the conclusion restores the standing ones.

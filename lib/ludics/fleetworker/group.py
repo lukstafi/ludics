@@ -242,10 +242,13 @@ def _await_exit(pid: int, timeout: float) -> None:
 
 
 def run(command: Sequence[str], deadline: int | None, label: str,
-        say: Callable[[str], None], grace: float = GRACE) -> Outcome:
+        say: Callable[[str], None], grace: float = GRACE,
+        started: Callable[[int], None] | None = None) -> Outcome:
     """Run ``command`` as a session leader, wait for it under the deadline and the forwarded
     signals, and say (through ``say``, prefixed with ``label``) whenever this wrapper ended the
-    group. Raises OSError when the command cannot be started (nothing is left running then)."""
+    group. ``started`` is told the group's id once the command runs (a measurement's hold leaves
+    that group out of its GPU co-tenants, ``cotenants.py``). Raises OSError when the command cannot
+    be started (nothing is left running then)."""
     received: list[int] = []  # every forwarded signal taken, in order
     armed = [False]  # whether the handler raises (only while the leader is waited for)
 
@@ -278,6 +281,8 @@ def run(command: Sequence[str], deadline: int | None, label: str,
             raise
         pgid = leader.pid
         _tell(guardian, b"%d\n" % pgid)
+        if started is not None:
+            started(pgid)
         until = time.monotonic() + deadline if deadline else None
         outcome: Outcome | None = None
         try:
