@@ -48,6 +48,7 @@ SECTIONS=(
   "execution conclude --from-bg-run"
   "execution tip-run"
   "execution revisions resolve"
+  "execution leg"
   "prs (the supervision read)"
   "refresh (execution-only boxes)"
   "execution slot"
@@ -2477,6 +2478,146 @@ expect "a GitHub that cannot resolve the branch is UNVERIFIED (exit 4)" 4 "^EXEC
 expect "a malformed head-of is refused at reserve" 1 "is not head-of:<one branch name>" -- \
   "${FWR[@]}" execution reserve "$(rv_req rv-head5 'head-of:main plus edits')"
 unset SHIM_GH_HEADS
+}
+
+section "execution leg" && {
+need_lease
+# ludics-lite#558: one reserved run of a project's runner on a box, at an exact commit, in a worktree
+# the leg makes or moves there; the fake remote is a bare repository, the box this one (and, once,
+# "other" through the ssh shim). The project's runner prints what it was given and under what, and
+# exits with its `verdict` file's status, 4 when a control patch added `broken`; it ends with a
+# runner sentinel as OCANNL's test-run.sh does, so the leg's own must come after it.
+# Four slots here, the first the one GPU token, so a batch declared --cpu shows in the slot it takes.
+FWL=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4 other=2" FLEET_BOX_GPU_TOKENS="testbox=1"
+  FLEET_SKILLS_REPO="$TMP/dispatcher" "$FW")
+lsrc="$TMP/leg src"; lremote="$TMP/leg.git"; lco="$TMP/leg co"; lwt="$TMP/leg wts/w 1"
+export LEG_MARK="$TMP/leg-ran"; : > "$LEG_MARK"
+git init -q -b main "$lsrc" && mkdir -p "$lsrc/tools" && printf '0\n' > "$lsrc/verdict" && printf 'leg fixture\n' > "$lsrc/README"
+cat > "$lsrc/tools/check.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'runner argv:'; printf ' [%s]' "$@"; printf '\n'
+printf 'runner slot: %s\n' "${FLEET_SLOT_HELD:-none}"
+printf 'runner hold: %s\n' "${FLEET_MEASUREMENT_HELD:-none}"
+printf '%s\n' "$(git rev-parse HEAD)" >> "$LEG_MARK"
+rc=$(cat verdict); [ ! -e broken ] || rc=4
+printf 'check: exit: %s\n' "$rc"
+exit "$rc"
+EOF
+chmod +x "$lsrc/tools/check.sh"
+git -C "$lsrc" add -A && git -C "$lsrc" commit -q -m A && la=$(git -C "$lsrc" rev-parse HEAD)
+git -C "$lsrc" checkout -q -b claude/topic && printf 'b\n' > "$lsrc/b" && git -C "$lsrc" add b && git -C "$lsrc" commit -q -m B && lb=$(git -C "$lsrc" rev-parse HEAD)
+git -C "$lsrc" checkout -q -b red main && printf '1\n' > "$lsrc/verdict" && git -C "$lsrc" commit -q -am C && lred=$(git -C "$lsrc" rev-parse HEAD)
+git init -q --bare "$lremote" && git -C "$lsrc" push -q "$lremote" main claude/topic red
+git clone -q -b main "$lremote" "$lco" || ko "could not clone the leg checkout (setup)"
+git -C "$lsrc" checkout -q main
+# The control patches: one the runner catches (adds `broken`), one it cannot (README), one that does
+# not apply to any commit here.
+mkpatch() { # <name> <file> <content>
+  git -C "$lsrc" checkout -q main && printf '%s\n' "$3" > "$lsrc/$2" && git -C "$lsrc" add -N "$2" &&
+    git -C "$lsrc" diff > "$TMP/$1.patch" && git -C "$lsrc" reset -q && git -C "$lsrc" checkout -q -- . && rm -f "$lsrc/broken"
+}
+mkpatch break broken x; mkpatch harmless README "leg fixture, edited"
+sed 's/^-leg fixture$/-no such line/; s/^ leg fixture$/ no such line/' "$TMP/harmless.patch" > "$TMP/stale.patch"
+lreq() { # <id> [host] [kind] [revision] -> run it, print the payload path
+  jq -n --arg id "$1" --arg host "${2:-testbox}" --arg kind "${3:-correctness}" --arg rev "${4:-origin/main}" '{request_id:$id, wave:"w", worker:$id,
+    transport:"subagent", issue:"o/r#558", purpose:"leg fixture", agent_host:"testbox", execution_host:$host, repository:"o/r",
+    requested_revision:$rev, kind:$kind}' > "$TMP/$1.json"
+  "${FWL[@]}" execution run "$TMP/$1.json" >/dev/null 2>&1 || ko "could not run $1 (setup)"
+}
+leg() { "${FWL[@]}" execution leg "$@"; }
+marks() { grep -c '' "$LEG_MARK"; }
+last_line() { tail -n 1 <<<"$out"; }
+lreq leg-a
+expect "a leg needs --rev" 2 "execution leg: --rev required" -- leg --request leg-a --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+expect "a leg needs a runner command" 2 "execution leg --request <id>" -- leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt"
+expect "an abbreviated --rev is refused before anything is asked" 2 "looks like an abbreviated or uppercase SHA" -- \
+  leg --request leg-a --rev "${la:0:9}" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+expect "--worktree must not be the checkout" 2 "--worktree must not be --checkout" -- leg --request leg-a --rev main --checkout "$lco" --worktree "$lco/" -- tools/check.sh
+expect "a leg runs only inside a reservation the registry holds" 1 "EXECUTION LEG REFUSED: unknown request_id leg-zz" -- \
+  leg --request leg-zz --rev main --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+jq -n '{request_id:"leg-r", wave:"w", worker:"leg-r", transport:"subagent", issue:"o/r#558", purpose:"leg fixture", agent_host:"testbox",
+  execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness"}' > "$TMP/leg-r.json"
+"${FWL[@]}" execution reserve "$TMP/leg-r.json" >/dev/null || ko "could not reserve leg-r (setup)"
+expect "...and only a dispatched one" 1 "leg-r is reserved, not dispatched" -- leg --request leg-r --rev main --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+fixture_done leg-r
+lreq leg-o other
+expect "...on the box it reserved" 1 "leg-o is reserved on other, not testbox" -- leg --request leg-o --box testbox --rev main --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+[ "$(marks)" = 0 ] && ok "...each refusal before the runner ran" || ko "a refused leg ran its runner"
+# The leg proper: a branch, fetched from the remote into a private ref, a worktree made at it.
+expect "a leg at a branch makes the worktree there and runs the runner in it under a slot" 0 "runner argv: \\[two words\\] \\[\$(x)\\] \\[\\]" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh "two words" '$(x)' ''
+grep -q "^EXECUTION LEG testbox: created $lwt at $lb (claude/topic, fetched from origin) for request leg-a; observed_sha=$lb$" <<<"$out" &&
+  ok "...naming the worktree and the observed_sha" || ko "no creation line: $out"
+grep -q "^runner slot: testbox [2-4] 4 cpu$" <<<"$out" && ok "...inside execution slot, which took a CPU slot for the --cpu it was given" || ko "the runner held no CPU slot: $out"
+[ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...its sentinel the last line, after the runner's own" || ko "last line: $(last_line)"
+[ "$(git -C "$lwt" rev-parse HEAD)" = "$lb" ] && [ "$(tail -n 1 "$LEG_MARK")" = "$lb" ] && ok "...at the branch's commit" || ko "the worktree is not at $lb"
+[ -z "$(git -C "$lco" for-each-ref refs/fleet-leg)" ] && ok "...the private ref deleted" || ko "a fleet-leg ref was left: $(git -C "$lco" for-each-ref refs/fleet-leg)"
+[ "$(git -C "$lco" rev-parse HEAD)" = "$la" ] && ok "...the main checkout untouched" || ko "the main checkout moved"
+expect "a full SHA the checkout has refreshes the worktree there, nothing fetched" 0 "refreshed $lwt at $la ($la, already in $lco)" -- \
+  leg --request leg-a --rev "$la" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+expect "the runner's 125 survives the trip unchanged" 125 "execution-leg: exit: 125" -- leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt" -- sh -c 'exit 125'
+expect "...and so does a status of 128 or more" 130 "execution-leg: exit: 130" -- leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt" -- sh -c 'exit 130'
+n=$(marks)
+: > "$lwt/stray"
+expect "a worktree with uncommitted changes is refused, never overwritten" 1 "EXECUTION LEG REFUSED testbox: --worktree $lwt has uncommitted changes (1 path(s))" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+rm -f "$lwt/stray"
+grep -q "execution-leg: exit" <<<"$out" && ko "a refusal printed the runner's sentinel: $out" || ok "...with no sentinel, the runner never started"
+expect "a revision the remote does not have is refused" 1 "git fetch origin claude/none in $lco failed" -- \
+  leg --request leg-a --rev claude/none --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+expect "the repository's main checkout is never moved" 1 "--worktree $lco is the repository's main checkout" -- \
+  leg --request leg-a --rev main --checkout "$lwt" --worktree "$lco" -- tools/check.sh
+expect "a directory of another repository is no worktree to move" 1 "is not a worktree of $lco" -- \
+  leg --request leg-a --rev main --checkout "$lco" --worktree "$proj" -- tools/check.sh
+[ "$(marks)" = "$n" ] && ok "...none of them ran the runner" || ko "a refused leg ran its runner"
+# The control: a patch that must make the runner fail, in the same slot, reverted after.
+expect "a control the runner catches makes the leg pass" 0 "control failed as required (exit 4), patch reverted" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh
+[ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...its sentinel after the control run's own exit: 4" || ko "last line: $(last_line)"
+[ "$(marks)" = $((n + 2)) ] && [ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...two runs, the worktree clean after" || ko "runs $(marks) (from $n), status: $(git -C "$lwt" status --porcelain)"
+expect "a control the runner does not catch fails the leg" 1 "CONTROL PASSED: the runner passed with" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/harmless.patch" -- tools/check.sh
+[ "$(last_line)" = "execution-leg: exit: 1" ] && [ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...reverted, its sentinel 1" || ko "last line $(last_line)"
+n=$(marks)
+expect "a control that does not apply is refused before anything runs" 1 "the control patch does not apply to $lb" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/stale.patch" -- tools/check.sh
+[ "$(marks)" = "$n" ] && ok "...the runner not started" || ko "the runner ran under a control that does not apply"
+expect "a main run that fails is the leg's status, its control not run" 1 "runner exit 1 at $lred" -- \
+  leg --request leg-a --rev red --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh
+grep -q "control patch applied" <<<"$out" && ko "the control ran after a red main run: $out" || ok "...the control skipped"
+[ -z "$(find "$ISSUE_WAVE_STATE/leg-control" -type f 2>/dev/null)" ] && ok "...and every copied patch removed from the box" || ko "a patch was left: $(ls "$ISSUE_WAVE_STATE/leg-control")"
+# A leg blocked under bg-run concludes from its directory: the leg's sentinel wins over the
+# control run's, which a runner prints last otherwise.
+lbg="$TMP/leg runs/ctl"
+bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" start "$lbg" -- "${FWL[@]}" execution leg --request leg-a --rev claude/topic \
+  --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh >/dev/null 2>&1
+expect "a controlled leg under bg-run concludes pass from its directory" 0 '"verdict": "pass"' -- \
+  "${FWL[@]}" execution conclude --from-bg-run "$lbg" --request leg-a --observed-from "$lwt"
+grep -Fq "runner sentinel 'execution-leg: exit: 0'" <<<"$out" && grep -Fq "\"observed_sha\": \"$lb\"" <<<"$out" &&
+  ok "...reading the leg's sentinel, at the leg's commit" || ko "the conclusion read another sentinel or SHA: $out"
+# Over ssh (the shim runs "other" here): every runner word crosses the remote shell intact.
+expect "a leg over ssh passes the runner's words through the remote shell untouched" 0 "runner argv: \\[a b\\] \\['q'\\] \\[\$HOME\\] \\[;\\]" -- \
+  env SHIM_SSH_LOCAL=other "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh "a b" "'q'" '$HOME' ';'
+grep -q "^EXECUTION LEG other: refreshed $lwt at $lb" <<<"$out" && ok "...on the reserved box" || ko "not run as other: $out"
+expect "a box that does not answer is UNREACHABLE (exit 4), not a runner's status" 4 "^EXECUTION LEG UNREACHABLE other: ssh failed or the connection dropped" -- \
+  leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+fixture_done leg-o
+# A head-of request's leg runs the commit resolved at assignment, not where the branch is now.
+printf 'claude/topic %s\n' "$lb" > "$TMP/leg-heads"
+SHIM_GH_HEADS="$TMP/leg-heads" lreq leg-h testbox correctness head-of:claude/topic
+git -C "$lsrc" checkout -q claude/topic && git -C "$lsrc" commit -q --allow-empty -m D && git -C "$lsrc" push -q "$lremote" claude/topic && git -C "$lsrc" checkout -q main
+expect "a head-of leg refuses the branch once it has moved past the assigned commit" 1 "claude/topic is $(git -C "$lsrc" rev-parse claude/topic), but request leg-h was assigned $lb (resolved at assignment): run --rev $lb" -- \
+  leg --request leg-h --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+expect "...and runs the assigned commit" 0 "execution-leg: exit: 0" -- leg --request leg-h --rev "$lb" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+fixture_done leg-h
+# A measurement runs under the hold of its own request, which takes no slot flags.
+lreq leg-m testbox measurement
+expect "a measurement's leg takes no slot flags" 2 "is a measurement, run under \`execution hold\`" -- \
+  leg --request leg-m --rev main --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
+expect "a measurement's leg runs under execution hold --request" 0 "^runner hold: testbox leg-m$" -- \
+  leg --request leg-m --rev main --checkout "$lco" --worktree "$lwt" --deadline 600 -- tools/check.sh
+fixture_done leg-m
+unset LEG_MARK
 }
 
 section "prs (the supervision read)" && {

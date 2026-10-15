@@ -87,7 +87,7 @@ ref="refs/fleet-leg/$$"; results=""
 say() { printf 'EXECUTION LEG %s: %s\n' "$BOX" "$*" >&2; }
 cleanup() {
   [ -z "$patch" ] || rm -f "$patch"
-  [ -z "$results" ] || rm -f "$results"
+  [ -z "$results" ] || rm -f "$results" "$results.sh"
   git -C "$co" update-ref -d "$ref" >/dev/null 2>&1
   return 0
 }
@@ -138,7 +138,9 @@ say "$made $wt at $sha ($rev, $how) for request $request; observed_sha=$head"
 results=$(mktemp "${TMPDIR:-/tmp}/fleet-leg.XXXXXX") || refuse "cannot create a scratch file on $BOX"
 # The runs, under ONE slot (or the measurement's hold): the main run, then the control. Each step
 # that ends is written to the results file, so a wrapper that refused is told from a runner that ran.
-inner='wt="$1" patch="$2" results="$3" box="$4"; shift 4
+# The script is a file beside it, so the slot's "held for" line names it rather than quoting it.
+cat > "$results.sh" <<'FLEET_LEG_RUNS' || refuse "cannot write a scratch file on $BOX"
+wt="$1" patch="$2" results="$3" box="$4"; shift 4
 cd "$wt" || exit 1
 printf "started\n" >> "$results"
 "$@" </dev/null; rc=$?
@@ -149,8 +151,9 @@ printf "EXECUTION LEG %s: control patch applied; the runner again, which must fa
 "$@" </dev/null; crc=$?
 printf "control=%s\n" "$crc" >> "$results"
 git apply -R "$patch" >&2 && printf "revert=ok\n" >> "$results"
-exit 0'
-"${wrap[@]}" -- bash -c "$inner" execution-leg "$wt" "$patch" "$results" "$BOX" "$@" </dev/null; wrc=$?
+exit 0
+FLEET_LEG_RUNS
+"${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$@" </dev/null; wrc=$?
 fact() { sed -n "s/^$1=//p" "$results" | head -n1; }
 main=$(fact main)
 now=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)
