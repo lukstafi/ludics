@@ -307,9 +307,11 @@ def _end_group(child: subprocess.Popen[bytes]) -> None:
             child.kill()
     else:
         for sig in (signal.SIGTERM, signal.SIGKILL):
+            # EPERM is "nothing left this process may signal": macOS answers it for a group whose
+            # last members are zombies awaiting their reaper.
             try:
                 os.killpg(child.pid, sig)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 break
             gone = False
             deadline = time.monotonic() + 5
@@ -318,7 +320,7 @@ def _end_group(child: subprocess.Popen[bytes]) -> None:
                 try:
                     os.killpg(child.pid, 0)
                     time.sleep(0.05)
-                except ProcessLookupError:
+                except (ProcessLookupError, PermissionError):
                     gone = True
             if gone:
                 break
