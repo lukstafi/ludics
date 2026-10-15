@@ -217,6 +217,24 @@ def gh_client_refusal(first_line: str) -> bool:
     return any(p.fullmatch(first_line) for p in _CLIENT_REFUSALS)
 
 
+# gh 2.101.0's refusal to PRINT an answer it got: a plain-text body holding terminal escape
+# sequences (an Actions job's log, ANSI colour and all) is withheld unless the call passes
+# --allow-escape-sequences, whether or not stdout is a terminal, and gh exits 1. The request
+# reached GitHub and was answered, so this is not transport, and re-sending it prints the same
+# refusal. A JSON answer is not withheld (its strings carry the escape as text), nor is a --jq
+# projection that decodes one, so the script's own calls, which all read JSON, never meet it.
+# Matched as the whole first line, fail-closed like the refusals above.
+_ESCAPE_REFUSAL = (
+    "the response contains terminal escape sequences;"
+    " pass --allow-escape-sequences to output it anyway"
+)
+
+
+def gh_withheld_escapes(first_line: str) -> bool:
+    """Did gh withhold an answer for the terminal escape sequences in it (post-wave-3 task 8)?"""
+    return first_line == _ESCAPE_REFUSAL
+
+
 _API_ONLY_WHOLE = frozenset(
     "api status search org project label cache ruleset secret variable ssh-key gpg-key".split()
 )
@@ -337,8 +355,16 @@ class GhArgsRefused:
     nothing. Only ``retry_caller(..., listed=True)`` returns it."""
 
 
+@dataclass(frozen=True)
+class GhOutputWithheld:
+    """gh got GitHub's answer and refused to print it: it holds terminal escape sequences and the
+    call did not pass ``--allow-escape-sequences`` (``gh_withheld_escapes``). Not transport, and
+    not an answer about the request; unlike ``GhArgsRefused`` the request WAS sent. Only
+    ``retry_caller(..., listed=True)`` returns it."""
+
+
 type GhResult = GhOk | GhFailed | GhUnanswered
-type GhCallerResult = GhOk | GhFailed | GhUnanswered | GhArgsRefused
+type GhCallerResult = GhOk | GhFailed | GhUnanswered | GhArgsRefused | GhOutputWithheld
 type Mode = Literal["read", "write"]
 
 
@@ -423,7 +449,7 @@ class GhSession:
         raises ``GhRefusedOwn`` (exit 2 for the whole command)."""
         result = self._retry(mode, args, "own", budgeted=True)
         match result:
-            case GhArgsRefused():
+            case GhArgsRefused() | GhOutputWithheld():
                 raise AssertionError("an own call's refusal raises, it is never returned")
             case GhOk() | GhFailed() | GhUnanswered():
                 return result
@@ -475,6 +501,10 @@ class GhSession:
                 if whose == "listed":
                     return GhArgsRefused()
                 raise GhRefusedOwn(refused_own_message(args, first))
+            # An answer gh withheld was still an answer: re-sending gets it withheld again. Read
+            # for a caller's listed path only; an own call reads JSON, which gh never withholds.
+            if whose == "listed" and gh_withheld_escapes(first):
+                return GhOutputWithheld()
             # A quota refusal is no answer about what was asked, so it is 3 under both policies, and
             # it is not retried on the backoff below: it sets the hold instead. An observer's read
             # waits that hold out at the gate above and repeats; a read the probe found no hold for

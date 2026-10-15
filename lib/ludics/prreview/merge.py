@@ -28,6 +28,7 @@ from ludics.prreview.checks import parse_wait
 from ludics.prreview.closekw import MultiClose, SeriesClose
 from ludics.prreview.core import (
     GhArgsRefused,
+    GhOutputWithheld,
     GhFailed,
     GhOk,
     GhSession,
@@ -363,7 +364,7 @@ class Merge:
                 case GhOk(stdout=out):
                     cli.emit(out)
                     return
-                case GhFailed() | GhUnanswered() | GhArgsRefused():
+                case GhFailed() | GhUnanswered() | GhArgsRefused() | GhOutputWithheld():
                     pass
                 case _:
                     assert_never(result)
