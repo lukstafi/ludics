@@ -101,7 +101,7 @@ class HeadOf(RegistryCase):
         for bad in ("head-of:", "head-of:-x", "head-of:/x", "head-of:.x", "head-of:a..b", "head-of:a//b",
                     "head-of:a/.b", "head-of:a@{1}", "head-of:a/", "head-of:a.", "head-of:a.lock",
                     "head-of:a b", "head-of:a~1", "head-of:a^", "head-of:a:b", "main", "head-of:release.lock/topic",
-                    "head-of:a/.hidden/b", "head-of:a./b"):
+                    "head-of:a/.hidden/b", "head-of:a./b", "head-of:HEAD"):
             self.assertIsNone(registry.head_of_branch(bad), bad)
         rc, _, err = self.call("reserve", request("bad", requested_revision="head-of:main plus edits"))
         self.assertEqual(rc, 1)

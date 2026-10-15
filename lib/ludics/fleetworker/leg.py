@@ -61,7 +61,7 @@ passed (``CONTROL PASSED``: the runner does not see what the patch breaks); the 
 when it was cut by the deadline or a signal (124, 128+), the patch reverted all the same; a patch
 that cannot be reverted is ``CONTROL NOT REVERTED``, status 1, whatever the control did. A control
 that is not exercised is ``NO CONTROL``, status 1, never a pass: its nested slot never started the
-runner, the runner could not be executed with the patch applied (126, 127), or the main run left the
+runner, the runner was no executable command with the patch applied, or the main run left the
 worktree at another commit than the one the leg reports, or not clean. A main run
 that failed is the leg's status, and the control does not run.
 
@@ -79,7 +79,7 @@ import sys
 import threading
 
 from ludics import cli
-from ludics.fleetworker import execution
+from ludics.fleetworker import execution, revision
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.preflight import knob
@@ -126,9 +126,10 @@ finish() { cleanup; printf 'execution-leg %s: exit: %s\n' "$token" "$1"; exit "$
 # A path's git common directory, physical; empty when it is no checkout.
 common() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
 gitdir() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
-# What makes a worktree not the commit at its HEAD: changed, staged or untracked paths, and
-# submodules whatever the configuration says to ignore.
-dirt() { git -C "$1" status --porcelain --ignore-submodules=none 2>/dev/null; }
+# What makes a worktree not the commit at its HEAD: changed, staged or untracked paths and
+# submodules, whatever the configuration says to show or ignore; git's own failure is its status,
+# never an empty (clean) answer.
+dirt() { git -C "$1" status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null; }
 [ -x "$fw" ] || refuse "no executable fleet-worker.sh at $fw (the skills checkout on $BOX; run fleet-worker.sh refresh $BOX)"
 cdir=$(common "$co"); [ -n "$cdir" ] || refuse "--checkout $co is not a git checkout on $BOX"
 # One leg at a time in a worktree, from the status check through the control's revert: a second
@@ -232,8 +233,8 @@ printf "main=%s\n" "$rc" >> "$results"
 # The control is made against the commit the leg reports, clean, or not at all.
 now=$(git rev-parse --verify -q "HEAD^{commit}")
 [ "$now" = "$head" ] || { printf "moved=%s\n" "${now:-unreadable}" >> "$results"; exit 0; }
-left=$(git status --porcelain --ignore-submodules=none | grep -c "")
-[ "$left" -eq 0 ] || { printf "dirty=%s\n" "$left" >> "$results"; exit 0; }
+st=$(git status --porcelain --untracked-files=all --ignore-submodules=none) || { printf "dirty=unreadable\n" >> "$results"; exit 0; }
+[ -z "$st" ] || { printf "dirty=%s\n" "$(printf "%s\n" "$st" | grep -c "")" >> "$results"; exit 0; }
 git apply "$patch" >&2 || { printf "apply=failed\n" >> "$results"; exit 1; }
 printf "applied\n" >> "$results"
 printf "EXECUTION LEG %s: control patch applied; the runner again, which must fail\n" "$box" >&2
@@ -294,7 +295,7 @@ if [ "$(fact revert)" != ok ] && grep -qx applied "$results"; then
 fi
 # Reverted is not clean: the control run may have left files of its own, or moved HEAD.
 if grep -qx applied "$results"; then
-  left=$(dirt "$wt"); now=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)
+  left=$(dirt "$wt") || left="(git status failed)"; now=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)
   if [ -n "$left" ] || [ "$now" != "$head" ]; then
     say "NO CONTROL: after the control run $wt is not clean at $head ($(printf '%s\n' "$left" | head -n 3 | tr '\n' ';') HEAD ${now:-unreadable}), which a later leg will refuse until it is cleaned; no control verdict"
     finish 1
@@ -303,8 +304,8 @@ fi
 if [ -z "$crc" ]; then
   say "the control run was ended before it returned (wrapper exit $wrc): no control verdict"
   finish "$wrc"
-elif grep -qx control-unexecutable "$results" || { [ "$crc" -ge 126 ] && [ "$crc" -le 127 ] && grep -qx control-started "$results"; }; then
-  say "NO CONTROL: the control run could not execute the runner (exit $crc: the patch removed it, or its mode); no control verdict"
+elif grep -qx control-unexecutable "$results"; then
+  say "NO CONTROL: the control run could not execute the runner (the patch removed it, or its mode); no control verdict"
   finish 1
 elif ! grep -qx control-started "$results"; then
   say "NO CONTROL: the control's nested execution slot never started the runner (exit $crc, above); no control verdict"
@@ -376,7 +377,7 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     remote = values.get("--remote", "origin")
     if not REMOTE.fullmatch(remote) or remote.startswith("-"):
         die(f"execution leg: --remote must be a remote's name, not {remote!r}")
-    if not ref_name_ok(rev):
+    if not ref_name_ok(rev) or (not OBJECT_ID.fullmatch(rev) and not revision.git_branch_ok(rev)):
         die(f"execution leg: --rev must be a full commit SHA or a branch name, not {rev!r}")
     if HEX.fullmatch(rev) and not OBJECT_ID.fullmatch(rev):
         die(f"execution leg: --rev {rev} looks like an abbreviated or uppercase SHA: give the full one (git rev-parse)")

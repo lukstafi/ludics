@@ -2477,6 +2477,8 @@ expect "a GitHub that cannot resolve the branch is UNVERIFIED (exit 4)" 4 "^EXEC
   env SHIM_GH=down "${FWR[@]}" execution run "$(rv_req rv-head4 head-of:claude/topic)"
 expect "a malformed head-of is refused at reserve" 1 "is not head-of:<one branch name>" -- \
   "${FWR[@]}" execution reserve "$(rv_req rv-head5 'head-of:main plus edits')"
+expect "head-of:HEAD names no branch, refused at reserve" 1 "is not head-of:<one branch name>" -- \
+  "${FWR[@]}" execution reserve "$(rv_req rv-head6 'head-of:HEAD')"
 unset SHIM_GH_HEADS
 }
 
@@ -2633,17 +2635,18 @@ n=$(marks)
 expect "a control that does not apply is refused before anything runs" 1 "the control patch does not apply to $lb" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/stale.patch" -- tools/check.sh
 [ "$(marks)" = "$n" ] && ok "...the runner not started" || ko "the runner ran under a control that does not apply"
-expect "a control whose patch removes the runner is no control, never a pass" 1 "NO CONTROL: the control run could not execute the runner (exit 12[67]" -- \
+expect "a control whose patch removes the runner is no control, never a pass" 1 "NO CONTROL: the control run could not execute the runner (the patch removed it" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/rm-runner.patch" -- tools/check.sh
 [ "$(last_line)" = "execution-leg: exit: 1" ] && [ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...status 1, the patch reverted" || ko "last line $(last_line), status $(git -C "$lwt" status --porcelain)"
 expect "a main run that moves HEAD gets no control on the commit it left" 1 "NO CONTROL: the main run left $lwt at $la, not $lb" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
   sh -c 'if [ ! -e broken ]; then git checkout -q --detach HEAD~1; fi; exit 0'
 grep -q "control patch applied" <<<"$out" && ko "the control ran on a moved worktree: $out" || ok "...the patch never applied"
+git -C "$lco" config status.showUntrackedFiles no   # a configuration hiding untracked files hides nothing from the leg
 expect "a control run that leaves residue is no control, never a pass" 1 "NO CONTROL: after the control run $lwt is not clean at $lb (?? residue;" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
   sh -c 'if [ -e broken ]; then : > residue; exit 3; fi; exit 0'
-rm -f "$lwt/residue"
+rm -f "$lwt/residue"; git -C "$lco" config --unset status.showUntrackedFiles
 # Each run carries the leg's --deadline; the wrapper holding both runs carries none, so a main run
 # that spends most of it leaves the control its own.
 expect "a controlled leg gives each run the whole --deadline" 0 "control failed as required (exit 3)" -- \

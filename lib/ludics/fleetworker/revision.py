@@ -124,6 +124,11 @@ def request_refusal(
         return None
     words = [word for word in revision.split() if HEX_WORD.fullmatch(word)]
     request_id = fields.get("request_id")
+    if revision.startswith(HEAD_OF):
+        branch = head_of_branch(revision)
+        if branch is not None and not git_branch_ok(branch):
+            return (f"EXECUTION REFUSED: requested_revision {revision} names no valid branch"
+                    f" (git check-ref-format --branch {branch} refuses it); nothing recorded", 1)
     if not words or (isinstance(request_id, str) and request_id and exists(request_id)):
         return None
     for word in words:
@@ -137,6 +142,13 @@ def request_refusal(
         if refusal is not None:
             return refusal
     return None
+
+
+def git_branch_ok(name: str) -> bool:
+    """Is ``name`` a branch name by git's own rules (``git check-ref-format --branch``)? The near side
+    asks git, beside the registry's own fail-closed alphabet, so the ref grammar is git's."""
+    done = proc.run_tool("git", ["check-ref-format", "--branch", name], stdin=subprocess.DEVNULL, timeout=30)
+    return done.rc == 0
 
 
 def head_of(request: Any) -> str | None:

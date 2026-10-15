@@ -159,10 +159,10 @@ def head_of_branch(revision: str) -> str | None:
 
 
 def ref_name_ok(name: str) -> bool:
-    """One branch name within `[A-Za-z0-9._/-]`, by git-check-ref-format's rules there: no leading
-    `-`, no `..`, and each `/` component nonempty, not starting with `.` and not ending in `.` or
+    """One branch name within `[A-Za-z0-9._/-]`, by git-check-ref-format's rules there: not `HEAD`,
+    no leading `-`, no `..`, and each `/` component nonempty, not starting with `.` and not ending in `.` or
     `.lock`."""
-    if not re.fullmatch(r"[A-Za-z0-9._/-]+", name) or name.startswith("-") or ".." in name:
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", name) or name.startswith("-") or ".." in name or name == "HEAD":
         return False
     return all(part and not part.startswith(".") and not part.endswith((".", ".lock")) for part in name.split("/"))
 

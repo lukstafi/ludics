@@ -385,8 +385,8 @@ commit as `resolved_revision`, and print `EXECUTION RESOLVED <id>: head-of:<bran
 request, which stays as it was asked, and in the dispatch's history entry, through to the
 conclusion; a reconcile to `reserved` and a new dispatch resolve again, and a reconcile never makes
 an undispatched head-of record `running` or `uncertain`. `reserve` records no commit.
-The grammar is one branch name (`[A-Za-z0-9._/-]`, git's ref rules within that), refused at reserve
-otherwise; a branch GitHub has no head for is refused (exit 1), a GitHub that does not answer is
+The grammar is one branch name (`[A-Za-z0-9._/-]`, git's ref rules within that, and what `git
+check-ref-format --branch` accepts on the reserving box), refused at reserve otherwise; a branch GitHub has no head for is refused (exit 1), a GitHub that does not answer is
 `EXECUTION UNVERIFIED` (exit 4), and nothing is recorded either way. The assignment names the
 resolved SHA, never the branch, and an [`execution leg`](#a-leg-on-another-box) of the request
 refuses any other commit.
@@ -611,7 +611,7 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   `CONTROL PASSED` when it did not, and the control's own status when it was cut (124, 128+),
   the patch reverted either way; a patch that cannot be reverted is `CONTROL NOT REVERTED`, exit 1,
   whatever the control did. A control that was not exercised is `NO CONTROL`, exit 1, never a
-  pass: the runner never started, could not be executed with the patch applied (126, 127), or the
+  pass: the runner never started, was no executable command with the patch applied, or the
   main run left the worktree at another commit than the one the leg reports, or not clean, or the
   control left it not clean after the revert. A runner
   that is no executable command in the worktree is refused before it runs. A failed main run is the leg's status, and the control does not

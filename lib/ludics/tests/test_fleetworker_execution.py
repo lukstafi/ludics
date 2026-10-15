@@ -226,6 +226,11 @@ class BranchHead(unittest.TestCase):
                 "EXECUTION REFUSED: head-of:topic cannot be resolved: the request's repository 'not a repo' is not"
                 " <owner>/<name> on GitHub; nothing recorded", 1))
 
+    def test_git_is_asked_whether_a_branch_name_is_one(self) -> None:
+        self.assertTrue(revision.git_branch_ok("claude/w1015-558"))
+        for bad in ("HEAD", "a..b", "a/.b", "x.lock"):
+            self.assertFalse(revision.git_branch_ok(bad), bad)
+
     def test_only_a_well_formed_head_of_request_follows_a_branch(self) -> None:
         self.assertEqual(revision.head_of({"requested_revision": "head-of:main"}), "main")
         for request in (None, {}, {"requested_revision": "origin/main"}, {"requested_revision": "head-of:a..b"}, {"requested_revision": 3}):
