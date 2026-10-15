@@ -762,7 +762,10 @@ controlled through the tools in your coordinator's file, never through those com
 - **A pause is not a halt.** When the user pauses the wave (a token budget about to run out),
   a halt would refuse the workers' own reservations. Message each worker instead, through its
   transport's channel: commit, push what has passed its tests, start no run, stop its own review
-  watch and merge wait (a merge wait left running merges with nobody there to close out), and end
+  watch and merge wait (a merge wait left running merges with nobody there to close out) - a
+  `bg-run.sh spawn` run with `bg-run.sh stop <dir>` ([Blocking on a
+  run](references/native-claude.md#blocking-on-a-run)), a harness task or a managed command
+  session through that runtime's own stop - and end
   the turn with a status block - head, PR state, runs in flight, next step. On resume, read each
   PR's state from GitHub before handing a worker its next step, as after any interruption: a
   merge call already under way when its wait was stopped can still land.
