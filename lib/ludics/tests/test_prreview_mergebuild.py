@@ -19,7 +19,8 @@ import time
 import unittest
 
 from ludics import cli
-from ludics.prreview import mergebuild
+from ludics.prreview import drift, mergebuild
+from ludics.prreview.core import Json
 from ludics.prreview.mergebuild import BuildConfig, build_inputs, parse_config
 
 
@@ -75,6 +76,19 @@ class Inputs(unittest.TestCase):
         self.assertEqual(build_inputs(paths, ("*/dune",)), ["lib/dune"])
         self.assertEqual(build_inputs(paths, ("*.ml", "*.mli")), ["lib/a.ml", "a.ml", "test/x.mli"])
         self.assertEqual(build_inputs(paths, ("lib",)), [])
+
+    def test_a_renamed_path_counts_by_its_other_name(self) -> None:
+        # The base renamed docs/api.txt to src/api.ml; the PR edited docs/api.txt: git carries
+        # the edit into src/api.ml, so the shared path is a build input.
+        renamed = {"docs/api.txt": ["src/api.ml"], "src/api.ml": ["docs/api.txt"]}
+        self.assertEqual(build_inputs(["docs/api.txt"], ("*.ml",), renamed), ["docs/api.txt"])
+        self.assertEqual(build_inputs(["docs/api.txt"], ("*.ml",)), [])
+
+    def test_the_drift_maps_renames_on_both_sides(self) -> None:
+        forward: Json = {"files": [{"filename": "a.ml", "previous_filename": "a.txt"}, {"filename": "x"}]}
+        reverse: Json = {"files": [{"filename": "a.ml", "previous_filename": "b.ml"}]}
+        got = drift._renames(forward, reverse)  # pyright: ignore[reportPrivateUsage]
+        self.assertEqual(got, {"a.ml": ["a.txt", "b.ml"], "a.txt": ["a.ml"], "b.ml": ["a.ml"]})
 
     def test_a_remote_names_the_repository_by_its_last_two_components(self) -> None:
         for url in (
@@ -260,10 +274,45 @@ class Build(unittest.TestCase):
         self.assertIn("does not merge cleanly", out)
 
     def test_a_moved_head_is_superseded(self) -> None:
-        self.sides("keep", "seam() { :; }")
+        head, _ = self.sides("keep", "seam() { :; }")
         rc, out = self.build("0" * 40)
         self.assertEqual(rc, 5, out)
-        self.assertIn("its gated head, 00000000, is not on origin after the fetch", out)
+        self.assertIn(f"its head on origin is {head[:8]}, not 00000000", out)
+
+    def test_a_force_push_over_a_head_the_clone_holds_is_superseded(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        git(self.clone, "fetch", "-q", "origin", "refs/pull/7/head")  # the clone holds the gated head
+        git(self.work, "checkout", "-q", "--detach", head)
+        self.write([*API, "keep", "# amended"])
+        git(self.work, "commit", "-q", "-a", "-m", "amended")
+        git(self.work, "push", "-q", "-f", self.remote, "HEAD:refs/pull/7/head")
+        rc, out = self.build(head)
+        self.assertEqual(rc, 5, out)
+        self.assertIn("SUPERSEDED", out)
+
+    def test_an_inherited_git_dir_aims_nothing_at_the_clone(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        os.environ["GIT_DIR"] = os.path.join(self.clone, ".git")
+        try:
+            rc, out = self.build(head, "git tag built && sh ./api.sh")
+        finally:
+            del os.environ["GIT_DIR"]
+        self.assertEqual(rc, 0, out)
+
+    def test_a_partial_clone_is_refused(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        git(self.remote, "config", "uploadpack.allowFilter", "true")
+        shutil.rmtree(self.clone)
+        git(self.dir, "clone", "-q", "--filter=blob:none", "file://" + self.remote, self.clone)
+        rc, out = self.build(head)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("partial clone", out)
+
+    def test_a_command_no_exec_takes_is_a_config_error(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        rc, out = self.build(head, "sh ./api.sh\0oops")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cannot be run", out)
 
     def test_a_timeout_is_no_verdict(self) -> None:
         head, _ = self.sides("sleep 30", "seam() { :; }")

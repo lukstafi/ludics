@@ -16,7 +16,7 @@ decided on (mergebuild.py, ludics-lite#611).
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 from ludics import cli
@@ -139,13 +139,15 @@ class Drift:
     (mergebuild.py): ``rc`` is ``warn_base_drift``'s status; ``base_ref``, ``head_sha`` and
     ``base_sha`` are None where they were not read; ``overlap`` is the exact intersection of the
     paths the PR and the base's advance changed (old names of renames included), or None for
-    UNKNOWN -- never "none"."""
+    UNKNOWN -- never "none"; ``renamed`` maps each name a rename on either side touched to the
+    other name of that rename, so a path in the overlap can be judged by where its content went."""
 
     rc: int
     base_ref: str | None = None
     head_sha: str | None = None
     base_sha: str | None = None
     overlap: list[str] | None = None
+    renamed: dict[str, list[str]] = field(default_factory=lambda: dict[str, list[str]]())
 
 
 def warn_base_drift(
@@ -346,11 +348,25 @@ def read_base_drift(
             f"with the current {base} while GitHub cannot build that merge — merge {base} in first.",
         )
     known = None if overlap_unknown else overlap
-    if count_unknown or overlap_unknown:
-        return Drift(3, base, head_sha, base_sha, known)
-    if count_warn or dirty_warn or meeting:
-        return Drift(1, base, head_sha, base_sha, known)
-    return Drift(0, base, head_sha, base_sha, known)
+    renamed = _renames(forward, reverse) if not overlap_unknown else {}
+    rc = 3 if count_unknown or overlap_unknown else 1 if count_warn or dirty_warn or meeting else 0
+    return Drift(rc, base, head_sha, base_sha, known, renamed)
+
+
+def _renames(*docs: Json) -> dict[str, list[str]]:
+    """Each name a rename entry of the compare responses touched, mapped to its other names."""
+    out: dict[str, list[str]] = {}
+    entries: list[Json] = []
+    for doc in docs:
+        files = doc.get("files") if isinstance(doc, dict) else None
+        entries.extend(files if isinstance(files, list) else [])
+    for entry in entries:
+        if isinstance(entry, dict):
+            name, prev = entry.get("filename"), entry.get("previous_filename")
+            if isinstance(name, str) and isinstance(prev, str) and name and prev:
+                out.setdefault(name, []).append(prev)
+                out.setdefault(prev, []).append(name)
+    return out
 
 
 def _parse(text: str) -> Json:

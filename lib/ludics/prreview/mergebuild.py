@@ -31,7 +31,8 @@ build input by its contents, by being generated, or by a default list.
 
 WHEN IT BUILDS. Only when the merge's own base-drift read (drift.py) leaves a build possible: the
 intersection of the paths the PR changed and the paths the base's advance changed since their merge
-base (old names of renames included) holds a build input -- or that intersection is UNKNOWN (a
+base (old names of renames included) holds a build input -- a path a rename on either side
+touched counting by its other name too, since git carries an edit of the old name into the new -- or that intersection is UNKNOWN (a
 compare call that did not answer, GitHub's 300-file cap), which is never "none" and so builds. An
 empty intersection means the base has not moved since the PR's merge base on any path the PR
 touched, and then the config is not even read. "The base moved since the head's CI run" is read as
@@ -45,8 +46,9 @@ remote (``origin`` first) has a URL ending in the repository's ``owner/name`` (`
 case ignored), so an SSH host alias serves as well as github.com. No such clone is exit 2, and so
 is a SHALLOW clone, which may lack the merge base (run from a full clone, or ``git fetch
 --unshallow``). The clone fetches ``refs/pull/<n>/head`` and the base branch as OBJECTS only -- no
-destination ref, ``--refmap=`` (no remote-tracking ref moves), no FETCH_HEAD -- and must then hold
-the gated head (else exit 5: a push moved it) and the base tip the drift read (else exit 3). Then
+destination ref, ``--refmap=`` (no remote-tracking ref moves), no FETCH_HEAD -- and the remote's
+``refs/pull/<n>/head``, read back with ``ls-remote``, must be the gated head (else exit 5:
+superseded), and the clone must hold it and the base tip the drift read (else exit 3). Then
 everything happens in a scratch directory: a repository of its own (``git init --template=``)
 that borrows the clone's objects through ``objects/info/alternates``, read only, and has its own
 config, refs, index and no hooks -- so the clone's sparse-checkout, hooks and worktree list are not
@@ -60,9 +62,19 @@ it is removed whatever the outcome, and one a SIGKILLed merge leaves is in pr-re
 temporary family (``pr-review-build.<pid>.*``). What the clone keeps is the fetched objects, which
 nothing names, as after any fetch.
 
+HOSTS AND CLONES -- the boundary. The merge build runs on POSIX hosts (the fleet's macOS and Linux
+boxes); under Windows a merge that needs one is refused (exit 2). It needs a FULL clone: a shallow
+one may lack the merge base, and a partial one (a promisor remote) holds objects only as promises
+the build's repository cannot redeem, so both are refused (exit 2) rather than deepened or
+materialized here. Git's repository-selection variables (``GIT_DIR``, ``GIT_WORK_TREE``, ...) are
+cleared for every git call and for the build, so an inherited one aims nothing at the caller's
+repository. A signal to merge during the fetch or the git setup (before the build starts) ends
+merge without stopping that git call; the scratch is the sweeper's then.
+
 TRUST. The command is the repository's own configuration, read from its default branch: it is
 trusted as a developer's build is, and the scratch repository is a place to build, not a sandbox.
-A git write the command makes lands in the scratch repository; anything else it does (a write
+A git write the command makes lands in the scratch repository; a command no exec can take (a
+NUL in it, past the argument limit) is a config error (exit 2); anything else it does (a write
 outside its tree, a network call, a process it detaches with ``setsid``) is the command's
 business, as it would be from a developer's shell.
 
@@ -161,9 +173,12 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
     return BuildConfig(command, tuple(inputs), DEFAULT_TIMEOUT if timeout is None else timeout)
 
 
-def build_inputs(paths: list[str], globs: tuple[str, ...]) -> list[str]:
-    """The paths one glob matches whole (the module docstring's boundary)."""
-    return [p for p in paths if any(fnmatch.fnmatchcase(p, g) for g in globs)]
+def build_inputs(paths: list[str], globs: tuple[str, ...], renamed: dict[str, list[str]] | None = None) -> list[str]:
+    """The paths one glob matches whole (the module docstring's boundary) -- by any of their
+    names: a path a rename on either side touched counts when its other name matches, since git
+    carries an edit of the old name into the new one."""
+    names = renamed or {}
+    return [p for p in paths if any(fnmatch.fnmatchcase(n, g) for n in (p, *names.get(p, [])) for g in globs)]
 
 
 def read_config(session: GhSession, repo: str, cap: int) -> BuildConfig | None:
@@ -211,8 +226,21 @@ def read_config(session: GhSession, repo: str, cap: int) -> BuildConfig | None:
             assert_never(result)
 
 
+# The variables that point git at a repository other than the one its cwd is in: an inherited one
+# (merge run from a hook or a wrapper) would aim every call here, and the build's own git writes,
+# at the caller's repository. Every git call and the build run without them.
+_GIT_REPO_VARS = frozenset({
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX",
+})
+
+
+def _clean_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    return {k: v for k, v in (os.environ if base is None else base).items() if k not in _GIT_REPO_VARS}
+
+
 def _git(args: list[str], cwd: str, *, timeout: float = GIT_TIMEOUT, env: dict[str, str] | None = None) -> proc.Completed:
-    return proc.run_tool("git", args, cwd=cwd, env=env, stdin=subprocess.DEVNULL, timeout=timeout)
+    return proc.run_tool("git", args, cwd=cwd, env=_clean_env(env), stdin=subprocess.DEVNULL, timeout=timeout)
 
 
 def _first_line(done: proc.Completed) -> str:
@@ -343,14 +371,19 @@ def _run_build(argv: list[str], cwd: str, bound: float) -> proc.Completed:
         return proc.Completed(127, "", f"{argv[0]}: command not found\n")
     full = [*prefix, *argv[1:]]
     posix = os.name != "nt"
-    child = subprocess.Popen(
-        full if posix else proc.windows_command_line(full),
-        cwd=cwd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=posix,
-    )
+    try:
+        child = subprocess.Popen(
+            full if posix else proc.windows_command_line(full),
+            cwd=cwd,
+            env=_clean_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=posix,
+        )
+    except (ValueError, OSError) as exc:
+        # A command no exec can take (a NUL in it, past the argument limit): the config's fault.
+        fail(2, f"NOT merging: {CONFIG_FILE}'s command cannot be run ({exc}); fix the file on the default branch.")
 
     def interrupted(signum: int, _frame: object) -> None:
         raise cli.Exit(128 + signum, f"the merge build was interrupted by signal {signum}; it was stopped, nothing merged")
@@ -396,7 +429,7 @@ def merge_build(session: GhSession, repo: str, pr: str, gated: str, drift: Drift
     if drift.overlap is None:
         why = "the paths both sides changed are UNKNOWN (above), which is never none"
     else:
-        inputs = build_inputs(drift.overlap, config.inputs)
+        inputs = build_inputs(drift.overlap, config.inputs, drift.renamed)
         if not inputs:
             cli.say(
                 f"merge build {repo}#{pr}: no build — none of the {len(drift.overlap)} path(s) changed on both sides"
@@ -404,6 +437,12 @@ def merge_build(session: GhSession, repo: str, pr: str, gated: str, drift: Drift
             )
             return
         why = f"{len(inputs)} build input(s) changed on both sides: {' '.join(inputs)}"
+    if os.name == "nt":
+        fail(
+            2,
+            f"NOT merging {repo}#{pr}: {why}, and the merge build runs on POSIX hosts only (the fleet's",
+            "macOS and Linux boxes). Run this merge from one of them.",
+        )
     if not drift.base_ref:
         fail(
             3,
@@ -438,6 +477,14 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, tip: str, config: Buil
                 f"(or its depth could not be read: {_first_line(shallow)}): the merge build needs the merge base.",
                 "Run merge from a full clone, or `git fetch --unshallow` this one first.",
             )
+        partial = _git([*quiet, "config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$"], root)
+        if partial.stdout.strip():
+            fail(
+                2,
+                f"NOT merging {repo}#{pr}: {why}, and the clone this merge runs in ({root}) is a partial clone",
+                "(a promisor remote), whose missing objects the build's repository cannot fetch. Run merge",
+                "from a full clone.",
+            )
         # Objects only: no destination, --refmap= (so no remote-tracking ref of the caller's moves
         # opportunistically) and no FETCH_HEAD. Nothing in the clone names what was fetched; the
         # two commits are named by the SHAs the gate and the drift read already hold.
@@ -453,12 +500,28 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, tip: str, config: Buil
                 f"NOT merging {repo}#{pr}: {why}, and fetching its head and {base_ref} from {remote} in",
                 f"{root} failed ({_first_line(fetched)}), so the merge commit was not built. Retry.",
             )
+        # The remote's head now, not the object's presence: a clone that already holds the gated
+        # commit would pass a presence check after a force-push replaced it.
+        listed = _git([*quiet, "ls-remote", "--quiet", remote, f"refs/pull/{pr}/head"], root, timeout=FETCH_TIMEOUT)
+        now = listed.stdout.split()[0] if listed.rc == 0 and listed.stdout.split() else ""
+        if not _SHA.fullmatch(now):
+            fail(
+                3,
+                f"NOT merging {repo}#{pr}: its head on {remote} could not be read back after the fetch",
+                f"({_first_line(listed)}). Retry.",
+            )
+        if now != gated:
+            fail(
+                5,
+                f"NOT merging {repo}#{pr}: its head on {remote} is {now[:8]}, not {gated[:8]}, the commit the",
+                "build signal was read for: SUPERSEDED. Re-run merge to judge the new head.",
+            )
         for sha, what in ((gated, "its gated head"), (tip, f"{base_ref}'s tip as the drift read it")):
             if _git([*quiet, "cat-file", "-e", f"{sha}^{{commit}}"], root).rc != 0:
                 fail(
-                    5 if sha == gated else 3,
-                    f"NOT merging {repo}#{pr}: {what}, {sha[:8]}, is not on {remote} after the fetch",
-                    "(a push or a force-push moved it); re-run merge to read it again.",
+                    3,
+                    f"NOT merging {repo}#{pr}: {what}, {sha[:8]}, is not in {root} after the fetch",
+                    "(a force-push may have moved it); re-run merge to read it again.",
                 )
         common = _git([*quiet, "rev-parse", "--path-format=absolute", "--git-common-dir"], root).stdout.strip()
         objects = os.path.join(common, "objects")

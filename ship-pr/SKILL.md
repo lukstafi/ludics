@@ -1160,8 +1160,10 @@ timeout 1200
 
 Any other line refuses the merge with exit 2. The merge still waits only on the head's own verdict,
 never on the base tip's CI, so roll-forward stands, and a repository without the file merges as
-before. Run such a merge from a full clone of the repository: one with no remote naming it, or a
-shallow one (which may lack the merge base), is exit 2. A
+before. A shared path renamed on either side counts by its other name too. Run such a merge on a
+POSIX host (the fleet's macOS and Linux boxes; Windows is refused) from a full clone of the
+repository: one with no remote naming it, a shallow one (which may lack the merge base) or a
+partial one (a promisor remote) is exit 2. A
 build that does not finish is exit 4, one that could not run (the fetch, the slot) exit 3, a head
 that moved exit 5, a textual conflict exit 1. Nothing waives a failed build: merge the base in, fix
 the clash, push. The boundary is the intersection: a clash across paths only one side changed (a

@@ -867,9 +867,11 @@ grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2. E
 then checks the clone: its working tree, its worktree list and its refs are as they were.
 `lib/ludics/tests/test_prreview_mergebuild.py` pins the grammar, the glob boundary, the remote
 match, a textual conflict, a moved head, a build past its bound, an interrupted merge and a process
-the build leaves behind (neither outlives the merge), a shallow clone (exit 2), a sparse one (the
-merge is still built whole), the build's own git writes (kept in its scratch repository) and a log
-of any size (read bounded).
+the build leaves behind (neither outlives the merge), a shallow or a partial clone (exit 2), a
+sparse one (the merge is still built whole), a force-push over a head the clone already holds (exit
+5), the build's own git writes, under an inherited `GIT_DIR` too (kept in its scratch repository), a
+command no exec takes (exit 2), a rename across the input boundary (a build input by its other
+name) and a log of any size (read bounded).
 
 `test-pr-review-retry.sh` drives `retry`: the plain retry's classification, and `retry run
 watch`, which addresses its run as
