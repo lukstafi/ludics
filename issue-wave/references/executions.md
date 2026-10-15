@@ -375,6 +375,21 @@ whose first call landed with its answer lost (a reservation under an existing re
 conclusion of a concluded record) is not checked again: the registry's own retry rule answers it.
 The boundary is `lib/ludics/fleetworker/revision.py`'s header.
 
+**A request that follows a branch** (ludics-lite#558). `"requested_revision": "head-of:<branch>"`
+names no commit when the worker asks, so a request queued behind a halt or a busy box cannot go
+stale (three SHA-keyed requests of the 2026-10-05 wave did, one twice, each re-pinned by hand). It
+is resolved at ASSIGNMENT: `run`, `window` and `dispatch` ask GitHub for the branch's head in the
+request's `repository` (`gh api repos/<repository>/git/ref/heads/<branch>`), hand the registry that
+commit as `resolved_revision`, and print `EXECUTION RESOLVED <id>: head-of:<branch> is <sha> in
+<repository>, read at assignment` on stderr. The record keeps `resolved_revision` beside the
+request, which stays as it was asked, and in the dispatch's history entry, through to the
+conclusion; a reconcile to `reserved` and a new dispatch resolve again. `reserve` records no commit.
+The grammar is one branch name (`[A-Za-z0-9._/-]`, git's ref rules within that), refused at reserve
+otherwise; a branch GitHub has no head for is refused (exit 1), a GitHub that does not answer is
+`EXECUTION UNVERIFIED` (exit 4), and nothing is recorded either way. The assignment names the
+resolved SHA, never the branch, and an [`execution leg`](#a-leg-on-another-box) of the request
+refuses any other commit.
+
 Run `fleet-worker.sh execution reserve <absolute-reserve.json>`, or - the usual shape -
 `fleet-worker.sh execution run <absolute-reserve.json>`, which reserves and dispatches under one
 lock and leaves the record `launching` (the payload may add `evidence` for the dispatch step).
@@ -543,6 +558,60 @@ It prints `TIP-RUN STARTED <id> <box> <sha> <dir>` with the record moved to `run
 NOT STARTED <id>: <why>` (exit 1) with anything it reserved concluded `not-launched`; exit 4 is an
 outcome to reconcile. Conclude a started run with `conclude --from-bg-run <dir> --request <id>
 --sha <sha>`. The rules it enforces are `lib/ludics/fleetworker/tiprun.py`'s header.
+
+## A leg on another box
+
+A correctness or measurement run on a box other than the worker's own was a script each worker
+wrote again: refresh a worktree there at the exact commit, run the project's runner, maybe apply a
+patch that must make it fail. `fleet-worker.sh execution leg` is that script, inside the
+reservation (ludics-lite#558):
+
+```
+fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
+  --checkout <checkout on the box> --worktree <worktree on the box> [--remote <name>] \
+  [--control <patch>] [--cpu|--gpu] [--wait <s>] [--wait-window[=<s>]] [--deadline <s>] \
+  -- <runner command...>
+```
+
+- **The reservation.** `--request` must name a dispatched record (`launching`, `running` or
+  `uncertain`; a standing one counts), read from the registry with no coordinator identity; its
+  execution host is the box (`--box`, if given, must be it). A correctness record's runs go under
+  `execution slot` on that box, with the slot flags given here; a measurement's under `execution
+  hold --request <id>`, which takes `--deadline` alone. A record holding a `resolved_revision`
+  (a [`head-of:` request](#reserve-launch-observe-conclude)) refuses any `--rev` that comes to
+  another commit.
+- **The worktree.** `--checkout` is the project's checkout on the box and `--worktree` a linked
+  worktree of it (paths absolute or `~/`): made with `git worktree add --detach` when the path does
+  not exist, checked out `--detach` at the commit when it does, and refused when it is another
+  repository's, the main checkout itself, or dirty, which a leg never overwrites. A full SHA the
+  checkout has is used as it is; anything else is fetched from `--remote` (`origin`) into a private
+  ref of the checkout and resolved there, never through `FETCH_HEAD`, which a linked worktree
+  cannot see (the trap ahrefs/ocannl#1153 hit) and which two legs in one checkout would overwrite.
+  `EXECUTION LEG <box>: created|refreshed <worktree> at <sha> ...; observed_sha=<sha>` on stderr is
+  the worktree's `git rev-parse HEAD` before the runner starts.
+- **The runner.** The command after `--` runs in the worktree with its words passed through
+  untouched, stdin closed. Its status is the leg's, unchanged (a 125, a 128 or more included), and
+  the last line on stdout is `execution-leg: exit: <status>`, the sentinel `conclude --from-bg-run`
+  reads. Without that line nothing ran to an end: `EXECUTION LEG REFUSED ...` says why (exit 1, 2
+  for usage, or the slot's own refusal status when it never started the runner), and `EXECUTION
+  LEG UNREACHABLE <box>` (4) is a box that never answered or a connection that dropped, the runner
+  perhaps started: look on the box before running it again.
+- **The control.** `--control <patch>` (a file on the caller's box) must apply before anything runs.
+  After a main run that passed it is applied, the runner runs again in the same slot and must fail,
+  and the patch is reverted: the leg exits 0 when the control failed (1-127, but 124), 1 with
+  `CONTROL PASSED` when it did not, and the control's own status when it was cut (124, 128+). A
+  failed main run is the leg's status, and the control does not run.
+
+The verb names no project's runner or layout. OCANNL's is `tools/test-run.sh`, which builds as it
+runs and takes the slot itself inside the leg's (the [nested slot](#exclusivity-and-the-run-time-slots)):
+`-- tools/test-run.sh run <alias>`, or `-- tools/test-run.sh bisect <good> <bad> <targets...>`
+(ahrefs/ocannl#1225), which bisects where it is invoked, so the leg is how it reaches a GPU box,
+and its 125 and its abort statuses come back as they left. Any other repository passes its own
+command, building first if its runner does not (`-- sh -c 'make && make check'`, `--
+scripts/test.sh unit`), with `--checkout` its clone on the box. A leg longer than a tool call runs
+under `bg-run.sh spawn` on the caller's box and concludes with `conclude --from-bg-run <dir> --box
+<that box> --observed-from <worktree>`. Do not wrap the leg itself in an `execution slot` on the
+caller's box: the slot it needs is the execution host's, which it takes there.
 
 ## Standing iteration reservation
 

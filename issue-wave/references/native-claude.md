@@ -108,6 +108,13 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    END_EXECUTION_REQUEST
    ```
 
+   `requested_revision` may be `"head-of:<branch>"` instead of a SHA: the coordinator resolves
+   it when it assigns the request (`run`/`dispatch` read the branch's head on GitHub and record it
+   as `resolved_revision`), so a request that waits behind a halt or a busy box never goes stale
+   and is not re-pinned after a push. A cross-box leg's `command` is usually `fleet-worker.sh
+   execution leg --request <id> --rev <sha|branch> --checkout <dir> --worktree <dir> -- <runner
+   args>` ([executions.md](executions.md#a-leg-on-another-box)), run from the worker's own box.
+
    The task notification that follows is this handoff, not completion. Several blocks are a
    queue: the coordinator assigns them one at a time, in order, each after the previous one's
    result is concluded, so a resumed worker holds one assignment and owes one result line.
@@ -119,7 +126,8 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    on exit 0 resumes the worker by its agent ID (the
    runtime's continue-an-agent form: SendMessage to the agent's name or ID, never a fresh
    Agent call) with one line, `EXECUTION_ASSIGNED <request_id>`, followed by the exact
-   command, revision, checkout and log to use. On a refusal, hold the worker - idle, it keeps
+   command, revision, checkout and log to use. For a `head-of:` request the revision is the
+   record's `resolved_revision` (the `EXECUTION RESOLVED` line), never the branch. On a refusal, hold the worker - idle, it keeps
    its context - or answer `EXECUTION_REFUSED <reason>` so it keeps implementing.
 4. **Result.** The resumed worker runs only the assigned command. Correctness uses
    `fleet-worker.sh execution slot -- <command>`, which is what bounds the box's
