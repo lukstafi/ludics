@@ -167,7 +167,9 @@ else
   # A branch is named as one (refs/heads/...): an unqualified source would take a tag of the same
   # name first. A SHA is fetched as itself.
   src=$rev; [ "$sha_like" = 1 ] || src="refs/heads/$rev"
-  bounded "$fetch_timeout" env GIT_TERMINAL_PROMPT=0 git -C "$co" fetch -q --no-tags "$remote" "+$src:$ref" >&2; frc=$?
+  # Without the worktree lock's descriptor: a transport process the bound outlives (a stalled
+  # upload-pack's child) must not hold the worktree for the next leg.
+  bounded "$fetch_timeout" env GIT_TERMINAL_PROMPT=0 git -C "$co" fetch -q --no-tags "$remote" "+$src:$ref" >&2 9>&-; frc=$?
   [ "$frc" -ne 124 ] || refuse "git fetch $remote $rev in $co did not finish in ${fetch_timeout}s (FLEET_FETCH_TIMEOUT)"
   [ "$frc" -eq 0 ] || refuse "git fetch $remote $rev in $co failed (above): no such branch or commit on $remote, or $remote is unreachable from $BOX"
   sha=$(git -C "$co" rev-parse --verify -q "$ref^{commit}") || refuse "$rev fetched from $remote is not a commit"

@@ -2608,8 +2608,10 @@ touch "$TMP/leg-go"; wait "$first"; first_rc=$?
 [ "$first_rc" = 0 ] && [ "$(git -C "$lwt" rev-parse HEAD)" = "$lb" ] && ok "...the first leg's worktree left at its commit" ||
   ko "the first leg: rc=$first_rc head=$(git -C "$lwt" rev-parse HEAD) -- $(cat "$TMP/leg-first.out")"
 expect "...and once it is done the next leg takes it" 0 "execution-leg: exit: 0" -- leg --request leg-a --rev "$la" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
-# The fetch is bounded by FLEET_FETCH_TIMEOUT: a remote that accepts and then stalls.
-git -C "$lco" remote add slow "$lremote" && git -C "$lco" config remote.slow.uploadpack "sh -c 'sleep 20'"
+# The fetch is bounded by FLEET_FETCH_TIMEOUT: a remote that accepts and then stalls. Its shell
+# forks the sleep (dash does even for `sh -c 'sleep 20'`, as on the CI runner), which outlives the
+# bound; it must not hold the worktree's lock, so the next case runs at once.
+git -C "$lco" remote add slow "$lremote" && git -C "$lco" config remote.slow.uploadpack "sh -c 'sleep 20; exit 1'"
 expect "a fetch that stalls is cut at FLEET_FETCH_TIMEOUT and refused" 1 "did not finish in 2s (FLEET_FETCH_TIMEOUT)" -- \
   env FLEET_FETCH_TIMEOUT=2 "${FWL[@]}" execution leg --request leg-a --rev claude/topic --remote slow --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 rm -f "$TMP/leg-late"
