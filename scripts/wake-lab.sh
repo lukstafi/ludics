@@ -1057,11 +1057,17 @@ wait_for() { # wait_for <box...> — poll until every box answers, for up to WAI
 # fleet-worker.sh's FLEET_ANCHOR default; WAKE_LAB_ANCHOR overrides it, and set empty turns the leg
 # off for a lab with no fleet. It must be a plain ssh destination, since it is spliced into the
 # remote command line (checked before anything is sent).
+# What `all up` claims is POINT-IN-TIME: at the last poll every asked leg answered, and every box
+# the leg did not ask still answered after the anchor wait (the final pass in the wake dispatch).
+# A route that flaps after that is outside it; `execution slot`'s UNREACHABLE refusal says to
+# retry a box woken minutes ago.
 ANCHOR=${WAKE_LAB_ANCHOR-mac-studio}
 ANCHOR_WAIT_SECONDS=${WAKE_LAB_ANCHOR_WAIT_SECONDS:-120}
 ANCHOR_POLL_SECONDS=${WAKE_LAB_ANCHOR_POLL_SECONDS:-5}
 ANCHOR_LEG_FAILED=3   # the probe's status when the box answered and its own ssh to the anchor did not
 ANCHOR_FAILED=""      # set by wait_anchor: the boxes whose anchor leg never came up
+ANCHOR_UNASKED=""     # set by wait_anchor: the boxes it did not ask, for the final pass
+ANCHOR_WAITED=0       # set by wait_anchor: 1 when it polled more than once, so time passed
 
 anchor_alias() { # anchor_alias <box> -- the endpoint whose ssh to the anchor is asked; 1 when none is
   [ "$(box_kind "$1")" = linux ] || return 1
@@ -1085,7 +1091,7 @@ anchor_probe() { # anchor_probe <alias> <cap seconds>
 # first pass's end, never a PROBE_CAP per box beyond the deadline.
 wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it works, for up to ANCHOR_WAIT_SECONDS
   local n a i all line left cap names=() aliases=() rcs=() caps=() first=1 deadline=$((SECONDS + ANCHOR_WAIT_SECONDS))
-  ANCHOR_FAILED=""
+  ANCHOR_FAILED=""; ANCHOR_UNASKED=""; ANCHOR_WAITED=0
   if [ -z "$ANCHOR" ]; then echo "anchor leg not checked: WAKE_LAB_ANCHOR is empty"; return 0; fi
   for n in "$@"; do
     # fleet-worker reads the registry WITHOUT ssh exactly where its anchor is `local` or the box's
@@ -1093,8 +1099,10 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
     # two spellings, and no other alias of the row, have no leg to ask; every other one is asked.
     if a=$(anchor_alias "$n") && { [ "$ANCHOR" = local ] || [ "$ANCHOR" = "$a" ]; }; then
       echo "anchor leg not asked on $n: the anchor $ANCHOR is that box itself, read without ssh"
+      ANCHOR_UNASKED="$ANCHOR_UNASKED $n"
     elif a=$(anchor_alias "$n"); then names+=("$n"); aliases+=("$a"); rcs+=(1); caps+=("$PROBE_CAP")
-    else echo "anchor leg not checked on $n: its kind is $(box_kind "$n"), and only a linux box is asked"; fi
+    else echo "anchor leg not checked on $n: its kind is $(box_kind "$n"), and only a linux box is asked"
+         ANCHOR_UNASKED="$ANCHOR_UNASKED $n"; fi
   done
   [ ${#names[@]} -gt 0 ] || return 0
   echo "waiting for each box's own ssh to $ANCHOR..."
@@ -1109,6 +1117,10 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
         [ "$first" = 1 ] || [ "$left" -ge "$cap" ] || cap=$left
         caps[i]=$cap
         anchor_probe "${aliases[i]}" "$cap"; rcs[i]=$?
+      elif [ "${rcs[i]}" = 0 ]; then
+        # The deadline passed before this poll reached the leg: an answer from an earlier poll is
+        # not this poll's, so it cannot make the poll all-answered.
+        rcs[i]=unasked
       fi
       if [ "${rcs[i]}" = 0 ]; then line="$line${names[i]}=OK "
       else line="$line${names[i]}=-- "; all=0; fi
@@ -1118,6 +1130,7 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
     [ "$all" = 1 ] && return 0
     left=$((deadline - SECONDS))
     [ "$left" -gt 0 ] || break
+    ANCHOR_WAITED=1
     if [ "$left" -ge "$ANCHOR_POLL_SECONDS" ]; then sleep "$ANCHOR_POLL_SECONDS"; else sleep "$left"; fi
     [ "$SECONDS" -lt "$deadline" ] || break
   done
@@ -1127,6 +1140,8 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
       0) continue ;;
       "$ANCHOR_LEG_FAILED")
         printf '%s\n' "anchor leg NOT up on $n: $a answers, but its own 'ssh -o BatchMode=yes $ANCHOR true' still failed after ${ANCHOR_WAIT_SECONDS}s; a fleet-worker.sh run there would refuse UNREACHABLE $ANCHOR" ;;
+      unasked)
+        printf '%s\n' "anchor leg NOT up on $n: the wait ran out before the last poll could ask it again" ;;
       "$CAP_EXPIRED")
         printf '%s\n' "anchor leg NOT up on $n: its last check through $a did not return within its ${caps[i]}s cap" ;;
       *)
@@ -1746,11 +1761,18 @@ case "$VERB" in
         if [ "$rc" = 0 ] || [ -z "$ANCHOR" ] || ! anchor_alias "$t" >/dev/null || is_up "$t"; then UP+=("$t"); fi
       done
       if [ ${#UP[@]} -gt 0 ]; then wait_anchor "${UP[@]}" || anchor_rc=1; fi
+      # The final pass: a box the anchor wait did not ask holds its verdict from before that wait,
+      # so where the wait took time and every box had answered, each such box is asked once more.
+      # (With a box already down the run is NOT all up whatever this would find.)
+      gone=""
+      if [ "$ANCHOR_WAITED" = 1 ] && [ "$rc" = 0 ]; then
+        for t in $ANCHOR_UNASKED; do is_up "$t" || gone="${gone:+$gone }$t"; done
+      fi
       # The final verdict is the wake's AND the WSL step's: `all up` over a failed restart would
       # hand the sweep the degraded VM the restart exists to replace, so the WSL failure is
       # restated as the LAST line, where the sweep routine reads its verdict, and the exit
       # status says so too.
-      if [ "$rc" = 0 ] && [ "$wsl_rc" = 0 ] && [ "$anchor_rc" = 0 ]; then
+      if [ "$rc" = 0 ] && [ "$wsl_rc" = 0 ] && [ "$anchor_rc" = 0 ] && [ -z "$gone" ]; then
         echo "all up"
       else
         if [ "$rc" != 0 ]; then
@@ -1760,6 +1782,7 @@ case "$VERB" in
           echo "PowerShell to disable Fast Startup and re-arm the NIC. Check '$0 status' after the"
           echo "router lease settles; tuf (no Wake-on-LAN) needs manual wake."
         fi
+        [ -n "$gone" ] && echo "NOT all up: stopped answering during the anchor wait: $gone"
         [ "$anchor_rc" != 0 ] && echo "NOT all up: no ssh to $ANCHOR yet from: $ANCHOR_FAILED (see above)"
         [ "$wsl_rc" != 0 ] && echo "NOT all up: $WSL_FAILED (see above)"
         exit 1

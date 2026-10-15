@@ -17,6 +17,10 @@ HOSTS
 cat >"$tmp/bin/ssh" <<'SSH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$SSH_LOG"
+# $SSH_GONE_AFTER_ASKS="<alias>:<n>": that alias answers nothing once n anchor-leg asks have been
+# made (to any box) -- a box that goes away while another box's leg is still being waited for.
+if [ -n "${SSH_GONE_AFTER_ASKS:-}" ] && [ "${*: -2:1}" = "${SSH_GONE_AFTER_ASKS%%:*}" ] &&
+   [ "$(grep -c -- ' true || exit ' "$SSH_LOG")" -ge "${SSH_GONE_AFTER_ASKS##*:}" ]; then exit 255; fi
 case "$*" in
   *systemctl*)
     [ "${SSH_POWER_FAIL:-0}" = 1 ] && { echo 'Access denied' >&2; exit 2; }
@@ -236,7 +240,14 @@ check 'an anchor leg that never comes up is NOT all up, naming that leg and not 
 # third ask. Asked only until it answered, rog would read OK beside minix and the wake all up.
 out=$(WAKE_LAB_HOSTS="$tmp/lab-hosts.sh" SSH_UP="rog-nv-linux minix-amd-linux" SSH_ANCHOR_SCRIPT="rog-nv-linux:01 minix-amd-linux:110" \
   WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_POLL_SECONDS=0 "$tmp/wake-lab.sh" --wait rog minix 2>&1); rc=$?
-check '...and a leg that answered is asked again, so one that has gone since is NOT all up' '[ "$rc" = 1 ] && [[ "$out" == *"anchor leg to mac-studio: rog=OK minix=--"*"rog=-- minix=OK"* ]] && [[ "$out" == *"anchor leg NOT up on rog: rog-nv-linux answers"* ]] && [[ "$out" != *"anchor leg NOT up on minix"* ]]'
+check '...and a leg that answered is asked again, so one that has gone since is NOT all up' '[ "$rc" = 1 ] && [[ "$out" == *"anchor leg to mac-studio: rog=OK minix=--"*"rog=-- minix=OK"* ]] && [[ "$out" == *"anchor leg NOT up on rog: rog-nv-linux answers"* ]] && [[ "$out" != *"anchor leg NOT up on minix: minix-amd-linux answers"* ]]'
+: >"$SSH_LOG"
+# The final pass: minix's leg is not asked (the anchor is minix itself), and it goes away while
+# rog's leg is still coming up, so the run is NOT all up rather than all up on minix's old answer.
+out=$(WAKE_LAB_HOSTS="$tmp/lab-hosts.sh" SSH_UP="rog-nv-linux minix-amd-linux" WAKE_LAB_ANCHOR=minix-amd-linux \
+  SSH_ANCHOR_SCRIPT="rog-nv-linux:110" SSH_GONE_AFTER_ASKS="minix-amd-linux:1" WAKE_LAB_WAIT_SECONDS=1 \
+  WAKE_LAB_ANCHOR_WAIT_SECONDS=30 WAKE_LAB_ANCHOR_POLL_SECONDS=0 "$tmp/wake-lab.sh" --wait rog minix 2>&1); rc=$?; last=${out##*$'\n'}
+check 'a box the anchor wait did not ask is asked once more after it, and one gone since is NOT all up' '[ "$rc" = 1 ] && [ "$last" = "NOT all up: stopped answering during the anchor wait: minix" ] && [[ "$out" == *"anchor leg to minix-amd-linux: rog=OK"* ]] && ! grep -qx "all up" <<<"$out"'
 : >"$SSH_LOG"
 started=$SECONDS
 out=$(SSH_UP=1 SSH_ANCHOR_AFTER=1000 SSH_ANCHOR_HANG_AFTER=1 WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAIT_SECONDS=3 WAKE_LAB_ANCHOR_POLL_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?; took=$((SECONDS - started))
