@@ -111,7 +111,7 @@ refused at reserve. Any other revision is the free text it always was, and a dis
 carrying `resolved_revision` for one is refused, as is a head-of dispatch without it. A reconcile to
 `reserved` and a later dispatch resolve again: each dispatch records the commit it assigned. A
 head-of record never dispatched names no commit, so reconcile refuses to make it `running` or
-`uncertain`.
+`uncertain`; and once resolved, an `observed_sha` that any later payload names must be that commit.
 """
 import fcntl
 import json
@@ -706,6 +706,11 @@ def main(argv: list[str]) -> None:
             refuse("unknown operation")
         if "observed_sha" in data and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", data["observed_sha"]):
             refuse("observed_sha must be an exact Git object ID")
+        assigned = record.get("resolved_revision")
+        if "observed_sha" in data and assigned and data["observed_sha"] != assigned:
+            # The commit a head-of request was assigned is the one its evidence is about.
+            refuse(f"observed_sha {data['observed_sha']} is not {assigned}, the commit "
+                   f"{record['request']['requested_revision']} was resolved to at assignment")
         for key in ("observed_sha", "remote_checkout", "handle", "log", "verdict"):
             if key in data:
                 nonempty(data, [key])

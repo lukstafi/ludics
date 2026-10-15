@@ -23,7 +23,9 @@ THE CHECKOUT AND THE REVISION, on the box (paths absolute, or ``~/``): ``--check
 checkout of the project there, ``--worktree`` a LINKED worktree of it (never the main one), made
 with ``git worktree add --detach`` when the path does not exist and checked out ``--detach`` at
 the commit when it does -- refused when it is another repository's, or has uncommitted changes,
-which a leg never overwrites. A full SHA already in the checkout is used as it is; anything else is
+which a leg never overwrites; and refused when it is not clean once at the commit, submodules
+included (a submodule the checkout moved past is refused, never updated). A runner that is no
+executable command in the worktree is refused before it is counted as run. A full SHA already in the checkout is used as it is; anything else is
 fetched from ``--remote`` (``origin``) -- a branch as ``refs/heads/<rev>``, so a tag of the same
 name is never taken for it -- INTO A PRIVATE REF of the checkout, ``refs/fleet-leg/<pid>``,
 and resolved there: never through ``FETCH_HEAD``, which a linked worktree cannot see and which two
@@ -59,7 +61,7 @@ when it was cut by the deadline or a signal (124, 128+), the patch reverted all 
 that cannot be reverted is ``CONTROL NOT REVERTED``, status 1, whatever the control did. A control
 that is not exercised is ``NO CONTROL``, status 1, never a pass: its nested slot never started the
 runner, the runner could not be executed with the patch applied (126, 127), or the main run left the
-worktree at another commit than the one the leg reports. A main run
+worktree at another commit than the one the leg reports, or not clean. A main run
 that failed is the leg's status, and the control does not run.
 
 WHAT THE STATUS MEANS. The runner's, when the sentinel line was printed. Without it, nothing ran to
@@ -93,6 +95,7 @@ HEX = re.compile(r"[0-9a-fA-F]{7,}")
 OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 REMOTE = re.compile(r"[A-Za-z0-9._-]+")
 SECONDS = re.compile(r"[1-9][0-9]*")
+WHOLE = re.compile(r"[0-9]+")
 RUN_BOUND = "86400"  # each run's --deadline when the leg names none: a day, a bound only to reap with
 HELD_BACK = 64  # bytes of an unfinished line kept back for the status line; it is never longer than 45
 
@@ -122,6 +125,9 @@ finish() { cleanup; printf 'execution-leg %s: exit: %s\n' "$token" "$1"; exit "$
 # A path's git common directory, physical; empty when it is no checkout.
 common() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
 gitdir() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
+# What makes a worktree not the commit at its HEAD: changed, staged or untracked paths, and
+# submodules whatever the configuration says to ignore.
+dirt() { git -C "$1" status --porcelain --ignore-submodules=none 2>/dev/null; }
 [ -x "$fw" ] || refuse "no executable fleet-worker.sh at $fw (the skills checkout on $BOX; run fleet-worker.sh refresh $BOX)"
 cdir=$(common "$co"); [ -n "$cdir" ] || refuse "--checkout $co is not a git checkout on $BOX"
 # One leg at a time in a worktree, from the status check through the control's revert: a second
@@ -175,7 +181,7 @@ if [ -e "$wt" ] || [ -L "$wt" ]; then
   top=$(cd "$wt" && git rev-parse --show-toplevel 2>/dev/null)
   [ -n "$top" ] && [ "$(cd "$top" && pwd -P)" = "$(cd "$wt" && pwd -P)" ] || refuse "--worktree $wt is inside a worktree, not its top"
   [ "$(gitdir "$wt")" != "$cdir" ] || refuse "--worktree $wt is the repository's main checkout; a leg moves only a linked worktree"
-  dirty=$(git -C "$wt" status --porcelain 2>/dev/null) || refuse "cannot read the status of $wt"
+  dirty=$(dirt "$wt") || refuse "cannot read the status of $wt"
   [ -z "$dirty" ] || refuse "--worktree $wt has uncommitted changes ($(printf '%s\n' "$dirty" | grep -c '') path(s)), which a leg never overwrites: clean it, or name another worktree"
   git -C "$wt" checkout -q --detach "$sha" </dev/null >&2 || refuse "git checkout --detach $sha in $wt failed (above)"
   made=refreshed
@@ -186,6 +192,10 @@ else
 fi
 head=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}') || refuse "cannot read HEAD of $wt"
 [ "$head" = "$sha" ] || refuse "HEAD of $wt is $head after checking out $sha"
+# Clean at the commit, submodules included: a submodule the checkout moved past is refused, never
+# updated, since the runner would test its old commit under this one's observed_sha.
+dirty=$(dirt "$wt") || refuse "cannot read the status of $wt"
+[ -z "$dirty" ] || refuse "$wt is not clean at $sha ($(printf '%s\n' "$dirty" | head -n 3 | tr '\n' ';')): a submodule that does not follow the checkout, or a file it left; a leg updates no submodule"
 git -C "$co" update-ref -d "$ref" >/dev/null 2>&1
 if [ -n "$patch" ]; then
   [ -f "$patch" ] || refuse "the control patch did not arrive at $patch"
@@ -208,15 +218,20 @@ cd "$wt" || exit 1
 # starts, just before it becomes the runner, so a slot that refused is told from a runner that ran.
 go() {
   local tag="$1"; shift
-  "$fw" execution slot "${nest[@]}" -- bash -c 'printf "%s\n" "$1" >> "$2"; shift 2; exec "$@"' leg-run "$tag-started" "$results" "$@" </dev/null
+  "$fw" execution slot "${nest[@]}" -- bash -c '
+    case "$3" in */*) [ -f "$3" ] && [ -x "$3" ] ;; *) command -v "$3" >/dev/null ;; esac ||
+      { printf "%s-unexecutable\n" "$1" >> "$2"; echo "EXECUTION LEG: $3 is not an executable command here" >&2; exit 127; }
+    printf "%s-started\n" "$1" >> "$2"; shift 2; exec "$@"' leg-run "$tag" "$results" "$@" </dev/null
 }
 printf "started\n" >> "$results"
 go main "$@"; rc=$?
 printf "main=%s\n" "$rc" >> "$results"
 { [ "$rc" -eq 0 ] && [ -n "$patch" ] && grep -qx main-started "$results"; } || exit "$rc"
-# The control is made against the commit the leg reports, or not at all.
+# The control is made against the commit the leg reports, clean, or not at all.
 now=$(git rev-parse --verify -q "HEAD^{commit}")
 [ "$now" = "$head" ] || { printf "moved=%s\n" "${now:-unreadable}" >> "$results"; exit 0; }
+left=$(git status --porcelain --ignore-submodules=none | grep -c "")
+[ "$left" -eq 0 ] || { printf "dirty=%s\n" "$left" >> "$results"; exit 0; }
 git apply "$patch" >&2 || { printf "apply=failed\n" >> "$results"; exit 1; }
 printf "applied\n" >> "$results"
 printf "EXECUTION LEG %s: control patch applied; the runner again, which must fail\n" "$box" >&2
@@ -238,6 +253,10 @@ if [ -z "$main" ]; then
   printf 'EXECUTION LEG REFUSED %s: the runner never started: %s exit %s (above)\n' "$BOX" "${wrap[*]}" "$wrc" >&2
   cleanup; exit "$wrc"
 fi
+if grep -qx main-unexecutable "$results"; then
+  printf 'EXECUTION LEG REFUSED %s: the runner is not an executable command in %s (above); nothing ran\n' "$BOX" "$wt" >&2
+  cleanup; exit 1
+fi
 if ! grep -qx main-started "$results"; then
   printf 'EXECUTION LEG REFUSED %s: the runner never started: its nested execution slot exit %s (above)\n' "$BOX" "$main" >&2
   cleanup; exit "$main"
@@ -247,6 +266,11 @@ say "runner exit $main at $head"
 moved=$(fact moved)
 if [ -n "$moved" ]; then
   say "NO CONTROL: the main run left $wt at $moved, not $head, so a control there would not be about $head; no control verdict"
+  finish 1
+fi
+left=$(fact dirty)
+if [ -n "$left" ]; then
+  say "NO CONTROL: the main run left $left changed or untracked path(s) in $wt, so a control failing there need not be the patch's doing; no control verdict"
   finish 1
 fi
 if [ "$(fact apply)" = failed ]; then
@@ -269,11 +293,11 @@ fi
 if [ -z "$crc" ]; then
   say "the control run was ended before it returned (wrapper exit $wrc): no control verdict"
   finish "$wrc"
+elif grep -qx control-unexecutable "$results" || { [ "$crc" -ge 126 ] && [ "$crc" -le 127 ] && grep -qx control-started "$results"; }; then
+  say "NO CONTROL: the control run could not execute the runner (exit $crc: the patch removed it, or its mode); no control verdict"
+  finish 1
 elif ! grep -qx control-started "$results"; then
   say "NO CONTROL: the control's nested execution slot never started the runner (exit $crc, above); no control verdict"
-  finish 1
-elif [ "$crc" -eq 126 ] || [ "$crc" -eq 127 ]; then
-  say "NO CONTROL: the control run could not execute the runner (exit $crc: the patch removed it, or its mode); no control verdict"
   finish 1
 elif [ "$crc" -eq 0 ]; then
   say "CONTROL PASSED: the runner passed with $pname applied, so it does not detect what the patch breaks"
@@ -316,13 +340,14 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
             i += 2
             continue
         if arg in ("--wait", "--deadline"):
-            if i + 1 >= len(args) or not SECONDS.fullmatch(args[i + 1]):
-                die(f"execution leg: {arg} takes a positive whole number of seconds")
+            # --wait 0 is the slot's refuse-at-once; a deadline is positive.
+            if i + 1 >= len(args) or not (SECONDS if arg == "--deadline" else WHOLE).fullmatch(args[i + 1]):
+                die(f"execution leg: {arg} takes a {'positive ' if arg == '--deadline' else ''}whole number of seconds")
             slot_flags += [arg, args[i + 1]]
             i += 2
             continue
         if arg in ("--cpu", "--gpu", "--wait-window") or (
-            arg.startswith("--wait-window=") and SECONDS.fullmatch(arg[len("--wait-window=") :])
+            arg.startswith("--wait-window=") and WHOLE.fullmatch(arg[len("--wait-window=") :])
         ):
             slot_flags.append(arg)
             i += 1

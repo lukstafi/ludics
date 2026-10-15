@@ -580,11 +580,12 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   `execution slot` on that box, with the slot flags given here; a measurement's under `execution
   hold --request <id>`, which takes `--deadline` alone. A record holding a `resolved_revision`
   (a [`head-of:` request](#reserve-launch-observe-conclude)) refuses any `--rev` that comes to
-  another commit.
+  another commit, and the registry refuses any `observed_sha` but that commit for it.
 - **The worktree.** `--checkout` is the project's checkout on the box and `--worktree` a linked
   worktree of it (paths absolute or `~/`): made with `git worktree add --detach` when the path does
   not exist, checked out `--detach` at the commit when it does, and refused when it is another
-  repository's, the main checkout itself, or dirty, which a leg never overwrites. A full SHA the
+  repository's, the main checkout itself, or dirty, which a leg never overwrites; and refused when
+  it is not clean once at the commit, submodules included (a submodule is never updated). A full SHA the
   checkout has is used as it is; a branch is fetched from `--remote` (`origin`) as
   `refs/heads/<branch>`, never a tag of that name, into a private
   ref of the checkout and resolved there, never through `FETCH_HEAD`, which a linked worktree
@@ -610,7 +611,8 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   the patch reverted either way; a patch that cannot be reverted is `CONTROL NOT REVERTED`, exit 1,
   whatever the control did. A control that was not exercised is `NO CONTROL`, exit 1, never a
   pass: the runner never started, could not be executed with the patch applied (126, 127), or the
-  main run left the worktree at another commit than the one the leg reports. A failed main run is the leg's status, and the control does not
+  main run left the worktree at another commit than the one the leg reports, or not clean. A runner
+  that is no executable command in the worktree is refused before it runs. A failed main run is the leg's status, and the control does not
   run.
 
 The verb names no project's runner or layout. OCANNL's is `tools/test-run.sh`, which builds as it

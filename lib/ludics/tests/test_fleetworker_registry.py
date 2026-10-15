@@ -126,6 +126,16 @@ class HeadOf(RegistryCase):
         self.assertIn("head-of:topic was never resolved (no dispatch)", err)
         self.assertEqual(self.call("reconcile", {"request_id": "h", "state": "reserved", "evidence": "nothing ran"})[0], 0)
 
+    def test_evidence_of_a_resolved_record_is_about_the_assigned_commit(self) -> None:
+        self.call("run", request("h", requested_revision="head-of:topic", resolved_revision=self.SHA))
+        other = "d" * 40
+        rc, _, err = self.call("record", {"request_id": "h", "state": "running", "evidence": "x", "observed_sha": other})
+        self.assertEqual(rc, 1)
+        self.assertIn(f"observed_sha {other} is not {self.SHA}, the commit head-of:topic was resolved to", err)
+        done = {"request_id": "h", "verdict": "pass", "log": "/l", "evidence": "x", "handle": "h", "remote_checkout": "/w"}
+        self.assertEqual(self.call("conclude", {**done, "observed_sha": other})[0], 1)
+        self.assertEqual(self.call("conclude", {**done, "observed_sha": self.SHA})[0], 0)
+
     def test_run_takes_the_resolution_beside_the_request_and_only_for_head_of(self) -> None:
         rc, rec, _ = self.call("run", request("h", requested_revision="head-of:topic", resolved_revision=self.SHA))
         self.assertEqual((rc, rec["resolved_revision"]), (0, self.SHA))

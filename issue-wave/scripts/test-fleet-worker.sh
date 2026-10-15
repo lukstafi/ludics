@@ -2616,6 +2616,19 @@ expect "a runner's background leftovers are reaped before the control runs" 0 "c
   sh -c 'if [ -e broken ]; then exit 3; fi; (sleep 3; touch "$1") & exit 0' x "$TMP/leg-late"
 sleep 4
 [ ! -e "$TMP/leg-late" ] && ok "...the main run's background child ended with it" || ko "a background child of the main run outlived it"
+# A submodule the checkout moves past is refused, never updated: the runner would test its old commit.
+lsub="$TMP/leg sub.git"; git init -q --bare -b main "$lsub"
+git clone -q "$lsub" "$TMP/leg sub" 2>/dev/null; git -C "$TMP/leg sub" commit -q --allow-empty -m S1 && git -C "$TMP/leg sub" push -q origin HEAD:main
+s1=$(git -C "$TMP/leg sub" rev-parse HEAD); git -C "$TMP/leg sub" commit -q --allow-empty -m S2 && git -C "$TMP/leg sub" push -q origin HEAD:main
+git -C "$lsrc" checkout -q -b subbed main && git -C "$lsrc" -c protocol.file.allow=always submodule add -q "$lsub" sub >/dev/null 2>&1 &&
+  git -C "$lsrc/sub" checkout -q "$s1" && git -C "$lsrc" add sub && git -C "$lsrc" commit -q -m "sub at S1" &&
+  git -C "$lsrc/sub" checkout -q main && git -C "$lsrc" commit -q -am "sub at S2" && git -C "$lsrc" push -q "$lremote" HEAD~1:refs/heads/sub1 HEAD:refs/heads/sub2 &&
+  git -C "$lsrc" checkout -q main || ko "could not build the submodule fixture (setup)"
+lwt2="$TMP/leg wts/sub"
+leg --request leg-a --rev sub1 --checkout "$lco" --worktree "$lwt2" -- true >/dev/null 2>&1 || ko "could not make the submodule worktree (setup)"
+git -C "$lwt2" -c protocol.file.allow=always submodule update -q --init >/dev/null 2>&1 || ko "could not initialize the submodule (setup)"
+expect "a submodule the checkout moved past is refused, never updated" 1 "is not clean at $(git -C "$lremote" rev-parse sub2) ( M sub;)" -- \
+  leg --request leg-a --rev sub2 --checkout "$lco" --worktree "$lwt2" -- tools/check.sh
 n=$(marks)
 expect "a control that does not apply is refused before anything runs" 1 "the control patch does not apply to $lb" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/stale.patch" -- tools/check.sh
@@ -2627,6 +2640,16 @@ expect "a main run that moves HEAD gets no control on the commit it left" 1 "NO 
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
   sh -c 'if [ ! -e broken ]; then git checkout -q --detach HEAD~1; fi; exit 0'
 grep -q "control patch applied" <<<"$out" && ko "the control ran on a moved worktree: $out" || ok "...the patch never applied"
+expect "a runner that is no executable command is refused, never a status" 1 "EXECUTION LEG REFUSED testbox: the runner is not an executable command" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/no-such-runner.sh
+grep -q "execution-leg: exit" <<<"$out" && ko "an unexecutable runner printed a sentinel: $out" || ok "...with no sentinel"
+expect "a main run that leaves files behind gets no control" 1 "NO CONTROL: the main run left 1 changed or untracked path(s)" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
+  sh -c 'if [ ! -e broken ]; then : > leftover; fi; exit 0'
+grep -q "control patch applied" <<<"$out" && ko "the control ran on a dirty worktree: $out" || ok "...the patch never applied"
+rm -f "$lwt/leftover"
+expect "--wait 0 is the slot's refuse-at-once, passed through" 0 "execution-leg: exit: 0" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --wait 0 --wait-window=0 -- tools/check.sh
 expect "a main run that fails is the leg's status, its control not run (and the branch red, not the tag red) " 1 "runner exit 1 at $lred" -- \
   leg --request leg-a --rev red --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh
 grep -q "control patch applied" <<<"$out" && ko "the control ran after a red main run: $out" || ok "...the control skipped"
