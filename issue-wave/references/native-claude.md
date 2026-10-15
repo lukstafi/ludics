@@ -30,41 +30,43 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   # foreground; each prints <dir> at once
   ~/.claude/skills/issue-wave/scripts/bg-run.sh spawn <parent> -- <cmd> [arg...]
   ~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot --bg <parent> -- <batch>
-  # foreground, re-issued until it prints rc=
+  # foreground, with Bash timeout: 600000, re-issued until it prints rc=
   ~/.claude/skills/issue-wave/scripts/bg-run.sh wait <dir>
+  # foreground; ends the run's whole tree
+  ~/.claude/skills/issue-wave/scripts/bg-run.sh stop <dir>
   ```
 
   `wait` blocks for its whole bound, `--within`, default 540 s so it ends under the 600 s cap,
   unless the run settles first, and prints one line led by its verdict; its exit code says the
-  same. While it blocks it writes a `bg-run: still waiting after <e> s ...` line to stderr every
-  120 s. `rc=<n>` (exit 0): the command finished with status `<n>`, and its
-  output is `<dir>/log`. The status is a file of its own, so a review body quoting `rc=` cannot
+  same. Give the Bash call `timeout: 600000`: the tool's default of 120 s cuts the wait short.
+  While it blocks it writes a `bg-run: still waiting after <e> s ...` line to stderr every 120 s.
+  `rc=<n>` (exit 0): the command finished with status `<n>`, and its output is `<dir>/log`. The status is a file of its own, so a review body quoting `rc=` cannot
   end the wait. `RUNNING after <e> s of --within <w>` (3): the bound was spent with the run still
   live, the designed return: re-issue it (an `<e>` under `<w>` is a bug worth reporting). A
   slow CI takes several of these. `STARTING` (4): no pid within a minute of the wait:
   re-issue it once, and a second one means the launch itself failed, so spawn again. `DIED` (5):
   the run was killed before the command returned, which says nothing about what the command was
   reading: re-arm it, and for `merge --wait` first re-read the merge state as ship-pr's *The
-  approval is one gate* says. `REFUSED` (6): the directory held a run that had ended; a directory
-  `spawn` allocated never does. Every re-arm takes a new `spawn`. A spawned run is no background
-  task of the harness's, so a task-stop does not reach it. Stop it through `<dir>/cpid`, whose
-  first line is the command's pid and second its start time:
+  approval is one gate* says. Every re-arm takes a new `spawn`. The command starts with SIGINT,
+  SIGQUIT, SIGHUP and SIGTERM at their default dispositions, so a suite that signals its own
+  children runs under `spawn` and `execution slot --bg` as it does in the foreground
+  (ludics-lite#524).
 
-  ```bash
-  p=$(head -n 1 <dir>/cpid)
-  [ "$(TZ=UTC LC_ALL=C ps -o lstart= -p "$p" | tr -d ' ')" = "$(sed -n 2p <dir>/cpid)" ] && kill "$p"
-  ```
-
-  The start-time match is the identity check `wait` makes, so a run that has ended, its pid since
-  reused, is left alone. The kill reaches the command's own process and nothing else: a child it
-  is running at that moment (a `gh` call, a `sleep`) runs on to its own end, and a `merge` already
-  inside its merge call can still land. Never kill the process group instead: a spawned run
-  shares its caller's, so a group kill takes the caller down too. Stopping the whole tree is
-  #510's `bg-run.sh stop`. The older form, `new` and then `start` as a Bash
-  `run_in_background: true` task, still works; the harness killed such a task at ~40 min into a
-  `merge --wait`, which is `DIED`. The script's header is the full contract, the run directory's
-  layout included, and `test-bg-run.sh` beside it pins the races each verdict closes
-  (ludics-lite#357, #388).
+  A spawned run is no background task of the harness's, so a task-stop does not reach it;
+  `bg-run.sh stop <dir>` does (ludics-lite#510). `spawn` gives the run a session of its own, and
+  `stop` ends that session's process group - the command, its `gh` calls and `sleep`s, and a
+  grandchild whose parent has already exited - with SIGTERM, then SIGKILL after 10 s
+  (`BG_RUN_STOP_GRACE`). It prints `STOPPED <dir>: ...` (exit 0), and a `wait` there then reads
+  `DIED`. A run that has already ended, or whose pid the system has since reused for another
+  process (the start-time check `wait` makes), is left alone: `NOT RUNNING: <verdict>`, exit 1.
+  The caller is never in the run's group, so the stop cannot take the caller down. A `merge`
+  already inside its merge call when the stop lands may still have reached GitHub, so re-read the
+  PR's state before acting on it. The older form, `new` and then `start` as a Bash
+  `run_in_background: true` task, still works (`start` runs only in a directory `new` allocated);
+  the harness killed such a task at ~40 min into a `merge --wait`, which is `DIED`. Its task-stop
+  ends it, and `stop` refuses it, because such a run shares its caller's process group. The
+  script's header is the full contract, the run directory's layout included, and `test-bg-run.sh`
+  beside it pins the races each verdict closes (ludics-lite#357, #388).
 
 ## Worker channel
 

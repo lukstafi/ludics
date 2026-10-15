@@ -5,10 +5,9 @@
 #
 # What it pins:
 #   - a finished run reads rc=<its exit status> with exit 0, whatever that status is, and the
-#     background `start` itself exits with it too -- on a directory `start` creates itself, the
-#     path every caller that names its own directory still takes;
-#   - `new` allocates: it creates the parent and prints <parent>/run-<N>, empty, one past the
-#     highest run-<N> there (other names not counted); two `new`s racing for the same N each get
+#     background `start` itself exits with it too, its directory left holding cpid, log, pid and rc;
+#   - `new` allocates: it creates the parent and prints <parent>/run-<N>, holding only its `.new`
+#     token, one past the highest run-<N> there (other names not counted); two `new`s racing for the same N each get
 #     a directory of their own, and a copy without the exclusive mkdir is the control that
 #     hands both the same one; a parent it cannot write in, or that is a file, is an error, not an
 #     endless search; a wait on a `new` directory before `start` reads STARTING, and `start`
@@ -25,10 +24,12 @@
 #   - a wrapper killed alone while its command runs on reads RUNNING, not DIED, through cpid; and
 #     a command that exited unreaped (a zombie, which still answers kill -0) reads DIED, and so
 #     does a pid the system has reused for a process with another start time;
-#   - a stale directory: `start` refuses one whose run has ended (finished or died), runs
-#     nothing, leaves the earlier status untouched, and a wait on it reads REFUSED, not the
-#     earlier run's rc; over a live run it is refused too, runs nothing, and marks nothing, so a
-#     wait there still reports the live run;
+#   - `start` runs only in a directory `new` allocated and no start has claimed (ludics-lite#425):
+#     it refuses, runs nothing and writes nothing, on a path that does not exist, on a directory
+#     `new` did not make, and on one a start has claimed -- a finished run's, whose rc and log stay
+#     untouched and which a wait still reads as that run's (the caller error the retired ended-run
+#     marker used to catch, pinned here as accepted), and a live run's, which a wait still reads as
+#     RUNNING;
 #   - two starts racing on one fresh directory: exactly one runs its command, the other is refused
 #     and leaves the winner's verdict alone -- also when the winner has already finished by the
 #     time the loser's claim fails;
@@ -43,6 +44,15 @@
 #     directory `new` would have and nothing else; a wait there reads RUNNING, then the command's
 #     status, its arguments intact in the log, the directory in start's layout; its usage errors
 #     create nothing;
+#   - the command starts with SIGINT, SIGQUIT, SIGHUP and SIGTERM at their default dispositions
+#     (ludics-lite#524): a spawned command that signals itself dies of it, also when the caller had
+#     all four ignored, and so does one under a `start` launched with `&` (INT and QUIT ignored);
+#     a copy with the reset emptied is the control, whose command survives each;
+#   - `stop` (ludics-lite#510) ends a spawned run's whole group, a grandchild behind an exited
+#     subshell included, from a caller that survives it, and a wait there then reads DIED; it sends
+#     KILL after BG_RUN_STOP_GRACE to a command that ignores TERM; it signals nothing, exit 1, on a
+#     run that finished, one never started, and a pid the system has reused for another process;
+#     and it refuses, exit 2, a run started by `start` in a group it does not lead, which runs on;
 #   - when zsh is installed, a start issued through `zsh -c` the way the Bash tool issues it,
 #     with its arguments passed through intact.
 #
@@ -93,6 +103,8 @@ until_exists() {
   while [ "$i" -lt $(($2 * 5)) ]; do [ -e "$1" ] && return 0; sleep 0.2; i=$((i + 1)); done
   return 1
 }
+# fresh <name>: a run directory from `new` under $TMP/<name>, in d.
+fresh() { d=$("$BG" new "$TMP/$1") || ko "new under $TMP/$1 failed"; }
 # bg_start <dir> <cmd...>: `start` in the background, the way the Bash tool runs it; its pid in S.
 bg_start() {
   local d=$1; shift
@@ -101,7 +113,7 @@ bg_start() {
 }
 
 # --- a finished run ------------------------------------------------------------------------------
-d="$TMP/finished"
+fresh finished
 bg_start "$d" sh -c 'echo hello; exit 7'
 expect "a finished run reads rc=7, exit 0" 0 'rc=7' -- "$BG" wait "$d" --within 20
 wait "$S"; src=$?
@@ -111,7 +123,8 @@ wait "$S"; src=$?
   || ko "log holds: $(cat "$d/log")"
 [ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid rc " ] && ok "...and the directory holds cpid, log, pid, rc and nothing else" \
   || ko "the directory holds: $(ls -A "$d" | tr '\n' ' ')"
-d="$TMP/finished0"
+fresh finished0
+fin0=$d
 bg_start "$d" true
 expect "a run exiting 0 reads rc=0" 0 'rc=0' -- "$BG" wait "$d" --within 20
 
@@ -119,8 +132,8 @@ expect "a run exiting 0 reads rc=0" 0 'rc=0' -- "$BG" wait "$d" --within 20
 p="$TMP/runs"
 expect "new on an absent parent creates it and prints run-1" 0 "$p/run-1" -- "$BG" new "$p"
 [ "$out" = "$p/run-1" ] && ok "...and prints that path and nothing else" || ko "new printed: $out"
-[ -d "$p/run-1" ] && [ -z "$(ls -A "$p/run-1")" ] && ok "...an empty directory" \
-  || ko "run-1 is not an empty directory: $(ls -A "$p/run-1" 2>&1)"
+[ -d "$p/run-1" ] && [ "$(ls -A "$p/run-1")" = .new ] && ok "...a directory holding only new's token" \
+  || ko "run-1 is not a directory holding only .new: $(ls -A "$p/run-1" 2>&1)"
 expect "a second new prints run-2" 0 "$p/run-2" -- "$BG" new "$p/"
 [ "$out" = "$p/run-2" ] && ok "...with the parent's trailing slash dropped" || ko "new printed: $out"
 mkdir "$p/run-7"; : > "$p/run-12x"; mkdir "$p/other"; : > "$p/run-"; mkdir "$p/run-0000000000099"
@@ -182,7 +195,7 @@ expect "...and start there runs and reads rc=5" 0 'rc=5' -- "$BG" wait "$d" --wi
 [ "$(cat "$d/log")" = from-new ] && ok "...with its output in log" || ko "log holds: $(cat "$d/log")"
 
 # --- race 1: the task is killed before the command returns ---------------------------------------
-d="$TMP/killed"
+fresh killed
 bg_start "$d" sh -c 'echo "$$" > "$0"; exec sleep 60' "$TMP/killed.child"
 if until_file "$d/pid" 10 && until_file "$TMP/killed.child" 10; then
   child=$(cat "$TMP/killed.child"); BGPIDS="$BGPIDS $child"
@@ -197,7 +210,7 @@ if until_file "$d/pid" 10 && until_file "$TMP/killed.child" 10; then
 else
   ko "race 1: the fixture task never published its pid"
 fi
-d="$TMP/orphan"
+fresh orphan
 bg_start "$d" sleep 60
 if until_file "$d/pid" 10 && until_file "$d/cpid" 10; then
   child=$(head -n 1 "$d/cpid"); BGPIDS="$BGPIDS $child"
@@ -258,7 +271,7 @@ expect "control: a pid with no start time recorded falls back to kill -0 (RUNNIN
 kill -9 "$sp" 2>/dev/null; { wait "$sp"; } 2>/dev/null
 
 # --- race 2: the command's output quotes the verdicts --------------------------------------------
-d="$TMP/quoting"
+fresh quoting
 bg_start "$d" sh -c 'printf "rc=0\nDIED\nREFUSED: no\n"; sleep 3; exit 7'
 if until_file "$d/log" 10; then
   expect "race 2: output quoting rc=0 does not settle the wait (RUNNING)" 3 RUNNING -- "$BG" wait "$d" --within 0
@@ -282,7 +295,7 @@ expect "race 3: no pid within the start grace reads STARTING" 4 STARTING -- \
   env BG_RUN_START_GRACE=2 "$BG" wait "$TMP/never" --within 540
 [ $((SECONDS - t0)) -le 6 ] && ok "...after the grace, not the 540 s window" \
   || ko "STARTING took $((SECONDS - t0)) s with a 2 s grace"
-d="$TMP/late"
+fresh late
 "$BG" wait "$d" --within 30 > "$TMP/late.out" 2>&1 &
 W=$!; BGPIDS="$BGPIDS $W"
 sleep 2
@@ -291,48 +304,59 @@ wait "$W"; wrc=$?
 [ "$wrc" -eq 0 ] && contains "$(cat "$TMP/late.out")" 'rc=0' \
   && ok "race 3: a wait already polling when start runs picks the run up (rc=0)" \
   || ko "the early wait exited $wrc -- $(cat "$TMP/late.out")"
-[ -e "$d/refused" ] && ko "the early wait's directory was refused: $(cat "$d/refused")" \
-  || ok "...and the early wait did not make the directory look stale"
 
-# --- a stale directory -----------------------------------------------------------------------------
-d="$TMP/stale"; mkdir -p "$d"
-printf '99999999\n' > "$d/pid"; printf 'old log\n' > "$d/log"; printf '0\n' > "$d/rc"
-expect "stale: start refuses a directory that holds a finished run (exit 2)" 2 'has ended' -- \
-  "$BG" start "$d" -- sh -c 'touch "$0"; exit 9' "$TMP/stale.ran"
-[ ! -e "$TMP/stale.ran" ] && ok "...and runs nothing" || ko "the refused start ran its command"
-[ "$(cat "$d/rc")" = 0 ] && [ "$(cat "$d/log")" = 'old log' ] \
-  && ok "...and leaves the earlier run's rc and log untouched" || ko "the earlier run's files changed"
-expect "stale: a wait on it reads REFUSED (exit 6), not the earlier rc=0" 6 'REFUSED:' -- "$BG" wait "$d" --within 0
-d="$TMP/stale-live"
+# --- start runs only in a directory new allocated and no start has claimed (ludics-lite#425) -----
+expect "start on a path that does not exist is refused (exit 2)" 2 'does not exist' -- \
+  "$BG" start "$TMP/named" -- sh -c 'touch "$0"' "$TMP/named.ran"
+[ ! -e "$TMP/named" ] && [ ! -e "$TMP/named.ran" ] && ok "...creates nothing and runs nothing" \
+  || ko "the refused start created its directory or ran its command"
+d="$TMP/self-made"; mkdir -p "$d"
+expect "start in a directory new did not allocate is refused" 2 'not allocated by new' -- \
+  "$BG" start "$d" -- sh -c 'touch "$0"' "$TMP/self.ran"
+[ -z "$(ls -A "$d")" ] && [ ! -e "$TMP/self.ran" ] && ok "...writes nothing there and runs nothing" \
+  || ko "the refused start ran or wrote: $(ls -A "$d")"
+expect "...and a wait there reads STARTING, as for any directory no start claimed" 4 STARTING -- \
+  env BG_RUN_START_GRACE=60 "$BG" wait "$d" --within 0
+# A path new printed, handed to a second start after its run ended: refused, runs nothing, and
+# writes nothing, so a wait there reads the FIRST run's status. That is the caller error the
+# retired ended-run marker turned into REFUSED; this pins that it is accepted, not missed.
+fresh reused
+bg_start "$d" sh -c 'echo first; exit 3'
+expect "a run to reuse finishes (rc=3)" 0 'rc=3' -- "$BG" wait "$d" --within 20
+expect "a second start on a finished run's directory is refused" 2 'already claimed' -- \
+  "$BG" start "$d" -- sh -c 'touch "$0"; exit 9' "$TMP/reused.ran"
+[ ! -e "$TMP/reused.ran" ] && ok "...and runs nothing" || ko "the refused start ran its command"
+[ "$(cat "$d/rc")" = 3 ] && [ "$(cat "$d/log")" = first ] && [ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid rc " ] \
+  && ok "...and leaves the earlier run's files as they were, adding none" \
+  || ko "the earlier run's directory changed: $(ls -A "$d" | tr '\n' ' ')"
+expect "...so a wait there reads the earlier run's rc=3: the accepted caller error" 0 'rc=3' -- "$BG" wait "$d" --within 0
+fresh stale-live
 bg_start "$d" sleep 30
 live=$S
 if until_file "$d/pid" 10; then
-  expect "a start over a live run is refused and runs nothing" 2 'is live' -- \
+  expect "a start over a live run is refused and runs nothing" 2 'already claimed' -- \
     "$BG" start "$d" -- sh -c 'touch "$0"' "$TMP/live.ran"
   [ ! -e "$TMP/live.ran" ] && ok "...its command did not run" || ko "the refused start ran its command"
-  expect "...and leaves the live run's verdict alone (RUNNING, not REFUSED)" 3 RUNNING -- \
+  expect "...and leaves the live run's verdict alone (RUNNING)" 3 RUNNING -- \
     "$BG" wait "$d" --within 0
 else
-  ko "stale: the live fixture never published its pid"
+  ko "the live fixture never published its pid"
 fi
 kill -9 "$live" 2>/dev/null; { wait "$live"; } 2>/dev/null
 [ -s "$d/cpid" ] && kill -9 "$(head -n 1 "$d/cpid")" 2>/dev/null
-d="$TMP/stale-dead"; mkdir -p "$d"
-printf '99999999\n' > "$d/pid"
-expect "stale: start refuses a directory whose run died" 2 'has ended' -- "$BG" start "$d" -- true
-expect "...and a wait on it reads REFUSED, not DIED" 6 'REFUSED:' -- "$BG" wait "$d" --within 0
 
 # Two starts racing on one fresh directory (a duplicated tool call, a retry): exactly one may run
-# its command. BG_RUN_CLAIM_GATE holds both past the emptiness check until both are there, so the
+# its command. BG_RUN_CLAIM_GATE holds both past the token check until both are there, so the
 # claim is what decides and the race is lost every time rather than by luck; the control is a copy whose exclusive link
 # is patched into an overwriting rename, which must then run the command twice.
-# twin_starts <script> <dir>: launch two starts at once; sets TWIN_RAN (times the command ran) and
-# TWIN_RCS (the two start exits).
+# twin_starts <script> <name>: launch two starts at once on one directory new allocates under
+# $TMP/<name>; sets TWIN_DIR, TWIN_RAN (times the command ran) and TWIN_RCS (the two start exits).
 twin_starts() {
   local ran="$2.ran" gate="$2.gate" a b ra rb i=0
-  BG_RUN_CLAIM_GATE=$gate "$1" start "$2" -- sh -c 'echo x >> "$0"; sleep 1' "$ran" > /dev/null 2>&1 &
+  TWIN_DIR=$("$1" new "$2")
+  BG_RUN_CLAIM_GATE=$gate "$1" start "$TWIN_DIR" -- sh -c 'echo x >> "$0"; sleep 1' "$ran" > /dev/null 2>&1 &
   a=$!
-  BG_RUN_CLAIM_GATE=$gate "$1" start "$2" -- sh -c 'echo x >> "$0"; sleep 1' "$ran" > /dev/null 2>&1 &
+  BG_RUN_CLAIM_GATE=$gate "$1" start "$TWIN_DIR" -- sh -c 'echo x >> "$0"; sleep 1' "$ran" > /dev/null 2>&1 &
   b=$!
   BGPIDS="$BGPIDS $a $b"
   # Open the gate once both starts stand at it (or after 10 s, when the counts below say why).
@@ -350,12 +374,12 @@ twin_starts "$BG" "$TMP/twin"
 [ "$TWIN_RAN" -eq 1 ] && [ "$TWIN_RCS" = "0 2 " ] \
   && ok "twin starts on one directory: the command ran once and the other start was refused" \
   || ko "twin starts: the command ran $TWIN_RAN time(s); the starts exited $TWIN_RCS"
-expect "...and the losing start left the winner's verdict alone (rc=0, not REFUSED)" 0 'rc=0' -- \
-  "$BG" wait "$TMP/twin" --within 0
+expect "...and the losing start left the winner's verdict alone (rc=0)" 0 'rc=0' -- \
+  "$BG" wait "$TWIN_DIR" --within 0
 # A start that loses the claim to a winner that has already FINISHED: the start is held past the
-# emptiness check, a finished run is put in place under it, and then it is let go. It must mark
+# token check, a finished run is put in place under it, and then it is let go. It must write
 # nothing, so the winner's rc is what a wait reads.
-d="$TMP/lost-to-finished"
+fresh lost-to-finished
 BG_RUN_CLAIM_GATE="$d.gate" "$BG" start "$d" -- sh -c 'touch "$0"' "$TMP/lost.ran" > "$TMP/lost.out" 2>&1 &
 L=$!; BGPIDS="$BGPIDS $L"
 if until_exists "$d.gate.$L" 10; then
@@ -365,7 +389,7 @@ if until_exists "$d.gate.$L" 10; then
   [ "$lrc" -eq 2 ] && contains "$(cat "$TMP/lost.out")" 'claimed' && [ ! -e "$TMP/lost.ran" ] \
     && ok "a start that loses the claim to a finished run is refused and runs nothing" \
     || ko "the losing start exited $lrc, ran=$([ -e "$TMP/lost.ran" ] && echo yes || echo no) -- $(cat "$TMP/lost.out")"
-  expect "...and marks nothing: a wait reads the winner's rc=0, not REFUSED" 0 'rc=0' -- "$BG" wait "$d" --within 0
+  expect "...and writes nothing: a wait reads the winner's rc=0" 0 'rc=0' -- "$BG" wait "$d" --within 0
 else
   ko "the gated start never reached the gate"
 fi
@@ -382,7 +406,7 @@ fi
 
 # The window is spent in full when it is shorter than the poll: a running command with --within 3
 # and a 10 s poll holds the call ~3 s rather than answering at once.
-d="$TMP/short-window"
+fresh short-window
 bg_start "$d" sleep 30
 if until_file "$d/pid" 10; then
   t0=$(date +%s)
@@ -400,7 +424,7 @@ kill -9 "$S" 2>/dev/null; { wait "$S"; } 2>/dev/null
 # A wait that reaches its bound names the elapsed time and the bound on its RUNNING line, and says
 # it is still waiting at each heartbeat (here every 1 s) on stderr only, never in a line that starts
 # with a verdict word; stdout stays the one verdict line (ludics-lite#571).
-d="$TMP/heartbeat"
+fresh heartbeat
 bg_start "$d" sleep 30
 if until_file "$d/pid" 10; then
   env BG_RUN_HEARTBEAT=1 "$BG" wait "$d" --within 3 > "$TMP/hb.out" 2> "$TMP/hb.err"; hrc=$?
@@ -476,6 +500,117 @@ expect "usage: spawn with no command is refused" 2 'usage:' -- "$BG" spawn "$TMP
 : > "$TMP/spawn-file"
 expect "spawn under a parent that is a file is an error, and starts nothing" 2 'cannot create' -- "$BG" spawn "$TMP/spawn-file" -- true
 
+# --- the command's signal dispositions (ludics-lite#524) ---------------------------------------------
+# A command that signals itself dies of it only where the signal is at its default disposition: an
+# ignored one is survived, and the command says so. Each spawn is made from a subshell that ignores
+# all four, so every one is inherited ignored and only the reset can undo it; the control is a copy
+# with the reset emptied, whose command must survive each.
+printf '%s\n' '#!/bin/sh' 'kill -"$1" $$' 'sleep 1' 'echo "survived $1"' > "$TMP/selfsig.sh"
+sig_spawn() { # <script> <parent> <SIG>: the run directory, spawned with all four signals ignored
+  ( trap '' INT QUIT HUP TERM; "$1" spawn "$2" -- sh "$TMP/selfsig.sh" "$3" )
+}
+for sc in INT:130 QUIT:131 HUP:129 TERM:143; do
+  sig=${sc%%:*} want=${sc#*:}
+  d=$(sig_spawn "$BG" "$TMP/sig-$sig" "$sig")
+  expect "a spawned command sees $sig at its default disposition, though its caller ignored it (rc=$want)" 0 "rc=$want" -- \
+    "$BG" wait "$d" --within 20
+  contains "$(cat "$d/log" 2>/dev/null)" survived && ko "...but it survived $sig: $(cat "$d/log")" \
+    || ok "...and did not survive it"
+done
+fresh sig-start
+bg_start "$d" sh "$TMP/selfsig.sh" INT
+expect "a command under a start launched with & (INT ignored) dies of INT too (rc=130)" 0 'rc=130' -- \
+  "$BG" wait "$d" --within 20
+sed "s|^reset_signals='INT QUIT HUP TERM'$|reset_signals=''|" "$BG" > "$TMP/noreset.sh"
+chmod +x "$TMP/noreset.sh"
+if cmp -s "$BG" "$TMP/noreset.sh"; then
+  ko "control: the patch found no reset_signals line to empty in $BG"
+else
+  for sig in INT QUIT HUP TERM; do
+    d=$(sig_spawn "$TMP/noreset.sh" "$TMP/sig-control-$sig" "$sig")
+    "$BG" wait "$d" --within 20 > /dev/null 2>&1
+    contains "$(cat "$d/log" 2>/dev/null)" "survived $sig" && ok "control: without the reset, the command survives $sig" \
+      || ko "control: without the reset the command did not survive $sig ($(cat "$d/rc" 2>/dev/null)), so the case above proves nothing"
+  done
+fi
+
+# --- stop: a spawned run's whole tree (ludics-lite#510) ---------------------------------------------
+# The command leaves a grandchild behind a subshell that has already exited, so the grandchild is
+# reparented out of the run's process tree. The caller, which spawns and stops, gets a process
+# group of its own (set -m), so a stop that wrongly signalled its caller's group would end that
+# caller -- what the case checks -- and not this suite.
+printf '%s\n' '#!/bin/sh' '( sh -c '"'"'echo $$ > "$0"; exec sleep 300'"'"' "$1" & )' 'exec sleep 300' > "$TMP/tree.sh"
+printf '%s\n' '#!/bin/bash' 'd=$("$1" spawn "$2" -- sh "$3" "$4") || exit 9' 'echo "dir $d"' \
+  'i=0; while [ ! -s "$4" ] && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done' \
+  '"$1" stop "$d"; echo "stop-rc $?"' 'echo caller-survived' > "$TMP/stopper.sh"
+set -m
+bash "$TMP/stopper.sh" "$BG" "$TMP/stop" "$TMP/tree.sh" "$TMP/stop.gc" > "$TMP/stopper.out" 2>&1 &
+sp=$!
+set +m
+BGPIDS="$BGPIDS $sp"
+wait "$sp"; sprc=$?
+sout=$(cat "$TMP/stopper.out")
+d=$(sed -n 's/^dir //p' "$TMP/stopper.out")
+gc=$(cat "$TMP/stop.gc" 2>/dev/null)
+[ -n "$gc" ] && BGPIDS="$BGPIDS $gc"
+[ "$sprc" -eq 0 ] && contains "$sout" caller-survived && contains "$sout" 'stop-rc 0' \
+  && contains "$sout" "STOPPED $d: process group" \
+  && ok "stop ends a live spawned run (STOPPED, exit 0), and its caller survives it" \
+  || ko "the stopper exited $sprc -- $sout"
+gone=false
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  case $(ps -o stat= -p "${gc:-99999999}" 2>/dev/null) in ''|Z*) gone=true; break ;; esac
+  sleep 0.2
+done
+[ -n "$gc" ] && $gone && ok "...a grandchild behind an exited subshell included" \
+  || ko "the grandchild (${gc:-never recorded}) outlived the stop"
+expect "...and a wait there reads DIED" 5 DIED -- "$BG" wait "$d" --within 5
+expect "a second stop there signals nothing (NOT RUNNING, exit 1)" 1 'NOT RUNNING: DIED' -- "$BG" stop "$d"
+# A command that ignores TERM gets KILL after the grace.
+d=$("$BG" spawn "$TMP/stubborn" -- sh -c 'trap "" TERM; : > "$0"; while :; do sleep 1; done' "$TMP/stubborn.ready")
+until_exists "$TMP/stubborn.ready" 10
+c=$(head -n 1 "$d/cpid" 2>/dev/null); BGPIDS="$BGPIDS $c"
+expect "stop sends KILL to a command that ignores TERM, after BG_RUN_STOP_GRACE" 0 'TERM, then KILL after 1 s' -- \
+  env BG_RUN_STOP_GRACE=1 "$BG" stop "$d"
+sleep 0.5
+case $(ps -o stat= -p "${c:-99999999}" 2>/dev/null) in ''|Z*) ok "...and the command is gone" ;;
+  *) ko "the TERM-ignoring command ($c) outlived the KILL" ;; esac
+# Nothing to stop: a finished run, one never started, a pid reused by another process.
+d=$("$BG" spawn "$TMP/stop-done" -- true)
+"$BG" wait "$d" --within 20 > /dev/null
+expect "stop on a finished run signals nothing (exit 1)" 1 'NOT RUNNING: rc=0' -- "$BG" stop "$d"
+fresh stop-never
+expect "stop on a directory no start has claimed signals nothing" 1 'NOT RUNNING: STARTING' -- "$BG" stop "$d"
+sleep 30 &
+sp=$!; BGPIDS="$BGPIDS $sp"
+d="$TMP/stop-reused"; mkdir -p "$d"
+printf '%s\n%s\n' "$sp" 'ThuJan100:00:001970' > "$d/pid"; cp "$d/pid" "$d/cpid"
+expect "stop on a pid the system reused (another start time) signals nothing" 1 'NOT RUNNING: DIED' -- "$BG" stop "$d"
+kill -0 "$sp" 2>/dev/null && ok "...and the process that now has that pid runs on" || ko "stop killed the unrelated process $sp"
+kill -9 "$sp" 2>/dev/null; { wait "$sp"; } 2>/dev/null
+# A run started by `start` in a group it does not lead (here the group of a shell started with
+# set -m, standing in for a harness task) has no group of its own: refused, and it runs on.
+fresh stop-start
+set -m
+sh -c '"$0" start "$1" -- sleep 300; :' "$BG" "$d" > /dev/null 2>&1 &
+par=$!
+set +m
+BGPIDS="$BGPIDS $par"
+if until_file "$d/cpid" 10; then
+  BGPIDS="$BGPIDS $(head -n 1 "$d/pid") $(head -n 1 "$d/cpid")"
+  expect "stop refuses a start-launched run that shares its caller's group (exit 2)" 2 'no process group of its own' -- \
+    "$BG" stop "$d"
+  expect "...which runs on (RUNNING)" 3 RUNNING -- "$BG" wait "$d" --within 0
+  kill -0 "$par" 2>/dev/null && ok "...as does the shell that started it" || ko "the refused stop ended the starting shell"
+else
+  ko "the start-launched fixture never published its cpid"
+fi
+kill -9 -- "-$par" 2>/dev/null; { wait "$par"; } 2>/dev/null
+expect "usage: stop refuses a relative directory" 2 'absolute' -- "$BG" stop rel/dir
+expect "usage: stop with no directory is refused" 2 'usage:' -- "$BG" stop
+expect "usage: a BG_RUN_STOP_GRACE that is not a number is refused" 2 'whole number' -- \
+  env BG_RUN_STOP_GRACE=soon "$BG" stop "$TMP/stop-never/run-1"
+
 # --- usage -------------------------------------------------------------------------------------------
 expect "usage: start refuses a relative directory" 2 'absolute' -- "$BG" start rel/dir -- true
 [ ! -e rel ] && ok "...and creates nothing" || ko "a relative start created ./rel"
@@ -485,13 +620,14 @@ expect "usage: start without -- is refused" 2 'usage:' -- "$BG" start "$TMP/u1" 
 expect "usage: start with no command is refused" 2 'usage:' -- "$BG" start "$TMP/u2" --
 expect "usage: a --within that is not a number is refused" 2 'whole number' -- "$BG" wait "$TMP/u3" --within soon
 expect "a zero-padded --within is decimal, not octal (08 is no arithmetic error)" 0 'rc=0' -- \
-  "$BG" wait "$TMP/finished0" --within 08
+  "$BG" wait "$fin0" --within 08
 expect "...and so are zero-padded BG_RUN_POLL and BG_RUN_START_GRACE" 4 STARTING -- \
   env BG_RUN_POLL=01 BG_RUN_START_GRACE=09 "$BG" wait "$TMP/padded" --within 02
 expect "usage: no subcommand is refused" 2 'usage:' -- "$BG"
 expect "usage: --help prints the synopsis" 0 'bg-run.sh start <dir> --' -- "$BG" --help
 expect "...and names new" 0 'bg-run.sh new   <parent>' -- "$BG" --help
 expect "...and spawn" 0 'bg-run.sh spawn <parent> -- <cmd>' -- "$BG" --help
+expect "...and stop" 0 'bg-run.sh stop  <dir>' -- "$BG" --help
 expect "usage: new refuses a relative parent" 2 'absolute' -- "$BG" new rel/parent
 [ ! -e rel ] && ok "...and creates nothing" || ko "a relative new created ./rel"
 expect "usage: new with no parent is refused" 2 'usage:' -- "$BG" new
@@ -500,7 +636,7 @@ expect "usage: new with a second argument is refused" 2 'usage:' -- "$BG" new "$
 
 # --- through zsh, the way the Bash tool issues it ------------------------------------------------------
 if command -v zsh > /dev/null 2>&1; then
-  d="$TMP/zsh"
+  fresh zsh
   # shellcheck disable=SC2016 # the single quotes are zsh's to expand
   zsh -fc '"$0" start "$1" -- printf "%s\n" "owner/repo#12" "a b" "\$HOME"' "$BG" "$d" > /dev/null 2>&1 &
   BGPIDS="$BGPIDS $!"

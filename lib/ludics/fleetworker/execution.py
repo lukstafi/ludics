@@ -184,7 +184,6 @@ case "$wrc" in
   # killed alone before its command published `cpid`), and no pause bounds how late the command
   # may still publish and run. The coordinator checks for the run's processes itself.
   5) refuse "bg-run.sh wait: DIED -- the task was killed before the command returned; bg-run cannot rule out a command that outlived it unpublished, so make sure no process of the run remains, then conclude it with a JSON payload (cancelled)" ;;
-  6) refuse "bg-run.sh wait: $said -- start refused this directory, so an rc there may be an earlier run's" ;;
   *) refuse "bg-run.sh wait exit $wrc: $said" ;;
 esac
 code=${said#rc=}
@@ -319,7 +318,7 @@ def conclude_from_bg_run(
         so a pass needs BOTH rc 0 and no nonzero sentinel;
       - 0 pass; 124 (timeout(1)) and 142 (test-run.sh's cap) timeout; 129/130/137/143 (a signal)
         cancelled; anything else fail;
-      - bg-run's DIED is refused, not mapped, as are RUNNING, STARTING and REFUSED.
+      - bg-run's DIED is refused, not mapped, as are RUNNING and STARTING.
     The read box need not be the execution host (a trip driven over ssh leaves its directory on
     the box that drove it), so the payload carries no ``execution_host`` binding, and the log and
     handle name the box read, ``<box>:<path>``."""

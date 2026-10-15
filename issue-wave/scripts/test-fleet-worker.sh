@@ -2119,13 +2119,14 @@ rm -f "$ISSUE_WAVE_STATE/executions/zz-broken.json"
 section "execution conclude --from-bg-run" && {
 need_lease
 # ludics-lite#405: runs that are not test-run.sh records -- a machine-verify trip, a measurement
-# script -- block under bg-run.sh, whose directory (`rc`, `log`, `refused`, `pid`/`cpid`) is read
+# script -- block under bg-run.sh, whose directory (`rc`, `log`, `pid`/`cpid`) is read
 # here through bg-run.sh's own `wait --within 0`. Each directory below is a real bg-run.sh run
-# (`start` returns when the command does), except the ones whose state has to be staged: a live
-# task, a killed one, one never started.
+# (`new`, then `start`, which returns when the command does), except the ones whose state has to
+# be staged: a live task, a killed one, one never started.
 BG="$TMP/dispatcher/issue-wave/scripts/bg-run.sh"
 bgdir() { # <name> <command...>: a finished bg-run.sh directory, its path on stdout
-  local d="$TMP/bg runs/$1"; shift
+  local d
+  d=$(bash "$BG" new "$TMP/bg runs/$1") || return 1; shift
   bash "$BG" start "$d" -- "$@" >/dev/null 2>&1
   printf '%s' "$d"
 }
@@ -2176,8 +2177,6 @@ d="$TMP/bg runs/live"; mkdir -p "$d"; printf '%s\n\n' "$$" > "$d/pid"
 expect "a live task (RUNNING) is refused" 1 "FROM-BG-RUN REFUSED: bg-run.sh wait: RUNNING" -- bgc bg-live "$d"
 d="$TMP/bg runs/never"; mkdir -p "$d"
 expect "a directory no task claimed (STARTING) is refused" 1 "FROM-BG-RUN REFUSED: bg-run.sh wait: STARTING" -- "${FWB[@]}" execution conclude --from-bg-run "$d" --request bg-live --sha "$sha"
-d=$(bgdir reused true); bash "$BG" start "$d" -- false >/dev/null 2>&1
-expect "a directory a second start refused is refused, its rc unread" 1 "an rc there may be an earlier run's" -- "${FWB[@]}" execution conclude --from-bg-run "$d" --request bg-live --sha "$sha"
 expect "a missing directory is refused" 1 "FROM-BG-RUN REFUSED: no run directory" -- "${FWB[@]}" execution conclude --from-bg-run "$TMP/bg runs/nope" --request bg-live --sha "$sha"
 expect "an unknown request is refused before any box is read" 1 "unknown request_id bg-zz" -- "${FWB[@]}" execution conclude --from-bg-run "$ok_dir" --request bg-zz --sha "$sha"
 expect "--from-bg-run needs an absolute directory" 2 "must be absolute" -- "${FWB[@]}" execution conclude --from-bg-run bg/x --request bg-live --sha "$sha"
@@ -2314,7 +2313,7 @@ expect "--observed-from on an execution host that does not answer concludes noth
 fixture_done rv-far
 # --from-bg-run: --sha is checked on GitHub, or --observed-from replaces it.
 BG="$TMP/dispatcher/issue-wave/scripts/bg-run.sh"
-bgd="$TMP/bg runs/rv-pass"; bash "$BG" start "$bgd" -- true >/dev/null 2>&1
+bgd=$(bash "$BG" new "$TMP/bg runs/rv-pass"); bash "$BG" start "$bgd" -- true >/dev/null 2>&1
 "${FWR[@]}" execution run "$(rv_req rv-bg origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-bg (setup)"
 expect "--from-bg-run refuses a --sha that resolves to no commit" 1 "EXECUTION REFUSED: --sha $typo is no commit of o/r" -- \
   env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --sha "$typo"
@@ -2855,6 +2854,17 @@ if held "$bgd/log" "inside slot 1 of 1, held by an enclosing batch"; then
   expect "...and then it is free" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 0 -- echo after-nested-bg
 else ko "the nested --bg batch did not run inside the enclosing slot: $(cat "$bgd/log" 2>/dev/null)"; fi
 bgkill "$bgd"
+# The detached batch starts with INT and HUP at their default dispositions (ludics-lite#524), so a
+# suite that signals its own children runs under --bg as in the foreground: a batch that signals
+# itself dies of it, through the slot's wrapper, where before the run inherited both ignored.
+for sc in INT:130 HUP:129; do
+  sig=${sc%%:*}
+  "${FWS[@]}" execution slot --bg "$TMP/slot-bg-sig" -- sh -c 'kill -"$0" $$; sleep 1; echo "survived $0"' "$sig" > "$TMP/slot-bg-sig.out" 2>&1
+  bgd=$(tail -n 1 "$TMP/slot-bg-sig.out")
+  expect "a --bg batch dies of the $sig it sends itself (rc=${sc#*:})" 0 "rc=${sc#*:}" -- "$BGR" wait "$bgd" --within 30
+  grep -q "^survived" "$bgd/log" 2>/dev/null && ko "...but it survived $sig: $(cat "$bgd/log")" || ok "...rather than surviving it"
+  bgkill "$bgd"
+done
 expect "--bg on a host with no fleet name is refused in the foreground" 2 "no fleet name" -- \
   env -u FLEET_LOCAL_BOX FLEET_HOSTNAME_MAP="nomatch*=testbox" "$FW" execution slot --bg "$TMP/slot-bg-none" -- echo x
 [ ! -e "$TMP/slot-bg-none" ] && ok "...and allocates no run directory" || ko "a refused --bg allocated $TMP/slot-bg-none"
