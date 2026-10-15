@@ -237,6 +237,8 @@ class RegistryUnread(unittest.TestCase):
         self.assertIn("wake-lab.sh --wait", unread.lines[1])
         # ...qualified: wake-lab asks a native-Linux box's leg and never a WSL guest's.
         self.assertIn("on a native-Linux box", unread.lines[1])
+        # ...and naming this anchor, since wake-lab's own default would ask a different one.
+        self.assertIn("WAKE_LAB_ANCHOR=far-anchor wake-lab.sh --wait <box>", unread.lines[1])
 
     def test_a_far_side_failure_is_not_given_the_wake_hint(self) -> None:
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",

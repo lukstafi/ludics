@@ -714,12 +714,14 @@ def read_registry(cfg: Config, box: str) -> list[dict[str, Any]] | Unread:
         # answer is the answer. The first minute after a wake is the exception (ludics-lite#617):
         # the box's sshd answers before its own ssh to the anchor does, so the second line tells
         # the caller that a retry may be all it needs, and that `wake-lab.sh --wait` waits for it --
-        # on a native-Linux box only, since it does not ask a WSL guest's leg (its anchor_alias).
+        # on a native-Linux box only, since it does not ask a WSL guest's leg (its anchor_alias). The
+        # command names this anchor, which is this box's spelling of it, as WAKE_LAB_ANCHOR wants:
+        # wake-lab's own default (mac-studio) is FLEET_ANCHOR's default, not whatever this one is.
         return Unread(4, (
             f"{SLOT_PREFIX} UNREACHABLE {cfg.anchor}: registry unread, no slot taken",
             f"{SLOT_PREFIX} UNREACHABLE {cfg.anchor}: a box woken in the last few minutes may only need its"
-            f" ssh to {cfg.anchor} to come up; retry in a minute (on a native-Linux box, wake-lab.sh --wait <box>"
-            " waits for that leg; it does not ask a WSL guest's)",
+            f" ssh to {cfg.anchor} to come up; retry in a minute (on a native-Linux box,"
+            f" WAKE_LAB_ANCHOR={cfg.anchor} wake-lab.sh --wait <box> waits for that leg; it does not ask a WSL guest's)",
         ))
     if done.rc != 0:
         return Unread(1, (substitution(done.out), f"{SLOT_PREFIX} REFUSED {box}: the anchor's registry could not be read"))
