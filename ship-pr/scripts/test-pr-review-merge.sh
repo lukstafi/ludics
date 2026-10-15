@@ -2285,6 +2285,11 @@ build_fixture() { # <kind>
   build_git "$work" commit -q -m base
   build_git "$work" push -q "$remote" HEAD:refs/heads/main
   base=$(git -C "$work" rev-parse HEAD)
+  # Cloned before either side moves, so its origin/main is behind the base's tip: a fetch that
+  # moved it (a configured refmap) would show in assert_clone_untouched.
+  git clone -q "$remote" "$root/clone"
+  BUILD_CLONE="$root/clone"
+  BUILD_REFS=$(git -C "$BUILD_CLONE" for-each-ref --format='%(refname) %(objectname)')
   case "$1" in
   clash) printf 'hook\n' >>"$work/api.sh" ;;
   compatible) printf 'keep\n' >>"$work/api.sh" ;;
@@ -2307,8 +2312,6 @@ build_fixture() { # <kind>
   build_git "$work" commit -q -a -m "the base's advance"
   build_git "$work" push -q "$remote" HEAD:refs/heads/main
   BUILD_TIP=$(git -C "$work" rev-parse HEAD)
-  git clone -q "$remote" "$root/clone"
-  BUILD_CLONE="$root/clone"
   GATED_HEAD=$BUILD_HEAD
   CURRENT_HEAD=$BUILD_HEAD
   BASE_TIP=$BUILD_TIP
@@ -2320,12 +2323,14 @@ build_fixture() { # <kind>
 
 MERGE_BUILD_SH=$'# The fixture\'s merge build.\ncommand sh ./api.sh\ninput *.sh\ntimeout 120'
 
-# The caller's clone after a merge build: its working tree, its worktrees and its refs as they were.
+# The caller's clone after a merge build: its working tree, its worktrees and every ref as they
+# were -- its remote-tracking ones included.
 assert_clone_untouched() {
   assert_eq "$(git -C "$BUILD_CLONE" status --porcelain)" "" "the clone's working tree is untouched"
   assert_eq "$(git -C "$BUILD_CLONE" worktree list --porcelain | grep -c '^worktree ')" 1 \
     "the scratch worktree is gone"
-  assert_eq "$(git -C "$BUILD_CLONE" for-each-ref refs/ship-pr/)" "" "the private refs are gone"
+  assert_eq "$(git -C "$BUILD_CLONE" for-each-ref --format='%(refname) %(objectname)')" "$BUILD_REFS" \
+    "every ref is as it was"
 }
 
 # The issue's acceptance: two greens whose hunks are textually disjoint and do not compile together.
@@ -2349,10 +2354,10 @@ test_a_merge_commit_that_does_not_build_is_refused() {
   assert_no_merge_call
   assert_clone_untouched
   # Each side alone runs clean: the clash is the merge's.
-  git -C "$BUILD_CLONE" checkout -q --detach "$BUILD_HEAD"
-  (cd "$BUILD_CLONE" && sh ./api.sh) || bail "the PR's head alone must run clean"
-  git -C "$BUILD_CLONE" checkout -q --detach "$BUILD_TIP"
-  (cd "$BUILD_CLONE" && sh ./api.sh) || bail "the base's tip alone must run clean"
+  git -C "$TEST_ROOT/build-clash/work" checkout -q --detach "$BUILD_HEAD"
+  (cd "$TEST_ROOT/build-clash/work" && sh ./api.sh) || bail "the PR's head alone must run clean"
+  git -C "$TEST_ROOT/build-clash/work" checkout -q --detach "$BUILD_TIP"
+  (cd "$TEST_ROOT/build-clash/work" && sh ./api.sh) || bail "the base's tip alone must run clean"
 }
 
 # The control: the same layout, whose merge commit builds, merges -- bound to the gated head.

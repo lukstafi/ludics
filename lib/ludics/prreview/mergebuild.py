@@ -43,7 +43,8 @@ outside this boundary, and stays the integration loop's to catch on the merged t
 HOW IT BUILDS. In a local clone of the repository: the git checkout the merge runs in, whose remote
 (``origin`` first) has a URL ending in the repository's ``owner/name`` (``.git`` optional, case
 ignored), so an SSH host alias serves as well as github.com. No such clone is exit 2. It fetches
-``refs/pull/<n>/head`` and the base branch into private refs under ``refs/ship-pr/merge-build/``,
+``refs/pull/<n>/head`` and the base branch into private refs under ``refs/ship-pr/merge-build/``
+(``--refmap=``, so no remote-tracking ref of the caller's moves),
 requires the fetched head to be the gated one (else exit 5, superseded), makes the merge commit
 with ``git merge-tree --write-tree`` and ``commit-tree`` (a textual conflict is exit 1), and checks
 it out as a detached worktree in a scratch directory -- never the caller's checkout, whose working
@@ -56,7 +57,8 @@ killed mid-build leaves a worktree entry ``git worktree prune`` drops once its d
 
 VERDICTS. Passed: the merge proceeds. Failed (any nonzero status): exit 1, refused, with the build
 output (its first and last lines when long). Not finished within the bound: exit 4. Could not run
-(the slot refused, a fetch or git step failed): exit 3. The build judges the base tip it fetched; a
+(the slot refused, a fetch or git step failed): exit 3. Interrupted (Ctrl-C, SIGTERM, SIGHUP): the
+build's process group is ended before its worktree is removed, and the command exits 128+n. The build judges the base tip it fetched; a
 base that moves again between the build and the merge call is not rebuilt (that, again, is the
 integration loop's). No flag waives a failed build.
 """
@@ -65,6 +67,7 @@ import fnmatch
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -262,6 +265,75 @@ def _shown(log: str) -> list[str]:
     return [*lines[:SHOWN_HEAD], f"... ({cut} line(s) of {len(lines)} left out) ...", *lines[-SHOWN_TAIL:]]
 
 
+def _stop(child: subprocess.Popen[bytes]) -> None:
+    """End the build's process group: SIGTERM first (an `execution slot` wrapper ends its own
+    command's group on it), SIGKILL five seconds later; under Windows, the process tree."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(child.pid)], stdin=subprocess.DEVNULL, capture_output=True, check=False)
+        child.kill()
+    else:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(child.pid, sig)
+            except ProcessLookupError:
+                break
+            try:
+                child.wait(timeout=5)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    try:
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _run_build(argv: list[str], cwd: str, bound: float) -> proc.Completed:
+    """The wrapped build in a process group of its own, under ``bound`` (124 past it, as
+    ``proc.run_tool`` reports a timeout). The group is ended however this process stops waiting
+    for it -- the bound, an exception, Ctrl-C, or a SIGTERM or SIGHUP to merge, which end the
+    command (exit 128+n) only after the build is stopped and its worktree removed -- so no build
+    outlives the merge that started it."""
+    prefix = proc.command_argv(argv[0])
+    if prefix is None:
+        return proc.Completed(127, "", f"{argv[0]}: command not found\n")
+    full = [*prefix, *argv[1:]]
+    posix = os.name != "nt"
+    child = subprocess.Popen(
+        full if posix else proc.windows_command_line(full),
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=posix,
+    )
+
+    def interrupted(signum: int, _frame: object) -> None:
+        raise cli.Exit(128 + signum, f"the merge build was interrupted by signal {signum}; it was stopped, nothing merged")
+
+    previous: dict[int, object] = {}
+    if posix:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            previous[sig] = signal.signal(sig, interrupted)
+    try:
+        try:
+            out, _ = child.communicate(timeout=bound)
+        except subprocess.TimeoutExpired:
+            _stop(child)
+            try:
+                out, _ = child.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, ValueError):
+                out = b""
+            return proc.Completed(124, proc.decode(out), f"no answer in {bound:g}s\n")
+        except BaseException:
+            _stop(child)
+            raise
+        return proc.Completed(child.returncode, proc.decode(out), "")
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)  # pyright: ignore[reportArgumentType]
+
+
 def _posix(path: str) -> str:
     """A path as the ``sh`` the wrapper runs under reads it: forward slashes (Git Bash's sh takes
     ``C:/...``, not ``C:\\...``)."""
@@ -311,7 +383,9 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, config: BuildConfig, w
         root, remote = find_clone(repo, os.getcwd(), hooks)
         quiet = ["-c", f"core.hooksPath={hooks}"]
         fetched = _git(
-            [*quiet, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote,
+            # --refmap= keeps the remote's configured fetch refspecs out of it: without it git also
+            # updates refs/remotes/<remote>/<base> opportunistically, which is the caller's.
+            [*quiet, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", remote,
              f"+refs/pull/{pr}/head:{ns}/head", f"+refs/heads/{base_ref}:{ns}/base"],
             root,
             timeout=FETCH_TIMEOUT,
@@ -379,7 +453,7 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, config: BuildConfig, w
                        f"--wait-window={SLOT_WAIT}", "--deadline", str(config.timeout), "--", *wrapped]
             bound += 2 * SLOT_WAIT + 120
         started = time.monotonic()
-        done = proc.run_tool(wrapped[0], wrapped[1:], cwd=tree, stdin=subprocess.DEVNULL, timeout=bound)
+        done = _run_build(wrapped, tree, bound)
         took = int(time.monotonic() - started)
         try:
             with open(status, encoding="utf-8") as handle:

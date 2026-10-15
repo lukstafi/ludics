@@ -11,8 +11,11 @@ import contextlib
 import io
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
 from ludics import cli
@@ -138,7 +141,18 @@ class Build(unittest.TestCase):
         git(self.work, "push", "-q", self.remote, "HEAD:refs/heads/main")
         return head, git(self.work, "rev-parse", "HEAD")
 
+    def refs(self) -> str:
+        return git(self.clone, "for-each-ref", "--format=%(refname) %(objectname)")
+
+    def assert_untouched(self, refs: str) -> None:
+        """The clone as it was: its working tree, its one worktree, and every ref -- its
+        remote-tracking ones included, which a fetch's configured refmap would move."""
+        self.assertEqual(git(self.clone, "status", "--porcelain"), "")
+        self.assertEqual(git(self.clone, "worktree", "list", "--porcelain").count("worktree "), 1)
+        self.assertEqual(self.refs(), refs)
+
     def build(self, gated: str) -> tuple[int, str]:
+        refs = self.refs()
         os.chdir(self.clone)
         out = io.StringIO()
         rc = 0
@@ -150,9 +164,7 @@ class Build(unittest.TestCase):
             except cli.Exit as exc:
                 rc = exc.rc
                 out.write(exc.message + "\n")
-        self.assertEqual(git(self.clone, "status", "--porcelain"), "")
-        self.assertEqual(git(self.clone, "worktree", "list", "--porcelain").count("worktree "), 1)
-        self.assertEqual(git(self.clone, "for-each-ref", "refs/ship-pr/"), "")
+        self.assert_untouched(refs)
         return rc, out.getvalue()
 
     def test_a_clash_is_refused_with_the_build_output(self) -> None:
@@ -199,6 +211,54 @@ class Build(unittest.TestCase):
                 )
         self.assertEqual(caught.exception.rc, 4, out.getvalue())
         self.assertIn("did not finish within", caught.exception.message)
+
+    @unittest.skipIf(os.name == "nt", "POSIX signals")
+    def test_an_interrupted_merge_stops_its_build(self) -> None:
+        """A SIGTERM or Ctrl-C to merge mid-build ends the build's process group before the
+        worktree goes, so no build outlives the merge (local review of #611)."""
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(sig=sig):
+                if sig == signal.SIGTERM:
+                    head, _ = self.sides("keep", "seam() { :; }")
+                else:
+                    head = git(self.remote, "rev-parse", "refs/pull/7/head")
+                refs = self.refs()
+                marker = os.path.join(self.dir, f"started-{sig}")
+                survived = os.path.join(self.dir, f"survived-{sig}")
+                command = f"echo started > {marker}; sleep 3; echo survived > {survived}"
+                code = (
+                    "import os\n"
+                    "from ludics.prreview.mergebuild import _build, BuildConfig\n"
+                    "from ludics import cli\n"
+                    f"os.chdir({self.clone!r})\n"
+                    "try:\n"
+                    f"    _build('owner/repo', '7', {head!r}, 'main', BuildConfig({command!r}, ('*.sh',), 60), 'test')\n"
+                    "except cli.Exit as exc:\n"
+                    "    raise SystemExit(exc.rc)\n"
+                )
+                lib = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+                child = subprocess.Popen(
+                    [sys.executable, "-B", "-c", code],
+                    env={**os.environ, "PYTHONPATH": lib},
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                try:
+                    for _ in range(200):
+                        if os.path.exists(marker):
+                            break
+                        time.sleep(0.05)
+                    self.assertTrue(os.path.exists(marker), "the build started")
+                    child.send_signal(sig)
+                    rc = child.wait(timeout=20)
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                        child.wait()
+                self.assertNotEqual(rc, 0)
+                time.sleep(4)
+                self.assertFalse(os.path.exists(survived), "the build was stopped with the merge")
+                self.assert_untouched(refs)
 
 
 if __name__ == "__main__":
