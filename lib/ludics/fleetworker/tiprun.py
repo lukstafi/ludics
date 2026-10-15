@@ -15,9 +15,11 @@ In order, each step yielding rather than waiting:
     ``coordinator`` whose ``requested_revision`` is exactly one full commit SHA: the tip the caller
     read, or a red tip being rerun. Anything else is a usage refusal (exit 2) before the anchor is
     asked.
- 2. THE YIELD. The registry is read, and a record outstanding on the execution host other than a
-    standing reservation (a worker's assigned leg, a measurement or its window, another loop run)
-    refuses the run: a loop run is the lowest-priority correctness on the box, so it never takes
+ 2. THE YIELD. The registry is read, before the reservation and again once it is published (the
+    first read is not atomic with it: of two runs racing, each then sees the other, or the later
+    one the earlier one, so two never run at once), and a record outstanding on the execution
+    host other than a standing reservation (a worker's assigned leg, a measurement or its window,
+    another loop run) refuses the run: a loop run is the lowest-priority correctness on the box, so it never takes
     a seat or a token a worker's leg was reserved for, and never stands between a measurement and
     its window. Standing reservations are a worker's iteration on its own agent host, whose batches
     the slot below sees as they run.
@@ -264,6 +266,17 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
         else:
             cli.say(f"TIP-RUN NOT STARTED {request_id}: the reservation was refused (above)")
         return rc
+    # THE YIELD, AGAIN (step 2): the read above is not atomic with the reservation, so a leg or a
+    # second loop run reserved in between is looked for once ours is published. Of two that race,
+    # each sees the other's record and yields, or the later one sees the earlier one's: never both run.
+    nothing = f"{box}:{parsed.checkout} (no run directory: nothing started)"
+    listed = listing(cfg)
+    records = records_of(listed.out) if listed.rc == 0 else None
+    if records is None:
+        return not_started(cfg, request_id, f"the registry could not be re-read after the reservation, so whether {box} is still free is unknown", nothing)
+    busy = yielding_to(records, box, request_id)
+    if busy:
+        return not_started(cfg, request_id, f"{box} has {', '.join(busy)} outstanding, reserved beside this run; a loop run yields to it", nothing)
 
     fw = os.path.join(cfg.here, os.path.basename(cfg.script)) if is_local(cfg, box) else ""
     kind = "cpu" if parsed.cpu else "gpu"
@@ -279,7 +292,7 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     refusals = [line for line in text.split("\n") if line.startswith("TIP-RUN REFUSED: ")]
     if done.rc == 1 and refusals:
         why = refusals[-1][len("TIP-RUN REFUSED: ") :]
-        return not_started(cfg, request_id, why, f"{box}:{parsed.checkout} (no run directory: nothing started)")
+        return not_started(cfg, request_id, why, nothing)
     facts = far_facts(text)
     run_dir, slot = facts.get("dir", ""), facts.get("slot", "")
     if done.rc != 0 or not run_dir or slot not in ("held", "ended", "unsettled"):

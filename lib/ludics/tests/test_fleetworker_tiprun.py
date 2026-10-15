@@ -3,11 +3,18 @@ tip-run" section drives the verb end to end, far side included)."""
 
 import contextlib
 import io
+import json
+import os
+import tempfile
 import unittest
 from typing import Any
+from unittest import mock
 
 from ludics import cli
+from ludics.fleetworker import tiprun
+from ludics.fleetworker.config import load_config
 from ludics.fleetworker.tiprun import far_facts, parse, request_problem, yielding_to
+from ludics.fleetworker.transport import Done
 
 SHA = "a" * 40
 
@@ -93,6 +100,42 @@ class FarFacts(unittest.TestCase):
     def test_the_first_of_each_known_key(self) -> None:
         text = "dir=/r/run-1\nslot=ended\nsaid=EXECUTION SLOT REFUSED x: a=b\nslot=held\nother=1\nnoise"
         self.assertEqual(far_facts(text), {"dir": "/r/run-1", "slot": "ended", "said": "EXECUTION SLOT REFUSED x: a=b"})
+
+
+class Race(unittest.TestCase):
+    """The yield is read again once the reservation is published: a leg (or a second loop run)
+    reserved between the first read and ours turns the run away, concluded not-launched, before
+    anything touches the box (the local review's finding: two concurrent runs both started)."""
+
+    def test_a_record_reserved_beside_the_run_turns_it_away(self) -> None:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="h")
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = os.path.join(tmp, "req.json")
+            with open(payload, "w", encoding="utf-8") as f:
+                json.dump(request(), f)
+            ours = outstanding("w-gpu-rog-1")
+            reads = iter([json.dumps([]), json.dumps([ours, outstanding("w-gpu-rog-2")])])
+            calls: list[tuple[list[str], dict[str, Any] | None]] = []
+
+            def listing(_cfg: object) -> Done:
+                return Done(0, next(reads))
+
+            def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None) -> int:
+                calls.append((args, body))
+                return 0
+
+            out = io.StringIO()
+            with mock.patch.object(tiprun, "listing", side_effect=listing), \
+                    mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
+                    mock.patch.object(tiprun, "run_on", side_effect=AssertionError("the box was touched")), \
+                    contextlib.redirect_stdout(out):
+                rc = tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "true"])
+        self.assertEqual(rc, 1)
+        self.assertEqual([c[0] for c in calls], [["execution", "run", payload], ["execution", "conclude"]])
+        conclusion = calls[1][1] or {}
+        self.assertEqual(conclusion.get("verdict"), "not-launched")
+        self.assertIn("w-gpu-rog-2 (launching) outstanding, reserved beside this run", conclusion.get("evidence", ""))
+        self.assertIn("TIP-RUN NOT STARTED w-gpu-rog-1: rog-nv-linux has w-gpu-rog-2 (launching) outstanding", out.getvalue())
 
 
 if __name__ == "__main__":
