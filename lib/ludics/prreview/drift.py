@@ -8,7 +8,9 @@ meet, and a patch that cannot be read hunk by hunk is UNREAD, never disjoint. A 
 be completed prints UNKNOWN and is never "not behind" or "none".
 
 ``watch`` reads the same thing at the end of a round (``watch_drift_note``), all of it on stderr
-there; this module is the one port of the function both call.
+there; this module is the one port of the function both call. ``read_base_drift`` is it with what
+it established handed back (``Drift``), which ``merge``'s build of the would-be merge commit is
+decided on (mergebuild.py, ludics-lite#611).
 """
 
 import json

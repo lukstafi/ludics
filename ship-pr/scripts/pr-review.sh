@@ -206,7 +206,14 @@
 #                                          # with no verdict yet: that one is waited for under
 #                                          # --wait and refused with 4 without it, and a check
 #                                          # that turns red during the wait was never waived, so
-#                                          # it refuses with 1 (ludics-lite#392)
+#                                          # it refuses with 1 (ludics-lite#392). Where the
+#                                          # repository's default branch has a
+#                                          # .github/ship-pr-merge-build and a path both sides
+#                                          # changed is one of its build inputs, it first BUILDS
+#                                          # the head merged with the base's tip in a scratch
+#                                          # worktree of the local clone it runs in, and refuses
+#                                          # (1) when that build fails, with its output
+#                                          # (ludics-lite#611; see prreview/mergebuild.py)
 #   pr-review.sh base [owner/name] [branch] [--wait[=seconds]] [--interim]
 #                                          # is the branch you are about to work off CI-green?
 #                                          # --wait holds until the CURRENT tip has its verdict —

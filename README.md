@@ -856,6 +856,18 @@ internal function (ludics-lite#403): the gate through `checks`, the override's w
 `test-pr-review-merge.sh` pins that `merge` reads the list too, and does not merge when the read
 did not answer.
 
+`test-pr-review-merge.sh` also runs `merge`'s build of the would-be merge commit (ludics-lite#611)
+in a real clone of a scratch remote, whose path ends in the repository's owner/name: two heads
+whose hunks are disjoint (the drift read says so) and whose merge commit does not run are refused
+with the build's output (exit 1, no merge call), and the same layout whose merge runs merges; a
+base that moved with no build input among the paths both sides changed merges unbuilt, and with
+nothing changed on both sides the config is not even read; a repository without
+`.github/ship-pr-merge-build` merges the clash unbuilt, as before; a line outside the config's
+grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2. Each build case
+then checks the clone: its working tree, its worktree list and its refs are as they were.
+`lib/ludics/tests/test_prreview_mergebuild.py` pins the grammar, the glob boundary, the remote
+match, a textual conflict, a moved head and a build past its bound.
+
 `test-pr-review-retry.sh` drives `retry`: the plain retry's classification, and `retry run
 watch`, which addresses its run as
 `owner/name#<run-id>` like every other subcommand and no longer resolves the repository from the
