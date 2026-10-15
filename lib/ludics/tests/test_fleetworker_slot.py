@@ -26,7 +26,10 @@ from ludics.fleetworker.slot import (
     judge_measurement,
     judge_nested,
     parse_slot,
+    read_registry,
+    unreachable_lines,
 )
+from ludics.fleetworker.transport import UNREACHABLE, Done
 
 
 class Locks(unittest.TestCase):
@@ -212,6 +215,50 @@ class WindowWait(unittest.TestCase):
         self.assertIn("the registry could not be read while waiting", err)
         result, out, _ = self.wait([measurement("win")], [unread] * 10000, bound=1)
         self.assertEqual((result, out), (4, "EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken\n"))
+
+
+class RegistryUnread(unittest.TestCase):
+    """An anchor that does not answer refuses at once, and says why a fresh wake may need a retry
+    (ludics-lite#617): the box's sshd answers before its own ssh to the anchor does."""
+
+    def test_an_unreachable_anchor_refuses_at_once_naming_the_wake_leg(self) -> None:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_ANCHOR": "far-anchor"}, host="testbox")
+        reads = mock.Mock(return_value=Done(UNREACHABLE, ""))
+        with mock.patch.object(slot, "listing", reads):
+            unread = read_registry(cfg, "testbox")
+        self.assertEqual(reads.call_count, 1)  # no retry inside the slot: the caller decides
+        assert isinstance(unread, Unread)
+        self.assertEqual(unread.rc, 4)
+        self.assertEqual(unread.lines[0], "EXECUTION SLOT UNREACHABLE far-anchor: registry unread, no slot taken")
+        self.assertEqual(len(unread.lines), 2)
+        self.assertTrue(unread.lines[1].startswith("EXECUTION SLOT UNREACHABLE far-anchor: a box woken in the"
+                                                   " last few minutes may only need its ssh to far-anchor"))
+        self.assertIn("retry", unread.lines[1])
+        self.assertIn("wake-lab.sh --wait", unread.lines[1])
+        # ...qualified: wake-lab asks a native-Linux box's leg and never a WSL guest's.
+        self.assertIn("on a native-Linux box", unread.lines[1])
+        # ...and naming this anchor, since wake-lab's own default would ask a different one.
+        self.assertIn("WAKE_LAB_ANCHOR=far-anchor wake-lab.sh --wait <box>", unread.lines[1])
+
+    def test_the_wake_command_is_offered_only_for_an_anchor_wake_lab_accepts(self) -> None:
+        for anchor in ("mac-studio", "me@hub.lan", "192.0.2.1"):
+            self.assertIn(f"WAKE_LAB_ANCHOR={anchor} wake-lab.sh --wait", unreachable_lines(anchor)[1])
+        for anchor in ("2001:db8::1", "fe80::1%eth0", "-oProxyCommand=x", "a b"):
+            retry = unreachable_lines(anchor)[1]
+            self.assertNotIn("wake-lab", retry)
+            self.assertIn("retry in a minute, once its route to the anchor is up", retry)
+            self.assertEqual(unreachable_lines(anchor)[0],
+                             f"EXECUTION SLOT UNREACHABLE {anchor}: registry unread, no slot taken")
+
+    def test_a_far_side_failure_is_not_given_the_wake_hint(self) -> None:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_ANCHOR": "far-anchor"}, host="testbox")
+        with mock.patch.object(slot, "listing", mock.Mock(return_value=Done(1, ""))):
+            unread = read_registry(cfg, "testbox")
+        assert isinstance(unread, Unread)
+        self.assertEqual(unread.rc, 1)
+        self.assertNotIn("woken", " ".join(unread.lines))
 
 
 if __name__ == "__main__":

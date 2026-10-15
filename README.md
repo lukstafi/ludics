@@ -716,7 +716,10 @@ rewrites: the single BootNext selection read from the listing (never BootOrder o
 locks held at the moment of the reboot, the refusal on a held lane or hold lock and none on a stale
 one, the sudoers, inhibitor, ambiguous-entry and wired-NIC refusals, and a Windows that never
 answers ending in `NEEDS A PERSON`. It pins the no-box refusal too: a bare invocation and each
-acting verb given no box print the usage, exit 2 and send nothing. `test-wake-lab.sh` runs the WSL path against shim `curl`, `python3` and `ssh` on PATH, so it
+acting verb given no box print the usage, exit 2 and send nothing. And it pins `--wait`'s anchor
+leg (ludics-lite#617): a box is all up only once its own non-interactive ssh to the anchor works,
+a leg that comes up late is waited for, one that never does ends in `NOT all up` naming that leg,
+and an anchor name that is not a plain ssh destination is refused before anything is sent. `test-wake-lab.sh` runs the WSL path against shim `curl`, `python3` and `ssh` on PATH, so it
 touches neither the router nor the network. It pins the split above from both sides: that every
 MAC the script sends comes from the sourced host table and that a missing, incomplete or
 short-a-target one is refused before any router traffic, and that no MAC-shaped literal is tracked
