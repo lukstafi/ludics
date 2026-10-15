@@ -753,7 +753,8 @@ controlled through the tools in your coordinator's file, never through those com
     start, the one whose backend was least recently covered at a tip, so CUDA and HIP
     alternate when both are free, and the HIP pick between tuf (discrete) and minix (unified
     memory) follows the same rule per box (the newest loop record per backend, or per box,
-    read as below without the `pass` filter). A box is free when it is up - tuf only while it
+    that ran: read as below with `pass` or `fail` for the verdict, since a `not-launched` or
+    `cancelled` record covered nothing). A box is free when it is up - tuf only while it
     already is: the loop never wakes a box - and no sweep lane holds it (`wake-lab.sh status
     <box>`); `execution tip-run` (below) checks the rest, and starts nothing where it would
     take from a worker or a measurement: anything outstanding on the box but a standing

@@ -34,6 +34,10 @@ In order, each step yielding rather than waiting:
     <runs> --wait 0``: one GPU token unless ``--cpu``, taken only if one is free at once, never
     queued behind or among the workers' batches, and with no ``--wait-window``. An enclosing
     slot's or measurement's marker is dropped first: a loop run is never part of another batch.
+    That ``fleet-worker.sh`` is the box's own, and resolves the box's fleet configuration (its
+    header's site defaults and ``~/.config/fleet/env.sh``), as every remote call of it does today
+    (``run_on``'s far sides, a worker's batch on its GPU home box); forwarding the coordinator's
+    is ludics-lite#632, for all of them at once.
  5. THE SLOT'S ANSWER is read off the run's log for up to ``SETTLE`` seconds. The boundary, a
     fail-closed allowlist: the run STARTED when the log holds the line ``take_slot`` prints after
     it took the slot and before it runs the command (``EXECUTION SLOT <box>: slot <i> of <n>[, GPU
