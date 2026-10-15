@@ -29,9 +29,9 @@ and resolved there: never through ``FETCH_HEAD``, which a linked worktree cannot
 legs fetching in one checkout would overwrite. The ref is deleted once the worktree holds the
 commit. ``observed_sha`` is the worktree's ``git rev-parse HEAD`` before the runner starts. The fetch is
 bounded by FLEET_FETCH_TIMEOUT (300 s). One leg at a time holds a worktree, from its status check
-through the control's revert (the far side's ``take_lock``, under ``$STATE/leg-locks``, keyed by
-the worktree's physical path, read through its nearest existing ancestor before it exists): a second is refused, never
-queued, since a worktree moved under a running leg would make it test another commit than the one
+through the control's revert (a flock under ``$STATE/leg-locks``, keyed by the worktree's physical
+path, held by every process the leg starts, the runner's wrapper included, so it outlives a far
+shell that dies first): a second is refused, never queued, since a worktree moved under a running leg would make it test another commit than the one
 it reports.
 
 THE RUNNER. The command after ``--`` runs in the worktree, its argv passed untouched (each word
@@ -96,13 +96,12 @@ fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
 while [ "$nwrap" -gt 0 ]; do wrap+=("$1"); shift; nwrap=$((nwrap - 1)); done
 patch=""; [ -z "$pname" ] || patch="$STATE/leg-control/$pname"
-ref="refs/fleet-leg/$$"; results="" wlock=""
+ref="refs/fleet-leg/$$"; results=""
 say() { printf 'EXECUTION LEG %s: %s\n' "$BOX" "$*" >&2; }
 cleanup() {
   [ -z "$patch" ] || rm -f "$patch"
   [ -z "$results" ] || rm -f "$results" "$results.sh"
   git -C "$co" update-ref -d "$ref" >/dev/null 2>&1
-  [ -z "$wlock" ] || { rm -f "$wlock/pid" "$wlock/start"; rmdir "$wlock" 2>/dev/null; }
   return 0
 }
 refuse() { printf 'EXECUTION LEG REFUSED %s: %s\n' "$BOX" "$*" >&2; cleanup; exit 1; }
@@ -113,9 +112,13 @@ gitdir() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2
 [ -x "$fw" ] || refuse "no executable fleet-worker.sh at $fw (the skills checkout on $BOX; run fleet-worker.sh refresh $BOX)"
 cdir=$(common "$co"); [ -n "$cdir" ] || refuse "--checkout $co is not a git checkout on $BOX"
 # One leg at a time in a worktree, from the status check through the control's revert: a second
-# leg moving it would make the first test another commit than the observed_sha it reports. The
-# lock is the far side's take_lock (a directory naming this shell's pid and start time, reclaimed
-# once that process is gone), keyed by the worktree's physical path when it exists.
+# leg moving it would make the first test another commit than the observed_sha it reports. The lock
+# is a flock on a file under $STATE/leg-locks, taken on descriptor 9 of this shell, which every
+# process started from here inherits -- the slot or hold wrapper included, which stays the parent of
+# the runner's group for as long as any of it runs. A flock belongs to the open file, so it holds
+# until the last of those processes has exited: this shell dying while the runner runs on (a
+# dropped connection) does not free the worktree. Taken by scripts/py (Python >= 3.12, which
+# `execution slot` needs on the box anyway), since macOS has no flock(1).
 # The key: the nearest existing ancestor's physical path, then the rest as given, so a leg before the
 # worktree exists and one after it name the same lock.
 canon() {
@@ -126,9 +129,15 @@ canon() {
 }
 wkey=$(canon "$wt") || refuse "cannot resolve --worktree $wt on $BOX"
 mkdir -p "$STATE/leg-locks" || refuse "cannot create $STATE/leg-locks on $BOX"
-wlock_try="$STATE/leg-locks/$(printf '%s' "$wkey" | cksum | tr ' ' -)"
-said=$(take_lock "$wlock_try" 0 "--worktree $wt") || refuse "${said:-the worktree is locked}: another leg is using it; wait for it, or name another worktree"
-wlock=$wlock_try
+wlock="$STATE/leg-locks/$(printf '%s' "$wkey" | cksum | tr ' ' -)"
+exec 9>>"$wlock" || refuse "cannot open the worktree lock $wlock on $BOX"
+"$SKILLS_REPO/scripts/py" -c 'import fcntl, sys
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(3)' </dev/null; lrc=$?
+[ "$lrc" -ne 3 ] || refuse "--worktree $wt: another leg is using it (lock $wlock); wait for it, or name another worktree"
+[ "$lrc" -eq 0 ] || refuse "cannot lock --worktree $wt ($SKILLS_REPO/scripts/py exit $lrc, above)"
 # The commit, into a private ref of the checkout (never FETCH_HEAD: see the module header).
 case "$rev" in *[!0-9a-f]*) sha_like=0 ;; *) case ${#rev} in 40|64) sha_like=1 ;; *) sha_like=0 ;; esac ;; esac
 if [ "$sha_like" = 1 ] && git -C "$co" cat-file -e "$rev^{commit}" 2>/dev/null; then
