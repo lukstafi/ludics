@@ -21,7 +21,7 @@ naming it:
     # a comment (first non-blank character `#`), and blank lines, are ignored
     command <shell command>    exactly one: run by `sh -c` at the root of the merged tree
     input <glob>               one or more: the BUILD INPUTS (below)
-    timeout <seconds>          at most one, a positive whole number (default 1200): the build's bound
+    timeout <seconds>          at most one, 1 to 86400 (default 1200): the build's bound
 
 BUILD INPUTS -- the boundary. A path is a build input when one ``input`` glob matches the WHOLE
 repository-relative path (``/``-separated) under Python's ``fnmatch.fnmatchcase``: case-sensitive,
@@ -42,7 +42,8 @@ outside this boundary, and stays the integration loop's to catch on the merged t
 
 HOW IT BUILDS. In a local clone of the repository: the git checkout the merge runs in, whose remote
 (``origin`` first) has a URL ending in the repository's ``owner/name`` (``.git`` optional, case
-ignored), so an SSH host alias serves as well as github.com. No such clone is exit 2. It fetches
+ignored), so an SSH host alias serves as well as github.com. No such clone is exit 2, and so is a
+SHALLOW clone, which may lack the merge base (run from a full clone, or ``git fetch --unshallow``). It fetches
 ``refs/pull/<n>/head`` and the base branch into private refs under ``refs/ship-pr/merge-build/``
 (``--refmap=``, so no remote-tracking ref of the caller's moves),
 requires the fetched head to be the gated one (else exit 5, superseded), makes the merge commit
@@ -54,6 +55,12 @@ log beside it, inside this box's run-time slot when it has slots (``fleet-worker
 measurement, under ``--deadline`` = the timeout) and bare otherwise, bounded either way. The
 worktree, the private refs and the scratch directory are removed whatever the outcome; a process
 killed mid-build leaves a worktree entry ``git worktree prune`` drops once its directory is gone.
+
+TRUST. The command is the repository's own configuration, read from its default branch: it is
+trusted as a developer's build is, and the scratch worktree is a place to build, not a sandbox. It
+shares the clone's repository, so a git write the command itself makes (a tag, a branch, a fetch)
+lands there as it would from a developer's shell, and is the command's business; what THIS code
+writes (the private refs, the worktree) it removes, and no remote-tracking ref moves.
 
 VERDICTS. Passed: the merge proceeds. Failed (any nonzero status): exit 1, refused, with the build
 output (its first and last lines when long). Not finished within the bound: exit 4. Could not run
@@ -83,6 +90,7 @@ from ludics.prreview.gate import github_file_absent
 CONFIG_LEAF = "ship-pr-merge-build"
 CONFIG_FILE = f".github/{CONFIG_LEAF}"
 DEFAULT_TIMEOUT = 1200
+MAX_TIMEOUT = 86400  # a day: a larger `timeout` is a config error, refused before anything is built
 SLOT_WAIT = 1800  # seconds a slot is waited for, and (separately) a measurement holding the box
 FETCH_TIMEOUT = 600
 GIT_TIMEOUT = 300
@@ -128,8 +136,9 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
             if timeout is not None:
                 warn(f"{where} names a second timeout line: {line}")
                 return None
-            if not value.isascii() or not value.isdigit() or int(value) < 1:
-                warn(f"{where}'s timeout is not a positive whole number of seconds: {line}")
+            # The length first: a few thousand digits is a ValueError in int() itself.
+            if not value.isascii() or not value.isdigit() or len(value) > 6 or not 1 <= int(value) <= MAX_TIMEOUT:
+                warn(f"{where}'s timeout is not a whole number of seconds from 1 to {MAX_TIMEOUT}: {line}")
                 return None
             timeout = int(value)
         else:
@@ -265,23 +274,32 @@ def _shown(log: str) -> list[str]:
     return [*lines[:SHOWN_HEAD], f"... ({cut} line(s) of {len(lines)} left out) ...", *lines[-SHOWN_TAIL:]]
 
 
-def _stop(child: subprocess.Popen[bytes]) -> None:
-    """End the build's process group: SIGTERM first (an `execution slot` wrapper ends its own
-    command's group on it), SIGKILL five seconds later; under Windows, the process tree."""
+def _end_group(child: subprocess.Popen[bytes]) -> None:
+    """End the build's process group, and wait for its leader: SIGTERM first (an `execution slot`
+    wrapper ends its own command's group on it), SIGKILL to what is left five seconds later. Run
+    after a build that ENDED too, since a command may leave a process running behind it (`cmd &`):
+    the group outlives its leader. Under Windows, the leader's process tree."""
     if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(child.pid)], stdin=subprocess.DEVNULL, capture_output=True, check=False)
-        child.kill()
+        if child.poll() is None:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(child.pid)], stdin=subprocess.DEVNULL, capture_output=True, check=False)
+            child.kill()
     else:
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
                 os.killpg(child.pid, sig)
             except ProcessLookupError:
                 break
-            try:
-                child.wait(timeout=5)
+            gone = False
+            deadline = time.monotonic() + 5
+            while not gone and time.monotonic() < deadline:
+                child.poll()
+                try:
+                    os.killpg(child.pid, 0)
+                    time.sleep(0.05)
+                except ProcessLookupError:
+                    gone = True
+            if gone:
                 break
-            except subprocess.TimeoutExpired:
-                continue
     try:
         child.wait(timeout=5)
     except subprocess.TimeoutExpired:
@@ -290,10 +308,12 @@ def _stop(child: subprocess.Popen[bytes]) -> None:
 
 def _run_build(argv: list[str], cwd: str, bound: float) -> proc.Completed:
     """The wrapped build in a process group of its own, under ``bound`` (124 past it, as
-    ``proc.run_tool`` reports a timeout). The group is ended however this process stops waiting
-    for it -- the bound, an exception, Ctrl-C, or a SIGTERM or SIGHUP to merge, which end the
-    command (exit 128+n) only after the build is stopped and its worktree removed -- so no build
-    outlives the merge that started it."""
+    ``proc.run_tool`` reports a timeout). The group is ended however the wait for it ends -- the
+    build's own exit (a process it left behind), the bound, an exception, Ctrl-C, or a SIGTERM or
+    SIGHUP to merge, which end the command (exit 128+n) only after the build is stopped and its
+    scratch removed -- so nothing in the group outlives the merge that started it. A process
+    that leaves the group (``setsid``, a daemon) is outside this boundary, as it is for
+    ``execution slot`` (fleetworker/group.py)."""
     prefix = proc.command_argv(argv[0])
     if prefix is None:
         return proc.Completed(127, "", f"{argv[0]}: command not found\n")
@@ -319,15 +339,16 @@ def _run_build(argv: list[str], cwd: str, bound: float) -> proc.Completed:
         try:
             out, _ = child.communicate(timeout=bound)
         except subprocess.TimeoutExpired:
-            _stop(child)
+            _end_group(child)
             try:
                 out, _ = child.communicate(timeout=5)
             except (subprocess.TimeoutExpired, ValueError):
                 out = b""
             return proc.Completed(124, proc.decode(out), f"no answer in {bound:g}s\n")
         except BaseException:
-            _stop(child)
+            _end_group(child)
             raise
+        _end_group(child)
         return proc.Completed(child.returncode, proc.decode(out), "")
     finally:
         for sig, handler in previous.items():
@@ -382,6 +403,14 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, config: BuildConfig, w
     try:
         root, remote = find_clone(repo, os.getcwd(), hooks)
         quiet = ["-c", f"core.hooksPath={hooks}"]
+        shallow = _git([*quiet, "rev-parse", "--is-shallow-repository"], root)
+        if shallow.stdout.strip() != "false":
+            fail(
+                2,
+                f"NOT merging {repo}#{pr}: {why}, and the clone this merge runs in ({root}) is shallow",
+                f"(or its depth could not be read: {_first_line(shallow)}): the merge build needs the merge base.",
+                "Run merge from a full clone, or `git fetch --unshallow` this one first.",
+            )
         fetched = _git(
             # --refmap= keeps the remote's configured fetch refspecs out of it: without it git also
             # updates refs/remotes/<remote>/<base> opportunistically, which is the caller's.

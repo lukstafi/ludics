@@ -50,6 +50,9 @@ class Grammar(unittest.TestCase):
             ("command make\ninput *.c\ntimeout ６\n", "timeout ６"),
             ("command make\ncommand cc\ninput *.c\n", "command cc"),
             ("command make\ninput *.c\ntimeout 5\ntimeout 6\n", "timeout 6"),
+            ("command make\ninput *.c\ntimeout 86401\n", "timeout 86401"),
+            ("command make\ninput *.c\ntimeout " + "9" * 309 + "\n", "9" * 309),
+            ("command make\ninput *.c\ntimeout " + "9" * 4301 + "\n", "9" * 4301),
         ):
             with self.subTest(text=text):
                 config, err = parsed(text)
@@ -182,6 +185,28 @@ class Build(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("PASSED", out)
         self.assertIn("bare (this box has no run-time slots)", out)
+
+    def test_a_process_the_build_leaves_behind_is_ended(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        survived = os.path.join(self.dir, "survived")
+        os.chdir(self.clone)
+        out = io.StringIO()
+        command = f"(sleep 2; echo survived > {survived}) & sh ./api.sh"
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            mergebuild._build(  # pyright: ignore[reportPrivateUsage]
+                "owner/repo", "7", head, "main", BuildConfig(command, ("*.sh",), 60), "test"
+            )
+        self.assertIn("PASSED", out.getvalue())
+        time.sleep(3)
+        self.assertFalse(os.path.exists(survived), "the group was ended after its leader exited")
+
+    def test_a_shallow_clone_is_refused(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        shutil.rmtree(self.clone)
+        git(self.dir, "clone", "-q", "--depth", "1", "file://" + self.remote, self.clone)
+        rc, out = self.build(head)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("is shallow", out)
 
     def test_a_textual_conflict_is_refused(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")

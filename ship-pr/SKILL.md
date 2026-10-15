@@ -1145,6 +1145,8 @@ when it fails:
 ```
 # pr-review.sh merge's build of the would-be merge commit (ludics-lite#611). A path is a build
 # input when an `input` glob matches the whole repository path (fnmatch: `*` crosses `/`).
+# The command is trusted as a developer's build is: it runs in a scratch worktree of the clone,
+# not a sandbox, so its own git writes land in that clone. timeout: 1 to 86400 seconds.
 command dune build @check
 input *.ml
 input *.mli
@@ -1157,7 +1159,8 @@ timeout 1200
 
 Any other line refuses the merge with exit 2. The merge still waits only on the head's own verdict,
 never on the base tip's CI, so roll-forward stands, and a repository without the file merges as
-before. Run such a merge from a clone of the repository: one with no remote naming it is exit 2. A
+before. Run such a merge from a full clone of the repository: one with no remote naming it, or a
+shallow one (which may lack the merge base), is exit 2. A
 build that does not finish is exit 4, one that could not run (the fetch, the slot) exit 3, a head
 that moved exit 5, a textual conflict exit 1. Nothing waives a failed build: merge the base in, fix
 the clash, push. The boundary is the intersection: a clash across paths only one side changed (a
