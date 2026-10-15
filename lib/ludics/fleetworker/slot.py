@@ -471,9 +471,10 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, w
     enclosing kill still reaches it through this wrapper, which ends its group when signalled, and
     through its guardian when this wrapper is killed outright.
 
-    ``recorder`` (THE CO-TENANTS) takes its opening snapshot once the command has started, and its
-    closing one once the command's leader has ended, however it ended, before this wrapper exits
-    or dies: a command that cannot be started records nothing."""
+    ``recorder`` (THE CO-TENANTS) takes its opening snapshot just before the command starts and
+    writes it once the command has started, and takes its closing one once the command's leader
+    has ended, however it ended, before this wrapper exits or dies: a command that cannot be
+    started records nothing, and the deadline counts from the command's start as before."""
     if shutil.which(command[0]) is None:
         refuse_unrunnable(prefix, box, command, "no such executable")
     if not (nested and deadline is None):
@@ -485,6 +486,8 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, w
     if nested and deadline is None:
         exec_command(prefix, box, command)
     pgid: list[int] = []
+    if recorder is not None:
+        recorder.prepare()
 
     def started(leader: int) -> None:
         pgid.append(leader)
@@ -614,10 +617,11 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
 
 
 class Recorder:
-    """THE CO-TENANTS (``cotenants.py``) of one hold: the opening snapshot once the command has
-    started (so a command that cannot start leaves no record), the closing one once its leader has
-    ended. Fail-open, and loudly: a record that cannot be written is a WARNING, never a refused
-    measurement."""
+    """THE CO-TENANTS (``cotenants.py``) of one hold: the opening snapshot is TAKEN before the
+    command starts (``prepare``: nothing of the hold's tree runs yet, and the command's deadline is
+    not yet counting) and WRITTEN once it has started (``opened``, an append, instant), so a command
+    that cannot be started leaves no record; the closing one once its leader has ended. Fail-open,
+    and loudly: a record that cannot be written is a WARNING, never a refused measurement."""
 
     def __init__(self, box: str, request: str, directory: str, enclosing: int | None) -> None:
         self.box, self.request, self.enclosing = box, request, enclosing
@@ -625,31 +629,37 @@ class Recorder:
         self.label = f"{HOLD_PREFIX} {box}: measurement {request}"
         self.first: dict[str, Any] | None = None
 
-    def take(self, event: str, pgid: int) -> dict[str, Any] | None:
-        # Called while the command runs (the opening one, inside group.run): nothing raised here
-        # may leave it unwaited for, so every failure is the WARNING.
+    def snap(self, event: str, pgid: int | None) -> dict[str, Any] | None:
         try:
-            line = cotenants.snapshot(os.environ, event, self.request, self.box, os.getpid(), pgid,
+            return cotenants.snapshot(os.environ, event, self.request, self.box, os.getpid(), pgid,
                                       enclosing=self.enclosing)
-        except Exception as exc:
+        except Exception as exc:  # a snapshot is evidence, and never stops the measurement
             errline(f"{self.label}: WARNING: no GPU co-tenant snapshot {event} -- {exc!r}")
             return None
+
+    def write(self, line: dict[str, Any]) -> None:
+        # Called inside group.run while the command runs (the opening line): nothing raised here
+        # may leave the command unwaited for.
         try:
             cotenants.append(self.path, line)
-        except OSError as exc:
-            errline(f"{self.label}: WARNING: the GPU co-tenants {event} are not recorded for the conclusion,"
-                    f" only said here -- {self.path}: {exc}")
-        return line
+        except Exception as exc:
+            errline(f"{self.label}: WARNING: the GPU co-tenants {line.get('event')} are not recorded for the"
+                    f" conclusion, only said here -- {self.path}: {exc}")
+
+    def prepare(self) -> None:
+        self.first = self.snap("opened", None)
 
     def opened(self, pgid: int) -> None:
-        self.first = self.take("opened", pgid)
         if self.first is not None:
+            self.write(self.first)
             errline(f"{self.label}: {cotenants.opened_line(self.first)}")
 
     def closed(self, pgid: int) -> None:
-        line = self.take("closed", pgid)
-        if self.first is not None and line is not None:
-            errline(f"{self.label}: {cotenants.closed_line(self.first, line)}")
+        line = self.snap("closed", pgid)
+        if line is not None:
+            self.write(line)
+            if self.first is not None:
+                errline(f"{self.label}: {cotenants.closed_line(self.first, line)}")
 
 
 def inhibitor_path(cfg: Config) -> str:

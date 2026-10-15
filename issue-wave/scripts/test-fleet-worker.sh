@@ -3006,7 +3006,7 @@ grep -q "^after-measurements$" <<<"$out" && ok "...and runs" || ko "the batch un
 # $GPU_APPS: a planted sleep, and a leftover the hold's command adds to the list and leaves running in
 # its group. Only the planted one is a co-tenant. The other probes are pointed at nothing.
 mkdir -p "$TMP/gpu"
-printf '%s\n' '#!/bin/sh' 'echo "$PPID, fleet-hold, 1"' 'while read -r pid; do echo "$pid, stub-gpu-app, 640"; done < "$GPU_APPS"' > "$TMP/gpu/nvidia-smi"
+printf '%s\n' '#!/bin/sh' '[ -z "${GPU_SLOW:-}" ] || sleep "$GPU_SLOW"' 'echo "$PPID, fleet-hold, 1"' 'while read -r pid; do echo "$pid, stub-gpu-app, 640"; done < "$GPU_APPS"' > "$TMP/gpu/nvidia-smi"
 chmod +x "$TMP/gpu/nvidia-smi"
 FWG=(env GPU_APPS="$TMP/gpu/apps" FLEET_NVIDIA_SMI="$TMP/gpu/nvidia-smi" FLEET_DRM_PROC="$TMP/gpu/no-proc" FLEET_IOREG="$TMP/gpu/no-ioreg" "${FWS[@]}")
 gpurec="$HOME/.local/state/fleet-execution-slots/testbox/measurement.gpu-measure.gpu.jsonl"
@@ -3019,9 +3019,7 @@ expect "a measurement hold's record lists a planted GPU-using process" 0 "measur
 grep -q "GPU co-tenants at close: 1 \[pid $planted " <<<"$out" && ok "...at its close too, leaving out the hold and its command's leftover" || ko "the closing snapshot: $out"
 pkill -f "$(gmre 21)"
 printf '%s\n' "$planted" > "$TMP/gpu/apps"  # the leftover is gone, as nvidia-smi would say
-# The opening snapshot is taken once the command has started, so the leftover may already be listed
-# (and left out) then: the hold's own tree counts 1 or 2 at open.
-[ "$(jq -sc --argjson p "$planted" '[.[] | [.event, ([.gpu_processes[].pid] == [$p]), .own_tree_gpu_processes >= 1]]' "$gpurec" 2>&1)" = '[["opened",true,true],["closed",true,true]]' ] &&
+[ "$(jq -sc --argjson p "$planted" '[.[] | [.event, ([.gpu_processes[].pid] == [$p]), .own_tree_gpu_processes]]' "$gpurec" 2>&1)" = '[["opened",true,1],["closed",true,2]]' ] &&
   ok "...in the record on the box: one opened and one closed line, the hold's own tree counted, not listed" || ko "the co-tenant record: $(cat "$gpurec" 2>&1)"
 "${FWG[@]}" execution hold --request gpu-measure -- "$FW" execution hold --request gpu-measure -- true >/dev/null 2>&1
 [ "$(jq -sc --argjson p "$planted" '[.[2:][] | [.event, ([.gpu_processes[].pid] == [$p])]]' "$gpurec" 2>&1)" = '[["opened",true],["opened",true],["closed",true],["closed",true]]' ] &&
@@ -3030,6 +3028,10 @@ printf '#!/nonexistent/interpreter\n' > "$TMP/gpu/no-interp.sh"; chmod +x "$TMP/
 expect "a hold whose command cannot be started is refused" 127 "EXECUTION HOLD REFUSED testbox: cannot run" -- \
   "${FWG[@]}" execution hold --request gpu-measure -- "$TMP/gpu/no-interp.sh"
 [ "$(grep -c '' "$gpurec")" -eq 6 ] && ok "...and records no snapshot, which would read as a hold that never closed" || ko "the unstarted hold's record: $(cat "$gpurec")"
+# A 4 s command under a 2 s deadline, beside a 3 s opening probe: a deadline counted from the end of
+# the probe (as when the snapshot ran with the command already started) would let it finish, exit 0.
+expect "a slow opening probe does not eat into --deadline, which counts from the command's start" 124 "EXECUTION HOLD testbox: --deadline 2s reached" -- \
+  env GPU_SLOW=3 "${FWG[@]}" execution hold --request gpu-measure --deadline 2 -- sleep 4
 kill "$planted" 2>/dev/null; wait "$planted" 2>/dev/null
 jq -n '{request_id:"gpu-measure", verdict:"pass", log:"/dev/null", evidence:"fixture: measured",
   observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-done.json"

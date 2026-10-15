@@ -15,8 +15,9 @@ One line per snapshot, its fields:
 - ``request_id``, ``box``: the registry's own names for the measurement and its execution host;
 - ``hold_pid``: the hold's pid, which pairs a hold's ``opened`` line with its ``closed`` one (a box
   may run several holds of one measurement, one after another);
-- ``event``: ``opened`` (once the command has started, after THE DRAIN; a command that cannot be
-  started records nothing) or ``closed`` (after the command's leader has ended, whatever ended it);
+- ``event``: ``opened`` (taken after THE DRAIN, just before the command starts, and written once it
+  has started, so a command that cannot be started records nothing) or ``closed`` (after the
+  command's leader has ended, whatever ended it);
 - ``at``: UTC, ISO 8601, as the registry's ``created_at``;
 - ``probes``: one ``{probe, status, detail}`` per source below, ``status`` ``ran``, ``absent`` (no
   such source on this box) or ``failed``;
