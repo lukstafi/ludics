@@ -40,8 +40,9 @@ list. Run them against the issue tracker, which is not always the repository the
        gh issue view <n> -R <tracker> --json body --jq .body > <file>   # then append the items
        gh issue edit <n> -R <tracker> --body-file <file>
 
-   (Wave 2026-10-14 ran five post-waves, 17 -> 11 -> 8 -> 2 -> 3 tasks, the last ones mostly
-   such polish, and filed about 47 follow-up issues.)
+   The label is the one SKILL.md's *Close out* creates. (Wave 2026-10-14 ran five post-waves,
+   17 -> 11 -> 8 -> 2 -> 3 tasks, the last ones mostly such polish, and filed about 47 follow-up
+   issues.)
 
 The next post-wave contains exactly the chips that passed both gates: the remaining
 non-discarded follow-ups without their own issue. An item covered by a new or existing issue,
