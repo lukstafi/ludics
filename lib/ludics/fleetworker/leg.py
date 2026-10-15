@@ -32,15 +32,16 @@ commit. ``observed_sha`` is the worktree's ``git rev-parse HEAD`` before the run
 THE RUNNER. The command after ``--`` runs in the worktree, its argv passed untouched (each word
 quoted for the box's shell), stdin closed; nothing here names a project's runner. Its status is the
 leg's, unchanged -- a 125 or a signal's 128+n survives the trip -- and the last line on stdout is
-``execution-leg: exit: <status>``, the sentinel ``conclude --from-bg-run`` reads.
+``execution-leg: exit: <status>``, the sentinel ``conclude --from-bg-run`` reads (split onto a line
+of its own when the runner's output ended without a newline).
 
 THE CONTROL. With ``--control <patch>`` (a file on this box, copied to the box's state directory),
 the patch must apply (``git apply --check``) before anything runs. After a main run that passed it
 is applied, the runner runs again in the same slot and must FAIL, and the patch is reverted. The
 leg's status is then 0 when the control failed (1-127 but 124, the slot's deadline); 1 when it
 passed (``CONTROL PASSED``: the runner does not see what the patch breaks); the control's own status
-when it was cut by the deadline or a signal (124, 128+). A main run that failed is the leg's status,
-and the control does not run.
+when it was cut by the deadline or a signal (124, 128+), the patch reverted all the same. A main run
+that failed is the leg's status, and the control does not run.
 
 WHAT THE STATUS MEANS. The runner's, when the sentinel line was printed. Without it, nothing ran to
 an end: an ``EXECUTION LEG REFUSED`` line says why (1; 2 usage; the slot's own refusal status when
@@ -66,7 +67,9 @@ USAGE = (
     " [--deadline <seconds>] -- <runner command...>"
 )
 DISPATCHED = ("launching", "running", "uncertain")
-SENTINEL = re.compile(rb"execution-leg: exit: ([0-9]{1,3})\r?\n?")
+# The sentinel ends a line; a runner whose last output had no newline leaves it mid-line, where it is
+# split off onto a line of its own as it passes through.
+SENTINEL = re.compile(rb"execution-leg: exit: ([0-9]{1,3})\r?\n?\Z")
 # A revision the box fetches: a full object ID, or a ref name in git's own grammar, fail-closed.
 REV = re.compile(r"[A-Za-z0-9._/-]+")
 HEX = re.compile(r"[0-9a-fA-F]{7,}")
@@ -147,6 +150,7 @@ printf "started\n" >> "$results"
 printf "main=%s\n" "$rc" >> "$results"
 { [ "$rc" -eq 0 ] && [ -n "$patch" ]; } || exit "$rc"
 git apply "$patch" >&2 || { printf "apply=failed\n" >> "$results"; exit 1; }
+printf "applied\n" >> "$results"
 printf "EXECUTION LEG %s: control patch applied; the runner again, which must fail\n" "$box" >&2
 "$@" </dev/null; crc=$?
 printf "control=%s\n" "$crc" >> "$results"
@@ -173,7 +177,16 @@ if [ "$(fact apply)" = failed ]; then
   cleanup; exit 1
 fi
 crc=$(fact control)
-[ "$(fact revert)" = ok ] || say "WARNING: the control patch could not be reverted in $wt, which a later leg will refuse until it is cleaned"
+# A deadline or a signal that ended the control run ended the script that would have reverted the
+# patch with it: the revert is made here, once the wrapper has reaped the group, while the patch is
+# still on the box.
+if [ "$(fact revert)" != ok ] && grep -qx applied "$results"; then
+  if git -C "$wt" apply -R "$patch" >&2; then
+    say "control patch reverted after the control run was cut"
+  else
+    say "WARNING: the control patch could not be reverted in $wt, which a later leg will refuse until it is cleaned"
+  fi
+fi
 if [ -z "$crc" ]; then
   say "the control run was ended before it returned (wrapper exit $wrc): no control verdict"
   finish "$wrc"
@@ -330,9 +343,12 @@ def stream(argv: list[str], script: str, box: str, *, local: bool) -> int:
     sentinel: int | None = None
     out = sys.stdout.buffer
     for line in child.stdout:
+        found = SENTINEL.search(line)
+        if found and found.start() > 0:
+            out.write(line[: found.start()] + b"\n")
+            line = line[found.start() :]
         out.write(line)
         out.flush()
-        found = SENTINEL.fullmatch(line)
         sentinel = int(found.group(1)) if found else sentinel
     rc = child.wait()
     feeder.join()

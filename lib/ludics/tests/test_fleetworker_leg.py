@@ -37,6 +37,10 @@ class Stream(unittest.TestCase):
         rc, out, _ = self.run_far("echo one\nprintf 'execution-leg: exit: 125\\n'\nexit 0\n", local=False)
         self.assertEqual((rc, out), (125, "one\nexecution-leg: exit: 125\n"))
 
+    def test_a_sentinel_after_output_with_no_newline_gets_a_line_of_its_own(self) -> None:
+        rc, out, _ = self.run_far("printf partial; printf 'execution-leg: exit: 255\\n'; exit 255\n", local=False)
+        self.assertEqual((rc, out), (255, "partial\nexecution-leg: exit: 255\n"))
+
     def test_the_last_sentinel_wins(self) -> None:
         rc, _, _ = self.run_far("echo 'execution-leg: exit: 3'\necho 'execution-leg: exit: 0'\n", local=True)
         self.assertEqual(rc, 0)

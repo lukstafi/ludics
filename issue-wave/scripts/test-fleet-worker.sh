@@ -2557,6 +2557,9 @@ expect "a full SHA the checkout has refreshes the worktree there, nothing fetche
   leg --request leg-a --rev "$la" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 expect "the runner's 125 survives the trip unchanged" 125 "execution-leg: exit: 125" -- leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt" -- sh -c 'exit 125'
 expect "...and so does a status of 128 or more" 130 "execution-leg: exit: 130" -- leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt" -- sh -c 'exit 130'
+expect "a runner whose output ends without a newline still reports its status, the sentinel on a line of its own" 255 "^partial$" -- \
+  leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt" -- sh -c 'printf partial; exit 255'
+[ "$(last_line)" = "execution-leg: exit: 255" ] && ok "...as the last line" || ko "last line: $(last_line)"
 n=$(marks)
 : > "$lwt/stray"
 expect "a worktree with uncommitted changes is refused, never overwritten" 1 "EXECUTION LEG REFUSED testbox: --worktree $lwt has uncommitted changes (1 path(s))" -- \
@@ -2578,6 +2581,11 @@ expect "a control the runner catches makes the leg pass" 0 "control failed as re
 expect "a control the runner does not catch fails the leg" 1 "CONTROL PASSED: the runner passed with" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/harmless.patch" -- tools/check.sh
 [ "$(last_line)" = "execution-leg: exit: 1" ] && [ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...reverted, its sentinel 1" || ko "last line $(last_line)"
+expect "a control run cut by --deadline is no verdict, its status kept" 124 "the control run was ended before it returned (wrapper exit 124)" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" --deadline 3 -- \
+  sh -c 'if [ -e broken ]; then sleep 30; fi; exit 0'
+grep -q "control patch reverted after the control run was cut" <<<"$out" && [ -z "$(git -C "$lwt" status --porcelain)" ] &&
+  ok "...and the patch reverted once the wrapper has reaped the run" || ko "the cut control left the worktree: $(git -C "$lwt" status --porcelain) -- $out"
 n=$(marks)
 expect "a control that does not apply is refused before anything runs" 1 "the control patch does not apply to $lb" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/stale.patch" -- tools/check.sh

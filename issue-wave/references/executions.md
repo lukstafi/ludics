@@ -599,8 +599,9 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
 - **The control.** `--control <patch>` (a file on the caller's box) must apply before anything runs.
   After a main run that passed it is applied, the runner runs again in the same slot and must fail,
   and the patch is reverted: the leg exits 0 when the control failed (1-127, but 124), 1 with
-  `CONTROL PASSED` when it did not, and the control's own status when it was cut (124, 128+). A
-  failed main run is the leg's status, and the control does not run.
+  `CONTROL PASSED` when it did not, and the control's own status when it was cut (124, 128+),
+  the patch reverted either way. A failed main run is the leg's status, and the control does not
+  run.
 
 The verb names no project's runner or layout. OCANNL's is `tools/test-run.sh`, which builds as it
 runs and takes the slot itself inside the leg's (the [nested slot](#exclusivity-and-the-run-time-slots)):
