@@ -411,10 +411,8 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
     runs-on: ubuntu-latest
     # Re-measured on v2 (ludics-lite#403): 703-770s over runs 37340116809, 37377439485,
-    # 37385847278, 37390277847 and 37404230827, x1.5. Main had grown to 1020s by 6630b40 (run
-    # 38789121989), and ludics-lite#558's `execution leg` section ran it past 20 min three
-    # times (cancelled at the bound on PR #633): 20 min x1.5.
-    timeout-minutes: 30
+    # 37385847278, 37390277847 and 37404230827, x1.5.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
