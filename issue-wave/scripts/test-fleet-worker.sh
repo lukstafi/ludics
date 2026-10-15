@@ -2230,6 +2230,8 @@ grep -q "GPU token 1 of 1 held for: " "$tdir/log" && grep -Fq "ran at $tip" "$td
   .state == "running" and .observed_sha == $tip and .remote_checkout == $co and .handle == "bg-run:testbox:\($d)" and .log == "testbox:\($d)/log"' >/dev/null &&
   ok "...and recorded it running, with its revision, checkout, handle and log" || ko "tip-a's record: $("$FW" execution list | jq -c '.[] | select(.request_id == "tip-a")')"
 expect "...which concludes from its bg-run directory" 0 '"verdict": "pass"' -- "${FWT[@]}" execution conclude --from-bg-run "$tdir" --request tip-a --sha "$tip"
+expect "a request id the registry holds is never run again" 1 "^TIP-RUN NOT STARTED tip-a: the registry already holds it (concluded); a loop run takes a fresh request id$" -- \
+  "${FWT[@]}" execution tip-run "$TMP/tip-a.json" --checkout "$tco" -- echo never
 # THE YIELD: a worker's assigned leg (any non-standing record) on the box, and nothing is reserved.
 jq -n '{request_id:"tip-leg", wave:"w", worker:"w1", transport:"subagent", issue:"o/r#1", purpose:"cuda leg",
   agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness"}' > "$TMP/tip-leg.json"

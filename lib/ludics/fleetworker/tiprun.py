@@ -21,9 +21,11 @@ In order, each step yielding rather than waiting:
     a seat or a token a worker's leg was reserved for, and never stands between a measurement and
     its window. Standing reservations are a worker's iteration on its own agent host, whose batches
     the slot below sees as they run.
- 3. ``execution run`` reserves and dispatches it, with every check the registry makes (lease, halt
-    and its triage exception, cap, measurement exclusivity) and the refresh of the box's skills
-    checkout after it.
+ 3. ``execution run`` reserves and dispatches it, with every check the registry makes (lease,
+    halt and its triage exception, cap, measurement exclusivity) and the refresh of the box's
+    skills checkout after it. The request id must be one the registry does not hold yet: ``run``
+    hands back an identical request's existing record, concluded or not, and a second run would
+    start under the first one's evidence.
  4. On the box (the far side below): the checkout must be clean before anything touches it, and
     is fetched only when it lacks the commit, checked out detached at it, and checked again (HEAD
     is the SHA, the tree clean). The command then starts in it under ``execution slot --bg
@@ -59,7 +61,7 @@ from typing import Any, cast
 
 from ludics import cli
 from ludics.fleetworker.config import Config
-from ludics.fleetworker.execution import field, listing, records_of
+from ludics.fleetworker.execution import field, listing, record_of, records_of
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import err, is_local, prelude, run, run_on
 
@@ -245,6 +247,11 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     if records is None:
         cli.say(f"TIP-RUN UNKNOWN {request_id}: the anchor's registry could not be read, so whether {box} is free is unknown; nothing reserved")
         return 4
+    # A request id the registry holds is never run again (step 3).
+    held = record_of(records, request_id)
+    if held is not None:
+        cli.say(f"TIP-RUN NOT STARTED {request_id}: the registry already holds it ({held.get('state')}); a loop run takes a fresh request id")
+        return 1
     busy = yielding_to(records, box, request_id)
     if busy:
         cli.say(f"TIP-RUN NOT STARTED {request_id}: {box} has {', '.join(busy)} outstanding; a loop run yields to it; nothing reserved")
@@ -269,8 +276,9 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
         fleet_worker(cfg, ["execution", "record"], uncertain)
         cli.say(f"TIP-RUN UNKNOWN {request_id}: {box} did not answer while the run was being started; recorded uncertain, reconcile it")
         return 4
-    if done.rc == 1 and text.startswith("TIP-RUN REFUSED: "):
-        why = text[len("TIP-RUN REFUSED: ") :].split("\n", 1)[0]
+    refusals = [line for line in text.split("\n") if line.startswith("TIP-RUN REFUSED: ")]
+    if done.rc == 1 and refusals:
+        why = refusals[-1][len("TIP-RUN REFUSED: ") :]
         return not_started(cfg, request_id, why, f"{box}:{parsed.checkout} (no run directory: nothing started)")
     facts = far_facts(text)
     run_dir, slot = facts.get("dir", ""), facts.get("slot", "")
