@@ -792,17 +792,19 @@ test_already_absent_remote_retry() {
   echo "PASS: already-absent remote branch retry"
 }
 
-test_absent_remote_recreation_race() {
-  local fake_bin local_oid new_oid real_git log tree
-  setup_case absent-remote-race merge main-off
-  local_oid=$(git -C "$CASE_MAIN" rev-parse refs/heads/topic)
-  tree=$(git -C "$CASE_MAIN" rev-parse "refs/heads/topic^{tree}")
-  new_oid=$(printf '%s\n' "concurrent remote recreation" | \
-    git -C "$CASE_MAIN" commit-tree "$tree" -p "$local_oid")
-  git -C "$CASE_MAIN" push origin :refs/heads/topic >/dev/null
-  fake_bin="$TEST_ROOT/absent-race-bin"
+# The race both cases below drive: the helper's own `ls-remote` of the topic answers "absent",
+# and before that answer reaches the helper, a racing push recreates origin/topic at RACE_OID from
+# the repository RACE_PEER, through its remote RACE_REMOTE (git's own arguments). Which
+# repository pushes is what the two cases differ in. A push from the main checkout creates its
+# origin/topic tracking ref as well: by remote name under every Git, and since Git 2.56 by URL too
+# when the URL uniquely matches a configured remote (its release notes). The second case pins that
+# state on purpose; the first case pushed from main by URL until Git 2.56 put it there by accident
+# and sent the case red on macOS (runs 38684606527 and 38686293701).
+# The helper's combined output goes to $log; the caller judges its exit status.
+run_absent_race_helper() {
+  local peer="$1" remote="$2" new_oid="$3" log="$4" fake_bin real_git
+  fake_bin="$TEST_ROOT/$(basename "$CASE_ROOT")-race-bin"
   real_git=$(command -v git)
-  log="$TEST_ROOT/absent-race.log"
   mkdir -p "$fake_bin"
   printf '%s\n' \
     '#!/usr/bin/env bash' \
@@ -813,21 +815,65 @@ test_absent_remote_recreation_race() {
     'if [ "$3" = ls-remote ] && [ "$is_topic_query" -eq 1 ]; then' \
     '  output=$("$REAL_GIT" "$@")' \
     '  status=$?' \
-    '  "$REAL_GIT" -C "$RACE_MAIN" push "$RACE_REMOTE" "$RACE_OID:refs/heads/topic" >/dev/null' \
+    '  "$REAL_GIT" -C "$RACE_PEER" push --no-verify "$RACE_REMOTE" "$RACE_OID:refs/heads/topic" >/dev/null' \
     '  printf "%s\\n" "$output"' \
     '  exit "$status"' \
     'fi' \
     'exec "$REAL_GIT" "$@"' >"$fake_bin/git"
   chmod +x "$fake_bin/git"
-
-  PATH="$fake_bin:$PATH" REAL_GIT="$real_git" RACE_MAIN="$CASE_MAIN" \
-    RACE_REMOTE="$CASE_REMOTE" RACE_OID="$new_oid" \
+  PATH="$fake_bin:$PATH" REAL_GIT="$real_git" RACE_PEER="$peer" \
+    RACE_REMOTE="$remote" RACE_OID="$new_oid" \
     "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >"$log" 2>&1
+}
+
+# A branch recreated by ANOTHER repository after the helper saw it absent: the recreation reaches
+# only the remote, as it would from another machine, so the helper cleans the local side and
+# must leave the new remote branch alone. The integrator clone is that other repository.
+test_absent_remote_recreation_race() {
+  local local_oid new_oid log tree
+  setup_case absent-remote-race merge main-off
+  local_oid=$(git -C "$CASE_MAIN" rev-parse refs/heads/topic)
+  tree=$(git -C "$CASE_MAIN" rev-parse "refs/heads/topic^{tree}")
+  new_oid=$(printf '%s\n' "concurrent remote recreation" | \
+    git -C "$CASE_INTEGRATOR" commit-tree "$tree" -p "$local_oid")
+  git -C "$CASE_MAIN" push origin :refs/heads/topic >/dev/null
+  log="$TEST_ROOT/absent-race.log"
+  run_absent_race_helper "$CASE_INTEGRATOR" origin "$new_oid" "$log" ||
+    { tail -n 40 "$log" >&2; fail "cleanup after an absent advertisement failed (log tail above)"; }
   assert_eq "$(git -C "$CASE_MAIN" ls-remote origin refs/heads/topic | awk '{print $1}')" \
     "$new_oid" "branch created after an absent observation must never be deleted"
   git -C "$CASE_MAIN" push origin :refs/heads/topic >/dev/null
   assert_cleaned
   echo "PASS: branch created after absent advertisement is preserved"
+}
+
+# The same recreation pushed from the main checkout, which also creates its origin/topic
+# tracking ref after the helper's snapshot of it: the helper refuses before any topic mutation,
+# and the recreated remote branch, its tracking ref and the local side all survive.
+test_absent_remote_tracking_ref_appears() {
+  local local_oid new_oid log tree
+  setup_case absent-remote-tracking-appears merge main-off
+  local_oid=$(git -C "$CASE_MAIN" rev-parse refs/heads/topic)
+  tree=$(git -C "$CASE_MAIN" rev-parse "refs/heads/topic^{tree}")
+  new_oid=$(printf '%s\n' "concurrent recreation from this checkout" | \
+    git -C "$CASE_MAIN" commit-tree "$tree" -p "$local_oid")
+  # Unlogged, like the racing push: the push log is the record of the helper's own pushes.
+  git -C "$CASE_MAIN" push --no-verify origin :refs/heads/topic >/dev/null
+  log="$TEST_ROOT/absent-tracking-appears.log"
+  if run_absent_race_helper "$CASE_MAIN" origin "$new_oid" "$log"; then
+    cat "$log" >&2
+    fail "cleanup proceeded past an origin/topic tracking ref that appeared after its snapshot"
+  fi
+  grep -F "origin/topic tracking ref appeared during cleanup; its new tip was preserved" "$log" >/dev/null ||
+    { tail -n 40 "$log" >&2; fail "the refusal did not name the appeared tracking ref (log tail above)"; }
+  assert_topic_preserved
+  assert_eq "$(git -C "$CASE_MAIN" ls-remote origin refs/heads/topic | awk '{print $1}')" \
+    "$new_oid" "branch created after an absent observation must never be deleted"
+  assert_eq "$(git -C "$CASE_MAIN" rev-parse refs/remotes/origin/topic)" "$new_oid" \
+    "the appeared tracking ref must be preserved"
+  assert_eq "$(git -C "$CASE_MAIN" rev-parse refs/heads/topic)" "$local_oid" \
+    "the local topic must be untouched"
+  echo "PASS: tracking ref appearing after an absent advertisement is refused"
 }
 
 test_other_topic_owner_refusal() {
@@ -5533,6 +5579,7 @@ TESTS=(
   test_conditional_local_ref_deletion
   test_already_absent_remote_retry
   test_absent_remote_recreation_race
+  test_absent_remote_tracking_ref_appears
   test_other_topic_owner_refusal
   test_dirty_session_refusal
   test_ignored_session_refusal
