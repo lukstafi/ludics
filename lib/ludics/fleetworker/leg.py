@@ -44,6 +44,11 @@ passed through): a runner's output -- a nested leg's sentinel, say -- cannot sta
 when the connection drops after printing it. A runner's own plain sentinel lines pass through as
 output.
 
+Each run (the main one, the control) is a nested ``execution slot --deadline`` inside the leg's slot
+or hold, taking none of its own: its process group is reaped when the runner returns, so nothing the
+runner left in the background overlaps the next run. The bound is the leg's ``--deadline``, or a
+day.
+
 THE CONTROL. With ``--control <patch>`` (a file on this box, copied to the box's state directory),
 the patch must apply (``git apply --check``) before anything runs. After a main run that passed it
 is applied, the runner runs again in the same slot and must FAIL, and the patch is reverted. The
@@ -84,17 +89,21 @@ HEX = re.compile(r"[0-9a-fA-F]{7,}")
 OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 REMOTE = re.compile(r"[A-Za-z0-9._-]+")
 SECONDS = re.compile(r"[1-9][0-9]*")
+RUN_BOUND = "86400"  # each run's --deadline when the leg names none: a day, a bound only to reap with
 HELD_BACK = 64  # bytes of an unfinished line kept back for the status line; it is never longer than 45
 
 # The far side, after the prelude. Args: checkout, worktree, remote, rev, want (the assigned commit or
 # empty), patch name (in $STATE/leg-control, or empty), request id, the fetch's bound in seconds
 # (FLEET_FETCH_TIMEOUT), the status token (see the header), the wrapper's word count and
-# words (fleet-worker.sh's own verb and flags, ending before its `--`), then the runner's argv.
+# words (fleet-worker.sh's own verb and flags, ending before its `--`), each run's nested-slot
+# flags' count and words, then the runner's argv.
 LEG = r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" nwrap="${10}"
 shift 10
 fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
 while [ "$nwrap" -gt 0 ]; do wrap+=("$1"); shift; nwrap=$((nwrap - 1)); done
+nnest="$1"; shift; nest=()
+while [ "$nnest" -gt 0 ]; do nest+=("$1"); shift; nnest=$((nnest - 1)); done
 patch=""; [ -z "$pname" ] || patch="$STATE/leg-control/$pname"
 ref="refs/fleet-leg/$$"; results=""
 say() { printf 'EXECUTION LEG %s: %s\n' "$BOX" "$*" >&2; }
@@ -180,22 +189,27 @@ results=$(mktemp "${TMPDIR:-/tmp}/fleet-leg.XXXXXX") || refuse "cannot create a 
 # The runs, under ONE slot (or the measurement's hold): the main run, then the control. Each step
 # that ends is written to the results file, so a wrapper that refused is told from a runner that ran.
 # The script is a file beside it, so the slot's "held for" line names it rather than quoting it.
+# Each run is a nested `execution slot --deadline` (inside the enclosing slot or hold, taking none
+# of its own): with a deadline it leads a process group of its own, and a command that ends first
+# takes anything it left running in that group with it (group.py, ludics-lite#566), so a runner's
+# leftover background child cannot overlap the control run, nor outlive the leg.
 cat > "$results.sh" <<'FLEET_LEG_RUNS' || refuse "cannot write a scratch file on $BOX"
-wt="$1" patch="$2" results="$3" box="$4"; shift 4
+wt="$1" patch="$2" results="$3" box="$4" fw="$5" n="$6"; shift 6
+nest=(); while [ "$n" -gt 0 ]; do nest+=("$1"); shift; n=$((n - 1)); done
 cd "$wt" || exit 1
 printf "started\n" >> "$results"
-"$@" </dev/null; rc=$?
+"$fw" execution slot "${nest[@]}" -- "$@" </dev/null; rc=$?
 printf "main=%s\n" "$rc" >> "$results"
 { [ "$rc" -eq 0 ] && [ -n "$patch" ]; } || exit "$rc"
 git apply "$patch" >&2 || { printf "apply=failed\n" >> "$results"; exit 1; }
 printf "applied\n" >> "$results"
 printf "EXECUTION LEG %s: control patch applied; the runner again, which must fail\n" "$box" >&2
-"$@" </dev/null; crc=$?
+"$fw" execution slot "${nest[@]}" -- "$@" </dev/null; crc=$?
 printf "control=%s\n" "$crc" >> "$results"
 git apply -R "$patch" >&2 && printf "revert=ok\n" >> "$results"
 exit 0
 FLEET_LEG_RUNS
-"${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$@" </dev/null; wrc=$?
+"${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
 fact() { sed -n "s/^$1=//p" "$results" | head -n1; }
 main=$(fact main)
 now=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)
@@ -336,6 +350,9 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
         wrap = ["execution", "hold", "--request", request, *slot_flags]
     else:
         wrap = ["execution", "slot", *slot_flags]
+    # The runs' own bound: the leg's --deadline, or a day, so each run's group is reaped as it ends.
+    deadline = slot_flags[slot_flags.index("--deadline") + 1] if "--deadline" in slot_flags else RUN_BOUND
+    nest = ["--deadline", deadline, *[flag for flag in slot_flags if flag in ("--cpu", "--gpu")]]
     resolved = record.get("resolved_revision")
     want = resolved if isinstance(resolved, str) and OBJECT_ID.fullmatch(resolved) else ""
 
@@ -356,7 +373,8 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
         die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
     argv = far_argv(
         cfg, box,
-        [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, str(len(wrap)), *wrap, *runner],
+        [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, str(len(wrap)), *wrap,
+         str(len(nest)), *nest, *runner],
     )
     return stream(argv, script, box, token, local=is_local(cfg, box))
 

@@ -2607,6 +2607,12 @@ expect "...and once it is done the next leg takes it" 0 "execution-leg: exit: 0"
 git -C "$lco" remote add slow "$lremote" && git -C "$lco" config remote.slow.uploadpack "sh -c 'sleep 20'"
 expect "a fetch that stalls is cut at FLEET_FETCH_TIMEOUT and refused" 1 "did not finish in 2s (FLEET_FETCH_TIMEOUT)" -- \
   env FLEET_FETCH_TIMEOUT=2 "${FWL[@]}" execution leg --request leg-a --rev claude/topic --remote slow --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+rm -f "$TMP/leg-late"
+expect "a runner's background leftovers are reaped before the control runs" 0 "control failed as required (exit 3)" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
+  sh -c 'if [ -e broken ]; then exit 3; fi; (sleep 3; touch "$1") & exit 0' x "$TMP/leg-late"
+sleep 4
+[ ! -e "$TMP/leg-late" ] && ok "...the main run's background child ended with it" || ko "a background child of the main run outlived it"
 n=$(marks)
 expect "a control that does not apply is refused before anything runs" 1 "the control patch does not apply to $lb" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/stale.patch" -- tools/check.sh

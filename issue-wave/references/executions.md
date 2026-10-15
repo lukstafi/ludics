@@ -593,7 +593,9 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   the control's revert: a second leg there is refused, not queued, since a worktree moved under a
   running leg would make it test another commit than the one it reports.
 - **The runner.** The command after `--` runs in the worktree with its words passed through
-  untouched, stdin closed. Its status is the leg's, unchanged (a 125, a 128 or more included), and
+  untouched, stdin closed, each run a nested `execution slot --deadline` (the leg's, or a day), so
+  whatever it leaves running in the background is ended with it rather than overlapping the next
+  run ([the command's process group](#the-os-level-sleep-guard)). Its status is the leg's, unchanged (a 125, a 128 or more included), and
   the last line on stdout is `execution-leg: exit: <status>`, the sentinel `conclude --from-bg-run`
   reads. Without that line nothing ran to an end: `EXECUTION LEG REFUSED ...` says why (exit 1, 2
   for usage, or the slot's own refusal status when it never started the runner), and `EXECUTION
