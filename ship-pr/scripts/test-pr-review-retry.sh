@@ -56,6 +56,8 @@ GQL_OUT=""
 # What gh prints on stderr when it refuses its arguments before sending anything: any call made
 # while it is set fails with it, whatever the command, since the refusal is gh's and not the API's.
 CLIENT_ERROR=""
+# What gh prints when it withholds an answer for the terminal escape sequences in it.
+ESCAPE_REFUSAL='the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway'
 
 # The fixture gh. Not gh_fixture_parse: that one refuses everything but `gh api`, and this await
 # reads `gh run view`. `repo view` is answered rather than refused ON PURPOSE — it is the first
@@ -83,6 +85,19 @@ gh() {
   "api lines")
     awk 'BEGIN { for (i = 1; i <= 200000; i++) print i }'
     return 0
+    ;;
+  # A job's log, plain text with ANSI colour in it (post-wave-3 task 8): gh withholds such a body
+  # unless the call opts in, after the API has answered, and exits 1 -- the refusal is verbatim
+  # from gh 2.101.0 reading a real Actions job log with its stdout redirected to a file.
+  "api repos/"*"/actions/jobs/"*"/logs")
+    case " $* " in
+    *" --allow-escape-sequences "*)
+      printf '\033[36;1mstep\033[0m ok\n'
+      return 0
+      ;;
+    esac
+    printf '%s\n' "$ESCAPE_REFUSAL" >&2
+    return 1
     ;;
   "api graphql")
     [ -n "$GQL_ERROR" ] || bail "fixture api graphql was called with no GQL_ERROR set: $*"
@@ -555,6 +570,64 @@ test_a_delegating_command_refusal_is_not_read() {
     run_retry "${cmd[@]}"
     assert_eq "$RETRY_RC" 2 "a listed path is read ($spec: $RETRY_OUT)"
     assert_eq "$(gh_calls | wc -l | tr -d ' ')" 1 "and not re-sent ($spec)"
+  done
+}
+
+# --- gh withholding an answer for its escape sequences (post-wave-3 task 8) --------------------
+
+# `retry --read api repos/<o>/<r>/actions/jobs/<id>/logs` without `--allow-escape-sequences`: GitHub
+# answered, and gh refused to print the answer. It was read as transport, retried four times and
+# reported as UNKNOWN. Re-sending it prints the same refusal, so it is the caller's call that is
+# wrong: exit 2 on the first attempt, under both policies, naming the flag. Unlike an argument
+# refusal, the request DID reach GitHub, so the message must not say nothing was sent.
+test_a_withheld_answer_is_a_usage_error() {
+  local mode
+  retune API_ATTEMPTS=3
+  for mode in --read --write; do
+    reset_fixture
+    run_retry "$mode" api repos/example/repo/actions/jobs/7/logs
+    assert_eq "$RETRY_RC" 2 "a withheld answer is a usage error ($mode: $RETRY_OUT)"
+    assert_contains "$RETRY_OUT" "gh api withheld GitHub's answer: $ESCAPE_REFUSAL." \
+      "the message quotes gh's refusal ($mode)"
+    assert_contains "$RETRY_OUT" "re-run it with --allow-escape-sequences" "and names the flag ($mode)"
+    assert_not_contains "$RETRY_OUT" "never answered" "GitHub did answer ($mode)"
+    assert_not_contains "$RETRY_OUT" "sent nothing" "and the request was sent ($mode)"
+    assert_not_contains "$RETRY_OUT" "AMBIGUOUSLY" "and it is not an ambiguous write ($mode)"
+    assert_eq "$(gh_calls | wc -l | tr -d ' ')" 1 "and it is not re-sent ($mode)"
+  done
+  # The flag the message names is the fix: the same read with it passes the log through, escape
+  # bytes and all.
+  reset_fixture
+  run_retry --read api repos/example/repo/actions/jobs/7/logs --allow-escape-sequences
+  assert_eq "$RETRY_RC" 0 "with the flag the log is read ($RETRY_OUT)"
+  assert_eq "$RETRY_OUT" $'\033[36;1mstep\033[0m ok' "and passed through as gh printed it"
+}
+
+# The controls: the refusal anywhere but as the whole first stderr line keeps the retry, and so
+# does the exact line on a command path whose stderr is not read as gh's (an alias or extension).
+test_a_withheld_answer_near_miss_still_retries() {
+  local body spec
+  local -a cmd
+  local -a bodies=(
+    "gh: $ESCAPE_REFUSAL"
+    "$ESCAPE_REFUSAL (HTTP 502)"
+    $'gh: Something went wrong (HTTP 500)\n'"$ESCAPE_REFUSAL"
+  )
+  retune API_ATTEMPTS=3
+  for body in "${bodies[@]}"; do
+    reset_fixture
+    CLIENT_ERROR="$body"
+    run_retry --read api repos/example/repo/actions/jobs/7/logs
+    assert_eq "$RETRY_RC" 3 "outside the exact line keeps the retry ($body: $RETRY_OUT)"
+    assert_eq "$(gh_calls | wc -l | tr -d ' ')" 3 "every attempt was spent ($body)"
+  done
+  for spec in 'myext logs' 'pr checkout 1'; do
+    read -r -a cmd <<<"$spec"
+    reset_fixture
+    CLIENT_ERROR="$ESCAPE_REFUSAL"
+    run_retry --read "${cmd[@]}"
+    assert_eq "$RETRY_RC" 3 "an unlisted path's line is not read as gh's ($spec: $RETRY_OUT)"
+    assert_eq "$(gh_calls | wc -l | tr -d ' ')" 3 "every attempt was spent ($spec)"
   done
 }
 
@@ -1058,6 +1131,8 @@ tests=(
   test_a_client_refusal_is_a_usage_error
   test_a_client_refusal_near_miss_still_retries
   test_a_delegating_command_refusal_is_not_read
+  test_a_withheld_answer_is_a_usage_error
+  test_a_withheld_answer_near_miss_still_retries
   test_the_scripts_own_refused_call_is_exit_2
   test_a_refused_own_call_stops_the_command
   test_run_watch_takes_every_spelling_of_its_flags

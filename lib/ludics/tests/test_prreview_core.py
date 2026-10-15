@@ -13,6 +13,7 @@ from ludics.prreview.core import (
     GhArgsRefused,
     GhFailed,
     GhOk,
+    GhOutputWithheld,
     GhRefusedOwn,
     GhSession,
     GhUnanswered,
@@ -127,6 +128,15 @@ class Classification(unittest.TestCase):
             "accepts between 1 and 2 arg(s), received 3",
         ):
             self.assertFalse(core.gh_client_refusal(line), line)
+
+    def test_withheld_escapes_is_the_whole_line(self) -> None:
+        line = (
+            "the response contains terminal escape sequences;"
+            " pass --allow-escape-sequences to output it anyway"
+        )
+        self.assertTrue(core.gh_withheld_escapes(line))
+        for near in (f"gh: {line}", f"{line} (HTTP 502)", line[:-1], ""):
+            self.assertFalse(core.gh_withheld_escapes(near), near)
 
     def test_api_only_commands(self) -> None:
         self.assertTrue(core.gh_api_only_command(["api", "x"]))
@@ -267,6 +277,28 @@ class Retry(unittest.TestCase):
             self.assertEqual(len(gh.calls()), 1)
             # Unlisted: the stderr is not read as gh's, so the read policy retries it.
             gh.script(Answer(1, "", 'Unknown JSON field: "x"\n'))
+            with contextlib.redirect_stderr(io.StringIO()):
+                result = s.session.retry_caller("read", ["ext", "x"], listed=False)
+            self.assertEqual(result, GhUnanswered())
+            self.assertEqual(len(gh.calls()), 3)
+
+
+    def test_a_withheld_answer_returns_on_the_first_attempt_when_listed(self) -> None:
+        refusal = (
+            "the response contains terminal escape sequences;"
+            " pass --allow-escape-sequences to output it anyway\n"
+        )
+        logs = ["api", "repos/o/r/actions/jobs/7/logs"]
+        with FakeTool("gh") as gh:
+            s = Session(SHIP_PR_API_ATTEMPTS="3")
+            for mode in ("read", "write"):
+                gh.script(Answer(1, "", refusal))
+                self.assertEqual(
+                    s.session.retry_caller(mode, logs, listed=True), GhOutputWithheld(), mode
+                )
+                self.assertEqual(len(gh.calls()), 1, mode)
+            # Unlisted: the stderr is not read as gh's, so the read policy retries it.
+            gh.script(Answer(1, "", refusal))
             with contextlib.redirect_stderr(io.StringIO()):
                 result = s.session.retry_caller("read", ["ext", "x"], listed=False)
             self.assertEqual(result, GhUnanswered())

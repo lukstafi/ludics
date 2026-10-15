@@ -251,7 +251,10 @@
 #                                          # any other gh call (pr merge, api) with the same retry
 #                                          # policy, instead of a hand-rolled loop. gh refusing
 #                                          # the arguments itself (an unknown flag or --json
-#                                          # field) sent nothing: exit 2, never retried
+#                                          # field) sent nothing: exit 2, never retried. So
+#                                          # is gh WITHHOLDING an answer for its terminal
+#                                          # escape sequences (a job's log): pass gh's
+#                                          # --allow-escape-sequences on such a read
 #   pr-review.sh retry [--read] run watch owner/name#<run-id>
 #                                          # NOT forwarded to gh: executed as a QUIET await of that
 #                                          # run — one verdict line instead of a stream of redraws,
