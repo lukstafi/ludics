@@ -753,22 +753,21 @@ controlled through the tools in your coordinator's file, never through those com
     start, the one whose backend was least recently covered at a tip, so CUDA and HIP
     alternate when both are free, and the HIP pick between tuf (discrete) and minix (unified
     memory) follows the same rule per box (the newest loop record per backend, or per box,
-    read as below without the `pass` filter). A box is
-    free when it is up - tuf only while it already is: the loop never wakes a box - and no
-    sweep lane holds it (`wake-lab.sh status <box>`); `execution tip-run` (below) checks the
-    rest, and starts nothing where it would take from a worker or a measurement: anything
-    outstanding on the box but a standing reservation (a worker's assigned leg, a measurement
-    or its window, another loop run) and it yields, reserving nothing; and it takes the box's
-    GPU token only if one is free at that moment (`execution slot --wait 0`, no
-    `--wait-window`), never waiting behind or among the workers' batches. A standing
-    reservation, a worker's on its GPU home box included, does not turn it away: a record is
-    not load (ludics-lite#160), and like another worker's batch the run takes only an idle
-    token and holds it for one run, so a worker homed there finds one token fewer for at most
-    that run, never none on rog-nv-linux's two. A run it does not
-    start is not retried: the loop tries again when it can next start. A measurement asked for
-    while a loop run holds its box ends that run - on the box, `kill` the pid on the first line
-    of `<dir>/cpid` (the slot's wrapper: its kill ends the batch's process group), conclude it
-    from the directory (`cancelled`), then open the window.
+    read as below without the `pass` filter). A box is free when it is up - tuf only while it
+    already is: the loop never wakes a box - and no sweep lane holds it (`wake-lab.sh status
+    <box>`); `execution tip-run` (below) checks the rest, and starts nothing where it would
+    take from a worker or a measurement: anything outstanding on the box but a standing
+    reservation (a worker's assigned leg, a measurement or its window, another loop run) and
+    it yields, reserving nothing; and it takes the box's GPU token only if one is free at that
+    moment (`execution slot --wait 0`, no `--wait-window`), never waiting behind or among the
+    workers' batches. A standing reservation, a worker's on its GPU home box included, does not
+    turn it away: a record is not load (ludics-lite#160), and like another worker's batch the
+    run takes only an idle token and holds it for one run, so a worker homed there finds one
+    token fewer for at most that run. A run it does not start is not retried: the loop tries
+    again when it can next start. A measurement asked for while a loop run holds its box ends
+    that run - on the box, `kill` the pid on the first line of `<dir>/cpid` (the slot's
+    wrapper: its kill ends the batch's process group), conclude it from the directory
+    (`cancelled`), then open the window.
   - **Informative, never a gate.** Its records never carry `"integration": true`, so the base
     gate never reads them (*Base gate*): launch verdicts stay the tip's own push run and the cc
     loop's records. A GPU red reaches the wave through the loop itself, below. Its request ids
