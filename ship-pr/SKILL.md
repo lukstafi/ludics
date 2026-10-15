@@ -1138,15 +1138,16 @@ red for an hour. A repository that names a build in `.github/ship-pr-merge-build
 branch (read like the advisory list: only a 404 the listing confirms is "no file") gets one local
 check before the merge call. When a path in the drift read's intersection matches one of the
 file's `input` globs, or the intersection is UNKNOWN, `merge` builds the gated head merged with the
-base's current tip in a scratch worktree of the clone it runs in, inside the box's run-time slot
+base's tip in a scratch repository that borrows the objects of the clone it runs in (nothing is
+registered in the clone, and nothing of the build outlives it), inside the box's run-time slot
 where it has slots, bounded by the file's timeout, and refuses with exit 1 and the build's output
 when it fails:
 
 ```
 # pr-review.sh merge's build of the would-be merge commit (ludics-lite#611). A path is a build
 # input when an `input` glob matches the whole repository path (fnmatch: `*` crosses `/`).
-# The command is trusted as a developer's build is: it runs in a scratch worktree of the clone,
-# not a sandbox, so its own git writes land in that clone. timeout: 1 to 86400 seconds.
+# The command is trusted as a developer's build is: its scratch repository is a place to build,
+# not a sandbox. timeout: 1 to 86400 seconds.
 command dune build @check
 input *.ml
 input *.mli

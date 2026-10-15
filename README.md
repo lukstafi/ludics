@@ -866,7 +866,10 @@ nothing changed on both sides the config is not even read; a repository without
 grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2. Each build case
 then checks the clone: its working tree, its worktree list and its refs are as they were.
 `lib/ludics/tests/test_prreview_mergebuild.py` pins the grammar, the glob boundary, the remote
-match, a textual conflict, a moved head and a build past its bound.
+match, a textual conflict, a moved head, a build past its bound, an interrupted merge and a process
+the build leaves behind (neither outlives the merge), a shallow clone (exit 2), a sparse one (the
+merge is still built whole), the build's own git writes (kept in its scratch repository) and a log
+of any size (read bounded).
 
 `test-pr-review-retry.sh` drives `retry`: the plain retry's classification, and `retry run
 watch`, which addresses its run as

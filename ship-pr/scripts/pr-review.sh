@@ -211,7 +211,8 @@
 #                                          # .github/ship-pr-merge-build and a path both sides
 #                                          # changed is one of its build inputs, it first BUILDS
 #                                          # the head merged with the base's tip in a scratch
-#                                          # worktree of the local clone it runs in, and refuses
+#                                          # repository borrowing the objects of the local
+#                                          # clone it runs in, and refuses
 #                                          # (1) when that build fails, with its output
 #                                          # (ludics-lite#611; see prreview/mergebuild.py)
 #   pr-review.sh base [owner/name] [branch] [--wait[=seconds]] [--interim]

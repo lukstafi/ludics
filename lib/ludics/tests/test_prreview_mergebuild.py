@@ -91,6 +91,31 @@ class Inputs(unittest.TestCase):
                 self.assertFalse(mergebuild._remote_matches(url, "owner/repo"))  # pyright: ignore[reportPrivateUsage]
 
 
+class Log(unittest.TestCase):
+    def shown(self, data: bytes) -> list[str]:
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(data)
+        try:
+            return mergebuild._shown(f.name)  # pyright: ignore[reportPrivateUsage]
+        finally:
+            os.unlink(f.name)
+
+    def test_a_short_log_is_shown_whole(self) -> None:
+        self.assertEqual(self.shown(b"a\nb\n"), ["a", "b"])
+
+    def test_a_long_log_is_its_two_ends(self) -> None:
+        lines = self.shown(b"".join(b"line %d\n" % i for i in range(1000)))
+        self.assertEqual(len(lines), mergebuild.SHOWN_HEAD + mergebuild.SHOWN_TAIL + 1)
+        self.assertEqual((lines[0], lines[-1]), ("line 0", "line 999"))
+
+    def test_a_huge_log_and_an_endless_line_are_read_bounded(self) -> None:
+        lines = self.shown(b"start\n" + b"x" * (5 * 1024 * 1024) + b"\nend\n")
+        self.assertEqual(lines[0], "start")
+        self.assertEqual(lines[-1], "end")
+        self.assertTrue(all(len(line) < mergebuild.LINE_CHARS + 40 for line in lines))
+        self.assertIn("its middle is left out", "\n".join(lines))
+
+
 def git(cwd: str, *args: str) -> str:
     done = subprocess.run(
         ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", cwd, *args],
@@ -142,7 +167,8 @@ class Build(unittest.TestCase):
         self.write([base_first, *API[1:]])
         git(self.work, "commit", "-q", "-a", "-m", "base")
         git(self.work, "push", "-q", self.remote, "HEAD:refs/heads/main")
-        return head, git(self.work, "rev-parse", "HEAD")
+        self.tip = git(self.work, "rev-parse", "HEAD")
+        return head, self.tip
 
     def refs(self) -> str:
         return git(self.clone, "for-each-ref", "--format=%(refname) %(objectname)")
@@ -154,7 +180,7 @@ class Build(unittest.TestCase):
         self.assertEqual(git(self.clone, "worktree", "list", "--porcelain").count("worktree "), 1)
         self.assertEqual(self.refs(), refs)
 
-    def build(self, gated: str) -> tuple[int, str]:
+    def build(self, gated: str, command: str = "sh ./api.sh") -> tuple[int, str]:
         refs = self.refs()
         os.chdir(self.clone)
         out = io.StringIO()
@@ -162,7 +188,7 @@ class Build(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             try:
                 mergebuild._build(  # pyright: ignore[reportPrivateUsage]
-                    "owner/repo", "7", gated, "main", BuildConfig("sh ./api.sh", ("*.sh",), 60), "test"
+                    "owner/repo", "7", gated, "main", self.tip, BuildConfig(command, ("*.sh",), 60), "test"
                 )
             except cli.Exit as exc:
                 rc = exc.rc
@@ -194,11 +220,25 @@ class Build(unittest.TestCase):
         command = f"(sleep 2; echo survived > {survived}) & sh ./api.sh"
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             mergebuild._build(  # pyright: ignore[reportPrivateUsage]
-                "owner/repo", "7", head, "main", BuildConfig(command, ("*.sh",), 60), "test"
+                "owner/repo", "7", head, "main", self.tip, BuildConfig(command, ("*.sh",), 60), "test"
             )
         self.assertIn("PASSED", out.getvalue())
         time.sleep(3)
         self.assertFalse(os.path.exists(survived), "the group was ended after its leader exited")
+
+    def test_the_builds_git_writes_stay_in_its_own_repository(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        rc, out = self.build(head, "git tag built && git branch built2 && git update-ref refs/remotes/origin/main HEAD && sh ./api.sh")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PASSED", out)
+
+    def test_a_sparse_clone_still_builds_the_whole_merge(self) -> None:
+        head, _ = self.sides("hook", "seam() { :; }")
+        git(self.clone, "sparse-checkout", "set", "--no-cone", "/nothing-here")
+        self.assertFalse(os.path.exists(os.path.join(self.clone, "api.sh")))
+        rc, out = self.build(head)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("hook", out)
 
     def test_a_shallow_clone_is_refused(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
@@ -220,10 +260,10 @@ class Build(unittest.TestCase):
         self.assertIn("does not merge cleanly", out)
 
     def test_a_moved_head_is_superseded(self) -> None:
-        head, _ = self.sides("keep", "seam() { :; }")
+        self.sides("keep", "seam() { :; }")
         rc, out = self.build("0" * 40)
         self.assertEqual(rc, 5, out)
-        self.assertIn(f"its head is {head[:8]}", out)
+        self.assertIn("its gated head, 00000000, is not on origin after the fetch", out)
 
     def test_a_timeout_is_no_verdict(self) -> None:
         head, _ = self.sides("sleep 30", "seam() { :; }")
@@ -232,7 +272,7 @@ class Build(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             with self.assertRaises(cli.Exit) as caught:
                 mergebuild._build(  # pyright: ignore[reportPrivateUsage]
-                    "owner/repo", "7", head, "main", BuildConfig("sh ./api.sh", ("*.sh",), 2), "test"
+                    "owner/repo", "7", head, "main", self.tip, BuildConfig("sh ./api.sh", ("*.sh",), 2), "test"
                 )
         self.assertEqual(caught.exception.rc, 4, out.getvalue())
         self.assertIn("did not finish within", caught.exception.message)
@@ -260,7 +300,7 @@ class Build(unittest.TestCase):
                     "from ludics import cli\n"
                     f"os.chdir({self.clone!r})\n"
                     "try:\n"
-                    f"    _build('owner/repo', '7', {head!r}, 'main', BuildConfig({command!r}, ('*.sh',), 60), 'test')\n"
+                    f"    _build('owner/repo', '7', {head!r}, 'main', {self.tip!r}, BuildConfig({command!r}, ('*.sh',), 60), 'test')\n"
                     "except cli.Exit as exc:\n"
                     "    raise SystemExit(exc.rc)\n"
                 )

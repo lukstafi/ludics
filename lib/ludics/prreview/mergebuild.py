@@ -40,33 +40,39 @@ that already built the merge with this very tip makes the build redundant, never
 conflict across paths only ONE side changed (the PR uses a name the base renamed in another file) is
 outside this boundary, and stays the integration loop's to catch on the merged tip.
 
-HOW IT BUILDS. In a local clone of the repository: the git checkout the merge runs in, whose remote
-(``origin`` first) has a URL ending in the repository's ``owner/name`` (``.git`` optional, case
-ignored), so an SSH host alias serves as well as github.com. No such clone is exit 2, and so is a
-SHALLOW clone, which may lack the merge base (run from a full clone, or ``git fetch --unshallow``). It fetches
-``refs/pull/<n>/head`` and the base branch into private refs under ``refs/ship-pr/merge-build/``
-(``--refmap=``, so no remote-tracking ref of the caller's moves),
-requires the fetched head to be the gated one (else exit 5, superseded), makes the merge commit
-with ``git merge-tree --write-tree`` and ``commit-tree`` (a textual conflict is exit 1), and checks
-it out as a detached worktree in a scratch directory -- never the caller's checkout, whose working
-tree, index and branches are not touched -- with hooks off. The command runs there, its output to a
-log beside it, inside this box's run-time slot when it has slots (``fleet-worker.sh execution slot
---probe`` answers the PROBE line; ``--cpu``, waiting up to 30 min for a slot and 30 min for a
-measurement, under ``--deadline`` = the timeout) and bare otherwise, bounded either way. The
-worktree, the private refs and the scratch directory are removed whatever the outcome; a process
-killed mid-build leaves a worktree entry ``git worktree prune`` drops once its directory is gone.
+HOW IT BUILDS. From a local clone of the repository: the git checkout the merge runs in, whose
+remote (``origin`` first) has a URL ending in the repository's ``owner/name`` (``.git`` optional,
+case ignored), so an SSH host alias serves as well as github.com. No such clone is exit 2, and so
+is a SHALLOW clone, which may lack the merge base (run from a full clone, or ``git fetch
+--unshallow``). The clone fetches ``refs/pull/<n>/head`` and the base branch as OBJECTS only -- no
+destination ref, ``--refmap=`` (no remote-tracking ref moves), no FETCH_HEAD -- and must then hold
+the gated head (else exit 5: a push moved it) and the base tip the drift read (else exit 3). Then
+everything happens in a scratch directory: a repository of its own (``git init --template=``)
+that borrows the clone's objects through ``objects/info/alternates``, read only, and has its own
+config, refs, index and no hooks -- so the clone's sparse-checkout, hooks and worktree list are not
+the build's, and nothing is registered in the clone. There the merge commit is made (``git
+merge-tree --write-tree``, ``commit-tree``; a textual conflict is exit 1) and checked out in full,
+and the command runs at its root, its output to a log beside it, inside this box's run-time slot
+when it has slots (``fleet-worker.sh execution slot --probe`` answers the PROBE line; ``--cpu``,
+waiting up to 30 min for a slot and 30 min for a measurement, under ``--deadline`` = the timeout)
+and bare otherwise, bounded either way. The scratch directory is the whole of the build's state:
+it is removed whatever the outcome, and one a SIGKILLed merge leaves is in pr-review's swept
+temporary family (``pr-review-build.<pid>.*``). What the clone keeps is the fetched objects, which
+nothing names, as after any fetch.
 
 TRUST. The command is the repository's own configuration, read from its default branch: it is
-trusted as a developer's build is, and the scratch worktree is a place to build, not a sandbox. It
-shares the clone's repository, so a git write the command itself makes (a tag, a branch, a fetch)
-lands there as it would from a developer's shell, and is the command's business; what THIS code
-writes (the private refs, the worktree) it removes, and no remote-tracking ref moves.
+trusted as a developer's build is, and the scratch repository is a place to build, not a sandbox.
+A git write the command makes lands in the scratch repository; anything else it does (a write
+outside its tree, a network call, a process it detaches with ``setsid``) is the command's
+business, as it would be from a developer's shell.
 
 VERDICTS. Passed: the merge proceeds. Failed (any nonzero status): exit 1, refused, with the build
-output (its first and last lines when long). Not finished within the bound: exit 4. Could not run
-(the slot refused, a fetch or git step failed): exit 3. Interrupted (Ctrl-C, SIGTERM, SIGHUP): the
-build's process group is ended before its worktree is removed, and the command exits 128+n. The build judges the base tip it fetched; a
-base that moves again between the build and the merge call is not rebuilt (that, again, is the
+output (its first and last lines when long, each line and each end bounded in bytes). Not finished
+within the bound: exit 4. Could not run (the slot refused, a fetch or git step failed): exit 3.
+After the command ends, however it ends, its process group is ended too, so a process it left
+behind does not outlive the merge; interrupted (Ctrl-C, SIGTERM, SIGHUP), the group is ended
+before the scratch goes, and the command exits 128+n. The build judges the base tip the drift read;
+a base that moves again between the build and the merge call is not rebuilt (that, again, is the
 integration loop's). No flag waives a failed build.
 """
 
@@ -97,6 +103,8 @@ GIT_TIMEOUT = 300
 PROBE_TIMEOUT = 60
 SHOWN_HEAD = 100  # a long build log is shown as its first and last lines
 SHOWN_TAIL = 100
+SHOWN_BYTES = 64 * 1024  # at most this much is read from each end of a long log
+LINE_CHARS = 1000  # a longer line is shown cut
 
 _LINE = re.compile(r"([a-z]+)(?:[ \t]+(.*))?")
 _SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
@@ -263,15 +271,29 @@ def _slot_runner() -> str | None:
 
 
 def _shown(log: str) -> list[str]:
+    """The build log as shown: whole when short; otherwise its first ``SHOWN_HEAD`` and last
+    ``SHOWN_TAIL`` lines, read from at most ``SHOWN_BYTES`` at each end, so a log of any size (or
+    one endless line) costs a bounded read. Every line is cut at ``LINE_CHARS``."""
+
+    def cut(line: str) -> str:
+        return line if len(line) <= LINE_CHARS else line[:LINE_CHARS] + f"… ({len(line) - LINE_CHARS} more chars)"
+
     try:
-        with open(log, encoding="utf-8", errors="surrogateescape") as handle:
-            lines = handle.read().splitlines()
+        with open(log, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            if size <= 2 * SHOWN_BYTES:
+                lines = proc.decode(handle.read()).splitlines()
+                if len(lines) <= SHOWN_HEAD + SHOWN_TAIL:
+                    return [cut(line) for line in lines]
+                left = len(lines) - SHOWN_HEAD - SHOWN_TAIL
+                return [*map(cut, lines[:SHOWN_HEAD]), f"... ({left} line(s) of {len(lines)} left out) ...",
+                        *map(cut, lines[-SHOWN_TAIL:])]
+            first = proc.decode(handle.read(SHOWN_BYTES)).splitlines()[:SHOWN_HEAD]
+            handle.seek(size - SHOWN_BYTES)
+            last = proc.decode(handle.read(SHOWN_BYTES)).splitlines()[1:][-SHOWN_TAIL:]
     except OSError as exc:
         return [f"(the build log could not be read: {exc.strerror})"]
-    if len(lines) <= SHOWN_HEAD + SHOWN_TAIL:
-        return lines
-    cut = len(lines) - SHOWN_HEAD - SHOWN_TAIL
-    return [*lines[:SHOWN_HEAD], f"... ({cut} line(s) of {len(lines)} left out) ...", *lines[-SHOWN_TAIL:]]
+    return [*map(cut, first), f"... (the log is {size} bytes; its middle is left out) ...", *map(cut, last)]
 
 
 def _end_group(child: subprocess.Popen[bytes]) -> None:
@@ -386,23 +408,26 @@ def merge_build(session: GhSession, repo: str, pr: str, gated: str, drift: Drift
             f"NOT merging {repo}#{pr}: {why}, and the PR's base branch could not be read (above),",
             "so the merge commit cannot be built. Retry.",
         )
-    _build(repo, pr, gated, drift.base_ref, config, why)
+    if not drift.base_sha:
+        fail(
+            3,
+            f"NOT merging {repo}#{pr}: {why}, and the tip of {drift.base_ref} could not be read (above),",
+            "so the merge commit cannot be built. Retry.",
+        )
+    _build(repo, pr, gated, drift.base_ref, drift.base_sha, config, why)
 
 
-def _build(repo: str, pr: str, gated: str, base_ref: str, config: BuildConfig, why: str) -> None:
+def _build(repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str) -> None:
     # pr-review's own temporary family, keyed by the owning pid, so a SIGKILLed merge's leftover
-    # (a whole build tree) is swept by the next `watch` (watch.tmp_sweep_stale).
+    # (a whole build tree, and the repository it is in) is swept by the next `watch`
+    # (watch.tmp_sweep_stale): nothing of the build lives anywhere else.
     scratch = os.path.realpath(tempfile.mkdtemp(prefix=f"pr-review-build.{proc.own_pid()}."))
     hooks = os.path.join(scratch, "no-hooks")
     os.mkdir(hooks)
-    token = os.path.basename(scratch).replace(".", "-")
-    ns = f"refs/ship-pr/merge-build/{token}"
     tree = os.path.join(scratch, "tree")
-    root: str | None = None
-    added = False
+    quiet = ["-c", f"core.hooksPath={hooks}"]
     try:
         root, remote = find_clone(repo, os.getcwd(), hooks)
-        quiet = ["-c", f"core.hooksPath={hooks}"]
         shallow = _git([*quiet, "rev-parse", "--is-shallow-repository"], root)
         if shallow.stdout.strip() != "false":
             fail(
@@ -411,11 +436,12 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, config: BuildConfig, w
                 f"(or its depth could not be read: {_first_line(shallow)}): the merge build needs the merge base.",
                 "Run merge from a full clone, or `git fetch --unshallow` this one first.",
             )
+        # Objects only: no destination, --refmap= (so no remote-tracking ref of the caller's moves
+        # opportunistically) and no FETCH_HEAD. Nothing in the clone names what was fetched; the
+        # two commits are named by the SHAs the gate and the drift read already hold.
         fetched = _git(
-            # --refmap= keeps the remote's configured fetch refspecs out of it: without it git also
-            # updates refs/remotes/<remote>/<base> opportunistically, which is the caller's.
             [*quiet, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", remote,
-             f"+refs/pull/{pr}/head:{ns}/head", f"+refs/heads/{base_ref}:{ns}/base"],
+             f"refs/pull/{pr}/head", f"refs/heads/{base_ref}"],
             root,
             timeout=FETCH_TIMEOUT,
         )
@@ -425,29 +451,39 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, config: BuildConfig, w
                 f"NOT merging {repo}#{pr}: {why}, and fetching its head and {base_ref} from {remote} in",
                 f"{root} failed ({_first_line(fetched)}), so the merge commit was not built. Retry.",
             )
-        shas = _git([*quiet, "rev-parse", f"{ns}/head^{{commit}}", f"{ns}/base^{{commit}}"], root)
-        lines = shas.stdout.split()
-        if shas.rc != 0 or len(lines) != 2 or not all(_SHA.fullmatch(s) for s in lines):
-            fail(3, f"NOT merging {repo}#{pr}: the fetched head and base could not be read back ({_first_line(shas)}).")
-        head, tip = lines
-        if head != gated:
-            fail(
-                5,
-                f"NOT merging {repo}#{pr}: its head is {head[:8]} on {remote}, not {gated[:8]}, the commit the",
-                "build signal was read for: SUPERSEDED. Re-run merge to judge the new head.",
-            )
-        merged = _git([*quiet, "merge-tree", "--write-tree", "--no-messages", tip, head], root)
+        for sha, what in ((gated, "its gated head"), (tip, f"{base_ref}'s tip as the drift read it")):
+            if _git([*quiet, "cat-file", "-e", f"{sha}^{{commit}}"], root).rc != 0:
+                fail(
+                    5 if sha == gated else 3,
+                    f"NOT merging {repo}#{pr}: {what}, {sha[:8]}, is not on {remote} after the fetch",
+                    "(a push or a force-push moved it); re-run merge to read it again.",
+                )
+        common = _git([*quiet, "rev-parse", "--path-format=absolute", "--git-common-dir"], root).stdout.strip()
+        objects = os.path.join(common, "objects")
+        if not common or not os.path.isdir(objects):
+            fail(3, f"NOT merging {repo}#{pr}: the object store of {root} could not be found ({common or 'no answer'}).")
+        # The build's own repository: it borrows the clone's objects (alternates, read only) and
+        # has its own config, refs and index, so the clone's sparse-checkout, hooks and refs are
+        # not the build's, and a git write the build makes lands here and goes with the scratch.
+        made = _git(["init", "--quiet", "--template=", tree], scratch)
+        if made.rc != 0:
+            fail(3, f"NOT merging {repo}#{pr}: the build's repository could not be made ({_first_line(made)}).")
+        info = os.path.join(tree, ".git", "objects", "info")
+        os.makedirs(info, exist_ok=True)
+        with open(os.path.join(info, "alternates"), "w", encoding="utf-8") as handle:
+            handle.write(objects + "\n")
+        merged = _git([*quiet, "merge-tree", "--write-tree", "--no-messages", tip, gated], tree)
         if merged.rc == 1:
             fail(
                 1,
-                f"NOT merging {repo}#{pr}: {head[:8]} does not merge cleanly with {base_ref} at {tip[:8]}:",
+                f"NOT merging {repo}#{pr}: {gated[:8]} does not merge cleanly with {base_ref} at {tip[:8]}:",
                 f"merge or rebase {base_ref} in, resolve, push, then merge again.",
             )
         written = merged.stdout.split("\n", 1)[0].strip()
         if merged.rc != 0 or not _SHA.fullmatch(written):
             fail(
                 3,
-                f"NOT merging {repo}#{pr}: {why}, and git could not compute the merge of {head[:8]} into",
+                f"NOT merging {repo}#{pr}: {why}, and git could not compute the merge of {gated[:8]} into",
                 f"{base_ref} at {tip[:8]} ({_first_line(merged)}; `git merge-tree --write-tree` needs git >= 2.38).",
             )
         ident = dict(os.environ)
@@ -455,18 +491,17 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, config: BuildConfig, w
             ident[f"GIT_{role}_NAME"] = "ship-pr merge build"
             ident[f"GIT_{role}_EMAIL"] = "ship-pr@localhost"
         commit = _git(
-            [*quiet, "commit-tree", written, "-p", tip, "-p", head, "-m", f"ship-pr merge build of {repo}#{pr}"],
-            root,
+            [*quiet, "commit-tree", written, "-p", tip, "-p", gated, "-m", f"ship-pr merge build of {repo}#{pr}"],
+            tree,
             env=ident,
         )
         merge_sha = commit.stdout.strip()
         if commit.rc != 0 or not _SHA.fullmatch(merge_sha):
             fail(3, f"NOT merging {repo}#{pr}: the merge commit could not be written ({_first_line(commit)}).")
-        _git([*quiet, "update-ref", f"{ns}/merge", merge_sha], root)
-        add = _git([*quiet, "worktree", "add", "--detach", "--quiet", tree, merge_sha], root)
-        added = add.rc == 0
-        if not added:
-            fail(3, f"NOT merging {repo}#{pr}: the merge commit could not be checked out ({_first_line(add)}).")
+        out = _git([*quiet, "-c", "core.sparseCheckout=false", "checkout", "--quiet", "--detach", merge_sha], tree)
+        if out.rc != 0:
+            fail(3, f"NOT merging {repo}#{pr}: the merge commit could not be checked out ({_first_line(out)}).")
+        head = gated
         runner = _slot_runner()
         where = "in a run-time slot" if runner else "bare (this box has no run-time slots)"
         cli.say(
@@ -516,11 +551,4 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, config: BuildConfig, w
             f"{done.rc} before the command did, output above). Retry.",
         )
     finally:
-        if root is not None:
-            quiet = ["-c", f"core.hooksPath={hooks}"]
-            if added:
-                _git([*quiet, "worktree", "remove", "--force", tree], root)
-            listed = _git([*quiet, "for-each-ref", "--format=%(refname)", f"{ns}/"], root)
-            for ref in listed.stdout.split():
-                _git([*quiet, "update-ref", "-d", ref], root)
         shutil.rmtree(scratch, ignore_errors=True)
