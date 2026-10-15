@@ -30,13 +30,14 @@ list. Run them against the issue tracker, which is not always the repository the
    polish with no behaviour change; only one worker raised it (no recurrence across workers);
    and no hand-back reports worker time it would have saved. A chip below the floor gets no
    worker. It becomes a `- [ ] **<claim>** <one-line spec> (<task ID>, <source PR>)` item on
-   the wave's follow-up checklist issue, one per wave and its post-waves, titled
-   `Wave <YYYY-MM-DD> small follow-ups` (the ahrefs/ocannl#1160 shape):
+   the wave's follow-up checklist issue, one per wave and its post-waves, titled by the board's
+   wave ID, `<wave ID> small follow-ups` (the ahrefs/ocannl#1160 shape; a second wave on one day
+   takes its own ID, such as `wave-20261015b`). A search hit is it only on an exact title:
 
        gh issue list -R <tracker> --state open --json number,title \
-         --search '"Wave <YYYY-MM-DD> small follow-ups" in:title'
-       gh issue create -R <tracker> --label wave-followup --title 'Wave <YYYY-MM-DD> small follow-ups' \
-         --body-file <file>      # only when the search found none
+         --search '"<wave ID> small follow-ups" in:title'
+       gh issue create -R <tracker> --label wave-followup --title '<wave ID> small follow-ups' \
+         --body-file <file>      # only when no hit has the exact title
        gh issue view <n> -R <tracker> --json body --jq .body > <file>   # then append the items
        gh issue edit <n> -R <tracker> --body-file <file>
 
