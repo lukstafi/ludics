@@ -80,7 +80,7 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    `"standing": true` reservation per worker on its agent host with `fleet-worker.sh execution
    run` (request id `<wave>-<issue>-<host>-iterate`; see [executions.md](executions.md)) and
    names it in the brief, and by default one more on the task's GPU home box
-   ([executions.md](executions.md#the-gpu-home-box) says when, and the batch's ssh form). It
+   ([executions.md](executions.md#the-gpu-home-box) says when, and the batch's `execution leg` form). It
    pre-authorizes the worker's own targeted test batches there -
    each through the project runner (`tools/test-run.sh run ...`), blocked to completion inside
    the turn, reported by run directory in the worker's messages - with no per-batch request. Each

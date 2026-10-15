@@ -662,24 +662,25 @@ before the coordinator granted a standing one mid-task, while #1313 on tuf-amd-l
 from launch, iterated without the coordinator and still yielded to measurement windows. Read the
 `REFRESH` line its `execution run` prints before the brief goes out, as for any assignment.
 
-The brief names the reservation id, a far-side checkout that is the worker's to prepare (a
-worktree of the box's clone, with the worker its one writer), and the batch's form, which moves
-that checkout to the pushed SHA under test and takes the slot on that box, not the agent's:
+The brief names the reservation id, the box's clone, a far-side worktree that is the worker's
+(a linked worktree of that clone, with the worker its one writer), and the batch's form, an
+[`execution leg`](#a-leg-on-another-box) run from the agent host, which makes or moves that
+worktree to the pushed SHA under test and takes the slot on that box, not the agent's:
 
 ```
-ssh <box> 'cd <checkout> && git fetch -q origin && git checkout -q --detach <sha> &&
-  fleet-worker.sh execution slot --wait-window -- <runner>'
+fleet-worker.sh execution leg --request <wave>-<issue>-<box>-iterate --rev <sha> \
+  --checkout <the box's clone> --worktree <far-side worktree> --wait-window -- <runner>
 ```
 
 A standing record carries no per-batch revision, so the `<sha>` in the command is what binds a
-batch to the code it judged, and the worker reports it with the run. A GPU batch passes no `-j`
-(above), so the box's GPU tokens (rog-nv-linux: 2) still bound it however many standing records
-the box holds. A batch that can outlast the tool cap takes `--bg <parent>` the same way, with the
-parent and `bg-run.sh wait <dir>` on that box too.
+batch to the code it judged; the leg prints it as `observed_sha`, and the worker reports it with
+the run. A GPU batch passes no `-j` (above), so the box's GPU tokens (rog-nv-linux: 2) still
+bound it however many standing records the box holds. A batch that can outlast the tool cap runs
+the leg under `bg-run.sh spawn` on the agent host, and blocks there with `bg-run.sh wait <dir>`.
 
 Each standing reservation is concluded at hand-back from its own box's last batch: its runner
-record with `--from-run`, or its `bg-run.sh` directory with `--from-bg-run` (each read on the
-reservation's execution host), or, with none to read, a JSON conclusion with `--observed-from
+record with `--from-run` (read on the reservation's execution host), or the leg's `bg-run.sh`
+directory with `--from-bg-run --box <agent host>`, or, with none to read, a JSON conclusion with `--observed-from
 <the far-side checkout>`. The coordinator records the far-side checkout on the board and removes
 it at close-out with the worker's local one, once that conclusion has landed. A measurement
 there, and a one-off leg on a box the plan names no iteration for, still go through a request.
