@@ -481,9 +481,9 @@ stdout also quotes the `result:` line and each `FAIL:`/`POTENTIAL:` finding, ind
 
 The per-run record `~/.ocannl-sweep/logs/<stamp>-run.tsv` (its path is the sweep's `run:` line) is
 the machine-readable form of the same run; read it rather than re-deriving facts from the summary
-prose. Its first line is `schema 5`. Each `unit` row is: machine, backend, outcome (or `no-row`), a
-lane-stopped flag, the log path, the kernel window's start and end, its COUNT, the window's KIND, and
-the unit's MEMORY model. The count means what the kind says (gh-ocannl-1034):
+prose. Its first line is `schema 6`. Each `unit` row is: machine, backend, outcome (or `no-row`), a
+lane-stopped flag, the log path, the kernel window's start and end, its COUNT, the window's KIND, the
+unit's MEMORY model, and its GPU-TOKEN readings. The count means what the kind says (gh-ocannl-1034):
 
 - `dxg` — a WSL boot (`-wsl`): the count is `vmbus_sendpacket failed` bursts on the dxg bridge.
 - `native` — a native-Ubuntu boot (`-linux`): the count is refused GPU queues and driver faults —
@@ -494,12 +494,30 @@ the unit's MEMORY model. The count means what the kind says (gh-ocannl-1034):
 - `-` — no window: a local unit, a CPU unit, one that never ran (`skip`, `gate`).
 
 A count is `-` (no window), a number (a window that was read; only this is a finding about the
-device), `unavailable` (the collection failed — not "the device was fine"), or `vm-replaced` (the
-WSL guest was destroyed and recreated mid-window). A positive count on a `fail` buys the unit its
-serial rerun, whose `still red:` / `all clean` lines are the verdict; quote the kind with the count
-so a reader knows which device it is about. The memory field is `discrete/<arch>`, `unified/<arch>`
+device), `unavailable` (the collection failed — not "the device was fine"), `vm-replaced` (the
+WSL guest was destroyed and recreated mid-window), or `suspended` (a native box slept inside the
+window: the kernel's `PM: suspend` entry/exit lines, since its boot id survives; gh-ocannl-1039).
+A positive count, `vm-replaced` or `suspended` makes the unit environment-red: on a `fail` it buys
+the serial rerun, whose `still red:` / `all clean` lines are the verdict. On an `error` or `timeout`
+there is no rerun, and for the last two the sweep says the guest was REPLACED or the box SUSPENDED
+mid-unit: that unit tested nothing about the code (a sleep mostly ends it as a `timeout`), so ask
+who restarted or slept the box, not what the backend did. Quote the kind with the count so a reader
+knows which device it is about. The memory field is `discrete/<arch>`, `unified/<arch>`
 or `-` (CPU): it is how you tell tuf/hip's discrete coverage from minix/hip's unified one without
 knowing the fleet's hardware.
+
+The twelfth field is the box's GPU-TOKEN readings (gh-ocannl-1177): `<event>=<GPU holders>/<tokens>`
+per reading, comma-separated — `opened` at the unit's start, `closed` after its suite, `refused` when
+its take of a token gave up — `?` for a reading that could not be read, and `-` for a unit with none
+(local, CPU, or never dialled). `opened=1/2,closed=0/2` says another batch held one of the box's two
+GPU tokens as the unit started; a launch out-of-memory beside a nonzero reading is contention until
+the serial rerun says otherwise. Where the tokens bind (rog-nv's cuda today) the unit runs inside
+one, and a token that did not come free in time records `skip (no GPU token on <box>: <holders>;
+<n>s)` — the one `skip` row that carries a log, with a `refused` reading in its token field
+(`opened=2/2,refused=2/2`) and each holder in the `<log stem>.gpu-tokens` file beside the log.
+Nothing was tested and nothing failed: report it like the lock skip, attributing it to the holders
+it names (a worker's batch, the GPU integration loop), never as a test failure, and do not rerun
+into it.
 
 ## 4. Staleness
 
