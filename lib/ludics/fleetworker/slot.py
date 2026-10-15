@@ -40,7 +40,7 @@ brief:
 - THE CO-TENANTS (ludics-lite#566, ``cotenants.py``): a ``hold --request`` records the box's
   GPU-using processes outside its own tree when its command starts and once it has ended, into
   ``<slot dir>/<box>/measurement.<id>.gpu.jsonl``, which the measurement's conclusion cites. A hold
-  nested in a live hold of the same measurement records nothing: its enclosing hold does.
+  nested in a hold of the same measurement records its own pair too.
 
 A wrapper must not change a batch's verdict: the command's status is this process's, a command
 killed by a signal kills this process with the same one, and the signal dispositions Python
@@ -600,13 +600,14 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
             os.environ["FLEET_MEASUREMENT_HELD"] = marker
             errline(f"{HOLD_PREFIX} {box}: measurement {request} held; an `execution slot` inside it runs"
                     " under this hold")
-        # THE CO-TENANTS: the enclosing hold of a nested one records them for the measurement.
-        if not nested:
-            after = record_cotenants(box, request, directory)
+        # THE CO-TENANTS: every hold records its own pair, a nested one too, since nothing bounds
+        # its life by its enclosing hold's (a backgrounded nested hold outlives it).
+        after = record_cotenants(box, request, directory, os.getpgrp() if nested else None)
     run_command(HOLD_PREFIX, box, command, inhibitor, why, deadline, after=after)
 
 
-def record_cotenants(box: str, request: str, directory: str) -> Callable[[int | None], None]:
+def record_cotenants(box: str, request: str, directory: str,
+                     enclosing: int | None) -> Callable[[int | None], None]:
     """THE CO-TENANTS (``cotenants.py``): the opening snapshot now, and the closing one the returned
     function takes once the command's leader has ended. Fail-open, and loudly: a record that cannot
     be written is a WARNING, never a refused measurement."""
@@ -614,7 +615,7 @@ def record_cotenants(box: str, request: str, directory: str) -> Callable[[int | 
     label = f"{HOLD_PREFIX} {box}: measurement {request}"
 
     def take(event: str, pgid: int | None) -> dict[str, Any]:
-        line = cotenants.snapshot(os.environ, event, request, box, os.getpid(), pgid)
+        line = cotenants.snapshot(os.environ, event, request, box, os.getpid(), pgid, enclosing=enclosing)
         try:
             cotenants.append(path, line)
         except OSError as exc:

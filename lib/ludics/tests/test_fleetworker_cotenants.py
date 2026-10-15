@@ -27,10 +27,11 @@ class FakeRun:
 
 class Nvidia(unittest.TestCase):
     def test_compute_apps_are_read_by_pid_and_memory(self) -> None:
-        run = FakeRun({"sh": (0, "4242, /usr/bin/python3, 812\n77, bench, [N/A]\nNo running processes\n")})
+        run = FakeRun({"sh": (0, "4242, /usr/bin/python3, 812\n77, bench, [N/A]\nNo running processes\n"
+                                 "4242, /usr/bin/python3, 100\n")})  # the same process on a second GPU
         found = cotenants.probe_nvidia("sh", run)
         self.assertEqual(found.status, "ran")
-        self.assertEqual(found.processes, ((4242, {"gpu_memory_mib": 812}), (77, {})))
+        self.assertEqual(found.processes, ((77, {}), (4242, {"gpu_memory_mib": 912})))
         self.assertIn("skipped 1 unreadable line", found.detail)
         self.assertIn("--query-compute-apps=pid,process_name,used_memory", run.calls[0])
 
@@ -60,11 +61,15 @@ class Drm(unittest.TestCase):
         self.client(300, 5, "/dev/dri/renderD128", info)
         self.client(300, 6, "/dev/dri/renderD128", info)  # the same client twice counts once
         self.client(301, 3, "/dev/dri/card1", "pos:\t0\n")  # no drm-* keys: listed without a time
+        # Client id 12 again, on another device: a client of its own.
+        self.client(303, 4, "/dev/dri/renderD128", "drm-pdev:\t0000:03:00.0\ndrm-client-id:\t12\ndrm-engine-gfx:\t7 ns\n")
+        self.client(303, 5, "/dev/dri/renderD129", "drm-pdev:\t0000:c4:00.0\ndrm-client-id:\t12\ndrm-engine-gfx:\t5 ns\n")
         self.client(302, 3, "/dev/null", "drm-driver:\tamdgpu\n")  # not a DRM descriptor
         os.makedirs(os.path.join(self.root, "self"))
         found = cotenants.probe_drm(self.root)
         self.assertEqual(found.status, "ran")
-        self.assertEqual(found.processes, ((300, {"driver": "amdgpu", "gpu_time_ns": 1500000500}), (301, {})))
+        self.assertEqual(found.processes, ((300, {"driver": "amdgpu", "gpu_time_ns": 1500000500}), (301, {}),
+                                           (303, {"gpu_time_ns": 12})))
 
     def test_no_proc_is_absent(self) -> None:
         self.assertEqual(cotenants.probe_drm(os.path.join(self.root, "none")).status, "absent")
@@ -115,6 +120,8 @@ class Snapshot(unittest.TestCase):
         table = {10: (1, 10), 20: (10, 10), 21: (20, 10), 31: (1, 30), 40: (1, 40)}
         self.assertEqual(cotenants.own_tree(table, 20, 30), {20, 21, 30, 31})
         self.assertEqual(cotenants.own_tree(table, 20, None), {20, 21})
+        # A nested hold leaves out its enclosing measurement's group, its own (10 here).
+        self.assertEqual(cotenants.own_tree(table, 20, None, 10), {10, 20, 21})
 
     def test_a_snapshot_lists_the_co_tenant_with_its_name_and_counts_the_own(self) -> None:
         ps_table = "10 1 10\n20 10 10\n31 1 30\n40 1 40\n"
@@ -124,14 +131,16 @@ class Snapshot(unittest.TestCase):
         def run(argv: Sequence[str]) -> tuple[int, str]:
             if argv[0] == "ps" and "-p" in argv:
                 self.assertEqual(argv[-1], "10,40")
-                return 0, "   10 lukstafi  claude\n   40 alice python3 train.py --big\n"
+                return 0, ("   10 lukstafi Thu Oct 15 17:00:49 2026 claude\n"
+                           "   40 alice Thu Oct 15 16:59:01 2026 python3 train.py --big\n")
             return FakeRun(answers)(argv)
 
         env = {"FLEET_NVIDIA_SMI": "sh", "FLEET_DRM_PROC": "/nonexistent", "FLEET_IOREG": "/nonexistent/ioreg"}
         line = cotenants.snapshot(env, "closed", "m-1", "minix", 20, 30, run)
-        self.assertEqual([p["pid"] for p in line["gpu_processes"]], [40, 10])
-        self.assertEqual(line["gpu_processes"][0], {"pid": 40, "user": "alice", "command": "python3 train.py --big",
-                                                    "probe": "nvidia-smi", "gpu_memory_mib": 512})
+        self.assertEqual([p["pid"] for p in line["gpu_processes"]], [10, 40])
+        self.assertEqual(line["gpu_processes"][1], {"pid": 40, "started": "Thu Oct 15 16:59:01 2026", "user": "alice",
+                                                    "command": "python3 train.py --big", "probe": "nvidia-smi",
+                                                    "gpu_memory_mib": 512})
         self.assertEqual(line["own_tree_gpu_processes"], 2)
         self.assertEqual((line["request_id"], line["box"], line["hold_pid"], line["event"]), ("m-1", "minix", 20, "closed"))
         self.assertEqual([p["status"] for p in line["probes"]], ["ran", "absent", "absent"])
@@ -157,6 +166,11 @@ class Summary(unittest.TestCase):
         self.assertIn("closed T-closed: 3 [", text)
         self.assertIn("(ioreg ran)", text)
 
+    def test_a_reused_pid_is_a_new_process(self) -> None:
+        opened = line("opened", [proc(1, "ioreg", gpu_time_ns=5_000_000_000, started="A")])
+        closed = line("closed", [proc(1, "ioreg", gpu_time_ns=2_000_000_000, started="B")])
+        self.assertEqual(cotenants.busy_during(opened, closed), ["pid 1 u cmd1 +2.00 s (ioreg)"])
+
     def test_a_hold_with_no_close_and_an_empty_box_say_so(self) -> None:
         text = cotenants.summary([line("opened", [])])
         self.assertEqual(text, "hold 7 opened T-opened: none (ioreg ran); no closed snapshot (the hold did not end normally)")
@@ -177,6 +191,11 @@ class Summary(unittest.TestCase):
             with open(path, encoding="utf-8") as f:
                 self.assertEqual([entry["event"] for entry in cotenants.read_lines(f.read())], ["opened", "closed"])
             self.assertTrue(path.endswith("/measurement.m-1.gpu.jsonl"))
+
+    def test_a_short_write_is_an_error_not_a_torn_line_said_nowhere(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(cotenants.os, "write", return_value=3):
+            with self.assertRaisesRegex(OSError, "short write: 3 of"):
+                cotenants.append(cotenants.record_path(tmp, "m-1"), line("opened", []))
 
 
 if __name__ == "__main__":

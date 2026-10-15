@@ -3018,10 +3018,12 @@ expect "a measurement hold's record lists a planted GPU-using process" 0 "measur
   "${FWG[@]}" execution hold --request gpu-measure -- sh -c 'sleep "$1" & echo "$!" >> "$GPU_APPS"' _ "${GM}21"
 grep -q "GPU co-tenants at close: 1 \[pid $planted " <<<"$out" && ok "...at its close too, leaving out the hold and its command's leftover" || ko "the closing snapshot: $out"
 pkill -f "$(gmre 21)"
+printf '%s\n' "$planted" > "$TMP/gpu/apps"  # the leftover is gone, as nvidia-smi would say
 [ "$(jq -sc --argjson p "$planted" '[.[] | [.event, ([.gpu_processes[].pid] == [$p]), .own_tree_gpu_processes]]' "$gpurec" 2>&1)" = '[["opened",true,1],["closed",true,2]]' ] &&
   ok "...in the record on the box: one opened and one closed line, the hold's own tree counted, not listed" || ko "the co-tenant record: $(cat "$gpurec" 2>&1)"
 "${FWG[@]}" execution hold --request gpu-measure -- "$FW" execution hold --request gpu-measure -- true >/dev/null 2>&1
-[ "$(grep -c '' "$gpurec")" -eq 4 ] && ok "...and a hold nested in a hold of the same measurement adds no snapshot of its own" || ko "the nested hold's record: $(cat "$gpurec")"
+[ "$(jq -sc --argjson p "$planted" '[.[2:][] | [.event, ([.gpu_processes[].pid] == [$p])]]' "$gpurec" 2>&1)" = '[["opened",true],["opened",true],["closed",true],["closed",true]]' ] &&
+  ok "...and a hold nested in a hold of the same measurement records its own pair, leaving out the measurement" || ko "the nested hold's record: $(cat "$gpurec")"
 kill "$planted" 2>/dev/null; wait "$planted" 2>/dev/null
 jq -n '{request_id:"gpu-measure", verdict:"pass", log:"/dev/null", evidence:"fixture: measured",
   observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-done.json"
@@ -3030,6 +3032,15 @@ expect "the measurement's conclusion carries the co-tenant record in its evidenc
 rm -f "$gpurec"
 expect "...and a retry of that conclusion, its answer lost, is the registry's identical retry though the record is gone" 0 "GPU co-tenants on testbox (testbox:$gpurec): hold " -- \
   "${FWS[@]}" execution conclude "$TMP/gpu-done.json"
+# A record past the MiB a conclusion reads is read from its end, and the conclusion says so.
+"${FWS[@]}" execution run "$(slotreq gpu-big measurement)" >/dev/null || ko "could not reserve the long-record measurement (setup)"
+bigrec="$HOME/.local/state/fleet-execution-slots/testbox/measurement.gpu-big.gpu.jsonl"
+awk 'BEGIN { for (i = 0; i < 20000; i++) printf "{\"event\":\"opened\",\"hold_pid\":1,\"pad\":\"%080d\"}\n", i }' > "$bigrec"
+jq -cn '{hold_pid: 9, event: "opened", at: "T1", probes: [], gpu_processes: []}, {hold_pid: 9, event: "closed", at: "T2", probes: [], gpu_processes: []}' >> "$bigrec"
+jq -n '{request_id:"gpu-big", verdict:"pass", log:"/dev/null", evidence:"fixture: measured",
+  observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-big.json"
+expect "a record longer than the MiB a conclusion reads is read from its end, saying what it left out" 0 "the record is [0-9]* bytes, of which its last 1048576 were read, so the earliest snapshots are left out; .*hold 9 opened T1: none" -- \
+  "${FWS[@]}" execution conclude "$TMP/gpu-big.json"
 "${FWS[@]}" execution run "$(slotreq gpu-none measurement)" >/dev/null || ko "could not reserve the second GPU measurement (setup)"
 jq -n '{request_id:"gpu-none", verdict:"pass", log:"/dev/null", evidence:"fixture: measured",
   observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-none.json"

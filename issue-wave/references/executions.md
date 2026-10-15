@@ -210,8 +210,9 @@ A `not-launched` conclusion reads nothing. So "who held a fleet token" (`executi
 by `request_id` and `box`) and "who was on the GPU" (this record, by `box` and `at`) line up in a
 conclusion's own evidence. Nothing is stopped: the record is evidence, a probe that fails says so in
 `probes`, and a record that cannot be written is a `WARNING` with the snapshot still said on
-stderr, never a refused measurement. A hold nested in a live hold of the same measurement records
-nothing; its enclosing hold does. `FLEET_NVIDIA_SMI`, `FLEET_DRM_PROC` and `FLEET_IOREG` name the
+stderr, never a refused measurement. A hold nested in a hold of the same measurement records its
+own pair too (a backgrounded one can outlive its enclosing hold). A conclusion reads the record's
+newest MiB, and says so when the record is longer. `FLEET_NVIDIA_SMI`, `FLEET_DRM_PROC` and `FLEET_IOREG` name the
 sources; the suites point them at stubs.
 
 **Batching measurements into windows.** When a measurement request arrives for a box where workers

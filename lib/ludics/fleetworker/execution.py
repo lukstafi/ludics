@@ -214,12 +214,14 @@ printf 'head=%s\n' "$head"
 
 # Far side of THE CO-TENANT EVIDENCE, on the execution host: the measurement's GPU co-tenant record,
 # which every `execution hold --request <id>` there appended to (cotenants.py). Args: box, request id.
-# Prints `none=<path>`, or `path=<path>` and the record's lines (its first MiB).
+# Prints `none=<path>`, or `path=<path>`, `size=<bytes>` and the record's last MiB.
 GPU_RECORD = r"""f="$SLOT_STATE/$1/measurement.$2.gpu.jsonl"
 [ -f "$f" ] || { printf 'none=%s\n' "$f"; exit 0; }
-printf 'path=%s\n' "$f"
-head -c 1048576 "$f"
+size=$(wc -c < "$f") || exit 1
+printf 'path=%s\nsize=%s\n' "$f" "$(printf '%s' "$size" | tr -d ' ')"
+tail -c 1048576 "$f"
 """
+GPU_RECORD_READ = 1048576  # the newest MiB of the record: a longer one names what it left out
 
 
 # How a conclusion's evidence names a revision the worker's result line gave.
@@ -419,14 +421,34 @@ def gpu_record_evidence(cfg: Config, host: str, request: str) -> str:
     if first.startswith("none="):
         return (f"no GPU co-tenant record on {host} ({path}): the measurement ran under no"
                 f" `execution hold --request {request}` there, or under one older than ludics-lite#566")
-    return f"GPU co-tenants on {host} ({host}:{path}): {cotenants.summary(cotenants.read_lines(rest))}"
+    second, _, rest = rest.partition("\n")
+    size = second.removeprefix("size=")
+    if not (second.startswith("size=") and size.isdecimal() and size.isascii()):
+        return f"GPU co-tenant record unread on {host}: {second[:200]!r} is no size"
+    cut = ""
+    if int(size) > GPU_RECORD_READ:
+        # The read starts mid-line: its first line is a fragment, dropped whole.
+        rest = rest.partition("\n")[2]
+        cut = (f"the record is {size} bytes, of which its last {GPU_RECORD_READ} were read, so the"
+               " earliest snapshots are left out; ")
+    return f"GPU co-tenants on {host} ({host}:{path}): {cut}{cotenants.summary(cotenants.read_lines(rest))}"
+
+
+def gpu_clause(evidence: str, recorded: str, host: str) -> bool:
+    """Whether ``recorded`` is exactly ``evidence`` with THE CO-TENANT EVIDENCE's clause after it:
+    the remainder must open with one of the clause's own three openings. The boundary: an
+    ``evidence`` whose own text ends in such an opening is not told apart from a shorter one."""
+    remainder = recorded.removeprefix(f"{evidence}; ")
+    return remainder != recorded and remainder.startswith(
+        (f"GPU co-tenants on {host} (", f"no GPU co-tenant record on {host} (", "GPU co-tenant record unread"))
 
 
 def with_gpu_record(cfg: Config, payload: str) -> str:
     """A conclusion payload with THE CO-TENANT EVIDENCE appended, when it concludes a measurement
     that ran; any other payload unchanged, as is one the registry will refuse on shape anyway (no
     object, no request id, no evidence) and one whose record cannot be read here (the conclusion
-    then meets the same anchor). A conclusion's retry reuses the clause it recorded."""
+    then meets the same anchor). A registry that cannot be read here refuses the conclusion, rather
+    than letting it land without its clause. A conclusion's retry reuses the clause it recorded."""
     try:
         decoded: Any = json.loads(payload)
     except ValueError:
@@ -440,8 +462,16 @@ def with_gpu_record(cfg: Config, payload: str) -> str:
     if data.get("verdict") == "not-launched":
         return payload
     done = listing(cfg)
+    if done.unreachable:
+        cli.say(f"EXECUTION UNREACHABLE {cfg.anchor}: cannot read request {request}'s record to tell whether"
+                " it is a measurement, whose conclusion carries its GPU co-tenant record; nothing concluded")
+        raise cli.Exit(4)
     records = records_of(done.out) if done.rc == 0 else None
-    record = record_of(records or [], request)
+    if records is None:
+        cli.emit(substitution(done.out))
+        cli.say("EXECUTION REFUSED: the anchor's registry could not be read; nothing concluded")
+        raise cli.Exit(1)
+    record = record_of(records, request)
     if record is None or field(record, "request", "kind") != "measurement":
         return payload
     if record.get("state") == "concluded":
@@ -451,7 +481,8 @@ def with_gpu_record(cfg: Config, payload: str) -> str:
         history: Any = record.get("history")
         last: Any = cast(list[Any], history)[-1] if isinstance(history, list) and history else None
         recorded = field(cast(dict[str, Any], last), "data", "evidence") if isinstance(last, dict) else None
-        if isinstance(recorded, str) and recorded.startswith(f"{evidence}; "):
+        host = jq_text(field(record, "request", "execution_host"))
+        if isinstance(recorded, str) and gpu_clause(evidence, recorded, host):
             data["evidence"] = recorded
             return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         return payload
