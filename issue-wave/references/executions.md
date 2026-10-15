@@ -484,7 +484,9 @@ A loop run - the GPU integration loop's, or the cc loop's local run - is one cal
 `fleet-worker.sh execution tip-run <reserve.json> --checkout <dir> [--runs <dir>] [--cpu] --
 <command...>`. Its request is the coordinator's non-standing `correctness` request whose
 `requested_revision` is exactly one full SHA. It yields, reserving nothing, to anything
-outstanding on the box but standing reservations; then it runs `execution run`, checks the SHA out
+outstanding on the box but standing reservations (read again once its own is published); then it
+runs `execution run`, starts nothing on a remote box whose skills checkout the refresh did not
+bring current, checks the SHA out
 detached in the clean checkout on the box (fetching only when it lacks it), and starts the command
 there under `execution slot --bg <runs> --wait 0` (default `<runs>`: `tip-runs` in the state
 directory, `~/.local/state/issue-wave` on the box unless `ISSUE_WAVE_STATE` names another), so it

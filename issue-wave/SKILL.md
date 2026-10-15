@@ -765,8 +765,11 @@ controlled through the tools in your coordinator's file, never through those com
     turn it away: a record is not load (ludics-lite#160), and like another worker's batch the
     run takes only an idle token and holds it for one run, so a worker homed there finds one
     token fewer for at most that run. A run it does not start is not retried: the loop tries
-    again when it can next start. A measurement asked for while a loop run holds its box ends
-    that run - `ssh <box> '~/ludics-lite/issue-wave/scripts/bg-run.sh stop <dir>'`, which ends
+    again when it can next start. The yield reads what is outstanding when the run starts: a
+    worker's leg reserved on the box after that meets the run as a batch meets another's,
+    waiting at most that run for a token, unless the coordinator, which reserved it, ends the
+    run for it. A measurement asked for while a loop run holds its box always ends that run -
+    `ssh <box> '~/ludics-lite/issue-wave/scripts/bg-run.sh stop <dir>'`, which ends
     its whole tree; the run then reads DIED, which `--from-bg-run` refuses, so conclude it
     `cancelled` with a JSON payload - then open the window.
   - **Informative, never a gate.** Its records never carry `"integration": true`, so the base

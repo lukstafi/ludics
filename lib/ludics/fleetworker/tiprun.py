@@ -25,7 +25,9 @@ In order, each step yielding rather than waiting:
     the slot below sees as they run.
  3. ``execution run`` reserves and dispatches it, with every check the registry makes (lease,
     halt and its triage exception, cap, measurement exclusivity) and the refresh of the box's
-    skills checkout after it. The request id must be one the registry does not hold yet: ``run``
+    skills checkout after it; on a remote box that refresh is asked again, and anything but
+    ``REFRESH OK`` starts nothing, since the box's own ``fleet-worker.sh`` runs the slot. The
+    request id must be one the registry does not hold yet: ``run``
     hands back an identical request's existing record, concluded or not, and a second run would
     start under the first one's evidence.
  4. On the box (the far side below): the checkout must be clean before anything touches it, and
@@ -51,9 +53,10 @@ started, anything reserved is concluded ``not-launched`` with the reason as evid
 loop yielded on holds no record of it. The conclusion of a started run is ``execution conclude
 --from-bg-run <dir> --request <id> --sha <sha>``, read on the execution host.
 
-Exit: 0 started, one line ``TIP-RUN STARTED <id> <box> <sha> <run dir>`` on stdout; 1 not started,
-``TIP-RUN NOT STARTED <id>: <why>``; 2 usage; 4 outcome unknown, ``TIP-RUN UNKNOWN <id>: <why>``
-(the record is left for the coordinator to reconcile). What the steps print themselves (the
+Exit: 0 started and recorded, one line ``TIP-RUN STARTED <id> <box> <sha> <run dir>`` on stdout
+(printed only then); 1 not started, ``TIP-RUN NOT STARTED <id>: <why>``; 2 usage; 4 outcome
+unknown, ``TIP-RUN UNKNOWN <id>: <why>`` (a run started but not recorded among them, its directory
+named; the record is left for the coordinator to reconcile). What the steps print themselves (the
 dispatched record, the refresh line) goes to stderr.
 """
 
@@ -69,6 +72,7 @@ from ludics import cli
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import field, listing, record_of, records_of
 from ludics.fleetworker.identity import die
+from ludics.fleetworker.preflight import refresh_box
 from ludics.fleetworker.transport import err, is_local, prelude, run, run_on
 
 USAGE = "execution tip-run <json-file> --checkout <dir> [--runs <dir>] [--cpu] -- <command> [args...]"
@@ -282,6 +286,11 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     if busy:
         return not_started(cfg, request_id, f"{box} has {', '.join(busy)} outstanding, reserved beside this run; a loop run yields to it", nothing)
 
+    # The box's own fleet-worker.sh runs the slot, so it must be the one `execution run` just tried
+    # to bring current: that refresh reports and never fails the dispatch, so it is asked again
+    # here (a current checkout answers at once) and anything but REFRESH OK starts nothing.
+    if not is_local(cfg, box) and refresh_box(cfg, box, to_stderr=True) != 0:
+        return not_started(cfg, request_id, f"the skills checkout on {box} was not refreshed (above), so its fleet-worker.sh may be stale", nothing)
     fw = os.path.join(cfg.here, os.path.basename(cfg.script)) if is_local(cfg, box) else ""
     kind = "cpu" if parsed.cpu else "gpu"
     far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), *parsed.command]
@@ -315,8 +324,8 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
                "observed_sha": sha, "remote_checkout": parsed.checkout,
                "handle": f"bg-run:{box}:{run_dir}", "log": f"{box}:{run_dir}/log"}
     if fleet_worker(cfg, ["execution", "record"], running) != 0:
-        cli.say(f"TIP-RUN STARTED {request_id} {box} {sha} {run_dir}")
-        err("TIP-RUN: the run started, but the registry did not take its running record (above); record it by hand")
+        cli.say(f"TIP-RUN UNKNOWN {request_id}: the run started in {run_dir} on {box} at {sha}, but the registry did not"
+                " take its running record (above); the record stays dispatched, record it by hand")
         return 4
     cli.say(f"TIP-RUN STARTED {request_id} {box} {sha} {run_dir}")
     return 0

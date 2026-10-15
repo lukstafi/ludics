@@ -138,5 +138,37 @@ class Race(unittest.TestCase):
         self.assertIn("TIP-RUN NOT STARTED w-gpu-rog-1: rog-nv-linux has w-gpu-rog-2 (launching) outstanding", out.getvalue())
 
 
+    def test_a_remote_box_whose_refresh_fails_starts_nothing(self) -> None:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="h")
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = os.path.join(tmp, "req.json")
+            with open(payload, "w", encoding="utf-8") as f:
+                json.dump(request(), f)
+            calls: list[tuple[list[str], dict[str, Any] | None]] = []
+
+            def listing(_cfg: object) -> Done:
+                return Done(0, json.dumps([outstanding("w-gpu-rog-1")]) if calls else "[]")
+
+            def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None) -> int:
+                calls.append((args, body))
+                return 0
+
+            def refresh(_cfg: object, box: str, *, to_stderr: bool = False) -> int:
+                self.assertEqual((box, to_stderr), ("rog-nv-linux", True))
+                return 1
+
+            out = io.StringIO()
+            with mock.patch.object(tiprun, "listing", side_effect=listing), \
+                    mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
+                    mock.patch.object(tiprun, "refresh_box", side_effect=refresh), \
+                    mock.patch.object(tiprun, "run_on", side_effect=AssertionError("the box was touched")), \
+                    contextlib.redirect_stdout(out):
+                rc = tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "true"])
+        self.assertEqual(rc, 1)
+        self.assertEqual([c[0] for c in calls], [["execution", "run", payload], ["execution", "conclude"]])
+        self.assertEqual((calls[1][1] or {}).get("verdict"), "not-launched")
+        self.assertIn("the skills checkout on rog-nv-linux was not refreshed", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
