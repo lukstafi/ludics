@@ -2695,10 +2695,16 @@ fixture_done leg-o
 printf 'claude/topic %s\n' "$lb" > "$TMP/leg-heads"
 SHIM_GH_HEADS="$TMP/leg-heads" lreq leg-h testbox correctness head-of:claude/topic
 git -C "$lsrc" checkout -q claude/topic && git -C "$lsrc" commit -q --allow-empty -m D && git -C "$lsrc" push -q "$lremote" claude/topic && git -C "$lsrc" checkout -q main
-expect "a head-of leg refuses the branch once it has moved past the assigned commit" 1 "claude/topic is $(git -C "$lsrc" rev-parse claude/topic), but request leg-h was assigned $lb (resolved at assignment): run --rev $lb" -- \
+expect "a head-of leg refuses the branch once it has moved past the assigned commit" 1 "claude/topic is $(git -C "$lsrc" rev-parse claude/topic), but request leg-h was assigned $lb: run --rev $lb" -- \
   leg --request leg-h --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 expect "...and runs the assigned commit" 0 "execution-leg: exit: 0" -- leg --request leg-h --rev "$lb" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 fixture_done leg-h
+# A request for one exact commit binds its leg to that commit as well.
+lreq leg-x testbox correctness "$la"
+expect "a leg of an exact-SHA request refuses another commit" 1 "but request leg-x was assigned $la: run --rev $la" -- \
+  leg --request leg-x --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+expect "...and runs that one" 0 "execution-leg: exit: 0" -- leg --request leg-x --rev "$la" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+fixture_done leg-x
 # A head-of record never dispatched was never resolved: no commit is its, so reconcile will not
 # make it active (and a leg refuses one that is, as a record written otherwise would be).
 jq -n '{request_id:"leg-hu", wave:"w", worker:"leg-hu", transport:"subagent", issue:"o/r#558", purpose:"leg fixture", agent_host:"testbox",

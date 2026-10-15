@@ -579,7 +579,8 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   execution host is the box (`--box`, if given, must be it). A correctness record's runs go under
   `execution slot` on that box, with the slot flags given here; a measurement's under `execution
   hold --request <id>`, which takes `--deadline` alone. A record holding a `resolved_revision`
-  (a [`head-of:` request](#reserve-launch-observe-conclude)) refuses any `--rev` that comes to
+  (a [`head-of:` request](#reserve-launch-observe-conclude)), or a non-standing one whose
+  `requested_revision` is exactly one commit, refuses any `--rev` that comes to
   another commit, and the registry refuses any `observed_sha` but that commit for it.
 - **The worktree.** `--checkout` is the project's checkout on the box and `--worktree` a linked
   worktree of it (paths absolute or `~/`): made with `git worktree add --detach` when the path does

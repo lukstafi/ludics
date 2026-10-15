@@ -178,7 +178,7 @@ else
   how="fetched from $remote"
 fi
 [ -z "$want" ] || [ "$sha" = "$want" ] ||
-  refuse "$rev is $sha, but request $request was assigned $want (resolved at assignment): run --rev $want"
+  refuse "$rev is $sha, but request $request was assigned $want: run --rev $want"
 # The worktree: a linked worktree of the checkout, made or moved to the commit, never overwritten.
 if [ -e "$wt" ] || [ -L "$wt" ]; then
   [ -d "$wt" ] || refuse "--worktree $wt exists and is not a directory"
@@ -438,6 +438,11 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     resolved = record.get("resolved_revision")
     want = resolved if isinstance(resolved, str) and OBJECT_ID.fullmatch(resolved) else ""
     requested = execution.field(record, "request", "requested_revision")
+    # A non-standing request for one exact commit is about that commit too. A standing record is
+    # not: it covers every batch of a worker's life, each at the commit it then has.
+    if not want and isinstance(requested, str) and OBJECT_ID.fullmatch(requested) \
+            and execution.field(record, "request", "standing") is not True:
+        want = requested
     if isinstance(requested, str) and requested.startswith("head-of:") and not want:
         # Reconciled to running without a dispatch, say: the branch was never resolved, so no commit
         # is this request's, and any --rev would pass.
