@@ -115,12 +115,16 @@ def run_on(
 ) -> Done:
     """Run ``script`` (on stdin) on the box, ``args`` as its $1..: a local ``bash -s`` here, ``bash -s``
     over ssh for any other box, its arguments quoted for the remote login shell (bash on every box)."""
-    if is_local(cfg, box):
-        argv = [_bash(), "-s", "--", *args]
-    else:
-        quoted = "".join(" " + shlex.quote(a) for a in args)
-        argv = [_ssh(), *SSH_OPTS, box, "bash -s --" + quoted]
+    argv = far_argv(cfg, box, args)
     return run(argv, stdin=script.encode("utf-8", "surrogateescape"), capture=capture, stdout_to_stderr=stdout_to_stderr)
+
+
+def far_argv(cfg: Config, box: str, args: Sequence[str]) -> list[str]:
+    """The command that reads a far-side script on stdin on the box (``run_on``'s)."""
+    if is_local(cfg, box):
+        return [_bash(), "-s", "--", *args]
+    quoted = "".join(" " + shlex.quote(a) for a in args)
+    return [_ssh(), *SSH_OPTS, box, "bash -s --" + quoted]
 
 
 def _bash() -> str:

@@ -197,6 +197,46 @@ class Revisions(unittest.TestCase):
             self.assertEqual(asked, ["r-1"], "a revision with no commit claim reads no record")
 
 
+class BranchHead(unittest.TestCase):
+    """ludics-lite#558: a head-of request's branch, read off GitHub at assignment."""
+
+    GOOD = "c" * 40
+
+    def test_the_branch_head_is_asked_of_the_exact_ref(self) -> None:
+        with FakeTool("gh") as gh:
+            gh.script(Answer(stdout=self.GOOD + "\n"))
+            self.assertEqual(revision.branch_head("o/r", "claude/w1015-558"), self.GOOD)
+            self.assertEqual(gh.calls(), [["api", "--hostname", "github.com", "repos/o/r/git/ref/heads/claude/w1015-558", "-q", ".object.sha"]])
+
+    def test_what_github_answers_otherwise(self) -> None:
+        with FakeTool("gh") as gh:
+            for answer, rc, want in (
+                (Answer(rc=1, stdout='{"message":"Not Found"}', stderr="gh: Not Found (HTTP 404)\n"), 1, "GitHub has no branch topic in o/r"),
+                (Answer(stdout="[]\n"), 1, "not one commit"),
+                (Answer(rc=1, stderr="error connecting to api.github.com\n"), 4, "EXECUTION UNVERIFIED github.com: head-of:topic could not be resolved"),
+            ):
+                gh.script(answer)
+                result = revision.branch_head("o/r", "topic")
+                self.assertIsInstance(result, tuple)
+                assert isinstance(result, tuple)
+                self.assertEqual(result[1], rc, want)
+                self.assertIn(want, result[0])
+            gh.script(Answer(stdout=self.GOOD + "\n"))
+            self.assertEqual(revision.branch_head("not a repo", "topic"), (
+                "EXECUTION REFUSED: head-of:topic cannot be resolved: the request's repository 'not a repo' is not"
+                " <owner>/<name> on GitHub; nothing recorded", 1))
+
+    def test_git_is_asked_whether_a_branch_name_is_one(self) -> None:
+        self.assertTrue(revision.git_branch_ok("claude/w1015-558"))
+        for bad in ("HEAD", "a..b", "a/.b", "x.lock"):
+            self.assertFalse(revision.git_branch_ok(bad), bad)
+
+    def test_only_a_well_formed_head_of_request_follows_a_branch(self) -> None:
+        self.assertEqual(revision.head_of({"requested_revision": "head-of:main"}), "main")
+        for request in (None, {}, {"requested_revision": "origin/main"}, {"requested_revision": "head-of:a..b"}, {"requested_revision": 3}):
+            self.assertIsNone(revision.head_of(request), request)
+
+
 class IntegrationRecords(unittest.TestCase):
     """ludics-lite#401: only a coordinator's concluded, marked, non-standing correctness run at an
     exact SHA, for the repository compared without case, is a verdict source for the gate."""

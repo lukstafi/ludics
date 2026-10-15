@@ -22,7 +22,9 @@ def request(identity: str, **extra: object) -> dict[str, object]:
     return base
 
 
-class Registry(unittest.TestCase):
+class RegistryCase(unittest.TestCase):
+    """A scratch registry root and the call into it; no tests of its own."""
+
     def setUp(self) -> None:
         self.root = os.path.realpath(tempfile.mkdtemp(prefix="ludics-registry-test."))
 
@@ -37,6 +39,8 @@ class Registry(unittest.TestCase):
             rc = registry.run(argv)
         return rc, json.loads(out.getvalue()) if out.getvalue() else None, err.getvalue()
 
+
+class Registry(RegistryCase):
     def test_import_runs_nothing(self) -> None:
         self.assertEqual(registry.LANE_LOCKS, [])
 
@@ -84,6 +88,78 @@ class Registry(unittest.TestCase):
         self.assertEqual(rc, 1)
         for bad in ({"host": ""}, {"host": 3}, {"active": "yes"}, {"box": "mac"}):
             self.assertEqual(self.call("list", bad, boxes=roster)[0], 1, bad)
+
+
+class HeadOf(RegistryCase):
+    """ludics-lite#558: a head-of:<branch> request is resolved at its dispatch, never at reserve."""
+
+    SHA = "c" * 40
+
+    def test_the_branch_grammar_is_fail_closed(self) -> None:
+        for good in ("main", "claude/w1015-558", "release-1.2", "a_b/c.d"):
+            self.assertEqual(registry.head_of_branch("head-of:" + good), good, good)
+        for bad in ("head-of:", "head-of:-x", "head-of:/x", "head-of:.x", "head-of:a..b", "head-of:a//b",
+                    "head-of:a/.b", "head-of:a@{1}", "head-of:a/", "head-of:a.", "head-of:a.lock",
+                    "head-of:a b", "head-of:a~1", "head-of:a^", "head-of:a:b", "main", "head-of:release.lock/topic",
+                    "head-of:a/.hidden/b", "head-of:a./b", "head-of:HEAD"):
+            self.assertIsNone(registry.head_of_branch(bad), bad)
+        rc, _, err = self.call("reserve", request("bad", requested_revision="head-of:main plus edits"))
+        self.assertEqual(rc, 1)
+        self.assertIn("is not head-of:<one branch name>", err)
+
+    def test_reserve_records_no_commit_and_dispatch_requires_one(self) -> None:
+        rc, rec, _ = self.call("reserve", request("h", requested_revision="head-of:topic"))
+        self.assertEqual((rc, "resolved_revision" in rec), (0, False))
+        rc, _, err = self.call("dispatch", {"request_id": "h", "evidence": "go"})
+        self.assertEqual(rc, 1)
+        self.assertIn("head-of:topic is resolved at assignment", err)
+        for bad in ("C" * 40, "c" * 39, 7):
+            self.assertEqual(self.call("dispatch", {"request_id": "h", "evidence": "go", "resolved_revision": bad})[0], 1)
+        rc, rec, _ = self.call("dispatch", {"request_id": "h", "evidence": "go", "resolved_revision": self.SHA})
+        self.assertEqual((rc, rec["state"], rec["resolved_revision"]), (0, "launching", self.SHA))
+        self.assertEqual(rec["history"][-1]["data"]["resolved_revision"], self.SHA)
+
+    def test_an_unresolved_head_of_record_is_never_made_active_by_reconcile(self) -> None:
+        self.call("reserve", request("h", requested_revision="head-of:topic"))
+        rc, _, err = self.call("reconcile", {"request_id": "h", "state": "running", "evidence": "recovered"})
+        self.assertEqual(rc, 1)
+        self.assertIn("head-of:topic was never resolved (no dispatch)", err)
+        self.assertEqual(self.call("reconcile", {"request_id": "h", "state": "reserved", "evidence": "nothing ran"})[0], 0)
+
+    def test_evidence_of_a_resolved_record_is_about_the_assigned_commit(self) -> None:
+        self.call("run", request("h", requested_revision="head-of:topic", resolved_revision=self.SHA))
+        other = "d" * 40
+        rc, _, err = self.call("record", {"request_id": "h", "state": "running", "evidence": "x", "observed_sha": other})
+        self.assertEqual(rc, 1)
+        self.assertIn(f"observed_sha {other} is not {self.SHA}, the commit head-of:topic was resolved to", err)
+        done = {"request_id": "h", "verdict": "pass", "log": "/l", "evidence": "x", "handle": "h", "remote_checkout": "/w"}
+        self.assertEqual(self.call("conclude", {**done, "observed_sha": other})[0], 1)
+        self.assertEqual(self.call("conclude", {**done, "observed_sha": self.SHA})[0], 0)
+
+    def test_run_takes_the_resolution_beside_the_request_and_only_for_head_of(self) -> None:
+        rc, rec, _ = self.call("run", request("h", requested_revision="head-of:topic", resolved_revision=self.SHA))
+        self.assertEqual((rc, rec["resolved_revision"]), (0, self.SHA))
+        self.assertNotIn("resolved_revision", rec["request"])
+        self.assertEqual(rec["history"][-1]["data"]["resolved_revision"], self.SHA)
+        rc, _, err = self.call("run", request("o", resolved_revision=self.SHA, standing=True))
+        self.assertEqual(rc, 1)
+        self.assertIn("resolved_revision is only for a head-of:<branch> request", err)
+        self.assertEqual(self.call("reserve", request("r", requested_revision="head-of:topic", resolved_revision=self.SHA))[0], 1)
+        rc, _, err = self.call("record", {"request_id": "h", "state": "running", "evidence": "x", "resolved_revision": self.SHA})
+        self.assertEqual(rc, 1)
+        self.assertIn("resolved_revision is only valid for dispatch", err)
+
+    def test_a_record_holding_a_resolution_for_another_revision_is_invalid(self) -> None:
+        self.call("run", request("h", requested_revision="head-of:topic", resolved_revision=self.SHA))
+        path = os.path.join(self.root, "executions", "h.json")
+        with open(path) as f:
+            data = json.load(f)
+        data["request"]["requested_revision"] = "origin/main"
+        with open(path, "w") as f:
+            json.dump(data, f)
+        rc, _, err = self.call("list", {})
+        self.assertEqual(rc, 1)
+        self.assertIn("invalid resolved revision", err)
 
 
 if __name__ == "__main__":

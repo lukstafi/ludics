@@ -97,6 +97,21 @@ but may be concluded, which is how a worker handing back mid-window ends it. A r
 the same request never dispatches twice: it suspends any standing record not yet suspended and prints
 the record. There is one measurement per window, so the registry still never holds two outstanding
 measurements on a box (`execution slot`'s in-hold admission, ludics-lite#480, relies on that).
+
+A request that follows a branch (ludics-lite#558): `"requested_revision": "head-of:<branch>"` names
+no commit at request time, so a request queued behind a halt or a busy box cannot go stale (three
+SHA-keyed requests of the 2026-10-05 wave did, one twice). The branch is resolved when the work is
+ASSIGNED: the dispatch step (`run`, `window`, `dispatch`) must carry `resolved_revision`, the exact
+commit the near side read off GitHub a moment before, and the record keeps it as a top-level field
+(and in that dispatch's history entry) through to its conclusion. The grammar, fail-closed: the
+whole revision is `head-of:` and one branch name of `[A-Za-z0-9._/-]`, not starting with `-`, with
+no `..`, and every `/`-separated component nonempty, not starting with `.` and not ending in `.` or
+`.lock` (git-check-ref-format's rules within that alphabet); anything else starting `head-of:` is
+refused at reserve. Any other revision is the free text it always was, and a dispatch
+carrying `resolved_revision` for one is refused, as is a head-of dispatch without it. A reconcile to
+`reserved` and a later dispatch resolve again: each dispatch records the commit it assigned. A
+head-of record never dispatched names no commit, so reconcile refuses to make it `running` or
+`uncertain`; and once resolved, an `observed_sha` that any later payload names must be that commit.
 """
 import fcntl
 import json
@@ -132,6 +147,37 @@ REQUEST_FIELDS = {"request_id", "wave", "worker", "transport", "issue", "purpose
                   "agent_host", "execution_host", "repository", "requested_revision", "kind"}
 STATES = {"reserved", "launching", "running", "uncertain", "suspended", "concluded"}
 SUSPENDABLE = STATES - {"suspended", "concluded"}   # what `suspended_from` may name
+HEAD_OF = "head-of:"
+OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def head_of_branch(revision: str) -> str | None:
+    """The branch a `head-of:<branch>` revision follows, or None when it is not one well-formed
+    branch name (the grammar is the header's)."""
+    branch = revision[len(HEAD_OF):] if revision.startswith(HEAD_OF) else ""
+    return branch if ref_name_ok(branch) else None
+
+
+def ref_name_ok(name: str) -> bool:
+    """One branch name within `[A-Za-z0-9._/-]`, by git-check-ref-format's rules there: not `HEAD`,
+    no leading `-`, no `..`, and each `/` component nonempty, not starting with `.` and not ending in `.` or
+    `.lock`."""
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", name) or name.startswith("-") or ".." in name or name == "HEAD":
+        return False
+    return all(part and not part.startswith(".") and not part.endswith((".", ".lock")) for part in name.split("/"))
+
+
+def resolve_dispatch(record: Record, resolved: Any, event: Record) -> None:
+    """The dispatch step's `resolved_revision` (see the header): required, as an exact object ID,
+    for a head-of request, and refused for any other."""
+    if record["request"]["requested_revision"].startswith(HEAD_OF):
+        if not isinstance(resolved, str) or not OBJECT_ID.fullmatch(resolved):
+            refuse(f"{record['request']['requested_revision']} is resolved at assignment: the dispatch must carry "
+                   f"resolved_revision, the exact commit the branch names now (fleet-worker.sh reads it off GitHub)")
+        record["resolved_revision"] = resolved
+        event["resolved_revision"] = resolved
+    elif resolved is not None:
+        refuse("resolved_revision is only for a head-of:<branch> request")
 
 
 def validate_request(data: Any) -> None:
@@ -143,6 +189,8 @@ def validate_request(data: Any) -> None:
         nonempty(request, ["triage_reason"])
     if request["kind"] not in {"correctness", "measurement"}:
         refuse("kind must be correctness or measurement")
+    if request["requested_revision"].startswith(HEAD_OF) and head_of_branch(request["requested_revision"]) is None:
+        refuse(f"requested_revision {request['requested_revision']!r} is not head-of:<one branch name>")
     if "standing" in request:
         # Loud and explicit rather than read off the `-iterate` id convention: a mistyped id
         # must not silently escape the cap, and `execution list` shows the exemption as a field.
@@ -183,6 +231,10 @@ def validate_record(data: Any, path: Path) -> Record:
             nonempty(record, [key])
     if "observed_sha" in record and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", record["observed_sha"]):
         refuse(f"invalid observed SHA: {path}")
+    if "resolved_revision" in record and not (isinstance(record["resolved_revision"], str)
+                                              and OBJECT_ID.fullmatch(record["resolved_revision"])
+                                              and record["request"]["requested_revision"].startswith(HEAD_OF)):
+        refuse(f"invalid resolved revision: {path}")
     # A suspension is exactly the state and its two fields, on a standing record (see the header).
     if record["state"] == "suspended":
         nonempty(record, ["suspended_by", "suspended_from"])
@@ -474,7 +526,7 @@ def main(argv: list[str]) -> None:
         dispatch_evidence = ("measurement window opened: reserved and dispatched in one step (execution window)"
                              if action == "window" else "reserved and dispatched in one step (execution run)")
         if action in {"run", "window"}:
-            request = {k: v for k, v in data.items() if k != "evidence"}
+            request = {k: v for k, v in data.items() if k not in {"evidence", "resolved_revision"}}
             if "evidence" in data:
                 nonempty(data, ["evidence"])
                 dispatch_evidence = data["evidence"]
@@ -544,7 +596,9 @@ def main(argv: list[str]) -> None:
             if halt_identity is not None and not triage:
                 refuse("fleet halted; ordinary dispatch refused")
             record["state"] = "launching"
-            events.append(("dispatch", {"request_id": identity, "evidence": dispatch_evidence}))
+            dispatched: Record = {"request_id": identity, "evidence": dispatch_evidence}
+            resolve_dispatch(record, data.get("resolved_revision"), dispatched)
+            events.append(("dispatch", dispatched))
         if queued:
             # Queued behind the open window rather than refused: restored when it concludes.
             record["suspended_from"] = record["state"]
@@ -564,8 +618,11 @@ def main(argv: list[str]) -> None:
     else:
         if record is None:
             refuse("unknown request_id")
-        if set(data) - {"request_id", "state", "evidence", "observed_sha", "remote_checkout", "handle", "log", "verdict", "execution_host"}:
+        if set(data) - {"request_id", "state", "evidence", "observed_sha", "remote_checkout", "handle", "log", "verdict",
+                        "execution_host", "resolved_revision"}:
             refuse("unknown evidence fields")
+        if "resolved_revision" in data and action != "dispatch":
+            refuse("resolved_revision is only valid for dispatch")
         nonempty(data, ["evidence"])
         # Evidence read on a named box binds to the box that was reserved: a run record at the
         # same path on another machine cannot conclude this assignment.
@@ -603,6 +660,7 @@ def main(argv: list[str]) -> None:
             # for its launch, and a lane harness that reads no registry can take the box meanwhile.
             if record["request"]["kind"] == "measurement":
                 check_lane_lock(record["request"]["execution_host"], map_spec, anchor, lab)
+            resolve_dispatch(record, data.get("resolved_revision"), {})
             state = "launching"
         elif action == "record":
             if record["state"] not in {"launching", "running", "uncertain"}:
@@ -614,6 +672,12 @@ def main(argv: list[str]) -> None:
             state = data.get("state")
             if state not in {"reserved", "running", "uncertain"}:
                 refuse("reconcile state must be reserved, running or uncertain")
+            if (state != "reserved" and record["request"]["requested_revision"].startswith(HEAD_OF)
+                    and "resolved_revision" not in record):
+                # Only a dispatch resolves the branch: an active record without that commit would
+                # name none, and any revision would pass for it.
+                refuse(f"{record['request']['requested_revision']} was never resolved (no dispatch): reconcile it "
+                       f"to reserved and dispatch it, which resolves the branch")
             # reserved means evidence establishes no launch occurred and no process can run.
             record["lease_token"] = token
         elif action == "conclude":
@@ -642,6 +706,11 @@ def main(argv: list[str]) -> None:
             refuse("unknown operation")
         if "observed_sha" in data and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", data["observed_sha"]):
             refuse("observed_sha must be an exact Git object ID")
+        assigned = record.get("resolved_revision")
+        if "observed_sha" in data and assigned and data["observed_sha"] != assigned:
+            # The commit a head-of request was assigned is the one its evidence is about.
+            refuse(f"observed_sha {data['observed_sha']} is not {assigned}, the commit "
+                   f"{record['request']['requested_revision']} was resolved to at assignment")
         for key in ("observed_sha", "remote_checkout", "handle", "log", "verdict"):
             if key in data:
                 nonempty(data, [key])
