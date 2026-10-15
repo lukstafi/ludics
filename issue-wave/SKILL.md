@@ -828,7 +828,14 @@ thread or CLI stream is the full record - arrives carrying proposed issues, chip
 and reasoned drops; the coordinator's role here is editorial, not generative. Combine
 overlapping proposals across workers into single issues - cross-worker recurrence is the
 strongest priority signal a wave produces - revise drafts against the tracker's style, then do
-the filing and evidence comments yourself. Route the remaining chips through the selected mode:
+the filing and evidence comments yourself. Every issue the wave files carries the
+`wave-followup` label, so a later triage pass can prune that backlog without re-reading each
+issue (wave 2026-10-14 filed about 47): the first time a tracker needs it, run `gh label create
+wave-followup -R <tracker> --color C5DEF5 --description 'Filed by an issue-wave close-out'`,
+where an "already exists" refusal is success; file with `gh issue create -R <tracker> --label
+wave-followup ...`; and add it to the follow-up issues workers filed during the wave (the ones
+their hand-backs and PRs name) with `gh issue edit <n> -R <tracker> --add-label wave-followup`.
+Route the remaining chips through the selected mode:
 spawn task chips only in the explicit spawn mode; in the default mode, collect the
 non-discarded tasks without their own issue for [Post-wave coordination](references/post-wave.md).
 Do not re-brainstorm a worker's merge from the supervision view (its transcript grounds it
