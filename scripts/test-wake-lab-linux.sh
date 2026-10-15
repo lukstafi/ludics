@@ -248,6 +248,12 @@ out=$(WAKE_LAB_HOSTS="$tmp/lab-hosts.sh" SSH_UP="rog-nv-linux minix-amd-linux" W
   SSH_ANCHOR_SCRIPT="rog-nv-linux:110" SSH_GONE_AFTER_ASKS="minix-amd-linux:1" WAKE_LAB_WAIT_SECONDS=1 \
   WAKE_LAB_ANCHOR_WAIT_SECONDS=30 WAKE_LAB_ANCHOR_POLL_SECONDS=0 "$tmp/wake-lab.sh" --wait rog minix 2>&1); rc=$?; last=${out##*$'\n'}
 check 'a box the anchor wait did not ask is asked once more after it, and one gone since is NOT all up' '[ "$rc" = 1 ] && [ "$last" = "NOT all up: stopped answering during the anchor wait: minix" ] && [[ "$out" == *"anchor leg to minix-amd-linux: rog=OK"* ]] && ! grep -qx "all up" <<<"$out"'
+# ...and so after a first poll that answered at once, since that ask took time too.
+: >"$SSH_LOG"
+out=$(WAKE_LAB_HOSTS="$tmp/lab-hosts.sh" SSH_UP="rog-nv-linux minix-amd-linux" WAKE_LAB_ANCHOR=minix-amd-linux \
+  SSH_GONE_AFTER_ASKS="minix-amd-linux:1" WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait rog minix 2>&1); rc=$?; last=${out##*$'\n'}
+check '...and so after a first poll that answered at once, since that ask took time too' '[ "$rc" = 1 ] && [ "$last" = "NOT all up: stopped answering during the anchor wait: minix" ] && [ "$(grep -c " true || exit " "$SSH_LOG")" -ge 1 ]'
+: >"$SSH_LOG"
 : >"$SSH_LOG"
 started=$SECONDS
 out=$(SSH_UP=1 SSH_ANCHOR_AFTER=1000 SSH_ANCHOR_HANG_AFTER=1 WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAIT_SECONDS=3 WAKE_LAB_ANCHOR_POLL_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?; took=$((SECONDS - started))

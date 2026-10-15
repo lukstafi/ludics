@@ -1067,7 +1067,7 @@ ANCHOR_POLL_SECONDS=${WAKE_LAB_ANCHOR_POLL_SECONDS:-5}
 ANCHOR_LEG_FAILED=3   # the probe's status when the box answered and its own ssh to the anchor did not
 ANCHOR_FAILED=""      # set by wait_anchor: the boxes whose anchor leg never came up
 ANCHOR_UNASKED=""     # set by wait_anchor: the boxes it did not ask, for the final pass
-ANCHOR_WAITED=0       # set by wait_anchor: 1 when it polled more than once, so time passed
+ANCHOR_ASKED=0        # set by wait_anchor: 1 when it asked any leg, which is time spent
 
 anchor_alias() { # anchor_alias <box> -- the endpoint whose ssh to the anchor is asked; 1 when none is
   [ "$(box_kind "$1")" = linux ] || return 1
@@ -1091,7 +1091,7 @@ anchor_probe() { # anchor_probe <alias> <cap seconds>
 # first pass's end, never a PROBE_CAP per box beyond the deadline.
 wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it works, for up to ANCHOR_WAIT_SECONDS
   local n a i all line left cap names=() aliases=() rcs=() caps=() first=1 deadline=$((SECONDS + ANCHOR_WAIT_SECONDS))
-  ANCHOR_FAILED=""; ANCHOR_UNASKED=""; ANCHOR_WAITED=0
+  ANCHOR_FAILED=""; ANCHOR_UNASKED=""; ANCHOR_ASKED=0
   if [ -z "$ANCHOR" ]; then echo "anchor leg not checked: WAKE_LAB_ANCHOR is empty"; return 0; fi
   for n in "$@"; do
     # fleet-worker reads the registry WITHOUT ssh exactly where its anchor is `local` or the box's
@@ -1106,6 +1106,7 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
   done
   [ ${#names[@]} -gt 0 ] || return 0
   echo "waiting for each box's own ssh to $ANCHOR..."
+  ANCHOR_ASKED=1
   while :; do
     all=1; line="anchor leg to $ANCHOR: "
     for ((i = 0; i < ${#names[@]}; i++)); do
@@ -1130,7 +1131,6 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
     [ "$all" = 1 ] && return 0
     left=$((deadline - SECONDS))
     [ "$left" -gt 0 ] || break
-    ANCHOR_WAITED=1
     if [ "$left" -ge "$ANCHOR_POLL_SECONDS" ]; then sleep "$ANCHOR_POLL_SECONDS"; else sleep "$left"; fi
     [ "$SECONDS" -lt "$deadline" ] || break
   done
@@ -1762,10 +1762,11 @@ case "$VERB" in
       done
       if [ ${#UP[@]} -gt 0 ]; then wait_anchor "${UP[@]}" || anchor_rc=1; fi
       # The final pass: a box the anchor wait did not ask holds its verdict from before that wait,
-      # so where the wait took time and every box had answered, each such box is asked once more.
-      # (With a box already down the run is NOT all up whatever this would find.)
+      # so where that wait asked any leg (which takes time, a first slow ask included) and every
+      # box had answered, each such box is asked once more. (With a box already down the run is
+      # NOT all up whatever this would find.)
       gone=""
-      if [ "$ANCHOR_WAITED" = 1 ] && [ "$rc" = 0 ]; then
+      if [ "$ANCHOR_ASKED" = 1 ] && [ "$rc" = 0 ]; then
         for t in $ANCHOR_UNASKED; do is_up "$t" || gone="${gone:+$gone }$t"; done
       fi
       # The final verdict is the wake's AND the WSL step's: `all up` over a failed restart would
