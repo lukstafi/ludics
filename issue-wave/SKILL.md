@@ -641,7 +641,12 @@ controlled through the tools in your coordinator's file, never through those com
   exemption for the same red conflicted at the next integration run).
 - **Converge long reviews.** An automated reviewer keeps finding members of any open-ended
   artifact (a scanner, a property table) indefinitely (2026-08-22: two workers went 9 and 13
-  rounds; 2026-08-27: three went 11-18). At 5 rounds send the policy - `fleet-worker.sh prs
+  rounds; 2026-08-27: three went 11-18). A PR that writes tracker-mutating or multi-step
+  procedures (`gh` sequences, wait loops, recovery paths) is such an artifact too, so the brief
+  has it state its recovery or readiness boundary on its first push ("recovery re-reads by
+  content", "`--wait` is a point-in-time check"), and a finding past that boundary is rebutted
+  on it or deferred to the one follow-up issue below (ludics-lite#625: five rounds of resume
+  corners until the boundary was written down). At 5 rounds send the policy - `fleet-worker.sh prs
   <owner/repo> [--wave <id>]` lists each open PR's round count, CI and head age and flags the
   ones there (ludics-lite#405; one reached 10 unnoticed) - whose axis is
   **silent vs loud**: a silent defect (a claim that cannot fail, a sweep that deletes what it
