@@ -588,7 +588,10 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   ref of the checkout and resolved there, never through `FETCH_HEAD`, which a linked worktree
   cannot see (the trap ahrefs/ocannl#1153 hit) and which two legs in one checkout would overwrite.
   `EXECUTION LEG <box>: created|refreshed <worktree> at <sha> ...; observed_sha=<sha>` on stderr is
-  the worktree's `git rev-parse HEAD` before the runner starts.
+  the worktree's `git rev-parse HEAD` before the runner starts. The fetch is bounded by
+  `FLEET_FETCH_TIMEOUT` (300 s). One leg at a time holds a worktree, from its status check through
+  the control's revert: a second leg there is refused, not queued, since a worktree moved under a
+  running leg would make it test another commit than the one it reports.
 - **The runner.** The command after `--` runs in the worktree with its words passed through
   untouched, stdin closed. Its status is the leg's, unchanged (a 125, a 128 or more included), and
   the last line on stdout is `execution-leg: exit: <status>`, the sentinel `conclude --from-bg-run`
@@ -600,7 +603,8 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   After a main run that passed it is applied, the runner runs again in the same slot and must fail,
   and the patch is reverted: the leg exits 0 when the control failed (1-127, but 124), 1 with
   `CONTROL PASSED` when it did not, and the control's own status when it was cut (124, 128+),
-  the patch reverted either way. A failed main run is the leg's status, and the control does not
+  the patch reverted either way; a patch that cannot be reverted is `CONTROL NOT REVERTED`, exit 1,
+  whatever the control did. A failed main run is the leg's status, and the control does not
   run.
 
 The verb names no project's runner or layout. OCANNL's is `tools/test-run.sh`, which builds as it

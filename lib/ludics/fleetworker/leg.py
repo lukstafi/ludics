@@ -27,7 +27,12 @@ which a leg never overwrites. A full SHA already in the checkout is used as it i
 fetched from ``--remote`` (``origin``) INTO A PRIVATE REF of the checkout, ``refs/fleet-leg/<pid>``,
 and resolved there: never through ``FETCH_HEAD``, which a linked worktree cannot see and which two
 legs fetching in one checkout would overwrite. The ref is deleted once the worktree holds the
-commit. ``observed_sha`` is the worktree's ``git rev-parse HEAD`` before the runner starts.
+commit. ``observed_sha`` is the worktree's ``git rev-parse HEAD`` before the runner starts. The fetch is
+bounded by FLEET_FETCH_TIMEOUT (300 s). One leg at a time holds a worktree, from its status check
+through the control's revert (the far side's ``take_lock``, under ``$STATE/leg-locks``, keyed by
+the worktree's physical path, read through its nearest existing ancestor before it exists): a second is refused, never
+queued, since a worktree moved under a running leg would make it test another commit than the one
+it reports.
 
 THE RUNNER. The command after ``--`` runs in the worktree, its argv passed untouched (each word
 quoted for the box's shell), stdin closed; nothing here names a project's runner. Its status is the
@@ -40,7 +45,8 @@ the patch must apply (``git apply --check``) before anything runs. After a main 
 is applied, the runner runs again in the same slot and must FAIL, and the patch is reverted. The
 leg's status is then 0 when the control failed (1-127 but 124, the slot's deadline); 1 when it
 passed (``CONTROL PASSED``: the runner does not see what the patch breaks); the control's own status
-when it was cut by the deadline or a signal (124, 128+), the patch reverted all the same. A main run
+when it was cut by the deadline or a signal (124, 128+), the patch reverted all the same; a patch
+that cannot be reverted is ``CONTROL NOT REVERTED``, status 1, whatever the control did. A main run
 that failed is the leg's status, and the control does not run.
 
 WHAT THE STATUS MEANS. The runner's, when the sentinel line was printed. Without it, nothing ran to
@@ -59,6 +65,8 @@ from ludics import cli
 from ludics.fleetworker import execution
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
+from ludics.fleetworker.preflight import knob
+from ludics.fleetworker.registry import ref_name_ok
 from ludics.fleetworker.transport import fleet_name, far_argv, is_local, prelude, put_file, substitution
 
 USAGE = (
@@ -70,28 +78,29 @@ DISPATCHED = ("launching", "running", "uncertain")
 # The sentinel ends a line; a runner whose last output had no newline leaves it mid-line, where it is
 # split off onto a line of its own as it passes through.
 SENTINEL = re.compile(rb"execution-leg: exit: ([0-9]{1,3})\r?\n?\Z")
-# A revision the box fetches: a full object ID, or a ref name in git's own grammar, fail-closed.
-REV = re.compile(r"[A-Za-z0-9._/-]+")
 HEX = re.compile(r"[0-9a-fA-F]{7,}")
 OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 REMOTE = re.compile(r"[A-Za-z0-9._-]+")
 SECONDS = re.compile(r"[1-9][0-9]*")
+HELD_BACK = 64  # bytes of an unfinished line kept back for the sentinel; it is never longer than 30
 
 # The far side, after the prelude. Args: checkout, worktree, remote, rev, want (the assigned commit or
-# empty), patch name (in $STATE/leg-control, or empty), request id, the wrapper's word count and
+# empty), patch name (in $STATE/leg-control, or empty), request id, the fetch's bound in seconds
+# (FLEET_FETCH_TIMEOUT), the wrapper's word count and
 # words (fleet-worker.sh's own verb and flags, ending before its `--`), then the runner's argv.
-LEG = r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" nwrap="$8"
-shift 8
+LEG = r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" nwrap="$9"
+shift 9
 fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
 while [ "$nwrap" -gt 0 ]; do wrap+=("$1"); shift; nwrap=$((nwrap - 1)); done
 patch=""; [ -z "$pname" ] || patch="$STATE/leg-control/$pname"
-ref="refs/fleet-leg/$$"; results=""
+ref="refs/fleet-leg/$$"; results="" wlock=""
 say() { printf 'EXECUTION LEG %s: %s\n' "$BOX" "$*" >&2; }
 cleanup() {
   [ -z "$patch" ] || rm -f "$patch"
   [ -z "$results" ] || rm -f "$results" "$results.sh"
   git -C "$co" update-ref -d "$ref" >/dev/null 2>&1
+  [ -z "$wlock" ] || { rm -f "$wlock/pid" "$wlock/start"; rmdir "$wlock" 2>/dev/null; }
   return 0
 }
 refuse() { printf 'EXECUTION LEG REFUSED %s: %s\n' "$BOX" "$*" >&2; cleanup; exit 1; }
@@ -101,13 +110,31 @@ common() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/n
 gitdir() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
 [ -x "$fw" ] || refuse "no executable fleet-worker.sh at $fw (the skills checkout on $BOX; run fleet-worker.sh refresh $BOX)"
 cdir=$(common "$co"); [ -n "$cdir" ] || refuse "--checkout $co is not a git checkout on $BOX"
+# One leg at a time in a worktree, from the status check through the control's revert: a second
+# leg moving it would make the first test another commit than the observed_sha it reports. The
+# lock is the far side's take_lock (a directory naming this shell's pid and start time, reclaimed
+# once that process is gone), keyed by the worktree's physical path when it exists.
+# The key: the nearest existing ancestor's physical path, then the rest as given, so a leg before the
+# worktree exists and one after it name the same lock.
+canon() {
+  local p="$1" rest="" base
+  while [ ! -d "$p" ] && [ "$p" != / ] && [ "$p" != . ]; do rest="/$(basename "$p")$rest"; p=$(dirname "$p"); done
+  base=$(cd "$p" && pwd -P) || return 1
+  printf '%s%s' "${base%/}" "$rest"
+}
+wkey=$(canon "$wt") || refuse "cannot resolve --worktree $wt on $BOX"
+mkdir -p "$STATE/leg-locks" || refuse "cannot create $STATE/leg-locks on $BOX"
+wlock_try="$STATE/leg-locks/$(printf '%s' "$wkey" | cksum | tr ' ' -)"
+said=$(take_lock "$wlock_try" 0 "--worktree $wt") || refuse "${said:-the worktree is locked}: another leg is using it; wait for it, or name another worktree"
+wlock=$wlock_try
 # The commit, into a private ref of the checkout (never FETCH_HEAD: see the module header).
 case "$rev" in *[!0-9a-f]*) sha_like=0 ;; *) case ${#rev} in 40|64) sha_like=1 ;; *) sha_like=0 ;; esac ;; esac
 if [ "$sha_like" = 1 ] && git -C "$co" cat-file -e "$rev^{commit}" 2>/dev/null; then
   sha=$rev how="already in $co"
 else
-  GIT_TERMINAL_PROMPT=0 git -C "$co" fetch -q --no-tags "$remote" "+$rev:$ref" </dev/null >&2 ||
-    refuse "git fetch $remote $rev in $co failed (above): no such branch or commit on $remote, or $remote is unreachable from $BOX"
+  bounded "$fetch_timeout" env GIT_TERMINAL_PROMPT=0 git -C "$co" fetch -q --no-tags "$remote" "+$rev:$ref" >&2; frc=$?
+  [ "$frc" -ne 124 ] || refuse "git fetch $remote $rev in $co did not finish in ${fetch_timeout}s (FLEET_FETCH_TIMEOUT)"
+  [ "$frc" -eq 0 ] || refuse "git fetch $remote $rev in $co failed (above): no such branch or commit on $remote, or $remote is unreachable from $BOX"
   sha=$(git -C "$co" rev-parse --verify -q "$ref^{commit}") || refuse "$rev fetched from $remote is not a commit"
   [ "$sha_like" = 0 ] || [ "$sha" = "$rev" ] || refuse "fetching $rev from $remote gave $sha"
   how="fetched from $remote"
@@ -182,9 +209,11 @@ crc=$(fact control)
 # still on the box.
 if [ "$(fact revert)" != ok ] && grep -qx applied "$results"; then
   if git -C "$wt" apply -R "$patch" >&2; then
-    say "control patch reverted after the control run was cut"
+    say "control patch reverted after the control run"
   else
-    say "WARNING: the control patch could not be reverted in $wt, which a later leg will refuse until it is cleaned"
+    # The worktree is not the commit the leg reports, so no control verdict stands on it.
+    say "CONTROL NOT REVERTED: the control patch could not be reverted in $wt (above), which a later leg will refuse until it is cleaned; no control verdict"
+    finish 1
   fi
 fi
 if [ -z "$crc" ]; then
@@ -256,9 +285,7 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     remote = values.get("--remote", "origin")
     if not REMOTE.fullmatch(remote) or remote.startswith("-"):
         die(f"execution leg: --remote must be a remote's name, not {remote!r}")
-    if not REV.fullmatch(rev) or rev[0] in "-/." or any(bad in rev for bad in ("..", "//", "/.")) or rev.endswith(
-        ("/", ".", ".lock")
-    ):
+    if not ref_name_ok(rev):
         die(f"execution leg: --rev must be a full commit SHA or a branch name, not {rev!r}")
     if HEX.fullmatch(rev) and not OBJECT_ID.fullmatch(rev):
         die(f"execution leg: --rev {rev} looks like an abbreviated or uppercase SHA: give the full one (git rev-parse)")
@@ -312,7 +339,12 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
             return refused(f"the control patch could not be copied to {box} (exit {sent.rc}); nothing ran")
 
     script = prelude(cfg, box) + LEG
-    argv = far_argv(cfg, box, [checkout, worktree, remote, rev, want, pname, request, str(len(wrap)), *wrap, *runner])
+    fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
+    if not SECONDS.fullmatch(fetch_timeout):
+        die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
+    argv = far_argv(
+        cfg, box, [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, str(len(wrap)), *wrap, *runner]
+    )
     return stream(argv, script, box, local=is_local(cfg, box))
 
 
@@ -322,7 +354,7 @@ def stream(argv: list[str], script: str, box: str, *, local: bool) -> int:
     sys.stdout.flush()
     sys.stderr.flush()
     try:
-        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
     except OSError as exc:
         sys.stderr.write(f"{argv[0]}: {exc.strerror}\n")
         return 127
@@ -342,14 +374,33 @@ def stream(argv: list[str], script: str, box: str, *, local: bool) -> int:
     feeder.start()
     sentinel: int | None = None
     out = sys.stdout.buffer
-    for line in child.stdout:
+
+    def line_out(line: bytes) -> None:
+        nonlocal sentinel
         found = SENTINEL.search(line)
         if found and found.start() > 0:
             out.write(line[: found.start()] + b"\n")
             line = line[found.start() :]
         out.write(line)
-        out.flush()
         sentinel = int(found.group(1)) if found else sentinel
+
+    # Bounded reads, not readline: a runner's output with no newline in it (progress bars, binary)
+    # passes through as it comes, and only a short tail of an unfinished line is held back, enough
+    # for a sentinel at its end to be seen.
+    pending = b""
+    fd = child.stdout.fileno()
+    while chunk := os.read(fd, 65536):
+        pending += chunk
+        *lines, pending = pending.split(b"\n")
+        for line in lines:
+            line_out(line + b"\n")
+        if len(pending) > HELD_BACK:
+            out.write(pending[:-HELD_BACK])
+            pending = pending[-HELD_BACK:]
+        out.flush()
+    if pending:
+        line_out(pending)
+        out.flush()
     rc = child.wait()
     feeder.join()
     if sentinel is not None:

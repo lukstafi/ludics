@@ -104,9 +104,10 @@ SHA-keyed requests of the 2026-10-05 wave did, one twice). The branch is resolve
 ASSIGNED: the dispatch step (`run`, `window`, `dispatch`) must carry `resolved_revision`, the exact
 commit the near side read off GitHub a moment before, and the record keeps it as a top-level field
 (and in that dispatch's history entry) through to its conclusion. The grammar, fail-closed: the
-whole revision is `head-of:` and one branch name of `[A-Za-z0-9._/-]`, not starting with `-`, `/`
-or `.`, with no `..`, `//`, `/.` or `@{`, not ending in `/`, `.` or `.lock`; anything else starting
-`head-of:` is refused at reserve. Any other revision is the free text it always was, and a dispatch
+whole revision is `head-of:` and one branch name of `[A-Za-z0-9._/-]`, not starting with `-`, with
+no `..`, and every `/`-separated component nonempty, not starting with `.` and not ending in `.` or
+`.lock` (git-check-ref-format's rules within that alphabet); anything else starting `head-of:` is
+refused at reserve. Any other revision is the free text it always was, and a dispatch
 carrying `resolved_revision` for one is refused, as is a head-of dispatch without it. A reconcile to
 `reserved` and a later dispatch resolve again: each dispatch records the commit it assigned.
 """
@@ -152,11 +153,16 @@ def head_of_branch(revision: str) -> str | None:
     """The branch a `head-of:<branch>` revision follows, or None when it is not one well-formed
     branch name (the grammar is the header's)."""
     branch = revision[len(HEAD_OF):] if revision.startswith(HEAD_OF) else ""
-    if (not re.fullmatch(r"[A-Za-z0-9._/-]+", branch) or branch[0] in "-/."
-            or any(bad in branch for bad in ("..", "//", "/.", "@{"))
-            or branch.endswith(("/", ".", ".lock"))):
-        return None
-    return branch
+    return branch if ref_name_ok(branch) else None
+
+
+def ref_name_ok(name: str) -> bool:
+    """One branch name within `[A-Za-z0-9._/-]`, by git-check-ref-format's rules there: no leading
+    `-`, no `..`, and each `/` component nonempty, not starting with `.` and not ending in `.` or
+    `.lock`."""
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", name) or name.startswith("-") or ".." in name:
+        return False
+    return all(part and not part.startswith(".") and not part.endswith((".", ".lock")) for part in name.split("/"))
 
 
 def resolve_dispatch(record: Record, resolved: Any, event: Record) -> None:

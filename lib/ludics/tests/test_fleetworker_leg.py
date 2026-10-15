@@ -41,6 +41,11 @@ class Stream(unittest.TestCase):
         rc, out, _ = self.run_far("printf partial; printf 'execution-leg: exit: 255\\n'; exit 255\n", local=False)
         self.assertEqual((rc, out), (255, "partial\nexecution-leg: exit: 255\n"))
 
+    def test_output_with_no_newline_passes_through_as_it_comes(self) -> None:
+        rc, out, _ = self.run_far("head -c 300000 /dev/zero | tr '\\0' 'z'; echo 'execution-leg: exit: 3'\n", local=True)
+        self.assertEqual(rc, 3)
+        self.assertEqual(out, "z" * 300000 + "\nexecution-leg: exit: 3\n")
+
     def test_the_last_sentinel_wins(self) -> None:
         rc, _, _ = self.run_far("echo 'execution-leg: exit: 3'\necho 'execution-leg: exit: 0'\n", local=True)
         self.assertEqual(rc, 0)

@@ -2584,8 +2584,29 @@ expect "a control the runner does not catch fails the leg" 1 "CONTROL PASSED: th
 expect "a control run cut by --deadline is no verdict, its status kept" 124 "the control run was ended before it returned (wrapper exit 124)" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" --deadline 3 -- \
   sh -c 'if [ -e broken ]; then sleep 30; fi; exit 0'
-grep -q "control patch reverted after the control run was cut" <<<"$out" && [ -z "$(git -C "$lwt" status --porcelain)" ] &&
+grep -q "control patch reverted after the control run$" <<<"$out" && [ -z "$(git -C "$lwt" status --porcelain)" ] &&
   ok "...and the patch reverted once the wrapper has reaped the run" || ko "the cut control left the worktree: $(git -C "$lwt" status --porcelain) -- $out"
+expect "a control patch the run made impossible to revert fails the leg, whatever the control did" 1 "CONTROL NOT REVERTED: the control patch could not be reverted" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
+  sh -c 'if [ -e broken ]; then echo changed > broken; exit 3; fi; exit 0'
+[ "$(last_line)" = "execution-leg: exit: 1" ] && ok "...its sentinel 1" || ko "last line: $(last_line)"
+rm -f "$lwt/broken"
+# One leg at a time per worktree: a second is refused while the first runs, never queued.
+rm -f "$TMP/leg-started" "$TMP/leg-go"
+leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" -- \
+  sh -c 'touch "$1"; while [ ! -e "$2" ]; do sleep 0.2; done' x "$TMP/leg-started" "$TMP/leg-go" > "$TMP/leg-first.out" 2>&1 &
+first=$!
+for _ in $(seq 100); do [ -e "$TMP/leg-started" ] && break; sleep 0.2; done
+expect "a second leg in a worktree another leg is running in is refused" 1 "another leg is using it" -- \
+  leg --request leg-a --rev "$la" --checkout "$lco" --worktree "$lwt/" -- tools/check.sh
+touch "$TMP/leg-go"; wait "$first"; first_rc=$?
+[ "$first_rc" = 0 ] && [ "$(git -C "$lwt" rev-parse HEAD)" = "$lb" ] && ok "...the first leg's worktree left at its commit" ||
+  ko "the first leg: rc=$first_rc head=$(git -C "$lwt" rev-parse HEAD) -- $(cat "$TMP/leg-first.out")"
+expect "...and once it is done the next leg takes it" 0 "execution-leg: exit: 0" -- leg --request leg-a --rev "$la" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+# The fetch is bounded by FLEET_FETCH_TIMEOUT: a remote that accepts and then stalls.
+git -C "$lco" remote add slow "$lremote" && git -C "$lco" config remote.slow.uploadpack "sh -c 'sleep 20'"
+expect "a fetch that stalls is cut at FLEET_FETCH_TIMEOUT and refused" 1 "did not finish in 2s (FLEET_FETCH_TIMEOUT)" -- \
+  env FLEET_FETCH_TIMEOUT=2 "${FWL[@]}" execution leg --request leg-a --rev claude/topic --remote slow --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 n=$(marks)
 expect "a control that does not apply is refused before anything runs" 1 "the control patch does not apply to $lb" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/stale.patch" -- tools/check.sh
