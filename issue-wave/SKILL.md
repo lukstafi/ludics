@@ -422,7 +422,11 @@ requirements for every transport with transport-specific setup and identity, and
   slots](references/executions.md#exclusivity-and-the-run-time-slots); `--wait-window` waits
   out a [measurement window](references/executions.md#exclusivity-and-the-run-time-slots) on
   the box instead of refusing, so the brief needs no waiter loop and no retry rule), and
-  is reported by run directory. For a Claude batch that can outlast the 600 s tool cap, a
+  is reported by run directory. Where the coordinator also took one on the task's [GPU home
+  box](references/executions.md#the-gpu-home-box), name that request id too, the far-side
+  checkout that is the worker's to prepare, and the batch's form there as that section gives it
+  (over ssh, the checkout moved to the pushed SHA under test, the runner under `execution slot
+  --wait-window` on that box), concluded at hand-back with the agent-host one. For a Claude batch that can outlast the 600 s tool cap, a
   window's wait included, use `execution slot --bg <parent> --wait-window -- <batch>`, which
   prints a run directory to block on with
   `bg-run.sh wait` ([Blocking on a run](references/native-claude.md#blocking-on-a-run)). For
@@ -433,7 +437,7 @@ requirements for every transport with transport-specific setup and identity, and
   says. Every other run - a
   measurement (only for a timing-grade claim or a run that needs the box to itself, a
   [rule](references/executions.md#exclusivity-and-the-run-time-slots) the brief carries), a
-  cross-box leg, a full suite - needs a request first, in the transport's shape:
+  one-off cross-box leg, a full suite - needs a request first, in the transport's shape:
   the [Claude Code worker channel](references/native-claude.md#worker-channel), the
   [Codex worker channel](references/native-codex.md#worker-channel), or the
   [CLI reservation handoff](references/executions.md#cli-reservation-handoff). A resumed worker
@@ -846,8 +850,9 @@ after this wave's report and cleanup as before.
 for every worker correctness or measurement run on a fleet box and every coordinator
 integration run, whatever the provider or transport. The usual shape is two calls per
 execution - `execution run <reserve.json>` then `execution conclude --from-run <run-dir>
---request <id> --sha <sha>` - plus one standing reservation per worker for its own iteration
-batches, taken at launch and concluded at hand-back, with `execution slot` around each batch
+--request <id> --sha <sha>` - plus a standing reservation per worker for its own iteration
+batches on its agent host, and one on its GPU home box (executions.md, *The GPU home box*),
+taken at launch and concluded at hand-back, with `execution slot` around each batch
 bounding the box's load. A measurement on a box where those are outstanding opens with
 `execution window <box> <reserve.json>` in place of `run`, which suspends them until it concludes
 (executions.md, *The measurement window*, which also says how to batch a box's pending

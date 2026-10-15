@@ -10,7 +10,8 @@ for Codex workers are SKILL.md's *Codex model choice*.
 
 A Codex native worker can keep its turn open, so the handoff is message-shaped: before any
 fleet correctness or measurement run beyond its
-[standing reservation](executions.md#standing-iteration-reservation), the worker messages the
+[standing reservations](executions.md#standing-iteration-reservation) (its agent host's, and its
+GPU home box's where the coordinator took one), the worker messages the
 coordinator with revision, execution host, workload kind, the bounded command, checkout and
 intended log path, then waits for dispatch. The coordinator completes the reservation, runs
 `fleet-worker.sh execution run <reserve.json>` (`execution window <box> <reserve.json>` for a
