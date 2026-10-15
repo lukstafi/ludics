@@ -219,7 +219,7 @@ def tmp_sweep_stale(env: Mapping[str, str]) -> None:
     windows = os.name == "nt"
     uid = None if windows else os.geteuid()
     found: list[tuple[str, str]] = []
-    for family in ("snap", "err", "gh", "probe", "test"):
+    for family in ("snap", "err", "gh", "probe", "test", "build"):
         prefix = f"pr-review-{family}."
         for path in sorted(glob.glob(os.path.join(glob.escape(root), prefix + "*"))):
             try:

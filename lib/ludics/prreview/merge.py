@@ -8,7 +8,8 @@ seven merges). The order of the reads is the shell's, and it is load-bearing -- 
 review round:
 
   the body's closing-keyword scan (lead time), the merge queue (a close-out merge), the advisory
-  list, the gate (with the override's waiver), the close-out refusals, the base drift; then before
+  list, the gate (with the override's waiver), the close-out refusals, the base drift, the build of
+  the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue last,
   and an ABSENT verdict's base (ludics-lite#523); then the call, bound to the gated head
   (``--match-head-commit``), and the merged state confirmed over REST.
@@ -39,9 +40,10 @@ from ludics.prreview.core import (
     pr_arg,
     warn,
 )
-from ludics.prreview.drift import warn_base_drift
+from ludics.prreview.drift import Drift, read_base_drift
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.gate import Gate, GateConfig, load_gate_config
+from ludics.prreview.mergebuild import merge_build
 from ludics.prreview.threads import merge_threads_gate
 
 USAGE = "usage: merge <pr> [--override <reason>] [--wait[=seconds]] [--allow-no-verdict] [-- <gh pr merge args...>]"
@@ -135,8 +137,8 @@ class Merge:
         self.multi = MultiClose(session, repo)
         self.series = SeriesClose(session, repo)
 
-    def drift(self) -> None:
-        warn_base_drift(self.session, self.repo, self.num, self.config.stale_base)
+    def drift(self) -> Drift:
+        return read_base_drift(self.session, self.repo, self.num, self.config.stale_base)
 
     def refuse_merge_queue(self) -> None:
         """``refuse_merge_queue``: a close-out merge refuses a base with a merge queue (1), and one
@@ -482,7 +484,10 @@ class Merge:
         if policy != 0:
             return policy
         self.judge()
-        self.drift()
+        drift = self.drift()
+        # The would-be merge commit's build, where the repository asks for one (mergebuild.py,
+        # ludics-lite#611): after the drift read it is decided on, before the merge call.
+        merge_build(self.session, self.repo, self.num, self.gate.check_sha, drift, self.config.limits.contents_dir_cap)
         self.merge_call()
         return self.confirm()
 

@@ -8,12 +8,15 @@ meet, and a patch that cannot be read hunk by hunk is UNREAD, never disjoint. A 
 be completed prints UNKNOWN and is never "not behind" or "none".
 
 ``watch`` reads the same thing at the end of a round (``watch_drift_note``), all of it on stderr
-there; this module is the one port of the function both call.
+there; this module is the one port of the function both call. ``read_base_drift`` is it with what
+it established handed back (``Drift``), which ``merge``'s build of the would-be merge commit is
+decided on (mergebuild.py, ludics-lite#611).
 """
 
 import json
 import re
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import cast
 
 from ludics import cli
@@ -130,6 +133,23 @@ def _meets(a: Ranges, b: Ranges) -> bool:
     return any(lo <= xhi + 1 and xlo <= hi + 1 for (xlo, xhi) in a for (lo, hi) in b)
 
 
+@dataclass(frozen=True)
+class Drift:
+    """What one drift read established, for ``merge``'s build of the would-be merge commit
+    (mergebuild.py): ``rc`` is ``warn_base_drift``'s status; ``base_ref``, ``head_sha`` and
+    ``base_sha`` are None where they were not read; ``overlap`` is the exact intersection of the
+    paths the PR and the base's advance changed (old names of renames included), or None for
+    UNKNOWN -- never "none"; ``renamed`` maps each name a rename on either side touched to the
+    other name of that rename, so a path in the overlap can be judged by where its content went."""
+
+    rc: int
+    base_ref: str | None = None
+    head_sha: str | None = None
+    base_sha: str | None = None
+    overlap: list[str] | None = None
+    renamed: dict[str, list[str]] = field(default_factory=lambda: dict[str, list[str]]())
+
+
 def warn_base_drift(
     session: GhSession,
     repo: str,
@@ -139,9 +159,22 @@ def warn_base_drift(
     say: Callable[[str], None] = cli.say,
     err: Callable[[str], None] | None = None,
 ) -> int:
+    """``warn_base_drift``: ``read_base_drift``'s status."""
+    return read_base_drift(session, repo, pr, stale_base, say=say, err=err).rc
+
+
+def read_base_drift(
+    session: GhSession,
+    repo: str,
+    pr: str,
+    stale_base: int | None,
+    *,
+    say: Callable[[str], None] = cli.say,
+    err: Callable[[str], None] | None = None,
+) -> Drift:
     """``warn_base_drift``: the count and the overlap, said on stdout (and loudly on stderr where it
-    is to be acted on). 0 nothing to act on; 1 a warning (stale, conflicted, or an overlap whose
-    hunks meet or are unread); 3 the count or the overlap is UNKNOWN. Never a gate.
+    is to be acted on). Status 0 nothing to act on; 1 a warning (stale, conflicted, or an overlap
+    whose hunks meet or are unread); 3 the count or the overlap is UNKNOWN. Never a gate.
 
     ``say`` takes what the shell printed on stdout and ``err`` (``warn`` by default) its stderr
     lines, ``pr-review.sh: `` included: a ``watch`` round passes one stderr writer for both, so
@@ -170,7 +203,7 @@ def warn_base_drift(
             "and do not assume the base-drift file overlap is empty.",
         )
         say(f"base-drift file overlap {repo}#{pr}: UNKNOWN — the PR snapshot could not be read")
-        return 3
+        return Drift(3)
     tip = session.retry("read", ["api", f"repos/{repo}/commits/{encode_ref(base)}", "--jq", ".sha"])
     if not isinstance(tip, GhOk) or not tip.stdout:
         warn(
@@ -179,7 +212,7 @@ def warn_base_drift(
             "and do not assume the base-drift file overlap is empty.",
         )
         say(f"base-drift file overlap {repo}#{pr}: UNKNOWN — the tip of {base} could not be read")
-        return 3
+        return Drift(3, base, head_sha)
     base_sha = tip.stdout
     dirty_warn = mstate == "dirty"
     if dirty_warn:
@@ -195,7 +228,7 @@ def warn_base_drift(
             "merging.",
         )
         say(f"base-drift file overlap {repo}#{pr}: UNKNOWN — the forward compare call did not answer")
-        return 3
+        return Drift(3, base, head_sha, base_sha)
     forward = _parse(forward_r.stdout)
     count_unknown = False
     overlap_unknown = False
@@ -314,11 +347,26 @@ def warn_base_drift(
             f"{repo}#{pr} CONFLICTS with {base} (mergeable_state=dirty): nothing tests this head merged",
             f"with the current {base} while GitHub cannot build that merge — merge {base} in first.",
         )
-    if count_unknown or overlap_unknown:
-        return 3
-    if count_warn or dirty_warn or meeting:
-        return 1
-    return 0
+    known = None if overlap_unknown else overlap
+    renamed = _renames(forward, reverse) if not overlap_unknown else {}
+    rc = 3 if count_unknown or overlap_unknown else 1 if count_warn or dirty_warn or meeting else 0
+    return Drift(rc, base, head_sha, base_sha, known, renamed)
+
+
+def _renames(*docs: Json) -> dict[str, list[str]]:
+    """Each name a rename entry of the compare responses touched, mapped to its other names."""
+    out: dict[str, list[str]] = {}
+    entries: list[Json] = []
+    for doc in docs:
+        files = doc.get("files") if isinstance(doc, dict) else None
+        entries.extend(files if isinstance(files, list) else [])
+    for entry in entries:
+        if isinstance(entry, dict):
+            name, prev = entry.get("filename"), entry.get("previous_filename")
+            if isinstance(name, str) and isinstance(prev, str) and name and prev:
+                out.setdefault(name, []).append(prev)
+                out.setdefault(prev, []).append(name)
+    return out
 
 
 def _parse(text: str) -> Json:

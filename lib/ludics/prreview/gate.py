@@ -216,36 +216,8 @@ class Gate:
                 assert_never(result)
 
     def advisory_absent(self) -> int:
-        """``advisory_absent``: 0 when a directory listing that answered leaves the file out; 2 when
-        that is not established; 3 when a listing did not answer."""
-        for directory in (".github", ""):
-            leaf = "ship-pr-advisory-checks" if directory else ".github"
-            path = f"repos/{self.repo}/contents" + (f"/{directory}" if directory else "")
-            result = self.session.retry(
-                "read",
-                ["api", path, "--jq", 'if type == "array" then ((length | tostring), (.[].name)) else empty end'],
-            )
-            match result:
-                case GhUnanswered():
-                    return 3
-                case GhFailed():
-                    if not directory:
-                        return 2
-                    if "HTTP 404" in self.session.err_line():
-                        continue
-                    return 2
-                case GhOk(stdout=raw):
-                    count = raw.split("\n", 1)[0]
-                    if not is_digits(count):
-                        return 2
-                    if int(count) >= self.config.limits.contents_dir_cap:
-                        return 2
-                    if leaf in raw.split("\n"):
-                        return 2
-                    return 0
-                case _:
-                    assert_never(result)
-        return 2
+        """``advisory_absent``: ``github_file_absent`` for the advisory list."""
+        return github_file_absent(self.session, self.repo, "ship-pr-advisory-checks", self.config.limits.contents_dir_cap)
 
     # --- the check fold -------------------------------------------------------------------------------
 
@@ -838,6 +810,42 @@ def running_list(names: list[str]) -> str:
         shown = shown[: RUNNING_CHARS - 1] + "…"
     more = len(names) - RUNNING_SHOWN
     return shown + (f" (+{more} more)" if more > 0 else "")
+
+
+def github_file_absent(session: GhSession, repo: str, leaf: str, cap: int) -> int:
+    """``advisory_absent``, for any file ``.github/<leaf>`` on the default branch whose raw read
+    answered 404: 0 when a directory listing that answered leaves the file out; 2 when that is not
+    established (a 404 is also how GitHub answers a token without Contents access to a private
+    repository); 3 when a listing did not answer. The advisory list and the merge build's config
+    (mergebuild.py) are read the same way."""
+    for directory in (".github", ""):
+        name = leaf if directory else ".github"
+        path = f"repos/{repo}/contents" + (f"/{directory}" if directory else "")
+        result = session.retry(
+            "read",
+            ["api", path, "--jq", 'if type == "array" then ((length | tostring), (.[].name)) else empty end'],
+        )
+        match result:
+            case GhUnanswered():
+                return 3
+            case GhFailed():
+                if not directory:
+                    return 2
+                if "HTTP 404" in session.err_line():
+                    continue
+                return 2
+            case GhOk(stdout=raw):
+                count = raw.split("\n", 1)[0]
+                if not is_digits(count):
+                    return 2
+                if int(count) >= cap:
+                    return 2
+                if name in raw.split("\n"):
+                    return 2
+                return 0
+            case _:
+                assert_never(result)
+    return 2
 
 
 def advisory_parse(text: str, where: str) -> str | None:

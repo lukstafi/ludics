@@ -79,7 +79,8 @@ gh() {
   # The rest of the merge, answered plainly: no advisory list (a 404 the listing confirms), one
   # green check over one finished run, the repository's default branch, a one-commit series with
   # nothing to close, and no review thread.
-  "repos/$REPO/contents/.github/ship-pr-advisory-checks")
+  # And no merge-build config (ludics-lite#611), which an overlap makes merge look for.
+  "repos/$REPO/contents/.github/ship-pr-advisory-checks" | "repos/$REPO/contents/.github/ship-pr-merge-build")
     echo "gh: Not Found (HTTP 404)" >&2
     return 1
     ;;

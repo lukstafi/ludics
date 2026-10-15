@@ -1124,12 +1124,51 @@ the read.
 
 **A green head merges as it is.** An overlap with the base, same-region or not, is information, not
 a reason to rebase: read those files for semantic drift, then merge. Interactions with the siblings
-merged meanwhile are the integration loop's to catch on the merged tip (standalone, the post-merge
+merged meanwhile, past the merge build below, are the integration loop's to catch on the merged tip (standalone, the post-merge
 owner's, below), as for any clean merge. Rebase, or merge the base in where the branch is shared,
 only for a textual conflict: `CONFLICTS`, or `merge` refusing the PR as not mergeable. Push that
 resolution once the head's own run has finished, never while it is in flight: a CI with
 `cancel-in-progress` cancels that run, and its verdict on the change itself with it. A count the
 compare API could not answer prints `UNKNOWN`, which is not "not behind": check it by hand.
+
+**Where the repository asks, `merge` builds the merge commit first** (ludics-lite#611). On
+2026-10-15 ocannl-staging#1142 and #1139 merged minutes apart, each green on its own head, their
+five shared paths changed "all in DISJOINT hunks" — and the merge did not compile, leaving master
+red for an hour. A repository that names a build in `.github/ship-pr-merge-build` on its default
+branch (read like the advisory list: only a 404 the listing confirms is "no file") gets one local
+check before the merge call. When a path in the drift read's intersection matches one of the
+file's `input` globs, or the intersection is UNKNOWN, `merge` builds the gated head merged with the
+base's tip in a scratch repository that borrows the objects of the clone it runs in (nothing is
+registered in the clone, and nothing of the build outlives it), inside the box's run-time slot
+where it has slots, bounded by the file's timeout, and refuses with exit 1 and the build's output
+when it fails:
+
+```
+# pr-review.sh merge's build of the would-be merge commit (ludics-lite#611). A path is a build
+# input when an `input` glob matches the whole repository path (fnmatch: `*` crosses `/`).
+# The command is trusted as a developer's build is: its scratch repository is a place to build,
+# not a sandbox. timeout: 1 to 86400 seconds.
+command dune build @check
+input *.ml
+input *.mli
+input dune
+input */dune
+input dune-project
+input *.opam
+timeout 1200
+```
+
+Any other line refuses the merge with exit 2. The merge still waits only on the head's own verdict,
+never on the base tip's CI, so roll-forward stands, and a repository without the file merges as
+before. A shared path renamed on either side counts by its other name too. Run such a merge on a
+POSIX host (the fleet's macOS and Linux boxes; Windows is refused) from a full clone of the
+repository: one with no remote naming it, a shallow one (which may lack the merge base) or a
+partial one (a promisor remote) is exit 2. A
+build that does not finish is exit 4, one that could not run (the fetch, the slot) exit 3, a head
+that moved exit 5, a textual conflict exit 1. Nothing waives a failed build: merge the base in, fix
+the clash, push. The boundary is the intersection: a clash across paths only one side changed (a
+caller in a file the base never touched) is still the integration loop's, as is a base that moves
+again between the build and the call (`prreview/mergebuild.py` states both).
 
 **Standalone use does not watch CI at all** (since 2026-08-31): trailing failures on the merged
 base belong to the repository's **post-merge owner**, the watch or triage routine its agent notes

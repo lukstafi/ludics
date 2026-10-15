@@ -226,6 +226,13 @@ gh() {
   "repos/$REPO/contents/.github/ship-pr-advisory-checks")
     body='^claude$'
     ;;
+  # No merge-build config (ludics-lite#611), which merge looks for when its drift read is UNKNOWN
+  # (this fixture's PR carries no base ref): a 404 the listing confirms.
+  "repos/$REPO/contents/.github/ship-pr-merge-build")
+    echo "gh: Not Found (HTTP 404)" >&2
+    return 1
+    ;;
+  "repos/$REPO/contents/.github") body='[{"name":"ship-pr-advisory-checks","type":"file"}]' ;;
   "repos/ghe/repo") body='{}' ;;
   # `base`'s read of the repository it resolved: no default branch, so it stops there (exit 3).
   "repos/$REPO") body='{"default_branch":""}' ;;
@@ -811,13 +818,16 @@ test_a_forwarded_merge_is_still_gated() {
 
 # The gate's verdict is about its last round: no read after it waits a hold out (merge --wait's
 # ceiling is the gate's), so a merge never lands on a verdict the wait made old. A hold landing on
-# the drift read, the first read after the gate, stops the merge at the threads read, exit 3.
+# the drift read, the first read after the gate, stops the merge at the next read, exit 3: this
+# fixture's PR carries no base ref, so the drift is UNKNOWN, and that next read is the merge-build
+# config an UNKNOWN drift makes merge look for (ludics-lite#611); with a known drift it is the threads.
 test_no_read_after_the_gate_waits_a_hold() {
   reset_fixture
   READ_HOOK='case "$FIXTURE_FILTER" in *mergeable_state*) plant_hold "$((T0 + 600))" graphql 600 ;; esac'
   run merge cmd_merge "$REPO#7" --wait=1200
   assert_eq "$(rc merge)" 3 "the merge stops ($(err merge))"
-  assert_contains "$(err merge)" "review-threads read" "at the threads read"
+  assert_contains "$(err merge)" "could not read $REPO's .github/ship-pr-merge-build" "at the next read"
+  assert_contains "$(err merge)" "no call was made" "which the hold kept from being sent"
   assert_eq "$(cat "$SLEEP_LOG")" "" "with no wait"
   assert_eq "$(cat "$MERGE_LOG")" "" "and no merge call"
 }
