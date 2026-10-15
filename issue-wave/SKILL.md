@@ -765,9 +765,9 @@ controlled through the tools in your coordinator's file, never through those com
     run takes only an idle token and holds it for one run, so a worker homed there finds one
     token fewer for at most that run. A run it does not start is not retried: the loop tries
     again when it can next start. A measurement asked for while a loop run holds its box ends
-    that run - on the box, `kill` the pid on the first line of `<dir>/cpid` (the slot's
-    wrapper: its kill ends the batch's process group), conclude it from the directory
-    (`cancelled`), then open the window.
+    that run - `ssh <box> '~/ludics-lite/issue-wave/scripts/bg-run.sh stop <dir>'`, which ends
+    its whole tree; the run then reads DIED, which `--from-bg-run` refuses, so conclude it
+    `cancelled` with a JSON payload - then open the window.
   - **Informative, never a gate.** Its records never carry `"integration": true`, so the base
     gate never reads them (*Base gate*): launch verdicts stay the tip's own push run and the cc
     loop's records. A GPU red reaches the wave through the loop itself, below. Its request ids
