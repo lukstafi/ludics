@@ -46,6 +46,7 @@ SECTIONS=(
   "halt"
   "execution run and conclude --from-run"
   "execution conclude --from-bg-run"
+  "execution tip-run"
   "execution revisions resolve"
   "prs (the supervision read)"
   "refresh (execution-only boxes)"
@@ -2189,6 +2190,97 @@ expect "...nor does one whose anchor does not answer" 4 "EXECUTION UNREACHABLE f
   env FLEET_ANCHOR=far-anchor "${FWB[@]}" execution conclude --from-bg-run "$ok_dir" --request bg-live --sha "$sha"
 "$FW" execution list | jq -e '[.[] | select(.request_id == "bg-live") | .state] == ["launching"]' >/dev/null && ok "every refusal left the assignment dispatched" || ko "a refusal changed bg-live"
 fixture_done bg-live
+}
+
+section "execution tip-run" && {
+need_lease
+# ludics-lite#615: one integration-loop run in one call. Each case drives the real far side on
+# testbox (local), a real clone and a real detached bg-run, and reads the registry it left.
+BG="$TMP/dispatcher/issue-wave/scripts/bg-run.sh"
+torigin="$TMP/tip origin.git"; tsrc="$TMP/tip src"; tco="$TMP/tip co"
+git init -q --bare "$torigin" && git init -q -b main "$tsrc" && echo one > "$tsrc/f" &&
+  git -C "$tsrc" add f && git -C "$tsrc" commit -q -m one && git -C "$tsrc" remote add origin "$torigin" &&
+  git -C "$tsrc" push -q origin main && git -C "$torigin" symbolic-ref HEAD refs/heads/main && git clone -q "$torigin" "$tco" || ko "could not stage the tip-run repositories (setup)"
+# The tip lands after the checkout was cloned, so the first run has to fetch it.
+echo two > "$tsrc/f" && git -C "$tsrc" commit -q -am two && git -C "$tsrc" push -q origin main || ko "could not push the tip (setup)"
+tip=$(git -C "$tsrc" rev-parse HEAD)
+absent=$(printf 'c%.0s' $(seq 40))   # a commit no repository here has
+tipreq() { # <id> [sha] [jq object to add] -> a loop run's request on testbox
+  local more='{}'; [ -z "${3:-}" ] || more=$3
+  jq -n --arg id "$1" --arg sha "${2:-$tip}" --argjson more "$more" '{request_id:$id, wave:"w", worker:"coordinator",
+    transport:"coordinator", issue:"o/r integration", purpose:"GPU integration loop, cuda: fixture", agent_host:"testbox",
+    execution_host:"testbox", repository:"o/r", requested_revision:$sha, kind:"correctness"} + $more' > "$TMP/$1.json"
+  printf '%s' "$TMP/$1.json"
+}
+state_of() { "$FW" execution list | jq -r --arg id "$1" '.[] | select(.request_id == $id) | "\(.state) \(.verdict // "-")"'; }
+# Two slots, one of them the GPU token, as rog-nv-linux has four and two.
+FWT=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=2" FLEET_BOX_GPU_TOKENS="testbox=1" "$FW")
+# A worker's standing reservation on the box is no reason to yield: its batches take slots as they run.
+jq -n '{request_id:"tip-stand", wave:"w", worker:"w1", transport:"subagent", issue:"o/r#1", purpose:"iterate",
+  agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true}' > "$TMP/tip-stand.json"
+"${FWT[@]}" execution run "$TMP/tip-stand.json" >/dev/null 2>&1 || ko "could not take the standing reservation (setup)"
+expect "a loop run starts at the tip, beside a standing reservation, on a GPU token" 0 "^TIP-RUN STARTED tip-a testbox $tip /" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-a)" --checkout "$tco" -- sh -c 'echo "ran at $(git rev-parse HEAD)"; echo "exit: 0"'
+tdir=$(sed -n "s/^TIP-RUN STARTED tip-a testbox $tip //p" <<<"$out")
+case "$tdir" in "$ISSUE_WAVE_STATE/tip-runs/"*) ok "...in a run directory under the state's tip-runs by default" ;; *) ko "run directory: '$tdir' -- $out" ;; esac
+bash "$BG" wait "$tdir" --within 30 >/dev/null
+grep -q "GPU token 1 of 1 held for: " "$tdir/log" && grep -Fq "ran at $tip" "$tdir/log" && ok "...the command ran in the checkout, fetched and detached at the tip, holding the token" ||
+  ko "the run's log: $(cat "$tdir/log" 2>/dev/null)"
+"$FW" execution list | jq -e --arg d "$tdir" --arg tip "$tip" --arg co "$tco" '.[] | select(.request_id == "tip-a") |
+  .state == "running" and .observed_sha == $tip and .remote_checkout == $co and .handle == "bg-run:testbox:\($d)" and .log == "testbox:\($d)/log"' >/dev/null &&
+  ok "...and recorded it running, with its revision, checkout, handle and log" || ko "tip-a's record: $("$FW" execution list | jq -c '.[] | select(.request_id == "tip-a")')"
+expect "...which concludes from its bg-run directory" 0 '"verdict": "pass"' -- "${FWT[@]}" execution conclude --from-bg-run "$tdir" --request tip-a --sha "$tip"
+# THE YIELD: a worker's assigned leg (any non-standing record) on the box, and nothing is reserved.
+jq -n '{request_id:"tip-leg", wave:"w", worker:"w1", transport:"subagent", issue:"o/r#1", purpose:"cuda leg",
+  agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness"}' > "$TMP/tip-leg.json"
+"${FWT[@]}" execution run "$TMP/tip-leg.json" >/dev/null 2>&1 || ko "could not dispatch the worker's leg (setup)"
+expect "a loop run yields to a worker's leg on the box" 1 "^TIP-RUN NOT STARTED tip-b: testbox has tip-leg (launching) outstanding; a loop run yields to it; nothing reserved$" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-b)" --checkout "$tco" -- echo never
+[ -z "$(state_of tip-b)" ] && ok "...reserving nothing" || ko "tip-b was reserved: $(state_of tip-b)"
+fixture_done tip-leg
+# The token taken only if free now: a batch holding the box's one GPU token turns the run away, and
+# what was reserved is concluded not-launched.
+"${FWT[@]}" execution slot -- sleep 30 > "$TMP/tip-holder.log" 2>&1 &
+tholder=$!
+for _ in $(seq 40); do grep -q "held for" "$TMP/tip-holder.log" 2>/dev/null && break; sleep 1; done
+expect "a loop run never waits for a busy GPU token" 1 "^TIP-RUN NOT STARTED tip-c: the slot did not run the command (EXECUTION SLOT REFUSED testbox: all 1 GPU tokens" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-c)" --checkout "$tco" -- echo never
+[ "$(state_of tip-c)" = "concluded not-launched" ] && ok "...and concludes what it reserved not-launched" || ko "tip-c: $(state_of tip-c)"
+expect "...while a CPU run (--cpu) takes the other slot beside it" 0 "^TIP-RUN STARTED tip-d testbox $tip /" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-d)" --checkout "$tco" --runs "$TMP/tip runs" --cpu -- sh -c 'exit 3'
+tdir=$(sed -n "s/^TIP-RUN STARTED tip-d testbox $tip //p" <<<"$out")
+kill -9 "$tholder" 2>/dev/null; wait "$tholder" 2>/dev/null
+bash "$BG" wait "$tdir" --within 30 >/dev/null
+expect "...and a red command concludes as fail" 0 '"verdict": "fail"' -- "${FWT[@]}" execution conclude --from-bg-run "$tdir" --request tip-d --sha "$tip"
+# A checkout with changes of its own is never touched or run over.
+echo stray > "$tco/stray"
+expect "a dirty checkout is refused before anything touches it" 1 "^TIP-RUN NOT STARTED tip-e: $tco on testbox has uncommitted changes (1 path(s))" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-e)" --checkout "$tco" -- echo never
+[ "$(state_of tip-e)" = "concluded not-launched" ] && ok "...concluding what it reserved not-launched" || ko "tip-e: $(state_of tip-e)"
+rm -f "$tco/stray"
+expect "a revision the origin does not have is refused after one fetch" 1 "^TIP-RUN NOT STARTED tip-f: $tco on testbox does not have $absent even after fetching origin" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-f "$absent")" --checkout "$tco" -- echo never
+# A halt refuses the reservation, as for any run outside its one triage reservation.
+"$FW" halt "cuda red at $tip, rerun pending" >/dev/null
+expect "a halted fleet starts no loop run" 1 "^TIP-RUN NOT STARTED tip-g: the reservation was refused (above)" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-g)" --checkout "$tco" -- echo never
+grep -q "fleet halted" <<<"$out" && ok "...naming the halt" || ko "no halt named: $out"
+"$FW" resume-launches >/dev/null
+# The request is the loop's shape, or a usage refusal before the anchor is asked.
+expect "an abbreviated revision is refused" 2 "requested_revision must be exactly one full 40-hex commit SHA" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-h "${tip:0:12}")" --checkout "$tco" -- echo never
+expect "a standing request is refused" 2 "a loop run is never standing" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-h "$tip" '{"standing":true}')" --checkout "$tco" -- echo never
+expect "a measurement is refused" 2 "kind must be correctness" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-h "$tip" '{"kind":"measurement"}')" --checkout "$tco" -- echo never
+expect "a worker's request is refused" 2 "transport must be coordinator" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-h "$tip" '{"transport":"subagent"}')" --checkout "$tco" -- echo never
+expect "a relative checkout is refused" 2 "--checkout must be absolute" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" --checkout co -- echo never
+expect "the checkout is required" 2 "execution tip-run <json-file> --checkout <dir>" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" -- echo never
+expect "the command is required" 2 "a command to run is required" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" --checkout "$tco" --
+[ -z "$(state_of tip-h)" ] && ok "...each before anything is reserved" || ko "tip-h was reserved: $(state_of tip-h)"
+jq -n '{request_id:"tip-stand", evidence:"fixture: iteration over", verdict:"not-launched", log:"/dev/null"}' > "$TMP/tip-stand-done.json"
+"$FW" execution conclude "$TMP/tip-stand-done.json" >/dev/null || ko "could not conclude tip-stand (setup)"
 }
 
 section "execution revisions resolve" && {

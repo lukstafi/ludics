@@ -137,6 +137,16 @@
 #   fleet-worker.sh execution conclude --from-bg-run <run-dir> --request <id> --sha <sha>
 #                          | --observed-from <checkout> [--box <box>] [--checkout <text>] [--evidence <text>]   # verdict and log
 #                          # read from a bg-run.sh directory (the mapping: lib/ludics/fleetworker/execution.py)
+#   fleet-worker.sh execution tip-run <json-file> --checkout <dir> [--runs <dir>] [--cpu] -- <command...>
+#                          # one integration-loop run (ludics-lite#615): yield to anything outstanding
+#                          # on the box but standing reservations, `execution run` the request (its
+#                          # requested_revision one full SHA), check that SHA out detached in the
+#                          # clean checkout on the box, and start the command there under
+#                          # `execution slot --bg <runs> --wait 0` (a GPU token unless --cpu, only
+#                          # if one is free now); prints TIP-RUN STARTED <id> <box> <sha> <dir>
+#                          # (exit 0) or TIP-RUN NOT STARTED <id>: <why> (exit 1, anything reserved
+#                          # concluded not-launched); conclude it with --from-bg-run
+#                          # (lib/ludics/fleetworker/tiprun.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
 #                          # CI state and head age; flags <n> (5) or more rounds (read-only)
 #   fleet-worker.sh halt <reason> | resume-launches | halted
