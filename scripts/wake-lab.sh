@@ -1072,18 +1072,23 @@ anchor_alias() { # anchor_alias <box> -- the endpoint whose ssh to the anchor is
 # CAP_EXPIRED nothing came back within PROBE_CAP; anything else, the box itself did not answer
 # (ssh's own 255). The remote `|| exit` is what tells the two legs apart: ssh hands back the
 # remote command's status, so a bare inner ssh failing reads as 255, the same as the outer one.
-anchor_probe() { # anchor_probe <alias>
-  capped "$PROBE_CAP" \
+anchor_probe() { # anchor_probe <alias> <cap seconds>
+  capped "$2" \
     ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$1" \
         "ssh -o BatchMode=yes -o ConnectTimeout=10 $ANCHOR true || exit $ANCHOR_LEG_FAILED" >/dev/null 2>&1
 }
 
+# The bound is wall-clock, the way the other waits here are, and an ask is held to it too: every
+# box's leg is asked once whatever the bound (under PROBE_CAP, as one is_up probe is), and after
+# that no ask starts past the deadline, each ask is capped at the time left before it, and the
+# pause between polls never sleeps past it. So the wait ends by the later of the deadline and the
+# first pass's end, never a PROBE_CAP per box beyond the deadline.
 wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it works, for up to ANCHOR_WAIT_SECONDS
-  local n a i all line names=() aliases=() rcs=() deadline=$((SECONDS + ANCHOR_WAIT_SECONDS))
+  local n a i all line left cap names=() aliases=() rcs=() caps=() first=1 deadline=$((SECONDS + ANCHOR_WAIT_SECONDS))
   ANCHOR_FAILED=""
   if [ -z "$ANCHOR" ]; then echo "anchor leg not checked: WAKE_LAB_ANCHOR is empty"; return 0; fi
   for n in "$@"; do
-    if a=$(anchor_alias "$n"); then names+=("$n"); aliases+=("$a"); rcs+=(1)
+    if a=$(anchor_alias "$n"); then names+=("$n"); aliases+=("$a"); rcs+=(1); caps+=("$PROBE_CAP")
     else echo "anchor leg not checked on $n: its kind is $(box_kind "$n"), and only a linux box is asked"; fi
   done
   [ ${#names[@]} -gt 0 ] || return 0
@@ -1092,14 +1097,24 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
     all=1; line="anchor leg to $ANCHOR: "
     for ((i = 0; i < ${#names[@]}; i++)); do
       # A leg that answered once is not asked again: the question is whether it has come up.
-      if [ "${rcs[i]}" != 0 ]; then anchor_probe "${aliases[i]}"; rcs[i]=$?; fi
+      if [ "${rcs[i]}" != 0 ]; then
+        cap=$PROBE_CAP; left=$((deadline - SECONDS))
+        if [ "$first" = 1 ] || [ "$left" -gt 0 ]; then
+          [ "$first" = 1 ] || [ "$left" -ge "$cap" ] || cap=$left
+          caps[i]=$cap
+          anchor_probe "${aliases[i]}" "$cap"; rcs[i]=$?
+        fi
+      fi
       if [ "${rcs[i]}" = 0 ]; then line="$line${names[i]}=OK "
       else line="$line${names[i]}=-- "; all=0; fi
     done
+    first=0
     printf '%s(%s)\n' "$line" "$(date +%H:%M:%S)"
     [ "$all" = 1 ] && return 0
-    [ "$SECONDS" -ge "$deadline" ] && break
-    sleep "$ANCHOR_POLL_SECONDS"
+    left=$((deadline - SECONDS))
+    [ "$left" -gt 0 ] || break
+    if [ "$left" -ge "$ANCHOR_POLL_SECONDS" ]; then sleep "$ANCHOR_POLL_SECONDS"; else sleep "$left"; fi
+    [ "$SECONDS" -lt "$deadline" ] || break
   done
   for ((i = 0; i < ${#names[@]}; i++)); do
     n=${names[i]}; a=${aliases[i]}
@@ -1108,7 +1123,7 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
       "$ANCHOR_LEG_FAILED")
         printf '%s\n' "anchor leg NOT up on $n: $a answers, but its own 'ssh -o BatchMode=yes $ANCHOR true' still failed after ${ANCHOR_WAIT_SECONDS}s; a fleet-worker.sh run there would refuse UNREACHABLE $ANCHOR" ;;
       "$CAP_EXPIRED")
-        printf '%s\n' "anchor leg NOT up on $n: its check through $a did not return within ${PROBE_CAP}s" ;;
+        printf '%s\n' "anchor leg NOT up on $n: its last check through $a did not return within its ${caps[i]}s cap" ;;
       *)
         printf '%s\n' "anchor leg NOT up on $n: $a itself stopped answering ssh (status ${rcs[i]}) while its ssh to $ANCHOR was asked" ;;
     esac

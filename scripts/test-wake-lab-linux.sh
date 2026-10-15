@@ -38,8 +38,12 @@ case "$*" in
     # and then the box's own ssh to the anchor fails the first $SSH_ANCHOR_AFTER times it is asked
     # (counted in this log, this ask included), with the status the probe's `|| exit` names: a
     # leg still coming up after a wake.
+    # $SSH_ANCHOR_HANG_AFTER=<n> wedges every ask after the n-th instead, the way a far side that
+    # accepted the connection and never answered does: only the script's cap ends it.
     [ "${SSH_UP:-0}" = 1 ] || exit 255
-    [ "$(grep -c -- ' true || exit ' "$SSH_LOG")" -gt "${SSH_ANCHOR_AFTER:-0}" ] && exit 0
+    asks=$(grep -c -- ' true || exit ' "$SSH_LOG")
+    [ -n "${SSH_ANCHOR_HANG_AFTER:-}" ] && [ "$asks" -gt "$SSH_ANCHOR_HANG_AFTER" ] && exec sleep 60
+    [ "$asks" -gt "${SSH_ANCHOR_AFTER:-0}" ] && exit 0
     all=$*; exit "${all##* }" ;;
 esac
 case " $* " in
@@ -218,6 +222,10 @@ check 'a box whose anchor leg comes up late is waited for, then all up' '[ "$rc"
 out=$(SSH_UP=1 SSH_ANCHOR_AFTER=1000 WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_POLL_SECONDS=0 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?; last=${out##*$'\n'}
 want_leg="anchor leg NOT up on tuf: tuf-amd-linux answers, but its own 'ssh -o BatchMode=yes mac-studio true' still failed"
 check 'an anchor leg that never comes up is NOT all up, naming that leg and not the wake' '[ "$rc" = 1 ] && [ "$last" = "NOT all up: no ssh to mac-studio yet from: tuf (see above)" ] && [[ "$out" == *"$want_leg"* ]] && ! grep -qx "all up" <<<"$out" && [[ "$out" != *"did NOT wake"* ]]'
+: >"$SSH_LOG"
+started=$SECONDS
+out=$(SSH_UP=1 SSH_ANCHOR_AFTER=1000 SSH_ANCHOR_HANG_AFTER=1 WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAIT_SECONDS=3 WAKE_LAB_ANCHOR_POLL_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?; took=$((SECONDS - started))
+check '...and an ask that wedges after the first is cut at the time left, not at the 20s probe cap' '[ "$rc" = 1 ] && [ "$took" -lt 12 ] && [[ "$out" == *"anchor leg NOT up on tuf: its last check through tuf-amd-linux did not return within its "[1-3]"s cap"* ]]'
 : >"$SSH_LOG"
 out=$(SSH_UP=0 WAKE_LAB_WAIT_SECONDS=0 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
 check 'a box that never answered is reported not woken, and its anchor leg is never asked' '[ "$rc" = 1 ] && [[ "$out" == *"did NOT wake: tuf"* ]] && ! grep -q " true || exit " "$SSH_LOG" && [[ "$out" != *"anchor leg"* ]]'

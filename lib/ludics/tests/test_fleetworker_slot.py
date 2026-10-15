@@ -235,6 +235,8 @@ class RegistryUnread(unittest.TestCase):
                                                    " last few minutes may only need its ssh to far-anchor"))
         self.assertIn("retry", unread.lines[1])
         self.assertIn("wake-lab.sh --wait", unread.lines[1])
+        # ...qualified: wake-lab asks a native-Linux box's leg and never a WSL guest's.
+        self.assertIn("on a native-Linux box", unread.lines[1])
 
     def test_a_far_side_failure_is_not_given_the_wake_hint(self) -> None:
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
