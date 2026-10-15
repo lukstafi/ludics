@@ -123,7 +123,9 @@
 #                          # measurement, and what `slot` runs inside; with --request <id> (the
 #                          # measurement's), it first takes every slot of the box (waiting for
 #                          # running batches), and an `execution slot` inside it runs under the
-#                          # hold instead of refusing; --deadline as for `slot`
+#                          # hold instead of refusing; it records the box's GPU co-tenants at
+#                          # its start and end, which the measurement's conclusion cites in its
+#                          # evidence; --deadline as for `slot`
 #   fleet-worker.sh execution reserve|dispatch|record|reconcile|conclude <json-file>
 #                          # every commit a payload names must exist on GitHub in its repository
 #   fleet-worker.sh execution conclude <json-file> --observed-from <checkout>   # observed_sha is

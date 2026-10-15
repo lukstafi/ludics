@@ -3000,6 +3000,38 @@ fixture_done hold-measure-2
 expect "...and with nothing outstanding the batch runs under the hold, which holds the box's slots" 0 "inside the enclosing .execution hold --request hold-measure., which holds this box's slots (the registry has no outstanding measurement hold-measure on testbox); no slot taken, for: echo after-measurements" -- \
   "${FWS[@]}" execution hold --request hold-measure -- "$FW" execution slot --wait 0 -- echo after-measurements
 grep -q "^after-measurements$" <<<"$out" && ok "...and runs" || ko "the batch under a hold with nothing outstanding did not run: $out"
+# THE CO-TENANTS (ludics-lite#566): a measurement's hold records the box's GPU-using processes
+# outside its own tree when it opens and when it closes, and the measurement's conclusion cites the
+# record. The probe is a stub nvidia-smi listing the hold itself (its parent) and every pid in
+# $GPU_APPS: a planted sleep, and a leftover the hold's command adds to the list and leaves running in
+# its group. Only the planted one is a co-tenant. The other probes are pointed at nothing.
+mkdir -p "$TMP/gpu"
+printf '%s\n' '#!/bin/sh' 'echo "$PPID, fleet-hold, 1"' 'while read -r pid; do echo "$pid, stub-gpu-app, 640"; done < "$GPU_APPS"' > "$TMP/gpu/nvidia-smi"
+chmod +x "$TMP/gpu/nvidia-smi"
+FWG=(env GPU_APPS="$TMP/gpu/apps" FLEET_NVIDIA_SMI="$TMP/gpu/nvidia-smi" FLEET_DRM_PROC="$TMP/gpu/no-proc" FLEET_IOREG="$TMP/gpu/no-ioreg" "${FWS[@]}")
+gpurec="$HOME/.local/state/fleet-execution-slots/testbox/measurement.gpu-measure.gpu.jsonl"
+"${FWS[@]}" execution run "$(slotreq gpu-measure measurement)" >/dev/null || ko "could not reserve the GPU measurement (setup)"
+sleep "${GM}20" &
+planted=$!
+printf '%s\n' "$planted" > "$TMP/gpu/apps"
+expect "a measurement hold's record lists a planted GPU-using process" 0 "measurement gpu-measure: GPU co-tenants at open: 1 \[pid $planted [^ ]* sleep ${GM}20 (nvidia-smi, 640 MiB)\] (nvidia-smi ran)" -- \
+  "${FWG[@]}" execution hold --request gpu-measure -- sh -c 'sleep "$1" & echo "$!" >> "$GPU_APPS"' _ "${GM}21"
+grep -q "GPU co-tenants at close: 1 \[pid $planted " <<<"$out" && ok "...at its close too, leaving out the hold and its command's leftover" || ko "the closing snapshot: $out"
+pkill -f "$(gmre 21)"
+[ "$(jq -sc --argjson p "$planted" '[.[] | [.event, ([.gpu_processes[].pid] == [$p]), .own_tree_gpu_processes]]' "$gpurec" 2>&1)" = '[["opened",true,1],["closed",true,2]]' ] &&
+  ok "...in the record on the box: one opened and one closed line, the hold's own tree counted, not listed" || ko "the co-tenant record: $(cat "$gpurec" 2>&1)"
+"${FWG[@]}" execution hold --request gpu-measure -- "$FW" execution hold --request gpu-measure -- true >/dev/null 2>&1
+[ "$(grep -c '' "$gpurec")" -eq 4 ] && ok "...and a hold nested in a hold of the same measurement adds no snapshot of its own" || ko "the nested hold's record: $(cat "$gpurec")"
+kill "$planted" 2>/dev/null; wait "$planted" 2>/dev/null
+jq -n '{request_id:"gpu-measure", verdict:"pass", log:"/dev/null", evidence:"fixture: measured",
+  observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-done.json"
+expect "the measurement's conclusion carries the co-tenant record in its evidence" 0 "fixture: measured; GPU co-tenants on testbox (testbox:$gpurec): hold [0-9]* opened [^ ]*: 1 \[pid $planted " -- \
+  "${FWS[@]}" execution conclude "$TMP/gpu-done.json"
+"${FWS[@]}" execution run "$(slotreq gpu-none measurement)" >/dev/null || ko "could not reserve the second GPU measurement (setup)"
+jq -n '{request_id:"gpu-none", verdict:"pass", log:"/dev/null", evidence:"fixture: measured",
+  observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-none.json"
+expect "...and one whose box holds no record says so" 0 "no GPU co-tenant record on testbox (.*): the measurement ran under no .execution hold --request gpu-none. there" -- \
+  "${FWS[@]}" execution conclude "$TMP/gpu-none.json"
 # THE MEASUREMENT WINDOW (ludics-lite#481): a measurement on a box whose workers hold standing
 # reservations suspends them; a batch there is refused naming the window, the measurement's own
 # run is still admitted inside its hold (#480), and the conclusion restores the standing ones.

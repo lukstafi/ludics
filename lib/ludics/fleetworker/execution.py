@@ -15,6 +15,11 @@ run on the box that holds the run, and read its record with the tools that wrote
 
 Every commit a payload names is checked before the anchor is asked (ludics-lite#561): what is read,
 where, and the outcomes are ``ludics.fleetworker.revision``'s header.
+
+THE CO-TENANT EVIDENCE (ludics-lite#566): a conclusion of a MEASUREMENT, in any of its three forms,
+gets a summary of the GPU co-tenant record its ``execution hold --request`` left on the execution
+host (``cotenants.py``) appended to its evidence, read there by ``GPU_RECORD``. Nothing else is read,
+and a ``not-launched`` conclusion, which describes no run, reads nothing.
 """
 
 import json
@@ -25,13 +30,13 @@ from dataclasses import dataclass
 from typing import Any, assert_never, cast
 
 from ludics import cli
-from ludics.fleetworker import revision
+from ludics.fleetworker import cotenants, revision
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
 from ludics.fleetworker.preflight import knob, refresh_box
-from ludics.fleetworker.transport import Done, err, fleet_name, prelude, run, run_on, substitution
+from ludics.fleetworker.transport import Done, emit_var, err, fleet_name, prelude, run, run_on, substitution
 
 REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "registry.py")
 
@@ -204,6 +209,16 @@ refuse() { echo "OBSERVED-FROM REFUSED: $*"; exit 1; }
 [ -d "$co" ] || refuse "no checkout $co on $BOX"
 head=$(git -C "$co" rev-parse --verify -q 'HEAD^{commit}') || refuse "cannot read HEAD of $co on $BOX (not a git checkout, or no commit yet)"
 printf 'head=%s\n' "$head"
+"""
+
+
+# Far side of THE CO-TENANT EVIDENCE, on the execution host: the measurement's GPU co-tenant record,
+# which every `execution hold --request <id>` there appended to (cotenants.py). Args: box, request id.
+# Prints `none=<path>`, or `path=<path>` and the record's lines (its first MiB).
+GPU_RECORD = r"""f="$SLOT_STATE/$1/measurement.$2.gpu.jsonl"
+[ -f "$f" ] || { printf 'none=%s\n' "$f"; exit 0; }
+printf 'path=%s\n' "$f"
+head -c 1048576 "$f"
 """
 
 
@@ -389,6 +404,49 @@ def observed_sha_of(cfg: Config, record: dict[str, Any], host: str, checkout: st
     if record.get("state") == "concluded" and isinstance(recorded, str) and recorded:
         return recorded
     return observed_head(cfg, host, checkout)
+
+
+def gpu_record_evidence(cfg: Config, host: str, request: str) -> str:
+    """THE CO-TENANT EVIDENCE: one clause for the conclusion's evidence, read on ``host``."""
+    script = prelude(cfg, host) + emit_var("SLOT_STATE", cfg.slot_state) + GPU_RECORD
+    done = run_on(cfg, host, script, [host, request], capture=True)
+    if done.unreachable:
+        return f"GPU co-tenant record unread: {host} did not answer"
+    first, _, rest = done.out.partition("\n")
+    if done.rc != 0 or not first.startswith(("path=", "none=")):
+        return f"GPU co-tenant record unread on {host}: exit {done.rc}, {first[:200]!r}"
+    path = first.split("=", 1)[1]
+    if first.startswith("none="):
+        return (f"no GPU co-tenant record on {host} ({path}): the measurement ran under no"
+                f" `execution hold --request {request}` there, or under one older than ludics-lite#566")
+    return f"GPU co-tenants on {host} ({host}:{path}): {cotenants.summary(cotenants.read_lines(rest))}"
+
+
+def with_gpu_record(cfg: Config, payload: str) -> str:
+    """A conclusion payload with THE CO-TENANT EVIDENCE appended, when it concludes a measurement
+    that ran; any other payload unchanged, as is one the registry will refuse on shape anyway (no
+    object, no request id, no evidence) and one whose record cannot be read here (the conclusion
+    then meets the same anchor)."""
+    try:
+        decoded: Any = json.loads(payload)
+    except ValueError:
+        return payload
+    if not isinstance(decoded, dict):
+        return payload
+    data = cast(dict[str, Any], decoded)
+    request, evidence = data.get("request_id"), data.get("evidence")
+    if not (isinstance(request, str) and request and isinstance(evidence, str) and evidence.strip()):
+        return payload
+    if data.get("verdict") == "not-launched":
+        return payload
+    done = listing(cfg)
+    records = records_of(done.out) if done.rc == 0 else None
+    record = record_of(records or [], request)
+    if record is None or field(record, "request", "kind") != "measurement":
+        return payload
+    host = jq_text(field(record, "request", "execution_host"))
+    data["evidence"] = f"{evidence}; {gpu_record_evidence(cfg, host, request)}"
+    return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
 
 # --- the endpoint map and the refresh after a dispatch -------------------------------------------
@@ -827,6 +885,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
                 payload = from_bg_run_payload(cfg, args)
             else:
                 payload = conclude_payload(cfg, args)
+            payload = with_gpu_record(cfg, payload)
         case "reserve" | "run" | "dispatch" | "record" | "reconcile":
             payload = read_payload(action, args)
             check_identity(cfg)

@@ -37,6 +37,10 @@ brief:
   process its parent, and ``--deadline``, a signal to this process, or a SIGKILL of it (through a
   guardian) ends the whole group; a deadline exits 124. A nested batch is exec'd in its enclosing
   group instead (``run_command``), so the enclosing wrapper's group kill reaches its tree.
+- THE CO-TENANTS (ludics-lite#566, ``cotenants.py``): a ``hold --request`` records the box's
+  GPU-using processes outside its own tree when its command starts and once it has ended, into
+  ``<slot dir>/<box>/measurement.<id>.gpu.jsonl``, which the measurement's conclusion cites. A hold
+  nested in a live hold of the same measurement records nothing: its enclosing hold does.
 
 A wrapper must not change a batch's verdict: the command's status is this process's, a command
 killed by a signal kills this process with the same one, and the signal dispositions Python
@@ -207,7 +211,7 @@ import shutil
 import signal
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn, assert_never
 
@@ -220,7 +224,7 @@ from ludics.fleetworker.config import (
     in_roster,
     short_hostname,
 )
-from ludics.fleetworker import group
+from ludics.fleetworker import cotenants, group
 from ludics.fleetworker.execution import field, jq_text, listing, records_of, registry_source
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import substitution
@@ -454,7 +458,8 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
 
 
 def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, why: str,
-                deadline: int | None, nested: bool = False) -> NoReturn:
+                deadline: int | None, nested: bool = False,
+                after: Callable[[int | None], None] | None = None) -> NoReturn:
     """Run the command: resolved before the guard (a command that cannot be found takes no
     inhibitor), the guard beside it when there is one, then the command as the leader of a process
     group of its own, which a deadline or a signal to this wrapper ends (THE GROUP, ``group.py``).
@@ -464,7 +469,10 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, w
     whole tree (ludics-lite#566): a group of its own would leave that tree to this wrapper's own
     reaping. Only a nested ``--deadline`` starts one, since a bound needs a group to end; the
     enclosing kill still reaches it through this wrapper, which ends its group when signalled, and
-    through its guardian when this wrapper is killed outright."""
+    through its guardian when this wrapper is killed outright.
+
+    ``after`` runs once the command's leader has ended, however it ended, before this wrapper
+    exits or dies: it is given the command's group id (THE CO-TENANTS' closing snapshot)."""
     if shutil.which(command[0]) is None:
         refuse_unrunnable(prefix, box, command, "no such executable")
     if not (nested and deadline is None):
@@ -475,11 +483,14 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, w
     sys.stderr.flush()
     if nested and deadline is None:
         exec_command(prefix, box, command)
+    pgid: list[int] = []
     try:
-        outcome = group.run(command, deadline, f"{prefix} {box}", errline)
+        outcome = group.run(command, deadline, f"{prefix} {box}", errline, started=pgid.append)
     except OSError as exc:
         # A script whose interpreter is missing passes the lookup above and fails here.
         refuse_unrunnable(prefix, box, command, exc)
+    if after is not None:
+        after(pgid[0] if pgid else None)
     match outcome:
         case group.Exited(code=code):
             raise cli.Exit(code)
@@ -548,7 +559,8 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
 def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: int,
          command: Sequence[str], deadline: int | None) -> NoReturn:
     """``execution hold``: with a measurement (``hold_lock``), THE DRAIN and the marker's shared lock
-    first, then the command under the guard."""
+    first, then the command under the guard, THE CO-TENANTS recorded before and after it."""
+    after: Callable[[int | None], None] | None = None
     if hold_lock:
         request = marker.split()[1]
         directory = os.path.dirname(hold_lock)
@@ -560,7 +572,8 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
             pass
         # A hold nested in a live hold of this same measurement finds the slots held by its
         # enclosing one, and waiting for them would wait for itself.
-        if os.environ.get("FLEET_MEASUREMENT_HELD") == marker and _is_held(hold_lock):
+        nested = os.environ.get("FLEET_MEASUREMENT_HELD") == marker and _is_held(hold_lock) is True
+        if nested:
             indices = set[int]()
         for index in sorted(indices):
             try:
@@ -587,7 +600,35 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
             os.environ["FLEET_MEASUREMENT_HELD"] = marker
             errline(f"{HOLD_PREFIX} {box}: measurement {request} held; an `execution slot` inside it runs"
                     " under this hold")
-    run_command(HOLD_PREFIX, box, command, inhibitor, why, deadline)
+        # THE CO-TENANTS: the enclosing hold of a nested one records them for the measurement.
+        if not nested:
+            after = record_cotenants(box, request, directory)
+    run_command(HOLD_PREFIX, box, command, inhibitor, why, deadline, after=after)
+
+
+def record_cotenants(box: str, request: str, directory: str) -> Callable[[int | None], None]:
+    """THE CO-TENANTS (``cotenants.py``): the opening snapshot now, and the closing one the returned
+    function takes once the command's leader has ended. Fail-open, and loudly: a record that cannot
+    be written is a WARNING, never a refused measurement."""
+    path = cotenants.record_path(directory, request)
+    label = f"{HOLD_PREFIX} {box}: measurement {request}"
+
+    def take(event: str, pgid: int | None) -> dict[str, Any]:
+        line = cotenants.snapshot(os.environ, event, request, box, os.getpid(), pgid)
+        try:
+            cotenants.append(path, line)
+        except OSError as exc:
+            errline(f"{label}: WARNING: the GPU co-tenants {event} are not recorded for the conclusion,"
+                    f" only said here -- {path}: {exc}")
+        return line
+
+    opened = take("opened", None)
+    errline(f"{label}: {cotenants.opened_line(opened)}")
+
+    def close(pgid: int | None) -> None:
+        errline(f"{label}: {cotenants.closed_line(opened, take('closed', pgid))}")
+
+    return close
 
 
 def inhibitor_path(cfg: Config) -> str:
