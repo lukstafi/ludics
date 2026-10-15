@@ -435,9 +435,12 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
         return refused(f"{request} follows {requested} but records no resolved_revision (it was never dispatched);"
                        " reconcile it to reserved and dispatch it, which resolves the branch")
 
+    # One random token per invocation: the status line's (see the header), and the staged patch's
+    # name on the box, which no other leg's can share.
+    token = secrets.token_hex(8)
     pname = ""
     if control:
-        pname = f"{re.sub(r'[^A-Za-z0-9._-]', '_', request)}.{os.getpid()}.patch"
+        pname = f"{re.sub(r'[^A-Za-z0-9._-]', '_', request)}.{token}.patch"
         sent = put_file(cfg, box, control, f"{cfg.state}/leg-control/{pname}")
         if sent.rc != 0:
             if sent.unreachable:
@@ -446,7 +449,6 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
             return refused(f"the control patch could not be copied to {box} (exit {sent.rc}); nothing ran")
 
     script = prelude(cfg, box) + LEG
-    token = secrets.token_hex(8)
     fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
     if not SECONDS.fullmatch(fetch_timeout):
         die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
