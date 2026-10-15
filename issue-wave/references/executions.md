@@ -596,7 +596,8 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   the control's revert: a second leg there is refused, not queued, since a worktree moved under a
   running leg would make it test another commit than the one it reports.
 - **The runner.** The command after `--` runs in the worktree with its words passed through
-  untouched, stdin closed, each run a nested `execution slot --deadline` (the leg's, or a day), so
+  untouched, stdin closed, each run a nested `execution slot --deadline` (the leg's, or a day, per run: the enclosing
+  slot or hold takes none), so
   whatever it leaves running in the background is ended with it rather than overlapping the next
   run ([the command's process group](#the-os-level-sleep-guard)). Its status is the leg's, unchanged (a 125, a 128 or more included), and
   the last line on stdout is `execution-leg: exit: <status>`, the sentinel `conclude --from-bg-run`
@@ -611,7 +612,8 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   the patch reverted either way; a patch that cannot be reverted is `CONTROL NOT REVERTED`, exit 1,
   whatever the control did. A control that was not exercised is `NO CONTROL`, exit 1, never a
   pass: the runner never started, could not be executed with the patch applied (126, 127), or the
-  main run left the worktree at another commit than the one the leg reports, or not clean. A runner
+  main run left the worktree at another commit than the one the leg reports, or not clean, or the
+  control left it not clean after the revert. A runner
   that is no executable command in the worktree is refused before it runs. A failed main run is the leg's status, and the control does not
   run.
 

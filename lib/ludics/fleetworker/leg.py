@@ -50,7 +50,8 @@ output.
 Each run (the main one, the control) is a nested ``execution slot --deadline`` inside the leg's slot
 or hold, taking none of its own: its process group is reaped when the runner returns, so nothing the
 runner left in the background overlaps the next run. The bound is the leg's ``--deadline``, or a
-day.
+day, for each run; the enclosing slot or hold takes none, so a main run cannot spend the control's.
+After the control, the reverted worktree must be clean at the commit again, or it is NO CONTROL.
 
 THE CONTROL. With ``--control <patch>`` (a file on this box, copied to the box's state directory),
 the patch must apply (``git apply --check``) before anything runs. After a main run that passed it
@@ -181,6 +182,7 @@ if [ -e "$wt" ] || [ -L "$wt" ]; then
   top=$(cd "$wt" && git rev-parse --show-toplevel 2>/dev/null)
   [ -n "$top" ] && [ "$(cd "$top" && pwd -P)" = "$(cd "$wt" && pwd -P)" ] || refuse "--worktree $wt is inside a worktree, not its top"
   [ "$(gitdir "$wt")" != "$cdir" ] || refuse "--worktree $wt is the repository's main checkout; a leg moves only a linked worktree"
+  [ "$(cd "$wt" && pwd -P)" != "$(cd "$co" && pwd -P)" ] || refuse "--worktree $wt is --checkout $co itself; a leg moves only another worktree"
   dirty=$(dirt "$wt") || refuse "cannot read the status of $wt"
   [ -z "$dirty" ] || refuse "--worktree $wt has uncommitted changes ($(printf '%s\n' "$dirty" | grep -c '') path(s)), which a leg never overwrites: clean it, or name another worktree"
   git -C "$wt" checkout -q --detach "$sha" </dev/null >&2 || refuse "git checkout --detach $sha in $wt failed (above)"
@@ -287,6 +289,14 @@ if [ "$(fact revert)" != ok ] && grep -qx applied "$results"; then
   else
     # The worktree is not the commit the leg reports, so no control verdict stands on it.
     say "CONTROL NOT REVERTED: the control patch could not be reverted in $wt (above), which a later leg will refuse until it is cleaned; no control verdict"
+    finish 1
+  fi
+fi
+# Reverted is not clean: the control run may have left files of its own, or moved HEAD.
+if grep -qx applied "$results"; then
+  left=$(dirt "$wt"); now=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)
+  if [ -n "$left" ] || [ "$now" != "$head" ]; then
+    say "NO CONTROL: after the control run $wt is not clean at $head ($(printf '%s\n' "$left" | head -n 3 | tr '\n' ';') HEAD ${now:-unreadable}), which a later leg will refuse until it is cleaned; no control verdict"
     finish 1
   fi
 fi
@@ -403,11 +413,17 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
         extra = [flag for flag in slot_flags if flag.startswith("--") and flag != "--deadline"]
         if extra:
             die(f"execution leg: {request} is a measurement, run under `execution hold`, which takes no slot: drop {' '.join(extra)}")
+    # The bound is each run's (the leg's --deadline, or a day), carried by the nested slot of each
+    # run, which reaps that run's group as it ends; the enclosing wrapper, holding both runs, takes
+    # none, so a main run cannot spend the control's time.
+    deadline = slot_flags[slot_flags.index("--deadline") + 1] if "--deadline" in slot_flags else RUN_BOUND
+    if "--deadline" in slot_flags:
+        at = slot_flags.index("--deadline")
+        slot_flags = slot_flags[:at] + slot_flags[at + 2 :]
+    if kind == "measurement":
         wrap = ["execution", "hold", "--request", request, *slot_flags]
     else:
         wrap = ["execution", "slot", *slot_flags]
-    # The runs' own bound: the leg's --deadline, or a day, so each run's group is reaped as it ends.
-    deadline = slot_flags[slot_flags.index("--deadline") + 1] if "--deadline" in slot_flags else RUN_BOUND
     nest = ["--deadline", deadline, *[flag for flag in slot_flags if flag in ("--cpu", "--gpu")]]
     resolved = record.get("resolved_revision")
     want = resolved if isinstance(resolved, str) and OBJECT_ID.fullmatch(resolved) else ""

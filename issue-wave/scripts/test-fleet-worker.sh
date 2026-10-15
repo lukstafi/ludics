@@ -2584,11 +2584,11 @@ expect "a control the runner catches makes the leg pass" 0 "control failed as re
 expect "a control the runner does not catch fails the leg" 1 "CONTROL PASSED: the runner passed with" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/harmless.patch" -- tools/check.sh
 [ "$(last_line)" = "execution-leg: exit: 1" ] && [ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...reverted, its sentinel 1" || ko "last line $(last_line)"
-expect "a control run cut by --deadline is no verdict, its status kept" 124 "the control run was ended before it returned (wrapper exit 124)" -- \
+expect "a control run cut by --deadline is no verdict, its status kept" 124 "the control run was cut (exit 124): no control verdict" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" --deadline 3 -- \
   sh -c 'if [ -e broken ]; then sleep 30; fi; exit 0'
-grep -q "control patch reverted after the control run$" <<<"$out" && [ -z "$(git -C "$lwt" status --porcelain)" ] &&
-  ok "...and the patch reverted once the wrapper has reaped the run" || ko "the cut control left the worktree: $(git -C "$lwt" status --porcelain) -- $out"
+grep -q "EXECUTION SLOT testbox: --deadline 3s reached" <<<"$out" && [ -z "$(git -C "$lwt" status --porcelain)" ] &&
+  ok "...cut by the control run's own nested deadline, and the patch reverted" || ko "the cut control left the worktree: $(git -C "$lwt" status --porcelain) -- $out"
 expect "a control patch the run made impossible to revert fails the leg, whatever the control did" 1 "CONTROL NOT REVERTED: the control patch could not be reverted" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
   sh -c 'if [ -e broken ]; then echo changed > broken; exit 3; fi; exit 0'
@@ -2640,6 +2640,17 @@ expect "a main run that moves HEAD gets no control on the commit it left" 1 "NO 
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
   sh -c 'if [ ! -e broken ]; then git checkout -q --detach HEAD~1; fi; exit 0'
 grep -q "control patch applied" <<<"$out" && ko "the control ran on a moved worktree: $out" || ok "...the patch never applied"
+expect "a control run that leaves residue is no control, never a pass" 1 "NO CONTROL: after the control run $lwt is not clean at $lb (?? residue;" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
+  sh -c 'if [ -e broken ]; then : > residue; exit 3; fi; exit 0'
+rm -f "$lwt/residue"
+# Each run carries the leg's --deadline; the wrapper holding both runs carries none, so a main run
+# that spends most of it leaves the control its own.
+expect "a controlled leg gives each run the whole --deadline" 0 "control failed as required (exit 3)" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" --deadline 4 -- \
+  sh -c 'sleep 3; if [ -e broken ]; then exit 3; fi; exit 0'
+expect "the checkout spelled another way is still no worktree to move" 1 "is --checkout" -- \
+  leg --request leg-a --rev main --checkout "$lwt" --worktree "$lwt/." -- tools/check.sh
 expect "a runner that is no executable command is refused, never a status" 1 "EXECUTION LEG REFUSED testbox: the runner is not an executable command" -- \
   leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/no-such-runner.sh
 grep -q "execution-leg: exit" <<<"$out" && ko "an unexecutable runner printed a sentinel: $out" || ok "...with no sentinel"
