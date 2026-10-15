@@ -15,8 +15,8 @@ One line per snapshot, its fields:
 - ``request_id``, ``box``: the registry's own names for the measurement and its execution host;
 - ``hold_pid``: the hold's pid, which pairs a hold's ``opened`` line with its ``closed`` one (a box
   may run several holds of one measurement, one after another);
-- ``event``: ``opened`` (after THE DRAIN, before the command starts) or ``closed`` (after the
-  command's leader has ended, whatever ended it);
+- ``event``: ``opened`` (once the command has started, after THE DRAIN; a command that cannot be
+  started records nothing) or ``closed`` (after the command's leader has ended, whatever ended it);
 - ``at``: UTC, ISO 8601, as the registry's ``created_at``;
 - ``probes``: one ``{probe, status, detail}`` per source below, ``status`` ``ran``, ``absent`` (no
   such source on this box) or ``failed``;
@@ -41,8 +41,12 @@ THE HOLD'S OWN TREE is this process, its descendants, and every member of the co
 group (group.py: the command leads one), which is where its leftovers stay after the leader has
 ended. A hold nested in a live hold of the same measurement also leaves out its own process group,
 which is its enclosing hold's command group: the measurement itself. Its ancestors are not: the
-hold's caller (a terminal, an agent's desktop app) shares the GPU like any other process. A process that left the command's group by ``setsid`` and was reparented
-away from the hold counts as a co-tenant too: it is no longer the hold's to end.
+hold's caller (a terminal, an agent's desktop app) shares the GPU like any other process. A process
+that left the command's group into a session of its own -- a ``setsid`` daemon, the command of a
+nested hold (group.py starts one per hold) -- and outlived what started it, so that it was
+reparented away from the hold, counts as a co-tenant: it is no longer the hold's to end, and the
+record lists it by its command line, so a reader sees what it was. The tree is read twice, before
+and after the probes, so a member that ends or starts while they run is still the hold's own.
 
 THE PROBES, a fail-closed allowlist: each reads exactly this, and nothing else counts as a GPU
 process.
@@ -86,6 +90,7 @@ from typing import Any, cast
 PROBE_TIMEOUT = 15  # seconds per probe; nvidia-smi answers in about one
 COMMAND_WIDTH = 300  # characters of a process's args kept in the record
 SHOWN = 8  # processes a summary names before "+<n> more"
+SUMMARY_WIDTH = 16000  # characters of a conclusion's clause: its payload is one argv word (128 KiB on Linux)
 
 type Runner = Callable[[Sequence[str]], tuple[int, str]]
 """Run a command with a bound: its status and stdout (127 when it cannot be started, 124 on time out)."""
@@ -304,11 +309,11 @@ def probes(env: Mapping[str, str], run: Runner) -> list[Found]:
 def snapshot(env: Mapping[str, str], event: str, request: str, box: str, me: int, pgid: int | None,
              run: Runner = run_bounded, enclosing: int | None = None) -> dict[str, Any]:
     """One line of the record: the probes' answers less the hold's own tree."""
-    # The table first: a leftover of the command's group that ends while the probes run is still
-    # known as the hold's own.
+    # The table before AND after the probes: a member of the hold's tree that ends while they run,
+    # or one started while they run, is still known as the hold's own.
     table = process_table(run)
     answers = probes(env, run)
-    own = own_tree(table, me, pgid, enclosing)
+    own = own_tree(table, me, pgid, enclosing) | own_tree(process_table(run), me, pgid, enclosing)
     listed = [(answer.probe, pid, fields) for answer in answers for pid, fields in answer.processes]
     names = describe([pid for _, pid, _ in listed if pid not in own], run)
     processes: list[dict[str, Any]] = []
@@ -442,14 +447,21 @@ def busy_during(opened: dict[str, Any], closed: dict[str, Any]) -> list[str]:
 def summary(lines: list[dict[str, Any]]) -> str:
     """The record, one clause per hold in the order the holds opened: what was on the GPU at its
     open and its close, and who used it in between. A hold with no ``closed`` line ended abnormally
-    (killed outright, or the box went down)."""
-    holds: dict[Any, dict[str, dict[str, Any]]] = {}
+    (killed outright, or the box went down). Lines are in the order they were appended, so a
+    ``closed`` line belongs to the latest ``opened`` one of its ``hold_pid``: a pid the system
+    reuses for a later hold opens a hold of its own. Cut at ``SUMMARY_WIDTH`` characters, naming
+    how many holds it left out, since the payload that carries it travels as one argument."""
+    holds: list[tuple[Any, dict[str, dict[str, Any]]]] = []
+    latest: dict[Any, dict[str, dict[str, Any]]] = {}
     for line in lines:
-        event = line.get("event")
+        event, pid = line.get("event"), line.get("hold_pid")
+        if event == "opened" or (event == "closed" and (pid not in latest or "closed" in latest[pid])):
+            latest[pid] = {}
+            holds.append((pid, latest[pid]))
         if event in ("opened", "closed"):
-            holds.setdefault(line.get("hold_pid"), {})[cast(str, event)] = line
+            latest[pid][cast(str, event)] = line
     clauses: list[str] = []
-    for pid, events in holds.items():
+    for pid, events in holds:
         opened, closed = events.get("opened"), events.get("closed")
         clause = f"hold {pid}"
         if opened is not None:
@@ -462,7 +474,14 @@ def summary(lines: list[dict[str, Any]]) -> str:
             clause += f"; GPU time used during it by: {_shown(busy_during(opened, closed))}"
         clause += f"; closed {closed.get('at')}: {describe_snapshot(closed)}"
         clauses.append(clause)
-    return " | ".join(clauses) if clauses else "no snapshot in it"
+    if not clauses:
+        return "no snapshot in it"
+    text = " | ".join(clauses)
+    if len(text) <= SUMMARY_WIDTH:
+        return text
+    kept = text[:SUMMARY_WIDTH]
+    shown = kept.count(" | ") + 1
+    return f"{kept}... [cut at {SUMMARY_WIDTH} characters: {len(clauses) - shown} later hold(s) not shown; the record has them]"
 
 
 def opened_line(line: dict[str, Any]) -> str:

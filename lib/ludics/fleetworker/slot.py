@@ -211,7 +211,7 @@ import shutil
 import signal
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn, assert_never
 
@@ -459,7 +459,7 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
 
 def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, why: str,
                 deadline: int | None, nested: bool = False,
-                after: Callable[[int | None], None] | None = None) -> NoReturn:
+                recorder: "Recorder | None" = None) -> NoReturn:
     """Run the command: resolved before the guard (a command that cannot be found takes no
     inhibitor), the guard beside it when there is one, then the command as the leader of a process
     group of its own, which a deadline or a signal to this wrapper ends (THE GROUP, ``group.py``).
@@ -471,8 +471,9 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, w
     enclosing kill still reaches it through this wrapper, which ends its group when signalled, and
     through its guardian when this wrapper is killed outright.
 
-    ``after`` runs once the command's leader has ended, however it ended, before this wrapper
-    exits or dies: it is given the command's group id (THE CO-TENANTS' closing snapshot)."""
+    ``recorder`` (THE CO-TENANTS) takes its opening snapshot once the command has started, and its
+    closing one once the command's leader has ended, however it ended, before this wrapper exits
+    or dies: a command that cannot be started records nothing."""
     if shutil.which(command[0]) is None:
         refuse_unrunnable(prefix, box, command, "no such executable")
     if not (nested and deadline is None):
@@ -484,13 +485,19 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, w
     if nested and deadline is None:
         exec_command(prefix, box, command)
     pgid: list[int] = []
+
+    def started(leader: int) -> None:
+        pgid.append(leader)
+        if recorder is not None:
+            recorder.opened(leader)
+
     try:
-        outcome = group.run(command, deadline, f"{prefix} {box}", errline, started=pgid.append)
+        outcome = group.run(command, deadline, f"{prefix} {box}", errline, started=started)
     except OSError as exc:
         # A script whose interpreter is missing passes the lookup above and fails here.
         refuse_unrunnable(prefix, box, command, exc)
-    if after is not None:
-        after(pgid[0] if pgid else None)
+    if recorder is not None and pgid:
+        recorder.closed(pgid[0])
     match outcome:
         case group.Exited(code=code):
             raise cli.Exit(code)
@@ -560,7 +567,7 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
          command: Sequence[str], deadline: int | None) -> NoReturn:
     """``execution hold``: with a measurement (``hold_lock``), THE DRAIN and the marker's shared lock
     first, then the command under the guard, THE CO-TENANTS recorded before and after it."""
-    after: Callable[[int | None], None] | None = None
+    recorder: Recorder | None = None
     if hold_lock:
         request = marker.split()[1]
         directory = os.path.dirname(hold_lock)
@@ -602,34 +609,47 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
                     " under this hold")
         # THE CO-TENANTS: every hold records its own pair, a nested one too, since nothing bounds
         # its life by its enclosing hold's (a backgrounded nested hold outlives it).
-        after = record_cotenants(box, request, directory, os.getpgrp() if nested else None)
-    run_command(HOLD_PREFIX, box, command, inhibitor, why, deadline, after=after)
+        recorder = Recorder(box, request, directory, os.getpgrp() if nested else None)
+    run_command(HOLD_PREFIX, box, command, inhibitor, why, deadline, recorder=recorder)
 
 
-def record_cotenants(box: str, request: str, directory: str,
-                     enclosing: int | None) -> Callable[[int | None], None]:
-    """THE CO-TENANTS (``cotenants.py``): the opening snapshot now, and the closing one the returned
-    function takes once the command's leader has ended. Fail-open, and loudly: a record that cannot
-    be written is a WARNING, never a refused measurement."""
-    path = cotenants.record_path(directory, request)
-    label = f"{HOLD_PREFIX} {box}: measurement {request}"
+class Recorder:
+    """THE CO-TENANTS (``cotenants.py``) of one hold: the opening snapshot once the command has
+    started (so a command that cannot start leaves no record), the closing one once its leader has
+    ended. Fail-open, and loudly: a record that cannot be written is a WARNING, never a refused
+    measurement."""
 
-    def take(event: str, pgid: int | None) -> dict[str, Any]:
-        line = cotenants.snapshot(os.environ, event, request, box, os.getpid(), pgid, enclosing=enclosing)
+    def __init__(self, box: str, request: str, directory: str, enclosing: int | None) -> None:
+        self.box, self.request, self.enclosing = box, request, enclosing
+        self.path = cotenants.record_path(directory, request)
+        self.label = f"{HOLD_PREFIX} {box}: measurement {request}"
+        self.first: dict[str, Any] | None = None
+
+    def take(self, event: str, pgid: int) -> dict[str, Any] | None:
+        # Called while the command runs (the opening one, inside group.run): nothing raised here
+        # may leave it unwaited for, so every failure is the WARNING.
         try:
-            cotenants.append(path, line)
+            line = cotenants.snapshot(os.environ, event, self.request, self.box, os.getpid(), pgid,
+                                      enclosing=self.enclosing)
+        except Exception as exc:
+            errline(f"{self.label}: WARNING: no GPU co-tenant snapshot {event} -- {exc!r}")
+            return None
+        try:
+            cotenants.append(self.path, line)
         except OSError as exc:
-            errline(f"{label}: WARNING: the GPU co-tenants {event} are not recorded for the conclusion,"
-                    f" only said here -- {path}: {exc}")
+            errline(f"{self.label}: WARNING: the GPU co-tenants {event} are not recorded for the conclusion,"
+                    f" only said here -- {self.path}: {exc}")
         return line
 
-    opened = take("opened", None)
-    errline(f"{label}: {cotenants.opened_line(opened)}")
+    def opened(self, pgid: int) -> None:
+        self.first = self.take("opened", pgid)
+        if self.first is not None:
+            errline(f"{self.label}: {cotenants.opened_line(self.first)}")
 
-    def close(pgid: int | None) -> None:
-        errline(f"{label}: {cotenants.closed_line(opened, take('closed', pgid))}")
-
-    return close
+    def closed(self, pgid: int) -> None:
+        line = self.take("closed", pgid)
+        if self.first is not None and line is not None:
+            errline(f"{self.label}: {cotenants.closed_line(self.first, line)}")
 
 
 def inhibitor_path(cfg: Config) -> str:

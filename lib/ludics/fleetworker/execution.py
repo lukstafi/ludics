@@ -25,6 +25,7 @@ and a ``not-launched`` conclusion, which describes no run, reads nothing.
 import json
 import os
 import re
+from datetime import datetime, timedelta
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, assert_never, cast
@@ -408,8 +409,33 @@ def observed_sha_of(cfg: Config, record: dict[str, Any], host: str, checkout: st
     return observed_head(cfg, host, checkout)
 
 
-def gpu_record_evidence(cfg: Config, host: str, request: str) -> str:
-    """THE CO-TENANT EVIDENCE: one clause for the conclusion's evidence, read on ``host``."""
+SKEW = timedelta(minutes=10)  # the clock difference allowed between the anchor and an execution host
+
+
+def reserved_since(lines: list[dict[str, Any]], created: str) -> tuple[list[dict[str, Any]], int]:
+    """The snapshots taken since the reservation was made, and how many older ones were left out:
+    a hold run under the id before it was reserved (a typo, an id reused later) is not this
+    measurement's. ``SKEW`` is the boundary: an older snapshot within it is kept. A line or a
+    record whose time does not parse is kept."""
+    try:
+        since = datetime.fromisoformat(created) - SKEW
+    except ValueError:
+        return lines, 0
+    kept: list[dict[str, Any]] = []
+    for line in lines:
+        at = line.get("at")
+        try:
+            older = isinstance(at, str) and datetime.fromisoformat(at) < since
+        except (ValueError, TypeError):
+            older = False
+        if not older:
+            kept.append(line)
+    return kept, len(lines) - len(kept)
+
+
+def gpu_record_evidence(cfg: Config, host: str, request: str, created: str = "") -> str:
+    """THE CO-TENANT EVIDENCE: one clause for the conclusion's evidence, read on ``host``; only the
+    snapshots taken since the reservation (``created``, its ``created_at``) count."""
     script = prelude(cfg, host) + emit_var("SLOT_STATE", cfg.slot_state) + GPU_RECORD
     done = run_on(cfg, host, script, [host, request], capture=True)
     if done.unreachable:
@@ -431,7 +457,10 @@ def gpu_record_evidence(cfg: Config, host: str, request: str) -> str:
         rest = rest.partition("\n")[2]
         cut = (f"the record is {size} bytes, of which its last {GPU_RECORD_READ} were read, so the"
                " earliest snapshots are left out; ")
-    return f"GPU co-tenants on {host} ({host}:{path}): {cut}{cotenants.summary(cotenants.read_lines(rest))}"
+    lines, older = reserved_since(cotenants.read_lines(rest), created)
+    if older:
+        cut += f"{older} snapshot(s) older than the reservation left out; "
+    return f"GPU co-tenants on {host} ({host}:{path}): {cut}{cotenants.summary(lines)}"
 
 
 def gpu_clause(evidence: str, recorded: str, host: str) -> bool:
@@ -487,7 +516,7 @@ def with_gpu_record(cfg: Config, payload: str) -> str:
             return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         return payload
     host = jq_text(field(record, "request", "execution_host"))
-    data["evidence"] = f"{evidence}; {gpu_record_evidence(cfg, host, request)}"
+    data["evidence"] = f"{evidence}; {gpu_record_evidence(cfg, host, request, jq_text(record.get('created_at')))}"
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
 

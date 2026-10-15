@@ -171,6 +171,17 @@ class Summary(unittest.TestCase):
         closed = line("closed", [proc(1, "ioreg", gpu_time_ns=2_000_000_000, started="B")])
         self.assertEqual(cotenants.busy_during(opened, closed), ["pid 1 u cmd1 +2.00 s (ioreg)"])
 
+    def test_a_hold_pid_reused_by_a_later_hold_opens_a_hold_of_its_own(self) -> None:
+        text = cotenants.summary([line("opened", [], 5), line("closed", [], 5), line("opened", [], 5), line("closed", [], 5)])
+        self.assertEqual(text.count("hold 5 opened"), 2)
+
+    def test_a_long_summary_is_cut_naming_what_it_left_out(self) -> None:
+        many = [proc(i, "nvidia-smi", gpu_memory_mib=i, command="x" * 200) for i in range(1, 9)]
+        lines = [entry for hold in range(200) for entry in (line("opened", many, hold), line("closed", many, hold))]
+        text = cotenants.summary(lines)
+        self.assertLess(len(text), cotenants.SUMMARY_WIDTH + 200)
+        self.assertRegex(text, r"\[cut at 16000 characters: [0-9]+ later hold\(s\) not shown; the record has them\]$")
+
     def test_a_hold_with_no_close_and_an_empty_box_say_so(self) -> None:
         text = cotenants.summary([line("opened", [])])
         self.assertEqual(text, "hold 7 opened T-opened: none (ioreg ran); no closed snapshot (the hold did not end normally)")

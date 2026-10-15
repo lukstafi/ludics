@@ -178,8 +178,9 @@ a refused measurement, as with the marker.
 what the fleet does not run: in the 2026-10-05 wave a minix A/B was refused for its timing
 windows, and the likeliest cause, a VS Code server sharing the integrated GPU, appeared nowhere in
 the window's record. So `execution hold --request <id>` records the box's GPU-using processes
-outside its own tree (the hold, its descendants and its command's process group) twice: after the
-drain, before the runner starts, and once the runner has ended, however it ended. It says each on
+outside its own tree (the hold, its descendants and its command's process group) twice: as the
+runner starts, after the drain (a runner that cannot be started records nothing), and once the
+runner has ended, however it ended. It says each on
 stderr (`EXECUTION HOLD <box>: measurement <id>: GPU co-tenants at open: ...`, then `at close:
 ...; GPU time used during the hold by: ...`) and appends each as a JSON line to
 `<slot dir>/<box>/measurement.<id>.gpu.jsonl` on the box. The fields: `request_id` and `box` (the
