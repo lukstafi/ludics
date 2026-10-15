@@ -21,22 +21,25 @@ One line per snapshot, its fields:
 - ``at``: UTC, ISO 8601, as the registry's ``created_at``;
 - ``probes``: one ``{probe, status, detail}`` per source below, ``status`` ``ran``, ``absent`` (no
   such source on this box) or ``failed``;
-- ``gpu_processes``: one entry per (probe, pid): ``pid``, ``started`` (``ps``'s ``lstart``, which
-  tells a reused pid apart), ``user`` and ``command`` (``ps``'s ``args``, cut to 300 characters;
-  all three empty for a pid ``ps`` no longer finds), ``probe``, and what that
-  probe measures: ``gpu_memory_mib`` (nvidia-smi), ``gpu_time_ns`` (cumulative GPU busy time:
-  drm-fdinfo, ioreg), ``driver`` (drm-fdinfo);
+- ``gpu_processes``: one entry per (probe, pid): ``pid``, ``user`` and ``command`` (``ps``'s
+  ``args``, cut to 300 characters; both empty for a pid ``ps`` no longer finds), ``probe``, and
+  what that probe reports, as it reports it: ``gpu_memory_mib`` (nvidia-smi), ``gpu_time_ns`` (the
+  client's cumulative GPU busy time as read: drm-fdinfo, ioreg), ``driver`` (drm-fdinfo);
 - ``own_tree_gpu_processes``: how many GPU-using processes were left out as the hold's own tree.
 
-WHAT IT RECORDS, AND WHAT IT DOES NOT (the boundary). It records what the three probes below can
-see, at two instants per hold, and nothing in between: a co-tenant that starts and ends inside a
-hold is invisible to nvidia-smi and DRM fdinfo, and shows in ioreg only if its client outlives the
-close. It sees another user's processes only through nvidia-smi; DRM fdinfo counts them as
-unreadable. It reads no GPU utilisation counter other than the per-process ones named below, so a
-GPU busy with something no probe lists (a VM's passthrough, a kernel-side job) is not attributed.
-Every ``execution hold --request`` records its own pair, a nested hold of the same measurement too,
-since nothing bounds a nested hold's life by its enclosing one's. A pid is told apart from a reuse
-of it by its ``ps`` start time, at one-second resolution.
+WHAT IT RECORDS, AND WHAT IT DOES NOT (the boundary). PRESENCE: which processes outside the hold's
+own tree the three probes below list at two instants per hold, with each probe's own fields as it
+reports them (memory held, a client's cumulative GPU time as read), and nothing in between. It does
+not attribute GPU usage to the hold's interval (no before/after arithmetic): a reader compares the
+two snapshots. A co-tenant that starts and ends inside a hold is invisible to nvidia-smi and DRM
+fdinfo, and shows in ioreg only if its client outlives the close. It sees another user's processes
+only through nvidia-smi; DRM fdinfo counts them as unreadable. A GPU busy with something no probe
+lists (a VM's passthrough, a kernel-side job) is not seen. Every ``execution hold --request``
+records its own pair; a nested hold of the same measurement is recorded only while it lives within
+its enclosing command, and one still live when the conclusion reads the record shows as a hold
+whose close is not recorded (the conclusion does not wait for it). The hold's own tree is read
+before and after the probes, by pid, so a pid reused within the seconds the probes run is not told
+apart.
 
 THE HOLD'S OWN TREE is this process, its descendants, and every member of the command's process
 group (group.py: the command leads one), which is where its leftovers stay after the leader has
@@ -268,20 +271,18 @@ def own_tree(table: Mapping[int, tuple[int, int]], me: int, pgid: int | None,
     return own
 
 
-def describe(pids: Sequence[int], run: Runner) -> dict[int, tuple[str, str, str]]:
-    """(user, start, args) per pid, from ``ps``; a pid it no longer finds is missing. The start is
-    ``lstart``, five words on Linux's procps and on macOS alike (``Thu Oct 15 17:00:49 2026``)."""
+def describe(pids: Sequence[int], run: Runner) -> dict[int, tuple[str, str]]:
+    """(user, args) per pid, from ``ps``; a pid it no longer finds is missing."""
     if not pids:
         return {}
-    rc, out = run(["ps", "-o", "pid=", "-o", "user=", "-o", "lstart=", "-o", "args=",
-                   "-p", ",".join(str(p) for p in sorted(set(pids)))])
-    named: dict[int, tuple[str, str, str]] = {}
+    rc, out = run(["ps", "-o", "pid=", "-o", "user=", "-o", "args=", "-p", ",".join(str(p) for p in sorted(set(pids)))])
+    named: dict[int, tuple[str, str]] = {}
     if rc not in (0, 1):  # 1: some pid was not found
         return named
     for line in out.splitlines():
-        fields = line.split(None, 7)
-        if len(fields) >= 7 and fields[0].isdecimal() and fields[0].isascii():
-            named[int(fields[0])] = (fields[1], " ".join(fields[2:7]), (fields[7] if len(fields) > 7 else "")[:COMMAND_WIDTH])
+        fields = line.split(None, 2)
+        if len(fields) >= 2 and fields[0].isdecimal() and fields[0].isascii():
+            named[int(fields[0])] = (fields[1], (fields[2] if len(fields) > 2 else "")[:COMMAND_WIDTH])
     return named
 
 
@@ -321,8 +322,8 @@ def snapshot(env: Mapping[str, str], event: str, request: str, box: str, me: int
     for probe, pid, fields in listed:
         if pid in own:
             continue
-        user, started, command = names.get(pid, ("", "", ""))
-        processes.append({"pid": pid, "started": started, "user": user, "command": command, "probe": probe, **fields})
+        user, command = names.get(pid, ("", ""))
+        processes.append({"pid": pid, "user": user, "command": command, "probe": probe, **fields})
     return {
         "request_id": request,
         "box": box,
@@ -414,7 +415,7 @@ def describe_snapshot(line: dict[str, Any]) -> str:
         if memory is not None:
             measure = f", {memory} MiB"
         elif busy is not None:
-            measure = f", {busy / 1e9:.2f} s GPU time so far"
+            measure = f", {busy / 1e9:.2f} s cumulative GPU time as read"
         items.append(f"{_name(process)} ({process.get('probe')}{measure})")
     ran: list[str] = []
     for probe in cast(list[Any], line.get("probes")) if isinstance(line.get("probes"), list) else []:
@@ -426,23 +427,6 @@ def describe_snapshot(line: dict[str, Any]) -> str:
     sources = ", ".join(ran) if ran else "no GPU probe could run here"
     count = f"{len(processes)} [{_shown(items)}]" if processes else "none"
     return f"{count} ({sources})"
-
-
-def busy_during(opened: dict[str, Any], closed: dict[str, Any]) -> list[str]:
-    """The co-tenants whose cumulative GPU time grew between the two snapshots, the most first; one
-    that appeared during the hold counts with all of its time."""
-    # Keyed by the process's start too, so a pid reused during a long hold is a new process.
-    before = {(p.get("probe"), p.get("pid"), p.get("started")): _int(p.get("gpu_time_ns")) or 0
-              for p in _processes(opened)}
-    grown: list[tuple[int, str]] = []
-    for process in _processes(closed):
-        busy = _int(process.get("gpu_time_ns"))
-        if busy is None:
-            continue
-        delta = busy - before.get((process.get("probe"), process.get("pid"), process.get("started")), 0)
-        if delta > 0:
-            grown.append((delta, f"{_name(process)} +{delta / 1e9:.2f} s ({process.get('probe')})"))
-    return [text for _, text in sorted(grown, key=lambda item: item[0], reverse=True)]
 
 
 def summary(lines: list[dict[str, Any]]) -> str:
@@ -468,11 +452,10 @@ def summary(lines: list[dict[str, Any]]) -> str:
         if opened is not None:
             clause += f" opened {opened.get('at')}: {describe_snapshot(opened)}"
         if closed is None:
-            clause += "; no closed snapshot (the hold did not end normally)"
+            clause += ("; its close is not recorded (the hold was still live when this was read, or did not"
+                       " end normally)")
             clauses.append(clause)
             continue
-        if opened is not None:
-            clause += f"; GPU time used during it by: {_shown(busy_during(opened, closed))}"
         clause += f"; closed {closed.get('at')}: {describe_snapshot(closed)}"
         clauses.append(clause)
     if not clauses:
@@ -490,7 +473,6 @@ def opened_line(line: dict[str, Any]) -> str:
     return f"GPU co-tenants at open: {describe_snapshot(line)}"
 
 
-def closed_line(opened: dict[str, Any], line: dict[str, Any]) -> str:
+def closed_line(line: dict[str, Any]) -> str:
     """What the hold says on stderr at its end."""
-    return (f"GPU co-tenants at close: {describe_snapshot(line)}; GPU time used during the hold by:"
-            f" {_shown(busy_during(opened, line))}")
+    return f"GPU co-tenants at close: {describe_snapshot(line)}"

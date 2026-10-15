@@ -131,16 +131,14 @@ class Snapshot(unittest.TestCase):
         def run(argv: Sequence[str]) -> tuple[int, str]:
             if argv[0] == "ps" and "-p" in argv:
                 self.assertEqual(argv[-1], "10,40")
-                return 0, ("   10 lukstafi Thu Oct 15 17:00:49 2026 claude\n"
-                           "   40 alice Thu Oct 15 16:59:01 2026 python3 train.py --big\n")
+                return 0, "   10 lukstafi  claude\n   40 alice python3 train.py --big\n"
             return FakeRun(answers)(argv)
 
         env = {"FLEET_NVIDIA_SMI": "sh", "FLEET_DRM_PROC": "/nonexistent", "FLEET_IOREG": "/nonexistent/ioreg"}
         line = cotenants.snapshot(env, "closed", "m-1", "minix", 20, 30, run)
         self.assertEqual([p["pid"] for p in line["gpu_processes"]], [10, 40])
-        self.assertEqual(line["gpu_processes"][1], {"pid": 40, "started": "Thu Oct 15 16:59:01 2026", "user": "alice",
-                                                    "command": "python3 train.py --big", "probe": "nvidia-smi",
-                                                    "gpu_memory_mib": 512})
+        self.assertEqual(line["gpu_processes"][1], {"pid": 40, "user": "alice", "command": "python3 train.py --big",
+                                                    "probe": "nvidia-smi", "gpu_memory_mib": 512})
         self.assertEqual(line["own_tree_gpu_processes"], 2)
         self.assertEqual((line["request_id"], line["box"], line["hold_pid"], line["event"]), ("m-1", "minix", 20, "closed"))
         self.assertEqual([p["status"] for p in line["probes"]], ["ran", "absent", "absent"])
@@ -156,20 +154,13 @@ def line(event: str, processes: list[dict[str, Any]], hold: int = 7) -> dict[str
 
 
 class Summary(unittest.TestCase):
-    def test_the_busy_co_tenant_is_named_with_its_time_in_the_hold(self) -> None:
+    def test_each_hold_is_its_presence_at_open_and_close(self) -> None:
         opened = line("opened", [proc(1, "ioreg", gpu_time_ns=5_000_000_000), proc(2, "ioreg", gpu_time_ns=10)])
-        closed = line("closed", [proc(1, "ioreg", gpu_time_ns=6_500_000_000), proc(2, "ioreg", gpu_time_ns=10),
-                                 proc(3, "ioreg", gpu_time_ns=250_000_000)])
+        closed = line("closed", [proc(3, "ioreg", gpu_time_ns=250_000_000)])
         text = cotenants.summary([opened, closed])
-        self.assertIn("hold 7 opened T-opened: 2 [pid 1 u cmd1 (ioreg, 5.00 s GPU time so far)", text)
-        self.assertIn("GPU time used during it by: pid 1 u cmd1 +1.50 s (ioreg); pid 3 u cmd3 +0.25 s (ioreg);", text)
-        self.assertIn("closed T-closed: 3 [", text)
-        self.assertIn("(ioreg ran)", text)
-
-    def test_a_reused_pid_is_a_new_process(self) -> None:
-        opened = line("opened", [proc(1, "ioreg", gpu_time_ns=5_000_000_000, started="A")])
-        closed = line("closed", [proc(1, "ioreg", gpu_time_ns=2_000_000_000, started="B")])
-        self.assertEqual(cotenants.busy_during(opened, closed), ["pid 1 u cmd1 +2.00 s (ioreg)"])
+        self.assertIn("hold 7 opened T-opened: 2 [pid 1 u cmd1 (ioreg, 5.00 s cumulative GPU time as read)", text)
+        self.assertIn("; closed T-closed: 1 [pid 3 u cmd3 (ioreg, 0.25 s cumulative GPU time as read)] (ioreg ran)", text)
+        self.assertNotIn("during", text)
 
     def test_a_hold_pid_reused_by_a_later_hold_opens_a_hold_of_its_own(self) -> None:
         text = cotenants.summary([line("opened", [], 5), line("closed", [], 5), line("opened", [], 5), line("closed", [], 5)])
@@ -184,7 +175,8 @@ class Summary(unittest.TestCase):
 
     def test_a_hold_with_no_close_and_an_empty_box_say_so(self) -> None:
         text = cotenants.summary([line("opened", [])])
-        self.assertEqual(text, "hold 7 opened T-opened: none (ioreg ran); no closed snapshot (the hold did not end normally)")
+        self.assertEqual(text, "hold 7 opened T-opened: none (ioreg ran); its close is not recorded (the hold was still"
+                               " live when this was read, or did not end normally)")
         self.assertEqual(cotenants.summary(cotenants.read_lines("not json\n")), "no snapshot in it")
 
     def test_two_holds_are_two_clauses_and_long_lists_are_cut(self) -> None:

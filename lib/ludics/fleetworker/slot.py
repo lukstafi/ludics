@@ -658,8 +658,7 @@ class Recorder:
         line = self.snap("closed", pgid)
         if line is not None:
             self.write(line)
-            if self.first is not None:
-                errline(f"{self.label}: {cotenants.closed_line(self.first, line)}")
+            errline(f"{self.label}: {cotenants.closed_line(line)}")
 
 
 def inhibitor_path(cfg: Config) -> str:

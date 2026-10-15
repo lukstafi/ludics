@@ -183,12 +183,12 @@ the runner starts, after the drain (written once it has started, so a runner tha
 records nothing; `--deadline` counts from the runner's start, as ever), and once the runner has
 ended, however it ended. It says each on
 stderr (`EXECUTION HOLD <box>: measurement <id>: GPU co-tenants at open: ...`, then `at close:
-...; GPU time used during the hold by: ...`) and appends each as a JSON line to
+...`) and appends each as a JSON line to
 `<slot dir>/<box>/measurement.<id>.gpu.jsonl` on the box. The fields: `request_id` and `box` (the
 registry's names), `hold_pid`, `event` (`opened` or `closed`), `at` (UTC), `probes` (one `{probe,
 status, detail}` per source, `status` `ran`, `absent` or `failed`), `gpu_processes` (one `{pid,
 user, command, probe}` per process and probe, plus `gpu_memory_mib` from nvidia-smi, or
-`gpu_time_ns`, its cumulative GPU busy time, and from DRM `driver`), and
+`gpu_time_ns`, the client's cumulative GPU busy time as read, and from DRM `driver`), and
 `own_tree_gpu_processes` (how many were left out as the hold's own). The sources, each read
 exactly as `lib/ludics/fleetworker/cotenants.py`'s header states:
 
@@ -199,21 +199,26 @@ exactly as `lib/ludics/fleetworker/cotenants.py`'s header states:
   are readable, so another user's (gdm's compositor, root's) are counted as unreadable in the
   probe's `detail`, not listed.
 - **ioreg** (macOS): the `IOGPUDeviceUserClient`s (Apple Silicon's AGX clients) with their
-  creator's pid and accumulated GPU time. Every app that ever drew holds one, so the open
-  snapshot lists dozens of mostly idle clients there; the GPU time used during the hold is the
-  attribution.
+  creator's pid and accumulated GPU time. Every app that ever drew holds one, so a snapshot
+  lists dozens of mostly idle clients there.
+
+It records PRESENCE, not usage: who was on the GPU at the two instants, with each probe's fields
+as read. It does no before/after arithmetic; a reader comparing the two snapshots' cumulative
+times does that themselves. The boundary in full is the module header's.
 
 A conclusion of a measurement (`conclude <json>`, `--from-run` and `--from-bg-run` alike) reads that
 file on the execution host and appends one clause to its evidence: `GPU co-tenants on <box>
 (<box>:<path>): hold <pid> opened <at>: <n> [pid <pid> <user> <command> (<probe>, <measure>); ...];
-GPU time used during it by: ...; closed <at>: ...`, one clause per hold, or `no GPU co-tenant
+closed <at>: ...`, one clause per hold, or `no GPU co-tenant
 record on <box>` when no hold recorded one, or `GPU co-tenant record unread: <box> did not answer`.
-A `not-launched` conclusion reads nothing. So "who held a fleet token" (`execution list --active`,
+A `not-launched` conclusion reads nothing. A hold still live when the conclusion reads the record
+shows `its close is not recorded`, and the conclusion is final and does not wait, so conclude a
+measurement once no process of it remains, as every conclusion requires. So "who held a fleet token" (`execution list --active`,
 by `request_id` and `box`) and "who was on the GPU" (this record, by `box` and `at`) line up in a
 conclusion's own evidence. Nothing is stopped: the record is evidence, a probe that fails says so in
 `probes`, and a record that cannot be written is a `WARNING` with the snapshot still said on
 stderr, never a refused measurement. A hold nested in a hold of the same measurement records its
-own pair too (a backgrounded one can outlive its enclosing hold). A conclusion reads the record's
+own pair too, and is recorded only while it lives within its enclosing command. A conclusion reads the record's
 newest MiB, and says so when the record is longer. `FLEET_NVIDIA_SMI`, `FLEET_DRM_PROC` and `FLEET_IOREG` name the
 sources; the suites point them at stubs.
 
