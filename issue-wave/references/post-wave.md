@@ -42,10 +42,11 @@ issue or checklist and compare by content before writing to it; the reconciliati
    polish with no behaviour change; only one worker raised it (no recurrence across workers);
    and no hand-back reports worker time it would have saved. A chip below the floor gets no
    worker. It becomes a `- [ ] **<claim>** <one-line spec> (<task ID>, <source PR>)`
-   item on the wave's follow-up checklist issue, one per wave and its post-waves, titled by the
-   board's wave ID, `<wave ID> small follow-ups` (the ahrefs/ocannl#1160 shape; a second wave
-   on one day takes its own ID, such as `wave-20261015b`). Reuse the exact-title hit whatever
-   its state, reopening it if closed:
+   item on the wave's follow-up checklist issue, one per wave and its post-waves, titled
+   `<wave ID> small follow-ups` (the ahrefs/ocannl#1160 shape). The wave ID is the `wave` field
+   every execution request of the wave already carries ([executions.md](executions.md), such
+   as `wave-20261015`); a second wave started on the same day gives its requests a suffixed one
+   (`wave-20261015b`). Reuse the exact-title hit whatever its state, reopening it if closed:
 
        gh issue list -R <tracker> --state all --json number,title,state \
          --search '"<wave ID> small follow-ups" in:title'
