@@ -523,26 +523,33 @@ By default the coordinator takes a second standing reservation at launch, beside
 one, on the task's GPU box whenever the plan homes the task there or names a GPU iteration leg
 for it: one per such box, request id `<wave>-<issue>-<box>-iterate`, the agent host still the
 worker's (ludics-lite#621). A GPU box that IS the agent host (a CLI worker resident there) takes
-no second one: its agent-host reservation already has that id and covers the batches, run locally. A request per GPU run cost ahrefs/ocannl#1240 three HIP round trips
-in wave-20261014 before the coordinator granted a standing one mid-task, while #1313 on
-tuf-amd-linux, holding one from launch, iterated without the coordinator and still yielded to
-measurement windows. Read the `REFRESH` line its `execution run` prints before the brief goes
-out, as for any assignment. The brief names the reservation id, a far-side checkout that is the
-worker's to prepare (a worktree of the box's clone at the worker's pushed revision, with the
-worker its one writer), and the batch's form, which takes the slot on that box, not the agent's:
+no second one: its agent-host reservation already has that id and covers the batches, run
+locally. A request per GPU run cost ahrefs/ocannl#1240 three HIP round trips in wave-20261014
+before the coordinator granted a standing one mid-task, while #1313 on tuf-amd-linux, holding one
+from launch, iterated without the coordinator and still yielded to measurement windows. Read the
+`REFRESH` line its `execution run` prints before the brief goes out, as for any assignment.
+
+The brief names the reservation id, a far-side checkout that is the worker's to prepare (a
+worktree of the box's clone, with the worker its one writer), and the batch's form, which moves
+that checkout to the pushed SHA under test and takes the slot on that box, not the agent's:
 
 ```
-ssh <box> 'cd <checkout> && fleet-worker.sh execution slot --wait-window -- <runner>'
+ssh <box> 'cd <checkout> && git fetch -q origin && git checkout -q --detach <sha> &&
+  fleet-worker.sh execution slot --wait-window -- <runner>'
 ```
 
-A GPU batch passes no `-j` (above), so the box's GPU tokens (rog-nv-linux: 2) still bound it
-however many standing records the box holds. A batch that can outlast the tool cap takes `--bg
-<parent>` the same way, with the parent and `bg-run.sh wait <dir>` on that box too. The
-reservation is concluded at hand-back like the agent-host one, from the last batch there: its
-runner record with `--from-run`, or its `bg-run.sh` directory with `--from-bg-run` (each read on
-the reservation's execution host), or, with none to read, a JSON conclusion with
-`--observed-from <the far-side checkout>`. A measurement there, and a one-off leg on a box the plan names no
-iteration for, still go through a request.
+A standing record carries no per-batch revision, so the `<sha>` in the command is what binds a
+batch to the code it judged, and the worker reports it with the run. A GPU batch passes no `-j`
+(above), so the box's GPU tokens (rog-nv-linux: 2) still bound it however many standing records
+the box holds. A batch that can outlast the tool cap takes `--bg <parent>` the same way, with the
+parent and `bg-run.sh wait <dir>` on that box too.
+
+Each standing reservation is concluded at hand-back from its own box's last batch: its runner
+record with `--from-run`, or its `bg-run.sh` directory with `--from-bg-run` (each read on the
+reservation's execution host), or, with none to read, a JSON conclusion with `--observed-from
+<the far-side checkout>`. The coordinator records the far-side checkout on the board and removes
+it at close-out with the worker's local one, once that conclusion has landed. A measurement
+there, and a one-off leg on a box the plan names no iteration for, still go through a request.
 
 ## Native handoffs
 

@@ -424,9 +424,9 @@ requirements for every transport with transport-specific setup and identity, and
   the box instead of refusing, so the brief needs no waiter loop and no retry rule), and
   is reported by run directory. Where the coordinator also took one on the task's [GPU home
   box](references/executions.md#the-gpu-home-box), name that request id too, the far-side
-  checkout that is the worker's to prepare, and the batch's form there, `ssh <box> 'cd
-  <checkout> && fleet-worker.sh execution slot --wait-window -- <runner>'`, concluded at
-  hand-back with the agent-host one. For a Claude batch that can outlast the 600 s tool cap, a
+  checkout that is the worker's to prepare, and the batch's form there as that section gives it
+  (over ssh, the checkout moved to the pushed SHA under test, the runner under `execution slot
+  --wait-window` on that box), concluded at hand-back with the agent-host one. For a Claude batch that can outlast the 600 s tool cap, a
   window's wait included, use `execution slot --bg <parent> --wait-window -- <batch>`, which
   prints a run directory to block on with
   `bg-run.sh wait` ([Blocking on a run](references/native-claude.md#blocking-on-a-run)). For

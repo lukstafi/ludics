@@ -81,8 +81,8 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    ([executions.md](executions.md#the-gpu-home-box) says when, and the batch's ssh form). It
    pre-authorizes the worker's own targeted test batches there -
    each through the project runner (`tools/test-run.sh run ...`), blocked to completion inside
-   the turn, reported by run directory in the worker's messages - with no per-batch request. It
-   is concluded at hand-back from the last batch's record. Being standing, it consumes no
+   the turn, reported by run directory in the worker's messages - with no per-batch request. Each
+   is concluded at hand-back from its own box's last batch. Being standing, it consumes no
    correctness slot, so a box holds as many as it has workers and a worker never waits on a
    sibling's brief-reading to start. The brief tells the worker to wrap each batch in the
    run-time lock instead - `fleet-worker.sh execution slot -- <batch>`, which takes one of the
