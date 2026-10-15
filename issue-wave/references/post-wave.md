@@ -33,15 +33,16 @@ issue or checklist and compare by content before writing to it; the reconciliati
    An open match turns the chip into "work this issue": the chip leaves the list, and its
    evidence goes onto that issue, `gh issue comment <n> -R <tracker> --body-file <file>`. A
    closed match whose record shows the chip's change landed (`stateReason` `COMPLETED`, with
-   the closing PR or a closing comment naming it) drops the chip as done; one closed
-   `NOT_PLANNED` drops it too, unless the chip brings evidence its body and comments lack,
-   which goes onto it as a comment the same way. (Wave 2026-10-14's third post-wave
+   the closing PR or a closing comment naming it) drops the chip as done, unless the chip's
+   evidence shows that change regressed or fell short: then it stays a chip and cites the
+   issue. One closed `NOT_PLANNED` drops it too, unless the chip brings evidence its body and
+   comments lack, which goes onto it as a comment the same way. (Wave 2026-10-14's third post-wave
    re-specified the open ludics-lite#568 as a chip; its worker noticed only after merging,
    and #568 was closed by hand.)
 2. **The value floor.** A chip is below the floor when all three hold: it is test or tooling
    polish with no behaviour change; only one worker raised it (no recurrence across workers);
    and no hand-back reports worker time it would have saved. A chip below the floor gets no
-   worker. It becomes a `- [ ] **<claim>** <one-line spec> (<task ID>, <source PR>)`
+   worker. It becomes a `- [ ] **<claim>** <one-line spec> (<source worker>, <source PR>)`
    item on the wave's follow-up checklist issue, one per wave and its post-waves, titled
    `<wave ID> small follow-ups` (the ahrefs/ocannl#1160 shape). The wave ID is the `wave` field
    every execution request of the wave already carries ([executions.md](executions.md), such
