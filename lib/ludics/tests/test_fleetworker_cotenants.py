@@ -4,7 +4,9 @@ the summary a conclusion's evidence carries."""
 
 import os
 import tempfile
+import threading
 import unittest
+from unittest import mock
 from collections.abc import Sequence
 from typing import Any
 
@@ -66,6 +68,18 @@ class Drm(unittest.TestCase):
 
     def test_no_proc_is_absent(self) -> None:
         self.assertEqual(cotenants.probe_drm(os.path.join(self.root, "none")).status, "absent")
+
+    def test_a_scan_that_blocks_is_given_up_on_as_failed(self) -> None:
+        release = threading.Event()
+
+        def blocked(root: str) -> cotenants.Found:
+            release.wait(10)
+            return cotenants.Found("drm-fdinfo", "ran", "")
+
+        with mock.patch.object(cotenants, "probe_drm", blocked):
+            found = cotenants.bounded_drm(self.root, 0.2)
+        release.set()
+        self.assertEqual((found.status, found.detail), ("failed", "no answer after 0.2s"))
 
 
 IOREG = """+-o AGXDeviceUserClient  <class AGXDeviceUserClient, id 0x1>

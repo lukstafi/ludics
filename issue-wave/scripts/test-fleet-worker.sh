@@ -3027,6 +3027,9 @@ jq -n '{request_id:"gpu-measure", verdict:"pass", log:"/dev/null", evidence:"fix
   observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-done.json"
 expect "the measurement's conclusion carries the co-tenant record in its evidence" 0 "fixture: measured; GPU co-tenants on testbox (testbox:$gpurec): hold [0-9]* opened [^ ]*: 1 \[pid $planted " -- \
   "${FWS[@]}" execution conclude "$TMP/gpu-done.json"
+rm -f "$gpurec"
+expect "...and a retry of that conclusion, its answer lost, is the registry's identical retry though the record is gone" 0 "GPU co-tenants on testbox (testbox:$gpurec): hold " -- \
+  "${FWS[@]}" execution conclude "$TMP/gpu-done.json"
 "${FWS[@]}" execution run "$(slotreq gpu-none measurement)" >/dev/null || ko "could not reserve the second GPU measurement (setup)"
 jq -n '{request_id:"gpu-none", verdict:"pass", log:"/dev/null", evidence:"fixture: measured",
   observed_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", remote_checkout:"/tmp/x", handle:"fixture"}' > "$TMP/gpu-none.json"

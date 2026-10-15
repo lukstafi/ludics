@@ -426,7 +426,7 @@ def with_gpu_record(cfg: Config, payload: str) -> str:
     """A conclusion payload with THE CO-TENANT EVIDENCE appended, when it concludes a measurement
     that ran; any other payload unchanged, as is one the registry will refuse on shape anyway (no
     object, no request id, no evidence) and one whose record cannot be read here (the conclusion
-    then meets the same anchor)."""
+    then meets the same anchor). A conclusion's retry reuses the clause it recorded."""
     try:
         decoded: Any = json.loads(payload)
     except ValueError:
@@ -443,6 +443,17 @@ def with_gpu_record(cfg: Config, payload: str) -> str:
     records = records_of(done.out) if done.rc == 0 else None
     record = record_of(records or [], request)
     if record is None or field(record, "request", "kind") != "measurement":
+        return payload
+    if record.get("state") == "concluded":
+        # A retry of a conclusion that landed with its answer lost: the clause it recorded stands,
+        # so the payload is the registry's identical retry however the box or its record has
+        # changed since. Any other payload for a concluded record is the registry's to refuse.
+        history: Any = record.get("history")
+        last: Any = cast(list[Any], history)[-1] if isinstance(history, list) and history else None
+        recorded = field(cast(dict[str, Any], last), "data", "evidence") if isinstance(last, dict) else None
+        if isinstance(recorded, str) and recorded.startswith(f"{evidence}; "):
+            data["evidence"] = recorded
+            return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         return payload
     host = jq_text(field(record, "request", "execution_host"))
     data["evidence"] = f"{evidence}; {gpu_record_evidence(cfg, host, request)}"

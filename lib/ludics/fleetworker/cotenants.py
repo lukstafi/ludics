@@ -55,7 +55,8 @@ process.
   CLOCK_UPTIME_RAW's). Apple Silicon's AGX clients are such a class; a Mac whose GPU driver
   registers no ``IOGPUDeviceUserClient`` lists nothing, and says ``ran`` with no clients.
 
-Every probe is bounded by ``PROBE_TIMEOUT``, and a probe that cannot run is a ``failed`` entry,
+Every probe is bounded by ``PROBE_TIMEOUT`` (the file reads of drm-fdinfo too, in a thread of
+their own), and a probe that cannot run is a ``failed`` entry,
 never a refused measurement: the record is evidence, and its absence must not stop the run.
 """
 
@@ -64,6 +65,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -259,10 +261,21 @@ def describe(pids: Sequence[int], run: Runner) -> dict[int, tuple[str, str]]:
 # --- a snapshot -----------------------------------------------------------------------------------
 
 
+def bounded_drm(root: str, timeout: float) -> Found:
+    """``probe_drm`` in a daemon thread, given up on after ``timeout`` seconds: it reads files, not a
+    subprocess's pipe, and a read under /proc that blocks must not hold the measurement (the thread
+    is left blocked, and ends with the process)."""
+    answer: list[Found] = []
+    thread = threading.Thread(target=lambda: answer.append(probe_drm(root)), daemon=True)
+    thread.start()
+    thread.join(timeout)
+    return answer[0] if answer else Found("drm-fdinfo", "failed", f"no answer after {timeout:g}s")
+
+
 def probes(env: Mapping[str, str], run: Runner) -> list[Found]:
     return [
         probe_nvidia(env.get("FLEET_NVIDIA_SMI") or "nvidia-smi", run),
-        probe_drm(env.get("FLEET_DRM_PROC") or "/proc"),
+        bounded_drm(env.get("FLEET_DRM_PROC") or "/proc", PROBE_TIMEOUT),
         probe_ioreg(env.get("FLEET_IOREG") or "ioreg", run),
     ]
 
