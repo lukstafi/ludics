@@ -1088,10 +1088,10 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
   ANCHOR_FAILED=""
   if [ -z "$ANCHOR" ]; then echo "anchor leg not checked: WAKE_LAB_ANCHOR is empty"; return 0; fi
   for n in "$@"; do
-    # fleet-worker reads the registry WITHOUT ssh where the anchor is the box itself (`local`, or
-    # the box's own name -- transport.is_local), so there is no leg to ask there; an alias of the
-    # box's own row is the same machine.
-    if [ "$ANCHOR" = local ] || [ "$ANCHOR" = "$n" ] || [[ " $(endpoints_of "$n" | sed 's/[a-z]*=//g') " == *" $ANCHOR "* ]]; then
+    # fleet-worker reads the registry WITHOUT ssh exactly where its anchor is `local` or the box's
+    # own fleet name (transport.is_local), and a linux box's fleet name is its linux alias. Those
+    # two spellings, and no other alias of the row, have no leg to ask; every other one is asked.
+    if a=$(anchor_alias "$n") && { [ "$ANCHOR" = local ] || [ "$ANCHOR" = "$a" ]; }; then
       echo "anchor leg not asked on $n: the anchor $ANCHOR is that box itself, read without ssh"
     elif a=$(anchor_alias "$n"); then names+=("$n"); aliases+=("$a"); rcs+=(1); caps+=("$PROBE_CAP")
     else echo "anchor leg not checked on $n: its kind is $(box_kind "$n"), and only a linux box is asked"; fi
@@ -1101,14 +1101,14 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
   while :; do
     all=1; line="anchor leg to $ANCHOR: "
     for ((i = 0; i < ${#names[@]}; i++)); do
-      # A leg that answered once is not asked again: the question is whether it has come up.
-      if [ "${rcs[i]}" != 0 ]; then
-        cap=$PROBE_CAP; left=$((deadline - SECONDS))
-        if [ "$first" = 1 ] || [ "$left" -gt 0 ]; then
-          [ "$first" = 1 ] || [ "$left" -ge "$cap" ] || cap=$left
-          caps[i]=$cap
-          anchor_probe "${aliases[i]}" "$cap"; rcs[i]=$?
-        fi
+      # Every leg is asked on every poll, an answered one included, as wait_for asks every box:
+      # `all up` is then one poll at which every leg answered, never a leg that answered once and
+      # has since gone while another box was still coming up.
+      cap=$PROBE_CAP; left=$((deadline - SECONDS))
+      if [ "$first" = 1 ] || [ "$left" -gt 0 ]; then
+        [ "$first" = 1 ] || [ "$left" -ge "$cap" ] || cap=$left
+        caps[i]=$cap
+        anchor_probe "${aliases[i]}" "$cap"; rcs[i]=$?
       fi
       if [ "${rcs[i]}" = 0 ]; then line="$line${names[i]}=OK "
       else line="$line${names[i]}=-- "; all=0; fi

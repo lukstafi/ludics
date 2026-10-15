@@ -40,8 +40,17 @@ case "$*" in
     # leg still coming up after a wake.
     # $SSH_ANCHOR_HANG_AFTER=<n> wedges every ask after the n-th instead, the way a far side that
     # accepted the connection and never answered does: only the script's cap ends it.
-    [ "${SSH_UP:-0}" = 1 ] || exit 255
-    asks=$(grep -c -- ' true || exit ' "$SSH_LOG")
+    # $SSH_ANCHOR_SCRIPT="<alias>:<outcomes> ..." scripts one alias's asks instead, one character
+    # per ask (0 answers, 1 the leg fails), the last repeating: a leg that answers and then goes.
+    dest=${*: -2:1}
+    [ "${SSH_UP:-0}" = 1 ] || [[ " ${SSH_UP:-} " == *" $dest "* ]] || exit 255
+    asks=$(grep -c -- " $dest ssh .* true || exit " "$SSH_LOG")
+    for spec in ${SSH_ANCHOR_SCRIPT:-}; do
+      [ "${spec%%:*}" = "$dest" ] || continue
+      seq=${spec#*:}; k=$((asks - 1)); [ "$k" -lt "${#seq}" ] || k=$((${#seq} - 1))
+      [ "${seq:k:1}" = 0 ] && exit 0
+      all=$*; exit "${all##* }"
+    done
     [ -n "${SSH_ANCHOR_HANG_AFTER:-}" ] && [ "$asks" -gt "$SSH_ANCHOR_HANG_AFTER" ] && exec sleep 60
     [ "$asks" -gt "${SSH_ANCHOR_AFTER:-0}" ] && exit 0
     all=$*; exit "${all##* }" ;;
@@ -50,10 +59,10 @@ case " $* " in
   *' tuf-amd-linux '*) [ "${SSH_UP:-0}" = 1 ] ;;
   *' tuf-amd-win '*) [ "${SSH_UP:-0}" = tuf-amd-win ] ;;
   *' tuf-amd-wsl '*) [ "${SSH_UP:-0}" = tuf-amd-wsl ] ;;
-  *' rog-nv-linux '*) [ "${SSH_UP:-0}" = rog-nv-linux ] ;;
+  *' rog-nv-linux '*) [[ " ${SSH_UP:-0} " == *' rog-nv-linux '* ]] ;;
   *' rog-nv-win '*) [ "${SSH_UP:-0}" = rog-nv-win ] ;;
   *' rog-nv-wsl '*) [ "${SSH_UP:-0}" = rog-nv-wsl ] ;;
-  *) for a in "$@"; do [ "$a" = "${SSH_UP:-}" ] && exit 0; done; exit 1 ;;
+  *) for a in "$@"; do [[ " ${SSH_UP:-} " == *" $a "* ]] && exit 0; done; exit 1 ;;
 esac
 SSH
 # The router and the magic packet log to the same file as ssh, so an empty log is "nothing sent".
@@ -223,6 +232,12 @@ out=$(SSH_UP=1 SSH_ANCHOR_AFTER=1000 WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAI
 want_leg="anchor leg NOT up on tuf: tuf-amd-linux answers, but its own 'ssh -o BatchMode=yes mac-studio true' still failed"
 check 'an anchor leg that never comes up is NOT all up, naming that leg and not the wake' '[ "$rc" = 1 ] && [ "$last" = "NOT all up: no ssh to mac-studio yet from: tuf (see above)" ] && [[ "$out" == *"$want_leg"* ]] && ! grep -qx "all up" <<<"$out" && [[ "$out" != *"did NOT wake"* ]]'
 : >"$SSH_LOG"
+# Every leg is asked on every poll: rog's answers once and then goes, while minix's comes up on its
+# third ask. Asked only until it answered, rog would read OK beside minix and the wake all up.
+out=$(WAKE_LAB_HOSTS="$tmp/lab-hosts.sh" SSH_UP="rog-nv-linux minix-amd-linux" SSH_ANCHOR_SCRIPT="rog-nv-linux:01 minix-amd-linux:110" \
+  WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_POLL_SECONDS=0 "$tmp/wake-lab.sh" --wait rog minix 2>&1); rc=$?
+check '...and a leg that answered is asked again, so one that has gone since is NOT all up' '[ "$rc" = 1 ] && [[ "$out" == *"anchor leg to mac-studio: rog=OK minix=--"*"rog=-- minix=OK"* ]] && [[ "$out" == *"anchor leg NOT up on rog: rog-nv-linux answers"* ]] && [[ "$out" != *"anchor leg NOT up on minix"* ]]'
+: >"$SSH_LOG"
 started=$SECONDS
 out=$(SSH_UP=1 SSH_ANCHOR_AFTER=1000 SSH_ANCHOR_HANG_AFTER=1 WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAIT_SECONDS=3 WAKE_LAB_ANCHOR_POLL_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?; took=$((SECONDS - started))
 check '...and an ask that wedges after the first is cut at the time left, not at the 20s probe cap' '[ "$rc" = 1 ] && [ "$took" -lt 12 ] && [[ "$out" == *"anchor leg NOT up on tuf: its last check through tuf-amd-linux did not return within its "[1-3]"s cap"* ]]'
@@ -233,10 +248,17 @@ check 'a box that never answered is reported not woken, and its anchor leg is ne
 out=$(SSH_UP=1 WAKE_LAB_ANCHOR=hub.lan WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
 check 'WAKE_LAB_ANCHOR names the anchor the box is asked to reach' '[ "$rc" = 0 ] && [[ "$out" == *"anchor leg to hub.lan: tuf=OK"* ]] && grep -q " hub.lan true || exit 3$" "$SSH_LOG" && ! grep -q "mac-studio" "$SSH_LOG"'
 : >"$SSH_LOG"
-for anchor in local tuf tuf-amd-linux; do
+for anchor in local tuf-amd-linux; do
   : >"$SSH_LOG"
   out=$(SSH_UP=1 SSH_ANCHOR_AFTER=1000 WAKE_LAB_ANCHOR=$anchor WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
   check "an anchor that is the box itself ($anchor) has no leg to ask, as fleet-worker reads it without ssh" '[ "$rc" = 0 ] && [[ "$out" == *"anchor leg not asked on tuf: the anchor $anchor is that box itself"* ]] && ! grep -q " true || exit " "$SSH_LOG"'
+done
+# ...and only those: fleet-worker ssh-es to any other spelling, its short name or another OS's
+# alias included, so that leg is asked (and here fails, as the stub's leg never comes up).
+for anchor in tuf tuf-amd-win; do
+  : >"$SSH_LOG"
+  out=$(SSH_UP=1 SSH_ANCHOR_AFTER=1000 WAKE_LAB_ANCHOR=$anchor WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB_ANCHOR_WAIT_SECONDS=0 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
+  check "...while $anchor, which fleet-worker still reaches over ssh, is asked" '[ "$rc" = 1 ] && [[ "$out" != *"is that box itself"* ]] && grep -q " $anchor true || exit 3$" "$SSH_LOG"'
 done
 : >"$SSH_LOG"
 out=$(SSH_UP=1 WAKE_LAB_ANCHOR= WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf 2>&1); rc=$?
