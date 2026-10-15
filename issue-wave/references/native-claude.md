@@ -77,7 +77,9 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
 1. **Standing reservation, at launch.** The coordinator takes one `kind: correctness`,
    `"standing": true` reservation per worker on its agent host with `fleet-worker.sh execution
    run` (request id `<wave>-<issue>-<host>-iterate`; see [executions.md](executions.md)) and
-   names it in the brief. It pre-authorizes the worker's own targeted test batches there -
+   names it in the brief, and by default one more on the task's GPU home box
+   ([executions.md](executions.md#the-gpu-home-box) says when, and the batch's ssh form). It
+   pre-authorizes the worker's own targeted test batches there -
    each through the project runner (`tools/test-run.sh run ...`), blocked to completion inside
    the turn, reported by run directory in the worker's messages - with no per-batch request. It
    is concluded at hand-back from the last batch's record. Being standing, it consumes no
@@ -90,7 +92,7 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    refuses while a measurement is outstanding there; a measurement still needs the box to itself through the registry.
    The brief's wrapper adds `--wait-window`, which waits out a coordinator's *measurement
    window* on the box instead of refusing (SKILL.md, *The brief*, execution handoff).
-2. **Request, for everything else.** A measurement, a cross-box leg, a full suite: the worker
+2. **Request, for everything else.** A measurement, a one-off cross-box leg, a full suite: the worker
    ends its turn with its final message carrying the block, one per request and each naming one
    execution host, back to back with nothing after the last (ahrefs/ocannl#1168 wrote its four
    requests as prose, and none was reserved):

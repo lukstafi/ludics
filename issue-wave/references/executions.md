@@ -482,14 +482,15 @@ field on any other shape. Concluded `pass` or `fail` at an exact `observed_sha`,
 
 ## Standing iteration reservation
 
-A worker's own targeted correctness batches on its agent host do not each need a request. The
+A worker's own targeted correctness batches on its agent host, and on its GPU home box
+([below](#the-gpu-home-box)), do not each need a request. The
 coordinator takes one `kind: correctness` reservation per worker at launch (`execution run`,
 request id `<wave>-<issue>-<host>-iterate`, `"standing": true`, purpose naming the bounded
 aliases and `-j` width) and names it in the brief; the worker then runs those batches through
 the project runner without asking, blocks on each inside its turn, and reports every run
 directory. The reservation is concluded at hand-back with `conclude --from-run` on the last
 batch's record, or, with none to read, a JSON conclusion with `--observed-from <the worker's
-worktree>` rather than a SHA copied from the report. Measurement, cross-box legs and full suites still go through a request.
+worktree>` rather than a SHA copied from the report. Measurement, one-off cross-box legs and full suites still go through a request.
 
 `"standing": true` is what exempts the record from the box's slot count, and it is explicit
 rather than read off the `-iterate` id convention: a mistyped id must not silently escape the
@@ -510,11 +511,36 @@ repository whose runner is a plain script go through it the same way, one batch 
 (2026-09-15: the coordinator ended up granting this by message after sixteen
 request/assign/report round-trips parked three workers idle between review rounds).
 
-A measurement on the worker's agent host suspends this reservation for as long as it runs: the
+A measurement on a box where the worker holds one suspends that reservation for as long as it runs: the
 coordinator opens it as a [measurement window](#exclusivity-and-the-run-time-slots), the record's
 state is `suspended` meanwhile, and a batch on the box waits for the window under the brief's
 `execution slot --wait-window` (or is refused naming it without that flag). A standing
 reservation taken while a window is open is admitted suspended, and restored with the others.
+
+### The GPU home box
+
+By default the coordinator takes a second standing reservation at launch, beside the agent-host
+one, on the task's GPU box whenever the plan homes the task there or names a GPU iteration leg
+for it: one per such box, request id `<wave>-<issue>-<box>-iterate`, the agent host still the
+worker's (ludics-lite#621). A request per GPU run cost ahrefs/ocannl#1240 three HIP round trips
+in wave-20261014 before the coordinator granted a standing one mid-task, while #1313 on
+tuf-amd-linux, holding one from launch, iterated without the coordinator and still yielded to
+measurement windows. Read the `REFRESH` line its `execution run` prints before the brief goes
+out, as for any assignment. The brief names the reservation id, a far-side checkout that is the
+worker's to prepare (a worktree of the box's clone at the worker's pushed revision, with the
+worker its one writer), and the batch's form, which takes the slot on that box, not the agent's:
+
+```
+ssh <box> 'cd <checkout> && fleet-worker.sh execution slot --wait-window -- <runner>'
+```
+
+A GPU batch passes no `-j` (above), so the box's GPU tokens (rog-nv-linux: 2) still bound it
+however many standing records the box holds. A batch that can outlast the tool cap takes `--bg
+<parent>` the same way, with the parent and `bg-run.sh wait <dir>` on that box too. The
+reservation is concluded at hand-back like the agent-host one: `--from-run` on the last batch
+there (it reads the run directory on the reservation's execution host), or `--observed-from
+<the far-side checkout>`. A measurement there, and a one-off leg on a box the plan names no
+iteration for, still go through a request.
 
 ## Native handoffs
 
