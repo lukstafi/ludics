@@ -29,12 +29,14 @@ list. Run them against the issue tracker, which is not always the repository the
          --json title,state,stateReason,body,comments,closedByPullRequestsReferences
 
    An open match turns the chip into "work this issue": the chip leaves the list, and its
-   evidence goes onto that issue, `gh issue comment <n> -R <tracker> --body-file <file>`. A
-   closed match whose record shows the chip's change landed (`stateReason` `COMPLETED`, with
-   the closing PR or a closing comment naming it) drops the chip as done; one closed
-   `NOT_PLANNED` drops it too, unless the chip brings evidence its body and comments lack,
-   which goes onto it as a comment. (Wave 2026-10-14's third post-wave re-specified the open
-   ludics-lite#568 as a chip; its worker noticed only after merging, and #568 was closed by hand.)
+   evidence goes onto that issue, `gh issue comment <n> -R <tracker> --body-file <file>`, as a
+   comment naming the task ID, posted only when the comments just read do not carry it (a
+   resumed close-out repeats nothing). A closed match whose record shows the chip's change
+   landed (`stateReason` `COMPLETED`, with the closing PR or a closing comment naming it) drops
+   the chip as done; one closed `NOT_PLANNED` drops it too, unless the chip brings evidence its
+   body and comments lack, which goes onto it as a comment the same way.
+   (Wave 2026-10-14's third post-wave re-specified the open ludics-lite#568 as a chip; its
+   worker noticed only after merging, and #568 was closed by hand.)
 2. **The value floor.** A chip is below the floor when all three hold: it is test or tooling
    polish with no behaviour change; only one worker raised it (no recurrence across workers);
    and no hand-back reports worker time it would have saved. A chip below the floor gets no
@@ -43,14 +45,17 @@ list. Run them against the issue tracker, which is not always the repository the
    wave ID, `<wave ID> small follow-ups` (the ahrefs/ocannl#1160 shape; a second wave on one day
    takes its own ID, such as `wave-20261015b`). A search hit is it only on an exact title:
 
-       gh issue list -R <tracker> --state open --json number,title \
+       gh issue list -R <tracker> --state all --json number,title,state \
          --search '"<wave ID> small follow-ups" in:title'
        gh issue create -R <tracker> --label wave-followup --title '<wave ID> small follow-ups' \
          --body-file <file>      # only when no hit has the exact title
+       gh issue reopen <n> -R <tracker>   # only when the exact-title hit is closed
        gh issue view <n> -R <tracker> --json body --jq .body > <file>   # then append the items
        gh issue edit <n> -R <tracker> --body-file <file>
 
-   The label is the one SKILL.md's *Close out* creates. (Wave 2026-10-14 ran five post-waves,
+   Append only the items whose task ID the fetched body does not carry yet, so a close-out
+   resumed after the edit but before the board recorded `checklisted` adds nothing twice. The
+   label is the one SKILL.md's *Close out* creates. (Wave 2026-10-14 ran five post-waves,
    17 -> 11 -> 8 -> 2 -> 3 tasks, the last ones mostly such polish, and filed about 47 follow-up
    issues.)
 
