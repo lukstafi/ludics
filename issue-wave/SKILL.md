@@ -24,7 +24,7 @@ choice changes follow-up handling only; regular wave selection and execution sta
 For the default mode, read [Post-wave coordination](references/post-wave.md) at close-out.
 
 **One coordinator per fleet, not per box** (ludics-lite#4, since 2026-09-02). The coordinator
-owns scoping, the decision gate, placement, the integration loop, stop-the-world, and close-out
+owns scoping, the decision gate, placement, the integration loops, stop-the-world, and close-out
 for every machine, and launches workers onto whichever box the plan places them on - the same
 brief, the same ship-pr lifecycle, transport-specific supervision whether the box is its own or
 remote. Its natural home is mac-studio (always on, and the flotilla dashboard lives there), but
@@ -740,6 +740,78 @@ controlled through the tools in your coordinator's file, never through those com
      the macOS jobs, a Linux box for the Ubuntu ones - under an execution reservation, each step
      through the box's slot. Not a CI run on a temporary ref: that waits in the same macOS
      queue this rule exists to shorten.
+- **The GPU integration loop (ludics-lite#615, decided 2026-10-15).** A local integration run
+  covers one backend, its box's, so a repository with GPU backends that GitHub CI never builds
+  (OCANNL: CUDA on rog-nv-linux, HIP on minix-amd-linux and tuf-amd-linux) gets a second,
+  opportunistic loop beside the cc one. In wave-20261014 the cc loop passed 31 times while three
+  GPU-only reds from the wave's own PRs accumulated; the next morning's sweep caught them, and
+  one HIP `@runtest` at the tip, about 25 minutes, found exactly those three. It keeps the cc
+  loop's shape - no queue; when it can next start it runs at the tip of that moment, and its
+  verdict covers every merge since its previous run *on that backend* as a span - and differs
+  in four ways.
+  - **Where, and at what priority: a worker's or lower.** Among the GPU boxes free when it can
+    start, the one whose backend was least recently covered at a tip, so CUDA and HIP
+    alternate when both are free, and the HIP pick between tuf (discrete) and minix (unified
+    memory) follows the same rule per box (the newest loop record per backend, or per box,
+    that ran: read as below with `pass` or `fail` for the verdict, since a `not-launched` or
+    `cancelled` record covered nothing). A box is free when it is up - tuf only while it
+    already is: the loop never wakes a box - and no sweep lane holds it (`wake-lab.sh status
+    <box>`); `execution tip-run` (below) checks the rest, and starts nothing where it would
+    take from a worker or a measurement: anything outstanding on the box but a standing
+    reservation (a worker's assigned leg, a measurement or its window, another loop run) and
+    it yields, reserving nothing; and it takes the box's GPU token only if one is free at that
+    moment (`execution slot --wait 0`, no `--wait-window`), never waiting behind or among the
+    workers' batches. A standing reservation, a worker's on its GPU home box included, does not
+    turn it away: a record is not load (ludics-lite#160), and like another worker's batch the
+    run takes only an idle token and holds it for one run, so a worker homed there finds one
+    token fewer for at most that run. A run it does not start is not retried: the loop tries
+    again when it can next start. The yield reads what is outstanding when the run starts: a
+    worker's leg reserved on the box after that meets the run as a batch meets another's,
+    waiting at most that run for a token, unless the coordinator, which reserved it, ends the
+    run for it. A measurement asked for while a loop run holds its box always ends that run -
+    `ssh <box> '~/ludics-lite/issue-wave/scripts/bg-run.sh stop <dir>'`, which ends
+    its whole tree; the run then reads DIED, which `--from-bg-run` refuses, so conclude it
+    `cancelled` with a JSON payload - then open the window.
+  - **Informative, never a gate.** Its records never carry `"integration": true`, so the base
+    gate never reads them (*Base gate*): launch verdicts stay the tip's own push run and the cc
+    loop's records. A GPU red reaches the wave through the loop itself, below. Its request ids
+    are `<wave>-gpu-<box>-<n>`, and its `purpose` begins `GPU integration loop, <backend>:`
+    (`cuda`, `hip`), the prefix the reads below select on.
+  - **One call per run**, in a checkout on the box that is the coordinator's own (never a
+    worker's):
+
+        fleet-worker.sh execution tip-run <reserve.json> --checkout <dir> -- <command...>
+
+    The request is an ordinary non-standing `correctness` request of transport `coordinator`
+    whose `requested_revision` is exactly the SHA to run (`git ls-remote origin
+    refs/heads/<base>` for the tip). It yields as above, reserves and dispatches (`execution
+    run`, with every check that makes, a halt's included), checks the SHA out detached in the
+    clean checkout, starts the command under `execution slot --bg` on a GPU token (`--cpu` for
+    a CPU backend), records it running, and prints `TIP-RUN STARTED <id> <box> <sha> <dir>`;
+    or `TIP-RUN NOT STARTED <id>: <why>` (exit 1), with anything it reserved concluded
+    `not-launched`. For OCANNL the command is `tools/test-run.sh run --test-cap 0 build
+    @runtest @train`, which runs the box's own backend by default. Block on the run with `ssh
+    <box> '~/ludics-lite/issue-wave/scripts/bg-run.sh wait <dir>'`, or try the conclusion at
+    each supervision pass (a RUNNING run is refused, never concluded): `fleet-worker.sh
+    execution conclude --from-bg-run <dir> --request <id> --sha <sha>`. The cc loop's local run
+    may take the same call, its request carrying `"integration": true`: yielding is how it
+    finds a quiet box too.
+  - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
+    rerun pending"`; one rerun at the same SHA on a box of that backend under the halt's one
+    triage reservation (the same `tip-run`, its request carrying `triage_reason`); green, a
+    flake, `resume-launches`; red, attribution by `git log --first-parent <last green on that
+    backend>..<red tip>` with one triage owner, as in the order above. The last green on a
+    backend is the newest `pass` among its loop records, or with none in the registry, the
+    daily sweep's last green there:
+
+        fleet-worker.sh execution list --compact | jq -r '[.[] | select(.verdict == "pass" and (.request.purpose | startswith("GPU integration loop, hip:")))] | sort_by(.updated_at) | last | .observed_sha // empty'
+
+  The daily cross-machine sweep stays the thorough check: every backend on every box, where the
+  loop covers one backend per run and only shortens the time to detection. The two are both
+  GPU-token takers on rog-nv-linux (the sweep's GPU unit since ahrefs/ocannl#1177), and neither
+  may starve the workers, so the loop does not start on a box a sweep lane holds (the sweep is
+  checking it more thoroughly anyway), and a lane that starts while a loop run is on its box
+  finds one token fewer for at most that run.
 - **On a regression, stop the world - as a mechanism.** `fleet-worker.sh halt "<what
   regressed, who owns the fix>"` (already set by the integration loop's red at the tip; repeating
   it updates the reason and keeps the halt) makes every subsequent `launch` refuse until
@@ -863,7 +935,8 @@ execution - `execution run <reserve.json>` then `execution conclude --from-run <
 --request <id> --sha <sha>` - plus a standing reservation per worker for its own iteration
 batches on its agent host, and one on its GPU home box (executions.md, *The GPU home box*),
 taken at launch and concluded at hand-back, with `execution slot` around each batch
-bounding the box's load. A measurement on a box where those are outstanding opens with
+bounding the box's load; an integration-loop run is one `execution tip-run` call, concluded
+`--from-bg-run` (*Supervise*). A measurement on a box where those are outstanding opens with
 `execution window <box> <reserve.json>` in place of `run`, which suspends them until it concludes
 (executions.md, *The measurement window*, which also says how to batch a box's pending
 measurements). `load` is an observation, not ownership, and neither it nor these
