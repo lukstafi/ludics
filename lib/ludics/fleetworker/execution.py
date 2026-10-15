@@ -596,9 +596,9 @@ def execution_refresh(cfg: Config, record_text: str) -> None:
 
 LIST_USAGE = "execution list: expected --active, --compact or --host <box>"
 USAGE = (
-    "execution: list, slot -- <command>, hold -- <command>, run|reserve|dispatch|record|reconcile|conclude"
-    " <json-file>, window <box> <json-file>, conclude --from-run|--from-bg-run <run-dir> --request <id>,"
-    " or tip-run <json-file> --checkout <dir> -- <command>"
+    "execution: list, slot -- <command>, hold -- <command>, leg --request <id> ... -- <runner>,"
+    " run|reserve|dispatch|record|reconcile|conclude <json-file>, window <box> <json-file>,"
+    " conclude --from-run|--from-bg-run <run-dir> --request <id>, or tip-run <json-file> --checkout <dir> -- <command>"
 )
 CONCLUDE_USAGE = "execution conclude <json-file> [--observed-from <checkout>]"
 
@@ -762,6 +762,50 @@ def checked_request(cfg: Config, payload: str, action: str) -> None:
     fail(revision.request_refusal(decoded, gh_timeout(cfg), lambda request: held(cfg, request, action)))
 
 
+def with_resolution(cfg: Config, payload: str, action: str) -> tuple[str, str]:
+    """A dispatch step (``run``, ``window``, ``dispatch``) of a request that follows a branch
+    (``head-of:<branch>``, ludics-lite#558): the payload with the commit the branch names on GitHub
+    NOW as ``resolved_revision``, and the line saying so once the registry has accepted it. Any other
+    payload is returned as it is, with no line; so is a retry the registry's own rule answers (an id
+    it holds that this action cannot newly dispatch), which is never resolved again. A payload that
+    does not parse is the registry's to refuse."""
+    try:
+        decoded: Any = json.loads(payload)
+    except ValueError:
+        return payload, ""
+    if not isinstance(decoded, dict):
+        return payload, ""
+    data = cast(dict[str, Any], decoded)
+    if action == "dispatch":
+        request_id = data.get("request_id")
+        if not (isinstance(request_id, str) and request_id):
+            return payload, ""
+        record = record_to_check(cfg, request_id)
+        if record is None or record.get("state") != "reserved":
+            return payload, ""
+        request: Any = record.get("request")
+        target = data
+    else:
+        request = data.get("request") if action == "window" else data
+        if not isinstance(request, dict):
+            return payload, ""
+        target = cast(dict[str, Any], request)
+        request_id = target.get("request_id")
+    branch = revision.head_of(request)
+    if branch is None:
+        return payload, ""
+    if action != "dispatch" and isinstance(request_id, str) and request_id and held(cfg, request_id, action):
+        return payload, ""
+    repo = jq_text(cast(dict[str, Any], request).get("repository"))
+    sha = revision.branch_head(repo, branch, gh_timeout(cfg))
+    if not isinstance(sha, str):
+        fail(sha)
+        return payload, ""
+    target["resolved_revision"] = sha
+    line = f"EXECUTION RESOLVED {jq_text(request_id)}: head-of:{branch} is {sha} in {repo}, read at assignment"
+    return json.dumps(data, separators=(",", ":"), ensure_ascii=False), line
+
+
 def held(cfg: Config, request: str, action: str) -> bool:
     """Whether the registry's own retry rule answers this request id: it holds the id, and the
     action cannot newly dispatch it -- `run` dispatches a record still reserved (one taken before
@@ -921,6 +965,7 @@ def window_payload(args: list[str]) -> str:
 def cmd_execution(cfg: Config, args: list[str]) -> int:
     action = args[0] if args else ""
     payload = "{}"
+    resolution = ""
     match action:
         case "list":
             options: dict[str, bool | str] = {"active": False, "compact": False}
@@ -954,6 +999,10 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             from ludics.fleetworker import tiprun
 
             return tiprun.cmd_tip_run(cfg, args[1:])
+        case "leg":
+            from ludics.fleetworker import leg
+
+            return leg.cmd_leg(cfg, args[1:])
         case "conclude":
             mode = args[1] if len(args) > 1 else ""
             if mode == "--from-run":
@@ -970,6 +1019,8 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
                 payload = checked_evidence(cfg, payload, "", action)
             else:
                 checked_request(cfg, payload, action)
+            if action in ("run", "dispatch"):
+                payload, resolution = with_resolution(cfg, payload, action)
         case "window":
             # THE MEASUREMENT WINDOW (ludics-lite#481): the box is named apart from the payload so
             # the call says which box's standing reservations it suspends, and the registry refuses
@@ -977,6 +1028,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             payload = window_payload(args)
             check_identity(cfg)
             checked_request(cfg, payload, action)
+            payload, resolution = with_resolution(cfg, payload, action)
         case _:
             die(USAGE)
     source = registry_source()
@@ -1002,6 +1054,8 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
     if done.unreachable:
         cli.say(f"EXECUTION UNREACHABLE {cfg.anchor}: outcome unknown; reconcile before retrying dispatch")
         return 4
+    if done.rc == 0 and resolution:
+        err(resolution)
     if done.rc == 0 and action in ("run", "dispatch", "window"):
         execution_refresh(cfg, out)
     return done.rc

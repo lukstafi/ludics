@@ -38,14 +38,23 @@ What is read, and nothing else (a fail-closed allowlist for what counts as a com
     made only of hex digits, seven or more, is a commit claim, and must be the full 40-hex SHA and
     resolve. A ref (``origin/main``) and prose are not read. Neither is a SHA inside a longer word
     (``origin/<sha>``, ``<sha>^``, ``<sha>:path``), nor whether a named ref exists.
+  - ``requested_revision`` of the form ``head-of:<branch>`` (ludics-lite#558), whose grammar is the
+    registry's (``registry.head_of_branch``), is read at ASSIGNMENT, not at request time: ``run``,
+    ``window`` and ``dispatch`` ask GitHub for the branch's head (``gh api --hostname github.com
+    repos/<repository>/git/ref/heads/<branch> -q .object.sha``) and hand the registry that commit as
+    ``resolved_revision``. A 404 there refuses (exit 1: no such branch, or a repository this box's
+    token cannot see); an answer that is not one 40-hex commit refuses; no answer is ``EXECUTION
+    UNVERIFIED``, exit 4, as above. A retry the registry's own rule answers is not resolved again.
 """
 
 import re
 import subprocess
+import urllib.parse
 from collections.abc import Callable
 from typing import Any, cast
 
 from ludics import proc
+from ludics.fleetworker.registry import HEAD_OF, head_of_branch
 
 SHA40 = re.compile(r"[0-9a-f]{40}")
 SHA64 = re.compile(r"[0-9a-f]{64}")
@@ -128,3 +137,38 @@ def request_refusal(
         if refusal is not None:
             return refusal
     return None
+
+
+def head_of(request: Any) -> str | None:
+    """The branch a reservation request follows (``head-of:<branch>``), or None for any other."""
+    if not isinstance(request, dict):
+        return None
+    revision = cast(dict[str, Any], request).get("requested_revision")
+    if not isinstance(revision, str) or not revision.startswith(HEAD_OF):
+        return None
+    return head_of_branch(revision)
+
+
+def branch_head(repo: str, branch: str, timeout: float = 30) -> str | tuple[str, int]:
+    """The commit ``branch`` names in ``repo`` on GitHub now, or the line to print and its exit."""
+    what = f"head-of:{branch}"
+    if not REPOSITORY.fullmatch(repo):
+        return (f"EXECUTION REFUSED: {what} cannot be resolved: the request's repository {repo!r} is not"
+                " <owner>/<name> on GitHub; nothing recorded", 1)
+    path = f"repos/{repo}/git/ref/heads/{urllib.parse.quote(branch, safe='/')}"
+    done = proc.run_tool(
+        "gh", ["api", "--hostname", "github.com", path, "-q", ".object.sha"], stdin=subprocess.DEVNULL, timeout=timeout
+    )
+    lines = done.stderr.strip().splitlines()
+    said = lines[-1].strip() if lines else f"gh exit {done.rc}, no message"
+    if done.rc == 0:
+        got = done.stdout.strip()
+        if SHA40.fullmatch(got):
+            return got
+        return (f"EXECUTION REFUSED: GitHub answered {what} in {repo} with {got or 'nothing'!r}, not one commit;"
+                " nothing recorded", 1)
+    if "(HTTP 404)" in done.stderr:
+        return (f"EXECUTION REFUSED: {what}: GitHub has no branch {branch} in {repo} (or the repository is one this"
+                f" box's gh token cannot see: {said}); nothing recorded", 1)
+    return (f"EXECUTION UNVERIFIED github.com: {what} could not be resolved in {repo} ({said}); nothing recorded"
+            " -- retry once GitHub answers", 4)

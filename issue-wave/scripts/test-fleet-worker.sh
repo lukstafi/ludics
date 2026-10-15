@@ -490,12 +490,25 @@ SHIMEOF
 # SHIM_GH_NO_COMMIT (422: no commit), the repository is SHIM_GH_NO_REPO (404), SHIM_GH=down (no
 # answer), `spam` (GitHub's other 422) or `hang` (a call that never returns, from a child process as
 # a stalled connection would). Each such call appends its path to $SHIM_GH_COMMIT_LOG.
+# A branch head (ludics-lite#558's head-of requests), `gh api --hostname github.com
+# repos/<owner>/<name>/git/ref/heads/<branch> -q .object.sha`, is answered from SHIM_GH_HEADS, a file
+# of `<branch> <sha>` lines (a branch it does not list is GitHub's 404), or not at all under
+# SHIM_GH=down; each such call appends its path to $SHIM_GH_COMMIT_LOG too.
 # `auth token -h github.com` answers gh's stored token (ludics-lite#567): SHIM_GH_STORED's value,
 # or with none set gh's "no oauth token" (exit 1); `hang` never returns. Asked with GH_TOKEN or
 # GITHUB_TOKEN in its environment, even empty, it fails loudly: gh would answer that variable, so
 # the preflight must ask with both removed.
 cat > "$TMP/bin/gh" <<'SHIMEOF'
 #!/usr/bin/env bash
+if [ "$#" -eq 6 ] && [ "$1 $2 $3 $5 $6" = "api --hostname github.com -q .object.sha" ]; then
+  case "$4" in repos/*/*/git/ref/heads/*) ;; *) echo "gh shim: unexpected call: $*" >&2; exit 2 ;; esac
+  printf '%s\n' "$4" >> "$SHIM_GH_COMMIT_LOG"
+  [ "${SHIM_GH:-}" != down ] || { printf 'error connecting to api.github.com\n' >&2; exit 1; }
+  branch=${4#repos/*/*/git/ref/heads/}
+  sha=$(awk -v b="$branch" '$1 == b { print $2 }' "${SHIM_GH_HEADS:-/dev/null}" | tail -n 1)
+  [ -n "$sha" ] || { printf '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+  printf '%s\n' "$sha"; exit 0
+fi
 if [ "$#" -eq 6 ] && [ "$1 $2 $3 $5 $6" = "api --hostname github.com -q .sha" ]; then
   case "$4" in repos/*/*/commits/*) ;; *) echo "gh shim: unexpected call: $*" >&2; exit 2 ;; esac
   printf '%s\n' "$4" >> "$SHIM_GH_COMMIT_LOG"
@@ -2429,6 +2442,41 @@ expect "--from-bg-run: a retry of a landed --sha conclusion asks GitHub nothing"
 "${FWR[@]}" execution run "$(rv_req rv-bg2 origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-bg2 (setup)"
 expect "--from-bg-run --observed-from keeps the provenance beside an --evidence of its own" 0 "\"evidence\": \"leg green; revision $head read as HEAD of $obs on testbox\"" -- \
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg2 --observed-from "$obs" --evidence "leg green"
+# A request that follows a branch (ludics-lite#558): `head-of:<branch>` names no commit when it is
+# made, so it cannot go stale in the queue; the dispatch resolves it on GitHub and records the commit.
+export SHIM_GH_HEADS="$TMP/gh-heads"
+printf 'claude/topic %s\n' "$good" > "$SHIM_GH_HEADS"
+: > "$SHIM_GH_COMMIT_LOG"
+expect "a head-of request is reserved as it is, asking GitHub nothing" 0 '"requested_revision": "head-of:claude/topic"' -- \
+  "${FWR[@]}" execution reserve "$(rv_req rv-head head-of:claude/topic)"
+[ -s "$SHIM_GH_COMMIT_LOG" ] && ko "a reservation resolved the branch at request time: $(cat "$SHIM_GH_COMMIT_LOG")" || ok "...and records no commit at request time"
+grep -q resolved_revision <<<"$out" && ko "the reserved record carries a resolution: $out" || ok "...nor a resolution"
+moved_head="${good%??}ee"
+printf 'claude/topic %s\n' "$moved_head" > "$SHIM_GH_HEADS"   # the worker pushes while the request waits
+printf '{"request_id":"rv-head","evidence":"about to launch"}' > "$TMP/rv-head-dispatch.json"
+expect "its dispatch resolves the branch at assignment, to the head GitHub names then" 0 "\"resolved_revision\": \"$moved_head\"" -- \
+  "${FWR[@]}" execution dispatch "$TMP/rv-head-dispatch.json"
+grep -q "^EXECUTION RESOLVED rv-head: head-of:claude/topic is $moved_head in o/r, read at assignment$" <<<"$out" && ok "...and says so" ||
+  ko "no resolution line: $out"
+grep -qx "repos/o/r/git/ref/heads/claude/topic" "$SHIM_GH_COMMIT_LOG" && ok "...asking GitHub for that branch of the request's repository" ||
+  ko "wrong or no branch read: $(cat "$SHIM_GH_COMMIT_LOG")"
+"$FW" execution list | jq -e --arg sha "$moved_head" '[.[] | select(.request_id == "rv-head")][0] | .resolved_revision == $sha and (.history[-1].data.resolved_revision == $sha)' >/dev/null &&
+  ok "...kept on the record and its dispatch entry" || ko "the resolution is not on the record"
+jq -n --arg sha "$moved_head" '{request_id:"rv-head", verdict:"pass", log:"/logs/x", evidence:"fixture run", handle:"fixture", remote_checkout:"/w/x", observed_sha:$sha}' > "$TMP/rv-head-done.json"
+"${FWR[@]}" execution conclude "$TMP/rv-head-done.json" >/dev/null || ko "could not conclude rv-head (setup)"
+"$FW" execution list | jq -e --arg sha "$moved_head" '[.[] | select(.request_id == "rv-head")][0] | .state == "concluded" and .resolved_revision == $sha' >/dev/null &&
+  ok "...and on the conclusion" || ko "the concluded record lost its resolution"
+: > "$SHIM_GH_COMMIT_LOG"
+expect "a head-of run resolves in the same call" 0 "\"resolved_revision\": \"$moved_head\"" -- "${FWR[@]}" execution run "$(rv_req rv-head2 head-of:claude/topic)"
+fixture_done rv-head2
+expect "a head-of branch GitHub does not have is refused, nothing recorded" 1 "EXECUTION REFUSED: head-of:claude/gone: GitHub has no branch claude/gone in o/r" -- \
+  "${FWR[@]}" execution run "$(rv_req rv-head3 head-of:claude/gone)"
+[ -z "$(state_of rv-head3)" ] && ok "...and nothing was reserved" || ko "a refused head-of run left a record: $(state_of rv-head3)"
+expect "a GitHub that cannot resolve the branch is UNVERIFIED (exit 4)" 4 "^EXECUTION UNVERIFIED github.com: head-of:claude/topic could not be resolved in o/r" -- \
+  env SHIM_GH=down "${FWR[@]}" execution run "$(rv_req rv-head4 head-of:claude/topic)"
+expect "a malformed head-of is refused at reserve" 1 "is not head-of:<one branch name>" -- \
+  "${FWR[@]}" execution reserve "$(rv_req rv-head5 'head-of:main plus edits')"
+unset SHIM_GH_HEADS
 }
 
 section "prs (the supervision read)" && {
