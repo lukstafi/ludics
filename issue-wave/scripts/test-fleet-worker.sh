@@ -2596,7 +2596,7 @@ grep -q "control patch applied" <<<"$out" && ko "the control ran after a red mai
 [ -z "$(find "$ISSUE_WAVE_STATE/leg-control" -type f 2>/dev/null)" ] && ok "...and every copied patch removed from the box" || ko "a patch was left: $(ls "$ISSUE_WAVE_STATE/leg-control")"
 # A leg blocked under bg-run concludes from its directory: the leg's sentinel wins over the
 # control run's, which a runner prints last otherwise.
-lbg="$TMP/leg runs/ctl"
+lbg=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" new "$TMP/leg runs") || ko "could not allocate a bg-run directory (setup)"
 bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" start "$lbg" -- "${FWL[@]}" execution leg --request leg-a --rev claude/topic \
   --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh >/dev/null 2>&1
 expect "a controlled leg under bg-run concludes pass from its directory" 0 '"verdict": "pass"' -- \
