@@ -141,23 +141,36 @@ def wave_issues(records: Json, wave: str) -> list[Json]:
     return unique(path(r, "request", "issue") for r in each(records) if path(r, "request", "wave") == wave)
 
 
-def pr_rows(listing_doc: Json, issues: list[Json] | None) -> list[list[str]]:
-    """The open PRs in number order, kept when they close an issue of ``issues`` (all of them when
-    None), as the fields the lines print: number, head sha, creation, draft, branch, title."""
+def closes_one_of(pr: Json, issues: list[Json]) -> bool:
+    """Does the PR close one of ``issues``: its closing references spelled ``owner/name#N``, compared
+    as text (``closingIssuesReferences[]?``: a missing or scalar field is no references)."""
+    refs: list[Json] = []
+    closing = idx(pr, "closingIssuesReferences")
+    if isinstance(closing, (list, dict)):
+        for ref in each(closing):
+            owner = jstr(path(ref, "repository", "owner", "login"))
+            refs.append(f"{owner}/{jstr(path(ref, 'repository', 'name'))}#{jstr(idx(ref, 'number'))}")
+    return any(r == i for r in refs for i in issues)
+
+
+def sorted_prs(listing_doc: Json) -> list[Json]:
+    """One page of the open-PR list in number order; jq's error on anything but an array."""
     if not isinstance(listing_doc, list):
         raise JqError(f"cannot sort {type_name(listing_doc)}")
+    return sort_by(listing_doc, lambda p: idx(p, "number"))
+
+
+def pr_rows(listing_doc: Json, issues: list[Json] | None, referencing: frozenset[int] = frozenset()) -> list[list[str]]:
+    """The open PRs in number order, kept when they close an issue of ``issues`` or their number is
+    in ``referencing`` (all of them when ``issues`` is None), as the fields the lines print: number,
+    head sha, creation, draft, branch, title."""
     rows: list[list[str]] = []
-    for pr in sort_by(listing_doc, lambda p: idx(p, "number")):
-        refs: list[Json] = []
-        closing = idx(pr, "closingIssuesReferences")
-        if isinstance(closing, (list, dict)):  # `[]?`: anything else is no references
-            for ref in each(closing):
-                owner = jstr(path(ref, "repository", "owner", "login"))
-                refs.append(f"{owner}/{jstr(path(ref, 'repository', 'name'))}#{jstr(idx(ref, 'number'))}")
-        if issues is not None and not any(r == i for r in refs for i in issues):
+    for pr in sorted_prs(listing_doc):
+        number = idx(pr, "number")
+        if issues is not None and not (closes_one_of(pr, issues) or (type(number) is int and number in referencing)):
             continue
         fields: list[Json] = [
-            idx(pr, "number"),
+            number,
             idx(pr, "headRefOid"),
             idx(pr, "createdAt"),
             "draft" if truthy(idx(pr, "isDraft")) else "-",
@@ -166,6 +179,52 @@ def pr_rows(listing_doc: Json, issues: list[Json] | None) -> list[list[str]]:
         ]
         rows.append([tsv_field(jstr(f) or "-") for f in fields])
     return rows
+
+
+# --- prs --wave: the PRs that reference a wave issue without closing it ----------------------------
+# A wave PR for one item of a multi-item issue says `Refs #N`, so it closes nothing, and the closing
+# filter alone dropped it (lukstafi/ludics-lite#655 for #605, wave-20261016). Boundary, a fail-closed
+# allowlist: what is read is each wave issue's cross-reference timeline (GraphQL CROSS_REFERENCED_EVENT,
+# GitHub's own record of a PR mentioning the issue), never PR or commit text; an issue is a record's
+# `issue` spelled exactly `owner/name#N` (WAVE_ISSUE) -- any other spelling (`<repo> integration`, a
+# post-wave task label) names no issue and was never matched by the closing filter either; a source
+# counts only when it is a PullRequest whose repository is the one listed (GitHub names compare
+# case-insensitively), and only a PR the open list also holds is printed. One paged read per wave
+# issue, made only when some open PR is not already kept by its closing references. A read that did
+# not answer (exit 3) is PRS UNREACHABLE and exit 4; one refused or of a shape outside this query's is
+# PRS REFUSED and exit 1. Either way the read goes on with the PRs it can name, and says so.
+WAVE_ISSUE = re.compile(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#([1-9][0-9]*)")
+XREF_QUERY = (
+    "query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {"
+    " repository(owner: $owner, name: $name) { issue(number: $number) {"
+    " timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100, after: $endCursor) {"
+    " pageInfo { hasNextPage endCursor }"
+    " nodes { ... on CrossReferencedEvent { source { __typename"
+    " ... on PullRequest { number repository { nameWithOwner } } } } } } } } }"
+)
+
+
+def referencing_prs(pages: list[Json], repo: str) -> set[int]:
+    """The numbers of the PRs of ``repo`` among the cross-reference sources of one issue's timeline
+    pages (``XREF_QUERY``'s shape; anything else is a JqError)."""
+    found: set[int] = set()
+    for page in pages:
+        items = path(page, "data", "repository", "issue", "timelineItems")
+        nodes = idx(items, "nodes")
+        if not isinstance(nodes, list):
+            raise JqError("a cross-reference page without its nodes")
+        if path(items, "pageInfo", "hasNextPage") is not False and page is pages[-1]:
+            raise JqError("the last cross-reference page says more follow")
+        for node in nodes:
+            source = idx(node, "source")
+            if idx(source, "__typename") != "PullRequest":
+                continue
+            number, owner_name = idx(source, "number"), path(source, "repository", "nameWithOwner")
+            if type(number) is not int or not isinstance(owner_name, str):
+                raise JqError("a PullRequest source without its number and repository")
+            if owner_name.casefold() == repo.casefold():
+                found.add(number)
+    return found
 
 
 def tsv_field(text: str) -> str:
@@ -212,6 +271,35 @@ def helper_read(argv: list[str], env: dict[str, str] | None = None) -> tuple[int
     return done.rc, substitution(done.out)
 
 
+def referencing_read(helper: str, repo: str, issue: Json) -> set[int] | tuple[int, str]:
+    """The open-list candidates one wave issue's cross-references name (see the boundary above
+    WAVE_ISSUE), or (exit, line) when the read did not answer (4) or was refused (1). An issue
+    spelled other than ``owner/name#N`` names no issue: nothing to read."""
+    spelled = WAVE_ISSUE.fullmatch(issue) if isinstance(issue, str) else None
+    if not spelled:
+        return set()
+    owner, name, number = spelled.groups()
+    done = run(
+        [helper, "retry", "--read", "api", "graphql", "--paginate", "-f", f"query={XREF_QUERY}",
+         "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={number}"],
+        capture=True,
+    )  # fmt: skip
+    if done.rc == 3:
+        return 4, (f"PRS UNREACHABLE: the cross-references of {issue} did not answer, so a PR of {repo}"
+                   " that only references it is not shown")
+    if done.rc != 0:
+        return 1, (f"PRS REFUSED: the cross-references of {issue} were refused (pr-review.sh exit {done.rc}),"
+                   f" so a PR of {repo} that only references it is not shown")
+    try:
+        pages = json_stream(done.out)
+        if not pages:
+            raise JqError("no cross-reference page")
+        return referencing_prs(pages, repo)
+    except JqError:
+        return 1, (f"PRS REFUSED: the cross-references of {issue} did not parse, so a PR of {repo}"
+                   " that only references it is not shown")
+
+
 def cmd_prs(cfg: Config, args: list[str]) -> int:
     """``prs <owner/repo> [--wave <id>] [--flag-at <n>]``: the coordinator's supervision read of open
     PRs (ludics-lite#405). The skill sends the convergence policy "after ~5 rounds", but no view
@@ -221,9 +309,10 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     note on a PR at --flag-at rounds or more, or at EARLY_ROUND or more when round 1 had LARGE_FIRST
     or more inline findings (the rounds trailer's ``first``, ludics-lite#650). Of the helper's text
     only the machine-readable trailer each command ends with is read (ludics-lite#423), never the
-    prose above it. --wave keeps the PRs
-    that close an issue some execution record of that wave names. Exit: 0 read | 1 a PR is at the
-    flag, or refused | 4 some read did not answer (a flag wins)."""
+    prose above it. --wave keeps the PRs that close an issue some execution record of that wave
+    names, and those that only reference one (its cross-reference timeline, one paged read per wave
+    issue: see the boundary above WAVE_ISSUE). Exit: 0 read | 1 a PR is at the flag, or refused |
+    4 some read did not answer (a flag wins)."""
     repo = wave = ""
     flag = "5"
     i = 0
@@ -298,10 +387,22 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         if len(counts) == 1 and isinstance(counts[0], int) and counts[0] >= int(limit):
             cli.say(f"PRS INCOMPLETE {repo}: the list reached its cap of {limit} open PRs (FLEET_PRS_LIMIT), so PRs past it are not shown")
             worst = 4
-        rows = [row for doc in docs for row in pr_rows(doc, issues)]
+        unkept = issues is not None and any(not closes_one_of(pr, issues) for doc in docs for pr in sorted_prs(doc))
     except JqError:
         cli.say(f"PRS REFUSED: the open-PR list of {repo} did not parse")
         return 1
+    referencing: set[int] = set()
+    for issue in (issues or []) if unkept else []:
+        read = referencing_read(helper, repo, issue)
+        if isinstance(read, set):
+            referencing |= read
+        else:
+            cli.say(read[1])
+            if read[0] == 1:
+                worst = 1
+            elif worst != 1:
+                worst = 4
+    rows = [row for doc in docs for row in pr_rows(doc, issues, frozenset(referencing))]
     rounds_env = {**cfg.env, "SHIP_PR_ROUND_THRESHOLD": "off"}
     for n, sha, created, draft, branch, title in rows:
         _, rounds_out = helper_read([helper, "rounds", f"{repo}#{n}"], env=rounds_env)
@@ -323,5 +424,5 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         mark = "draft " if draft == "draft" else ""
         cli.say(f"{repo}#{n} rounds={rounds} ci={ci} head={age} {mark}{branch}: {title}{note}")
     if not rows:
-        cli.say(f"PRS {repo}: no open PRs" + (f" closing an issue of wave {wave}" if wave else ""))
+        cli.say(f"PRS {repo}: no open PRs" + (f" closing or referencing an issue of wave {wave}" if wave else ""))
     return worst
