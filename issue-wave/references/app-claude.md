@@ -39,8 +39,8 @@ reconnected within about 2 s, and the end-of-turn note arrived. The Mac sleeping
    - `cwd`: the box's checkout, and `use_worktree: true`;
    - a recognizable `title` and `name`, the full brief as `prompt`, and `background`;
    - `model` only when the user chose one. The schema ignores a model above the coordinator's
-     own, so check `get_session`'s `model` after the start. A model that differs from the
-     user's choice is a capability gate to report, not a worker to keep.
+     own, so a choice above it is a capability gate to report before launching. After the start,
+     `get_session`'s `model` confirms the choice.
 
    The app starts a session only in a turn begun by the user's own chat message in the
    coordinator. It refused one in a turn begun by another session's message, and an
@@ -53,13 +53,16 @@ reconnected within about 2 s, and the end-of-turn note arrived. The Mac sleeping
 5. The app makes the worktree at `<cwd>/.claude/worktrees/<random>`, on a branch named after the
    app's branch prefix (`claude/<random>`). It cuts the branch from the checkout's current local
    commit. On TUF that was a local master 1622 commits behind origin. The brief therefore requires
-   these steps in the app's worktree before any edit: `git fetch origin`, a check of the verified
-   base SHA, and `git switch -c <topic> <verified-sha>`. A SHA as the start point sets no upstream.
+   these steps in the app's worktree before any edit: `git fetch <remote>`, a check of the
+   verified base SHA, and `git switch -c <topic> <verified-sha>`. The brief names the
+   development remote and base that the coordinator resolved, as
+   [native-workers.md](native-workers.md#placement-and-launch) step 1 says. A SHA as the start point sets no upstream.
    The pilot's `git checkout -B <branch> origin/master` made origin/master the upstream.
 
    A replacement worker takes over the old worker's worktree, where the topic branch is
-   already checked out. Start it only after archiving the old session has stopped that
-   session's process. Pass `cwd`: the old `worktreePath` and `use_worktree: false`, which the
+   already checked out. Start it only after the old writer is proven stopped as SKILL.md's
+   *Intervene* bullet requires. That means its session process, which archiving stops, every
+   child of it such as a `bg-run.sh` run, and its reservations. Pass `cwd`: the old `worktreePath` and `use_worktree: false`, which the
    schema defines as that folder as it is. Its brief names the branch, commits and PR. That
    worktree is then cleaned up once, at close-out.
 6. The result gives the `local_` session id and the `name`. `get_session` on that id reports
@@ -132,9 +135,12 @@ process, and no `ccd-cli` process for it remained on the box. That tool needs th
 explicit agreement for each session, so ask in a batch at close-out, or before a takeover that
 needs the old writer stopped.
 
+First collect the whole hand-back with `list_events` and verify it. Consolidate it as
+SKILL.md's *Close out* requires.
+
 Archiving left the worktree and the app's branch on the box. The app's `clean_up_worktrees`
-does not work over SSH. Clean up only after the hand-back, the merge, the archive, and a check
-that no process or reservation still uses the checkout. Run the cleanup in
+does not work over SSH. Clean up only after the verified hand-back, the merge, the archive, and
+a check that no process or reservation still uses the checkout. Run the cleanup in
 [native-workers.md](native-workers.md#close-out-and-bounded-smoke) on the box:
 
 1. Archive unique experiment inputs and instrumentation.
@@ -143,7 +149,6 @@ that no process or reservation still uses the checkout. Run the cleanup in
    deleting it.
 3. Delete the app's own `claude/<random>` branch with `git branch -D`. Once the worker has
    switched to its topic branch, no worktree has the app's branch checked out.
-Collect the hand-back with `list_events` and consolidate it as SKILL.md's *Close out* requires.
 
 The pilot made no PR, so nobody has seen which session a worker's PR binds to.
 [native-claude.md](native-claude.md#auto-fix-events-on-worker-prs) covers Auto-fix events
