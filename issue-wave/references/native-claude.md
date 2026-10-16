@@ -176,9 +176,10 @@ In the Claude desktop app, a PR's "Auto-fix CI & address comments" monitor wakes
 PR is bound to with a `<ci-monitor-event>` on a CI failure, a merge conflict or a review comment,
 each asking that session to push a fix. It is a wake source only: it reads no review state,
 counts no rounds, gates no merge, and exists only in desktop sessions, so ship-pr stays on
-`pr-review.sh`. Under a desktop coordinator the events for a worker's PR land in the
-coordinator's session, where one writer per branch (SKILL.md, *Supervise*) rules out acting on
-them:
+`pr-review.sh`. Under a desktop coordinator a worker's PR lands in the coordinator's session: a
+native worker's `gh pr create` bound it there with Auto-fix already on (2026-10-16,
+ludics-lite#653: `mcp__ccd_pr__get_status` from the worker read `bound: true`, `auto_fix: true`).
+One writer per branch (SKILL.md, *Supervise*) rules out acting on its events:
 
 - **Log-only on a worker-owned PR.** An event gets one board line, never a push and never a turn
   spent on the PR. A finding the coordinator judges silent (must-fix, SKILL.md *Converge long
