@@ -301,11 +301,15 @@ multi-PR arc that comment is what makes the phases legible later.
 Poll for the review yourself. A repository with automatic reviews on starts its review
 unrequested when a PR opens for review (a draft, once it is marked ready); what never arms on its
 own is an observer. In the Claude Desktop
-client, the `<pr-created>` tag renders a PR card, but the review-event feed behind that card starts only when
-the user clicks its "Auto-fix CI & address comments" — verified on a PR opened with the tag and no
-other setup, which drew a review nobody was told about. If review events do start mid-loop and
-carry the comment bodies and ids inline, take them as they come and stop polling for what they
-delivered.
+client, the `<pr-created>` tag renders a PR card, and the review-event feed behind that card is its
+"Auto-fix CI & address comments" switch. Do not assume it is off: on ludics-lite#653
+(2026-10-16) `mcp__ccd_pr__get_status` read `auto_fix: true` right after `gh pr create`, in a
+session whose app setting "Auto-fix pull requests" was on; elsewhere a PR opened with the tag and
+no other setup drew a review no event announced. `get_status` reports the switch; a worker PR in
+an issue wave follows issue-wave's
+[native-claude.md](../issue-wave/references/native-claude.md#auto-fix-events-on-worker-prs). If
+review events do arrive and carry the comment bodies and ids inline, take them as they come and
+stop polling for what they delivered.
 
 Never end a turn with a PR in flight and nothing that will wake you. Under Claude Code, run `watch`
 with Bash `run_in_background: true` and yield; the completion notification is the wake. Under Codex
