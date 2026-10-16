@@ -274,10 +274,12 @@ class Folded:
     vwhen: str
     vurl: str
     wfid: str
-    # The run ids of the newest completed and newest judged runs ("" where there is none): the
-    # run a red verdict is read from, for ``--advisory-red``'s jobs read.
+    # The run ids and attempts of the newest completed and newest judged runs ("" and 0 where
+    # there is none): the run a red verdict is read from, for ``--advisory-red``'s jobs read.
     crun: str = ""
     vrun: str = ""
+    cattempt: int = 0
+    vattempt: int = 0
 
 
 def fold(rows: Sequence[RunRow]) -> list[Folded]:
@@ -306,6 +308,7 @@ def fold(rows: Sequence[RunRow]) -> list[Folded]:
             vconcl=v.conclusion if v else "-", vsha=v.head_sha if v else "-",
             vwhen=v.created_at if v else "-", vurl=v.url if v else "-", wfid=k,
             crun=c.run_id if c else "", vrun=v.run_id if v else "",
+            cattempt=c.attempt if c else 0, vattempt=v.attempt if v else 0,
         ))
     return out
 
@@ -526,7 +529,7 @@ class Base:
         self.is_advisory = Matcher(knobs.advisory)
         # The workflow-file readers and the paths-ignore walk, shared with checks/merge.
         self.reads = Reads(session, repo, self.gate_config.limits, self.is_advisory)
-        self._jobs_cache: dict[str, list[tuple[str, str]]] = {}
+        self._jobs_cache: dict[tuple[str, int], list[tuple[str, str]]] = {}
         self._advisory_jobs: Matcher | None = None
         self._trigger_cache: dict[str, Trigger] = {}
         self._ignore_cache: dict[str, bool] = {}
@@ -616,6 +619,7 @@ class Base:
         prints UNKNOWN and leaves the red standing, and is not remembered."""
         indent = "           "
         run_id = first_sha = first_when = ""
+        attempt = 0
         reds = 0
         bounded = False
         for r in rows:
@@ -624,7 +628,8 @@ class Base:
             klass = conclusion_class(r.conclusion)
             if klass == "red":
                 reds += 1
-                run_id = run_id or r.run_id
+                if not run_id:
+                    run_id, attempt = r.run_id, r.attempt
                 first_sha, first_when = r.head_sha, r.created_at
             elif klass == "green":
                 bounded = True
@@ -640,7 +645,7 @@ class Base:
                       f"{indent}green under it, so the red may start further back\n")
         if not _DIGITS.fullmatch(run_id):
             return detail
-        jobs = self.run_jobs(run_id)
+        jobs = self.run_jobs(run_id, attempt)
         if jobs is None:
             return (detail + f"{indent}which job failed is UNKNOWN ({self.err_line()}) — the red above"
                     " stands; open the run\n")
@@ -652,15 +657,19 @@ class Base:
             line = f"{indent}no job in that run concluded red — a startup or workflow-level failure"
         return detail + line + "\n"
 
-    def run_jobs(self, run_id: str) -> list[tuple[str, str]] | None:
-        """Every job of the run, ``(name, conclusion)`` as the API spells them (a job with no
-        conclusion is ``pending``), or None when the read failed -- which is not remembered: one
-        that answered is, since a completed run's jobs do not change."""
-        cached = self._jobs_cache.get(run_id)
+    def run_jobs(self, run_id: str, attempt: int) -> list[tuple[str, str]] | None:
+        """Every job of the run at that attempt, ``(name, conclusion)`` as the API spells them (a
+        job with no conclusion is ``pending``), or None when the read failed -- which is not
+        remembered: one that answered is, since a completed attempt's jobs do not change. A re-run
+        keeps the run id and raises ``run_attempt``, so the attempt is the key and the read; an
+        attempt the page did not carry (0) reads the run's latest jobs."""
+        key = (run_id, attempt)
+        cached = self._jobs_cache.get(key)
         if cached is not None:
             return cached
-        pages = self.gh_pages(["api", "--paginate",
-                               f"repos/{self.repo}/actions/runs/{run_id}/jobs?per_page=100"])
+        path = (f"repos/{self.repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100" if attempt
+                else f"repos/{self.repo}/actions/runs/{run_id}/jobs?per_page=100")
+        pages = self.gh_pages(["api", "--paginate", path])
         if isinstance(pages, (GhFailed, GhUnanswered)):
             return None
         jobs: list[tuple[str, str]] = []
@@ -669,7 +678,7 @@ class Base:
                 name = get(job, "name")
                 jobs.append((name if isinstance(name, str) else "",
                              jq_raw(alt(get(job, "conclusion"), "pending"))))
-        self._jobs_cache[run_id] = jobs
+        self._jobs_cache[key] = jobs
         return jobs
 
     def advisory_jobs(self) -> Matcher | None:
@@ -684,7 +693,7 @@ class Base:
             self._advisory_jobs = Matcher(gate.advisory)
         return self._advisory_jobs
 
-    def advisory_red(self, run_id: str) -> tuple[list[tuple[str, str]], str]:
+    def advisory_red(self, run_id: str, attempt: int) -> tuple[list[tuple[str, str]], str]:
         """Under ``--advisory-red``: the red run's red jobs when every one of them is a job the
         advisory list names and every other job passed, with "" -- else no jobs and why the red
         stands. Fail closed: an unreadable list or jobs read keeps the red."""
@@ -693,7 +702,7 @@ class Base:
         matcher = self.advisory_jobs()
         if matcher is None:
             return [], f"the repository's advisory list could not be read ({self.err_line()})"
-        jobs = self.run_jobs(run_id)
+        jobs = self.run_jobs(run_id, attempt)
         if jobs is None:
             return [], f"its jobs could not be read ({self.err_line()})"
         return advisory_only(jobs, matcher)
@@ -1464,11 +1473,12 @@ class Wait:
                 rnd.nogo_at_tip += 1
             # The newest JUDGED run carries the verdict; a stopped run over it is context.
             stopped_note = ""
-            crun = f.crun
+            crun, cattempt = f.crun, f.cattempt
             if conclusion_class(concl) == "nogo" and f.vsha != "-":
                 stopped_note = (f"           (newest completed run: {concl} at {csha[:8]}, stopped not"
                                 " judged — verdict above is the newest judged run)\n")
-                concl, csha, cwhen, curl, crun = f.vconcl, f.vsha, f.vwhen, f.vurl, f.vrun
+                concl, csha, cwhen, curl = f.vconcl, f.vsha, f.vwhen, f.vurl
+                crun, cattempt = f.vrun, f.vattempt
             klass = conclusion_class(concl)
             # --advisory-red (the fleet-worker gate's, ludics-lite#651): a run red ONLY in jobs the
             # repository's advisory list names is not this workflow's red. It reads as green for
@@ -1476,7 +1486,7 @@ class Wait:
             standing = ""
             advisory = False
             if klass == "red" and self.args.advisory_red:
-                reds, standing = b.advisory_red(crun)
+                reds, standing = b.advisory_red(crun, cattempt)
                 if reds:
                     rnd.advisory_red.extend((name, csha, crun, job, jconcl) for job, jconcl in reds)
                     jobs = ", ".join(f"{tsv(job)} ({tsv(jconcl)})" for job, jconcl in reds)

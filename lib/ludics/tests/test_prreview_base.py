@@ -657,6 +657,27 @@ class AdvisoryRed(unittest.TestCase):
             self.assertEqual(gh.asked.count("repos/o/r/contents/.github/ship-pr-advisory-checks"), 1,
                              "the list is read once, the first time a red needs it")
 
+    def test_a_rerun_is_judged_by_its_own_attempts_jobs(self) -> None:
+        """A re-run keeps the run id and raises ``run_attempt``: round one's advisory-only attempt
+        is no evidence for round two's attempt, which failed a required job (the local review's
+        finding: jobs remembered by run id alone admitted it)."""
+        world = self._world()
+        world["repos/o/r/actions/workflows/1/runs?branch=main&event=push&per_page=10"] = [
+            runs({"conclusion": "failure", "head_sha": C, "run_attempt": 1}),
+            runs({"conclusion": "failure", "head_sha": C, "run_attempt": 2})]
+        world["repos/o/r/actions/runs/1000/attempts/1/jobs?per_page=100"] = world.pop(
+            "repos/o/r/actions/runs/1000/jobs?per_page=100")
+        world["repos/o/r/actions/runs/1000/attempts/2/jobs?per_page=100"] = json.dumps({"jobs": [
+            {"name": "bash 3.2 suites, a (macos)", "conclusion": "success"},
+            {"name": "fixtures (ubuntu)", "conclusion": "failure"}]})
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "advisory-red.json")
+            rc, out, _, gh = base_run(world, ["main", "--wait=900", "--advisory-red", path], clock=FakeClock())
+        self.assertEqual(rc, 1, out)
+        self.assertIn("failed job(s): fixtures (ubuntu) (failure)", out)
+        self.assertIn("not an advisory-only red: fixtures (ubuntu) (failure) is not advisory", out)
+        self.assertIn("repos/o/r/actions/runs/1000/attempts/2/jobs?per_page=100", gh.asked)
+
     def test_the_flag_takes_a_file(self) -> None:
         rc, _, err, _ = base_run(self._world(), ["main", "--advisory-red"])
         self.assertEqual(rc, 2)
