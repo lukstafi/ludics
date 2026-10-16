@@ -166,7 +166,8 @@
 #                          # (lib/ludics/fleetworker/tiprun.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
 #                          # CI state and head age; flags <n> (5) or more rounds, or 3 or more
-#                          # after a round 1 of 5 or more inline findings (read-only)
+#                          # after a round 1 of 5 or more inline findings (read-only); --wave
+#                          # keeps the PRs that close or reference an issue the wave's records name
 #   fleet-worker.sh halt <reason> | resume-launches | halted
 #
 # `launch`, `unstick`, `close`, `halt` and `resume-launches` require the lease; `launch` also refuses

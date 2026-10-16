@@ -20,9 +20,20 @@ from ludics.fleetworker.__main__ import usage_text
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.gate import uri
 from ludics.fleetworker.preflight import siblings_of, slots_report
-from ludics.fleetworker.supervision import ROUNDS_TRAILER, converge_note, each, head_age, length, load_line, pr_rows, wave_issues
+from ludics.fleetworker.supervision import (
+    ROUNDS_TRAILER,
+    WAVE_ISSUE,
+    converge_note,
+    each,
+    head_age,
+    length,
+    load_line,
+    pr_rows,
+    referencing_prs,
+    wave_issues,
+)
 from ludics.fleetworker.workers import feeder_wait_ok, preflight_note, valid_name
-from ludics.prreview.core import JsonStreamError, json_docs, json_stream
+from ludics.prreview.core import Json, JsonStreamError, json_docs, json_stream
 from ludics.prreview.jqsem import JqError, jstr, tojson
 
 SCRIPT = "/repo/issue-wave/scripts/fleet-worker.sh"
@@ -120,6 +131,33 @@ class Prs(unittest.TestCase):
         self.assertEqual([row[0] for row in pr_rows(listing, ["o/r#8"])], [])
         records = json.loads('[{"request": {"wave": "w", "issue": "o/r#7"}}, {"request": {"wave": "w", "issue": "o/r#7"}}, {"request": {"wave": "v", "issue": "x"}}]')
         self.assertEqual(wave_issues(records, "w"), ["o/r#7"])
+
+    def test_a_wave_keeps_a_pr_that_only_references_one_of_its_issues(self) -> None:
+        # A PR for one item of a multi-item issue says `Refs #N` and closes nothing (ludics-lite#655).
+        listing = json.loads('[{"number": 1, "closingIssuesReferences": []}, {"number": 2}, {"number": 3}]')
+        self.assertEqual([row[0] for row in pr_rows(listing, ["o/r#7"], frozenset({2}))], ["2"])
+        self.assertEqual([row[0] for row in pr_rows(listing, None, frozenset({2}))], ["1", "2", "3"])
+
+    def test_cross_references_count_the_prs_of_the_listed_repository_only(self) -> None:
+        def page(nodes: list[object], more: bool = False) -> Json:
+            items = {"pageInfo": {"hasNextPage": more, "endCursor": "c"}, "nodes": nodes}
+            return json.loads(json.dumps({"data": {"repository": {"issue": {"timelineItems": items}}}}))
+
+        def pr(number: object, repo: object) -> object:
+            return {"source": {"__typename": "PullRequest", "number": number, "repository": {"nameWithOwner": repo}}}
+
+        pages = [page([pr(5, "o/r"), {"source": {"__typename": "Issue"}}, pr(6, "o/other")], more=True), page([pr(8, "O/R")])]
+        self.assertEqual(referencing_prs(pages, "o/r"), {5, 8}, "GitHub names compare case-insensitively")
+        for bad in ([page([pr(5, "o/r")], more=True)], [page([pr("5", "o/r")])], [page([pr(5, None)])],
+                    [json.loads('{"data": {"repository": {"issue": null}}}')]):
+            with self.assertRaises(JqError):
+                referencing_prs(bad, "o/r")
+
+    def test_a_wave_issue_is_spelled_owner_name_number(self) -> None:
+        for issue in ("o/r#7", "ahrefs/ocannl#1235", "a.b/c_d-e#10"):
+            self.assertIsNotNone(WAVE_ISSUE.fullmatch(issue), issue)
+        for issue in ("lukstafi/ludics-lite#post-1", "lukstafi/ocannl-staging integration", "o/r#0", "#7", "o/r#7 x"):
+            self.assertIsNone(WAVE_ISSUE.fullmatch(issue), issue)
 
     def test_a_list_that_is_not_an_array_is_jqs_error(self) -> None:
         with self.assertRaises(JqError):

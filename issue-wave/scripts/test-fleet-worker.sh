@@ -194,9 +194,21 @@ printf '%s\n' "$logged grace=${SHIP_PR_BASE_ABSENT_GRACE:-unset} interval=${SHIP
 # head commit's date, each answered from a file there, or 3 (the API never answered) without one.
 # `rounds-N` holds the count, then optionally the trailer line to print instead of the real shape
 # (`-` prints none); `checks-N` holds the exit status, the verdict's prose, and the trailer line
-# as printed (empty: none), then any lines to print after it.
+# as printed (empty: none), then any lines to print after it. A wave issue's cross-reference read
+# (GraphQL, ludics-lite#650's follow-up) is answered from `xref-<owner>-<name>-<N>`: its pages as
+# printed, or `exit <n>` alone for that status.
 if [ -n "${SHIM_PRS:-}" ]; then
   printf '%s\n' "$* threshold=${SHIP_PR_ROUND_THRESHOLD:-unset}" >> "$SHIM_PRS/calls"
+  if [ "$1 $3 $4" = "retry api graphql" ]; then
+    xo="" xn="" xi=""
+    for arg in "$@"; do
+      case "$arg" in owner=*) xo=${arg#owner=} ;; name=*) xn=${arg#name=} ;; number=*) xi=${arg#number=} ;; esac
+    done
+    xf="$SHIM_PRS/xref-$xo-$xn-$xi"
+    [ -f "$xf" ] || exit 3
+    case "$(head -n 1 "$xf")" in "exit "*) exit "$(head -n 1 "$xf" | cut -c6-)" ;; esac
+    cat "$xf"; exit 0
+  fi
   case "$1 $3" in
     "retry pr") [ -f "$SHIM_PRS/list.json" ] || exit 3; cat "$SHIM_PRS/list.json"; exit 0 ;;
     "retry api") [ -f "$SHIM_PRS/date-${4##*/}" ] || exit 3; cat "$SHIM_PRS/date-${4##*/}"; exit 0 ;;
@@ -2909,6 +2921,8 @@ probe '3\nrounds: n=4 threshold=off first=unknown\n' '0\ngreen -- 3 passed\nchec
 [ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=4 ci=green " <<<"$out" && ! grep -q CONVERGE <<<"$out" && ok "...and an unread round 1 is exit 4, no flag" || ko "unread round 1 (exit $rc): $out"
 probe '3\nrounds: n=6 threshold=12 first=0\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
 [ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=? " <<<"$out" && ok "a rounds trailer under a threshold prs did not ask for is not read" || ko "threshold mismatch (exit $rc): $out"
+echo '{}' > "$P/list.json"
+expect "an open-PR list of another shape is REFUSED, exit 1" 1 "^PRS REFUSED: the open-PR list of o/r did not parse" -- "$FW" prs o/r
 rm "$P/list.json" "$P/list-full.json"
 expect "an open-PR list that never answered is UNREACHABLE, exit 4" 4 "PRS UNREACHABLE: the open PRs of o/r did not answer" -- "$FW" prs o/r
 expect "prs needs an owner/repo" 2 "prs: <owner/repo> required" -- "$FW" prs
@@ -2922,8 +2936,32 @@ jq -n --arg now "$now" '[{number: 7, title: "first PR", headRefName: "claude/iss
 jq -n '{request_id:"prs-7", wave:"wv", worker:"prs-7", transport:"subagent", issue:"o/other#7", purpose:"prs fixture",
   agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true}' > "$TMP/prs-7.json"
 env FLEET_BOXES="testbox other" "$FW" execution reserve "$TMP/prs-7.json" >/dev/null 2>&1 || ko "could not reserve prs-7 (setup)"
+xref() { # <issue file suffix> <PR source repo> <number...>: one cross-reference page naming those PRs
+  local f="$P/xref-$1" r="$2"; shift 2
+  printf '%s\n' "$@" | jq -n --arg r "$r" '{data: {repository: {issue: {timelineItems: {pageInfo: {hasNextPage: false, endCursor: null},
+    nodes: ([inputs | {source: {__typename: "PullRequest", number: tonumber, repository: {nameWithOwner: $r}}}] + [{source: {__typename: "Issue"}}])}}}}}' > "$f"
+}
+xref o-other-7 o/elsewhere 12
+: > "$P/calls"
 expect "--wave keeps the PRs closing an issue its records name" 0 "^o/r#7 rounds=2" -- "$FW" prs o/r --wave wv
-grep -q "o/r#12" <<<"$out" && ko "a PR of no wave issue was listed: $out" || ok "...and drops the rest"
+grep -q "o/r#12" <<<"$out" && ko "a PR of no wave issue was listed: $out" || ok "...and drops the rest, a PR of another repository referencing the issue included"
+grep -q "^retry --read api graphql --paginate -f query=.*CROSS_REFERENCED_EVENT.* -f owner=o -f name=other -F number=7 " "$P/calls" && [ "$(grep -c graphql "$P/calls")" = 1 ] \
+  && ok "...through one cross-reference read of the wave issue" || ko "cross-reference calls: $(grep graphql "$P/calls")"
+# A wave PR for one item of a multi-item issue says `Refs #N` and closes nothing (lukstafi/ludics-lite#655).
+xref o-other-7 O/R 12
+expect "--wave keeps a PR that only references a wave issue" 0 "^o/r#12 rounds=6 " -- "$FW" prs o/r --wave wv --flag-at 7
+grep -q "^o/r#7 rounds=2" <<<"$out" && ok "...beside the one closing it" || ko "the closing PR went missing: $out"
+printf 'exit 3\n' > "$P/xref-o-other-7"
+expect "a cross-reference read that does not answer is UNREACHABLE, exit 4, never a silently narrower list" 4 "^PRS UNREACHABLE: the cross-references of o/other#7 did not answer" -- "$FW" prs o/r --wave wv --flag-at 7
+grep -q "^o/r#7 rounds=2" <<<"$out" && ok "...and still lists the PR it can name" || ko "the closing PR went missing: $out"
+printf 'exit 1\n' > "$P/xref-o-other-7"
+expect "a refused cross-reference read is REFUSED, exit 1" 1 "^PRS REFUSED: the cross-references of o/other#7 were refused (pr-review.sh exit 1)" -- "$FW" prs o/r --wave wv --flag-at 7
+printf '{"data": {"repository": {"issue": null}}}\n' > "$P/xref-o-other-7"
+expect "a cross-reference page of another shape is REFUSED, exit 1" 1 "^PRS REFUSED: the cross-references of o/other#7 did not parse" -- "$FW" prs o/r --wave wv --flag-at 7
+jq '[.[] | select(.number == 7)]' "$P/list.json" > "$P/list-7.json" && mv "$P/list-7.json" "$P/list.json"
+: > "$P/calls"
+expect "with every open PR kept by its closing references, nothing more is read" 0 "^o/r#7 rounds=2" -- "$FW" prs o/r --wave wv
+grep -q graphql "$P/calls" && ko "a cross-reference read with nothing to find: $(cat "$P/calls")" || ok "...no cross-reference read"
 expect "--wave with no records is refused, not read as an empty wave" 1 "no execution record names wave nowave" -- "$FW" prs o/r --wave nowave
 fixture_done prs-7
 unset SHIM_PRS
