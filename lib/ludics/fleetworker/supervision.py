@@ -387,7 +387,8 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         if len(counts) == 1 and isinstance(counts[0], int) and counts[0] >= int(limit):
             cli.say(f"PRS INCOMPLETE {repo}: the list reached its cap of {limit} open PRs (FLEET_PRS_LIMIT), so PRs past it are not shown")
             worst = 4
-        unkept = issues is not None and any(not closes_one_of(pr, issues) for doc in docs for pr in sorted_prs(doc))
+        pages = [sorted_prs(doc) for doc in docs]
+        unkept = issues is not None and any(not closes_one_of(pr, issues) for page in pages for pr in page)
     except JqError:
         cli.say(f"PRS REFUSED: the open-PR list of {repo} did not parse")
         return 1
@@ -402,7 +403,11 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
                 worst = 1
             elif worst != 1:
                 worst = 4
-    rows = [row for doc in docs for row in pr_rows(doc, issues, frozenset(referencing))]
+    try:
+        rows = [row for doc in docs for row in pr_rows(doc, issues, frozenset(referencing))]
+    except JqError:
+        cli.say(f"PRS REFUSED: the open-PR list of {repo} did not parse")
+        return 1
     rounds_env = {**cfg.env, "SHIP_PR_ROUND_THRESHOLD": "off"}
     for n, sha, created, draft, branch, title in rows:
         _, rounds_out = helper_read([helper, "rounds", f"{repo}#{n}"], env=rounds_env)

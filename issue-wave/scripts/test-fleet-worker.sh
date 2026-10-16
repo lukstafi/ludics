@@ -2921,6 +2921,8 @@ probe '3\nrounds: n=4 threshold=off first=unknown\n' '0\ngreen -- 3 passed\nchec
 [ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=4 ci=green " <<<"$out" && ! grep -q CONVERGE <<<"$out" && ok "...and an unread round 1 is exit 4, no flag" || ko "unread round 1 (exit $rc): $out"
 probe '3\nrounds: n=6 threshold=12 first=0\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
 [ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=? " <<<"$out" && ok "a rounds trailer under a threshold prs did not ask for is not read" || ko "threshold mismatch (exit $rc): $out"
+echo '{}' > "$P/list.json"
+expect "an open-PR list of another shape is REFUSED, exit 1" 1 "^PRS REFUSED: the open-PR list of o/r did not parse" -- "$FW" prs o/r
 rm "$P/list.json" "$P/list-full.json"
 expect "an open-PR list that never answered is UNREACHABLE, exit 4" 4 "PRS UNREACHABLE: the open PRs of o/r did not answer" -- "$FW" prs o/r
 expect "prs needs an owner/repo" 2 "prs: <owner/repo> required" -- "$FW" prs
