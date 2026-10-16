@@ -2517,7 +2517,7 @@ hreq() { # <id> [standing: true|false] -> a reservation payload file, requested 
 hb() { local id="$1"; shift; "${FWH[@]}" execution conclude --standing-handback --request "$id" --observed-from "$hwt" "$@"; }
 hstate() { "$FW" execution list | jq -r --arg id "$1" '[.[] | select(.request_id == $id) | .state] | join(",")'; }
 hrun dirty 0 "$hbase" $' M lib/a.ml\n?? test/new_test.ml\n'; hrun rewritten 0 "$(printf 'd%.0s' $(seq 40))" ""
-hrun gone 1 - - "$TMP/handback removed wt"; hrun unfinished - - -
+hrun gone 1 - - "$TMP/handback removed wt"; hrun unfinished - - -; hrun truncated 0 "${hbase%??????}" ""
 hreq hb-usage
 expect "the standing form needs the request" 2 "--request <id> required" -- "${FWH[@]}" execution conclude --standing-handback --observed-from "$hwt" --evidence x --verdict pass
 expect "...the checkout observed_sha is read off" 2 "--observed-from <checkout> required" -- "${FWH[@]}" execution conclude --standing-handback --request hb-usage --evidence x --verdict pass
@@ -2534,6 +2534,8 @@ fixture_done hb-plain
 expect "an unknown request is refused" 1 "unknown request_id hb-none" -- hb hb-none --evidence x --verdict pass
 expect "an unfinished run is still refused: no verdict to read" 1 "FROM-RUN REFUSED: .*has no exit" -- hb hb-usage --evidence x --from-run "$hruns/unfinished"
 expect "...as is a run its runner says is still going" 1 "not a finished run" -- env SHIM_RUN_STATUS=3 "${FWH[@]}" execution conclude --standing-handback --request hb-usage --observed-from "$hwt" --evidence x --from-run "$hruns/dirty"
+expect "...as is a launch head that is no exact object ID (a truncated one would read as rewritten)" 1 "FROM-RUN REFUSED: .*/head holds '${hbase%??????}', not one commit ID" -- \
+  hb hb-usage --evidence x --from-run "$hruns/truncated"
 expect "a --verdict the run record contradicts is refused" 1 "--verdict fail, but $hruns/dirty reads pass .*give one of them" -- hb hb-usage --evidence x --from-run "$hruns/dirty" --verdict fail
 expect "an observed HEAD GitHub does not have in the repository is refused" 1 "observed_sha $hhead is no commit of o/r" -- \
   env SHIM_GH_NO_COMMIT="$hhead" "${FWH[@]}" execution conclude --standing-handback --request hb-usage --observed-from "$hwt" --evidence x --verdict pass

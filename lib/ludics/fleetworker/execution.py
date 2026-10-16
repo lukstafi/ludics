@@ -230,7 +230,9 @@ rhead= n=0 rel=
 if [ -e "$dir/head" ] && [ -e "$dir/dirty" ]; then
   [ -f "$dir/head" ] && [ -f "$dir/dirty" ] || refuse "$dir/head or $dir/dirty is not a regular file: a malformed record"
   rhead=$(cat "$dir/head")
-  case "$rhead" in ''|*[!0-9a-f]*) refuse "$dir/head holds '$rhead', not one commit ID: a malformed record" ;; esac
+  # One exact object ID, 40 or 64 hex digits: a truncated one would read as a rewritten commit.
+  case "$rhead" in *[!0-9a-f]*) refuse "$dir/head holds '$rhead', not one commit ID: a malformed record" ;; esac
+  case ${#rhead} in 40|64) ;; *) refuse "$dir/head holds '$rhead', not one commit ID: a malformed record" ;; esac
   [ -s "$dir/dirty" ] && n=$(grep -c '' "$dir/dirty")
   if [ "$rhead" = "$ohead" ]; then rel=same
   elif git -C "$co" merge-base --is-ancestor "$rhead" "$ohead" 2>/dev/null; then rel=ancestor
@@ -443,7 +445,7 @@ def standing_run_clause(facts: str, run_dir: str, host: str) -> tuple[str, str] 
     code, wt, gone = facts_of(facts, "exit"), facts_of(facts, "wt"), facts_of(facts, "gone")
     record, rhead, dirty, rel = (facts_of(facts, key) for key in ("record", "head", "dirty", "rel"))
     shaped = record == "none" or (
-        record == "launch" and re.fullmatch(r"[0-9a-f]+", rhead) and dirty.isdecimal() and rel in REL
+        record == "launch" and revision.OBJECT_ID.fullmatch(rhead) and dirty.isdecimal() and rel in REL
     )
     if not (code.isdecimal() and code.isascii() and wt and gone in ("0", "1") and shaped):
         return Refusal(f"FROM-RUN REFUSED: unreadable record facts from {host}: {facts}", 1)

@@ -137,7 +137,8 @@ class StandingHandback(unittest.TestCase):
         self.assertIn("its record naming no launch revision", text)
 
     def test_unreadable_facts_are_refused(self) -> None:
-        for over in ({"exit": ""}, {"exit": "x"}, {"gone": "2"}, {"record": "odd"}, {"rel": "near"}, {"dirty": "-1"}, {"wt": ""}):
+        for over in ({"exit": ""}, {"exit": "x"}, {"gone": "2"}, {"record": "odd"}, {"rel": "near"}, {"dirty": "-1"}, {"wt": ""},
+                     {"head": "b" * 39}, {"head": "b" * 41}, {"head": "B" * 40}):
             read = execution.standing_run_clause(self.facts(**over), self.RUN, "testbox")
             self.assertIsInstance(read, Refusal, over)
 
