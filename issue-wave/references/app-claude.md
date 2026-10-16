@@ -71,10 +71,11 @@ reconnected within about 2 s, and the end-of-turn note arrived. The Mac sleeping
    all of them.
    The brief names the coordinator's own `local_` id (`get_session "self"`). The worker's
    linked-sessions note names only the top session of the family, not the session that
-   started it. The worker's startup report goes to that id by `SendMessage`. It carries the
-   `hostname`, the absolute worktree, the topic branch, the base SHA, and a harmless Git
-   mutation with its exit status. The coordinator checks the hostname against the planned box;
-   the pilot reported `tuf-amd-linux`. Then it
+   started it. The brief also names the expected `hostname`, which is the box name on this
+   fleet: the pilot reported `tuf-amd-linux`. The worker's first command compares it. On a
+   mismatch, the worker ends its turn with a report and touches nothing. Its startup report goes
+   to the coordinator's id by `SendMessage`. It carries the hostname, the absolute worktree, the
+   topic branch, the base SHA, and a harmless Git mutation with its exit status. Then the worker
    carries on with the task. Its final hand-back is the final message of its last turn.
 
 ## Board and recovery
