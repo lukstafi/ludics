@@ -159,7 +159,8 @@
 #                          # concluded not-launched); conclude it with --from-bg-run
 #                          # (lib/ludics/fleetworker/tiprun.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
-#                          # CI state and head age; flags <n> (5) or more rounds (read-only)
+#                          # CI state and head age; flags <n> (5) or more rounds, or 3 or more
+#                          # after a round 1 of 5 or more inline findings (read-only)
 #   fleet-worker.sh halt <reason> | resume-launches | halted
 #
 # `launch`, `unstick`, `close`, `halt` and `resume-launches` require the lease; `launch` also refuses

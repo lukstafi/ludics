@@ -485,12 +485,15 @@ test_empty_reviews_need_their_own_findings() {
 }
 
 # `rounds` ends with its machine-readable trailer (ludics-lite#423), the line `fleet-worker.sh prs`
-# reads instead of the prose: the count or `unknown`, and the threshold or `off`, on the LAST line.
+# reads instead of the prose: the count or `unknown`, the threshold or `off`, and round 1's inline
+# findings or `unknown` (ludics-lite#650), on the LAST line. Every round-1 review's comments read
+# INLINE_JSON here: two findings and a thread reply that is none.
 test_rounds_ends_with_its_trailer() {
   local out rc
   set_reviews \
-    "$(review "$REVIEWER" COMMENTED aaaa 2026-09-01T10:00:00Z)" \
-    "$(review "$REVIEWER" COMMENTED bbbb 2026-09-01T11:00:00Z)"
+    "$(review "$REVIEWER" COMMENTED aaaa 2026-09-01T10:00:00Z | jq -c '.id = 11')" \
+    "$(review "$REVIEWER" COMMENTED bbbb 2026-09-01T11:00:00Z | jq -c '.id = 12')"
+  INLINE_JSON='[{"id":1,"body":"P2"},{"id":2,"body":"P1"},{"id":3,"body":"ok","in_reply_to_id":1}]'
   ROUND_THRESHOLD=12
   set +e
   out=$(cmd_rounds 7 2>&1)
@@ -498,17 +501,27 @@ test_rounds_ends_with_its_trailer() {
   set -e
   assert_eq "$rc" 0 "under the threshold"
   assert_contains "$out" "review rounds with findings: 2 of 12" "the prose line stays"
-  assert_eq "$(tail -n 1 <<<"$out")" "rounds: n=2 threshold=12" "and the trailer is the last line"
+  assert_eq "$(tail -n 1 <<<"$out")" "rounds: n=2 threshold=12 first=2" "and the trailer is the last line"
   ROUND_THRESHOLD=1
   set +e
   out=$(cmd_rounds 7 2>&1)
   rc=$?
   set -e
   assert_eq "$rc" 1 "past the threshold, the exit is unchanged"
-  assert_eq "$(tail -n 1 <<<"$out")" "rounds: n=2 threshold=1" "and the trailer still follows"
+  assert_eq "$(tail -n 1 <<<"$out")" "rounds: n=2 threshold=1 first=2" "and the trailer still follows"
   ROUND_THRESHOLD=off
   out=$(cmd_rounds 7 2>&1)
-  assert_eq "$(tail -n 1 <<<"$out")" "rounds: n=2 threshold=off" "no threshold reads as off"
+  assert_eq "$(tail -n 1 <<<"$out")" "rounds: n=2 threshold=off first=2" "no threshold reads as off"
+  FAIL_INLINE=1
+  ROUND_THRESHOLD=12
+  set +e
+  out=$(cmd_rounds 7 2>&1)
+  rc=$?
+  set -e
+  assert_eq "$rc" 0 "an unread round 1 leaves the exit to the count"
+  assert_eq "$(tail -n 1 <<<"$out")" "rounds: n=2 threshold=12 first=unknown" "and its size says unknown, not 0"
+  FAIL_INLINE=""
+  INLINE_JSON='[]'
   FAIL_READ=1
   ROUND_THRESHOLD=12
   set +e
@@ -516,7 +529,7 @@ test_rounds_ends_with_its_trailer() {
   rc=$?
   set -e
   assert_eq "$rc" 3 "an unread feed exits 3"
-  assert_eq "$(tail -n 1 <<<"$out")" "rounds: n=unknown threshold=12" "and its trailer says unknown, not 0"
+  assert_eq "$(tail -n 1 <<<"$out")" "rounds: n=unknown threshold=12 first=unknown" "and its trailer says unknown, not 0"
 }
 
 # --- a read that does not parse must not render as a count (ludics-lite#89) ---------------------
@@ -546,7 +559,7 @@ test_a_broken_jq_program_is_not_a_round_count() {
   assert_contains "$ROUNDS_OUTPUT" "NOT 'no rounds yet'" "and the line says so"
   assert_contains "$ROUNDS_OUTPUT" "the reviews feed did not parse" "naming the read"
   assert_not_contains "$ROUNDS_OUTPUT" "rounds with findings: 0" "must not print a zero count"
-  assert_eq "$(tail -n 1 <<<"$ROUNDS_OUTPUT")" "rounds: n=unknown threshold=12" "and the trailer says unknown"
+  assert_eq "$(tail -n 1 <<<"$ROUNDS_OUTPUT")" "rounds: n=unknown threshold=12 first=unknown" "and the trailer says unknown"
 }
 
 tests=(

@@ -34,6 +34,7 @@ from ludics.prreview.feeds import (
     NotSubstantive,
     ReadFailed,
     feed,
+    review_comments,
     state_comments,
     state_head_read,
     state_reviews,
@@ -846,18 +847,47 @@ def gated_state(ctx: Ctx, pr: str) -> State:
 
 @dataclass(frozen=True)
 class Rounds:
-    """``review_rounds``'s "count|detail": ``count`` is None for unknown."""
+    """``review_rounds``'s "count|detail": ``count`` is None for unknown. ``first`` is round 1's
+    inline findings when the caller asked for them (``first_round_findings``), None for unknown or
+    not asked."""
 
     count: int | None
     detail: str
+    first: int | None = None
 
     def token(self) -> str:
         """``count_token``."""
         return "unknown" if self.count is None else str(self.count)
 
+    def first_token(self) -> str:
+        return "unknown" if self.count is None or self.first is None else str(self.first)
+
+
+def first_round_findings(ctx: Ctx, pr: str, review_ids: list[Json]) -> int | None:
+    """Round 1's size for the convergence note's early trigger (ludics-lite#650): the top-level
+    inline comments (no ``in_reply_to_id``) of the reviewer's reviews in round 1, one read of each
+    review's own comments endpoint. Boundary, as a fail-closed allowlist: only those comments are
+    counted, so a finding stated in a review's body or in a comment-only round is not, and the
+    count is a lower bound -- it can miss the early trigger (the round-5 one still stands), never
+    raise it. None (unknown) when a review id is not a number or a read did not answer or parse."""
+    n = 0
+    for rid in review_ids:
+        if not isinstance(rid, int) or isinstance(rid, bool) or rid < 0:
+            return None
+        try:
+            comments = review_comments(ctx, pr, str(rid))
+        except ReadFailed:
+            return None
+        try:
+            n += len([c for c in as_list(comments) if idx(c, "in_reply_to_id") is None])
+        except JqError:
+            return None
+    return n
+
 
 def review_rounds(
-    ctx: Ctx, pr: str, round_gap: int, icap: int | None = None, rcap: int | None = None
+    ctx: Ctx, pr: str, round_gap: int, icap: int | None = None, rcap: int | None = None,
+    first: bool = False,
 ) -> Rounds:
     rev = ctx.reviewer
     try:
@@ -873,7 +903,8 @@ def review_rounds(
     except ReadFailed:
         return Rounds(None, f"the comments API did not answer ({ctx.session.err_line()})")
     try:
-        events: list[tuple[Json, int]] = []
+        # (head, when, ("review", its id) or None for a comment): round 1's reviews, for `first`
+        events: list[tuple[Json, int, tuple[str, Json] | None]] = []
         for r in raw:
             if not login_is(r, rev):
                 continue
@@ -883,7 +914,7 @@ def review_rounds(
                 continue
             if idx(r, "state") not in ("COMMENTED", "CHANGES_REQUESTED"):
                 continue
-            events.append((alt(idx(r, "commit_id"), ""), fromdateiso8601(idx(r, "submitted_at"))))
+            events.append((alt(idx(r, "commit_id"), ""), fromdateiso8601(idx(r, "submitted_at")), ("review", idx(r, "id"))))
         for c in as_list(comments):
             if not login_is(c, rev):
                 continue
@@ -894,15 +925,18 @@ def review_rounds(
                 continue
             stamp = capture_first(body, REVIEWED_COMMIT_RE)
             sha: Json = alt(stamp["s"] if stamp is not None else None, "comment")
-            events.append((sha, fromdateiso8601(idx(c, "created_at"))))
+            events.append((sha, fromdateiso8601(idx(c, "created_at")), None))
         n = 0
         cur: Json = None
         t = 0
-        for sha, when in sort_by(events, lambda e: e[1]):
+        round1: list[Json] = []
+        for sha, when, rid in sort_by(events, lambda e: e[1]):
             if not _same_head(sha, cur) or when - t > round_gap:
                 n += 1
                 cur = sha
             t = when
+            if n == 1 and rid is not None:
+                round1.append(rid[1])
     except JqError:
         return Rounds(None, "the reviews feed did not parse")
     try:
@@ -916,7 +950,8 @@ def review_rounds(
         head_count = str(len([h for h in unique(heads) if h != ""]))
     except JqError:
         head_count = "?"
-    return Rounds(n, f"{n} round(s) of {rev} findings over {head_count} head(s)")
+    size = first_round_findings(ctx, pr, round1) if first else None
+    return Rounds(n, f"{n} round(s) of {rev} findings over {head_count} head(s)", size)
 
 
 def _same_head(a: Json, b: Json) -> bool:

@@ -184,7 +184,7 @@
 #   pr-review.sh rounds <pr>               # how many review rounds carried findings, read off the
 #                                          # PR (heads the reviewer left comments on), against
 #                                          # SHIP_PR_ROUND_THRESHOLD; exit 1 past it; ends with a
-#                                          # `rounds: n=… threshold=…` trailer (see prreview/rounds.py)
+#                                          # `rounds: n=… threshold=… first=…` trailer (see prreview/rounds.py)
 #   pr-review.sh checks <pr> [--wait] [--check <ERE>]
 #                                          # the BUILD signal on the head commit: green / red /
 #                                          # no verdict yet / absent; ends with a

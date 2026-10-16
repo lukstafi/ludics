@@ -20,7 +20,7 @@ from ludics.fleetworker.__main__ import usage_text
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.gate import uri
 from ludics.fleetworker.preflight import siblings_of, slots_report
-from ludics.fleetworker.supervision import each, head_age, length, load_line, pr_rows, wave_issues
+from ludics.fleetworker.supervision import ROUNDS_TRAILER, converge_note, each, head_age, length, load_line, pr_rows, wave_issues
 from ludics.fleetworker.workers import feeder_wait_ok, preflight_note, valid_name
 from ludics.prreview.core import JsonStreamError, json_docs, json_stream
 from ludics.prreview.jqsem import JqError, jstr, tojson
@@ -124,6 +124,25 @@ class Prs(unittest.TestCase):
     def test_a_list_that_is_not_an_array_is_jqs_error(self) -> None:
         with self.assertRaises(JqError):
             pr_rows({"number": 1}, None)
+
+    def test_the_flag_at_rounds_and_the_early_flag_after_a_large_round_1(self) -> None:
+        # ludics-lite#650: round 3 after a round 1 of five or more, round 5 (--flag-at) otherwise.
+        self.assertIn("CONVERGE: 5 review rounds with findings (flag at 5)", converge_note("5", "0", "5"))
+        self.assertIn("CONVERGE: 5 review rounds", converge_note("5", "unknown", "5"))
+        self.assertEqual(converge_note("4", "4", "5"), "")
+        self.assertIn("after a round 1 of 5 (flag at 3 after 5 or more)", converge_note("3", "5", "5"))
+        self.assertEqual(converge_note("2", "9", "5"), "", "round 2 is early even after a large round 1")
+        self.assertEqual(converge_note("4", "unknown", "5"), "", "an unread round 1 raises no early flag")
+        self.assertEqual(converge_note("?", "9", "1"), "")
+        self.assertIn("(flag at 2)", converge_note("3", "9", "2"), "--flag-at wins where both apply")
+
+    def test_the_rounds_trailer_must_carry_round_1(self) -> None:
+        found = ROUNDS_TRAILER.fullmatch("rounds: n=3 threshold=off first=7")
+        self.assertEqual(found.groups() if found else None, ("3", "7"))
+        found = ROUNDS_TRAILER.fullmatch("rounds: n=3 threshold=off first=unknown")
+        self.assertEqual(found.groups() if found else None, ("3", "unknown"))
+        self.assertIsNone(ROUNDS_TRAILER.fullmatch("rounds: n=3 threshold=off"))
+        self.assertIsNone(ROUNDS_TRAILER.fullmatch("rounds: n=3 threshold=12 first=7"))
 
     def test_head_age_reads_the_newer_date_and_formats_it_as_the_shell_did(self) -> None:
         epoch = calendar.timegm((2027, 1, 15, 8, 0, 0, 0, 0, 0)) + 0.5  # jq's `now`, a float
