@@ -623,7 +623,9 @@ controlled through the tools in your coordinator's file, never through those com
   stopped - a message, an interruption request or a missing listing is not that proof. CLI
   unstick, capacity errors and finishers are script-fenced in
   [cli-claude.md](references/cli-claude.md#intervening); app workers follow
-  [separate-codex.md](references/separate-codex.md#supervision-and-intervention).
+  [separate-codex.md](references/separate-codex.md#supervision-and-intervention). A desktop
+  Auto-fix event on a worker's PR is log-only:
+  [native-claude.md](references/native-claude.md#auto-fix-events-on-worker-prs).
 - **Babysit through `pr-review.sh`, not hand-rolled `gh`.** When the coordinator ends up
   shepherding a PR itself - a takeover after failed unsticks, a finisher's branch, a stranded
   PR inherited from a dead session - drive the review loop with the ship-pr skill's

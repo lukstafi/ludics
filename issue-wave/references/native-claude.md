@@ -169,3 +169,27 @@ holds a background task and is not stalled, so spawn no finisher on its worktree
 (Supervise: *Stay alive, but design for dying*). After any interruption reconcile from
 `ListAgents`, the board and the PRs rather than from memory; an idle worker is still there to
 resume.
+
+## Auto-fix events on worker PRs
+
+In the Claude desktop app, a PR's "Auto-fix CI & address comments" monitor wakes the session the
+PR is bound to with a `<ci-monitor-event>` on a CI failure, a merge conflict or a review comment,
+each asking that session to push a fix. It is a wake source only: it reads no review state,
+counts no rounds, gates no merge, and exists only in desktop sessions, so ship-pr stays on
+`pr-review.sh`. Under a desktop coordinator the events for a worker's PR land in the
+coordinator's session, where one writer per branch (SKILL.md, *Supervise*) rules out acting on
+them:
+
+- **Log-only on a worker-owned PR.** An event gets one board line, never a push and never a turn
+  spent on the PR. A finding the coordinator judges silent (must-fix, SKILL.md *Converge long
+  reviews*) and that the worker may have missed is forwarded to the worker with `SendMessage`,
+  naming the PR, the round and the thread.
+- **Turn the monitor off.** When the coordinator first sees a wave PR bound to its own session
+  (`mcp__ccd_pr__get_status`, session `"self"` by default, shows the bound PR and its `auto_fix`
+  switch), it turns Auto-fix off for that PR with `mcp__ccd_pr__set_monitor` (`auto_fix: false`
+  and the PR's url as `get_status` reports it; `address_comments` is the same switch). The
+  worker's backgrounded `pr-review.sh watch` is that PR's wake source.
+
+Why it matters: in wave-20261015 about 40 such events each cost a coordinator turn, and since
+they covered only the ludics-lite PRs they also gave a false picture of review progress
+(ludics-lite#650: lukstafi/ocannl-staging#1170 reached 12 rounds unseen).
