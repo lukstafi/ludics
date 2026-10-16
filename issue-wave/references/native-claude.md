@@ -185,11 +185,17 @@ One writer per branch (SKILL.md, *Supervise*) rules out acting on its events:
   spent on the PR. A finding the coordinator judges silent (must-fix, SKILL.md *Converge long
   reviews*) and that the worker may have missed is forwarded to the worker with `SendMessage`,
   naming the PR, the round and the thread.
-- **Turn the monitor off.** When the coordinator first sees a wave PR bound to its own session
-  (`mcp__ccd_pr__get_status`, session `"self"` by default, shows the bound PR and its `auto_fix`
-  switch), it turns Auto-fix off for that PR with `mcp__ccd_pr__set_monitor` (`auto_fix: false`
-  and the PR's url as `get_status` reports it; `address_comments` is the same switch). The
-  worker's backgrounded `pr-review.sh watch` is that PR's wake source.
+- **Turn the monitor off right after the PR opens.** A session holds one bound PR, and the app binds
+  one whenever the session runs `gh pr create` or pushes a branch that has a PR (`get_status`'s
+  own unbound reply says so), so a sibling's next PR or push can take the binding. The moment a
+  PR is known to be bound is just after the worker's own `gh pr create`. The brief has the worker call
+  `mcp__ccd_pr__get_status` (session `"self"`, the default) then, and when it shows the worker's
+  own PR, `mcp__ccd_pr__set_monitor` with `auto_fix: false` and that PR's url as `get_status`
+  reports it (`address_comments` is the same switch). Any other PR there means the binding has
+  already moved, and the worker leaves it alone. The call asks the user's approval outside bypass
+  permissions mode, and an unseen prompt stalls a worker, so a brief for a worker in another mode
+  leaves the step out, and the coordinator makes the same call whenever `get_status` shows it a
+  wave PR still on. The worker's backgrounded `pr-review.sh watch` is that PR's wake source.
 
 Why it matters: in wave-20261015 about 40 such events each cost a coordinator turn, and since
 they covered only the ludics-lite PRs they also gave a false picture of review progress
