@@ -2555,6 +2555,15 @@ hreq hb-gone
 expect "a last batch whose worktree is gone concludes with its red verdict, saying so" 0 "its recorded worktree $TMP/handback removed wt is gone" -- \
   hb hb-gone --evidence "one batch red" --from-run "$hruns/gone"
 grep -Fq '"verdict": "fail"' <<<"$out" && ok "...as fail" || ko "exit 1 did not read as fail: $out"
+# A --from-run hand-back whose answer was lost, retried once the worker's run worktree is removed:
+# re-read, the record would say "gone", so the recorded conclusion is the retry's payload.
+rwt="$TMP/handback run wt"; git clone -q "$TMP/proj.git" "$rwt"
+hrun later 0 - - "$rwt"; hreq hb-retry
+hb hb-retry --evidence "green" --from-run "$hruns/later" > "$TMP/hb-retry.out" 2>&1 || ko "could not conclude hb-retry (setup): $(cat "$TMP/hb-retry.out")"
+rm -rf "${rwt:?}"
+expect "a --from-run retry after its worktree is removed is the registry's harmless retry" 0 '"state": "concluded"' -- \
+  env SHIM_GH=down "${FWH[@]}" execution conclude --standing-handback --request hb-retry --observed-from "$hwt" --evidence "green" --from-run "$hruns/later"
+grep -Fq "is gone" <<<"$out" && ko "the retry recomposed its evidence: $out" || ok "...with the evidence the conclusion recorded"
 hreq hb-verdict
 expect "with no run named, the hand-back's own verdict concludes it" 0 "verdict fail as the worker's hand-back reports it, no run record named" -- \
   hb hb-verdict --evidence "the scans batch stayed red" --verdict fail

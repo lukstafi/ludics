@@ -459,19 +459,50 @@ def standing_run_clause(facts: str, run_dir: str, host: str) -> tuple[str, str] 
     return verdict, clause
 
 
+def handback_lead(evidence: str, checkout: str, host: str) -> str:
+    return f"{evidence}; standing hand-back, observed_sha read as HEAD of {checkout} on {host}"
+
+
+def handback_handle(request: str, run_dir: str) -> tuple[str, str]:
+    """A standing hand-back's handle and log: the run record's, or the hand-back's own."""
+    if not run_dir:
+        return f"standing-handback:{request}", "none: no run record named (the evidence is the hand-back's)"
+    return "test-run:" + basename(run_dir), run_dir + "/log"
+
+
+def recorded_handback(
+    record: dict[str, Any], request: str, checkout: str, host: str, evidence: str, run_dir: str, verdict: str
+) -> str | None:
+    """A retry of a hand-back that landed with its answer lost: the recorded conclusion, when this
+    call names its request, checkout, record (or none), evidence and any --verdict. Re-read, the run
+    record could describe a worktree removed or a history rewritten since, and the registry takes
+    only an identical payload as a retry. None for anything else, which composes afresh."""
+    history: Any = record.get("history")
+    last: Any = cast(list[Any], history)[-1] if isinstance(history, list) and history else None
+    data: Any = cast(dict[str, Any], last).get("data") if isinstance(last, dict) else None
+    if record.get("state") != "concluded" or not isinstance(data, dict):
+        return None
+    landed = cast(dict[str, Any], data)
+    handle, log = handback_handle(request, run_dir)
+    said = landed.get("evidence")
+    if (landed.get("request_id") == request and landed.get("handle") == handle and landed.get("log") == log
+            and landed.get("remote_checkout") == checkout and (not verdict or landed.get("verdict") == verdict)
+            and isinstance(said, str) and said.startswith(handback_lead(evidence, checkout, host) + "; ")):  # fmt: skip
+        return json.dumps(landed, separators=(",", ":"), ensure_ascii=False)
+    return None
+
+
 def standing_handback(
     request: str, host: str, checkout: str, head: str, evidence: str, verdict: str, run: tuple[str, str] | None
 ) -> str:
     """The payload of ``conclude --standing-handback``: ``run`` is the record's directory and
     evidence clause, or None when the hand-back's own verdict stands alone."""
-    evidence += f"; standing hand-back, observed_sha read as HEAD of {checkout} on {host}"
+    evidence = handback_lead(evidence, checkout, host)
+    handle, log = handback_handle(request, run[0] if run else "")
     if run is None:
-        handle, log = f"standing-handback:{request}", "none: no run record named (the evidence is the hand-back's)"
         evidence += f"; verdict {verdict} as the worker's hand-back reports it, no run record named"
     else:
-        run_dir, clause = run
-        handle, log = "test-run:" + basename(run_dir), run_dir + "/log"
-        evidence += "; " + clause
+        evidence += "; " + run[1]
     data = {"request_id": request, "evidence": evidence, "observed_sha": head, "remote_checkout": checkout,
             "handle": handle, "log": log, "verdict": verdict, "execution_host": host}  # fmt: skip
     return compact(data)
@@ -1067,6 +1098,9 @@ def standing_handback_payload(cfg: Config, args: list[str]) -> str:
         return concluded(head)
     if record.get("state") != "concluded":
         fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "observed_sha", head, gh_timeout(cfg)))
+    again = recorded_handback(record, request, observed_from, host, evidence, run_dir, verdict)
+    if again is not None:
+        return again
     run: tuple[str, str] | None = None
     if run_dir:
         done = run_on(cfg, host, prelude(cfg, host) + FROM_RUN_STANDING, [run_dir, observed_from, head], capture=True)

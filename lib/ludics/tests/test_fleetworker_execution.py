@@ -156,6 +156,20 @@ class StandingHandback(unittest.TestCase):
         self.assertEqual((data["handle"], data["log"]), ("test-run:20261016T101010Z-1", self.RUN + "/log"))
         self.assertTrue(data["evidence"].endswith("; " + text))
 
+    def test_a_retry_reuses_the_recorded_conclusion_however_the_box_changed(self) -> None:
+        verdict, text = self.clause()
+        landed: dict[str, Any] = json.loads(execution.standing_handback("r", "testbox", "/w t", SHA, "ok", verdict, (self.RUN, text)))
+        del landed["execution_host"]  # the registry checks it and records the rest
+        rec = {"state": "concluded", "history": [{"action": "conclude", "data": landed}]}
+        again = execution.recorded_handback(rec, "r", "/w t", "testbox", "ok", self.RUN, "")
+        self.assertEqual(json.loads(again or "{}"), landed)
+        self.assertIsNotNone(execution.recorded_handback(rec, "r", "/w t", "testbox", "ok", self.RUN, "pass"))
+        for call in (("r", "/w t", "testbox", "other words", self.RUN, ""), ("r", "/w t", "testbox", "ok", "/runs/other", ""),
+                     ("r", "/w u", "testbox", "ok", self.RUN, ""), ("r", "/w t", "testbox", "ok", self.RUN, "fail"),
+                     ("r", "/w t", "testbox", "ok", "", "pass")):
+            self.assertIsNone(execution.recorded_handback(rec, *call), call)
+        self.assertIsNone(execution.recorded_handback({**rec, "state": "running"}, "r", "/w t", "testbox", "ok", self.RUN, ""))
+
 
 class Revisions(unittest.TestCase):
     """ludics-lite#561: a commit a payload names must exist in the request's repository on GitHub.
