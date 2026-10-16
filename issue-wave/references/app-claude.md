@@ -37,7 +37,10 @@ reconnected within about 2 s, and the end-of-turn note arrived. The Mac sleeping
 4. Start the worker with `start_session`, passing:
    - `initiation: "user_asked"`, `context: "fresh"`, `target: "ssh"` and the `host`;
    - `cwd`: the box's checkout, and `use_worktree: true`;
-   - a recognizable `title` and `name`, the full brief as `prompt`, and `background`.
+   - a recognizable `title` and `name`, the full brief as `prompt`, and `background`;
+   - `model` only when the user chose one. The schema ignores a model above the coordinator's
+     own, so check `get_session`'s `model` after the start. A model that differs from the
+     user's choice is a capability gate to report, not a worker to keep.
 
    The app starts a session only in a turn begun by the user's own chat message in the
    coordinator. It refused one in a turn begun by another session's message, and an
@@ -52,13 +55,16 @@ reconnected within about 2 s, and the end-of-turn note arrived. The Mac sleeping
    commit. On TUF that was a local master 1622 commits behind origin. The brief therefore requires
    these steps in the app's worktree before any edit: `git fetch origin`, a check of the verified
    base SHA, and `git switch -c <topic> <verified-sha>`. A SHA as the start point sets no upstream.
-   The pilot's `git checkout -B <branch> origin/master` made origin/master the upstream. A
-   replacement worker continues the existing topic branch instead. Its brief names the branch,
-   commits and PR, and it starts only after the old worker's worktree has been removed as in
-   [close-out](#intervention-and-close-out), which frees the branch. It then runs
-   `git fetch origin` and `git switch <topic>` in its own worktree.
+   The pilot's `git checkout -B <branch> origin/master` made origin/master the upstream.
+
+   A replacement worker takes over the old worker's worktree, where the topic branch is
+   already checked out. Start it only after archiving the old session has stopped that
+   session's process. Pass `cwd`: the old `worktreePath` and `use_worktree: false`, which the
+   schema defines as that folder as it is. Its brief names the branch, commits and PR. That
+   worktree is then cleaned up once, at close-out.
 6. The result gives the `local_` session id and the `name`. `get_session` on that id reports
-   `worktreePath`, `branch`, `permissionMode`, `isRemote` and `isRunning`. Record all of them.
+   `worktreePath`, `branch`, `model`, `permissionMode`, `isRemote` and `isRunning`. Record
+   all of them.
    The brief names the coordinator's own `local_` id (`get_session "self"`). The worker's
    linked-sessions note names only the top session of the family, not the session that
    started it. The worker's startup report goes to that id by `SendMessage`: its absolute
