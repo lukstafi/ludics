@@ -7,7 +7,8 @@ worker channel and the tool names, and those live in the per-coordinator files -
 [native-claude.md](native-claude.md) for a Claude Code coordinator, [native-codex.md](native-codex.md)
 for a Codex one; read yours alongside this. Vocabulary, the transport choice and the rule that
 the user's provider, model and transport choices are preserved are SKILL.md's (*Vocabulary*,
-*Launch*); the complete app-worker alternative is [separate-codex.md](separate-codex.md).
+*Launch*); the app-worker alternatives are [separate-codex.md](separate-codex.md) (Codex) and
+[app-claude.md](app-claude.md) (Claude).
 
 Tool names and concurrency limits come from the runtime in front of you, not from a remembered
 wave: they change between builds (Claude Code's `SendMessage` was not loadable on 2026-09-10
@@ -25,8 +26,8 @@ establish remote native-worker support**: a native worker runs where the coordin
 runs its subagents. This is the one statement of that rule. When repeated hardware iteration
 argues for an agent resident on the box, the options are a CLI worker there
 ([cli-claude.md](cli-claude.md)) or an explicitly selected app worker, subject to the app's
-actual host-aware tools ([separate-codex.md](separate-codex.md)). Residence does not preclude
-checks on other boxes; each execution is reserved separately, runs local to the agent included.
+actual host-aware tools ([separate-codex.md](separate-codex.md), [app-claude.md](app-claude.md)).
+Residence does not preclude checks on other boxes; each execution is reserved separately, runs local to the agent included.
 
 1. Claim the fleet lease and read the plan, the board, the halt, the PRs and the execution
    registry. Resolve the project's development remote (including staging versus upstream),
@@ -123,7 +124,8 @@ applicable, with the repository's base and explicitly regenerable directories (f
 `--regenerable _build`). Archive unique experiment inputs and instrumentation first. Avoid
 rebuilding its ref/ancestry checks in an ad-hoc cleanup script; Dune can copy a worktree's `.git`
 file into `_build/default`, which a plain `git clean -fdX` will preserve as a nested repository.
-App-managed worktrees follow [separate-codex.md](separate-codex.md#close-out) instead.
+App-managed worktrees follow [separate-codex.md](separate-codex.md#close-out) or
+[app-claude.md](app-claude.md#intervention-and-close-out) instead.
 Consolidate workers' after-merge proposals and persist the completed wave's board. Route chips
 through SKILL.md's selected mode; retain the lease across the default post-wave coordination
 loop and release it only at final close-out.
