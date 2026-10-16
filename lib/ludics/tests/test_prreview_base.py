@@ -678,6 +678,44 @@ class AdvisoryRed(unittest.TestCase):
         self.assertIn("not an advisory-only red: fixtures (ubuntu) (failure) is not advisory", out)
         self.assertIn("repos/o/r/actions/runs/1000/attempts/2/jobs?per_page=100", gh.asked)
 
+    def test_an_older_advisory_only_red_does_not_hold_the_interim(self) -> None:
+        """Under ``--interim`` (the gate's read) the tip's own run is in flight over an older run
+        red only in an advisory job: the interim's own read of the older runs takes the same
+        reading as the fold (review round 1: it counted the raw failure and held the gate to its
+        ceiling). Without the flag the older red holds the interim, as before."""
+        def at(sha: str, rid: int, created: str, **more: object) -> dict[str, object]:
+            return {"conclusion": "success", "head_sha": sha, "id": rid, "created_at": created,
+                    "run_attempt": 1, **more}
+        fly = at(C, 10, "2026-10-05T10:30:00Z", status="in_progress", conclusion=None)
+        red = at(B, 9, "2026-10-05T10:20:00Z", conclusion="failure")
+        prev = at(A, 8, "2026-10-05T10:00:00Z")
+        answers = pushless_world()
+        answers.update({
+            f"repos/o/r/contents/.github/workflows/ci.yml?ref={C}": DOCS_IGNORED,
+            "repos/o/r/actions/workflows/1/runs?branch=main&event=push&per_page=10": runs(fly, red, prev),
+            "repos/o/r/actions/workflows/1/runs?branch=main&event=push&per_page=100": runs(fly, red, prev),
+            "repos/o/r/actions/runs/10": json.dumps({"status": "in_progress"}),
+            "repos/o/r/actions/runs/9/attempts/1/jobs?per_page=100": json.dumps({"jobs": [
+                {"name": "bash 3.2 suites, a (macos)", "conclusion": "failure"},
+                {"name": "fixtures (ubuntu)", "conclusion": "success"}]}),
+            "repos/o/r/contents/.github/ship-pr-advisory-checks": ADVISORY,
+        })
+        head = gate_stub("green", "o/r#7 @eeeeeeee: green — 1 build checks passed")
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "advisory-red.json")
+            rc, out, _, _ = base_run(answers, ["main", "--wait=900", "--interim", "--advisory-red", path],
+                                     clock=FakeClock(), gate=head, knobs={"SHIP_PR_BASE_ABSENT_GRACE": "0"})
+            self.assertEqual(rc, 0, out)
+            self.assertIn(f"green, interim (tip {C[:8]}", out)
+            self.assertIn(f"  advisory-red  ci — failure at {B[:8]}", out)
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual([(r["job"], r["sha"], r["run"]) for r in json.load(f)],
+                                 [("bash 3.2 suites, a (macos)", B, "9")], "named once, not once per read")
+        rc, out, _, _ = base_run(answers, ["main", "--wait=120", "--interim"], clock=FakeClock(), gate=head,
+                                 knobs={"SHIP_PR_BASE_ABSENT_GRACE": "0"})
+        self.assertNotEqual(rc, 0, out)
+        self.assertNotIn("green, interim", out)
+
     def test_the_flag_takes_a_file(self) -> None:
         rc, _, err, _ = base_run(self._world(), ["main", "--advisory-red"])
         self.assertEqual(rc, 2)

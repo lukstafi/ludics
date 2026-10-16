@@ -923,9 +923,10 @@ class Base:
 
     # --- the interim's deeper read ---
 
-    def older_runs(self, wid: str, ebranch: str, tip: str) -> tuple[int, str] | None:
+    def older_runs(self, wid: str, ebranch: str, tip: str) -> tuple[int, str, RunRow | None] | None:
         """The hundred-deep read before an interim (ludics-lite#533): how many runs at another
-        commit have not completed, and the newest JUDGED conclusion among them ("none")."""
+        commit have not completed, the newest JUDGED conclusion among them ("none"), and that run
+        (for ``--advisory-red``'s jobs read)."""
         doc = self.gh_json(["api", f"repos/{self.repo}/actions/workflows/{wid}/runs"
                             f"?branch={ebranch}&event=push&per_page=100"])
         if isinstance(doc, (GhFailed, GhUnanswered)):
@@ -939,9 +940,11 @@ class Base:
         others.sort(key=lambda r: (_jq_order(get(r, "created_at")), _jq_order(get(r, "id"))))
         others.reverse()
         unfinished = sum(1 for r in others if get(r, "status") != "completed")
-        newest = next((jq_raw(get(r, "conclusion")) for r in others
-                       if get(r, "status") == "completed" and get(r, "conclusion") in _JUDGED), "none")
-        return unfinished, newest
+        judged = next((r for r in others
+                       if get(r, "status") == "completed" and get(r, "conclusion") in _JUDGED), None)
+        if judged is None:
+            return unfinished, "none", None
+        return unfinished, jq_raw(get(judged, "conclusion")), _run_row(judged)
 
 
 @dataclass(frozen=True)
@@ -1597,8 +1600,18 @@ class Wait:
                     rnd.out += (f"           (no interim verdict for {wname}: its push runs could not be"
                                 f" read past the first page ({b.err_line()}))\n")
                     break
-                n_open, newest = older
+                n_open, newest, judged = older
                 older_fly += n_open
+                # An advisory-only red is no red here either (--advisory-red): the same run the
+                # fold took out of the verdict, or an older one the page of ten did not hold.
+                if conclusion_class(newest) == "red" and self.args.advisory_red and judged is not None:
+                    reds, standing = b.advisory_red(judged.run_id, judged.attempt)
+                    if reds:
+                        seen = {(run, job) for _, _, run, job, _ in rnd.advisory_red}
+                        rnd.advisory_red.extend((wname, judged.head_sha, judged.run_id, job, jconcl)
+                                                for job, jconcl in reds if (judged.run_id, job) not in seen)
+                        continue
+                    rnd.out += f"           (not an advisory-only red: {standing})\n"
                 if conclusion_class(newest) == "red":
                     older_fly += 1
                     rnd.out += (f"           (no interim verdict for {wname}: its newest judged push run"
